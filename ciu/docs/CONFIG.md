@@ -6,7 +6,7 @@ This document defines the configuration structure and rendering behavior used by
 
 1. Generate workspace env and source it:
   - env-workspace-setup-generate.sh
-  - source .env.workspace
+  - source .env.ciu
 2. Render configs (recommended for debugging and preflight):
   - ciu --render-toml
 3. Deploy stacks (orchestration):
@@ -173,7 +173,7 @@ Templates should reference secrets via ${<FLATTENED_KEY>} placeholders so render
 
 ## Fail-Fast Requirements
 
-- .env.workspace must define REPO_ROOT, PHYSICAL_REPO_ROOT, DOCKER_NETWORK_INTERNAL, CONTAINER_UID, DOCKER_GID, PUBLIC_FQDN, PUBLIC_TLS_*.
+- .env.ciu must define REPO_ROOT, PHYSICAL_REPO_ROOT, DOCKER_NETWORK_INTERNAL, CONTAINER_UID, DOCKER_GID, PUBLIC_FQDN, PUBLIC_TLS_*.
 - deploy.project_name and deploy.environment_tag must be set.
 - Stack config must have a single root key.
 

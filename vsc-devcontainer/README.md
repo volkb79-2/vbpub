@@ -41,6 +41,20 @@ The image sets:
 
 If CIU wheel inputs are provided at build time, the CIU wheel is downloaded and installed into the same virtualenv (optional SHA256 verification via `CIU_WHEEL_SHA256`).
 
+## Environment Provisioning Flow (To-be)
+
+Chronological steps for a complete development environment vs. GitHub Actions runner. This consolidates what happens in the base image, devcontainer post-create, and CI/CD setup scripts.
+
+| Step (Chronological) | Devcontainer (vsc-devcontainer + post-create) | GitHub Actions (runner + env-setup) |
+| --- | --- | --- |
+| 1. Base OS | `mcr.microsoft.com/devcontainers/python:1-${PYTHON_VERSION}-${DEBIAN_VERSION}` (from [vsc-devcontainer/Dockerfile](vsc-devcontainer/Dockerfile)) | GitHub-hosted Ubuntu runner ([about runners](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners)) |
+| 2. Core system packages | Installed in Dockerfile via `apt-get` (curl, git, jq, dnsutils, etc.). | Preinstalled on runner; no Dockerfile step. |
+| 3. Modern tools + CLIs | Installed in Dockerfile (bat, fd, ripgrep, shellcheck, fzf, yq, Consul, Vault, PostgreSQL client, Redis tools, AWS CLI). | Not installed by default; add in CI if needed (not done in env-setup). |
+| 4. Python runtime + packages | `/home/vscode/.venv` created and populated in Dockerfile with common dev packages; `env-workspace-setup-generate.sh` installs repo `requirements.txt` to keep tooling aligned. | Uses runner Python; `env-workspace-setup-generate.sh` installs requirements from repo `requirements.txt`. |
+| 5. CIU install | CIU must already be available (prebaked in image or preinstalled in workspace); post-create does not install CIU. | `.github/actions/env-setup.sh` downloads wheel from `CIU_PKG_URL` and installs it before running env setup. |
+| 6. Workspace env generation + bootstrap | `.devcontainer/post-create.sh` calls `env-workspace-setup-generate.sh`, which runs `ciu --generate-env --define-root` to create `.env.ciu` and execute CIU post-bootstrap (network create/attach + TLS access checks). | `.github/actions/env-setup.sh` delegates to `env-workspace-setup-generate.sh` for the same `.env.ciu` generation and CIU bootstrap. |
+| 7. Dev UX/CI extras | Post-create sets VS Code settings, aliases, SSH agent, and PATH helpers. | CI sets `MOCK_MODE=true`, optional Docker registry login, and creates `vol-testing-results/`. |
+
 ## Version overrides
 
 Defaults are `latest`. Any variable defined in docker-bake.hcl can be overridden via environment variables when invoking the build.

@@ -35,6 +35,18 @@ class WorkspaceEnvError(ValueError):
     """Raised when workspace environment file is missing or invalid."""
 
 
+def _log_info(message: str) -> None:
+    print(f"[INFO] {message}", flush=True)
+
+
+def _log_warn(message: str) -> None:
+    print(f"[WARN] {message}", flush=True)
+
+
+def _log_error(message: str) -> None:
+    print(f"[ERROR] {message}", flush=True)
+
+
 def resolve_env_root(start_dir: Path, define_root: Optional[Path], defaults_filename: str) -> Path:
     """Resolve the workspace env root directory.
 
@@ -288,6 +300,129 @@ def _compute_network_name(physical_root: Path) -> Dict[str, str]:
     }
 
 
+def _docker_available() -> bool:
+    if not shutil.which("docker"):
+        return False
+    result = subprocess.run(
+        ["docker", "info"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _ensure_network_exists(network_name: str) -> None:
+    if not network_name:
+        raise WorkspaceEnvError("DOCKER_NETWORK_INTERNAL is missing or empty.")
+
+    if not _docker_available():
+        raise WorkspaceEnvError("Docker not available; cannot create network.")
+
+    inspect = subprocess.run(
+        ["docker", "network", "inspect", network_name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if inspect.returncode == 0:
+        return
+
+    _log_info(f"Creating docker network: {network_name}")
+    create = subprocess.run(
+        ["docker", "network", "create", network_name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if create.returncode != 0:
+        raise WorkspaceEnvError(
+            f"Failed to create docker network {network_name}: {create.stderr.strip()}"
+        )
+
+
+def _connect_devcontainer_to_network(network_name: str) -> None:
+    env_type = os.environ.get("ENV_TYPE", "").lower()
+    if env_type != "devcontainer":
+        return
+
+    container_name = os.environ.get("DEVCONTAINER_NAME") or os.environ.get("HOSTNAME", "")
+    if not container_name:
+        _log_warn("Devcontainer name not detected; skipping network attach.")
+        return
+
+    if not _docker_available():
+        _log_warn("Docker not available; skipping devcontainer network attach.")
+        return
+
+    inspect = subprocess.run(
+        ["docker", "network", "inspect", network_name, "--format", "{{range .Containers}}{{.Name}} {{end}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if inspect.returncode == 0 and container_name in inspect.stdout.split():
+        return
+
+    _log_info(f"Connecting devcontainer {container_name} to {network_name}")
+    connect = subprocess.run(
+        ["docker", "network", "connect", network_name, container_name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if connect.returncode != 0:
+        _log_warn(
+            f"Failed to connect devcontainer to {network_name}: {connect.stderr.strip()}"
+        )
+
+
+def _check_tls_access() -> None:
+    cert_path = os.environ.get("PUBLIC_TLS_CRT_PEM", "")
+    key_path = os.environ.get("PUBLIC_TLS_KEY_PEM", "")
+    if not cert_path or not key_path:
+        return
+
+    if not _docker_available():
+        _log_warn("Docker not available; skipping TLS accessibility checks.")
+        return
+
+    user_uid = os.environ.get("USER_UID", str(os.getuid()))
+    docker_gid = os.environ.get("DOCKER_GID") or os.environ.get("CONTAINER_GID", "")
+    if not docker_gid:
+        _log_warn("DOCKER_GID not set; skipping TLS accessibility checks.")
+        return
+
+    for label, path in (("certificate", cert_path), ("private key", key_path)):
+        test = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-v",
+                "/etc/letsencrypt:/etc/letsencrypt:ro",
+                "--user",
+                f"{user_uid}:{docker_gid}",
+                "alpine:latest",
+                "sh",
+                "-c",
+                f"test -r '{path}'",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if test.returncode != 0:
+            _log_warn(f"TLS {label} not accessible to Docker: {path}")
+
+
+def _post_generate_env_bootstrap() -> None:
+    network_name = os.environ.get("DOCKER_NETWORK_INTERNAL", "")
+    _ensure_network_exists(network_name)
+    _connect_devcontainer_to_network(network_name)
+    _check_tls_access()
+
+
 def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Path:
     """Generate .env.ciu with autodetected values.
 
@@ -354,6 +489,7 @@ def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Pat
             ("CONTAINER_GID", container_gid, "GID used for container user mapping"),
             ("DOCKER_UID", docker_uid, "UID for Docker socket access (defaults to USER_UID)"),
             ("DOCKER_GID", docker_gid, "Docker group GID for host volume permissions"),
+            ("DEVCONTAINER_NAME", os.environ.get("DEVCONTAINER_NAME", os.environ.get("HOSTNAME", "")), "Detected devcontainer name (if applicable)"),
         ],
     ))
     lines.append("")
@@ -415,8 +551,10 @@ def bootstrap_workspace_env(
     env_root = resolve_env_root(start_dir, define_root, defaults_filename)
     env_path = env_root / ENV_FILE_NAME
 
+    generated = False
     if generate_env or not env_path.exists():
         generate_ciu_env(env_root)
+        generated = True
 
     if define_root:
         values = parse_workspace_env(env_path)
@@ -424,6 +562,9 @@ def bootstrap_workspace_env(
             os.environ[key] = value
     else:
         load_workspace_env(env_root)
+
+    if generated:
+        _post_generate_env_bootstrap()
 
     if update_cert_permission:
         public_fqdn = os.environ.get("PUBLIC_FQDN")

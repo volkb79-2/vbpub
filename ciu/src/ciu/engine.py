@@ -608,7 +608,7 @@ def render_global_config_chain(working_dir: Path, repo_root_override: Optional[P
         if env_repo_root and Path(env_repo_root).resolve() != repo_root:
             raise ValueError(
                 f"[ERROR] --define-root ({repo_root}) does not match REPO_ROOT ({env_repo_root}). "
-                "Update .env.workspace or use a matching --define-root."
+                "Update .env.ciu or use a matching --define-root."
             )
     else:
         repo_root = Path(os.environ.get("REPO_ROOT", "")).resolve() if os.environ.get("REPO_ROOT") else None
@@ -616,7 +616,7 @@ def render_global_config_chain(working_dir: Path, repo_root_override: Optional[P
     if not repo_root or not repo_root.exists():
         raise ValueError(
             "[ERROR] REPO_ROOT not set or invalid. "
-            "Ensure .env.workspace is loaded before running CIU."
+            "Ensure .env.ciu is loaded before running CIU."
         )
 
     merged: dict = {}
@@ -799,7 +799,7 @@ def auto_generate_values(config: dict) -> dict:
     if not container_uid or not docker_gid:
         raise ValueError(
             "[ERROR] Missing required deploy.env.shared values for hostdir ownership. "
-            "Ensure CONTAINER_UID and DOCKER_GID are set via .env.workspace."
+            "Ensure CONTAINER_UID and DOCKER_GID are set via .env.ciu."
         )
 
     config['auto_generated']['uid'] = container_uid
@@ -823,7 +823,7 @@ def create_hostdirs(config: dict) -> dict:
     if not uid or not docker_gid:
         raise ValueError(
             "CONTAINER_UID/DOCKER_GID not found in config - "
-            "ensure .env.workspace is loaded before running CIU"
+            "ensure .env.ciu is loaded before running CIU"
         )
 
     uid = int(uid)

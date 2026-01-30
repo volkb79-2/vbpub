@@ -42,7 +42,7 @@ Multi-stack orchestrator. CIU Deploy sequences multiple stacks using deployment 
 - Stop, clean, build, deploy actions
 - Phase/group selection and ordering
 - Health checks and selftests
-- Workspace environment enforcement (.env.workspace)
+- Workspace environment enforcement (.env.ciu)
 
 **Common usage**:
 - Default deploy (all enabled phases)
@@ -62,7 +62,7 @@ Multi-stack orchestrator. CIU Deploy sequences multiple stacks using deployment 
 
 ## Workspace prerequisites
 
-- Run env-workspace-setup-generate.sh and source .env.workspace
+- Run env-workspace-setup-generate.sh and source .env.ciu
 - Ensure PYTHON_EXECUTABLE points to the workspace venv
 - Build images with docker buildx bake before deploy
 
@@ -79,7 +79,7 @@ Multi-stack orchestrator. CIU Deploy sequences multiple stacks using deployment 
 
 **Publish a wheel (GitHub Releases)**:
 - From the CIU repo root:
-  - tools/publish-and-validate.sh
+  - publish-and-validate.sh
 - Requires `GITHUB_PUSH_PAT`, `GITHUB_USERNAME`, and `GITHUB_REPO`.
 - Publishes a versioned release and uploads the versioned wheel asset to the
   `ciu-wheel-latest` tag as an alias.
@@ -88,7 +88,7 @@ Multi-stack orchestrator. CIU Deploy sequences multiple stacks using deployment 
 ## Running tests
 
 - From the CIU repo root:
-  - pytest
+  - run-ciu-tests.sh
 
 ## Where CIU is installed in dstdns
 
@@ -128,7 +128,7 @@ All dstdns scripts and docs should invoke `ciu` and `ciu-deploy` from the instal
 
 - Missing ciu-global.toml: run ciu --render-toml
 - Missing images: run docker buildx bake all-services --load
-- Missing workspace env: run env-workspace-setup-generate.sh and source .env.workspace
+- Missing workspace env: run env-workspace-setup-generate.sh and source .env.ciu
 
 ## Detailed Documentation
 

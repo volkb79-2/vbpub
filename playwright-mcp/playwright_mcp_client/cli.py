@@ -60,6 +60,88 @@ async def _ws_eval(url: str, token: Optional[str], timeout: float, script: str) 
     return 0
 
 
+async def _ws_health(url: str, token: Optional[str], timeout: float) -> int:
+    async with PlaywrightWSClient(url=url, auth_token=token, timeout=timeout) as client:
+        result = await client.health()
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+async def _ws_console_logs(url: str, token: Optional[str], timeout: float) -> int:
+    async with PlaywrightWSClient(url=url, auth_token=token, timeout=timeout) as client:
+        result = await client.get_console_logs()
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+async def _ws_console_clear(url: str, token: Optional[str], timeout: float) -> int:
+    async with PlaywrightWSClient(url=url, auth_token=token, timeout=timeout) as client:
+        result = await client.clear_console_logs()
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+async def _ws_trace_start(url: str, token: Optional[str], timeout: float) -> int:
+    async with PlaywrightWSClient(url=url, auth_token=token, timeout=timeout) as client:
+        result = await client.start_tracing()
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+async def _ws_trace_stop(url: str, token: Optional[str], timeout: float, path: Optional[str]) -> int:
+    async with PlaywrightWSClient(url=url, auth_token=token, timeout=timeout) as client:
+        result = await client.stop_tracing(path=path)
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+async def _ws_export_state(url: str, token: Optional[str], timeout: float, path: Optional[str]) -> int:
+    async with PlaywrightWSClient(url=url, auth_token=token, timeout=timeout) as client:
+        result = await client.export_storage_state(path=path)
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+async def _ws_import_state(url: str, token: Optional[str], timeout: float, path: Optional[str]) -> int:
+    async with PlaywrightWSClient(url=url, auth_token=token, timeout=timeout) as client:
+        result = await client.import_storage_state(path=path)
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+async def _ws_video_path(url: str, token: Optional[str], timeout: float) -> int:
+    async with PlaywrightWSClient(url=url, auth_token=token, timeout=timeout) as client:
+        result = await client.get_video_path()
+        print(json.dumps(result, indent=2))
+    return 0
+
+
+async def _ws_login(
+    url: str,
+    token: Optional[str],
+    timeout: float,
+    login_url: str,
+    username: str,
+    password: str,
+    username_selector: str,
+    password_selector: str,
+    submit_selector: str,
+    success_url_pattern: Optional[str],
+) -> int:
+    async with PlaywrightWSClient(url=url, auth_token=token, timeout=timeout) as client:
+        result = await client.login(
+            url=login_url,
+            username=username,
+            password=password,
+            username_selector=username_selector,
+            password_selector=password_selector,
+            submit_selector=submit_selector,
+            success_url_pattern=success_url_pattern,
+        )
+        print(json.dumps(result, indent=2))
+    return 0
+
+
 def _add_ws_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--url", default=_default_ws_url(), help="WebSocket URL")
     parser.add_argument("--token", default=_default_token(), help="Auth token")
@@ -93,6 +175,43 @@ def main() -> int:
     _add_ws_common_args(ws_eval)
     ws_eval.add_argument("--script", required=True, help="JavaScript expression")
 
+    ws_health = ws_sub.add_parser("health", help="Fetch server health")
+    _add_ws_common_args(ws_health)
+
+    ws_login = ws_sub.add_parser("login", help="Login via form")
+    _add_ws_common_args(ws_login)
+    ws_login.add_argument("--login-url", required=True, help="Login URL")
+    ws_login.add_argument("--username", required=True, help="Username")
+    ws_login.add_argument("--password", required=True, help="Password")
+    ws_login.add_argument("--username-selector", default="#username", help="Username selector")
+    ws_login.add_argument("--password-selector", default="#password", help="Password selector")
+    ws_login.add_argument("--submit-selector", default="button[type='submit']", help="Submit selector")
+    ws_login.add_argument("--success-url-pattern", help="Success URL pattern (optional)")
+
+    ws_console = ws_sub.add_parser("console-logs", help="Fetch console logs")
+    _add_ws_common_args(ws_console)
+
+    ws_console_clear = ws_sub.add_parser("console-clear", help="Clear console logs")
+    _add_ws_common_args(ws_console_clear)
+
+    ws_trace_start = ws_sub.add_parser("trace-start", help="Start tracing")
+    _add_ws_common_args(ws_trace_start)
+
+    ws_trace_stop = ws_sub.add_parser("trace-stop", help="Stop tracing")
+    _add_ws_common_args(ws_trace_stop)
+    ws_trace_stop.add_argument("--path", help="Output trace filename (optional)")
+
+    ws_export_state = ws_sub.add_parser("state-export", help="Export storage state")
+    _add_ws_common_args(ws_export_state)
+    ws_export_state.add_argument("--path", help="Output filename (optional)")
+
+    ws_import_state = ws_sub.add_parser("state-import", help="Import storage state")
+    _add_ws_common_args(ws_import_state)
+    ws_import_state.add_argument("--path", required=True, help="Storage state filename")
+
+    ws_video_path = ws_sub.add_parser("video-path", help="Get recorded video path (if enabled)")
+    _add_ws_common_args(ws_video_path)
+
     args = parser.parse_args()
     _configure_logging(args.verbose)
 
@@ -105,6 +224,37 @@ def main() -> int:
             return asyncio.run(_ws_screenshot(args.url, args.token, args.timeout, args.path, args.full_page))
         if args.ws_command == "eval":
             return asyncio.run(_ws_eval(args.url, args.token, args.timeout, args.script))
+        if args.ws_command == "health":
+            return asyncio.run(_ws_health(args.url, args.token, args.timeout))
+        if args.ws_command == "login":
+            return asyncio.run(
+                _ws_login(
+                    args.url,
+                    args.token,
+                    args.timeout,
+                    args.login_url,
+                    args.username,
+                    args.password,
+                    args.username_selector,
+                    args.password_selector,
+                    args.submit_selector,
+                    args.success_url_pattern,
+                )
+            )
+        if args.ws_command == "console-logs":
+            return asyncio.run(_ws_console_logs(args.url, args.token, args.timeout))
+        if args.ws_command == "console-clear":
+            return asyncio.run(_ws_console_clear(args.url, args.token, args.timeout))
+        if args.ws_command == "trace-start":
+            return asyncio.run(_ws_trace_start(args.url, args.token, args.timeout))
+        if args.ws_command == "trace-stop":
+            return asyncio.run(_ws_trace_stop(args.url, args.token, args.timeout, args.path))
+        if args.ws_command == "state-export":
+            return asyncio.run(_ws_export_state(args.url, args.token, args.timeout, args.path))
+        if args.ws_command == "state-import":
+            return asyncio.run(_ws_import_state(args.url, args.token, args.timeout, args.path))
+        if args.ws_command == "video-path":
+            return asyncio.run(_ws_video_path(args.url, args.token, args.timeout))
 
     parser.error("Unknown command")
     return 1

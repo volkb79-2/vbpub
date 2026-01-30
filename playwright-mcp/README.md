@@ -8,6 +8,7 @@ Standalone Playwright service with **WebSocket** and **MCP** interfaces, designe
 - MCP server for VS Code Copilot chat
 - Token authentication (required by default)
 - Optional TLS via Nginx + Let’s Encrypt
+- Optional video capture via `PLAYWRIGHT_VIDEO_DIR`
 - Buildx Bake build/push workflow
 - CIU-ready standalone project (ships CIU defaults + compose templates)
 
@@ -86,6 +87,49 @@ WS_URL=ws://localhost:3000 ACCESS_TOKEN=<token> python3 usage-demo.py
 pwmcp ws ping --url ws://localhost:3000 --token <token>
 pwmcp ws navigate --url ws://localhost:3000 --token <token> --page https://example.com
 pwmcp ws screenshot --url ws://localhost:3000 --token <token> --path /screenshots/example.png
+pwmcp ws health --url ws://localhost:3000 --token <token>
+pwmcp ws login --url ws://localhost:3000 --token <token> --login-url https://app.example/login --username admin --password <secret>
+pwmcp ws console-logs --url ws://localhost:3000 --token <token>
+pwmcp ws trace-start --url ws://localhost:3000 --token <token>
+pwmcp ws trace-stop --url ws://localhost:3000 --token <token> --path trace.zip
+pwmcp ws state-export --url ws://localhost:3000 --token <token> --path storage-state.json
+pwmcp ws state-import --url ws://localhost:3000 --token <token> --path storage-state.json
+pwmcp ws video-path --url ws://localhost:3000 --token <token>
+```
+
+## Client Toolkit (playwright-mcp-client)
+
+The client package provides reusable helpers for UI testing against the MCP WebSocket service:
+- `PlaywrightMCPConfig` (env-driven config, proxy + viewport settings)
+- `ArtifactManager` (consistent output paths)
+- `UIHarness` (navigation, assertions, login helpers, tracing, cookies, storage state, console logs)
+- `RetryPolicy` + `async_retry` (retry with backoff)
+
+Import example:
+
+```python
+from playwright_mcp_client import PlaywrightMCPConfig, PlaywrightWSClient, UIHarness, ArtifactManager
+
+config = PlaywrightMCPConfig.from_env()
+artifacts = ArtifactManager(config.artifacts_dir)
+
+async with PlaywrightWSClient(url=config.ws_url, auth_token=config.auth_token, timeout=config.timeout) as client:
+	ui = UIHarness(client=client, config=config, artifacts=artifacts)
+	await ui.goto("/login")
+	await ui.assert_visible("#username")
+```
+
+## Build & Publish Client Wheel
+
+```bash
+./build-client-wheel.sh
+./publish-client-wheel.sh
+```
+
+## Client Toolkit Tests
+
+```bash
+./run-client-tests.sh
 ```
 
 ## Documentation
@@ -96,6 +140,8 @@ pwmcp ws screenshot --url ws://localhost:3000 --token <token> --path /screenshot
 - docs/USAGE.md
 - docs/GAP-ANALYSIS.md
 - docs/CONFIG-EXAMPLES.md
+- docs/CLIENT.md
+- docs/SERVER.md
 
 ## Notes
 

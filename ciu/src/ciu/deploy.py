@@ -1448,7 +1448,7 @@ def load_proxy_config(repo_root, global_config):
     if not public_fqdn:
         raise ValueError(
             "topology.external.public_fqdn is required but missing. "
-            "Run env-workspace-setup-generate.sh and source .env.workspace."
+            "Run env-workspace-setup-generate.sh and source .env.ciu."
         )
 
     try:

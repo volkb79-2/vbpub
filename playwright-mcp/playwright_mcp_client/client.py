@@ -260,6 +260,88 @@ class PlaywrightWSClient:
         result = await self._send_command('query_selector', {'selector': selector})
         return result.get('found', False)
 
+    async def query_selector_all(self, selector: str) -> Dict[str, Any]:
+        return await self._send_command('query_selector_all', {'selector': selector})
+
+    async def reload(self, wait_until: str = 'networkidle') -> Dict[str, Any]:
+        return await self._send_command('reload', {'wait_until': wait_until})
+
+    async def go_back(self) -> Dict[str, Any]:
+        return await self._send_command('go_back', {})
+
+    async def go_forward(self) -> Dict[str, Any]:
+        return await self._send_command('go_forward', {})
+
+    async def set_viewport_size(self, width: int = 1280, height: int = 720) -> Dict[str, Any]:
+        return await self._send_command('set_viewport_size', {'width': width, 'height': height})
+
+    async def cookies(self) -> Dict[str, Any]:
+        return await self._send_command('cookies', {})
+
+    async def set_cookies(self, cookies: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return await self._send_command('set_cookies', {'cookies': cookies})
+
+    async def clear_cookies(self) -> Dict[str, Any]:
+        return await self._send_command('clear_cookies', {})
+
+    async def close_session(self) -> Dict[str, Any]:
+        return await self._send_command('close_session', {})
+
+    async def health(self) -> Dict[str, Any]:
+        return await self._send_command('health', {})
+
+    async def login(
+        self,
+        url: str,
+        username: str,
+        password: str,
+        username_selector: str = '#username',
+        password_selector: str = '#password',
+        submit_selector: str = "button[type='submit']",
+        success_url_pattern: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return await self._send_command('login', {
+            'url': url,
+            'username': username,
+            'password': password,
+            'username_selector': username_selector,
+            'password_selector': password_selector,
+            'submit_selector': submit_selector,
+            'success_url_pattern': success_url_pattern,
+        })
+
+    async def get_console_logs(self) -> Dict[str, Any]:
+        return await self._send_command('get_console_logs', {})
+
+    async def clear_console_logs(self) -> Dict[str, Any]:
+        return await self._send_command('clear_console_logs', {})
+
+    async def start_tracing(self, screenshots: bool = True, snapshots: bool = True, sources: bool = True) -> Dict[str, Any]:
+        return await self._send_command('start_tracing', {
+            'screenshots': screenshots,
+            'snapshots': snapshots,
+            'sources': sources,
+        })
+
+    async def stop_tracing(self, path: Optional[str] = None) -> Dict[str, Any]:
+        return await self._send_command('stop_tracing', {
+            'path': path,
+        })
+
+    async def export_storage_state(self, path: Optional[str] = None) -> Dict[str, Any]:
+        return await self._send_command('export_storage_state', {
+            'path': path,
+        })
+
+    async def import_storage_state(self, state: Optional[Dict[str, Any]] = None, path: Optional[str] = None) -> Dict[str, Any]:
+        return await self._send_command('import_storage_state', {
+            'state': state,
+            'path': path,
+        })
+
+    async def get_video_path(self) -> Dict[str, Any]:
+        return await self._send_command('get_video_path', {})
+
     async def query_selector_all(self, selector: str) -> int:
         result = await self._send_command('query_selector_all', {'selector': selector})
         return result.get('count', 0)

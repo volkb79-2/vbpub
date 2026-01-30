@@ -39,6 +39,7 @@ MAX_SESSIONS = int(os.getenv('WS_MAX_SESSIONS', '10'))
 SESSION_TIMEOUT = int(os.getenv('WS_SESSION_TIMEOUT', '3600'))
 PLAYWRIGHT_HEADLESS = os.getenv('PLAYWRIGHT_HEADLESS', 'true').lower() == 'true'
 PLAYWRIGHT_BROWSER = os.getenv('PLAYWRIGHT_BROWSER', 'chromium')
+PLAYWRIGHT_VIDEO_DIR = os.getenv('PLAYWRIGHT_VIDEO_DIR', '')
 SSL_CERT_PATH = os.getenv('SSL_CERT_PATH', '/app/certs/server.crt')
 SSL_KEY_PATH = os.getenv('SSL_KEY_PATH', '/app/certs/server.key')
 SSL_ENABLED = os.getenv('SSL_ENABLED', 'false').lower() == 'true'
@@ -111,6 +112,13 @@ class PlaywrightWebSocketServer:
             'close_session': self._handle_close_session,
             'health': self._handle_health,
             'login': self._handle_login,
+            'get_console_logs': self._handle_get_console_logs,
+            'clear_console_logs': self._handle_clear_console_logs,
+            'start_tracing': self._handle_start_tracing,
+            'stop_tracing': self._handle_stop_tracing,
+            'export_storage_state': self._handle_export_storage_state,
+            'import_storage_state': self._handle_import_storage_state,
+            'get_video_path': self._handle_get_video_path,
         }
 
     async def start(self) -> None:
@@ -259,10 +267,15 @@ class PlaywrightWebSocketServer:
             raise RuntimeError("Browser not initialized")
 
         session_id = f"session_{secrets.token_hex(8)}"
-        context = await self._browser.new_context()
+        if PLAYWRIGHT_VIDEO_DIR:
+            context = await self._browser.new_context(record_video_dir=PLAYWRIGHT_VIDEO_DIR)
+        else:
+            context = await self._browser.new_context()
         page = await context.new_page()
 
         session = BrowserSession(session_id=session_id, context=context, page=page)
+        self._attach_console_logger(session)
+        session.metadata["tracing_active"] = False
         self.sessions[session_id] = session
         logger.info("Created session: %s", session_id)
 
@@ -282,6 +295,22 @@ class PlaywrightWebSocketServer:
             raise ValueError(f"Session not found: {session_id}")
         session.touch()
         return session
+
+    def _attach_console_logger(self, session: BrowserSession) -> None:
+        console_logs: list[dict[str, Any]] = []
+
+        def _console_handler(message) -> None:
+            try:
+                console_logs.append({
+                    "type": message.type,
+                    "text": message.text,
+                    "location": message.location,
+                })
+            except Exception as exc:  # pragma: no cover - defensive logging only
+                logger.debug("Failed to capture console log: %s", exc)
+
+        session.page.on("console", _console_handler)
+        session.metadata["console_logs"] = console_logs
 
     async def _handle_message(self, websocket: ServerConnection, session_id: str, message: str) -> None:
         try:
@@ -737,6 +766,94 @@ class PlaywrightWebSocketServer:
             'url': session.page.url,
             'title': await session.page.title()
         }
+
+    async def _handle_get_console_logs(self, session_id: str, args: dict) -> dict:
+        session = self._get_session(session_id)
+        logs = session.metadata.get("console_logs", [])
+        return {"logs": list(logs)}
+
+    async def _handle_clear_console_logs(self, session_id: str, args: dict) -> dict:
+        session = self._get_session(session_id)
+        logs = session.metadata.get("console_logs")
+        if isinstance(logs, list):
+            logs.clear()
+        return {"cleared": True}
+
+    async def _handle_start_tracing(self, session_id: str, args: dict) -> dict:
+        session = self._get_session(session_id)
+        if session.metadata.get("tracing_active"):
+            return {"started": False, "reason": "already_active"}
+
+        await session.context.tracing.start(
+            screenshots=bool(args.get("screenshots", True)),
+            snapshots=bool(args.get("snapshots", True)),
+            sources=bool(args.get("sources", True)),
+        )
+        session.metadata["tracing_active"] = True
+        return {"started": True}
+
+    async def _handle_stop_tracing(self, session_id: str, args: dict) -> dict:
+        session = self._get_session(session_id)
+        if not session.metadata.get("tracing_active"):
+            return {"stopped": False, "reason": "not_active"}
+
+        filename = args.get("path")
+        if filename:
+            filename = Path(filename).name
+        else:
+            filename = f"trace_{session_id}_{int(time.time())}.zip"
+
+        trace_path = Path("/screenshots") / filename
+        await session.context.tracing.stop(path=str(trace_path))
+        session.metadata["tracing_active"] = False
+
+        return {"stopped": True, "path": str(trace_path)}
+
+    async def _handle_export_storage_state(self, session_id: str, args: dict) -> dict:
+        session = self._get_session(session_id)
+        path = args.get("path")
+
+        if path:
+            filename = Path(path).name
+            storage_path = Path("/screenshots") / filename
+            await session.context.storage_state(path=str(storage_path))
+            return {"path": str(storage_path)}
+
+        state = await session.context.storage_state()
+        return {"state": state}
+
+    async def _handle_import_storage_state(self, session_id: str, args: dict) -> dict:
+        session = self._get_session(session_id)
+        state = args.get("state")
+        path = args.get("path")
+
+        if path:
+            filename = Path(path).name
+            storage_path = Path("/screenshots") / filename
+            if not storage_path.exists():
+                raise ValueError(f"Storage state file not found: {storage_path}")
+            state = json.loads(storage_path.read_text(encoding="utf-8"))
+
+        if not state:
+            raise ValueError("state or path is required")
+
+        await session.context.close()
+        context = await self._browser.new_context(storage_state=state)
+        page = await context.new_page()
+
+        session.context = context
+        session.page = page
+        self._attach_console_logger(session)
+        session.metadata["tracing_active"] = False
+
+        return {"imported": True}
+
+    async def _handle_get_video_path(self, session_id: str, args: dict) -> dict:
+        session = self._get_session(session_id)
+        if not session.page.video:
+            return {"path": None}
+        path = await session.page.video.path()
+        return {"path": str(path)}
 
 
 async def main() -> None:
