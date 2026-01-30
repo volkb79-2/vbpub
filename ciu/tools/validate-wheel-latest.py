@@ -69,9 +69,30 @@ def main() -> None:
     data = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
     project_meta = data.get("project", {})
     version = project_meta.get("version")
+
     if not version:
-        print("[ERROR] Unable to read project.version from pyproject.toml", file=sys.stderr)
-        raise SystemExit(1)
+        dynamic_meta = data.get("tool", {}).get("setuptools", {}).get("dynamic", {})
+        version_attr = dynamic_meta.get("version", {}).get("attr")
+        if not version_attr:
+            print("[ERROR] Unable to resolve project version from pyproject.toml", file=sys.stderr)
+            raise SystemExit(1)
+
+        module_path, _, attr_name = version_attr.rpartition(".")
+        if not module_path or not attr_name:
+            print(f"[ERROR] Invalid dynamic version attr: {version_attr}", file=sys.stderr)
+            raise SystemExit(1)
+
+        sys.path.insert(0, str(project_root / "src"))
+        try:
+            module = __import__(module_path, fromlist=[attr_name])
+        except ImportError as exc:
+            print(f"[ERROR] Unable to import {module_path} for version lookup: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+
+        version = getattr(module, attr_name, None)
+        if not version:
+            print("[ERROR] Dynamic version attribute resolved to empty", file=sys.stderr)
+            raise SystemExit(1)
 
     asset_name = os.getenv("CIU_LATEST_ASSET_NAME", f"ciu-{version}-py3-none-any.whl")
 

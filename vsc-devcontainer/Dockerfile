@@ -9,8 +9,8 @@ FROM ${BASE_IMAGE}
 
 SHELL ["/bin/bash", "-c"]
 
-ARG PYTHON_VERSION
 ARG DEBIAN_VERSION
+
 ARG BACKPORTS_URI
 ARG OCI_TITLE=""
 ARG OCI_DESCRIPTION=""
@@ -41,6 +41,9 @@ ARG GITHUB_USERNAME
 ARG GITHUB_REPO
 ARG CIU_LATEST_TAG
 ARG CIU_LATEST_ASSET_NAME
+
+ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
+ENV BACKPORTS_URI="${BACKPORTS_URI}"
 
 # OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 LABEL org.opencontainers.image.title="${OCI_TITLE}" \

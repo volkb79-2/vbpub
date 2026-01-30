@@ -79,10 +79,11 @@ Multi-stack orchestrator. CIU Deploy sequences multiple stacks using deployment 
 
 **Publish a wheel (GitHub Releases)**:
 - From the CIU repo root:
-  - tools/publish-wheel-release.py
+  - tools/publish-and-validate.sh
 - Requires `GITHUB_PUSH_PAT`, `GITHUB_USERNAME`, and `GITHUB_REPO`.
 - Publishes a versioned release and uploads the versioned wheel asset to the
   `ciu-wheel-latest` tag as an alias.
+- Validation step checks the latest release asset exists after publish.
 
 ## Running tests
 
