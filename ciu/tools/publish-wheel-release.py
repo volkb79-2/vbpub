@@ -142,6 +142,12 @@ def update_release(api_base: str, owner: str, repo: str, release_id: int, title:
     return parse_json(resp.body, f"update release {release_id}")
 
 
+def delete_release(api_base: str, owner: str, repo: str, release_id: int, token: str) -> None:
+    resp = api_request("DELETE", f"{api_base}/repos/{owner}/{repo}/releases/{release_id}", token)
+    if resp.status >= 400:
+        fail(f"Failed to delete release {release_id}", resp.status, resp.body)
+
+
 def list_assets(api_base: str, owner: str, repo: str, release_id: int, token: str) -> list[Dict[str, Any]]:
     resp = api_request("GET", f"{api_base}/repos/{owner}/{repo}/releases/{release_id}/assets", token)
     if resp.status >= 400:
@@ -169,13 +175,28 @@ def upload_asset(upload_url: str, asset_path: Path, asset_name: str, token: str)
         fail(f"Failed to upload asset {asset_name}", resp.status, resp.body)
 
 
-def publish_release_asset(api_base: str, owner: str, repo: str, tag: str, title: str, notes: str, asset_path: Path, asset_name: str, token: str) -> None:
+def publish_release_asset(
+    api_base: str,
+    owner: str,
+    repo: str,
+    tag: str,
+    title: str,
+    notes: str,
+    asset_path: Path,
+    asset_name: str,
+    token: str,
+    *,
+    recreate: bool = False,
+) -> None:
     release = get_release_by_tag(api_base, owner, repo, tag, token)
     if release is None:
         release = create_release(api_base, owner, repo, tag, title, notes, token)
     else:
         release_id = release.get("id")
-        if release_id:
+        if release_id and recreate:
+            delete_release(api_base, owner, repo, int(release_id), token)
+            release = create_release(api_base, owner, repo, tag, title, notes, token)
+        elif release_id:
             update_release(api_base, owner, repo, int(release_id), title, notes, token)
 
     release_id = release.get("id")
@@ -210,9 +231,7 @@ def main() -> None:
     data = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
     project_meta = data.get("project", {})
 
-    version = project_meta.get("version")
-    if not version:
-        version = os.getenv("CIU_BUILD_VERSION") or os.getenv("CIU_VERSION")
+    version = os.getenv("CIU_BUILD_VERSION") or os.getenv("CIU_VERSION")
 
     if not version:
         try:
@@ -246,7 +265,20 @@ def main() -> None:
 
     tag = f"{package_name}-wheel-{version}"
     release_title = os.getenv("CIU_RELEASE_TITLE", f"{package_name}-wheel-{version}-py3-none-any")
-    release_notes = os.getenv("CIU_RELEASE_NOTES", f"{package_name} wheel {version}")
+    release_notes = os.getenv(
+        "CIU_RELEASE_NOTES",
+        (
+            f"{package_name} wheel {version}\n\n"
+            "Includes:\n"
+            "- CIU CLI entrypoints (ciu, ciu-deploy)\n"
+            "- Config-driven orchestration helpers\n"
+            "- Installable wheel for devcontainers and CI runners\n\n"
+            "Install:\n"
+            "```bash\n"
+            "python -m pip install ./<wheel-file>\n"
+            "```"
+        ),
+    )
 
     wheel_path = build_wheel(project_root, wheel_glob)
     wheel_hash = sha256(wheel_path.read_bytes()).hexdigest()
@@ -256,9 +288,32 @@ def main() -> None:
     latest_tag = os.getenv("CIU_LATEST_TAG", f"{package_name}-wheel-latest")
     latest_asset_name = os.getenv("CIU_LATEST_ASSET_NAME", wheel_path.name)
     latest_title = os.getenv("CIU_LATEST_TITLE", f"{package_name}-wheel-latest")
-    latest_notes = os.getenv("CIU_LATEST_NOTES", f"{package_name} wheel latest (points to {version})")
+    latest_notes = os.getenv(
+        "CIU_LATEST_NOTES",
+        (
+            f"{package_name} wheel latest (points to {version})\n\n"
+            "Includes:\n"
+            "- Latest CIU CLI wheel\n"
+            "- Updated orchestration helpers\n\n"
+            "Install:\n"
+            "```bash\n"
+            "python -m pip install ./<wheel-file>\n"
+            "```"
+        ),
+    )
 
-    publish_release_asset(api_base, owner, repo, latest_tag, latest_title, latest_notes, wheel_path, latest_asset_name, token)
+    publish_release_asset(
+        api_base,
+        owner,
+        repo,
+        latest_tag,
+        latest_title,
+        latest_notes,
+        wheel_path,
+        latest_asset_name,
+        token,
+        recreate=True,
+    )
 
     wheel_url = f"https://github.com/{owner}/{repo}/releases/download/{tag}/{wheel_path.name}"
     latest_wheel_url = f"https://github.com/{owner}/{repo}/releases/download/{latest_tag}/{latest_asset_name}"

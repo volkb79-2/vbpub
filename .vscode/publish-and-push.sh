@@ -1,19 +1,4 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""Legacy entrypoint removed. Use release-all.py or release-runner.py."""
 
-PYTHON_BIN="/workspaces/vbpub/.venv/bin/python"
-
-echo "[STEP] Ensure pip is available"
-if ! "${PYTHON_BIN}" -m pip --version; then
-	"${PYTHON_BIN}" -m ensurepip --upgrade
-	"${PYTHON_BIN}" -m pip install --upgrade pip wheel
-fi
-
-echo "[STEP] Publish CIU wheel"
-"${PYTHON_BIN}" /workspaces/vbpub/ciu/tools/publish-wheel-release.py
-
-echo "[STEP] Build vsc-devcontainer images"
-bash /workspaces/vbpub/vsc-devcontainer/build-images.sh
-
-echo "[STEP] Push vsc-devcontainer images"
-bash /workspaces/vbpub/vsc-devcontainer/push-images.sh
+raise SystemExit("[ERROR] .vscode/publish-and-push.sh removed. Use release-all.py or release-runner.py.")

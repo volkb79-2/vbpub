@@ -146,6 +146,7 @@ celerybeat.pid
 .envrc
 .env.ciu
 .venv
+release.toml
 env/
 venv/
 ENV/

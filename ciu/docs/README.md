@@ -79,7 +79,7 @@ Multi-stack orchestrator. CIU Deploy sequences multiple stacks using deployment 
 
 **Publish a wheel (GitHub Releases)**:
 - From the CIU repo root:
-  - publish-and-validate.sh
+  - python3 publish-wheel.py
 - Requires `GITHUB_PUSH_PAT`, `GITHUB_USERNAME`, and `GITHUB_REPO`.
 - Publishes a versioned release and uploads the versioned wheel asset to the
   `ciu-wheel-latest` tag as an alias.
@@ -88,7 +88,7 @@ Multi-stack orchestrator. CIU Deploy sequences multiple stacks using deployment 
 ## Running tests
 
 - From the CIU repo root:
-  - run-ciu-tests.sh
+  - python3 run-ciu-tests.py
 
 ## Where CIU is installed in dstdns
 
@@ -116,6 +116,71 @@ Recommended distribution:
   - https://github.com/volkb79-2/vbpub/releases/download/ciu-wheel-latest/ciu-<version>-py3-none-any.whl
 - Versioned URL scheme:
   - https://github.com/volkb79-2/vbpub/releases/download/ciu-wheel-<version>/ciu-<version>-py3-none-any.whl
+
+### Resolve the latest wheel URL dynamically (release.toml)
+
+Use the release config to build the download URL at runtime.
+
+Steps:
+1. Read `release.toml` for `github.username`, `github.repo`, and `env.CIU_LATEST_TAG`.
+2. Query the release assets for that tag.
+3. Pick the `.whl` asset and build the download URL.
+
+```python
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+import tomllib
+
+
+def load_release_config(path: Path) -> dict:
+  if not path.exists():
+    raise FileNotFoundError(f"release config not found: {path}")
+  with path.open("rb") as handle:
+    return tomllib.load(handle)
+
+
+def main() -> None:
+  repo_root = Path(__file__).resolve().parents[2]
+  config = load_release_config(repo_root / "release.toml")
+
+  github = config.get("github") or {}
+  env = config.get("env") or {}
+
+  owner = (github.get("username") or "").strip()
+  repo = (github.get("repo") or "").strip()
+  tag = (env.get("CIU_LATEST_TAG") or "").strip()
+
+  if not owner or not repo or not tag:
+    raise ValueError("github.username, github.repo, and env.CIU_LATEST_TAG are required")
+
+  token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_PUSH_PAT")
+  if not token:
+    raise ValueError("Set GH_TOKEN or GITHUB_PUSH_PAT for GitHub API access")
+
+  api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"
+  req = Request(api_url, headers={"Authorization": f"Bearer {token}"})
+  with urlopen(req) as response:
+    payload = response.read().decode("utf-8")
+
+  data = __import__("json").loads(payload)
+  assets = data.get("assets") or []
+  wheel = next((a for a in assets if a.get("name", "").endswith(".whl")), None)
+  if not wheel:
+    raise RuntimeError(f"No wheel asset found for tag {tag}")
+
+  asset_name = wheel["name"]
+  url = f"https://github.com/{owner}/{repo}/releases/download/{tag}/{asset_name}"
+  print(url)
+
+
+if __name__ == "__main__":
+  main()
+```
 
 All dstdns scripts and docs should invoke `ciu` and `ciu-deploy` from the installed package.
 

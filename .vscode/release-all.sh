@@ -1,5 +1,4 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""Legacy entrypoint removed. Use release-all.py or release-runner.py."""
 
-bash /workspaces/vbpub/playwright-mcp/release-and-upload.sh
-bash /workspaces/vbpub/.vscode/publish-and-push.sh
+raise SystemExit("[ERROR] .vscode/release-all.sh removed. Use release-all.py or release-runner.py.")

@@ -9,7 +9,13 @@ description = "CIU deployment CLI"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
-authors = [{name = "DST-DNS Team"}]
+authors = [{name = "Volker Badziong"}]
+dependencies = [
+	"Jinja2>=3.1.2",
+	"PyYAML>=6.0.1",
+	"tomli>=2.0.0",
+	"tomli_w>=1.0.0",
+]
 
 [tool.setuptools.dynamic]
 version = {attr = "ciu.__version__"}

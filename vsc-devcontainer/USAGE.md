@@ -4,7 +4,7 @@
 
 Build all four variants:
 
-- `./build-images.sh`
+- `./build-images.py`
 
 Environment configuration:
 - Copy `.env.sample` to `.env` and adjust values as needed.
@@ -20,14 +20,14 @@ Any variable in docker-bake.hcl can be overridden for a build.
 Example:
 
 ```
-B2_VERSION=4.5.0 ./build-images.sh
+B2_VERSION=4.5.0 ./build-images.py
 ```
 
 ## Push (registry)
 
 After validation, push all variants:
 
-- `./push-images.sh`
+- `./push-images.py`
 
 Ensure you are logged in to the registry (e.g., `docker login ghcr.io`) and that `GITHUB_USERNAME` matches your org/user.
 If `GITHUB_PUSH_PAT` and `GITHUB_USERNAME` are set in `.env`, the push script will log in automatically.

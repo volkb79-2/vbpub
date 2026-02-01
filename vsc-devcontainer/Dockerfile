@@ -41,6 +41,7 @@ ARG GITHUB_USERNAME
 ARG GITHUB_REPO
 ARG CIU_LATEST_TAG
 ARG CIU_LATEST_ASSET_NAME
+ARG CIU_INSTALL_REQUIRED="false"
 
 ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
 ENV BACKPORTS_URI="${BACKPORTS_URI}"
@@ -380,6 +381,7 @@ RUN set -euo pipefail; \
         tomli_w
 RUN set -euo pipefail; \
     if [ -n "${GITHUB_USERNAME}" ] && [ -n "${GITHUB_REPO}" ]; then \
+        skip_ciu=0; \
         wheel_dir="/tmp/ciu-wheel"; \
         install -d -m 0755 "${wheel_dir}"; \
         wheel_path="${wheel_dir}/ciu.whl"; \
@@ -388,23 +390,38 @@ RUN set -euo pipefail; \
         if [ -z "${ciu_asset_name}" ]; then \
             ciu_asset_name="$(curl -fsSL "https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/tags/${ciu_latest_tag}" \
                 | jq -r '.assets[].name | select(endswith(".whl"))' \
-                | head -n 1)"; \
+                | head -n 1 || true)"; \
         fi; \
         if [ -z "${ciu_asset_name}" ]; then \
-            echo "[ERROR] Failed to resolve CIU wheel asset name for tag ${ciu_latest_tag}" >&2; \
-            exit 1; \
+            if [ "${CIU_INSTALL_REQUIRED}" = "true" ]; then \
+                echo "[ERROR] Failed to resolve CIU wheel asset name for tag ${ciu_latest_tag}" >&2; \
+                exit 1; \
+            fi; \
+            echo "[WARN] CIU wheel asset not found for tag ${ciu_latest_tag}; skipping CIU install" >&2; \
+            skip_ciu=1; \
         fi; \
-        ciu_url="https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/download/${ciu_latest_tag}/${ciu_asset_name}"; \
-        curl -fsSL "${ciu_url}" -o "${wheel_path}"; \
-        wheel_name="$(/home/vscode/.venv/bin/python -c 'import sys, zipfile; from pathlib import Path; wheel_path=Path(sys.argv[1]); zf=zipfile.ZipFile(wheel_path); metadata_files=[name for name in zf.namelist() if name.endswith(".dist-info/METADATA")]; wheel_files=[name for name in zf.namelist() if name.endswith(".dist-info/WHEEL")]; assert metadata_files, "[ERROR] Missing METADATA in CIU wheel"; assert wheel_files, "[ERROR] Missing WHEEL metadata in CIU wheel"; metadata=zf.read(metadata_files[0]).decode("utf-8", "replace"); name=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Name:")), None); version=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Version:")), None); wheel_meta=zf.read(wheel_files[0]).decode("utf-8", "replace"); tag=next((line.split(":", 1)[1].strip() for line in wheel_meta.splitlines() if line.startswith("Tag:")), None); assert name and version and tag, "[ERROR] Missing Name/Version/Tag in CIU wheel metadata"; dist=name.replace("-", "_"); print(f"{dist}-{version}-{tag}.whl"); zf.close()' "${wheel_path}")"; \
-        if [ -z "${wheel_name}" ]; then \
-            echo "[ERROR] Failed to derive CIU wheel filename from metadata" >&2; \
-            exit 1; \
+        if [ "${skip_ciu}" -eq 0 ]; then \
+            ciu_url="https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/download/${ciu_latest_tag}/${ciu_asset_name}"; \
+            if ! curl -fsSL "${ciu_url}" -o "${wheel_path}"; then \
+                if [ "${CIU_INSTALL_REQUIRED}" = "true" ]; then \
+                    echo "[ERROR] Failed to download CIU wheel from ${ciu_url}" >&2; \
+                    exit 1; \
+                fi; \
+                echo "[WARN] Failed to download CIU wheel from ${ciu_url}; skipping CIU install" >&2; \
+                skip_ciu=1; \
+            fi; \
         fi; \
-        wheel_dest="${wheel_dir}/${wheel_name}"; \
-        mv "${wheel_path}" "${wheel_dest}"; \
-        /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check "${wheel_dest}"; \
-        rm -rf "${wheel_dir}"; \
+        if [ "${skip_ciu}" -eq 0 ]; then \
+            wheel_name="$(/home/vscode/.venv/bin/python -c 'import sys, zipfile; from pathlib import Path; wheel_path=Path(sys.argv[1]); zf=zipfile.ZipFile(wheel_path); metadata_files=[name for name in zf.namelist() if name.endswith(".dist-info/METADATA")]; wheel_files=[name for name in zf.namelist() if name.endswith(".dist-info/WHEEL")]; assert metadata_files, "[ERROR] Missing METADATA in CIU wheel"; assert wheel_files, "[ERROR] Missing WHEEL metadata in CIU wheel"; metadata=zf.read(metadata_files[0]).decode("utf-8", "replace"); name=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Name:")), None); version=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Version:")), None); wheel_meta=zf.read(wheel_files[0]).decode("utf-8", "replace"); tag=next((line.split(":", 1)[1].strip() for line in wheel_meta.splitlines() if line.startswith("Tag:")), None); assert name and version and tag, "[ERROR] Missing Name/Version/Tag in CIU wheel metadata"; dist=name.replace("-", "_"); print(f"{dist}-{version}-{tag}.whl"); zf.close()' "${wheel_path}")"; \
+            if [ -z "${wheel_name}" ]; then \
+                echo "[ERROR] Failed to derive CIU wheel filename from metadata" >&2; \
+                exit 1; \
+            fi; \
+            wheel_dest="${wheel_dir}/${wheel_name}"; \
+            mv "${wheel_path}" "${wheel_dest}"; \
+            /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check "${wheel_dest}"; \
+            rm -rf "${wheel_dir}"; \
+        fi; \
     else \
         echo "GITHUB_USERNAME/GITHUB_REPO not set; skipping CIU install"; \
     fi
@@ -438,9 +455,16 @@ RUN set -euo pipefail; \
     if [ -z "$shellcheck_version_output" ]; then \
         shellcheck_version_output="$(shellcheck --version 2>&1 | head -1 || true)"; \
     fi; \
+    ciu_version_output="$(/home/vscode/.venv/bin/python -c 'import importlib.metadata as m; print(m.version("ciu"))' 2>/dev/null || true)"; \
     { \
         echo "image.debian=${DEBIAN_VERSION}"; \
         echo "image.python=$(python3 --version 2>&1)"; \
+        echo "image.version=${OCI_VERSION}"; \
+        if [ -n "${ciu_version_output}" ]; then \
+            echo "tool.ciu=${ciu_version_output}"; \
+        else \
+            echo "tool.ciu=not-installed"; \
+        fi; \
         echo "tool.b2=${b2_version_output}"; \
         echo "tool.bat=$(bat --version 2>&1 | head -1)"; \
         echo "tool.delta=$(delta --version 2>&1 | head -1)"; \

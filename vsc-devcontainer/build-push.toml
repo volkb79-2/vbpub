@@ -1,0 +1,97 @@
+project_root = "."
+log_dir = "logs"
+release_config = "../release.toml"
+
+[build_metadata]
+date_env = "BUILD_DATE"
+date_format = "%Y%m%d"
+auto_increment_env = "BUILD_AUTO_INCREMENT"
+counter_file_template = "build-counter-{date}.txt"
+
+[steps.build-images]
+no_cache_env = "BUILD_NO_CACHE"
+bake_set_prefix = "base.args."
+bake_set_vars = [
+  "AWSCLI_VERSION",
+  "B2_VERSION",
+  "BACKPORTS_URI",
+  "BAT_VERSION",
+  "DELTA_VERSION",
+  "GH_VERSION",
+  "CONSUL_VERSION",
+  "FD_VERSION",
+  "FZF_VERSION",
+  "POSTGRESQL_CLIENT_VERSION",
+  "REDIS_TOOLS_VERSION",
+  "RIPGREP_VERSION",
+  "RGA_VERSION",
+  "SHELLCHECK_VERSION",
+  "VAULT_VERSION",
+  "YQ_VERSION",
+  "GITHUB_USERNAME",
+  "GITHUB_REPO",
+  "CIU_LATEST_TAG",
+  "CIU_LATEST_ASSET_NAME",
+  "CIU_INSTALL_REQUIRED",
+  "OCI_TITLE",
+  "OCI_DESCRIPTION",
+  "OCI_SOURCE",
+  "OCI_DOCUMENTATION",
+  "OCI_URL",
+  "OCI_LICENSES",
+  "OCI_VENDOR",
+  "OCI_VERSION",
+  "OCI_REVISION",
+  "OCI_CREATED",
+]
+commands = [
+  { label = "vsc-devcontainer: build images", argv = ["docker", "buildx", "bake", "-f", "docker-bake.hcl", "all", "--load"], cwd = "." },
+]
+
+[steps.push-images]
+bake_set_prefix = "base.args."
+bake_set_vars = [
+  "AWSCLI_VERSION",
+  "B2_VERSION",
+  "BACKPORTS_URI",
+  "BAT_VERSION",
+  "DELTA_VERSION",
+  "GH_VERSION",
+  "CONSUL_VERSION",
+  "FD_VERSION",
+  "FZF_VERSION",
+  "POSTGRESQL_CLIENT_VERSION",
+  "REDIS_TOOLS_VERSION",
+  "RIPGREP_VERSION",
+  "RGA_VERSION",
+  "SHELLCHECK_VERSION",
+  "VAULT_VERSION",
+  "YQ_VERSION",
+  "GITHUB_USERNAME",
+  "GITHUB_REPO",
+  "CIU_LATEST_TAG",
+  "CIU_LATEST_ASSET_NAME",
+  "CIU_INSTALL_REQUIRED",
+  "OCI_TITLE",
+  "OCI_DESCRIPTION",
+  "OCI_SOURCE",
+  "OCI_DOCUMENTATION",
+  "OCI_URL",
+  "OCI_LICENSES",
+  "OCI_VENDOR",
+  "OCI_VERSION",
+  "OCI_REVISION",
+  "OCI_CREATED",
+]
+required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
+env = { BUILD_AUTO_INCREMENT = "1" }
+
+commands = [
+  { label = "vsc-devcontainer: push images", argv = ["docker", "buildx", "bake", "-f", "docker-bake.hcl", "all", "--push"], cwd = "." },
+]
+
+[steps.push-images.login]
+registry = "ghcr.io"
+username_env = "GITHUB_USERNAME"
+token_env = "GITHUB_PUSH_PAT"
+required = true

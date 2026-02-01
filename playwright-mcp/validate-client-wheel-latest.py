@@ -64,10 +64,21 @@ def main() -> None:
     with open(script_dir / "pyproject.toml", "rb") as handle:
         data = tomllib.load(handle)
     project_meta = data.get("project", {})
-    version = project_meta.get("version") or os.getenv("PWMCP_VERSION")
+    version = project_meta.get("version")
+    if not version:
+        version = os.getenv("PWMCP_VERSION") or os.getenv("VERSION") or os.getenv("BUILD_DATE")
 
     if not version:
-        print("[ERROR] Unable to resolve package version from pyproject.toml", file=sys.stderr)
+        # Import after env file load to honor PWMCP_VERSION/VERSION/BUILD_DATE.
+        try:
+            from playwright_mcp_client.version import __version__ as module_version
+        except Exception:
+            module_version = None
+        if module_version and module_version != "0.1.0":
+            version = module_version
+
+    if not version:
+        print("[ERROR] Unable to resolve package version from pyproject.toml or environment", file=sys.stderr)
         raise SystemExit(1)
 
     asset_name = os.getenv("PWMCP_LATEST_ASSET_NAME", f"playwright_mcp_client-{version}-py3-none-any.whl")

@@ -1,5 +1,4 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""Legacy entrypoint removed. Use publish-wheel.py."""
 
-echo "[ERROR] validate-and-publish.sh has been removed. Use ../publish-and-validate.sh instead." >&2
-exit 1
+raise SystemExit("[ERROR] validate-and-publish.sh removed. Use publish-wheel.py.")

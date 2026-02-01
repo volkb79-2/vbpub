@@ -1,0 +1,15 @@
+project_root = "."
+log_dir = "logs"
+release_config = "../release.toml"
+
+[steps.build-wheel]
+clean_dirs = ["dist"]
+commands = [
+  { label = "CIU: build wheel", argv = ["python3", "-m", "pip", "wheel", ".", "-w", "dist"], cwd = "." },
+]
+
+[steps.publish-wheel]
+commands = [
+  { label = "CIU: publish wheel", argv = ["python3", "tools/publish-wheel-release.py"], cwd = "." },
+  { label = "CIU: validate latest wheel", argv = ["python3", "tools/validate-wheel-latest.py"], cwd = "." },
+]

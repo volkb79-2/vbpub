@@ -1,5 +1,5 @@
 # Playwright MCP Standalone Service
-FROM python:3.13-slim-bookworm
+FROM python:3.14-slim-trixie
 
 ARG OCI_TITLE="playwright-mcp"
 ARG OCI_DESCRIPTION="Standalone Playwright MCP + WebSocket service for multi-project browser automation."
@@ -37,6 +37,22 @@ RUN apt-get update && \
         fonts-noto-color-emoji \
         netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
+
+# If you want to switch to OS-supplied Chromium instead of Playwright-managed browsers:
+# 1) Install chromium from apt and set executable path.
+# 2) Skip Playwright browser download and keep install-deps.
+#
+# RUN apt-get update && \
+#     apt-get install -y --no-install-recommends \
+#         ca-certificates \
+#         chromium \
+#         curl \
+#         fonts-noto-color-emoji \
+#         netcat-openbsd \
+#     && rm -rf /var/lib/apt/lists/*
+#
+# ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+#     PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium
 
 COPY requirements.root.txt ./
 

@@ -1,0 +1,98 @@
+# Sample release configuration (copy to vbpub/release.toml and fill values)
+repo_root = ".."
+
+[github]
+# GitHub org/user that owns the repo + packages
+username = "your-github-username-or-org"
+repo = "vbpub"
+# Personal access token with releases + packages permissions
+# token = "ghp_xxx"
+# Optional: "org" or "user" to skip autodetection
+# owner_type = "org"
+
+[registry]
+# Optional override for container registry
+url = "ghcr.io"
+
+[env]
+# Optional shared env vars for build/push steps (Markdown supported in notes)
+# CIU_LATEST_TAG = "ciu-wheel-latest"
+# CIU_LATEST_ASSET_NAME = "ciu-<version>-py3-none-any.whl"
+# CIU_INSTALL_REQUIRED = "false"
+# OCI_TITLE = "vbpub devcontainer"
+# OCI_DESCRIPTION = "Pre-built VS Code devcontainer image with Python, CIU, Docker CLI, and ops tooling."
+# CIU_RELEASE_NOTES = "## CIU CLI wheel\nLightweight CLI for CIU orchestration.\n\n**Includes**\n- ciu / ciu-deploy entrypoints\n- Config-driven deployment helpers\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+# CIU_LATEST_NOTES = "## CIU CLI wheel (latest)\nLatest CIU CLI wheel for automation.\n\n**Includes**\n- ciu / ciu-deploy entrypoints\n- Config-driven deployment helpers\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+# PWMCP_RELEASE_NOTES = "## Playwright MCP client wheel\nWebSocket client SDK for Playwright MCP.\n\n**Includes**\n- Client SDK + helpers\n- UI harness + retry utilities\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+# PWMCP_LATEST_NOTES = "## Playwright MCP client wheel (latest)\nLatest client SDK for Python integrations.\n\n**Includes**\n- Client SDK + helpers\n- UI harness + retry utilities\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+
+[orchestration]
+project_order = ["ciu", "vsc-devcontainer", "playwright-mcp"]
+default_projects = ["ciu", "vsc-devcontainer", "playwright-mcp"]
+default_steps = ["run-tests", "build", "push", "validate"]
+
+[cleanup]
+release_tag_prefixes = [
+  "ciu-wheel-",
+  "playwright-mcp-client-wheel-",
+  "playwright-mcp-stack-bundle-",
+]
+keep_release_tags = [
+  "ciu-wheel-latest",
+  "playwright-mcp-client-wheel-latest",
+  "playwright-mcp-stack-bundle-latest",
+]
+ghcr_packages = ["vsc-devcontainer", "playwright-mcp"]
+
+[projects.ciu.steps.run-tests]
+commands = [
+  { label = "CIU: run tests", argv = ["python3", "run-ciu-tests.py"], cwd = "ciu" },
+]
+
+[projects.ciu.steps.build]
+commands = [
+  { label = "CIU: build wheel", argv = ["python3", "build-wheel.py"], cwd = "ciu" },
+]
+
+[projects.ciu.steps.push]
+commands = [
+  { label = "CIU: publish wheel", argv = ["python3", "publish-wheel.py"], cwd = "ciu" },
+]
+
+[projects.ciu.steps.validate]
+commands = [
+  { label = "CIU: validate latest wheel", argv = ["python3", "tools/validate-wheel-latest.py"], cwd = "ciu" },
+]
+
+[projects.vsc-devcontainer.steps.build]
+commands = [
+  { label = "vsc-devcontainer: build images", argv = ["python3", "build-images.py"], cwd = "vsc-devcontainer" },
+]
+
+[projects.vsc-devcontainer.steps.push]
+commands = [
+  { label = "vsc-devcontainer: push images", argv = ["python3", "push-images.py"], cwd = "vsc-devcontainer" },
+]
+
+[projects.playwright-mcp.steps.run-tests]
+commands = [
+  { label = "playwright-mcp-client: run tests", argv = ["python3", "run-client-tests.py"], cwd = "playwright-mcp" },
+]
+
+[projects.playwright-mcp.steps.build]
+commands = [
+  { label = "playwright-mcp-client: build wheel", argv = ["python3", "build-client-wheel.py"], cwd = "playwright-mcp" },
+  { label = "playwright-mcp: build images", argv = ["python3", "build-images.py"], cwd = "playwright-mcp" },
+]
+
+[projects.playwright-mcp.steps.push]
+commands = [
+  { label = "playwright-mcp-client: publish wheel", argv = ["python3", "publish-client-wheel.py"], cwd = "playwright-mcp" },
+  { label = "playwright-mcp: push images", argv = ["python3", "push-images.py"], cwd = "playwright-mcp" },
+  { label = "playwright-mcp: upload release assets", argv = ["python3", "upload-release-assets.py"], cwd = "playwright-mcp" },
+]
+
+[projects.playwright-mcp.steps.validate]
+commands = [
+  { label = "playwright-mcp-client: validate latest wheel", argv = ["python3", "validate-client-wheel-latest.py"], cwd = "playwright-mcp" },
+]

@@ -26,6 +26,8 @@ MCP_PORT = int(os.getenv('MCP_PORT', '8765'))
 MCP_SERVER_NAME = os.getenv('MCP_SERVER_NAME', 'playwright-mcp')
 PLAYWRIGHT_HEADLESS = os.getenv('PLAYWRIGHT_HEADLESS', 'true').lower() == 'true'
 PLAYWRIGHT_BROWSER = os.getenv('PLAYWRIGHT_BROWSER', 'chromium')
+PLAYWRIGHT_CHROMIUM_CHANNEL = os.getenv('PLAYWRIGHT_CHROMIUM_CHANNEL', '').strip()
+PLAYWRIGHT_CHROMIUM_EXECUTABLE = os.getenv('PLAYWRIGHT_CHROMIUM_EXECUTABLE', '').strip()
 
 ACCESS_TOKEN = os.getenv('ACCESS_TOKEN', '')
 MCP_AUTH_TOKEN = os.getenv('MCP_AUTH_TOKEN', '')
@@ -98,7 +100,12 @@ async def ensure_browser():
         _playwright = await async_playwright().start()
 
         if PLAYWRIGHT_BROWSER == 'chromium':
-            _browser = await _playwright.chromium.launch(headless=PLAYWRIGHT_HEADLESS)
+            launch_kwargs = {"headless": PLAYWRIGHT_HEADLESS}
+            if PLAYWRIGHT_CHROMIUM_EXECUTABLE:
+                launch_kwargs["executable_path"] = PLAYWRIGHT_CHROMIUM_EXECUTABLE
+            elif PLAYWRIGHT_CHROMIUM_CHANNEL:
+                launch_kwargs["channel"] = PLAYWRIGHT_CHROMIUM_CHANNEL
+            _browser = await _playwright.chromium.launch(**launch_kwargs)
         elif PLAYWRIGHT_BROWSER == 'firefox':
             _browser = await _playwright.firefox.launch(headless=PLAYWRIGHT_HEADLESS)
         elif PLAYWRIGHT_BROWSER == 'webkit':

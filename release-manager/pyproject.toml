@@ -1,0 +1,14 @@
+[project]
+name = "vbpub-release-manager"
+version = "0.1.0"
+description = "Unified release orchestration for vbpub artifacts."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[project.scripts]
+vbpub-release = "release_manager.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,8 +1,4 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""Legacy entrypoint removed. Use run-ciu-tests.py."""
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CIU_ROOT="$SCRIPT_DIR"
-
-cd "$CIU_ROOT"
-pytest tests -v
+raise SystemExit("[ERROR] run-ciu-tests.sh removed. Use run-ciu-tests.py.")

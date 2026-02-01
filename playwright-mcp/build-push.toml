@@ -1,0 +1,43 @@
+project_root = "."
+log_dir = "logs"
+release_config = "../release.toml"
+
+[build_metadata]
+date_env = "BUILD_DATE"
+date_format = "%Y%m%d"
+auto_increment_env = "BUILD_AUTO_INCREMENT"
+counter_file_template = "build-counter-{date}.txt"
+version_env = "VERSION"
+version_from_env = "BUILD_DATE"
+
+[steps.build-images]
+commands = [
+  { label = "playwright-mcp: build images", argv = ["docker", "buildx", "bake", "all", "--load"], cwd = "." },
+]
+
+[steps.push-images]
+required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
+env = { BUILD_AUTO_INCREMENT = "1" }
+
+commands = [
+  { label = "playwright-mcp: build stack bundle", argv = ["python3", "release-stack-bundle.py"], cwd = "." },
+  { label = "playwright-mcp: push images", argv = ["docker", "buildx", "bake", "all", "--push"], cwd = "." },
+  { label = "playwright-mcp: upload release assets", argv = ["python3", "upload-release-assets.py"], cwd = "." },
+]
+
+[steps.push-images.login]
+registry = "ghcr.io"
+username_env = "GITHUB_USERNAME"
+token_env = "GITHUB_PUSH_PAT"
+required = true
+
+[steps.build-client-wheel]
+clean_dirs = ["dist"]
+commands = [
+  { label = "playwright-mcp-client: build wheel", argv = ["python3", "-m", "pip", "wheel", ".", "-w", "dist/client"], cwd = "." },
+]
+
+[steps.publish-client-wheel]
+commands = [
+  { label = "playwright-mcp-client: publish wheel", argv = ["python3", "publish-client-wheel.py"], cwd = "." },
+]

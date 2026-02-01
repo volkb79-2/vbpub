@@ -6,7 +6,7 @@ This project uses Buildx Bake.
 
 ```bash
 cd /workspaces/vbpub/playwright-mcp
-./build-images.sh
+./build-images.py
 ```
 
 ## Push (GHCR)
@@ -15,7 +15,7 @@ cd /workspaces/vbpub/playwright-mcp
 cd /workspaces/vbpub/playwright-mcp
 cp .env.sample .env
 # Fill GITHUB_USERNAME and GITHUB_PUSH_PAT in vbpub/.env or local .env
-./push-images.sh
+./push-images.py
 ```
 
 ## Stack Bundle (CIU + Manual)

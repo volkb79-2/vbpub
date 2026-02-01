@@ -1,16 +1,16 @@
-// Defaults are defined here so builds work without any environment.
-// .env or shell variables can override these at build time.
+// Defaults are injected from the top-level release.toml via release-manager.
+// Keep these empty so config comes from release.toml or explicit env vars.
 variable "REGISTRY" {
-  default = "ghcr.io"
+  default = ""
 }
 
-// Set GITHUB_USERNAME to your GHCR org/user (e.g., volkb79-2) so pushes land at ghcr.io/<username>/vsc-devcontainer:<variant>. 
+// Set GITHUB_USERNAME to your GHCR org/user (e.g., volkb79-2) so pushes land at ghcr.io/<username>/vsc-devcontainer:<variant>.
 variable "GITHUB_USERNAME" {
-  default = "volkb79-2"
+  default = ""
 }
 
 variable "GITHUB_REPO" {
-  default = "vbpub"
+  default = ""
 }
 
 // Used in tags; build script sets BUILD_DATE if not provided.
@@ -27,7 +27,7 @@ variable "OCI_TITLE" {
 }
 
 variable "OCI_DESCRIPTION" {
-  default = "Pre-built VS Code devcontainer base image with modern CLI tools, Python venv, and service clients."
+  default = "Pre-built VS Code devcontainer base image with Python 3.x, CIU tooling, Docker CLI, and modern ops clients (psql, redis-cli, vault, gh)."
 }
 
 variable "OCI_SOURCE" {
@@ -130,6 +130,10 @@ variable "CIU_LATEST_ASSET_NAME" {
   default = ""
 }
 
+variable "CIU_INSTALL_REQUIRED" {
+  default = "false"
+}
+
 function "tag" {
   params = [debian, python]
   result = "${REGISTRY}/${GITHUB_USERNAME}/vsc-devcontainer:${debian}-py${python}-${BUILD_DATE}"
@@ -174,6 +178,7 @@ target "base" {
     GITHUB_REPO = "${GITHUB_REPO}"
     CIU_LATEST_TAG = "${CIU_LATEST_TAG}"
     CIU_LATEST_ASSET_NAME = "${CIU_LATEST_ASSET_NAME}"
+    CIU_INSTALL_REQUIRED = "${CIU_INSTALL_REQUIRED}"
   }
 }
 
@@ -214,14 +219,26 @@ target "trixie-py313" {
     PYTHON_VERSION = "3.13"
     DEBIAN_VERSION = "trixie"
   }
-  tags = [tag("trixie", "3.13"), latest_tag("trixie", "3.13"), "${REGISTRY}/${GITHUB_USERNAME}/vsc-devcontainer:latest"]
+  tags = [tag("trixie", "3.13"), latest_tag("trixie", "3.13")]
+}
+
+
+target "trixie-py314" {
+  inherits = ["base"]
+  args = {
+    BASE_IMAGE = "python:3.14-trixie"
+    PYTHON_VERSION = "3.14"
+    DEBIAN_VERSION = "trixie"
+  }
+  tags = [tag("trixie", "3.14"), latest_tag("trixie", "3.14"), "${REGISTRY}/${GITHUB_USERNAME}/vsc-devcontainer:latest"]
 }
 
 group "all" {
   targets = [
-    "bookworm-py311",
-    "bookworm-py313",
+    # "bookworm-py311",
+    # "bookworm-py313",
     "trixie-py311",
-    "trixie-py313"
+    "trixie-py313",
+    "trixie-py314",
   ]
 }

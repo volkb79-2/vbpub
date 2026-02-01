@@ -4,14 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "playwright-mcp-client"
-version = "0.1.0"
+dynamic = ["version"]
 description = "WebSocket client for Playwright MCP Standalone Service"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [
-  { name = "volkb79-2" }
-]
+authors = [{ name = "Volker Badziong" }]
 keywords = ["playwright", "mcp", "websocket", "testing"]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -19,7 +17,7 @@ classifiers = [
   "Operating System :: OS Independent"
 ]
 dependencies = [
-  "websockets>=12.0,<13.0"
+  "websockets>=13.0"
 ]
 
 [project.urls]
@@ -29,6 +27,9 @@ Documentation = "https://github.com/volkb79-2/vbpub/tree/main/playwright-mcp/doc
 
 [project.scripts]
 pwmcp = "playwright_mcp_client.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "playwright_mcp_client.version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]

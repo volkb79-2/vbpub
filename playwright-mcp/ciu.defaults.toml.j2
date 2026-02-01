@@ -15,14 +15,17 @@ tag = "latest"
 ws_internal = 3000
 mcp_internal = 8765
 health_internal = 8081
+artifact_http_internal = 8090
 
 ws_external = 3000
 mcp_external = 8765
 health_external = 8081
+artifact_http_external = 8090
 
 expose_ws = false
 expose_mcp = false
 expose_health = false
+expose_artifact_http = false
 
 [playwright_mcp.runtime]
 auth_required = true
@@ -32,6 +35,21 @@ mcp_auth_token = ""
 
 ws_max_sessions = 20
 ws_session_timeout = 3600
+ws_event_stream_enabled = true
+ws_console_stream_enabled = false
+ws_artifact_root = "/screenshots"
+ws_workspace_root = "/workspaces"
+ws_artifact_max_bytes = 5242880
+
+artifact_http_enabled = false
+artifact_http_host = "0.0.0.0"
+artifact_http_auth_required = true
+
+ws_har_enabled = false
+ws_har_content = "omit"
+
+browser_pool_enabled = false
+browser_pool_size = 4
 
 playwright_headless = true
 playwright_browser = "chromium"

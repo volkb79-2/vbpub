@@ -23,7 +23,7 @@ variable "OCI_TITLE" {
 }
 
 variable "OCI_DESCRIPTION" {
-  default = "Standalone Playwright MCP + WebSocket service for multi-project browser automation."
+  default = "Standalone Playwright MCP server with WebSocket + health endpoints, auth support, and workspace/screenshot volumes for browser automation." 
 }
 
 variable "OCI_SOURCE" {

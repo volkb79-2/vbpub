@@ -122,6 +122,12 @@ def update_release(api_base: str, owner: str, repo: str, release_id: int, title:
     return parse_json(resp.body, f"update release {release_id}")
 
 
+def delete_release(api_base: str, owner: str, repo: str, release_id: int, token: str) -> None:
+    resp = api_request("DELETE", f"{api_base}/repos/{owner}/{repo}/releases/{release_id}", token)
+    if resp.status >= 400:
+        fail(f"Failed to delete release {release_id}", resp.status, resp.body)
+
+
 def list_assets(api_base: str, owner: str, repo: str, release_id: int, token: str) -> list[Dict[str, Any]]:
     resp = api_request("GET", f"{api_base}/repos/{owner}/{repo}/releases/{release_id}/assets", token)
     if resp.status >= 400:
@@ -159,13 +165,18 @@ def publish_release_asset(
     asset_path: Path,
     asset_name: str,
     token: str,
+    *,
+    recreate: bool = False,
 ) -> None:
     release = get_release_by_tag(api_base, owner, repo, tag, token)
     if release is None:
         release = create_release(api_base, owner, repo, tag, title, notes, token)
     else:
         release_id = release.get("id")
-        if release_id:
+        if release_id and recreate:
+            delete_release(api_base, owner, repo, int(release_id), token)
+            release = create_release(api_base, owner, repo, tag, title, notes, token)
+        elif release_id:
             update_release(api_base, owner, repo, int(release_id), title, notes, token)
 
     release_id = release.get("id")
@@ -196,9 +207,7 @@ def main() -> None:
         data = tomllib.load(handle)
     project_meta = data.get("project", {})
 
-    version = project_meta.get("version")
-    if not version:
-        version = os.getenv("PWMCP_BUILD_VERSION") or os.getenv("PWMCP_VERSION")
+    version = os.getenv("PWMCP_BUILD_VERSION") or os.getenv("PWMCP_VERSION")
 
     if not version:
         version = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -224,8 +233,33 @@ def main() -> None:
     release_title = os.getenv("PWMCP_RELEASE_TITLE", release_tag)
     latest_title = os.getenv("PWMCP_LATEST_TITLE", latest_tag)
 
-    release_notes = os.getenv("PWMCP_RELEASE_NOTES", f"{package_name} wheel {version}")
-    latest_notes = os.getenv("PWMCP_LATEST_NOTES", f"{package_name} wheel latest")
+    release_notes = os.getenv(
+        "PWMCP_RELEASE_NOTES",
+        (
+            f"{package_name} wheel {version}\n\n"
+            "Includes:\n"
+            "- WebSocket client SDK for Playwright MCP\n"
+            "- Retry policy helpers and UI harness\n"
+            "- Lightweight dependency set (no server stack)\n\n"
+            "Install:\n"
+            "```bash\n"
+            "python -m pip install ./<wheel-file>\n"
+            "```"
+        ),
+    )
+    latest_notes = os.getenv(
+        "PWMCP_LATEST_NOTES",
+        (
+            f"{package_name} wheel latest\n\n"
+            "Includes:\n"
+            "- Latest client SDK wheel\n"
+            "- Ready for integration into Python apps\n\n"
+            "Install:\n"
+            "```bash\n"
+            "python -m pip install ./<wheel-file>\n"
+            "```"
+        ),
+    )
 
     release_asset_name = os.getenv("PWMCP_RELEASE_ASSET_NAME", wheel_path.name)
     latest_asset_name = os.getenv("PWMCP_LATEST_ASSET_NAME", wheel_path.name)
@@ -233,7 +267,18 @@ def main() -> None:
     api_base = "https://api.github.com"
 
     publish_release_asset(api_base, owner, repo, release_tag, release_title, release_notes, wheel_path, release_asset_name, token)
-    publish_release_asset(api_base, owner, repo, latest_tag, latest_title, latest_notes, wheel_path, latest_asset_name, token)
+    publish_release_asset(
+        api_base,
+        owner,
+        repo,
+        latest_tag,
+        latest_title,
+        latest_notes,
+        wheel_path,
+        latest_asset_name,
+        token,
+        recreate=True,
+    )
 
     print(f"[INFO] Published {wheel_path.name}")
     print(f"[INFO] Release tag: {release_tag}")

@@ -7,13 +7,18 @@ Designed for use by multiple projects and remote clients.
 """
 
 import asyncio
+import base64
+import http.server
 import json
 import logging
+import mimetypes
 import os
 import secrets
 import ssl
+import threading
 import time
 import uuid
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -39,10 +44,28 @@ MAX_SESSIONS = int(os.getenv('WS_MAX_SESSIONS', '10'))
 SESSION_TIMEOUT = int(os.getenv('WS_SESSION_TIMEOUT', '3600'))
 PLAYWRIGHT_HEADLESS = os.getenv('PLAYWRIGHT_HEADLESS', 'true').lower() == 'true'
 PLAYWRIGHT_BROWSER = os.getenv('PLAYWRIGHT_BROWSER', 'chromium')
+PLAYWRIGHT_CHROMIUM_CHANNEL = os.getenv('PLAYWRIGHT_CHROMIUM_CHANNEL', '').strip()
+PLAYWRIGHT_CHROMIUM_EXECUTABLE = os.getenv('PLAYWRIGHT_CHROMIUM_EXECUTABLE', '').strip()
 PLAYWRIGHT_VIDEO_DIR = os.getenv('PLAYWRIGHT_VIDEO_DIR', '')
 SSL_CERT_PATH = os.getenv('SSL_CERT_PATH', '/app/certs/server.crt')
 SSL_KEY_PATH = os.getenv('SSL_KEY_PATH', '/app/certs/server.key')
 SSL_ENABLED = os.getenv('SSL_ENABLED', 'false').lower() == 'true'
+WS_EVENT_STREAM_ENABLED = os.getenv('WS_EVENT_STREAM_ENABLED', 'true').lower() == 'true'
+WS_ARTIFACT_ROOT = os.getenv('WS_ARTIFACT_ROOT', '/screenshots')
+WS_WORKSPACE_ROOT = os.getenv('WS_WORKSPACE_ROOT', '/workspaces')
+WS_ARTIFACT_MAX_BYTES = int(os.getenv('WS_ARTIFACT_MAX_BYTES', '5242880'))
+BROWSER_POOL_ENABLED = os.getenv('BROWSER_POOL_ENABLED', 'false').lower() == 'true'
+BROWSER_POOL_SIZE = int(os.getenv('BROWSER_POOL_SIZE', '4'))
+WS_HAR_ENABLED = os.getenv('WS_HAR_ENABLED', 'false').lower() == 'true'
+WS_HAR_CONTENT = os.getenv('WS_HAR_CONTENT', 'omit').strip()
+WS_CONSOLE_STREAM_ENABLED = os.getenv('WS_CONSOLE_STREAM_ENABLED', 'false').lower() == 'true'
+ARTIFACT_HTTP_ENABLED = os.getenv('ARTIFACT_HTTP_ENABLED', 'false').lower() == 'true'
+ARTIFACT_HTTP_HOST = os.getenv('ARTIFACT_HTTP_HOST', '0.0.0.0')
+ARTIFACT_HTTP_PORT = int(os.getenv('ARTIFACT_HTTP_PORT', '8090'))
+ARTIFACT_HTTP_AUTH_REQUIRED = os.getenv('ARTIFACT_HTTP_AUTH_REQUIRED', '').strip()
+if ARTIFACT_HTTP_AUTH_REQUIRED == "":
+    ARTIFACT_HTTP_AUTH_REQUIRED = str(AUTH_REQUIRED)
+ARTIFACT_HTTP_AUTH_REQUIRED = ARTIFACT_HTTP_AUTH_REQUIRED.lower() == "true"
 
 
 def _resolve_ws_token() -> str:
@@ -74,8 +97,19 @@ class PlaywrightWebSocketServer:
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
         self._cleanup_task: Optional[asyncio.Task] = None
+        self._context_pool: list[BrowserContext] = []
+        self._pool_lock = asyncio.Lock()
+        self._pool_enabled = BROWSER_POOL_ENABLED
+        self._session_owners: Dict[str, set[ServerConnection]] = {}
+        self._artifact_httpd: Optional[http.server.ThreadingHTTPServer] = None
+        self._artifact_thread: Optional[threading.Thread] = None
 
         self.handlers: Dict[str, Callable] = {
+            'create_session': self._handle_create_session,
+            'list_sessions': self._handle_list_sessions,
+            'event_stream': self._handle_event_stream,
+            'list_artifacts': self._handle_list_artifacts,
+            'get_artifact': self._handle_get_artifact,
             'navigate': self._handle_navigate,
             'screenshot': self._handle_screenshot,
             'click': self._handle_click,
@@ -114,6 +148,7 @@ class PlaywrightWebSocketServer:
             'login': self._handle_login,
             'get_console_logs': self._handle_get_console_logs,
             'clear_console_logs': self._handle_clear_console_logs,
+            'export_console_logs': self._handle_export_console_logs,
             'start_tracing': self._handle_start_tracing,
             'stop_tracing': self._handle_stop_tracing,
             'export_storage_state': self._handle_export_storage_state,
@@ -135,7 +170,12 @@ class PlaywrightWebSocketServer:
         self._playwright = await async_playwright().start()
 
         if PLAYWRIGHT_BROWSER == 'chromium':
-            self._browser = await self._playwright.chromium.launch(headless=PLAYWRIGHT_HEADLESS)
+            launch_kwargs = {"headless": PLAYWRIGHT_HEADLESS}
+            if PLAYWRIGHT_CHROMIUM_EXECUTABLE:
+                launch_kwargs["executable_path"] = PLAYWRIGHT_CHROMIUM_EXECUTABLE
+            elif PLAYWRIGHT_CHROMIUM_CHANNEL:
+                launch_kwargs["channel"] = PLAYWRIGHT_CHROMIUM_CHANNEL
+            self._browser = await self._playwright.chromium.launch(**launch_kwargs)
         elif PLAYWRIGHT_BROWSER == 'firefox':
             self._browser = await self._playwright.firefox.launch(headless=PLAYWRIGHT_HEADLESS)
         elif PLAYWRIGHT_BROWSER == 'webkit':
@@ -144,7 +184,20 @@ class PlaywrightWebSocketServer:
             raise ValueError(f"Unsupported browser: {PLAYWRIGHT_BROWSER}")
 
         logger.info("Playwright browser initialized")
+
+        if self._pool_enabled and PLAYWRIGHT_VIDEO_DIR:
+            logger.warning("Browser pooling disabled because PLAYWRIGHT_VIDEO_DIR is set")
+            self._pool_enabled = False
+
+        if self._pool_enabled and BROWSER_POOL_SIZE > 0:
+            for _ in range(BROWSER_POOL_SIZE):
+                context = await self._create_context("pool")
+                self._context_pool.append(context)
+            logger.info("Prewarmed browser pool: %s", len(self._context_pool))
         self._cleanup_task = asyncio.create_task(self._cleanup_expired_sessions())
+
+        if ARTIFACT_HTTP_ENABLED:
+            self._start_artifact_http_server()
 
         ssl_context = None
         if SSL_ENABLED:
@@ -170,6 +223,8 @@ class PlaywrightWebSocketServer:
     async def stop(self) -> None:
         logger.info("Shutting down WebSocket server...")
 
+        self._stop_artifact_http_server()
+
         if self._cleanup_task:
             self._cleanup_task.cancel()
             try:
@@ -180,6 +235,13 @@ class PlaywrightWebSocketServer:
         for session_id in list(self.sessions.keys()):
             await self._close_session(session_id)
 
+        for context in list(self._context_pool):
+            try:
+                await context.close()
+            except Exception as exc:
+                logger.debug("Error closing pooled context: %s", exc)
+        self._context_pool.clear()
+
         if self._browser:
             await self._browser.close()
 
@@ -187,6 +249,291 @@ class PlaywrightWebSocketServer:
             await self._playwright.stop()
 
         logger.info("WebSocket server stopped")
+
+    def _normalize_workspace_id(self, workspace_id: Optional[str]) -> str:
+        raw = workspace_id or f"workspace_{secrets.token_hex(6)}"
+        sanitized = "".join(ch for ch in raw if ch.isalnum() or ch in ("-", "_"))
+        if not sanitized:
+            raise ValueError("Invalid workspace_id")
+        return sanitized
+
+    def _workspace_root(self) -> Path:
+        return Path(WS_WORKSPACE_ROOT)
+
+    def _artifact_root(self) -> Path:
+        return Path(WS_ARTIFACT_ROOT)
+
+    def _workspace_dir(self, workspace_id: str) -> Path:
+        return self._workspace_root() / workspace_id
+
+    def _artifact_dir(self, workspace_id: str) -> Path:
+        return self._artifact_root() / workspace_id
+
+    def _ensure_dir(self, path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+
+    def _start_artifact_http_server(self) -> None:
+        token = _resolve_ws_token()
+
+        class ArtifactHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args) -> None:  # noqa: A003 - match BaseHTTPRequestHandler
+                return
+
+            def _reject(self, status: int, message: str) -> None:
+                body = message.encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+                if ARTIFACT_HTTP_AUTH_REQUIRED and token:
+                    auth = self.headers.get("Authorization", "")
+                    parsed = urlparse(self.path)
+                    query = parse_qs(parsed.query)
+                    query_token = query.get("token", [""])[0]
+                    if auth != f"Bearer {token}" and query_token != token:
+                        self._reject(401, "Unauthorized")
+                        return
+
+                parsed = urlparse(self.path)
+                if not parsed.path.startswith("/artifacts/"):
+                    self._reject(404, "Not Found")
+                    return
+
+                relative = parsed.path[len("/artifacts/") :]
+                if not relative:
+                    self._reject(400, "Missing workspace id")
+                    return
+
+                parts = relative.split("/", 1)
+                workspace_id = parts[0]
+                rel_path = parts[1] if len(parts) > 1 else ""
+                if not rel_path:
+                    self._reject(400, "Missing artifact path")
+                    return
+
+                artifacts_dir = self.server.artifact_root / workspace_id
+                candidate = (artifacts_dir / unquote(rel_path)).resolve()
+                if artifacts_dir not in candidate.parents and artifacts_dir != candidate:
+                    self._reject(400, "Invalid artifact path")
+                    return
+
+                if not candidate.exists() or not candidate.is_file():
+                    self._reject(404, "Artifact not found")
+                    return
+
+                content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+                data = candidate.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        server = http.server.ThreadingHTTPServer((ARTIFACT_HTTP_HOST, ARTIFACT_HTTP_PORT), ArtifactHandler)
+        server.daemon_threads = True
+        server.artifact_root = self._artifact_root()
+        self._artifact_httpd = server
+
+        thread = threading.Thread(target=server.serve_forever, name="artifact-http", daemon=True)
+        thread.start()
+        self._artifact_thread = thread
+        logger.info("Artifact HTTP server running on http://%s:%s", ARTIFACT_HTTP_HOST, ARTIFACT_HTTP_PORT)
+
+    def _stop_artifact_http_server(self) -> None:
+        if self._artifact_httpd:
+            self._artifact_httpd.shutdown()
+            self._artifact_httpd.server_close()
+            self._artifact_httpd = None
+        if self._artifact_thread:
+            self._artifact_thread.join(timeout=5)
+            self._artifact_thread = None
+
+    def _register_session_owner(self, session_id: str, websocket: ServerConnection) -> None:
+        owners = self._session_owners.setdefault(session_id, set())
+        owners.add(websocket)
+
+    def _unregister_websocket(self, websocket: ServerConnection) -> None:
+        to_remove = []
+        for session_id, owners in self._session_owners.items():
+            if websocket in owners:
+                owners.discard(websocket)
+                if not owners:
+                    to_remove.append(session_id)
+        for session_id in to_remove:
+            self._session_owners.pop(session_id, None)
+
+    async def _emit_session_event(self, session_id: str, event: str, data: dict) -> None:
+        if not WS_EVENT_STREAM_ENABLED:
+            return
+
+        session = self.sessions.get(session_id)
+        if session and not session.metadata.get("event_stream_enabled", True):
+            return
+
+        payload = {
+            "type": "event",
+            "event": event,
+            "session_id": session_id,
+            "ts": time.time(),
+            "data": data,
+        }
+
+        owners = list(self._session_owners.get(session_id, set()))
+        for websocket in owners:
+            try:
+                await websocket.send(json.dumps(payload))
+            except Exception:
+                self._unregister_websocket(websocket)
+
+    def _resolve_artifact_path_for_dir(
+        self,
+        artifacts_dir: Path,
+        filename: Optional[str],
+        default_prefix: str,
+        suffix: str,
+    ) -> Path:
+        if filename:
+            name = Path(filename).name
+        else:
+            name = f"{default_prefix}_{int(time.time())}{suffix}"
+
+        if name.startswith(".") or ".." in name:
+            raise ValueError("Invalid artifact filename")
+
+        self._ensure_dir(artifacts_dir)
+        return artifacts_dir / name
+
+    async def _emit_event(self, websocket: Optional[ServerConnection], event: str, session_id: str, data: dict) -> None:
+        if not WS_EVENT_STREAM_ENABLED:
+            return
+
+        session = self.sessions.get(session_id)
+        if session and not session.metadata.get("event_stream_enabled", True):
+            return
+
+        payload = {
+            "type": "event",
+            "event": event,
+            "session_id": session_id,
+            "ts": time.time(),
+            "data": data,
+        }
+
+        if not websocket:
+            return
+
+        try:
+            await websocket.send(json.dumps(payload))
+        except Exception as exc:
+            logger.debug("Failed to emit event to client: %s", exc)
+
+    async def _borrow_context(
+        self,
+        workspace_id: str,
+        *,
+        record_har: bool,
+        har_path: Optional[Path],
+        har_content: Optional[str],
+        storage_state: Optional[dict] = None,
+    ) -> BrowserContext:
+        if not self._browser:
+            raise RuntimeError("Browser not initialized")
+
+        if not self._pool_enabled or record_har or storage_state:
+            return await self._create_context(
+                workspace_id,
+                record_har=record_har,
+                har_path=har_path,
+                har_content=har_content,
+                storage_state=storage_state,
+            )
+
+        async with self._pool_lock:
+            if self._context_pool:
+                return self._context_pool.pop()
+
+        return await self._create_context(workspace_id)
+
+    async def _release_context(self, context: BrowserContext) -> None:
+        if not self._pool_enabled:
+            await context.close()
+            return
+
+        async with self._pool_lock:
+            if len(self._context_pool) >= BROWSER_POOL_SIZE:
+                await context.close()
+                return
+
+            self._context_pool.append(context)
+
+    async def _reset_context(self, context: BrowserContext) -> None:
+        try:
+            await context.clear_cookies()
+            pages = list(context.pages)
+            for page in pages:
+                try:
+                    await page.evaluate("localStorage.clear(); sessionStorage.clear();")
+                except Exception:
+                    pass
+                try:
+                    await page.goto("about:blank")
+                except Exception:
+                    pass
+                if page != pages[0]:
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logger.debug("Failed to reset context: %s", exc)
+
+    async def _create_context(
+        self,
+        workspace_id: str,
+        *,
+        record_har: bool = False,
+        har_path: Optional[Path] = None,
+        har_content: Optional[str] = None,
+        storage_state: Optional[dict] = None,
+    ) -> BrowserContext:
+        if not self._browser:
+            raise RuntimeError("Browser not initialized")
+
+        context_kwargs: dict[str, Any] = {}
+        if storage_state:
+            context_kwargs["storage_state"] = storage_state
+
+        record_video_dir: Optional[str] = None
+        if PLAYWRIGHT_VIDEO_DIR:
+            video_root = Path(PLAYWRIGHT_VIDEO_DIR)
+            record_video_dir = str(video_root / workspace_id / "videos")
+            self._ensure_dir(Path(record_video_dir))
+
+        if record_har and har_path:
+            context_kwargs["record_har_path"] = str(har_path)
+            if har_content:
+                context_kwargs["record_har_content"] = har_content
+
+        if record_video_dir:
+            context_kwargs["record_video_dir"] = record_video_dir
+
+        return await self._browser.new_context(**context_kwargs)
+
+    def _resolve_artifact_path(self, session: BrowserSession, filename: Optional[str], default_prefix: str, suffix: str) -> Path:
+        if filename:
+            name = Path(filename).name
+        else:
+            name = f"{default_prefix}_{session.session_id}_{int(time.time())}{suffix}"
+
+        if name.startswith(".") or ".." in name:
+            raise ValueError("Invalid artifact filename")
+
+        artifact_dir = Path(session.metadata["artifacts_dir"])
+        self._ensure_dir(artifact_dir)
+        return artifact_dir / name
 
     async def _cleanup_expired_sessions(self) -> None:
         while True:
@@ -237,12 +584,15 @@ class PlaywrightWebSocketServer:
                 return
 
         try:
-            session = await self._create_session()
+            session = await self._create_session(workspace_id=f"client_{client_id}")
             self.client_sessions[websocket] = session.session_id
+            self._register_session_owner(session.session_id, websocket)
 
             await websocket.send(json.dumps({
                 'type': 'connected',
                 'session_id': session.session_id,
+                'workspace_id': session.metadata.get("workspace_id"),
+                'artifacts_dir': session.metadata.get("artifacts_dir"),
                 'message': 'Session created successfully'
             }))
 
@@ -258,8 +608,17 @@ class PlaywrightWebSocketServer:
             if session_id:
                 await self._close_session(session_id)
                 logger.info("Session %s closed for client %s", session_id, client_id)
+            self._unregister_websocket(websocket)
 
-    async def _create_session(self) -> BrowserSession:
+    async def _create_session(
+        self,
+        workspace_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        *,
+        record_har: Optional[bool] = None,
+        har_content: Optional[str] = None,
+        har_path: Optional[str] = None,
+    ) -> BrowserSession:
         if len(self.sessions) >= MAX_SESSIONS:
             raise RuntimeError(f"Maximum sessions ({MAX_SESSIONS}) reached")
 
@@ -267,15 +626,45 @@ class PlaywrightWebSocketServer:
             raise RuntimeError("Browser not initialized")
 
         session_id = f"session_{secrets.token_hex(8)}"
-        if PLAYWRIGHT_VIDEO_DIR:
-            context = await self._browser.new_context(record_video_dir=PLAYWRIGHT_VIDEO_DIR)
-        else:
-            context = await self._browser.new_context()
+        workspace = self._normalize_workspace_id(workspace_id)
+        workspace_dir = self._workspace_dir(workspace)
+        artifacts_dir = self._artifact_dir(workspace)
+        self._ensure_dir(workspace_dir)
+        self._ensure_dir(artifacts_dir)
+
+        resolved_record_har = WS_HAR_ENABLED if record_har is None else bool(record_har)
+        resolved_har_content = (har_content or WS_HAR_CONTENT).strip() or None
+        resolved_har_path: Optional[Path] = None
+        if resolved_record_har:
+            resolved_har_path = self._resolve_artifact_path_for_dir(
+                artifacts_dir,
+                har_path,
+                f"har_{session_id}",
+                ".har",
+            )
+
+        context = await self._borrow_context(
+            workspace,
+            record_har=resolved_record_har,
+            har_path=resolved_har_path,
+            har_content=resolved_har_content,
+        )
+        await self._reset_context(context)
         page = await context.new_page()
 
         session = BrowserSession(session_id=session_id, context=context, page=page)
         self._attach_console_logger(session)
         session.metadata["tracing_active"] = False
+        session.metadata["workspace_id"] = workspace
+        session.metadata["workspace_dir"] = str(workspace_dir)
+        session.metadata["artifacts_dir"] = str(artifacts_dir)
+        session.metadata["event_stream_enabled"] = WS_EVENT_STREAM_ENABLED
+        session.metadata["har_enabled"] = resolved_record_har
+        session.metadata["har_content"] = resolved_har_content
+        session.metadata["har_path"] = str(resolved_har_path) if resolved_har_path else None
+        session.metadata["pool_eligible"] = self._pool_enabled and not resolved_record_har
+        if metadata:
+            session.metadata.update(metadata)
         self.sessions[session_id] = session
         logger.info("Created session: %s", session_id)
 
@@ -285,7 +674,12 @@ class PlaywrightWebSocketServer:
         session = self.sessions.pop(session_id, None)
         if session:
             try:
-                await session.context.close()
+                pool_eligible = bool(session.metadata.get("pool_eligible", False))
+                if pool_eligible:
+                    await self._reset_context(session.context)
+                    await self._release_context(session.context)
+                else:
+                    await session.context.close()
             except Exception as e:
                 logger.error("Error closing session %s: %s", session_id, e)
 
@@ -301,11 +695,21 @@ class PlaywrightWebSocketServer:
 
         def _console_handler(message) -> None:
             try:
-                console_logs.append({
+                payload = {
                     "type": message.type,
                     "text": message.text,
                     "location": message.location,
-                })
+                }
+                console_logs.append(payload)
+                if WS_CONSOLE_STREAM_ENABLED:
+                    asyncio.create_task(self._emit_session_event(
+                        session.session_id,
+                        "console",
+                        {
+                            **payload,
+                            "ts": time.time(),
+                        },
+                    ))
             except Exception as exc:  # pragma: no cover - defensive logging only
                 logger.debug("Failed to capture console log: %s", exc)
 
@@ -319,6 +723,8 @@ class PlaywrightWebSocketServer:
             command = data.get('command', '')
             args = data.get('args', {})
 
+            target_session_id = args.get('session_id') or session_id
+
             handler = self.handlers.get(command)
             if not handler:
                 await websocket.send(json.dumps({
@@ -328,7 +734,20 @@ class PlaywrightWebSocketServer:
                 }))
                 return
 
-            result = await handler(session_id, args)
+            await self._emit_event(websocket, "command_started", target_session_id, {
+                "command": command,
+            })
+            result = await handler(target_session_id, args)
+
+            await self._emit_event(websocket, "command_finished", target_session_id, {
+                "command": command,
+                "result": result,
+            })
+
+            if command == "create_session" and isinstance(result, dict):
+                new_session_id = result.get("session_id")
+                if new_session_id:
+                    self._register_session_owner(new_session_id, websocket)
 
             await websocket.send(json.dumps({
                 'type': 'response',
@@ -349,11 +768,127 @@ class PlaywrightWebSocketServer:
                 msg_id = data.get('id')
             except NameError:
                 pass
+            target_session = None
+            try:
+                target_session = data.get('args', {}).get('session_id') or session_id
+            except Exception:
+                target_session = session_id
+            if target_session:
+                await self._emit_event(websocket, "command_failed", target_session, {
+                    "command": data.get('command') if isinstance(data, dict) else None,
+                    "error": str(e),
+                })
             await websocket.send(json.dumps({
                 'type': 'error',
                 'id': msg_id,
                 'error': str(e)
             }))
+
+    async def _handle_create_session(self, session_id: str, args: dict) -> dict:
+        workspace_id = args.get("workspace_id")
+        user_id = args.get("user_id")
+        label = args.get("label")
+        record_har = args.get("record_har")
+        har_content = args.get("har_content")
+        har_path = args.get("har_path")
+        metadata = {
+            "user_id": user_id,
+            "label": label,
+        }
+        session = await self._create_session(
+            workspace_id=workspace_id,
+            metadata=metadata,
+            record_har=record_har,
+            har_content=har_content,
+            har_path=har_path,
+        )
+        return {
+            "session_id": session.session_id,
+            "workspace_id": session.metadata.get("workspace_id"),
+            "workspace_dir": session.metadata.get("workspace_dir"),
+            "artifacts_dir": session.metadata.get("artifacts_dir"),
+            "har_enabled": session.metadata.get("har_enabled"),
+            "har_path": session.metadata.get("har_path"),
+        }
+
+    async def _handle_list_sessions(self, session_id: str, args: dict) -> dict:
+        sessions = []
+        for sid, session in self.sessions.items():
+            sessions.append({
+                "session_id": sid,
+                "workspace_id": session.metadata.get("workspace_id"),
+                "user_id": session.metadata.get("user_id"),
+                "label": session.metadata.get("label"),
+                "created_at": session.created_at,
+                "last_used": session.last_used,
+            })
+        return {"sessions": sessions}
+
+    async def _handle_event_stream(self, session_id: str, args: dict) -> dict:
+        enabled = bool(args.get("enabled", True))
+        session = self._get_session(session_id)
+        session.metadata["event_stream_enabled"] = enabled
+        return {"enabled": enabled}
+
+    async def _handle_list_artifacts(self, session_id: str, args: dict) -> dict:
+        session = self._get_session(session_id)
+        artifacts_dir = Path(session.metadata["artifacts_dir"])
+        if not artifacts_dir.exists():
+            return {"artifacts": []}
+
+        workspace_id = session.metadata.get("workspace_id")
+        http_base = None
+        if ARTIFACT_HTTP_ENABLED and workspace_id:
+            http_base = f"http://{ARTIFACT_HTTP_HOST}:{ARTIFACT_HTTP_PORT}/artifacts/{workspace_id}/"
+
+        items = []
+        for path in sorted(artifacts_dir.rglob("*")):
+            if path.is_dir():
+                continue
+            rel_path = str(path.relative_to(artifacts_dir))
+            stat = path.stat()
+            entry = {
+                "path": rel_path,
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+            }
+            if http_base:
+                entry["http_url"] = f"{http_base}{quote(rel_path)}"
+            items.append(entry)
+        return {"artifacts": items}
+
+    async def _handle_get_artifact(self, session_id: str, args: dict) -> dict:
+        session = self._get_session(session_id)
+        rel_path = args.get("path")
+        if not rel_path:
+            raise ValueError("path is required")
+
+        artifacts_dir = Path(session.metadata["artifacts_dir"])
+        candidate = (artifacts_dir / rel_path).resolve()
+        if artifacts_dir not in candidate.parents and artifacts_dir != candidate:
+            raise ValueError("Invalid artifact path")
+        if not candidate.exists() or not candidate.is_file():
+            raise ValueError("Artifact not found")
+
+        data = candidate.read_bytes()
+        truncated = False
+        if len(data) > WS_ARTIFACT_MAX_BYTES:
+            data = data[:WS_ARTIFACT_MAX_BYTES]
+            truncated = True
+
+        response = {
+            "path": rel_path,
+            "size": candidate.stat().st_size,
+            "truncated": truncated,
+            "content_base64": base64.b64encode(data).decode("utf-8"),
+        }
+        workspace_id = session.metadata.get("workspace_id")
+        if ARTIFACT_HTTP_ENABLED and workspace_id:
+            response["http_url"] = (
+                f"http://{ARTIFACT_HTTP_HOST}:{ARTIFACT_HTTP_PORT}"
+                f"/artifacts/{workspace_id}/{quote(rel_path)}"
+            )
+        return response
 
     async def _handle_navigate(self, session_id: str, args: dict) -> dict:
         session = self._get_session(session_id)
@@ -374,17 +909,12 @@ class PlaywrightWebSocketServer:
     async def _handle_screenshot(self, session_id: str, args: dict) -> dict:
         session = self._get_session(session_id)
 
-        path = args.get('path')
-        if path:
-            filename = Path(path).name
-            import re
-            if not re.match(r'^[\w\-\.]+$', filename):
-                raise ValueError(f"Invalid filename: {filename}")
-            if '..' in filename or filename.startswith('.'):
-                raise ValueError(f"Invalid filename: {filename}")
-            screenshot_path = Path("/screenshots") / filename
-        else:
-            screenshot_path = Path("/screenshots") / f"screenshot_{int(time.time())}.png"
+        screenshot_path = self._resolve_artifact_path(
+            session,
+            args.get("path"),
+            "screenshot",
+            ".png",
+        )
 
         full_page = args.get('full_page', True)
 
@@ -731,7 +1261,16 @@ class PlaywrightWebSocketServer:
             'sessions': len(self.sessions),
             'max_sessions': MAX_SESSIONS,
             'browser': PLAYWRIGHT_BROWSER,
-            'headless': PLAYWRIGHT_HEADLESS
+            'headless': PLAYWRIGHT_HEADLESS,
+            'pool_enabled': self._pool_enabled,
+            'pool_size': len(self._context_pool),
+            'artifact_root': WS_ARTIFACT_ROOT,
+            'har_enabled': WS_HAR_ENABLED,
+            'har_content': WS_HAR_CONTENT,
+            'console_stream_enabled': WS_CONSOLE_STREAM_ENABLED,
+            'artifact_http_enabled': ARTIFACT_HTTP_ENABLED,
+            'artifact_http_host': ARTIFACT_HTTP_HOST,
+            'artifact_http_port': ARTIFACT_HTTP_PORT,
         }
 
     async def _handle_login(self, session_id: str, args: dict) -> dict:
@@ -779,6 +1318,19 @@ class PlaywrightWebSocketServer:
             logs.clear()
         return {"cleared": True}
 
+    async def _handle_export_console_logs(self, session_id: str, args: dict) -> dict:
+        session = self._get_session(session_id)
+        logs = session.metadata.get("console_logs", [])
+        artifacts_dir = Path(session.metadata["artifacts_dir"])
+        log_path = self._resolve_artifact_path_for_dir(
+            artifacts_dir,
+            args.get("path"),
+            "console",
+            ".json",
+        )
+        log_path.write_text(json.dumps(list(logs), indent=2), encoding="utf-8")
+        return {"path": str(log_path), "count": len(logs)}
+
     async def _handle_start_tracing(self, session_id: str, args: dict) -> dict:
         session = self._get_session(session_id)
         if session.metadata.get("tracing_active"):
@@ -797,13 +1349,12 @@ class PlaywrightWebSocketServer:
         if not session.metadata.get("tracing_active"):
             return {"stopped": False, "reason": "not_active"}
 
-        filename = args.get("path")
-        if filename:
-            filename = Path(filename).name
-        else:
-            filename = f"trace_{session_id}_{int(time.time())}.zip"
-
-        trace_path = Path("/screenshots") / filename
+        trace_path = self._resolve_artifact_path(
+            session,
+            args.get("path"),
+            "trace",
+            ".zip",
+        )
         await session.context.tracing.stop(path=str(trace_path))
         session.metadata["tracing_active"] = False
 
@@ -814,8 +1365,12 @@ class PlaywrightWebSocketServer:
         path = args.get("path")
 
         if path:
-            filename = Path(path).name
-            storage_path = Path("/screenshots") / filename
+            storage_path = self._resolve_artifact_path(
+                session,
+                path,
+                "storage-state",
+                ".json",
+            )
             await session.context.storage_state(path=str(storage_path))
             return {"path": str(storage_path)}
 
@@ -828,8 +1383,12 @@ class PlaywrightWebSocketServer:
         path = args.get("path")
 
         if path:
-            filename = Path(path).name
-            storage_path = Path("/screenshots") / filename
+            storage_path = self._resolve_artifact_path(
+                session,
+                path,
+                "storage-state",
+                ".json",
+            )
             if not storage_path.exists():
                 raise ValueError(f"Storage state file not found: {storage_path}")
             state = json.loads(storage_path.read_text(encoding="utf-8"))
@@ -838,7 +1397,29 @@ class PlaywrightWebSocketServer:
             raise ValueError("state or path is required")
 
         await session.context.close()
-        context = await self._browser.new_context(storage_state=state)
+        workspace_id = session.metadata.get("workspace_id") or "workspace"
+        record_har = bool(session.metadata.get("har_enabled", False))
+        har_content = session.metadata.get("har_content")
+        har_path_value = session.metadata.get("har_path")
+        har_path = Path(har_path_value) if har_path_value else None
+
+        if record_har and not har_path:
+            artifacts_dir = Path(session.metadata["artifacts_dir"])
+            har_path = self._resolve_artifact_path_for_dir(
+                artifacts_dir,
+                None,
+                f"har_{session_id}",
+                ".har",
+            )
+            session.metadata["har_path"] = str(har_path)
+
+        context = await self._create_context(
+            str(workspace_id),
+            record_har=record_har,
+            har_path=har_path,
+            har_content=har_content,
+            storage_state=state,
+        )
         page = await context.new_page()
 
         session.context = context

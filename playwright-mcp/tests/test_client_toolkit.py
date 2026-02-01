@@ -4,13 +4,23 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from playwright_mcp_client import ArtifactManager, PlaywrightMCPConfig, UIHarness
+from playwright_mcp_client import (
+    ArtifactManager,
+    LayoutSelectors,
+    PlaywrightMCPConfig,
+    SessionManager,
+    UIHarness,
+    default_layout_selectors,
+    merge_selectors,
+    validate_selectors,
+)
 from playwright_mcp_client.retry import RetryPolicy, async_retry
 
 
 class FakeClient:
-    def __init__(self) -> None:
+    def __init__(self, base_dir: Path | None = None) -> None:
         self.calls = []
+        self.base_dir = base_dir
 
     async def set_viewport_size(self, width: int, height: int):
         self.calls.append(("set_viewport_size", width, height))
@@ -19,14 +29,14 @@ class FakeClient:
         self.calls.append(("navigate", url, wait_until, timeout))
         return {"url": url}
 
-    async def wait_for_load_state(self, state: str):
-        self.calls.append(("wait_for_load_state", state))
+    async def wait_for_load_state(self, state: str, timeout: int = 30000):
+        self.calls.append(("wait_for_load_state", state, timeout))
 
-    async def click(self, selector: str):
-        self.calls.append(("click", selector))
+    async def click(self, selector: str, timeout: int = 10000, button: str = "left", click_count: int = 1):
+        self.calls.append(("click", selector, timeout, button, click_count))
 
-    async def fill(self, selector: str, value: str):
-        self.calls.append(("fill", selector, value))
+    async def fill(self, selector: str, value: str, timeout: int = 10000):
+        self.calls.append(("fill", selector, value, timeout))
 
     async def login(self, **kwargs):
         self.calls.append(("login", kwargs))
@@ -62,11 +72,18 @@ class FakeClient:
 
     async def export_storage_state(self, path: str = None):
         self.calls.append(("export_storage_state", path))
-        return {"path": path or "storage-state.json"}
+        name = path or "storage-state.json"
+        if self.base_dir:
+            storage_path = self.base_dir / name
+            storage_path.write_text("{}", encoding="utf-8")
+        return {"path": name}
 
     async def import_storage_state(self, state=None, path: str = None):
         self.calls.append(("import_storage_state", path))
         return {"imported": True}
+
+    async def get_video_path(self):
+        return {"path": "/tmp/video.webm"}
 
 
 class TestConfig(unittest.TestCase):
@@ -77,8 +94,10 @@ class TestConfig(unittest.TestCase):
         config = PlaywrightMCPConfig.from_env()
         self.assertEqual(config.ws_url, "ws://localhost:3000")
         self.assertEqual(config.wait_state, "networkidle")
+        self.assertEqual(config.action_timeout_ms, 10000)
         self.assertEqual(config.viewport_width, 1280)
         self.assertEqual(config.viewport_height, 720)
+        self.assertTrue(config.headless)
 
 
 class TestArtifactManager(unittest.TestCase):
@@ -104,12 +123,14 @@ class TestUIHarness(unittest.IsolatedAsyncioTestCase):
             proxy_base_url="http://localhost:8080",
             timeout=30.0,
             nav_timeout_ms=30000,
+            action_timeout_ms=15000,
             wait_state="networkidle",
             viewport_width=1024,
             viewport_height=768,
+            headless=True,
             artifacts_dir=Path(self.temp_dir.name),
         )
-        self.client = FakeClient()
+        self.client = FakeClient(base_dir=Path(self.temp_dir.name))
         self.artifacts = ArtifactManager(Path(self.temp_dir.name))
         self.ui = UIHarness(client=self.client, config=self.config, artifacts=self.artifacts)
 
@@ -135,6 +156,11 @@ class TestUIHarness(unittest.IsolatedAsyncioTestCase):
         result = await self.ui.load_storage_state("storage-state.json")
         self.assertTrue(result["imported"])
 
+    async def test_capture_artifacts(self):
+        result = await self.ui.capture_artifacts(prefix="run", include_trace=False)
+        self.assertIn("screenshot", result)
+        self.assertIn("console_log", result)
+
 
 class TestRetry(unittest.IsolatedAsyncioTestCase):
     async def test_async_retry(self):
@@ -150,6 +176,43 @@ class TestRetry(unittest.IsolatedAsyncioTestCase):
         policy = RetryPolicy(attempts=3, delay_seconds=0.01, backoff_factor=1.0, max_delay_seconds=0.01)
         result = await async_retry(flaky, policy)
         self.assertEqual(result, "ok")
+
+
+class TestSelectors(unittest.TestCase):
+    def test_default_selectors(self):
+        selectors = default_layout_selectors()
+        validate_selectors(selectors)
+        self.assertIn("nav", selectors.required)
+
+    def test_merge_selectors(self):
+        selectors = merge_selectors(["main"], ["footer"])
+        self.assertEqual(selectors.as_list(), ["main", "footer"])
+
+    def test_validate_selectors_empty(self):
+        with self.assertRaises(ValueError):
+            validate_selectors(LayoutSelectors(required=()))
+
+
+class TestSessionManager(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.client = FakeClient(base_dir=Path(self.temp_dir.name))
+        self.artifacts = ArtifactManager(Path(self.temp_dir.name))
+        self.session = SessionManager(client=self.client, artifacts=self.artifacts)
+
+    async def test_session_save_and_load(self):
+        await self.session.save()
+        result = await self.session.load()
+        self.assertTrue(result.storage_state_path.exists())
+        self.assertTrue(result.cookies_path.exists())
+
+    async def test_session_ensure(self):
+        async def login_callback():
+            return None
+
+        result = await self.session.ensure(login_callback=login_callback)
+        self.assertTrue(result.storage_state_path.exists())
 
 
 if __name__ == "__main__":

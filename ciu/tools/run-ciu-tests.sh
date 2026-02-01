@@ -1,5 +1,4 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""Legacy shim removed. Use run-ciu-tests.py instead."""
 
-echo "[ERROR] tools/run-ciu-tests.sh has been removed. Use ../run-ciu-tests.sh instead." >&2
-exit 1
+raise SystemExit("[ERROR] tools/run-ciu-tests.sh removed. Use run-ciu-tests.py.")

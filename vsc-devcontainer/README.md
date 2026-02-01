@@ -66,7 +66,7 @@ Additional optional build args:
 Example:
 
 ```
-B2_VERSION=4.5.0 ./build-images.sh
+B2_VERSION=4.5.0 ./build-images.py
 ```
 
 Checksum verification is enabled for HashiCorp binaries, AWS CLI, and B2 CLI downloads during build.
@@ -98,11 +98,11 @@ This makes the package page readable before download and points to the manifest 
 This project uses Buildx Bake. The build date is included in tags via `BUILD_DATE`.
 
 - `docker-bake.hcl` defines 4 targets and an `all` group.
-- `./build-images.sh` sets `BUILD_DATE` and builds all variants.
+- `./build-images.py` runs the config-driven build step and builds all variants.
 
 ### Shared credentials
 
-`build-images.sh` and `push-images.sh` will load a shared repo-root env file if present:
+`build-images.py` and `push-images.py` will load a shared repo-root env file if present:
 - vbpub/.env (preferred)
 - vsc-devcontainer/.env (fallback)
 
@@ -110,9 +110,9 @@ This lets you store GitHub credentials once for multiple vbpub projects.
 
 ## Push to GitHub Artifact Registry
 
-Use `./push-images.sh` (or run Bake with `--push`) after validation. Configure registry owner via environment variables in the script or your shell.
+Use `./push-images.py` (or run Bake with `--push`) after validation. Configure registry owner via environment variables in the script or your shell.
 
-`push-images.sh` also updates the `latest` tag (and per-variant `*-latest` tags) to point at the most recently pushed images.
+`push-images.py` also updates the `latest` tag (and per-variant `*-latest` tags) to point at the most recently pushed images.
 
 ### GHCR (personal account)
 
@@ -127,7 +127,7 @@ https://docs.github.com/en/packages/working-with-a-github-packages-registry/work
 2. Create a GitHub Personal Access Token with:
 	- `write:packages` (required for push)
 	- `read:packages` (required for pull)
-3. Run `./push-images.sh` (the script will login if `GITHUB_PUSH_PAT` is set).
+3. Run `./push-images.py` (the script will login if `GITHUB_PUSH_PAT` is set).
 
 ## Usage in other repositories
 
