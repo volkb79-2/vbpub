@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pwmcp-shared"
+dynamic = ["version"]
+description = "Shared types and helpers for PWMCP client and server"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Volker Badziong" }]
+keywords = ["playwright", "mcp", "pwmcp", "shared"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent"
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/volkb79-2/vbpub/tree/main/pwmcp"
+Source = "https://github.com/volkb79-2/vbpub"
+Documentation = "https://github.com/volkb79-2/vbpub/tree/main/pwmcp/docs"
+
+[tool.setuptools.dynamic]
+version = { attr = "pwmcp_shared.version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["pwmcp_shared"]

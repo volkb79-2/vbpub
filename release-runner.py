@@ -24,8 +24,8 @@ def main() -> int:
         "--build",
         "--push",
         "--validate",
-        # "--remove-assets",
-        # "10min",
+        "--remove-assets",
+        "30min",
     ]
 
     print(f"[INFO] Logging to {log_file}")

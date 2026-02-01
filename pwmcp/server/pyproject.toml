@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pwmcp-server"
+dynamic = ["version"]
+description = "Standalone PWMCP server (WebSocket + MCP + health endpoints)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Volker Badziong" }]
+keywords = ["playwright", "mcp", "websocket", "server", "pwmcp"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent"
+]
+dependencies = [
+  "fastapi>=0.110.0",
+  "fastmcp>=2.0.0",
+  "mcp>=1.22.0",
+  "playwright>=1.56.0",
+  "uvicorn>=0.30.0",
+  "websockets>=13.0",
+  "pwmcp-shared"
+]
+
+[project.urls]
+Homepage = "https://github.com/volkb79-2/vbpub/tree/main/pwmcp"
+Source = "https://github.com/volkb79-2/vbpub"
+Documentation = "https://github.com/volkb79-2/vbpub/tree/main/pwmcp/docs"
+
+[project.scripts]
+pwmcp-server = "pwmcp_server.start_services:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "pwmcp_server.version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["pwmcp_server"]

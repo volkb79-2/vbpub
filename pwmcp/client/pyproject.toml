@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pwmcp-client"
+dynamic = ["version"]
+description = "WebSocket client for PWMCP server"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Volker Badziong" }]
+keywords = ["playwright", "mcp", "websocket", "testing", "pwmcp"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent"
+]
+dependencies = [
+  "websockets>=13.0",
+  "pwmcp-shared"
+]
+
+[project.urls]
+Homepage = "https://github.com/volkb79-2/vbpub/tree/main/pwmcp"
+Source = "https://github.com/volkb79-2/vbpub"
+Documentation = "https://github.com/volkb79-2/vbpub/tree/main/pwmcp/docs"
+
+[project.scripts]
+pwmcp = "pwmcp_client.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "pwmcp_client.version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["pwmcp_client"]

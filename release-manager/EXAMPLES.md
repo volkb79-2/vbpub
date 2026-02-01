@@ -18,22 +18,24 @@ CIU_LATEST_TAG = "ciu-wheel-latest"
 CIU_LATEST_ASSET_NAME = "ciu-wheel-latest-py3-none-any.whl"
 
 [orchestration]
-project_order = ["ciu", "vsc-devcontainer", "playwright-mcp"]
-default_projects = ["ciu", "vsc-devcontainer", "playwright-mcp"]
+project_order = ["ciu", "vsc-devcontainer", "pwmcp"]
+default_projects = ["ciu", "vsc-devcontainer", "pwmcp"]
 default_steps = ["run-tests", "build", "push", "validate"]
 
 [cleanup]
 release_tag_prefixes = [
   "ciu-wheel-",
-  "playwright-mcp-client-wheel-",
-  "playwright-mcp-stack-bundle-",
+  "pwmcp-client-wheel-",
+  "pwmcp-server-wheel-",
+  "pwmcp-stack-bundle-",
 ]
 keep_release_tags = [
   "ciu-wheel-latest",
-  "playwright-mcp-client-wheel-latest",
-  "playwright-mcp-stack-bundle-latest",
+  "pwmcp-client-wheel-latest",
+  "pwmcp-server-wheel-latest",
+  "pwmcp-stack-bundle-latest",
 ]
-ghcr_packages = ["vsc-devcontainer", "playwright-mcp"]
+ghcr_packages = ["vsc-devcontainer", "pwmcp-server", "pwmcp-client"]
 ```
 
 ## 2) Running the full pipeline
@@ -74,8 +76,8 @@ python3 /workspaces/vbpub/release-manager/src/release_manager/step_runner.py \
   --step build-images
 ```
 
-## 6) Build a stack bundle (playwright-mcp)
+## 6) Build a stack bundle (pwmcp)
 
 ```bash
-python3 /workspaces/vbpub/playwright-mcp/release-stack-bundle.py
+python3 /workspaces/vbpub/pwmcp/release-stack-bundle.py
 ```

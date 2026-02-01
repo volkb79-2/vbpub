@@ -71,7 +71,7 @@ Each project has its own build-push.toml that defines steps and commands:
 
 - [ciu/build-push.toml](../ciu/build-push.toml)
 - [vsc-devcontainer/build-push.toml](../vsc-devcontainer/build-push.toml)
-- [playwright-mcp/build-push.toml](../playwright-mcp/build-push.toml)
+- [pwmcp/build-push.toml](../pwmcp/build-push.toml)
 
 ### Examples
 
@@ -82,8 +82,9 @@ See [release-manager/EXAMPLES.md](EXAMPLES.md) for practical examples.
 
 Current Release Flow:
 - **CIU wheel publish**: creates a versioned release tag `ciu-wheel-<version>` and **recreates** `ciu-wheel-latest` so it becomes the newest release. See vbpub/ciu/tools/publish-wheel-release.py.
-- **Playwright MCP client wheel**: creates `playwright-mcp-client-wheel-<version>` and **recreates** `playwright-mcp-client-wheel-latest`. See vbpub/playwright-mcp/publish-client-wheel.py.
-- **Bundle**: creates `playwright-mcp-stack-bundle-<version>` and **recreates** `playwright-mcp-stack-bundle-latest`. See vbpub/playwright-mcp/upload-release-assets.py.
+- **PWMCP client wheel**: creates `pwmcp-client-wheel-<version>` and **recreates** `pwmcp-client-wheel-latest`. See vbpub/pwmcp/publish-client-wheel.py.
+- **PWMCP server wheel**: creates `pwmcp-server-wheel-<version>` and **recreates** `pwmcp-server-wheel-latest`. See vbpub/pwmcp/publish-server-wheel.py.
+- **Bundle**: creates `pwmcp-stack-bundle-<version>` and **recreates** `pwmcp-stack-bundle-latest`. See vbpub/pwmcp/upload-release-assets.py.
 
 How vsc‑devcontainer and dstdns consume latest:
 - **vsc‑devcontainer**: uses `CIU_LATEST_TAG`/`CIU_LATEST_ASSET_NAME` during build to fetch the wheel from the **tagged latest** release (`/releases/tags/<tag>`). Recreating `ciu-wheel-latest` ensures it always resolves to the newest build.

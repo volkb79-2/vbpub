@@ -372,22 +372,23 @@ def cleanup_releases(
     cleanup: CleanupConfig,
 ) -> None:
     releases = list_releases(owner, repo, token)
+    wildcard_prefixes = not cleanup.release_tag_prefixes or "*" in cleanup.release_tag_prefixes
     for release in releases:
         tag = release.get("tag_name") or ""
         if tag in cleanup.keep_release_tags:
             continue
-        if not any(tag.startswith(prefix) for prefix in cleanup.release_tag_prefixes):
+        if not wildcard_prefixes and not any(tag.startswith(prefix) for prefix in cleanup.release_tag_prefixes):
             continue
-        created_at = release.get("created_at")
-        if not created_at:
+        published_at = release.get("published_at") or release.get("created_at") or release.get("updated_at")
+        if not published_at:
             continue
-        created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        if created_dt >= cutoff:
+        published_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+        if published_dt >= cutoff:
             continue
         release_id = release.get("id")
         if not release_id:
             continue
-        log_info(f"Deleting release tag {tag} (created {created_at})")
+        log_info(f"Deleting release tag {tag} (published {published_at})")
         delete_release(owner, repo, token, int(release_id), dry_run)
 
 
@@ -409,6 +410,33 @@ def list_package_versions(owner: str, package: str, token: str, owner_type: str)
     return versions
 
 
+def list_container_packages(owner: str, token: str, owner_type: str) -> list[str]:
+    packages: list[str] = []
+    page = 1
+    while True:
+        if owner_type == "org":
+            url = (
+                f"https://api.github.com/orgs/{owner}/packages"
+                f"?package_type=container&per_page=100&page={page}"
+            )
+        else:
+            url = (
+                f"https://api.github.com/users/{owner}/packages"
+                f"?package_type=container&per_page=100&page={page}"
+            )
+        items, _ = load_json(url, token)
+        if not items:
+            break
+        for item in items:
+            name = (item.get("name") or "").strip()
+            if name:
+                packages.append(name)
+        if len(items) < 100:
+            break
+        page += 1
+    return packages
+
+
 def delete_package_version(owner: str, package: str, token: str, version_id: int, owner_type: str, dry_run: bool) -> None:
     if dry_run:
         log_info(f"[DRY RUN] Would delete {package} version {version_id}")
@@ -419,6 +447,12 @@ def delete_package_version(owner: str, package: str, token: str, version_id: int
         url = f"https://api.github.com/users/{owner}/packages/container/{package}/versions/{version_id}"
     status, body, _ = http_request("DELETE", url, token)
     if status >= 400:
+        if status == 400 and "cannot be deleted" in body:
+            log_warn(
+                "Skipping GHCR cleanup for "
+                f"{package} version {version_id}: {body}"
+            )
+            return
         if status == 403:
             log_warn(
                 "Skipping GHCR cleanup for "
@@ -443,7 +477,9 @@ def cleanup_ghcr(owner: str, token: str, cutoff: datetime, dry_run: bool, cleanu
     if not owner_type:
         owner_type = resolve_owner_type(owner, token)
 
-    for package in cleanup.ghcr_packages:
+    wildcard_packages = not cleanup.ghcr_packages or "*" in cleanup.ghcr_packages
+    packages = list_container_packages(owner, token, owner_type) if wildcard_packages else cleanup.ghcr_packages
+    for package in packages:
         versions = list_package_versions(owner, package, token, owner_type)
         for version in versions:
             version_id = version.get("id")
@@ -452,9 +488,6 @@ def cleanup_ghcr(owner: str, token: str, cutoff: datetime, dry_run: bool, cleanu
                 continue
             updated_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
             if updated_dt >= cutoff:
-                continue
-            tags = version.get("metadata", {}).get("container", {}).get("tags", [])
-            if any("latest" in tag for tag in tags):
                 continue
             log_info(f"Deleting GHCR {package} version {version_id} (updated {updated_at})")
             delete_package_version(owner, package, token, int(version_id), owner_type, dry_run)

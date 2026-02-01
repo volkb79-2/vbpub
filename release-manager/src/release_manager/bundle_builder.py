@@ -16,11 +16,13 @@ import tomllib
 @dataclass(frozen=True)
 class BundleConfig:
     project_root: Path
+    wheel_project_root: Path
     dist_dir: Path
     bundle_dir: Path
     client_dir: Path
     wheel_enabled: bool
     wheel_python_bin: str
+    wheel_find_links: Optional[Path]
     archive_template: str
     archive_version_env: str
     archive_fallback_env: str
@@ -64,6 +66,16 @@ def parse_config(config_path: Path) -> BundleConfig:
         raise ValueError("[wheel] must be a table")
     wheel_enabled = bool(wheel.get("enabled", False))
     wheel_python_bin = str(wheel.get("python_bin") or "python3")
+    wheel_project_root_raw = wheel.get("project_root")
+    if wheel_project_root_raw:
+        wheel_project_root = resolve_path(config_path.parent, str(wheel_project_root_raw))
+    else:
+        wheel_project_root = project_root
+    wheel_find_links_raw = wheel.get("find_links")
+    if wheel_find_links_raw:
+        wheel_find_links = resolve_path(config_path.parent, str(wheel_find_links_raw))
+    else:
+        wheel_find_links = None
 
     archive = config.get("archive")
     if not archive or not isinstance(archive, dict):
@@ -82,11 +94,13 @@ def parse_config(config_path: Path) -> BundleConfig:
 
     return BundleConfig(
         project_root=project_root,
+        wheel_project_root=wheel_project_root,
         dist_dir=dist_dir,
         bundle_dir=bundle_dir,
         client_dir=client_dir,
         wheel_enabled=wheel_enabled,
         wheel_python_bin=wheel_python_bin,
+        wheel_find_links=wheel_find_links,
         archive_template=archive_template,
         archive_version_env=archive_version_env,
         archive_fallback_env=archive_fallback_env,
@@ -100,11 +114,10 @@ def build_wheel(config: BundleConfig) -> None:
         return
     log_info("Building client wheel")
     config.client_dir.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [config.wheel_python_bin, "-m", "pip", "wheel", ".", "-w", str(config.client_dir)],
-        check=True,
-        cwd=str(config.project_root),
-    )
+    command = [config.wheel_python_bin, "-m", "pip", "wheel", ".", "-w", str(config.client_dir)]
+    if config.wheel_find_links is not None:
+        command.extend(["--find-links", str(config.wheel_find_links)])
+    subprocess.run(command, check=True, cwd=str(config.wheel_project_root))
 
 
 def copy_sources(config: BundleConfig) -> None:

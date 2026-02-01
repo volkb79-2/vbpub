@@ -27,22 +27,24 @@ url = "ghcr.io"
 # PWMCP_LATEST_NOTES = "## Playwright MCP client wheel (latest)\nLatest client SDK for Python integrations.\n\n**Includes**\n- Client SDK + helpers\n- UI harness + retry utilities\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
 
 [orchestration]
-project_order = ["ciu", "vsc-devcontainer", "playwright-mcp"]
-default_projects = ["ciu", "vsc-devcontainer", "playwright-mcp"]
+project_order = ["ciu", "vsc-devcontainer", "pwmcp"]
+default_projects = ["ciu", "vsc-devcontainer", "pwmcp"]
 default_steps = ["run-tests", "build", "push", "validate"]
 
 [cleanup]
 release_tag_prefixes = [
   "ciu-wheel-",
-  "playwright-mcp-client-wheel-",
-  "playwright-mcp-stack-bundle-",
+  "pwmcp-client-wheel-",
+  "pwmcp-server-wheel-",
+  "pwmcp-stack-bundle-",
 ]
 keep_release_tags = [
   "ciu-wheel-latest",
-  "playwright-mcp-client-wheel-latest",
-  "playwright-mcp-stack-bundle-latest",
+  "pwmcp-client-wheel-latest",
+  "pwmcp-server-wheel-latest",
+  "pwmcp-stack-bundle-latest",
 ]
-ghcr_packages = ["vsc-devcontainer", "playwright-mcp"]
+ghcr_packages = ["vsc-devcontainer", "pwmcp-server", "pwmcp-client"]
 
 [projects.ciu.steps.run-tests]
 commands = [
@@ -74,25 +76,28 @@ commands = [
   { label = "vsc-devcontainer: push images", argv = ["python3", "push-images.py"], cwd = "vsc-devcontainer" },
 ]
 
-[projects.playwright-mcp.steps.run-tests]
+[projects.pwmcp.steps.run-tests]
 commands = [
-  { label = "playwright-mcp-client: run tests", argv = ["python3", "run-client-tests.py"], cwd = "playwright-mcp" },
+  { label = "pwmcp-client: run tests", argv = ["python3", "run-client-tests.py"], cwd = "pwmcp" },
 ]
 
-[projects.playwright-mcp.steps.build]
+[projects.pwmcp.steps.build]
 commands = [
-  { label = "playwright-mcp-client: build wheel", argv = ["python3", "build-client-wheel.py"], cwd = "playwright-mcp" },
-  { label = "playwright-mcp: build images", argv = ["python3", "build-images.py"], cwd = "playwright-mcp" },
+  { label = "pwmcp-shared: build wheel", argv = ["python3", "build-shared-wheel.py"], cwd = "pwmcp" },
+  { label = "pwmcp-client: build wheel", argv = ["python3", "build-client-wheel.py"], cwd = "pwmcp" },
+  { label = "pwmcp-server: build wheel", argv = ["python3", "build-server-wheel.py"], cwd = "pwmcp" },
+  { label = "pwmcp: build images", argv = ["python3", "build-images.py"], cwd = "pwmcp" },
 ]
 
-[projects.playwright-mcp.steps.push]
+[projects.pwmcp.steps.push]
 commands = [
-  { label = "playwright-mcp-client: publish wheel", argv = ["python3", "publish-client-wheel.py"], cwd = "playwright-mcp" },
-  { label = "playwright-mcp: push images", argv = ["python3", "push-images.py"], cwd = "playwright-mcp" },
-  { label = "playwright-mcp: upload release assets", argv = ["python3", "upload-release-assets.py"], cwd = "playwright-mcp" },
+  { label = "pwmcp-client: publish wheel", argv = ["python3", "publish-client-wheel.py"], cwd = "pwmcp" },
+  { label = "pwmcp-server: publish wheel", argv = ["python3", "publish-server-wheel.py"], cwd = "pwmcp" },
+  { label = "pwmcp: push images", argv = ["python3", "push-images.py"], cwd = "pwmcp" },
+  { label = "pwmcp: upload release assets", argv = ["python3", "upload-release-assets.py"], cwd = "pwmcp" },
 ]
 
-[projects.playwright-mcp.steps.validate]
+[projects.pwmcp.steps.validate]
 commands = [
-  { label = "playwright-mcp-client: validate latest wheel", argv = ["python3", "validate-client-wheel-latest.py"], cwd = "playwright-mcp" },
+  { label = "pwmcp-client: validate latest wheel", argv = ["python3", "validate-client-wheel-latest.py"], cwd = "pwmcp" },
 ]

@@ -1,0 +1,60 @@
+project_root = "."
+log_dir = "logs"
+release_config = "../release.toml"
+
+[build_metadata]
+date_env = "BUILD_DATE"
+date_format = "%Y%m%d"
+auto_increment_env = "BUILD_AUTO_INCREMENT"
+counter_file_template = "build-counter-{date}.txt"
+version_env = "VERSION"
+version_from_env = "BUILD_DATE"
+
+[steps.build-images]
+commands = [
+  { label = "pwmcp: build images", argv = ["docker", "buildx", "bake", "all", "--load"], cwd = "." },
+]
+
+[steps.push-images]
+required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
+env = { BUILD_AUTO_INCREMENT = "1" }
+
+commands = [
+  { label = "pwmcp: build stack bundle", argv = ["python3", "release-stack-bundle.py"], cwd = "." },
+  { label = "pwmcp: push images", argv = ["docker", "buildx", "bake", "all", "--push"], cwd = "." },
+  { label = "pwmcp: upload release assets", argv = ["python3", "upload-release-assets.py"], cwd = "." },
+]
+
+[steps.push-images.login]
+registry = "ghcr.io"
+username_env = "GITHUB_USERNAME"
+token_env = "GITHUB_PUSH_PAT"
+required = true
+
+[steps.build-shared-wheel]
+clean_dirs = ["dist/shared"]
+commands = [
+  { label = "pwmcp-shared: build wheel", argv = ["python3", "-m", "pip", "wheel", ".", "-w", "../dist/shared"], cwd = "shared" },
+]
+
+[steps.build-client-wheel]
+clean_dirs = ["dist/client"]
+commands = [
+  { label = "pwmcp-client: build wheel", argv = ["python3", "-m", "pip", "wheel", ".", "-w", "../dist/client", "--find-links", "../dist/shared"], cwd = "client" },
+]
+
+[steps.build-server-wheel]
+clean_dirs = ["dist/server"]
+commands = [
+  { label = "pwmcp-server: build wheel", argv = ["python3", "-m", "pip", "wheel", ".", "-w", "../dist/server", "--find-links", "../dist/shared"], cwd = "server" },
+]
+
+[steps.publish-client-wheel]
+commands = [
+  { label = "pwmcp-client: publish wheel", argv = ["python3", "publish-client-wheel-fixed.py"], cwd = "." },
+]
+
+[steps.publish-server-wheel]
+commands = [
+  { label = "pwmcp-server: publish wheel", argv = ["python3", "publish-server-wheel.py"], cwd = "." },
+]
