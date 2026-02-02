@@ -16,10 +16,11 @@ the commands defined in the config.
 
 ### Required configuration
 
-Use the provided sample as a starting point and store the real config at repo root:
+Use the provided samples as a starting point and store the real config at repo root:
 
-- [release-manager/release.sample.toml](release.sample.toml)
-- vbpub/release.toml (actual config with secrets)
+- [vbpub/release.sample.toml](../release.sample.toml) (repo defaults, no secrets)
+- [release-manager/release.sample.toml](release.sample.toml) (syntax/spec only)
+- vbpub/release.toml (local config with secrets; gitignored)
 
 ### Running
 
@@ -65,12 +66,42 @@ python3 /workspaces/vbpub/release-all.py \
 	--remove-assets 7d
 ```
 
+### Orchestration execution modes
+
+The release manager can run steps in two ways:
+
+- `step-first` (default): for each step, run all selected projects in order.
+- `project-first`: for each project, run all selected steps in order.
+
+Use `orchestration.execution_mode` to control this.
+
+### Per-step project ordering
+
+When execution mode is `step-first`, you can override project order per step with:
+
+```toml
+[orchestration.step_project_order]
+run-tests = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
+build = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
+push = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
+validate = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
+```
+
+This is useful when a downstream project needs artifacts produced by an upstream project in the same step.
+
+### OCI image description
+
+OCI_DESCRIPTION values are Markdown. Include a short tool manifest summary and
+reference the in-image manifest at:
+
+- /usr/local/share/modern-debian-tools-python-debug/manifest.md
+
 ### Per-project build/push config
 
 Each project has its own build-push.toml that defines steps and commands:
 
 - [ciu/build-push.toml](../ciu/build-push.toml)
-- [vsc-devcontainer/build-push.toml](../vsc-devcontainer/build-push.toml)
+- [modern-debian-tools-python-debug/build-push.toml](../modern-debian-tools-python-debug/build-push.toml)
 - [pwmcp/build-push.toml](../pwmcp/build-push.toml)
 
 ### Examples
@@ -84,10 +115,9 @@ Current Release Flow:
 - **CIU wheel publish**: creates a versioned release tag `ciu-wheel-<version>` and **recreates** `ciu-wheel-latest` so it becomes the newest release. See vbpub/ciu/tools/publish-wheel-release.py.
 - **PWMCP client wheel**: creates `pwmcp-client-wheel-<version>` and **recreates** `pwmcp-client-wheel-latest`. See vbpub/pwmcp/publish-client-wheel.py.
 - **PWMCP server wheel**: creates `pwmcp-server-wheel-<version>` and **recreates** `pwmcp-server-wheel-latest`. See vbpub/pwmcp/publish-server-wheel.py.
-- **Bundle**: creates `pwmcp-stack-bundle-<version>` and **recreates** `pwmcp-stack-bundle-latest`. See vbpub/pwmcp/upload-release-assets.py.
 
 How vsc‑devcontainer and dstdns consume latest:
-- **vsc‑devcontainer**: uses `CIU_LATEST_TAG`/`CIU_LATEST_ASSET_NAME` during build to fetch the wheel from the **tagged latest** release (`/releases/tags/<tag>`). Recreating `ciu-wheel-latest` ensures it always resolves to the newest build.
+- **modern-debian-tools-python-debug**: uses `CIU_LATEST_TAG`/`CIU_LATEST_ASSET_NAME` during build to fetch the wheel from the **tagged latest** release (`/releases/tags/<tag>`). Recreating `ciu-wheel-latest` ensures it always resolves to the newest build.
 - **dstdns env‑setup**: it **only** downloads from `CIU_PKG_URL` (no discovery). See dstdns/.github/actions/env-setup.sh. You must set `CIU_PKG_URL` to the package‑specific latest asset URL (e.g. the `CIU_WHEEL_LATEST_URL` output from the publish step), not the repo‑wide `/releases/latest`.
 
 Best‑practice guidance (multi‑package repos):

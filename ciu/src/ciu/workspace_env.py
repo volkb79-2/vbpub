@@ -416,10 +416,19 @@ def _check_tls_access() -> None:
             _log_warn(f"TLS {label} not accessible to Docker: {path}")
 
 
+def ensure_workspace_network(
+    network_name: Optional[str] = None,
+    auto_connect: bool = True,
+) -> None:
+    """Ensure the shared Docker network exists and attach devcontainer if enabled."""
+    resolved = network_name or os.environ.get("DOCKER_NETWORK_INTERNAL", "")
+    _ensure_network_exists(resolved)
+    if auto_connect:
+        _connect_devcontainer_to_network(resolved)
+
+
 def _post_generate_env_bootstrap() -> None:
-    network_name = os.environ.get("DOCKER_NETWORK_INTERNAL", "")
-    _ensure_network_exists(network_name)
-    _connect_devcontainer_to_network(network_name)
+    ensure_workspace_network()
     _check_tls_access()
 
 

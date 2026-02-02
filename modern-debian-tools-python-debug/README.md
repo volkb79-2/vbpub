@@ -1,28 +1,37 @@
-# VSC Devcontainer Base Images
+# Modern Debian Python Debug Images
 
-Pre-built devcontainer base images for VS Code workspaces. This replaces live builds from `.devcontainer/Dockerfile` and provides consistent, versioned artifacts.
+Pre-built Debian + Python tooling images for interactive debugging. Two image families are published:
+
+- `modern-debian-tools-python-debug` (standard Python base image)
+- `modern-debian-tools-python-debug-vsc-devcontainer` (VS Code devcontainer base image)
 
 ## Images
 
-Four variants are built:
+Variants are built for both image families:
 - Bookworm + Python 3.11
 - Bookworm + Python 3.13
 - Trixie + Python 3.11
 - Trixie + Python 3.13
+- Trixie + Python 3.14
 
 Base images:
-- Bookworm uses `mcr.microsoft.com/devcontainers/python` for VS Code integration.
-- Trixie uses official `python:<version>-trixie` images with a `vscode` user created during build.
+- `modern-debian-tools-python-debug`: `python:${PYTHON_VERSION}-${DEBIAN_VERSION}`
+- `modern-debian-tools-python-debug-vsc-devcontainer`: `mcr.microsoft.com/devcontainers/python:1-${PYTHON_VERSION}-${DEBIAN_VERSION}`
 
 Each image tag includes Debian version, Python version, and build date:
 
 ```
-<registry>/<github_username>/vsc-devcontainer:<debian>-py<python>-<YYYYMMDD>
+<registry>/<github_username>/modern-debian-tools-python-debug:<debian>-py<python>-<YYYYMMDD>
 ```
 
 Example:
 ```
-ghcr.io/acme/vsc-devcontainer:bookworm-py3.13-20260117
+ghcr.io/acme/modern-debian-tools-python-debug:bookworm-py3.13-20260117
+```
+
+VS Code devcontainer tag:
+```
+<registry>/<github_username>/modern-debian-tools-python-debug-vsc-devcontainer:<debian>-py<python>-<YYYYMMDD>
 ```
 
 ## Contents
@@ -45,9 +54,9 @@ If CIU wheel inputs are provided at build time, the CIU wheel is downloaded and 
 
 Chronological steps for a complete development environment vs. GitHub Actions runner. This consolidates what happens in the base image, devcontainer post-create, and CI/CD setup scripts.
 
-| Step (Chronological) | Devcontainer (vsc-devcontainer + post-create) | GitHub Actions (runner + env-setup) |
+| Step (Chronological) | Devcontainer (modern-debian-tools-python-debug-vsc-devcontainer + post-create) | GitHub Actions (runner + env-setup) |
 | --- | --- | --- |
-| 1. Base OS | `mcr.microsoft.com/devcontainers/python:1-${PYTHON_VERSION}-${DEBIAN_VERSION}` (from [vsc-devcontainer/Dockerfile](vsc-devcontainer/Dockerfile)) | GitHub-hosted Ubuntu runner ([about runners](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners)) |
+| 1. Base OS | `mcr.microsoft.com/devcontainers/python:1-${PYTHON_VERSION}-${DEBIAN_VERSION}` (from [modern-debian-tools-python-debug/Dockerfile](modern-debian-tools-python-debug/Dockerfile)) | GitHub-hosted Ubuntu runner ([about runners](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners)) |
 | 2. Core system packages | Installed in Dockerfile via `apt-get` (curl, git, jq, dnsutils, etc.). | Preinstalled on runner; no Dockerfile step. |
 | 3. Modern tools + CLIs | Installed in Dockerfile (bat, fd, ripgrep, shellcheck, fzf, yq, Consul, Vault, PostgreSQL client, Redis tools, AWS CLI). | Not installed by default; add in CI if needed (not done in env-setup). |
 | 4. Python runtime + packages | `/home/vscode/.venv` created and populated in Dockerfile with common dev packages; `env-workspace-setup-generate.sh` installs repo `requirements.txt` to keep tooling aligned. | Uses runner Python; `env-workspace-setup-generate.sh` installs requirements from repo `requirements.txt`. |
@@ -97,14 +106,14 @@ This makes the package page readable before download and points to the manifest 
 
 This project uses Buildx Bake. The build date is included in tags via `BUILD_DATE`.
 
-- `docker-bake.hcl` defines 4 targets and an `all` group.
+- `docker-bake.hcl` defines base + devcontainer targets and an `all` group.
 - `./build-images.py` runs the config-driven build step and builds all variants.
 
 ### Shared credentials
 
 `build-images.py` and `push-images.py` will load a shared repo-root env file if present:
 - vbpub/.env (preferred)
-- vsc-devcontainer/.env (fallback)
+- modern-debian-tools-python-debug/.env (fallback)
 
 This lets you store GitHub credentials once for multiple vbpub projects.
 
@@ -137,7 +146,7 @@ Example:
 
 ```
 {
-	"image": "ghcr.io/acme/vsc-devcontainer:bookworm-py3.13-20260117",
+	"image": "ghcr.io/acme/modern-debian-tools-python-debug-vsc-devcontainer:bookworm-py3.13-20260117",
 	"remoteUser": "vscode"
 }
 ```
@@ -150,4 +159,20 @@ Counterexample (do NOT do this):
 		"dockerfile": "Dockerfile"
 	}
 }
+```
+
+# Check MCR devcontainer released images
+
+run `./check-mcr-devcontainer-tags.py ` to check the availability. As of 2025-02:
+
+```txt
+debian    3.12   3.13   3.14   3.15   3.16 
+--------  -----  -----  -----  -----  -----
+bookworm  1pd    1pd    pd     .      .    
+trixie    pd     pd     pd     .      .    
+forky     .      .      .      .      .    
+
+Legend: 1 = 1- prefix, p = plain, d = dev- prefix, . = missing
+
+Secondary manifest variants: 10 (https://raw.githubusercontent.com/devcontainers/images/main/src/python/manifest.json)
 ```

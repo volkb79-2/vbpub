@@ -53,6 +53,8 @@ from .cli_utils import get_cli_version
 from .workspace_env import (
     WorkspaceEnvError,
     bootstrap_workspace_env,
+    generate_ciu_env,
+    ensure_workspace_network,
     resolve_env_root,
     detect_standalone_root,
 )
@@ -197,6 +199,7 @@ def parse_arguments(argv: Optional[list] = None) -> argparse.Namespace:
     10. --skip-hostdir-check - Skip hostdir creation/validation
     11. --skip-hooks - Skip pre/post compose hooks
     12. --skip-secrets - Skip secret resolution/validation
+    13. --auto-connect-network / --no-auto-connect-network - Override devcontainer network auto-connect
     """
     parser = argparse.ArgumentParser(
         description='CIU: TOML-based Docker Compose orchestration',
@@ -217,6 +220,12 @@ Examples:
 
   # Use custom compose file name
   %(prog)s -f custom-compose.yml.j2
+
+Shared functionality:
+    - Reads .env.ciu (REPO_ROOT, PHYSICAL_REPO_ROOT, DOCKER_NETWORK_INTERNAL).
+    - Ensures .env.ciu is generated when missing (use --generate-env to refresh).
+        - Renders TOML with INSTANCE_ID-based values and (when enabled) connects
+            devcontainers to DOCKER_NETWORK_INTERNAL before running compose actions.
         '''
     )
 
@@ -287,6 +296,22 @@ Examples:
         '--skip-secrets',
         action='store_true',
         help='Skip secret resolution/validation (cleanup mode)'
+    )
+
+    network_group = parser.add_mutually_exclusive_group()
+    network_group.add_argument(
+        '--auto-connect-network',
+        dest='auto_connect_network',
+        action='store_true',
+        default=None,
+        help='Auto-connect devcontainer to DOCKER_NETWORK_INTERNAL (override config)'
+    )
+    network_group.add_argument(
+        '--no-auto-connect-network',
+        dest='auto_connect_network',
+        action='store_false',
+        default=None,
+        help='Disable devcontainer network auto-connect (override config)'
     )
 
     parser.add_argument(
@@ -1720,7 +1745,8 @@ def main_execution(
     skip_hooks: bool = False,
     skip_secrets: bool = False,
     generate_env: bool = False,
-    update_cert_permission: bool = False
+    update_cert_permission: bool = False,
+    auto_connect_network: Optional[bool] = None
 ) -> dict:
     """
     Main execution pipeline for CIU.
@@ -1772,6 +1798,10 @@ def main_execution(
         print("[INFO] Rendering global configuration...", flush=True)
         global_config = render_global_config_chain(working_dir, repo_root_override=define_root)
 
+        auto_connect_setting = global_config.get('ciu', {}).get('auto_connect_network', True)
+        if auto_connect_network is not None:
+            auto_connect_setting = auto_connect_network
+
         log_level = global_config.get('deploy', {}).get('log_level', 'INFO')
         configure_logging(log_level)
 
@@ -1785,6 +1815,8 @@ def main_execution(
             print("[SUCCESS] Rendered CIU TOML files (ciu-global.toml, ciu.toml)", flush=True)
             os.chdir(original_cwd)
             return result
+
+        ensure_workspace_network(auto_connect=auto_connect_setting)
 
         print("[INFO] Merging configurations...", flush=True)
         merged = deep_merge_configs(global_config, stack_config)
@@ -2008,7 +2040,8 @@ def main(argv: Optional[list] = None) -> int:
         skip_hooks=args.skip_hooks,
         skip_secrets=args.skip_secrets,
         generate_env=args.generate_env,
-        update_cert_permission=args.update_cert_permission
+        update_cert_permission=args.update_cert_permission,
+        auto_connect_network=args.auto_connect_network
     )
 
     if result.get('status') == 'success':

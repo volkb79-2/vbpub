@@ -1,0 +1,76 @@
+name: MCR Devcontainer Tag Watch
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore previous snapshot
+        id: cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/previous
+          key: mcr-devcontainer-tags-${{ runner.os }}-latest
+          restore-keys: |
+            mcr-devcontainer-tags-${{ runner.os }}-
+
+      - name: Check MCR tag matrix
+        run: |
+          mkdir -p .cache/current
+          python3 modern-debian-tools-python-debug/check-mcr-devcontainer-tags.py \
+            --json-out .cache/current/mcr-tags.json \
+            --table-out .cache/current/mcr-tags.txt
+
+      - name: Compare snapshots
+        id: compare
+        run: |
+          mkdir -p .cache/current
+          python3 scripts/compare_mcr_tags.py \
+            --previous .cache/previous/mcr-tags.json \
+            --current .cache/current/mcr-tags.json \
+            --table-file .cache/current/mcr-tags.txt \
+            --report-out .cache/current/report.txt
+        continue-on-error: true
+
+      - name: Prepare email body
+        if: steps.compare.outcome == 'failure'
+        run: |
+          printf "MCR devcontainer tag update detected.\n\n" > .cache/current/email.txt
+          cat .cache/current/report.txt >> .cache/current/email.txt
+
+      - name: Send email notification
+        if: steps.compare.outcome == 'failure'
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          SMTP_TO: ${{ secrets.SMTP_TO }}
+          SMTP_STARTTLS: ${{ secrets.SMTP_STARTTLS }}
+        run: |
+          python3 scripts/send_email.py \
+            --subject "MCR devcontainer tags changed" \
+            --body-file .cache/current/email.txt
+
+      - name: Save current snapshot
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/current
+          key: mcr-devcontainer-tags-${{ runner.os }}-latest

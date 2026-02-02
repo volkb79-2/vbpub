@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Push vsc-devcontainer images using config-driven step runner."""
+"""Push modern-debian-tools-python-debug images using config-driven step runner."""
 from __future__ import annotations
 
 import sys

@@ -35,6 +35,7 @@ class CleanupConfig:
     release_tag_prefixes: List[str]
     keep_release_tags: List[str]
     ghcr_packages: List[str]
+    ghcr_delete_packages: List[str]
 
 
 @dataclass(frozen=True)
@@ -180,7 +181,18 @@ def parse_commands(config_path: Path, repo_root: Path, step_name: str, raw_comma
 
 def load_config(
     config_path: Path,
-) -> tuple[Path, dict[str, ProjectConfig], list[str], list[str], CleanupConfig, GitHubConfig, ReleaseEnvConfig]:
+) -> tuple[
+    Path,
+    dict[str, ProjectConfig],
+    list[str],
+    list[str],
+    list[str],
+    str,
+    dict[str, list[str]],
+    CleanupConfig,
+    GitHubConfig,
+    ReleaseEnvConfig,
+]:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
     with config_path.open("rb") as handle:
@@ -203,6 +215,23 @@ def load_config(
     default_steps = orchestration.get("default_steps")
     if not default_steps or not isinstance(default_steps, list):
         raise ValueError("orchestration.default_steps must be a list")
+
+    execution_mode = (orchestration.get("execution_mode") or "step-first").strip()
+    if execution_mode not in {"step-first", "project-first"}:
+        raise ValueError("orchestration.execution_mode must be 'step-first' or 'project-first'")
+
+    step_project_order_raw = orchestration.get("step_project_order") or {}
+    if not isinstance(step_project_order_raw, dict):
+        raise ValueError("orchestration.step_project_order must be a table")
+    step_project_order: dict[str, list[str]] = {}
+    for step_name, step_projects in step_project_order_raw.items():
+        if not isinstance(step_name, str):
+            raise ValueError("orchestration.step_project_order keys must be strings")
+        if not isinstance(step_projects, list) or not all(isinstance(item, str) for item in step_projects):
+            raise ValueError(
+                f"orchestration.step_project_order.{step_name} must be a list of project names"
+            )
+        step_project_order[step_name] = step_projects
 
     projects_section = config.get("projects")
     if not projects_section or not isinstance(projects_section, dict):
@@ -227,17 +256,21 @@ def load_config(
     release_tag_prefixes = cleanup_section.get("release_tag_prefixes")
     keep_release_tags = cleanup_section.get("keep_release_tags")
     ghcr_packages = cleanup_section.get("ghcr_packages")
+    ghcr_delete_packages = cleanup_section.get("ghcr_delete_packages") or []
     if not release_tag_prefixes or not isinstance(release_tag_prefixes, list):
         raise ValueError("cleanup.release_tag_prefixes must be a list")
     if not keep_release_tags or not isinstance(keep_release_tags, list):
         raise ValueError("cleanup.keep_release_tags must be a list")
     if not ghcr_packages or not isinstance(ghcr_packages, list):
         raise ValueError("cleanup.ghcr_packages must be a list")
+    if not isinstance(ghcr_delete_packages, list):
+        raise ValueError("cleanup.ghcr_delete_packages must be a list")
 
     cleanup = CleanupConfig(
         release_tag_prefixes=release_tag_prefixes,
         keep_release_tags=keep_release_tags,
         ghcr_packages=ghcr_packages,
+        ghcr_delete_packages=ghcr_delete_packages,
     )
 
     github = config.get("github")
@@ -270,7 +303,18 @@ def load_config(
 
     env_config = ReleaseEnvConfig(env=env_section, registry_url=registry_url)
 
-    return repo_root, projects, project_order, default_projects, default_steps, cleanup, github_config, env_config
+    return (
+        repo_root,
+        projects,
+        project_order,
+        default_projects,
+        default_steps,
+        execution_mode,
+        step_project_order,
+        cleanup,
+        github_config,
+        env_config,
+    )
 
 
 def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> None:
@@ -462,10 +506,32 @@ def delete_package_version(owner: str, package: str, token: str, version_id: int
         raise RuntimeError(f"Failed to delete {package} version {version_id}: {body}")
 
 
+def delete_package(owner: str, package: str, token: str, owner_type: str, dry_run: bool) -> None:
+    if dry_run:
+        log_info(f"[DRY RUN] Would delete {package} package")
+        return
+    if owner_type == "org":
+        url = f"https://api.github.com/orgs/{owner}/packages/container/{package}"
+    else:
+        url = f"https://api.github.com/users/{owner}/packages/container/{package}"
+    status, body, _ = http_request("DELETE", url, token)
+    if status >= 400:
+        if status == 403:
+            log_warn(
+                "Skipping GHCR package delete for "
+                f"{package}: missing package delete scope."
+            )
+            return
+        if status == 404:
+            log_warn(f"Skipping GHCR package delete for {package}: not found")
+            return
+        raise RuntimeError(f"Failed to delete {package} package: {body}")
+
+
 def resolve_owner_type(owner: str, token: str) -> str:
     for candidate in ("org", "user"):
         try:
-            list_package_versions(owner, "vsc-devcontainer", token, candidate)
+            list_package_versions(owner, "modern-debian-tools-python-debug", token, candidate)
             return candidate
         except RuntimeError:
             continue
@@ -480,6 +546,10 @@ def cleanup_ghcr(owner: str, token: str, cutoff: datetime, dry_run: bool, cleanu
     wildcard_packages = not cleanup.ghcr_packages or "*" in cleanup.ghcr_packages
     packages = list_container_packages(owner, token, owner_type) if wildcard_packages else cleanup.ghcr_packages
     for package in packages:
+        if package in cleanup.ghcr_delete_packages:
+            log_info(f"Deleting GHCR package {package} (explicit cleanup list)")
+            delete_package(owner, package, token, owner_type, dry_run)
+            continue
         versions = list_package_versions(owner, package, token, owner_type)
         for version in versions:
             version_id = version.get("id")
@@ -552,6 +622,8 @@ def main() -> None:
         project_order,
         default_projects,
         default_steps,
+        execution_mode,
+        step_project_order,
         cleanup,
         github_config,
         env_config,
@@ -587,12 +659,26 @@ def main() -> None:
     if steps:
         compute_release_date(repo_root)
 
-    for step in steps:
+    if execution_mode == "project-first":
         for project in selected:
-            commands = project.steps.get(step, [])
-            if not commands:
-                continue
-            run_commands(commands)
+            for step in steps:
+                commands = project.steps.get(step, [])
+                if not commands:
+                    continue
+                run_commands(commands)
+    else:
+        for step in steps:
+            ordered_names = step_project_order.get(step) or selected_names
+            for project_name in ordered_names:
+                if project_name not in configs:
+                    raise ValueError(f"Unknown project in step_project_order: {project_name}")
+                if project_name not in selected_names:
+                    continue
+                project = configs[project_name]
+                commands = project.steps.get(step, [])
+                if not commands:
+                    continue
+                run_commands(commands)
 
     if args.remove_assets:
         remove_assets(args.remove_assets, args.dry_run, cleanup, github_config, env_config)

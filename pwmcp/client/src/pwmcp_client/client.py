@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import websockets
 from websockets.asyncio.client import ClientConnection
 from pwmcp_shared.constants import DEFAULT_WS_PORT, ENV_ACCESS_TOKEN, ENV_WS_AUTH_TOKEN
+from pwmcp_client.version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class PlaywrightWSClient:
         await self.close()
 
     async def connect(self) -> None:
+        logger.info("PWMCP client version: %s", __version__)
         logger.info("Connecting to %s...", self.url)
 
         self._ws = await websockets.connect(

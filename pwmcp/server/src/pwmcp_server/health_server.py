@@ -18,6 +18,7 @@ from pwmcp_shared.constants import (
     ENV_MCP_PORT,
     ENV_WS_PORT,
 )
+from pwmcp_server.version import __version__
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +65,7 @@ async def health() -> JSONResponse:
     payload = {
         "status": "healthy" if not failures else "unhealthy",
         "service": "pwmcp-server",
+        "version": __version__,
         "checks": checks,
     }
     status_code = 200 if not failures else 503
@@ -77,6 +79,7 @@ async def ready() -> JSONResponse:
     payload = {
         "status": "ready" if not failures else "not-ready",
         "service": "pwmcp-server",
+        "version": __version__,
         "checks": checks,
     }
     status_code = 200 if not failures else 503
@@ -92,6 +95,7 @@ async def selftest() -> JSONResponse:
         payload = {
             "status": "failed",
             "service": "pwmcp-server",
+            "version": __version__,
             "target": SELFTEST_URL,
             "error": str(exc),
         }
@@ -101,6 +105,7 @@ async def selftest() -> JSONResponse:
         payload = {
             "status": "failed",
             "service": "pwmcp-server",
+            "version": __version__,
             "target": SELFTEST_URL,
             "http_status": status_code,
         }
@@ -109,6 +114,7 @@ async def selftest() -> JSONResponse:
     payload = {
         "status": "ok",
         "service": "pwmcp-server",
+        "version": __version__,
         "target": SELFTEST_URL,
         "http_status": status_code,
     }

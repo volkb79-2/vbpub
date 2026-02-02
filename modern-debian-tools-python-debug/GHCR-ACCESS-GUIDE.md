@@ -10,7 +10,7 @@
 ### How to make images public:
 
 1. **Navigate to package settings:**
-   - URL pattern: `https://github.com/users/volkb79-2/packages/container/vsc-devcontainer/settings`
+  - URL pattern: `https://github.com/users/volkb79-2/packages/container/modern-debian-tools-python-debug/settings`
    - Or: GitHub Profile → Packages → Select package → Settings
 
 2. **Change visibility:**
@@ -22,10 +22,16 @@
 ### Published Images:
 ```bash
 # Available images (currently private):
-ghcr.io/volkb79-2/vsc-devcontainer:bookworm-py3.11-20260118
-ghcr.io/volkb79-2/vsc-devcontainer:bookworm-py3.13-20260118
-ghcr.io/volkb79-2/vsc-devcontainer:trixie-py3.11-20260118
-ghcr.io/volkb79-2/vsc-devcontainer:trixie-py3.13-20260118
+ghcr.io/volkb79-2/modern-debian-tools-python-debug:bookworm-py3.11-20260118
+ghcr.io/volkb79-2/modern-debian-tools-python-debug:bookworm-py3.13-20260118
+ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-20260118
+ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.13-20260118
+
+# VS Code devcontainer variants:
+ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:bookworm-py3.11-20260118
+ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:bookworm-py3.13-20260118
+ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.11-20260118
+ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.13-20260118
 ```
 
 ---
@@ -64,14 +70,14 @@ echo $GITHUB_PUSH_PAT | docker login ghcr.io -u $GITHUB_USERNAME --password-stdi
 
 **Option 2: Using password from .env**
 ```bash
-# From vsc-devcontainer directory:
+# From modern-debian-tools-python-debug directory:
 source .env
 echo $GITHUB_PUSH_PAT | docker login ghcr.io -u $GITHUB_USERNAME --password-stdin
 ```
 
 **Verify authentication:**
 ```bash
-docker pull ghcr.io/volkb79-2/vsc-devcontainer:bookworm-py3.13-20260118
+docker pull ghcr.io/volkb79-2/modern-debian-tools-python-debug:bookworm-py3.13-20260118
 ```
 
 ---
@@ -109,7 +115,7 @@ docker pull ghcr.io/volkb79-2/vsc-devcontainer:bookworm-py3.13-20260118
 ```jsonc
 {
   "name": "my-devcontainer",
-  "image": "ghcr.io/volkb79-2/vsc-devcontainer:bookworm-py3.13-20260118",
+  "image": "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:bookworm-py3.13-20260118",
   // Optional: Keep build config commented for fallback
   // "build": {
   //   "dockerfile": "Dockerfile"
@@ -144,11 +150,12 @@ echo $GITHUB_TOKEN | docker login ghcr.io -u volkb79-2 --password-stdin
 **Solution:**
 ```bash
 # List available tags:
-# Visit: https://github.com/volkb79-2/vsc-devcontainer/pkgs/container/vsc-devcontainer
+# Visit: https://github.com/volkb79-2/vbpub/pkgs/container/modern-debian-tools-python-debug
+# Also: https://github.com/volkb79-2/vbpub/pkgs/container/modern-debian-tools-python-debug-vsc-devcontainer
 
 # Or use GitHub API:
 curl -H "Authorization: token $GITHUB_TOKEN" \
-  https://api.github.com/users/volkb79-2/packages/container/vsc-devcontainer/versions
+  https://api.github.com/users/volkb79-2/packages/container/modern-debian-tools-python-debug/versions
 ```
 
 ### Devcontainer can't pull private image
@@ -191,14 +198,16 @@ docker login ghcr.io -u volkb79-2
     password: ${{ secrets.GITHUB_TOKEN }}
 
 - name: Pull devcontainer image
-  run: docker pull ghcr.io/volkb79-2/vsc-devcontainer:bookworm-py3.13-20260118
+  run: docker pull ghcr.io/volkb79-2/modern-debian-tools-python-debug:bookworm-py3.13-20260118
 ```
 
 ---
 
 ## Reference Links
 
-- **Package Settings:** https://github.com/volkb79-2/vsc-devcontainer/settings
+- **Package Settings:**
+  - https://github.com/volkb79-2/vbpub/pkgs/container/modern-debian-tools-python-debug/settings
+  - https://github.com/volkb79-2/vbpub/pkgs/container/modern-debian-tools-python-debug-vsc-devcontainer/settings
 - **PAT Creation:** https://github.com/settings/tokens
 - **GHCR Documentation:** https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry
 - **VSCode Devcontainers:** https://code.visualstudio.com/docs/devcontainers/containers

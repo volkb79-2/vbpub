@@ -5,6 +5,7 @@
 ARG PYTHON_VERSION="3.14"
 ARG DEBIAN_VERSION="trixie"
 ARG BASE_IMAGE="mcr.microsoft.com/devcontainers/python:1-${PYTHON_VERSION}-${DEBIAN_VERSION}"
+# BASE_IMAGE is set by `docker-bake.hcl` during build
 FROM ${BASE_IMAGE}
 
 SHELL ["/bin/bash", "-c"]
@@ -42,6 +43,7 @@ ARG GITHUB_REPO
 ARG CIU_LATEST_TAG
 ARG CIU_LATEST_ASSET_NAME
 ARG CIU_INSTALL_REQUIRED="false"
+ARG DEVCONTAINERS_RELEASE=""
 
 ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
 ENV BACKPORTS_URI="${BACKPORTS_URI}"
@@ -93,7 +95,7 @@ RUN set -euo pipefail; \
         ca-certificates \
         locales \
         curl \
-        dnsutils \
+        bind9-dnsutils \
         fuse3 \
         gdb \
         git \
@@ -469,6 +471,11 @@ RUN set -euo pipefail; \
         echo "- Debian: ${DEBIAN_VERSION}"; \
         echo "- Python: $(python3 --version 2>&1)"; \
         echo "- Image version: ${OCI_VERSION}"; \
+        if [ -n "${DEVCONTAINERS_RELEASE:-}" ]; then \
+            echo "- Devcontainers release: ${DEVCONTAINERS_RELEASE}"; \
+        else \
+            echo "- Devcontainers release: unknown"; \
+        fi; \
         echo ""; \
         echo "## Tooling"; \
         if [ -n "${ciu_version_output}" ]; then \
@@ -501,7 +508,7 @@ RUN set -euo pipefail; \
         echo ""; \
         echo "    (installed via apt)"; \
         dpkg-query -W -f='${Package}=${Version}\n' \
-            bash-completion ca-certificates curl dnsutils fuse3 git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc \
+            bash-completion ca-certificates curl bind9-dnsutils fuse3 git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc \
             "${NETCAT_PKG}" ncdu openssl pandoc p7zip-full poppler-utils python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim wget xz-utils \
             postgresql-client redis-tools | sed 's/^/    /'; \
     } > "${manifest}"; \

@@ -36,6 +36,7 @@ class StepConfig:
     required_env: list[str]
     login: Optional[dict]
     step_env: Mapping[str, str]
+    env_command: Optional[list[str]]
 
 
 def log_info(message: str) -> None:
@@ -201,6 +202,10 @@ def parse_step(config: dict, step_name: str) -> StepConfig:
     if not isinstance(step_env, dict):
         raise ValueError(f"steps.{step_name}.env must be a table")
 
+    env_command = step.get("env_command")
+    if env_command is not None and not isinstance(env_command, list):
+        raise ValueError(f"steps.{step_name}.env_command must be a list")
+
     return StepConfig(
         name=step_name,
         commands=commands,
@@ -211,6 +216,7 @@ def parse_step(config: dict, step_name: str) -> StepConfig:
         required_env=required_env,
         login=login,
         step_env=step_env,
+        env_command=[str(item) for item in env_command] if env_command else None,
     )
 
 
@@ -218,6 +224,31 @@ def ensure_required_env(required: Iterable[str]) -> None:
     missing = [name for name in required if not os.getenv(name)]
     if missing:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
+
+
+def apply_env_command(env_command: Optional[list[str]], cwd: Path) -> None:
+    if not env_command:
+        return
+    log_info(f"Resolving dynamic environment via: {' '.join(env_command)}")
+    result = subprocess.run(
+        env_command,
+        cwd=str(cwd),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise ValueError(f"env_command output must be KEY=VALUE lines. Got: {line}")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            raise ValueError(f"env_command produced empty key in line: {line}")
+        os.environ[key] = value
 
 
 def maybe_login(login: Optional[dict]) -> None:
@@ -311,6 +342,7 @@ def run_step(build_config_path: Path, step_name: str, release_config_path: Optio
         value_str = str(value).strip()
         if value_str:
             os.environ.setdefault(key, value_str)
+    apply_env_command(step.env_command, project_root)
     ensure_required_env(step.required_env)
     maybe_login(step.login)
 

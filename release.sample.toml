@@ -1,0 +1,106 @@
+repo_root = "."
+
+[github]
+username = "your-github-username"
+repo = "vbpub"
+token = ""
+# owner_type = "org"
+
+[registry]
+url = "ghcr.io"
+
+[env]
+OCI_VENDOR = "Volker Badziong"
+OCI_DESCRIPTION = """Modern Debian Tools + Python Debug: prebuilt devcontainer image focused on CIU workflows and modern CLI tooling.
+Highlights: Debian-based Python devcontainer with a managed venv; CLI tooling (b2, bat, delta, fd, ripgrep, rga, fzf, yq, gh, consul, vault); clients (psql, redis-cli, awscli); VS Code devcontainer tags (vsc-devcontainer variants).
+Tool manifest: /usr/local/share/modern-debian-tools-python-debug/manifest.md
+"""
+OCI_DESCRIPTION_SERVER = """PWMCP Server: WebSocket + MCP server image for browser automation. CIU usage requires pwmcp/ciu.defaults.toml.j2 and pwmcp/docker-compose.yml.j2. Then run: ciu --generate-env -d .; ciu -d .
+"""
+OCI_DESCRIPTION_CLIENT = """PWMCP Client: client toolkit container for PWMCP workflows. CIU usage requires pwmcp/ciu.defaults.toml.j2 and pwmcp/docker-compose.yml.j2. Then run: ciu --generate-env -d .; ciu -d .
+"""
+CIU_LATEST_TAG = "ciu-wheel-latest"
+CIU_RELEASE_NOTES = "## CIU CLI wheel\nLightweight CLI for CIU orchestration.\n\n**Includes**\n- ciu / ciu-deploy entrypoints\n- Config-driven deployment helpers\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+CIU_LATEST_NOTES = "## CIU CLI wheel (latest)\nLatest CIU CLI wheel for automation.\n\n**Includes**\n- ciu / ciu-deploy entrypoints\n- Config-driven deployment helpers\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+PWMCP_CLIENT_RELEASE_NOTES = "## PWMCP client wheel\nWebSocket client SDK for PWMCP.\n\n**Includes**\n- Client SDK + helpers\n- UI harness + retry utilities\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+PWMCP_CLIENT_LATEST_NOTES = "## PWMCP client wheel (latest)\nLatest client SDK for Python integrations.\n\n**Includes**\n- Client SDK + helpers\n- UI harness + retry utilities\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+PWMCP_SERVER_RELEASE_NOTES = "## PWMCP server wheel\nWebSocket + MCP server package.\n\n**Includes**\n- Server runtime\n- Health and WebSocket services\n- Playwright backend\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+PWMCP_SERVER_LATEST_NOTES = "## PWMCP server wheel (latest)\nLatest server SDK for PWMCP.\n\n**Includes**\n- Server runtime\n- Health and WebSocket services\n- Playwright backend\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+
+[orchestration]
+project_order = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
+default_projects = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
+default_steps = ["run-tests", "build", "push", "validate"]
+execution_mode = "project-first"
+
+[orchestration.step_project_order]
+run-tests = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
+build = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
+push = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
+validate = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
+
+[cleanup]
+# Apply cleanup globally regardless of tag prefix.
+release_tag_prefixes = ["*"]
+keep_release_tags = [
+  "ciu-wheel-latest",
+  "pwmcp-client-wheel-latest",
+  "pwmcp-server-wheel-latest",
+]
+ghcr_packages = ["*"]
+
+[projects.ciu.steps.run-tests]
+commands = [
+  { label = "CIU: run tests", argv = ["python3", "run-ciu-tests.py"], cwd = "ciu" },
+]
+
+[projects.ciu.steps.build]
+commands = [
+  { label = "CIU: build wheel", argv = ["python3", "build-wheel.py"], cwd = "ciu" },
+]
+
+[projects.ciu.steps.push]
+commands = [
+  { label = "CIU: publish wheel", argv = ["python3", "publish-wheel.py"], cwd = "ciu" },
+]
+
+[projects.ciu.steps.validate]
+commands = [
+  { label = "CIU: validate latest wheel", argv = ["python3", "tools/validate-wheel-latest.py"], cwd = "ciu" },
+]
+
+[projects.modern-debian-tools-python-debug.steps.build]
+commands = [
+  { label = "modern-debian-tools-python-debug: build images", argv = ["python3", "build-images.py"], cwd = "modern-debian-tools-python-debug" },
+]
+
+[projects.modern-debian-tools-python-debug.steps.push]
+commands = [
+  { label = "modern-debian-tools-python-debug: push images", argv = ["python3", "push-images.py"], cwd = "modern-debian-tools-python-debug" },
+]
+
+[projects.pwmcp.steps.run-tests]
+commands = [
+  { label = "pwmcp-client: run tests", argv = ["python3", "run-client-tests.py"], cwd = "pwmcp" },
+]
+
+[projects.pwmcp.steps.build]
+commands = [
+  { label = "pwmcp-shared: build wheel", argv = ["python3", "build-shared-wheel.py"], cwd = "pwmcp" },
+  { label = "pwmcp-client: build wheel", argv = ["python3", "build-client-wheel.py"], cwd = "pwmcp" },
+  { label = "pwmcp-server: build wheel", argv = ["python3", "build-server-wheel.py"], cwd = "pwmcp" },
+  { label = "pwmcp: build images", argv = ["python3", "build-images.py"], cwd = "pwmcp" },
+]
+
+[projects.pwmcp.steps.push]
+commands = [
+  { label = "pwmcp-client: publish wheel", argv = ["python3", "publish-client-wheel-fixed.py"], cwd = "pwmcp" },
+  { label = "pwmcp-server: publish wheel", argv = ["python3", "publish-server-wheel.py"], cwd = "pwmcp" },
+  { label = "pwmcp: push images", argv = ["python3", "push-images.py"], cwd = "pwmcp" },
+  { label = "pwmcp: upload release assets", argv = ["python3", "upload-release-assets.py"], cwd = "pwmcp" },
+]
+
+[projects.pwmcp.steps.validate]
+commands = [
+  { label = "pwmcp-client: validate latest wheel", argv = ["python3", "validate-client-wheel-latest.py"], cwd = "pwmcp" },
+]

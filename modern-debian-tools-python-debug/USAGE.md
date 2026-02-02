@@ -38,7 +38,7 @@ Reference the desired tag under `image` (no `build` section):
 
 ```
 {
-  "image": "ghcr.io/acme/vsc-devcontainer:bookworm-py3.13-20260117",
+  "image": "ghcr.io/acme/modern-debian-tools-python-debug-vsc-devcontainer:bookworm-py3.13-20260117",
   "remoteUser": "vscode"
 }
 ```

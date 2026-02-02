@@ -11,6 +11,7 @@ import sys
 from typing import List
 
 from pwmcp_shared.constants import DEFAULT_HEALTH_PORT, DEFAULT_MCP_PORT, DEFAULT_WS_PORT, ENV_HEALTH_PORT, ENV_MCP_PORT, ENV_WS_PORT
+from pwmcp_server.version import __version__
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,6 +72,7 @@ async def _main() -> None:
     logger.info("=" * 60)
     logger.info("PWMCP Standalone Service Starting")
     logger.info("=" * 60)
+    logger.info("PWMCP server version: %s", __version__)
     logger.info("WebSocket server: ws://0.0.0.0:%s", WS_PORT)
     if MCP_ENABLED:
         logger.info("MCP server: http://0.0.0.0:%s", MCP_PORT)

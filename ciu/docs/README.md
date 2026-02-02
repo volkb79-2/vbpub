@@ -66,6 +66,15 @@ Multi-stack orchestrator. CIU Deploy sequences multiple stacks using deployment 
 - Ensure PYTHON_EXECUTABLE points to the workspace venv
 - Build images with docker buildx bake before deploy
 
+### Devcontainer network auto-connect
+
+CIU reads `ciu.auto_connect_network` from ciu-global.toml to decide whether to
+attach the devcontainer to `DOCKER_NETWORK_INTERNAL`. Defaults are set to
+`true` in the repo templates. Override per run:
+
+- `--auto-connect-network`
+- `--no-auto-connect-network`
+
 ## Build & install the CIU package
 
 **Editable install (development)**:

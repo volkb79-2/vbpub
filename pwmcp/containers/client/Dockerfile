@@ -55,6 +55,7 @@ RUN set -eux; \
     chown -R "${PWMCP_UID}:${PWMCP_GID}" /workspaces
 
 COPY containers/client/requirements.txt /tmp/requirements.txt
+COPY containers/client/manifest.sh /tmp/manifest.sh
 
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r /tmp/requirements.txt
@@ -63,6 +64,7 @@ COPY dist/shared/*.whl /tmp/wheels/
 COPY dist/client/*.whl /tmp/wheels/
 
 RUN pip install --no-cache-dir /tmp/wheels/pwmcp_shared-*.whl /tmp/wheels/pwmcp_client-*.whl
+RUN bash /tmp/manifest.sh
 
 USER ${PWMCP_USER}
 

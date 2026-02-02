@@ -1,103 +1,58 @@
-# Sample release configuration (copy to vbpub/release.toml and fill values)
-repo_root = ".."
+# Release Manager sample configuration (syntax/spec only).
+# Copy into your repo root as release.toml and fill in repo-specific values + secrets.
+
+repo_root = "/path/to/repo"
 
 [github]
-# GitHub org/user that owns the repo + packages
-username = "your-github-username-or-org"
-repo = "vbpub"
-# Personal access token with releases + packages permissions
-# token = "ghp_xxx"
-# Optional: "org" or "user" to skip autodetection
+username = "your-github-user-or-org"
+repo = "your-repo"
+token = "ghp_your_token"
 # owner_type = "org"
 
 [registry]
-# Optional override for container registry
 url = "ghcr.io"
 
 [env]
-# Optional shared env vars for build/push steps (Markdown supported in notes)
-# CIU_LATEST_TAG = "ciu-wheel-latest"
-# CIU_LATEST_ASSET_NAME = "ciu-<version>-py3-none-any.whl"
-# CIU_INSTALL_REQUIRED = "false"
-# OCI_TITLE = "vbpub devcontainer"
-# OCI_DESCRIPTION = "Pre-built VS Code devcontainer image with Python, CIU, Docker CLI, and ops tooling."
-# CIU_RELEASE_NOTES = "## CIU CLI wheel\nLightweight CLI for CIU orchestration.\n\n**Includes**\n- ciu / ciu-deploy entrypoints\n- Config-driven deployment helpers\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
-# CIU_LATEST_NOTES = "## CIU CLI wheel (latest)\nLatest CIU CLI wheel for automation.\n\n**Includes**\n- ciu / ciu-deploy entrypoints\n- Config-driven deployment helpers\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
-# PWMCP_RELEASE_NOTES = "## Playwright MCP client wheel\nWebSocket client SDK for Playwright MCP.\n\n**Includes**\n- Client SDK + helpers\n- UI harness + retry utilities\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
-# PWMCP_LATEST_NOTES = "## Playwright MCP client wheel (latest)\nLatest client SDK for Python integrations.\n\n**Includes**\n- Client SDK + helpers\n- UI harness + retry utilities\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+# Shared environment variables for build/push steps.
+# OCI_DESCRIPTION supports Markdown and can reference an in-image manifest path.
+# OCI_VENDOR = "Your Name or Org"
+# OCI_TITLE = "your-image-title"
+# OCI_DESCRIPTION = """# Your image\n\n## Tool manifest\nSee `/usr/local/share/your-image/manifest.md`.\n"""
+# RELEASE_NOTES = """## Release notes\n- Item 1\n"""
 
 [orchestration]
-project_order = ["ciu", "vsc-devcontainer", "pwmcp"]
-default_projects = ["ciu", "vsc-devcontainer", "pwmcp"]
+project_order = ["project-a", "project-b"]
+default_projects = ["project-a", "project-b"]
 default_steps = ["run-tests", "build", "push", "validate"]
+execution_mode = "project-first"
+
+[orchestration.step_project_order]
+run-tests = ["project-a", "project-b"]
+build = ["project-a", "project-b"]
+push = ["project-a", "project-b"]
+validate = ["project-a", "project-b"]
 
 [cleanup]
-release_tag_prefixes = [
-  "ciu-wheel-",
-  "pwmcp-client-wheel-",
-  "pwmcp-server-wheel-",
-  "pwmcp-stack-bundle-",
-]
-keep_release_tags = [
-  "ciu-wheel-latest",
-  "pwmcp-client-wheel-latest",
-  "pwmcp-server-wheel-latest",
-  "pwmcp-stack-bundle-latest",
-]
-ghcr_packages = ["vsc-devcontainer", "pwmcp-server", "pwmcp-client"]
+release_tag_prefixes = ["*"]
+keep_release_tags = []
+ghcr_packages = ["*"]
 
-[projects.ciu.steps.run-tests]
+[projects.project-a.steps.run-tests]
 commands = [
-  { label = "CIU: run tests", argv = ["python3", "run-ciu-tests.py"], cwd = "ciu" },
+  { label = "project-a: run tests", argv = ["python3", "run-tests.py"], cwd = "project-a" },
 ]
 
-[projects.ciu.steps.build]
+[projects.project-a.steps.build]
 commands = [
-  { label = "CIU: build wheel", argv = ["python3", "build-wheel.py"], cwd = "ciu" },
+  { label = "project-a: build artifacts", argv = ["python3", "build.py"], cwd = "project-a" },
 ]
 
-[projects.ciu.steps.push]
+[projects.project-a.steps.push]
 commands = [
-  { label = "CIU: publish wheel", argv = ["python3", "publish-wheel.py"], cwd = "ciu" },
+  { label = "project-a: push artifacts", argv = ["python3", "push.py"], cwd = "project-a" },
 ]
 
-[projects.ciu.steps.validate]
+[projects.project-a.steps.validate]
 commands = [
-  { label = "CIU: validate latest wheel", argv = ["python3", "tools/validate-wheel-latest.py"], cwd = "ciu" },
-]
-
-[projects.vsc-devcontainer.steps.build]
-commands = [
-  { label = "vsc-devcontainer: build images", argv = ["python3", "build-images.py"], cwd = "vsc-devcontainer" },
-]
-
-[projects.vsc-devcontainer.steps.push]
-commands = [
-  { label = "vsc-devcontainer: push images", argv = ["python3", "push-images.py"], cwd = "vsc-devcontainer" },
-]
-
-[projects.pwmcp.steps.run-tests]
-commands = [
-  { label = "pwmcp-client: run tests", argv = ["python3", "run-client-tests.py"], cwd = "pwmcp" },
-]
-
-[projects.pwmcp.steps.build]
-commands = [
-  { label = "pwmcp-shared: build wheel", argv = ["python3", "build-shared-wheel.py"], cwd = "pwmcp" },
-  { label = "pwmcp-client: build wheel", argv = ["python3", "build-client-wheel.py"], cwd = "pwmcp" },
-  { label = "pwmcp-server: build wheel", argv = ["python3", "build-server-wheel.py"], cwd = "pwmcp" },
-  { label = "pwmcp: build images", argv = ["python3", "build-images.py"], cwd = "pwmcp" },
-]
-
-[projects.pwmcp.steps.push]
-commands = [
-  { label = "pwmcp-client: publish wheel", argv = ["python3", "publish-client-wheel.py"], cwd = "pwmcp" },
-  { label = "pwmcp-server: publish wheel", argv = ["python3", "publish-server-wheel.py"], cwd = "pwmcp" },
-  { label = "pwmcp: push images", argv = ["python3", "push-images.py"], cwd = "pwmcp" },
-  { label = "pwmcp: upload release assets", argv = ["python3", "upload-release-assets.py"], cwd = "pwmcp" },
-]
-
-[projects.pwmcp.steps.validate]
-commands = [
-  { label = "pwmcp-client: validate latest wheel", argv = ["python3", "validate-client-wheel-latest.py"], cwd = "pwmcp" },
+  { label = "project-a: validate", argv = ["python3", "validate.py"], cwd = "project-a" },
 ]

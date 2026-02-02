@@ -47,10 +47,12 @@ RUN set -eux; \
 
 COPY dist/shared/*.whl /tmp/wheels/
 COPY dist/server/*.whl /tmp/wheels/
+COPY containers/server/manifest.sh /tmp/manifest.sh
 
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir /tmp/wheels/pwmcp_shared-*.whl /tmp/wheels/pwmcp_server-*.whl && \
-    python -m playwright install --with-deps
+    python -m playwright install --with-deps && \
+    bash /tmp/manifest.sh
 
 RUN mkdir -p /workspaces/artifacts /certs && \
     chmod 777 /workspaces /workspaces/artifacts /certs /ms-playwright && \

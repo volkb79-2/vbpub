@@ -6,10 +6,22 @@ import sys
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+import shutil
 
 
 def main() -> int:
     repo_root = Path(__file__).resolve().parent
+    config_path = repo_root / "release.toml"
+    sample_path = repo_root / "release.sample.toml"
+    if not config_path.exists():
+        if not sample_path.exists():
+            print("[ERROR] release.sample.toml not found; cannot initialize release.toml")
+            return 1
+        shutil.copy(sample_path, config_path)
+        print("[INFO] Created release.toml from release.sample.toml")
+        print("[ERROR] Fill in secrets (GitHub token, usernames) before running the release pipeline.")
+        return 1
+
     log_dir = repo_root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -19,7 +31,7 @@ def main() -> int:
         sys.executable,
         str(repo_root / "release-all.py"),
         "--config",
-        str(repo_root / "release.toml"),
+        str(config_path),
         "--run-tests",
         "--build",
         "--push",

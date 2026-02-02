@@ -44,8 +44,9 @@ bake_set_vars = [
   "OCI_REVISION",
   "OCI_CREATED",
 ]
+env_command = ["python3", "scripts/resolve-devcontainers-release.py"]
 commands = [
-  { label = "vsc-devcontainer: build images", argv = ["docker", "buildx", "bake", "-f", "docker-bake.hcl", "all", "--load"], cwd = "." },
+  { label = "modern-debian-tools-python-debug: build images", argv = ["docker", "buildx", "bake", "-f", "docker-bake.hcl", "all", "--load"], cwd = "." },
 ]
 
 [steps.push-images]
@@ -83,11 +84,12 @@ bake_set_vars = [
   "OCI_REVISION",
   "OCI_CREATED",
 ]
+env_command = ["python3", "scripts/resolve-devcontainers-release.py"]
 required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
 env = { BUILD_AUTO_INCREMENT = "1" }
 
 commands = [
-  { label = "vsc-devcontainer: push images", argv = ["docker", "buildx", "bake", "-f", "docker-bake.hcl", "all", "--push"], cwd = "." },
+  { label = "modern-debian-tools-python-debug: push images", argv = ["docker", "buildx", "bake", "-f", "docker-bake.hcl", "all", "--push"], cwd = "." },
 ]
 
 [steps.push-images.login]

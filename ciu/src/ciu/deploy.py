@@ -82,7 +82,7 @@ import uuid
 from pathlib import Path
 from typing import Set, TypedDict
 
-from .config_constants import GLOBAL_CONFIG_DEFAULTS, GLOBAL_CONFIG_RENDERED
+from .config_constants import GLOBAL_CONFIG_DEFAULTS, GLOBAL_CONFIG_RENDERED, STACK_CONFIG_DEFAULTS
 from .cli_utils import get_cli_version
 from .workspace_env import (
     WorkspaceEnvError,
@@ -94,7 +94,6 @@ from .render_utils import (
     build_global_config_debug_lines,
     load_global_config,
     render_global_config,
-    render_global_config_if_missing,
     render_stack_configs,
 )
 
@@ -1158,17 +1157,18 @@ def ensure_network(network_name):
         success(f"Network '{network_name}' already exists")
 
 
-def assert_devcontainer_connected_to_network(network_name):
-    """Assert that the devcontainer is connected to the deployment network.
-    
+def assert_devcontainer_connected_to_network(network_name, auto_connect: bool = True):
+    """Ensure the devcontainer is connected to the deployment network.
+
     This is CRITICAL before starting containers to ensure services are accessible
     from the devcontainer for development and debugging.
-    
+
     Args:
         network_name: Docker network name to verify connection to
-    
+        auto_connect: Whether to attach the devcontainer when missing
+
     Raises:
-        SystemExit: If devcontainer is not connected to network
+        SystemExit: If devcontainer connection cannot be established
     """
     try:
         if os.environ.get('IS_DEVCONTAINER') != '1':
@@ -1181,10 +1181,10 @@ def assert_devcontainer_connected_to_network(network_name):
                 "DEVCONTAINER_NAME is not set. "
                 "Run: ciu --generate-env and source .env.ciu."
             )
-        assert container_name is not None
+            sys.exit(1)
+
         info(f"Checking devcontainer network connection: {container_name}")
-        
-        # Check if devcontainer is connected to network
+
         result = subprocess.run(
             [
                 "docker",
@@ -1197,32 +1197,51 @@ def assert_devcontainer_connected_to_network(network_name):
             capture_output=True,
             text=True
         )
-        
-        if container_name not in result.stdout:
-            error(f"CRITICAL: Devcontainer '{container_name}' is NOT connected to network '{network_name}'")
-            error("")
-            error("This will prevent service access from devcontainer (e.g., curl http://vault:8200)")
-            error("")
-            error("To fix:")
-            error(f"  1. Run: docker network connect {network_name} {container_name}")
-            error(f"  2. Or rebuild devcontainer (post-create.sh will auto-connect)")
-            error("")
+
+        if container_name not in result.stdout.split():
+            if auto_connect:
+                info(f"Connecting devcontainer '{container_name}' to '{network_name}'")
+                connect = subprocess.run(
+                    ["docker", "network", "connect", network_name, container_name],
+                    capture_output=True,
+                    text=True
+                )
+                if connect.returncode != 0:
+                    error(
+                        f"Failed to connect devcontainer to '{network_name}': {connect.stderr.strip()}"
+                    )
+                    sys.exit(1)
+
+                result = subprocess.run(
+                    [
+                        "docker",
+                        "network",
+                        "inspect",
+                        network_name,
+                        "--format",
+                        "{{range .Containers}}{{.Name}} {{end}}",
+                    ],
+                    capture_output=True,
+                    text=True
+                )
+            else:
+                error(
+                    f"Devcontainer '{container_name}' is not connected to '{network_name}' and auto-connect is disabled"
+                )
+                sys.exit(1)
+
+        if container_name not in result.stdout.split():
+            error(
+                f"CRITICAL: Devcontainer '{container_name}' is NOT connected to network '{network_name}'"
+            )
             error("Deployment cannot continue without devcontainer network connectivity.")
             sys.exit(1)
-        
+
         success(f"✓ Devcontainer connected to '{network_name}'")
-        
+
     except Exception as e:
         error(f"Failed to verify devcontainer network connection: {e}")
         sys.exit(1)
-
-
-# Function removed: connect_devcontainer_to_network()
-# Devcontainer network connection is now handled by .devcontainer/post-create.sh
-# This provides better developer experience:
-# - Auto-connection on devcontainer creation
-# - Network name derived from .env.ciu (DOCKER_NETWORK_INTERNAL)
-# - No dependency on orchestrator running
 # - Works immediately after container rebuild
 
 
@@ -2589,6 +2608,34 @@ def render_all_configs(
 
     render_stack_configs(stack_paths, global_config, preserve_state=True)
 
+
+def ensure_global_config_rendered(
+    repo_root: Path,
+    _python_exe: str,
+    deployment_phases: list[dict]
+) -> dict:
+    """Ensure ciu-global.toml and stack ciu.toml files are rendered.
+
+    Returns the loaded global configuration.
+    """
+    global_config = render_global_config(repo_root)
+
+    stack_paths: set[Path] = set()
+    for phase in deployment_phases:
+        for service in phase.get('services', []):
+            if not service.get('enabled', True):
+                continue
+            service_path = service.get('path')
+            if not service_path:
+                continue
+            stack_paths.add(repo_root / service_path)
+
+    if stack_paths:
+        info(f"Ensuring ciu.toml for {len(stack_paths)} stack(s)")
+        render_stack_configs(stack_paths, global_config, preserve_state=True)
+
+    return global_config
+
 # Registry deployment is now handled by:
 # 1. CIU validates deploy.registry.url (empty for local, non-empty for external)
 # 2. Deployment phases include registry service if needed
@@ -2803,6 +2850,12 @@ Examples:
     %(prog)s --deploy --healthcheck       # Deploy then check health (internal + external)
     %(prog)s --deploy --healthcheck internal  # Deploy then check internal health only
     %(prog)s --deploy --healthcheck external  # Deploy then check external routes only
+
+Shared functionality:
+    - Uses .env.ciu for REPO_ROOT, PHYSICAL_REPO_ROOT, and DOCKER_NETWORK_INTERNAL.
+    - Ensures .env.ciu is generated when missing (use --generate-env to refresh).
+        - Renders TOML with INSTANCE_ID-based values and (when enabled) connects
+            devcontainers to DOCKER_NETWORK_INTERNAL before running deploy actions.
         """
     )
     
@@ -2851,6 +2904,21 @@ Examples:
                              help='Generate .env.ciu with autodetected values')
     option_group.add_argument('--update-cert-permission', action='store_true',
                              help='Update Let\'s Encrypt cert permissions (requires root)')
+    network_group = parser.add_mutually_exclusive_group()
+    network_group.add_argument(
+        '--auto-connect-network',
+        dest='auto_connect_network',
+        action='store_true',
+        default=None,
+        help='Auto-connect devcontainer to DOCKER_NETWORK_INTERNAL (override config)'
+    )
+    network_group.add_argument(
+        '--no-auto-connect-network',
+        dest='auto_connect_network',
+        action='store_false',
+        default=None,
+        help='Disable devcontainer network auto-connect (override config)'
+    )
     option_group.add_argument(
         '--version',
         action='version',
@@ -2940,14 +3008,15 @@ Examples:
     os.chdir(repo_root)
     info(f"Working directory: {repo_root}")
 
-    # Ensure global config exists before loading
-    render_global_config_if_missing(repo_root)
-
-    # Load global configuration
-    global_config = load_global_config(repo_root)
+    # Render global configuration to resolve INSTANCE_ID-based values
+    global_config = render_global_config(repo_root)
     set_debug_enabled(global_config.get('deploy', {}).get('log_level'))
     for line in build_global_config_debug_lines(global_config):
         debug(line)
+
+    auto_connect_setting = global_config.get('ciu', {}).get('auto_connect_network', True)
+    if args.auto_connect_network is not None:
+        auto_connect_setting = args.auto_connect_network
 
     # Debug: Print workspace environment values
     info("="*70)
@@ -2974,6 +3043,8 @@ Examples:
         error("CRITICAL: DOCKER_NETWORK_INTERNAL not set in .env.ciu")
         error("Run: ciu --generate-env and source .env.ciu")
         sys.exit(1)
+
+    python_exe = get_python_executable(repo_root)
     
     # Handle --list-groups (exit immediately after printing)
     if args.list_groups:
@@ -3103,7 +3174,7 @@ Examples:
                 ensure_network(network_name)
                 
                 # Step 1: CRITICAL - Assert devcontainer is connected to network
-                assert_devcontainer_connected_to_network(network_name)
+                assert_devcontainer_connected_to_network(network_name, auto_connect=auto_connect_setting)
                 
                 if enabled_service_slugs:
                     info("Deployment configuration:")

@@ -20,9 +20,7 @@ required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
 env = { BUILD_AUTO_INCREMENT = "1" }
 
 commands = [
-  { label = "pwmcp: build stack bundle", argv = ["python3", "release-stack-bundle.py"], cwd = "." },
   { label = "pwmcp: push images", argv = ["docker", "buildx", "bake", "all", "--push"], cwd = "." },
-  { label = "pwmcp: upload release assets", argv = ["python3", "upload-release-assets.py"], cwd = "." },
 ]
 
 [steps.push-images.login]

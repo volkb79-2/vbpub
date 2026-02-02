@@ -37,11 +37,11 @@ variable "OCI_SOURCE" {
 }
 
 variable "OCI_DOCUMENTATION" {
-  default = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/tree/main/vsc-devcontainer"
+  default = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/tree/main/modern-debian-tools-python-debug"
 }
 
 variable "OCI_URL" {
-  default = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/tree/main/vsc-devcontainer"
+  default = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/tree/main/modern-debian-tools-python-debug"
 }
 
 variable "OCI_LICENSES" {
@@ -135,6 +135,10 @@ variable "CIU_LATEST_ASSET_NAME" {
 variable "CIU_INSTALL_REQUIRED" {
   default = "false"
 }
+variable "DEVCONTAINERS_RELEASE_STABLE" {
+  default = ""
+}
+
 
 function "base_tag" {
   params = [debian, python]
@@ -234,7 +238,6 @@ target "trixie-py313" {
   tags = [base_tag("trixie", "3.13"), base_latest_tag("trixie", "3.13")]
 }
 
-
 target "trixie-py314" {
   inherits = ["base"]
   args = {
@@ -245,32 +248,15 @@ target "trixie-py314" {
   tags = [base_tag("trixie", "3.14"), base_latest_tag("trixie", "3.14"), "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug:latest"]
 }
 
-target "bookworm-py311-vsc" {
-  inherits = ["base"]
-  args = {
-    BASE_IMAGE = "mcr.microsoft.com/devcontainers/python:1-3.11-bookworm"
-    PYTHON_VERSION = "3.11"
-    DEBIAN_VERSION = "bookworm"
-  }
-  tags = [vsc_tag("bookworm", "3.11"), vsc_latest_tag("bookworm", "3.11")]
-}
 
-target "bookworm-py313-vsc" {
-  inherits = ["base"]
-  args = {
-    BASE_IMAGE = "mcr.microsoft.com/devcontainers/python:1-3.13-bookworm"
-    PYTHON_VERSION = "3.13"
-    DEBIAN_VERSION = "bookworm"
-  }
-  tags = [vsc_tag("bookworm", "3.13"), vsc_latest_tag("bookworm", "3.13")]
-}
 
 target "trixie-py311-vsc" {
   inherits = ["base"]
   args = {
-    BASE_IMAGE = "mcr.microsoft.com/devcontainers/python:1-3.11-trixie"
+    BASE_IMAGE = "mcr.microsoft.com/devcontainers/python:3.11-trixie"
     PYTHON_VERSION = "3.11"
     DEBIAN_VERSION = "trixie"
+    DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
   }
   tags = [vsc_tag("trixie", "3.11"), vsc_latest_tag("trixie", "3.11")]
 }
@@ -278,32 +264,36 @@ target "trixie-py311-vsc" {
 target "trixie-py313-vsc" {
   inherits = ["base"]
   args = {
-    BASE_IMAGE = "mcr.microsoft.com/devcontainers/python:1-3.13-trixie"
+    BASE_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-trixie"
     PYTHON_VERSION = "3.13"
     DEBIAN_VERSION = "trixie"
+    DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
   }
   tags = [vsc_tag("trixie", "3.13"), vsc_latest_tag("trixie", "3.13")]
 }
 
+# to manually extract the used devcontainer version:
+# `docker image inspect mcr.microsoft.com/devcontainers/python:3.14-trixie --format '{{ index .Config.Labels "dev.containers.release" }}'` 
 target "trixie-py314-vsc" {
   inherits = ["base"]
   args = {
-    BASE_IMAGE = "mcr.microsoft.com/devcontainers/python:1-3.14-trixie"
+    BASE_IMAGE = "mcr.microsoft.com/devcontainers/python:3.14-trixie"
     PYTHON_VERSION = "3.14"
     DEBIAN_VERSION = "trixie"
+    DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
   }
   tags = [vsc_tag("trixie", "3.14"), vsc_latest_tag("trixie", "3.14"), "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:latest"]
 }
 
+
+# currently missing newer versions for devcontainer, run `./check-mcr-devcontainer-tags.py` to see what is available
 group "all" {
   targets = [
     # "bookworm-py311",
     # "bookworm-py313",
     "trixie-py311",
-    "trixie-py313",
+    #"trixie-py313",
     "trixie-py314",
-    "trixie-py311-vsc",
-    "trixie-py313-vsc",
-    "trixie-py314-vsc",
+    "trixie-py314-vsc"
   ]
 }

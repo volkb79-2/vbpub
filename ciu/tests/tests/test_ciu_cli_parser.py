@@ -27,6 +27,7 @@ class TestParseArgumentsDefaults:
         assert args.yes is False
         assert args.reset is False
         assert args.define_root is None
+        assert args.auto_connect_network is None
 
 
 class TestParseArgumentsFlags:
@@ -68,6 +69,14 @@ class TestParseArgumentsFlags:
         assert args.generate_env is True
         assert args.reset is True
         assert args.yes is True
+        assert args.auto_connect_network is None
+
+    def test_auto_connect_flags(self):
+        args = parse_arguments(["--auto-connect-network"])
+        assert args.auto_connect_network is True
+
+        args = parse_arguments(["--no-auto-connect-network"])
+        assert args.auto_connect_network is False
 
     def test_version_flag_exits(self, capsys):
         with pytest.raises(SystemExit) as exc:

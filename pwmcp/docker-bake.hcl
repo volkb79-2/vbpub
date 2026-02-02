@@ -31,11 +31,11 @@ variable "OCI_TITLE_CLIENT" {
 }
 
 variable "OCI_DESCRIPTION_SERVER" {
-  default = "PWMCP server with WebSocket + MCP + health endpoints for browser automation." 
+  default = ""
 }
 
 variable "OCI_DESCRIPTION_CLIENT" {
-  default = "PWMCP client container with extended Python tooling for test automation." 
+  default = ""
 }
 
 variable "OCI_SOURCE" {
@@ -55,7 +55,7 @@ variable "OCI_LICENSES" {
 }
 
 variable "OCI_VENDOR" {
-  default = "volkb79-2"
+  default = ""
 }
 
 variable "OCI_VERSION" {
