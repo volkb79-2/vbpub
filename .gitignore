@@ -236,4 +236,5 @@ scripts/*.key
 *.pem
 *.key
 
-
+# Generated scaling diagnostic reports
+scaling-report-*.md
