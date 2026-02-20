@@ -178,6 +178,23 @@ def read_file(path: str) -> str:
         return ""
 
 
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from terminal output."""
+    return re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", text or "")
+
+
+def parse_numeric_scalar(text: str) -> Optional[float]:
+    """Parse a plain numeric scalar (optionally prefixed by uint32) safely."""
+    cleaned = strip_ansi(text).strip()
+    m = re.match(r"^(?:uint32\s+)?([0-9]+(?:\.[0-9]+)?)$", cleaned)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # OS / distro detection
 # ---------------------------------------------------------------------------
@@ -603,7 +620,7 @@ def detect_current_scale(
     if command_exists("wlr-randr"):
         res = run_user_cmd(["wlr-randr"])
         if res["ok"]:
-            m = re.search(r"[Ss]cale:\s*([0-9.]+)", res["stdout"])
+            m = re.search(r"[Ss]cale:\s*([0-9.]+)", strip_ansi(res["stdout"]))
             if m:
                 return float(m.group(1)), "wlr-randr"
 
@@ -611,24 +628,23 @@ def detect_current_scale(
     if command_exists("kscreen-doctor"):
         res = run_user_cmd(["kscreen-doctor", "--outputs"])
         if res["ok"]:
-            m = re.search(r"Scale:\s*([0-9.]+)", res["stdout"])
+            m = re.search(r"Scale:\s*([0-9.]+)", strip_ansi(res["stdout"]))
             if m:
                 return float(m.group(1)), "kscreen-doctor"
 
     # 3. gsettings (GNOME integer scale)
-    if command_exists("gsettings"):
+    if command_exists("gsettings") and any(x in de for x in ("gnome", "ubuntu", "cinnamon")):
         res = run_user_cmd(["gsettings", "get", "org.gnome.desktop.interface", "scaling-factor"])
         if res["ok"]:
-            m = re.search(r"(\d+)", res["stdout"])
-            if m and int(m.group(1)) >= 1:
-                factor = float(m.group(1))
+            factor = parse_numeric_scalar(res["stdout"])
+            if factor is not None and factor >= 1:
                 res2 = run_user_cmd([
                     "gsettings", "get", "org.gnome.desktop.interface", "text-scaling-factor",
                 ])
                 if res2["ok"]:
-                    m2 = re.search(r"([0-9.]+)", res2["stdout"])
-                    if m2 and float(m2.group(1)) != 1.0:
-                        return round(factor * float(m2.group(1)), 4), "gsettings (integer x text-scaling-factor)"
+                    text_factor = parse_numeric_scalar(res2["stdout"])
+                    if text_factor is not None and text_factor != 1.0:
+                        return round(factor * text_factor, 4), "gsettings (integer x text-scaling-factor)"
                 return factor, "gsettings scaling-factor"
 
     # 4. kreadconfig5 (KDE Plasma 5)
@@ -1178,19 +1194,49 @@ def analyze_scaling_pipeline(
 # FPS benchmarking
 # ---------------------------------------------------------------------------
 
-def _run_glmark2(run_user_cmd, duration_s: int = 15) -> tuple:
+def _resolve_fps_mode(fps_mode: str, session_type: str, desktop: str) -> str:
+    if fps_mode != "auto":
+        return fps_mode
+    session_lc = (session_type or "").lower()
+    desktop_lc = (desktop or "").lower()
+    if "wayland" in session_lc and ("kde" in desktop_lc or "plasma" in desktop_lc):
+        return "windowed"
+    return "fullscreen"
+
+
+def _build_glmark_cmd(tool: str, resolved_mode: str, fps_window_size: str) -> list[str]:
+    cmd = [tool]
+    if resolved_mode == "fullscreen":
+        cmd.append("--fullscreen")
+    elif resolved_mode == "offscreen":
+        cmd.append("--off-screen")
+    elif resolved_mode == "windowed":
+        cmd.extend(["--size", fps_window_size])
+    else:
+        cmd.append("--fullscreen")
+    return cmd
+
+
+def _run_glmark2(
+    run_user_cmd,
+    duration_s: int = 15,
+    resolved_mode: str = "fullscreen",
+    fps_window_size: str = "1920x1080",
+) -> tuple:
     """Run glmark2(-wayland). Returns (score_like_value, tool)."""
+    
     for tool in ("glmark2-wayland", "glmark2"):
         if not command_exists(tool):
             continue
         # glmark2 full suite can take long; parse partial output on timeout.
-        res = run_user_cmd([tool, "--fullscreen"], duration_s + 5)
+        cmd = _build_glmark_cmd(tool, resolved_mode, fps_window_size)
+        res = run_user_cmd(cmd, duration_s + 5)
         combined = "\n".join([res.get("stdout", ""), res.get("stderr", "")])
         if res.get("ok") or res.get("returncode") in (0, 124):
             for line in combined.splitlines():
                 m = re.search(r"glmark2 Score:\s*(\d+)", line, re.IGNORECASE)
                 if m:
-                    return float(m.group(1)), tool
+                    return float(m.group(1)), f"{tool} ({resolved_mode})"
 
             # Fallback: compute scene FPS average from partial benchmark output.
             fps_vals = []
@@ -1202,11 +1248,16 @@ def _run_glmark2(run_user_cmd, duration_s: int = 15) -> tuple:
                     except ValueError:
                         pass
             if fps_vals:
-                return round(sum(fps_vals) / len(fps_vals), 1), f"{tool} (partial)"
+                return round(sum(fps_vals) / len(fps_vals), 1), f"{tool} ({resolved_mode}, partial)"
     return 0.0, ""
 
 
-def _run_glmark2_with_hud(run_user_cmd, duration_s: int = 15) -> tuple:
+def _run_glmark2_with_hud(
+    run_user_cmd,
+    duration_s: int = 15,
+    resolved_mode: str = "fullscreen",
+    fps_window_size: str = "1920x1080",
+) -> tuple:
     """Run glmark2 via MangoHud wrapper when available."""
     if not command_exists("mangohud"):
         return 0.0, ""
@@ -1214,13 +1265,14 @@ def _run_glmark2_with_hud(run_user_cmd, duration_s: int = 15) -> tuple:
     for tool in ("glmark2-wayland", "glmark2"):
         if not command_exists(tool):
             continue
-        res = run_user_cmd(["mangohud", tool, "--fullscreen"], timeout=duration_s + 5)
+        glmark_cmd = _build_glmark_cmd(tool, resolved_mode, fps_window_size)
+        res = run_user_cmd(["mangohud"] + glmark_cmd, timeout=duration_s + 5)
         combined = "\n".join([res.get("stdout", ""), res.get("stderr", "")])
         if res.get("ok") or res.get("returncode") in (0, 124):
             for line in combined.splitlines():
                 m = re.search(r"glmark2 Score:\s*(\d+)", line, re.IGNORECASE)
                 if m:
-                    return float(m.group(1)), f"mangohud+{tool}"
+                    return float(m.group(1)), f"mangohud+{tool} ({resolved_mode})"
 
             fps_vals = []
             for line in combined.splitlines():
@@ -1231,11 +1283,16 @@ def _run_glmark2_with_hud(run_user_cmd, duration_s: int = 15) -> tuple:
                     except ValueError:
                         pass
             if fps_vals:
-                return round(sum(fps_vals) / len(fps_vals), 1), f"mangohud+{tool} (partial)"
+                return round(sum(fps_vals) / len(fps_vals), 1), f"mangohud+{tool} ({resolved_mode}, partial)"
     return 0.0, ""
 
 
-def _run_glmark2_with_gallium_hud(run_user_cmd, duration_s: int = 15) -> tuple:
+def _run_glmark2_with_gallium_hud(
+    run_user_cmd,
+    duration_s: int = 15,
+    resolved_mode: str = "fullscreen",
+    fps_window_size: str = "1920x1080",
+) -> tuple:
     """Run glmark2 with Mesa GALLIUM_HUD enabled as fallback when MangoHud is unavailable."""
     for tool in ("glmark2-wayland", "glmark2"):
         if not command_exists(tool):
@@ -1244,13 +1301,14 @@ def _run_glmark2_with_gallium_hud(run_user_cmd, duration_s: int = 15) -> tuple:
             "GALLIUM_HUD": "simple,fps",
             "GALLIUM_HUD_PERIOD": "0.5",
         }
-        res = run_user_cmd([tool, "--fullscreen"], timeout=duration_s + 5, extra_env=env)
+        cmd = _build_glmark_cmd(tool, resolved_mode, fps_window_size)
+        res = run_user_cmd(cmd, timeout=duration_s + 5, extra_env=env)
         combined = "\n".join([res.get("stdout", ""), res.get("stderr", "")])
         if res.get("ok") or res.get("returncode") in (0, 124):
             for line in combined.splitlines():
                 m = re.search(r"glmark2 Score:\s*(\d+)", line, re.IGNORECASE)
                 if m:
-                    return float(m.group(1)), f"gallium_hud+{tool}"
+                    return float(m.group(1)), f"gallium_hud+{tool} ({resolved_mode})"
 
             fps_vals = []
             for line in combined.splitlines():
@@ -1261,7 +1319,7 @@ def _run_glmark2_with_gallium_hud(run_user_cmd, duration_s: int = 15) -> tuple:
                     except ValueError:
                         pass
             if fps_vals:
-                return round(sum(fps_vals) / len(fps_vals), 1), f"gallium_hud+{tool} (partial)"
+                return round(sum(fps_vals) / len(fps_vals), 1), f"gallium_hud+{tool} ({resolved_mode}, partial)"
     return 0.0, ""
 
 
@@ -1296,17 +1354,43 @@ def _run_glxgears(duration_s: int = 5) -> float:
     return round(sum(fps_vals) / len(fps_vals), 1) if fps_vals else 0.0
 
 
-def measure_fps(run_user_cmd, allow_glxgears_fallback: bool = False) -> tuple:
+def measure_fps(
+    run_user_cmd,
+    allow_glxgears_fallback: bool = False,
+    fps_mode: str = "auto",
+    fps_window_size: str = "1920x1080",
+    session_type: str = "",
+    desktop: str = "",
+) -> tuple:
     """Measure FPS using best available tool. Returns (fps, tool_name)."""
-    fps, tool = _run_glmark2_with_hud(run_user_cmd)
+    resolved_mode = _resolve_fps_mode(fps_mode, session_type, desktop)
+    trace(
+        "measure_fps config: "
+        f"requested_mode={fps_mode}, resolved_mode={resolved_mode}, "
+        f"window_size={fps_window_size}"
+    )
+
+    fps, tool = _run_glmark2_with_hud(
+        run_user_cmd,
+        resolved_mode=resolved_mode,
+        fps_window_size=fps_window_size,
+    )
     if fps > 0:
         return fps, tool
 
-    fps, tool = _run_glmark2_with_gallium_hud(run_user_cmd)
+    fps, tool = _run_glmark2_with_gallium_hud(
+        run_user_cmd,
+        resolved_mode=resolved_mode,
+        fps_window_size=fps_window_size,
+    )
     if fps > 0:
         return fps, tool
 
-    fps, tool = _run_glmark2(run_user_cmd)
+    fps, tool = _run_glmark2(
+        run_user_cmd,
+        resolved_mode=resolved_mode,
+        fps_window_size=fps_window_size,
+    )
     if fps > 0:
         return fps, tool
     if allow_glxgears_fallback:
@@ -1406,7 +1490,12 @@ def gather_nvidia_activation_diagnostics(
         "relevant": bool(nvidia_gpu),
         "nouveau_active": nouveau_active,
         "nvidia_module_active": nvidia_module_active,
+        "recommended_package": "",
+        "candidate_packages": [],
+        "suited_package": "",
         "checks": {},
+        "simulations": {},
+        "command_block": [],
         "options": [],
         "notes": [],
     }
@@ -1452,6 +1541,8 @@ def gather_nvidia_activation_diagnostics(
         }
 
     if base_distro in ("ubuntu", "debian"):
+        recommended_package = ""
+        candidate_packages = []
         if command_exists("ubuntu-drivers"):
             ud = run_user_cmd(["ubuntu-drivers", "devices"], timeout=40)
             diag["checks"]["ubuntu_drivers_devices"] = {
@@ -1459,6 +1550,16 @@ def gather_nvidia_activation_diagnostics(
                 "stdout": ud.get("stdout", "")[:3000],
                 "stderr": ud.get("stderr", "")[:1000],
             }
+            if ud.get("ok"):
+                for line in ud.get("stdout", "").splitlines():
+                    m = re.search(r"driver\s*:\s*([^\s]+)", line)
+                    if not m:
+                        continue
+                    pkg = m.group(1).strip()
+                    if pkg not in candidate_packages:
+                        candidate_packages.append(pkg)
+                    if "recommended" in line.lower():
+                        recommended_package = pkg
 
         installed_nvidia_packages = []
         if command_exists("dpkg"):
@@ -1489,6 +1590,41 @@ def gather_nvidia_activation_diagnostics(
                 "branches": sorted(set(available_branches))[:20],
             }
 
+        def _highest_driver_branch(pkgs: list[str]) -> str:
+            best_name = ""
+            best_num = -1
+            for pkg in pkgs:
+                m = re.match(r"nvidia-driver-(\d+)$", pkg)
+                if not m:
+                    continue
+                try:
+                    num = int(m.group(1))
+                except ValueError:
+                    continue
+                if num > best_num:
+                    best_num = num
+                    best_name = pkg
+            return best_name
+
+        suited_package = recommended_package or _highest_driver_branch(
+            sorted(set(candidate_packages + available_branches))
+        )
+
+        diag["recommended_package"] = recommended_package
+        diag["candidate_packages"] = sorted(set(candidate_packages))[:30]
+        diag["suited_package"] = suited_package
+
+        to_simulate = [x for x in [recommended_package, suited_package] if x]
+        for pkg in sorted(set(to_simulate)):
+            if command_exists("apt-get"):
+                sim = run_user_cmd(["apt-get", "-s", "install", pkg], timeout=45)
+                diag["simulations"][f"apt_sim_{pkg}"] = {
+                    "ok": sim.get("ok", False),
+                    "returncode": sim.get("returncode"),
+                    "stdout_excerpt": sim.get("stdout", "")[:2500],
+                    "stderr_excerpt": sim.get("stderr", "")[:800],
+                }
+
     options = []
     options.append("Option A (quick check): reboot and verify modules with: lsmod | grep -E 'nvidia|nouveau'")
 
@@ -1499,7 +1635,11 @@ def gather_nvidia_activation_diagnostics(
 
     installed_pkgs = diag.get("checks", {}).get("installed_nvidia_packages", {}).get("packages", [])
     if base_distro in ("ubuntu", "debian"):
-        if not installed_pkgs:
+        if diag.get("suited_package"):
+            options.append(
+                f"Option C (suited package): install '{diag.get('suited_package')}' then reboot"
+            )
+        if not installed_pkgs and not diag.get("suited_package"):
             options.append(
                 "Option C (explicit install): choose an available branch and install it (example: sudo apt install nvidia-driver-550), then sudo update-initramfs -u && sudo reboot"
             )
@@ -1516,8 +1656,73 @@ def gather_nvidia_activation_diagnostics(
     if not nvidia_module_active:
         options.append("Option E (diagnostics): collect dmesg/journal errors for nvidia/nouveau module load failures")
 
+    diag["command_block"] = build_nvidia_command_block(diag, base_distro)
     diag["options"] = options
     return diag
+
+
+def build_nvidia_command_block(diag: dict, base_distro: str) -> list[str]:
+    """Create practical command block users can copy/paste."""
+    if base_distro not in ("ubuntu", "debian"):
+        return []
+
+    suited = (diag or {}).get("suited_package", "")
+    cmds = [
+        "ubuntu-drivers devices",
+        "lsmod | grep -E 'nvidia|nouveau'",
+        "mokutil --sb-state",
+    ]
+    if suited:
+        cmds.append(f"sudo apt-get install -y {suited}")
+    else:
+        cmds.append("apt-cache search '^nvidia-driver-[0-9]+'")
+        cmds.append("sudo apt-get install -y nvidia-driver-550")
+    cmds += [
+        "sudo update-initramfs -u",
+        "sudo reboot",
+        "# after reboot:",
+        "nvidia-smi",
+        "lsmod | grep -E 'nvidia|nouveau'",
+        "journalctl -b --no-pager | grep -Ei 'nvidia|nouveau|dkms|secure boot|module'",
+    ]
+    return cmds
+
+
+def gather_journalctl_debug(run_user_cmd, journalctl_lines: int = 400) -> dict:
+    """Collect journalctl slices for troubleshooting in markdown report."""
+    data = {
+        "enabled": True,
+        "available": command_exists("journalctl"),
+        "lines": int(max(50, journalctl_lines)),
+        "sections": {},
+        "notes": [],
+    }
+    if not data["available"]:
+        data["notes"].append("journalctl command not available")
+        return data
+
+    lines_arg = str(data["lines"])
+    commands = {
+        "boot_tail": ["journalctl", "-b", "--no-pager", "-n", lines_arg],
+        "warnings_and_errors": ["journalctl", "-b", "--no-pager", "-p", "warning", "-n", lines_arg],
+        "graphics_filter": [
+            "journalctl", "-b", "--no-pager", "-n", lines_arg,
+            "--grep", "nvidia|nouveau|kwin|xwayland|drm|gpu|glmark|mangohud",
+        ],
+    }
+    for key, cmd in commands.items():
+        res = run_user_cmd(cmd, timeout=45)
+        if (not res.get("ok")) and key == "graphics_filter":
+            # Some journalctl versions are stricter about --grep; keep graceful fallback.
+            res = run_user_cmd(["journalctl", "-b", "--no-pager", "-n", lines_arg], timeout=45)
+        data["sections"][key] = {
+            "ok": res.get("ok", False),
+            "cmd": " ".join(cmd),
+            "returncode": res.get("returncode"),
+            "stdout": (res.get("stdout", "") or "")[:120000],
+            "stderr": (res.get("stderr", "") or "")[:5000],
+        }
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -1826,6 +2031,7 @@ def print_console_report(
     assessment, conclusions,
     nvidia_instructions,
     nvidia_activation_diagnostics,
+    journalctl_debug,
 ) -> None:
     matrix_has_fractional = any(
         abs(float(run.get("requested_scale", 1.0)) - round(float(run.get("requested_scale", 1.0)))) > 1e-6
@@ -1907,6 +2113,13 @@ def print_console_report(
             _bullet("Available branches", ", ".join(branches[:8]))
         for opt in nvidia_activation_diagnostics.get("options", []):
             print(f"    {opt}")
+        cmd_block = nvidia_activation_diagnostics.get("command_block", [])
+        if cmd_block:
+            print("    Suggested command block:")
+            print("    ```bash")
+            for cmd in cmd_block:
+                print(f"    {cmd}")
+            print("    ```")
 
     _section("Pipeline Analysis")
     _bullet("Pipeline",            pipeline_analysis.get("pipeline_class", "unknown"))
@@ -1948,6 +2161,15 @@ def print_console_report(
     for note in compositor_diagnostics.get("notes", []):
         print(f"    note: {note}")
 
+    _section("Journalctl Debug Capture")
+    _bullet("Enabled", "yes" if journalctl_debug.get("enabled") else "no")
+    _bullet("journalctl available", "yes" if journalctl_debug.get("available") else "no")
+    _bullet("Captured lines", journalctl_debug.get("lines", "n/a"))
+    for sec_name, sec_data in journalctl_debug.get("sections", {}).items():
+        _bullet(f"Section {sec_name}", "ok" if sec_data.get("ok") else "failed")
+        if sec_data.get("stderr"):
+            print(f"    stderr: {sec_data.get('stderr')[:200]}")
+
     _section("Efficiency & Performance Assessment")
     print(assessment)
 
@@ -1982,6 +2204,7 @@ def write_markdown_report(
     nvidia_instructions,
     nvidia_activation_diagnostics,
     mem_breakdown, ps_output: Optional[str],
+    journalctl_debug,
     trace_log,
     console_log,
 ) -> None:
@@ -2077,6 +2300,9 @@ def write_markdown_report(
         options = nvidia_activation_diagnostics.get("options", [])
         if options:
             lines += ["", "### NVIDIA Recovery Options"] + [f"- {opt}" for opt in options]
+        command_block = nvidia_activation_diagnostics.get("command_block", [])
+        if command_block:
+            lines += ["", "### NVIDIA Suggested Commands", "```bash"] + command_block + ["```"]
     lines += [
         "",
         "```json",
@@ -2130,6 +2356,27 @@ def write_markdown_report(
     ]
     if ps_output:
         lines += ["", "## Process List (ps axu)", "```text", ps_output, "```"]
+
+    lines += ["", "## Journalctl Debug"]
+    lines += [
+        f"- Enabled: {journalctl_debug.get('enabled')}",
+        f"- journalctl available: {journalctl_debug.get('available')}",
+        f"- Captured lines: {journalctl_debug.get('lines')}",
+    ]
+    for note in journalctl_debug.get("notes", []):
+        lines.append(f"- Note: {note}")
+    for sec_name, sec_data in journalctl_debug.get("sections", {}).items():
+        lines += [
+            "",
+            f"### journalctl section: {sec_name}",
+            f"- Command: {sec_data.get('cmd', '')}",
+            f"- Success: {sec_data.get('ok')}",
+            "```text",
+            sec_data.get("stdout", "") or "(no output)",
+            "```",
+        ]
+        if sec_data.get("stderr"):
+            lines += ["```text", sec_data.get("stderr"), "```"]
 
     lines += [
         "",
@@ -2190,6 +2437,31 @@ def main() -> int:
         "--allow-glxgears-fallback", action="store_true",
         help="Allow glxgears fallback when glmark2 is unavailable (default: disabled).",
     )
+    parser.add_argument(
+        "--fps-mode",
+        choices=["auto", "fullscreen", "windowed", "offscreen"],
+        default="auto",
+        help=(
+            "glmark mode policy. auto picks a stable mode per desktop "
+            "(KDE Wayland -> windowed, others -> fullscreen)."
+        ),
+    )
+    parser.add_argument(
+        "--fps-window-size",
+        default="1920x1080",
+        help="Window size for --fps-mode windowed (default: 1920x1080).",
+    )
+    parser.add_argument(
+        "--journalctl-lines",
+        type=int,
+        default=400,
+        help="Number of lines per journalctl debug section in report (default: 400).",
+    )
+    parser.add_argument(
+        "--no-journalctl",
+        action="store_true",
+        help="Skip journalctl debug capture in report.",
+    )
     args = parser.parse_args()
     interactive = not args.non_interactive
     trace(f"main start: argv={sys.argv}")
@@ -2197,7 +2469,9 @@ def main() -> int:
         "options: "
         f"non_interactive={args.non_interactive}, fractional_scale={args.fractional_scale}, "
         f"scale_alias={args.scale}, mouse_test={args.mouse_test}, "
-        f"allow_glxgears_fallback={args.allow_glxgears_fallback}, output='{args.output}'"
+        f"allow_glxgears_fallback={args.allow_glxgears_fallback}, fps_mode={args.fps_mode}, "
+        f"fps_window_size={args.fps_window_size}, no_journalctl={args.no_journalctl}, "
+        f"journalctl_lines={args.journalctl_lines}, output='{args.output}'"
     )
 
     cprint(C_BLUE, "\n[*] Linux Desktop Scaling Diagnostics")
@@ -2341,6 +2615,10 @@ def main() -> int:
         fps_value, fps_used_tool = measure_fps(
             run_user_cmd,
             allow_glxgears_fallback=args.allow_glxgears_fallback,
+            fps_mode=args.fps_mode,
+            fps_window_size=args.fps_window_size,
+            session_type=session_type,
+            desktop=desktop,
         )
         used_mb, avail_mb = ram_snapshot()
         return {
@@ -2481,6 +2759,16 @@ def main() -> int:
             f"nouveau_active={nvidia_activation_diagnostics.get('nouveau_active')}"
         )
     mem_breakdown = summarize_memory_breakdown()
+    if args.no_journalctl:
+        journalctl_debug = {
+            "enabled": False,
+            "available": command_exists("journalctl"),
+            "lines": args.journalctl_lines,
+            "sections": {},
+            "notes": ["journalctl capture disabled by --no-journalctl"],
+        }
+    else:
+        journalctl_debug = gather_journalctl_debug(run_user_cmd, journalctl_lines=args.journalctl_lines)
 
     cpu_model = ""
     for line in read_file("/proc/cpuinfo").splitlines():
@@ -2509,6 +2797,7 @@ def main() -> int:
         assessment=assessment, conclusions=conclusions,
         nvidia_instructions=nvidia_instructions,
         nvidia_activation_diagnostics=nvidia_activation_diagnostics,
+        journalctl_debug=journalctl_debug,
     )
 
     # ---- Markdown report ----
@@ -2541,6 +2830,7 @@ def main() -> int:
         nvidia_instructions=nvidia_instructions,
         nvidia_activation_diagnostics=nvidia_activation_diagnostics,
         mem_breakdown=mem_breakdown, ps_output=ps_output,
+        journalctl_debug=journalctl_debug,
         trace_log=TRACE_LOG,
         console_log=CONSOLE_LOG,
     )

@@ -220,7 +220,14 @@ Options:
   --fractional-scale FACTOR
                        Fractional case in the 3-run matrix (default 1.25)
   --scale FACTOR       Deprecated alias for --fractional-scale
+  --fps-mode {auto,fullscreen,windowed,offscreen}
+                       glmark mode policy; auto uses KDE Wayland-safe windowed mode
+  --fps-window-size WxH
+                       Window size for --fps-mode windowed (default 1920x1080)
   --mouse-test         Enable libinput event capture (disabled by default)
+  --journalctl-lines N
+                       Number of lines captured per journalctl debug section
+  --no-journalctl      Disable journalctl capture in report
   --allow-glxgears-fallback
                        Use glxgears only if glmark2 is unavailable
   -h, --help           Show help and exit
@@ -240,6 +247,12 @@ python3 scripts/linux-desktop-analysis.py --fractional-scale 1.5
 
 # Enable mouse event capture explicitly
 python3 scripts/linux-desktop-analysis.py --mouse-test
+
+# Kubuntu/KDE-safe FPS sampling (avoid fullscreen)
+python3 scripts/linux-desktop-analysis.py --fps-mode windowed --fps-window-size 1920x1080
+
+# Keep report compact while still including journal diagnostics
+python3 scripts/linux-desktop-analysis.py --journalctl-lines 250
 ```
 
 ### Dependencies
@@ -268,10 +281,18 @@ Benchmark backend order (current implementation):
 3. plain `glmark2`,
 4. optional `glxgears` fallback only when enabled.
 
+glmark execution mode (current implementation):
+
+- `--fps-mode auto`: KDE Wayland defaults to `windowed`; others default to `fullscreen`.
+- `--fps-mode fullscreen`: explicit fullscreen benchmarking.
+- `--fps-mode windowed`: composited benchmark window with configurable size.
+- `--fps-mode offscreen`: off-screen rendering path (useful for stability triage).
+
 Notes:
 - HUD backends improve frame-time visibility for the benchmarked app.
 - They still do **not** directly measure global compositor present FPS for all desktop surfaces.
 - Script output now includes a dedicated **Compositor Diagnostics** section with strategy-specific probes.
+- Script output now includes dedicated **Journalctl Debug** sections for troubleshooting driver/compositor issues.
 
 All utilities are optional; the script degrades gracefully when any of
 them is absent.
