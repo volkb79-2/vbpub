@@ -2082,24 +2082,14 @@ def _run_glmark2_with_gallium_hud(
     return 0.0, ""
 
 
-def _run_glxgears(duration_s: int = 5) -> float:
-    """Run glxgears for duration_s seconds. Returns average FPS."""
+def _run_glxgears(run_user_cmd, duration_s: int = 5) -> float:
+    """Run glxgears for duration_s seconds in the active session env. Returns average FPS."""
     if not command_exists("glxgears"):
         return 0.0
     try:
-        proc = subprocess.Popen(
-            ["glxgears", "-info"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        time.sleep(duration_s + 1)
-        proc.terminate()
-        try:
-            out, _ = proc.communicate(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            out, _ = proc.communicate()
+        # Use timeout so the command terminates deterministically and keep session env via run_user_cmd.
+        res = run_user_cmd(["timeout", f"{max(2, duration_s)}s", "glxgears", "-info"], timeout=duration_s + 5)
+        out = "\n".join([res.get("stdout", ""), res.get("stderr", "")])
     except Exception:  # noqa: BLE001
         return 0.0
     fps_vals = []
@@ -2153,7 +2143,7 @@ def measure_fps(
     if fps > 0:
         return fps, tool
     if allow_glxgears_fallback:
-        fps = _run_glxgears()
+        fps = _run_glxgears(run_user_cmd)
         if fps > 0:
             return fps, "glxgears"
     return 0.0, "unavailable"
@@ -2756,7 +2746,9 @@ def assess_performance(
     elif target_fps is None:
         lines.append("No target-scale FPS collected (scale change skipped or unavailable).")
     elif baseline_fps == 0:
-        lines.append("FPS benchmark unavailable (glmark2 not accessible; optional glxgears fallback disabled).")
+        lines.append(
+            "FPS benchmark unavailable (glmark2/glxgears not accessible in the active desktop session)."
+        )
 
     if ram_total_mb >= 8192:
         lines.append(
@@ -2952,6 +2944,8 @@ def print_console_report(
         _bullet(f"{case_name} detected", f"{run.get('detected_scale')}x")
         _bullet(f"{case_name} fps", run.get("fps") if run.get("fps") else "n/a")
         _bullet(f"{case_name} tool", run.get("fps_tool") or "unavailable")
+        if run.get("benchmark_note"):
+            _bullet(f"{case_name} benchmark note", run.get("benchmark_note"))
         _bullet(f"{case_name} RAM used", f"{run.get('used_mb')} MB")
 
     _section("FPS Benchmark")
@@ -3255,6 +3249,7 @@ def write_markdown_report(
             f"- {case_name} detected: {run.get('detected_scale')}x",
             f"- {case_name} FPS: {run.get('fps') if run.get('fps') else 'n/a'}",
             f"- {case_name} tool: {run.get('fps_tool') or 'unavailable'}",
+            f"- {case_name} benchmark note: {run.get('benchmark_note') or 'none'}",
             f"- {case_name} RAM used: {run.get('used_mb')} MB",
             "",
         ]
@@ -3566,7 +3561,7 @@ def main() -> int:
     strategy_tools = fps_strategy.get("tools", []) if isinstance(fps_strategy, dict) else []
     wanted = [
         "lspci", "lshw", "glxinfo", "vulkaninfo", "glmark2", "mangohud",
-        "xlsclients", "libinput",
+        "glxgears", "xlsclients", "libinput",
     ] + [tool for tool in strategy_tools if tool]
     deduped_wanted = []
     seen = set()
@@ -3691,11 +3686,23 @@ def main() -> int:
     }
     test_runs: dict = {}
 
-    def run_measurement_case(case_name: str, requested_scale: float, switch_method: str, status: str = "ok") -> dict:
+    def run_measurement_case(
+        case_name: str,
+        requested_scale: float,
+        switch_method: str,
+        status: str = "ok",
+        benchmark_required: bool = False,
+    ) -> dict:
         detected_scale, detected_src = detect_current_scale(session_env, desktop, run_user_cmd, home_dir)
+        auto_glxgears_fallback = bool(args.allow_glxgears_fallback or benchmark_required)
+        if benchmark_required and not args.allow_glxgears_fallback:
+            trace(
+                f"benchmark fallback auto-enabled for case={case_name} "
+                "because scale switch succeeded and primary benchmark was unavailable"
+            )
         fps_value, fps_used_tool = measure_fps(
             run_user_cmd,
-            allow_glxgears_fallback=args.allow_glxgears_fallback,
+            allow_glxgears_fallback=auto_glxgears_fallback,
             fps_mode=args.fps_mode,
             fps_window_size=args.fps_window_size,
             session_type=session_type,
@@ -3711,6 +3718,11 @@ def main() -> int:
             "switch_method": switch_method,
             "fps": fps_value,
             "fps_tool": fps_used_tool,
+            "benchmark_note": (
+                "benchmark-required-but-unavailable"
+                if benchmark_required and (fps_used_tool == "unavailable" or fps_value <= 0)
+                else ""
+            ),
             "used_mb": used_mb,
             "avail_mb": avail_mb,
         }
@@ -3755,7 +3767,13 @@ def main() -> int:
         else:
             cprint(C_GREEN, f"    Scale ensured via {method}.")
             case_status = "ok"
-        test_runs[case_name] = run_measurement_case(case_name, scale_value, method, status=case_status)
+        test_runs[case_name] = run_measurement_case(
+            case_name,
+            scale_value,
+            method,
+            status=case_status,
+            benchmark_required=bool(ok),
+        )
         trace(
             f"case result: {case_name} requested={scale_value} "
             f"detected={test_runs[case_name].get('detected_scale')} "
@@ -3846,6 +3864,19 @@ def main() -> int:
                 )
         except Exception:
             continue
+    successful_scale_switch_without_benchmark = any(
+        (
+            str(run.get("status", "")).startswith("ok")
+            and str(run.get("switch_method", "")) not in ("start-scale", "already-at-target", "skipped")
+            and str(run.get("benchmark_note", "")) == "benchmark-required-but-unavailable"
+        )
+        for run in test_runs.values()
+    )
+    if successful_scale_switch_without_benchmark:
+        conclusions.append(
+            "At least one scale switch succeeded, but no FPS benchmark result could be captured in-session. "
+            "Run from an active graphical user session and ensure glmark2 or glxgears can open the display."
+        )
     if guard_scale:
         conclusions.append(f"Scale transitions were guarded to avoid known instability: {guard_reason}.")
     nvidia_instructions = []
