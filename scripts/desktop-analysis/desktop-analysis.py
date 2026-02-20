@@ -38,7 +38,7 @@ from typing import Optional
 REPORT_OUTPUT_FILE = f"desktop-analysis-report-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
 TRACE_LOG: list[str] = []
 CONSOLE_LOG: list[str] = []
-_TRACE_SNIPPET_LIMIT = 240
+_TRACE_SNIPPET_LIMIT = 1200
 
 
 def _timestamp() -> str:
@@ -87,7 +87,14 @@ def _bullet(label: str, value: object) -> None:
 def run_cmd(cmd: list, timeout: int = 20, env: Optional[dict] = None) -> dict:
     """Run a subprocess and return a result dict."""
     cmd_str = " ".join(cmd)
-    trace(f"run_cmd start: cmd='{cmd_str}', timeout={timeout}")
+    env_markers = []
+    if env:
+        for key in ("GALLIUM_HUD", "GALLIUM_HUD_PERIOD", "MANGOHUD", "MANGOHUD_CONFIG"):
+            value = env.get(key)
+            if value:
+                env_markers.append(f"{key}={value}")
+    env_suffix = f", env_markers={env_markers}" if env_markers else ""
+    trace(f"run_cmd start: cmd='{cmd_str}', timeout={timeout}{env_suffix}")
     try:
         r = subprocess.run(
             cmd,
@@ -1347,38 +1354,170 @@ def _nvidia_install_instructions(base_distro: str, osr: dict) -> list:
     lines = [f"Proprietary NVIDIA driver is not active on {distro_name}."]
     if base_distro in ("ubuntu", "debian"):
         lines += [
-            "  - Detect recommended package: ubuntu-drivers devices",
-            "  - Install recommended: sudo ubuntu-drivers autoinstall",
-            "  - If still on nouveau: check Secure Boot state (mokutil --sb-state)",
-            "  - List installed NVIDIA packages: dpkg -l | grep -E '^ii\\s+nvidia|nvidia-driver'",
-            "  - Check available driver branches: apt-cache search '^nvidia-driver-[0-9]+'",
-            "  - Install explicit branch from distro repo (example): sudo apt install nvidia-driver-550",
-            "  - Rebuild initramfs and reboot: sudo update-initramfs -u && sudo reboot",
-            "  - Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
+            "Detect recommended package: ubuntu-drivers devices",
+            "Install recommended: sudo ubuntu-drivers autoinstall",
+            "If still on nouveau: check Secure Boot state (mokutil --sb-state)",
+            "List installed NVIDIA packages: dpkg -l | grep -E '^ii\\s+nvidia|nvidia-driver'",
+            "Check available driver branches: apt-cache search '^nvidia-driver-[0-9]+'",
+            "Install explicit branch from distro repo (example): sudo apt install nvidia-driver-550",
+            "Rebuild initramfs and reboot: sudo update-initramfs -u && sudo reboot",
+            "Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
         ]
     elif base_distro == "fedora":
         lines += [
-            "  - Enable RPM Fusion nonfree if not yet enabled",
-            "  - Install driver: sudo dnf install akmod-nvidia",
-            "  - Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
+            "Enable RPM Fusion nonfree if not yet enabled",
+            "Install driver: sudo dnf install akmod-nvidia",
+            "Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
         ]
     elif base_distro == "arch":
         lines += [
-            "  - Install packages: sudo pacman -S nvidia nvidia-utils",
-            "  - Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
+            "Install packages: sudo pacman -S nvidia nvidia-utils",
+            "Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
         ]
     elif base_distro == "suse":
         lines += [
-            "  - Enable NVIDIA SUSE repo or use distro driver workflow",
-            "  - Install proprietary nvidia driver package for your branch",
-            "  - Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
+            "Enable NVIDIA SUSE repo or use distro driver workflow",
+            "Install proprietary nvidia driver package for your branch",
+            "Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
         ]
     else:
         lines += [
-            "  - Use your distro's NVIDIA packaging guide for proprietary drivers",
-            "  - Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
+            "Use your distro's NVIDIA packaging guide for proprietary drivers",
+            "Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
         ]
     return lines
+
+
+def gather_nvidia_activation_diagnostics(
+    run_user_cmd,
+    base_distro: str,
+    gpu_lspci: str,
+    renderer: str,
+    driver_info: dict,
+) -> dict:
+    """Collect actionable diagnostics for NVIDIA proprietary driver activation."""
+    gpu_text = f"{gpu_lspci} {renderer}".lower()
+    loaded = set(driver_info.get("loaded", []))
+    nvidia_gpu = ("nvidia" in gpu_text) or ("geforce" in gpu_text) or ("nv" in gpu_text)
+    nouveau_active = "nouveau" in loaded
+    nvidia_module_active = any(mod.startswith("nvidia") for mod in loaded)
+
+    diag = {
+        "relevant": bool(nvidia_gpu),
+        "nouveau_active": nouveau_active,
+        "nvidia_module_active": nvidia_module_active,
+        "checks": {},
+        "options": [],
+        "notes": [],
+    }
+
+    if not diag["relevant"]:
+        diag["notes"].append("NVIDIA GPU not detected in renderer/lspci context.")
+        return diag
+
+    secure_boot_enabled = None
+    if command_exists("mokutil"):
+        sb = run_user_cmd(["mokutil", "--sb-state"], timeout=20)
+        diag["checks"]["secure_boot"] = {
+            "ok": sb.get("ok", False),
+            "stdout": sb.get("stdout", "")[:1000],
+            "stderr": sb.get("stderr", "")[:500],
+        }
+        sb_text = (sb.get("stdout", "") + "\n" + sb.get("stderr", "")).lower()
+        if "enabled" in sb_text:
+            secure_boot_enabled = True
+        elif "disabled" in sb_text:
+            secure_boot_enabled = False
+
+    if command_exists("nvidia-smi"):
+        smi = run_user_cmd(["nvidia-smi"], timeout=20)
+        diag["checks"]["nvidia_smi"] = {
+            "ok": smi.get("ok", False),
+            "stdout": smi.get("stdout", "")[:1200],
+            "stderr": smi.get("stderr", "")[:500],
+        }
+    else:
+        diag["checks"]["nvidia_smi"] = {
+            "ok": False,
+            "stdout": "",
+            "stderr": "nvidia-smi command not found",
+        }
+
+    if command_exists("modinfo"):
+        mod = run_user_cmd(["modinfo", "nvidia"], timeout=20)
+        diag["checks"]["modinfo_nvidia"] = {
+            "ok": mod.get("ok", False),
+            "stdout": mod.get("stdout", "")[:1000],
+            "stderr": mod.get("stderr", "")[:500],
+        }
+
+    if base_distro in ("ubuntu", "debian"):
+        if command_exists("ubuntu-drivers"):
+            ud = run_user_cmd(["ubuntu-drivers", "devices"], timeout=40)
+            diag["checks"]["ubuntu_drivers_devices"] = {
+                "ok": ud.get("ok", False),
+                "stdout": ud.get("stdout", "")[:3000],
+                "stderr": ud.get("stderr", "")[:1000],
+            }
+
+        installed_nvidia_packages = []
+        if command_exists("dpkg"):
+            dpkg_res = run_user_cmd(["dpkg", "-l"], timeout=60)
+            if dpkg_res.get("ok"):
+                for line in dpkg_res.get("stdout", "").splitlines():
+                    if not line.startswith("ii"):
+                        continue
+                    if re.search(r"\bnvidia\b|linux-modules-nvidia|system76.*nvidia", line):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            installed_nvidia_packages.append(parts[1])
+            diag["checks"]["installed_nvidia_packages"] = {
+                "ok": bool(installed_nvidia_packages),
+                "packages": installed_nvidia_packages[:80],
+            }
+
+        available_branches = []
+        if command_exists("apt-cache"):
+            search = run_user_cmd(["apt-cache", "search", "nvidia-driver-"], timeout=30)
+            if search.get("ok"):
+                for line in search.get("stdout", "").splitlines():
+                    m = re.match(r"(nvidia-driver-\d+)\b", line.strip())
+                    if m:
+                        available_branches.append(m.group(1))
+            diag["checks"]["available_driver_branches"] = {
+                "ok": bool(available_branches),
+                "branches": sorted(set(available_branches))[:20],
+            }
+
+    options = []
+    options.append("Option A (quick check): reboot and verify modules with: lsmod | grep -E 'nvidia|nouveau'")
+
+    if secure_boot_enabled and not nvidia_module_active:
+        options.append(
+            "Option B (Secure Boot path): disable Secure Boot in firmware OR enroll/sign NVIDIA DKMS module (MOK), then reboot"
+        )
+
+    installed_pkgs = diag.get("checks", {}).get("installed_nvidia_packages", {}).get("packages", [])
+    if base_distro in ("ubuntu", "debian"):
+        if not installed_pkgs:
+            options.append(
+                "Option C (explicit install): choose an available branch and install it (example: sudo apt install nvidia-driver-550), then sudo update-initramfs -u && sudo reboot"
+            )
+        elif not nvidia_module_active:
+            options.append(
+                "Option C (installed but inactive): run sudo update-initramfs -u, check dkms status, reboot, then verify nvidia-smi"
+            )
+
+    if nouveau_active:
+        options.append(
+            "Option D (nouveau still active): ensure proprietary module loads first; if needed, apply distro-supported nouveau blacklist workflow and regenerate initramfs"
+        )
+
+    if not nvidia_module_active:
+        options.append("Option E (diagnostics): collect dmesg/journal errors for nvidia/nouveau module load failures")
+
+    diag["options"] = options
+    return diag
 
 
 # ---------------------------------------------------------------------------
@@ -1686,7 +1825,13 @@ def print_console_report(
     compositor_diagnostics,
     assessment, conclusions,
     nvidia_instructions,
+    nvidia_activation_diagnostics,
 ) -> None:
+    matrix_has_fractional = any(
+        abs(float(run.get("requested_scale", 1.0)) - round(float(run.get("requested_scale", 1.0)))) > 1e-6
+        for run in test_runs.values()
+    )
+
     _section("System Information")
     _bullet("Hostname",            platform.node())
     _bullet("OS",                  osr.get("PRETTY_NAME", "unknown"))
@@ -1711,7 +1856,7 @@ def print_console_report(
     _bullet("Start detected via",  start_scale_source)
     _bullet("Baseline factor",     f"{baseline_scale}x")
     _bullet("Detected via",        baseline_scale_source)
-    _bullet("Fractional",          "yes" if not float(baseline_scale).is_integer() else "no")
+    _bullet("Fractional case tested", "yes" if matrix_has_fractional else "no")
 
     _section("Test Matrix")
     for case_name, run in test_runs.items():
@@ -1750,6 +1895,18 @@ def print_console_report(
     if nvidia_instructions:
         for line in nvidia_instructions:
             print(f"    {line}")
+    if nvidia_activation_diagnostics.get("relevant"):
+        _bullet("NVIDIA module active", "yes" if nvidia_activation_diagnostics.get("nvidia_module_active") else "no")
+        _bullet("nouveau active", "yes" if nvidia_activation_diagnostics.get("nouveau_active") else "no")
+        checks = nvidia_activation_diagnostics.get("checks", {})
+        pkgs = checks.get("installed_nvidia_packages", {}).get("packages", [])
+        branches = checks.get("available_driver_branches", {}).get("branches", [])
+        if pkgs:
+            _bullet("Installed NVIDIA pkgs", ", ".join(pkgs[:8]))
+        if branches:
+            _bullet("Available branches", ", ".join(branches[:8]))
+        for opt in nvidia_activation_diagnostics.get("options", []):
+            print(f"    {opt}")
 
     _section("Pipeline Analysis")
     _bullet("Pipeline",            pipeline_analysis.get("pipeline_class", "unknown"))
@@ -1823,10 +1980,16 @@ def write_markdown_report(
     compositor_diagnostics,
     assessment, conclusions,
     nvidia_instructions,
+    nvidia_activation_diagnostics,
     mem_breakdown, ps_output: Optional[str],
     trace_log,
     console_log,
 ) -> None:
+    matrix_has_fractional = any(
+        abs(float(run.get("requested_scale", 1.0)) - round(float(run.get("requested_scale", 1.0)))) > 1e-6
+        for run in test_runs.values()
+    )
+
     lines = [
         "# Desktop Scaling Diagnostic Report",
         f"- Generated: {dt.datetime.now().isoformat()}",
@@ -1851,6 +2014,7 @@ def write_markdown_report(
         f"- Reference: {_REFERENCE_SCALE}x",
         f"- Start: {start_scale}x  (detected via: {start_scale_source})",
         f"- Baseline: {baseline_scale}x  (detected via: {baseline_scale_source})",
+        f"- Fractional case tested: {'yes' if matrix_has_fractional else 'no'}",
         "",
         "## Test Matrix",
         "",
@@ -1899,6 +2063,20 @@ def write_markdown_report(
     ]
     if nvidia_instructions:
         lines += ["", "### Proprietary NVIDIA install guidance"] + [f"- {x}" for x in nvidia_instructions]
+    if nvidia_activation_diagnostics.get("relevant"):
+        lines += [
+            "",
+            "### NVIDIA Activation Diagnostics",
+            f"- NVIDIA module active: {'yes' if nvidia_activation_diagnostics.get('nvidia_module_active') else 'no'}",
+            f"- nouveau active: {'yes' if nvidia_activation_diagnostics.get('nouveau_active') else 'no'}",
+            "",
+            "```json",
+            json.dumps(nvidia_activation_diagnostics, indent=2),
+            "```",
+        ]
+        options = nvidia_activation_diagnostics.get("options", [])
+        if options:
+            lines += ["", "### NVIDIA Recovery Options"] + [f"- {opt}" for opt in options]
     lines += [
         "",
         "```json",
@@ -2101,7 +2279,11 @@ def main() -> int:
     gpu_lspci = ""
     for line in graphics.get("lspci", {}).get("stdout", "").splitlines():
         if any(k in line.lower() for k in ("vga", "3d controller", "display controller")):
-            gpu_lspci = (line.split("]")[-1] if "]" in line else line.split(":")[-1]).strip()
+            m_gpu = re.search(r":\s*(.+?)(?:\s*\(rev\s+[0-9a-fA-F]+\))?$", line)
+            if m_gpu:
+                gpu_lspci = m_gpu.group(1).strip()
+            else:
+                gpu_lspci = line.strip()
             break
 
     glxinfo_out = graphics.get("glxinfo", {}).get("stdout", "")
@@ -2178,6 +2360,11 @@ def main() -> int:
     trace(f"test matrix first case mapping: start_scale={start_scale} -> {first_case}")
     cprint(C_BLUE, f"\n[*] Immediate start-scale run mapped to case: {first_case}")
     test_runs[first_case] = run_measurement_case(first_case, required_cases[first_case], "start-scale")
+    trace(
+        f"case result: {first_case} requested={required_cases[first_case]} "
+        f"detected={test_runs[first_case].get('detected_scale')} "
+        f"fps={test_runs[first_case].get('fps')} tool={test_runs[first_case].get('fps_tool')}"
+    )
 
     # Run remaining required cases
     for case_name, scale_value in required_cases.items():
@@ -2270,8 +2457,29 @@ def main() -> int:
         pipeline_analysis,
     )
     nvidia_instructions = []
+    nvidia_activation_diagnostics = {
+        "relevant": False,
+        "nouveau_active": False,
+        "nvidia_module_active": False,
+        "checks": {},
+        "options": [],
+        "notes": [],
+    }
     if "nouveau" in set(driver_info.get("loaded", [])):
         nvidia_instructions = _nvidia_install_instructions(base_distro, osr)
+        nvidia_activation_diagnostics = gather_nvidia_activation_diagnostics(
+            run_user_cmd=run_user_cmd,
+            base_distro=base_distro,
+            gpu_lspci=gpu_lspci,
+            renderer=renderer,
+            driver_info=driver_info,
+        )
+        trace(
+            "nvidia diagnostics: "
+            f"relevant={nvidia_activation_diagnostics.get('relevant')} "
+            f"nvidia_module_active={nvidia_activation_diagnostics.get('nvidia_module_active')} "
+            f"nouveau_active={nvidia_activation_diagnostics.get('nouveau_active')}"
+        )
     mem_breakdown = summarize_memory_breakdown()
 
     cpu_model = ""
@@ -2300,6 +2508,7 @@ def main() -> int:
         compositor_diagnostics=compositor_diagnostics,
         assessment=assessment, conclusions=conclusions,
         nvidia_instructions=nvidia_instructions,
+        nvidia_activation_diagnostics=nvidia_activation_diagnostics,
     )
 
     # ---- Markdown report ----
@@ -2330,6 +2539,7 @@ def main() -> int:
         compositor_diagnostics=compositor_diagnostics,
         assessment=assessment, conclusions=conclusions,
         nvidia_instructions=nvidia_instructions,
+        nvidia_activation_diagnostics=nvidia_activation_diagnostics,
         mem_breakdown=mem_breakdown, ps_output=ps_output,
         trace_log=TRACE_LOG,
         console_log=CONSOLE_LOG,
