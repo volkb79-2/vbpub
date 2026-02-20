@@ -351,6 +351,53 @@ def detect_immutable() -> bool:
     return command_exists("rpm-ostree")
 
 
+def detect_live_environment() -> dict:
+    """Best-effort detection of live/installer environment where package installs may be restricted."""
+    markers = {
+        "/run/initramfs/live": Path("/run/initramfs/live").exists(),
+        "/run/archiso": Path("/run/archiso").exists(),
+        "/run/live/medium": Path("/run/live/medium").exists(),
+        "/cdrom": Path("/cdrom").exists(),
+    }
+    cmdline = read_file("/proc/cmdline").lower()
+    cmdline_live_tokens = [
+        "boot=live",
+        "rd.live.image",
+        "liveimg",
+        "nobara",
+        "fedora-media",
+    ]
+    cmdline_live = any(tok in cmdline for tok in cmdline_live_tokens)
+    root_fs_type = ""
+    if command_exists("findmnt"):
+        res = run_cmd(["findmnt", "-n", "-o", "FSTYPE", "/"], timeout=10)
+        if res.get("ok"):
+            root_fs_type = (res.get("stdout", "") or "").strip()
+    in_container = (
+        Path("/.dockerenv").exists()
+        or Path("/run/.containerenv").exists()
+        or bool(os.environ.get("container"))
+    )
+    rootfs_live = root_fs_type in {"squashfs", "overlay"} and not in_container
+    likely_live = any(markers.values()) or cmdline_live or rootfs_live
+    reasons = []
+    for marker, present in markers.items():
+        if present:
+            reasons.append(f"marker:{marker}")
+    if cmdline_live:
+        reasons.append("kernel-cmdline-live-token")
+    if rootfs_live:
+        reasons.append(f"rootfs:{root_fs_type}")
+    if in_container:
+        reasons.append("container-environment")
+    return {
+        "likely_live": bool(likely_live),
+        "reasons": reasons,
+        "root_fs_type": root_fs_type or "unknown",
+        "in_container": bool(in_container),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Privilege / sudo helpers
 # ---------------------------------------------------------------------------
@@ -413,7 +460,13 @@ _PKG_MAP: dict = {
         "suse": ["qt6-tools", "libqt5-qttools"],
     },
     "mangohud":       {"ubuntu": "mangohud", "debian": "mangohud", "fedora": "mangohud", "arch": "mangohud", "suse": "mangohud"},
-    "xlsclients":     {"ubuntu": "x11-utils",      "debian": "x11-utils",     "fedora": "xorg-x11-utils",  "arch": "xorg-xlsclients", "suse": "xorg-x11-utils"},
+    "xlsclients":     {
+        "ubuntu": "x11-utils",
+        "debian": "x11-utils",
+        "fedora": ["xorg-x11-utils", "xorg-x11-apps", "xlsclients"],
+        "arch": "xorg-xlsclients",
+        "suse": ["xorg-x11-utils", "xorg-x11"],
+    },
     "libinput":       {"ubuntu": "libinput-tools",  "debian": "libinput-tools","fedora": "libinput",        "arch": "libinput",        "suse": "libinput-tools"},
     "kscreen-doctor": {"ubuntu": "kscreen",        "debian": "kscreen",       "fedora": "kscreen",         "arch": "kscreen",         "suse": "kscreen"},
 }
@@ -443,6 +496,8 @@ def _package_exists(pm: str, package: str) -> bool:
 def _resolve_package_candidate(pm: Optional[str], package_spec) -> Optional[str]:
     """Resolve package candidate when multiple names exist across distro versions."""
     if isinstance(package_spec, str):
+        if pm and not _package_exists(pm, package_spec):
+            return None
         return package_spec
 
     if isinstance(package_spec, list):
@@ -453,7 +508,7 @@ def _resolve_package_candidate(pm: Optional[str], package_spec) -> Optional[str]
         for candidate in package_spec:
             if _package_exists(pm, candidate):
                 return candidate
-        return package_spec[0]
+        return None
 
     return None
 
@@ -468,6 +523,129 @@ def _packages_for_distro(missing_cmds: list, base_distro: str) -> list:
         if pkg:
             pkgs.add(pkg)
     return sorted(pkgs)
+
+
+def resolve_package_plan(missing_cmds: list, base_distro: str, pm: Optional[str]) -> dict:
+    """Resolve and validate package candidates per missing tool before any install attempt."""
+    entries: list[dict] = []
+    installable_packages: set[str] = set()
+    out_of_sync: list[dict] = []
+
+    for tool in missing_cmds:
+        pkg_map = _PKG_MAP.get(tool, {})
+        package_spec = pkg_map.get(base_distro) or pkg_map.get("ubuntu")
+
+        if package_spec is None:
+            entry = {
+                "tool": tool,
+                "status": "no-mapping",
+                "candidates": [],
+                "available_candidates": [],
+                "selected_package": "",
+            }
+            entries.append(entry)
+            out_of_sync.append(entry)
+            continue
+
+        candidates = [package_spec] if isinstance(package_spec, str) else list(package_spec)
+        available_candidates: list[str] = []
+        if pm:
+            for candidate in candidates:
+                if candidate and _package_exists(pm, candidate):
+                    available_candidates.append(candidate)
+
+        selected = _resolve_package_candidate(pm, package_spec)
+        status = "resolved" if selected else "no-available-candidate"
+
+        entry = {
+            "tool": tool,
+            "status": status,
+            "candidates": candidates,
+            "available_candidates": available_candidates,
+            "selected_package": selected or "",
+        }
+        entries.append(entry)
+
+        if selected:
+            installable_packages.add(selected)
+        else:
+            out_of_sync.append(entry)
+
+    return {
+        "entries": entries,
+        "installable_packages": sorted(installable_packages),
+        "out_of_sync": out_of_sync,
+        "missing_tool_count": len(missing_cmds),
+        "resolved_tool_count": len([entry for entry in entries if entry.get("status") == "resolved"]),
+    }
+
+
+def gather_package_manager_diagnostics(pm: Optional[str], run_user_cmd, base_distro: str, requested_packages: list[str]) -> dict:
+    """Collect package-manager and repo health details for install troubleshooting."""
+    diag = {
+        "pm": pm or "unknown",
+        "base_distro": base_distro,
+        "can_install": False,
+        "reasons": [],
+        "checks": {},
+        "resolved_packages": requested_packages or [],
+        "live_env": detect_live_environment(),
+        "immutable": detect_immutable(),
+    }
+    if not pm:
+        diag["reasons"].append("no-package-manager-detected")
+        return diag
+
+    live_env = diag["live_env"]
+    if live_env.get("likely_live"):
+        diag["reasons"].append("likely-live-environment")
+    if diag["immutable"]:
+        diag["reasons"].append("immutable-image-environment")
+
+    if pm == "apt-get":
+        policy = run_user_cmd(["apt-cache", "policy"], timeout=30) if command_exists("apt-cache") else {"ok": False}
+        diag["checks"]["repo_policy"] = {
+            "ok": policy.get("ok", False),
+            "stderr": (policy.get("stderr", "") or "")[:3000],
+            "stdout_excerpt": (policy.get("stdout", "") or "")[:8000],
+        }
+        diag["can_install"] = bool(policy.get("ok", False)) and not live_env.get("likely_live")
+    elif pm == "dnf":
+        repolist = run_user_cmd(["dnf", "-q", "repolist", "--enabled"], timeout=45)
+        diag["checks"]["repolist_enabled"] = {
+            "ok": repolist.get("ok", False),
+            "stderr": (replist_err := (repolist.get("stderr", "") or ""))[:3000],
+            "stdout_excerpt": (repolist.get("stdout", "") or "")[:8000],
+        }
+        diag["can_install"] = bool(repolist.get("ok", False)) and not live_env.get("likely_live")
+        if not repolist.get("ok"):
+            if "cannot" in replist_err.lower() or "error" in replist_err.lower():
+                diag["reasons"].append("dnf-repolist-failed")
+    elif pm == "pacman":
+        sync_db = run_user_cmd(["pacman", "-Sy", "--print-format", "%n", "--noconfirm"], timeout=45)
+        diag["checks"]["syncdb"] = {
+            "ok": sync_db.get("ok", False),
+            "stderr": (sync_db.get("stderr", "") or "")[:3000],
+            "stdout_excerpt": (sync_db.get("stdout", "") or "")[:8000],
+        }
+        diag["can_install"] = bool(sync_db.get("ok", False)) and not live_env.get("likely_live")
+    elif pm == "zypper":
+        repos = run_user_cmd(["zypper", "--non-interactive", "repos", "-d"], timeout=45)
+        diag["checks"]["repos"] = {
+            "ok": repos.get("ok", False),
+            "stderr": (repos.get("stderr", "") or "")[:3000],
+            "stdout_excerpt": (repos.get("stdout", "") or "")[:8000],
+        }
+        diag["can_install"] = bool(repos.get("ok", False)) and not live_env.get("likely_live")
+    else:
+        diag["reasons"].append(f"unsupported-install-probe:{pm}")
+
+    if not requested_packages:
+        diag["reasons"].append("no-package-candidates-resolved")
+
+    if not diag["can_install"] and not diag["reasons"]:
+        diag["reasons"].append("installability-undetermined")
+    return diag
 
 
 def install_packages(pm: str, packages: list, priv: dict) -> dict:
@@ -2830,6 +3008,8 @@ def print_console_report(
     nvidia_instructions,
     nvidia_activation_diagnostics,
     journalctl_debug,
+    package_manager_diagnostics,
+    package_install_result,
 ) -> None:
     matrix_has_fractional = any(
         abs(float(run.get("requested_scale", 1.0)) - round(float(run.get("requested_scale", 1.0)))) > 1e-6
@@ -2890,6 +3070,36 @@ def print_console_report(
             )
     else:
         print("    Active runtime components: none detected in current process list")
+
+    _section("Package Manager Diagnostics")
+    _bullet("Package manager", package_manager_diagnostics.get("pm", "unknown"))
+    _bullet("Installability probe", "yes" if package_manager_diagnostics.get("can_install") else "no")
+    _bullet("Immutable environment", "yes" if package_manager_diagnostics.get("immutable") else "no")
+    live_info = package_manager_diagnostics.get("live_env", {}) or {}
+    _bullet("Likely live environment", "yes" if live_info.get("likely_live") else "no")
+    package_resolution = package_install_result.get("package_resolution", {}) or {}
+    _bullet(
+        "Package resolution",
+        f"{package_resolution.get('resolved_tool_count', 0)} / {package_resolution.get('missing_tool_count', 0)} missing tools mapped to installable packages",
+    )
+    if live_info.get("reasons"):
+        print(f"    Live detection reasons: {', '.join(live_info.get('reasons', [])[:8])}")
+    if package_manager_diagnostics.get("reasons"):
+        print(f"    Installability reasons: {', '.join(package_manager_diagnostics.get('reasons', [])[:8])}")
+    _bullet("Install attempted", "yes" if package_install_result.get("attempted") else "no")
+    if package_install_result.get("requested_packages"):
+        print(f"    Requested packages: {', '.join(package_install_result.get('requested_packages', [])[:12])}")
+    if package_install_result.get("attempted"):
+        _bullet("Install success", "yes" if package_install_result.get("ok") else "no")
+    _bullet("Install result", package_install_result.get("reason", "not-attempted"))
+    if package_resolution.get("out_of_sync"):
+        print("    Out-of-sync mappings (script vs distro reality):")
+        for entry in package_resolution.get("out_of_sync", [])[:20]:
+            tool = entry.get("tool", "unknown")
+            status = entry.get("status", "unknown")
+            candidates = ", ".join(entry.get("candidates", [])[:8]) or "none"
+            available = ", ".join(entry.get("available_candidates", [])[:8]) or "none"
+            print(f"      - {tool}: {status}; candidates=[{candidates}] available=[{available}]")
 
     _section("Inspection Coverage")
     _bullet("Coverage score", f"{inspection_coverage.get('score', 0)} / 100")
@@ -3095,6 +3305,8 @@ def write_markdown_report(
     nvidia_activation_diagnostics,
     mem_breakdown, ps_output: Optional[str],
     journalctl_debug,
+    package_manager_diagnostics,
+    package_install_result,
     trace_log,
     console_log,
 ) -> None:
@@ -3181,6 +3393,47 @@ def write_markdown_report(
             lines.append(f"| {role} | {process} | {package} | {version} |")
     else:
         lines += ["", "### Active Runtime Components", "- None detected in current process list"]
+
+    lines += [
+        "",
+        "## Package Manager Diagnostics",
+        f"- Package manager: {package_manager_diagnostics.get('pm', 'unknown')}",
+        f"- Installability probe: {package_manager_diagnostics.get('can_install')}",
+        f"- Immutable environment: {package_manager_diagnostics.get('immutable')}",
+        f"- Likely live environment: {(package_manager_diagnostics.get('live_env', {}) or {}).get('likely_live')}",
+    ]
+    package_resolution = package_install_result.get("package_resolution", {}) or {}
+    lines.append(
+        "- Package resolution: "
+        f"{package_resolution.get('resolved_tool_count', 0)} / {package_resolution.get('missing_tool_count', 0)} missing tools mapped to installable packages"
+    )
+    live_reasons = (package_manager_diagnostics.get("live_env", {}) or {}).get("reasons", [])
+    if live_reasons:
+        lines.append(f"- Live detection reasons: {', '.join(live_reasons[:8])}")
+    if package_manager_diagnostics.get("reasons"):
+        lines.append(f"- Installability reasons: {', '.join(package_manager_diagnostics.get('reasons', [])[:8])}")
+    lines += [
+        f"- Install attempted: {package_install_result.get('attempted')}",
+        f"- Install result: {package_install_result.get('reason', 'not-attempted')}",
+    ]
+    if package_install_result.get("requested_packages"):
+        lines.append(f"- Requested packages: {', '.join(package_install_result.get('requested_packages', [])[:12])}")
+    if package_install_result.get("attempted"):
+        lines.append(f"- Install success: {package_install_result.get('ok')}")
+    if package_resolution.get("out_of_sync"):
+        lines += ["", "### Out-of-sync mappings"]
+        for entry in package_resolution.get("out_of_sync", [])[:40]:
+            tool = entry.get("tool", "unknown")
+            status = entry.get("status", "unknown")
+            candidates = ", ".join(entry.get("candidates", [])[:8]) or "none"
+            available = ", ".join(entry.get("available_candidates", [])[:8]) or "none"
+            lines.append(
+                f"- {tool}: {status}; candidates=[{candidates}] available=[{available}]"
+            )
+    if package_manager_diagnostics.get("checks"):
+        lines += ["", "### Package manager checks", "```json", json.dumps(package_manager_diagnostics.get("checks", {}), indent=2), "```"]
+    if package_install_result.get("logs"):
+        lines += ["", "### Package install logs", "```json", json.dumps(package_install_result.get("logs", []), indent=2), "```"]
 
     lines += [
         "",
@@ -3558,6 +3811,8 @@ def main() -> int:
 
     # ---- Package auto-install ----
     pm = detect_pkg_manager()
+    immutable_env = detect_immutable()
+    live_env = detect_live_environment()
     strategy_tools = fps_strategy.get("tools", []) if isinstance(fps_strategy, dict) else []
     wanted = [
         "lspci", "lshw", "glxinfo", "vulkaninfo", "glmark2", "mangohud",
@@ -3571,15 +3826,71 @@ def main() -> int:
         seen.add(cmd)
         deduped_wanted.append(cmd)
     missing = [c for c in deduped_wanted if not tool_available(c)]
-    trace(f"tool check: wanted={deduped_wanted}, missing={missing}, pkg_manager={pm}, immutable={detect_immutable()}")
-    if missing and pm and not detect_immutable():
+    package_resolution = resolve_package_plan(missing, base_distro, pm)
+    requested_pkgs = package_resolution.get("installable_packages", [])
+    package_manager_diagnostics = gather_package_manager_diagnostics(
+        pm=pm,
+        run_user_cmd=run_user_cmd,
+        base_distro=base_distro,
+        requested_packages=requested_pkgs,
+    )
+    package_install_result = {
+        "attempted": False,
+        "ok": False,
+        "installed": [],
+        "logs": [],
+        "reason": "not-attempted",
+        "requested_packages": requested_pkgs,
+        "missing_tools": missing,
+        "package_resolution": package_resolution,
+    }
+    trace(
+        "tool check: "
+        f"wanted={deduped_wanted}, missing={missing}, pkg_manager={pm}, immutable={immutable_env}, "
+        f"live={live_env.get('likely_live')}, resolved={package_resolution.get('resolved_tool_count', 0)}/"
+        f"{package_resolution.get('missing_tool_count', 0)}"
+    )
+    if package_resolution.get("out_of_sync"):
+        drift_tools = [entry.get("tool", "unknown") for entry in package_resolution.get("out_of_sync", [])]
+        cprint(
+            C_YELLOW,
+            "Package mapping drift detected for missing tools: "
+            + ", ".join(drift_tools[:12]),
+        )
+
+    if missing and pm and not immutable_env and not live_env.get("likely_live"):
         cprint(C_YELLOW, f"Auto-installing missing tools: {missing}")
-        pkgs = _packages_for_distro(missing, base_distro)
+        pkgs = requested_pkgs
         if pkgs:
             result = install_packages(pm, pkgs, priv)
+            package_install_result = {
+                **result,
+                "attempted": True,
+                "reason": "attempted",
+                "requested_packages": pkgs,
+                "missing_tools": missing,
+                "package_resolution": package_resolution,
+            }
             trace(f"package install result: ok={result.get('ok')} installed_candidates={pkgs}")
+            for idx, install_log in enumerate(result.get("logs", []), 1):
+                trace(
+                    f"install log[{idx}]: ok={install_log.get('ok')} rc={install_log.get('returncode')} "
+                    f"cmd={install_log.get('cmd', '')} stderr={(install_log.get('stderr', '') or '')[:500]}"
+                )
             status = "OK" if result["ok"] else "some packages failed"
             cprint(C_GREEN if result["ok"] else C_YELLOW, f"Package install: {status} ({pkgs})")
+        else:
+            package_install_result["reason"] = "no-valid-package-candidates"
+            cprint(C_YELLOW, "Package install skipped: no installable package candidates resolved for missing tools.")
+    elif missing and not pm:
+        package_install_result["reason"] = "no-package-manager"
+        cprint(C_YELLOW, "Package install skipped: no supported package manager detected.")
+    elif missing and immutable_env:
+        package_install_result["reason"] = "immutable-environment"
+        cprint(C_YELLOW, "Package install skipped: immutable/image-based environment detected.")
+    elif missing and live_env.get("likely_live"):
+        package_install_result["reason"] = "live-environment"
+        cprint(C_YELLOW, "Package install skipped: likely live/installer environment (transient filesystem/repo state).")
 
     # ---- Graphics info ----
     cprint(C_BLUE, "\n[*] Gathering graphics information...")
@@ -3950,6 +4261,8 @@ def main() -> int:
         nvidia_instructions=nvidia_instructions,
         nvidia_activation_diagnostics=nvidia_activation_diagnostics,
         journalctl_debug=journalctl_debug,
+        package_manager_diagnostics=package_manager_diagnostics,
+        package_install_result=package_install_result,
     )
 
     # ---- Markdown report ----
@@ -3999,6 +4312,8 @@ def main() -> int:
             nvidia_activation_diagnostics=nvidia_activation_diagnostics,
             mem_breakdown=mem_breakdown, ps_output=ps_output,
             journalctl_debug=journalctl_debug,
+            package_manager_diagnostics=package_manager_diagnostics,
+            package_install_result=package_install_result,
             trace_log=TRACE_LOG,
             console_log=CONSOLE_LOG,
         )

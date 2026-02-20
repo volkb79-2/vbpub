@@ -1,0 +1,9 @@
+services:
+  probe:
+    image: fedora:43
+    container_name: desktop-probe-bazzite-fedora-atomic
+    tty: true
+    stdin_open: true
+    command: ["bash", "-lc", "sleep infinity"]
+    environment:
+      - TARGET_DISTRO=bazzite

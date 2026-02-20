@@ -1,0 +1,9 @@
+services:
+  probe:
+    image: ubuntu:24.04
+    container_name: desktop-probe-popos-ubuntu
+    tty: true
+    stdin_open: true
+    command: ["bash", "-lc", "sleep infinity"]
+    environment:
+      - TARGET_DISTRO=popos

@@ -1,0 +1,9 @@
+services:
+  probe:
+    image: opensuse/tumbleweed:latest
+    container_name: desktop-probe-regata-opensuse
+    tty: true
+    stdin_open: true
+    command: ["bash", "-lc", "sleep infinity"]
+    environment:
+      - TARGET_DISTRO=regata

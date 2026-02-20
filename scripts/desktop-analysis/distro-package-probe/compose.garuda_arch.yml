@@ -1,0 +1,9 @@
+services:
+  probe:
+    image: archlinux:latest
+    container_name: desktop-probe-garuda-arch
+    tty: true
+    stdin_open: true
+    command: ["bash", "-lc", "sleep infinity"]
+    environment:
+      - TARGET_DISTRO=garuda
