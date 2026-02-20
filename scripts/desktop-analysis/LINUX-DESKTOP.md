@@ -126,14 +126,14 @@ performance.  It is designed to answer these questions:
 │     gsettings / kscreen-doctor /        │
 │     xfconf / xrandr                     │
 ├─────────────────────────────────────────┤
-│  3. Optional target test first          │
-│     test current or requested scale     │
+│  3. Immediate run at current scale      │
+│     map to nearest required test case   │
 ├─────────────────────────────────────────┤
-│  4. Force reference baseline at 1.0x    │
-│     baseline measured afterwards        │
+│  4. Run remaining required cases        │
+│     1.0x, 2.0x, fractional (default 1.25x) │
 ├─────────────────────────────────────────┤
-│  5. Measure baseline FPS & RAM          │
-│     glmark2 score                        │
+│  5. Auto scale switch + manual fallback │
+│     for each missing case               │
 ├─────────────────────────────────────────┤
 │  6. Optional mouse capture              │
 │     only with --mouse-test              │
@@ -142,13 +142,15 @@ performance.  It is designed to answer these questions:
 │     Wayland/XWayland, driver path,      │
 │     output topology, bottlenecks        │
 ├─────────────────────────────────────────┤
-│  8. Assess driver suitability           │
+│  8. Determine compositor-present FPS    │
+│     strategy + tool availability        │
+├─────────────────────────────────────────┤
+│  9. Assess driver suitability           │
 │     Check for software rasteriser       │
 │     Match driver to GPU vendor          │
 ├─────────────────────────────────────────┤
-│  9. Print consolidated report           │
-│     FPS comparison · RAM delta ·        │
-│     efficiency verdict + pipeline view  │
+│ 10. Print consolidated report           │
+│     test matrix · strategy · pipeline   │
 └─────────────────────────────────────────┘
 ```
 
@@ -156,11 +158,11 @@ performance.  It is designed to answer these questions:
 
 | Metric | Why it matters |
 |---|---|
-| **Baseline scale** | Confirms what the compositor is actually using |
-| **Target scale** | The scale being evaluated |
+| **Start scale** | Captures current environment without forcing an immediate switch |
+| **Required test scales** | Ensures comparable matrix (`1.0`, `2.0`, fractional) |
 | **Baseline FPS** | Reference rendering throughput before any change |
-| **Target FPS** | Throughput at the new scale; large drops signal inefficiency |
-| **FPS ratio** | target / baseline; ≥ 0.80 is considered acceptable |
+| **Per-case FPS** | Throughput/score for each matrix case |
+| **FPS strategy** | How compositor-present FPS was estimated in this environment |
 | **RAM used (baseline)** | Establishes memory baseline |
 | **RAM delta** | > 200 MB increase suggests extra framebuffer allocations |
 | **Mouse smoothness** | Wayland + libinput + high refresh rate = smooth |
@@ -179,6 +181,35 @@ performance.  It is designed to answer these questions:
 The script can detect XWayland presence and list clients, but it does not yet
 separate FPS between native Wayland and XWayland-only workloads.
 
+### Compositor-present FPS strategy (preferred over input-event sampling)
+
+Desktop draw FPS should be measured from compositor/present timing, not from
+mouse input event cadence. Mouse events only describe input stream timing and
+can be misleading when used as a rendering proxy.
+
+Recommended strategy hierarchy:
+
+1. Use compositor-native frame/present telemetry when available.
+2. Fallback to present/scanout-adjacent timing sources for that session type.
+3. Always report output refresh and frame-time consistency (not only one FPS number).
+
+| Environment | Primary strategy | Fallback strategy | Key tools |
+|---|---|---|---|
+| GNOME Wayland (Mutter) | Mutter/GNOME shell perf telemetry | Output refresh + benchmark score + frame-time proxy | `gdbus`, `wayland-info`, `xrandr` |
+| KDE Wayland (KWin) | KWin telemetry/debug channels | Output refresh + benchmark score + frame-time proxy | `kscreen-doctor`, `qdbus`/`gdbus`, `xrandr` |
+| COSMIC Wayland | `cosmic-comp` telemetry when available | Output topology + benchmark score + frame-time proxy | `wlr-randr`, `wayland-info`, `xrandr` |
+| Sway/wlroots | wlroots compositor stats/debug signals | Output topology + benchmark score + frame-time proxy | `wlr-randr`, compositor-specific CLI |
+| Hyprland | `hyprctl` runtime telemetry | Output refresh + benchmark score + frame-time proxy | `hyprctl`, `xrandr` |
+| X11 desktops (Xfce/MATE/LXQt/i3/Openbox) | X compositor/present telemetry if available | Output refresh + benchmark score + frame-time proxy | `xrandr`, compositor-specific tools |
+
+Minimum output fields for decision-quality diagnostics:
+
+- active output refresh (`Hz`),
+- selected strategy and data source,
+- achieved FPS/score,
+- frame-time stability indicators (avg/p95/p99 when available),
+- context flags (Wayland/XWayland mix, driver path, fractional/integer scaling).
+
 ### Command-line Options
 
 ```
@@ -186,7 +217,9 @@ python3 linux-desktop-analysis.py [OPTIONS]
 
 Options:
   --non-interactive    Skip all prompts (for scripting / automation)
-  --scale FACTOR       Target scale factor to test before 1.0x baseline
+  --fractional-scale FACTOR
+                       Fractional case in the 3-run matrix (default 1.25)
+  --scale FACTOR       Deprecated alias for --fractional-scale
   --mouse-test         Enable libinput event capture (disabled by default)
   --allow-glxgears-fallback
                        Use glxgears only if glmark2 is unavailable
@@ -200,10 +233,10 @@ Options:
 python3 scripts/linux-desktop-analysis.py
 
 # Test scale 2× non-interactively
-python3 scripts/linux-desktop-analysis.py --scale 2 --non-interactive
+python3 scripts/linux-desktop-analysis.py --fractional-scale 1.25 --non-interactive
 
 # Test 1.5× (fractional)
-python3 scripts/linux-desktop-analysis.py --scale 1.5
+python3 scripts/linux-desktop-analysis.py --fractional-scale 1.5
 
 # Enable mouse event capture explicitly
 python3 scripts/linux-desktop-analysis.py --mouse-test
@@ -316,6 +349,9 @@ Pointer latency is dominated by the display refresh rate and the input
 pipeline (Wayland input vs X11 events), compositor load, and GPU driver state.
 Sub-60 Hz is not automatically bad: 50-59 Hz can still feel fine. Severe issues
 usually appear when refresh rate is very low or frame scheduling is unstable.
+
+Important: mouse-event timing is not a valid substitute for compositor-present
+FPS. Keep pointer tests optional and separate from rendering performance tests.
 
 ---
 
