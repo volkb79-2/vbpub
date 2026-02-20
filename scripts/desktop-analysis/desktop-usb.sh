@@ -24,7 +24,8 @@ set -euo pipefail
 
 REPO="volkb79-2/vbpub"
 BRANCH="main"
-SCRIPT_PATH="scripts/linux-desktop-analysis.py"
+FILE_NAME="desktop-analysis.py"
+SCRIPT_PATH="scripts/desktop-analysis/${FILE_NAME}"
 RAW_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${SCRIPT_PATH}"
 
 # ---------------------------------------------------------------------------
@@ -74,7 +75,7 @@ TMP_SCRIPT="$(mktemp /tmp/linux-desktop-analysis-XXXXXX.py)"
 # Ensure cleanup on exit
 trap 'rm -f "$TMP_SCRIPT"' EXIT INT TERM
 
-info "Downloading linux-desktop-analysis.py from ${REPO} (branch: ${BRANCH})..."
+info "Downloading ${FILE_NAME} from ${REPO} (branch: ${BRANCH})..."
 
 if command -v curl >/dev/null 2>&1; then
     curl --fail --silent --show-error --location --retry 3 \
@@ -89,5 +90,5 @@ ok "Downloaded to ${TMP_SCRIPT}"
 # Execute
 # ---------------------------------------------------------------------------
 
-info "Running linux-desktop-analysis.py${SCRIPT_ARGS[*]:+ with args: ${SCRIPT_ARGS[*]}}..."
+info "Running ${FILE_NAME}${SCRIPT_ARGS[*]:+ with args: ${SCRIPT_ARGS[*]}}..."
 python3 "$TMP_SCRIPT" "${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}"

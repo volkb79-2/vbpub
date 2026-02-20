@@ -16,7 +16,8 @@ Supported servers : X11 / Wayland
 Usage
 -----
     python3 linux-desktop-analysis.py [--scale FACTOR] [--non-interactive]
-                                      [--output FILE] [--no-ps]
+                                      [--output FILE] [--no-ps] [--mouse-test]
+                                      [--allow-glxgears-fallback]
 """
 
 from __future__ import annotations
@@ -85,8 +86,10 @@ def run_cmd(cmd: list, timeout: int = 20, env: Optional[dict] = None) -> dict:
     except FileNotFoundError:
         return {"ok": False, "stdout": "", "stderr": "", "returncode": 127,
                 "error": "command not found", "cmd": " ".join(cmd)}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "stdout": "", "stderr": "", "returncode": 124,
+    except subprocess.TimeoutExpired as exc:
+        stdout = (exc.stdout or "").strip() if isinstance(exc.stdout, str) else ""
+        stderr = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
+        return {"ok": False, "stdout": stdout, "stderr": stderr, "returncode": 124,
                 "error": "timeout", "cmd": " ".join(cmd)}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "stdout": "", "stderr": "", "returncode": 1,
@@ -687,6 +690,192 @@ def analyze_xwayland(run_user_cmd, session_env: dict) -> dict:
     return data
 
 
+def gather_output_scaling_topology(run_user_cmd, session_type: str) -> dict:
+    """Collect display/output scale + refresh details from session-specific tools."""
+    data: dict = {"backend": "unknown", "outputs": [], "notes": []}
+
+    if "wayland" in session_type.lower() and command_exists("wlr-randr"):
+        res = run_user_cmd(["wlr-randr"])
+        if res.get("ok"):
+            data["backend"] = "wlr-randr"
+            current: Optional[dict] = None
+            for raw in res.get("stdout", "").splitlines():
+                line = raw.rstrip()
+                if not line:
+                    continue
+                if not line.startswith(" ") and not line.startswith("\t"):
+                    if current:
+                        data["outputs"].append(current)
+                    output_name = line.split()[0]
+                    current = {
+                        "name": output_name,
+                        "scale": None,
+                        "refresh_hz": None,
+                        "mode": "",
+                        "focused": "(focused)" in line,
+                    }
+                    continue
+                if current is None:
+                    continue
+
+                m_mode = re.search(r"(\d+x\d+)\s+px,\s*([0-9.]+)\s*Hz,\s*current", line)
+                if m_mode:
+                    current["mode"] = m_mode.group(1)
+                    try:
+                        current["refresh_hz"] = float(m_mode.group(2))
+                    except ValueError:
+                        pass
+
+                m_scale_a = re.search(r"[Ss]cale:\s*([0-9.]+)", line)
+                m_scale_b = re.search(r"scale\s+([0-9.]+)", line)
+                scale_match = m_scale_a or m_scale_b
+                if scale_match:
+                    try:
+                        current["scale"] = float(scale_match.group(1))
+                    except ValueError:
+                        pass
+
+            if current:
+                data["outputs"].append(current)
+            if not data["outputs"]:
+                data["notes"].append("wlr-randr available, but no outputs parsed")
+            return data
+
+    if command_exists("xrandr"):
+        res = run_user_cmd(["xrandr", "--query"])
+        if res.get("ok"):
+            data["backend"] = "xrandr"
+            current: Optional[dict] = None
+            for raw in res.get("stdout", "").splitlines():
+                line = raw.rstrip()
+                if " connected" in line and not line.startswith(" "):
+                    if current:
+                        data["outputs"].append(current)
+                    output_name = line.split()[0]
+                    current = {
+                        "name": output_name,
+                        "scale": 1.0,
+                        "refresh_hz": None,
+                        "mode": "",
+                        "focused": False,
+                    }
+                    continue
+                if current is None:
+                    continue
+                m_mode = re.search(r"^\s+(\d+x\d+)\s+.*?([0-9.]+)\*", line)
+                if m_mode:
+                    current["mode"] = m_mode.group(1)
+                    try:
+                        current["refresh_hz"] = float(m_mode.group(2))
+                    except ValueError:
+                        pass
+            if current:
+                data["outputs"].append(current)
+            if not data["outputs"]:
+                data["notes"].append("xrandr available, but no outputs parsed")
+
+    return data
+
+
+def analyze_scaling_pipeline(
+    session_type: str,
+    desktop: str,
+    compositor: str,
+    xwayland_analysis: dict,
+    driver_info: dict,
+    renderer: str,
+    reference_scale: float,
+    target_scale: Optional[float],
+    fps_tool: str,
+    output_topology: dict,
+) -> dict:
+    """Classify the render/scaling pipeline and explain expected efficiency."""
+    xwayland_clients = xwayland_analysis.get("xwayland_clients")
+    xwayland_clients = xwayland_clients if isinstance(xwayland_clients, int) else 0
+    loaded_drivers = set(driver_info.get("loaded", []))
+    renderer_lc = (renderer or "").lower()
+    is_wayland = "wayland" in (session_type or "").lower()
+
+    scale_values = [reference_scale]
+    if target_scale is not None:
+        scale_values.append(target_scale)
+    is_fractional = any(abs(s - round(s)) > 1e-6 for s in scale_values)
+
+    if "llvmpipe" in renderer_lc or "softpipe" in renderer_lc or "software rasterizer" in renderer_lc:
+        gpu_path = "software-rendering"
+    elif "nvidia" in loaded_drivers:
+        gpu_path = "nvidia-proprietary"
+    elif "nouveau" in loaded_drivers:
+        gpu_path = "nvidia-nouveau"
+    elif "amdgpu" in loaded_drivers or "radeon" in loaded_drivers:
+        gpu_path = "amd-mesa"
+    elif "i915" in loaded_drivers or "xe" in loaded_drivers:
+        gpu_path = "intel-mesa"
+    else:
+        gpu_path = "unknown-gpu-stack"
+
+    if is_wayland:
+        if xwayland_clients > 0:
+            render_path = "wayland-mixed-with-xwayland"
+        else:
+            render_path = "wayland-native"
+    else:
+        render_path = "x11"
+
+    if is_fractional:
+        scale_path = "fractional-scaling (compositor resampling likely)"
+    else:
+        scale_path = "integer-scaling"
+
+    bottlenecks = []
+    rationale = []
+
+    if render_path == "wayland-mixed-with-xwayland":
+        bottlenecks.append("XWayland composition path is active")
+        rationale.append("X11 clients are translated via XWayland before final Wayland composition")
+    if gpu_path == "nvidia-nouveau":
+        bottlenecks.append("nouveau driver may limit throughput and frame pacing")
+        rationale.append("NVIDIA open-source driver can underperform compared to proprietary stack on many cards")
+    if gpu_path == "software-rendering":
+        bottlenecks.append("software renderer detected")
+        rationale.append("CPU rasterization is significantly slower for compositor and app rendering")
+    if is_fractional:
+        bottlenecks.append("fractional scaling introduces resampling overhead")
+        rationale.append("fractional output scales often require non-integer buffer conversion or compositor filtering")
+    if fps_tool and fps_tool.startswith("glmark2"):
+        rationale.append("glmark2 score is a coarse throughput signal; frame pacing still needs compositor metrics")
+
+    if gpu_path == "software-rendering":
+        efficiency_expectation = "low"
+    elif "nouveau" in gpu_path and is_fractional:
+        efficiency_expectation = "low-to-moderate"
+    elif render_path == "wayland-mixed-with-xwayland" and is_fractional:
+        efficiency_expectation = "moderate"
+    elif is_fractional:
+        efficiency_expectation = "moderate-to-high"
+    else:
+        efficiency_expectation = "high"
+
+    return {
+        "pipeline_class": f"{render_path} + {scale_path}",
+        "session_type": session_type,
+        "desktop": desktop,
+        "compositor": compositor,
+        "render_path": render_path,
+        "scale_path": scale_path,
+        "gpu_path": gpu_path,
+        "xwayland_clients": xwayland_clients,
+        "reference_scale": reference_scale,
+        "target_scale": target_scale,
+        "is_fractional_test": is_fractional,
+        "benchmark_tool": fps_tool,
+        "output_topology": output_topology,
+        "efficiency_expectation": efficiency_expectation,
+        "likely_bottlenecks": bottlenecks,
+        "rationale": rationale,
+    }
+
+
 # ---------------------------------------------------------------------------
 # FPS benchmarking
 # ---------------------------------------------------------------------------
@@ -740,14 +929,15 @@ def _run_glxgears(duration_s: int = 5) -> float:
     return round(sum(fps_vals) / len(fps_vals), 1) if fps_vals else 0.0
 
 
-def measure_fps(run_user_cmd) -> tuple:
+def measure_fps(run_user_cmd, allow_glxgears_fallback: bool = False) -> tuple:
     """Measure FPS using best available tool. Returns (fps, tool_name)."""
     fps, tool = _run_glmark2(run_user_cmd)
     if fps > 0:
         return fps, tool
-    fps = _run_glxgears()
-    if fps > 0:
-        return fps, "glxgears"
+    if allow_glxgears_fallback:
+        fps = _run_glxgears()
+        if fps > 0:
+            return fps, "glxgears"
     return 0.0, "unavailable"
 
 
@@ -819,7 +1009,7 @@ def sample_input_events(device_path: Optional[str], priv: dict, interactive: boo
     input("Mouse test: move the mouse continuously for 10 s, then press Enter to start...")
     # Use list args (no shell=True) to avoid command injection via device_path
     cmd = ["libinput", "debug-events", "--device", device_path]
-    res = run_cmd(cmd)
+    res = run_cmd(cmd, timeout=10)
     summary["method"] = "libinput debug-events"
     summary["returncode"] = res.get("returncode")
 
@@ -833,7 +1023,7 @@ def sample_input_events(device_path: Optional[str], priv: dict, interactive: boo
         cprint(C_YELLOW, "Permission denied; retrying with sudo...")
         sudo_cmd = ensure_sudo(cmd, priv)
         if sudo_cmd:
-            res = run_cmd(sudo_cmd)
+            res = run_cmd(sudo_cmd, timeout=10)
             summary["method"] = "libinput debug-events (sudo)"
             summary["returncode"] = res.get("returncode")
             if res["ok"] or res.get("returncode") in (124, 143):
@@ -869,11 +1059,16 @@ def assess_mouse_smoothness(session_type: str, mouse_stats: dict, run_user_cmd) 
         notes.append(f"libinput event gap: avg {avg:.1f} ms")
         if avg > 25:
             notes.append("High average event gap — pointer may feel choppy")
+    elif mouse_stats.get("error"):
+        notes.append(f"Mouse event capture: {mouse_stats.get('error')}")
 
     smooth = is_wayland or command_exists("libinput")
-    if refresh and refresh < 60:
-        smooth = False
-        notes.append("Refresh rate < 60 Hz — noticeable cursor lag likely")
+    if refresh:
+        if refresh < 45:
+            smooth = False
+            notes.append("Very low refresh rate (<45 Hz) — visible cursor judder likely")
+        elif refresh < 55:
+            notes.append("Moderate refresh rate (<55 Hz) — usually acceptable; perceived lag may come from compositor/GPU load")
     if mouse_stats.get("ok") and (mouse_stats.get("avg_gap_ms") or 0) > 25:
         smooth = False
 
@@ -919,6 +1114,7 @@ def summarize_memory_breakdown() -> dict:
 # ---------------------------------------------------------------------------
 
 _FPS_ACCEPTABLE_RATIO = 0.80
+_REFERENCE_SCALE = 1.0
 
 
 def assess_performance(
@@ -979,7 +1175,7 @@ def assess_performance(
     elif target_fps is None:
         lines.append("No target-scale FPS collected (scale change skipped or unavailable).")
     elif baseline_fps == 0:
-        lines.append("FPS benchmark unavailable (glmark2/glxgears not accessible).")
+        lines.append("FPS benchmark unavailable (glmark2 not accessible; optional glxgears fallback disabled).")
 
     if ram_total_mb >= 8192:
         lines.append(
@@ -1006,6 +1202,7 @@ def build_conclusions(
     cosmic_scale_hits: list,
     smooth: bool,
     driver_suitable: bool,
+    pipeline_analysis: dict,
 ) -> list:
     conclusions = []
     if xwayland_present and (xwayland_analysis.get("xwayland_clients") or 0) > 0:
@@ -1023,6 +1220,11 @@ def build_conclusions(
         conclusions.append("Mouse smoothness may be degraded — see Mouse Smoothness section.")
     if not driver_suitable:
         conclusions.append("GPU driver may be unsuitable — see Driver Suitability section.")
+    if pipeline_analysis.get("pipeline_class"):
+        conclusions.append(
+            f"Determined scaling pipeline: {pipeline_analysis.get('pipeline_class')} "
+            f"(expected efficiency: {pipeline_analysis.get('efficiency_expectation')})."
+        )
     return conclusions
 
 
@@ -1032,11 +1234,13 @@ def build_conclusions(
 
 def print_console_report(
     osr, base_distro, session_type, desktop, wm_comp, xwayland_present,
+    start_scale, start_scale_source,
     baseline_scale, baseline_scale_source, target_scale,
     ram_total_mb, cpu_model, cpu_cores, gpu_lspci,
     driver_info, renderer, baseline_fps, fps_tool, target_fps,
     baseline_used_mb, baseline_avail_mb, target_used_mb,
     smooth, mouse_notes, driver_suitable, driver_notes,
+    pipeline_analysis,
     assessment, conclusions,
 ) -> None:
     _section("System Information")
@@ -1058,6 +1262,9 @@ def print_console_report(
     _bullet("XWayland present",    "yes" if xwayland_present else "no")
 
     _section("Scaling")
+    _bullet("Reference factor",    f"{_REFERENCE_SCALE}x")
+    _bullet("Start factor",        f"{start_scale}x")
+    _bullet("Start detected via",  start_scale_source)
     _bullet("Baseline factor",     f"{baseline_scale}x")
     _bullet("Detected via",        baseline_scale_source)
     _bullet("Fractional",          "yes" if not float(baseline_scale).is_integer() else "no")
@@ -1091,6 +1298,22 @@ def print_console_report(
     _bullet("Assessment",          "suitable" if driver_suitable else "may be unsuitable")
     print(f"    {driver_notes}")
 
+    _section("Pipeline Analysis")
+    _bullet("Pipeline",            pipeline_analysis.get("pipeline_class", "unknown"))
+    _bullet("GPU path",            pipeline_analysis.get("gpu_path", "unknown"))
+    _bullet("Expected efficiency", pipeline_analysis.get("efficiency_expectation", "unknown"))
+    output_topology = pipeline_analysis.get("output_topology", {})
+    outputs = output_topology.get("outputs", [])
+    if outputs:
+        for out in outputs:
+            out_name = out.get("name", "output")
+            out_scale = out.get("scale") if out.get("scale") is not None else "n/a"
+            out_hz = out.get("refresh_hz") if out.get("refresh_hz") is not None else "n/a"
+            out_mode = out.get("mode") or "unknown"
+            print(f"    - {out_name}: mode={out_mode}, scale={out_scale}, refresh={out_hz} Hz")
+    for reason in pipeline_analysis.get("likely_bottlenecks", []):
+        print(f"    bottleneck: {reason}")
+
     _section("Efficiency & Performance Assessment")
     print(assessment)
 
@@ -1110,12 +1333,14 @@ def write_markdown_report(
     output_path: str,
     osr, base_distro, session_type, desktop, wm_comp,
     xwayland_present, xwayland_analysis,
+    start_scale, start_scale_source,
     baseline_scale, baseline_scale_source, target_scale,
     ram_total_mb, cpu_model, cpu_cores, gpu_lspci,
     driver_info, renderer, baseline_fps, fps_tool, target_fps,
     baseline_used_mb, baseline_avail_mb, target_used_mb,
     smooth, mouse_notes, mouse_stats,
     driver_suitable, driver_notes,
+    pipeline_analysis,
     assessment, conclusions,
     mem_breakdown, ps_output: Optional[str],
 ) -> None:
@@ -1140,6 +1365,8 @@ def write_markdown_report(
         f"- XWayland present: {xwayland_present}",
         "",
         "## Scaling",
+        f"- Reference: {_REFERENCE_SCALE}x",
+        f"- Start: {start_scale}x  (detected via: {start_scale_source})",
         f"- Baseline: {baseline_scale}x  (detected via: {baseline_scale_source})",
         f"- Target: {target_scale}x" if target_scale else "- Target: n/a",
         "",
@@ -1181,6 +1408,15 @@ def write_markdown_report(
         "## XWayland Analysis",
         "```json",
         json.dumps(xwayland_analysis, indent=2),
+        "```",
+        "",
+        "## Pipeline Analysis",
+        f"- Pipeline: {pipeline_analysis.get('pipeline_class', 'unknown')}",
+        f"- GPU path: {pipeline_analysis.get('gpu_path', 'unknown')}",
+        f"- Expected efficiency: {pipeline_analysis.get('efficiency_expectation', 'unknown')}",
+        "",
+        "```json",
+        json.dumps(pipeline_analysis, indent=2),
         "```",
         "",
         "## Efficiency & Performance Assessment",
@@ -1227,12 +1463,20 @@ def main() -> int:
     )
     parser.add_argument(
         "--output",
-        default=f"scaling-report-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.md",
+        default=f"desktop-analysis-report-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.md",
         help="Markdown report output path.",
     )
     parser.add_argument(
         "--no-ps", action="store_true",
         help="Skip ps axu output in Markdown report.",
+    )
+    parser.add_argument(
+        "--mouse-test", action="store_true",
+        help="Enable interactive libinput mouse capture test (disabled by default).",
+    )
+    parser.add_argument(
+        "--allow-glxgears-fallback", action="store_true",
+        help="Allow glxgears fallback when glmark2 is unavailable (default: disabled).",
     )
     args = parser.parse_args()
     interactive = not args.non_interactive
@@ -1312,22 +1556,22 @@ def main() -> int:
     # ---- Display / scale detection ----
     home_dir = os.path.expanduser("~")
     _ = gather_display_info(run_user_cmd)
-    baseline_scale, baseline_scale_source = detect_current_scale(
+    start_scale, start_scale_source = detect_current_scale(
         session_env, desktop, run_user_cmd, home_dir,
     )
 
-    if baseline_scale == 1.0 and "fallback" in baseline_scale_source and interactive:
+    if start_scale == 1.0 and "fallback" in start_scale_source and interactive:
         raw = input(
-            f"Could not auto-detect scale (source: {baseline_scale_source}). "
+            f"Could not auto-detect scale (source: {start_scale_source}). "
             "Enter current scale [1.0]: "
         ).strip()
         if raw:
             try:
-                baseline_scale = float(raw)
+                start_scale = float(raw)
             except ValueError:
                 pass
 
-    cprint(C_GREEN, f"Baseline scale: {baseline_scale}x  (via {baseline_scale_source})")
+    cprint(C_GREEN, f"Start scale: {start_scale}x  (via {start_scale_source})")
 
     # ---- COSMIC config scan ----
     cosmic_cfg        = discover_cosmic_configs(home_dir)
@@ -1336,76 +1580,118 @@ def main() -> int:
     # ---- XWayland analysis ----
     xwayland_analysis = analyze_xwayland(run_user_cmd, session_env)
 
-    # ---- Baseline FPS + RAM ----
+    # ---- Target + baseline orchestration ----
+    # Policy: reference baseline is always 1.0x; if session starts at another scale,
+    # test that scale first and run baseline afterwards.
+    reference_scale = float(_REFERENCE_SCALE)
+    baseline_scale = reference_scale
+    baseline_scale_source = "reference baseline policy"
+
+    target_scale: Optional[float] = args.scale
+    if target_scale is None:
+        if interactive:
+            prompt_default = f"{start_scale}"
+            raw = input(
+                f"\n[?] Enter target scale to test before baseline (default: {prompt_default}x): "
+            ).strip()
+            if raw:
+                try:
+                    target_scale = float(raw.replace(",", "."))
+                except ValueError:
+                    target_scale = start_scale
+            else:
+                target_scale = start_scale
+        else:
+            target_scale = start_scale
+
+    if target_scale is not None:
+        target_scale = float(target_scale)
+
+    target_fps: Optional[float] = None
+    target_used_mb: Optional[int] = None
+
+    # ---- Optional target test first ----
+    if target_scale is not None and abs(target_scale - reference_scale) > 1e-6:
+        cprint(C_BLUE, f"\n[*] Running target test at {target_scale}x (before 1.0x baseline)...")
+        if abs(start_scale - target_scale) > 1e-6:
+            applied, apply_method = set_scale_programmatic(desktop, target_scale, run_user_cmd)
+            if applied:
+                cprint(C_GREEN, f"    Applied via {apply_method}. Waiting 2 s for compositor...")
+                time.sleep(2)
+            else:
+                cprint(C_YELLOW, "    Could not apply target scale programmatically.")
+                if interactive:
+                    input(f"    Please set scale to {target_scale}x manually, then press Enter...")
+                    time.sleep(2)
+                else:
+                    cprint(C_YELLOW, "    Skipping target test (non-interactive, could not auto-apply).")
+                    target_scale = None
+
+        if target_scale is not None:
+            detected_target_scale, detected_target_src = detect_current_scale(
+                session_env, desktop, run_user_cmd, home_dir,
+            )
+            target_scale = float(detected_target_scale)
+            cprint(C_GREEN, f"    Detected target scale: {target_scale}x  (via {detected_target_src})")
+
+            cprint(C_BLUE, "\n[*] Measuring target FPS...")
+            target_fps, _ = measure_fps(run_user_cmd, allow_glxgears_fallback=args.allow_glxgears_fallback)
+            if target_fps:
+                cprint(C_GREEN, f"    Target FPS: {target_fps}")
+            else:
+                cprint(C_YELLOW, "    FPS benchmark unavailable.")
+            target_used_mb, _ = ram_snapshot()
+
+    # ---- Baseline/reference measurement at 1.0x ----
+    cprint(C_BLUE, f"\n[*] Preparing reference baseline at {reference_scale}x...")
+    scale_before_baseline = target_scale if target_scale is not None else start_scale
+    if abs(scale_before_baseline - reference_scale) > 1e-6:
+        applied, apply_method = set_scale_programmatic(desktop, reference_scale, run_user_cmd)
+        if applied:
+            cprint(C_GREEN, f"    Applied via {apply_method}. Waiting 2 s for compositor...")
+            time.sleep(2)
+        else:
+            cprint(C_YELLOW, "    Could not apply reference baseline programmatically.")
+            if interactive:
+                input(f"    Please set scale to {reference_scale}x manually, then press Enter...")
+                time.sleep(2)
+
+    baseline_scale, baseline_scale_source = detect_current_scale(
+        session_env, desktop, run_user_cmd, home_dir,
+    )
+    cprint(C_GREEN, f"    Baseline scale detected: {baseline_scale}x  (via {baseline_scale_source})")
+
     cprint(C_BLUE, "\n[*] Measuring baseline FPS...")
-    baseline_fps, fps_tool = measure_fps(run_user_cmd)
+    baseline_fps, fps_tool = measure_fps(run_user_cmd, allow_glxgears_fallback=args.allow_glxgears_fallback)
     if baseline_fps == 0.0:
-        cprint(C_YELLOW, "    FPS benchmark unavailable (no display or glmark2/glxgears not found).")
+        cprint(C_YELLOW, "    FPS benchmark unavailable (glmark2 not found or no display).")
     else:
         cprint(C_GREEN, f"    Baseline FPS ({fps_tool}): {baseline_fps}")
 
     baseline_used_mb, baseline_avail_mb = ram_snapshot()
 
-    # ---- Mouse test at baseline ----
+    # ---- Mouse test at baseline (optional) ----
     cprint(C_BLUE, "\n[*] Mouse smoothness test (baseline scale)...")
     input_devices = parse_proc_input_devices()
     mouse_device  = select_mouse_event_device(input_devices)
-    if not mouse_device:
+    if args.mouse_test and not mouse_device:
         cprint(C_YELLOW, "    No mouse/pointer input device found in /proc/bus/input/devices.")
-    baseline_mouse = sample_input_events(mouse_device, priv, interactive)
+    if args.mouse_test:
+        baseline_mouse = sample_input_events(mouse_device, priv, interactive)
+    else:
+        baseline_mouse = {
+            "device": mouse_device,
+            "method": "disabled",
+            "ok": False,
+            "error": "disabled by default (use --mouse-test to enable)",
+        }
 
-    # ---- Target scale ----
-    target_scale: Optional[float] = args.scale
-    if target_scale is None and interactive:
-        raw = input(
-            f"\n[?] Current scale is {baseline_scale}x. "
-            "Enter target scale to test (e.g. 1.25, 1.5, 2) or press Enter to skip: "
-        ).strip()
-        if raw:
-            try:
-                target_scale = float(raw)
-            except ValueError:
-                pass
-
-    target_fps: Optional[float]   = None
-    target_used_mb: Optional[int] = None
-
-    if target_scale is not None and target_scale != baseline_scale:
-        cprint(C_BLUE, f"\n[*] Applying target scale: {target_scale}x...")
-        applied, apply_method = set_scale_programmatic(desktop, target_scale, run_user_cmd)
-        if applied:
-            cprint(C_GREEN, f"    Applied via {apply_method}. Waiting 2 s for compositor...")
-            time.sleep(2)
-        else:
-            cprint(C_YELLOW, "    Could not apply scale programmatically.")
-            if interactive:
-                input(f"    Please set scale to {target_scale}x manually, then press Enter...")
-                time.sleep(2)
-            else:
-                cprint(C_YELLOW, "    Skipping target scale (non-interactive, could not auto-apply).")
-                target_scale = None
-
-    if target_scale is not None and target_scale != baseline_scale:
-        new_detected, new_src = detect_current_scale(session_env, desktop, run_user_cmd, home_dir)
-        cprint(C_GREEN, f"    Detected scale after switch: {new_detected}x  (via {new_src})")
-
-        cprint(C_BLUE, "\n[*] Measuring target FPS...")
-        target_fps, _ = measure_fps(run_user_cmd)
-        if target_fps:
-            cprint(C_GREEN, f"    Target FPS: {target_fps}")
-        else:
-            cprint(C_YELLOW, "    FPS benchmark unavailable.")
-
-        target_used_mb, _ = ram_snapshot()
-
-        cprint(C_BLUE, "\n[*] Mouse smoothness test (target scale)...")
-        _ = sample_input_events(mouse_device, priv, interactive)
-
-        # Restore baseline scale
-        cprint(C_BLUE, f"\n[*] Restoring baseline scale ({baseline_scale}x)...")
-        restored, _ = set_scale_programmatic(desktop, baseline_scale, run_user_cmd)
+    # ---- Restore start scale ----
+    if abs(start_scale - baseline_scale) > 1e-6:
+        cprint(C_BLUE, f"\n[*] Restoring start scale ({start_scale}x)...")
+        restored, _ = set_scale_programmatic(desktop, start_scale, run_user_cmd)
         if not restored:
-            cprint(C_YELLOW, f"    Could not auto-restore. Please manually restore to {baseline_scale}x.")
+            cprint(C_YELLOW, f"    Could not auto-restore. Please manually restore to {start_scale}x.")
 
     # ---- Assess mouse smoothness ----
     cprint(C_BLUE, "\n[*] Assessing mouse smoothness...")
@@ -1414,6 +1700,24 @@ def main() -> int:
     # ---- Assessment ----
     cprint(C_BLUE, "[*] Generating assessment...")
     ram_total_mb = baseline_used_mb + baseline_avail_mb
+    output_topology = gather_output_scaling_topology(run_user_cmd, session_type)
+    pipeline_analysis = analyze_scaling_pipeline(
+        session_type=session_type,
+        desktop=desktop,
+        compositor=wm_comp.get("compositor", "unknown"),
+        xwayland_analysis=xwayland_analysis,
+        driver_info=driver_info,
+        renderer=renderer,
+        reference_scale=baseline_scale,
+        target_scale=target_scale if (target_scale is not None and abs(target_scale - baseline_scale) > 1e-6) else None,
+        fps_tool=fps_tool,
+        output_topology=output_topology,
+    )
+    reported_target_scale = (
+        target_scale
+        if (target_scale is not None and abs(target_scale - baseline_scale) > 1e-6)
+        else None
+    )
     assessment = assess_performance(
         ram_total_mb=ram_total_mb,
         cpu_cores=os.cpu_count() or 0,
@@ -1428,6 +1732,7 @@ def main() -> int:
         xwayland_present, xwayland_analysis,
         driver_info, cosmic_scale_hits,
         smooth, driver_suitable,
+        pipeline_analysis,
     )
     mem_breakdown = summarize_memory_breakdown()
 
@@ -1442,8 +1747,9 @@ def main() -> int:
         osr=osr, base_distro=base_distro,
         session_type=session_type, desktop=desktop,
         wm_comp=wm_comp, xwayland_present=xwayland_present,
+        start_scale=start_scale, start_scale_source=start_scale_source,
         baseline_scale=baseline_scale, baseline_scale_source=baseline_scale_source,
-        target_scale=target_scale,
+        target_scale=reported_target_scale,
         ram_total_mb=ram_total_mb, cpu_model=cpu_model, cpu_cores=os.cpu_count() or 0,
         gpu_lspci=gpu_lspci, driver_info=driver_info, renderer=renderer,
         baseline_fps=baseline_fps, fps_tool=fps_tool, target_fps=target_fps,
@@ -1451,6 +1757,7 @@ def main() -> int:
         target_used_mb=target_used_mb,
         smooth=smooth, mouse_notes=mouse_notes,
         driver_suitable=driver_suitable, driver_notes=driver_notes,
+        pipeline_analysis=pipeline_analysis,
         assessment=assessment, conclusions=conclusions,
     )
 
@@ -1467,8 +1774,9 @@ def main() -> int:
         session_type=session_type, desktop=desktop,
         wm_comp=wm_comp, xwayland_present=xwayland_present,
         xwayland_analysis=xwayland_analysis,
+        start_scale=start_scale, start_scale_source=start_scale_source,
         baseline_scale=baseline_scale, baseline_scale_source=baseline_scale_source,
-        target_scale=target_scale,
+        target_scale=reported_target_scale,
         ram_total_mb=ram_total_mb, cpu_model=cpu_model, cpu_cores=os.cpu_count() or 0,
         gpu_lspci=gpu_lspci, driver_info=driver_info, renderer=renderer,
         baseline_fps=baseline_fps, fps_tool=fps_tool, target_fps=target_fps,
@@ -1476,6 +1784,7 @@ def main() -> int:
         target_used_mb=target_used_mb,
         smooth=smooth, mouse_notes=mouse_notes, mouse_stats=baseline_mouse,
         driver_suitable=driver_suitable, driver_notes=driver_notes,
+        pipeline_analysis=pipeline_analysis,
         assessment=assessment, conclusions=conclusions,
         mem_breakdown=mem_breakdown, ps_output=ps_output,
     )
