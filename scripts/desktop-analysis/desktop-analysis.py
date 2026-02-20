@@ -36,6 +36,21 @@ from pathlib import Path
 from typing import Optional
 
 REPORT_OUTPUT_FILE = f"desktop-analysis-report-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+TRACE_LOG: list[str] = []
+CONSOLE_LOG: list[str] = []
+_TRACE_SNIPPET_LIMIT = 240
+
+
+def _timestamp() -> str:
+    return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def trace(msg: str) -> None:
+    TRACE_LOG.append(f"[{_timestamp()}] {msg}")
+
+
+def log_console(msg: str) -> None:
+    CONSOLE_LOG.append(f"[{_timestamp()}] {msg}")
 
 # ---------------------------------------------------------------------------
 # Colour helpers
@@ -49,16 +64,19 @@ C_BLUE   = "\033[34m"
 
 
 def cprint(color: str, msg: str) -> None:
+    log_console(msg)
     print(f"{color}{msg}{C_RESET}")
 
 
 def _section(title: str) -> None:
+    log_console(f"== {title} ==")
     print(f"\n{C_BLUE}{'=' * 62}{C_RESET}")
     print(f"{C_BLUE}  {title}{C_RESET}")
     print(f"{C_BLUE}{'=' * 62}{C_RESET}")
 
 
 def _bullet(label: str, value: object) -> None:
+    log_console(f"{label}: {value}")
     print(f"  {label:<34} {value}")
 
 
@@ -68,6 +86,8 @@ def _bullet(label: str, value: object) -> None:
 
 def run_cmd(cmd: list, timeout: int = 20, env: Optional[dict] = None) -> dict:
     """Run a subprocess and return a result dict."""
+    cmd_str = " ".join(cmd)
+    trace(f"run_cmd start: cmd='{cmd_str}', timeout={timeout}")
     try:
         r = subprocess.run(
             cmd,
@@ -77,29 +97,71 @@ def run_cmd(cmd: list, timeout: int = 20, env: Optional[dict] = None) -> dict:
             timeout=timeout,
             env=env,
         )
-        return {
+        result = {
             "ok": r.returncode == 0,
             "stdout": r.stdout.strip(),
             "stderr": r.stderr.strip(),
             "returncode": r.returncode,
             "error": "",
-            "cmd": " ".join(cmd),
+            "cmd": cmd_str,
         }
+        stdout_excerpt = result["stdout"][:_TRACE_SNIPPET_LIMIT].replace("\n", "\\n")
+        stderr_excerpt = result["stderr"][:_TRACE_SNIPPET_LIMIT].replace("\n", "\\n")
+        trace(
+            f"run_cmd done: rc={result['returncode']} ok={result['ok']} "
+            f"stdout='{stdout_excerpt}' stderr='{stderr_excerpt}'"
+        )
+        return result
     except FileNotFoundError:
+        trace(f"run_cmd error: command not found: '{cmd_str}'")
         return {"ok": False, "stdout": "", "stderr": "", "returncode": 127,
-                "error": "command not found", "cmd": " ".join(cmd)}
+                "error": "command not found", "cmd": cmd_str}
     except subprocess.TimeoutExpired as exc:
-        stdout = (exc.stdout or "").strip() if isinstance(exc.stdout, str) else ""
-        stderr = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
+        def _to_text(value) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace").strip()
+            return str(value).strip()
+
+        stdout = _to_text(exc.stdout)
+        stderr = _to_text(exc.stderr)
+        trace(
+            "run_cmd timeout: "
+            f"cmd='{cmd_str}' stdout='{stdout[:_TRACE_SNIPPET_LIMIT].replace(chr(10), '\\n')}' "
+            f"stderr='{stderr[:_TRACE_SNIPPET_LIMIT].replace(chr(10), '\\n')}'"
+        )
         return {"ok": False, "stdout": stdout, "stderr": stderr, "returncode": 124,
-                "error": "timeout", "cmd": " ".join(cmd)}
+            "error": "timeout", "cmd": cmd_str}
     except Exception as exc:  # noqa: BLE001
+        trace(f"run_cmd exception: cmd='{cmd_str}' error='{exc}'")
         return {"ok": False, "stdout": "", "stderr": "", "returncode": 1,
-                "error": str(exc), "cmd": " ".join(cmd)}
+            "error": str(exc), "cmd": cmd_str}
 
 
 def command_exists(cmd: str) -> bool:
     return shutil.which(cmd) is not None
+
+
+def command_exists_any(commands: list[str]) -> bool:
+    return any(command_exists(cmd) for cmd in commands)
+
+
+def resolve_command_variant(tool: str) -> str:
+    """Resolve command aliases that differ by distro/version."""
+    if tool == "qdbus":
+        for candidate in ("qdbus", "qdbus6", "qdbus-qt6"):
+            if command_exists(candidate):
+                return candidate
+        return "qdbus"
+    return tool
+
+
+def tool_available(tool: str) -> bool:
+    """Tool availability check with alias support."""
+    if tool == "qdbus":
+        return command_exists_any(["qdbus", "qdbus6", "qdbus-qt6"])
+    return command_exists(tool)
 
 
 def read_file(path: str) -> str:
@@ -192,7 +254,7 @@ def ensure_sudo(cmd: list, priv: dict) -> Optional[list]:
 # Package auto-install
 # ---------------------------------------------------------------------------
 
-# tool -> {distro_family: package_name}
+# tool -> {distro_family: package_name or [fallback_package_names]}
 _PKG_MAP: dict = {
     "lspci":          {"ubuntu": "pciutils",      "debian": "pciutils",      "fedora": "pciutils",        "arch": "pciutils",        "suse": "pciutils"},
     "lshw":           {"ubuntu": "lshw",           "debian": "lshw",          "fedora": "lshw",            "arch": "lshw",            "suse": "lshw"},
@@ -204,18 +266,66 @@ _PKG_MAP: dict = {
     "wlr-randr":      {"ubuntu": "wlr-randr",      "debian": "wlr-randr",     "fedora": "wlr-randr",       "arch": "wlr-randr",       "suse": "wlr-randr"},
     "xrandr":         {"ubuntu": "x11-xserver-utils", "debian": "x11-xserver-utils", "fedora": "xrandr", "arch": "xorg-xrandr", "suse": "xrandr"},
     "gdbus":          {"ubuntu": "libglib2.0-bin", "debian": "libglib2.0-bin", "fedora": "glib2", "arch": "glib2", "suse": "glib2-tools"},
-    "qdbus":          {"ubuntu": "qttools5-dev-tools", "debian": "qttools5-dev-tools", "fedora": "qt5-qttools", "arch": "qt5-tools", "suse": "libqt5-qttools"},
+    "qdbus":          {
+        "ubuntu": ["qt6-tools-dev-tools", "qttools5-dev-tools"],
+        "debian": ["qt6-tools-dev-tools", "qttools5-dev-tools"],
+        "fedora": ["qt6-qttools", "qt5-qttools"],
+        "arch": ["qt6-tools", "qt5-tools"],
+        "suse": ["qt6-tools", "libqt5-qttools"],
+    },
+    "mangohud":       {"ubuntu": "mangohud", "debian": "mangohud", "fedora": "mangohud", "arch": "mangohud", "suse": "mangohud"},
     "xlsclients":     {"ubuntu": "x11-utils",      "debian": "x11-utils",     "fedora": "xorg-x11-utils",  "arch": "xorg-xlsclients", "suse": "xorg-x11-utils"},
     "libinput":       {"ubuntu": "libinput-tools",  "debian": "libinput-tools","fedora": "libinput",        "arch": "libinput",        "suse": "libinput-tools"},
     "kscreen-doctor": {"ubuntu": "kscreen",        "debian": "kscreen",       "fedora": "kscreen",         "arch": "kscreen",         "suse": "kscreen"},
 }
 
 
+def _package_exists(pm: str, package: str) -> bool:
+    """Best-effort package existence check for distro package managers."""
+    if not package:
+        return False
+
+    if pm == "apt-get" and command_exists("apt-cache"):
+        res = run_cmd(["apt-cache", "show", package], timeout=20)
+        return res.get("ok", False) and bool(res.get("stdout"))
+    if pm == "dnf":
+        res = run_cmd(["dnf", "-q", "info", package], timeout=30)
+        return res.get("ok", False)
+    if pm == "pacman":
+        res = run_cmd(["pacman", "-Si", package], timeout=20)
+        return res.get("ok", False)
+    if pm == "zypper":
+        res = run_cmd(["zypper", "--non-interactive", "info", package], timeout=30)
+        return res.get("ok", False)
+
+    return True
+
+
+def _resolve_package_candidate(pm: Optional[str], package_spec) -> Optional[str]:
+    """Resolve package candidate when multiple names exist across distro versions."""
+    if isinstance(package_spec, str):
+        return package_spec
+
+    if isinstance(package_spec, list):
+        if not package_spec:
+            return None
+        if not pm:
+            return package_spec[0]
+        for candidate in package_spec:
+            if _package_exists(pm, candidate):
+                return candidate
+        return package_spec[0]
+
+    return None
+
+
 def _packages_for_distro(missing_cmds: list, base_distro: str) -> list:
+    pm = detect_pkg_manager()
     pkgs = set()
     for cmd in missing_cmds:
         pkg_map = _PKG_MAP.get(cmd, {})
-        pkg = pkg_map.get(base_distro) or pkg_map.get("ubuntu")
+        package_spec = pkg_map.get(base_distro) or pkg_map.get("ubuntu")
+        pkg = _resolve_package_candidate(pm, package_spec)
         if pkg:
             pkgs.add(pkg)
     return sorted(pkgs)
@@ -760,7 +870,7 @@ def gather_fps_strategy_findings(strategy: dict, run_user_cmd, session_type: str
     }
 
     for tool in strategy.get("tools", []):
-        findings["tool_availability"][tool] = command_exists(tool)
+        findings["tool_availability"][tool] = tool_available(tool)
 
     # Shared refresh probe
     if command_exists("xrandr"):
@@ -804,12 +914,71 @@ def gather_fps_strategy_findings(strategy: dict, run_user_cmd, session_type: str
             "stdout_excerpt": kd.get("stdout", "")[:2000],
         }
 
+    if sid == "kde-wayland" and tool_available("qdbus"):
+        qdbus_cmd = resolve_command_variant("qdbus")
+        qd = run_user_cmd([qdbus_cmd, "org.kde.KWin", "/KWin", "supportInformation"], timeout=30)
+        findings["probes"]["kwin-support-info"] = {
+            "ok": qd.get("ok", False),
+            "stdout_excerpt": qd.get("stdout", "")[:2000],
+        }
+
     if not any(v for v in findings["tool_availability"].values()):
         findings["notes"].append("No strategy tools available; relying on benchmark-only fallback")
     if "wayland" in (session_type or "").lower() and not command_exists("wayland-info"):
         findings["notes"].append("wayland-info missing; environment introspection is limited")
 
     return findings
+
+
+def gather_compositor_diagnostics(strategy: dict, wm_comp: dict, run_user_cmd, session_env: dict) -> dict:
+    """Gather compositor-specific diagnostics for responsiveness interpretation."""
+    diagnostics = {
+        "strategy_id": strategy.get("id", "unknown"),
+        "compositor": wm_comp.get("compositor", "unknown"),
+        "probes": {},
+        "notes": [],
+    }
+
+    compositor_name = (wm_comp.get("compositor") or "").strip()
+    if compositor_name:
+        ps_probe = run_user_cmd(["ps", "-C", compositor_name, "-o", "pid=,%cpu=,rss=,etimes="], timeout=20)
+        diagnostics["probes"]["compositor-ps"] = {
+            "ok": ps_probe.get("ok", False),
+            "stdout_excerpt": ps_probe.get("stdout", "")[:1000],
+        }
+    else:
+        diagnostics["notes"].append("Compositor process name unknown; skipping process-level probe")
+
+    sid = strategy.get("id", "")
+    if sid == "gnome-wayland" and command_exists("gsettings"):
+        gs = run_user_cmd(["gsettings", "get", "org.gnome.mutter", "experimental-features"], timeout=20)
+        diagnostics["probes"]["gnome-mutter-experimental-features"] = {
+            "ok": gs.get("ok", False),
+            "stdout_excerpt": gs.get("stdout", "")[:1000],
+        }
+
+    if sid == "hyprland-wayland" and command_exists("hyprctl"):
+        hp = run_user_cmd(["hyprctl", "-j", "monitors"], timeout=20)
+        diagnostics["probes"]["hyprctl-monitors-json"] = {
+            "ok": hp.get("ok", False),
+            "stdout_excerpt": hp.get("stdout", "")[:2000],
+        }
+
+    if sid in ("cosmic-wayland", "wlroots-wayland") and command_exists("wayland-info"):
+        wi = run_user_cmd(["wayland-info"], timeout=25)
+        diagnostics["probes"]["wayland-info"] = {
+            "ok": wi.get("ok", False),
+            "stdout_excerpt": wi.get("stdout", "")[:2000],
+        }
+
+    if sid == "x11-generic" and session_env.get("DISPLAY") and command_exists("xprop"):
+        xp = run_user_cmd(["xprop", "-root", "_NET_SUPPORTING_WM_CHECK"], timeout=20)
+        diagnostics["probes"]["x11-wm-check"] = {
+            "ok": xp.get("ok", False),
+            "stdout_excerpt": xp.get("stdout", "")[:1000],
+        }
+
+    return diagnostics
 
 
 def gather_output_scaling_topology(run_user_cmd, session_type: str) -> dict:
@@ -1030,6 +1199,65 @@ def _run_glmark2(run_user_cmd, duration_s: int = 15) -> tuple:
     return 0.0, ""
 
 
+def _run_glmark2_with_hud(run_user_cmd, duration_s: int = 15) -> tuple:
+    """Run glmark2 via MangoHud wrapper when available."""
+    if not command_exists("mangohud"):
+        return 0.0, ""
+
+    for tool in ("glmark2-wayland", "glmark2"):
+        if not command_exists(tool):
+            continue
+        res = run_user_cmd(["mangohud", tool, "--fullscreen"], timeout=duration_s + 5)
+        combined = "\n".join([res.get("stdout", ""), res.get("stderr", "")])
+        if res.get("ok") or res.get("returncode") in (0, 124):
+            for line in combined.splitlines():
+                m = re.search(r"glmark2 Score:\s*(\d+)", line, re.IGNORECASE)
+                if m:
+                    return float(m.group(1)), f"mangohud+{tool}"
+
+            fps_vals = []
+            for line in combined.splitlines():
+                m = re.search(r"\bFPS:\s*([0-9]+(?:\.[0-9]+)?)", line, re.IGNORECASE)
+                if m:
+                    try:
+                        fps_vals.append(float(m.group(1)))
+                    except ValueError:
+                        pass
+            if fps_vals:
+                return round(sum(fps_vals) / len(fps_vals), 1), f"mangohud+{tool} (partial)"
+    return 0.0, ""
+
+
+def _run_glmark2_with_gallium_hud(run_user_cmd, duration_s: int = 15) -> tuple:
+    """Run glmark2 with Mesa GALLIUM_HUD enabled as fallback when MangoHud is unavailable."""
+    for tool in ("glmark2-wayland", "glmark2"):
+        if not command_exists(tool):
+            continue
+        env = {
+            "GALLIUM_HUD": "simple,fps",
+            "GALLIUM_HUD_PERIOD": "0.5",
+        }
+        res = run_user_cmd([tool, "--fullscreen"], timeout=duration_s + 5, extra_env=env)
+        combined = "\n".join([res.get("stdout", ""), res.get("stderr", "")])
+        if res.get("ok") or res.get("returncode") in (0, 124):
+            for line in combined.splitlines():
+                m = re.search(r"glmark2 Score:\s*(\d+)", line, re.IGNORECASE)
+                if m:
+                    return float(m.group(1)), f"gallium_hud+{tool}"
+
+            fps_vals = []
+            for line in combined.splitlines():
+                m = re.search(r"\bFPS:\s*([0-9]+(?:\.[0-9]+)?)", line, re.IGNORECASE)
+                if m:
+                    try:
+                        fps_vals.append(float(m.group(1)))
+                    except ValueError:
+                        pass
+            if fps_vals:
+                return round(sum(fps_vals) / len(fps_vals), 1), f"gallium_hud+{tool} (partial)"
+    return 0.0, ""
+
+
 def _run_glxgears(duration_s: int = 5) -> float:
     """Run glxgears for duration_s seconds. Returns average FPS."""
     if not command_exists("glxgears"):
@@ -1063,6 +1291,14 @@ def _run_glxgears(duration_s: int = 5) -> float:
 
 def measure_fps(run_user_cmd, allow_glxgears_fallback: bool = False) -> tuple:
     """Measure FPS using best available tool. Returns (fps, tool_name)."""
+    fps, tool = _run_glmark2_with_hud(run_user_cmd)
+    if fps > 0:
+        return fps, tool
+
+    fps, tool = _run_glmark2_with_gallium_hud(run_user_cmd)
+    if fps > 0:
+        return fps, tool
+
     fps, tool = _run_glmark2(run_user_cmd)
     if fps > 0:
         return fps, tool
@@ -1113,6 +1349,11 @@ def _nvidia_install_instructions(base_distro: str, osr: dict) -> list:
         lines += [
             "  - Detect recommended package: ubuntu-drivers devices",
             "  - Install recommended: sudo ubuntu-drivers autoinstall",
+            "  - If still on nouveau: check Secure Boot state (mokutil --sb-state)",
+            "  - List installed NVIDIA packages: dpkg -l | grep -E '^ii\\s+nvidia|nvidia-driver'",
+            "  - Check available driver branches: apt-cache search '^nvidia-driver-[0-9]+'",
+            "  - Install explicit branch from distro repo (example): sudo apt install nvidia-driver-550",
+            "  - Rebuild initramfs and reboot: sudo update-initramfs -u && sudo reboot",
             "  - Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
         ]
     elif base_distro == "fedora":
@@ -1442,6 +1683,7 @@ def print_console_report(
     smooth, mouse_notes, driver_suitable, driver_notes,
     pipeline_analysis,
     fps_strategy_findings,
+    compositor_diagnostics,
     assessment, conclusions,
     nvidia_instructions,
 ) -> None:
@@ -1538,6 +1780,17 @@ def print_console_report(
     for note in fps_strategy_findings.get("notes", []):
         print(f"    note: {note}")
 
+    _section("Compositor Diagnostics")
+    _bullet("Compositor", compositor_diagnostics.get("compositor", "unknown"))
+    _bullet("Strategy id", compositor_diagnostics.get("strategy_id", "unknown"))
+    for probe_name, probe_data in compositor_diagnostics.get("probes", {}).items():
+        _bullet(f"Probe {probe_name}", "ok" if probe_data.get("ok") else "failed")
+        excerpt = probe_data.get("stdout_excerpt", "")
+        if excerpt:
+            print(f"    {excerpt[:300]}")
+    for note in compositor_diagnostics.get("notes", []):
+        print(f"    note: {note}")
+
     _section("Efficiency & Performance Assessment")
     print(assessment)
 
@@ -1567,9 +1820,12 @@ def write_markdown_report(
     driver_suitable, driver_notes,
     pipeline_analysis,
     fps_strategy_findings,
+    compositor_diagnostics,
     assessment, conclusions,
     nvidia_instructions,
     mem_breakdown, ps_output: Optional[str],
+    trace_log,
+    console_log,
 ) -> None:
     lines = [
         "# Desktop Scaling Diagnostic Report",
@@ -1672,6 +1928,14 @@ def write_markdown_report(
         json.dumps(fps_strategy_findings, indent=2),
         "```",
         "",
+        "## Compositor Diagnostics",
+        f"- Compositor: {compositor_diagnostics.get('compositor', 'unknown')}",
+        f"- Strategy id: {compositor_diagnostics.get('strategy_id', 'unknown')}",
+        "",
+        "```json",
+        json.dumps(compositor_diagnostics, indent=2),
+        "```",
+        "",
         "## Efficiency & Performance Assessment",
         assessment,
         "",
@@ -1688,6 +1952,19 @@ def write_markdown_report(
     ]
     if ps_output:
         lines += ["", "## Process List (ps axu)", "```text", ps_output, "```"]
+
+    lines += [
+        "",
+        "## Execution Trace Log",
+        "```text",
+        "\n".join(trace_log[-1200:]) if trace_log else "(no trace entries)",
+        "```",
+        "",
+        "## Console Log",
+        "```text",
+        "\n".join(console_log[-1200:]) if console_log else "(no console log entries)",
+        "```",
+    ]
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -1737,6 +2014,13 @@ def main() -> int:
     )
     args = parser.parse_args()
     interactive = not args.non_interactive
+    trace(f"main start: argv={sys.argv}")
+    trace(
+        "options: "
+        f"non_interactive={args.non_interactive}, fractional_scale={args.fractional_scale}, "
+        f"scale_alias={args.scale}, mouse_test={args.mouse_test}, "
+        f"allow_glxgears_fallback={args.allow_glxgears_fallback}, output='{args.output}'"
+    )
 
     cprint(C_BLUE, "\n[*] Linux Desktop Scaling Diagnostics")
     cprint(C_BLUE,   "    ===================================")
@@ -1750,6 +2034,7 @@ def main() -> int:
     # ---- OS / distro ----
     osr = read_os_release()
     base_distro = detect_base_distro(osr)
+    trace(f"detected distro: id={osr.get('ID', '')}, base_distro={base_distro}, pretty='{osr.get('PRETTY_NAME', 'unknown')}'")
     cprint(C_GREEN, f"Base distro: {base_distro}  ({osr.get('PRETTY_NAME', 'unknown')})")
 
     # ---- Session environment ----
@@ -1765,30 +2050,45 @@ def main() -> int:
     if xwayland_display and "DISPLAY" not in session_env:
         session_env["DISPLAY"] = xwayland_display
 
-    def run_user_cmd(cmd: list, timeout: int = 20) -> dict:
-        return run_cmd(cmd, timeout=timeout, env=session_env)
+    def run_user_cmd(cmd: list, timeout: int = 20, extra_env: Optional[dict] = None) -> dict:
+        env = dict(session_env)
+        if extra_env:
+            env.update(extra_env)
+        return run_cmd(cmd, timeout=timeout, env=env)
 
     session_type      = detect_session_type(session_env)
     desktop           = infer_desktop_session(session_env, processes)
     wm_comp           = detect_compositor_wm(processes)
+    trace(f"session detection: session_type={session_type}, desktop={desktop}, compositor={wm_comp.get('compositor', 'unknown')}")
     xwayland_present  = bool(xwayland_display)
     cprint(C_GREEN, f"Session: {session_type}, Desktop: {desktop}, Compositor: {wm_comp['compositor']}")
     fps_strategy = detect_fps_strategy(session_type, desktop, wm_comp.get("compositor", "unknown"))
     fps_strategy_findings = gather_fps_strategy_findings(fps_strategy, run_user_cmd, session_type)
+    compositor_diagnostics = gather_compositor_diagnostics(fps_strategy, wm_comp, run_user_cmd, session_env)
     cprint(C_GREEN, f"FPS strategy: {fps_strategy.get('name', 'unknown')}")
 
     # ---- Package auto-install ----
     pm = detect_pkg_manager()
+    strategy_tools = fps_strategy.get("tools", []) if isinstance(fps_strategy, dict) else []
     wanted = [
-        "lspci", "lshw", "glxinfo", "vulkaninfo", "glmark2",
-        "wayland-info", "wlr-randr", "xrandr", "gdbus", "qdbus", "xlsclients", "libinput", "kscreen-doctor",
-    ]
-    missing = [c for c in wanted if not command_exists(c)]
+        "lspci", "lshw", "glxinfo", "vulkaninfo", "glmark2", "mangohud",
+        "xlsclients", "libinput",
+    ] + [tool for tool in strategy_tools if tool]
+    deduped_wanted = []
+    seen = set()
+    for cmd in wanted:
+        if cmd in seen:
+            continue
+        seen.add(cmd)
+        deduped_wanted.append(cmd)
+    missing = [c for c in deduped_wanted if not tool_available(c)]
+    trace(f"tool check: wanted={deduped_wanted}, missing={missing}, pkg_manager={pm}, immutable={detect_immutable()}")
     if missing and pm and not detect_immutable():
         cprint(C_YELLOW, f"Auto-installing missing tools: {missing}")
         pkgs = _packages_for_distro(missing, base_distro)
         if pkgs:
             result = install_packages(pm, pkgs, priv)
+            trace(f"package install result: ok={result.get('ok')} installed_candidates={pkgs}")
             status = "OK" if result["ok"] else "some packages failed"
             cprint(C_GREEN if result["ok"] else C_YELLOW, f"Package install: {status} ({pkgs})")
 
@@ -1832,6 +2132,7 @@ def main() -> int:
                 pass
 
     cprint(C_GREEN, f"Start scale: {start_scale}x  (via {start_scale_source})")
+    trace(f"start scale: value={start_scale}, source={start_scale_source}")
 
     # ---- COSMIC config scan ----
     cosmic_cfg        = discover_cosmic_configs(home_dir)
@@ -1874,6 +2175,7 @@ def main() -> int:
 
     # Immediate first run at current scale (mapped to nearest required case)
     first_case = _map_start_scale_to_case(start_scale, required_cases)
+    trace(f"test matrix first case mapping: start_scale={start_scale} -> {first_case}")
     cprint(C_BLUE, f"\n[*] Immediate start-scale run mapped to case: {first_case}")
     test_runs[first_case] = run_measurement_case(first_case, required_cases[first_case], "start-scale")
 
@@ -1888,6 +2190,11 @@ def main() -> int:
         else:
             cprint(C_GREEN, f"    Scale ensured via {method}.")
         test_runs[case_name] = run_measurement_case(case_name, scale_value, method)
+        trace(
+            f"case result: {case_name} requested={scale_value} "
+            f"detected={test_runs[case_name].get('detected_scale')} "
+            f"fps={test_runs[case_name].get('fps')} tool={test_runs[case_name].get('fps_tool')}"
+        )
 
     # Normalize baseline references from mandatory 1.0 case
     base_run = test_runs.get("base_1.0", {})
@@ -1990,6 +2297,7 @@ def main() -> int:
         driver_suitable=driver_suitable, driver_notes=driver_notes,
         pipeline_analysis=pipeline_analysis,
         fps_strategy_findings=fps_strategy_findings,
+        compositor_diagnostics=compositor_diagnostics,
         assessment=assessment, conclusions=conclusions,
         nvidia_instructions=nvidia_instructions,
     )
@@ -2019,10 +2327,14 @@ def main() -> int:
         driver_suitable=driver_suitable, driver_notes=driver_notes,
         pipeline_analysis=pipeline_analysis,
         fps_strategy_findings=fps_strategy_findings,
+        compositor_diagnostics=compositor_diagnostics,
         assessment=assessment, conclusions=conclusions,
         nvidia_instructions=nvidia_instructions,
         mem_breakdown=mem_breakdown, ps_output=ps_output,
+        trace_log=TRACE_LOG,
+        console_log=CONSOLE_LOG,
     )
+    trace(f"report write complete: output='{args.output}'")
     cprint(C_GREEN, f"\nReport written to: {args.output}")
 
     return 0

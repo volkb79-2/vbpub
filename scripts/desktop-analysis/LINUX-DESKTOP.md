@@ -249,8 +249,9 @@ utilities that are typically pre-installed:
 
 | Utility | Purpose | Package (Debian/Ubuntu) |
 |---|---|---|
+| `mangohud` | Preferred HUD wrapper for app FPS/frame-time overlays | `mangohud` |
 | `glmark2` | Primary graphics benchmark | `glmark2` |
-| `glxgears` | Optional fallback benchmark | `mesa-utils` |
+| `glxgears` | Last-resort fallback benchmark | `mesa-utils` |
 | `glxinfo` | OpenGL renderer info | `mesa-utils` |
 | `lspci` | GPU model & kernel driver | `pciutils` |
 | `xrandr` | X11 scale detection & setting | `x11-xserver-utils` |
@@ -259,6 +260,18 @@ utilities that are typically pre-installed:
 | `xfconf-query` | Xfce scale detection & setting | `xfconf` |
 | `libinput` | Mouse input driver info | `libinput-tools` |
 | `xinput` | X11 pointer device list | `xinput` |
+
+Benchmark backend order (current implementation):
+
+1. `mangohud + glmark2` (preferred),
+2. `GALLIUM_HUD + glmark2` (Mesa fallback),
+3. plain `glmark2`,
+4. optional `glxgears` fallback only when enabled.
+
+Notes:
+- HUD backends improve frame-time visibility for the benchmarked app.
+- They still do **not** directly measure global compositor present FPS for all desktop surfaces.
+- Script output now includes a dedicated **Compositor Diagnostics** section with strategy-specific probes.
 
 All utilities are optional; the script degrades gracefully when any of
 them is absent.
