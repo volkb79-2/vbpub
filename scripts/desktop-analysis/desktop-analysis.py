@@ -168,6 +168,96 @@ def resolve_report_output_path(requested_path: str) -> tuple[str, str]:
             )
 
 
+def _probe_directory_writable(path: Path) -> tuple[bool, str]:
+    """Return whether a directory is writable by creating and deleting a tiny probe file."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / f".desktop-analysis-writecheck-{os.getpid()}-{int(time.time() * 1000)}.tmp"
+        with open(probe, "w", encoding="utf-8"):
+            pass
+        probe.unlink(missing_ok=True)
+        return True, ""
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
+def preflight_writable_paths(requested_output: str) -> dict:
+    """Validate writable startup cwd and report destination directory."""
+    cwd = Path.cwd()
+    cwd_ok, cwd_err = _probe_directory_writable(cwd)
+
+    output_requested = Path(requested_output).expanduser()
+    output_target = output_requested if output_requested.is_absolute() else (cwd / output_requested)
+    output_dir = output_target.parent
+    out_ok, out_err = _probe_directory_writable(output_dir)
+
+    return {
+        "cwd": str(cwd),
+        "cwd_writable": cwd_ok,
+        "cwd_error": cwd_err,
+        "output_target": str(output_target),
+        "output_dir": str(output_dir),
+        "output_dir_writable": out_ok,
+        "output_dir_error": out_err,
+    }
+
+
+def analyze_kwin_crash_signals(journalctl_sections: dict) -> dict:
+    """Analyze journal/coredump snippets for common KWin crash or freeze signatures."""
+    signals: list[str] = []
+    next_steps: list[str] = []
+
+    combined_chunks: list[str] = []
+    for sec in (journalctl_sections or {}).values():
+        if not isinstance(sec, dict):
+            continue
+        combined_chunks.append(sec.get("stdout", "") or "")
+        combined_chunks.append(sec.get("stderr", "") or "")
+    text = "\n".join(combined_chunks)
+    text_l = text.lower()
+
+    score = 0
+    if "prepareatomicpresentation" in text_l or "kwin::drmpipeline" in text_l:
+        signals.append("KWin DRM atomic presentation path errors detected (prepareAtomicPresentation/DrmPipeline).")
+        score += 4
+    if "kwin_scene_opengl" in text_l and "gl_invalid" in text_l:
+        signals.append("OpenGL compositor errors detected (kwin_scene_opengl + GL_INVALID_*).")
+        score += 3
+    if "failed to create framebuffer" in text_l or "kwin_wayland_drm" in text_l:
+        signals.append("KWin Wayland DRM framebuffer/output failures detected.")
+        score += 3
+    if "kwin_wayland" in text_l and ("segfault" in text_l or "segmentation fault" in text_l or "sigsegv" in text_l):
+        signals.append("KWin segfault signature detected in logs.")
+        score += 5
+    if "coredumpctl" in (journalctl_sections or {}) and (journalctl_sections.get("coredumpctl", {}).get("stdout", "") or "").strip():
+        signals.append("coredumpctl returned entries for kwin_wayland.")
+        score += 4
+
+    if score >= 7:
+        level = "high"
+    elif score >= 3:
+        level = "medium"
+    elif score > 0:
+        level = "low"
+    else:
+        level = "none"
+
+    if level != "none":
+        next_steps.extend([
+            "journalctl --user-unit plasma-kwin_wayland -b --no-pager",
+            "journalctl --user -b --no-pager --grep 'kwin_wayland_drm|kwin_scene_opengl|GL_INVALID|prepareAtomicPresentation|EGL|xwayland|drm'",
+            "journalctl -k -b --no-pager --grep 'drm|nvidia|nouveau|amdgpu|i915|simpledrm'",
+            "coredumpctl list kwin_wayland --no-pager",
+        ])
+
+    return {
+        "risk_level": level,
+        "score": score,
+        "signals": signals,
+        "next_steps": next_steps,
+    }
+
+
 def command_exists(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
@@ -2369,6 +2459,12 @@ def gather_journalctl_debug(run_user_cmd, journalctl_lines: int = 8000) -> dict:
         "lines": int(max(50, journalctl_lines)),
         "sections": {},
         "notes": [],
+        "kwin_crash_analysis": {
+            "risk_level": "unknown",
+            "score": 0,
+            "signals": [],
+            "next_steps": [],
+        },
     }
     if not data["available"]:
         data["notes"].append("journalctl command not available")
@@ -2382,19 +2478,47 @@ def gather_journalctl_debug(run_user_cmd, journalctl_lines: int = 8000) -> dict:
             "journalctl", "-b", "--no-pager", "-n", lines_arg,
             "--grep", "nvidia|nouveau|kwin|xwayland|drm|gpu|glmark|mangohud",
         ],
+        "kwin_user_unit": [
+            "journalctl", "--user-unit", "plasma-kwin_wayland", "-b", "--no-pager", "-n", lines_arg,
+        ],
+        "kwin_focus_user": [
+            "journalctl", "--user", "-b", "--no-pager", "-n", lines_arg,
+            "--grep", "kwin_wayland_drm|kwin_scene_opengl|GL_INVALID|prepareAtomicPresentation|xwayland|EGL|drm",
+        ],
+        "kernel_drm_focus": [
+            "journalctl", "-k", "-b", "--no-pager", "-n", lines_arg,
+            "--grep", "drm|nvidia|nouveau|amdgpu|i915|simpledrm",
+        ],
     }
     for key, cmd in commands.items():
         res = run_user_cmd(cmd, timeout=45)
-        if (not res.get("ok")) and key == "graphics_filter":
+        if (not res.get("ok")) and ("--grep" in cmd):
             # Some journalctl versions are stricter about --grep; keep graceful fallback.
-            res = run_user_cmd(["journalctl", "-b", "--no-pager", "-n", lines_arg], timeout=45)
+            fallback_cmd = list(cmd)
+            grep_idx = fallback_cmd.index("--grep")
+            del fallback_cmd[grep_idx:grep_idx + 2]
+            res = run_user_cmd(fallback_cmd, timeout=45)
+        stderr_text = (res.get("stderr", "") or "")
+        section_ok = bool(res.get("ok", False)) or ("No journal files were found." in stderr_text)
         data["sections"][key] = {
-            "ok": res.get("ok", False),
+            "ok": section_ok,
             "cmd": " ".join(cmd),
             "returncode": res.get("returncode"),
             "stdout": (res.get("stdout", "") or "")[:120000],
-            "stderr": (res.get("stderr", "") or "")[:5000],
+            "stderr": stderr_text[:5000],
         }
+
+    if command_exists("coredumpctl"):
+        coredump_res = run_user_cmd(["coredumpctl", "list", "kwin_wayland", "--no-pager"], timeout=30)
+        data["sections"]["coredumpctl"] = {
+            "ok": coredump_res.get("ok", False),
+            "cmd": "coredumpctl list kwin_wayland --no-pager",
+            "returncode": coredump_res.get("returncode"),
+            "stdout": (coredump_res.get("stdout", "") or "")[:120000],
+            "stderr": (coredump_res.get("stderr", "") or "")[:5000],
+        }
+
+    data["kwin_crash_analysis"] = analyze_kwin_crash_signals(data.get("sections", {}))
     return data
 
 
@@ -2923,6 +3047,13 @@ def print_console_report(
     _bullet("Enabled", "yes" if journalctl_debug.get("enabled") else "no")
     _bullet("journalctl available", "yes" if journalctl_debug.get("available") else "no")
     _bullet("Captured lines", journalctl_debug.get("lines", "n/a"))
+    kwin_analysis = journalctl_debug.get("kwin_crash_analysis", {}) or {}
+    _bullet("KWin crash risk", kwin_analysis.get("risk_level", "unknown"))
+    _bullet("KWin crash score", kwin_analysis.get("score", "n/a"))
+    for signal in kwin_analysis.get("signals", []):
+        print(f"    signal: {signal}")
+    for step in kwin_analysis.get("next_steps", []):
+        print(f"    next: {step}")
     for sec_name, sec_data in journalctl_debug.get("sections", {}).items():
         _bullet(f"Section {sec_name}", "ok" if sec_data.get("ok") else "failed")
         if sec_data.get("stderr"):
@@ -3238,6 +3369,19 @@ def write_markdown_report(
         f"- journalctl available: {journalctl_debug.get('available')}",
         f"- Captured lines: {journalctl_debug.get('lines')}",
     ]
+    kwin_analysis = journalctl_debug.get("kwin_crash_analysis", {}) or {}
+    lines += [
+        f"- KWin crash risk: {kwin_analysis.get('risk_level', 'unknown')}",
+        f"- KWin crash score: {kwin_analysis.get('score', 0)}",
+    ]
+    if kwin_analysis.get("signals"):
+        lines.append("- KWin crash signals:")
+        for signal in kwin_analysis.get("signals", []):
+            lines.append(f"  - {signal}")
+    if kwin_analysis.get("next_steps"):
+        lines.append("- KWin next-step commands:")
+        for step in kwin_analysis.get("next_steps", []):
+            lines.append(f"  - {step}")
     for note in journalctl_debug.get("notes", []):
         lines.append(f"- Note: {note}")
     for sec_name, sec_data in journalctl_debug.get("sections", {}).items():
@@ -3367,6 +3511,19 @@ def main() -> int:
         cprint(C_RED, "[ERROR] Root-capable access is required in this environment.")
         cprint(C_RED, "[ERROR] Open a root shell (e.g., `sudo -i`) and run the script again.")
         return 2
+
+    path_preflight = preflight_writable_paths(args.output)
+    if not path_preflight.get("cwd_writable"):
+        cprint(C_RED, f"[ERROR] Start directory is not writable: {path_preflight.get('cwd')}")
+        cprint(C_RED, f"[ERROR] Details: {path_preflight.get('cwd_error', 'permission denied')}")
+        cprint(C_RED, "[ERROR] Change to a writable directory before running this script.")
+        return 5
+    if not path_preflight.get("output_dir_writable"):
+        cprint(
+            C_YELLOW,
+            f"[WARN] Output directory is not writable: {path_preflight.get('output_dir')} "
+            f"({path_preflight.get('output_dir_error', 'permission denied')}).",
+        )
 
     # ---- OS / distro ----
     osr = read_os_release()
