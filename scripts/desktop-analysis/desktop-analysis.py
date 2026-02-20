@@ -520,6 +520,107 @@ def gather_graphics_info(run_user_cmd, priv: dict) -> dict:
     return info
 
 
+def parse_lspci_gpu_inventory(lspci_text: str) -> list[dict]:
+    """Parse lspci -nnk GPU entries including active/possible kernel drivers."""
+    gpus: list[dict] = []
+    current: Optional[dict] = None
+    for raw_line in (lspci_text or "").splitlines():
+        line = raw_line.rstrip()
+        if re.match(r"^[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9]\s", line):
+            if current:
+                gpus.append(current)
+                current = None
+            if any(x in line.lower() for x in ("vga compatible controller", "3d controller", "display controller")):
+                slot = line.split()[0]
+                m_desc = re.search(r":\s*(.+?)(?:\s*\(rev\s+[0-9a-fA-F]+\))?$", line)
+                current = {
+                    "slot": slot,
+                    "model": (m_desc.group(1).strip() if m_desc else line.strip()),
+                    "driver_in_use": "",
+                    "kernel_modules": [],
+                }
+            continue
+        if current is None:
+            continue
+        if "Kernel driver in use:" in line:
+            current["driver_in_use"] = line.split(":", 1)[1].strip()
+        elif "Kernel modules:" in line:
+            mods = [m.strip() for m in line.split(":", 1)[1].split(",") if m.strip()]
+            current["kernel_modules"] = mods
+    if current:
+        gpus.append(current)
+    return gpus
+
+
+def parse_possible_nvidia_drivers(base_distro: str, run_user_cmd) -> dict:
+    """Collect possible/recommended NVIDIA driver packages from distro tools."""
+    data = {
+        "recommended": "",
+        "available": [],
+        "raw": "",
+    }
+    if base_distro not in ("ubuntu", "debian"):
+        return data
+    if command_exists("ubuntu-drivers"):
+        ud = run_user_cmd(["ubuntu-drivers", "devices"], timeout=40)
+        if ud.get("ok"):
+            data["raw"] = ud.get("stdout", "")[:8000]
+            for line in ud.get("stdout", "").splitlines():
+                m = re.search(r"driver\s*:\s*([^\s]+)", line)
+                if not m:
+                    continue
+                pkg = m.group(1).strip()
+                if pkg not in data["available"]:
+                    data["available"].append(pkg)
+                if "recommended" in line.lower():
+                    data["recommended"] = pkg
+    return data
+
+
+def gather_platform_firmware_security_info(run_user_cmd) -> dict:
+    """Collect BIOS/firmware + Secure Boot context for diagnostics."""
+    dmi_files = {
+        "bios_vendor": "/sys/class/dmi/id/bios_vendor",
+        "bios_version": "/sys/class/dmi/id/bios_version",
+        "bios_date": "/sys/class/dmi/id/bios_date",
+        "sys_vendor": "/sys/class/dmi/id/sys_vendor",
+        "product_name": "/sys/class/dmi/id/product_name",
+        "board_name": "/sys/class/dmi/id/board_name",
+    }
+    info = {k: read_file(v) for k, v in dmi_files.items()}
+    info["boot_mode"] = "uefi" if os.path.isdir("/sys/firmware/efi") else "legacy-bios"
+    info["kernel_cmdline"] = read_file("/proc/cmdline")
+
+    secure_boot = {
+        "available": command_exists("mokutil"),
+        "state": "unknown",
+        "raw": "",
+    }
+    if secure_boot["available"]:
+        sb = run_user_cmd(["mokutil", "--sb-state"], timeout=20)
+        raw = (sb.get("stdout", "") + "\n" + sb.get("stderr", "")).strip()
+        secure_boot["raw"] = raw
+        raw_lc = raw.lower()
+        if "enabled" in raw_lc:
+            secure_boot["state"] = "enabled"
+        elif "disabled" in raw_lc:
+            secure_boot["state"] = "disabled"
+    info["secure_boot"] = secure_boot
+    return info
+
+
+def should_guard_scale_switching(session_type: str, desktop: str, driver_info: dict, force_risky_scale: bool) -> tuple[bool, str]:
+    """Return whether scale switching should be guarded to avoid compositor instability."""
+    if force_risky_scale:
+        return False, "forced-by-flag"
+    is_wayland = "wayland" in (session_type or "").lower()
+    is_kde = "kde" in (desktop or "").lower() or "plasma" in (desktop or "").lower()
+    uses_nouveau = "nouveau" in set(driver_info.get("loaded", []))
+    if is_wayland and is_kde and uses_nouveau:
+        return True, "kde-wayland+nouveau risk guard"
+    return False, ""
+
+
 def gather_driver_info(lsmod_text: str, priv: dict) -> dict:
     loaded_all = {line.split()[0] for line in lsmod_text.splitlines() if line.strip()}
     gpu_modules = {"nvidia", "nouveau", "i915", "xe", "amdgpu", "radeon"}
@@ -730,9 +831,19 @@ def set_scale_programmatic(desktop: str, factor: float, run_user_cmd) -> tuple:
 
     # kscreen-doctor (KDE)
     if command_exists("kscreen-doctor"):
-        res = run_user_cmd(["kscreen-doctor", f"output.1.scale.{factor}"])
-        if res["ok"]:
-            return True, "kscreen-doctor"
+        out = run_user_cmd(["kscreen-doctor", "--outputs"], timeout=25)
+        output_ids = []
+        if out.get("ok"):
+            for line in strip_ansi(out.get("stdout", "")).splitlines():
+                m = re.match(r"\s*Output:\s*(\d+)\s+", line)
+                if m:
+                    output_ids.append(m.group(1))
+        if not output_ids:
+            output_ids = ["1"]
+        for output_id in output_ids:
+            res = run_user_cmd(["kscreen-doctor", f"output.{output_id}.scale.{factor}"])
+            if res["ok"]:
+                return True, f"kscreen-doctor output.{output_id}"
 
     # gsettings (GNOME)
     if command_exists("gsettings"):
@@ -1421,8 +1532,12 @@ def _ensure_scale(session_env: dict, desktop: str, target_scale: float, run_user
 
     applied, method = set_scale_programmatic(desktop, target_scale, run_user_cmd)
     if applied:
-        time.sleep(2)
-        return True, method
+        for _ in range(4):
+            time.sleep(1)
+            confirmed_scale, _ = detect_current_scale(session_env, desktop, run_user_cmd, home_dir)
+            if abs(confirmed_scale - target_scale) < 0.03:
+                return True, method
+        return False, f"{method} (no-confirmation)"
 
     if interactive:
         input(f"    Please set scale to {target_scale}x manually, then press Enter...")
@@ -1688,7 +1803,7 @@ def build_nvidia_command_block(diag: dict, base_distro: str) -> list[str]:
     return cmds
 
 
-def gather_journalctl_debug(run_user_cmd, journalctl_lines: int = 400) -> dict:
+def gather_journalctl_debug(run_user_cmd, journalctl_lines: int = 8000) -> dict:
     """Collect journalctl slices for troubleshooting in markdown report."""
     data = {
         "enabled": True,
@@ -2022,6 +2137,9 @@ def print_console_report(
     baseline_scale, baseline_scale_source,
     test_runs,
     ram_total_mb, cpu_model, cpu_cores, gpu_lspci,
+    gpu_inventory,
+    firmware_security_info,
+    possible_nvidia_drivers,
     driver_info, renderer, baseline_fps, fps_tool, target_fps,
     baseline_used_mb, baseline_avail_mb, target_used_mb,
     smooth, mouse_notes, driver_suitable, driver_notes,
@@ -2047,8 +2165,25 @@ def print_console_report(
     _bullet("CPU cores",           cpu_cores)
     _bullet("RAM total",           f"{ram_total_mb} MB ({ram_total_mb / 1024:.1f} GB)")
     _bullet("GPU",                 gpu_lspci or "unknown")
+    if gpu_inventory:
+        for idx, gpu in enumerate(gpu_inventory, 1):
+            _bullet(f"GPU[{idx}] model", gpu.get("model", "unknown"))
+            _bullet(f"GPU[{idx}] active", gpu.get("driver_in_use") or "unknown")
+            mods = gpu.get("kernel_modules", [])
+            if mods:
+                _bullet(f"GPU[{idx}] possible", ", ".join(mods))
     _bullet("OpenGL renderer",     renderer or "unknown")
     _bullet("GPU driver (kernel)", ", ".join(driver_info.get("loaded", [])) or "unknown")
+    _bullet("Boot mode", firmware_security_info.get("boot_mode", "unknown"))
+    sb = firmware_security_info.get("secure_boot", {})
+    _bullet("Secure Boot", sb.get("state", "unknown"))
+    _bullet("BIOS", f"{firmware_security_info.get('bios_vendor', '')} {firmware_security_info.get('bios_version', '')} ({firmware_security_info.get('bios_date', '')})".strip())
+    _bullet("Mainboard", firmware_security_info.get("board_name", "unknown"))
+    _bullet("System", f"{firmware_security_info.get('sys_vendor', '')} {firmware_security_info.get('product_name', '')}".strip())
+    if possible_nvidia_drivers.get("recommended"):
+        _bullet("NVIDIA recommended", possible_nvidia_drivers.get("recommended"))
+    if possible_nvidia_drivers.get("available"):
+        _bullet("NVIDIA possible", ", ".join(possible_nvidia_drivers.get("available", [])[:8]))
 
     _section("Session")
     _bullet("Display server",      session_type)
@@ -2067,6 +2202,8 @@ def print_console_report(
     _section("Test Matrix")
     for case_name, run in test_runs.items():
         _bullet(f"{case_name} scale", f"{run.get('requested_scale')}x")
+        if run.get("status"):
+            _bullet(f"{case_name} status", run.get("status"))
         _bullet(f"{case_name} detected", f"{run.get('detected_scale')}x")
         _bullet(f"{case_name} fps", run.get("fps") if run.get("fps") else "n/a")
         _bullet(f"{case_name} tool", run.get("fps_tool") or "unavailable")
@@ -2193,6 +2330,9 @@ def write_markdown_report(
     baseline_scale, baseline_scale_source,
     test_runs,
     ram_total_mb, cpu_model, cpu_cores, gpu_lspci,
+    gpu_inventory,
+    firmware_security_info,
+    possible_nvidia_drivers,
     driver_info, renderer, baseline_fps, fps_tool, target_fps,
     baseline_used_mb, baseline_avail_mb, target_used_mb,
     smooth, mouse_notes, mouse_stats,
@@ -2226,7 +2366,30 @@ def write_markdown_report(
         f"- RAM: {ram_total_mb} MB ({ram_total_mb / 1024:.1f} GB)",
         f"- GPU: {gpu_lspci or 'unknown'}",
         f"- OpenGL renderer: {renderer or 'unknown'}",
+        f"- Boot mode: {firmware_security_info.get('boot_mode', 'unknown')}",
+        f"- Secure Boot: {firmware_security_info.get('secure_boot', {}).get('state', 'unknown')}",
+        f"- BIOS: {firmware_security_info.get('bios_vendor', '')} {firmware_security_info.get('bios_version', '')} ({firmware_security_info.get('bios_date', '')})".strip(),
+        f"- Mainboard: {firmware_security_info.get('board_name', 'unknown')}",
+        f"- System model: {firmware_security_info.get('sys_vendor', '')} {firmware_security_info.get('product_name', '')}".strip(),
         "",
+        "### GPU Inventory",
+    ]
+    if gpu_inventory:
+        for idx, gpu in enumerate(gpu_inventory, 1):
+            lines += [
+                f"- GPU[{idx}] model: {gpu.get('model', 'unknown')}",
+                f"- GPU[{idx}] active driver: {gpu.get('driver_in_use') or 'unknown'}",
+                f"- GPU[{idx}] possible drivers: {', '.join(gpu.get('kernel_modules', [])) if gpu.get('kernel_modules') else 'unknown'}",
+            ]
+    else:
+        lines += ["- No GPU inventory parsed"]
+
+    if possible_nvidia_drivers.get("recommended"):
+        lines += [f"- NVIDIA recommended package: {possible_nvidia_drivers.get('recommended')}"]
+    if possible_nvidia_drivers.get("available"):
+        lines += [f"- NVIDIA possible packages: {', '.join(possible_nvidia_drivers.get('available', [])[:20])}"]
+
+    lines += [
         "## Session",
         f"- Session type: {session_type}",
         f"- Desktop: {desktop}",
@@ -2246,6 +2409,7 @@ def write_markdown_report(
     for case_name, run in test_runs.items():
         lines += [
             f"- {case_name} requested: {run.get('requested_scale')}x",
+            f"- {case_name} status: {run.get('status', 'ok')}",
             f"- {case_name} detected: {run.get('detected_scale')}x",
             f"- {case_name} FPS: {run.get('fps') if run.get('fps') else 'n/a'}",
             f"- {case_name} tool: {run.get('fps_tool') or 'unavailable'}",
@@ -2454,13 +2618,18 @@ def main() -> int:
     parser.add_argument(
         "--journalctl-lines",
         type=int,
-        default=400,
-        help="Number of lines per journalctl debug section in report (default: 400).",
+        default=8000,
+        help="Number of lines per journalctl debug section in report (default: 8000).",
     )
     parser.add_argument(
         "--no-journalctl",
         action="store_true",
         help="Skip journalctl debug capture in report.",
+    )
+    parser.add_argument(
+        "--force-risky-scale",
+        action="store_true",
+        help="Force scale switching even in known-unstable combinations (e.g., KDE Wayland + nouveau).",
     )
     args = parser.parse_args()
     interactive = not args.non_interactive
@@ -2471,7 +2640,8 @@ def main() -> int:
         f"scale_alias={args.scale}, mouse_test={args.mouse_test}, "
         f"allow_glxgears_fallback={args.allow_glxgears_fallback}, fps_mode={args.fps_mode}, "
         f"fps_window_size={args.fps_window_size}, no_journalctl={args.no_journalctl}, "
-        f"journalctl_lines={args.journalctl_lines}, output='{args.output}'"
+        f"journalctl_lines={args.journalctl_lines}, force_risky_scale={args.force_risky_scale}, "
+        f"output='{args.output}'"
     )
 
     cprint(C_BLUE, "\n[*] Linux Desktop Scaling Diagnostics")
@@ -2549,6 +2719,9 @@ def main() -> int:
     graphics    = gather_graphics_info(run_user_cmd, priv)
     lsmod_text  = graphics.get("lsmod", {}).get("stdout", "")
     driver_info = gather_driver_info(lsmod_text, priv)
+    gpu_inventory = parse_lspci_gpu_inventory(graphics.get("lspci", {}).get("stdout", ""))
+    firmware_security_info = gather_platform_firmware_security_info(run_user_cmd)
+    possible_nvidia_drivers = parse_possible_nvidia_drivers(base_distro, run_user_cmd)
 
     gpu_lspci = ""
     for line in graphics.get("lspci", {}).get("stdout", "").splitlines():
@@ -2590,6 +2763,16 @@ def main() -> int:
     cprint(C_GREEN, f"Start scale: {start_scale}x  (via {start_scale_source})")
     trace(f"start scale: value={start_scale}, source={start_scale_source}")
 
+    guard_scale, guard_reason = should_guard_scale_switching(
+        session_type=session_type,
+        desktop=desktop,
+        driver_info=driver_info,
+        force_risky_scale=args.force_risky_scale,
+    )
+    if guard_scale:
+        cprint(C_YELLOW, f"Scale switching safety guard active: {guard_reason}")
+        trace(f"scale guard active: reason={guard_reason}")
+
     # ---- COSMIC config scan ----
     cosmic_cfg        = discover_cosmic_configs(home_dir)
     cosmic_scale_hits = extract_scale_from_configs(cosmic_cfg["files"])
@@ -2610,7 +2793,7 @@ def main() -> int:
     }
     test_runs: dict = {}
 
-    def run_measurement_case(case_name: str, requested_scale: float, switch_method: str) -> dict:
+    def run_measurement_case(case_name: str, requested_scale: float, switch_method: str, status: str = "ok") -> dict:
         detected_scale, detected_src = detect_current_scale(session_env, desktop, run_user_cmd, home_dir)
         fps_value, fps_used_tool = measure_fps(
             run_user_cmd,
@@ -2623,6 +2806,7 @@ def main() -> int:
         used_mb, avail_mb = ram_snapshot()
         return {
             "case": case_name,
+            "status": status,
             "requested_scale": requested_scale,
             "detected_scale": detected_scale,
             "detected_source": detected_src,
@@ -2648,13 +2832,32 @@ def main() -> int:
     for case_name, scale_value in required_cases.items():
         if case_name in test_runs:
             continue
+        if guard_scale:
+            cprint(C_YELLOW, f"\n[*] Skipping scale switch for {case_name}: {guard_reason}")
+            detected_scale, detected_src = detect_current_scale(session_env, desktop, run_user_cmd, home_dir)
+            used_mb, avail_mb = ram_snapshot()
+            test_runs[case_name] = {
+                "case": case_name,
+                "status": f"skipped ({guard_reason})",
+                "requested_scale": scale_value,
+                "detected_scale": detected_scale,
+                "detected_source": detected_src,
+                "switch_method": "skipped",
+                "fps": 0.0,
+                "fps_tool": "skipped",
+                "used_mb": used_mb,
+                "avail_mb": avail_mb,
+            }
+            continue
         cprint(C_BLUE, f"\n[*] Running case {case_name} at {scale_value}x...")
         ok, method = _ensure_scale(session_env, desktop, scale_value, run_user_cmd, interactive)
         if not ok:
             cprint(C_YELLOW, f"    Could not ensure scale {scale_value}x; proceeding with current detected scale.")
+            case_status = f"scale-change-failed ({method})"
         else:
             cprint(C_GREEN, f"    Scale ensured via {method}.")
-        test_runs[case_name] = run_measurement_case(case_name, scale_value, method)
+            case_status = "ok"
+        test_runs[case_name] = run_measurement_case(case_name, scale_value, method, status=case_status)
         trace(
             f"case result: {case_name} requested={scale_value} "
             f"detected={test_runs[case_name].get('detected_scale')} "
@@ -2734,6 +2937,19 @@ def main() -> int:
         smooth, driver_suitable,
         pipeline_analysis,
     )
+    for case_name, run in test_runs.items():
+        try:
+            requested = float(run.get("requested_scale", 1.0))
+            detected = float(run.get("detected_scale", 1.0))
+            if abs(requested - detected) > 0.05:
+                conclusions.append(
+                    f"Scale mismatch in {case_name}: requested {requested}x, detected {detected}x. "
+                    "Compositor likely rejected or reverted this change."
+                )
+        except Exception:
+            continue
+    if guard_scale:
+        conclusions.append(f"Scale transitions were guarded to avoid known instability: {guard_reason}.")
     nvidia_instructions = []
     nvidia_activation_diagnostics = {
         "relevant": False,
@@ -2785,7 +3001,10 @@ def main() -> int:
         baseline_scale=baseline_scale, baseline_scale_source=baseline_scale_source,
         test_runs=test_runs,
         ram_total_mb=ram_total_mb, cpu_model=cpu_model, cpu_cores=os.cpu_count() or 0,
-        gpu_lspci=gpu_lspci, driver_info=driver_info, renderer=renderer,
+        gpu_lspci=gpu_lspci, gpu_inventory=gpu_inventory,
+        firmware_security_info=firmware_security_info,
+        possible_nvidia_drivers=possible_nvidia_drivers,
+        driver_info=driver_info, renderer=renderer,
         baseline_fps=baseline_fps, fps_tool=fps_tool, target_fps=target_fps,
         baseline_used_mb=baseline_used_mb, baseline_avail_mb=baseline_avail_mb,
         target_used_mb=target_used_mb,
@@ -2817,7 +3036,10 @@ def main() -> int:
         baseline_scale=baseline_scale, baseline_scale_source=baseline_scale_source,
         test_runs=test_runs,
         ram_total_mb=ram_total_mb, cpu_model=cpu_model, cpu_cores=os.cpu_count() or 0,
-        gpu_lspci=gpu_lspci, driver_info=driver_info, renderer=renderer,
+        gpu_lspci=gpu_lspci, gpu_inventory=gpu_inventory,
+        firmware_security_info=firmware_security_info,
+        possible_nvidia_drivers=possible_nvidia_drivers,
+        driver_info=driver_info, renderer=renderer,
         baseline_fps=baseline_fps, fps_tool=fps_tool, target_fps=target_fps,
         baseline_used_mb=baseline_used_mb, baseline_avail_mb=baseline_avail_mb,
         target_used_mb=target_used_mb,
