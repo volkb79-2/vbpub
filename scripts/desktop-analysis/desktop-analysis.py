@@ -146,6 +146,28 @@ def run_cmd(cmd: list, timeout: int = 20, env: Optional[dict] = None) -> dict:
             "error": str(exc), "cmd": cmd_str}
 
 
+def resolve_report_output_path(requested_path: str) -> tuple[str, str]:
+    """Resolve a writable report path; fall back to /tmp when target is not writable."""
+    target = Path(requested_path).expanduser()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "a", encoding="utf-8"):
+            pass
+        return str(target), ""
+    except Exception as exc:  # noqa: BLE001
+        fallback = Path("/tmp") / target.name
+        try:
+            with open(fallback, "a", encoding="utf-8"):
+                pass
+            return str(fallback), (
+                f"Output path '{target}' not writable ({exc}); using fallback '{fallback}'."
+            )
+        except Exception as fallback_exc:  # noqa: BLE001
+            return "", (
+                f"Output path '{target}' not writable ({exc}) and fallback '{fallback}' failed ({fallback_exc})."
+            )
+
+
 def command_exists(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
@@ -596,11 +618,15 @@ def _query_package_version(pm: Optional[str], package: str, run_user_cmd) -> Opt
         return None
 
     if pm in {"dnf", "zypper", "rpm-ostree"} and command_exists("rpm"):
-        res = run_user_cmd(["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", package], timeout=20)
+        res = run_user_cmd(["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}\\n", package], timeout=20)
         if res.get("ok") and res.get("stdout"):
-            val = res["stdout"].strip()
-            if val and "is not installed" not in val.lower():
-                return val
+            lines = [ln.strip() for ln in res["stdout"].splitlines() if ln.strip()]
+            uniq = []
+            for ln in lines:
+                if ln not in uniq:
+                    uniq.append(ln)
+            if uniq and "is not installed" not in "\n".join(uniq).lower():
+                return ", ".join(uniq[:2])
         return None
 
     if pm == "pacman" and command_exists("pacman"):
@@ -631,7 +657,7 @@ def gather_desktop_pipeline_packages(
     session_lc = (session_type or "").lower()
 
     components: list[tuple[str, list[str]]] = [
-        ("Display server (Wayland)", ["xwayland", "wayland", "wayland-protocols"]),
+        ("Display server (Wayland)", ["xorg-x11-server-Xwayland", "xwayland", "wayland", "wayland-protocols"]),
         ("Display server (X11)", ["xserver-xorg-core", "xorg-x11-server-Xorg", "xorg-server"]),
         ("Mesa / GL stack", [
             "mesa-vulkan-drivers",
@@ -771,6 +797,8 @@ def gather_desktop_pipeline_packages(
         "Session manager": [
             ("gnome-session", ["gnome-session-bin", "gnome-session"]),
             ("startplasma", ["plasma-workspace", "plasma-session"]),
+            ("startplasma-wayland", ["plasma-workspace", "plasma-session"]),
+            ("startplasma-x11", ["plasma-workspace", "plasma-session"]),
             ("xfce4-session", ["xfce4-session"]),
             ("mate-session", ["mate-session-manager", "mate-session"]),
             ("lxqt-session", ["lxqt-session"]),
@@ -785,6 +813,7 @@ def gather_desktop_pipeline_packages(
         ],
         "Launcher": [
             ("krunner", ["plasma-workspace", "krunner"]),
+            ("plasmashell", ["plasma-workspace", "plasma-desktop"]),
             ("cosmic-launcher", ["cosmic-launcher", "pop-launcher"]),
             ("rofi", ["rofi"]),
             ("wofi", ["wofi"]),
@@ -792,8 +821,10 @@ def gather_desktop_pipeline_packages(
             ("xfce4-appfinder", ["xfce4-appfinder"]),
             ("lxqt-runner", ["lxqt-runner"]),
         ],
-        "Display server process": [
-            ("Xwayland", ["xwayland"]),
+        "Display server (Wayland)": [
+            ("Xwayland", ["xorg-x11-server-Xwayland", "xwayland"]),
+        ],
+        "Display server (X11)": [
             ("Xorg", ["xserver-xorg-core", "xorg-server"]),
         ],
     }
@@ -3332,6 +3363,10 @@ def main() -> int:
     cprint(C_GREEN, f"Privilege check: root={priv['is_root']}, sudo_ok={priv['sudo_ok']}")
     for note in priv["notes"]:
         cprint(C_YELLOW, f"  Note: {note}")
+    if not (priv.get("is_root") or priv.get("sudo_ok")):
+        cprint(C_RED, "[ERROR] Root-capable access is required in this environment.")
+        cprint(C_RED, "[ERROR] Open a root shell (e.g., `sudo -i`) and run the script again.")
+        return 2
 
     # ---- OS / distro ----
     osr = read_os_release()
@@ -3736,42 +3771,56 @@ def main() -> int:
         if res["ok"]:
             ps_output = res["stdout"]
 
-    write_markdown_report(
-        output_path=args.output,
-        osr=osr, base_distro=base_distro,
-        session_type=session_type, desktop=desktop,
-        wm_comp=wm_comp, xwayland_present=xwayland_present,
-        xwayland_analysis=xwayland_analysis,
-        start_scale=start_scale, start_scale_source=start_scale_source,
-        baseline_scale=baseline_scale, baseline_scale_source=baseline_scale_source,
-        test_runs=test_runs,
-        ram_total_mb=ram_total_mb, cpu_model=cpu_model, cpu_cores=os.cpu_count() or 0,
-        gpu_lspci=gpu_lspci, gpu_inventory=gpu_inventory,
-        firmware_security_info=firmware_security_info,
-        possible_nvidia_drivers=possible_nvidia_drivers,
-        pipeline_packages=pipeline_packages,
-        inspection_coverage=inspection_coverage,
-        gaming_signals=gaming_signals,
-        operational_hints=operational_hints,
-        driver_info=driver_info, renderer=renderer,
-        baseline_fps=baseline_fps, fps_tool=fps_tool, target_fps=target_fps,
-        baseline_used_mb=baseline_used_mb, baseline_avail_mb=baseline_avail_mb,
-        target_used_mb=target_used_mb,
-        smooth=smooth, mouse_notes=mouse_notes, mouse_stats=baseline_mouse,
-        driver_suitable=driver_suitable, driver_notes=driver_notes,
-        pipeline_analysis=pipeline_analysis,
-        fps_strategy_findings=fps_strategy_findings,
-        compositor_diagnostics=compositor_diagnostics,
-        assessment=assessment, conclusions=conclusions,
-        nvidia_instructions=nvidia_instructions,
-        nvidia_activation_diagnostics=nvidia_activation_diagnostics,
-        mem_breakdown=mem_breakdown, ps_output=ps_output,
-        journalctl_debug=journalctl_debug,
-        trace_log=TRACE_LOG,
-        console_log=CONSOLE_LOG,
-    )
-    trace(f"report write complete: output='{args.output}'")
-    cprint(C_GREEN, f"\nReport written to: {args.output}")
+    resolved_output, output_note = resolve_report_output_path(args.output)
+    if output_note:
+        cprint(C_YELLOW, f"[WARN] {output_note}")
+        trace(f"output path adjusted: {output_note}")
+    if not resolved_output:
+        cprint(C_RED, "[ERROR] No writable output path available for markdown report.")
+        return 3
+
+    try:
+        write_markdown_report(
+            output_path=resolved_output,
+            osr=osr, base_distro=base_distro,
+            session_type=session_type, desktop=desktop,
+            wm_comp=wm_comp, xwayland_present=xwayland_present,
+            xwayland_analysis=xwayland_analysis,
+            start_scale=start_scale, start_scale_source=start_scale_source,
+            baseline_scale=baseline_scale, baseline_scale_source=baseline_scale_source,
+            test_runs=test_runs,
+            ram_total_mb=ram_total_mb, cpu_model=cpu_model, cpu_cores=os.cpu_count() or 0,
+            gpu_lspci=gpu_lspci, gpu_inventory=gpu_inventory,
+            firmware_security_info=firmware_security_info,
+            possible_nvidia_drivers=possible_nvidia_drivers,
+            pipeline_packages=pipeline_packages,
+            inspection_coverage=inspection_coverage,
+            gaming_signals=gaming_signals,
+            operational_hints=operational_hints,
+            driver_info=driver_info, renderer=renderer,
+            baseline_fps=baseline_fps, fps_tool=fps_tool, target_fps=target_fps,
+            baseline_used_mb=baseline_used_mb, baseline_avail_mb=baseline_avail_mb,
+            target_used_mb=target_used_mb,
+            smooth=smooth, mouse_notes=mouse_notes, mouse_stats=baseline_mouse,
+            driver_suitable=driver_suitable, driver_notes=driver_notes,
+            pipeline_analysis=pipeline_analysis,
+            fps_strategy_findings=fps_strategy_findings,
+            compositor_diagnostics=compositor_diagnostics,
+            assessment=assessment, conclusions=conclusions,
+            nvidia_instructions=nvidia_instructions,
+            nvidia_activation_diagnostics=nvidia_activation_diagnostics,
+            mem_breakdown=mem_breakdown, ps_output=ps_output,
+            journalctl_debug=journalctl_debug,
+            trace_log=TRACE_LOG,
+            console_log=CONSOLE_LOG,
+        )
+    except PermissionError as exc:
+        cprint(C_RED, f"[ERROR] Failed writing report due to permission error: {exc}")
+        cprint(C_RED, "[ERROR] Re-run from a writable directory or set --output /tmp/<name>.md")
+        return 4
+
+    trace(f"report write complete: output='{resolved_output}'")
+    cprint(C_GREEN, f"\nReport written to: {resolved_output}")
 
     return 0
 
