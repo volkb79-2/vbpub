@@ -212,15 +212,18 @@ def read_os_release() -> dict:
 def detect_base_distro(osr: dict) -> str:
     os_id   = osr.get("ID", "").lower()
     id_like = osr.get("ID_LIKE", "").lower()
+
+    # Explicit distro support: Pop!_OS, Bazzite, Nobara, Garuda, Regata
+    # Map derivatives to their package ecosystem family.
     if os_id == "pop" or "ubuntu" in id_like or os_id == "ubuntu":
         return "ubuntu"
     if "fedora" in id_like or os_id in ("fedora", "nobara", "bazzite"):
         return "fedora"
-    if "arch" in id_like or os_id in ("arch", "manjaro", "endeavouros"):
+    if "arch" in id_like or os_id in ("arch", "manjaro", "endeavouros", "garuda"):
         return "arch"
     if "debian" in id_like or os_id == "debian":
         return "debian"
-    if "suse" in id_like or os_id in ("opensuse", "suse"):
+    if "suse" in id_like or os_id in ("opensuse", "suse", "regata"):
         return "suse"
     return "unknown"
 
@@ -576,6 +579,513 @@ def parse_possible_nvidia_drivers(base_distro: str, run_user_cmd) -> dict:
                     data["recommended"] = pkg
     return data
 
+def _query_package_version(pm: Optional[str], package: str, run_user_cmd) -> Optional[str]:
+    """Best-effort package version lookup across package managers."""
+    if not pm or not package:
+        return None
+
+    if pm == "apt-get" and command_exists("dpkg-query"):
+        res = run_user_cmd([
+            "dpkg-query", "-W", "-f=${db:Status-Status}\\t${Version}\\n", package
+        ], timeout=20)
+        if res.get("ok") and res.get("stdout"):
+            line = res["stdout"].strip().splitlines()[-1]
+            parts = line.split("\t")
+            if len(parts) >= 2 and parts[0].strip() == "installed":
+                return parts[1].strip()
+        return None
+
+    if pm in {"dnf", "zypper", "rpm-ostree"} and command_exists("rpm"):
+        res = run_user_cmd(["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", package], timeout=20)
+        if res.get("ok") and res.get("stdout"):
+            val = res["stdout"].strip()
+            if val and "is not installed" not in val.lower():
+                return val
+        return None
+
+    if pm == "pacman" and command_exists("pacman"):
+        res = run_user_cmd(["pacman", "-Q", package], timeout=20)
+        if res.get("ok") and res.get("stdout"):
+            parts = res["stdout"].strip().split()
+            if len(parts) >= 2:
+                return parts[1].strip()
+        return None
+
+    return None
+
+
+def gather_desktop_pipeline_packages(
+    base_distro: str,
+    session_type: str,
+    desktop: str,
+    wm_comp: dict,
+    processes: list,
+    driver_info: dict,
+    possible_nvidia_drivers: dict,
+    run_user_cmd,
+) -> dict:
+    """Collect major desktop pipeline packages and installed versions."""
+    pm = detect_pkg_manager()
+    desktop_lc = (desktop or "").lower()
+    compositor_lc = (wm_comp.get("compositor", "") or "").lower()
+    session_lc = (session_type or "").lower()
+
+    components: list[tuple[str, list[str]]] = [
+        ("Display server (Wayland)", ["xwayland", "wayland", "wayland-protocols"]),
+        ("Display server (X11)", ["xserver-xorg-core", "xorg-x11-server-Xorg", "xorg-server"]),
+        ("Mesa / GL stack", [
+            "mesa-vulkan-drivers",
+            "libgl1-mesa-dri",
+            "libglx-mesa0",
+            "mesa-utils",
+            "mesa",
+            "mesa-dri-drivers",
+        ]),
+        ("Input stack", ["libinput10", "libinput", "libinput-tools", "xserver-xorg-input-libinput"]),
+    ]
+
+    if "kde" in desktop_lc or "plasma" in desktop_lc:
+        components.extend([
+            ("Desktop shell", ["plasma-desktop", "plasma-workspace"]),
+            ("Compositor / WM", ["kwin-wayland", "kwin-x11", "kwin", "kwin-common"]),
+            ("Session manager", ["plasma-workspace", "plasma-session"]),
+            ("Display manager", ["sddm"]),
+            ("Launcher", ["plasma-workspace", "krunner"]),
+            ("Scaling tools", ["kscreen"]),
+        ])
+    elif "gnome" in desktop_lc:
+        components.extend([
+            ("Desktop shell", ["gnome-shell"]),
+            ("Compositor / WM", ["mutter"]),
+            ("Session manager", ["gnome-session-bin", "gnome-session"]),
+            ("Display manager", ["gdm3", "gdm"]),
+            ("Launcher", ["gnome-shell", "gnome-session-bin"]),
+            ("Scaling tools", ["gnome-control-center"]),
+        ])
+    elif "cinnamon" in desktop_lc:
+        components.extend([
+            ("Desktop shell", ["cinnamon"]),
+            ("Compositor / WM", ["muffin"]),
+            ("Session manager", ["cinnamon-session"]),
+            ("Display manager", ["lightdm", "gdm3"]),
+            ("Launcher", ["cinnamon", "rofi"]),
+        ])
+    elif "cosmic" in desktop_lc:
+        components.extend([
+            ("Desktop shell", ["cosmic-session", "cosmic-comp"]),
+            ("Compositor / WM", ["cosmic-comp"]),
+            ("Session manager", ["cosmic-session"]),
+            ("Display manager", ["gdm3", "gdm", "sddm"]),
+            ("Launcher", ["cosmic-launcher", "pop-launcher"]),
+            ("Scaling tools", ["cosmic-settings", "gnome-control-center"]),
+        ])
+    elif "sway" in desktop_lc:
+        components.extend([
+            ("Desktop shell", ["sway"]),
+            ("Compositor / WM", ["sway", "wlroots"]),
+            ("Session manager", ["sway", "systemd"]),
+            ("Display manager", ["greetd", "lightdm", "sddm", "gdm3"]),
+            ("Launcher", ["wofi", "bemenu", "rofi"]),
+            ("Scaling tools", ["wlr-randr", "sway"]),
+        ])
+    elif "hypr" in desktop_lc:
+        components.extend([
+            ("Desktop shell", ["hyprland"]),
+            ("Compositor / WM", ["hyprland", "wlroots"]),
+            ("Session manager", ["hyprland", "systemd"]),
+            ("Display manager", ["greetd", "sddm", "gdm3", "lightdm"]),
+            ("Launcher", ["wofi", "rofi", "fuzzel"]),
+            ("Scaling tools", ["wlr-randr", "hyprland"]),
+        ])
+    elif "xfce" in desktop_lc:
+        components.extend([
+            ("Desktop shell", ["xfce4-session", "xfce4-panel"]),
+            ("Compositor / WM", ["xfwm4", "picom"]),
+            ("Session manager", ["xfce4-session"]),
+            ("Display manager", ["lightdm", "gdm3", "sddm"]),
+            ("Launcher", ["xfce4-appfinder", "rofi"]),
+            ("Scaling tools", ["xfce4-settings"]),
+        ])
+    elif "mate" in desktop_lc:
+        components.extend([
+            ("Desktop shell", ["mate-desktop", "mate-panel"]),
+            ("Compositor / WM", ["marco"]),
+            ("Session manager", ["mate-session-manager", "mate-session"]),
+            ("Display manager", ["lightdm", "gdm3", "sddm"]),
+            ("Launcher", ["mate-panel", "rofi"]),
+            ("Scaling tools", ["mate-control-center"]),
+        ])
+    elif "lxqt" in desktop_lc:
+        components.extend([
+            ("Desktop shell", ["lxqt-session", "lxqt-panel"]),
+            ("Compositor / WM", ["openbox", "kwin-x11", "picom"]),
+            ("Session manager", ["lxqt-session"]),
+            ("Display manager", ["sddm", "lightdm", "gdm3"]),
+            ("Launcher", ["lxqt-runner", "rofi"]),
+            ("Scaling tools", ["lxqt-config"]),
+        ])
+    elif desktop_lc == "i3" or "i3" in compositor_lc:
+        components.extend([
+            ("Desktop shell", ["i3-wm", "i3"]),
+            ("Compositor / WM", ["i3-wm", "i3", "picom"]),
+            ("Session manager", ["i3-wm", "systemd"]),
+            ("Display manager", ["lightdm", "gdm3", "sddm"]),
+            ("Launcher", ["dmenu", "rofi"]),
+            ("Scaling tools", ["xrandr", "arandr"]),
+        ])
+
+    uses_nvidia = "nvidia" in set(driver_info.get("loaded", [])) or "nvidia" in (compositor_lc + desktop_lc)
+    if uses_nvidia or possible_nvidia_drivers.get("available"):
+        nvidia_candidates = []
+        nvidia_candidates.extend(possible_nvidia_drivers.get("available", [])[:12])
+        nvidia_candidates.extend([
+            "nvidia-driver",
+            "nvidia-utils",
+            "nvidia-dkms",
+            "nvidia-kernel-common",
+            "libnvidia-gl-535",
+            "libnvidia-gl-550",
+            "libnvidia-gl-560",
+            "libnvidia-gl-570",
+            "libnvidia-gl-580",
+        ])
+        components.append(("NVIDIA driver stack", nvidia_candidates))
+
+    # Runtime process role mapping: helps identify active pipeline components.
+    process_candidates: dict[str, list[tuple[str, list[str]]]] = {
+        "Compositor / WM": [
+            ("kwin_wayland", ["kwin-wayland", "kwin"]),
+            ("kwin_x11", ["kwin-x11", "kwin"]),
+            ("gnome-shell", ["gnome-shell", "mutter"]),
+            ("mutter", ["mutter"]),
+            ("cosmic-comp", ["cosmic-comp"]),
+            ("sway", ["sway"]),
+            ("Hyprland", ["hyprland"]),
+            ("xfwm4", ["xfwm4"]),
+            ("muffin", ["muffin"]),
+            ("marco", ["marco"]),
+            ("openbox", ["openbox"]),
+            ("i3", ["i3-wm", "i3"]),
+            ("picom", ["picom"]),
+        ],
+        "Session manager": [
+            ("gnome-session", ["gnome-session-bin", "gnome-session"]),
+            ("startplasma", ["plasma-workspace", "plasma-session"]),
+            ("xfce4-session", ["xfce4-session"]),
+            ("mate-session", ["mate-session-manager", "mate-session"]),
+            ("lxqt-session", ["lxqt-session"]),
+            ("cinnamon-session", ["cinnamon-session"]),
+            ("cosmic-session", ["cosmic-session"]),
+        ],
+        "Display manager": [
+            ("sddm", ["sddm"]),
+            ("gdm3", ["gdm3", "gdm"]),
+            ("lightdm", ["lightdm"]),
+            ("greetd", ["greetd"]),
+        ],
+        "Launcher": [
+            ("krunner", ["plasma-workspace", "krunner"]),
+            ("cosmic-launcher", ["cosmic-launcher", "pop-launcher"]),
+            ("rofi", ["rofi"]),
+            ("wofi", ["wofi"]),
+            ("dmenu", ["dmenu"]),
+            ("xfce4-appfinder", ["xfce4-appfinder"]),
+            ("lxqt-runner", ["lxqt-runner"]),
+        ],
+        "Display server process": [
+            ("Xwayland", ["xwayland"]),
+            ("Xorg", ["xserver-xorg-core", "xorg-server"]),
+        ],
+    }
+
+    active_runtime = []
+    proc_comm_values = []
+    for p in processes or []:
+        first = (p.strip().split(" ", 1)[0] if p.strip() else "").strip()
+        if first:
+            proc_comm_values.append(first)
+
+    for role, entries in process_candidates.items():
+        for proc_name, pkg_candidates in entries:
+            if not any(proc_name.lower() == comm.lower() for comm in proc_comm_values):
+                continue
+            pkg_name = None
+            version = None
+            for candidate in pkg_candidates:
+                found_version = _query_package_version(pm, candidate, run_user_cmd)
+                if found_version:
+                    pkg_name = candidate
+                    version = found_version
+                    break
+            active_runtime.append({
+                "role": role,
+                "process": proc_name,
+                "package": pkg_name or "unknown",
+                "version": version or "unknown",
+            })
+
+    rows = []
+    seen_pairs = set()
+
+    for component, candidates in components:
+        found_for_component = 0
+        for pkg in candidates:
+            version = _query_package_version(pm, pkg, run_user_cmd)
+            if not version:
+                continue
+            key = (component, pkg)
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            rows.append({
+                "component": component,
+                "package": pkg,
+                "version": version,
+            })
+            found_for_component += 1
+            if component != "NVIDIA driver stack" and found_for_component >= 2:
+                break
+
+    if session_lc == "wayland" and not any(r["component"] == "Display server (Wayland)" for r in rows):
+        rows.append({"component": "Display server (Wayland)", "package": "(not resolved)", "version": "unknown"})
+    if "x11" in session_lc and not any(r["component"] == "Display server (X11)" for r in rows):
+        rows.append({"component": "Display server (X11)", "package": "(not resolved)", "version": "unknown"})
+
+    return {
+        "package_manager": pm or "unknown",
+        "rows": rows,
+        "active_runtime": active_runtime,
+    }
+
+
+def evaluate_inspection_coverage(
+    pipeline_packages: dict,
+    session_type: str,
+    desktop: str,
+    renderer: str,
+    gpu_inventory: list,
+) -> dict:
+    """Compute a quick coverage score and list missing inspection signals."""
+    rows = pipeline_packages.get("rows", []) or []
+    active_runtime = pipeline_packages.get("active_runtime", []) or []
+
+    role_requirements = [
+        "Compositor / WM",
+        "Session manager",
+        "Launcher",
+    ]
+
+    desktop_lc = (desktop or "").lower()
+    if any(k in desktop_lc for k in ("kde", "plasma", "gnome", "xfce", "mate", "lxqt", "cinnamon", "cosmic")):
+        role_requirements.append("Display manager")
+
+    if "wayland" in (session_type or "").lower():
+        role_requirements.append("Display server (Wayland)")
+    if "x11" in (session_type or "").lower():
+        role_requirements.append("Display server (X11)")
+
+    must_have_components = set(role_requirements + ["Mesa / GL stack", "Input stack"])
+    available_components = {str(r.get("component", "")) for r in rows}
+
+    missing_components = sorted([
+        comp for comp in must_have_components
+        if comp not in available_components
+    ])
+
+    runtime_roles = {str(a.get("role", "")) for a in active_runtime}
+    missing_runtime_roles = sorted([
+        role for role in role_requirements
+        if role not in runtime_roles
+    ])
+
+    flags = []
+    if not renderer:
+        flags.append("OpenGL renderer unresolved")
+    if not gpu_inventory:
+        flags.append("GPU inventory unresolved")
+    if (session_type or "unknown") == "unknown":
+        flags.append("Session type unresolved")
+    if (desktop or "unknown") == "unknown":
+        flags.append("Desktop session unresolved")
+    if not rows:
+        flags.append("No package versions resolved")
+    if not active_runtime:
+        flags.append("No active runtime components mapped")
+
+    total_checks = len(must_have_components) + len(role_requirements) + 4
+    failed_checks = len(missing_components) + len(missing_runtime_roles) + len(flags)
+    score = max(0, int(round(100 * (total_checks - failed_checks) / total_checks))) if total_checks > 0 else 0
+
+    if score >= 85:
+        level = "good"
+    elif score >= 60:
+        level = "partial"
+    else:
+        level = "weak"
+
+    return {
+        "score": score,
+        "level": level,
+        "missing_components": missing_components,
+        "missing_runtime_roles": missing_runtime_roles,
+        "flags": flags,
+    }
+
+
+def gather_gaming_optimization_signals(
+    base_distro: str,
+    session_type: str,
+    desktop: str,
+    wm_comp: dict,
+    processes: list,
+    run_user_cmd,
+) -> dict:
+    """Collect kernel/system optimization signals relevant to gaming operation."""
+    pm = detect_pkg_manager()
+    kernel_release = platform.release()
+    kernel_lc = kernel_release.lower()
+
+    # Kernel flavor tags frequently associated with gaming/low-latency tuning.
+    flavor_tags = [
+        "zen", "xanmod", "liquorix", "bore", "tkg", "nobara", "bazzite", "garuda",
+        "rt", "lowlatency",
+    ]
+    kernel_flavors = sorted([tag for tag in flavor_tags if tag in kernel_lc])
+
+    # zram / swap signals
+    swaps = read_file("/proc/swaps")
+    zram_lines = [ln for ln in swaps.splitlines()[1:] if ln.strip() and "zram" in ln]
+    zram_enabled = bool(zram_lines)
+    zram_devices = []
+    for ln in zram_lines:
+        parts = ln.split()
+        if len(parts) >= 5:
+            zram_devices.append({
+                "device": parts[0],
+                "size_kb": parts[2],
+                "used_kb": parts[3],
+                "priority": parts[4],
+            })
+
+    # CPU governor / energy profile
+    governor = read_file("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+    energy_profile = read_file("/sys/firmware/acpi/platform_profile")
+
+    # Runtime daemons/tools/processes
+    process_names = [(p.strip().split(" ", 1)[0] if p.strip() else "") for p in (processes or [])]
+    process_names_lc = [p.lower() for p in process_names if p]
+
+    gamemoded_active = "gamemoded" in process_names_lc
+    gamescope_active = "gamescope" in process_names_lc
+    steam_active = any(name in process_names_lc for name in ("steam", "steamwebhelper"))
+
+    gamemode_service = run_cmd(["systemctl", "is-active", "gamemoded"], timeout=10)
+    combined_text = ((gamemode_service.get("stdout", "") or "") + "\n" + (gamemode_service.get("stderr", "") or "")).strip()
+    combined_lc = combined_text.lower()
+    if "systemd" in combined_lc and "not running" in combined_lc:
+        gamemode_service_state = "not-available (no systemd init context)"
+    elif gamemode_service.get("ok"):
+        first_line = (gamemode_service.get("stdout", "") or "").strip().splitlines()
+        gamemode_service_state = first_line[0].strip() if first_line else "unknown"
+    else:
+        gamemode_service_state = "unknown"
+
+    # Distro-profile-specific package probes
+    profile_probe_candidates = {
+        "fedora": [
+            "gamemode", "gamescope", "mangohud", "steam", "wine", "obs-studio", "vulkan-loader", "mesa-vulkan-drivers",
+        ],
+        "arch": [
+            "gamemode", "gamescope", "mangohud", "steam", "wine", "obs-studio", "vulkan-icd-loader", "mesa",
+        ],
+        "ubuntu": [
+            "gamemode", "gamescope", "mangohud", "steam", "wine", "obs-studio", "vulkan-tools", "mesa-vulkan-drivers",
+        ],
+        "suse": [
+            "gamemode", "gamescope", "mangohud", "steam", "wine", "obs-studio", "vulkan-tools", "Mesa-vulkan-drivers",
+        ],
+        "debian": [
+            "gamemode", "gamescope", "mangohud", "steam", "wine", "obs-studio", "vulkan-tools", "mesa-vulkan-drivers",
+        ],
+    }
+    probe_list = profile_probe_candidates.get(base_distro, profile_probe_candidates.get("debian", []))
+    package_probe = []
+    for pkg in probe_list:
+        version = _query_package_version(pm, pkg, run_user_cmd)
+        if version:
+            package_probe.append({"package": pkg, "version": version})
+
+    # Binary availability checks complement package probes.
+    binary_checks = {
+        "gamemoderun": command_exists("gamemoderun"),
+        "gamescope": command_exists("gamescope"),
+        "mangohud": command_exists("mangohud"),
+        "steam": command_exists("steam"),
+        "wine": command_exists("wine"),
+        "proton": command_exists("proton"),
+    }
+
+    return {
+        "base_distro": base_distro,
+        "package_manager": pm or "unknown",
+        "session_type": session_type,
+        "desktop": desktop,
+        "compositor": wm_comp.get("compositor", "unknown"),
+        "kernel_release": kernel_release,
+        "kernel_flavor_tags": kernel_flavors,
+        "zram_enabled": zram_enabled,
+        "zram_devices": zram_devices,
+        "cpu_governor": governor or "unknown",
+        "platform_profile": energy_profile or "unknown",
+        "gamemoded_active": gamemoded_active,
+        "gamemode_service_state": gamemode_service_state,
+        "gamescope_active": gamescope_active,
+        "steam_active": steam_active,
+        "binary_checks": binary_checks,
+        "profile_package_probe": package_probe,
+    }
+
+
+def build_operational_hints(base_distro: str, gaming_signals: dict) -> list[str]:
+    """Generate immutable/mutable and distro-profile-aware operational hints."""
+    hints = []
+    immutable = detect_immutable() or base_distro == "fedora" and "bazzite" in (gaming_signals.get("kernel_release", "").lower())
+
+    if immutable:
+        hints.append(
+            "Immutable/image-based environment detected or likely: prefer rpm-ostree/flatpak workflows and avoid direct package-manager assumptions."
+        )
+    else:
+        hints.append(
+            "Mutable environment detected: standard package-manager based diagnostics and remediation are expected to work."
+        )
+
+    governor = (gaming_signals.get("cpu_governor") or "").lower()
+    if governor in {"powersave", "conservative"}:
+        hints.append("CPU governor is power-saving oriented; this can reduce frame-time stability under gaming load.")
+    elif governor in {"performance", "schedutil"}:
+        hints.append(f"CPU governor '{governor}' is generally suitable for gaming workloads.")
+
+    if gaming_signals.get("zram_enabled"):
+        hints.append("zram swap is active, which may improve responsiveness during memory pressure.")
+    else:
+        hints.append("zram swap not detected; memory pressure behavior may be less smooth during heavy gaming workloads.")
+
+    if not gaming_signals.get("binary_checks", {}).get("gamemoderun"):
+        hints.append("gamemode launcher not found; per-game CPU/IO optimization toggles may be unavailable.")
+    if not gaming_signals.get("binary_checks", {}).get("gamescope"):
+        hints.append("gamescope binary not found; fullscreen/session isolation optimizations are unavailable.")
+
+    profile_map = {
+        "fedora": "Fedora-like profile (Nobara/Bazzite)",
+        "arch": "Arch-like profile (Garuda)",
+        "ubuntu": "Ubuntu-like profile (Pop!_OS)",
+        "suse": "openSUSE-like profile (Regata)",
+    }
+    hints.append(f"Using distro profile probe set: {profile_map.get(base_distro, base_distro)}.")
+
+    return hints
+
 
 def gather_platform_firmware_security_info(run_user_cmd) -> dict:
     """Collect BIOS/firmware + Secure Boot context for diagnostics."""
@@ -609,10 +1119,10 @@ def gather_platform_firmware_security_info(run_user_cmd) -> dict:
     return info
 
 
-def should_guard_scale_switching(session_type: str, desktop: str, driver_info: dict, force_risky_scale: bool) -> tuple[bool, str]:
+def should_guard_scale_switching(session_type: str, desktop: str, driver_info: dict, enable_scale_safety_guard: bool) -> tuple[bool, str]:
     """Return whether scale switching should be guarded to avoid compositor instability."""
-    if force_risky_scale:
-        return False, "forced-by-flag"
+    if not enable_scale_safety_guard:
+        return False, "disabled-by-default"
     is_wayland = "wayland" in (session_type or "").lower()
     is_kde = "kde" in (desktop or "").lower() or "plasma" in (desktop or "").lower()
     uses_nouveau = "nouveau" in set(driver_info.get("loaded", []))
@@ -1270,6 +1780,22 @@ def analyze_scaling_pipeline(
     if fps_tool and fps_tool.startswith("glmark2"):
         rationale.append("glmark2 score is a coarse throughput signal; frame pacing still needs compositor metrics")
 
+    gaming_compat_hints = []
+    compositor_lc = (compositor or "").lower()
+    desktop_lc = (desktop or "").lower()
+    if is_wayland and ("hypr" in compositor_lc or "hypr" in desktop_lc):
+        gaming_compat_hints.append("Hyprland Wayland sessions may need compositor-specific overlay/capture setup (MangoHud, OBS, gamescope).")
+    if is_wayland and ("sway" in compositor_lc or "sway" in desktop_lc):
+        gaming_compat_hints.append("Sway sessions can require explicit XWayland/window rules for legacy game launchers and overlays.")
+    if is_wayland and ("wayfire" in compositor_lc or "wayfire" in desktop_lc):
+        gaming_compat_hints.append("Wayfire plugin configuration may influence frame pacing and fullscreen behavior.")
+    if is_wayland and ("cosmic" in compositor_lc or "cosmic" in desktop_lc):
+        gaming_compat_hints.append("COSMIC transition-era builds may vary in gaming overlay/capture maturity across releases.")
+    if is_wayland and "kwin" in compositor_lc:
+        gaming_compat_hints.append("KWin Wayland: prefer windowed benchmark mode if fullscreen causes instability.")
+    if render_path == "wayland-mixed-with-xwayland":
+        gaming_compat_hints.append("Mixed Wayland/XWayland workloads can increase latency variance for some games.")
+
     if gpu_path == "software-rendering":
         efficiency_expectation = "low"
     elif "nouveau" in gpu_path:
@@ -1298,6 +1824,7 @@ def analyze_scaling_pipeline(
         "efficiency_expectation": efficiency_expectation,
         "likely_bottlenecks": bottlenecks,
         "rationale": rationale,
+        "gaming_compat_hints": gaming_compat_hints,
     }
 
 
@@ -2124,6 +2651,8 @@ def build_conclusions(
             f"Determined scaling pipeline: {pipeline_analysis.get('pipeline_class')} "
             f"(expected efficiency: {pipeline_analysis.get('efficiency_expectation')})."
         )
+    for hint in pipeline_analysis.get("gaming_compat_hints", [])[:4]:
+        conclusions.append(f"Gaming compatibility note: {hint}")
     return conclusions
 
 
@@ -2140,6 +2669,10 @@ def print_console_report(
     gpu_inventory,
     firmware_security_info,
     possible_nvidia_drivers,
+    pipeline_packages,
+    inspection_coverage,
+    gaming_signals,
+    operational_hints,
     driver_info, renderer, baseline_fps, fps_tool, target_fps,
     baseline_used_mb, baseline_avail_mb, target_used_mb,
     smooth, mouse_notes, driver_suitable, driver_notes,
@@ -2190,6 +2723,63 @@ def print_console_report(
     _bullet("Desktop env",         desktop)
     _bullet("Compositor / WM",     wm_comp.get("compositor", "unknown"))
     _bullet("XWayland present",    "yes" if xwayland_present else "no")
+
+    _section("Desktop Pipeline Packages")
+    _bullet("Package manager", pipeline_packages.get("package_manager", "unknown"))
+    rows = pipeline_packages.get("rows", [])
+    if rows:
+        for row in rows:
+            print(f"    - {row.get('component', 'component')}: {row.get('package', 'package')} = {row.get('version', 'unknown')}")
+    else:
+        print("    - No pipeline package versions resolved")
+    active_runtime = pipeline_packages.get("active_runtime", [])
+    if active_runtime:
+        print("    Active runtime components:")
+        for item in active_runtime:
+            print(
+                "      - "
+                f"{item.get('role', 'role')}: process={item.get('process', 'unknown')}, "
+                f"package={item.get('package', 'unknown')}, version={item.get('version', 'unknown')}"
+            )
+    else:
+        print("    Active runtime components: none detected in current process list")
+
+    _section("Inspection Coverage")
+    _bullet("Coverage score", f"{inspection_coverage.get('score', 0)} / 100")
+    _bullet("Coverage level", inspection_coverage.get("level", "unknown"))
+    missing_components = inspection_coverage.get("missing_components", [])
+    missing_runtime_roles = inspection_coverage.get("missing_runtime_roles", [])
+    if missing_components:
+        print(f"    Missing package components: {', '.join(missing_components)}")
+    if missing_runtime_roles:
+        print(f"    Missing runtime role mappings: {', '.join(missing_runtime_roles)}")
+    flags = inspection_coverage.get("flags", [])
+    if flags:
+        for flag in flags:
+            print(f"    flag: {flag}")
+
+    _section("Gaming Optimization Signals")
+    _bullet("Kernel", gaming_signals.get("kernel_release", "unknown"))
+    _bullet("Kernel flavor tags", ", ".join(gaming_signals.get("kernel_flavor_tags", [])) or "none")
+    _bullet("zram enabled", "yes" if gaming_signals.get("zram_enabled") else "no")
+    _bullet("CPU governor", gaming_signals.get("cpu_governor", "unknown"))
+    _bullet("Platform profile", gaming_signals.get("platform_profile", "unknown"))
+    _bullet("gamemoded active", "yes" if gaming_signals.get("gamemoded_active") else "no")
+    _bullet("gamemode service", gaming_signals.get("gamemode_service_state", "unknown"))
+    _bullet("gamescope active", "yes" if gaming_signals.get("gamescope_active") else "no")
+    _bullet("steam active", "yes" if gaming_signals.get("steam_active") else "no")
+    binaries = gaming_signals.get("binary_checks", {})
+    for tool_name, available in binaries.items():
+        _bullet(f"binary {tool_name}", "yes" if available else "no")
+    pkg_probe = gaming_signals.get("profile_package_probe", [])
+    if pkg_probe:
+        print("    Profile package probes:")
+        for item in pkg_probe:
+            print(f"      - {item.get('package')}: {item.get('version')}")
+
+    _section("Operational Hints")
+    for hint in operational_hints:
+        print(f"    - {hint}")
 
     _section("Scaling")
     _bullet("Reference factor",    f"{_REFERENCE_SCALE}x")
@@ -2333,6 +2923,10 @@ def write_markdown_report(
     gpu_inventory,
     firmware_security_info,
     possible_nvidia_drivers,
+    pipeline_packages,
+    inspection_coverage,
+    gaming_signals,
+    operational_hints,
     driver_info, renderer, baseline_fps, fps_tool, target_fps,
     baseline_used_mb, baseline_avail_mb, target_used_mb,
     smooth, mouse_notes, mouse_stats,
@@ -2395,6 +2989,92 @@ def write_markdown_report(
         f"- Desktop: {desktop}",
         f"- Compositor/WM: {wm_comp.get('compositor', 'unknown')}",
         f"- XWayland present: {xwayland_present}",
+        "",
+        "## Desktop Pipeline Packages",
+        f"- Package manager: {pipeline_packages.get('package_manager', 'unknown')}",
+        "",
+    ]
+
+    pkg_rows = pipeline_packages.get("rows", [])
+    if pkg_rows:
+        lines += [
+            "| Component | Package | Version |",
+            "|---|---|---|",
+        ]
+        for row in pkg_rows:
+            component = str(row.get("component", "")).replace("|", "\\|")
+            package = str(row.get("package", "")).replace("|", "\\|")
+            version = str(row.get("version", "")).replace("|", "\\|")
+            lines.append(f"| {component} | {package} | {version} |")
+    else:
+        lines += ["- No pipeline package versions resolved"]
+
+    active_runtime = pipeline_packages.get("active_runtime", [])
+    if active_runtime:
+        lines += [
+            "",
+            "### Active Runtime Components",
+            "| Role | Process | Package | Version |",
+            "|---|---|---|---|",
+        ]
+        for item in active_runtime:
+            role = str(item.get("role", "")).replace("|", "\\|")
+            process = str(item.get("process", "")).replace("|", "\\|")
+            package = str(item.get("package", "")).replace("|", "\\|")
+            version = str(item.get("version", "")).replace("|", "\\|")
+            lines.append(f"| {role} | {process} | {package} | {version} |")
+    else:
+        lines += ["", "### Active Runtime Components", "- None detected in current process list"]
+
+    lines += [
+        "",
+        "## Inspection Coverage",
+        f"- Coverage score: {inspection_coverage.get('score', 0)} / 100",
+        f"- Coverage level: {inspection_coverage.get('level', 'unknown')}",
+    ]
+    missing_components = inspection_coverage.get("missing_components", [])
+    missing_runtime_roles = inspection_coverage.get("missing_runtime_roles", [])
+    flags = inspection_coverage.get("flags", [])
+    if missing_components:
+        lines.append(f"- Missing package components: {', '.join(missing_components)}")
+    if missing_runtime_roles:
+        lines.append(f"- Missing runtime role mappings: {', '.join(missing_runtime_roles)}")
+    if flags:
+        lines += ["- Flags:"] + [f"  - {flag}" for flag in flags]
+
+    lines += [
+        "",
+        "## Gaming Optimization Signals",
+        f"- Kernel: {gaming_signals.get('kernel_release', 'unknown')}",
+        f"- Kernel flavor tags: {', '.join(gaming_signals.get('kernel_flavor_tags', [])) or 'none'}",
+        f"- zram enabled: {'yes' if gaming_signals.get('zram_enabled') else 'no'}",
+        f"- CPU governor: {gaming_signals.get('cpu_governor', 'unknown')}",
+        f"- Platform profile: {gaming_signals.get('platform_profile', 'unknown')}",
+        f"- gamemoded active: {'yes' if gaming_signals.get('gamemoded_active') else 'no'}",
+        f"- gamemode service state: {gaming_signals.get('gamemode_service_state', 'unknown')}",
+        f"- gamescope active: {'yes' if gaming_signals.get('gamescope_active') else 'no'}",
+        f"- steam active: {'yes' if gaming_signals.get('steam_active') else 'no'}",
+        "",
+        "### Gaming Tool Binaries",
+    ]
+    for tool_name, available in (gaming_signals.get("binary_checks", {}) or {}).items():
+        lines.append(f"- {tool_name}: {'yes' if available else 'no'}")
+    profile_probe = gaming_signals.get("profile_package_probe", [])
+    if profile_probe:
+        lines += [
+            "",
+            "### Distro-profile package probes",
+            "| Package | Version |",
+            "|---|---|",
+        ]
+        for item in profile_probe:
+            pkg = str(item.get("package", "")).replace("|", "\\|")
+            ver = str(item.get("version", "")).replace("|", "\\|")
+            lines.append(f"| {pkg} | {ver} |")
+
+    lines += ["", "## Operational Hints"] + [f"- {hint}" for hint in operational_hints]
+
+    lines += [
         "",
         "## Scaling",
         f"- Reference: {_REFERENCE_SCALE}x",
@@ -2627,9 +3307,9 @@ def main() -> int:
         help="Skip journalctl debug capture in report.",
     )
     parser.add_argument(
-        "--force-risky-scale",
+        "--enable-scale-safety-guard",
         action="store_true",
-        help="Force scale switching even in known-unstable combinations (e.g., KDE Wayland + nouveau).",
+        help="Enable safety guard that skips risky scale switching combinations (off by default).",
     )
     args = parser.parse_args()
     interactive = not args.non_interactive
@@ -2640,7 +3320,7 @@ def main() -> int:
         f"scale_alias={args.scale}, mouse_test={args.mouse_test}, "
         f"allow_glxgears_fallback={args.allow_glxgears_fallback}, fps_mode={args.fps_mode}, "
         f"fps_window_size={args.fps_window_size}, no_journalctl={args.no_journalctl}, "
-        f"journalctl_lines={args.journalctl_lines}, force_risky_scale={args.force_risky_scale}, "
+        f"journalctl_lines={args.journalctl_lines}, enable_scale_safety_guard={args.enable_scale_safety_guard}, "
         f"output='{args.output}'"
     )
 
@@ -2722,6 +3402,16 @@ def main() -> int:
     gpu_inventory = parse_lspci_gpu_inventory(graphics.get("lspci", {}).get("stdout", ""))
     firmware_security_info = gather_platform_firmware_security_info(run_user_cmd)
     possible_nvidia_drivers = parse_possible_nvidia_drivers(base_distro, run_user_cmd)
+    pipeline_packages = gather_desktop_pipeline_packages(
+        base_distro=base_distro,
+        session_type=session_type,
+        desktop=desktop,
+        wm_comp=wm_comp,
+        processes=processes,
+        driver_info=driver_info,
+        possible_nvidia_drivers=possible_nvidia_drivers,
+        run_user_cmd=run_user_cmd,
+    )
 
     gpu_lspci = ""
     for line in graphics.get("lspci", {}).get("stdout", "").splitlines():
@@ -2741,6 +3431,22 @@ def main() -> int:
             break
 
     driver_suitable, driver_notes = assess_driver_suitability(glxinfo_out, driver_info)
+    inspection_coverage = evaluate_inspection_coverage(
+        pipeline_packages=pipeline_packages,
+        session_type=session_type,
+        desktop=desktop,
+        renderer=renderer,
+        gpu_inventory=gpu_inventory,
+    )
+    gaming_signals = gather_gaming_optimization_signals(
+        base_distro=base_distro,
+        session_type=session_type,
+        desktop=desktop,
+        wm_comp=wm_comp,
+        processes=processes,
+        run_user_cmd=run_user_cmd,
+    )
+    operational_hints = build_operational_hints(base_distro=base_distro, gaming_signals=gaming_signals)
 
     # ---- Display / scale detection ----
     home_dir = os.path.expanduser("~")
@@ -2767,7 +3473,7 @@ def main() -> int:
         session_type=session_type,
         desktop=desktop,
         driver_info=driver_info,
-        force_risky_scale=args.force_risky_scale,
+        enable_scale_safety_guard=args.enable_scale_safety_guard,
     )
     if guard_scale:
         cprint(C_YELLOW, f"Scale switching safety guard active: {guard_reason}")
@@ -3004,6 +3710,10 @@ def main() -> int:
         gpu_lspci=gpu_lspci, gpu_inventory=gpu_inventory,
         firmware_security_info=firmware_security_info,
         possible_nvidia_drivers=possible_nvidia_drivers,
+        pipeline_packages=pipeline_packages,
+        inspection_coverage=inspection_coverage,
+        gaming_signals=gaming_signals,
+        operational_hints=operational_hints,
         driver_info=driver_info, renderer=renderer,
         baseline_fps=baseline_fps, fps_tool=fps_tool, target_fps=target_fps,
         baseline_used_mb=baseline_used_mb, baseline_avail_mb=baseline_avail_mb,
@@ -3039,6 +3749,10 @@ def main() -> int:
         gpu_lspci=gpu_lspci, gpu_inventory=gpu_inventory,
         firmware_security_info=firmware_security_info,
         possible_nvidia_drivers=possible_nvidia_drivers,
+        pipeline_packages=pipeline_packages,
+        inspection_coverage=inspection_coverage,
+        gaming_signals=gaming_signals,
+        operational_hints=operational_hints,
         driver_info=driver_info, renderer=renderer,
         baseline_fps=baseline_fps, fps_tool=fps_tool, target_fps=target_fps,
         baseline_used_mb=baseline_used_mb, baseline_avail_mb=baseline_avail_mb,
