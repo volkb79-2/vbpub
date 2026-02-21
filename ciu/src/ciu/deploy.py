@@ -7,8 +7,10 @@ This script provides action-based orchestration with explicit, user-controlled e
 Actions (executed in the order specified):
     --stop               Stop all containers (preserves volumes, container selection based on label filtering on project and environment)
     --clean              Clean volumes and data (skip running containers, selection based on label filtering on project and environment))
+    --reset              Alias for --clean (matches ciu --reset behavior)
     --build              Build Docker images
     --build-no-cache     Build images from scratch (no cache)
+    --start              Alias for --deploy (explicit start action)
     --deploy             Deploy services (default if no actions specified)
     --render-toml         Render ciu-global.toml and stack ciu.toml files
     --healthcheck [scope]  Run health checks (internal|external|both, default: both)
@@ -39,9 +41,11 @@ Examples:
     ciu-deploy                           # Default: deploy only
     ciu-deploy --deploy                  # Explicit deploy
     ciu-deploy --render-toml             # Render global + stack TOML files
+    ciu-deploy --start                   # Explicit start alias for deploy
     ciu-deploy --stop                    # Stop all containers
     ciu-deploy --stop --services-only    # Stop only app services (keep infra)
     ciu-deploy --stop --clean --deploy   # Full restart with clean state
+    ciu-deploy --reset                   # Alias for clean
     ciu-deploy --clean --build --deploy  # Clean + rebuild + deploy
     ciu-deploy --print-config-context    # Inspect configuration
     ciu-deploy --selftest                # Run self-tests (internal + external)
@@ -58,6 +62,7 @@ Examples:
 Execution Order:
     - Actions execute in the order specified on command line (left to right)
     - No implicit actions (e.g., --clean does NOT automatically stop)
+    - If --groups/--phases is provided, actions apply only to those selections
     - Fail-fast by default (use --ignore-errors to continue on failure)
 
 Configuration:
@@ -78,11 +83,17 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+import tomllib
 import uuid
 from pathlib import Path
 from typing import Set, TypedDict
 
-from .config_constants import GLOBAL_CONFIG_DEFAULTS, GLOBAL_CONFIG_RENDERED, STACK_CONFIG_DEFAULTS
+from .config_constants import (
+    GLOBAL_CONFIG_DEFAULTS,
+    GLOBAL_CONFIG_RENDERED,
+    STACK_CONFIG_DEFAULTS,
+    STACK_CONFIG_RENDERED,
+)
 from .cli_utils import get_cli_version
 from .workspace_env import (
     WorkspaceEnvError,
@@ -254,6 +265,67 @@ def collect_enabled_service_slugs(phases: list[dict], global_config: dict) -> se
                 enabled_slugs.add(normalize_service_slug(name))
 
     return enabled_slugs
+
+
+def filter_deployment_phases(
+    deployment_phases: list[dict],
+    selected_phase_keys: Set[str] | None
+) -> list[dict]:
+    """Filter deployment phases by selected phase keys.
+
+    Args:
+        deployment_phases: All enabled deployment phases.
+        selected_phase_keys: Optional set of phase keys to keep.
+
+    Returns:
+        Filtered list of phases.
+    """
+    if not selected_phase_keys:
+        return deployment_phases
+    return [phase for phase in deployment_phases if phase.get('key') in selected_phase_keys]
+
+
+def collect_bake_targets_from_phases(phases: list[dict]) -> list[str]:
+    """Collect docker-bake targets based on service stack paths.
+
+    Rule: Only services in applications/ or tools/ are build targets.
+    The bake target is the final path component.
+    """
+    targets: set[str] = set()
+    for phase in phases:
+        for service in phase.get('services', []):
+            if not service.get('enabled', True):
+                continue
+            service_path = service.get('path')
+            if not service_path:
+                continue
+            parts = Path(service_path).parts
+            if not parts:
+                continue
+            category = parts[0]
+            if category not in {'applications', 'tools'}:
+                continue
+            targets.add(parts[-1])
+    return sorted(targets)
+
+
+def build_action_sequence(argv: list[str]) -> list[str]:
+    """Build the ordered action list from CLI args, honoring aliases."""
+    action_flags = [
+        '--stop', '--clean', '--reset', '--build', '--build-no-cache',
+        '--start', '--deploy', '--render-toml', '--healthcheck', '--selftest', '--print-config-context'
+    ]
+    action_aliases = {
+        'start': 'deploy',
+        'reset': 'clean',
+    }
+    actions: list[str] = []
+    for arg in argv[1:]:
+        if arg in action_flags:
+            action_name = arg.lstrip('--').replace('-', '_')
+            action_name = action_aliases.get(action_name, action_name)
+            actions.append(action_name)
+    return actions
 
 
 def list_available_groups(global_config: dict) -> None:
@@ -521,7 +593,11 @@ def run_cmd(cmd, cwd=None, check=True, env=None, capture_output=True, text=True,
         error(f"Command failed with exit code {result.returncode}: {' '.join(cmd)}")
     return result
 
-def stop_deployment(repo_root, services_only=False):
+def stop_deployment(
+    repo_root,
+    services_only: bool = False,
+    selected_service_slugs: set[str] | None = None,
+):
     """
     Stop all running containers without cleaning volumes.
     Uses Docker label filtering to find ALL containers matching project and environment.
@@ -560,6 +636,8 @@ def stop_deployment(repo_root, services_only=False):
     if services_only:
         info("  Mode: Services only (skipping infrastructure containers)")
         info(f"  Infrastructure patterns to preserve: {', '.join(infra_patterns)}")
+    if selected_service_slugs:
+        info("  Mode: Scoped stop (matching selected phases/groups)")
     info("  Strategy: Using Docker labels (managed-by + name pattern)")
     info("")
     
@@ -616,12 +694,20 @@ def stop_deployment(repo_root, services_only=False):
     infra_containers = []
     deployment_containers = []
     
+    prefix = f"{project_name}-{env_tag}-"
     for container in containers:
         if is_service_container(container):
             service_containers.append(container)
         elif services_only and any(pattern in container.lower() for pattern in infra_patterns):
             infra_containers.append(container)
         else:
+            if selected_service_slugs:
+                service_name = container
+                if container.startswith(prefix):
+                    service_name = container[len(prefix):]
+                service_slug = normalize_service_slug(service_name)
+                if service_slug not in selected_service_slugs:
+                    continue
             deployment_containers.append(container)
     
     if service_containers:
@@ -689,7 +775,7 @@ def stop_deployment(repo_root, services_only=False):
     info("")
 
 
-def cleanup_deployment(repo_root):
+def cleanup_deployment(repo_root, selected_phase_keys: Set[str] | None = None):
     """
     Clean all volumes and data.
     Does NOT stop containers - use --stop action first if needed.
@@ -708,6 +794,13 @@ def cleanup_deployment(repo_root):
     
     # Load global config to get all service paths dynamically
     global_config = load_global_config(repo_root)
+    deployment_phases = load_deployment_phases(global_config)
+    deployment_phases = filter_deployment_phases(deployment_phases, selected_phase_keys)
+    full_cleanup = not selected_phase_keys
+
+    if not deployment_phases:
+        warn("No phases selected for cleanup")
+        return
 
     # Prefer host-visible paths for cleanup in devcontainer Docker-outside-Docker setups
     physical_repo_root = os.getenv('PHYSICAL_REPO_ROOT')
@@ -719,29 +812,35 @@ def cleanup_deployment(repo_root):
     # This handles service-owned files (e.g., postgres UID 70) that host user cannot delete
     info("")
     info("Step 1: Running cleanup init containers...")
-    cleaned_by_init = run_cleanup_init_containers(repo_root, global_config)
+    stack_paths = {
+        (repo_root / service.get('path'))
+        for phase in deployment_phases
+        for service in phase.get('services', [])
+        if service.get('enabled', True) and service.get('path')
+    }
+    cleaned_by_init = run_cleanup_init_containers(
+        repo_root,
+        global_config,
+        allowed_stack_paths=stack_paths
+    )
     if cleaned_by_init:
         info(f"  Cleanup init containers completed: {len(cleaned_by_init)} services")
     info("")
     
     # STEP 2: Collect all service paths from deployment phases
     stacks = []
-    phases = global_config.get('deploy', {}).get('phases', {})
-    
-    info(f"Step 2: Discovering services from {len(phases)} deployment phases...")
-    
-    # Sort phases by key for consistent order
-    for phase_key in sorted(phases.keys()):
-        phase_data = phases[phase_key]
-        phase_name = phase_data.get('name', 'Unknown Phase')
-        services = phase_data.get('services', [])
-        
+    info(f"Step 2: Discovering services from {len(deployment_phases)} deployment phases...")
+
+    for phase in deployment_phases:
+        phase_name = phase.get('name', 'Unknown Phase')
+        services = phase.get('services', [])
+
         info(f"  Phase: {phase_name} ({len(services)} services)")
-        
+
         for service in services:
             service_path = service.get('path', '')
             service_name = service.get('name', 'Unknown Service')
-            
+
             if service_path:
                 full_path = repo_root / service_path
                 stacks.append((full_path, service_name))
@@ -842,16 +941,17 @@ def cleanup_deployment(repo_root):
             info("  Removed: vault-init.json (credential state file)")
     
     # Also check and clean global vault-init.json locations
-    vault_init_global = repo_root / "infra" / "vault" / "vault-init.json"
-    if vault_init_global.exists():
-        vault_init_global.unlink()
-        info("Removed global vault-init.json")
-    
-    # Remove ciu-global.toml (rendered runtime config)
-    global_rendered = repo_root / GLOBAL_CONFIG_RENDERED
-    if global_rendered.exists():
-        global_rendered.unlink()
-        info("Removed ciu-global.toml")
+    if full_cleanup:
+        vault_init_global = repo_root / "infra" / "vault" / "vault-init.json"
+        if vault_init_global.exists():
+            vault_init_global.unlink()
+            info("Removed global vault-init.json")
+
+        # Remove ciu-global.toml (rendered runtime config)
+        global_rendered = repo_root / GLOBAL_CONFIG_RENDERED
+        if global_rendered.exists():
+            global_rendered.unlink()
+            info("Removed ciu-global.toml")
     
     # Remove any orphaned containers matching BOTH project AND environment (for parallel deployments)
     deployment = global_config.get('deploy', {})
@@ -863,124 +963,129 @@ def cleanup_deployment(repo_root):
     if not env_tag:
         error("CRITICAL: deploy.environment_tag not set in global config")
     
-    info(f"Checking for orphaned containers (project={project_name}, environment={env_tag})...")
-    info("  Note: Filtering by BOTH project label AND environment tag to support parallel deployments")
-    result = subprocess.run(
-        [
-            "docker",
-            "ps",
-            "-a",
-            "--filter",
-            f"label=project={project_name}",
-            "--filter",
-            f"label=environment={env_tag}",
-            "--format",
-            "{{.Names}}",
-        ],
-        capture_output=True,
-        text=True
-    )
-    if result.stdout.strip():
-        orphaned = result.stdout.strip().split('\n')
-        for container in orphaned:
-            # Skip service containers (admin-debug, testing, etc.)
-            if is_service_container(container):
-                info(f"  Skipping: {container} (service container - manually managed)")
-                continue
-            info(f"  Removing orphaned container: {container}")
-            subprocess.run(
-                ["docker", "rm", "-f", container],
-                capture_output=True
-            )
-            cleaned_containers.append(container)
+    if full_cleanup:
+        info(f"Checking for orphaned containers (project={project_name}, environment={env_tag})...")
+        info("  Note: Filtering by BOTH project label AND environment tag to support parallel deployments")
+        result = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "-a",
+                "--filter",
+                f"label=project={project_name}",
+                "--filter",
+                f"label=environment={env_tag}",
+                "--format",
+                "{{.Names}}",
+            ],
+            capture_output=True,
+            text=True
+        )
+        if result.stdout.strip():
+            orphaned = result.stdout.strip().split('\n')
+            for container in orphaned:
+                # Skip service containers (admin-debug, testing, etc.)
+                if is_service_container(container):
+                    info(f"  Skipping: {container} (service container - manually managed)")
+                    continue
+                info(f"  Removing orphaned container: {container}")
+                subprocess.run(
+                    ["docker", "rm", "-f", container],
+                    capture_output=True
+                )
+                cleaned_containers.append(container)
     
     # Remove any orphaned volumes
-    info("Checking for orphaned DST-DNS volumes...")
-    result = subprocess.run(
-        [
-            "docker",
-            "volume",
-            "ls",
-            "--filter",
-            f"label=project={project_name}",
-            "--format",
-            "{{.Name}}",
-        ],
-        capture_output=True,
-        text=True
-    )
-    if result.stdout.strip():
-        orphaned = result.stdout.strip().split('\n')
-        for volume in orphaned:
-            info(f"  Removing orphaned volume: {volume}")
-            subprocess.run(
-                ["docker", "volume", "rm", volume],
-                capture_output=True
-            )
-            cleaned_volumes.append(volume)
+    if full_cleanup:
+        info("Checking for orphaned DST-DNS volumes...")
+        result = subprocess.run(
+            [
+                "docker",
+                "volume",
+                "ls",
+                "--filter",
+                f"label=project={project_name}",
+                "--format",
+                "{{.Name}}",
+            ],
+            capture_output=True,
+            text=True
+        )
+        if result.stdout.strip():
+            orphaned = result.stdout.strip().split('\n')
+            for volume in orphaned:
+                info(f"  Removing orphaned volume: {volume}")
+                subprocess.run(
+                    ["docker", "volume", "rm", volume],
+                    capture_output=True
+                )
+                cleaned_volumes.append(volume)
     
     # Remove project-prefixed named volumes (e.g., SkyWalking: dstdns-98535c-banyandb-data)
     # These may not have labels but match our naming convention: {project_name}-{env_tag}-*
-    info(f"Checking for named volumes with prefix: {project_name}-{env_tag}-")
-    result = subprocess.run(
-        ["docker", "volume", "ls", "--format", "{{.Name}}"],
-        capture_output=True,
-        text=True
-    )
-    if result.stdout.strip():
-        named_volumes = [
-            name for name in result.stdout.strip().split('\n')
-            if name.startswith(f"{project_name}-{env_tag}-")
-        ]
-        for volume in named_volumes:
-            if volume and volume not in cleaned_volumes:
-                info(f"  Removing named volume: {volume}")
-                result = subprocess.run(
-                    ["docker", "volume", "rm", volume],
-                    capture_output=True, text=True
-                )
-                if result.returncode == 0:
-                    cleaned_volumes.append(volume)
-                else:
-                    warn(f"    Could not remove {volume}: {result.stderr.strip()}")
+    if full_cleanup:
+        info(f"Checking for named volumes with prefix: {project_name}-{env_tag}-")
+        result = subprocess.run(
+            ["docker", "volume", "ls", "--format", "{{.Name}}"],
+            capture_output=True,
+            text=True
+        )
+        if result.stdout.strip():
+            named_volumes = [
+                name for name in result.stdout.strip().split('\n')
+                if name.startswith(f"{project_name}-{env_tag}-")
+            ]
+            for volume in named_volumes:
+                if volume and volume not in cleaned_volumes:
+                    info(f"  Removing named volume: {volume}")
+                    result = subprocess.run(
+                        ["docker", "volume", "rm", volume],
+                        capture_output=True, text=True
+                    )
+                    if result.returncode == 0:
+                        cleaned_volumes.append(volume)
+                    else:
+                        warn(f"    Could not remove {volume}: {result.stderr.strip()}")
     
     # Also clean legacy volumes without environment tag (e.g., dstdns-vault-data)
-    info(f"Checking for legacy volumes with prefix: {project_name}-")
-    result = subprocess.run(
-        ["docker", "volume", "ls", "--format", "{{.Name}}"],
-        capture_output=True,
-        text=True
-    )
-    if result.stdout.strip():
-        legacy_volumes = [
-            name for name in result.stdout.strip().split('\n')
-            if name.startswith(f"{project_name}-")
-            and not name.startswith(f"{project_name}-{env_tag}-")
-        ]
-        for volume in legacy_volumes:
-            if volume and volume not in cleaned_volumes:
-                info(f"  Removing legacy volume: {volume}")
-                result = subprocess.run(
-                    ["docker", "volume", "rm", volume],
-                    capture_output=True, text=True
-                )
-                if result.returncode == 0:
-                    cleaned_volumes.append(volume)
-                else:
-                    warn(f"    Could not remove {volume}: {result.stderr.strip()}")
+    if full_cleanup:
+        info(f"Checking for legacy volumes with prefix: {project_name}-")
+        result = subprocess.run(
+            ["docker", "volume", "ls", "--format", "{{.Name}}"],
+            capture_output=True,
+            text=True
+        )
+        if result.stdout.strip():
+            legacy_volumes = [
+                name for name in result.stdout.strip().split('\n')
+                if name.startswith(f"{project_name}-")
+                and not name.startswith(f"{project_name}-{env_tag}-")
+            ]
+            for volume in legacy_volumes:
+                if volume and volume not in cleaned_volumes:
+                    info(f"  Removing legacy volume: {volume}")
+                    result = subprocess.run(
+                        ["docker", "volume", "rm", volume],
+                        capture_output=True, text=True
+                    )
+                    if result.returncode == 0:
+                        cleaned_volumes.append(volume)
+                    else:
+                        warn(f"    Could not remove {volume}: {result.stderr.strip()}")
     
     # Prune all unused volumes (comprehensive cleanup)
-    info("Pruning all unused Docker volumes...")
-    result = subprocess.run(
-        ["docker", "volume", "prune", "-af"],
-        capture_output=True,
-        text=True
-    )
-    if result.stdout.strip():
-        # Parse the prune output to count pruned volumes
-        for line in result.stdout.split('\n'):
-            if 'Total reclaimed space' in line:
-                info(f"  {line.strip()}")
+    if full_cleanup:
+        info("Pruning all unused Docker volumes...")
+        result = subprocess.run(
+            ["docker", "volume", "prune", "-af"],
+            capture_output=True,
+            text=True
+        )
+        if result.stdout.strip():
+            # Parse the prune output to count pruned volumes
+            for line in result.stdout.split('\n'):
+                if 'Total reclaimed space' in line:
+                    info(f"  {line.strip()}")
     
     # Summary
     info("="*70)
@@ -1001,7 +1106,11 @@ def cleanup_deployment(repo_root):
     info("")
 
 
-def run_cleanup_init_containers(repo_root, global_config):
+def run_cleanup_init_containers(
+    repo_root,
+    global_config,
+    allowed_stack_paths: set[Path] | None = None,
+):
     """
     Run init containers with CLEAN_DATA_DIR=true to clean persistent data.
     
@@ -1015,6 +1124,7 @@ def run_cleanup_init_containers(repo_root, global_config):
     Args:
         repo_root: Repository root path
         global_config: Loaded global configuration
+        allowed_stack_paths: Optional set of stack paths to allow (phase/group scoping)
         
     Returns:
         List of container names that ran cleanup
@@ -1036,6 +1146,9 @@ def run_cleanup_init_containers(repo_root, global_config):
         
         stack_path_rel, service_name = entry.split(':', 1)
         stack_path = repo_root / stack_path_rel
+        if allowed_stack_paths is not None and stack_path not in allowed_stack_paths:
+            debug(f"Skipping cleanup init container outside selected phases: {entry}")
+            continue
         compose_file = stack_path / "docker-compose.yml"
         
         if not compose_file.exists():
@@ -1094,7 +1207,7 @@ def run_cleanup_init_containers(repo_root, global_config):
     return cleaned
 
 
-def build_images(repo_root, use_cache=True):
+def build_images(repo_root, use_cache=True, targets: list[str] | None = None):
     """
     Build all Docker images using docker buildx bake.
     
@@ -1109,7 +1222,12 @@ def build_images(repo_root, use_cache=True):
     info(f"BUILD: Building images (cache={'enabled' if use_cache else 'disabled'})")
     info("="*70)
     
-    cmd = ["docker", "buildx", "bake", "all", "--load"]
+    cmd = ["docker", "buildx", "bake"]
+    if targets:
+        cmd.extend(targets)
+    else:
+        cmd.append("all")
+    cmd.append("--load")
     if not use_cache:
         cmd.append("--no-cache")
     
@@ -1801,6 +1919,62 @@ def check_vault_secrets(global_config):
         return False, f"Failed to parse secrets: {e}"
 
 
+VAULT_DIRECTIVE_PREFIXES = (
+    "GEN_TO_VAULT:",
+    "ASK_VAULT:",
+    "ASK_VAULT_ONCE:",
+)
+
+
+def _collect_vault_paths(value: object, paths: set[str]) -> None:
+    """Recursively collect Vault directive paths from config values."""
+    if isinstance(value, dict):
+        for item in value.values():
+            _collect_vault_paths(item, paths)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_vault_paths(item, paths)
+        return
+    if not isinstance(value, str):
+        return
+
+    for prefix in VAULT_DIRECTIVE_PREFIXES:
+        if value.startswith(prefix):
+            vault_path = value[len(prefix):].strip()
+            if vault_path:
+                paths.add(vault_path)
+            return
+
+
+def _collect_required_vault_paths(global_config: dict) -> tuple[set[str] | None, str | None]:
+    """Collect Vault paths referenced by enabled stack configs."""
+    repo_root = os.environ.get('REPO_ROOT')
+    if not repo_root:
+        return None, "REPO_ROOT not set (workspace environment missing)"
+
+    required_paths: set[str] = set()
+    deployment_phases = load_deployment_phases(global_config)
+
+    for phase in deployment_phases:
+        for service in phase.get('services', []):
+            stack_path = service.get('path')
+            if not stack_path:
+                continue
+            config_path = Path(repo_root) / stack_path / STACK_CONFIG_RENDERED
+            if not config_path.exists():
+                return None, f"Stack config not found: {config_path}"
+            try:
+                with open(config_path, 'rb') as f:
+                    stack_config = tomllib.load(f)
+            except Exception as e:
+                return None, f"Failed to parse stack config {config_path}: {e}"
+
+            _collect_vault_paths(stack_config, required_paths)
+
+    return required_paths, None
+
+
 def check_vault_secret_paths(global_config):
     """Verify that required Vault secret paths are readable."""
     vault_container = get_container_name(global_config, 'vault')
@@ -1808,15 +1982,14 @@ def check_vault_secret_paths(global_config):
     if not ok or not token:
         return False, msg
 
-    paths = global_config.get('vault', {}).get('paths', {})
-    if not isinstance(paths, dict) or not paths:
-        return False, "Vault paths not configured"
+    required_paths, error_msg = _collect_required_vault_paths(global_config)
+    if error_msg:
+        return False, error_msg
+    if not required_paths:
+        return True, "No Vault secrets referenced by enabled stacks"
 
     missing = []
-    for name, vault_path in paths.items():
-        if not vault_path:
-            missing.append(name)
-            continue
+    for vault_path in sorted(required_paths):
         cmd = [
             "docker",
             "exec",
@@ -1831,11 +2004,11 @@ def check_vault_secret_paths(global_config):
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            missing.append(name)
+            missing.append(vault_path)
 
     if missing:
         return False, f"Missing Vault secrets: {', '.join(missing)}"
-    return True, f"Verified {len(paths)} Vault secret path(s)"
+    return True, f"Verified {len(required_paths)} Vault secret path(s)"
 
 
 def check_consul_kv_paths(global_config):
@@ -1881,25 +2054,14 @@ def check_minio_ready(global_config):
 
 
 def check_minio_bucket(global_config):
-    """Verify that the environment-specific MinIO bucket exists (if known)."""
-    repo_root = os.environ.get('REPO_ROOT')
-    if not repo_root:
-        return False, "REPO_ROOT not set (workspace environment missing)"
+    """Verify that the environment-specific MinIO bucket exists."""
+    deploy_config = global_config.get('deploy', {})
+    project_name = deploy_config.get('project_name')
+    environment_tag = deploy_config.get('environment_tag')
+    if not project_name or not environment_tag:
+        return False, "Deploy project_name/environment_tag not set"
 
-    config_path = Path(repo_root) / "infra" / "db-core" / "compose.active.toml"
-    if not config_path.exists():
-        return False, "MinIO compose.active.toml not found"
-
-    try:
-        with open(config_path, 'rb') as f:
-            cfg = tomllib.load(f)
-    except Exception as e:
-        return False, f"Failed to parse MinIO config: {e}"
-
-    env_cfg = cfg.get('env', {})
-    bucket_name = env_cfg.get('bucket_created') or env_cfg.get('minio_bucket')
-    if not bucket_name:
-        return False, "MinIO bucket name not available"
+    bucket_name = f"{project_name}-{environment_tag}".lower()
 
     minio_container = get_container_name(global_config, 'minio')
     cmd = ["docker", "exec", minio_container, "mc", "ls", f"local/{bucket_name}"]
@@ -2837,10 +2999,12 @@ Named Service Groups:
 
 Examples:
   %(prog)s                              # Deploy (default)
+    %(prog)s --start                      # Explicit start (alias for deploy)
   %(prog)s --stop                       # Stop containers
   %(prog)s --stop --services-only       # Stop only application services (keep infra)
     %(prog)s --render-toml                # Render global + stack TOML files
   %(prog)s --stop --clean --deploy      # Full restart with clean state
+    %(prog)s --reset                      # Alias for clean
   %(prog)s --print-config-context       # Inspect configuration
   %(prog)s --phases 1,2 --deploy        # Deploy only phases 1 and 2
   %(prog)s --groups infra --deploy      # Deploy infrastructure only
@@ -2865,10 +3029,14 @@ Shared functionality:
                              help='Stop all containers (preserves volumes)')
     action_group.add_argument('--clean', action='store_true',
                              help='Clean volumes and data')
+    action_group.add_argument('--reset', action='store_true',
+                             help='Alias for --clean (matches ciu --reset)')
     action_group.add_argument('--build', action='store_true',
                              help='Build Docker images')
     action_group.add_argument('--build-no-cache', action='store_true',
                              help='Build images from scratch (no cache)')
+    action_group.add_argument('--start', action='store_true',
+                             help='Alias for --deploy (explicit start action)')
     action_group.add_argument('--deploy', action='store_true',
                              help='Deploy services (default if no actions)')
     action_group.add_argument('--render-toml', action='store_true',
@@ -3052,19 +3220,7 @@ Shared functionality:
         return 0
     
     # Collect actions to execute (in order specified)
-    actions = []
-    
-    # Build action list from arguments in the order they appear
-    # We need to preserve argument order, so check sys.argv
-    action_flags = [
-        '--stop', '--clean', '--build', '--build-no-cache',
-        '--deploy', '--render-toml', '--healthcheck', '--selftest', '--print-config-context'
-    ]
-    
-    for arg in sys.argv[1:]:
-        if arg in action_flags:
-            action_name = arg.lstrip('--').replace('-', '_')
-            actions.append(action_name)
+    actions = build_action_sequence(sys.argv)
     
     # Default action: deploy
     if not actions:
@@ -3107,6 +3263,15 @@ Shared functionality:
         selected_phases.sort()
         info(f"Resolved groups to phases: {selected_phases}")
     
+    deployment_phases = load_deployment_phases(global_config)
+    selected_deployment_phases = filter_deployment_phases(deployment_phases, selected_phase_keys)
+    selected_service_slugs = (
+        collect_enabled_service_slugs(selected_deployment_phases, global_config)
+        if selected_phase_keys
+        else set()
+    )
+    selected_bake_targets = collect_bake_targets_from_phases(selected_deployment_phases)
+
     # Execute actions in order
     for action in actions:
         try:
@@ -3121,23 +3286,34 @@ Shared functionality:
                 return 0
             
             elif action == 'stop':
-                stop_deployment(repo_root, services_only=args.services_only)
+                stop_deployment(
+                    repo_root,
+                    services_only=args.services_only,
+                    selected_service_slugs=selected_service_slugs or None,
+                )
             
             elif action == 'clean':
-                cleanup_deployment(repo_root)
+                cleanup_deployment(repo_root, selected_phase_keys=selected_phase_keys or None)
 
             elif action == 'render_toml':
-                deployment_phases = load_deployment_phases(global_config)
-                render_all_configs(repo_root, deployment_phases, selected_phases)
+                render_all_configs(repo_root, selected_deployment_phases, selected_phases)
             
             elif action == 'build':
-                if not build_images(repo_root, use_cache=True):
+                targets = selected_bake_targets or None
+                if selected_phase_keys and not targets:
+                    warn("No build targets found for selected phases; skipping build")
+                    continue
+                if not build_images(repo_root, use_cache=True, targets=targets):
                     error("Docker build failed")
                     if not args.ignore_errors:
                         return 1
             
             elif action == 'build_no_cache':
-                if not build_images(repo_root, use_cache=False):
+                targets = selected_bake_targets or None
+                if selected_phase_keys and not targets:
+                    warn("No build targets found for selected phases; skipping build")
+                    continue
+                if not build_images(repo_root, use_cache=False, targets=targets):
                     error("Docker build failed")
                     if not args.ignore_errors:
                         return 1
@@ -3145,23 +3321,11 @@ Shared functionality:
             elif action == 'deploy':
                 # Show deployment configuration from phases (accurate)
                 # Load deployment phases from configuration
-                deployment_phases = load_deployment_phases(global_config)
+                deployment_phases = selected_deployment_phases
                 enabled_service_slugs = collect_enabled_service_slugs(deployment_phases, global_config)
                 
                 # Filter phases if --phases specified
                 if selected_phases:
-                    filtered_phases = []
-                    for phase in deployment_phases:
-                        # Extract phase number from key (e.g., "phase_1" -> 1)
-                        phase_key = phase.get('key', '')
-                        if phase_key.startswith('phase_'):
-                            try:
-                                phase_num = int(phase_key.split('_')[1])
-                                if phase_num in selected_phases:
-                                    filtered_phases.append(phase)
-                            except (IndexError, ValueError):
-                                pass
-                    deployment_phases = filtered_phases
                     info(f"Deploying {len(deployment_phases)} selected phases")
                 
                 if not deployment_phases:

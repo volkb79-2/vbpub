@@ -118,7 +118,7 @@ def check_runtime_dependencies() -> None:
         import hvac  # noqa: F401 - Import check only
     except ImportError:
         warnings.append(('hvac', 'Vault client library', 'pip install hvac',
-                        'Required for ASK_VAULT: and GEN: secret directives'))
+                'Required for ASK_VAULT: and GEN_TO_VAULT: secret directives'))
 
     # Check jinja2 (template rendering) - CRITICAL
     try:
@@ -1103,7 +1103,6 @@ def collect_secret_directives(config: dict) -> dict:
     """Collect Vault-related secret directive paths from config."""
     directives = {
         'ask': set(),
-        'gen': set(),
         'gen_to_vault': set(),
         'ask_once': set(),
         'local': set(),
@@ -1130,8 +1129,6 @@ def collect_secret_directives(config: dict) -> dict:
             directives['ask_once'].add(value[15:])
         elif value.startswith('GEN_TO_VAULT:'):
             directives['gen_to_vault'].add(value[13:])
-        elif value.startswith('GEN:'):
-            directives['gen'].add(value[4:])
         elif value.startswith('GEN_LOCAL:'):
             directives['local'].add(value[10:])
         elif value.startswith('ASK_EXTERNAL:'):
@@ -1398,20 +1395,6 @@ def resolve_secrets(config: dict, state: Optional[dict] = None, vault_data: Opti
 
             if value.startswith('GEN_TO_VAULT:'):
                 vault_path = value[13:]
-                if vault_path in vault_storage:
-                    return vault_storage[vault_path]
-
-                secret = secrets.token_urlsafe(32)
-                vault_storage[vault_path] = secret
-
-                field_name = path.split('.')[-1] if '.' in path else path
-                hash_value = hashlib.sha256(secret.encode()).hexdigest()[:8]
-                state['vault'][field_name] = {'hash': hash_value}
-
-                return secret
-
-            if value.startswith('GEN:'):
-                vault_path = value[4:]
                 if vault_path in vault_storage:
                     return vault_storage[vault_path]
 

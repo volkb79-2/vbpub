@@ -132,14 +132,24 @@ Example stack root key: db_core, worker_io, controller.
 
 CIU resolves these directives before docker-compose rendering:
 
-- GEN:<path> — generate once, store in Vault
-- GEN_TO_VAULT:<path> — explicit variant for Vault generation
+### Vault-backed directives
+
+These directives create or read secrets in Vault and MUST be treated as Vault-managed:
+
+- GEN_TO_VAULT:<path> — generate once, store in Vault
 - ASK_VAULT:<path> — read from Vault
 - ASK_VAULT_ONCE:<path> — generate-once semantics (rotated on reset)
-- GEN_LOCAL:<path> — generate locally and persist in stack ciu.toml
+
+### Local/external directives
+
+These directives are NOT Vault-managed:
+
+- GEN_LOCAL:<path> — generate locally and persist in stack ciu.toml only
 - GEN_EPHEMERAL — generate per run, never persisted
 - ASK_EXTERNAL:<key> — prompt or read from env at runtime
 - DERIVE:<algo>:<source> — deterministic derived secret
+
+**Important**: GEN_TO_VAULT is Vault-backed. Local persistence is GEN_LOCAL.
 
 Plaintext secrets are never written to docker-compose.yml; placeholders are used instead (see below).
 
@@ -158,7 +168,7 @@ db_core.secrets.postgres_superuser_password
 → DB_CORE_SECRETS_POSTGRES_SUPERUSER_PASSWORD
 
 [env]
-REDIS_PASSWORD = "GEN:..."
+REDIS_PASSWORD = "GEN_TO_VAULT:..."
 → ENV_REDIS_PASSWORD
 ```
 
@@ -184,7 +194,7 @@ Stack config (infra/db-core/ciu.defaults.toml.j2):
 [db_core]
 
 [env]
-POSTGRES_PASSWORD = "GEN:{{ vault.paths.postgres_superuser }}"
+POSTGRES_PASSWORD = "GEN_TO_VAULT:{{ vault.paths.postgres_superuser }}"
 
 [db_core.postgres.hostdir]
 data = ""

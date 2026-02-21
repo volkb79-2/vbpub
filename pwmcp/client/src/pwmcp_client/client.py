@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import ssl
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -27,11 +28,13 @@ class PlaywrightWSClient:
         self,
         url: str = f"ws://localhost:{DEFAULT_WS_PORT}",
         auth_token: Optional[str] = None,
-        timeout: float = 30.0
+        timeout: float = 30.0,
+        ssl_context: Optional[ssl.SSLContext] = None,
     ) -> None:
         self.url = url
         self.auth_token = auth_token or os.getenv(ENV_WS_AUTH_TOKEN) or os.getenv(ENV_ACCESS_TOKEN, '')
         self.timeout = timeout
+        self.ssl_context = ssl_context
         self._ws: Optional[ClientConnection] = None
         self._session_id: Optional[str] = None
         self._pending: Dict[str, asyncio.Future] = {}
@@ -53,7 +56,8 @@ class PlaywrightWSClient:
             self.url,
             max_size=10 * 1024 * 1024,
             ping_interval=30,
-            ping_timeout=10
+            ping_timeout=10,
+            ssl=self.ssl_context
         )
 
         if self.auth_token:

@@ -437,6 +437,93 @@ def ensure_sudo(cmd: list, priv: dict) -> Optional[list]:
     return None
 
 
+def configure_passwordless_sudo(priv: dict, target_user: str) -> dict:
+    """Configure passwordless sudo for target user via /etc/sudoers.d entry."""
+    result = {
+        "attempted": False,
+        "ok": False,
+        "target_user": target_user,
+        "sudoers_file": "/etc/sudoers.d/90-desktop-analysis-nopasswd",
+        "steps": [],
+        "reason": "",
+    }
+    if not target_user:
+        result["reason"] = "target-user-empty"
+        return result
+
+    def _run_privileged(cmd: list[str], timeout: int = 60) -> dict:
+        full_cmd = ensure_sudo(cmd, priv)
+        if not full_cmd:
+            return {
+                "ok": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "sudo unavailable or authentication failed",
+                "cmd": " ".join(cmd),
+                "error": "no-sudo",
+            }
+        return run_cmd(full_cmd, timeout=timeout)
+
+    result["attempted"] = True
+    temp_path = f"/tmp/desktop-analysis-sudoers-{target_user}.tmp"
+    content = f"{target_user} ALL=(ALL) NOPASSWD: ALL\n"
+
+    try:
+        Path(temp_path).write_text(content, encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        result["reason"] = f"temp-write-failed:{exc}"
+        return result
+
+    result["steps"].append({
+        "step": "write-temp-sudoers",
+        "ok": True,
+        "cmd": f"python-write {temp_path}",
+        "stdout": content.strip(),
+        "stderr": "",
+        "returncode": 0,
+    })
+
+    install_res = _run_privileged([
+        "install", "-m", "0440", temp_path, result["sudoers_file"],
+    ], timeout=60)
+    install_res["step"] = "install-sudoers-file"
+    result["steps"].append(install_res)
+
+    visudo_cmd = ["visudo", "-cf", result["sudoers_file"]]
+    if command_exists("visudo"):
+        validate_res = _run_privileged(visudo_cmd, timeout=60)
+        validate_res["step"] = "validate-sudoers-file"
+        result["steps"].append(validate_res)
+    else:
+        result["steps"].append({
+            "step": "validate-sudoers-file",
+            "ok": False,
+            "cmd": "visudo -cf",
+            "stdout": "",
+            "stderr": "visudo not available; validation skipped",
+            "returncode": 127,
+        })
+
+    remove_temp = run_cmd(["rm", "-f", temp_path], timeout=15)
+    remove_temp["step"] = "cleanup-temp-sudoers"
+    result["steps"].append(remove_temp)
+
+    critical_steps = [
+        step for step in result["steps"]
+        if step.get("step") in {"install-sudoers-file", "validate-sudoers-file"}
+    ]
+    result["ok"] = all(step.get("ok", False) for step in critical_steps if step.get("step") != "validate-sudoers-file")
+    if command_exists("visudo"):
+        validation = next((s for s in result["steps"] if s.get("step") == "validate-sudoers-file"), None)
+        result["ok"] = bool(result["ok"] and validation and validation.get("ok", False))
+
+    if not result["ok"]:
+        result["reason"] = "sudoers-setup-failed"
+    else:
+        result["reason"] = "sudoers-setup-complete"
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Package auto-install
 # ---------------------------------------------------------------------------
@@ -2388,7 +2475,9 @@ def _nvidia_install_instructions(base_distro: str, osr: dict) -> list:
     elif base_distro == "fedora":
         lines += [
             "Enable RPM Fusion nonfree if not yet enabled",
-            "Install driver: sudo dnf install akmod-nvidia",
+            "If open variant is present, remove it first: sudo dnf remove -y akmod-nvidia-open kmod-nvidia-open-dkms",
+            "Install proprietary stack: sudo dnf install -y akmod-nvidia xorg-x11-drv-nvidia xorg-x11-drv-nvidia-libs",
+            "Build module/initramfs before reboot: sudo akmods --force && sudo dracut -f",
             "Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
         ]
     elif base_distro == "arch":
@@ -2410,6 +2499,312 @@ def _nvidia_install_instructions(base_distro: str, osr: dict) -> list:
     return lines
 
 
+def _ask_yes_no(prompt: str, default: bool = False) -> bool:
+    suffix = " [Y/n]: " if default else " [y/N]: "
+    try:
+        raw = input(prompt + suffix).strip().lower()
+    except EOFError:
+        return default
+    if not raw:
+        return default
+    return raw in {"y", "yes"}
+
+
+def _detect_nvidia_context(gpu_lspci: str, renderer: str, gpu_inventory: list[dict]) -> bool:
+    text = f"{gpu_lspci} {renderer}".lower()
+    if any(token in text for token in ("nvidia", "geforce", "quadro", "tesla", "10de:")):
+        return True
+    for gpu in gpu_inventory or []:
+        model = (gpu or {}).get("model", "").lower()
+        if any(token in model for token in ("nvidia", "geforce", "quadro", "tesla", "10de:")):
+            return True
+    return False
+
+
+def _detect_open_gsp_mismatch(run_user_cmd) -> dict:
+    result = {
+        "detected": False,
+        "reason": "",
+        "journal_excerpt": "",
+        "check_ok": False,
+    }
+    if not command_exists("journalctl"):
+        result["reason"] = "journalctl-unavailable"
+        return result
+
+    res = run_user_cmd(
+        [
+            "journalctl", "-k", "-b", "--no-pager", "-n", "4000",
+            "--grep", "NVRM|nvidia|GSP|nouveau",
+        ],
+        timeout=40,
+    )
+    result["check_ok"] = bool(res.get("ok", False))
+    out = (res.get("stdout", "") or "")
+    text = out.lower()
+    mismatch = (
+        ("not supported by open" in text and "does not include the required gpu" in text)
+        or ("system processor (gsp)" in text and "probe with driver nvidia failed" in text)
+    )
+    result["detected"] = bool(mismatch)
+    if mismatch:
+        result["reason"] = "nvidia-open-gsp-mismatch"
+    result["journal_excerpt"] = out[:2500]
+    return result
+
+
+def _collect_installed_nvidia_packages(base_distro: str, run_user_cmd) -> dict:
+    packages: list[str] = []
+    checks: dict = {}
+
+    if base_distro in ("ubuntu", "debian") and command_exists("dpkg"):
+        res = run_user_cmd(["dpkg", "-l"], timeout=60)
+        checks["dpkg_l"] = {"ok": bool(res.get("ok", False)), "stderr": (res.get("stderr", "") or "")[:500]}
+        if res.get("ok"):
+            for line in (res.get("stdout", "") or "").splitlines():
+                if not line.startswith("ii"):
+                    continue
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                pkg = parts[1]
+                if "nvidia" in pkg:
+                    packages.append(pkg)
+    elif base_distro in ("fedora", "suse") and command_exists("rpm"):
+        res = run_user_cmd(["rpm", "-qa"], timeout=60)
+        checks["rpm_qa"] = {"ok": bool(res.get("ok", False)), "stderr": (res.get("stderr", "") or "")[:500]}
+        if res.get("ok"):
+            for pkg in (res.get("stdout", "") or "").splitlines():
+                if "nvidia" in pkg.lower():
+                    packages.append(pkg.strip())
+    elif base_distro == "arch" and command_exists("pacman"):
+        res = run_user_cmd(["pacman", "-Q"], timeout=60)
+        checks["pacman_q"] = {"ok": bool(res.get("ok", False)), "stderr": (res.get("stderr", "") or "")[:500]}
+        if res.get("ok"):
+            for line in (res.get("stdout", "") or "").splitlines():
+                pkg = line.split()[0] if line.split() else ""
+                if "nvidia" in pkg.lower():
+                    packages.append(pkg)
+
+    open_patterns = [
+        r"\bnvidia-open\b",
+        r"nvidia-driver-\d+-open",
+        r"akmod-nvidia-open",
+        r"kmod-nvidia-open",
+        r"open-dkms",
+        r"xorg-x11-drv-nvidia-open",
+    ]
+    proprietary_patterns = [
+        r"\bakmod-nvidia\b",
+        r"\bxorg-x11-drv-nvidia\b",
+        r"^nvidia-driver-\d+$",
+        r"\bnvidia-utils\b",
+        r"\bnvidia-driver-g0\d\b",
+        r"\bnvidia\b",
+    ]
+
+    open_pkgs: list[str] = []
+    proprietary_pkgs: list[str] = []
+    for pkg in sorted(set(packages)):
+        low = pkg.lower()
+        if any(re.search(p, low) for p in open_patterns):
+            open_pkgs.append(pkg)
+        if any(re.search(p, low) for p in proprietary_patterns):
+            proprietary_pkgs.append(pkg)
+
+    return {
+        "all": sorted(set(packages)),
+        "open": sorted(set(open_pkgs)),
+        "proprietary": sorted(set(proprietary_pkgs)),
+        "checks": checks,
+    }
+
+
+def _build_nvidia_proprietary_install_plan(base_distro: str, diag: dict) -> dict:
+    suited = (diag or {}).get("suited_package", "") or ""
+    open_pkgs = list((diag or {}).get("installed_open_packages", []) or [])
+
+    plan = {
+        "remove_packages": open_pkgs,
+        "install_packages": [],
+        "post_commands": [],
+    }
+
+    if base_distro == "fedora":
+        selected = suited if suited and "open" not in suited else "akmod-nvidia"
+        plan["install_packages"] = [selected, "xorg-x11-drv-nvidia", "xorg-x11-drv-nvidia-libs"]
+        plan["post_commands"] = ["akmods --force", "dracut -f"]
+    elif base_distro in ("ubuntu", "debian"):
+        selected = suited if suited and "open" not in suited else "nvidia-driver-550"
+        plan["install_packages"] = [selected]
+        plan["post_commands"] = ["update-initramfs -u"]
+    elif base_distro == "arch":
+        if not plan["remove_packages"]:
+            plan["remove_packages"] = ["nvidia-open"]
+        plan["install_packages"] = ["nvidia", "nvidia-utils"]
+        plan["post_commands"] = ["mkinitcpio -P"]
+    elif base_distro == "suse":
+        if not plan["remove_packages"]:
+            plan["remove_packages"] = ["nvidia-open-driver-G06"]
+        plan["install_packages"] = ["nvidia-driver-G06"]
+        if command_exists("dracut"):
+            plan["post_commands"] = ["dracut -f"]
+
+    plan["remove_packages"] = [pkg for pkg in plan["remove_packages"] if pkg]
+    plan["install_packages"] = [pkg for pkg in plan["install_packages"] if pkg]
+    return plan
+
+
+def maybe_offer_nvidia_proprietary_remediation(
+    *,
+    interactive: bool,
+    auto_fix_nvidia: bool,
+    priv: dict,
+    base_distro: str,
+    renderer: str,
+    run_user_cmd,
+    nvidia_activation_diagnostics: dict,
+    gpu_lspci: str,
+    driver_info: dict,
+) -> dict:
+    result = {
+        "offered": False,
+        "accepted": False,
+        "attempted": False,
+        "ok": False,
+        "reason": "",
+        "actions": [],
+        "logs": [],
+        "post_check": {},
+    }
+
+    if not interactive and not auto_fix_nvidia:
+        result["reason"] = "non-interactive"
+        return result
+    if not nvidia_activation_diagnostics.get("relevant"):
+        result["reason"] = "nvidia-not-relevant"
+        return result
+
+    uses_nouveau = bool(nvidia_activation_diagnostics.get("nouveau_active"))
+    open_mismatch = bool(nvidia_activation_diagnostics.get("open_gsp_mismatch"))
+    software_renderer = any(token in (renderer or "").lower() for token in ("llvmpipe", "softpipe", "software rasterizer"))
+    nvidia_module_active = bool(nvidia_activation_diagnostics.get("nvidia_module_active"))
+
+    needs = uses_nouveau or open_mismatch or (software_renderer and not nvidia_module_active)
+    if not needs:
+        result["reason"] = "no-remediation-needed"
+        return result
+
+    reasons = []
+    if uses_nouveau:
+        reasons.append("nouveau-active")
+    if open_mismatch:
+        reasons.append("open-gsp-mismatch")
+    if software_renderer and not nvidia_module_active:
+        reasons.append("software-renderer-without-active-nvidia")
+
+    prompt = (
+        "NVIDIA remediation suggested (" + ", ".join(reasons) + "). "
+        "Apply automatic proprietary-driver correction now (before reboot)?"
+    )
+    result["offered"] = True
+    if auto_fix_nvidia:
+        result["accepted"] = True
+        result["reason"] = "auto-fix-enabled"
+    else:
+        if not _ask_yes_no(prompt, default=False):
+            result["reason"] = "user-declined"
+            return result
+        result["accepted"] = True
+
+    result["attempted"] = True
+
+    plan = _build_nvidia_proprietary_install_plan(base_distro, nvidia_activation_diagnostics)
+    result["actions"] = plan
+
+    if not plan.get("install_packages"):
+        result["reason"] = "unsupported-distro-or-empty-plan"
+        return result
+
+    def _run_privileged(cmd: list[str], timeout: int = 300) -> dict:
+        full_cmd = ensure_sudo(cmd, priv)
+        if not full_cmd:
+            return {
+                "ok": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "sudo unavailable or authentication failed",
+                "cmd": " ".join(cmd),
+                "error": "no-sudo",
+            }
+        return run_cmd(full_cmd, timeout=timeout)
+
+    def _run_step(step: str, cmd: list[str], timeout: int = 300) -> dict:
+        trace(f"nvidia remediation step start: {step} cmd={' '.join(cmd)}")
+        log = _run_privileged(cmd, timeout=timeout)
+        log["step"] = step
+        trace(
+            "nvidia remediation step done: "
+            f"step={step} ok={log.get('ok')} rc={log.get('returncode')} "
+            f"stderr={(log.get('stderr', '') or '')[:300]}"
+        )
+        return log
+
+    remove_pkgs = plan.get("remove_packages", [])
+    if remove_pkgs:
+        if base_distro in ("fedora", "suse"):
+            if base_distro == "fedora":
+                result["logs"].append(_run_step("remove-open-packages", ["dnf", "remove", "-y"] + remove_pkgs, timeout=300))
+            else:
+                result["logs"].append(_run_step("remove-open-packages", ["zypper", "--non-interactive", "rm"] + remove_pkgs, timeout=300))
+        elif base_distro in ("ubuntu", "debian"):
+            result["logs"].append(_run_step("remove-open-packages", ["apt-get", "remove", "-y"] + remove_pkgs, timeout=300))
+        elif base_distro == "arch":
+            result["logs"].append(_run_step("remove-open-packages", ["pacman", "-Rns", "--noconfirm"] + remove_pkgs, timeout=300))
+
+    install_pkgs = plan.get("install_packages", [])
+    if base_distro == "fedora":
+        result["logs"].append(_run_step("install-proprietary-packages", ["dnf", "install", "-y"] + install_pkgs, timeout=600))
+    elif base_distro in ("ubuntu", "debian"):
+        result["logs"].append(_run_step("refresh-package-index", ["apt-get", "update"], timeout=180))
+        result["logs"].append(_run_step("install-proprietary-packages", ["apt-get", "install", "-y"] + install_pkgs, timeout=600))
+    elif base_distro == "arch":
+        result["logs"].append(_run_step("install-proprietary-packages", ["pacman", "-Sy", "--noconfirm"] + install_pkgs, timeout=600))
+    elif base_distro == "suse":
+        result["logs"].append(_run_step("install-proprietary-packages", ["zypper", "--non-interactive", "install"] + install_pkgs, timeout=600))
+
+    for post_cmd in plan.get("post_commands", []):
+        cmd = [token for token in post_cmd.split() if token]
+        if cmd:
+            result["logs"].append(_run_step(f"post-command:{post_cmd}", cmd, timeout=600))
+
+    result["ok"] = all(log.get("ok", False) for log in result.get("logs", [])) if result.get("logs") else False
+
+    mismatch_check = _detect_open_gsp_mismatch(run_user_cmd)
+    installed_after = _collect_installed_nvidia_packages(base_distro, run_user_cmd)
+    lsmod_after = run_cmd(["lsmod"])
+    loaded_after = gather_driver_info(lsmod_after.get("stdout", ""), priv)
+    smi_after = run_user_cmd(["nvidia-smi"], timeout=20) if command_exists("nvidia-smi") else {"ok": False, "stderr": "nvidia-smi not found", "stdout": ""}
+
+    result["post_check"] = {
+        "open_gsp_mismatch": bool(mismatch_check.get("detected")),
+        "open_packages_remaining": installed_after.get("open", []),
+        "nvidia_loaded_modules": loaded_after.get("loaded", []),
+        "nvidia_smi_ok": bool(smi_after.get("ok", False)),
+        "mismatch_check": mismatch_check,
+        "needs_reboot": True,
+    }
+
+    if result["ok"] and not result["post_check"]["open_packages_remaining"]:
+        result["reason"] = "packages-corrected-reboot-required"
+    elif not result["ok"]:
+        result["reason"] = "install-or-post-step-failed"
+    else:
+        result["reason"] = "partial-correction"
+
+    return result
+
+
 def gather_nvidia_activation_diagnostics(
     run_user_cmd,
     base_distro: str,
@@ -2428,6 +2823,10 @@ def gather_nvidia_activation_diagnostics(
         "relevant": bool(nvidia_gpu),
         "nouveau_active": nouveau_active,
         "nvidia_module_active": nvidia_module_active,
+        "open_gsp_mismatch": False,
+        "open_gsp_mismatch_reason": "",
+        "installed_open_packages": [],
+        "installed_proprietary_packages": [],
         "recommended_package": "",
         "candidate_packages": [],
         "suited_package": "",
@@ -2477,6 +2876,25 @@ def gather_nvidia_activation_diagnostics(
             "stdout": mod.get("stdout", "")[:1000],
             "stderr": mod.get("stderr", "")[:500],
         }
+
+    open_mismatch = _detect_open_gsp_mismatch(run_user_cmd)
+    diag["open_gsp_mismatch"] = bool(open_mismatch.get("detected"))
+    diag["open_gsp_mismatch_reason"] = open_mismatch.get("reason", "")
+    diag["checks"]["open_gsp_mismatch"] = {
+        "ok": bool(open_mismatch.get("check_ok", False)),
+        "detected": bool(open_mismatch.get("detected")),
+        "reason": open_mismatch.get("reason", ""),
+        "stdout_excerpt": (open_mismatch.get("journal_excerpt", "") or "")[:2000],
+    }
+
+    installed_pkgs = _collect_installed_nvidia_packages(base_distro, run_user_cmd)
+    diag["installed_open_packages"] = installed_pkgs.get("open", [])
+    diag["installed_proprietary_packages"] = installed_pkgs.get("proprietary", [])
+    diag["checks"]["installed_nvidia_packages_unified"] = {
+        "ok": True,
+        "open": installed_pkgs.get("open", [])[:40],
+        "proprietary": installed_pkgs.get("proprietary", [])[:40],
+    }
 
     if base_distro in ("ubuntu", "debian"):
         recommended_package = ""
@@ -2652,6 +3070,11 @@ def gather_nvidia_activation_diagnostics(
             "Option D (nouveau still active): ensure proprietary module loads first; if needed, apply distro-supported nouveau blacklist workflow and regenerate initramfs"
         )
 
+    if diag.get("open_gsp_mismatch"):
+        options.append(
+            "Option F (open/GSP mismatch detected): remove nvidia-open packages, install proprietary branch, rebuild initramfs, then reboot"
+        )
+
     if not nvidia_module_active:
         options.append("Option E (diagnostics): collect dmesg/journal errors for nvidia/nouveau module load failures")
 
@@ -2667,10 +3090,16 @@ def build_nvidia_command_block(diag: dict, base_distro: str) -> list[str]:
 
     if base_distro == "fedora":
         suited = (diag or {}).get("suited_package", "") or "akmod-nvidia"
+        if "open" in suited:
+            suited = "akmod-nvidia"
         return [
             "dnf repoquery akmod-nvidia",
             "dnf repoquery xorg-x11-drv-nvidia",
+            "sudo dnf remove -y akmod-nvidia-open kmod-nvidia-open-dkms",
             f"sudo dnf install -y {suited}",
+            "sudo dnf install -y xorg-x11-drv-nvidia xorg-x11-drv-nvidia-libs",
+            "sudo akmods --force",
+            "sudo dracut -f",
             "sudo reboot",
             "# after reboot:",
             "lsmod | grep -E 'nvidia|nouveau'",
@@ -2679,6 +3108,8 @@ def build_nvidia_command_block(diag: dict, base_distro: str) -> list[str]:
         ]
 
     suited = (diag or {}).get("suited_package", "")
+    if "open" in suited:
+        suited = ""
     cmds = [
         "ubuntu-drivers devices",
         "lsmod | grep -E 'nvidia|nouveau'",
@@ -3091,6 +3522,7 @@ def print_console_report(
     journalctl_debug,
     package_manager_diagnostics,
     package_install_result,
+    sudo_passwordless_result,
 ) -> None:
     matrix_has_fractional = any(
         abs(float(run.get("requested_scale", 1.0)) - round(float(run.get("requested_scale", 1.0)))) > 1e-6
@@ -3181,6 +3613,22 @@ def print_console_report(
             candidates = ", ".join(entry.get("candidates", [])[:8]) or "none"
             available = ", ".join(entry.get("available_candidates", [])[:8]) or "none"
             print(f"      - {tool}: {status}; candidates=[{candidates}] available=[{available}]")
+
+    if sudo_passwordless_result.get("attempted") or sudo_passwordless_result.get("reason") not in {"", "not-requested"}:
+        _section("Sudo Configuration")
+        _bullet("Passwordless sudo requested", "yes" if sudo_passwordless_result.get("attempted") else "no")
+        _bullet("Result", "ok" if sudo_passwordless_result.get("ok") else "failed")
+        _bullet("Reason", sudo_passwordless_result.get("reason", "unknown"))
+        if sudo_passwordless_result.get("target_user"):
+            _bullet("Target user", sudo_passwordless_result.get("target_user"))
+        if sudo_passwordless_result.get("sudoers_file"):
+            _bullet("Sudoers file", sudo_passwordless_result.get("sudoers_file"))
+        for step in sudo_passwordless_result.get("steps", [])[:20]:
+            print(
+                "    - "
+                f"{step.get('step', 'step')}: ok={step.get('ok')} rc={step.get('returncode')} "
+                f"cmd={step.get('cmd', '')}"
+            )
 
     _section("Inspection Coverage")
     _bullet("Coverage score", f"{inspection_coverage.get('score', 0)} / 100")
@@ -3287,6 +3735,37 @@ def print_console_report(
             for cmd in cmd_block:
                 print(f"    {cmd}")
             print("    ```")
+        remediation = nvidia_activation_diagnostics.get("auto_remediation", {})
+        if remediation:
+            _bullet("NVIDIA auto remediation offered", "yes" if remediation.get("offered") else "no")
+            _bullet("NVIDIA auto remediation attempted", "yes" if remediation.get("attempted") else "no")
+            _bullet("NVIDIA auto remediation result", "ok" if remediation.get("ok") else remediation.get("reason", "n/a"))
+            actions = remediation.get("actions", {})
+            if actions:
+                print(
+                    "    planned actions: "
+                    f"remove={actions.get('remove_packages', [])}, "
+                    f"install={actions.get('install_packages', [])}, "
+                    f"post={actions.get('post_commands', [])}"
+                )
+            for log in remediation.get("logs", [])[:30]:
+                print(
+                    "    - "
+                    f"{log.get('step', 'step')}: ok={log.get('ok')} rc={log.get('returncode')} "
+                    f"cmd={log.get('cmd', '')}"
+                )
+                stderr_excerpt = (log.get("stderr", "") or "")[:240]
+                if stderr_excerpt:
+                    print(f"      stderr: {stderr_excerpt}")
+            post_check = remediation.get("post_check", {})
+            if post_check:
+                print(
+                    "    post-check: "
+                    f"open_mismatch={post_check.get('open_gsp_mismatch')}, "
+                    f"open_pkgs_remaining={post_check.get('open_packages_remaining', [])}, "
+                    f"nvidia_modules={post_check.get('nvidia_loaded_modules', [])}, "
+                    f"nvidia_smi_ok={post_check.get('nvidia_smi_ok')}"
+                )
 
     _section("Pipeline Analysis")
     _bullet("Pipeline",            pipeline_analysis.get("pipeline_class", "unknown"))
@@ -3388,6 +3867,7 @@ def write_markdown_report(
     journalctl_debug,
     package_manager_diagnostics,
     package_install_result,
+    sudo_passwordless_result,
     trace_log,
     console_log,
 ) -> None:
@@ -3516,6 +3996,21 @@ def write_markdown_report(
     if package_install_result.get("logs"):
         lines += ["", "### Package install logs", "```json", json.dumps(package_install_result.get("logs", []), indent=2), "```"]
 
+    if sudo_passwordless_result.get("attempted") or sudo_passwordless_result.get("reason") not in {"", "not-requested"}:
+        lines += [
+            "",
+            "## Sudo Configuration",
+            f"- Passwordless sudo requested: {'yes' if sudo_passwordless_result.get('attempted') else 'no'}",
+            f"- Result: {'ok' if sudo_passwordless_result.get('ok') else 'failed'}",
+            f"- Reason: {sudo_passwordless_result.get('reason', 'unknown')}",
+            f"- Target user: {sudo_passwordless_result.get('target_user', '')}",
+            f"- Sudoers file: {sudo_passwordless_result.get('sudoers_file', '')}",
+            "",
+            "```json",
+            json.dumps(sudo_passwordless_result, indent=2),
+            "```",
+        ]
+
     lines += [
         "",
         "## Inspection Coverage",
@@ -3638,6 +4133,19 @@ def write_markdown_report(
         command_block = nvidia_activation_diagnostics.get("command_block", [])
         if command_block:
             lines += ["", "### NVIDIA Suggested Commands", "```bash"] + command_block + ["```"]
+        remediation = nvidia_activation_diagnostics.get("auto_remediation", {})
+        if remediation:
+            lines += [
+                "",
+                "### NVIDIA Auto Remediation",
+                f"- Offered: {'yes' if remediation.get('offered') else 'no'}",
+                f"- Attempted: {'yes' if remediation.get('attempted') else 'no'}",
+                f"- Result: {'ok' if remediation.get('ok') else remediation.get('reason', 'failed')}",
+                "",
+                "```json",
+                json.dumps(remediation, indent=2),
+                "```",
+            ]
     lines += [
         "",
         "```json",
@@ -3786,6 +4294,16 @@ def main() -> int:
         help="Allow glxgears fallback when glmark2 is unavailable (default: disabled).",
     )
     parser.add_argument(
+        "--auto-fix-nvidia",
+        action="store_true",
+        help="Automatically apply NVIDIA proprietary remediation without interactive prompt when mismatch is detected.",
+    )
+    parser.add_argument(
+        "--make-sudo-passwordless",
+        action="store_true",
+        help="Configure passwordless sudo (NOPASSWD: ALL) for the invoking user via /etc/sudoers.d.",
+    )
+    parser.add_argument(
         "--fps-mode",
         choices=["auto", "fullscreen", "windowed", "offscreen"],
         default="auto",
@@ -3825,6 +4343,7 @@ def main() -> int:
         f"allow_glxgears_fallback={args.allow_glxgears_fallback}, fps_mode={args.fps_mode}, "
         f"fps_window_size={args.fps_window_size}, no_journalctl={args.no_journalctl}, "
         f"journalctl_lines={args.journalctl_lines}, enable_scale_safety_guard={args.enable_scale_safety_guard}, "
+        f"auto_fix_nvidia={args.auto_fix_nvidia}, make_sudo_passwordless={args.make_sudo_passwordless}, "
         f"output='{args.output}'"
     )
 
@@ -3840,6 +4359,30 @@ def main() -> int:
         cprint(C_RED, "[ERROR] Root-capable access is required in this environment.")
         cprint(C_RED, "[ERROR] Open a root shell (e.g., `sudo -i`) and run the script again.")
         return 2
+
+    sudo_passwordless_result = {
+        "attempted": False,
+        "ok": False,
+        "target_user": "",
+        "sudoers_file": "",
+        "steps": [],
+        "reason": "not-requested",
+    }
+    if args.make_sudo_passwordless:
+        target_user = os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
+        if not target_user:
+            cprint(C_RED, "[ERROR] Could not determine target user for sudoers update.")
+            return 6
+        cprint(C_YELLOW, f"[WARN] Configuring passwordless sudo for user '{target_user}' (NOPASSWD: ALL).")
+        if interactive and not _ask_yes_no("Proceed with passwordless sudo configuration?", default=False):
+            sudo_passwordless_result["reason"] = "user-declined"
+            cprint(C_YELLOW, "Passwordless sudo setup skipped by user.")
+        else:
+            sudo_passwordless_result = configure_passwordless_sudo(priv, target_user)
+            if sudo_passwordless_result.get("ok"):
+                cprint(C_GREEN, f"Passwordless sudo configured for '{target_user}'.")
+            else:
+                cprint(C_RED, f"Passwordless sudo setup failed: {sudo_passwordless_result.get('reason', 'unknown')}")
 
     path_preflight = preflight_writable_paths(args.output)
     if not path_preflight.get("cwd_writable"):
@@ -4280,8 +4823,8 @@ def main() -> int:
         "options": [],
         "notes": [],
     }
-    if "nouveau" in set(driver_info.get("loaded", [])):
-        nvidia_instructions = _nvidia_install_instructions(base_distro, osr)
+    nvidia_context = _detect_nvidia_context(gpu_lspci, renderer, gpu_inventory)
+    if nvidia_context:
         nvidia_activation_diagnostics = gather_nvidia_activation_diagnostics(
             run_user_cmd=run_user_cmd,
             base_distro=base_distro,
@@ -4289,6 +4832,44 @@ def main() -> int:
             renderer=renderer,
             driver_info=driver_info,
         )
+        if (
+            nvidia_activation_diagnostics.get("nouveau_active")
+            or nvidia_activation_diagnostics.get("open_gsp_mismatch")
+            or not nvidia_activation_diagnostics.get("nvidia_module_active")
+        ):
+            nvidia_instructions = _nvidia_install_instructions(base_distro, osr)
+
+        remediation_result = maybe_offer_nvidia_proprietary_remediation(
+            interactive=interactive,
+            auto_fix_nvidia=bool(args.auto_fix_nvidia),
+            priv=priv,
+            base_distro=base_distro,
+            renderer=renderer,
+            run_user_cmd=run_user_cmd,
+            nvidia_activation_diagnostics=nvidia_activation_diagnostics,
+            gpu_lspci=gpu_lspci,
+            driver_info=driver_info,
+        )
+        nvidia_activation_diagnostics["auto_remediation"] = remediation_result
+        if remediation_result.get("attempted"):
+            post_lsmod = run_cmd(["lsmod"])
+            driver_info = gather_driver_info(post_lsmod.get("stdout", ""), priv)
+            nvidia_activation_diagnostics = gather_nvidia_activation_diagnostics(
+                run_user_cmd=run_user_cmd,
+                base_distro=base_distro,
+                gpu_lspci=gpu_lspci,
+                renderer=renderer,
+                driver_info=driver_info,
+            )
+            nvidia_activation_diagnostics["auto_remediation"] = remediation_result
+            if remediation_result.get("ok"):
+                conclusions.append(
+                    "NVIDIA proprietary remediation was applied automatically. Reboot is still required for final module activation check."
+                )
+            else:
+                conclusions.append(
+                    "NVIDIA proprietary remediation was attempted but did not fully complete; check 'NVIDIA Activation Diagnostics' logs."
+                )
         trace(
             "nvidia diagnostics: "
             f"relevant={nvidia_activation_diagnostics.get('relevant')} "
@@ -4344,6 +4925,7 @@ def main() -> int:
         journalctl_debug=journalctl_debug,
         package_manager_diagnostics=package_manager_diagnostics,
         package_install_result=package_install_result,
+        sudo_passwordless_result=sudo_passwordless_result,
     )
 
     # ---- Markdown report ----
@@ -4395,6 +4977,7 @@ def main() -> int:
             journalctl_debug=journalctl_debug,
             package_manager_diagnostics=package_manager_diagnostics,
             package_install_result=package_install_result,
+            sudo_passwordless_result=sudo_passwordless_result,
             trace_log=TRACE_LOG,
             console_log=CONSOLE_LOG,
         )
