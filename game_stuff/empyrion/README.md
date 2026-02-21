@@ -182,6 +182,20 @@ python3 release-empyrion-translation.py
 
 This reads metadata from root `release.toml`, validates token parity, and writes zip/report artifacts to `game_stuff/empyrion/dist/`.
 
+To also create/update a GitHub Release and upload the zip + report:
+
+```bash
+cd game_stuff/empyrion
+python3 release-empyrion-translation.py --publish-github
+```
+
+Optional release flags:
+
+- `--tag empyrion-de-translation-YYYYMMDD-HHMMSS`
+- `--release-name "Empyrion DE Translation <stamp>"`
+- `--draft`
+- `--prerelease`
+
 Opt-in through the repository release manager (not part of default project list):
 
 ```bash

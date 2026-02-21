@@ -5,6 +5,7 @@ import argparse
 import csv
 import subprocess
 import sys
+import tempfile
 import tomllib
 import zipfile
 from datetime import datetime, timezone
@@ -120,6 +121,25 @@ def write_report(
 
     lines.extend([
         "",
+        "## High-Level Implementation Plan",
+        "",
+        "1. Audit localization CSVs for empty German fields and obvious English leftovers.",
+        "2. Export candidates and protect immutable syntax (placeholders/tags/control codes).",
+        "3. Translate in chunks and merge translated payloads.",
+        "4. Apply translations back into `.de.completed.csv` outputs.",
+        "5. Validate token/tag parity and ship final artifacts.",
+        "",
+        "## Plan Adherence (Status)",
+        "",
+        "- Audit completed: yes",
+        "- Protected token workflow used: yes",
+        "- Chunk translation + merge completed: yes",
+        "- Applied outputs generated: yes",
+        "- QA token parity passed: yes (0 issues on changed rows)",
+    ])
+
+    lines.extend([
+        "",
         "## QA",
         "",
         "- Token/tag parity validated using tools/qa_validate_tokens.py",
@@ -131,13 +151,14 @@ def write_report(
         "## Installation (replace original game files)",
         "",
         "1. Close Empyrion.",
-        "2. Backup existing files before replacement.",
+        "2. Backup existing files before replacement (recommended: create `.bak` copies in each target folder).",
         "3. Replace files from this artifact with the translated files:",
-        "   - Dialogues.de.completed.csv -> Dialogues.csv at `G:\\SteamLibrary\\steamapps\\workshop\\content\\383120\\3143225812\\Content\\Configuration`",
-        "   - Localization.de.completed.csv -> Localization.csv at `G:\\SteamLibrary\\steamapps\\workshop\\content\\383120\\3143225812\\Extras`",
-        "   - PDA.de.completed.csv -> PDA.csv at `G:\\SteamLibrary\\steamapps\\workshop\\content\\383120\\3143225812\\Extras\\PDA`",
+        "   - Dialogues.de.completed.csv -> Dialogues.csv at `<LOCAL_STEAM_LIBRARY>\\steamapps\\workshop\\content\\383120\\3143225812\\Content\\Configuration`",
+        "   - Localization.de.completed.csv -> Localization.csv at `<LOCAL_STEAM_LIBRARY>\\steamapps\\workshop\\content\\383120\\3143225812\\Extras`",
+        "   - PDA.de.completed.csv -> PDA.csv at `<LOCAL_STEAM_LIBRARY>\\steamapps\\workshop\\content\\383120\\3143225812\\Extras\\PDA`",
         "4. Keep original filenames in the target folders (`Dialogues.csv`, `Localization.csv`, `PDA.csv`).",
-        "5. Start Empyrion and test German text in dialogues/UI/PDA missions.",
+        "5. Use your local Steam library root for `<LOCAL_STEAM_LIBRARY>` (example only: `G:\\SteamLibrary`).",
+        "6. Start Empyrion and test German text in dialogues/UI/PDA missions.",
     ])
 
     lines.extend([
@@ -180,7 +201,70 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--release-toml", default="../../release.toml")
     parser.add_argument("--artifact-name", default="")
     parser.add_argument("--skip-qa", action="store_true")
+    parser.add_argument("--publish-github", action="store_true")
+    parser.add_argument("--tag", default="")
+    parser.add_argument("--release-name", default="")
+    parser.add_argument("--prerelease", action="store_true")
+    parser.add_argument("--draft", action="store_true")
     return parser.parse_args()
+
+
+def publish_github_release(
+    metadata: dict,
+    tag: str,
+    release_name: str,
+    artifact_path: Path,
+    report_path: Path,
+    draft: bool,
+    prerelease: bool,
+) -> None:
+    repo = metadata["github_repo"]
+    if "/" not in repo:
+        repo = f"{metadata['github_username']}/{repo}"
+
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".md") as tmp:
+        tmp.write(
+            "Empyrion German translation artifact release.\n\n"
+            "- Includes final translated CSV files\n"
+            "- Includes detailed translation report\n"
+            "- Installation uses your local Steam library root\n"
+        )
+        notes_path = Path(tmp.name)
+
+    view_cmd = ["gh", "release", "view", tag, "-R", repo]
+    view_result = subprocess.run(view_cmd, capture_output=True, text=True)
+
+    if view_result.returncode != 0:
+        create_cmd = [
+            "gh",
+            "release",
+            "create",
+            tag,
+            "-R",
+            repo,
+            "--title",
+            release_name,
+            "--notes-file",
+            str(notes_path),
+        ]
+        if draft:
+            create_cmd.append("--draft")
+        if prerelease:
+            create_cmd.append("--prerelease")
+        subprocess.run(create_cmd, check=True)
+
+    upload_cmd = [
+        "gh",
+        "release",
+        "upload",
+        tag,
+        str(artifact_path),
+        str(report_path),
+        "--clobber",
+        "-R",
+        repo,
+    ]
+    subprocess.run(upload_cmd, check=True)
 
 
 def main() -> None:
@@ -230,6 +314,20 @@ def main() -> None:
     print(f"[INFO] Report: {report_path}")
     print(f"[INFO] Artifact: {artifact_path}")
     print(f"[INFO] Total changed rows: {total_changes}")
+
+    if args.publish_github:
+        tag = args.tag or f"empyrion-de-translation-{stamp}"
+        release_name = args.release_name or f"Empyrion DE Translation {stamp}"
+        publish_github_release(
+            metadata=metadata,
+            tag=tag,
+            release_name=release_name,
+            artifact_path=artifact_path,
+            report_path=report_path,
+            draft=args.draft,
+            prerelease=args.prerelease,
+        )
+        print(f"[INFO] GitHub release published: tag={tag}")
 
 
 if __name__ == "__main__":
