@@ -2477,7 +2477,7 @@ def _ensure_scale(session_env: dict, desktop: str, target_scale: float, run_user
     return False, "unavailable-non-interactive"
 
 
-def _nvidia_install_instructions(base_distro: str, osr: dict) -> list:
+def _nvidia_install_instructions(base_distro: str, osr: dict, diag: Optional[dict] = None) -> list:
     distro_name = osr.get("PRETTY_NAME", "this distro")
     lines = [f"Proprietary NVIDIA driver is not active on {distro_name}."]
     if base_distro in ("ubuntu", "debian"):
@@ -2492,13 +2492,30 @@ def _nvidia_install_instructions(base_distro: str, osr: dict) -> list:
             "Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
         ]
     elif base_distro == "fedora":
-        lines += [
-            "Enable RPM Fusion nonfree if not yet enabled",
-            "If open variant is present, remove it first: sudo dnf remove -y akmod-nvidia-open kmod-nvidia-open-dkms",
-            "Install proprietary stack: sudo dnf install -y akmod-nvidia xorg-x11-drv-nvidia xorg-x11-drv-nvidia-libs",
-            "Build module/initramfs before reboot: sudo akmods --force && sudo dracut -f",
-            "Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
-        ]
+        proprietary_installed = bool((diag or {}).get("installed_proprietary_packages"))
+        open_mismatch = bool((diag or {}).get("open_gsp_mismatch"))
+        if proprietary_installed:
+            lines += [
+                "Distro NVIDIA packages already appear installed; prioritize module build/activation instead of adding another repo.",
+                "Ensure matching kernel build deps: sudo dnf install -y akmods kernel-devel-$(uname -r) kernel-headers-$(uname -r)",
+                "Rebuild module for current kernel: sudo akmods --force --kernels $(uname -r)",
+                "Verify module artifact: modinfo -k $(uname -r) nvidia",
+                "Rebuild initramfs and reboot: sudo dracut -f && sudo reboot",
+                "After reboot verify: lsmod | grep -E 'nvidia|nouveau' && nvidia-smi",
+            ]
+            if open_mismatch:
+                lines += [
+                    "If open/GSP mismatch persists: sudo dnf remove -y akmod-nvidia-open kmod-nvidia-open-dkms",
+                    "Then repeat akmods/dracut/reboot sequence above.",
+                ]
+        else:
+            lines += [
+                "Enable RPM Fusion nonfree if not yet enabled",
+                "If open variant is present, remove it first: sudo dnf remove -y akmod-nvidia-open kmod-nvidia-open-dkms",
+                "Install proprietary stack: sudo dnf install -y akmod-nvidia xorg-x11-drv-nvidia xorg-x11-drv-nvidia-libs",
+                "Build module/initramfs before reboot: sudo akmods --force && sudo dracut -f",
+                "Reboot and verify: lsmod | grep -E 'nvidia|nouveau'",
+            ]
     elif base_distro == "arch":
         lines += [
             "Install packages: sudo pacman -S nvidia nvidia-utils",
@@ -2531,6 +2548,7 @@ def _ask_yes_no(prompt: str, default: bool = False) -> bool:
 
 def _ask_nvidia_remediation_mode() -> str:
     options = [
+        ("distro-repair", "clean reinstall using distro-integrated NVIDIA stack"),
         ("cleanup-only", "remove NVIDIA packages only (no install)"),
         ("cuda-repo", "install NVIDIA via CUDA/Fedora repo package path"),
         ("runfile", "install NVIDIA via .run installer path"),
@@ -2542,7 +2560,7 @@ def _ask_nvidia_remediation_mode() -> str:
         print(f"  {idx}) {label}")
 
     try:
-        raw = input("Choose remediation mode [1-5, default 5]: ").strip()
+        raw = input(f"Choose remediation mode [1-{len(options)}, default {len(options)}]: ").strip()
     except EOFError:
         return "skip"
 
@@ -2772,6 +2790,65 @@ def _build_nvidia_remediation_plan(
             plan["reason"] = "no-installed-nvidia-packages-found"
         return plan
 
+    if mode == "distro-repair":
+        if base_distro != "fedora":
+            plan["supported"] = False
+            plan["reason"] = "distro-repair-mode-supported-on-fedora-only"
+            return plan
+
+        # Remove all known NVIDIA package families first to avoid mixed stacks.
+        add_step(
+            "remove-existing-nvidia-packages",
+            [
+                "dnf", "remove", "-y",
+                "akmod-nvidia*", "kmod-nvidia*", "xorg-x11-drv-nvidia*",
+                "nvidia-driver*", "libnvidia*", "nvidia-kmod-common*",
+            ],
+            timeout=900,
+        )
+
+        kernel_release = platform.release().strip()
+        add_step(
+            "install-build-deps",
+            [
+                "dnf", "install", "-y",
+                "akmods",
+                f"kernel-devel-{kernel_release}",
+                f"kernel-headers-{kernel_release}",
+            ],
+            timeout=600,
+        )
+
+        # Try distro family variants in order; first successful branch wins.
+        plan["steps"].append(
+            {
+                "step": "install-driver-family",
+                "alternatives": [
+                    [
+                        "dnf", "install", "-y",
+                        "akmod-nvidia",
+                        "nvidia-driver",
+                        "nvidia-driver-cuda",
+                        "nvidia-driver-libs",
+                        "nvidia-driver-cuda-libs",
+                    ],
+                    [
+                        "dnf", "install", "-y",
+                        "akmod-nvidia",
+                        "xorg-x11-drv-nvidia",
+                        "xorg-x11-drv-nvidia-cuda",
+                        "xorg-x11-drv-nvidia-libs",
+                    ],
+                ],
+                "timeout": 1200,
+            }
+        )
+
+        add_step("rebuild-akmods", ["akmods", "--force", "--kernels", kernel_release], timeout=1200)
+        add_step("dracut", ["dracut", "-f"], timeout=300)
+        plan["reboot_required"] = True
+        return plan
+
     if mode == "cuda-repo":
         if base_distro != "fedora":
             plan["supported"] = False
@@ -2913,7 +2990,7 @@ def maybe_offer_nvidia_remediation(
             return result
         print(prompt)
         selected_mode = _ask_nvidia_remediation_mode()
-    elif policy in {"cleanup-only", "cuda-repo", "runfile", "nouveau"}:
+    elif policy in {"distro-repair", "cleanup-only", "cuda-repo", "runfile", "nouveau"}:
         selected_mode = policy
     elif policy == "skip":
         result["reason"] = "policy-no-ignored"
@@ -2980,18 +3057,67 @@ def maybe_offer_nvidia_remediation(
         return log
 
     for step in plan.get("steps", []):
+        step_name = str(step.get("step", "nvidia-remediation-step"))
+        timeout = int(step.get("timeout", 600))
+        alternatives = step.get("alternatives") or []
+
+        if alternatives:
+            alt_logs: list[dict] = []
+            success = False
+            for idx, alt_cmd in enumerate(alternatives, 1):
+                cmd = list(alt_cmd or [])
+                if not cmd:
+                    continue
+                log = _run_step(f"{step_name}[alt{idx}]", cmd, timeout=timeout)
+                log["alternative_index"] = idx
+                alt_logs.append(log)
+                if log.get("ok", False):
+                    success = True
+                    break
+
+            result["logs"].append(
+                {
+                    "step": step_name,
+                    "ok": success,
+                    "used_alternatives": True,
+                    "alternatives": alt_logs,
+                    "stderr": "" if success else ((alt_logs[-1].get("stderr", "") if alt_logs else "no-alternative-command-ran")),
+                }
+            )
+            continue
+
         cmd = list(step.get("cmd") or [])
         if not cmd:
             continue
-        result["logs"].append(
-            _run_step(
-                str(step.get("step", "nvidia-remediation-step")),
-                cmd,
-                timeout=int(step.get("timeout", 600)),
-            )
-        )
+        result["logs"].append(_run_step(step_name, cmd, timeout=timeout))
 
     result["ok"] = all(log.get("ok", False) for log in result.get("logs", [])) if result.get("logs") else False
+
+    def _extract_failed_log_path(logs: list[dict]) -> str:
+        pattern = re.compile(r"(/var/cache/akmods/[^\s]+\.failed\.log)")
+        stack = list(logs)
+        while stack:
+            entry = stack.pop()
+            if isinstance(entry, dict):
+                for key in ("stderr", "stdout", "error", "cmd"):
+                    text = str(entry.get(key, "") or "")
+                    match = pattern.search(text)
+                    if match:
+                        return match.group(1)
+                nested = entry.get("alternatives")
+                if isinstance(nested, list):
+                    stack.extend(nested)
+        return ""
+
+    failed_log_path = _extract_failed_log_path(result.get("logs", []))
+    kernel_api_mismatch = False
+    kernel_api_mismatch_signature = ""
+    if failed_log_path:
+        failed_log_tail = _run_privileged(["tail", "-n", "220", failed_log_path], timeout=45)
+        failed_text = ((failed_log_tail.get("stdout", "") or "") + "\n" + (failed_log_tail.get("stderr", "") or "")).lower()
+        if "vm_area_struct" in failed_text and "__vm_flags" in failed_text:
+            kernel_api_mismatch = True
+            kernel_api_mismatch_signature = "vm_area_struct.__vm_flags missing"
 
     mismatch_check = _detect_open_gsp_mismatch(run_user_cmd)
     installed_after = _collect_installed_nvidia_packages(base_distro, run_user_cmd)
@@ -3005,6 +3131,9 @@ def maybe_offer_nvidia_remediation(
         "nvidia_loaded_modules": loaded_after.get("loaded", []),
         "nvidia_smi_ok": bool(smi_after.get("ok", False)),
         "mismatch_check": mismatch_check,
+        "akmods_failed_log": failed_log_path,
+        "kernel_api_mismatch": kernel_api_mismatch,
+        "kernel_api_mismatch_signature": kernel_api_mismatch_signature,
         "needs_reboot": bool(plan.get("reboot_required", False)),
     }
     result["reboot_required"] = bool(plan.get("reboot_required", False))
@@ -3012,9 +3141,33 @@ def maybe_offer_nvidia_remediation(
     if result["ok"] and not result["post_check"]["open_packages_remaining"]:
         result["reason"] = "remediation-complete"
     elif not result["ok"]:
-        result["reason"] = "install-or-post-step-failed"
+        if kernel_api_mismatch:
+            result["reason"] = "kernel-api-mismatch-akmods"
+        else:
+            result["reason"] = "install-or-post-step-failed"
     else:
         result["reason"] = "partial-correction"
+
+    if not result["ok"] and interactive and policy == "ask":
+        print("[WARN] NVIDIA remediation did not complete successfully.")
+        if kernel_api_mismatch:
+            print("[WARN] Detected akmods kernel API mismatch (__vm_flags / vm_area_struct).")
+            print("[WARN] Consider trying mode 'distro-repair' or 'runfile'.")
+        if _ask_yes_no("Try another remediation mode now?", default=True):
+            next_mode = _ask_nvidia_remediation_mode()
+            if next_mode not in {"", "skip", selected_mode}:
+                return maybe_offer_nvidia_remediation(
+                    interactive=interactive,
+                    fix_nvidia_policy=next_mode,
+                    priv=priv,
+                    base_distro=base_distro,
+                    renderer=renderer,
+                    run_user_cmd=run_user_cmd,
+                    nvidia_activation_diagnostics=nvidia_activation_diagnostics,
+                    gpu_lspci=gpu_lspci,
+                    driver_info=driver_info,
+                    nvidia_runfile_path=nvidia_runfile_path,
+                )
 
     return result
 
@@ -3319,7 +3472,7 @@ def gather_nvidia_activation_diagnostics(
         "Option B (packaging source): prefer distro-integrated NVIDIA repos/packages; NVIDIA upstream .run/DKMS path exists but is advanced and can conflict with package-manager managed drivers."
     )
     options.append(
-        "Option H (NVIDIA direct packages): use NVIDIA CUDA/Fedora repository package path (separate from distro-managed stack)."
+        "Option H (fallback only): use NVIDIA CUDA/Fedora repository path only if distro-integrated package candidates are unavailable or broken."
     )
     options.append(
         "Option I (NVIDIA .run installer): advanced fallback path; remove distro NVIDIA packages first and expect manual maintenance after kernel updates."
@@ -3376,7 +3529,10 @@ def gather_nvidia_activation_diagnostics(
         options.append("Option E (diagnostics): collect dmesg/journal errors for nvidia/nouveau module load failures")
 
     diag["command_block"] = build_nvidia_command_block(diag, base_distro)
-    diag["command_block_nvidia_cuda_repo"] = build_nvidia_cuda_repo_command_block(base_distro)
+    has_distro_candidates = bool(diag.get("candidate_packages"))
+    diag["command_block_nvidia_cuda_repo"] = (
+        [] if (base_distro == "fedora" and has_distro_candidates) else build_nvidia_cuda_repo_command_block(base_distro)
+    )
     diag["command_block_nvidia_runfile"] = build_nvidia_runfile_command_block(base_distro)
     diag["options"] = options
     return diag
@@ -5219,7 +5375,11 @@ def main() -> int:
             or nvidia_activation_diagnostics.get("open_gsp_mismatch")
             or not nvidia_activation_diagnostics.get("nvidia_module_active")
         ):
-            nvidia_instructions = _nvidia_install_instructions(base_distro, osr)
+            nvidia_instructions = _nvidia_install_instructions(
+                base_distro,
+                osr,
+                nvidia_activation_diagnostics,
+            )
 
         remediation_result = maybe_offer_nvidia_remediation(
             interactive=interactive,
