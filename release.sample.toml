@@ -112,5 +112,5 @@ commands = [
 
 [projects.empyrion-translation.steps.push]
 commands = [
-  { label = "empyrion: publish DE translation artifact", argv = ["python3", "release-empyrion-translation.py", "--publish-github"], cwd = "game_stuff/empyrion" },
+  { label = "empyrion: publish DE translation artifact", argv = ["python3", "release-empyrion-translation.py", "--publish-github", "--publish-only"], cwd = "game_stuff/empyrion" },
 ]

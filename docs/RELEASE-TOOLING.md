@@ -11,6 +11,16 @@ vbpub uses a config-driven release workflow:
 - **Runner**: release-all.py
 - **Step runner**: release-manager/src/release_manager/step_runner.py
 
+- Build + publish a single project:
+```bash
+python3 release-all.py --project empyrion-translation --build --push
+```
+
+- Publish only (no rebuild):
+```bash
+python3 release-all.py --project empyrion-translation --push
+```
+
 ## Primary entrypoints (Python)
 
 ```bash
@@ -53,3 +63,4 @@ python3 /workspaces/vbpub/release-all.py \
 
 - GitHub credentials are loaded from release.toml, not .env.
 - The pipeline is config-driven; no project logic is hardcoded in the orchestrator.
+- For empyrion-translation, `--push` is publish-only and reuses the latest artifact/report from `game_stuff/empyrion/dist/`.

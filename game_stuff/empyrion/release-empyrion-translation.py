@@ -426,11 +426,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--artifact-name", default="")
     parser.add_argument("--skip-qa", action="store_true")
     parser.add_argument("--publish-github", action="store_true")
+    parser.add_argument("--publish-only", action="store_true")
     parser.add_argument("--tag", default="")
     parser.add_argument("--release-name", default="")
     parser.add_argument("--prerelease", action="store_true")
     parser.add_argument("--draft", action="store_true")
     return parser.parse_args()
+
+
+def find_latest_artifact(output_dir: Path) -> tuple[Path, Path]:
+    zip_candidates = sorted(
+        output_dir.glob("empyrion-de-translation-*.zip"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+    report_candidates = sorted(
+        output_dir.glob("empyrion-de-translation-report-*.md"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+
+    if not zip_candidates:
+        raise FileNotFoundError(
+            f"No artifact zip found in {output_dir}. Run build first."
+        )
+    if not report_candidates:
+        raise FileNotFoundError(
+            f"No report markdown found in {output_dir}. Run build first."
+        )
+
+    return zip_candidates[0], report_candidates[0]
 
 
 def main() -> None:
@@ -439,44 +464,54 @@ def main() -> None:
     input_dir = (script_dir / args.input_dir).resolve()
     output_dir = (script_dir / args.output_dir).resolve()
 
-    if not input_dir.exists():
-        raise FileNotFoundError(f"Input directory not found: {input_dir}")
-    for name in FINAL_FILES:
-        file_path = input_dir / name
-        if not file_path.exists():
-            raise FileNotFoundError(f"Required file not found: {file_path}")
-
-    if not args.skip_qa:
-        run_qa(script_dir, input_dir)
+    if args.publish_only and not args.publish_github:
+        raise ValueError("--publish-only requires --publish-github")
 
     metadata = load_release_metadata_from_env()
-    changes_csv = input_dir / "applied_changes.csv"
-    total_changes, by_file, by_status = summarize_changes(changes_csv)
-    contains_english_rows = collect_status_rows(changes_csv, "de_contains_english")
-
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    artifact_name = args.artifact_name or f"empyrion-de-translation-{stamp}.zip"
-    report_name = f"empyrion-de-translation-report-{stamp}.md"
 
-    report_path = output_dir / report_name
-    artifact_path = output_dir / artifact_name
+    if args.publish_only:
+        artifact_path, report_path = find_latest_artifact(output_dir)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        print(f"[INFO] Publish-only mode: using existing artifact {artifact_path}")
+        print(f"[INFO] Publish-only mode: using existing report {report_path}")
+    else:
+        if not input_dir.exists():
+            raise FileNotFoundError(f"Input directory not found: {input_dir}")
+        for name in FINAL_FILES:
+            file_path = input_dir / name
+            if not file_path.exists():
+                raise FileNotFoundError(f"Required file not found: {file_path}")
 
-    write_report(
-        report_path,
-        metadata,
-        total_changes,
-        by_file,
-        by_status,
-        input_dir,
-        contains_english_rows,
-    )
-    create_zip(artifact_path, input_dir, report_path)
+        if not args.skip_qa:
+            run_qa(script_dir, input_dir)
 
-    print(f"[INFO] Input dir: {input_dir}")
-    print(f"[INFO] Report: {report_path}")
-    print(f"[INFO] Artifact: {artifact_path}")
-    print(f"[INFO] Total changed rows: {total_changes}")
+        changes_csv = input_dir / "applied_changes.csv"
+        total_changes, by_file, by_status = summarize_changes(changes_csv)
+        contains_english_rows = collect_status_rows(changes_csv, "de_contains_english")
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        artifact_name = args.artifact_name or f"empyrion-de-translation-{stamp}.zip"
+        report_name = f"empyrion-de-translation-report-{stamp}.md"
+
+        report_path = output_dir / report_name
+        artifact_path = output_dir / artifact_name
+
+        write_report(
+            report_path,
+            metadata,
+            total_changes,
+            by_file,
+            by_status,
+            input_dir,
+            contains_english_rows,
+        )
+        create_zip(artifact_path, input_dir, report_path)
+
+        print(f"[INFO] Input dir: {input_dir}")
+        print(f"[INFO] Report: {report_path}")
+        print(f"[INFO] Artifact: {artifact_path}")
+        print(f"[INFO] Total changed rows: {total_changes}")
 
     if args.publish_github:
         tag = args.tag or f"empyrion-de-translation-{stamp}"
