@@ -104,3 +104,8 @@ commands = [
 commands = [
   { label = "pwmcp-client: validate latest wheel", argv = ["python3", "validate-client-wheel-latest.py"], cwd = "pwmcp" },
 ]
+
+[projects.empyrion-translation.steps.build]
+commands = [
+  { label = "empyrion: package DE translation artifact", argv = ["python3", "release-empyrion-translation.py"], cwd = "game_stuff/empyrion" },
+]
