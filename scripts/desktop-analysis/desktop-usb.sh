@@ -9,10 +9,10 @@
 # from a USB stick without a full clone of the repository.
 #
 # Usage:
-#   ./linux-desktop-analysis-usb.sh [-- ARGS...]
+#   ./linux-desktop-analysis-usb.sh [ARGS...]
 #
-# Any arguments after "--" are forwarded to the Python script, e.g.:
-#   ./linux-desktop-analysis-usb.sh -- --scale 2 --non-interactive
+# All arguments are forwarded to the Python script, e.g.:
+#   ./linux-desktop-analysis-usb.sh --scale 2 --non-interactive
 #
 # Requirements:
 #   - bash 4+
@@ -42,20 +42,10 @@ require_cmd() {
 }
 
 # ---------------------------------------------------------------------------
-# Parse arguments — collect anything after "--" to pass to the script
+# Parse arguments — forward all args directly to the Python script
 # ---------------------------------------------------------------------------
 
-SCRIPT_ARGS=()
-forwarding=0
-for arg in "$@"; do
-    if [[ "$arg" == "--" ]]; then
-        forwarding=1
-        continue
-    fi
-    if [[ "$forwarding" -eq 1 ]]; then
-        SCRIPT_ARGS+=("$arg")
-    fi
-done
+SCRIPT_ARGS=("$@")
 
 # ---------------------------------------------------------------------------
 # Preflight checks

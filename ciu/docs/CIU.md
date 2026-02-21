@@ -167,6 +167,20 @@ flowchart TD
    - Jinja2 render → expand env vars ($VAR/${VAR}) → parse TOML.
    - Deep merge defaults + overrides → write ciu-global.toml.
 
+### Macro/Template Expansion Notes
+
+CIU applies expansion in this order:
+
+1. Jinja2 template rendering (`*.defaults.toml.j2`, optional `*.toml.j2`)
+2. Environment variable expansion for `$VAR` / `${VAR}`
+3. TOML parsing and deep merge
+
+Vault directive strings (for example `GEN_TO_VAULT:path/key`) are resolved only
+after merged TOML exists. CIU Deploy Vault path preflight reads rendered stack
+configs (`ciu.toml`) from enabled stacks, so stacks must be rendered first.
+Use `ciu-deploy --render-toml` before running preflight checks in a fresh
+workspace.
+
 3. **Render stack config**
    - Same render/expand/parse flow for <stack>/ciu.defaults.toml.j2 and <stack>/ciu.toml.j2.
    - Deep merge defaults + overrides → write <stack>/ciu.toml.

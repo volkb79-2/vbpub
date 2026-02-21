@@ -1137,6 +1137,13 @@ def collect_secret_directives(config: dict) -> dict:
             directives['derive'].add(value)
         elif value == 'GEN_EPHEMERAL':
             directives['ephemeral'].add('GEN_EPHEMERAL')
+        else:
+            if re.match(r'^[A-Z][A-Z0-9_]+:', value):
+                raise ValueError(
+                    f"Unrecognized secret directive: {value!r}. "
+                    f"Known directives: ASK_VAULT:, ASK_VAULT_ONCE:, GEN_TO_VAULT:, "
+                    f"GEN_LOCAL:, ASK_EXTERNAL:, DERIVE:, GEN_EPHEMERAL"
+                )
 
     walk(config)
     return directives
@@ -1226,12 +1233,12 @@ def resolve_secret_directives(config: dict, stack_config_path: Path) -> dict:
         return config
 
     vault_required = any(
-        directives[key] for key in ('ask', 'ask_once', 'gen', 'gen_to_vault')
+        directives[key] for key in ('ask', 'ask_once', 'gen_to_vault')
     )
 
     print(
         "[INFO] Resolving secret directives: "
-        f"vault={sum(len(directives[k]) for k in ('ask','ask_once','gen','gen_to_vault'))}, "
+        f"vault={sum(len(directives[k]) for k in ('ask','ask_once','gen_to_vault'))}, "
         f"local={len(directives['local'])}, external={len(directives['external'])}, "
         f"derive={len(directives['derive'])}, ephemeral={len(directives['ephemeral'])}",
         flush=True
@@ -1252,7 +1259,6 @@ def resolve_secret_directives(config: dict, stack_config_path: Path) -> dict:
         all_paths = set().union(
             directives['ask'],
             directives['ask_once'],
-            directives['gen'],
             directives['gen_to_vault']
         )
 

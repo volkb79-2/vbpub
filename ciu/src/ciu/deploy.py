@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Master orchestration script for DST-DNS deployment.
+Master orchestration script for CIU deployment.
 
 This script provides action-based orchestration with explicit, user-controlled execution:
 
 Actions (executed in the order specified):
     --stop               Stop all containers (preserves volumes, container selection based on label filtering on project and environment)
     --clean              Clean volumes and data (skip running containers, selection based on label filtering on project and environment))
-    --reset              Alias for --clean (matches ciu --reset behavior)
     --build              Build Docker images
     --build-no-cache     Build images from scratch (no cache)
     --start              Alias for --deploy (explicit start action)
@@ -15,18 +14,15 @@ Actions (executed in the order specified):
     --render-toml         Render ciu-global.toml and stack ciu.toml files
     --healthcheck [scope]  Run health checks (internal|external|both, default: both)
     --selftest [scope]     Run self-tests (internal|external|both, default: both)
-    --print-config-context  Print evaluated configuration and exit
+    --print-context      Print evaluated configuration and exit
     --list-groups        List available service groups and exit
 
 Options:
-    --services-only      Only stop application services (keep infrastructure running)
     --phases PHASES      Comma-separated phase numbers to deploy (e.g., --phases 1,2,3)
     --groups GROUPS      Comma-separated named groups to deploy (e.g., --groups infra,apps)
     --ignore-errors      Continue execution even when errors occur
     --warnings-as-errors Treat warnings as errors and exit
-    --repo-root PATH     Specify repository root directory
-    --root-folder PATH   Alias for --repo-root
-    --root-folder PATH   Alias for --repo-root
+    --root-folder PATH   Repository root directory or stack subfolder (default: current working directory)
 
 Named Service Groups:
     Groups are defined in ciu-global.toml [deploy.groups]
@@ -43,11 +39,9 @@ Examples:
     ciu-deploy --render-toml             # Render global + stack TOML files
     ciu-deploy --start                   # Explicit start alias for deploy
     ciu-deploy --stop                    # Stop all containers
-    ciu-deploy --stop --services-only    # Stop only app services (keep infra)
     ciu-deploy --stop --clean --deploy   # Full restart with clean state
-    ciu-deploy --reset                   # Alias for clean
     ciu-deploy --clean --build --deploy  # Clean + rebuild + deploy
-    ciu-deploy --print-config-context    # Inspect configuration
+    ciu-deploy --print-context           # Inspect configuration
     ciu-deploy --selftest                # Run self-tests (internal + external)
     ciu-deploy --selftest internal       # Run internal self-tests only
     ciu-deploy --selftest external       # Run external self-tests only
@@ -312,12 +306,11 @@ def collect_bake_targets_from_phases(phases: list[dict]) -> list[str]:
 def build_action_sequence(argv: list[str]) -> list[str]:
     """Build the ordered action list from CLI args, honoring aliases."""
     action_flags = [
-        '--stop', '--clean', '--reset', '--build', '--build-no-cache',
-        '--start', '--deploy', '--render-toml', '--healthcheck', '--selftest', '--print-config-context'
+        '--stop', '--clean', '--build', '--build-no-cache',
+        '--start', '--deploy', '--render-toml', '--healthcheck', '--selftest', '--print-context'
     ]
     action_aliases = {
         'start': 'deploy',
-        'reset': 'clean',
     }
     actions: list[str] = []
     for arg in argv[1:]:
@@ -595,7 +588,6 @@ def run_cmd(cmd, cwd=None, check=True, env=None, capture_output=True, text=True,
 
 def stop_deployment(
     repo_root,
-    services_only: bool = False,
     selected_service_slugs: set[str] | None = None,
 ):
     """
@@ -605,13 +597,9 @@ def stop_deployment(
     
     Args:
         repo_root: Repository root path
-        services_only: If True, only stop application services (keep infra running)
     """
     info("="*70)
-    if services_only:
-        info("STOP: Stopping application services only (infrastructure preserved)")
-    else:
-        info("STOP: Stopping all containers (volumes preserved)")
+    info("STOP: Stopping all deployment containers (volumes preserved)")
     info("="*70)
     
     # Load global config to get project name and environment tag
@@ -628,14 +616,7 @@ def stop_deployment(
     if not label_prefix:
         error("CRITICAL: deploy.labels.prefix not set in global config")
     
-    # Define infrastructure patterns to skip when services_only is True
-    # These patterns match containers for vault, postgres, redis, minio, etc.
-    infra_patterns = ['vault', 'postgres', 'redis', 'minio', 'pgadmin', 'adminer', 'consul']
-    
     info(f"Stopping containers: project={project_name}, environment={env_tag}")
-    if services_only:
-        info("  Mode: Services only (skipping infrastructure containers)")
-        info(f"  Infrastructure patterns to preserve: {', '.join(infra_patterns)}")
     if selected_service_slugs:
         info("  Mode: Scoped stop (matching selected phases/groups)")
     info("  Strategy: Using Docker labels (managed-by + name pattern)")
@@ -689,17 +670,14 @@ def stop_deployment(
     
     containers = [c.strip() for c in result.stdout.strip().split('\n') if c.strip()]
     
-    # Filter out service containers (manually managed) and infrastructure (if services_only)
+    # Filter out service containers (manually managed)
     service_containers = []
-    infra_containers = []
     deployment_containers = []
     
     prefix = f"{project_name}-{env_tag}-"
     for container in containers:
         if is_service_container(container):
             service_containers.append(container)
-        elif services_only and any(pattern in container.lower() for pattern in infra_patterns):
-            infra_containers.append(container)
         else:
             if selected_service_slugs:
                 service_name = container
@@ -713,12 +691,6 @@ def stop_deployment(
     if service_containers:
         info(f"Skipping {len(service_containers)} service containers (manually managed):")
         for container in service_containers:
-            info(f"  - {container}")
-        info("")
-    
-    if infra_containers:
-        info(f"Preserving {len(infra_containers)} infrastructure containers (--services-only):")
-        for container in infra_containers:
             info(f"  - {container}")
         info("")
     
@@ -1984,6 +1956,10 @@ def check_vault_secret_paths(global_config):
 
     required_paths, error_msg = _collect_required_vault_paths(global_config)
     if error_msg:
+        if "Stack config not found" in error_msg:
+            warn(f"[WARN] Vault path preflight skipped: {error_msg}")
+            warn("[WARN] Run 'ciu-deploy --render-toml' first to enable this check.")
+            return True, "Vault preflight skipped — stack configs not yet rendered"
         return False, error_msg
     if not required_paths:
         return True, "No Vault secrets referenced by enabled stacks"
@@ -2041,34 +2017,6 @@ def check_consul_kv_paths(global_config):
     if missing:
         return False, f"Missing Consul KV entries: {', '.join(missing)}"
     return True, f"Verified {len(services)} Consul KV path(s)"
-
-
-def check_minio_ready(global_config):
-    """Check MinIO readiness via mc inside the container."""
-    minio_container = get_container_name(global_config, 'minio')
-    cmd = ["docker", "exec", minio_container, "mc", "ready", "local"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode == 0:
-        return True, "MinIO ready"
-    return False, "MinIO not ready (mc ready failed)"
-
-
-def check_minio_bucket(global_config):
-    """Verify that the environment-specific MinIO bucket exists."""
-    deploy_config = global_config.get('deploy', {})
-    project_name = deploy_config.get('project_name')
-    environment_tag = deploy_config.get('environment_tag')
-    if not project_name or not environment_tag:
-        return False, "Deploy project_name/environment_tag not set"
-
-    bucket_name = f"{project_name}-{environment_tag}".lower()
-
-    minio_container = get_container_name(global_config, 'minio')
-    cmd = ["docker", "exec", minio_container, "mc", "ls", f"local/{bucket_name}"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode == 0:
-        return True, f"MinIO bucket exists: {bucket_name}"
-    return False, f"MinIO bucket missing: {bucket_name}"
 
 
 def check_service_health_endpoint(service_name, hostname, port):
@@ -2541,13 +2489,6 @@ def run_health_checks(global_config, log_file=None, scope: str | None = None, in
             ok, msg = check_vault_secret_paths(global_config)
             info(f"  Vault secret paths: {msg}")
             checks.append(("Vault secret paths", ok))
-        if is_service_enabled('minio'):
-            ok, msg = check_minio_ready(global_config)
-            info(f"  MinIO ready: {msg}")
-            checks.append(("MinIO ready", ok))
-            ok, msg = check_minio_bucket(global_config)
-            info(f"  MinIO bucket: {msg}")
-            checks.append(("MinIO bucket", ok))
 
     # Observability services
     if run_internal:
@@ -2914,7 +2855,7 @@ def execute_deployment_phase(phase, repo_root, python_exe, args, global_config):
             error(f"Vault failed to become ready. Check logs: docker logs {vault_container}")
         
         if args.vault_only:
-            success("Vault started. Use --services-only to start remaining services.")
+            success("Vault started. Use --groups apps --deploy to start application phases.")
             return
     
     elif phase['key'] == 'phase_2':
@@ -2986,7 +2927,7 @@ def main():
     ctx = get_deployment_context()
     
     parser = argparse.ArgumentParser(
-        description="DST-DNS Deployment Orchestrator - Action-based deployment control",
+        description="CIU Deployment Orchestrator - Action-based deployment control",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Execution Order:
@@ -2994,32 +2935,30 @@ Execution Order:
   If no actions are specified, --deploy is the default.
 
 Named Service Groups:
-    Groups are defined in ciu-global.toml [deploy.groups]
+  Groups are defined in ciu-global.toml [deploy.groups]
   Built-in groups: infra, apps, observability, minimal, full
 
 Examples:
   %(prog)s                              # Deploy (default)
-    %(prog)s --start                      # Explicit start (alias for deploy)
+  %(prog)s --start                      # Explicit start (alias for deploy)
   %(prog)s --stop                       # Stop containers
-  %(prog)s --stop --services-only       # Stop only application services (keep infra)
-    %(prog)s --render-toml                # Render global + stack TOML files
+  %(prog)s --render-toml                # Render global + stack TOML files
   %(prog)s --stop --clean --deploy      # Full restart with clean state
-    %(prog)s --reset                      # Alias for clean
-  %(prog)s --print-config-context       # Inspect configuration
+  %(prog)s --print-context              # Inspect configuration
   %(prog)s --phases 1,2 --deploy        # Deploy only phases 1 and 2
   %(prog)s --groups infra --deploy      # Deploy infrastructure only
   %(prog)s --groups apps --deploy       # Deploy applications only
   %(prog)s --groups minimal --deploy    # Minimal set for testing
   %(prog)s --list-groups                # Show available groups
-    %(prog)s --deploy --healthcheck       # Deploy then check health (internal + external)
-    %(prog)s --deploy --healthcheck internal  # Deploy then check internal health only
-    %(prog)s --deploy --healthcheck external  # Deploy then check external routes only
+  %(prog)s --deploy --healthcheck       # Deploy then check health (internal + external)
+  %(prog)s --deploy --healthcheck internal  # Deploy then check internal health only
+  %(prog)s --deploy --healthcheck external  # Deploy then check external routes only
 
 Shared functionality:
-    - Uses .env.ciu for REPO_ROOT, PHYSICAL_REPO_ROOT, and DOCKER_NETWORK_INTERNAL.
-    - Ensures .env.ciu is generated when missing (use --generate-env to refresh).
-        - Renders TOML with INSTANCE_ID-based values and (when enabled) connects
-            devcontainers to DOCKER_NETWORK_INTERNAL before running deploy actions.
+  - Uses .env.ciu for REPO_ROOT, PHYSICAL_REPO_ROOT, and DOCKER_NETWORK_INTERNAL.
+  - Ensures .env.ciu is generated when missing (use --generate-env to refresh).
+  - Renders TOML with INSTANCE_ID-based values and (when enabled) connects
+    devcontainers to DOCKER_NETWORK_INTERNAL before running deploy actions.
         """
     )
     
@@ -3029,8 +2968,6 @@ Shared functionality:
                              help='Stop all containers (preserves volumes)')
     action_group.add_argument('--clean', action='store_true',
                              help='Clean volumes and data')
-    action_group.add_argument('--reset', action='store_true',
-                             help='Alias for --clean (matches ciu --reset)')
     action_group.add_argument('--build', action='store_true',
                              help='Build Docker images')
     action_group.add_argument('--build-no-cache', action='store_true',
@@ -3047,47 +2984,30 @@ Shared functionality:
     action_group.add_argument('--selftest', nargs='?', const='both',
                              choices=['internal', 'external', 'both'],
                              help='Run self-tests (internal|external|both, default: both)')
-    action_group.add_argument('--print-config-context', action='store_true',
+    action_group.add_argument('--print-context', action='store_true',
                              help='Print evaluated configuration and exit')
     action_group.add_argument('--list-groups', action='store_true',
                              help='List available service groups and exit')
     
-    # Options (modifiers)
-    option_group = parser.add_argument_group('Options')
-    option_group.add_argument('--services-only', action='store_true',
-                             help='Only stop application services (keep infrastructure running)')
-    option_group.add_argument('--phases',
-                             help='Comma-separated phase numbers to deploy (e.g., 1,2,3)')
-    option_group.add_argument('--groups',
-                             help='Comma-separated named groups to deploy (e.g., infra,apps)')
-    option_group.add_argument('--ignore-errors', action='store_true',
-                             help='Continue execution on errors')
-    option_group.add_argument('--warnings-as-errors', action='store_true',
-                             help='Treat warnings as errors')
-    option_group.add_argument('--repo-root', type=str, default=None,
-                             help='Repository root directory (default: current working directory)')
-    option_group.add_argument('--root-folder', dest='repo_root', type=str, default=None,
-                             help='Alias for --repo-root')
-    option_group.add_argument('--generate-env', action='store_true',
-                             help='Generate .env.ciu with autodetected values')
-    option_group.add_argument('--update-cert-permission', action='store_true',
-                             help='Update Let\'s Encrypt cert permissions (requires root)')
-    network_group = parser.add_mutually_exclusive_group()
-    network_group.add_argument(
-        '--auto-connect-network',
-        dest='auto_connect_network',
-        action='store_true',
-        default=None,
-        help='Auto-connect devcontainer to DOCKER_NETWORK_INTERNAL (override config)'
-    )
-    network_group.add_argument(
-        '--no-auto-connect-network',
-        dest='auto_connect_network',
-        action='store_false',
-        default=None,
-        help='Disable devcontainer network auto-connect (override config)'
-    )
-    option_group.add_argument(
+    # Control (modifiers)
+    control_group = parser.add_argument_group('Control')
+    control_group.add_argument('--phases',
+                              help='Comma-separated phase numbers to deploy (e.g., 1,2,3)')
+    control_group.add_argument('--groups',
+                              help='Comma-separated named groups to deploy (e.g., infra,apps)')
+    control_group.add_argument('--ignore-errors', action='store_true',
+                              help='Continue execution on errors')
+    control_group.add_argument('--warnings-as-errors', action='store_true',
+                              help='Treat warnings as errors')
+    control_group.add_argument('--root-folder', dest='root_folder', type=str, default=None,
+                              help='Repository root directory or stack subfolder (default: current working directory)')
+    control_group.add_argument('--generate-env', action='store_true',
+                              help='Generate .env.ciu with autodetected values')
+    control_group.add_argument('--update-cert-permission', action='store_true',
+                              help='Update Let\'s Encrypt cert permissions (requires root)')
+    control_group.add_argument('--connect-network', choices=['yes', 'no'], default='yes',
+                              help='Connect devcontainer to DOCKER_NETWORK_INTERNAL (default: yes)')
+    control_group.add_argument(
         '--version',
         action='version',
         version=f"ciu-deploy {get_cli_version()}"
@@ -3104,7 +3024,7 @@ Shared functionality:
     try:
         env_root = bootstrap_workspace_env(
             start_dir=Path.cwd(),
-            define_root=Path(args.repo_root).resolve() if args.repo_root else None,
+            define_root=Path(args.root_folder).resolve() if args.root_folder else None,
             defaults_filename=GLOBAL_CONFIG_DEFAULTS,
             generate_env=args.generate_env,
             update_cert_permission=args.update_cert_permission,
@@ -3136,12 +3056,12 @@ Shared functionality:
                 "Regenerate .env.ciu from the standalone root."
             )
     
-    # Get repository root (env or --repo-root argument).
-    # If --repo-root is inside the current REPO_ROOT, remap PHYSICAL_REPO_ROOT
+    # Get repository root (env or --root-folder argument).
+    # If --root-folder is inside the current REPO_ROOT, remap PHYSICAL_REPO_ROOT
     # to the corresponding subtree on the host to keep bind mounts aligned.
-    if args.repo_root:
-        repo_root = Path(args.repo_root).resolve()
-        info(f"Using repository root from --repo-root/--root-folder: {repo_root}")
+    if args.root_folder:
+        repo_root = Path(args.root_folder).resolve()
+        info(f"Using repository root from --root-folder: {repo_root}")
         env_repo_root_value = os.environ.get('REPO_ROOT')
         env_physical_root_value = os.environ.get('PHYSICAL_REPO_ROOT')
         if env_repo_root_value:
@@ -3167,10 +3087,10 @@ Shared functionality:
     global_config_defaults = repo_root / GLOBAL_CONFIG_DEFAULTS
     if not global_config_defaults.exists():
         error(f"Global config defaults not found: {global_config_defaults}")
-        error("This does not appear to be a valid DST-DNS repository root.")
+        error("This does not appear to be a valid CIU repository root.")
         error("Either:")
         error("  1. Run this script from the repository root directory")
-        error("  2. Use --repo-root <path> to specify the repository root")
+        error("  2. Use --root-folder <path> to specify the repository root")
         sys.exit(1)
     
     os.chdir(repo_root)
@@ -3183,8 +3103,10 @@ Shared functionality:
         debug(line)
 
     auto_connect_setting = global_config.get('ciu', {}).get('auto_connect_network', True)
-    if args.auto_connect_network is not None:
-        auto_connect_setting = args.auto_connect_network
+    if args.connect_network == 'no':
+        auto_connect_setting = False
+    elif args.connect_network == 'yes':
+        auto_connect_setting = True
 
     # Debug: Print workspace environment values
     info("="*70)
@@ -3288,7 +3210,6 @@ Shared functionality:
             elif action == 'stop':
                 stop_deployment(
                     repo_root,
-                    services_only=args.services_only,
                     selected_service_slugs=selected_service_slugs or None,
                 )
             
@@ -3357,11 +3278,10 @@ Shared functionality:
                 for i, phase in enumerate(deployment_phases, 1):
                     info(f"\n{BLUE}>>> Phase {i}/{len(deployment_phases)}: {phase.get('name')}{RESET}")
                     try:
-                        # Pass args for phase-specific handling (like vault-only, services-only)
+                        # Pass args for phase-specific handling
                         # Note: These flags are deprecated but kept for backward compatibility
                         class LegacyArgs:
                             vault_only = False
-                            services_only = False
                             clean = False
                         legacy_args = LegacyArgs()
                         

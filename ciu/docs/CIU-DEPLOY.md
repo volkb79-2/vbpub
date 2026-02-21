@@ -39,7 +39,7 @@ Actions execute in the order specified on the CLI. If no actions are specified, 
 - --render-toml
 - --healthcheck [internal|external|both]
 - --selftest [internal|external|both]
-- --print-config-context
+- --print-context
 - --list-groups
 
 ## Workspace Env Options
@@ -64,12 +64,14 @@ CIU Deploy also auto-generates .env.ciu when it is missing, even without
 
 ## Options (Modifiers)
 
-- --services-only (stop only app services, keep infra running)
 - --phases 1,2,3 (explicit phase numbers)
 - --groups infra,apps (named groups)
 - --ignore-errors (continue on error)
 - --warnings-as-errors
-- --repo-root / --root-folder (override repo root)
+- --root-folder (override repo root; supports standalone subfolder roots)
+
+Stop scoping is controlled only by `--phases` and `--groups`; there is no
+special infra/app stop switch.
 
 ## Deployment Model (Phases & Groups)
 
@@ -126,6 +128,16 @@ flowchart TD
 
 5. **Service containers**
    - Admin-debug and testing containers are excluded from stop/clean.
+
+## Vault Path Preflight and Render Requirement
+
+`check_vault_secret_paths` inspects rendered stack configs (`ciu.toml`) for
+Vault directives. If stack configs are missing, CIU Deploy logs a clear warning
+and skips the preflight with guidance to run:
+
+- `ciu-deploy --render-toml`
+
+This is expected behavior in a fresh workspace before first render.
 
 ## Clean Behavior (Details)
 

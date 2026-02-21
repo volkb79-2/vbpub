@@ -17,7 +17,7 @@ def test_build_action_sequence_aliases_and_order():
         "ciu-deploy",
         "--start",
         "--stop",
-        "--reset",
+        "--clean",
         "--deploy",
     ]
 
