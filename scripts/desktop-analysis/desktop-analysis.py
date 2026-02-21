@@ -2658,7 +2658,7 @@ def _build_nvidia_proprietary_install_plan(base_distro: str, diag: dict) -> dict
 def maybe_offer_nvidia_proprietary_remediation(
     *,
     interactive: bool,
-    auto_fix_nvidia: bool,
+    fix_nvidia_policy: str,
     priv: dict,
     base_distro: str,
     renderer: str,
@@ -2673,14 +2673,13 @@ def maybe_offer_nvidia_proprietary_remediation(
         "attempted": False,
         "ok": False,
         "reason": "",
+        "issues_detected": [],
+        "action_recommended": False,
+        "reboot_required": False,
         "actions": [],
         "logs": [],
         "post_check": {},
     }
-
-    if not interactive and not auto_fix_nvidia:
-        result["reason"] = "non-interactive"
-        return result
     if not nvidia_activation_diagnostics.get("relevant"):
         result["reason"] = "nvidia-not-relevant"
         return result
@@ -2691,9 +2690,6 @@ def maybe_offer_nvidia_proprietary_remediation(
     nvidia_module_active = bool(nvidia_activation_diagnostics.get("nvidia_module_active"))
 
     needs = uses_nouveau or open_mismatch or (software_renderer and not nvidia_module_active)
-    if not needs:
-        result["reason"] = "no-remediation-needed"
-        return result
 
     reasons = []
     if uses_nouveau:
@@ -2702,16 +2698,29 @@ def maybe_offer_nvidia_proprietary_remediation(
         reasons.append("open-gsp-mismatch")
     if software_renderer and not nvidia_module_active:
         reasons.append("software-renderer-without-active-nvidia")
+    result["issues_detected"] = reasons
+    result["action_recommended"] = bool(needs)
+
+    if not needs:
+        result["reason"] = "no-remediation-needed"
+        return result
 
     prompt = (
         "NVIDIA remediation suggested (" + ", ".join(reasons) + "). "
         "Apply automatic proprietary-driver correction now (before reboot)?"
     )
     result["offered"] = True
-    if auto_fix_nvidia:
+    policy = (fix_nvidia_policy or "ask").strip().lower()
+    if policy == "yes":
         result["accepted"] = True
-        result["reason"] = "auto-fix-enabled"
+        result["reason"] = "policy-yes-auto-accepted"
+    elif policy == "no":
+        result["reason"] = "policy-no-ignored"
+        return result
     else:
+        if not interactive:
+            result["reason"] = "non-interactive-policy-ask"
+            return result
         if not _ask_yes_no(prompt, default=False):
             result["reason"] = "user-declined"
             return result
@@ -2794,6 +2803,7 @@ def maybe_offer_nvidia_proprietary_remediation(
         "mismatch_check": mismatch_check,
         "needs_reboot": True,
     }
+    result["reboot_required"] = True
 
     if result["ok"] and not result["post_check"]["open_packages_remaining"]:
         result["reason"] = "packages-corrected-reboot-required"
@@ -3740,6 +3750,10 @@ def print_console_report(
             _bullet("NVIDIA auto remediation offered", "yes" if remediation.get("offered") else "no")
             _bullet("NVIDIA auto remediation attempted", "yes" if remediation.get("attempted") else "no")
             _bullet("NVIDIA auto remediation result", "ok" if remediation.get("ok") else remediation.get("reason", "n/a"))
+            _bullet("NVIDIA issues detected", ", ".join(remediation.get("issues_detected", [])) or "none")
+            _bullet("NVIDIA action recommended", "yes" if remediation.get("action_recommended") else "no")
+            reboot_required = bool(remediation.get("reboot_required")) or bool((remediation.get("post_check") or {}).get("needs_reboot"))
+            _bullet("NVIDIA reboot required", "yes" if reboot_required else "no")
             actions = remediation.get("actions", {})
             if actions:
                 print(
@@ -4135,12 +4149,16 @@ def write_markdown_report(
             lines += ["", "### NVIDIA Suggested Commands", "```bash"] + command_block + ["```"]
         remediation = nvidia_activation_diagnostics.get("auto_remediation", {})
         if remediation:
+            reboot_required = bool(remediation.get("reboot_required")) or bool((remediation.get("post_check") or {}).get("needs_reboot"))
             lines += [
                 "",
                 "### NVIDIA Auto Remediation",
                 f"- Offered: {'yes' if remediation.get('offered') else 'no'}",
                 f"- Attempted: {'yes' if remediation.get('attempted') else 'no'}",
                 f"- Result: {'ok' if remediation.get('ok') else remediation.get('reason', 'failed')}",
+                f"- Issues detected: {', '.join(remediation.get('issues_detected', [])) or 'none'}",
+                f"- Action recommended: {'yes' if remediation.get('action_recommended') else 'no'}",
+                f"- Reboot required: {'yes' if reboot_required else 'no'}",
                 "",
                 "```json",
                 json.dumps(remediation, indent=2),
@@ -4294,9 +4312,18 @@ def main() -> int:
         help="Allow glxgears fallback when glmark2 is unavailable (default: disabled).",
     )
     parser.add_argument(
+        "--fix-nvidia",
+        choices=["ask", "yes", "no"],
+        default="ask",
+        help=(
+            "NVIDIA remediation policy when issues are detected: "
+            "ask (default), yes (apply automatically), no (log and skip)."
+        ),
+    )
+    parser.add_argument(
         "--auto-fix-nvidia",
         action="store_true",
-        help="Automatically apply NVIDIA proprietary remediation without interactive prompt when mismatch is detected.",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--make-sudo-passwordless",
@@ -4343,9 +4370,15 @@ def main() -> int:
         f"allow_glxgears_fallback={args.allow_glxgears_fallback}, fps_mode={args.fps_mode}, "
         f"fps_window_size={args.fps_window_size}, no_journalctl={args.no_journalctl}, "
         f"journalctl_lines={args.journalctl_lines}, enable_scale_safety_guard={args.enable_scale_safety_guard}, "
-        f"auto_fix_nvidia={args.auto_fix_nvidia}, make_sudo_passwordless={args.make_sudo_passwordless}, "
+        f"fix_nvidia={args.fix_nvidia}, auto_fix_nvidia_legacy={args.auto_fix_nvidia}, "
+        f"make_sudo_passwordless={args.make_sudo_passwordless}, "
         f"output='{args.output}'"
     )
+
+    fix_nvidia_policy = args.fix_nvidia
+    if args.auto_fix_nvidia:
+        fix_nvidia_policy = "yes"
+        trace("legacy flag --auto-fix-nvidia provided; effective fix_nvidia policy set to 'yes'")
 
     cprint(C_BLUE, "\n[*] Linux Desktop Scaling Diagnostics")
     cprint(C_BLUE,   "    ===================================")
@@ -4841,7 +4874,7 @@ def main() -> int:
 
         remediation_result = maybe_offer_nvidia_proprietary_remediation(
             interactive=interactive,
-            auto_fix_nvidia=bool(args.auto_fix_nvidia),
+            fix_nvidia_policy=fix_nvidia_policy,
             priv=priv,
             base_distro=base_distro,
             renderer=renderer,
@@ -4866,15 +4899,29 @@ def main() -> int:
                 conclusions.append(
                     "NVIDIA proprietary remediation was applied automatically. Reboot is still required for final module activation check."
                 )
+                if remediation_result.get("reboot_required"):
+                    cprint(C_YELLOW, "[WARN] NVIDIA remediation applied: reboot required for final activation.")
             else:
                 conclusions.append(
                     "NVIDIA proprietary remediation was attempted but did not fully complete; check 'NVIDIA Activation Diagnostics' logs."
                 )
+        elif remediation_result.get("action_recommended"):
+            conclusions.append(
+                "NVIDIA issue detected and logged; remediation was not applied in this run."
+            )
+            cprint(
+                C_YELLOW,
+                "[WARN] NVIDIA issues detected but remediation was not applied. "
+                "Use --fix-nvidia yes to apply automatically or rerun interactively.",
+            )
         trace(
             "nvidia diagnostics: "
             f"relevant={nvidia_activation_diagnostics.get('relevant')} "
             f"nvidia_module_active={nvidia_activation_diagnostics.get('nvidia_module_active')} "
-            f"nouveau_active={nvidia_activation_diagnostics.get('nouveau_active')}"
+            f"nouveau_active={nvidia_activation_diagnostics.get('nouveau_active')} "
+            f"fix_policy={fix_nvidia_policy} "
+            f"issues={remediation_result.get('issues_detected', [])} "
+            f"reboot_required={remediation_result.get('reboot_required')}"
         )
     mem_breakdown = summarize_memory_breakdown()
     if args.no_journalctl:
