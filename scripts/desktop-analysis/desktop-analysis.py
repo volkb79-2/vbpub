@@ -364,7 +364,8 @@ def detect_live_environment() -> dict:
         "boot=live",
         "rd.live.image",
         "liveimg",
-        "nobara",
+        "root=live:",
+        "rd.live.ram",
         "fedora-media",
     ]
     cmdline_live = any(tok in cmdline for tok in cmdline_live_tokens)
@@ -1345,14 +1346,19 @@ def gather_gaming_optimization_signals(
     }
 
 
-def build_operational_hints(base_distro: str, gaming_signals: dict) -> list[str]:
+def build_operational_hints(base_distro: str, gaming_signals: dict, live_env: dict | None = None) -> list[str]:
     """Generate immutable/mutable and distro-profile-aware operational hints."""
     hints = []
+    live = bool((live_env or {}).get("likely_live"))
     immutable = detect_immutable() or base_distro == "fedora" and "bazzite" in (gaming_signals.get("kernel_release", "").lower())
 
     if immutable:
         hints.append(
             "Immutable/image-based environment detected or likely: prefer rpm-ostree/flatpak workflows and avoid direct package-manager assumptions."
+        )
+    elif live:
+        hints.append(
+            "Live environment detected: package installation/remediation is intentionally treated as non-persistent for this run."
         )
     else:
         hints.append(
@@ -2265,8 +2271,9 @@ def _run_glxgears(run_user_cmd, duration_s: int = 5) -> float:
     if not command_exists("glxgears"):
         return 0.0
     try:
-        # Use timeout so the command terminates deterministically and keep session env via run_user_cmd.
-        res = run_user_cmd(["timeout", f"{max(2, duration_s)}s", "glxgears", "-info"], timeout=duration_s + 5)
+        # Use SIGINT and a slightly longer runtime so glxgears has a chance to emit at least one FPS sample.
+        timeout_s = max(6, int(duration_s) + 1)
+        res = run_user_cmd(["timeout", "-s", "INT", f"{timeout_s}s", "glxgears", "-info"], timeout=timeout_s + 5)
         out = "\n".join([res.get("stdout", ""), res.get("stderr", "")])
     except Exception:  # noqa: BLE001
         return 0.0
@@ -2556,6 +2563,54 @@ def gather_nvidia_activation_diagnostics(
                     "stderr_excerpt": sim.get("stderr", "")[:800],
                 }
 
+    if base_distro == "fedora":
+        candidate_priority = [
+            "akmod-nvidia",
+            "akmod-nvidia-open",
+            "xorg-x11-drv-nvidia",
+            "kmod-nvidia",
+            "kmod-nvidia-open-dkms",
+        ]
+
+        candidate_packages: list[str] = []
+        recommended_package = ""
+
+        if command_exists("dnf"):
+            for pkg in candidate_priority:
+                rq = run_user_cmd(
+                    ["dnf", "repoquery", "--qf", "%{name}-%{version}-%{release}.%{arch}", pkg],
+                    timeout=45,
+                )
+                stdout = rq.get("stdout", "") or ""
+                available = bool(rq.get("ok")) and (pkg in stdout)
+                diag["checks"][f"repoquery_{pkg}"] = {
+                    "ok": bool(available),
+                    "stdout_excerpt": stdout[:1200],
+                    "stderr_excerpt": (rq.get("stderr", "") or "")[:500],
+                }
+                if available:
+                    candidate_packages.append(pkg)
+                    if not recommended_package:
+                        recommended_package = pkg
+
+            if candidate_packages:
+                diag["checks"]["available_driver_branches"] = {
+                    "ok": True,
+                    "branches": sorted(set(candidate_packages)),
+                }
+            else:
+                search = run_user_cmd(["dnf", "search", "nvidia"], timeout=45)
+                diag["checks"]["dnf_search_nvidia"] = {
+                    "ok": search.get("ok", False),
+                    "stdout_excerpt": (search.get("stdout", "") or "")[:2000],
+                    "stderr_excerpt": (search.get("stderr", "") or "")[:500],
+                }
+
+        suited_package = recommended_package or (candidate_packages[0] if candidate_packages else "")
+        diag["recommended_package"] = recommended_package
+        diag["candidate_packages"] = sorted(set(candidate_packages))[:30]
+        diag["suited_package"] = suited_package
+
     options = []
     options.append("Option A (quick check): reboot and verify modules with: lsmod | grep -E 'nvidia|nouveau'")
 
@@ -2578,6 +2633,19 @@ def gather_nvidia_activation_diagnostics(
             options.append(
                 "Option C (installed but inactive): run sudo update-initramfs -u, check dkms status, reboot, then verify nvidia-smi"
             )
+    elif base_distro == "fedora":
+        if diag.get("suited_package"):
+            options.append(
+                f"Option C (suited package): install '{diag.get('suited_package')}' and reboot"
+            )
+        else:
+            options.append(
+                "Option C (explicit package check): run 'dnf repoquery akmod-nvidia' and install the matching NVIDIA package from enabled repos"
+            )
+        if not nvidia_module_active:
+            options.append(
+                "Option C (installed but inactive): rebuild initramfs if needed (dracut --force), reboot, then verify nvidia-smi"
+            )
 
     if nouveau_active:
         options.append(
@@ -2594,8 +2662,21 @@ def gather_nvidia_activation_diagnostics(
 
 def build_nvidia_command_block(diag: dict, base_distro: str) -> list[str]:
     """Create practical command block users can copy/paste."""
-    if base_distro not in ("ubuntu", "debian"):
+    if base_distro not in ("ubuntu", "debian", "fedora"):
         return []
+
+    if base_distro == "fedora":
+        suited = (diag or {}).get("suited_package", "") or "akmod-nvidia"
+        return [
+            "dnf repoquery akmod-nvidia",
+            "dnf repoquery xorg-x11-drv-nvidia",
+            f"sudo dnf install -y {suited}",
+            "sudo reboot",
+            "# after reboot:",
+            "lsmod | grep -E 'nvidia|nouveau'",
+            "nvidia-smi",
+            "journalctl -k -b --no-pager | grep -Ei 'nvidia|nouveau|drm|module'",
+        ]
 
     suited = (diag or {}).get("suited_package", "")
     cmds = [
@@ -3944,7 +4025,7 @@ def main() -> int:
         processes=processes,
         run_user_cmd=run_user_cmd,
     )
-    operational_hints = build_operational_hints(base_distro=base_distro, gaming_signals=gaming_signals)
+    operational_hints = build_operational_hints(base_distro=base_distro, gaming_signals=gaming_signals, live_env=live_env)
 
     # ---- Display / scale detection ----
     home_dir = os.path.expanduser("~")

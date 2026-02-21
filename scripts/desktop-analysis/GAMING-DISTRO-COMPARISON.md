@@ -56,6 +56,109 @@ Cross-distro patterns relevant to gaming performance and latency:
 - **Wayland/XWayland maturity by desktop**:
   - Gaming overlays/capture paths still vary by compositor and session mode; distro defaults influence out-of-box success.
 
+## Rollback and update resilience by targeted distro
+
+This section answers which of the five target distros provide strong rollback/update resilience out of the box, and what that means operationally for updates and package installation.
+
+| Distro | Rollback resilience level | Main mechanism used | Out-of-box rollback after bad update | Update/install consequence for users and tooling |
+|---|---|---|---|---|
+| Bazzite | High | Immutable image-based Fedora stack (rpm-ostree model) | Yes, strong (bootable previous deployment model) | Treat host as image-managed. Prefer image updates plus reboot. Prefer Flatpak/toolbox/distrobox for user apps; avoid traditional mutable-host assumptions. |
+| Garuda Linux | High (if snapshots enabled as shipped) | Btrfs snapshot workflow (commonly Timeshift/Snapper style) on mutable Arch base | Yes, practical rollback to snapshot state | Update/install with pacman/AUR workflows, but preserve snapshot discipline before large upgrades; rollback usually filesystem-level and may require post-rollback package DB reconciliation checks. |
+| Regata OS | Medium to High (configuration dependent) | openSUSE-style snapshot resilience patterns are possible on Btrfs setups | Usually available when snapshot stack is enabled/configured | Update/install remains zypper-style mutable workflow, but resilience depends on whether snapshot integration is active in the installation profile. |
+| Nobara Project | Medium | Mutable Fedora workflow (dnf/rpm) with gaming defaults | Limited by default (no guaranteed transactional rollback model) | Update/install with dnf in-place; for resilience, users typically need extra snapshot/backup policy beyond default package workflow. |
+| Pop!_OS | Medium to Low (for rollback), Medium (for recovery) | Mutable apt/dpkg workflow plus recovery/refresh style safety net | No strong package-transaction rollback by default | Update/install is conventional apt-based mutable host management; rollback is generally backup/recovery driven, not transactional package rollback. |
+
+### Which targeted distros clearly offer rollback/update resilience
+
+- Clearly strong by design:
+  - Bazzite (immutable image/deployment model)
+  - Garuda Linux (snapshot-first workflow on mutable system)
+- Potentially strong but install/profile dependent:
+  - Regata OS (depends on snapshot-enabled filesystem/profile behavior)
+- More conventional mutable-update behavior (weaker rollback by default):
+  - Nobara Project
+  - Pop!_OS
+
+### Pros, cons, and implementation consequences
+
+#### Bazzite (immutable/image-based)
+
+Pros:
+- Strongest update safety and rollback predictability.
+- Lower host drift over time.
+
+Cons:
+- Traditional package-manager remediation is constrained.
+- Some changes are delayed until reboot/deployment switch.
+
+Consequences:
+- System updating should be image/deployment-first.
+- Installing host tools should be minimized; prefer Flatpak/toolbox/distrobox/user-space workflows.
+- Diagnostics tooling must avoid assuming immediate mutable host installs.
+
+#### Garuda Linux (snapshot + mutable rolling)
+
+Pros:
+- Fast access to new kernels/Mesa/drivers with practical rollback escape hatch.
+- Good balance of performance-tuning flexibility and recoverability.
+
+Cons:
+- Snapshot rollback is not always as clean as transactional deployment rollback.
+- Rolling updates still require operational discipline (snapshot before upgrade, verify after).
+
+Consequences:
+- Updating/installing happens through normal Arch workflows, but snapshot cadence is operationally mandatory for resilience.
+- Tooling should stay mutable-first while warning to snapshot before invasive changes.
+
+#### Regata OS (openSUSE-derived fixed model)
+
+Pros:
+- Can achieve strong rollback behavior when snapshot integration is active.
+- Fixed release model can reduce surprise churn versus rolling ecosystems.
+
+Cons:
+- Real resilience varies by actual filesystem/profile setup.
+- Not always equivalent to immutable transactional behavior.
+
+Consequences:
+- Use standard zypper-based update/install flow.
+- Explicitly validate whether snapshot rollback is active before relying on it in runbooks.
+
+#### Nobara Project (mutable Fedora gaming defaults)
+
+Pros:
+- Straightforward mutable workflow; broad Fedora ecosystem compatibility.
+- Gaming-focused package defaults reduce initial setup effort.
+
+Cons:
+- No strong built-in transactional rollback guarantee by default.
+- Breakage mitigation often depends on external backup/snapshot strategy.
+
+Consequences:
+- Update/install as mutable dnf host.
+- Recommend optional snapshot/backup guardrails for high-risk update windows.
+
+#### Pop!_OS (mutable Ubuntu-family fixed)
+
+Pros:
+- Predictable LTS-style package management and wide compatibility.
+- Recovery/refresh paths help restore operability.
+
+Cons:
+- Rollback of individual update transactions is weaker than immutable or snapshot-first models.
+- Recovery paths are broader-grained than transactional rollback.
+
+Consequences:
+- Standard apt update/install lifecycle remains primary.
+- For resilience, pair updates with backup/snapshot policy rather than relying on package-transaction rollback.
+
+### Practical policy impact for desktop-analysis behavior
+
+- Bazzite: treat as non-mutable for remediation; report install constraints and recommend image-native workflow.
+- Garuda: allow package-manager remediation but surface snapshot-first guidance before major install/update actions.
+- Regata: allow mutable remediation and report whether rollback prerequisites (snapshot stack) are detectable.
+- Nobara and Pop!_OS: use mutable package workflows with explicit recommendation for backup/snapshot practices when applying high-impact changes.
+
 ## Script adaptation review and decisions
 
 ### Implemented now
