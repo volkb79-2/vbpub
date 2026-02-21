@@ -2578,6 +2578,44 @@ def _ask_nvidia_remediation_mode() -> str:
     return "skip"
 
 
+def _infer_nvidia_runfile_candidate(diag: dict) -> dict:
+    """Infer NVIDIA .run download candidate from installed proprietary package versions."""
+    packages = list(diag.get("installed_proprietary_packages") or [])
+    if not packages:
+        checks = diag.get("checks") or {}
+        unified = checks.get("installed_nvidia_packages_unified") or {}
+        packages = list(unified.get("proprietary") or [])
+
+    version_candidates: list[tuple[int, int, int]] = []
+    for pkg in packages:
+        text = str(pkg or "")
+        match = re.search(r"(\d+)\.(\d+)\.(\d+)", text)
+        if not match:
+            continue
+        try:
+            version_candidates.append((int(match.group(1)), int(match.group(2)), int(match.group(3))))
+        except ValueError:
+            continue
+
+    if not version_candidates:
+        return {
+            "ok": False,
+            "reason": "runfile-version-not-inferable",
+        }
+
+    version_tuple = sorted(set(version_candidates), reverse=True)[0]
+    version = f"{version_tuple[0]}.{version_tuple[1]}.{version_tuple[2]}"
+    filename = f"NVIDIA-Linux-x86_64-{version}.run"
+    return {
+        "ok": True,
+        "reason": "runfile-version-inferred-from-installed-packages",
+        "version": version,
+        "filename": filename,
+        "path": f"/tmp/{filename}",
+        "url": f"https://us.download.nvidia.com/XFree86/Linux-x86_64/{version}/{filename}",
+    }
+
+
 def _detect_nvidia_context(gpu_lspci: str, renderer: str, gpu_inventory: list[dict]) -> bool:
     text = f"{gpu_lspci} {renderer}".lower()
     if any(token in text for token in ("nvidia", "geforce", "quadro", "tesla", "10de:")):
@@ -2751,6 +2789,7 @@ def _build_nvidia_remediation_plan(
     mode: str,
     diag: dict,
     runfile_path: str,
+    runfile_url: str = "",
 ) -> dict:
     open_pkgs = list((diag or {}).get("installed_open_packages", []) or [])
     proprietary_pkgs = list((diag or {}).get("installed_proprietary_packages", []) or [])
@@ -2886,8 +2925,18 @@ def _build_nvidia_remediation_plan(
             elif base_distro == "suse":
                 add_step("remove-existing-nvidia-packages", ["zypper", "--non-interactive", "rm"] + remove_pkgs)
         add_step("switch-to-multi-user", ["systemctl", "isolate", "multi-user.target"], timeout=180)
-        add_step("chmod-runfile", ["chmod", "+x", runfile_path], timeout=60)
-        add_step("execute-runfile", [runfile_path, "--dkms", "--no-nouveau-check"], timeout=1800)
+        if runfile_url:
+            target_dir = str(Path(runfile_path).parent)
+            add_step("prepare-runfile-dir", ["mkdir", "-p", target_dir], timeout=60)
+            if command_exists("curl"):
+                add_step("download-runfile", ["curl", "-fL", "-o", runfile_path, runfile_url], timeout=1200)
+            elif command_exists("wget"):
+                add_step("download-runfile", ["wget", "-O", runfile_path, runfile_url], timeout=1200)
+            else:
+                plan["supported"] = False
+                plan["reason"] = "runfile-download-tool-missing"
+                return plan
+        add_step("execute-runfile", ["bash", runfile_path, "--dkms", "--no-nouveau-check"], timeout=1800)
         if command_exists("dracut"):
             add_step("dracut", ["dracut", "-f"], timeout=300)
         elif base_distro in ("ubuntu", "debian"):
@@ -2954,6 +3003,9 @@ def maybe_offer_nvidia_remediation(
         "logs": [],
         "post_check": {},
         "selected_mode": "",
+        "runfile_candidate": {},
+        "runfile_source": "",
+        "runfile_path": "",
     }
     if not nvidia_activation_diagnostics.get("relevant"):
         result["reason"] = "nvidia-not-relevant"
@@ -3014,17 +3066,36 @@ def maybe_offer_nvidia_remediation(
     result["attempted"] = True
 
     runfile_path = (nvidia_runfile_path or "").strip()
-    if selected_mode == "runfile" and not runfile_path and interactive:
-        try:
-            runfile_path = input("Enter absolute path to NVIDIA .run installer file: ").strip()
-        except EOFError:
-            runfile_path = ""
+    runfile_url = ""
+    if selected_mode == "runfile":
+        result["runfile_source"] = "user-provided" if runfile_path else "auto-infer"
+        runfile_exists = bool(runfile_path and os.path.isfile(runfile_path))
+        if not runfile_exists:
+            candidate = _infer_nvidia_runfile_candidate(nvidia_activation_diagnostics)
+            result["runfile_candidate"] = candidate
+            if candidate.get("ok"):
+                runfile_path = str(candidate.get("path") or runfile_path)
+                runfile_url = str(candidate.get("url") or "")
+                result["runfile_source"] = "auto-download"
+            elif runfile_path:
+                result["runfile_source"] = "user-provided-missing"
+
+        if not runfile_path and interactive:
+            try:
+                runfile_path = input("Enter absolute path to NVIDIA .run installer file: ").strip()
+            except EOFError:
+                runfile_path = ""
+            if runfile_path:
+                result["runfile_source"] = "user-provided"
+
+        result["runfile_path"] = runfile_path
 
     plan = _build_nvidia_remediation_plan(
         base_distro=base_distro,
         mode=selected_mode,
         diag=nvidia_activation_diagnostics,
         runfile_path=runfile_path,
+        runfile_url=runfile_url,
     )
     result["actions"] = plan
 
@@ -4656,6 +4727,8 @@ def write_markdown_report(
         remediation = nvidia_activation_diagnostics.get("auto_remediation", {})
         if remediation:
             reboot_required = bool(remediation.get("reboot_required")) or bool((remediation.get("post_check") or {}).get("needs_reboot"))
+            runfile_source = remediation.get("runfile_source", "")
+            runfile_path = remediation.get("runfile_path", "")
             lines += [
                 "",
                 "### NVIDIA Auto Remediation",
@@ -4665,6 +4738,8 @@ def write_markdown_report(
                 f"- Issues detected: {', '.join(remediation.get('issues_detected', [])) or 'none'}",
                 f"- Action recommended: {'yes' if remediation.get('action_recommended') else 'no'}",
                 f"- Reboot required: {'yes' if reboot_required else 'no'}",
+                f"- Runfile source: {runfile_source or 'n/a'}",
+                f"- Runfile path: {runfile_path or 'n/a'}",
                 "",
                 "```json",
                 json.dumps(remediation, indent=2),
@@ -4819,11 +4894,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--fix-nvidia",
-        choices=["ask", "cleanup-only", "cuda-repo", "runfile", "nouveau", "skip"],
+        choices=["ask", "distro-repair", "cleanup-only", "cuda-repo", "runfile", "nouveau", "skip"],
         default="ask",
         help=(
             "NVIDIA remediation mode when issues are detected: "
-            "ask (interactive selection), cleanup-only, cuda-repo, runfile, nouveau, skip."
+            "ask (interactive selection), distro-repair, cleanup-only, cuda-repo, runfile, nouveau, skip."
         ),
     )
     parser.add_argument(
@@ -5423,7 +5498,7 @@ def main() -> int:
             cprint(
                 C_YELLOW,
                 "[WARN] NVIDIA issues detected but remediation was not applied. "
-                "Use --fix-nvidia <cleanup-only|cuda-repo|runfile|nouveau> or rerun with --fix-nvidia ask.",
+                "Use --fix-nvidia <distro-repair|cleanup-only|cuda-repo|runfile|nouveau> or rerun with --fix-nvidia ask.",
             )
         trace(
             "nvidia diagnostics: "
