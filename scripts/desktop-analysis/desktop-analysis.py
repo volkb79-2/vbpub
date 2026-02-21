@@ -2961,31 +2961,35 @@ def _build_nvidia_remediation_plan(
         return plan
 
     if mode == "nouveau":
-        if remove_pkgs:
-            if base_distro == "fedora":
+        if base_distro == "fedora":
+            if remove_pkgs:
                 add_step("remove-nvidia-packages", ["dnf", "remove", "-y"] + remove_pkgs)
-                add_step("install-nouveau", ["dnf", "install", "-y", "xorg-x11-drv-nouveau", "mesa-dri-drivers"], timeout=600)
-                add_step("dracut", ["dracut", "-f"], timeout=300)
-            elif base_distro in ("ubuntu", "debian"):
+            add_step("install-nouveau", ["dnf", "install", "-y", "xorg-x11-drv-nouveau", "mesa-dri-drivers"], timeout=600)
+            add_step("dracut", ["dracut", "-f"], timeout=300)
+            plan["reboot_required"] = True
+        elif base_distro in ("ubuntu", "debian"):
+            if remove_pkgs:
                 add_step("remove-nvidia-packages", ["apt-get", "remove", "-y"] + remove_pkgs)
-                add_step("install-nouveau", ["apt-get", "install", "-y", "xserver-xorg-video-nouveau"], timeout=600)
-                add_step("update-initramfs", ["update-initramfs", "-u"], timeout=300)
-            elif base_distro == "arch":
+            add_step("install-nouveau", ["apt-get", "install", "-y", "xserver-xorg-video-nouveau"], timeout=600)
+            add_step("update-initramfs", ["update-initramfs", "-u"], timeout=300)
+            plan["reboot_required"] = True
+        elif base_distro == "arch":
+            if remove_pkgs:
                 add_step("remove-nvidia-packages", ["pacman", "-Rns", "--noconfirm"] + remove_pkgs)
-                add_step("install-nouveau", ["pacman", "-Sy", "--noconfirm", "xf86-video-nouveau"], timeout=600)
-                add_step("mkinitcpio", ["mkinitcpio", "-P"], timeout=300)
-            elif base_distro == "suse":
+            add_step("install-nouveau", ["pacman", "-Sy", "--noconfirm", "xf86-video-nouveau"], timeout=600)
+            add_step("mkinitcpio", ["mkinitcpio", "-P"], timeout=300)
+            plan["reboot_required"] = True
+        elif base_distro == "suse":
+            if remove_pkgs:
                 add_step("remove-nvidia-packages", ["zypper", "--non-interactive", "rm"] + remove_pkgs)
-                add_step("install-nouveau", ["zypper", "--non-interactive", "install", "xf86-video-nouveau"], timeout=600)
-                if command_exists("dracut"):
-                    add_step("dracut", ["dracut", "-f"], timeout=300)
-            else:
-                plan["supported"] = False
-                plan["reason"] = f"nouveau-mode-unsupported-distro:{base_distro}"
-                return plan
+            add_step("install-nouveau", ["zypper", "--non-interactive", "install", "xf86-video-nouveau"], timeout=600)
+            if command_exists("dracut"):
+                add_step("dracut", ["dracut", "-f"], timeout=300)
             plan["reboot_required"] = True
         else:
-            plan["reason"] = "no-installed-nvidia-packages-found"
+            plan["supported"] = False
+            plan["reason"] = f"nouveau-mode-unsupported-distro:{base_distro}"
+            return plan
         return plan
 
     plan["supported"] = False
@@ -3023,6 +3027,7 @@ def maybe_offer_nvidia_remediation(
         "runfile_candidate": {},
         "runfile_source": "",
         "runfile_path": "",
+        "execution_class": "",
     }
     if not nvidia_activation_diagnostics.get("relevant"):
         result["reason"] = "nvidia-not-relevant"
@@ -3180,7 +3185,14 @@ def maybe_offer_nvidia_remediation(
             continue
         result["logs"].append(_run_step(step_name, cmd, timeout=timeout))
 
-    result["ok"] = all(log.get("ok", False) for log in result.get("logs", [])) if result.get("logs") else False
+    no_steps_planned = not bool(plan.get("steps"))
+    if no_steps_planned:
+        result["attempted"] = False
+        result["ok"] = True
+        result["execution_class"] = "no-op"
+    else:
+        result["ok"] = all(log.get("ok", False) for log in result.get("logs", [])) if result.get("logs") else False
+        result["execution_class"] = "executed" if result["ok"] else "failed"
 
     def _extract_failed_log_path(logs: list[dict]) -> str:
         pattern = re.compile(r"(/var/cache/akmods/[^\s]+\.failed\.log)")
@@ -3227,7 +3239,9 @@ def maybe_offer_nvidia_remediation(
     }
     result["reboot_required"] = bool(plan.get("reboot_required", False))
 
-    if result["ok"] and not result["post_check"]["open_packages_remaining"]:
+    if no_steps_planned:
+        result["reason"] = plan.get("reason", "no-remediation-steps-required")
+    elif result["ok"] and not result["post_check"]["open_packages_remaining"]:
         result["reason"] = "remediation-complete"
     elif not result["ok"]:
         if kernel_api_mismatch:
@@ -3258,6 +3272,14 @@ def maybe_offer_nvidia_remediation(
                     nvidia_runfile_path=nvidia_runfile_path,
                     session_type=session_type,
                 )
+
+    if not result.get("execution_class"):
+        if result.get("attempted") and not result.get("ok"):
+            result["execution_class"] = "failed"
+        elif result.get("attempted"):
+            result["execution_class"] = "executed"
+        else:
+            result["execution_class"] = "no-op"
 
     return result
 
@@ -3705,10 +3727,9 @@ def build_nvidia_runfile_command_block(base_distro: str) -> list[str]:
     return [
         "# NVIDIA .run installer path (advanced; conflicts with package-managed stacks)",
         "sudo dnf remove -y 'akmod-nvidia*' 'kmod-nvidia*' 'xorg-x11-drv-nvidia*' 'nvidia-driver*' 'libnvidia*' || true",
-        "sudo systemctl isolate multi-user.target",
-        "# Download latest driver .run from NVIDIA website first, then:",
-        "chmod +x NVIDIA-Linux-*.run",
-        "sudo ./NVIDIA-Linux-*.run --dkms --no-nouveau-check",
+        "# Prefer running from TTY/root console; avoid isolating from an active desktop session.",
+        "# Download the .run installer to /tmp, then execute via bash:",
+        "sudo bash /tmp/NVIDIA-Linux-*.run --dkms --no-nouveau-check",
         "sudo dracut -f || true",
         "sudo reboot",
         "# after reboot:",
@@ -4754,6 +4775,7 @@ def write_markdown_report(
                 f"- Offered: {'yes' if remediation.get('offered') else 'no'}",
                 f"- Attempted: {'yes' if remediation.get('attempted') else 'no'}",
                 f"- Result: {'ok' if remediation.get('ok') else remediation.get('reason', 'failed')}",
+                f"- Execution class: {remediation.get('execution_class', 'n/a')}",
                 f"- Issues detected: {', '.join(remediation.get('issues_detected', [])) or 'none'}",
                 f"- Action recommended: {'yes' if remediation.get('action_recommended') else 'no'}",
                 f"- Reboot required: {'yes' if reboot_required else 'no'}",
@@ -5207,7 +5229,15 @@ def main() -> int:
         session_env, desktop, run_user_cmd, home_dir,
     )
 
-    if start_scale == 1.0 and "fallback" in start_scale_source and interactive:
+    session_type_lc = (session_type or "unknown").strip().lower()
+    desktop_lc = (desktop or "unknown").strip().lower()
+    renderer_lc = (renderer or "").strip().lower()
+    headless_session = session_type_lc in {"tty", "console", "unknown"} or desktop_lc in {"unknown", "none", ""}
+    no_gui_renderer = renderer_lc in {"", "unknown"}
+    skip_desktop_matrix = bool(headless_session or no_gui_renderer)
+    skip_desktop_reason = "no-active-desktop-session"
+
+    if start_scale == 1.0 and "fallback" in start_scale_source and interactive and not skip_desktop_matrix:
         raw = input(
             f"Could not auto-detect scale (source: {start_scale_source}). "
             "Enter current scale [1.0]: "
@@ -5250,14 +5280,6 @@ def main() -> int:
         "fractional": fractional_scale,
     }
     test_runs: dict = {}
-
-    session_type_lc = (session_type or "unknown").strip().lower()
-    desktop_lc = (desktop or "unknown").strip().lower()
-    renderer_lc = (renderer or "").strip().lower()
-    headless_session = session_type_lc in {"tty", "console", "unknown"} or desktop_lc in {"unknown", "none", ""}
-    no_gui_renderer = renderer_lc in {"", "unknown"}
-    skip_desktop_matrix = bool(headless_session or no_gui_renderer)
-    skip_desktop_reason = "no-active-desktop-session"
 
     if skip_desktop_matrix:
         cprint(C_YELLOW, "[WARN] No active desktop session detected; skipping scale/FPS matrix.")
