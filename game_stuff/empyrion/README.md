@@ -180,7 +180,8 @@ cd game_stuff/empyrion
 python3 release-empyrion-translation.py
 ```
 
-This reads metadata from root `release.toml`, validates token parity, and writes zip/report artifacts to `game_stuff/empyrion/dist/`.
+This validates token parity and writes zip/report artifacts to `game_stuff/empyrion/dist/`.
+When executed through the release manager, credentials/metadata come from manager-injected environment variables sourced from root `release.toml`.
 
 To also create/update a GitHub Release and upload the zip + report:
 
@@ -200,4 +201,10 @@ Opt-in through the repository release manager (not part of default project list)
 
 ```bash
 python3 release-all.py --project empyrion-translation --build
+```
+
+To publish via release manager (no `gh`, uses GitHub REST API + token env):
+
+```bash
+python3 release-all.py --project empyrion-translation --build --push
 ```

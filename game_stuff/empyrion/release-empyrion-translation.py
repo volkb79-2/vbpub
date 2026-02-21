@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import os
 import subprocess
 import sys
-import tempfile
-import tomllib
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 FINAL_FILES = [
     "Dialogues.de.completed.csv",
@@ -19,16 +21,239 @@ FINAL_FILES = [
 ]
 
 
-def load_release_metadata(path: Path) -> dict:
-    with path.open("rb") as handle:
-        data = tomllib.load(handle)
-    github = data.get("github", {}) if isinstance(data, dict) else {}
-    env = data.get("env", {}) if isinstance(data, dict) else {}
+def load_release_metadata_from_env() -> dict:
+    github_username = (os.getenv("GITHUB_USERNAME") or "unknown").strip()
+    github_repo = (os.getenv("GITHUB_REPO") or "unknown").strip()
+    oci_vendor = (os.getenv("OCI_VENDOR") or "unknown").strip()
     return {
-        "github_username": (github.get("username") or "unknown").strip(),
-        "github_repo": (github.get("repo") or "unknown").strip(),
-        "oci_vendor": (env.get("OCI_VENDOR") or "unknown").strip(),
+        "github_username": github_username,
+        "github_repo": github_repo,
+        "oci_vendor": oci_vendor,
     }
+
+
+def parse_repo(metadata: dict) -> tuple[str, str]:
+    github_repo = metadata["github_repo"]
+    github_username = metadata["github_username"]
+    if "/" in github_repo:
+        owner, repo = github_repo.split("/", 1)
+    else:
+        owner, repo = github_username, github_repo
+
+    if not owner or owner == "unknown" or not repo or repo == "unknown":
+        raise ValueError(
+            "Missing repository identity. Require GITHUB_USERNAME and GITHUB_REPO in environment."
+        )
+    return owner, repo
+
+
+def parse_json(body: str, context: str) -> dict:
+    if not body.strip():
+        raise RuntimeError(f"Empty JSON body for {context}")
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid JSON for {context}: {exc}") from exc
+
+
+def api_request(
+    method: str,
+    url: str,
+    token: str,
+    data: bytes | None = None,
+    content_type: str | None = None,
+) -> tuple[int, str]:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    if content_type:
+        headers["Content-Type"] = content_type
+
+    req = Request(url, method=method, headers=headers, data=data)
+    try:
+        with urlopen(req) as resp:
+            return resp.status, resp.read().decode("utf-8")
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8") if exc.fp else ""
+        return exc.code, body
+
+
+def get_release_by_tag(api_base: str, owner: str, repo: str, tag: str, token: str) -> dict | None:
+    status, body = api_request(
+        "GET", f"{api_base}/repos/{owner}/{repo}/releases/tags/{tag}", token
+    )
+    if status == 404:
+        return None
+    if status >= 400:
+        raise RuntimeError(f"Failed to fetch release tag {tag}: status={status} body={body}")
+    return parse_json(body, f"release tag {tag}")
+
+
+def create_release(
+    api_base: str,
+    owner: str,
+    repo: str,
+    tag: str,
+    title: str,
+    notes: str,
+    token: str,
+    draft: bool,
+    prerelease: bool,
+) -> dict:
+    payload = json.dumps(
+        {
+            "tag_name": tag,
+            "name": title,
+            "body": notes,
+            "draft": draft,
+            "prerelease": prerelease,
+        }
+    ).encode("utf-8")
+    status, body = api_request(
+        "POST",
+        f"{api_base}/repos/{owner}/{repo}/releases",
+        token,
+        data=payload,
+        content_type="application/json",
+    )
+    if status >= 400:
+        raise RuntimeError(f"Failed to create release {tag}: status={status} body={body}")
+    return parse_json(body, f"create release {tag}")
+
+
+def update_release(
+    api_base: str,
+    owner: str,
+    repo: str,
+    release_id: int,
+    title: str,
+    notes: str,
+    token: str,
+    draft: bool,
+    prerelease: bool,
+) -> dict:
+    payload = json.dumps(
+        {
+            "name": title,
+            "body": notes,
+            "draft": draft,
+            "prerelease": prerelease,
+        }
+    ).encode("utf-8")
+    status, body = api_request(
+        "PATCH",
+        f"{api_base}/repos/{owner}/{repo}/releases/{release_id}",
+        token,
+        data=payload,
+        content_type="application/json",
+    )
+    if status >= 400:
+        raise RuntimeError(f"Failed to update release {release_id}: status={status} body={body}")
+    return parse_json(body, f"update release {release_id}")
+
+
+def list_assets(api_base: str, owner: str, repo: str, release_id: int, token: str) -> list[dict]:
+    status, body = api_request(
+        "GET", f"{api_base}/repos/{owner}/{repo}/releases/{release_id}/assets", token
+    )
+    if status >= 400:
+        raise RuntimeError(f"Failed to list assets for release {release_id}: status={status} body={body}")
+    parsed = parse_json(body, f"list assets for release {release_id}")
+    if isinstance(parsed, list):
+        return parsed
+    raise RuntimeError(f"Unexpected assets payload for release {release_id}")
+
+
+def delete_asset(api_base: str, owner: str, repo: str, asset_id: int, token: str) -> None:
+    status, body = api_request(
+        "DELETE", f"{api_base}/repos/{owner}/{repo}/releases/assets/{asset_id}", token
+    )
+    if status >= 400:
+        raise RuntimeError(f"Failed to delete asset {asset_id}: status={status} body={body}")
+
+
+def upload_asset(upload_url: str, asset_path: Path, asset_name: str, token: str) -> None:
+    upload_url = upload_url.split("{", 1)[0]
+    status, body = api_request(
+        "POST",
+        f"{upload_url}?name={asset_name}",
+        token,
+        data=asset_path.read_bytes(),
+        content_type="application/octet-stream",
+    )
+    if status >= 400:
+        raise RuntimeError(f"Failed to upload asset {asset_name}: status={status} body={body}")
+
+
+def publish_github_release_assets(
+    metadata: dict,
+    tag: str,
+    release_name: str,
+    artifact_path: Path,
+    report_path: Path,
+    draft: bool,
+    prerelease: bool,
+) -> None:
+    token = (os.getenv("GITHUB_PUSH_PAT") or "").strip()
+    if not token:
+        raise ValueError("GITHUB_PUSH_PAT is required in environment for publish mode")
+
+    owner, repo = parse_repo(metadata)
+    api_base = "https://api.github.com"
+    notes = (
+        "Empyrion German translation artifact release.\n\n"
+        "- Includes final translated CSV files\n"
+        "- Includes detailed translation report\n"
+        "- Installation uses local Steam library root placeholder\n"
+    )
+
+    release = get_release_by_tag(api_base, owner, repo, tag, token)
+    if release is None:
+        release = create_release(
+            api_base,
+            owner,
+            repo,
+            tag,
+            release_name,
+            notes,
+            token,
+            draft=draft,
+            prerelease=prerelease,
+        )
+    else:
+        release_id = int(release.get("id", 0))
+        if not release_id:
+            raise RuntimeError(f"Release payload missing id for tag {tag}")
+        release = update_release(
+            api_base,
+            owner,
+            repo,
+            release_id,
+            release_name,
+            notes,
+            token,
+            draft=draft,
+            prerelease=prerelease,
+        )
+
+    release_id = int(release.get("id", 0))
+    upload_url = str(release.get("upload_url", ""))
+    if not release_id or not upload_url:
+        raise RuntimeError(f"Release payload missing id/upload_url for tag {tag}")
+
+    assets = list_assets(api_base, owner, repo, release_id, token)
+    existing_assets: dict[str, int] = {}
+    for asset in assets:
+        name = str(asset.get("name", ""))
+        asset_id = int(asset.get("id", 0))
+        if name and asset_id:
+            existing_assets[name] = asset_id
+
+    for asset_path in [artifact_path, report_path]:
+        if asset_path.name in existing_assets:
+            delete_asset(api_base, owner, repo, existing_assets[asset_path.name], token)
+        upload_asset(upload_url, asset_path, asset_path.name, token)
 
 
 def run_qa(script_dir: Path, input_dir: Path) -> None:
@@ -198,7 +423,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build Empyrion DE translation release artifact")
     parser.add_argument("--input-dir", default="tools/output-all-real")
     parser.add_argument("--output-dir", default="dist")
-    parser.add_argument("--release-toml", default="../../release.toml")
     parser.add_argument("--artifact-name", default="")
     parser.add_argument("--skip-qa", action="store_true")
     parser.add_argument("--publish-github", action="store_true")
@@ -209,70 +433,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def publish_github_release(
-    metadata: dict,
-    tag: str,
-    release_name: str,
-    artifact_path: Path,
-    report_path: Path,
-    draft: bool,
-    prerelease: bool,
-) -> None:
-    repo = metadata["github_repo"]
-    if "/" not in repo:
-        repo = f"{metadata['github_username']}/{repo}"
-
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".md") as tmp:
-        tmp.write(
-            "Empyrion German translation artifact release.\n\n"
-            "- Includes final translated CSV files\n"
-            "- Includes detailed translation report\n"
-            "- Installation uses your local Steam library root\n"
-        )
-        notes_path = Path(tmp.name)
-
-    view_cmd = ["gh", "release", "view", tag, "-R", repo]
-    view_result = subprocess.run(view_cmd, capture_output=True, text=True)
-
-    if view_result.returncode != 0:
-        create_cmd = [
-            "gh",
-            "release",
-            "create",
-            tag,
-            "-R",
-            repo,
-            "--title",
-            release_name,
-            "--notes-file",
-            str(notes_path),
-        ]
-        if draft:
-            create_cmd.append("--draft")
-        if prerelease:
-            create_cmd.append("--prerelease")
-        subprocess.run(create_cmd, check=True)
-
-    upload_cmd = [
-        "gh",
-        "release",
-        "upload",
-        tag,
-        str(artifact_path),
-        str(report_path),
-        "--clobber",
-        "-R",
-        repo,
-    ]
-    subprocess.run(upload_cmd, check=True)
-
-
 def main() -> None:
     args = parse_args()
     script_dir = Path(__file__).resolve().parent
     input_dir = (script_dir / args.input_dir).resolve()
     output_dir = (script_dir / args.output_dir).resolve()
-    release_toml = (script_dir / args.release_toml).resolve()
 
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory not found: {input_dir}")
@@ -280,13 +445,11 @@ def main() -> None:
         file_path = input_dir / name
         if not file_path.exists():
             raise FileNotFoundError(f"Required file not found: {file_path}")
-    if not release_toml.exists():
-        raise FileNotFoundError(f"release.toml not found: {release_toml}")
 
     if not args.skip_qa:
         run_qa(script_dir, input_dir)
 
-    metadata = load_release_metadata(release_toml)
+    metadata = load_release_metadata_from_env()
     changes_csv = input_dir / "applied_changes.csv"
     total_changes, by_file, by_status = summarize_changes(changes_csv)
     contains_english_rows = collect_status_rows(changes_csv, "de_contains_english")
@@ -318,7 +481,7 @@ def main() -> None:
     if args.publish_github:
         tag = args.tag or f"empyrion-de-translation-{stamp}"
         release_name = args.release_name or f"Empyrion DE Translation {stamp}"
-        publish_github_release(
+        publish_github_release_assets(
             metadata=metadata,
             tag=tag,
             release_name=release_name,

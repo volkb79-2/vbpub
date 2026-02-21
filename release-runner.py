@@ -2,6 +2,7 @@
 """Run release pipeline with cleanup and tee-like logging."""
 from __future__ import annotations
 
+import argparse
 import sys
 import subprocess
 from datetime import datetime, timezone
@@ -9,7 +10,20 @@ from pathlib import Path
 import shutil
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run release-all.py with log capture")
+    parser.add_argument(
+        "--project",
+        action="append",
+        default=[],
+        help="Run only the specified project(s). Repeat flag for multiple projects.",
+    )
+    parser.add_argument("--step-first", action="store_true", help="Use step-first execution mode")
+    return parser.parse_args()
+
+
 def main() -> int:
+    cli_args = parse_args()
     repo_root = Path(__file__).resolve().parent
     config_path = repo_root / "release.toml"
     sample_path = repo_root / "release.sample.toml"
@@ -39,6 +53,12 @@ def main() -> int:
         "--remove-assets",
         "30min",
     ]
+
+    for project_name in cli_args.project:
+        args.extend(["--project", project_name])
+
+    if cli_args.step_first:
+        args.append("--step-first")
 
     print(f"[INFO] Logging to {log_file}")
     print(f"[INFO] Running: {' '.join(args)}")
