@@ -2249,7 +2249,7 @@ def _build_glmark_cmd(tool: str, resolved_mode: str, fps_window_size: str) -> li
 
 def _run_glmark2(
     run_user_cmd,
-    duration_s: int = 15,
+    duration_s: int = 3,
     resolved_mode: str = "fullscreen",
     fps_window_size: str = "1920x1080",
 ) -> tuple:
@@ -2284,7 +2284,7 @@ def _run_glmark2(
 
 def _run_glmark2_with_hud(
     run_user_cmd,
-    duration_s: int = 15,
+    duration_s: int = 3,
     resolved_mode: str = "fullscreen",
     fps_window_size: str = "1920x1080",
 ) -> tuple:
@@ -2319,7 +2319,7 @@ def _run_glmark2_with_hud(
 
 def _run_glmark2_with_gallium_hud(
     run_user_cmd,
-    duration_s: int = 15,
+    duration_s: int = 3,
     resolved_mode: str = "fullscreen",
     fps_window_size: str = "1920x1080",
 ) -> tuple:
@@ -2382,6 +2382,7 @@ def measure_fps(
     fps_window_size: str = "1920x1080",
     session_type: str = "",
     desktop: str = "",
+    benchmark_seconds: int = 3,
 ) -> tuple:
     """Measure FPS using best available tool. Returns (fps, tool_name)."""
     resolved_mode = _resolve_fps_mode(fps_mode, session_type, desktop)
@@ -2393,6 +2394,7 @@ def measure_fps(
 
     fps, tool = _run_glmark2_with_hud(
         run_user_cmd,
+        duration_s=benchmark_seconds,
         resolved_mode=resolved_mode,
         fps_window_size=fps_window_size,
     )
@@ -2401,6 +2403,7 @@ def measure_fps(
 
     fps, tool = _run_glmark2_with_gallium_hud(
         run_user_cmd,
+        duration_s=benchmark_seconds,
         resolved_mode=resolved_mode,
         fps_window_size=fps_window_size,
     )
@@ -2409,13 +2412,14 @@ def measure_fps(
 
     fps, tool = _run_glmark2(
         run_user_cmd,
+        duration_s=benchmark_seconds,
         resolved_mode=resolved_mode,
         fps_window_size=fps_window_size,
     )
     if fps > 0:
         return fps, tool
     if allow_glxgears_fallback:
-        fps = _run_glxgears(run_user_cmd)
+        fps = _run_glxgears(run_user_cmd, duration_s=max(3, benchmark_seconds))
         if fps > 0:
             return fps, "glxgears"
     return 0.0, "unavailable"
@@ -2519,6 +2523,64 @@ def _detect_nvidia_context(gpu_lspci: str, renderer: str, gpu_inventory: list[di
         if any(token in model for token in ("nvidia", "geforce", "quadro", "tesla", "10de:")):
             return True
     return False
+
+
+def _package_looks_open_nvidia(package_name: str) -> bool:
+    pkg = (package_name or "").lower()
+    return bool(
+        re.search(r"\bopen\b", pkg)
+        or "nvidia-open" in pkg
+        or "-open" in pkg
+    )
+
+
+def _extract_nvidia_gpu_model(gpu_lspci: str, gpu_inventory: list[dict]) -> str:
+    for gpu in gpu_inventory or []:
+        model = (gpu or {}).get("model", "")
+        if "nvidia" in model.lower() or "geforce" in model.lower() or "10de:" in model.lower():
+            return model
+    if _detect_nvidia_context(gpu_lspci, "", gpu_inventory):
+        return gpu_lspci or "unknown-nvidia-gpu"
+    return ""
+
+
+def _infer_open_module_support_from_gpu_model(gpu_model: str) -> dict:
+    """Best-effort compatibility hint for nvidia-open/GSP vs proprietary branch."""
+    model = (gpu_model or "").lower()
+    if not model:
+        return {
+            "likely_supported": None,
+            "reason": "gpu-model-unavailable",
+        }
+
+    # Pre-Turing families (Kepler/Maxwell/Pascal) generally require proprietary branch.
+    if re.search(r"\b(gf\d{3}|gk\d{3}|gm\d{3}|gp\d{3})\b", model):
+        return {
+            "likely_supported": False,
+            "reason": "legacy-nvidia-generation-detected (pre-turing; prefer proprietary module)",
+        }
+    if any(token in model for token in ("gt 1030", "gtx 10", "pascal", "maxwell", "kepler")):
+        return {
+            "likely_supported": False,
+            "reason": "gpu-family-likely-pre-gsp (prefer proprietary module)",
+        }
+
+    # Newer generations are more likely compatible with open/GSP path.
+    if re.search(r"\b(tu\d{3}|ga\d{3}|ad\d{3}|gh\d{3})\b", model):
+        return {
+            "likely_supported": True,
+            "reason": "modern-nvidia-generation-detected (open path may be supported)",
+        }
+    if any(token in model for token in ("rtx 20", "rtx 30", "rtx 40", "turing", "ampere", "ada")):
+        return {
+            "likely_supported": True,
+            "reason": "modern-rtx-family-detected (open path may be supported)",
+        }
+
+    return {
+        "likely_supported": None,
+        "reason": "unknown-generation-cannot-determine-open-support",
+    }
 
 
 def _detect_open_gsp_mismatch(run_user_cmd) -> dict:
@@ -2819,18 +2881,27 @@ def gather_nvidia_activation_diagnostics(
     run_user_cmd,
     base_distro: str,
     gpu_lspci: str,
+    gpu_inventory: list[dict],
     renderer: str,
     driver_info: dict,
 ) -> dict:
     """Collect actionable diagnostics for NVIDIA proprietary driver activation."""
     gpu_text = f"{gpu_lspci} {renderer}".lower()
     loaded = set(driver_info.get("loaded", []))
-    nvidia_gpu = ("nvidia" in gpu_text) or ("geforce" in gpu_text) or ("nv" in gpu_text)
+    nvidia_gpu = _detect_nvidia_context(gpu_lspci, renderer, gpu_inventory)
+    nvidia_gpu_model = _extract_nvidia_gpu_model(gpu_lspci, gpu_inventory)
+    support_hint = _infer_open_module_support_from_gpu_model(nvidia_gpu_model)
     nouveau_active = "nouveau" in loaded
     nvidia_module_active = any(mod.startswith("nvidia") for mod in loaded)
 
     diag = {
         "relevant": bool(nvidia_gpu),
+        "gpu_model_detected": nvidia_gpu_model,
+        "open_module_support_likely": support_hint.get("likely_supported"),
+        "open_module_support_reason": support_hint.get("reason", ""),
+        "package_hardware_mismatch": False,
+        "package_hardware_mismatch_reason": "",
+        "nvidia_vendor_repository": "Use distro-integrated NVIDIA repos/packages (RPM Fusion/Nobara on Fedora-like). NVIDIA .run/self-managed DKMS exists but is not recommended for this tool's automated path.",
         "nouveau_active": nouveau_active,
         "nvidia_module_active": nvidia_module_active,
         "open_gsp_mismatch": False,
@@ -2976,6 +3047,18 @@ def gather_nvidia_activation_diagnostics(
             sorted(set(candidate_packages + available_branches))
         )
 
+        if support_hint.get("likely_supported") is False and _package_looks_open_nvidia(suited_package):
+            alternatives = [
+                pkg for pkg in sorted(set(candidate_packages + available_branches))
+                if not _package_looks_open_nvidia(pkg)
+            ]
+            if alternatives:
+                alt = _highest_driver_branch(alternatives) or alternatives[0]
+                diag["notes"].append(
+                    f"Adjusted suited package from '{suited_package}' to '{alt}' because GPU model '{nvidia_gpu_model}' likely needs proprietary branch."
+                )
+                suited_package = alt
+
         diag["recommended_package"] = recommended_package
         diag["candidate_packages"] = sorted(set(candidate_packages))[:30]
         diag["suited_package"] = suited_package
@@ -3035,44 +3118,73 @@ def gather_nvidia_activation_diagnostics(
                 }
 
         suited_package = recommended_package or (candidate_packages[0] if candidate_packages else "")
+        if support_hint.get("likely_supported") is False and _package_looks_open_nvidia(suited_package):
+            if "akmod-nvidia" in candidate_packages:
+                diag["notes"].append(
+                    f"Adjusted suited package from '{suited_package}' to 'akmod-nvidia' for GPU '{nvidia_gpu_model}' (likely requires proprietary branch)."
+                )
+                suited_package = "akmod-nvidia"
         diag["recommended_package"] = recommended_package
         diag["candidate_packages"] = sorted(set(candidate_packages))[:30]
         diag["suited_package"] = suited_package
 
+    if support_hint.get("likely_supported") is False and diag.get("installed_open_packages"):
+        diag["package_hardware_mismatch"] = True
+        diag["package_hardware_mismatch_reason"] = (
+            f"Detected open NVIDIA packages on GPU '{nvidia_gpu_model}' which likely requires proprietary branch."
+        )
+    if diag.get("open_gsp_mismatch"):
+        diag["package_hardware_mismatch"] = True
+        if not diag.get("package_hardware_mismatch_reason"):
+            diag["package_hardware_mismatch_reason"] = "Kernel logs indicate open/GSP mismatch for current GPU."
+
+    diag["checks"]["package_hardware_compat"] = {
+        "ok": not diag.get("package_hardware_mismatch"),
+        "gpu_model": nvidia_gpu_model,
+        "open_module_support_likely": support_hint.get("likely_supported"),
+        "reason": support_hint.get("reason", ""),
+        "installed_open_packages": diag.get("installed_open_packages", [])[:20],
+        "installed_proprietary_packages": diag.get("installed_proprietary_packages", [])[:20],
+        "mismatch_reason": diag.get("package_hardware_mismatch_reason", ""),
+    }
+
     options = []
     options.append("Option A (quick check): reboot and verify modules with: lsmod | grep -E 'nvidia|nouveau'")
+    options.append(
+        "Option B (packaging source): prefer distro-integrated NVIDIA repos/packages; NVIDIA upstream .run/DKMS path exists but is advanced and can conflict with package-manager managed drivers."
+    )
 
     if secure_boot_enabled and not nvidia_module_active:
         options.append(
-            "Option B (Secure Boot path): disable Secure Boot in firmware OR enroll/sign NVIDIA DKMS module (MOK), then reboot"
+            "Option C (Secure Boot path): disable Secure Boot in firmware OR enroll/sign NVIDIA DKMS module (MOK), then reboot"
         )
 
     installed_pkgs = diag.get("checks", {}).get("installed_nvidia_packages", {}).get("packages", [])
     if base_distro in ("ubuntu", "debian"):
         if diag.get("suited_package"):
             options.append(
-                f"Option C (suited package): install '{diag.get('suited_package')}' then reboot"
+                f"Option D (suited package): install '{diag.get('suited_package')}' then reboot"
             )
         if not installed_pkgs and not diag.get("suited_package"):
             options.append(
-                "Option C (explicit install): choose an available branch and install it (example: sudo apt install nvidia-driver-550), then sudo update-initramfs -u && sudo reboot"
+                "Option D (explicit install): choose an available branch and install it (example: sudo apt install nvidia-driver-550), then sudo update-initramfs -u && sudo reboot"
             )
         elif not nvidia_module_active:
             options.append(
-                "Option C (installed but inactive): run sudo update-initramfs -u, check dkms status, reboot, then verify nvidia-smi"
+                "Option D (installed but inactive): run sudo update-initramfs -u, check dkms status, reboot, then verify nvidia-smi"
             )
     elif base_distro == "fedora":
         if diag.get("suited_package"):
             options.append(
-                f"Option C (suited package): install '{diag.get('suited_package')}' and reboot"
+                f"Option D (suited package): install '{diag.get('suited_package')}' and reboot"
             )
         else:
             options.append(
-                "Option C (explicit package check): run 'dnf repoquery akmod-nvidia' and install the matching NVIDIA package from enabled repos"
+                "Option D (explicit package check): run 'dnf repoquery akmod-nvidia' and install the matching NVIDIA package from enabled repos"
             )
         if not nvidia_module_active:
             options.append(
-                "Option C (installed but inactive): rebuild initramfs if needed (dracut --force), reboot, then verify nvidia-smi"
+                "Option D (installed but inactive): rebuild initramfs if needed (dracut --force), reboot, then verify nvidia-smi"
             )
 
     if nouveau_active:
@@ -3083,6 +3195,10 @@ def gather_nvidia_activation_diagnostics(
     if diag.get("open_gsp_mismatch"):
         options.append(
             "Option F (open/GSP mismatch detected): remove nvidia-open packages, install proprietary branch, rebuild initramfs, then reboot"
+        )
+    if diag.get("package_hardware_mismatch"):
+        options.append(
+            "Option G (package/hardware mismatch): installed NVIDIA package branch appears incompatible with detected GPU model; switch to proprietary package branch."
         )
 
     if not nvidia_module_active:
@@ -4862,6 +4978,7 @@ def main() -> int:
             run_user_cmd=run_user_cmd,
             base_distro=base_distro,
             gpu_lspci=gpu_lspci,
+            gpu_inventory=gpu_inventory,
             renderer=renderer,
             driver_info=driver_info,
         )
@@ -4891,6 +5008,7 @@ def main() -> int:
                 run_user_cmd=run_user_cmd,
                 base_distro=base_distro,
                 gpu_lspci=gpu_lspci,
+                gpu_inventory=gpu_inventory,
                 renderer=renderer,
                 driver_info=driver_info,
             )
