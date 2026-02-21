@@ -1555,10 +1555,10 @@ def assess_driver_suitability(glxinfo_stdout: str, driver_info: dict) -> tuple:
         return True, "✓  " + " ".join(notes)
     if "nouveau" in loaded:
         notes.append(
-            "nouveau (open-source) driver for NVIDIA GPU. "
-            "Consider proprietary driver for full performance."
+            "nouveau (open-source) driver active for NVIDIA GPU. "
+            "Treat as acceptable unless there are explicit performance/probe failures."
         )
-        return False, "⚠  " + " ".join(notes)
+        return True, "ℹ  " + " ".join(notes)
     if "amdgpu" in loaded or "radeon" in loaded:
         mod = "amdgpu" if "amdgpu" in loaded else "radeon"
         notes.append(f"AMD open-source driver '{mod}' active — suitable.")
@@ -2672,12 +2672,12 @@ def _infer_open_module_support_from_gpu_model(gpu_model: str) -> dict:
     if re.search(r"\b(gf\d{3}|gk\d{3}|gm\d{3}|gp\d{3})\b", model):
         return {
             "likely_supported": False,
-            "reason": "legacy-nvidia-generation-detected (pre-turing; prefer proprietary module)",
+            "reason": "legacy-nvidia-generation-detected (pre-turing; nvidia-open/GSP unlikely; nouveau may be valid)",
         }
     if any(token in model for token in ("gt 1030", "gtx 10", "pascal", "maxwell", "kepler")):
         return {
             "likely_supported": False,
-            "reason": "gpu-family-likely-pre-gsp (prefer proprietary module)",
+            "reason": "gpu-family-likely-pre-gsp (nvidia-open/GSP unlikely; nouveau may be valid)",
         }
 
     # Newer generations are more likely compatible with open/GSP path.
@@ -2726,6 +2726,48 @@ def _detect_open_gsp_mismatch(run_user_cmd) -> dict:
     result["detected"] = bool(mismatch)
     if mismatch:
         result["reason"] = "nvidia-open-gsp-mismatch"
+    result["journal_excerpt"] = out[:2500]
+    return result
+
+
+def _detect_nouveau_probe_failure(run_user_cmd) -> dict:
+    result = {
+        "detected": False,
+        "reason": "",
+        "journal_excerpt": "",
+        "check_ok": False,
+    }
+    if not command_exists("journalctl"):
+        result["reason"] = "journalctl-unavailable"
+        return result
+
+    res = run_user_cmd(
+        [
+            "journalctl", "-k", "-b", "--no-pager", "-n", "4000",
+            "--grep", "nouveau|firmware|NVRM|nvidia",
+        ],
+        timeout=40,
+    )
+    result["check_ok"] = bool(res.get("ok", False))
+    out = (res.get("stdout", "") or "")
+    text = out.lower()
+
+    probe_failed = "probe with driver nouveau failed" in text
+    firmware_missing = (
+        "firmware unavailable" in text
+        or "failed to load firmware" in text
+        or "request_firmware" in text
+    )
+    detected = probe_failed or firmware_missing
+
+    result["detected"] = bool(detected)
+    if detected:
+        if probe_failed and firmware_missing:
+            result["reason"] = "nouveau-probe-and-firmware-failure"
+        elif probe_failed:
+            result["reason"] = "nouveau-probe-failed"
+        else:
+            result["reason"] = "nouveau-firmware-missing"
     result["journal_excerpt"] = out[:2500]
     return result
 
@@ -2897,6 +2939,18 @@ def _build_nvidia_remediation_plan(
             }
         )
 
+        add_step(
+            "blacklist-nouveau",
+            [
+                "bash", "-lc",
+                "cat > /etc/modprobe.d/blacklist-nouveau.conf <<'EOF'\n"
+                "blacklist nouveau\n"
+                "options nouveau modeset=0\n"
+                "EOF",
+            ],
+            timeout=90,
+        )
+
         add_step("rebuild-akmods", ["akmods", "--force", "--kernels", kernel_release], timeout=1200)
         add_step("dracut", ["dracut", "-f"], timeout=300)
         plan["reboot_required"] = True
@@ -2964,7 +3018,16 @@ def _build_nvidia_remediation_plan(
         if base_distro == "fedora":
             if remove_pkgs:
                 add_step("remove-nvidia-packages", ["dnf", "remove", "-y"] + remove_pkgs)
-            add_step("install-nouveau", ["dnf", "install", "-y", "xorg-x11-drv-nouveau", "mesa-dri-drivers"], timeout=600)
+            add_step(
+                "install-nouveau",
+                [
+                    "dnf", "install", "-y",
+                    "xorg-x11-drv-nouveau",
+                    "mesa-dri-drivers",
+                    "nvidia-gpu-firmware",
+                ],
+                timeout=600,
+            )
             add_step("dracut", ["dracut", "-f"], timeout=300)
             plan["reboot_required"] = True
         elif base_distro in ("ubuntu", "debian"):
@@ -3035,23 +3098,37 @@ def maybe_offer_nvidia_remediation(
 
     uses_nouveau = bool(nvidia_activation_diagnostics.get("nouveau_active"))
     open_mismatch = bool(nvidia_activation_diagnostics.get("open_gsp_mismatch"))
+    package_mismatch = bool(nvidia_activation_diagnostics.get("package_hardware_mismatch"))
     software_renderer = any(token in (renderer or "").lower() for token in ("llvmpipe", "softpipe", "software rasterizer"))
     nvidia_module_active = bool(nvidia_activation_diagnostics.get("nvidia_module_active"))
 
-    needs = uses_nouveau or open_mismatch or (software_renderer and not nvidia_module_active)
+    nouveau_acceptable = bool(nvidia_activation_diagnostics.get("nouveau_accepted_legacy_gpu"))
+    if software_renderer:
+        nouveau_acceptable = False
+
+    needs = (
+        open_mismatch
+        or package_mismatch
+        or (software_renderer and not nvidia_module_active)
+        or (uses_nouveau and not nouveau_acceptable)
+    )
 
     reasons = []
-    if uses_nouveau:
+    if uses_nouveau and not nouveau_acceptable:
         reasons.append("nouveau-active")
+    elif nouveau_acceptable:
+        reasons.append("nouveau-accepted-for-legacy-gpu")
     if open_mismatch:
         reasons.append("open-gsp-mismatch")
+    if package_mismatch:
+        reasons.append("package-hardware-mismatch")
     if software_renderer and not nvidia_module_active:
         reasons.append("software-renderer-without-active-nvidia")
     result["issues_detected"] = reasons
     result["action_recommended"] = bool(needs)
 
     if not needs:
-        result["reason"] = "no-remediation-needed"
+        result["reason"] = "no-remediation-needed-nouveau-acceptable" if nouveau_acceptable else "no-remediation-needed"
         return result
 
     prompt = "NVIDIA remediation suggested (" + ", ".join(reasons) + ")."
@@ -3221,17 +3298,36 @@ def maybe_offer_nvidia_remediation(
             kernel_api_mismatch_signature = "vm_area_struct.__vm_flags missing"
 
     mismatch_check = _detect_open_gsp_mismatch(run_user_cmd)
+    nouveau_probe_check = _detect_nouveau_probe_failure(run_user_cmd)
     installed_after = _collect_installed_nvidia_packages(base_distro, run_user_cmd)
     lsmod_after = run_cmd(["lsmod"])
     loaded_after = gather_driver_info(lsmod_after.get("stdout", ""), priv)
     smi_after = run_user_cmd(["nvidia-smi"], timeout=20) if command_exists("nvidia-smi") else {"ok": False, "stderr": "nvidia-smi not found", "stdout": ""}
+    nvidia_active_after = any(mod.startswith("nvidia") for mod in (loaded_after.get("loaded", []) or []))
+    nouveau_active_after = "nouveau" in (loaded_after.get("loaded", []) or [])
+    proprietary_mode = selected_mode in {"distro-repair", "cuda-repo", "runfile"}
+    proprietary_target_ok = (
+        nvidia_active_after
+        and bool(smi_after.get("ok", False))
+        and not bool(mismatch_check.get("detected"))
+        and not nouveau_active_after
+    )
+    nouveau_target_ok = (
+        nouveau_active_after
+        and not bool(nouveau_probe_check.get("detected"))
+    )
 
     result["post_check"] = {
         "open_gsp_mismatch": bool(mismatch_check.get("detected")),
         "open_packages_remaining": installed_after.get("open", []),
         "nvidia_loaded_modules": loaded_after.get("loaded", []),
+        "nvidia_module_active": nvidia_active_after,
+        "nouveau_active": nouveau_active_after,
         "nvidia_smi_ok": bool(smi_after.get("ok", False)),
         "mismatch_check": mismatch_check,
+        "nouveau_probe_failure": bool(nouveau_probe_check.get("detected")),
+        "nouveau_probe_check": nouveau_probe_check,
+        "target_state_ok": proprietary_target_ok if proprietary_mode else (nouveau_target_ok if selected_mode == "nouveau" else True),
         "akmods_failed_log": failed_log_path,
         "kernel_api_mismatch": kernel_api_mismatch,
         "kernel_api_mismatch_signature": kernel_api_mismatch_signature,
@@ -3241,13 +3337,30 @@ def maybe_offer_nvidia_remediation(
 
     if no_steps_planned:
         result["reason"] = plan.get("reason", "no-remediation-steps-required")
-    elif result["ok"] and not result["post_check"]["open_packages_remaining"]:
-        result["reason"] = "remediation-complete"
     elif not result["ok"]:
         if kernel_api_mismatch:
             result["reason"] = "kernel-api-mismatch-akmods"
         else:
             result["reason"] = "install-or-post-step-failed"
+    elif selected_mode == "nouveau" and result["post_check"]["nouveau_probe_failure"]:
+        result["ok"] = False
+        result["execution_class"] = "failed"
+        result["reason"] = result["post_check"]["nouveau_probe_check"].get("reason") or "nouveau-probe-failed"
+    elif proprietary_mode and not proprietary_target_ok:
+        result["ok"] = False
+        result["execution_class"] = "failed"
+        if result["post_check"]["open_gsp_mismatch"]:
+            result["reason"] = "post-check-open-gsp-mismatch-persists"
+        elif nouveau_active_after and not nvidia_active_after:
+            result["reason"] = "post-check-nouveau-still-active"
+        elif not nvidia_active_after:
+            result["reason"] = "post-check-nvidia-module-inactive"
+        elif not result["post_check"]["nvidia_smi_ok"]:
+            result["reason"] = "post-check-nvidia-smi-failed"
+        else:
+            result["reason"] = "post-check-target-state-not-reached"
+    elif result["ok"] and not result["post_check"]["open_packages_remaining"]:
+        result["reason"] = "remediation-complete"
     else:
         result["reason"] = "partial-correction"
 
@@ -3306,6 +3419,8 @@ def gather_nvidia_activation_diagnostics(
         "gpu_model_detected": nvidia_gpu_model,
         "open_module_support_likely": support_hint.get("likely_supported"),
         "open_module_support_reason": support_hint.get("reason", ""),
+        "nouveau_accepted_legacy_gpu": False,
+        "nouveau_accepted_legacy_gpu_reason": "",
         "package_hardware_mismatch": False,
         "package_hardware_mismatch_reason": "",
         "nvidia_vendor_repository": "Use distro-integrated NVIDIA repos/packages (RPM Fusion/Nobara on Fedora-like). NVIDIA .run/self-managed DKMS exists but is not recommended for this tool's automated path.",
@@ -3568,6 +3683,22 @@ def gather_nvidia_activation_diagnostics(
         if not diag.get("package_hardware_mismatch_reason"):
             diag["package_hardware_mismatch_reason"] = "Kernel logs indicate open/GSP mismatch for current GPU."
 
+    nouveau_accepted = bool(
+        diag.get("nouveau_active")
+        and support_hint.get("likely_supported") is False
+        and not diag.get("open_gsp_mismatch")
+        and not diag.get("package_hardware_mismatch")
+    )
+    diag["nouveau_accepted_legacy_gpu"] = nouveau_accepted
+    if nouveau_accepted:
+        diag["nouveau_accepted_legacy_gpu_reason"] = (
+            "Legacy/pre-GSP NVIDIA GPU detected with active nouveau and no mismatch signals."
+        )
+    else:
+        diag["nouveau_accepted_legacy_gpu_reason"] = (
+            "Not a legacy-nouveau accepted state or mismatch/failure signals present."
+        )
+
     diag["checks"]["package_hardware_compat"] = {
         "ok": not diag.get("package_hardware_mismatch"),
         "gpu_model": nvidia_gpu_model,
@@ -3624,9 +3755,14 @@ def gather_nvidia_activation_diagnostics(
             )
 
     if nouveau_active:
-        options.append(
-            "Option D (nouveau still active): ensure proprietary module loads first; if needed, apply distro-supported nouveau blacklist workflow and regenerate initramfs"
-        )
+        if support_hint.get("likely_supported") is False:
+            options.append(
+                "Option D (nouveau active on legacy NVIDIA): acceptable baseline; only switch if you have explicit performance or compatibility issues."
+            )
+        else:
+            options.append(
+                "Option D (nouveau still active): ensure proprietary module loads first; if needed, apply distro-supported nouveau blacklist workflow and regenerate initramfs"
+            )
 
     if diag.get("open_gsp_mismatch"):
         options.append(
@@ -3637,7 +3773,7 @@ def gather_nvidia_activation_diagnostics(
             "Option G (package/hardware mismatch): installed NVIDIA package branch appears incompatible with detected GPU model; switch to proprietary package branch."
         )
 
-    if not nvidia_module_active:
+    if not nvidia_module_active and not nouveau_active:
         options.append("Option E (diagnostics): collect dmesg/journal errors for nvidia/nouveau module load failures")
 
     diag["command_block"] = build_nvidia_command_block(diag, base_distro)
@@ -4080,10 +4216,6 @@ def build_conclusions(
             "Wayland session with active XWayland clients: X11 apps composited "
             "inside Wayland (extra compositing overhead)."
         )
-    if "nouveau" in driver_info.get("loaded", []):
-        conclusions.append(
-            "'nouveau' driver active for NVIDIA GPU: consider proprietary driver for better performance."
-        )
     if cosmic_scale_hits:
         conclusions.append(f"COSMIC config files referencing scaling: {cosmic_scale_hits}")
     if not smooth:
@@ -4326,6 +4458,10 @@ def print_console_report(
     if nvidia_activation_diagnostics.get("relevant"):
         _bullet("NVIDIA module active", "yes" if nvidia_activation_diagnostics.get("nvidia_module_active") else "no")
         _bullet("nouveau active", "yes" if nvidia_activation_diagnostics.get("nouveau_active") else "no")
+        _bullet(
+            "Nouveau accepted for legacy GPU",
+            "yes" if nvidia_activation_diagnostics.get("nouveau_accepted_legacy_gpu") else "no",
+        )
         checks = nvidia_activation_diagnostics.get("checks", {})
         pkgs = checks.get("installed_nvidia_packages", {}).get("packages", [])
         branches = checks.get("available_driver_branches", {}).get("branches", [])
@@ -4747,6 +4883,7 @@ def write_markdown_report(
             "### NVIDIA Activation Diagnostics",
             f"- NVIDIA module active: {'yes' if nvidia_activation_diagnostics.get('nvidia_module_active') else 'no'}",
             f"- nouveau active: {'yes' if nvidia_activation_diagnostics.get('nouveau_active') else 'no'}",
+            f"- Nouveau accepted for legacy GPU: {'yes' if nvidia_activation_diagnostics.get('nouveau_accepted_legacy_gpu') else 'no'}",
             "",
             "```json",
             json.dumps(nvidia_activation_diagnostics, indent=2),
@@ -5231,10 +5368,8 @@ def main() -> int:
 
     session_type_lc = (session_type or "unknown").strip().lower()
     desktop_lc = (desktop or "unknown").strip().lower()
-    renderer_lc = (renderer or "").strip().lower()
     headless_session = session_type_lc in {"tty", "console", "unknown"} or desktop_lc in {"unknown", "none", ""}
-    no_gui_renderer = renderer_lc in {"", "unknown"}
-    skip_desktop_matrix = bool(headless_session or no_gui_renderer)
+    skip_desktop_matrix = bool(headless_session)
     skip_desktop_reason = "no-active-desktop-session"
 
     if start_scale == 1.0 and "fallback" in start_scale_source and interactive and not skip_desktop_matrix:
@@ -5518,16 +5653,6 @@ def main() -> int:
             renderer=renderer,
             driver_info=driver_info,
         )
-        if (
-            nvidia_activation_diagnostics.get("nouveau_active")
-            or nvidia_activation_diagnostics.get("open_gsp_mismatch")
-            or not nvidia_activation_diagnostics.get("nvidia_module_active")
-        ):
-            nvidia_instructions = _nvidia_install_instructions(
-                base_distro,
-                osr,
-                nvidia_activation_diagnostics,
-            )
 
         remediation_result = maybe_offer_nvidia_remediation(
             interactive=interactive,
@@ -5543,6 +5668,12 @@ def main() -> int:
             session_type=session_type,
         )
         nvidia_activation_diagnostics["auto_remediation"] = remediation_result
+        if remediation_result.get("action_recommended") or remediation_result.get("attempted"):
+            nvidia_instructions = _nvidia_install_instructions(
+                base_distro,
+                osr,
+                nvidia_activation_diagnostics,
+            )
         if remediation_result.get("attempted"):
             post_lsmod = run_cmd(["lsmod"])
             driver_info = gather_driver_info(post_lsmod.get("stdout", ""), priv)
