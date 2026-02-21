@@ -2586,6 +2586,19 @@ def _infer_nvidia_runfile_candidate(diag: dict) -> dict:
         unified = checks.get("installed_nvidia_packages_unified") or {}
         packages = list(unified.get("proprietary") or [])
 
+    if not packages:
+        checks = diag.get("checks") or {}
+        fallback_keys = [
+            "repoquery_akmod-nvidia",
+            "repoquery_xorg-x11-drv-nvidia",
+            "repoquery_kmod-nvidia",
+        ]
+        for key in fallback_keys:
+            entry = checks.get(key) or {}
+            excerpt = str(entry.get("stdout_excerpt", "") or "")
+            if excerpt:
+                packages.append(excerpt)
+
     version_candidates: list[tuple[int, int, int]] = []
     for pkg in packages:
         text = str(pkg or "")
@@ -2790,6 +2803,7 @@ def _build_nvidia_remediation_plan(
     diag: dict,
     runfile_path: str,
     runfile_url: str = "",
+    session_type: str = "unknown",
 ) -> dict:
     open_pkgs = list((diag or {}).get("installed_open_packages", []) or [])
     proprietary_pkgs = list((diag or {}).get("installed_proprietary_packages", []) or [])
@@ -2924,7 +2938,9 @@ def _build_nvidia_remediation_plan(
                 add_step("remove-existing-nvidia-packages", ["pacman", "-Rns", "--noconfirm"] + remove_pkgs)
             elif base_distro == "suse":
                 add_step("remove-existing-nvidia-packages", ["zypper", "--non-interactive", "rm"] + remove_pkgs)
-        add_step("switch-to-multi-user", ["systemctl", "isolate", "multi-user.target"], timeout=180)
+        session_lc = (session_type or "unknown").strip().lower()
+        if session_lc in {"tty", "console", "unknown"}:
+            add_step("switch-to-multi-user", ["systemctl", "isolate", "multi-user.target"], timeout=180)
         if runfile_url:
             target_dir = str(Path(runfile_path).parent)
             add_step("prepare-runfile-dir", ["mkdir", "-p", target_dir], timeout=60)
@@ -2989,6 +3005,7 @@ def maybe_offer_nvidia_remediation(
     gpu_lspci: str,
     driver_info: dict,
     nvidia_runfile_path: str,
+    session_type: str,
 ) -> dict:
     result = {
         "offered": False,
@@ -3096,6 +3113,7 @@ def maybe_offer_nvidia_remediation(
         diag=nvidia_activation_diagnostics,
         runfile_path=runfile_path,
         runfile_url=runfile_url,
+        session_type=session_type,
     )
     result["actions"] = plan
 
@@ -3238,6 +3256,7 @@ def maybe_offer_nvidia_remediation(
                     gpu_lspci=gpu_lspci,
                     driver_info=driver_info,
                     nvidia_runfile_path=nvidia_runfile_path,
+                    session_type=session_type,
                 )
 
     return result
@@ -5232,6 +5251,21 @@ def main() -> int:
     }
     test_runs: dict = {}
 
+    session_type_lc = (session_type or "unknown").strip().lower()
+    desktop_lc = (desktop or "unknown").strip().lower()
+    renderer_lc = (renderer or "").strip().lower()
+    headless_session = session_type_lc in {"tty", "console", "unknown"} or desktop_lc in {"unknown", "none", ""}
+    no_gui_renderer = renderer_lc in {"", "unknown"}
+    skip_desktop_matrix = bool(headless_session or no_gui_renderer)
+    skip_desktop_reason = "no-active-desktop-session"
+
+    if skip_desktop_matrix:
+        cprint(C_YELLOW, "[WARN] No active desktop session detected; skipping scale/FPS matrix.")
+        trace(
+            "desktop matrix skipped: "
+            f"session_type={session_type_lc}, desktop={desktop_lc}, renderer={renderer_lc or 'none'}"
+        )
+
     def run_measurement_case(
         case_name: str,
         requested_scale: float,
@@ -5274,28 +5308,13 @@ def main() -> int:
             "avail_mb": avail_mb,
         }
 
-    # Immediate first run at current scale (mapped to nearest required case)
-    first_case = _map_start_scale_to_case(start_scale, required_cases)
-    trace(f"test matrix first case mapping: start_scale={start_scale} -> {first_case}")
-    cprint(C_BLUE, f"\n[*] Immediate start-scale run mapped to case: {first_case}")
-    test_runs[first_case] = run_measurement_case(first_case, required_cases[first_case], "start-scale")
-    trace(
-        f"case result: {first_case} requested={required_cases[first_case]} "
-        f"detected={test_runs[first_case].get('detected_scale')} "
-        f"fps={test_runs[first_case].get('fps')} tool={test_runs[first_case].get('fps_tool')}"
-    )
-
-    # Run remaining required cases
-    for case_name, scale_value in required_cases.items():
-        if case_name in test_runs:
-            continue
-        if guard_scale:
-            cprint(C_YELLOW, f"\n[*] Skipping scale switch for {case_name}: {guard_reason}")
+    if skip_desktop_matrix:
+        for case_name, scale_value in required_cases.items():
             detected_scale, detected_src = detect_current_scale(session_env, desktop, run_user_cmd, home_dir)
             used_mb, avail_mb = ram_snapshot()
             test_runs[case_name] = {
                 "case": case_name,
-                "status": f"skipped ({guard_reason})",
+                "status": f"skipped ({skip_desktop_reason})",
                 "requested_scale": scale_value,
                 "detected_scale": detected_scale,
                 "detected_source": detected_src,
@@ -5305,27 +5324,59 @@ def main() -> int:
                 "used_mb": used_mb,
                 "avail_mb": avail_mb,
             }
-            continue
-        cprint(C_BLUE, f"\n[*] Running case {case_name} at {scale_value}x...")
-        ok, method = _ensure_scale(session_env, desktop, scale_value, run_user_cmd, interactive)
-        if not ok:
-            cprint(C_YELLOW, f"    Could not ensure scale {scale_value}x; proceeding with current detected scale.")
-            case_status = f"scale-change-failed ({method})"
-        else:
-            cprint(C_GREEN, f"    Scale ensured via {method}.")
-            case_status = "ok"
-        test_runs[case_name] = run_measurement_case(
-            case_name,
-            scale_value,
-            method,
-            status=case_status,
-            benchmark_required=bool(ok),
-        )
+    else:
+        # Immediate first run at current scale (mapped to nearest required case)
+        first_case = _map_start_scale_to_case(start_scale, required_cases)
+        trace(f"test matrix first case mapping: start_scale={start_scale} -> {first_case}")
+        cprint(C_BLUE, f"\n[*] Immediate start-scale run mapped to case: {first_case}")
+        test_runs[first_case] = run_measurement_case(first_case, required_cases[first_case], "start-scale")
         trace(
-            f"case result: {case_name} requested={scale_value} "
-            f"detected={test_runs[case_name].get('detected_scale')} "
-            f"fps={test_runs[case_name].get('fps')} tool={test_runs[case_name].get('fps_tool')}"
+            f"case result: {first_case} requested={required_cases[first_case]} "
+            f"detected={test_runs[first_case].get('detected_scale')} "
+            f"fps={test_runs[first_case].get('fps')} tool={test_runs[first_case].get('fps_tool')}"
         )
+
+        # Run remaining required cases
+        for case_name, scale_value in required_cases.items():
+            if case_name in test_runs:
+                continue
+            if guard_scale:
+                cprint(C_YELLOW, f"\n[*] Skipping scale switch for {case_name}: {guard_reason}")
+                detected_scale, detected_src = detect_current_scale(session_env, desktop, run_user_cmd, home_dir)
+                used_mb, avail_mb = ram_snapshot()
+                test_runs[case_name] = {
+                    "case": case_name,
+                    "status": f"skipped ({guard_reason})",
+                    "requested_scale": scale_value,
+                    "detected_scale": detected_scale,
+                    "detected_source": detected_src,
+                    "switch_method": "skipped",
+                    "fps": 0.0,
+                    "fps_tool": "skipped",
+                    "used_mb": used_mb,
+                    "avail_mb": avail_mb,
+                }
+                continue
+            cprint(C_BLUE, f"\n[*] Running case {case_name} at {scale_value}x...")
+            ok, method = _ensure_scale(session_env, desktop, scale_value, run_user_cmd, interactive)
+            if not ok:
+                cprint(C_YELLOW, f"    Could not ensure scale {scale_value}x; proceeding with current detected scale.")
+                case_status = f"scale-change-failed ({method})"
+            else:
+                cprint(C_GREEN, f"    Scale ensured via {method}.")
+                case_status = "ok"
+            test_runs[case_name] = run_measurement_case(
+                case_name,
+                scale_value,
+                method,
+                status=case_status,
+                benchmark_required=bool(ok),
+            )
+            trace(
+                f"case result: {case_name} requested={scale_value} "
+                f"detected={test_runs[case_name].get('detected_scale')} "
+                f"fps={test_runs[case_name].get('fps')} tool={test_runs[case_name].get('fps_tool')}"
+            )
 
     # Normalize baseline references from mandatory 1.0 case
     base_run = test_runs.get("base_1.0", {})
@@ -5467,6 +5518,7 @@ def main() -> int:
             gpu_lspci=gpu_lspci,
             driver_info=driver_info,
             nvidia_runfile_path=args.nvidia_runfile_path,
+            session_type=session_type,
         )
         nvidia_activation_diagnostics["auto_remediation"] = remediation_result
         if remediation_result.get("attempted"):
