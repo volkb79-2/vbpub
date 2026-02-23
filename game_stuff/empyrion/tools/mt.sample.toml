@@ -1,0 +1,45 @@
+[mt]
+# Providers used in parallel (recommended)
+providers = ["deepl", "google", "easygoogletranslate"]
+source_lang = "EN"
+target_lang = "DE"
+batch_size = 20
+max_parallel_per_provider = 2
+max_attempts = 3
+base_backoff_seconds = 1.0
+rate_limit_cooldown_seconds = 120
+rate_limit_cooldown_max_seconds = 900
+max_batch_attempts = 0
+status_interval_seconds = 30
+checkpoint_every_batches = 1
+log_level = "INFO" # INFO | DEBUG | TRACE
+log_file = ""       # optional, e.g. "./tools/reports/mt-run.log"
+
+[providers.deepl]
+enabled = true
+weight = 1
+api_key = "YOUR_DEEPL_API_KEY"
+endpoint = "https://api-free.deepl.com/v2/translate"
+max_text_chars = 0
+max_request_texts = 50
+max_request_chars = 20000
+auto_split_long_texts = true
+
+[providers.google]
+enabled = false
+weight = 6
+api_key = "YOUR_GOOGLE_TRANSLATE_API_KEY"
+endpoint = "https://translation.googleapis.com/language/translate/v2"
+max_text_chars = 0
+max_request_texts = 50
+max_request_chars = 20000
+auto_split_long_texts = true
+
+[providers.easygoogletranslate]
+enabled = true
+weight = 20
+timeout = 15
+max_text_chars = 5000
+max_request_texts = 1
+max_request_chars = 5000
+auto_split_long_texts = true

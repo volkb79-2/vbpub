@@ -19,6 +19,7 @@ FINAL_FILES = [
     "PDA.de.completed.csv",
     "applied_changes.csv",
 ]
+CANONICAL_INPUT_DIR = "tools/output-all-real"
 
 
 def load_release_metadata_from_env() -> dict:
@@ -192,6 +193,7 @@ def publish_github_release_assets(
     release_name: str,
     artifact_path: Path,
     report_path: Path,
+    latest_failures_report_path: Path | None,
     draft: bool,
     prerelease: bool,
 ) -> None:
@@ -250,7 +252,11 @@ def publish_github_release_assets(
         if name and asset_id:
             existing_assets[name] = asset_id
 
-    for asset_path in [artifact_path, report_path]:
+    assets_to_upload = [artifact_path, report_path]
+    if latest_failures_report_path and latest_failures_report_path.exists():
+        assets_to_upload.append(latest_failures_report_path)
+
+    for asset_path in assets_to_upload:
         if asset_path.name in existing_assets:
             delete_asset(api_base, owner, repo, existing_assets[asset_path.name], token)
         upload_asset(upload_url, asset_path, asset_path.name, token)
@@ -304,6 +310,21 @@ def collect_status_rows(changes_csv: Path, target_status: str) -> list[dict[str,
     return rows
 
 
+def find_latest_failures_markdown(script_dir: Path) -> Path | None:
+    reports_dir = script_dir / "tools" / "reports"
+    if not reports_dir.exists():
+        return None
+
+    candidates = [
+        *reports_dir.glob("mt_failures*.md"),
+        *reports_dir.glob("*.failures.md"),
+    ]
+    if not candidates:
+        return None
+
+    return max(candidates, key=lambda item: item.stat().st_mtime)
+
+
 def write_report(
     report_path: Path,
     metadata: dict,
@@ -312,6 +333,7 @@ def write_report(
     by_status: dict[str, int],
     input_dir: Path,
     contains_english_rows: list[dict[str, str]],
+    latest_failures_report_path: Path | None,
 ) -> None:
     ts = datetime.now(timezone.utc).isoformat()
     lines = [
@@ -373,6 +395,17 @@ def write_report(
 
     lines.extend([
         "",
+        "## MT Failure Diagnostics",
+        "",
+    ])
+    if latest_failures_report_path and latest_failures_report_path.exists():
+        lines.append(f"- Included latest MT failures markdown in artifact: {latest_failures_report_path.name}")
+        lines.append("- This report contains either the remaining failed rows with second-pass fields or an explicit no-errors-remaining summary.")
+    else:
+        lines.append("- No MT failures markdown was found in tools/reports at packaging time.")
+
+    lines.extend([
+        "",
         "## Installation (replace original game files)",
         "",
         "1. Close Empyrion.",
@@ -410,18 +443,27 @@ def write_report(
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def create_zip(artifact_path: Path, input_dir: Path, report_path: Path) -> None:
+def create_zip(
+    artifact_path: Path,
+    input_dir: Path,
+    report_path: Path,
+    latest_failures_report_path: Path | None,
+) -> None:
     base_folder = "empyrion-de-translation"
     with zipfile.ZipFile(artifact_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name in FINAL_FILES:
             file_path = input_dir / name
             archive.write(file_path, arcname=f"{base_folder}/{name}")
         archive.write(report_path, arcname=f"{base_folder}/{report_path.name}")
+        if latest_failures_report_path and latest_failures_report_path.exists():
+            archive.write(
+                latest_failures_report_path,
+                arcname=f"{base_folder}/{latest_failures_report_path.name}",
+            )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build Empyrion DE translation release artifact")
-    parser.add_argument("--input-dir", default="tools/output-all-real")
     parser.add_argument("--output-dir", default="dist")
     parser.add_argument("--artifact-name", default="")
     parser.add_argument("--skip-qa", action="store_true")
@@ -461,7 +503,7 @@ def find_latest_artifact(output_dir: Path) -> tuple[Path, Path]:
 def main() -> None:
     args = parse_args()
     script_dir = Path(__file__).resolve().parent
-    input_dir = (script_dir / args.input_dir).resolve()
+    input_dir = (script_dir / CANONICAL_INPUT_DIR).resolve()
     output_dir = (script_dir / args.output_dir).resolve()
 
     if args.publish_only and not args.publish_github:
@@ -472,9 +514,12 @@ def main() -> None:
 
     if args.publish_only:
         artifact_path, report_path = find_latest_artifact(output_dir)
+        latest_failures_report_path = find_latest_failures_markdown(script_dir)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         print(f"[INFO] Publish-only mode: using existing artifact {artifact_path}")
         print(f"[INFO] Publish-only mode: using existing report {report_path}")
+        if latest_failures_report_path:
+            print(f"[INFO] Publish-only mode: using latest MT failures report {latest_failures_report_path}")
     else:
         if not input_dir.exists():
             raise FileNotFoundError(f"Input directory not found: {input_dir}")
@@ -496,6 +541,7 @@ def main() -> None:
 
         report_path = output_dir / report_name
         artifact_path = output_dir / artifact_name
+        latest_failures_report_path = find_latest_failures_markdown(script_dir)
 
         write_report(
             report_path,
@@ -505,13 +551,16 @@ def main() -> None:
             by_status,
             input_dir,
             contains_english_rows,
+            latest_failures_report_path,
         )
-        create_zip(artifact_path, input_dir, report_path)
+        create_zip(artifact_path, input_dir, report_path, latest_failures_report_path)
 
         print(f"[INFO] Input dir: {input_dir}")
         print(f"[INFO] Report: {report_path}")
         print(f"[INFO] Artifact: {artifact_path}")
         print(f"[INFO] Total changed rows: {total_changes}")
+        if latest_failures_report_path:
+            print(f"[INFO] Included latest MT failures report: {latest_failures_report_path}")
 
     if args.publish_github:
         tag = args.tag or f"empyrion-de-translation-{stamp}"
@@ -522,6 +571,7 @@ def main() -> None:
             release_name=release_name,
             artifact_path=artifact_path,
             report_path=report_path,
+            latest_failures_report_path=latest_failures_report_path,
             draft=args.draft,
             prerelease=args.prerelease,
         )

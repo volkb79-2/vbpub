@@ -147,6 +147,8 @@ celerybeat.pid
 .env.ciu
 .venv
 release.toml
+game_stuff/empyrion/tools/mt.toml
+game_stuff/empyrion/tools/mt.local.toml
 env/
 venv/
 ENV/

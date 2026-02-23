@@ -3,7 +3,24 @@
 ## Why this was done
 
 In-game text was still partially English while playing in German (especially with Reforged Eden 2 content).  
-The goal was to make German (`Deutsch`) consistently available across the main localization CSV files **without using DeepL**, while keeping all gameplay/UI control syntax intact.
+The goal is to make German (`Deutsch`) consistently available across the main localization CSV files while keeping all gameplay/UI control syntax intact, independent of MT provider choice.
+
+
+## Build and push
+- Build + publish a single project:
+```bash
+python3 release-all.py --project empyrion-translation --build --push
+```
+
+- Publish only (no rebuild):
+```bash
+python3 release-all.py --project empyrion-translation --push
+```
+
+Empyrion project note:
+- `game_stuff/empyrion/release-empyrion-translation.py` always reads from fixed folder `game_stuff/empyrion/tools/output-all-real`.
+- To avoid path confusion, keep the latest approved translation outputs synced into that folder before running release commands.
+
 
 ## Scope
 
@@ -68,6 +85,7 @@ Path meaning:
 3. **Translate in chunks**
    - Split into manageable chunk files (`chunk_0001.jsonl`, etc.).
    - Translate `source_masked` -> `translation_masked`.
+   - Optional: `translate-mt --treat-remaining-failures-as-ok` can promote remaining QA-failed rows (when they still contain a usable masked translation) so final apply can produce full CSV coverage with no untranslated rows left.
 
 4. **Merge**
    - Merge all translated chunk outputs into one JSONL.
@@ -80,6 +98,56 @@ Path meaning:
    - Run token parity QA on changed rows.
    - Verify placeholders/tags/control codes remained valid.
 
+## Original Plan Adherence (Audit)
+
+Status against the original implementation plan:
+
+1. Baseline + inventory (`de_empty`, `de_contains_english`, `de_ok`) — **met**
+   - Implemented via `tools/empyrion_localize.py audit` and `tools/reports/audit_candidates.csv`.
+2. Safe extractor + immutable token masking — **met**
+   - Protected via `tools/protect_patterns.txt` and masking sentinels `__PH_n__`.
+3. Glossary + normalization assets — **met (initial)**
+   - Implemented with `tools/glossary_de.csv` and glossary enforcement during apply.
+4. Translation orchestration preserving row/id mapping — **met**
+   - JSONL `id`-based export/chunk/merge/apply pipeline.
+5. Side-by-side completed outputs — **met**
+   - `tools/output-all-real/*.de.completed.csv`.
+6. Automated QA gates — **partial**
+   - Strong token/tag parity implemented; language fluency gate was missing in the first run.
+7. Reviewer package — **met**
+   - `applied_changes.csv`, release report, and optional high-risk sample export.
+8. Pipeline documentation — **met**
+   - This README and `tools/README.md`.
+
+## Verified Updated Implementation Plan (Current)
+
+Quality recovery now follows a high-risk-first automated strategy:
+
+1. Compute deterministic risk metadata during export:
+   - `risk_score`, `risk_level`, `risk_flags`, `risk_version` per entry.
+2. Mark rows as high-risk when source text likely breaks grammar under literal tag-fragment translation:
+   - mixed markup/plain segments,
+   - placeholder-adjacent text,
+   - short dialogue utterances,
+   - dialogue punctuation cues,
+   - dense structure (`\\n` + tags).
+3. Generate optional developer sample report (non-blocking):
+   - `tools/reports/high_risk_samples.csv`.
+4. Route high-risk rows into dedicated chunk set (`highrisk_chunk_*`) with stricter translation prompt rules:
+   - preserve placeholders exactly,
+   - prefer idiomatic German for short dialogue acts,
+   - maintain natural sentence grammar around markup boundaries.
+5. Enforce a human-in-the-loop quality gate for high/medium risk content:
+   - export → chunk → **manual LLM/Copilot translation + review** → merge → apply → token QA.
+   - The manual translation/review step happens between `chunk` and `merge` using generated prompt files and chunk JSONL inputs.
+6. Add command/control hard-lock safety:
+   - critical literals (for example `give item Token 6995`) are masked before MT so they cannot drift.
+7. Add report-time bracket watchlist:
+   - `translate-mt` review markdown now reports remaining non-protected bracket labels to guide targeted manual checks.
+8. Keep release flow unchanged in safety behavior:
+   - build creates artifact,
+   - push publishes only (no rebuild).
+
 ## Protected syntax (must not break)
 
 Examples of protected patterns:
@@ -87,7 +155,9 @@ Examples of protected patterns:
 - Placeholders: `{PlayerName}`, `{TotalGamesWon}`
 - XML-like tags: `<color=#fddc1e>...</color>`
 - PDA/format tags: `[b]`, `[/b]`, `[c]`, `[-]`, `[00fbff]`
+- URL/control bracket forms: `[/url]`, `[url=...]`, `[S-1]`, `[F-?]`, `[ IDA ]`
 - Control codes: `@q0`, `@w2`, `@p9`, `@d3`
+- Command literals: `give item Token 6995` (and similar command-value forms)
 - Escaped newlines: `\n`
 
 ## Worked examples
@@ -181,6 +251,7 @@ python3 release-empyrion-translation.py
 ```
 
 This validates token parity and writes zip/report artifacts to `game_stuff/empyrion/dist/`.
+The created artifact now also bundles the latest MT failures markdown from `tools/reports/` so release diagnostics always include the current failure/no-error summary.
 When executed through the release manager, credentials/metadata come from manager-injected environment variables sourced from root `release.toml`.
 
 To also create/update a GitHub Release and upload the zip + report:

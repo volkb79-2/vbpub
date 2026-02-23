@@ -1,0 +1,8 @@
+# One regex per line. These fragments are treated as immutable tokens.
+# Keep patterns conservative; invalid edits can break in-game text rendering.
+\{[^{}]+\}
+<[^>\n]+>
+\[(?:/?[bicuv]|c|-)\]
+\[[0-9A-Fa-f]{6}\]
+@\w+\d*
+\\n
