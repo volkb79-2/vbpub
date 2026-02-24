@@ -1,0 +1,269 @@
+[INFO] Step 1/7: audit
+[INFO] Wrote summary: reports/audit_summary.json
+[INFO] Wrote candidate list: reports/audit_candidates.csv
+[INFO] Step 2/7: export
+[INFO] Wrote optional high-risk sample report: reports/high_risk_samples.csv
+[INFO] Exported 24767 translation entries: reports/translation_units.risk.v2.jsonl
+[INFO] Wrote helper prompt: reports/translation_units.risk.v2.prompt.txt
+[INFO] Step 3/7: translate-mt (resume enabled)
+[INFO] 2026-02-24T17:01:05+00:00 translate-mt start
+[INFO] 2026-02-24T17:01:05+00:00 loading MT config
+[DEBUG] translate-mt args: Namespace(command='translate-mt', input='./reports/translation_units.risk.v2.jsonl', output='./reports/translations.mt.full.jsonl', source_field='source_masked', mt_config='./mt.toml', mt_local_config='./mt.local.toml', providers=[], provider='', source_lang='', target_lang='DE', keys=[], batch_size=0, max_parallel=0, sample_mode=False, sample_size=200, sample_seed=None, parenthesized_transport_token_edges=None, failures_output='./reports/translations.mt.full.failures.jsonl', review_output='./reports/translations.mt.full.review.md', translation_success_report='./reports/translation-success.md', translation_failures_report='./reports/translation-failures.md', resume=True, resume_from_output='', include_internal_masked_fields=False, treat_remaining_failures_as_ok=False, func=<function cmd_translate_mt at 0x7f0ad14a59b0>)
+[INFO] 2026-02-24T17:01:05+00:00 reading input JSONL: ./reports/translation_units.risk.v2.jsonl
+[INFO] 2026-02-24T17:01:07+00:00 prepared jobs: 24767
+[INFO] 2026-02-24T17:01:07+00:00 provider init complete: deepl(w=1), easygoogletranslate(w=20)
+[INFO] 2026-02-24T17:01:07+00:00 created 1239 batches (batch_size=20)
+[INFO] Provider skipped by config: google (config_enabled_false)
+[INFO] 2026-02-24T17:01:07+00:00 running provider preflight checks
+[WARN] Provider preflight FAILED: deepl error=deepl failed after retries: DeepL quota exceeded: {"message":"Quota exceeded"}
+[INFO] Provider preflight OK: easygoogletranslate probe='Hello world.' => 'Hallo Welt.'
+[INFO] 2026-02-24T17:01:07+00:00 provider disabled: deepl (reason=quota)
+[INFO] 2026-02-24T17:01:07+00:00 retry scheduling batch 1/1239 on alternate provider (attempt 2)
+[INFO] 2026-02-24T17:01:12+00:00 batch 5/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:19+00:00 batch 6/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:20+00:00 batch 4/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:21+00:00 batch 2/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:22+00:00 batch 3/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:26+00:00 batch 7/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:26+00:00 batch 8/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:30+00:00 batch 9/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:30+00:00 batch 11/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:33+00:00 batch 10/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:35+00:00 batch 13/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:37+00:00 batch 14/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:40+00:00 batch 15/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] scheduler_status pending=1223 inflight=3 translated=260 failures=0 temporary_disabled=0 permanent_disabled=1
+[INFO] 2026-02-24T17:01:45+00:00 batch 12/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:45+00:00 batch 16/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:46+00:00 batch 17/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:50+00:00 batch 18/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:01:59+00:00 batch 19/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:02:01+00:00 batch 21/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:02:03+00:00 batch 20/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] checkpoint wrote 19 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] batch 22/1239 narrowed retry set to 1 rows
+[INFO] 2026-02-24T17:02:08+00:00 retry scheduling batch 22/1239 on same provider (attempt 2)
+[DEBUG] checkpoint wrote 19 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] batch 24/1239 narrowed retry set to 1 rows
+[INFO] 2026-02-24T17:02:16+00:00 retry scheduling batch 24/1239 on same provider (attempt 2)
+[DEBUG] scheduler_status pending=1216 inflight=3 translated=438 failures=0 temporary_disabled=0 permanent_disabled=1
+[INFO] 2026-02-24T17:02:16+00:00 batch 23/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:02:18+00:00 batch 25/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:02:22+00:00 batch 26/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:02:29+00:00 batch 27/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:02:30+00:00 batch 28/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:02:37+00:00 batch 29/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:02:38+00:00 batch 30/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] checkpoint wrote 19 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] batch 31/1239 narrowed retry set to 1 rows
+[INFO] 2026-02-24T17:02:45+00:00 retry scheduling batch 31/1239 on same provider (attempt 2)
+[INFO] 2026-02-24T17:02:46+00:00 batch 32/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] scheduler_status pending=1208 inflight=3 translated=617 failures=0 temporary_disabled=0 permanent_disabled=1
+[INFO] 2026-02-24T17:02:56+00:00 batch 33/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:03:01+00:00 batch 34/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:03:02+00:00 batch 35/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:03:07+00:00 batch 36/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:03:13+00:00 batch 37/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] checkpoint wrote 19 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] batch 38/1239 narrowed retry set to 1 rows
+[INFO] 2026-02-24T17:03:17+00:00 retry scheduling batch 38/1239 on same provider (attempt 2)
+[DEBUG] scheduler_status pending=1203 inflight=3 translated=736 failures=0 temporary_disabled=0 permanent_disabled=1
+[INFO] 2026-02-24T17:03:17+00:00 batch 39/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:03:26+00:00 batch 40/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:03:31+00:00 batch 41/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:03:35+00:00 batch 43/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:03:35+00:00 batch 42/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:03:46+00:00 batch 44/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:03:50+00:00 batch 47/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] scheduler_status pending=1196 inflight=3 translated=876 failures=0 temporary_disabled=0 permanent_disabled=1
+[INFO] 2026-02-24T17:03:59+00:00 batch 46/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:04:01+00:00 batch 45/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:04:04+00:00 batch 48/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] checkpoint wrote 19 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] batch 49/1239 narrowed retry set to 1 rows
+[INFO] 2026-02-24T17:04:08+00:00 retry scheduling batch 49/1239 on same provider (attempt 2)
+[DEBUG] checkpoint wrote 19 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] batch 50/1239 narrowed retry set to 1 rows
+[INFO] 2026-02-24T17:04:14+00:00 retry scheduling batch 50/1239 on same provider (attempt 2)
+[INFO] 2026-02-24T17:04:17+00:00 batch 51/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:04:23+00:00 batch 52/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] scheduler_status pending=1191 inflight=3 translated=1014 failures=0 temporary_disabled=0 permanent_disabled=1
+[INFO] 2026-02-24T17:04:29+00:00 batch 53/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:04:33+00:00 batch 54/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:04:38+00:00 batch 55/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:04:41+00:00 batch 56/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:04:47+00:00 batch 57/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:04:49+00:00 batch 58/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:04:54+00:00 batch 59/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] scheduler_status pending=1184 inflight=3 translated=1154 failures=0 temporary_disabled=0 permanent_disabled=1
+[INFO] 2026-02-24T17:04:56+00:00 batch 60/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:05:00+00:00 batch 61/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:05:08+00:00 batch 63/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:05:09+00:00 batch 62/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:05:15+00:00 batch 65/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:05:15+00:00 batch 64/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:05:24+00:00 batch 66/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] scheduler_status pending=1177 inflight=3 translated=1294 failures=0 temporary_disabled=0 permanent_disabled=1
+[INFO] 2026-02-24T17:05:27+00:00 batch 67/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:05:33+00:00 batch 69/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:05:35+00:00 batch 68/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:05:40+00:00 batch 70/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:05:45+00:00 batch 71/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:05:50+00:00 batch 72/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:05:52+00:00 batch 73/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:05:57+00:00 batch 74/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] scheduler_status pending=1169 inflight=3 translated=1454 failures=0 temporary_disabled=0 permanent_disabled=1
+[INFO] 2026-02-24T17:06:04+00:00 batch 77/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:04+00:00 batch 75/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:08+00:00 batch 76/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:12+00:00 batch 78/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:19+00:00 batch 80/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:21+00:00 batch 79/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:22+00:00 batch 81/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:30+00:00 batch 82/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] scheduler_status pending=1161 inflight=3 translated=1614 failures=0 temporary_disabled=0 permanent_disabled=1
+[INFO] 2026-02-24T17:06:37+00:00 batch 83/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:38+00:00 batch 85/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:39+00:00 batch 84/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:44+00:00 batch 86/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:50+00:00 batch 87/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:51+00:00 batch 88/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:56+00:00 batch 89/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:06:58+00:00 batch 90/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:07:01+00:00 batch 92/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] scheduler_status pending=1152 inflight=3 translated=1794 failures=0 temporary_disabled=0 permanent_disabled=1
+[INFO] 2026-02-24T17:07:07+00:00 batch 94/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:07:08+00:00 batch 91/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:07:10+00:00 batch 93/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:07:18+00:00 batch 95/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:07:22+00:00 batch 97/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:07:25+00:00 batch 96/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:07:28+00:00 batch 98/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:07:30+00:00 batch 99/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:07:38+00:00 batch 100/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] scheduler_status pending=1143 inflight=3 translated=1974 failures=0 temporary_disabled=0 permanent_disabled=1
+[INFO] 2026-02-24T17:07:38+00:00 batch 101/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] checkpoint wrote 19 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] batch 102/1239 narrowed retry set to 1 rows
+[INFO] 2026-02-24T17:07:43+00:00 retry scheduling batch 102/1239 on same provider (attempt 2)
+[INFO] 2026-02-24T17:07:44+00:00 batch 103/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:07:52+00:00 batch 105/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:07:53+00:00 batch 104/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:07:59+00:00 batch 107/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:07:59+00:00 batch 106/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:08:05+00:00 batch 109/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:08:06+00:00 batch 108/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:08:08+00:00 batch 111/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[DEBUG] scheduler_status pending=1134 inflight=3 translated=2173 failures=0 temporary_disabled=0 permanent_disabled=1
+[INFO] 2026-02-24T17:08:13+00:00 batch 110/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:08:16+00:00 batch 112/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:08:19+00:00 batch 113/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:08:22+00:00 batch 114/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl
+[INFO] 2026-02-24T17:08:24+00:00 batch 115/1239 ok via easygoogletranslate (rows=20)
+[DEBUG] checkpoint wrote 20 translated rows to reports/translations.mt.full.jsonl

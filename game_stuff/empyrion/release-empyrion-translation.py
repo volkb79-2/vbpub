@@ -5,10 +5,10 @@ import argparse
 import csv
 import json
 import os
-import subprocess
 import sys
 import zipfile
 from datetime import datetime, timezone
+import subprocess
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -17,9 +17,12 @@ FINAL_FILES = [
     "Dialogues.de.completed.csv",
     "Localization.de.completed.csv",
     "PDA.de.completed.csv",
-    "applied_changes.csv",
 ]
-CANONICAL_INPUT_DIR = "tools/output-all-real"
+CANONICAL_INPUT_DIR = "output-all-real"
+CANONICAL_REPORTS_DIR = "reports"
+SUMMARY_REPORT_NAME = "translation-report.md"
+FAILURES_REPORT_NAME = "translation-failures.md"
+SUCCESS_REPORT_NAME = "translation-success.md"
 
 
 def load_release_metadata_from_env() -> dict:
@@ -48,7 +51,7 @@ def parse_repo(metadata: dict) -> tuple[str, str]:
     return owner, repo
 
 
-def parse_json(body: str, context: str) -> dict:
+def parse_json(body: str, context: str):
     if not body.strip():
         raise RuntimeError(f"Empty JSON body for {context}")
     try:
@@ -174,26 +177,24 @@ def delete_asset(api_base: str, owner: str, repo: str, asset_id: int, token: str
         raise RuntimeError(f"Failed to delete asset {asset_id}: status={status} body={body}")
 
 
-def upload_asset(upload_url: str, asset_path: Path, asset_name: str, token: str) -> None:
+def upload_asset(upload_url: str, asset_path: Path, token: str) -> None:
     upload_url = upload_url.split("{", 1)[0]
     status, body = api_request(
         "POST",
-        f"{upload_url}?name={asset_name}",
+        f"{upload_url}?name={asset_path.name}",
         token,
         data=asset_path.read_bytes(),
         content_type="application/octet-stream",
     )
     if status >= 400:
-        raise RuntimeError(f"Failed to upload asset {asset_name}: status={status} body={body}")
+        raise RuntimeError(f"Failed to upload asset {asset_path.name}: status={status} body={body}")
 
 
 def publish_github_release_assets(
     metadata: dict,
     tag: str,
     release_name: str,
-    artifact_path: Path,
-    report_path: Path,
-    latest_failures_report_path: Path | None,
+    assets_to_upload: list[Path],
     draft: bool,
     prerelease: bool,
 ) -> None:
@@ -205,8 +206,8 @@ def publish_github_release_assets(
     api_base = "https://api.github.com"
     notes = (
         "Empyrion German translation artifact release.\n\n"
-        "- Includes final translated CSV files\n"
-        "- Includes detailed translation report\n"
+        "- Includes final translated CSV files and translation report\n"
+        "- Includes detailed translation trace reports\n"
         "- Installation uses local Steam library root placeholder\n"
     )
 
@@ -252,20 +253,16 @@ def publish_github_release_assets(
         if name and asset_id:
             existing_assets[name] = asset_id
 
-    assets_to_upload = [artifact_path, report_path]
-    if latest_failures_report_path and latest_failures_report_path.exists():
-        assets_to_upload.append(latest_failures_report_path)
-
     for asset_path in assets_to_upload:
         if asset_path.name in existing_assets:
             delete_asset(api_base, owner, repo, existing_assets[asset_path.name], token)
-        upload_asset(upload_url, asset_path, asset_path.name, token)
+        upload_asset(upload_url, asset_path, token)
 
 
 def run_qa(script_dir: Path, input_dir: Path) -> None:
     cmd = [
         sys.executable,
-        str(script_dir / "tools" / "qa_validate_tokens.py"),
+        str(script_dir / "qa_validate_tokens.py"),
         "--changes-csv",
         str(input_dir / "applied_changes.csv"),
         str(input_dir / "Dialogues.de.completed.csv"),
@@ -290,182 +287,119 @@ def summarize_changes(changes_csv: Path) -> tuple[int, dict[str, int], dict[str,
     return total, by_file, by_status
 
 
-def collect_status_rows(changes_csv: Path, target_status: str) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    with changes_csv.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            status = (row.get("status") or "").strip()
-            if status == target_status:
-                rows.append(
-                    {
-                        "file": (row.get("file") or "").strip(),
-                        "row": (row.get("row") or "").strip(),
-                        "key": (row.get("key") or "").strip(),
-                        "old_de": (row.get("old_de") or "").strip(),
-                        "new_de": (row.get("new_de") or "").strip(),
-                        "source_en": (row.get("source_en") or "").strip(),
-                    }
-                )
-    return rows
+def _count_failure_entries(failures_report_path: Path) -> int:
+    if not failures_report_path.exists():
+        return 0
+    content = failures_report_path.read_text(encoding="utf-8")
+    if "No errors remaining." in content:
+        return 0
+    return sum(1 for line in content.splitlines() if line.startswith("### "))
 
 
-def find_latest_failures_markdown(script_dir: Path) -> Path | None:
-    reports_dir = script_dir / "tools" / "reports"
-    if not reports_dir.exists():
-        return None
+def _resolve_reports(script_dir: Path) -> tuple[Path, Path]:
+    reports_dir = script_dir / CANONICAL_REPORTS_DIR
+    failures_report_path = reports_dir / FAILURES_REPORT_NAME
+    success_path = reports_dir / SUCCESS_REPORT_NAME
 
-    candidates = [
-        *reports_dir.glob("mt_failures*.md"),
-        *reports_dir.glob("*.failures.md"),
-    ]
-    if not candidates:
-        return None
+    if not failures_report_path.exists():
+        failures_report_path.parent.mkdir(parents=True, exist_ok=True)
+        failures_report_path.write_text(
+            "# Translation Failures Trace\n\nNo errors remaining.\n",
+            encoding="utf-8",
+        )
 
-    return max(candidates, key=lambda item: item.stat().st_mtime)
+    if not success_path.exists():
+        success_path.parent.mkdir(parents=True, exist_ok=True)
+        success_path.write_text(
+            "# Translation Success Trace\n\nNo success trace available. Run translate-mt first.\n",
+            encoding="utf-8",
+        )
+
+    return failures_report_path, success_path
 
 
-def write_report(
+def write_summary_report(
     report_path: Path,
     metadata: dict,
     total_changes: int,
     by_file: dict[str, int],
     by_status: dict[str, int],
     input_dir: Path,
-    contains_english_rows: list[dict[str, str]],
-    latest_failures_report_path: Path | None,
+    failure_count: int,
+    warnings_count: int,
 ) -> None:
     ts = datetime.now(timezone.utc).isoformat()
     lines = [
-        "# Empyrion German Translation Artifact Report",
+        "# Empyrion Translation Summary Report",
         "",
         f"- Generated (UTC): {ts}",
         f"- Repository: {metadata['github_username']}/{metadata['github_repo']}",
         f"- Vendor: {metadata['oci_vendor']}",
-        "",
-        "## Source",
-        "",
         f"- Input directory: {input_dir}",
-        "- Files:",
-        "  - Dialogues.de.completed.csv",
-        "  - Localization.de.completed.csv",
-        "  - PDA.de.completed.csv",
-        "  - applied_changes.csv",
         "",
-        "## Change Summary",
+        "## Packaging Overview",
         "",
-        f"- Total changed rows: {total_changes}",
+        f"- failures: **{failure_count}**",
+        f"- warnings: **{warnings_count}**",
+        f"- total changed rows: **{total_changes}**",
         "",
-        "### By File",
+        "## Changed Rows by File",
         "",
     ]
     for name, count in sorted(by_file.items()):
         lines.append(f"- {name}: {count}")
 
-    lines.extend(["", "### By Status", ""])
+    lines.extend(["", "## Changed Rows by Status", ""])
     for name, count in sorted(by_status.items()):
         lines.append(f"- {name}: {count}")
 
     lines.extend([
         "",
-        "## High-Level Implementation Plan",
+        "## Included Artifacts",
         "",
-        "1. Audit localization CSVs for empty German fields and obvious English leftovers.",
-        "2. Export candidates and protect immutable syntax (placeholders/tags/control codes).",
-        "3. Translate in chunks and merge translated payloads.",
-        "4. Apply translations back into `.de.completed.csv` outputs.",
-        "5. Validate token/tag parity and ship final artifacts.",
+        "- Dialogues.de.completed.csv",
+        "- Localization.de.completed.csv",
+        "- PDA.de.completed.csv",
+        "- translation-success.md",
+        "- translation-failures.md",
         "",
-        "## Plan Adherence (Status)",
+        "## Notes",
         "",
-        "- Audit completed: yes",
-        "- Protected token workflow used: yes",
-        "- Chunk translation + merge completed: yes",
-        "- Applied outputs generated: yes",
-        "- QA token parity passed: yes (0 issues on changed rows)",
+        "- `translation-failures.md` contains full failure trace diagnostics.",
+        "- `translation-success.md` contains success trace diagnostics in the traces bundle.",
     ])
-
-    lines.extend([
-        "",
-        "## QA",
-        "",
-        "- Token/tag parity validated using tools/qa_validate_tokens.py",
-        "- Validation scope: changed rows from applied_changes.csv",
-    ])
-
-    lines.extend([
-        "",
-        "## MT Failure Diagnostics",
-        "",
-    ])
-    if latest_failures_report_path and latest_failures_report_path.exists():
-        lines.append(f"- Included latest MT failures markdown in artifact: {latest_failures_report_path.name}")
-        lines.append("- This report contains either the remaining failed rows with second-pass fields or an explicit no-errors-remaining summary.")
-    else:
-        lines.append("- No MT failures markdown was found in tools/reports at packaging time.")
-
-    lines.extend([
-        "",
-        "## Installation (replace original game files)",
-        "",
-        "1. Close Empyrion.",
-        "2. Backup existing files before replacement (recommended: create `.bak` copies in each target folder).",
-        "3. Replace files from this artifact with the translated files:",
-        "   - Dialogues.de.completed.csv -> Dialogues.csv at `<LOCAL_STEAM_LIBRARY>\\steamapps\\workshop\\content\\383120\\3143225812\\Content\\Configuration`",
-        "   - Localization.de.completed.csv -> Localization.csv at `<LOCAL_STEAM_LIBRARY>\\steamapps\\workshop\\content\\383120\\3143225812\\Extras`",
-        "   - PDA.de.completed.csv -> PDA.csv at `<LOCAL_STEAM_LIBRARY>\\steamapps\\workshop\\content\\383120\\3143225812\\Extras\\PDA`",
-        "4. Keep original filenames in the target folders (`Dialogues.csv`, `Localization.csv`, `PDA.csv`).",
-        "5. Use your local Steam library root for `<LOCAL_STEAM_LIBRARY>` (example only: `G:\\SteamLibrary`).",
-        "6. Start Empyrion and test German text in dialogues/UI/PDA missions.",
-    ])
-
-    lines.extend([
-        "",
-        "## Details: de_contains_english",
-        "",
-        f"- Count: {len(contains_english_rows)}",
-        "- Status: All entries below were translated/replaced in `new_de`.",
-        "",
-    ])
-
-    if contains_english_rows:
-        lines.extend([
-            "| File | Row | Key | old_de | new_de |",
-            "|---|---:|---|---|---|",
-        ])
-        for entry in contains_english_rows:
-            old_de = entry["old_de"].replace("|", "\\|").replace("\n", "\\n")
-            new_de = entry["new_de"].replace("|", "\\|").replace("\n", "\\n")
-            lines.append(
-                f"| {entry['file']} | {entry['row']} | {entry['key']} | {old_de} | {new_de} |"
-            )
 
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def create_zip(
+def create_translation_zip(
     artifact_path: Path,
     input_dir: Path,
-    report_path: Path,
-    latest_failures_report_path: Path | None,
+    summary_report_path: Path,
+    failures_report_path: Path,
 ) -> None:
     base_folder = "empyrion-de-translation"
     with zipfile.ZipFile(artifact_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name in FINAL_FILES:
-            file_path = input_dir / name
-            archive.write(file_path, arcname=f"{base_folder}/{name}")
-        archive.write(report_path, arcname=f"{base_folder}/{report_path.name}")
-        if latest_failures_report_path and latest_failures_report_path.exists():
-            archive.write(
-                latest_failures_report_path,
-                arcname=f"{base_folder}/{latest_failures_report_path.name}",
-            )
+            archive.write(input_dir / name, arcname=f"{base_folder}/{name}")
+        archive.write(summary_report_path, arcname=f"{base_folder}/{summary_report_path.name}")
+        archive.write(failures_report_path, arcname=f"{base_folder}/{failures_report_path.name}")
+
+
+def create_traces_zip(
+    artifact_path: Path,
+    failures_report_path: Path,
+    success_report_path: Path,
+) -> None:
+    base_folder = "empyrion-de-translation-traces"
+    with zipfile.ZipFile(artifact_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(failures_report_path, arcname=f"{base_folder}/{failures_report_path.name}")
+        archive.write(success_report_path, arcname=f"{base_folder}/{success_report_path.name}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build Empyrion DE translation release artifact")
+    parser = argparse.ArgumentParser(description="Build Empyrion DE translation release artifacts")
     parser.add_argument("--output-dir", default="dist")
-    parser.add_argument("--artifact-name", default="")
     parser.add_argument("--skip-qa", action="store_true")
     parser.add_argument("--publish-github", action="store_true")
     parser.add_argument("--publish-only", action="store_true")
@@ -476,28 +410,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def find_latest_artifact(output_dir: Path) -> tuple[Path, Path]:
-    zip_candidates = sorted(
+def find_latest_artifacts(output_dir: Path) -> tuple[Path, Path]:
+    translation_zips = sorted(
         output_dir.glob("empyrion-de-translation-*.zip"),
         key=lambda item: item.stat().st_mtime,
         reverse=True,
     )
-    report_candidates = sorted(
-        output_dir.glob("empyrion-de-translation-report-*.md"),
+    traces_zips = sorted(
+        output_dir.glob("empyrion-de-translation-traces-*.zip"),
         key=lambda item: item.stat().st_mtime,
         reverse=True,
     )
 
-    if not zip_candidates:
-        raise FileNotFoundError(
-            f"No artifact zip found in {output_dir}. Run build first."
-        )
-    if not report_candidates:
-        raise FileNotFoundError(
-            f"No report markdown found in {output_dir}. Run build first."
-        )
+    if not translation_zips:
+        raise FileNotFoundError(f"No translation artifact zip found in {output_dir}. Run build first.")
+    if not traces_zips:
+        raise FileNotFoundError(f"No traces artifact zip found in {output_dir}. Run build first.")
 
-    return zip_candidates[0], report_candidates[0]
+    return translation_zips[0], traces_zips[0]
 
 
 def main() -> None:
@@ -513,17 +443,16 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.publish_only:
-        artifact_path, report_path = find_latest_artifact(output_dir)
-        latest_failures_report_path = find_latest_failures_markdown(script_dir)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        print(f"[INFO] Publish-only mode: using existing artifact {artifact_path}")
-        print(f"[INFO] Publish-only mode: using existing report {report_path}")
-        if latest_failures_report_path:
-            print(f"[INFO] Publish-only mode: using latest MT failures report {latest_failures_report_path}")
+        translation_zip_path, traces_zip_path = find_latest_artifacts(output_dir)
+        date_stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+        print(f"[INFO] Publish-only mode: using translation artifact {translation_zip_path}")
+        print(f"[INFO] Publish-only mode: using traces artifact {traces_zip_path}")
     else:
         if not input_dir.exists():
             raise FileNotFoundError(f"Input directory not found: {input_dir}")
-        for name in FINAL_FILES:
+
+        required_for_build = [*FINAL_FILES, "applied_changes.csv"]
+        for name in required_for_build:
             file_path = input_dir / name
             if not file_path.exists():
                 raise FileNotFoundError(f"Required file not found: {file_path}")
@@ -533,45 +462,54 @@ def main() -> None:
 
         changes_csv = input_dir / "applied_changes.csv"
         total_changes, by_file, by_status = summarize_changes(changes_csv)
-        contains_english_rows = collect_status_rows(changes_csv, "de_contains_english")
 
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        artifact_name = args.artifact_name or f"empyrion-de-translation-{stamp}.zip"
-        report_name = f"empyrion-de-translation-report-{stamp}.md"
+        failures_report_path, success_report_path = _resolve_reports(script_dir)
+        failure_count = _count_failure_entries(failures_report_path)
+        warnings_count = int(by_status.get("de_contains_english", 0))
 
-        report_path = output_dir / report_name
-        artifact_path = output_dir / artifact_name
-        latest_failures_report_path = find_latest_failures_markdown(script_dir)
+        date_stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+        summary_report_path = output_dir / SUMMARY_REPORT_NAME
+        translation_zip_path = output_dir / f"empyrion-de-translation-{date_stamp}.zip"
+        traces_zip_path = output_dir / f"empyrion-de-translation-traces-{date_stamp}.zip"
 
-        write_report(
-            report_path,
+        write_summary_report(
+            summary_report_path,
             metadata,
             total_changes,
             by_file,
             by_status,
             input_dir,
-            contains_english_rows,
-            latest_failures_report_path,
+            failure_count,
+            warnings_count,
         )
-        create_zip(artifact_path, input_dir, report_path, latest_failures_report_path)
+        create_translation_zip(
+            translation_zip_path,
+            input_dir,
+            summary_report_path,
+            failures_report_path,
+        )
+        create_traces_zip(
+            traces_zip_path,
+            failures_report_path,
+            success_report_path,
+        )
 
         print(f"[INFO] Input dir: {input_dir}")
-        print(f"[INFO] Report: {report_path}")
-        print(f"[INFO] Artifact: {artifact_path}")
+        print(f"[INFO] Summary report: {summary_report_path}")
+        print(f"[INFO] Translation artifact: {translation_zip_path}")
+        print(f"[INFO] Traces artifact: {traces_zip_path}")
         print(f"[INFO] Total changed rows: {total_changes}")
-        if latest_failures_report_path:
-            print(f"[INFO] Included latest MT failures report: {latest_failures_report_path}")
+        print(f"[INFO] Failures counted from trace: {failure_count}")
+        print(f"[INFO] Warnings counted from applied changes: {warnings_count}")
 
     if args.publish_github:
-        tag = args.tag or f"empyrion-de-translation-{stamp}"
-        release_name = args.release_name or f"Empyrion DE Translation {stamp}"
+        tag = args.tag or f"empyrion-de-translation-{date_stamp}"
+        release_name = args.release_name or f"Empyrion DE Translation {date_stamp}"
         publish_github_release_assets(
             metadata=metadata,
             tag=tag,
             release_name=release_name,
-            artifact_path=artifact_path,
-            report_path=report_path,
-            latest_failures_report_path=latest_failures_report_path,
+            assets_to_upload=[translation_zip_path, traces_zip_path],
             draft=args.draft,
             prerelease=args.prerelease,
         )

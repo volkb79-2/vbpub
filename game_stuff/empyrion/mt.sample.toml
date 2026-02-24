@@ -1,6 +1,9 @@
 [mt]
 # Providers used in parallel (recommended)
 providers = ["deepl", "google", "easygoogletranslate"]
+# Toggle wrapping direct transport tokens with parentheses and edge flags
+# Example payload token: (TKPH0LTK)
+parenthesized_transport_token_edges = true
 source_lang = "EN"
 target_lang = "DE"
 batch_size = 20

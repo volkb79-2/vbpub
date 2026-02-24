@@ -1,22 +1,20 @@
 
 # Empyrion localization workspace artifacts (generated)
-tools/__pycache__/
-tools/chunks*/
-tools/output*/
-tools/**/.tmp_*.py
-tools/reports/*.jsonl
-tools/reports/*.csv
-tools/reports/*.txt
-dist/
-tools/mt.toml
-tools/mt.local.toml
-tools/reports/mt_failures*.jsonl
+__pycache__/
+chunks*/
+output*/
+**/.tmp_*.py
 
-tools/reports/
+reports/
+
+dist/
+mt.toml
+mt.local.toml
+reports/mt_failures*.jsonl
 
 # Empyrion local source CSVs (copied from game/mod install)
-Dialogues.csv
-Localization.csv
-PDA.csv
+input_data/Dialogues.csv
+input_data/Localization.csv
+input_data/PDA.csv
 
 *.jsonl

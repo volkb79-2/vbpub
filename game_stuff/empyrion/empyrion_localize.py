@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import csv
 import hashlib
 import html
@@ -211,6 +212,43 @@ def compute_risk(
         flags.append("long_sentence_with_markup")
         score += 2
 
+    adjacent_placeholder_pairs = len(re.findall(r"__PH_\d+____PH_\d+__", source_masked))
+    if adjacent_placeholder_pairs >= 4:
+        flags.append("placeholder_cluster_dense")
+        score += 2
+
+    punctuation_boundary_stress = bool(
+        re.search(r"__PH_\d+__[.,:;!?]", source_masked)
+        or re.search(r"[.,:;!?]__PH_\d+__", source_masked)
+    )
+    if punctuation_boundary_stress:
+        flags.append("punctuation_placeholder_boundary")
+        score += 1
+
+    structure_segments = _split_by_placeholders(source_masked)
+    very_short_segments = 0
+    for segment in structure_segments:
+        segment_words = _tokenize_words(segment)
+        if segment_words and len(segment_words) <= 2:
+            very_short_segments += 1
+    if very_short_segments >= 4:
+        flags.append("fragmented_micro_segments")
+        score += 2
+
+    if english.count("\\n") >= 3:
+        flags.append("heavy_multiline_structure")
+        score += 2
+
+    if len(re.findall(r"@[dpqw]\d+", english)) >= 2:
+        flags.append("control_code_dense")
+        score += 1
+
+    if protected_count > 0 and len(words) > 0:
+        placeholder_density = protected_count / max(1, len(words))
+        if placeholder_density >= 0.35:
+            flags.append("high_placeholder_density")
+            score += 2
+
     if score >= high_threshold:
         risk_level = "high"
     elif score >= medium_threshold:
@@ -366,6 +404,22 @@ def make_id(file_name: str, key: str, row_index: int) -> str:
     return f"{file_name}:{row_index}:{key}:{digest}"
 
 
+def _extract_entry_key(entry: dict) -> str:
+    key = entry.get("key")
+    if isinstance(key, str) and key.strip():
+        return key.strip()
+
+    item_id = entry.get("id")
+    if isinstance(item_id, str) and item_id:
+        parts = item_id.split(":", 3)
+        if len(parts) >= 3:
+            parsed_key = parts[2].strip()
+            if parsed_key:
+                return parsed_key
+
+    return ""
+
+
 def cmd_audit(args: argparse.Namespace) -> None:
     base = Path(args.base_dir)
     report_dir = Path(args.report_dir)
@@ -429,7 +483,7 @@ def cmd_export(args: argparse.Namespace) -> None:
                 "risk_score": risk_score,
                 "risk_level": risk_level,
                 "risk_flags": risk_flags,
-                "risk_version": "v1",
+                "risk_version": "v2",
             }
             entries.append(entry)
             if risk_score >= args.high_risk_min_score:
@@ -489,6 +543,118 @@ def cmd_export(args: argparse.Namespace) -> None:
 
     print(f"[INFO] Exported {len(entries)} translation entries: {output}")
     print(f"[INFO] Wrote helper prompt: {prompt_file}")
+
+
+def cmd_risk_report(args: argparse.Namespace) -> None:
+    export_file = Path(args.export_file)
+    output_csv = Path(args.output_csv)
+
+    entries = _read_jsonl(export_file)
+    if not entries:
+        raise ValueError(f"No entries found in export file: {export_file}")
+
+    score_counter: Counter[int] = Counter()
+    level_counter: Counter[str] = Counter()
+
+    for entry in entries:
+        score = int(entry.get("risk_score", 0))
+        level = str(entry.get("risk_level", "unknown") or "unknown")
+        score_counter[score] += 1
+        level_counter[level] += 1
+
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    with output_csv.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["risk_score", "rows"])
+        for score in sorted(score_counter.keys()):
+            writer.writerow([score, score_counter[score]])
+
+    total_rows = len(entries)
+    low_count = level_counter.get("low", 0)
+    medium_count = level_counter.get("medium", 0)
+    high_count = level_counter.get("high", 0)
+    medium_high_count = medium_count + high_count
+
+    print(f"[INFO] Risk report source: {export_file}")
+    print(f"[INFO] Total rows: {total_rows}")
+    print(
+        f"[INFO] Levels: low={low_count} medium={medium_count} high={high_count} medium+high={medium_high_count}"
+    )
+    print(f"[INFO] Wrote risk distribution CSV: {output_csv}")
+
+
+def cmd_risk_sample(args: argparse.Namespace) -> None:
+    export_file = Path(args.export_file)
+    output = Path(args.output)
+    report_csv = Path(args.report_csv) if args.report_csv else output.with_suffix(".csv")
+
+    entries = _read_jsonl(export_file)
+    if not entries:
+        raise ValueError(f"No entries found in export file: {export_file}")
+
+    requested_levels = [level.strip().lower() for level in (args.risk_levels or []) if level.strip()]
+    requested_scores = set(int(score) for score in (args.risk_scores or []))
+    min_score = args.min_score
+    max_score = args.max_score
+
+    if not requested_levels and not requested_scores and min_score is None and max_score is None:
+        raise ValueError(
+            "At least one selector is required: --risk-levels, --risk-scores, --min-score, or --max-score"
+        )
+
+    selected: List[dict] = []
+    for entry in entries:
+        risk_level = str(entry.get("risk_level", "")).lower()
+        risk_score = int(entry.get("risk_score", 0))
+
+        if requested_levels and risk_level not in requested_levels:
+            continue
+        if requested_scores and risk_score not in requested_scores:
+            continue
+        if min_score is not None and risk_score < int(min_score):
+            continue
+        if max_score is not None and risk_score > int(max_score):
+            continue
+
+        selected.append(entry)
+
+    if not selected:
+        raise ValueError("No rows matched the selected risk filters.")
+
+    sample_size = max(1, int(args.size))
+    sample_size = min(sample_size, len(selected))
+
+    rng = random.Random(args.seed) if args.seed is not None else random.Random()
+    sampled = rng.sample(selected, sample_size) if sample_size < len(selected) else list(selected)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", encoding="utf-8") as handle:
+        for row in sampled:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    report_csv.parent.mkdir(parents=True, exist_ok=True)
+    with report_csv.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["id", "file", "row", "key", "risk_score", "risk_level", "risk_flags", "english"])
+        for row in sorted(sampled, key=lambda item: (int(item.get("risk_score", 0)), item.get("id", ""))):
+            writer.writerow(
+                [
+                    row.get("id", ""),
+                    row.get("file", ""),
+                    row.get("row", ""),
+                    row.get("key", ""),
+                    row.get("risk_score", ""),
+                    row.get("risk_level", ""),
+                    "|".join(row.get("risk_flags", [])),
+                    row.get("english", ""),
+                ]
+            )
+
+    print(f"[INFO] Risk sample source: {export_file}")
+    print(f"[INFO] Matched rows: {len(selected)}")
+    print(f"[INFO] Sampled rows: {len(sampled)}")
+    print(f"[INFO] Wrote risk sample JSONL: {output}")
+    print(f"[INFO] Wrote risk sample CSV: {report_csv}")
 
 
 def _set_runtime_logging(level: str, log_file: str = "") -> None:
@@ -939,6 +1105,108 @@ def _write_mt_failures_markdown(
             lines.append(f"- qa_status: `{qa_status}`")
         if qa_error:
             lines.append(f"- qa_error: {qa_error}")
+        lines.append("")
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_mt_success_markdown(
+    report_path: Path,
+    *,
+    input_path: str,
+    output_path: str,
+    source_field: str,
+    jobs: List[dict],
+    entries_by_id: Dict[str, dict],
+    translated_rows: Dict[str, dict],
+    prep_context: Dict[str, str],
+    include_internal_masked_fields: bool = False,
+) -> None:
+    success_jobs = [job for job in jobs if translated_rows.get(job["id"]) and translated_rows[job["id"]].get("translation_masked")]
+
+    lines: List[str] = []
+    lines.append("# Translation Success Trace")
+    lines.append("")
+    lines.append(f"- input source: `{input_path}`")
+    lines.append(f"- translated output: `{output_path}`")
+    lines.append(f"- source field used: `{source_field}`")
+    lines.append(f"- include internal masked fields: `{include_internal_masked_fields}`")
+    lines.append(f"- successful rows: **{len(success_jobs)}**")
+    lines.append("")
+    lines.append("## Preparation and Execution")
+    lines.append("")
+    lines.append(f"- mt config: `{prep_context.get('mt_config', '')}`")
+    lines.append(f"- mt local config: `{prep_context.get('mt_local_config', '')}`")
+    lines.append(f"- providers requested: `{prep_context.get('providers_requested', '')}`")
+    lines.append(f"- providers enabled: `{prep_context.get('providers_enabled', '')}`")
+    lines.append(f"- source language: `{prep_context.get('source_lang', '')}`")
+    lines.append(f"- target language: `{prep_context.get('target_lang', '')}`")
+    lines.append(f"- batch size: `{prep_context.get('batch_size', '')}`")
+    lines.append(f"- max parallel per provider: `{prep_context.get('max_parallel', '')}`")
+    lines.append(
+        f"- parenthesized transport token edges: `{prep_context.get('parenthesized_transport_token_edges', '')}`"
+    )
+    lines.append("")
+
+    _append_mt_pipeline_documentation(
+        lines,
+        include_internal_masked_fields=include_internal_masked_fields,
+    )
+
+    def append_pipeline_codeblock(field_name: str, field_value: str) -> None:
+        lines.append(f"- **{field_name}**:")
+        lines.append("```text")
+        lines.extend(field_value.splitlines() or [""])
+        lines.append("```")
+
+    for idx, job in enumerate(success_jobs, start=1):
+        item_id = job["id"]
+        entry = entries_by_id.get(item_id, {})
+        translated_meta = translated_rows.get(item_id, {})
+
+        source_masked = job.get("source_masked") or entry.get("source_masked") or ""
+        source_english_raw = entry.get("english") if isinstance(entry.get("english"), str) else ""
+        en_original_raw = source_english_raw
+        source_masked_placeholders = source_masked
+        en_sent_to_mt_normalized = job.get("transport_payload") or ""
+        de_returned_by_mt_raw = translated_meta.get("translation_provider_raw", "")
+        translation_masked_final = translated_meta.get("translation_masked", "")
+        de_final_game_ready = ""
+        if translation_masked_final:
+            de_final_game_ready = restore_text(translation_masked_final, entry.get("protected", {}))
+            de_final_game_ready = _compact_empyrion_tag_spacing(de_final_game_ready)
+
+        risk_level = entry.get("risk_level", "n/a")
+        risk_flags = entry.get("risk_flags", [])
+        file_name = entry.get("file")
+        row_number = entry.get("row")
+        key = entry.get("key")
+        origin_parts = [part for part in [file_name, str(row_number) if row_number is not None else "", key] if part]
+        origin = ":".join(origin_parts) if origin_parts else item_id
+
+        lines.append(f"### {idx}. {origin}")
+        lines.append(f"- id: `{item_id}`")
+        lines.append(f"- risk_level: `{risk_level}`")
+        lines.append(f"- risk_flags: `{', '.join(risk_flags) if risk_flags else 'none'}`")
+        lines.append(f"- mt_provider: `{translated_meta.get('provider', 'unknown')}`")
+        lines.append("- qa_status: `passed`")
+
+        pipeline_field_values: Dict[str, str] = {
+            "en_original_raw": en_original_raw,
+            "source_masked_placeholders": source_masked_placeholders,
+            "source_masked_internal": source_masked,
+            "en_sent_to_mt_normalized": en_sent_to_mt_normalized,
+            "de_returned_by_mt_raw": de_returned_by_mt_raw,
+            "translation_masked_final": translation_masked_final,
+            "de_final_game_ready": de_final_game_ready,
+        }
+
+        for field_name in _ordered_mt_pipeline_field_names(
+            include_internal_masked_fields=include_internal_masked_fields,
+        ):
+            field_value = pipeline_field_values.get(field_name, "")
+            append_pipeline_codeblock(field_name, field_value)
         lines.append("")
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1517,7 +1785,7 @@ def _deep_merge_dict(base: dict, override: dict) -> dict:
 def _load_mt_config(path: Path, local_override_path: Path | None = None) -> dict:
     if not path.exists():
         raise FileNotFoundError(
-            f"MT config not found: {path}. Create it from tools/mt.sample.toml and add API keys."
+            f"MT config not found: {path}. Create it from mt.sample.toml and add API keys."
         )
     with path.open("rb") as handle:
         data = tomllib.load(handle)
@@ -1807,13 +2075,47 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
     backoff_seconds = float(mt_cfg.get("base_backoff_seconds", 1.0))
     rate_limit_cooldown_seconds = int(mt_cfg.get("rate_limit_cooldown_seconds", 120))
     rate_limit_cooldown_max_seconds = int(mt_cfg.get("rate_limit_cooldown_max_seconds", 900))
-    parenthesized_transport_token_edges = bool(mt_cfg.get("parenthesized_transport_token_edges", False))
+    parenthesized_transport_token_edges = bool(mt_cfg.get("parenthesized_transport_token_edges", True))
+    if args.parenthesized_transport_token_edges is not None:
+        parenthesized_transport_token_edges = bool(args.parenthesized_transport_token_edges)
     max_batch_attempts = int(mt_cfg.get("max_batch_attempts", 0))
     status_interval_seconds = max(5, int(mt_cfg.get("status_interval_seconds", 30)))
     checkpoint_every_batches = max(1, int(mt_cfg.get("checkpoint_every_batches", 1)))
 
     _log_step(f"reading input JSONL: {args.input}")
     entries = _read_jsonl(Path(args.input))
+
+    requested_keys: List[str] = []
+    if args.keys:
+        seen_keys: Set[str] = set()
+        for raw_item in args.keys:
+            for part in str(raw_item).split(","):
+                key = part.strip()
+                if key and key not in seen_keys:
+                    seen_keys.add(key)
+                    requested_keys.append(key)
+
+    if requested_keys:
+        requested_key_set = set(requested_keys)
+        filtered_entries: List[dict] = []
+        found_keys: Set[str] = set()
+        for entry in entries:
+            entry_key = _extract_entry_key(entry)
+            if entry_key in requested_key_set:
+                filtered_entries.append(entry)
+                found_keys.add(entry_key)
+
+        missing_keys = sorted(requested_key_set - found_keys)
+        if missing_keys:
+            raise ValueError(
+                "Requested KEY(s) not found in input JSONL: " + ", ".join(missing_keys)
+            )
+
+        entries = filtered_entries
+        _log_step(
+            f"KEY filter enabled: selected {len(entries)} rows for {len(requested_keys)} key(s)"
+        )
+
     entries_by_id: Dict[str, dict] = {
         entry.get("id"): entry for entry in entries if isinstance(entry.get("id"), str) and entry.get("id")
     }
@@ -2582,6 +2884,45 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
         include_internal_masked_fields=args.include_internal_masked_fields,
     )
     print(f"[INFO] Wrote MT failures markdown: {failures_report_output}")
+    prep_context = {
+        "mt_config": args.mt_config,
+        "mt_local_config": args.mt_local_config,
+        "providers_requested": ", ".join(provider_order),
+        "providers_enabled": ", ".join(enabled_provider_order),
+        "source_lang": source_lang,
+        "target_lang": target_lang,
+        "batch_size": str(batch_size),
+        "max_parallel": str(max_parallel_per_provider),
+        "parenthesized_transport_token_edges": str(parenthesized_transport_token_edges),
+    }
+    translation_success_report_output = Path(args.translation_success_report)
+    _write_mt_success_markdown(
+        translation_success_report_output,
+        input_path=args.input,
+        output_path=args.output,
+        source_field=source_field,
+        jobs=jobs,
+        entries_by_id=entries_by_id,
+        translated_rows=translated_rows,
+        prep_context=prep_context,
+        include_internal_masked_fields=args.include_internal_masked_fields,
+    )
+    print(f"[INFO] Wrote translation success trace markdown: {translation_success_report_output}")
+
+    translation_failures_report_output = Path(args.translation_failures_report)
+    _write_mt_failures_markdown(
+        translation_failures_report_output,
+        input_path=args.input,
+        output_path=args.output,
+        failures_path=failures_path_for_report,
+        source_field=source_field,
+        jobs=jobs,
+        entries_by_id=entries_by_id,
+        translated_rows=translated_rows,
+        failures=failures,
+        include_internal_masked_fields=args.include_internal_masked_fields,
+    )
+    print(f"[INFO] Wrote translation failures trace markdown: {translation_failures_report_output}")
 
     print("[INFO] MT request telemetry by provider:")
     for provider_name in provider_order:
@@ -3103,21 +3444,44 @@ def cmd_merge(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Empyrion German localization helper")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Empyrion German localization helper (MT-first workflow).\n"
+            "Tip: use '<command> --help' to see command-specific options like --keys."
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  # 1) Audit\n"
+            "  python3 empyrion_localize.py audit --base-dir ./input_data --report-dir ./reports\n"
+            "\n"
+            "  # 2) Export\n"
+            "  python3 empyrion_localize.py export --base-dir ./input_data --output ./reports/translation_units.risk.v2.jsonl\n"
+            "\n"
+            "  # 3) MT translate (default flow)\n"
+            "  python3 empyrion_localize.py translate-mt --input ./reports/translation_units.risk.v2.jsonl --output ./reports/translations.mt.jsonl --target-lang DE\n"
+            "\n"
+            "  # 4) MT translate selected keys\n"
+            "  python3 empyrion_localize.py translate-mt --input ./reports/translation_units.risk.v2.jsonl --output ./reports/translations.mt.keys.jsonl --keys dialogue_iKK4CKC eden_pda_eGSGG\n"
+            "\n"
+            "  # 5) Apply\n"
+            "  python3 empyrion_localize.py apply --base-dir ./input_data --export-file ./reports/translation_units.risk.v2.jsonl --translated-file ./reports/translations.mt.jsonl --out-dir ./output\n"
+        ),
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_audit = sub.add_parser("audit", help="Scan candidate rows")
-    p_audit.add_argument("--base-dir", default=".")
-    p_audit.add_argument("--report-dir", default="./tools/reports")
+    p_audit.add_argument("--base-dir", default="./input_data")
+    p_audit.add_argument("--report-dir", default="./reports")
     p_audit.set_defaults(func=cmd_audit)
 
     p_export = sub.add_parser("export", help="Export translation units as JSONL")
-    p_export.add_argument("--base-dir", default=".")
-    p_export.add_argument("--output", default="./tools/reports/translation_units.jsonl")
-    p_export.add_argument("--pattern-file", default="./tools/protect_patterns.txt")
+    p_export.add_argument("--base-dir", default="./input_data")
+    p_export.add_argument("--output", default="./reports/translation_units.jsonl")
+    p_export.add_argument("--pattern-file", default="./protect_patterns.txt")
     p_export.add_argument(
         "--high-risk-report",
-        default="./tools/reports/high_risk_samples.csv",
+        default="./reports/high_risk_samples.csv",
         help="Optional CSV report of highest-risk entries for developer quality spot checks.",
     )
     p_export.add_argument(
@@ -3145,6 +3509,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max rows to include in high-risk sample report.",
     )
     p_export.set_defaults(func=cmd_export)
+
+    p_risk_report = sub.add_parser(
+        "risk-report",
+        help="Generate row distribution report by risk score and print level totals",
+    )
+    p_risk_report.add_argument("--export-file", required=True)
+    p_risk_report.add_argument("--output-csv", default="./reports/risk_distribution.v2.csv")
+    p_risk_report.set_defaults(func=cmd_risk_report)
+
+    p_risk_sample = sub.add_parser(
+        "risk-sample",
+        help="Select a random sample from exported rows filtered by risk selectors",
+    )
+    p_risk_sample.add_argument("--export-file", required=True)
+    p_risk_sample.add_argument("--output", required=True, help="Output JSONL sample file")
+    p_risk_sample.add_argument(
+        "--report-csv",
+        default="",
+        help="Optional CSV report for sampled rows (default: <output>.csv)",
+    )
+    p_risk_sample.add_argument(
+        "--risk-levels",
+        nargs="*",
+        default=[],
+        help="Risk levels to include (e.g. --risk-levels medium high)",
+    )
+    p_risk_sample.add_argument(
+        "--risk-scores",
+        nargs="*",
+        type=int,
+        default=[],
+        help="Exact risk scores to include (e.g. --risk-scores 4 5 6)",
+    )
+    p_risk_sample.add_argument("--min-score", type=int, default=None)
+    p_risk_sample.add_argument("--max-score", type=int, default=None)
+    p_risk_sample.add_argument("--size", type=int, default=10)
+    p_risk_sample.add_argument("--seed", type=int, default=None)
+    p_risk_sample.set_defaults(func=cmd_risk_sample)
 
     p_stub = sub.add_parser("build-stub", help="Create translation JSONL stub")
     p_stub.add_argument("--export-file", required=True)
@@ -3192,7 +3594,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_translate_mt = sub.add_parser(
         "translate-mt",
-        help="Translate JSONL entries using modular MT providers (DeepL/Google) with optional sample mode",
+        help="Translate JSONL entries with the default pass-1 transport pipeline and write JSONL + reports",
+        description=(
+            "Default pipeline: source masking -> direct transport tokens -> MT -> restore placeholders -> "
+            "placeholder-sequence QA -> report generation.\n"
+            "Default reports: --review-output=<output>.review.md, --translation-success-report=./reports/translation-success.md, "
+            "--translation-failures-report=./reports/translation-failures.md.\n\n"
+            "Bootstrap from raw CSV first (if JSONL does not exist yet):\n"
+            "  python3 empyrion_localize.py audit --base-dir ./input_data --report-dir ./reports\n"
+            "  python3 empyrion_localize.py export --base-dir ./input_data --output ./reports/translation_units.risk.v2.jsonl\n\n"
+            "Examples:\n"
+            "  python3 empyrion_localize.py translate-mt --input ./reports/translation_units.risk.v2.jsonl --output ./reports/translations.mt.jsonl --target-lang DE --resume\n"
+            "  python3 empyrion_localize.py translate-mt --input ./reports/translation_units.risk.v2.jsonl --output ./reports/translations.mt.keys.jsonl --keys dialogue_iKK4CKC eden_pda_eGSGG --resume\n"
+            "  python3 empyrion_localize.py translate-mt --input ./reports/translation_units.risk.v2.jsonl --output ./reports/translations.mt.sample10.jsonl --sample-mode --sample-size 10 --resume"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
     )
     p_translate_mt.add_argument("--input", required=True, help="Input JSONL containing id + source field")
     p_translate_mt.add_argument("--output", required=True, help="Output JSONL with id + translation_masked")
@@ -3203,12 +3619,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_translate_mt.add_argument(
         "--mt-config",
-        default="./tools/mt.toml",
+        default="./mt.toml",
         help="Local TOML config with MT provider API keys and settings",
     )
     p_translate_mt.add_argument(
         "--mt-local-config",
-        default="./tools/mt.local.toml",
+        default="./mt.local.toml",
         help="Optional local TOML override merged on top of --mt-config",
     )
     p_translate_mt.add_argument(
@@ -3224,6 +3640,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_translate_mt.add_argument("--source-lang", default="")
     p_translate_mt.add_argument("--target-lang", default="")
+    p_translate_mt.add_argument(
+        "--keys",
+        nargs="*",
+        default=[],
+        help=(
+            "Optional CSV KEY filter(s) (first-column KEY values). "
+            "Only matching rows are translated; accepts space- or comma-separated values."
+        ),
+    )
     p_translate_mt.add_argument("--batch-size", type=int, default=0)
     p_translate_mt.add_argument(
         "--max-parallel",
@@ -3249,6 +3674,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional random seed for sample-mode selection (default: non-deterministic random).",
     )
     p_translate_mt.add_argument(
+        "--parenthesized-transport-token-edges",
+        dest="parenthesized_transport_token_edges",
+        action="store_true",
+        default=None,
+        help=(
+            "Override TOML and force parenthesized edge transport tokens during MT payload generation "
+            "(default from mt.parenthesized_transport_token_edges, which defaults to true)."
+        ),
+    )
+    p_translate_mt.add_argument(
+        "--no-parenthesized-transport-token-edges",
+        dest="parenthesized_transport_token_edges",
+        action="store_false",
+        help="Override TOML and disable parenthesized edge transport tokens.",
+    )
+    p_translate_mt.add_argument(
         "--failures-output",
         default="",
         help="Optional output JSONL for failed rows",
@@ -3257,6 +3698,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--review-output",
         default="",
         help="Optional markdown review output path (default: <output>.review.md)",
+    )
+    p_translate_mt.add_argument(
+        "--translation-success-report",
+        default="./reports/translation-success.md",
+        help="Markdown trace report for successful translated rows (single canonical output).",
+    )
+    p_translate_mt.add_argument(
+        "--translation-failures-report",
+        default="./reports/translation-failures.md",
+        help="Markdown trace report for failed translation rows.",
     )
     p_translate_mt.add_argument(
         "--resume",
@@ -3296,7 +3747,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_quality_audit.add_argument("--export-file", required=True)
     p_quality_audit.add_argument(
         "--baseline-translated-file",
-        default="./tools/reports/translations.all.jsonl",
+        default="./reports/translations.all.jsonl",
         help="Baseline translation file to detect unchanged rows.",
     )
     p_quality_audit.add_argument("--current-translated-file", required=True)
@@ -3304,11 +3755,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_quality_audit.add_argument("--max-quality-score", type=int, default=7)
     p_quality_audit.add_argument(
         "--output",
-        default="./tools/reports/highrisk_quality_candidates.jsonl",
+        default="./reports/highrisk_quality_candidates.jsonl",
     )
     p_quality_audit.add_argument(
         "--report-csv",
-        default="./tools/reports/highrisk_quality_candidates.csv",
+        default="./reports/highrisk_quality_candidates.csv",
     )
     p_quality_audit.set_defaults(func=cmd_quality_audit)
 
@@ -3324,12 +3775,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_quality_chunk.set_defaults(func=cmd_quality_chunk)
 
     p_apply = sub.add_parser("apply", help="Apply translated JSONL and generate completed CSV files")
-    p_apply.add_argument("--base-dir", default=".")
+    p_apply.add_argument("--base-dir", default="./input_data")
     p_apply.add_argument("--export-file", required=True)
     p_apply.add_argument("--translated-file", required=True)
-    p_apply.add_argument("--out-dir", default="./tools/output")
-    p_apply.add_argument("--pattern-file", default="./tools/protect_patterns.txt")
-    p_apply.add_argument("--glossary-file", default="./tools/glossary_de.csv")
+    p_apply.add_argument("--out-dir", default="./output")
+    p_apply.add_argument("--pattern-file", default="./protect_patterns.txt")
+    p_apply.add_argument("--glossary-file", default="./glossary_de.csv")
     p_apply.set_defaults(func=cmd_apply)
 
     return parser

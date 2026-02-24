@@ -25,21 +25,113 @@ This toolchain completes German localization for Empyrion CSV files while preser
 
 ## MT transport details (current)
 
-- Production `translate-mt` transport uses direct `TKBPHnTK` tokens for adjacent placeholder runs.
+- Production `translate-mt` transport uses direct `TKPHnTK` tokens for adjacent placeholder runs.
+- Default transport wraps edge tokens in parentheses (for example `(TKPH0LTK)`), controlled by `mt.parenthesized_transport_token_edges`.
 - Newline placeholders are converted to real newlines before MT request so paragraph structure is visible to MT.
 - Adjacent-run detection merges placeholders separated by spaces/tabs, but never across newlines.
-- After MT response, `TKBPHnTK` is restored back to original placeholder runs before token-sequence QA.
+- After MT response, transport tokens are restored back to original placeholder runs before token-sequence QA.
 - Newline placeholders are restored in order before final placeholder spacing normalization.
 - Report fields for pipeline variables are emitted as top-level fenced `text` code blocks (review and failures reports).
 
+## Legacy prompt artifacts
+
+- `export` still writes `<output>.prompt.txt` as a compatibility helper for older manual translation workflows.
+- In current MT-first operation, this file is informational only and not consumed by `translate-mt`.
+- Safe default: ignore it (or clean it with `cleanup-artifacts.sh`) when running MT-only.
+
+## MT request bundling and split behavior (efficiency + limits)
+
+`translate-mt` uses two levels of packing/splitting:
+
+1. **Row batching** (throughput):
+  - controlled by CLI `--batch-size` or TOML `mt.batch_size`.
+  - groups rows into provider work batches.
+
+2. **Provider request sizing** (hard limits):
+  - `max_request_texts` = max row segments per API call,
+  - `max_request_chars` = max total chars per API call,
+  - `max_text_chars` = max chars for a single row segment.
+
+If a row exceeds `max_text_chars` and `auto_split_long_texts=true`, it is split with placeholder-aware segmentation, translated in pieces, then reassembled before placeholder QA.
+If a request would exceed `max_request_texts` or `max_request_chars`, `translate-mt` starts a new API call automatically.
+
+Result: higher MT efficiency without breaching provider payload limits.
+
 ## Quick start
 Run from `game_stuff/empyrion`.
+
+## Risk classification (v2)
+
+`export` computes per-row metadata from `compute_risk(...)`:
+
+- `risk_version = v2`
+- `risk_score` (weighted flag sum)
+- `risk_level` (`low`/`medium`/`high`)
+- `risk_flags` (triggered rule list)
+
+Default thresholds used in this repo:
+
+- `low`: score `< 3`
+- `medium`: score `3..5`
+- `high`: score `>= 6`
+
+Operational routing:
+
+- Bulk MT: typically low-risk rows
+- Review-first chunks: medium/high, especially score `>= 6`
+
+### Built-in risk utilities
+
+Generate row distribution by risk score (plus level totals in console):
+
+```bash
+python3 empyrion_localize.py risk-report \
+  --export-file ./reports/translation_units.risk.v2.jsonl \
+  --output-csv ./reports/risk_distribution.v2.csv
+```
+
+Create random sample rows for selected risk classes:
+
+```bash
+python3 empyrion_localize.py risk-sample \
+  --export-file ./reports/translation_units.risk.v2.jsonl \
+  --output ./reports/translation_units.risk.sample10.medium_high.jsonl \
+  --report-csv ./reports/translation_units.risk.sample10.medium_high.csv \
+  --risk-levels medium high \
+  --size 10
+```
+
+Run MT test translation on the sample before full translation:
+
+```bash
+python3 empyrion_localize.py translate-mt \
+  --input ./reports/translation_units.risk.sample10.medium_high.jsonl \
+  --output ./reports/translations.mt.sample10.medium_high.jsonl \
+  --failures-output ./reports/mt_failures.sample10.medium_high.jsonl \
+  --review-output ./reports/risk_score_class_samples.sample10.medium_high.md \
+  --mt-config ./mt.toml \
+  --mt-local-config ./mt.local.toml \
+  --target-lang DE \
+  --source-field english \
+  --batch-size 10 \
+  --max-parallel 2
+```
+
+Translate specific single rows by CSV `KEY` values:
+
+```bash
+python3 empyrion_localize.py translate-mt \
+  --input ./reports/translation_units.risk.v2.jsonl \
+  --output ./reports/translations.mt.keys.jsonl \
+  --source-field english \
+  --keys dialogue_iKK4CKC eden_pda_eGSGG
+```
 
 ## Fresh checkout runbook (from zero)
 
 Prerequisites:
 - Python 3 available as `python3`
-- Source CSV files placed in `game_stuff/empyrion/`:
+- Source CSV files placed in `game_stuff/empyrion/input_data/`:
   - `Dialogues.csv`
   - `Localization.csv`
   - `PDA.csv`
@@ -47,57 +139,78 @@ Prerequisites:
 Recommended clean start:
 ```bash
 cd game_stuff/empyrion
-rm -rf tools/chunks* tools/output* tools/reports/*.jsonl tools/reports/*.csv tools/reports/*.txt
+rm -rf chunks* output* reports/*.jsonl reports/*.csv reports/*.txt
 ```
 
-End-to-end medium+high pipeline (`score >= 3`):
+End-to-end MT pipeline from raw CSV to release:
+
+Preferred runner (resume by default):
+
+```bash
+cd game_stuff/empyrion
+
+# Resume existing work
+./run-full-workflow.sh
+
+# Restart from CSV only
+./run-full-workflow.sh --clean
+```
+
+Equivalent explicit command sequence:
+
 ```bash
 cd game_stuff/empyrion
 
 # 1) Audit
-python3 tools/empyrion_localize.py audit --base-dir . --report-dir ./tools/reports
+python3 empyrion_localize.py audit --base-dir ./input_data --report-dir ./reports
 
 # 2) Export with risk scoring
-python3 tools/empyrion_localize.py export \
-  --base-dir . \
-  --output ./tools/reports/translation_units.risk.v2.jsonl \
+python3 empyrion_localize.py export \
+  --base-dir ./input_data \
+  --output ./reports/translation_units.risk.v2.jsonl \
   --risk-medium-threshold 3 \
   --risk-high-threshold 6 \
   --high-risk-min-score 6 \
-  --high-risk-report ./tools/reports/high_risk_samples.top100.csv \
+  --high-risk-report ./reports/high_risk_samples.top100.csv \
   --high-risk-sample-size 100
 
-# 3) Build chunk set for medium+high rows (score >=3)
-python3 tools/empyrion_localize.py chunk \
-  --export-file ./tools/reports/translation_units.risk.v2.jsonl \
-  --out-dir ./tools/chunks_medhigh_all \
-  --size 200 \
-  --split-by-risk \
-  --high-risk-min-score 3 \
-  --high-risk-only
+# 3) MT translate (medium+high in this example)
+python3 empyrion_localize.py translate-mt \
+  --input ./reports/translation_units.risk.v2.jsonl \
+  --output ./reports/translations.medhigh.v2.jsonl \
+  --review-output ./reports/translations.medhigh.v2.review.md \
+  --failures-output ./reports/translations.medhigh.v2.failures.jsonl \
+  --target-lang DE \
+  --batch-size 20 \
+  --resume
 
-# 4) Translate chunks with Copilot Chat (see section below),
-#    producing highrisk_chunk_*.translated.jsonl in the same folder.
+# 3b) Resume later from same output file
+python3 empyrion_localize.py translate-mt \
+  --input ./reports/translation_units.risk.v2.jsonl \
+  --output ./reports/translations.medhigh.v2.jsonl \
+  --target-lang DE \
+  --resume
 
-# 5) Merge translated chunks
-python3 tools/empyrion_localize.py merge \
-  --in-dir ./tools/chunks_medhigh_all \
-  --pattern "highrisk_chunk_*.translated.jsonl" \
-  --output ./tools/reports/translations.medhigh.v2.jsonl
+# 4) Apply to release target folder
+python3 empyrion_localize.py apply \
+  --base-dir ./input_data \
+  --export-file ./reports/translation_units.risk.v2.jsonl \
+  --translated-file ./reports/translations.medhigh.v2.jsonl \
+  --out-dir ./output-all-real
 
-# 6) Apply to CSV outputs
-python3 tools/empyrion_localize.py apply \
-  --base-dir . \
-  --export-file ./tools/reports/translation_units.risk.v2.jsonl \
-  --translated-file ./tools/reports/translations.medhigh.v2.jsonl \
-  --out-dir ./tools/output-medhigh-v2
+# 5) Token QA on changed rows
+python3 qa_validate_tokens.py \
+  --changes-csv output-all-real/applied_changes.csv \
+  output-all-real/Dialogues.de.completed.csv \
+  output-all-real/Localization.de.completed.csv \
+  output-all-real/PDA.de.completed.csv
 
-# 7) Token QA on changed rows
-python3 tools/qa_validate_tokens.py \
-  --changes-csv tools/output-medhigh-v2/applied_changes.csv \
-  tools/output-medhigh-v2/Dialogues.de.completed.csv \
-  tools/output-medhigh-v2/Localization.de.completed.csv \
-  tools/output-medhigh-v2/PDA.de.completed.csv
+# 6) Build release artifact (run from repository root)
+cd /workspaces/vbpub
+python3 release-all.py --project empyrion-translation --build
+
+# 7) Push release
+python3 release-all.py --project empyrion-translation --push
 ```
 
 ### Is previous “basic translation” required?
@@ -106,62 +219,53 @@ No. A prior baseline translation run is **not required**.
 You can start from raw source CSVs and run the risk pipeline directly.
 The previous baseline is optional only as historical context.
 
-### Where Copilot Chat comes into play
+### Optional manual chunk workflow (legacy/fallback)
 
-Copilot Chat is used between `chunk` and `merge`:
-
-1) Use chunk JSONL as input (e.g. `tools/chunks_medhigh_all/highrisk_chunk_0001.jsonl`).
-2) Use one of these prompt files:
-   - Per-chunk prompt generated by pipeline (recommended):
-     - `tools/chunks_medhigh_all/highrisk_chunk_0001.prompt.txt`
-   - Reusable medium/high template prompt:
-     - `tools/copilot-medhigh.prompt.txt`
-3) Save Copilot output as matching translated JSONL:
-   - `tools/chunks_medhigh_all/highrisk_chunk_0001.translated.jsonl`
-4) Repeat for all chunk files, then run `merge`.
+Chunk + prompt-based translation remains available for exceptional/manual scenarios, but is no longer the default production path.
+If used, run `chunk`, produce `*.translated.jsonl`, then `merge` as before.
 
 ### 1) Audit missing/mixed German rows
 ```bash
-python3 tools/empyrion_localize.py audit --base-dir . --report-dir ./tools/reports
+python3 empyrion_localize.py audit --base-dir ./input_data --report-dir ./reports
 ```
 
-### 2) Export translation units for GPT/Copilot translation
+### 2) Export translation units (MT default input)
 ```bash
-python3 tools/empyrion_localize.py export --base-dir . --output ./tools/reports/translation_units.jsonl
+python3 empyrion_localize.py export --base-dir ./input_data --output ./reports/translation_units.jsonl
 ```
 
-Risk tuning options (how much should be handled by high-risk Copilot review first):
+Risk tuning options (for risk-focused MT routing/review):
 ```bash
-python3 tools/empyrion_localize.py export \
-  --base-dir . \
-  --output ./tools/reports/translation_units.jsonl \
+python3 empyrion_localize.py export \
+  --base-dir ./input_data \
+  --output ./reports/translation_units.jsonl \
   --risk-medium-threshold 3 \
   --risk-high-threshold 6 \
   --high-risk-min-score 6 \
-  --high-risk-report ./tools/reports/high_risk_samples.csv \
+  --high-risk-report ./reports/high_risk_samples.csv \
   --high-risk-sample-size 100
 ```
 
 Optional: create a stub JSONL template:
 ```bash
-python3 tools/empyrion_localize.py build-stub \
-  --export-file ./tools/reports/translation_units.jsonl \
-  --output ./tools/reports/translations.masked.jsonl
+python3 empyrion_localize.py build-stub \
+  --export-file ./reports/translation_units.jsonl \
+  --output ./reports/translations.masked.jsonl
 ```
 
-### 2b) Create GPT/Copilot chunk packs
+### 2b) Create chunk packs (legacy/manual fallback)
 ```bash
-python3 tools/empyrion_localize.py chunk \
-  --export-file ./tools/reports/translation_units.jsonl \
-  --out-dir ./tools/chunks \
+python3 empyrion_localize.py chunk \
+  --export-file ./reports/translation_units.jsonl \
+  --out-dir ./chunks \
   --size 200
 ```
 
 Create a dedicated top-100 high-risk batch for manual quality inspection first:
 ```bash
-python3 tools/empyrion_localize.py chunk \
-  --export-file ./tools/reports/translation_units.jsonl \
-  --out-dir ./tools/chunks_highrisk_top100 \
+python3 empyrion_localize.py chunk \
+  --export-file ./reports/translation_units.jsonl \
+  --out-dir ./chunks_highrisk_top100 \
   --size 100 \
   --split-by-risk \
   --high-risk-min-score 6 \
@@ -171,9 +275,9 @@ python3 tools/empyrion_localize.py chunk \
 
 Then prepare lower-risk chunks for bulk translation:
 ```bash
-python3 tools/empyrion_localize.py chunk \
-  --export-file ./tools/reports/translation_units.jsonl \
-  --out-dir ./tools/chunks_lowrisk \
+python3 empyrion_localize.py chunk \
+  --export-file ./reports/translation_units.jsonl \
+  --out-dir ./chunks_lowrisk \
   --size 200 \
   --split-by-risk \
   --high-risk-min-score 6 \
@@ -181,9 +285,9 @@ python3 tools/empyrion_localize.py chunk \
 ```
 
 Artifacts:
-- `tools/chunks/chunk_XXXX.jsonl` (input rows)
-- `tools/chunks/chunk_XXXX.prompt.txt` (prompt instructions)
-- `tools/chunks/chunks_index.csv` (worklist)
+- `chunks/chunk_XXXX.jsonl` (input rows)
+- `chunks/chunk_XXXX.prompt.txt` (prompt instructions)
+- `chunks/chunks_index.csv` (worklist)
 
 Risk chunk options:
 - `--high-risk-min-score`: minimum score for high-risk bucket.
@@ -193,19 +297,19 @@ Risk chunk options:
 
 If you only want rows where German is empty:
 ```bash
-python3 tools/empyrion_localize.py chunk \
-  --export-file ./tools/reports/translation_units.jsonl \
-  --out-dir ./tools/chunks \
+python3 empyrion_localize.py chunk \
+  --export-file ./reports/translation_units.jsonl \
+  --out-dir ./chunks \
   --size 200 \
   --skip-existing
 ```
 
 After translating chunk files into `chunk_XXXX.translated.jsonl`, merge them:
 ```bash
-python3 tools/empyrion_localize.py merge \
-  --in-dir ./tools/chunks \
+python3 empyrion_localize.py merge \
+  --in-dir ./chunks \
   --pattern "*.translated.jsonl" \
-  --output ./tools/reports/translations.masked.merged.jsonl
+  --output ./reports/translations.masked.merged.jsonl
 ```
 
 ### 3) Provide translated JSONL
@@ -219,26 +323,26 @@ Rules:
 
 ### 4) Apply translations and generate completed files
 ```bash
-python3 tools/empyrion_localize.py apply \
+python3 empyrion_localize.py apply \
   --base-dir . \
-  --export-file ./tools/reports/translation_units.jsonl \
-  --translated-file ./tools/reports/translations.masked.merged.jsonl \
-  --out-dir ./tools/output
+  --export-file ./reports/translation_units.jsonl \
+  --translated-file ./reports/translations.masked.merged.jsonl \
+  --out-dir ./output
 ```
 
 Generated files:
-- `tools/output/Dialogues.de.completed.csv`
-- `tools/output/Localization.de.completed.csv`
-- `tools/output/PDA.de.completed.csv`
-- `tools/output/applied_changes.csv`
+- `output/Dialogues.de.completed.csv`
+- `output/Localization.de.completed.csv`
+- `output/PDA.de.completed.csv`
+- `output/applied_changes.csv`
 
 ### 5) Validate token parity
 ```bash
-python3 tools/qa_validate_tokens.py \
-  --changes-csv tools/output/applied_changes.csv \
-  tools/output/Dialogues.de.completed.csv \
-  tools/output/Localization.de.completed.csv \
-  tools/output/PDA.de.completed.csv
+python3 qa_validate_tokens.py \
+  --changes-csv output/applied_changes.csv \
+  output/Dialogues.de.completed.csv \
+  output/Localization.de.completed.csv \
+  output/PDA.de.completed.csv
 ```
 
 Use `--full-file` only if you intentionally want to see legacy mismatches already present in original files.
@@ -255,14 +359,15 @@ Use `--full-file` only if you intentionally want to see legacy mismatches alread
 1) Copy config template and add local API keys:
 
 ```bash
-cp tools/mt.sample.toml tools/mt.toml
+cp mt.sample.toml mt.toml
 # optional local machine override (gitignored)
-cp tools/mt.sample.toml tools/mt.local.toml
+cp mt.sample.toml mt.local.toml
 ```
 
-2) Edit `tools/mt.toml` and set:
+2) Edit `mt.toml` and set:
 - `providers.deepl.api_key`
 - `providers.google.api_key`
+- `mt.parenthesized_transport_token_edges = true|false` (default: `true`, recommended)
 - provider policy controls per service:
   - `providers.<name>.enabled = true|false`
   - `providers.<name>.weight = <int>` (higher = used more often)
@@ -276,8 +381,8 @@ Recommended sparse-cost policy:
 - Prefer higher weights for lower-cost providers when available.
 
 3) Optional override rules:
-- `tools/mt.toml`: shared local base config for this workspace
-- `tools/mt.local.toml`: optional local override merged on top of `mt.toml`
+- `mt.toml`: shared local base config for this workspace
+- `mt.local.toml`: optional local override merged on top of `mt.toml`
 
 Both files are gitignored.
 
@@ -289,35 +394,35 @@ pip install google-api-python-client
 
 Notes:
 - `google` provider uses official Google Cloud Translate API (requires API key).
-- `easygoogletranslate` provider is implemented in-repo via a dedicated Google mobile wrapper (`tools/google_mobile_translate.py`) and does not depend on the external `easygoogletranslate` pip package.
+- `easygoogletranslate` provider is implemented in-repo via a dedicated Google mobile wrapper (`google_mobile_translate.py`) and does not depend on the external `easygoogletranslate` pip package.
 
 ### MT translate command
 
 Translate chunk JSONL directly with providers in parallel:
 
 ```bash
-python3 tools/empyrion_localize.py translate-mt \
-  --input tools/chunks/highrisk_chunk_0001.jsonl \
-  --output tools/chunks/highrisk_chunk_0001.translated.jsonl \
-  --mt-config tools/mt.toml \
-  --mt-local-config tools/mt.local.toml \
+python3 empyrion_localize.py translate-mt \
+  --input chunks/highrisk_chunk_0001.jsonl \
+  --output chunks/highrisk_chunk_0001.translated.jsonl \
+  --mt-config mt.toml \
+  --mt-local-config mt.local.toml \
   --providers deepl google easygoogletranslate \
   --max-parallel 2 \
-  --failures-output tools/reports/mt_failures_highrisk_0001.jsonl
+  --failures-output reports/mt_failures_highrisk_0001.jsonl
 ```
 
 Optional full-coverage mode (accept unresolved QA rows that still have a masked MT output):
 
 ```bash
-python3 tools/empyrion_localize.py translate-mt \
-  --input tools/reports/translation_units.risk.v2.jsonl \
-  --output tools/reports/translations.mt.full_accepted.jsonl \
-  --mt-config tools/mt.toml \
-  --mt-local-config tools/mt.local.toml \
+python3 empyrion_localize.py translate-mt \
+  --input reports/translation_units.risk.v2.jsonl \
+  --output reports/translations.mt.full_accepted.jsonl \
+  --mt-config mt.toml \
+  --mt-local-config mt.local.toml \
   --providers deepl google easygoogletranslate \
   --resume \
-  --failures-output tools/reports/mt_failures.full_accepted.jsonl \
-  --review-output tools/reports/risk_score_class_full_accepted.md \
+  --failures-output reports/mt_failures.full_accepted.jsonl \
+  --review-output reports/risk_score_class_full_accepted.md \
   --treat-remaining-failures-as-ok
 ```
 
@@ -359,6 +464,9 @@ Row-level status semantics in review markdown:
   - promoted rows remain listed in failures JSONL/markdown for manual QA inspection
   - this enables "0 untranslated rows" CSV output when remaining failures are placeholder-QA-only
   - rows with no translation payload (provider hard failure) still remain in failures
+- CLI override flags:
+  - `--parenthesized-transport-token-edges` forces parenthesized edge transport tokens
+  - `--no-parenthesized-transport-token-edges` disables parenthesized edge transport tokens
 
 Why the current strategy is stable:
 - There is only one translation pass, so there is no pass-transition drift between two transport formats.
@@ -371,7 +479,7 @@ Why the current strategy is stable:
 
 This section explains the full row lifecycle using:
 - row key: `PDA.csv:3077:eden_pda_eGSGG`
-- reference review: `tools/reports/rowtest_dialogue_WOQKWiC_plus_eGSGG_paren_config_on_afterfix17_20260224.review.md`
+- reference review: `reports/rowtest_dialogue_WOQKWiC_plus_eGSGG_paren_config_on_afterfix17_20260224.review.md`
 
 The goal is to make each transformation explainable, reversible, and QA-verifiable.
 
@@ -468,12 +576,12 @@ The manual step between `chunk` and `merge` is intentional for intelligent lingu
 Run MT on a small subset first before full dataset:
 
 ```bash
-python3 tools/empyrion_localize.py translate-mt \
-  --input tools/reports/translation_units.risk.v2.jsonl \
-  --output tools/reports/translations.mt.sample.jsonl \
+python3 empyrion_localize.py translate-mt \
+  --input reports/translation_units.risk.v2.jsonl \
+  --output reports/translations.mt.sample.jsonl \
   --source-field source_masked \
-  --mt-config tools/mt.toml \
-  --mt-local-config tools/mt.local.toml \
+  --mt-config mt.toml \
+  --mt-local-config mt.local.toml \
   --providers deepl easygoogletranslate \
   --sample-mode \
   --sample-size 200 \
@@ -506,16 +614,16 @@ Deterministic sample option:
 If you want to save telemetry output for later analysis:
 
 ```bash
-python3 tools/empyrion_localize.py translate-mt \
-  --input tools/reports/translation_units.risk.sample10_per_score.0_9.jsonl \
-  --output tools/reports/translations.mt.sample10_per_score.0_9.jsonl \
-  --failures-output tools/reports/mt_failures_sample10_per_score.0_9.jsonl \
-  --mt-config tools/mt.toml \
+python3 empyrion_localize.py translate-mt \
+  --input reports/translation_units.risk.sample10_per_score.0_9.jsonl \
+  --output reports/translations.mt.sample10_per_score.0_9.jsonl \
+  --failures-output reports/mt_failures_sample10_per_score.0_9.jsonl \
+  --mt-config mt.toml \
   --target-lang DE \
   --source-field english \
   --batch-size 20 \
   --max-parallel 2 \
-  2>&1 | tee tools/reports/mt_sample10.telemetry.log
+  2>&1 | tee reports/mt_sample10.telemetry.log
 ```
 
 ## Fresh stratified sample-10 rerun (risk scores 0-9)
@@ -526,27 +634,27 @@ Use this when you want a clean, reproducible sample run from the initial CSV-der
 
 ```bash
 cd game_stuff/empyrion
-find tools -type f -name '.tmp_*.py' -delete
+find . -type f -name '.tmp_*.py' -delete
 rm -f \
-  tools/reports/mt_failures_sample*.jsonl \
-  tools/reports/translations.mt.sample*.jsonl \
-  tools/reports/risk_score_class_samples.sample*.md \
-  tools/reports/chat_repairs.sample*.jsonl \
-  tools/reports/translation_units.risk.sample10_per_score.0_9.jsonl
+  reports/mt_failures_sample*.jsonl \
+  reports/translations.mt.sample*.jsonl \
+  reports/risk_score_class_samples.sample*.md \
+  reports/chat_repairs.sample*.jsonl \
+  reports/translation_units.risk.sample10_per_score.0_9.jsonl
 ```
 
 ### 2) Rebuild audit/export from source CSVs
 
 ```bash
 cd game_stuff/empyrion
-python3 tools/empyrion_localize.py audit --base-dir . --report-dir ./tools/reports
-python3 tools/empyrion_localize.py export \
+python3 empyrion_localize.py audit --base-dir . --report-dir ./reports
+python3 empyrion_localize.py export \
   --base-dir . \
-  --output ./tools/reports/translation_units.risk.v2.jsonl \
+  --output ./reports/translation_units.risk.v2.jsonl \
   --risk-medium-threshold 3 \
   --risk-high-threshold 6 \
   --high-risk-min-score 6 \
-  --high-risk-report ./tools/reports/high_risk_samples.top100.csv \
+  --high-risk-report ./reports/high_risk_samples.top100.csv \
   --high-risk-sample-size 100
 ```
 
@@ -558,8 +666,8 @@ python3 - <<'PY'
 import json
 from pathlib import Path
 
-source = Path('tools/reports/translation_units.risk.v2.jsonl')
-out = Path('tools/reports/translation_units.risk.sample10_per_score.0_9.jsonl')
+source = Path('reports/translation_units.risk.v2.jsonl')
+out = Path('reports/translation_units.risk.sample10_per_score.0_9.jsonl')
 
 by_score = {score: [] for score in range(10)}
 with source.open('r', encoding='utf-8') as f:
@@ -587,12 +695,12 @@ PY
 
 ```bash
 cd game_stuff/empyrion
-python3 tools/empyrion_localize.py translate-mt \
-  --input ./tools/reports/translation_units.risk.sample10_per_score.0_9.jsonl \
-  --output ./tools/reports/translations.mt.sample10_per_score.0_9.jsonl \
-  --failures-output ./tools/reports/mt_failures_sample10_per_score.0_9.jsonl \
-  --review-output ./tools/reports/risk_score_class_samples.sample10_per_score.md \
-  --mt-config ./tools/mt.toml \
+python3 empyrion_localize.py translate-mt \
+  --input ./reports/translation_units.risk.sample10_per_score.0_9.jsonl \
+  --output ./reports/translations.mt.sample10_per_score.0_9.jsonl \
+  --failures-output ./reports/mt_failures_sample10_per_score.0_9.jsonl \
+  --review-output ./reports/risk_score_class_samples.sample10_per_score.md \
+  --mt-config ./mt.toml \
   --target-lang DE \
   --source-field english \
   --batch-size 20 \
@@ -600,10 +708,10 @@ python3 tools/empyrion_localize.py translate-mt \
 ```
 
 Outputs:
-- `tools/reports/translations.mt.sample10_per_score.0_9.jsonl`
-- `tools/reports/mt_failures_sample10_per_score.0_9.jsonl`
-- `tools/reports/mt_failures_sample10_per_score.0_9.md`
-- `tools/reports/risk_score_class_samples.sample10_per_score.md` (generated by `translate-mt`; includes full EN→MT→final-DE lifecycle fields, provider-vs-QA error separation, and a non-protected bracket-label watchlist)
+- `reports/translations.mt.sample10_per_score.0_9.jsonl`
+- `reports/mt_failures_sample10_per_score.0_9.jsonl`
+- `reports/mt_failures_sample10_per_score.0_9.md`
+- `reports/risk_score_class_samples.sample10_per_score.md` (generated by `translate-mt`; includes full EN→MT→final-DE lifecycle fields, provider-vs-QA error separation, and a non-protected bracket-label watchlist)
 
 
 ## Generic score-9 quality refinement (no manual key targeting)
@@ -613,14 +721,14 @@ Use this when you want a systematic second pass for high-risk rows (e.g. `risk_s
 ### 1) Build quality candidates from current merged translation
 
 ```bash
-python3 tools/empyrion_localize.py quality-audit \
-  --export-file ./tools/reports/translation_units.risk.v2.jsonl \
-  --baseline-translated-file ./tools/reports/translations.all.jsonl \
-  --current-translated-file ./tools/reports/translations.integrated.v3.jsonl \
+python3 empyrion_localize.py quality-audit \
+  --export-file ./reports/translation_units.risk.v2.jsonl \
+  --baseline-translated-file ./reports/translations.all.jsonl \
+  --current-translated-file ./reports/translations.integrated.v3.jsonl \
   --min-risk-score 9 \
   --max-quality-score 7 \
-  --output ./tools/reports/highrisk_quality_candidates.jsonl \
-  --report-csv ./tools/reports/highrisk_quality_candidates.csv
+  --output ./reports/highrisk_quality_candidates.jsonl \
+  --report-csv ./reports/highrisk_quality_candidates.csv
 ```
 
 What this does:
@@ -632,9 +740,9 @@ What this does:
 ### 2) Create bulk refinement chunks for chat
 
 ```bash
-python3 tools/empyrion_localize.py quality-chunk \
-  --candidates-file ./tools/reports/highrisk_quality_candidates.jsonl \
-  --out-dir ./tools/chunks_quality_score9 \
+python3 empyrion_localize.py quality-chunk \
+  --candidates-file ./reports/highrisk_quality_candidates.jsonl \
+  --out-dir ./chunks_quality_score9 \
   --size 120
 ```
 
@@ -645,26 +753,26 @@ This generates:
 ### 3) Merge refined chunks and re-apply
 
 ```bash
-python3 tools/empyrion_localize.py merge \
-  --in-dir ./tools/chunks_quality_score9 \
+python3 empyrion_localize.py merge \
+  --in-dir ./chunks_quality_score9 \
   --pattern "quality_chunk_*.translated.jsonl" \
-  --output ./tools/reports/translations.quality-refined.jsonl
+  --output ./reports/translations.quality-refined.jsonl
 
-python3 tools/empyrion_localize.py apply \
+python3 empyrion_localize.py apply \
   --base-dir . \
-  --export-file ./tools/reports/translation_units.risk.v2.jsonl \
-  --translated-file ./tools/reports/translations.quality-refined.jsonl \
-  --out-dir ./tools/output-all-real
+  --export-file ./reports/translation_units.risk.v2.jsonl \
+  --translated-file ./reports/translations.quality-refined.jsonl \
+  --out-dir ./output-all-real
 ```
 
 ### 4) Validate token safety
 
 ```bash
-python3 tools/qa_validate_tokens.py \
-  --changes-csv tools/output-all-real/applied_changes.csv \
-  tools/output-all-real/Dialogues.de.completed.csv \
-  tools/output-all-real/Localization.de.completed.csv \
-  tools/output-all-real/PDA.de.completed.csv
+python3 qa_validate_tokens.py \
+  --changes-csv output-all-real/applied_changes.csv \
+  output-all-real/Dialogues.de.completed.csv \
+  output-all-real/Localization.de.completed.csv \
+  output-all-real/PDA.de.completed.csv
 ```
 
 
