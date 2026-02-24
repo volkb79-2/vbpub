@@ -1,14 +1,24 @@
+# Purpose
+
+Preparation of english source text including markup and control sequences for machine translation (MT) has limits.
+Translation might need intelligent post-processing and validation. You can use this prompt below.
+
+# Prompt
+
 Translate the JSONL records from English to German.
 
 Input format (one JSON object per line):
+```json
 {
   "id": "...",
   "source_masked": "...",
   ...
 }
-
+```
 Output format (one JSON object per line, no markdown, no commentary):
+```json
 {"id":"...","translation_masked":"..."}
+```
 
 Mandatory rules:
 1) Keep id unchanged.

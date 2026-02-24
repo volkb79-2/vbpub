@@ -1,246 +1,106 @@
-# Gaming-Focused Distro Comparison (DistroWatch snapshot)
+# Gaming Distribution Comparison (Gaming-first UX focus)
 
-This document compares five gaming-oriented distributions requested for explicit support in the desktop analysis tooling:
+This document compares the requested gaming-focused distros with **distros as columns** and grouped feature sections:
+
 - Bazzite
 - Pop!_OS
 - Regata OS
-- Nobara Project
+- Nobara
 - Garuda Linux
 
-Data source: DistroWatch project pages and release/package tables.
+## Why these distros feel "easy" for gaming
 
-## Scope and data caveats
+Across all five, ease mostly comes from the same pattern:
 
-- DistroWatch reader-comment **full text** was not accessible in this environment due consent/cookie interstitial pages.
-- This comparison therefore uses available public metadata from DistroWatch pages:
-  - latest listed release/version and date,
-  - distro summary text,
-  - release/headline snippets,
-  - ratings/popularity counters.
+1. Steam/Proton path is pre-enabled or pre-documented.
+2. Driver friction is reduced (especially NVIDIA + hybrid graphics).
+3. Common launchers/tools are bundled or one-click.
+4. OS update risk is mitigated (rollback/snapshots/recovery story).
 
-## Feature comparison table
+What differs is *how* they deliver that:
 
-| Distro | DistroWatch page | Home page | Latest listed version (DistroWatch) | Base | Release model | Desktop focus | Gaming/system optimization signals |
-|---|---|---|---|---|---|---|---|
-| Bazzite | https://distrowatch.com/table.php?distribution=bazzite | https://bazzite.gg/ | 43.20260217 (2026-02-17) | Fedora | Fixed (image-based immutable) | GNOME, KDE Plasma | Immutable/read-only base; Flatpak-centric workflow; targets Steam Deck/handhelds; gaming-focused packaging and image variants |
-| Pop!_OS | https://distrowatch.com/table.php?distribution=popos | https://system76.com/pop | 24.04 (2025-12-11) | Ubuntu LTS / Debian family | Fixed | COSMIC, GNOME | Hardware-vendor integration focus; COSMIC desktop transition; broad laptop/desktop support with developer/gaming-friendly defaults |
-| Regata OS | https://distrowatch.com/table.php?distribution=regata | https://www.regataos.com.br/ | 25.1.0 (2026-02-02) | openSUSE | Fixed | KDE Plasma | Explicit “gaming mode” via Vulkan API mention; hybrid graphics configuration support; integrated game portal/store |
-| Nobara Project | https://distrowatch.com/table.php?distribution=nobara | https://nobaraproject.org/ | 43 (2025-12-27) | Fedora | Rolling (current table) | GNOME, KDE Plasma | Ships gaming/streaming-oriented defaults: NVIDIA drivers, Wine dependencies, OBS, codec stack and Fedora usability fixes |
-| Garuda Linux | https://distrowatch.com/table.php?distribution=garuda | https://garudalinux.org/ | 260115 (2026-01-15) | Arch | Rolling | Multi-edition (KDE, GNOME, Hyprland, Sway, i3, Xfce, etc.) | Performance-focused defaults: zram, performance CPU governor, custom memory-management tooling, Timeshift rollback/stability workflow |
+- **Bazzite**: image-based/atomic workflow plus gaming-focused defaults and rollback/rebase tooling.
+- **Pop!_OS**: Ubuntu-family mutable workflow, with polished GPU switching and broad compatibility.
+- **Regata OS**: openSUSE-based desktop with Game Access + PRIME Settings style UX.
+- **Nobara**: Fedora-based with gaming/creator packages and repos pre-enabled.
+- **Garuda**: Arch-based rolling stack with Btrfs snapshot workflow + gaming assistant tooling.
 
-## Latest community signals (available metadata)
+## Matrix A — Packaging, base, and update model
 
-Because direct comment bodies were unavailable in this environment, these are “community signals” from visible DistroWatch metadata:
+| Feature Group | Bazzite | Pop!_OS | Regata OS | Nobara | Garuda Linux |
+|---|---|---|---|---|---|
+| Base family | Fedora Atomic lineage | Ubuntu/Debian lineage | openSUSE lineage | Fedora lineage | Arch lineage |
+| Core package model | Image-based system (`rpm-ostree`) + Flatpak-centric app flow | Mutable `apt/dpkg` system + Flatpak support | RPM/openSUSE-style model (plus store UX) | Mutable `dnf/rpm` + third-party repos enabled | Mutable `pacman` + Chaotic-AUR integration |
+| Release style (practical) | Atomic image updates; channel/rebase model | Fixed/LTS-style releases | Fixed release cadence | Fast Fedora-based cadence | Rolling release |
+| Install software channels | Flatpak, `rpm-ostree` layering, distrobox/containers, Homebrew option | APT repos + Flatpak | Regata app store + RPM/Flatpak/Snap indications (public metadata) | Fedora + RPMFusion + Nobara repos | Official repos + AUR/Chaotic-AUR |
+| Intended operational style | "Treat host as image" | Conventional mutable Linux desktop | Conventional desktop with integrated store/game portal | Mutable Fedora desktop with gaming defaults | Power-user mutable rolling desktop |
 
-- **Bazzite**: strong gaming identity; handheld/Steam Deck positioning; high visitor rating shown on page.
-- **Pop!_OS**: high popularity ranking; significant attention around COSMIC era releases.
-- **Regata OS**: niche but explicit gaming messaging (Vulkan game mode, hybrid graphics support).
-- **Nobara**: steady gaming audience; out-of-box gaming and creator tooling emphasized.
-- **Garuda**: performance-tweak identity clearly communicated; broad desktop edition matrix for gamer preference.
+## Matrix B — Gaming runtime and launcher stack
 
-## Kernel and system optimization notes for gaming operation
+| Feature Group | Bazzite | Pop!_OS | Regata OS | Nobara | Garuda Linux |
+|---|---|---|---|---|---|
+| Steam readiness | Explicitly pre-installed and central | Explicit "gaming" positioning and Steam-friendly UX | Steam Play docs in official support portal | Steam-ready messaging in official docs/site | Gaming editions and gamer tooling available |
+| Proton/Wine path | ProtonDB + launcher guides + non-Steam integration docs | Standard Steam/Proton path on Ubuntu ecosystem | Steam Play + Game Access docs | Explicit Wine deps + Proton-GE focus | Standard Arch Steam/Proton + gamer assistant workflow |
+| Non-Steam launchers | Lutris and launcher integration emphasized | Available via apt/flatpak ecosystem | Game Access highlighted as core feature | Launchers and creator stack pre-positioned | Garuda Gamer / helper tools target easy launcher installs |
+| Controller/console-like UX | Steam Gaming Mode options, handheld/HTPC variants | Desktop-first, with strong laptop GPU tooling | Controller/game-access docs and hybrid graphics focus | Steam-HTPC/handheld-oriented editions available | Dr460nized-gaming and related editions |
 
-Cross-distro patterns relevant to gaming performance and latency:
+## Matrix C — Driver handling and graphics configuration
 
-- **Kernel flavor and cadence**:
-  - Fedora/Arch-derived gaming distros typically track newer kernels faster.
-  - Ubuntu-LTS-derived systems trade some bleeding-edge gains for stability.
-- **GPU driver strategy**:
-  - Pre-integrated NVIDIA drivers and codec stacks reduce setup friction (notably Nobara).
-  - Mesa cadence and Vulkan stack freshness are central for AMD/Intel performance.
-- **Memory and scheduler behavior**:
-  - zram and tuned memory behavior (explicitly called out by Garuda) can improve responsiveness under load.
-  - CPU governor defaults (performance vs. schedutil/powersave) materially affect frame-time stability.
-- **Rollback and update resilience**:
-  - Immutable/image-based approaches (Bazzite) and snapshot workflows (Garuda/Timeshift) reduce breakage risk after updates.
-- **Wayland/XWayland maturity by desktop**:
-  - Gaming overlays/capture paths still vary by compositor and session mode; distro defaults influence out-of-box success.
+| Feature Group | Bazzite | Pop!_OS | Regata OS | Nobara | Garuda Linux |
+|---|---|---|---|---|---|
+| NVIDIA posture | Official images and docs emphasize NVIDIA support | "No fuss with drivers" messaging; dedicated System76 driver track on supported hardware | Dedicated GPU-by-default options + PRIME Settings style management | NVIDIA-ready defaults highlighted | NVIDIA in ISOs, with fallback install guidance for older series |
+| Hybrid graphics UX | Gaming docs + hardware-specific guidance | First-class graphics mode switching (`integrated`, `hybrid`, `nvidia`, `compute`) | PRIME Settings UX explicitly documented | Gaming-first defaults; hybrid behavior depends on edition/hardware | Typical Arch/hybrid tooling path, distro helpers included |
+| AMD/Intel story | Latest Mesa focus and gaming compatibility docs | Broad Ubuntu hardware compatibility baseline | Vulkan/game mode messaging | Fedora + gaming-oriented stack tuning | Rolling Mesa/kernel cadence favored by power users |
 
-## Rollback and update resilience by targeted distro
+## Matrix D — Performance and latency-oriented defaults
 
-This section answers which of the five target distros provide strong rollback/update resilience out of the box, and what that means operationally for updates and package installation.
+| Feature Group | Bazzite | Pop!_OS | Regata OS | Nobara | Garuda Linux |
+|---|---|---|---|---|---|
+| Out-of-box tuning posture | Explicit gaming-focused schedulers/tweaks messaging | Balanced desktop performance defaults | GameMode + FSR highlighted | Kernel/graphics tuning highlighted | Performance-centric branding and tooling |
+| GameMode/FSR emphasis | Strong gaming docs and launch options | Via standard Linux tooling (not primary brand element) | Explicitly promoted on official feature page | Strongly promoted in gaming-first setup | Commonly integrated in gamer workflows |
+| "Fast path" to playable state | Very high (Steam/Lutris/docs/handheld targeting) | Medium-high (clean UX + driver tooling) | Medium-high (store + game portal + hybrid tools) | High (many dependencies pre-included) | High for experienced users; medium for newcomers |
 
-| Distro | Rollback resilience level | Main mechanism used | Out-of-box rollback after bad update | Core admin tools (day-2 ops) | Update/install consequence for users and tooling | Performance implications (gaming) |
-|---|---|---|---|---|---|---|
-| Bazzite | High | Immutable image-based Fedora stack (rpm-ostree model) | Yes, strong (bootable previous deployment model) | `rpm-ostree`, `flatpak`, `toolbox`/`distrobox` | Treat host as image-managed. Prefer image updates plus reboot. Prefer Flatpak/toolbox/distrobox for user apps; avoid traditional mutable-host assumptions. | Stable baseline with low host drift; however, urgent host-level driver/kernel experiments are slower (deployment cycle + reboot). |
-| Garuda Linux | High (if snapshots enabled as shipped) | Btrfs snapshot workflow (commonly Timeshift/Snapper style) on mutable Arch base | Yes, practical rollback to snapshot state | `pacman`, AUR helper (`paru`/`yay`), snapshot tool (`timeshift` or `snapper`) | Update/install with pacman/AUR workflows, but preserve snapshot discipline before large upgrades; rollback usually filesystem-level and may require post-rollback package DB reconciliation checks. | Fast kernel/Mesa cadence can improve FPS and device support, but update churn can introduce regressions without snapshot hygiene. |
-| Regata OS | Medium to High (configuration dependent) | openSUSE-style snapshot resilience patterns are possible on Btrfs setups | Usually available when snapshot stack is enabled/configured | `zypper`, `snapper` (when enabled), Btrfs tooling | Update/install remains zypper-style mutable workflow, but resilience depends on whether snapshot integration is active in the installation profile. | More conservative release rhythm can reduce random regressions; peak performance gains may trail Arch/Fedora gaming stacks. |
-| Nobara Project | Medium | Mutable Fedora workflow (dnf/rpm) with gaming defaults | Limited by default (no guaranteed transactional rollback model) | `dnf`, `akmods`, `dracut`, optional Btrfs snapshot tooling | Update/install with dnf in-place; for resilience, users typically need extra snapshot/backup policy beyond default package workflow. | Strong out-of-box gaming stack can improve initial experience; but broken driver transitions (e.g., open vs proprietary variants) can temporarily force software rendering. |
-| Pop!_OS | Medium to Low (for rollback), Medium (for recovery) | Mutable apt/dpkg workflow plus recovery/refresh style safety net | No strong package-transaction rollback by default | `apt`, `dpkg`, recovery/refresh workflow, optional Timeshift/Btrfs tooling | Update/install is conventional apt-based mutable host management; rollback is generally backup/recovery driven, not transactional package rollback. | LTS-style stack favors stability and consistent frametimes; newest GPU/kernel optimizations may arrive later than rolling/faster-moving distros. |
+## Matrix E — Rollback, recovery, and update risk control
 
-### Which targeted distros clearly offer rollback/update resilience
+| Feature Group | Bazzite | Pop!_OS | Regata OS | Nobara | Garuda Linux |
+|---|---|---|---|---|---|
+| Built-in rollback model | Strong atomic rollback (`rpm-ostree rollback`, boot previous deployment) | No atomic package rollback by default; recovery/repair workflows exist | Snapshot-style resilience possible depending on profile/filesystem | Conventional mutable Fedora updates unless user adds snapshot policy | Btrfs snapshots are a core distro value proposition |
+| Rebase/channel switching | First-class (including rollback-helper tooling) | Traditional release upgrades | Traditional release upgrades | Traditional release upgrades | Rolling updates with snapshot safety net |
+| User safety on "bad update" | High by design | Medium (recovery-oriented) | Medium to high (depends on setup) | Medium | High when snapshot workflow is used properly |
 
-- Clearly strong by design:
-  - Bazzite (immutable image/deployment model)
-  - Garuda Linux (snapshot-first workflow on mutable system)
-- Potentially strong but install/profile dependent:
-  - Regata OS (depends on snapshot-enabled filesystem/profile behavior)
-- More conventional mutable-update behavior (weaker rollback by default):
-  - Nobara Project
-  - Pop!_OS
+## Matrix F — Best-fit gamer persona
 
-### Pros, cons, and implementation consequences
+| Persona Fit | Bazzite | Pop!_OS | Regata OS | Nobara | Garuda Linux |
+|---|---|---|---|---|---|
+| Wants SteamOS-like behavior on desktop/handheld | Excellent | Fair | Good | Good | Good |
+| Wants minimal Linux tinkering | Excellent | Good | Good | Excellent | Fair |
+| Wants newest rolling graphics stack | Good (image cadence) | Fair | Fair | Good | Excellent |
+| Wants highest rollback confidence | Excellent | Fair | Good (if snapshots active) | Fair | Good-Excellent |
+| Wants familiar Ubuntu-style package workflow | Low | Excellent | Low | Low | Low |
 
-#### Bazzite (immutable/image-based)
+## Practical conclusions
 
-Pros:
-- Strongest update safety and rollback predictability.
-- Lower host drift over time.
+- **Best "appliance-style gaming Linux"**: Bazzite.
+- **Best "Ubuntu-like daily driver + gaming"**: Pop!_OS.
+- **Best "easy gaming desktop in openSUSE ecosystem"**: Regata OS.
+- **Best "Fedora + pre-baked gaming stack"**: Nobara.
+- **Best "max control + max cadence + snapshot guardrails"**: Garuda.
 
-Cons:
-- Traditional package-manager remediation is constrained.
-- Some changes are delayed until reboot/deployment switch.
+## Source notes
 
-Consequences:
-- System updating should be image/deployment-first.
-- Installing host tools should be minimized; prefer Flatpak/toolbox/distrobox/user-space workflows.
-- Diagnostics tooling must avoid assuming immediate mutable host installs.
-
-Tools needed to manage effectively:
-- `rpm-ostree` for host upgrades/rollback.
-- `flatpak` for desktop apps.
-- `toolbox` or `distrobox` for mutable dev/admin tooling.
-
-Performance implications:
-- Very consistent frame pacing once configured (low drift).
-- Fast experimentation with kernel/driver combinations is less immediate than mutable distros.
-
-#### Garuda Linux (snapshot + mutable rolling)
-
-Pros:
-- Fast access to new kernels/Mesa/drivers with practical rollback escape hatch.
-- Good balance of performance-tuning flexibility and recoverability.
-
-Cons:
-- Snapshot rollback is not always as clean as transactional deployment rollback.
-- Rolling updates still require operational discipline (snapshot before upgrade, verify after).
-
-Consequences:
-- Updating/installing happens through normal Arch workflows, but snapshot cadence is operationally mandatory for resilience.
-- Tooling should stay mutable-first while warning to snapshot before invasive changes.
-
-Tools needed to manage effectively:
-- `pacman` (+ optional AUR helper like `paru`/`yay`).
-- Snapshot tool (`timeshift` or `snapper`) plus Btrfs subvolume awareness.
-
-Performance implications:
-- Often best access to latest gaming improvements.
-- Requires stricter maintenance discipline to avoid post-update performance regressions.
-
-#### Regata OS (openSUSE-derived fixed model)
-
-Pros:
-- Can achieve strong rollback behavior when snapshot integration is active.
-- Fixed release model can reduce surprise churn versus rolling ecosystems.
-
-Cons:
-- Real resilience varies by actual filesystem/profile setup.
-- Not always equivalent to immutable transactional behavior.
-
-Consequences:
-- Use standard zypper-based update/install flow.
-- Explicitly validate whether snapshot rollback is active before relying on it in runbooks.
-
-Tools needed to manage effectively:
-- `zypper` for package lifecycle.
-- `snapper` and Btrfs tooling when rollback workflow is enabled.
-
-Performance implications:
-- Good operational stability under fixed cadence.
-- May lag behind faster-moving gaming distros for newest Mesa/kernel tuning.
-
-#### Nobara Project (mutable Fedora gaming defaults)
-
-Pros:
-- Straightforward mutable workflow; broad Fedora ecosystem compatibility.
-- Gaming-focused package defaults reduce initial setup effort.
-
-Cons:
-- No strong built-in transactional rollback guarantee by default.
-- Breakage mitigation often depends on external backup/snapshot strategy.
-
-Consequences:
-- Update/install as mutable dnf host.
-- Recommend optional snapshot/backup guardrails for high-risk update windows.
-
-Tools needed to manage effectively:
-- `dnf` for packages.
-- `akmods` + `dracut` for NVIDIA/module lifecycle validation.
-- Optional snapshot tooling for stronger rollback safety.
-
-Performance implications:
-- Strong defaults reduce initial setup friction and can improve gaming startup experience.
-- Driver transitions need validation to prevent fallback to software rendering.
-
-#### Pop!_OS (mutable Ubuntu-family fixed)
-
-Pros:
-- Predictable LTS-style package management and wide compatibility.
-- Recovery/refresh paths help restore operability.
-
-Cons:
-- Rollback of individual update transactions is weaker than immutable or snapshot-first models.
-- Recovery paths are broader-grained than transactional rollback.
-
-Consequences:
-- Standard apt update/install lifecycle remains primary.
-- For resilience, pair updates with backup/snapshot policy rather than relying on package-transaction rollback.
-
-Tools needed to manage effectively:
-- `apt`/`dpkg` for package management.
-- Distribution recovery/refresh tooling and optional snapshot backup stack.
-
-Performance implications:
-- Stable baseline with fewer surprise regressions.
-- Newest performance features and driver improvements may be slower to land than on rolling variants.
-
-### Practical policy impact for desktop-analysis behavior
-
-- Bazzite: treat as non-mutable for remediation; report install constraints and recommend image-native workflow.
-- Garuda: allow package-manager remediation but surface snapshot-first guidance before major install/update actions.
-- Regata: allow mutable remediation and report whether rollback prerequisites (snapshot stack) are detectable.
-- Nobara and Pop!_OS: use mutable package workflows with explicit recommendation for backup/snapshot practices when applying high-impact changes.
-
-## Script adaptation review and decisions
-
-### Implemented now
-
-- Added explicit distro-family detection support in [scripts/desktop-analysis/desktop-analysis.py](../scripts/desktop-analysis/desktop-analysis.py):
-  - `garuda` -> `arch`
-  - `regata` -> `suse`
-  - Existing explicit mappings already present:
-    - `pop` -> `ubuntu`
-    - `bazzite`, `nobara` -> `fedora`
-
-### Adaptations now implemented in script
-
-1. **Gaming optimization checks section**
-  - Implemented structured checks for:
-    - zram enabled and swap-device usage details,
-    - CPU governor and platform profile,
-    - gamemode process/service state,
-    - gamescope/steam runtime activity,
-    - gaming tool binary availability,
-    - kernel flavor tags (`zen`, `xanmod`, `liquorix`, `bore`, etc.).
-
-2. **Immutable vs mutable operational hints**
-  - Implemented operational guidance that distinguishes immutable/image-based workflows from mutable package-manager workflows.
-
-3. **Distro-profile-specific package probes**
-  - Implemented profile-aware package probing for gaming stack packages:
-    - Fedora-like (Nobara/Bazzite),
-    - Arch-like (Garuda),
-    - Ubuntu-like (Pop!_OS),
-    - openSUSE-like (Regata),
-    - Debian fallback profile.
-
-4. **Desktop/compositor gaming compatibility hints**
-  - Implemented compositor-aware hints in pipeline analysis for Hyprland/Sway/Wayfire/COSMIC/KWin Wayland and mixed Wayland+XWayland paths.
+- Regata has multiple public domains in circulation; technical statements here prioritize currently accessible Regata pages and support portal content. Older/community metadata (e.g., DistroWatch summaries) is treated as supplemental.
 
 ## References
 
-- Bazzite: https://distrowatch.com/table.php?distribution=bazzite
-- Pop!_OS: https://distrowatch.com/table.php?distribution=popos
-- Regata OS: https://distrowatch.com/table.php?distribution=regata
-- Nobara Project: https://distrowatch.com/table.php?distribution=nobara
-- Garuda Linux: https://distrowatch.com/table.php?distribution=garuda
+- Bazzite official site: https://bazzite.gg/
+- Bazzite docs (software/update/rollback): https://docs.bazzite.gg/Installing_and_Managing_Software/Updates_Rollbacks_and_Rebasing/
+- Pop!_OS official site: https://system76.com/pop/
+- Pop!_OS graphics switching docs: https://support.system76.com/articles/graphics-switch-pop/
+- Pop!_OS package manager docs: https://support.system76.com/articles/package-manager-pop/
+- System76 driver docs: https://support.system76.com/articles/system76-driver/
+- Nobara official site: https://nobaraproject.org/
+- Garuda official site: https://garudalinux.org/
+- Garuda wiki home: https://wiki.garudalinux.org/en/home
+- Regata official site: https://get.regataos.com.br/
+- Regata support portal: https://suporte.regataos.com.br/
+- Regata supplemental metadata: https://distrowatch.com/table.php?distribution=regata

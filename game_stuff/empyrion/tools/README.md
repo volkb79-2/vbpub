@@ -23,6 +23,15 @@ This toolchain completes German localization for Empyrion CSV files while preser
 - Writes side-by-side outputs: `*.de.completed.csv`.
 - MT row-review markdown now includes a non-protected bracket-label watchlist to highlight remaining potentially risky bracket text for manual review.
 
+## MT transport details (current)
+
+- Production `translate-mt` transport uses direct `TKBPHnTK` tokens for adjacent placeholder runs.
+- Newline placeholders are converted to real newlines before MT request so paragraph structure is visible to MT.
+- Adjacent-run detection merges placeholders separated by spaces/tabs, but never across newlines.
+- After MT response, `TKBPHnTK` is restored back to original placeholder runs before token-sequence QA.
+- Newline placeholders are restored in order before final placeholder spacing normalization.
+- Report fields for pipeline variables are emitted as top-level fenced `text` code blocks (review and failures reports).
+
 ## Quick start
 Run from `game_stuff/empyrion`.
 
@@ -314,11 +323,14 @@ python3 tools/empyrion_localize.py translate-mt \
 
 Runtime behavior (automatic):
 - Provider preflight check runs first (probe translation: Hello world.) and reports per-provider availability.
-- Translation requests always use cleaned masked text:
-  - prefers source_masked when present in the input JSONL
+- Translation requests always use pass1-only direct transport:
+  - prefers `source_masked` when present in the input JSONL
   - otherwise derives masked text by placeholder protection before sending to MT
-  - bundles adjacent placeholder runs before MT (for example `__PH_0____PH_1____PH_2__` -> `__BPH_n__`) and restores them after MT
-  - enforces spaces around placeholder tokens on MT input and restored output to reduce token-boundary word-order artifacts
+  - converts placeholder runs to direct MT-safe transport tokens (`TKBPHnTK`)
+  - converts newline placeholders to real line breaks before MT so paragraph structure remains visible
+  - restores `TKBPHnTK` back to the original placeholder runs after MT
+  - restores newline placeholders in deterministic order before final spacing normalization
+  - enforces token boundary spacing to reduce grammar bleed across placeholder boundaries
   - applies provider-specific request sizing (`max_request_texts`, `max_request_chars`) automatically
   - if a row exceeds provider `max_text_chars`, it can be split into smaller masked segments and reassembled after translation
 - Provider routing is weighted and config-driven:
@@ -332,23 +344,108 @@ Row-level status semantics in review markdown:
 - `qa_error`: placeholder integrity failed after provider response (`token_drop`, `token_reorder`, `token_insert_dup`).
 - The review now shows the full lifecycle per row:
   - `en_original_raw` (original English, JSON-escaped so control chars are visible)
+  - `source_masked_placeholders` (canonical placeholder sequence used for expected-token QA)
   - `en_sent_to_mt_normalized` (exact normalized payload sent to MT)
   - `de_returned_by_mt_raw` (raw provider return)
-  - `en_sent_to_mt_normalized2` (optional second-pass payload using word-token retry)
-  - `de_returned_by_mt_raw2` (optional second-pass raw provider return)
-  - `qa_error2` (second-pass QA result when retry still fails)
   - `de_final_game_ready` (placeholder-restored German written by `apply`)
 - Internal masked fields are hidden by default:
   - `source_masked_internal` (protected/masked English intermediate)
   - `translation_masked_final` (post-processed masked German used for QA)
 - Show internal masked fields explicitly with `--include-internal-masked-fields`.
 - `translate-mt` always writes a failures markdown report:
-  - if failures remain, it includes complete failure diagnostics with second-pass fields
+  - if failures remain, it includes complete failure diagnostics for pass1-only direct transport
   - if no failures remain, it explicitly states that no errors remain
 - `--treat-remaining-failures-as-ok` promotes rows that still failed QA but have `translation_masked` output into the translated JSONL.
   - promoted rows remain listed in failures JSONL/markdown for manual QA inspection
   - this enables "0 untranslated rows" CSV output when remaining failures are placeholder-QA-only
   - rows with no translation payload (provider hard failure) still remain in failures
+
+Why the current strategy is stable:
+- There is only one translation pass, so there is no pass-transition drift between two transport formats.
+- Direct transport tokens (`TKBPHnTK`) are simple, explicit anchors around markup/control runs.
+- Real newlines are visible to MT, preserving sentence/paragraph context that reduces punctuation and grammar distortion.
+- Placeholder QA validates ordered token sequence and catches drops/reorders immediately.
+- Newline placeholders are excluded from token-drop QA comparison to avoid false positives from formatting-only line-break handling.
+
+### Example walkthrough: `eden_pda_eGSGG` (why each stage exists)
+
+This section explains the full row lifecycle using:
+- row key: `PDA.csv:3077:eden_pda_eGSGG`
+- reference review: `tools/reports/rowtest_dialogue_WOQKWiC_plus_eGSGG_paren_config_on_afterfix17_20260224.review.md`
+
+The goal is to make each transformation explainable, reversible, and QA-verifiable.
+
+1) **`en_original_raw` (source truth from dataset)**
+- What it contains:
+  - original English text with game markup (`[b]`, `[c]`, `[-][/c]`)
+  - escaped line breaks (`\\n`) and inline formatting structure
+- Why this stage exists:
+  - provides the canonical semantic content and markup shape
+  - lets reviewers verify whether later German output preserved structure and intent
+
+2) **`source_masked_placeholders` (canonical placeholder stream)**
+- What happens:
+  - every protected markup/control span is converted into ordered placeholders (`__PH_n__`)
+  - plain-language segments remain visible between placeholders
+- Why this stage exists:
+  - defines the exact expected token order for placeholder QA
+  - decouples linguistic translation from markup integrity
+  - prevents translators/providers from mutating control syntax directly
+
+3) **`en_sent_to_mt_normalized` (transport-safe MT payload)**
+- What happens:
+  - placeholder runs are compacted into MT transport anchors (`TKPHnTK` with optional edge flags)
+  - newline placeholders are materialized as real line breaks before MT
+- Why this stage exists:
+  - compact anchors survive MT better than raw placeholder noise
+  - real paragraph boundaries improve grammar/punctuation quality in MT output
+  - edge flags preserve adjacency intent near lexical text
+
+4) **`de_returned_by_mt_raw` (provider output before restoration)**
+- What it shows:
+  - direct provider text result (German)
+  - transport anchors still present, lexical content translated
+- Why this stage exists:
+  - isolates provider behavior from local post-processing
+  - enables root-cause analysis: provider drift vs restoration/spacing logic
+
+5) **`de_final_game_ready` (restored game markup output)**
+- What happens:
+  - transport anchors are restored to original placeholder runs
+  - placeholders are restored to original game control markup
+  - deterministic spacing normalization is applied
+- Why this stage exists:
+  - produces immediately deployable game text with original control syntax
+  - ensures consistent formatting and readability while preserving structure
+
+6) **Placeholder QA (`qa_status`, `qa_error`)**
+- What is validated:
+  - expected placeholder sequence from `source_masked_placeholders`
+  - actual restored sequence in MT result
+  - error classes: `token_drop`, `token_reorder`, `token_insert_dup`
+- Why this stage exists:
+  - fail-fast safety net against silent structural corruption
+  - guarantees markup/control integrity independently from linguistic quality
+
+### What was fixed in afterfix17 (spacing, not placeholder integrity)
+
+Observed in earlier iteration (`afterfix16`):
+- in-flow spaces were occasionally removed near styled segments in final German text
+- example symptom in `eden_pda_eGSGG`: missing readability spaces around style boundaries in long lines
+
+Fix applied:
+- refined tag-space compaction so removal after opening tags only applies at line start (indent cleanup), not globally within flowing text
+
+Why this is the correct fix:
+- preserves legitimate lexical spacing between adjacent style segments
+- still removes unwanted leading whitespace artifacts after newline boundaries
+- keeps placeholder QA behavior unchanged (this is a formatting/readability correction layer)
+
+Validation outcome (`afterfix17`):
+- rows considered: 2
+- translated: 2
+- failed: 0
+- `qa_status`: passed for both rows, including `eden_pda_eGSGG`
 
 ### Canonical order: CSV -> translated artifact (with manual LLM gate)
 

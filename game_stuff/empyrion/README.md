@@ -98,6 +98,51 @@ Path meaning:
    - Run token parity QA on changed rows.
    - Verify placeholders/tags/control codes remained valid.
 
+## MT transport (current production flow)
+
+`translate-mt` now uses direct word-token transport for adjacent placeholder runs.
+
+1. Mask source into placeholders (`__PH_n__`).
+2. Keep newline placeholders as real paragraph newlines for MT payload shaping.
+3. Convert adjacent placeholder runs directly to transport tokens (`TKBPHnTK`).
+4. Send normalized payload to MT.
+5. Restore `TKBPHnTK` back to original placeholder runs after MT.
+6. Restore newline placeholders and enforce placeholder-token sequence QA.
+7. Restore final game markup for CSV output.
+
+### Pipeline example (raw text flow)
+
+```text
+Original:
+[b][c][ffffff]Location:[-][/c][/b] [c][00ff00]Delta System[-][/c]\n[b][c][ffffff]Difficulty:[-][/c][/b] ...
+
+Masked:
+__PH_0____PH_1____PH_2__Location:__PH_3____PH_4____PH_5__ __PH_6____PH_7__Delta System__PH_8____PH_9__\n__PH_10____PH_11____PH_12__Difficulty:...
+
+Sent to MT (direct TKBPH transport):
+TKBPH0TK Location: TKBPH1TK Delta System TKBPH2TK
+TKBPH3TK Difficulty: ...
+
+Returned by MT (raw):
+TKBPH0TK Standort: TKBPH1TK Deltasystem TKBPH2TK
+TKBPH3TK Schwierigkeit: ...
+
+Restored masked:
+__PH_0____PH_1____PH_2__Standort:__PH_3____PH_4____PH_5__ __PH_6____PH_7__Deltasystem__PH_8____PH_9__\n__PH_10____PH_11____PH_12__Schwierigkeit:...
+
+Final CSV text:
+[b][c][ffffff]Standort:[-][/c][/b] [c][00ff00]Deltasystem[-][/c]\n[b][c][ffffff]Schwierigkeit:[-][/c][/b] ...
+```
+
+### Recent fixes reflected in code
+
+- Direct transport switched from `__BPH__` payload transport to `TKBPH` run transport.
+- Newline placeholders are preserved as real MT paragraph separators during transport.
+- Placeholder bundling is restricted to spaces/tabs only (no cross-newline merge).
+- Spaces around newline placeholders are stripped in final masked normalization.
+- Post-restore tag spacing compaction keeps game markup canonical.
+- MT reports render pipeline values as raw fenced code blocks (no JSON-escaped inline text).
+
 ## Original Plan Adherence (Audit)
 
 Status against the original implementation plan:

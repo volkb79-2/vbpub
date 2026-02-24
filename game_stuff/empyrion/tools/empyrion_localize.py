@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 
 from google_mobile_translate import GoogleMobileTranslate, GoogleMobileTranslateError
 
@@ -63,6 +63,10 @@ _LOG_LEVELS = {
 _RUNTIME_LOG_LEVEL = _LOG_LEVELS["INFO"]
 _RUNTIME_LOG_FILE: Path | None = None
 _RUNTIME_LOG_LOCK = Lock()
+TRANSPORT_TOKEN_CORE_PATTERN = r"TKB?PH\d+(?:LR|L|R)?TK"
+TRANSPORT_TOKEN_PATTERN = rf"(?:{TRANSPORT_TOKEN_CORE_PATTERN}|\({TRANSPORT_TOKEN_CORE_PATTERN}\))"
+PLACEHOLDER_CLUSTER_SEPARATOR_PATTERN = r"[ \t]*(?:[.,:;!?][ \t]*)*"
+PLACEHOLDER_CLUSTER_PATTERN = rf"__PH_\d+__(?:{PLACEHOLDER_CLUSTER_SEPARATOR_PATTERN}__PH_\d+__)+"
 
 
 @dataclass
@@ -267,6 +271,29 @@ def restore_text(text: str, protected: Dict[str, str]) -> str:
     for token, value in protected.items():
         restored = restored.replace(token, value)
     return restored
+
+
+def _compact_empyrion_tag_spacing(text: str) -> str:
+    if not text:
+        return text
+
+    opening_tag = r"\[(?:b|i|u|c|[0-9A-Fa-f]{6})\]"
+    closing_tag = r"\[(?:-|/b|/i|/u|/c)\]"
+    opening_html_tag = r"<(?!/)[^>\n]+>"
+    closing_html_tag = r"</[^>\n]+>"
+
+    compacted = text
+    compacted = re.sub(rf"({opening_tag})\s+(?={opening_tag})", r"\1", compacted)
+    compacted = re.sub(rf"({closing_tag})\s+(?={closing_tag})", r"\1", compacted)
+    compacted = re.sub(rf"\s+(?={closing_tag})", "", compacted)
+    compacted = re.sub(rf"(^|[\n\r])((?:{opening_tag})+)\s+(?=[A-Za-zÀ-ÿ0-9])", r"\1\2", compacted)
+
+    compacted = re.sub(rf"({opening_html_tag})\s+(?={opening_html_tag})", r"\1", compacted)
+    compacted = re.sub(rf"({closing_html_tag})\s+(?={closing_html_tag})", r"\1", compacted)
+    compacted = re.sub(rf"\s+(?={closing_html_tag})", "", compacted)
+    compacted = re.sub(rf"(^|[\n\r])((?:{opening_html_tag})+)\s+(?=[A-Za-zÀ-ÿ0-9])", r"\1\2", compacted)
+
+    return compacted
 
 
 def load_glossary(glossary_file: Path | None) -> List[Tuple[str, str]]:
@@ -524,6 +551,54 @@ def _append_jsonl(path: Path, rows: List[dict]) -> None:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _ordered_mt_pipeline_field_names(*, include_internal_masked_fields: bool) -> List[str]:
+    ordered = [
+        "en_original_raw",
+        "source_masked_placeholders",
+    ]
+    if include_internal_masked_fields:
+        ordered.append("source_masked_internal")
+    ordered.extend(
+        [
+            "en_sent_to_mt_normalized",
+            "de_returned_by_mt_raw",
+        ]
+    )
+    if include_internal_masked_fields:
+        ordered.append("translation_masked_final")
+    ordered.append("de_final_game_ready")
+    return ordered
+
+
+def _append_mt_pipeline_documentation(lines: List[str], *, include_internal_masked_fields: bool) -> None:
+    lines.append("## MT Pipeline (Ordered Fields)")
+    lines.append("")
+    lines.append("Fields are emitted in strict execution order:")
+    lines.append("")
+    lines.append("1. `en_original_raw` — original dataset English.")
+    lines.append("2. `source_masked_placeholders` — canonical `__PH_*__` source; this defines expected placeholder order for QA.")
+    if include_internal_masked_fields:
+        lines.append("3. `source_masked_internal` *(optional)* — internal protected/masked source before MT normalization.")
+        lines.append("4. `en_sent_to_mt_normalized` — exact pass-1 payload sent to MT (direct transport tokens).")
+        lines.append("5. `de_returned_by_mt_raw` — raw pass-1 MT response.")
+        lines.append("6. `translation_masked_final` *(optional)* — internal post-processed masked German used for placeholder QA.")
+        lines.append("7. `de_final_game_ready` — final German with original control/markup restored.")
+    else:
+        lines.append("3. `en_sent_to_mt_normalized` — exact pass-1 payload sent to MT (direct transport tokens).")
+        lines.append("4. `de_returned_by_mt_raw` — raw pass-1 MT response.")
+        lines.append("5. `de_final_game_ready` — final German with original control/markup restored.")
+    lines.append("")
+    lines.append("## Placeholder QA and `token_drop`")
+    lines.append("")
+    lines.append("- Placeholder QA compares the full expected token sequence from `source_masked_placeholders` against tokens extracted from MT output.")
+    lines.append("- `token_drop` means one or more expected placeholders are missing in returned output (even if later placeholders are present).")
+    lines.append("- Direct transport uses `TKPHnTK` anchors (optionally with `L`/`R` boundary flags) for placeholder runs and restores original placeholders after MT.")
+    lines.append("- Newline placeholders are converted to real line breaks before MT and restored in deterministic order after MT.")
+    lines.append("- Missing placeholders cannot be reconstructed post hoc; preservation must happen at transport/provider stage.")
+    lines.append("- Newline placeholder tokens are excluded from token-drop comparison to avoid false positives from formatting-only line-break handling.")
+    lines.append("")
+
+
 def _write_mt_review_markdown(
     review_path: Path,
     *,
@@ -581,17 +656,18 @@ def _write_mt_review_markdown(
     lines.append(f"- failed rows: **{failed_count}**")
     lines.append(f"- missing rows: **{missing_count}**")
     lines.append("")
-    lines.append("## Field Explanations")
+
+    def append_pipeline_codeblock(field_name: str, field_value: str) -> None:
+        lines.append(f"- **{field_name}**:")
+        lines.append("```text")
+        lines.extend(field_value.splitlines() or [""])
+        lines.append("```")
+    _append_mt_pipeline_documentation(
+        lines,
+        include_internal_masked_fields=include_internal_masked_fields,
+    )
+    lines.append("## Status Fields")
     lines.append("")
-    lines.append("- `en_original_raw`: original unmodified English input from the dataset (JSON-escaped so control characters remain visible).")
-    lines.append("- `source_masked_internal` *(optional, hidden by default)*: protected/masked English source after placeholder protection, before MT normalization.")
-    lines.append("- `en_sent_to_mt_normalized`: exact normalized English payload sent to MT (after placeholder protection/bundling and spacing normalization).")
-    lines.append("- `de_returned_by_mt_raw`: raw German text returned by the MT provider before local unbundling/normalization.")
-    lines.append("- `en_sent_to_mt_normalized2`: optional second-pass normalized payload when word-token QA retry is attempted.")
-    lines.append("- `de_returned_by_mt_raw2`: optional second-pass raw MT response.")
-    lines.append("- `qa_error2`: optional second-pass QA error when retry still fails.")
-    lines.append("- `translation_masked_final` *(optional, hidden by default)*: internal post-processed masked German used for placeholder-sequence QA.")
-    lines.append("- `de_final_game_ready`: final German with placeholders restored to original control/markup tokens (the value written to final CSV by `apply`).")
     lines.append("- `mt_status`: row treatment result (`translated`, `blocked`, or `missing`).")
     lines.append("- `mt_provider`: provider used for this row (e.g. `deepl`, `easygoogletranslate`); `none` means no provider could process the row.")
     lines.append("- `mt_ok`: `True` when translation passed placeholder sequence QA; otherwise `False`.")
@@ -674,32 +750,19 @@ def _write_mt_review_markdown(
 
             source_masked = job.get("source_masked") or entry.get("source_masked") or ""
             source_english_raw = entry.get("english") if isinstance(entry.get("english"), str) else ""
-            en_original_raw = json.dumps(source_english_raw, ensure_ascii=False)
-            en_sent_to_mt_normalized = job.get("bundled") or ""
+            en_original_raw = source_english_raw
+            source_masked_placeholders = source_masked
+            en_sent_to_mt_normalized = job.get("transport_payload") or ""
             de_returned_by_mt_raw = (
                 translated_meta.get("translation_provider_raw")
                 or failure.get("translation_provider_raw", "")
-                or ""
-            )
-            en_sent_to_mt_normalized2 = (
-                translated_meta.get("en_sent_to_mt_normalized2")
-                or failure.get("en_sent_to_mt_normalized2", "")
-                or ""
-            )
-            de_returned_by_mt_raw2 = (
-                translated_meta.get("de_returned_by_mt_raw2")
-                or failure.get("de_returned_by_mt_raw2", "")
-                or ""
-            )
-            qa_error2 = (
-                translated_meta.get("qa_error2")
-                or failure.get("qa_error2", "")
                 or ""
             )
             translation_masked_final = translation
             de_final_game_ready = ""
             if translation_masked_final:
                 de_final_game_ready = restore_text(translation_masked_final, entry.get("protected", {}))
+                de_final_game_ready = _compact_empyrion_tag_spacing(de_final_game_ready)
 
             risk_level = entry.get("risk_level", "n/a")
             risk_flags = entry.get("risk_flags", [])
@@ -716,33 +779,27 @@ def _write_mt_review_markdown(
             lines.append(f"- mt_status: `{status}`")
             lines.append(f"- mt_provider: `{provider}`")
             lines.append(f"- mt_ok: `{ok}`")
-            pipeline_fields: List[Tuple[str, str]] = [
-                ("en_original_raw", en_original_raw),
-            ]
-            if include_internal_masked_fields:
-                pipeline_fields.append(("source_masked_internal", source_masked))
-            pipeline_fields.extend(
-                [
-                    ("en_sent_to_mt_normalized", en_sent_to_mt_normalized),
-                    ("de_returned_by_mt_raw", de_returned_by_mt_raw),
-                    ("en_sent_to_mt_normalized2", en_sent_to_mt_normalized2),
-                    ("de_returned_by_mt_raw2", de_returned_by_mt_raw2),
-                ]
-            )
-            if include_internal_masked_fields:
-                pipeline_fields.append(("translation_masked_final", translation_masked_final))
-            pipeline_fields.append(("de_final_game_ready", de_final_game_ready))
+            pipeline_field_values: Dict[str, str] = {
+                "en_original_raw": en_original_raw,
+                "source_masked_placeholders": source_masked_placeholders,
+                "source_masked_internal": source_masked,
+                "en_sent_to_mt_normalized": en_sent_to_mt_normalized,
+                "de_returned_by_mt_raw": de_returned_by_mt_raw,
+                "translation_masked_final": translation_masked_final,
+                "de_final_game_ready": de_final_game_ready,
+            }
 
-            for field_name, field_value in pipeline_fields:
-                lines.append(f"- **{field_name}**: {field_value}")
+            for field_name in _ordered_mt_pipeline_field_names(
+                include_internal_masked_fields=include_internal_masked_fields,
+            ):
+                field_value = pipeline_field_values.get(field_name, "")
+                append_pipeline_codeblock(field_name, field_value)
             if mt_error:
                 lines.append(f"- mt_error: {mt_error}")
             if qa_status:
                 lines.append(f"- qa_status: `{qa_status}`")
             if qa_error:
                 lines.append(f"- qa_error: {qa_error}")
-            if qa_error2:
-                lines.append(f"- qa_error2: {qa_error2}")
             lines.append("")
 
     review_path.parent.mkdir(parents=True, exist_ok=True)
@@ -781,8 +838,28 @@ def _write_mt_failures_markdown(
     lines.append(f"- failed rows: **{len(failed_jobs)}**")
     lines.append("")
 
+    _append_mt_pipeline_documentation(
+        lines,
+        include_internal_masked_fields=include_internal_masked_fields,
+    )
+    lines.append("## Status Fields")
+    lines.append("")
+    lines.append("- `mt_status`: row treatment result (`translated`, `blocked`, or `missing`).")
+    lines.append("- `mt_provider`: provider used for this row (e.g. `deepl`, `easygoogletranslate`); `none` means no provider could process the row.")
+    lines.append("- `mt_ok`: `True` when translation passed placeholder sequence QA; otherwise `False`.")
+    lines.append("- `mt_error`: provider-stage error (transport/provider/quota failures).")
+    lines.append("- `qa_status`: QA result (`passed` or `failed`) for placeholder-sequence validation.")
+    lines.append("- `qa_error`: QA failure reason (`token_drop`, `token_reorder`, `token_insert_dup`).")
+    lines.append("")
+
+    def append_pipeline_codeblock(field_name: str, field_value: str) -> None:
+        lines.append(f"- **{field_name}**:")
+        lines.append("```text")
+        lines.extend(field_value.splitlines() or [""])
+        lines.append("```")
+
     if not failed_jobs:
-        lines.append("No errors remaining. All rows passed MT and placeholder QA (including optional second-pass retry where needed).")
+        lines.append("No errors remaining. All rows passed MT and placeholder QA.")
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text("\n".join(lines), encoding="utf-8")
         return
@@ -801,32 +878,19 @@ def _write_mt_failures_markdown(
 
         source_masked = job.get("source_masked") or entry.get("source_masked") or ""
         source_english_raw = entry.get("english") if isinstance(entry.get("english"), str) else ""
-        en_original_raw = json.dumps(source_english_raw, ensure_ascii=False)
-        en_sent_to_mt_normalized = job.get("bundled") or ""
+        en_original_raw = source_english_raw
+        source_masked_placeholders = source_masked
+        en_sent_to_mt_normalized = job.get("transport_payload") or ""
         de_returned_by_mt_raw = (
             failure.get("translation_provider_raw")
             or translated_meta.get("translation_provider_raw")
-            or ""
-        )
-        en_sent_to_mt_normalized2 = (
-            failure.get("en_sent_to_mt_normalized2")
-            or translated_meta.get("en_sent_to_mt_normalized2", "")
-            or ""
-        )
-        de_returned_by_mt_raw2 = (
-            failure.get("de_returned_by_mt_raw2")
-            or translated_meta.get("de_returned_by_mt_raw2", "")
-            or ""
-        )
-        qa_error2 = (
-            failure.get("qa_error2")
-            or translated_meta.get("qa_error2", "")
             or ""
         )
         translation_masked_final = failure.get("translation_masked") or translated_meta.get("translation_masked", "")
         de_final_game_ready = ""
         if translation_masked_final:
             de_final_game_ready = restore_text(translation_masked_final, entry.get("protected", {}))
+            de_final_game_ready = _compact_empyrion_tag_spacing(de_final_game_ready)
 
         risk_level = entry.get("risk_level", "n/a")
         risk_flags = entry.get("risk_flags", [])
@@ -847,23 +911,21 @@ def _write_mt_failures_markdown(
         lines.append(f"- mt_provider: `{provider}`")
         lines.append("- mt_ok: `False`")
 
-        pipeline_fields: List[Tuple[str, str]] = [("en_original_raw", en_original_raw)]
-        if include_internal_masked_fields:
-            pipeline_fields.append(("source_masked_internal", source_masked))
-        pipeline_fields.extend(
-            [
-                ("en_sent_to_mt_normalized", en_sent_to_mt_normalized),
-                ("de_returned_by_mt_raw", de_returned_by_mt_raw),
-                ("en_sent_to_mt_normalized2", en_sent_to_mt_normalized2),
-                ("de_returned_by_mt_raw2", de_returned_by_mt_raw2),
-            ]
-        )
-        if include_internal_masked_fields:
-            pipeline_fields.append(("translation_masked_final", translation_masked_final))
-        pipeline_fields.append(("de_final_game_ready", de_final_game_ready))
+        pipeline_field_values: Dict[str, str] = {
+            "en_original_raw": en_original_raw,
+            "source_masked_placeholders": source_masked_placeholders,
+            "source_masked_internal": source_masked,
+            "en_sent_to_mt_normalized": en_sent_to_mt_normalized,
+            "de_returned_by_mt_raw": de_returned_by_mt_raw,
+            "translation_masked_final": translation_masked_final,
+            "de_final_game_ready": de_final_game_ready,
+        }
 
-        for field_name, field_value in pipeline_fields:
-            lines.append(f"- **{field_name}**: {field_value}")
+        for field_name in _ordered_mt_pipeline_field_names(
+            include_internal_masked_fields=include_internal_masked_fields,
+        ):
+            field_value = pipeline_field_values.get(field_name, "")
+            append_pipeline_codeblock(field_name, field_value)
 
         if mt_error:
             lines.append(f"- mt_error: {mt_error}")
@@ -877,8 +939,6 @@ def _write_mt_failures_markdown(
             lines.append(f"- qa_status: `{qa_status}`")
         if qa_error:
             lines.append(f"- qa_error: {qa_error}")
-        if qa_error2:
-            lines.append(f"- qa_error2: {qa_error2}")
         lines.append("")
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -893,8 +953,187 @@ def _bundle_adjacent_placeholders(masked: str) -> Tuple[str, Dict[str, str]]:
         bundle_map[token] = match.group(0)
         return token
 
-    bundled = re.sub(r"(?:__PH_\d+__){2,}", repl, masked)
+    bundled = re.sub(PLACEHOLDER_CLUSTER_PATTERN, repl, masked)
     return bundled, bundle_map
+
+
+def _strip_parenthesized_placeholder_runs(text: str) -> str:
+    token_pattern = r"__(?:PH|BPH)_\d+__"
+    run_pattern = rf"(?:{token_pattern}(?:[ \t]*{token_pattern})*)"
+    return re.sub(rf"\(\s*({run_pattern})\s*\)", r"\1", text)
+
+
+def _prepare_direct_tkbph_transport(
+    masked_text: str,
+    protected: Dict[str, str],
+    *,
+    parenthesized_transport_token_edges: bool = False,
+) -> Tuple[str, Dict[str, str], List[str], str]:
+    def _token_has_adjacent_whitespace(text: str, token: str) -> Tuple[bool, bool]:
+        idx = text.find(token)
+        if idx < 0:
+            return False, False
+        left_ws = idx > 0 and text[idx - 1].isspace()
+        right_pos = idx + len(token)
+        right_ws = right_pos < len(text) and text[right_pos].isspace()
+        return left_ws, right_ws
+
+    normalized_masked_text = masked_text
+    if parenthesized_transport_token_edges:
+        normalized_masked_text = _strip_parenthesized_placeholder_runs(normalized_masked_text)
+
+    masked_with_newlines, ordered_newline_tokens = _replace_newline_placeholders_with_real_newlines(
+        normalized_masked_text,
+        protected,
+    )
+
+    run_map_base: Dict[str, str] = {}
+
+    def repl(match: re.Match[str]) -> str:
+        token_core = f"TKPH{len(run_map_base)}TK"
+        token = token_core
+        if parenthesized_transport_token_edges:
+            token = f"({token_core})"
+        run_map_base[token] = match.group(0)
+        return token
+
+    payload = masked_with_newlines
+
+    payload = re.sub(
+        PLACEHOLDER_CLUSTER_PATTERN,
+        repl,
+        payload,
+    )
+    payload = re.sub(r"__PH_\d+__", repl, payload)
+
+    payload_before_spacing = payload
+
+    payload = re.sub(rf"(?<![ \t\n\(\[\{{])({TRANSPORT_TOKEN_PATTERN})", r" \1", payload)
+    payload = re.sub(rf"({TRANSPORT_TOKEN_PATTERN})(?![ \t\n]|$|[.,:;!?\)\]\}}])", r"\1 ", payload)
+
+    if "\n" in payload:
+        lines = [
+            _enforce_placeholder_spacing(line, token_pattern=rf"{TRANSPORT_TOKEN_PATTERN}|__PH_\d+__")
+            for line in payload.split("\n")
+        ]
+        payload = "\n".join(lines)
+        payload = re.sub(r"[ \t]+", " ", payload)
+        payload = re.sub(r"[ \t]+([.,:;!?])", r"\1", payload)
+        payload = re.sub(r"\n{3,}", "\n\n", payload).strip()
+    else:
+        payload = _enforce_placeholder_spacing(payload, token_pattern=rf"{TRANSPORT_TOKEN_PATTERN}|__PH_\d+__")
+        payload = re.sub(r"\s+([.,:;!?])", r"\1", payload).strip()
+
+    run_map: Dict[str, str] = {}
+    for payload_token_base, placeholder_run in run_map_base.items():
+        before_left_ws, before_right_ws = _token_has_adjacent_whitespace(payload_before_spacing, payload_token_base)
+        after_left_ws, after_right_ws = _token_has_adjacent_whitespace(payload, payload_token_base)
+
+        inserted_left_ws = after_left_ws and not before_left_ws
+        inserted_right_ws = after_right_ws and not before_right_ws
+
+        flags = "LR" if inserted_left_ws and inserted_right_ws else "L" if inserted_left_ws else "R" if inserted_right_ws else ""
+        if not flags:
+            run_map[payload_token_base] = placeholder_run
+            continue
+
+        if payload_token_base.startswith("(") and payload_token_base.endswith(")"):
+            token_core = payload_token_base[1:-1]
+            token_core = token_core[:-2] + flags + "TK"
+            payload_token_flagged = f"({token_core})"
+        else:
+            payload_token_flagged = payload_token_base[:-2] + flags + "TK"
+
+        payload = payload.replace(payload_token_base, payload_token_flagged)
+        run_map[payload_token_flagged] = placeholder_run
+
+    return payload, run_map, ordered_newline_tokens, masked_with_newlines
+
+
+def _restore_direct_tkbph_transport(
+    translated_text: str,
+    run_map: Dict[str, str],
+    ordered_newline_tokens: List[str],
+) -> str:
+    def _decode_transport_flags(token: str) -> Tuple[bool, bool]:
+        match = re.fullmatch(r"\(?(?:TKB?PH\d+(?P<flags>LR|L|R)?TK)\)?", token)
+        if not match:
+            return False, False
+        flags = match.group("flags") or ""
+        return ("L" in flags, "R" in flags)
+
+    restored = translated_text
+    for token, value in run_map.items():
+        trim_left, trim_right = _decode_transport_flags(token)
+        if trim_left:
+            restored = re.sub(rf"[ \t]+{re.escape(token)}", token, restored)
+        if trim_right:
+            restored = re.sub(rf"{re.escape(token)}[ \t]+", token, restored)
+        restored = restored.replace(token, value)
+
+    restored = _restore_newline_placeholders_from_text(restored, ordered_newline_tokens)
+    restored = _enforce_placeholder_spacing(restored, token_pattern=r"__(?:PH|BPH)_\d+__")
+    return restored
+
+
+def _next_transport_token_index(run_map: Dict[str, str]) -> int:
+    max_idx = -1
+    for token in run_map.keys():
+        match = re.search(r"TKB?PH(\d+)", token)
+        if not match:
+            continue
+        idx = int(match.group(1))
+        if idx > max_idx:
+            max_idx = idx
+    return max_idx + 1
+
+
+def _coalesce_transport_token_clusters(
+    translated_text: str,
+    run_map: Dict[str, str],
+) -> Tuple[str, Dict[str, str]]:
+    if not translated_text or not run_map:
+        return translated_text, run_map
+
+    token_re = re.compile(TRANSPORT_TOKEN_PATTERN)
+    cluster_re = re.compile(
+        rf"(?P<a>{TRANSPORT_TOKEN_PATTERN})(?P<sep>{PLACEHOLDER_CLUSTER_SEPARATOR_PATTERN})(?P<b>{TRANSPORT_TOKEN_PATTERN})"
+    )
+
+    out_text = translated_text
+    out_map = dict(run_map)
+    next_idx = _next_transport_token_index(out_map)
+
+    while True:
+        match = cluster_re.search(out_text)
+        if not match:
+            break
+
+        token_a = match.group("a")
+        token_b = match.group("b")
+        sep = match.group("sep")
+
+        if not sep:
+            break
+
+        if token_a not in out_map or token_b not in out_map:
+            break
+
+        if token_re.search(sep):
+            break
+
+        core = f"TKPH{next_idx}TK"
+        next_idx += 1
+        if token_a.startswith("(") and token_a.endswith(")") and token_b.startswith("(") and token_b.endswith(")"):
+            merged_token = f"({core})"
+        else:
+            merged_token = core
+
+        merged_value = f"{out_map[token_a]}{sep}{out_map[token_b]}"
+        out_map[merged_token] = merged_value
+        out_text = out_text[:match.start()] + merged_token + out_text[match.end():]
+
+    return out_text, out_map
 
 
 def _unbundle_placeholders(text: str, bundle_map: Dict[str, str]) -> str:
@@ -908,16 +1147,92 @@ def _extract_token_sequence(text: str) -> List[str]:
     return re.findall(r"__(?:PH|BPH)_\d+__", text)
 
 
+def _extract_newline_placeholder_tokens(protected: Dict[str, str]) -> Set[str]:
+    if not protected:
+        return set()
+    tokens: Set[str] = set()
+    for token, value in protected.items():
+        if value != "\\n":
+            continue
+        if re.fullmatch(r"__PH_\d+__", token):
+            tokens.add(token)
+    return tokens
+
+
+def _filter_newline_placeholders(tokens: List[str], newline_tokens: Set[str]) -> List[str]:
+    if not tokens or not newline_tokens:
+        return tokens
+    return [token for token in tokens if token not in newline_tokens]
+
+
 def _normalize_for_mt(text: str) -> str:
-    return _enforce_placeholder_spacing(text, token_pattern=r"__(?:PH|BPH)_\d+__")
+    if "\n" in text:
+        normalized_lines = [
+            _enforce_placeholder_spacing(line, token_pattern=r"__(?:PH|BPH)_\d+__")
+            for line in text.split("\n")
+        ]
+        normalized = "\n".join(normalized_lines)
+        normalized = re.sub(r"[ \t]+([.,:;!?])", r"\1", normalized)
+        normalized = re.sub(r"[ \t]+", " ", normalized)
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+        return normalized.strip()
+
+    normalized = _enforce_placeholder_spacing(text, token_pattern=r"__(?:PH|BPH)_\d+__")
+    normalized = re.sub(r"\s+([.,:;!?])", r"\1", normalized)
+    return normalized
 
 
-def _encode_word_tokens_for_mt(text: str) -> str:
-    return re.sub(r"__(B?PH)_(\d+)__", r"TK\1\2TK", text)
+def _replace_newline_placeholders_with_real_newlines(
+    masked_text: str,
+    protected: Dict[str, str],
+) -> Tuple[str, List[str]]:
+    if not masked_text or not protected:
+        return masked_text, []
+
+    newline_tokens: List[Tuple[int, str]] = []
+    for token, value in protected.items():
+        if value == "\\n":
+            match = re.fullmatch(r"__PH_(\d+)__", token)
+            if match:
+                newline_tokens.append((int(match.group(1)), token))
+
+    if not newline_tokens:
+        return masked_text, []
+
+    newline_tokens.sort(key=lambda item: item[0])
+    ordered_tokens = [token for _, token in newline_tokens]
+
+    out = masked_text
+    for token in ordered_tokens:
+        out = out.replace(token, "\n")
+    return out, ordered_tokens
 
 
-def _decode_word_tokens_from_mt(text: str) -> str:
-    return re.sub(r"TK(B?PH)(\d+)TK", r"__\1_\2__", text)
+def _restore_newline_placeholders_from_text(
+    text: str,
+    ordered_newline_tokens: List[str],
+) -> str:
+    if not text or not ordered_newline_tokens:
+        return text
+
+    restored = text
+    for token in ordered_newline_tokens:
+        if "\n" in restored:
+            restored = restored.replace("\n", token, 1)
+            continue
+        if "\\n" in restored:
+            restored = restored.replace("\\n", token, 1)
+    return restored
+
+
+def _remove_token_hyphenation_artifacts(text: str, token_pattern: str = r"__(?:PH|BPH)_\d+__") -> str:
+    if not text:
+        return text
+
+    cleaned = text
+    cleaned = re.sub(rf"({token_pattern})\s*-(?=[A-Za-zÀ-ÿ0-9])", r"\1 ", cleaned)
+    cleaned = re.sub(rf"(?<=[A-Za-zÀ-ÿ0-9])-\s*({token_pattern})", r" \1", cleaned)
+    return cleaned
 
 
 def _classify_placeholder_mismatch(expected_tokens: List[str], actual_tokens: List[str]) -> str:
@@ -932,10 +1247,104 @@ def _classify_placeholder_mismatch(expected_tokens: List[str], actual_tokens: Li
 
 def _enforce_placeholder_spacing(text: str, token_pattern: str) -> str:
     normalized = re.sub(r"\s+", " ", text).strip()
-    normalized = re.sub(rf"(?<!\s)({token_pattern})", r" \1", normalized)
-    normalized = re.sub(rf"({token_pattern})(?!\s|$|[.,:;!?])", r"\1 ", normalized)
+    normalized = re.sub(rf"(?<!\s)(?<![\(\[\{{])({token_pattern})", r" \1", normalized)
+    normalized = re.sub(rf"({token_pattern})(?!\s|$|[.,:;!?\)\]\}}])", r"\1 ", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized
+
+
+def _enforce_placeholder_spacing_preserving_newline_tokens(
+    text: str,
+    newline_placeholder_tokens: List[str],
+) -> str:
+    if not text:
+        return text
+
+    if not newline_placeholder_tokens:
+        return _enforce_placeholder_spacing(text, token_pattern=r"__PH_\d+__")
+
+    protected = text
+    marker_map: Dict[str, str] = {}
+    for idx, token in enumerate(newline_placeholder_tokens):
+        marker = f"__NLMARK_{idx}__"
+        marker_map[marker] = token
+        protected = protected.replace(token, marker)
+
+    normalized = _enforce_placeholder_spacing(protected, token_pattern=r"__PH_\d+__")
+    for marker, token in marker_map.items():
+        normalized = normalized.replace(marker, token)
+
+    for token in newline_placeholder_tokens:
+        normalized = re.sub(rf"\s*{re.escape(token)}\s*", token, normalized)
+
+    normalized = re.sub(r"\s*(?:\\n)\s*", r"\\n", normalized)
+    return normalized
+
+
+def _apply_source_placeholder_boundary_spacing(
+    translated_masked: str,
+    source_masked: str,
+) -> str:
+    if not translated_masked or not source_masked:
+        return translated_masked
+
+    token_pattern = r"__(?:PH|BPH)_\d+__"
+    source_tokens = re.findall(token_pattern, source_masked)
+    translated_tokens = re.findall(token_pattern, translated_masked)
+    if source_tokens != translated_tokens:
+        return translated_masked
+
+    source_parts = re.split(rf"({token_pattern})", source_masked)
+    translated_parts = re.split(rf"({token_pattern})", translated_masked)
+    if len(source_parts) != len(translated_parts):
+        return translated_masked
+
+    source_text_parts = source_parts[::2]
+    tokens = source_parts[1::2]
+    translated_text_parts = translated_parts[::2]
+
+    def _has_lexical_content(value: str) -> bool:
+        return bool(re.search(r"[A-Za-zÀ-ÿ0-9]", value or ""))
+
+    for idx in range(1, len(translated_text_parts) - 1):
+        source_segment = source_text_parts[idx]
+        translated_segment = translated_text_parts[idx]
+        if source_segment.strip() != "":
+            continue
+        if not _has_lexical_content(translated_segment):
+            continue
+
+        target_idx = idx - 1
+        for probe in range(idx - 1, -1, -1):
+            if _has_lexical_content(source_text_parts[probe]):
+                target_idx = probe
+                break
+
+        moved = re.sub(r"\s+", " ", translated_segment).strip()
+        if moved:
+            left = re.sub(r"[ \t\n]+$", "", translated_text_parts[target_idx])
+            translated_text_parts[target_idx] = f"{left} {moved}" if left else moved
+            translated_text_parts[idx] = source_segment
+
+    for idx in range(len(tokens)):
+        translated_text_parts[idx] = re.sub(r"[ \t\n]+$", "", translated_text_parts[idx])
+        translated_text_parts[idx + 1] = re.sub(r"^[ \t\n]+", "", translated_text_parts[idx + 1])
+
+    rebuilt = translated_text_parts[0]
+    for idx, token in enumerate(tokens):
+        left_ws_match = re.search(r"[ \t\n]*$", source_text_parts[idx])
+        right_ws_match = re.match(r"[ \t\n]*", source_text_parts[idx + 1])
+        left_ws = left_ws_match.group(0) if left_ws_match else ""
+        right_ws = right_ws_match.group(0) if right_ws_match else ""
+
+        if idx > 0 and translated_text_parts[idx] == "":
+            left_ws = ""
+
+        rebuilt += left_ws + token + right_ws + translated_text_parts[idx + 1]
+
+    rebuilt = re.sub(rf"({token_pattern})[ \t]+([.,:;!?])", r"\1\2", rebuilt)
+
+    return rebuilt
 
 
 def _split_masked_text_for_limit(text: str, max_chars: int) -> List[str]:
@@ -1398,6 +1807,7 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
     backoff_seconds = float(mt_cfg.get("base_backoff_seconds", 1.0))
     rate_limit_cooldown_seconds = int(mt_cfg.get("rate_limit_cooldown_seconds", 120))
     rate_limit_cooldown_max_seconds = int(mt_cfg.get("rate_limit_cooldown_max_seconds", 900))
+    parenthesized_transport_token_edges = bool(mt_cfg.get("parenthesized_transport_token_edges", False))
     max_batch_attempts = int(mt_cfg.get("max_batch_attempts", 0))
     status_interval_seconds = max(5, int(mt_cfg.get("status_interval_seconds", 30)))
     checkpoint_every_batches = max(1, int(mt_cfg.get("checkpoint_every_batches", 1)))
@@ -1433,6 +1843,7 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
         if not item_id or not isinstance(source_value, str) or not source_value.strip():
             continue
 
+        protected_map: Dict[str, str] = {}
         source_masked = entry.get("source_masked")
         if (
             source_field == "source_masked"
@@ -1450,17 +1861,31 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                 masked_for_mt = _normalize_italics_in_masked_source(masked_for_mt, protected_map)
         else:
             source_for_mt = _normalize_inline_italics_markup(source_value)
-            masked_for_mt, _ = protect_text(source_for_mt, patterns)
+            masked_for_mt, protected_map = protect_text(source_for_mt, patterns)
 
-        bundled, bundle_map = _bundle_adjacent_placeholders(masked_for_mt)
-        normalized_bundled = _normalize_for_mt(bundled)
+        expected_masked = masked_for_mt
+        if parenthesized_transport_token_edges:
+            expected_masked = _strip_parenthesized_placeholder_runs(expected_masked)
+
+        transport_payload, transport_run_map, ordered_newline_tokens, masked_with_newlines = _prepare_direct_tkbph_transport(
+            masked_for_mt,
+            protected_map,
+            parenthesized_transport_token_edges=parenthesized_transport_token_edges,
+        )
         jobs.append(
             {
                 "id": item_id,
-                "source_masked": masked_for_mt,
-                "bundled": normalized_bundled,
-                "bundle_map": bundle_map,
-                "expected_tokens": _extract_token_sequence(masked_for_mt),
+                "source_masked": expected_masked,
+                "transport_payload": transport_payload,
+                "transport_run_map": transport_run_map,
+                "ordered_newline_tokens": ordered_newline_tokens,
+                "masked_with_newlines": masked_with_newlines,
+                "expected_tokens": _extract_token_sequence(expected_masked),
+                "newline_placeholder_tokens": sorted(_extract_newline_placeholder_tokens(protected_map)),
+                "expected_tokens_for_qa": _filter_newline_placeholders(
+                    _extract_token_sequence(expected_masked),
+                    _extract_newline_placeholder_tokens(protected_map),
+                ),
             }
         )
 
@@ -1641,7 +2066,7 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
             )
 
     def process_batch_with_provider(batch_index: int, batch: List[dict], provider: BaseMTProvider) -> dict:
-        texts = [item["bundled"] for item in batch]
+        texts = [item["transport_payload"] for item in batch]
         rows_sent = len(texts)
         words_sent = sum(_count_words_for_stats(text) for text in texts)
         started_ts = _utc_ts()
@@ -1678,54 +2103,30 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
         result_rows: List[dict] = []
         placeholder_error = False
         for item, output in zip(batch, outputs):
-            unbundled = _unbundle_placeholders(output, item["bundle_map"])
-            unbundled = _enforce_placeholder_spacing(unbundled, token_pattern=r"__PH_\d+__")
-            token_seq = _extract_token_sequence(unbundled)
-            if token_seq != item["expected_tokens"]:
+            output_sanitized = _remove_token_hyphenation_artifacts(
+                output,
+                token_pattern=rf"{TRANSPORT_TOKEN_PATTERN}|__(?:PH|BPH)_\d+__",
+            )
+            output_compacted, compacted_run_map = _coalesce_transport_token_clusters(
+                output_sanitized,
+                item.get("transport_run_map", {}),
+            )
+            unbundled = _restore_direct_tkbph_transport(
+                output_compacted,
+                compacted_run_map,
+                item.get("ordered_newline_tokens", []),
+            )
+            unbundled = _apply_source_placeholder_boundary_spacing(
+                unbundled,
+                item.get("source_masked", ""),
+            )
+            token_seq_full = _extract_token_sequence(unbundled)
+            newline_placeholder_tokens = set(item.get("newline_placeholder_tokens", []))
+            token_seq = _filter_newline_placeholders(token_seq_full, newline_placeholder_tokens)
+            expected_tokens_for_qa = item.get("expected_tokens_for_qa", item["expected_tokens"])
+            if token_seq != expected_tokens_for_qa:
                 placeholder_error = True
-                qa_error = _classify_placeholder_mismatch(item["expected_tokens"], token_seq)
-
-                normalized_bundled2 = _encode_word_tokens_for_mt(item["bundled"])
-                de_returned_by_mt_raw2 = ""
-                qa_error2 = ""
-                recovered = False
-                recovered_translation = ""
-                try:
-                    outputs2 = _translate_with_retry(
-                        provider,
-                        [normalized_bundled2],
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                        max_attempts=max_attempts,
-                        base_backoff=backoff_seconds,
-                    )
-                    de_returned_by_mt_raw2 = outputs2[0]
-                    decoded2 = _decode_word_tokens_from_mt(de_returned_by_mt_raw2)
-                    unbundled2 = _unbundle_placeholders(decoded2, item["bundle_map"])
-                    unbundled2 = _enforce_placeholder_spacing(unbundled2, token_pattern=r"__PH_\d+__")
-                    token_seq2 = _extract_token_sequence(unbundled2)
-                    qa_error2 = _classify_placeholder_mismatch(item["expected_tokens"], token_seq2)
-                    if not qa_error2:
-                        recovered = True
-                        recovered_translation = unbundled2
-                except Exception as exc:  # noqa: PERF203
-                    qa_error2 = f"word_token_provider_error:{exc}"
-
-                if recovered:
-                    result_rows.append(
-                        {
-                            "id": item["id"],
-                            "ok": True,
-                            "translation_provider_raw": de_returned_by_mt_raw2,
-                            "translation_masked": recovered_translation,
-                            "provider": provider.name,
-                            "qa_status": "passed",
-                            "en_sent_to_mt_normalized2": normalized_bundled2,
-                            "de_returned_by_mt_raw2": de_returned_by_mt_raw2,
-                            "qa_error2": "",
-                        }
-                    )
-                    continue
+                qa_error = _classify_placeholder_mismatch(expected_tokens_for_qa, token_seq)
 
                 result_rows.append(
                     {
@@ -1736,9 +2137,6 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                         "translation_provider_raw": output,
                         "translation_masked": unbundled,
                         "provider": provider.name,
-                        "en_sent_to_mt_normalized2": normalized_bundled2,
-                        "de_returned_by_mt_raw2": de_returned_by_mt_raw2,
-                        "qa_error2": qa_error2,
                     }
                 )
             else:
@@ -1920,9 +2318,6 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                             "translation_masked": row["translation_masked"],
                             "provider": row.get("provider", provider_name),
                             "qa_status": row.get("qa_status", "passed"),
-                            "en_sent_to_mt_normalized2": row.get("en_sent_to_mt_normalized2", ""),
-                            "de_returned_by_mt_raw2": row.get("de_returned_by_mt_raw2", ""),
-                            "qa_error2": row.get("qa_error2", ""),
                         }
                         if is_new:
                             newly_completed_for_batch += 1
@@ -1951,9 +2346,6 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                                 "translation_masked": row["translation_masked"],
                                 "provider": row.get("provider", provider_name),
                                 "qa_status": row.get("qa_status", "passed"),
-                                "en_sent_to_mt_normalized2": row.get("en_sent_to_mt_normalized2", ""),
-                                "de_returned_by_mt_raw2": row.get("de_returned_by_mt_raw2", ""),
-                                "qa_error2": row.get("qa_error2", ""),
                             }
                             if is_new:
                                 newly_completed_for_batch += 1
@@ -2102,9 +2494,6 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                 "translation_masked": translation_masked,
                 "provider": failure.get("provider", "accepted_failure"),
                 "qa_status": "accepted_failure",
-                "en_sent_to_mt_normalized2": failure.get("en_sent_to_mt_normalized2", ""),
-                "de_returned_by_mt_raw2": failure.get("de_returned_by_mt_raw2", ""),
-                "qa_error2": failure.get("qa_error2", ""),
             }
             accepted_failures.append(failure)
 
@@ -2333,6 +2722,7 @@ def cmd_quality_audit(args: argparse.Namespace) -> None:
             baseline_masked = base_entry.get("translation_masked")
 
         current_restored = restore_text(current_masked, exp.get("protected", {}))
+        current_restored = _compact_empyrion_tag_spacing(current_restored)
         quality_score, quality_flags = _quality_score_and_flags(
             english=exp.get("english", ""),
             german=current_restored,
@@ -2510,6 +2900,7 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 if translated_entry and translated_entry.get("translation_masked"):
                     masked = translated_entry["translation_masked"]
                     restored = restore_text(masked, exp.get("protected", {}))
+                    restored = _compact_empyrion_tag_spacing(restored)
                     new_de = enforce_glossary(restored, glossary)
                 elif source_norm in memory:
                     new_de = memory[source_norm]
