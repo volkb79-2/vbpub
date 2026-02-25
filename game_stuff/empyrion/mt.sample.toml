@@ -1,25 +1,52 @@
 [mt]
 # Providers used in parallel (recommended)
 providers = ["deepl", "google", "easygoogletranslate"]
-# Toggle wrapping direct transport tokens with parentheses and edge flags
-# Example payload token: (TKPH0LTK)
+# Normalize fused control tags like "@q0You" -> "@q0 You" before masking/export
+# default: true
+control_tag_spacing_enabled = true
+# Persist normalized English text into final *.de.completed.csv English column during apply
+# default: true
+persist_normalized_english_in_output_csv = true
+# Alternative mode: force fused control-tag output (remove spaces around @q/@w/@d/@p tags)
+# default: false
+control_tag_fused_output = false
+# Export report path for IDs whose English contained fused control-tag sequences
+control_tag_affected_ids_output = "./reports/control_tag_spacing_ids.txt"
+# Wrap direct transport tokens with parentheses and edge flags (recommended)
 parenthesized_transport_token_edges = true
 source_lang = "EN"
 target_lang = "DE"
+# Dynamic mode: ignore scheduler batch_size/batch_max_chars and let provider hard limits
+# (max_request_texts/max_request_chars/max_text_chars) determine MT call packing.
+dynamic_provider_call_batching = true
 batch_size = 20
 max_parallel_per_provider = 2
+# In-provider retry attempts for MT transport/API calls
 max_attempts = 3
 base_backoff_seconds = 1.0
 rate_limit_cooldown_seconds = 120
 rate_limit_cooldown_max_seconds = 900
-max_batch_attempts = 0
+# Scheduler retry attempts for provider/transport failures
+# (0 means unlimited)
+provider_error_batch_max_attempts = 3
+# Scheduler attempts for row-level placeholder QA failures
+# default 1 = no retries for QA failures
+# (0 means unlimited)
+qa_failure_batch_max_attempts = 1
+# When true, in-run failures with translation_masked are promoted into translated output
+treat_remaining_failures_as_ok = true
 status_interval_seconds = 30
 checkpoint_every_batches = 1
-log_level = "INFO" # INFO | DEBUG | TRACE
+log_level = "DEBUG" # INFO | DEBUG | TRACE
 log_file = ""       # optional, e.g. "./tools/reports/mt-run.log"
 
+[workflow]
+# When true, run-full-workflow.sh treats Step 5 token parity failures as report-only
+# and continues to release build/push (CLI flag still overrides this default).
+promote_step5_failures_to_ok = false
+
 [providers.deepl]
-enabled = true
+enabled = false
 weight = 1
 api_key = "YOUR_DEEPL_API_KEY"
 endpoint = "https://api-free.deepl.com/v2/translate"
@@ -43,6 +70,12 @@ enabled = true
 weight = 20
 timeout = 15
 max_text_chars = 5000
-max_request_texts = 1
+# In packed mode, runtime pre-sizing also counts separator overhead and uses
+# an effective cap bounded by request + per-text limits.
+max_request_texts = 50
 max_request_chars = 5000
 auto_split_long_texts = true
+# Try packed multi-row requests (single provider call per request-batch when possible)
+packed_multi_text_request = true
+packed_separator_token = "TXTSEP9ZQ"
+packed_fallback_to_per_text = true

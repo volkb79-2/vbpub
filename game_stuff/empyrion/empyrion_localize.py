@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock
-from typing import Dict, List, Set, Tuple
+from typing import Callable, Dict, List, Set, Tuple
 
 from google_mobile_translate import GoogleMobileTranslate, GoogleMobileTranslateError
 
@@ -41,7 +41,7 @@ GERMAN_HINTS = {
 }
 DEFAULT_PATTERNS = [
     r"\{[^{}]+\}",
-    r"<[^>\\n]+>",
+    r"</?[A-Za-z][A-Za-z0-9]*(?:=[^<>\\n]*)?>",
     r"\[(?:/?(?:[bicuv]|sub|sup)|c|-)\]",
     r"\[/?url\]",
     r"\[url=[^\]\n]+\]",
@@ -66,8 +66,9 @@ _RUNTIME_LOG_FILE: Path | None = None
 _RUNTIME_LOG_LOCK = Lock()
 TRANSPORT_TOKEN_CORE_PATTERN = r"TKB?PH\d+(?:LR|L|R)?TK"
 TRANSPORT_TOKEN_PATTERN = rf"(?:{TRANSPORT_TOKEN_CORE_PATTERN}|\({TRANSPORT_TOKEN_CORE_PATTERN}\))"
-PLACEHOLDER_CLUSTER_SEPARATOR_PATTERN = r"[ \t]*(?:[.,:;!?][ \t]*)*"
+PLACEHOLDER_CLUSTER_SEPARATOR_PATTERN = r"[ \t]*(?:[.,:;!?\[\]\(\)][ \t]*)*"
 PLACEHOLDER_CLUSTER_PATTERN = rf"__PH_\d+__(?:{PLACEHOLDER_CLUSTER_SEPARATOR_PATTERN}__PH_\d+__)+"
+CONTROL_TAG_PATTERN = r"@[dpqw]\d+"
 
 
 @dataclass
@@ -104,7 +105,7 @@ def _split_by_placeholders(masked: str) -> List[str]:
 
 def _plain_for_quality(text: str) -> str:
     plain = re.sub(r"\{[^{}]+\}", " ", text)
-    plain = re.sub(r"<[^>\n]+>", " ", plain)
+    plain = re.sub(r"</?[A-Za-z][A-Za-z0-9]*(?:=[^<>\n]*)?>", " ", plain)
     plain = re.sub(r"\[(?:/?(?:[bicuv]|sub|sup)|c|-)\]", " ", plain)
     plain = re.sub(r"\[/?url\]", " ", plain)
     plain = re.sub(r"\[url=[^\]\n]+\]", " ", plain)
@@ -317,8 +318,8 @@ def _compact_empyrion_tag_spacing(text: str) -> str:
 
     opening_tag = r"\[(?:b|i|u|c|[0-9A-Fa-f]{6})\]"
     closing_tag = r"\[(?:-|/b|/i|/u|/c)\]"
-    opening_html_tag = r"<(?!/)[^>\n]+>"
-    closing_html_tag = r"</[^>\n]+>"
+    opening_html_tag = r"<[A-Za-z][A-Za-z0-9]*(?:=[^<>\n]*)?>"
+    closing_html_tag = r"</[A-Za-z][A-Za-z0-9]*>"
 
     compacted = text
     compacted = re.sub(rf"({opening_tag})\s+(?={opening_tag})", r"\1", compacted)
@@ -332,6 +333,98 @@ def _compact_empyrion_tag_spacing(text: str) -> str:
     compacted = re.sub(rf"(^|[\n\r])((?:{opening_html_tag})+)\s+(?=[A-Za-zÀ-ÿ0-9])", r"\1\2", compacted)
 
     return compacted
+
+
+def _add_control_tag_spacing(text: str) -> str:
+    if not text:
+        return text
+
+    spaced = text
+    spaced = re.sub(rf"(?<=\w)({CONTROL_TAG_PATTERN})", r" \1", spaced)
+    spaced = re.sub(rf"({CONTROL_TAG_PATTERN})(?=\w)", r"\1 ", spaced)
+    return re.sub(r"[ \t]{2,}", " ", spaced)
+
+
+def _fuse_control_tag_spacing(text: str) -> str:
+    if not text:
+        return text
+    return re.sub(rf"\s*({CONTROL_TAG_PATTERN})\s*", r"\1", text)
+
+
+def _count_control_tag_fused_boundaries(text: str) -> int:
+    if not text:
+        return 0
+    return len(re.findall(rf"(?<=\w){CONTROL_TAG_PATTERN}|{CONTROL_TAG_PATTERN}(?=\w)", text))
+
+
+def _has_fused_control_sequences(text: str) -> bool:
+    if not text:
+        return False
+    return bool(re.search(rf"\w{CONTROL_TAG_PATTERN}|{CONTROL_TAG_PATTERN}\w", text))
+
+
+def _apply_control_tag_spacing_mode(
+    text: str,
+    *,
+    spacing_enabled: bool,
+    fused_output: bool,
+) -> Tuple[str, bool, bool, int, int, str]:
+    if not text:
+        return text, False, False, 0, 0, "none"
+
+    had_fused_sequences = _has_fused_control_sequences(text)
+    fused_boundaries_before = _count_control_tag_fused_boundaries(text)
+    normalized = text
+    if spacing_enabled:
+        normalized = _add_control_tag_spacing(normalized)
+    if fused_output:
+        normalized = _fuse_control_tag_spacing(normalized)
+    fused_boundaries_after = _count_control_tag_fused_boundaries(normalized)
+    unfused_count_applied = max(0, fused_boundaries_before - fused_boundaries_after)
+    fused_count_applied = max(0, fused_boundaries_after - fused_boundaries_before)
+
+    if fused_output:
+        mode = "force_fuse"
+    elif spacing_enabled:
+        mode = "force_unfuse"
+    else:
+        mode = "none"
+
+    return (
+        normalized,
+        normalized != text,
+        had_fused_sequences,
+        unfused_count_applied,
+        fused_count_applied,
+        mode,
+    )
+
+
+def _parse_id_filters(ids: List[str], ids_file: str) -> List[str]:
+    ordered_ids: List[str] = []
+    seen_ids: Set[str] = set()
+
+    def _add(raw_value: str) -> None:
+        for part in str(raw_value).split(","):
+            item_id = part.strip()
+            if item_id and item_id not in seen_ids:
+                seen_ids.add(item_id)
+                ordered_ids.append(item_id)
+
+    for raw in ids or []:
+        _add(raw)
+
+    if ids_file:
+        ids_path = Path(ids_file)
+        if not ids_path.exists():
+            raise FileNotFoundError(f"ID filter file not found: {ids_path}")
+        for line in ids_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            _add(stripped)
+
+    return ordered_ids
 
 
 def load_glossary(glossary_file: Path | None) -> List[Tuple[str, str]]:
@@ -455,28 +548,56 @@ def cmd_export(args: argparse.Namespace) -> None:
     output = Path(args.output)
     pattern_file = Path(args.pattern_file) if args.pattern_file else None
     patterns = _build_patterns(pattern_file)
+    mt_cfg = _read_mt_settings_for_non_mt_commands(args.mt_config, args.mt_local_config)
+    control_spacing_enabled = bool(mt_cfg.get("control_tag_spacing_enabled", True))
+    persist_normalized_english = bool(mt_cfg.get("persist_normalized_english_in_output_csv", True))
+    control_fused_output = bool(mt_cfg.get("control_tag_fused_output", False))
+    affected_ids_report = str(
+        mt_cfg.get("control_tag_affected_ids_output", "./reports/control_tag_spacing_ids.txt")
+    ).strip()
 
     entries: List[dict] = []
     high_risk_rows: List[dict] = []
+    affected_rows: List[dict] = []
     for file_name in CSV_FILES:
         rows = load_csv_rows(base / file_name)
         for candidate in find_candidates(rows):
-            source_for_mt = _normalize_inline_italics_markup(candidate.english)
+            (
+                english_prepared,
+                english_changed,
+                had_fused_sequences,
+                control_unfused_count,
+                control_fused_count,
+                control_spacing_mode,
+            ) = _apply_control_tag_spacing_mode(
+                candidate.english,
+                spacing_enabled=control_spacing_enabled,
+                fused_output=control_fused_output,
+            )
+            source_for_mt = _normalize_inline_italics_markup(english_prepared)
             masked_en, protected = protect_text(source_for_mt, patterns)
             risk_score, risk_level, risk_flags = compute_risk(
-                candidate.english,
+                english_prepared,
                 masked_en,
                 protected,
                 medium_threshold=args.risk_medium_threshold,
                 high_threshold=args.risk_high_threshold,
             )
+            entry_id = make_id(file_name, candidate.key, candidate.row_index)
             entry = {
-                "id": make_id(file_name, candidate.key, candidate.row_index),
+                "id": entry_id,
                 "file": file_name,
                 "row": candidate.row_index,
                 "key": candidate.key,
                 "status": candidate.status,
-                "english": candidate.english,
+                "english": english_prepared,
+                "english_original": candidate.english,
+                "english_control_normalized": english_changed,
+                "english_control_fused_sequence_detected": had_fused_sequences,
+                "english_control_spacing_mode": control_spacing_mode,
+                "english_control_unfused_count": control_unfused_count,
+                "english_control_fused_count": control_fused_count,
+                "english_persist_in_apply": persist_normalized_english,
                 "deutsch_current": candidate.deutsch,
                 "source_masked": masked_en,
                 "protected": protected,
@@ -486,6 +607,18 @@ def cmd_export(args: argparse.Namespace) -> None:
                 "risk_version": "v2",
             }
             entries.append(entry)
+            if had_fused_sequences:
+                affected_rows.append(
+                    {
+                        "id": entry_id,
+                        "file": file_name,
+                        "row": candidate.row_index,
+                        "key": candidate.key,
+                        "control_spacing_mode": control_spacing_mode,
+                        "control_unfused_count": control_unfused_count,
+                        "control_fused_count": control_fused_count,
+                    }
+                )
             if risk_score >= args.high_risk_min_score:
                 high_risk_rows.append(entry)
 
@@ -540,6 +673,41 @@ def cmd_export(args: argparse.Namespace) -> None:
                     row["source_masked"],
                 ])
         print(f"[INFO] Wrote optional high-risk sample report: {high_risk_report}")
+
+    if affected_ids_report:
+        affected_path = Path(affected_ids_report)
+        affected_path.parent.mkdir(parents=True, exist_ok=True)
+        with affected_path.open("w", encoding="utf-8") as handle:
+            for row in affected_rows:
+                handle.write(f"{row['id']}\n")
+
+        affected_csv = affected_path.with_suffix(".csv")
+        with affected_csv.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow([
+                "id",
+                "file",
+                "row",
+                "key",
+                "control_spacing_mode",
+                "control_unfused_count",
+                "control_fused_count",
+            ])
+            for row in affected_rows:
+                writer.writerow([
+                    row["id"],
+                    row["file"],
+                    row["row"],
+                    row["key"],
+                    row["control_spacing_mode"],
+                    row["control_unfused_count"],
+                    row["control_fused_count"],
+                ])
+
+        print(
+            f"[INFO] Control-tag fused-sequence rows: {len(affected_rows)} "
+            f"(id list: {affected_path}, details: {affected_csv})"
+        )
 
     print(f"[INFO] Exported {len(entries)} translation entries: {output}")
     print(f"[INFO] Wrote helper prompt: {prompt_file}")
@@ -741,7 +909,7 @@ def _append_mt_pipeline_documentation(lines: List[str], *, include_internal_mask
     lines.append("")
     lines.append("Fields are emitted in strict execution order:")
     lines.append("")
-    lines.append("1. `en_original_raw` — original dataset English.")
+    lines.append("1. `en_original_raw` — exact original dataset English (`english_original`), before control-tag fuse/unfuse normalization.")
     lines.append("2. `source_masked_placeholders` — canonical `__PH_*__` source; this defines expected placeholder order for QA.")
     if include_internal_masked_fields:
         lines.append("3. `source_masked_internal` *(optional)* — internal protected/masked source before MT normalization.")
@@ -762,6 +930,7 @@ def _append_mt_pipeline_documentation(lines: List[str], *, include_internal_mask
     lines.append("- Newline placeholders are converted to real line breaks before MT and restored in deterministic order after MT.")
     lines.append("- Missing placeholders cannot be reconstructed post hoc; preservation must happen at transport/provider stage.")
     lines.append("- Newline placeholder tokens are excluded from token-drop comparison to avoid false positives from formatting-only line-break handling.")
+    lines.append("- Control-tag counters (`english_control_unfused_count`, `english_control_fused_count`) are per-row export-mode transformations (`force_unfuse` / `force_fuse` / `none`).")
     lines.append("")
 
 
@@ -915,7 +1084,11 @@ def _write_mt_review_markdown(
                 qa_status = "failed"
 
             source_masked = job.get("source_masked") or entry.get("source_masked") or ""
-            source_english_raw = entry.get("english") if isinstance(entry.get("english"), str) else ""
+            source_english_raw = (
+                entry.get("english_original")
+                if isinstance(entry.get("english_original"), str)
+                else (entry.get("english") if isinstance(entry.get("english"), str) else "")
+            )
             en_original_raw = source_english_raw
             source_masked_placeholders = source_masked
             en_sent_to_mt_normalized = job.get("transport_payload") or ""
@@ -927,7 +1100,8 @@ def _write_mt_review_markdown(
             translation_masked_final = translation
             de_final_game_ready = ""
             if translation_masked_final:
-                de_final_game_ready = restore_text(translation_masked_final, entry.get("protected", {}))
+                protected_for_restore = job.get("protected") or entry.get("protected", {})
+                de_final_game_ready = restore_text(translation_masked_final, protected_for_restore)
                 de_final_game_ready = _compact_empyrion_tag_spacing(de_final_game_ready)
 
             risk_level = entry.get("risk_level", "n/a")
@@ -945,6 +1119,9 @@ def _write_mt_review_markdown(
             lines.append(f"- mt_status: `{status}`")
             lines.append(f"- mt_provider: `{provider}`")
             lines.append(f"- mt_ok: `{ok}`")
+            lines.append(f"- english_control_spacing_mode: `{entry.get('english_control_spacing_mode', 'none')}`")
+            lines.append(f"- english_control_unfused_count: `{entry.get('english_control_unfused_count', 0)}`")
+            lines.append(f"- english_control_fused_count: `{entry.get('english_control_fused_count', 0)}`")
             pipeline_field_values: Dict[str, str] = {
                 "en_original_raw": en_original_raw,
                 "source_masked_placeholders": source_masked_placeholders,
@@ -1043,7 +1220,11 @@ def _write_mt_failures_markdown(
         status = "blocked"
 
         source_masked = job.get("source_masked") or entry.get("source_masked") or ""
-        source_english_raw = entry.get("english") if isinstance(entry.get("english"), str) else ""
+        source_english_raw = (
+            entry.get("english_original")
+            if isinstance(entry.get("english_original"), str)
+            else (entry.get("english") if isinstance(entry.get("english"), str) else "")
+        )
         en_original_raw = source_english_raw
         source_masked_placeholders = source_masked
         en_sent_to_mt_normalized = job.get("transport_payload") or ""
@@ -1055,7 +1236,8 @@ def _write_mt_failures_markdown(
         translation_masked_final = failure.get("translation_masked") or translated_meta.get("translation_masked", "")
         de_final_game_ready = ""
         if translation_masked_final:
-            de_final_game_ready = restore_text(translation_masked_final, entry.get("protected", {}))
+            protected_for_restore = job.get("protected") or entry.get("protected", {})
+            de_final_game_ready = restore_text(translation_masked_final, protected_for_restore)
             de_final_game_ready = _compact_empyrion_tag_spacing(de_final_game_ready)
 
         risk_level = entry.get("risk_level", "n/a")
@@ -1076,6 +1258,9 @@ def _write_mt_failures_markdown(
         lines.append(f"- mt_status: `{status}`")
         lines.append(f"- mt_provider: `{provider}`")
         lines.append("- mt_ok: `False`")
+        lines.append(f"- english_control_spacing_mode: `{entry.get('english_control_spacing_mode', 'none')}`")
+        lines.append(f"- english_control_unfused_count: `{entry.get('english_control_unfused_count', 0)}`")
+        lines.append(f"- english_control_fused_count: `{entry.get('english_control_fused_count', 0)}`")
 
         pipeline_field_values: Dict[str, str] = {
             "en_original_raw": en_original_raw,
@@ -1147,6 +1332,8 @@ def _write_mt_success_markdown(
     lines.append(
         f"- parenthesized transport token edges: `{prep_context.get('parenthesized_transport_token_edges', '')}`"
     )
+    lines.append(f"- dedupe identical mt payloads: `{prep_context.get('dedupe_identical_mt_payloads', '')}`")
+    lines.append(f"- deduped duplicate rows saved: `{prep_context.get('deduped_rows_saved', '')}`")
     lines.append("")
 
     _append_mt_pipeline_documentation(
@@ -1166,7 +1353,11 @@ def _write_mt_success_markdown(
         translated_meta = translated_rows.get(item_id, {})
 
         source_masked = job.get("source_masked") or entry.get("source_masked") or ""
-        source_english_raw = entry.get("english") if isinstance(entry.get("english"), str) else ""
+        source_english_raw = (
+            entry.get("english_original")
+            if isinstance(entry.get("english_original"), str)
+            else (entry.get("english") if isinstance(entry.get("english"), str) else "")
+        )
         en_original_raw = source_english_raw
         source_masked_placeholders = source_masked
         en_sent_to_mt_normalized = job.get("transport_payload") or ""
@@ -1174,7 +1365,8 @@ def _write_mt_success_markdown(
         translation_masked_final = translated_meta.get("translation_masked", "")
         de_final_game_ready = ""
         if translation_masked_final:
-            de_final_game_ready = restore_text(translation_masked_final, entry.get("protected", {}))
+            protected_for_restore = job.get("protected") or entry.get("protected", {})
+            de_final_game_ready = restore_text(translation_masked_final, protected_for_restore)
             de_final_game_ready = _compact_empyrion_tag_spacing(de_final_game_ready)
 
         risk_level = entry.get("risk_level", "n/a")
@@ -1191,6 +1383,9 @@ def _write_mt_success_markdown(
         lines.append(f"- risk_flags: `{', '.join(risk_flags) if risk_flags else 'none'}`")
         lines.append(f"- mt_provider: `{translated_meta.get('provider', 'unknown')}`")
         lines.append("- qa_status: `passed`")
+        lines.append(f"- english_control_spacing_mode: `{entry.get('english_control_spacing_mode', 'none')}`")
+        lines.append(f"- english_control_unfused_count: `{entry.get('english_control_unfused_count', 0)}`")
+        lines.append(f"- english_control_fused_count: `{entry.get('english_control_fused_count', 0)}`")
 
         pipeline_field_values: Dict[str, str] = {
             "en_original_raw": en_original_raw,
@@ -1364,31 +1559,50 @@ def _coalesce_transport_token_clusters(
         return translated_text, run_map
 
     token_re = re.compile(TRANSPORT_TOKEN_PATTERN)
+    cluster_sep_pattern = rf"(?:{PLACEHOLDER_CLUSTER_SEPARATOR_PATTERN}|\(\s*{PLACEHOLDER_CLUSTER_SEPARATOR_PATTERN}\s*\))+"
     cluster_re = re.compile(
-        rf"(?P<a>{TRANSPORT_TOKEN_PATTERN})(?P<sep>{PLACEHOLDER_CLUSTER_SEPARATOR_PATTERN})(?P<b>{TRANSPORT_TOKEN_PATTERN})"
+        rf"(?P<a>{TRANSPORT_TOKEN_PATTERN})(?P<sep>{cluster_sep_pattern})(?P<b>{TRANSPORT_TOKEN_PATTERN})"
     )
+
+    def _normalize_cluster_separator(sep: str) -> str:
+        if not sep:
+            return ""
+        normalized = sep
+        if re.search(TRANSPORT_TOKEN_PATTERN, normalized):
+            return normalized
+        if re.search(r"[A-Za-zÀ-ÿ0-9]", normalized):
+            return normalized
+        normalized = normalized.replace("(", "").replace(")", "")
+        normalized = re.sub(r"[ \t]+", " ", normalized)
+        normalized = re.sub(r"\s+([.,:;!?])", r"\1", normalized)
+        return normalized
 
     out_text = translated_text
     out_map = dict(run_map)
     next_idx = _next_transport_token_index(out_map)
+    search_pos = 0
 
     while True:
-        match = cluster_re.search(out_text)
+        match = cluster_re.search(out_text, pos=search_pos)
         if not match:
             break
 
         token_a = match.group("a")
         token_b = match.group("b")
         sep = match.group("sep")
+        normalized_sep = _normalize_cluster_separator(sep)
 
-        if not sep:
-            break
+        if not normalized_sep:
+            search_pos = match.start() + 1
+            continue
 
         if token_a not in out_map or token_b not in out_map:
-            break
+            search_pos = match.start() + 1
+            continue
 
-        if token_re.search(sep):
-            break
+        if token_re.search(normalized_sep):
+            search_pos = match.start() + 1
+            continue
 
         core = f"TKPH{next_idx}TK"
         next_idx += 1
@@ -1397,11 +1611,36 @@ def _coalesce_transport_token_clusters(
         else:
             merged_token = core
 
-        merged_value = f"{out_map[token_a]}{sep}{out_map[token_b]}"
+        merged_value = f"{out_map[token_a]}{normalized_sep}{out_map[token_b]}"
         out_map[merged_token] = merged_value
         out_text = out_text[:match.start()] + merged_token + out_text[match.end():]
+        search_pos = max(0, match.start() - len(merged_token))
 
     return out_text, out_map
+
+
+def _retag_transport_tokens_in_expected_order(
+    text: str,
+    expected_tokens: List[str],
+) -> str:
+    if not text or not expected_tokens:
+        return text
+
+    token_re = re.compile(TRANSPORT_TOKEN_PATTERN)
+    matches = list(token_re.finditer(text))
+    if not matches:
+        return text
+    if len(matches) != len(expected_tokens):
+        return text
+
+    parts: List[str] = []
+    last_end = 0
+    for idx, match in enumerate(matches):
+        parts.append(text[last_end:match.start()])
+        parts.append(expected_tokens[idx])
+        last_end = match.end()
+    parts.append(text[last_end:])
+    return "".join(parts)
 
 
 def _unbundle_placeholders(text: str, bundle_map: Dict[str, str]) -> str:
@@ -1673,6 +1912,7 @@ def _translate_with_provider_limits(
     texts: List[str],
     source_lang: str,
     target_lang: str,
+    call_observer: Callable[..., None] | None = None,
 ) -> List[str]:
     if not texts:
         return []
@@ -1694,9 +1934,22 @@ def _translate_with_provider_limits(
     if provider.name == "easygoogletranslate" and max_text_chars <= 0:
         max_text_chars = 5000
 
+    packed_mode = bool(cfg.get("packed_multi_text_request", False))
+    packed_separator = str(cfg.get("packed_separator_token", "__VBMT_ROW_SEP_9ZQ__"))
+    packed_join_overhead_per_extra_text = len(packed_separator) + 2 if packed_mode else 0
+
+    def _combine_positive_caps(*caps: int) -> int:
+        positive = [cap for cap in caps if cap > 0]
+        return min(positive) if positive else 0
+
+    # For packed provider requests, cap by both request-level and provider text-level limits.
+    # This lets us pre-compute safe row packing before making the request.
+    packed_request_chars_cap = _combine_positive_caps(max_request_chars, max_text_chars)
+    request_chars_cap = packed_request_chars_cap if packed_mode else max_request_chars
+
     segmented_inputs: List[List[str]] = []
-    flat_segments: List[str] = []
-    for text in texts:
+    flat_segments: List[Tuple[int, str]] = []
+    for row_idx, text in enumerate(texts):
         if max_text_chars > 0 and len(text) > max_text_chars:
             if not auto_split_long_texts:
                 raise MTProviderError(
@@ -1712,30 +1965,98 @@ def _translate_with_provider_limits(
             segments = [text]
 
         segmented_inputs.append(segments)
-        flat_segments.extend(segments)
+        for segment in segments:
+            flat_segments.append((row_idx, segment))
 
-    request_batches: List[List[str]] = []
-    current_batch: List[str] = []
+    request_batches: List[List[Tuple[int, str]]] = []
+    current_batch: List[Tuple[int, str]] = []
     current_chars = 0
-    for segment in flat_segments:
+    for row_idx, segment in flat_segments:
         seg_len = len(segment)
         would_exceed_texts = bool(max_request_texts > 0 and len(current_batch) >= max_request_texts)
-        would_exceed_chars = bool(max_request_chars > 0 and current_batch and (current_chars + seg_len > max_request_chars))
+
+        projected_chars = current_chars + seg_len
+        if current_batch and packed_join_overhead_per_extra_text > 0:
+            projected_chars += packed_join_overhead_per_extra_text
+
+        would_exceed_chars = bool(request_chars_cap > 0 and current_batch and (projected_chars > request_chars_cap))
         if would_exceed_texts or would_exceed_chars:
             request_batches.append(current_batch)
             current_batch = []
             current_chars = 0
 
-        current_batch.append(segment)
+        current_batch.append((row_idx, segment))
         current_chars += seg_len
+        if len(current_batch) > 1 and packed_join_overhead_per_extra_text > 0:
+            current_chars += packed_join_overhead_per_extra_text
 
     if current_batch:
         request_batches.append(current_batch)
 
+    def _should_split_batch_on_error(exc: Exception, batch_size: int) -> bool:
+        if batch_size <= 1:
+            return False
+        message = str(exc).lower()
+        if "max 5000 chars per request" in message:
+            return True
+        if isinstance(exc, MTProviderError):
+            if exc.kind in {"request", "service"} and "chars per request" in message:
+                return True
+        return False
+
     flat_outputs: List[str] = []
-    for request_batch in request_batches:
-        translated_batch = provider.translate_batch(request_batch, source_lang, target_lang)
-        if len(translated_batch) != len(request_batch):
+    pending_batches: List[List[Tuple[int, str]]] = list(request_batches)
+    while pending_batches:
+        request_batch = pending_batches.pop(0)
+        request_texts = [segment for _, segment in request_batch]
+        rows_sent = len({row_idx for row_idx, _ in request_batch})
+        words_sent = sum(_count_words_for_stats(text) for text in request_texts)
+        chars_sent = sum(_count_chars_for_stats(text) for text in request_texts)
+        started_ts = _utc_ts()
+        started_perf = time.perf_counter()
+
+        try:
+            translated_batch = provider.translate_batch(request_texts, source_lang, target_lang)
+        except Exception as exc:  # noqa: PERF203
+            if _should_split_batch_on_error(exc, len(request_batch)):
+                split_at = len(request_batch) // 2
+                first_half = request_batch[:split_at]
+                second_half = request_batch[split_at:]
+                _runtime_log(
+                    "WARN",
+                    (
+                        f"{provider.name} request batch overflow; reducing rows and retrying "
+                        f"(old_rows={len(request_batch)} new_rows={len(first_half)}+{len(second_half)})"
+                    ),
+                )
+                pending_batches.insert(0, second_half)
+                pending_batches.insert(0, first_half)
+                continue
+            if call_observer is not None:
+                call_observer(
+                    provider.name,
+                    started_ts=started_ts,
+                    duration_sec=time.perf_counter() - started_perf,
+                    rows_sent=rows_sent,
+                    words_sent=words_sent,
+                    chars_sent=chars_sent,
+                    ok=False,
+                    error=str(exc),
+                )
+            raise
+
+        if call_observer is not None:
+            call_observer(
+                provider.name,
+                started_ts=started_ts,
+                duration_sec=time.perf_counter() - started_perf,
+                rows_sent=rows_sent,
+                words_sent=words_sent,
+                chars_sent=chars_sent,
+                ok=True,
+            )
+
+        if len(translated_batch) != len(request_texts):
             raise MTProviderError(
                 f"{provider.name} response size mismatch after request chunking",
                 kind="service",
@@ -1772,6 +2093,10 @@ def _count_words_for_stats(text: str) -> int:
     return len(re.findall(r"[A-Za-zÀ-ÿ0-9']+", text or ""))
 
 
+def _count_chars_for_stats(text: str) -> int:
+    return len(text or "")
+
+
 def _deep_merge_dict(base: dict, override: dict) -> dict:
     merged = dict(base)
     for key, value in override.items():
@@ -1800,6 +2125,21 @@ def _load_mt_config(path: Path, local_override_path: Path | None = None) -> dict
         data = _deep_merge_dict(data, local_data)
 
     return data
+
+
+def _read_mt_settings_for_non_mt_commands(
+    mt_config_path: str,
+    mt_local_config_path: str,
+) -> dict:
+    primary_path = Path(mt_config_path)
+    local_path = Path(mt_local_config_path) if mt_local_config_path else None
+
+    if not primary_path.exists():
+        return {}
+
+    config = _load_mt_config(primary_path, local_override_path=local_path)
+    mt_cfg = config.get("mt", {})
+    return mt_cfg if isinstance(mt_cfg, dict) else {}
 
 
 class MTProviderError(RuntimeError):
@@ -1928,20 +2268,11 @@ class GoogleProvider(BaseMTProvider):
 
 
 class EasyGoogleTranslateProvider(BaseMTProvider):
-    def translate_batch(self, texts: List[str], source_lang: str, target_lang: str) -> List[str]:
-        if not texts:
-            return []
-        timeout = int(self.config.get("timeout", 15))
-
-        try:
-            translator = GoogleMobileTranslate(
-                source_language=source_lang.lower(),
-                target_language=target_lang.lower(),
-                timeout=timeout,
-            )
-        except Exception as exc:
-            raise MTProviderError(f"easygoogletranslate init failed: {exc}", kind="config", retryable=False) from exc
-
+    def _translate_per_text(
+        self,
+        translator: GoogleMobileTranslate,
+        texts: List[str],
+    ) -> List[str]:
         outputs: List[str] = []
         for text in texts:
             try:
@@ -1959,6 +2290,65 @@ class EasyGoogleTranslateProvider(BaseMTProvider):
                     retryable=True,
                 ) from exc
         return outputs
+
+    def _translate_packed(
+        self,
+        translator: GoogleMobileTranslate,
+        texts: List[str],
+    ) -> List[str]:
+        separator = str(self.config.get("packed_separator_token", "__VBMT_ROW_SEP_9ZQ__"))
+        packed_payload = f"\n{separator}\n".join(texts)
+
+        try:
+            translated_packed = translator.translate(packed_payload)
+        except GoogleMobileTranslateError as exc:
+            raise MTProviderError(
+                f"easygoogletranslate (google-mobile) packed request failed: {exc}",
+                kind=exc.kind,
+                retryable=exc.retryable,
+            ) from exc
+        except Exception as exc:
+            raise MTProviderError(
+                f"easygoogletranslate (google-mobile) packed request failed: {exc}",
+                kind="service",
+                retryable=True,
+            ) from exc
+
+        translated_parts = translated_packed.split(separator)
+        if len(translated_parts) != len(texts):
+            fallback_per_text = bool(self.config.get("packed_fallback_to_per_text", True))
+            if fallback_per_text:
+                return self._translate_per_text(translator, texts)
+            raise MTProviderError(
+                (
+                    "easygoogletranslate packed response split mismatch: "
+                    f"expected={len(texts)} got={len(translated_parts)}"
+                ),
+                kind="service",
+                retryable=True,
+            )
+
+        return translated_parts
+
+    def translate_batch(self, texts: List[str], source_lang: str, target_lang: str) -> List[str]:
+        if not texts:
+            return []
+        timeout = int(self.config.get("timeout", 15))
+
+        try:
+            translator = GoogleMobileTranslate(
+                source_language=source_lang.lower(),
+                target_language=target_lang.lower(),
+                timeout=timeout,
+            )
+        except Exception as exc:
+            raise MTProviderError(f"easygoogletranslate init failed: {exc}", kind="config", retryable=False) from exc
+
+        packed_mode = bool(self.config.get("packed_multi_text_request", False))
+        if packed_mode and len(texts) > 1:
+            return self._translate_packed(translator, texts)
+
+        return self._translate_per_text(translator, texts)
 
 
 def _build_provider(name: str, providers_cfg: dict) -> BaseMTProvider:
@@ -1999,11 +2389,18 @@ def _translate_with_retry(
     target_lang: str,
     max_attempts: int,
     base_backoff: float,
+    call_observer: Callable[..., None] | None = None,
 ) -> List[str]:
     last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
-            return _translate_with_provider_limits(provider, texts, source_lang, target_lang)
+            return _translate_with_provider_limits(
+                provider,
+                texts,
+                source_lang,
+                target_lang,
+                call_observer=call_observer,
+            )
         except MTProviderError as exc:  # noqa: PERF203
             last_error = exc
             if not exc.retryable or exc.kind == "quota":
@@ -2042,6 +2439,43 @@ def _probe_provider(provider: BaseMTProvider, source_lang: str, target_lang: str
         return False, "", str(exc)
 
 
+def _build_scheduler_batches(
+    translation_jobs: List[dict],
+    *,
+    max_rows_per_batch: int,
+    max_chars_per_batch: int,
+) -> List[List[dict]]:
+    if not translation_jobs:
+        return []
+
+    row_cap = max(0, int(max_rows_per_batch or 0))
+    char_cap = max(0, int(max_chars_per_batch or 0))
+
+    batches: List[List[dict]] = []
+    current_batch: List[dict] = []
+    current_chars = 0
+
+    for job in translation_jobs:
+        payload = str(job.get("transport_payload", ""))
+        payload_chars = len(payload)
+
+        would_exceed_rows = bool(row_cap > 0 and len(current_batch) >= row_cap)
+        would_exceed_chars = bool(char_cap > 0 and current_batch and (current_chars + payload_chars > char_cap))
+
+        if would_exceed_rows or would_exceed_chars:
+            batches.append(current_batch)
+            current_batch = []
+            current_chars = 0
+
+        current_batch.append(job)
+        current_chars += payload_chars
+
+    if current_batch:
+        batches.append(current_batch)
+
+    return batches
+
+
 def cmd_translate_mt(args: argparse.Namespace) -> None:
     _log_step("translate-mt start")
     _log_step("loading MT config")
@@ -2069,18 +2503,37 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
 
     source_lang = args.source_lang or mt_cfg.get("source_lang", "EN")
     target_lang = args.target_lang or mt_cfg.get("target_lang", "DE")
-    batch_size = int(args.batch_size or mt_cfg.get("batch_size", 20))
+    batch_size_cfg = int(mt_cfg.get("batch_size", 20))
+    batch_size = batch_size_cfg if args.batch_size is None else int(args.batch_size)
+    batch_size = max(0, batch_size)
+    batch_max_chars_cfg = int(mt_cfg.get("batch_max_chars", 0))
+    batch_max_chars = batch_max_chars_cfg if args.batch_max_chars is None else int(args.batch_max_chars)
+    batch_max_chars = max(0, batch_max_chars)
+    dynamic_provider_call_batching_cfg = bool(mt_cfg.get("dynamic_provider_call_batching", False))
+    dynamic_provider_call_batching = (
+        dynamic_provider_call_batching_cfg
+        if args.dynamic_provider_call_batching is None
+        else bool(args.dynamic_provider_call_batching)
+    )
     max_parallel_per_provider = int(args.max_parallel or mt_cfg.get("max_parallel_per_provider", 2))
-    max_attempts = int(mt_cfg.get("max_attempts", 3))
+    max_attempts = int(args.mt_error_max_attempts or mt_cfg.get("max_attempts", 3))
     backoff_seconds = float(mt_cfg.get("base_backoff_seconds", 1.0))
     rate_limit_cooldown_seconds = int(mt_cfg.get("rate_limit_cooldown_seconds", 120))
     rate_limit_cooldown_max_seconds = int(mt_cfg.get("rate_limit_cooldown_max_seconds", 900))
     parenthesized_transport_token_edges = bool(mt_cfg.get("parenthesized_transport_token_edges", True))
     if args.parenthesized_transport_token_edges is not None:
         parenthesized_transport_token_edges = bool(args.parenthesized_transport_token_edges)
-    max_batch_attempts = int(mt_cfg.get("max_batch_attempts", 0))
+    max_provider_error_batch_attempts = int(
+        args.provider_error_batch_max_attempts
+        or mt_cfg.get("provider_error_batch_max_attempts", 3)
+    )
+    max_qa_failure_batch_attempts = int(
+        args.qa_failure_batch_max_attempts
+        or mt_cfg.get("qa_failure_batch_max_attempts", 1)
+    )
     status_interval_seconds = max(5, int(mt_cfg.get("status_interval_seconds", 30)))
     checkpoint_every_batches = max(1, int(mt_cfg.get("checkpoint_every_batches", 1)))
+    dedupe_identical_mt_payloads = bool(mt_cfg.get("dedupe_identical_mt_payloads", True))
 
     _log_step(f"reading input JSONL: {args.input}")
     entries = _read_jsonl(Path(args.input))
@@ -2116,6 +2569,28 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
             f"KEY filter enabled: selected {len(entries)} rows for {len(requested_keys)} key(s)"
         )
 
+    requested_ids = _parse_id_filters(args.ids, args.ids_file)
+    if requested_ids:
+        requested_id_set = set(requested_ids)
+        filtered_entries = []
+        found_ids: Set[str] = set()
+        for entry in entries:
+            entry_id = entry.get("id")
+            if entry_id in requested_id_set:
+                filtered_entries.append(entry)
+                found_ids.add(entry_id)
+
+        missing_ids = sorted(requested_id_set - found_ids)
+        if missing_ids:
+            raise ValueError(
+                "Requested ID(s) not found in input JSONL: " + ", ".join(missing_ids)
+            )
+
+        entries = filtered_entries
+        _log_step(
+            f"ID filter enabled: selected {len(entries)} rows for {len(requested_ids)} id(s)"
+        )
+
     entries_by_id: Dict[str, dict] = {
         entry.get("id"): entry for entry in entries if isinstance(entry.get("id"), str) and entry.get("id")
     }
@@ -2138,6 +2613,10 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
 
     source_field = args.source_field
     patterns = _build_patterns(None)
+    if source_field == "source_masked":
+        _log_step(
+            "source_masked mode: using exported source_masked/protected mapping as canonical input"
+        )
     jobs: List[dict] = []
     for entry in entries:
         source_value = entry.get(source_field)
@@ -2147,20 +2626,24 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
 
         protected_map: Dict[str, str] = {}
         source_masked = entry.get("source_masked")
-        if (
-            source_field == "source_masked"
-            and isinstance(source_masked, str)
-            and source_masked.strip()
-        ):
-            masked_for_mt = source_masked
+        if source_field == "source_masked":
+            if not isinstance(source_masked, str) or not source_masked.strip():
+                raise ValueError(
+                    f"source_masked mode requires source_masked for id={item_id}"
+                )
+
             protected_raw = entry.get("protected")
-            if isinstance(protected_raw, dict):
-                protected_map = {
-                    str(token): str(value)
-                    for token, value in protected_raw.items()
-                    if isinstance(token, str)
-                }
-                masked_for_mt = _normalize_italics_in_masked_source(masked_for_mt, protected_map)
+            if not isinstance(protected_raw, dict) or not protected_raw:
+                raise ValueError(
+                    f"source_masked mode requires protected mapping for id={item_id}; re-export input first"
+                )
+
+            protected_map = {
+                str(token): str(value)
+                for token, value in protected_raw.items()
+                if isinstance(token, str)
+            }
+            masked_for_mt = _normalize_italics_in_masked_source(source_masked, protected_map)
         else:
             source_for_mt = _normalize_inline_italics_markup(source_value)
             masked_for_mt, protected_map = protect_text(source_for_mt, patterns)
@@ -2174,12 +2657,15 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
             protected_map,
             parenthesized_transport_token_edges=parenthesized_transport_token_edges,
         )
+        expected_transport_tokens = re.findall(TRANSPORT_TOKEN_PATTERN, transport_payload)
         jobs.append(
             {
                 "id": item_id,
                 "source_masked": expected_masked,
+                "protected": dict(protected_map),
                 "transport_payload": transport_payload,
                 "transport_run_map": transport_run_map,
+                "expected_transport_tokens": expected_transport_tokens,
                 "ordered_newline_tokens": ordered_newline_tokens,
                 "masked_with_newlines": masked_with_newlines,
                 "expected_tokens": _extract_token_sequence(expected_masked),
@@ -2229,11 +2715,70 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                 f"resume mode: loaded {len(resumed_translated_rows)} translated rows from {resume_source}"
             )
 
+    promoted_existing_failures: List[dict] = []
+    if args.promote_failures_from:
+        promote_source = Path(args.promote_failures_from)
+        if not promote_source.exists():
+            raise FileNotFoundError(f"Promotion source not found: {promote_source}")
+        promote_rows = _read_jsonl(promote_source, strict=False)
+        for row in promote_rows:
+            item_id = row.get("id")
+            translation_masked = row.get("translation_masked")
+            if not isinstance(item_id, str) or not item_id:
+                continue
+            if not isinstance(translation_masked, str) or not translation_masked.strip():
+                continue
+            if item_id in resumed_translated_rows:
+                continue
+
+            resumed_translated_rows[item_id] = {
+                "translation_provider_raw": row.get("translation_provider_raw", ""),
+                "translation_masked": translation_masked,
+                "provider": row.get("provider", "accepted_failure"),
+                "qa_status": "accepted_failure",
+            }
+            promoted_existing_failures.append(row)
+
+        _log_step(
+            f"promotion mode: loaded {len(promoted_existing_failures)} rows from failures file {promote_source}"
+        )
+
     if resumed_translated_rows:
         remaining_jobs = [job for job in jobs if job["id"] not in resumed_translated_rows]
         skipped_count = len(jobs) - len(remaining_jobs)
         jobs = remaining_jobs
         _log_step(f"resume mode: skipping {skipped_count} already translated jobs; remaining {len(jobs)}")
+
+    translation_jobs: List[dict] = list(jobs)
+    deduped_rows_saved = 0
+    if dedupe_identical_mt_payloads and translation_jobs:
+        groups: Dict[str, List[dict]] = {}
+        for job in translation_jobs:
+            groups.setdefault(job.get("transport_payload", ""), []).append(job)
+
+        deduped_jobs: List[dict] = []
+        for members in groups.values():
+            representative = dict(members[0])
+            representative["member_jobs"] = members
+            representative["dedupe_member_count"] = len(members)
+            deduped_jobs.append(representative)
+
+        deduped_rows_saved = len(translation_jobs) - len(deduped_jobs)
+        translation_jobs = deduped_jobs
+        if deduped_rows_saved > 0:
+            _log_step(
+                "dedupe enabled: "
+                f"{len(jobs)} logical rows collapsed to {len(translation_jobs)} MT requests "
+                f"(saved {deduped_rows_saved} duplicate request rows)"
+            )
+
+    if args.promote_failures_only:
+        if jobs:
+            raise ValueError(
+                "promote-failures-only requested, but some rows remain untranslated "
+                f"({len(jobs)} remaining). Provide a complete resume/promotion source or disable --promote-failures-only."
+            )
+        _log_step("promote-failures-only enabled: MT translation stage skipped")
 
     if not args.resume and not args.resume_from_output:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2265,11 +2810,42 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
         + ", ".join(f"{name}(w={provider_weights.get(name, 1)})" for name in enabled_provider_order)
     )
 
-    batches = [jobs[i:i + batch_size] for i in range(0, len(jobs), batch_size)]
-    _log_step(f"created {len(batches)} batches (batch_size={batch_size})")
+    if dynamic_provider_call_batching:
+        batches = [translation_jobs] if translation_jobs else []
+        _log_step(
+            "dynamic provider-call batching enabled: scheduler uses provider hard-limit packing "
+            "(mt.batch_size and mt.batch_max_chars are ignored)"
+        )
+        _log_step(f"created {len(batches)} scheduler batch(es) in dynamic mode")
+    else:
+        batches = _build_scheduler_batches(
+            translation_jobs,
+            max_rows_per_batch=batch_size,
+            max_chars_per_batch=batch_max_chars,
+        )
+        if batch_max_chars > 0 and batch_size > 0:
+            _log_step(
+                f"created {len(batches)} batches "
+                f"(row_cap={batch_size}, char_cap={batch_max_chars})"
+            )
+        elif batch_max_chars > 0:
+            _log_step(f"created {len(batches)} batches (char_cap={batch_max_chars}, row_cap=unlimited)")
+        elif batch_size > 0:
+            _log_step(f"created {len(batches)} batches (row_cap={batch_size})")
+        else:
+            _log_step(f"created {len(batches)} batches (single-batch mode)")
 
     translated_rows: Dict[str, dict] = dict(resumed_translated_rows)
     jobs_by_id: Dict[str, dict] = {job["id"]: job for job in all_jobs}
+    logical_row_words_by_id: Dict[str, int] = {
+        job["id"]: _count_words_for_stats(job.get("transport_payload", ""))
+        for job in all_jobs
+    }
+    total_scope_rows = len(all_jobs)
+    total_scope_words = sum(logical_row_words_by_id.values())
+    translated_words_done = sum(
+        logical_row_words_by_id.get(item_id, 0) for item_id in translated_rows.keys()
+    )
     failures: List[dict] = []
     accepted_failures: List[dict] = []
     batch_attempts: Dict[int, int] = {}
@@ -2329,6 +2905,7 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
             "rows_ok": 0,
             "rows_failed": 0,
             "words_total": 0,
+            "chars_total": 0,
             "response_sec_total": 0.0,
             "response_sec_min": None,
             "response_sec_max": None,
@@ -2338,12 +2915,33 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
     }
     call_log: List[dict] = []
 
-    def _record_call(provider_name: str, *, started_ts: str, duration_sec: float, rows_sent: int, words_sent: int, ok: bool, error: str = "") -> None:
+    def _record_call(
+        provider_name: str,
+        *,
+        started_ts: str,
+        duration_sec: float,
+        rows_sent: int,
+        words_sent: int,
+        chars_sent: int,
+        ok: bool,
+        error: str = "",
+    ) -> None:
+        event_payload = {
+            "ts": started_ts,
+            "provider": provider_name,
+            "rows": rows_sent,
+            "words": words_sent,
+            "chars": chars_sent,
+            "duration_sec": round(duration_sec, 3),
+            "ok": ok,
+            "error": error,
+        }
         with telemetry_lock:
             stats = provider_stats[provider_name]
             stats["calls"] += 1
             stats["rows_total"] += rows_sent
             stats["words_total"] += words_sent
+            stats["chars_total"] += chars_sent
             stats["response_sec_total"] += duration_sec
             if stats["response_sec_min"] is None or duration_sec < stats["response_sec_min"]:
                 stats["response_sec_min"] = duration_sec
@@ -2355,24 +2953,17 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                 stats["calls_error"] += 1
                 stats["last_error"] = error
 
-            call_log.append(
-                {
-                    "ts": started_ts,
-                    "provider": provider_name,
-                    "rows": rows_sent,
-                    "words": words_sent,
-                    "duration_sec": round(duration_sec, 3),
-                    "ok": ok,
-                    "error": error,
-                }
-            )
+            call_log.append(event_payload)
+
+        err = f" error={error}" if error else ""
+        _runtime_log(
+            "INFO",
+            f"{started_ts} provider={provider_name} rows={rows_sent} "
+            f"words={words_sent} chars={chars_sent} duration_sec={duration_sec:.3f} ok={ok}{err}",
+        )
 
     def process_batch_with_provider(batch_index: int, batch: List[dict], provider: BaseMTProvider) -> dict:
         texts = [item["transport_payload"] for item in batch]
-        rows_sent = len(texts)
-        words_sent = sum(_count_words_for_stats(text) for text in texts)
-        started_ts = _utc_ts()
-        started_perf = time.perf_counter()
         try:
             outputs = _translate_with_retry(
                 provider,
@@ -2381,77 +2972,67 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                 target_lang=target_lang,
                 max_attempts=max_attempts,
                 base_backoff=backoff_seconds,
-            )
-            _record_call(
-                provider.name,
-                started_ts=started_ts,
-                duration_sec=time.perf_counter() - started_perf,
-                rows_sent=rows_sent,
-                words_sent=words_sent,
-                ok=True,
+                call_observer=_record_call,
             )
         except Exception as exc:  # noqa: PERF203
-            _record_call(
-                provider.name,
-                started_ts=started_ts,
-                duration_sec=time.perf_counter() - started_perf,
-                rows_sent=rows_sent,
-                words_sent=words_sent,
-                ok=False,
-                error=str(exc),
-            )
             raise
 
         result_rows: List[dict] = []
         placeholder_error = False
         for item, output in zip(batch, outputs):
-            output_sanitized = _remove_token_hyphenation_artifacts(
-                output,
-                token_pattern=rf"{TRANSPORT_TOKEN_PATTERN}|__(?:PH|BPH)_\d+__",
-            )
-            output_compacted, compacted_run_map = _coalesce_transport_token_clusters(
-                output_sanitized,
-                item.get("transport_run_map", {}),
-            )
-            unbundled = _restore_direct_tkbph_transport(
-                output_compacted,
-                compacted_run_map,
-                item.get("ordered_newline_tokens", []),
-            )
-            unbundled = _apply_source_placeholder_boundary_spacing(
-                unbundled,
-                item.get("source_masked", ""),
-            )
-            token_seq_full = _extract_token_sequence(unbundled)
-            newline_placeholder_tokens = set(item.get("newline_placeholder_tokens", []))
-            token_seq = _filter_newline_placeholders(token_seq_full, newline_placeholder_tokens)
-            expected_tokens_for_qa = item.get("expected_tokens_for_qa", item["expected_tokens"])
-            if token_seq != expected_tokens_for_qa:
-                placeholder_error = True
-                qa_error = _classify_placeholder_mismatch(expected_tokens_for_qa, token_seq)
+            member_jobs = item.get("member_jobs") or [item]
+            for member in member_jobs:
+                output_sanitized = _remove_token_hyphenation_artifacts(
+                    output,
+                    token_pattern=rf"{TRANSPORT_TOKEN_PATTERN}|__(?:PH|BPH)_\d+__",
+                )
+                output_retagged = _retag_transport_tokens_in_expected_order(
+                    output_sanitized,
+                    member.get("expected_transport_tokens", []),
+                )
+                output_compacted, compacted_run_map = _coalesce_transport_token_clusters(
+                    output_retagged,
+                    member.get("transport_run_map", {}),
+                )
+                unbundled = _restore_direct_tkbph_transport(
+                    output_compacted,
+                    compacted_run_map,
+                    member.get("ordered_newline_tokens", []),
+                )
+                unbundled = _apply_source_placeholder_boundary_spacing(
+                    unbundled,
+                    member.get("source_masked", ""),
+                )
+                token_seq_full = _extract_token_sequence(unbundled)
+                newline_placeholder_tokens = set(member.get("newline_placeholder_tokens", []))
+                token_seq = _filter_newline_placeholders(token_seq_full, newline_placeholder_tokens)
+                expected_tokens_for_qa = member.get("expected_tokens_for_qa", member["expected_tokens"])
+                if token_seq != expected_tokens_for_qa:
+                    placeholder_error = True
+                    qa_error = _classify_placeholder_mismatch(expected_tokens_for_qa, token_seq)
 
-                result_rows.append(
-                    {
-                        "id": item["id"],
-                        "ok": False,
-                        "qa_status": "failed",
-                        "qa_error": qa_error,
-                        "translation_provider_raw": output,
-                        "translation_masked": unbundled,
-                        "provider": provider.name,
-                    }
-                )
-            else:
-                result_rows.append(
-                    {
-                        "id": item["id"],
-                        "ok": True,
-                        "translation_provider_raw": output,
-                        "translation_masked": unbundled,
-                        "provider": provider.name,
-                        "qa_status": "passed",
-                    }
-                )
+                    result_rows.append(
+                        {
+                            "id": member["id"],
+                            "ok": False,
+                            "qa_status": "failed",
+                            "qa_error": qa_error,
+                            "translation_provider_raw": output,
+                            "translation_masked": unbundled,
+                            "provider": provider.name,
+                        }
+                    )
+                else:
+                    result_rows.append(
+                        {
+                            "id": member["id"],
+                            "ok": True,
+                            "translation_provider_raw": output,
+                            "translation_masked": unbundled,
+                            "provider": provider.name,
+                            "qa_status": "passed",
+                        }
+                    )
 
         if placeholder_error:
             return {
@@ -2472,7 +3053,7 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
             "message": "",
         }
 
-    pending = list(range(len(batches)))
+    pending = [] if args.promote_failures_only else list(range(len(batches)))
     inflight: Dict[object, Tuple[int, str]] = {}
     rr_index = 0
     weighted_cycle: List[str] = []
@@ -2484,11 +3065,16 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
         while pending or inflight:
             now_ts = time.time()
             if now_ts >= next_status_log_ts:
+                rows_done = len(translated_rows)
+                rows_remaining = max(0, total_scope_rows - rows_done)
+                words_done = max(0, translated_words_done)
+                words_remaining = max(0, total_scope_words - words_done)
                 _runtime_log(
-                    "DEBUG",
-                    "scheduler_status "
-                    f"pending={len(pending)} inflight={len(inflight)} "
-                    f"translated={len(translated_rows)} failures={len(failures)} "
+                    "INFO",
+                    "heartbeat "
+                    f"rows_done={rows_done}/{total_scope_rows} rows_remaining={rows_remaining} "
+                    f"words_done={words_done}/{total_scope_words} words_remaining={words_remaining} "
+                    f"pending={len(pending)} inflight={len(inflight)} failures={len(failures)} "
                     f"temporary_disabled={len(temporarily_disabled_until)} "
                     f"permanent_disabled={len(permanently_disabled_providers)}",
                 )
@@ -2622,6 +3208,7 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                             "qa_status": row.get("qa_status", "passed"),
                         }
                         if is_new:
+                            translated_words_done += logical_row_words_by_id.get(row["id"], 0)
                             newly_completed_for_batch += 1
                             checkpoint_rows_pending.append(
                                 {
@@ -2650,6 +3237,7 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                                 "qa_status": row.get("qa_status", "passed"),
                             }
                             if is_new:
+                                translated_words_done += logical_row_words_by_id.get(row["id"], 0)
                                 newly_completed_for_batch += 1
                                 checkpoint_rows_pending.append(
                                     {
@@ -2731,7 +3319,17 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                 untried_active_providers = [
                     provider for provider in active_after_disable if provider.name not in tried_for_batch
                 ]
-                has_attempt_budget = (max_batch_attempts <= 0) or (attempt_count < max_batch_attempts)
+                if row_failures:
+                    has_attempt_budget = (
+                        max_qa_failure_batch_attempts <= 0
+                        or attempt_count < max_qa_failure_batch_attempts
+                    )
+                else:
+                    has_attempt_budget = (
+                        max_provider_error_batch_attempts <= 0
+                        or attempt_count < max_provider_error_batch_attempts
+                    )
+
                 if row_failures and len(available_after_disable) <= 1:
                     same_failure_streak = batch_same_failure_streak.get(batch_index, 0)
                     if same_failure_streak >= 3:
@@ -2782,7 +3380,11 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
 
     flush_translation_checkpoint(force=True)
 
-    if args.treat_remaining_failures_as_ok and failures:
+    treat_remaining_failures_as_ok = bool(mt_cfg.get("treat_remaining_failures_as_ok", False))
+    if args.treat_remaining_failures_as_ok is not None:
+        treat_remaining_failures_as_ok = bool(args.treat_remaining_failures_as_ok)
+
+    if treat_remaining_failures_as_ok and failures:
         for failure in failures:
             item_id = failure.get("id")
             translation_masked = failure.get("translation_masked")
@@ -2791,12 +3393,15 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
             if not isinstance(translation_masked, str) or not translation_masked.strip():
                 continue
 
+            was_translated = item_id in translated_rows
             translated_rows[item_id] = {
                 "translation_provider_raw": failure.get("translation_provider_raw", ""),
                 "translation_masked": translation_masked,
                 "provider": failure.get("provider", "accepted_failure"),
                 "qa_status": "accepted_failure",
             }
+            if not was_translated:
+                translated_words_done += logical_row_words_by_id.get(item_id, 0)
             accepted_failures.append(failure)
 
         if accepted_failures:
@@ -2815,6 +3420,8 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                     "translation_provider_raw": translated_meta.get("translation_provider_raw", ""),
                     "translation_masked": translated_meta["translation_masked"],
                     "provider": translated_meta.get("provider", "unknown"),
+                    "source_masked": job.get("source_masked", ""),
+                    "protected": dict(job.get("protected") or {}),
                 }
             )
 
@@ -2841,9 +3448,16 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
             "[WARN] Disabled providers due to limits/errors: "
             + ", ".join(f"{name}({reason})" for name, reason in disabled_providers.items())
         )
-    print(f"[INFO] Input rows considered: {len(jobs)}")
+    print(f"[INFO] Input rows considered: {len(all_jobs)}")
+    if dedupe_identical_mt_payloads:
+        print(
+            f"[INFO] MT request dedupe: unique_requests={len(translation_jobs)} "
+            f"saved_duplicate_rows={deduped_rows_saved}"
+        )
     print(f"[INFO] Successfully translated: {len(ordered_out)}")
-    if args.treat_remaining_failures_as_ok:
+    if promoted_existing_failures:
+        print(f"[INFO] Promoted existing failures from JSONL: {len(promoted_existing_failures)}")
+    if treat_remaining_failures_as_ok:
         print(f"[INFO] Accepted failed rows as OK: {len(accepted_failures)}")
     print(f"[INFO] Failed rows: {len(failures)}")
     print(f"[INFO] Wrote translated JSONL: {args.output}")
@@ -2892,8 +3506,17 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
         "source_lang": source_lang,
         "target_lang": target_lang,
         "batch_size": str(batch_size),
+        "batch_max_chars": str(batch_max_chars),
         "max_parallel": str(max_parallel_per_provider),
+        "max_attempts": str(max_attempts),
+        "provider_error_batch_max_attempts": str(max_provider_error_batch_attempts),
+        "qa_failure_batch_max_attempts": str(max_qa_failure_batch_attempts),
+        "promote_failures_from": str(args.promote_failures_from or ""),
+        "promote_failures_only": str(bool(args.promote_failures_only)),
+        "treat_remaining_failures_as_ok": str(treat_remaining_failures_as_ok),
         "parenthesized_transport_token_edges": str(parenthesized_transport_token_edges),
+        "dedupe_identical_mt_payloads": str(dedupe_identical_mt_payloads),
+        "deduped_rows_saved": str(deduped_rows_saved),
     }
     translation_success_report_output = Path(args.translation_success_report)
     _write_mt_success_markdown(
@@ -2932,24 +3555,19 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
         calls = max(1, stats["calls"])
         avg_rows = stats["rows_total"] / calls
         avg_words = stats["words_total"] / calls
+        avg_chars = stats["chars_total"] / calls
         avg_sec = stats["response_sec_total"] / calls
         print(
             f"[INFO]   {provider_name}: calls={stats['calls']} ok={stats['calls_ok']} error={stats['calls_error']} "
             f"rows_total={stats['rows_total']} rows/req={avg_rows:.2f} words_total={stats['words_total']} "
-            f"words/req={avg_words:.2f} sec_total={stats['response_sec_total']:.3f} sec/req={avg_sec:.3f} "
+            f"words/req={avg_words:.2f} chars_total={stats['chars_total']} chars/req={avg_chars:.2f} "
+            f"sec_total={stats['response_sec_total']:.3f} sec/req={avg_sec:.3f} "
             f"sec_min={stats['response_sec_min'] if stats['response_sec_min'] is not None else 0:.3f} "
             f"sec_max={stats['response_sec_max'] if stats['response_sec_max'] is not None else 0:.3f}"
         )
         if stats.get("last_error"):
             print(f"[WARN]   {provider_name} last_error={stats['last_error']}")
 
-    print("[INFO] MT request call log:")
-    for event in call_log:
-        err = f" error={event['error']}" if event.get("error") else ""
-        print(
-            f"[INFO]   {event['ts']} provider={event['provider']} rows={event['rows']} words={event['words']} "
-            f"duration_sec={event['duration_sec']:.3f} ok={event['ok']}{err}"
-        )
     _log_step("translate-mt finished")
 
 
@@ -3208,6 +3826,8 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
     patterns = _build_patterns(pattern_file)
     glossary = load_glossary(glossary_file)
+    mt_cfg = _read_mt_settings_for_non_mt_commands(args.mt_config, args.mt_local_config)
+    persist_normalized_english = bool(mt_cfg.get("persist_normalized_english_in_output_csv", True))
 
     exported = {entry["id"]: entry for entry in _read_jsonl(export_file)}
     translated = {entry["id"]: entry for entry in _read_jsonl(translated_file)}
@@ -3234,13 +3854,48 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
                 current_de = row.get("Deutsch") or ""
                 source_en = row.get("English") or ""
+                normalized_en = exp.get("english") if isinstance(exp.get("english"), str) else source_en
+                english_changed = False
+                if (
+                    persist_normalized_english
+                    and isinstance(normalized_en, str)
+                    and normalized_en
+                    and normalized_en != source_en
+                ):
+                    row["English"] = normalized_en
+                    english_changed = True
+
                 source_norm = _normalize_text(source_en)
 
                 new_de = None
                 translated_entry = translated.get(cid)
                 if translated_entry and translated_entry.get("translation_masked"):
                     masked = translated_entry["translation_masked"]
-                    restored = restore_text(masked, exp.get("protected", {}))
+                    translated_protected = translated_entry.get("protected")
+                    exp_protected = exp.get("protected", {})
+
+                    candidate_maps: List[Dict[str, str]] = []
+                    if isinstance(translated_protected, dict) and translated_protected:
+                        candidate_maps.append(translated_protected)
+                    if isinstance(exp_protected, dict):
+                        if not candidate_maps or exp_protected != candidate_maps[0]:
+                            candidate_maps.append(exp_protected)
+                    if not candidate_maps:
+                        candidate_maps.append({})
+
+                    best_restored = ""
+                    best_leak_score = None
+                    for protected_for_restore in candidate_maps:
+                        candidate_restored = restore_text(masked, protected_for_restore)
+                        leak_score = (
+                            len(re.findall(r"__(?:PH|BPH)_\d+__", candidate_restored))
+                            + len(re.findall(TRANSPORT_TOKEN_PATTERN, candidate_restored))
+                        )
+                        if best_leak_score is None or leak_score < best_leak_score:
+                            best_leak_score = leak_score
+                            best_restored = candidate_restored
+
+                    restored = best_restored
                     restored = _compact_empyrion_tag_spacing(restored)
                     new_de = enforce_glossary(restored, glossary)
                 elif source_norm in memory:
@@ -3252,7 +3907,28 @@ def cmd_apply(args: argparse.Namespace) -> None:
                     if set(old_tokens.values()) - set(new_tokens.values()):
                         continue
                     row["Deutsch"] = new_de
-                    rep_writer.writerow([file_name, idx, key, exp["status"], current_de, new_de, source_en])
+                    status_label = exp["status"]
+                    if english_changed:
+                        status_label = f"{status_label}+english_normalized"
+                    rep_writer.writerow([
+                        file_name,
+                        idx,
+                        key,
+                        status_label,
+                        current_de,
+                        new_de,
+                        row.get("English") or "",
+                    ])
+                elif english_changed:
+                    rep_writer.writerow([
+                        file_name,
+                        idx,
+                        key,
+                        "english_normalized",
+                        current_de,
+                        current_de,
+                        row.get("English") or "",
+                    ])
 
             output_path = out_dir / f"{Path(file_name).stem}.de.completed.csv"
             with output_path.open("w", encoding="utf-8", newline="") as out_handle:
@@ -3480,6 +4156,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("--output", default="./reports/translation_units.jsonl")
     p_export.add_argument("--pattern-file", default="./protect_patterns.txt")
     p_export.add_argument(
+        "--mt-config",
+        default="./mt.toml",
+        help="Optional MT TOML source for export-time control-tag spacing settings (if file exists).",
+    )
+    p_export.add_argument(
+        "--mt-local-config",
+        default="./mt.local.toml",
+        help="Optional local MT TOML override merged on top of --mt-config for export settings.",
+    )
+    p_export.add_argument(
         "--high-risk-report",
         default="./reports/high_risk_samples.csv",
         help="Optional CSV report of highest-risk entries for developer quality spot checks.",
@@ -3606,7 +4292,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  python3 empyrion_localize.py translate-mt --input ./reports/translation_units.risk.v2.jsonl --output ./reports/translations.mt.jsonl --target-lang DE --resume\n"
             "  python3 empyrion_localize.py translate-mt --input ./reports/translation_units.risk.v2.jsonl --output ./reports/translations.mt.keys.jsonl --keys dialogue_iKK4CKC eden_pda_eGSGG --resume\n"
-            "  python3 empyrion_localize.py translate-mt --input ./reports/translation_units.risk.v2.jsonl --output ./reports/translations.mt.sample10.jsonl --sample-mode --sample-size 10 --resume"
+            "  python3 empyrion_localize.py translate-mt --input ./reports/translation_units.risk.v2.jsonl --output ./reports/translations.mt.sample10.jsonl --sample-mode --sample-size 10 --resume\n"
+            "  python3 empyrion_localize.py translate-mt --input ./reports/translation_units.risk.v2.jsonl --output ./reports/translations.mt.full.jsonl --resume-from-output ./reports/translations.mt.full.jsonl --promote-failures-from ./reports/translations.mt.full.failures.jsonl --promote-failures-only"
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
@@ -3649,7 +4336,51 @@ def build_parser() -> argparse.ArgumentParser:
             "Only matching rows are translated; accepts space- or comma-separated values."
         ),
     )
-    p_translate_mt.add_argument("--batch-size", type=int, default=0)
+    p_translate_mt.add_argument(
+        "--ids",
+        nargs="*",
+        default=[],
+        help="Optional explicit row id filter(s). Accepts space- or comma-separated id values.",
+    )
+    p_translate_mt.add_argument(
+        "--ids-file",
+        default="",
+        help="Optional newline-separated id file for selective re-translation.",
+    )
+    p_translate_mt.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help=(
+            "Scheduler row cap per batch. If omitted, uses mt.batch_size from TOML. "
+            "Set 0 for no row cap."
+        ),
+    )
+    p_translate_mt.add_argument(
+        "--batch-max-chars",
+        type=int,
+        default=None,
+        help=(
+            "Scheduler char cap per batch (sum of transport payload chars). "
+            "If omitted, uses mt.batch_max_chars from TOML. Set 0 for no char cap."
+        ),
+    )
+    p_translate_mt.add_argument(
+        "--dynamic-provider-call-batching",
+        dest="dynamic_provider_call_batching",
+        action="store_true",
+        default=None,
+        help=(
+            "Enable provider hard-limit driven batching mode. Scheduler row/char caps are ignored and "
+            "provider request limits determine MT call packing."
+        ),
+    )
+    p_translate_mt.add_argument(
+        "--no-dynamic-provider-call-batching",
+        dest="dynamic_provider_call_batching",
+        action="store_false",
+        help="Disable provider hard-limit driven batching mode and use scheduler batch caps.",
+    )
     p_translate_mt.add_argument(
         "--max-parallel",
         type=int,
@@ -3725,12 +4456,59 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include internal masked lifecycle fields in review output (source_masked_internal and translation_masked_final).",
     )
     p_translate_mt.add_argument(
-        "--treat-remaining-failures-as-ok",
+        "--mt-error-max-attempts",
+        type=int,
+        default=0,
+        help="Max in-provider retry attempts for MT transport/API errors (default from TOML mt.max_attempts, default=3).",
+    )
+    p_translate_mt.add_argument(
+        "--provider-error-batch-max-attempts",
+        type=int,
+        default=0,
+        help=(
+            "Max batch attempts for provider/transport failures (alternate/same provider scheduler retries). "
+            "Default from TOML mt.provider_error_batch_max_attempts (default 3)."
+        ),
+    )
+    p_translate_mt.add_argument(
+        "--qa-failure-batch-max-attempts",
+        type=int,
+        default=0,
+        help=(
+            "Max batch attempts when only row-level placeholder QA failures remain. "
+            "Default from TOML mt.qa_failure_batch_max_attempts (default=1 = no QA retries)."
+        ),
+    )
+    p_translate_mt.add_argument(
+        "--promote-failures-from",
+        default="",
+        help=(
+            "Optional failures JSONL (same schema as --failures-output). Rows with translation_masked are promoted "
+            "into translated output before scheduling MT."
+        ),
+    )
+    p_translate_mt.add_argument(
+        "--promote-failures-only",
         action="store_true",
         help=(
-            "Promote failed rows with available translation_masked into translated output and remove them from remaining failures. "
-            "Use when you want full CSV coverage despite unresolved placeholder QA errors."
+            "Do not run MT; require full coverage from resume + --promote-failures-from and write output directly."
         ),
+    )
+    p_translate_mt.add_argument(
+        "--treat-remaining-failures-as-ok",
+        dest="treat_remaining_failures_as_ok",
+        action="store_true",
+        default=None,
+        help=(
+            "Promote in-run failed rows with available translation_masked into translated output. "
+            "If omitted, default is read from TOML mt.treat_remaining_failures_as_ok (default false)."
+        ),
+    )
+    p_translate_mt.add_argument(
+        "--no-treat-remaining-failures-as-ok",
+        dest="treat_remaining_failures_as_ok",
+        action="store_false",
+        help="Force-disable in-run failure promotion regardless of TOML setting.",
     )
     p_translate_mt.set_defaults(func=cmd_translate_mt)
 
@@ -3781,6 +4559,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_apply.add_argument("--out-dir", default="./output")
     p_apply.add_argument("--pattern-file", default="./protect_patterns.txt")
     p_apply.add_argument("--glossary-file", default="./glossary_de.csv")
+    p_apply.add_argument(
+        "--mt-config",
+        default="./mt.toml",
+        help="Optional MT TOML source for apply-time English persistence settings (if file exists).",
+    )
+    p_apply.add_argument(
+        "--mt-local-config",
+        default="./mt.local.toml",
+        help="Optional local MT TOML override merged on top of --mt-config for apply settings.",
+    )
     p_apply.set_defaults(func=cmd_apply)
 
     return parser

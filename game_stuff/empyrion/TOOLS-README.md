@@ -11,7 +11,7 @@ This toolchain completes German localization for Empyrion CSV files while preser
 - Reads CSV via `csv.DictReader`/`DictWriter` (multiline + quoting safe).
 - Protects immutable fragments before translation:
   - `{...}` placeholders
-  - `<...>` XML-like tags
+  - real `<tag...>` / `</tag...>` markup tags (tag-name based)
   - formatting tags (`[b]`, `[/b]`, `[c]`, `[-]`, etc.)
   - url/control tags (`[/url]`, `[url=...]`)
   - structured bracket markers (`[S-1]`, `[E-5]`, `[F-?]`, speaker labels like `[ IDA ]`)
@@ -22,16 +22,40 @@ This toolchain completes German localization for Empyrion CSV files while preser
 - Enforces glossary replacements (`glossary_de.csv`).
 - Writes side-by-side outputs: `*.de.completed.csv`.
 - MT row-review markdown now includes a non-protected bracket-label watchlist to highlight remaining potentially risky bracket text for manual review.
+- Literal angle-bracket prose that is not real tag markup is translated as normal text (not protected).
 
 ## MT transport details (current)
 
 - Production `translate-mt` transport uses direct `TKPHnTK` tokens for adjacent placeholder runs.
+- For `--source-field source_masked`, MT prep uses exported `source_masked` + exported `protected` as the canonical mapping (no remask/reindex in this mode).
 - Default transport wraps edge tokens in parentheses (for example `(TKPH0LTK)`), controlled by `mt.parenthesized_transport_token_edges`.
 - Newline placeholders are converted to real newlines before MT request so paragraph structure is visible to MT.
 - Adjacent-run detection merges placeholders separated by spaces/tabs, but never across newlines.
+- Adjacent-run coalescing also handles bracket/paren separator patterns around transport tokens to improve restoration stability.
 - After MT response, transport tokens are restored back to original placeholder runs before token-sequence QA.
+- Before restore/coalesce, expected transport-token order from source payload is re-applied to reduce false reorder failures caused by MT swapping adjacent `TKPH` tokens.
 - Newline placeholders are restored in order before final placeholder spacing normalization.
 - Report fields for pipeline variables are emitted as top-level fenced `text` code blocks (review and failures reports).
+- `translate-mt` output rows persist `source_masked` and `protected`, so `apply` can restore with the same mapping lineage used during transport.
+
+## Final-output leak prevention gate
+
+`qa_validate_tokens.py` now enforces two independent checks on final CSV output:
+
+1. token parity (`missing_tokens`, `extra_tokens`), and
+2. leak scan for internal tokens in `Deutsch`:
+  - `__PH_n__`
+  - `__BPH_n__`
+  - `TKPH/TKBPH` transport tokens
+
+Why this exists:
+
+- parity-only checks can pass while internal tokens still leak into final CSV,
+- leak scan catches restoration-lineage issues that are invisible to basic parity.
+
+Operational effect:
+
+- Step 5 now fails on leak tokens and emits them in `leak_tokens` for direct triage.
 
 ## Legacy prompt artifacts
 
@@ -45,15 +69,21 @@ This toolchain completes German localization for Empyrion CSV files while preser
 
 1. **Row batching** (throughput):
   - controlled by CLI `--batch-size` or TOML `mt.batch_size`.
-  - groups rows into provider work batches.
+  - row cap per scheduler batch (`0` means unlimited rows).
 
-2. **Provider request sizing** (hard limits):
+2. **Char-aware scheduler cap** (throughput + stability):
+  - controlled by CLI `--batch-max-chars` or TOML `mt.batch_max_chars`.
+  - caps total source chars per scheduler batch (`0` disables char cap).
+
+3. **Provider request sizing** (hard limits):
   - `max_request_texts` = max row segments per API call,
   - `max_request_chars` = max total chars per API call,
   - `max_text_chars` = max chars for a single row segment.
 
 If a row exceeds `max_text_chars` and `auto_split_long_texts=true`, it is split with placeholder-aware segmentation, translated in pieces, then reassembled before placeholder QA.
 If a request would exceed `max_request_texts` or `max_request_chars`, `translate-mt` starts a new API call automatically.
+In packed mode, projected request size includes separator overhead, and the effective packed cap is bounded by both request and per-text limits.
+If a packed request still overflows at provider side, `translate-mt` downshifts that request (fewer rows) and retries instead of immediate hard-fail.
 
 Result: higher MT efficiency without breaching provider payload limits.
 
@@ -127,6 +157,27 @@ python3 empyrion_localize.py translate-mt \
   --keys dialogue_iKK4CKC eden_pda_eGSGG
 ```
 
+Translate specific rows by full export IDs (for triage/replay):
+
+```bash
+python3 empyrion_localize.py translate-mt \
+  --input ./reports/translation_units.risk.v2.jsonl \
+  --output ./reports/translations.mt.ids.jsonl \
+  --ids-file ./reports/targeted_ids.txt \
+  --target-lang DE \
+  --resume
+```
+
+## MT dedupe + telemetry
+
+- Request dedupe is enabled by default via `mt.dedupe_identical_mt_payloads=true`.
+- Rows with identical `transport_payload` are collapsed to one provider request, then expanded back to all member rows.
+- Success trace reports include:
+  - `dedupe identical mt payloads`
+  - `deduped duplicate rows saved`
+- Runtime provider telemetry includes rows, words, chars, and durations per call and per provider summary.
+- Per-call telemetry is emitted immediately at runtime; duplicate end-of-run replay of the same call list is removed.
+
 ## Fresh checkout runbook (from zero)
 
 Prerequisites:
@@ -154,7 +205,23 @@ cd game_stuff/empyrion
 
 # Restart from CSV only
 ./run-full-workflow.sh --clean
+
+# Resume and promote failed rows with fallback translations
+./run-full-workflow.sh --accept-qa-failed
+
+# Reuse existing output + failures JSONL only (no MT re-translation)
+./run-full-workflow.sh --promote-existing-failures
+
+# Keep Step 5 token QA failures as report-only and continue release
+./run-full-workflow.sh --promote-step5-failures-to-ok
 ```
+
+Resume/promotion behavior:
+- `translate-mt --resume` continues from existing output JSONL and skips already translated keys.
+- `translate-mt --promote-failures-from <failures.jsonl> --promote-failures-only` promotes fallback rows without MT API calls.
+- `translate-mt --resume-from-output <path>` resumes against a different output file explicitly.
+- `run-full-workflow.sh` reads default Step 5 promotion from `mt.toml` `[workflow].promote_step5_failures_to_ok` (CLI flag still overrides).
+- `translate-mt` emits heartbeat progress at `mt.status_interval_seconds` including done/remaining rows and words.
 
 Equivalent explicit command sequence:
 
@@ -190,6 +257,14 @@ python3 empyrion_localize.py translate-mt \
   --output ./reports/translations.medhigh.v2.jsonl \
   --target-lang DE \
   --resume
+
+# 3c) Promote existing failures from JSONL only (no MT re-translation)
+python3 empyrion_localize.py translate-mt \
+  --input ./reports/translation_units.risk.v2.jsonl \
+  --output ./reports/translations.medhigh.v2.jsonl \
+  --resume \
+  --promote-failures-from ./reports/translations.medhigh.v2.failures.jsonl \
+  --promote-failures-only
 
 # 4) Apply to release target folder
 python3 empyrion_localize.py apply \
@@ -609,7 +684,8 @@ Deterministic sample option:
   - `rows_total` and `rows/req`
   - `words_total` and `words/req`
   - `sec_total`, `sec/req`, `sec_min`, `sec_max`
-- Per-call log entries with timestamp, provider, rows, words, duration, status, and error text
+- Per-call log entries with timestamp, provider, rows, words, chars, duration, status, and error text
+- Per-call lines are printed immediately when each provider call completes
 
 If you want to save telemetry output for later analysis:
 

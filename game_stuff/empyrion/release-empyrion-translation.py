@@ -269,6 +269,10 @@ def run_qa(script_dir: Path, input_dir: Path) -> None:
         str(input_dir / "Localization.de.completed.csv"),
         str(input_dir / "PDA.de.completed.csv"),
     ]
+
+    if (os.getenv("EMPYRION_PROMOTE_STEP5_FAILURES_TO_OK") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        cmd.insert(2, "--promote-failures-as-ok")
+
     subprocess.run(cmd, check=True, cwd=str(script_dir))
 
 
@@ -505,11 +509,20 @@ def main() -> None:
     if args.publish_github:
         tag = args.tag or f"empyrion-de-translation-{date_stamp}"
         release_name = args.release_name or f"Empyrion DE Translation {date_stamp}"
+
+        assets_to_upload: list[Path] = []
+        seen_names: set[str] = set()
+        for asset in [translation_zip_path, traces_zip_path]:
+            if asset.name in seen_names:
+                continue
+            seen_names.add(asset.name)
+            assets_to_upload.append(asset)
+
         publish_github_release_assets(
             metadata=metadata,
             tag=tag,
             release_name=release_name,
-            assets_to_upload=[translation_zip_path, traces_zip_path],
+            assets_to_upload=assets_to_upload,
             draft=args.draft,
             prerelease=args.prerelease,
         )

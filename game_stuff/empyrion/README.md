@@ -33,7 +33,24 @@ cd game_stuff/empyrion
 
 # Start fresh from CSV only (remove previous generated artifacts)
 ./run-full-workflow.sh --clean
+
+# Resume and carry over QA-failed rows that still have fallback translations
+./run-full-workflow.sh --accept-qa-failed
+
+# Reuse existing output + failures JSONL only (no MT re-translation)
+./run-full-workflow.sh --promote-existing-failures
+
+# Keep Step 5 token QA failures as report-only and continue release
+./run-full-workflow.sh --promote-step5-failures-to-ok
 ```
+
+Resume/promotion behavior:
+- `--resume` continues from existing output JSONL and only schedules remaining rows.
+- `--promote-existing-failures` skips MT API calls and promotes existing fallback rows from `reports/translations.mt.full.failures.jsonl`.
+- `--accept-qa-failed` applies in-run promotion while translating.
+- `--promote-step5-failures-to-ok` keeps Step 5 failures in reports but does not stop release build/push.
+- You can set default Step 5 promotion in `mt.toml` via `[workflow].promote_step5_failures_to_ok = true` (CLI still overrides).
+- Translation emits interval heartbeat progress using `mt.status_interval_seconds` with done/remaining rows and words.
 
 Start in `game_stuff/empyrion`:
 
@@ -48,10 +65,35 @@ python3 empyrion_localize.py export \
    --base-dir ./input_data \
    --output ./reports/translation_units.risk.v2.jsonl
 
+# Optional: after export, re-translate only rows whose English had fused control tags
+# (IDs generated at reports/control_tag_spacing_ids.txt by default)
+python3 empyrion_localize.py translate-mt \
+   --input ./reports/translation_units.risk.v2.jsonl \
+   --output ./reports/translations.mt.controlfix.jsonl \
+   --ids-file ./reports/control_tag_spacing_ids.txt \
+   --target-lang DE \
+   --resume
+
 # 3) MT translation (full set)
 python3 empyrion_localize.py translate-mt \
    --input ./reports/translation_units.risk.v2.jsonl \
    --output ./reports/translations.mt.full.jsonl \
+   --target-lang DE \
+   --resume
+
+# 3a) Re-translate targeted rows by IDs (from triage/export reports)
+python3 empyrion_localize.py translate-mt \
+   --input ./reports/translation_units.risk.v2.jsonl \
+   --output ./reports/translations.mt.targeted.jsonl \
+   --ids-file ./reports/targeted_ids.txt \
+   --target-lang DE \
+   --resume
+
+# 3a-alt) Re-translate targeted rows by CSV KEY values
+python3 empyrion_localize.py translate-mt \
+   --input ./reports/translation_units.risk.v2.jsonl \
+   --output ./reports/translations.mt.keys.jsonl \
+   --keys dialogue_C04saqW eden_dialogue_mSiKCu0 eden_pda_eGSGG \
    --target-lang DE \
    --resume
 
@@ -61,6 +103,14 @@ python3 empyrion_localize.py translate-mt \
    --output ./reports/translations.mt.full.jsonl \
    --target-lang DE \
    --resume
+
+# 3c) Greenlight existing failures JSONL without re-running MT
+python3 empyrion_localize.py translate-mt \
+   --input ./reports/translation_units.risk.v2.jsonl \
+   --output ./reports/translations.mt.full.jsonl \
+   --resume \
+   --promote-failures-from ./reports/translations.mt.full.failures.jsonl \
+   --promote-failures-only
 
 # 4) Apply translated rows to final deliverable folder used by release
 python3 empyrion_localize.py apply \
@@ -156,7 +206,14 @@ Path meaning:
 3. **Translate with MT (default production path)**
    - Run `translate-mt` over export JSONL (optionally filtered by risk/class/sample/keys).
    - Translator sends `source_masked` and receives `translation_masked` with placeholder QA.
-   - Optional: `translate-mt --treat-remaining-failures-as-ok` can promote remaining QA-failed rows (when they still contain a usable masked translation) so final apply can produce full CSV coverage with no untranslated rows left.
+   - For `--source-field source_masked`, `translate-mt` now treats exported `source_masked` + exported `protected` as canonical and keeps that mapping stable end-to-end.
+   - `translate-mt` output rows now also include `source_masked` and `protected`, so downstream `apply` can restore with the exact mapping used during transport.
+    - Optional: `translate-mt --treat-remaining-failures-as-ok` can promote remaining QA-failed rows (when they still contain a usable masked translation) so final apply can produce full CSV coverage with no untranslated rows left.
+    - Promotion can also be driven from an existing failures JSONL without retranslation via `--promote-failures-from ... --promote-failures-only`.
+      - `--resume-from-output` can be used to resume from a different output file path explicitly.
+    - Retry behavior is split:
+       - MT/provider errors: `mt.max_attempts` + `mt.provider_error_batch_max_attempts` (default 3)
+       - Row-level QA failures: `mt.qa_failure_batch_max_attempts` (default 1 = no retries)
 
 4. **Merge**
    - Merge all translated chunk outputs into one JSONL.
@@ -168,6 +225,18 @@ Path meaning:
 6. **Validate**
    - Run token parity QA on changed rows.
    - Verify placeholders/tags/control codes remained valid.
+   - Explicitly fail if final CSV still contains internal tokens (`__PH_n__`, `__BPH_n__`, `TKPH...`).
+
+### Why this additional leak scan is required
+
+Token parity alone is not sufficient: a row can preserve token sets and still leak internal placeholders into final CSV if restore mapping drifts.
+
+The final validation gate now checks:
+
+- token parity (`missing_tokens`, `extra_tokens`), and
+- final-output leak tokens (`leak_tokens`) in `Deutsch`.
+
+This closes the gap where `translation_masked` looked structurally valid but `de_final_game_ready` still contained internal transport/mask tokens.
 
 ## MT transport (current production flow)
 
@@ -185,18 +254,41 @@ Path meaning:
 
 The MT path is optimized for throughput while protecting provider limits:
 
-- **Row bundling**: rows are grouped into MT requests by `batch_size` (CLI `--batch-size` or `mt.batch_size` in TOML).
+- **Scheduler batching**: rows are grouped by both row count and optional char budget:
+   - `batch_size` (CLI `--batch-size`, TOML `mt.batch_size`) is the row cap (`0` means unlimited rows),
+   - `batch_max_chars` (CLI `--batch-max-chars`, TOML `mt.batch_max_chars`) is the per-scheduler-batch char cap (`0` disables char cap).
 - **Per-provider request caps**: each provider can define
    - `max_request_texts` (max rows per API call),
    - `max_request_chars` (max total chars per API call),
    - `max_text_chars` (max chars per single row).
+- **Packed request sizing** (easygoogle packed mode):
+   - final packed payload length is pre-computed with separator overhead (`\n<separator>\n` between rows),
+   - effective packed request cap is bounded by both `max_request_chars` and `max_text_chars` (when set),
+   - row packing is reduced in advance so packed requests stay under provider limits.
 - **Automatic request splitting**:
    - If a row exceeds `max_text_chars` and `auto_split_long_texts=true`, the row is split into placeholder-safe subsegments.
    - If adding a row would exceed `max_request_texts` or `max_request_chars`, a new API call is started.
+   - If a provider still returns a packed overflow error, the current request batch is automatically downshifted (split into fewer rows) and retried.
    - Segmented row responses are reassembled back to a single row before QA/apply.
 - **Fail-fast toggle**: set `auto_split_long_texts=false` to fail on oversize rows instead of splitting.
 
 This means we can send larger batches for efficiency without breaching provider payload limits.
+
+### MT request dedupe and telemetry
+
+- `translate-mt` can dedupe identical MT payload rows before calling providers (`mt.dedupe_identical_mt_payloads`, default `true`).
+- Dedupe preserves per-row output by fanning one translated representative result back to all member rows.
+- Success reports include dedupe context (`dedupe identical mt payloads`, `deduped duplicate rows saved`).
+- Provider telemetry now tracks both words and chars:
+   - per-provider totals (`words_total`, `chars_total`),
+   - per-request averages (`words/req`, `chars/req`),
+   - per-call runtime lines including `words`, `chars`, and `duration_sec`.
+- Each provider call line is emitted immediately when the call finishes; duplicate end-of-run per-call listing has been removed.
+
+### Literal angle-bracket text vs real tags
+
+- Protection now treats only real tag-like markup as immutable (for example `<i>`, `</color>`, `<tag=...>`).
+- Prose enclosed in angle brackets that is not a real tag name (for example `< Update: Alien personnel on site. Sending extraction team >`) is no longer protected as markup and is sent through MT as normal text.
 
 ### Pipeline example (raw text flow)
 
@@ -231,6 +323,29 @@ Final CSV text:
 - Spaces around newline placeholders are stripped in final masked normalization.
 - Post-restore tag spacing compaction keeps game markup canonical.
 - MT reports render pipeline values as raw fenced code blocks (no JSON-escaped inline text).
+- Export can normalize fused control tags in English (e.g. `@q0You` → `@q0 You`) via `mt.control_tag_spacing_enabled`.
+- Export writes affected row IDs to `mt.control_tag_affected_ids_output` for selective re-translation (`translate-mt --ids-file ...`).
+- Apply can persist normalized English into final CSV via `mt.persist_normalized_english_in_output_csv`.
+- Alternative fused-output mode is configurable via `mt.control_tag_fused_output`.
+- Direct transport coalescing now treats bracket/paren separators (`[]()`) as merge boundaries for adjacent placeholder clusters.
+- A pre-restore expected-order retag pass now normalizes MT-swapped adjacent `TKPH` tokens back to source order to avoid false `token_reorder` failures.
+- `source_masked` mode now uses canonical export mapping (no remask/reindex drift), preventing placeholder-ID mismatches between `translate-mt` and `apply`.
+- `apply` now prefers translated-row `protected` mapping and selects the restoration candidate with the fewest leaked internal tokens.
+- Step 5 QA now includes explicit leak-token detection (`__PH`, `__BPH`, `TKPH`) in final CSV output.
+
+### Example trace: `eden_pda_aaWmSSe`
+
+Observed issue pattern before fix:
+
+- Export row had canonical placeholders ending at `__PH_4__`.
+- MT result for this row contained `__PH_5__` after translation.
+- Final CSV leaked `__PH_5__` because restore mapping did not contain that token.
+
+What changed:
+
+- `translate-mt` now reuses export `source_masked` + `protected` directly.
+- The row is restored using the same mapping lineage used during transport.
+- Step 5 leak scan confirms no internal tokens remain in final CSV.
 
 ## Original Plan Adherence (Audit)
 
