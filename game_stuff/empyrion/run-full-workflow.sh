@@ -125,6 +125,19 @@ if [[ -z "${PROMOTE_STEP5_FAILURES_TO_OK}" ]]; then
   fi
 fi
 
+mkdir -p "${SCRIPT_DIR}/reports"
+WORKFLOW_LOG_LATEST="${SCRIPT_DIR}/reports/workflow.latest.log"
+if [[ -z "${EMPYRION_WORKFLOW_LOG:-}" ]]; then
+  WORKFLOW_LOG_STAMP="$(date -u +%Y%m%d-%H%M%S)"
+  EMPYRION_WORKFLOW_LOG="${SCRIPT_DIR}/reports/workflow-output-${WORKFLOW_LOG_STAMP}.log"
+fi
+EMPYRION_WORKFLOW_LOG="$(realpath "${EMPYRION_WORKFLOW_LOG}")"
+export EMPYRION_WORKFLOW_LOG
+export EMPYRION_WORKFLOW_LOG_LATEST="${WORKFLOW_LOG_LATEST}"
+
+exec > >(tee -a "${EMPYRION_WORKFLOW_LOG}") 2>&1
+echo "[INFO] Workflow log capture enabled: ${EMPYRION_WORKFLOW_LOG}"
+
 cd "${SCRIPT_DIR}"
 
 if [[ ${CLEAN} -eq 1 ]]; then
@@ -236,5 +249,8 @@ python3 release-all.py --project empyrion-translation --build
 
 echo "[INFO] Step 7/7: release push"
 python3 release-all.py --project empyrion-translation --push
+
+cp -f "${EMPYRION_WORKFLOW_LOG}" "${WORKFLOW_LOG_LATEST}"
+echo "[INFO] Workflow latest log updated: ${WORKFLOW_LOG_LATEST}"
 
 echo "[INFO] Full workflow complete"

@@ -23,6 +23,7 @@ CANONICAL_REPORTS_DIR = "reports"
 SUMMARY_REPORT_NAME = "translation-report.md"
 FAILURES_REPORT_NAME = "translation-failures.md"
 SUCCESS_REPORT_NAME = "translation-success.md"
+WORKFLOW_LOG_DEFAULT = "workflow.latest.log"
 
 
 def load_release_metadata_from_env() -> dict:
@@ -394,11 +395,34 @@ def create_traces_zip(
     artifact_path: Path,
     failures_report_path: Path,
     success_report_path: Path,
+    workflow_log_path: Path | None,
 ) -> None:
     base_folder = "empyrion-de-translation-traces"
     with zipfile.ZipFile(artifact_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(failures_report_path, arcname=f"{base_folder}/{failures_report_path.name}")
         archive.write(success_report_path, arcname=f"{base_folder}/{success_report_path.name}")
+        if workflow_log_path and workflow_log_path.exists():
+            archive.write(workflow_log_path, arcname=f"{base_folder}/{WORKFLOW_LOG_DEFAULT}")
+
+
+def _resolve_workflow_log_path(script_dir: Path) -> Path | None:
+    env_candidates = [
+        (os.getenv("EMPYRION_WORKFLOW_LOG") or "").strip(),
+        (os.getenv("EMPYRION_WORKFLOW_LOG_LATEST") or "").strip(),
+    ]
+    for raw_path in env_candidates:
+        if not raw_path:
+            continue
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = (script_dir / candidate).resolve()
+        if candidate.exists():
+            return candidate
+
+    default_candidate = (script_dir / "reports" / WORKFLOW_LOG_DEFAULT).resolve()
+    if default_candidate.exists():
+        return default_candidate
+    return None
 
 
 def parse_args() -> argparse.Namespace:
@@ -416,7 +440,11 @@ def parse_args() -> argparse.Namespace:
 
 def find_latest_artifacts(output_dir: Path) -> tuple[Path, Path]:
     translation_zips = sorted(
-        output_dir.glob("empyrion-de-translation-*.zip"),
+        [
+            path
+            for path in output_dir.glob("empyrion-de-translation-*.zip")
+            if not path.name.startswith("empyrion-de-translation-traces-")
+        ],
         key=lambda item: item.stat().st_mtime,
         reverse=True,
     )
@@ -444,6 +472,7 @@ def main() -> None:
         raise ValueError("--publish-only requires --publish-github")
 
     metadata = load_release_metadata_from_env()
+    workflow_log_path = _resolve_workflow_log_path(script_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.publish_only:
@@ -496,6 +525,7 @@ def main() -> None:
             traces_zip_path,
             failures_report_path,
             success_report_path,
+            workflow_log_path,
         )
 
         print(f"[INFO] Input dir: {input_dir}")
@@ -505,6 +535,10 @@ def main() -> None:
         print(f"[INFO] Total changed rows: {total_changes}")
         print(f"[INFO] Failures counted from trace: {failure_count}")
         print(f"[INFO] Warnings counted from applied changes: {warnings_count}")
+        if workflow_log_path and workflow_log_path.exists():
+            print(f"[INFO] Workflow log included in traces zip: {workflow_log_path}")
+        else:
+            print("[WARN] No workflow log found; traces zip contains reports only")
 
     if args.publish_github:
         tag = args.tag or f"empyrion-de-translation-{date_stamp}"

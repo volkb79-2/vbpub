@@ -1103,6 +1103,10 @@ def _write_mt_review_markdown(
                 protected_for_restore = job.get("protected") or entry.get("protected", {})
                 de_final_game_ready = restore_text(translation_masked_final, protected_for_restore)
                 de_final_game_ready = _compact_empyrion_tag_spacing(de_final_game_ready)
+                de_final_game_ready = _align_newline_token_boundaries_to_source(
+                    en_original_raw,
+                    de_final_game_ready,
+                )
 
             risk_level = entry.get("risk_level", "n/a")
             risk_flags = entry.get("risk_flags", [])
@@ -1239,6 +1243,10 @@ def _write_mt_failures_markdown(
             protected_for_restore = job.get("protected") or entry.get("protected", {})
             de_final_game_ready = restore_text(translation_masked_final, protected_for_restore)
             de_final_game_ready = _compact_empyrion_tag_spacing(de_final_game_ready)
+            de_final_game_ready = _align_newline_token_boundaries_to_source(
+                en_original_raw,
+                de_final_game_ready,
+            )
 
         risk_level = entry.get("risk_level", "n/a")
         risk_flags = entry.get("risk_flags", [])
@@ -1368,6 +1376,10 @@ def _write_mt_success_markdown(
             protected_for_restore = job.get("protected") or entry.get("protected", {})
             de_final_game_ready = restore_text(translation_masked_final, protected_for_restore)
             de_final_game_ready = _compact_empyrion_tag_spacing(de_final_game_ready)
+            de_final_game_ready = _align_newline_token_boundaries_to_source(
+                en_original_raw,
+                de_final_game_ready,
+            )
 
         risk_level = entry.get("risk_level", "n/a")
         risk_flags = entry.get("risk_flags", [])
@@ -1517,6 +1529,7 @@ def _restore_direct_tkbph_transport(
     translated_text: str,
     run_map: Dict[str, str],
     ordered_newline_tokens: List[str],
+    source_with_newlines: str = "",
 ) -> str:
     def _decode_transport_flags(token: str) -> Tuple[bool, bool]:
         match = re.fullmatch(r"\(?(?:TKB?PH\d+(?P<flags>LR|L|R)?TK)\)?", token)
@@ -1534,9 +1547,30 @@ def _restore_direct_tkbph_transport(
             restored = re.sub(rf"{re.escape(token)}[ \t]+", token, restored)
         restored = restored.replace(token, value)
 
-    restored = _restore_newline_placeholders_from_text(restored, ordered_newline_tokens)
+    restored = _restore_newline_placeholders_from_text(
+        restored,
+        ordered_newline_tokens,
+        source_with_newlines=source_with_newlines,
+    )
     restored = _enforce_placeholder_spacing(restored, token_pattern=r"__(?:PH|BPH)_\d+__")
     return restored
+
+
+def _align_newline_token_boundaries_to_source(source_text: str, value: str) -> str:
+    if not value:
+        return value
+
+    source_has_leading_newline = bool(re.match(r"^[ \t]*(?:\\n|\n)", source_text or ""))
+    source_has_trailing_newline = bool(re.search(r"(?:\\n|\n)[ \t]*$", source_text or ""))
+
+    aligned = value
+    if not source_has_leading_newline:
+        aligned = re.sub(r"^(?:[ \t]*(?:\\n|\n))+[ \t]*", "", aligned)
+
+    if not source_has_trailing_newline:
+        aligned = re.sub(r"[ \t]*(?:\\n|\n)(?:[ \t]*(?:\\n|\n))*[ \t]*$", "", aligned)
+
+    return aligned
 
 
 def _next_transport_token_index(run_map: Dict[str, str]) -> int:
@@ -1718,11 +1752,36 @@ def _replace_newline_placeholders_with_real_newlines(
 def _restore_newline_placeholders_from_text(
     text: str,
     ordered_newline_tokens: List[str],
+    source_with_newlines: str = "",
 ) -> str:
     if not text or not ordered_newline_tokens:
         return text
 
     restored = text
+
+    if source_with_newlines:
+        expected_newline_count = len(ordered_newline_tokens)
+
+        def _count_newline_markers(value: str) -> int:
+            return len(re.findall(r"(?:\\n|\n)", value))
+
+        source_has_leading_newline = bool(re.match(r"^[ \t]*(?:\\n|\n)", source_with_newlines))
+        source_has_trailing_newline = bool(re.search(r"(?:\\n|\n)[ \t]*$", source_with_newlines))
+
+        while (
+            not source_has_leading_newline
+            and _count_newline_markers(restored) > expected_newline_count
+            and re.match(r"^[ \t]*(?:\\n|\n)", restored)
+        ):
+            restored = re.sub(r"^[ \t]*(?:\\n|\n)[ \t]*", "", restored, count=1)
+
+        while (
+            not source_has_trailing_newline
+            and _count_newline_markers(restored) > expected_newline_count
+            and re.search(r"(?:\\n|\n)[ \t]*$", restored)
+        ):
+            restored = re.sub(r"[ \t]*(?:\\n|\n)[ \t]*$", "", restored, count=1)
+
     for token in ordered_newline_tokens:
         if "\n" in restored:
             restored = restored.replace("\n", token, 1)
@@ -2611,6 +2670,28 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
         else:
             _log_step(f"sample mode enabled: using all {sample_size} entries (input smaller than sample size)")
 
+    selective_run = bool(requested_keys or requested_ids or args.sample_mode)
+
+    def _capture_existing_report_text(report_path: Path) -> str:
+        if not selective_run or not report_path.exists():
+            return ""
+        return report_path.read_text(encoding="utf-8")
+
+    def _restore_existing_report_text(report_path: Path, previous_text: str, report_label: str) -> None:
+        if not previous_text:
+            return
+        latest_text = report_path.read_text(encoding="utf-8")
+        merged_text = (
+            previous_text.rstrip()
+            + "\n\n---\n\n"
+            + "## Incremental selective rerun\n\n"
+            + latest_text.lstrip()
+        )
+        report_path.write_text(merged_text, encoding="utf-8")
+        print(
+            f"[INFO] Preserved existing {report_label}; appended selective rerun section instead of replacing prior trace content"
+        )
+
     source_field = args.source_field
     patterns = _build_patterns(None)
     if source_field == "source_masked":
@@ -2633,7 +2714,7 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                 )
 
             protected_raw = entry.get("protected")
-            if not isinstance(protected_raw, dict) or not protected_raw:
+            if not isinstance(protected_raw, dict):
                 raise ValueError(
                     f"source_masked mode requires protected mapping for id={item_id}; re-export input first"
                 )
@@ -2914,6 +2995,32 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
         for provider in providers
     }
     call_log: List[dict] = []
+    heartbeat_lock = Lock()
+    last_heartbeat_ts = time.time()
+
+    def _emit_progress_heartbeat(*, force: bool = False, reason: str = "") -> None:
+        nonlocal last_heartbeat_ts
+
+        now_ts = time.time()
+        with heartbeat_lock:
+            if not force and (now_ts - last_heartbeat_ts) < status_interval_seconds:
+                return
+            last_heartbeat_ts = now_ts
+
+        rows_done = len(translated_rows)
+        rows_remaining = max(0, total_scope_rows - rows_done)
+        words_done = max(0, translated_words_done)
+        words_remaining = max(0, total_scope_words - words_done)
+        reason_suffix = f" reason={reason}" if reason else ""
+        _runtime_log(
+            "INFO",
+            f"{_utc_ts()} heartbeat "
+            f"rows_done={rows_done}/{total_scope_rows} rows_remaining={rows_remaining} "
+            f"words_done={words_done}/{total_scope_words} words_remaining={words_remaining} "
+            f"pending={len(pending)} inflight={len(inflight)} failures={len(failures)} "
+            f"temporary_disabled={len(temporarily_disabled_until)} "
+            f"permanent_disabled={len(permanently_disabled_providers)}{reason_suffix}",
+        )
 
     def _record_call(
         provider_name: str,
@@ -2961,6 +3068,7 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
             f"{started_ts} provider={provider_name} rows={rows_sent} "
             f"words={words_sent} chars={chars_sent} duration_sec={duration_sec:.3f} ok={ok}{err}",
         )
+        _emit_progress_heartbeat(reason="provider-call")
 
     def process_batch_with_provider(batch_index: int, batch: List[dict], provider: BaseMTProvider) -> dict:
         texts = [item["transport_payload"] for item in batch]
@@ -2998,6 +3106,7 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                     output_compacted,
                     compacted_run_map,
                     member.get("ordered_newline_tokens", []),
+                    source_with_newlines=member.get("masked_with_newlines", ""),
                 )
                 unbundled = _apply_source_placeholder_boundary_spacing(
                     unbundled,
@@ -3060,25 +3169,9 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
     weighted_cycle_key: str = ""
 
     total_workers = max_parallel_per_provider * max(1, len(providers))
-    next_status_log_ts = time.time() + status_interval_seconds
     with ThreadPoolExecutor(max_workers=total_workers) as executor:
         while pending or inflight:
-            now_ts = time.time()
-            if now_ts >= next_status_log_ts:
-                rows_done = len(translated_rows)
-                rows_remaining = max(0, total_scope_rows - rows_done)
-                words_done = max(0, translated_words_done)
-                words_remaining = max(0, total_scope_words - words_done)
-                _runtime_log(
-                    "INFO",
-                    "heartbeat "
-                    f"rows_done={rows_done}/{total_scope_rows} rows_remaining={rows_remaining} "
-                    f"words_done={words_done}/{total_scope_words} words_remaining={words_remaining} "
-                    f"pending={len(pending)} inflight={len(inflight)} failures={len(failures)} "
-                    f"temporary_disabled={len(temporarily_disabled_until)} "
-                    f"permanent_disabled={len(permanently_disabled_providers)}",
-                )
-                next_status_log_ts = now_ts + status_interval_seconds
+            _emit_progress_heartbeat(reason="scheduler-loop")
 
             now = time.time()
             for provider_name, wake_ts in list(temporarily_disabled_until.items()):
@@ -3379,6 +3472,7 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
                             _append_jsonl(failures_output_path, failed_rows)
 
     flush_translation_checkpoint(force=True)
+    _emit_progress_heartbeat(force=True, reason="final")
 
     treat_remaining_failures_as_ok = bool(mt_cfg.get("treat_remaining_failures_as_ok", False))
     if args.treat_remaining_failures_as_ok is not None:
@@ -3465,6 +3559,7 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
         print(f"[INFO] Wrote failures JSONL: {args.failures_output}")
 
     review_output = Path(args.review_output) if args.review_output else Path(args.output).with_suffix(".review.md")
+    review_output_previous = _capture_existing_report_text(review_output)
     failures_path_for_report = args.failures_output or "<not_written>"
     _write_mt_review_markdown(
         review_output,
@@ -3472,12 +3567,13 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
         output_path=args.output,
         failures_path=failures_path_for_report,
         source_field=source_field,
-        jobs=jobs,
+        jobs=all_jobs,
         entries_by_id=entries_by_id,
         translated_rows=translated_rows,
         failures=failures,
         include_internal_masked_fields=args.include_internal_masked_fields,
     )
+    _restore_existing_report_text(review_output, review_output_previous, "review markdown")
     print(f"[INFO] Wrote MT review markdown: {review_output}")
 
     failures_report_output = (
@@ -3485,17 +3581,23 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
         if args.failures_output
         else review_output.with_name(review_output.stem + ".failures.md")
     )
+    failures_report_output_previous = _capture_existing_report_text(failures_report_output)
     _write_mt_failures_markdown(
         failures_report_output,
         input_path=args.input,
         output_path=args.output,
         failures_path=failures_path_for_report,
         source_field=source_field,
-        jobs=jobs,
+        jobs=all_jobs,
         entries_by_id=entries_by_id,
         translated_rows=translated_rows,
         failures=failures,
         include_internal_masked_fields=args.include_internal_masked_fields,
+    )
+    _restore_existing_report_text(
+        failures_report_output,
+        failures_report_output_previous,
+        "failures markdown",
     )
     print(f"[INFO] Wrote MT failures markdown: {failures_report_output}")
     prep_context = {
@@ -3519,31 +3621,43 @@ def cmd_translate_mt(args: argparse.Namespace) -> None:
         "deduped_rows_saved": str(deduped_rows_saved),
     }
     translation_success_report_output = Path(args.translation_success_report)
+    translation_success_previous = _capture_existing_report_text(translation_success_report_output)
     _write_mt_success_markdown(
         translation_success_report_output,
         input_path=args.input,
         output_path=args.output,
         source_field=source_field,
-        jobs=jobs,
+        jobs=all_jobs,
         entries_by_id=entries_by_id,
         translated_rows=translated_rows,
         prep_context=prep_context,
         include_internal_masked_fields=args.include_internal_masked_fields,
     )
+    _restore_existing_report_text(
+        translation_success_report_output,
+        translation_success_previous,
+        "translation success trace",
+    )
     print(f"[INFO] Wrote translation success trace markdown: {translation_success_report_output}")
 
     translation_failures_report_output = Path(args.translation_failures_report)
+    translation_failures_previous = _capture_existing_report_text(translation_failures_report_output)
     _write_mt_failures_markdown(
         translation_failures_report_output,
         input_path=args.input,
         output_path=args.output,
         failures_path=failures_path_for_report,
         source_field=source_field,
-        jobs=jobs,
+        jobs=all_jobs,
         entries_by_id=entries_by_id,
         translated_rows=translated_rows,
         failures=failures,
         include_internal_masked_fields=args.include_internal_masked_fields,
+    )
+    _restore_existing_report_text(
+        translation_failures_report_output,
+        translation_failures_previous,
+        "translation failures trace",
     )
     print(f"[INFO] Wrote translation failures trace markdown: {translation_failures_report_output}")
 
@@ -3897,6 +4011,10 @@ def cmd_apply(args: argparse.Namespace) -> None:
 
                     restored = best_restored
                     restored = _compact_empyrion_tag_spacing(restored)
+                    restored = _align_newline_token_boundaries_to_source(
+                        normalized_en,
+                        restored,
+                    )
                     new_de = enforce_glossary(restored, glossary)
                 elif source_norm in memory:
                     new_de = memory[source_norm]
