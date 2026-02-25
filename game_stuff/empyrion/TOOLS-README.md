@@ -7,6 +7,13 @@ This toolchain completes German localization for Empyrion CSV files while preser
 - `Localization.csv`
 - `PDA.csv`
 
+Input discovery supports either:
+
+- direct CSV files in `--base-dir`, or
+- latest snapshot subfolder `YYYYMMDD-bNN` under `--base-dir`.
+
+When item-name lock is enabled, `ItemsConfig.ecf` is also read from the selected input directory.
+
 ## Safety model
 - Reads CSV via `csv.DictReader`/`DictWriter` (multiline + quoting safe).
 - Protects immutable fragments before translation:
@@ -32,6 +39,7 @@ This toolchain completes German localization for Empyrion CSV files while preser
 - Newline placeholders are converted to real newlines before MT request so paragraph structure is visible to MT.
 - Adjacent-run detection merges placeholders separated by spaces/tabs, but never across newlines.
 - Adjacent-run coalescing also handles bracket/paren separator patterns around transport tokens to improve restoration stability.
+- Coalescing does not merge runs across sentence punctuation separators (`.`, `!`, `?`).
 - After MT response, transport tokens are restored back to original placeholder runs before token-sequence QA.
 - Before restore/coalesce, expected transport-token order from source payload is re-applied to reduce false reorder failures caused by MT swapping adjacent `TKPH` tokens.
 - Newline placeholders are restored in order before final placeholder spacing normalization.
@@ -89,6 +97,19 @@ Result: higher MT efficiency without breaching provider payload limits.
 
 ## Quick start
 Run from `game_stuff/empyrion`.
+
+## Optional item-name English lock
+
+Config (`mt.toml` or `mt.local.toml`):
+
+```toml
+keep_item_names_english_in_german = true
+```
+
+Effect:
+
+- `export`: item name keys (derived from `ItemsConfig.ecf` `Name:` fields) are skipped.
+- `apply`: those keys are forced to English in `Deutsch`.
 
 ## Risk classification (v2)
 

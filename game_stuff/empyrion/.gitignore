@@ -13,8 +13,6 @@ mt.local.toml
 reports/mt_failures*.jsonl
 
 # Empyrion local source CSVs (copied from game/mod install)
-input_data/Dialogues.csv
-input_data/Localization.csv
-input_data/PDA.csv
+input_data/
 
 *.jsonl

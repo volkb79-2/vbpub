@@ -148,6 +148,11 @@ We process these source files in the `input_data` folder:
 - `Localization.csv` — UI labels, item/block names, system strings
 - `PDA.csv` — mission/chapter text, logs, long-form story content
 
+Input discovery behavior:
+
+- If `--base-dir` directly contains all three CSV files, that directory is used.
+- Otherwise, the tool auto-selects the latest snapshot subfolder matching `YYYYMMDD-bNN` (for example `20260225-b41`) that contains all three CSV files.
+
 All use the same column model:
 
 `KEY, English, Deutsch, ...other languages...`
@@ -161,9 +166,10 @@ Target behavior:
 ## What data is where
 
 ### Source data
-- `input_data/Dialogues.csv`
-- `input_data/Localization.csv`
-- `input_data/PDA.csv`
+- `input_data/<snapshot>/Dialogues.csv`
+- `input_data/<snapshot>/Localization.csv`
+- `input_data/<snapshot>/PDA.csv`
+- `input_data/<snapshot>/ItemsConfig.ecf` (required only when item-name English lock is enabled)
 
 ### Tooling
 - `empyrion_localize.py` — audit/export/chunk/merge/apply pipeline
@@ -249,6 +255,25 @@ This closes the gap where `translation_masked` looked structurally valid but `de
 5. Restore transport tokens back to original placeholder runs after MT.
 6. Restore newline placeholders and enforce placeholder-token sequence QA.
 7. Restore final game markup for CSV output.
+
+Transport behavior constraints:
+
+- Placeholder cluster detection merges placeholders separated by spaces/tabs only.
+- Coalescing of transport token clusters does not merge across sentence punctuation boundaries (`.`, `!`, `?`).
+
+## Item-name English lock (optional)
+
+You can keep item display names in English in German output via config:
+
+```toml
+keep_item_names_english_in_german = true
+```
+
+Behavior:
+
+- Export: item-name rows are skipped from MT input by deriving item keys from `ItemsConfig.ecf` `Name:` attributes.
+- Apply: those keys are forced to English in the `Deutsch` column.
+- Scope: item names only; non-item rows (status effects, dialogue, descriptions) are unaffected.
 
 ### MT request efficiency and max-size protection
 

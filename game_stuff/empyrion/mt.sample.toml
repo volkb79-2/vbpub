@@ -7,6 +7,10 @@ control_tag_spacing_enabled = true
 # Persist normalized English text into final *.de.completed.csv English column during apply
 # default: true
 persist_normalized_english_in_output_csv = true
+# Keep item display names in English for German output by deriving item KEYs from ECF Name attributes.
+# This affects item names only (not info/description rows) and applies as: skip MT + enforce in apply output.
+# default: false
+keep_item_names_english_in_german = false
 # Alternative mode: force fused control-tag output (remove spaces around @q/@w/@d/@p tags)
 # default: false
 control_tag_fused_output = false

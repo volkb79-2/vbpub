@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
     GoogleHttpError = Exception
 
 CSV_FILES = ["Dialogues.csv", "Localization.csv", "PDA.csv"]
+INPUT_SNAPSHOT_DIR_PATTERN = re.compile(r"^(\d{8})-b(\d+)$")
 ENGLISH_STOPWORDS = {
     "the", "and", "you", "your", "for", "with", "this", "that", "have", "are", "was",
     "what", "where", "when", "how", "can", "will", "from", "into", "unknown", "mission",
@@ -66,7 +67,7 @@ _RUNTIME_LOG_FILE: Path | None = None
 _RUNTIME_LOG_LOCK = Lock()
 TRANSPORT_TOKEN_CORE_PATTERN = r"TKB?PH\d+(?:LR|L|R)?TK"
 TRANSPORT_TOKEN_PATTERN = rf"(?:{TRANSPORT_TOKEN_CORE_PATTERN}|\({TRANSPORT_TOKEN_CORE_PATTERN}\))"
-PLACEHOLDER_CLUSTER_SEPARATOR_PATTERN = r"[ \t]*(?:[.,:;!?\[\]\(\)][ \t]*)*"
+PLACEHOLDER_CLUSTER_SEPARATOR_PATTERN = r"[ \t]*"
 PLACEHOLDER_CLUSTER_PATTERN = rf"__PH_\d+__(?:{PLACEHOLDER_CLUSTER_SEPARATOR_PATTERN}__PH_\d+__)+"
 CONTROL_TAG_PATTERN = r"@[dpqw]\d+"
 
@@ -312,6 +313,47 @@ def restore_text(text: str, protected: Dict[str, str]) -> str:
     return restored
 
 
+def _resolve_input_base_dir(base_dir: Path) -> Path:
+    if all((base_dir / file_name).exists() for file_name in CSV_FILES):
+        return base_dir
+
+    snapshot_dirs: List[Tuple[int, int, Path]] = []
+    for child in base_dir.iterdir() if base_dir.exists() else []:
+        if not child.is_dir():
+            continue
+        match = INPUT_SNAPSHOT_DIR_PATTERN.fullmatch(child.name)
+        if not match:
+            continue
+        if not all((child / file_name).exists() for file_name in CSV_FILES):
+            continue
+        snapshot_dirs.append((int(match.group(1)), int(match.group(2)), child))
+
+    if not snapshot_dirs:
+        return base_dir
+
+    snapshot_dirs.sort(key=lambda item: (item[0], item[1]))
+    return snapshot_dirs[-1][2]
+
+
+def _extract_item_name_keys_from_ecf(base_dir: Path) -> Set[str]:
+    items_config = base_dir / "ItemsConfig.ecf"
+    if not items_config.exists():
+        return set()
+
+    item_block_pattern = re.compile(r"\{\s*\+?Item\s+Id\s*:\s*\d+,(.*?)\}", re.DOTALL)
+    name_pattern = re.compile(r"\bName\s*:\s*([^,\n\r}]+)")
+    keys: Set[str] = set()
+    text = items_config.read_text(encoding="utf-8", errors="ignore")
+    for block_match in item_block_pattern.finditer(text):
+        block_text = block_match.group(1)
+        for match in name_pattern.finditer(block_text):
+            raw_name = match.group(1).strip().strip('"\'')
+            if not raw_name:
+                continue
+            keys.add(raw_name)
+    return keys
+
+
 def _compact_empyrion_tag_spacing(text: str) -> str:
     if not text:
         return text
@@ -333,6 +375,59 @@ def _compact_empyrion_tag_spacing(text: str) -> str:
     compacted = re.sub(rf"(^|[\n\r])((?:{opening_html_tag})+)\s+(?=[A-Za-zÀ-ÿ0-9])", r"\1\2", compacted)
 
     return compacted
+
+
+def _normalize_final_empyrion_spacing(text: str) -> str:
+    if not text:
+        return text
+
+    opening_tag = r"\[(?:b|i|u|c|[0-9A-Fa-f]{6})\]"
+    closing_tag = r"\[(?:-|/b|/i|/u|/c)\]"
+    opening_html_tag = r"<[A-Za-z][A-Za-z0-9]*(?:=[^<>\n]*)?>"
+    closing_html_tag = r"</[A-Za-z][A-Za-z0-9]*>"
+    control_seq = rf"(?:{opening_tag}|{closing_tag}|{opening_html_tag}|{closing_html_tag})"
+    opening_cluster = rf"(?:{opening_tag}|{opening_html_tag})+"
+    closing_cluster = rf"(?:{closing_tag}|{closing_html_tag})+"
+
+    normalized = text
+    normalized = re.sub(rf"({control_seq})\s+(?={control_seq})", r"\1", normalized)
+    normalized = re.sub(rf"({opening_cluster})\s+(?=[A-Za-zÀ-ÿ0-9_(\{{])", r"\1", normalized)
+    normalized = re.sub(rf"(?<=[A-Za-zÀ-ÿ0-9_\)\}}])\s+({closing_cluster})", r"\1", normalized)
+    normalized = re.sub(
+        rf"(?<=[A-Za-zÀ-ÿ0-9_\)\}}])((?:{closing_cluster})+(?:{opening_cluster})+)(?=[A-Za-zÀ-ÿ0-9_\(\{{])",
+        r"\1 ",
+        normalized,
+    )
+    normalized = re.sub(
+        rf"(?<=[:;])((?:{closing_cluster})+(?:{opening_cluster})+)(?=[A-Za-zÀ-ÿ0-9_\(\{{])",
+        r"\1 ",
+        normalized,
+    )
+    normalized = re.sub(
+        rf"(?<=[A-Za-zÀ-ÿ0-9_\)\}}])((?:{closing_cluster})+)(?=[A-Za-zÀ-ÿ0-9_\(\{{])",
+        r"\1 ",
+        normalized,
+    )
+    normalized = re.sub(
+        rf"(?<=[:;])((?:{closing_cluster})+)(?=[A-Za-zÀ-ÿ0-9_\(\{{])",
+        r"\1 ",
+        normalized,
+    )
+    normalized = re.sub(r"(?<!\n)[ \t]{2,}", " ", normalized)
+    normalized = re.sub(r"[ \t]+([.,:;!?])", r"\1", normalized)
+    return normalized
+
+
+def _should_apply_final_spacing_normalizer(entry: dict) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    risk_level = str(entry.get("risk_level", "")).strip().lower()
+    if risk_level != "high":
+        return False
+    risk_flags = entry.get("risk_flags")
+    if not isinstance(risk_flags, list):
+        return False
+    return "mixed_markup_plain" in risk_flags
 
 
 def _add_control_tag_spacing(text: str) -> str:
@@ -514,7 +609,8 @@ def _extract_entry_key(entry: dict) -> str:
 
 
 def cmd_audit(args: argparse.Namespace) -> None:
-    base = Path(args.base_dir)
+    base = _resolve_input_base_dir(Path(args.base_dir))
+    print(f"[INFO] Using input data directory: {base}")
     report_dir = Path(args.report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
 
@@ -544,7 +640,8 @@ def cmd_audit(args: argparse.Namespace) -> None:
 
 
 def cmd_export(args: argparse.Namespace) -> None:
-    base = Path(args.base_dir)
+    base = _resolve_input_base_dir(Path(args.base_dir))
+    print(f"[INFO] Using input data directory: {base}")
     output = Path(args.output)
     pattern_file = Path(args.pattern_file) if args.pattern_file else None
     patterns = _build_patterns(pattern_file)
@@ -555,6 +652,13 @@ def cmd_export(args: argparse.Namespace) -> None:
     affected_ids_report = str(
         mt_cfg.get("control_tag_affected_ids_output", "./reports/control_tag_spacing_ids.txt")
     ).strip()
+    keep_item_names_english_in_german = bool(mt_cfg.get("keep_item_names_english_in_german", False))
+    item_name_keys: Set[str] = set()
+    if keep_item_names_english_in_german:
+        item_name_keys = _extract_item_name_keys_from_ecf(base)
+        print(
+            f"[INFO] Item-name English lock enabled: {len(item_name_keys)} item keys extracted from ECF"
+        )
 
     entries: List[dict] = []
     high_risk_rows: List[dict] = []
@@ -562,6 +666,8 @@ def cmd_export(args: argparse.Namespace) -> None:
     for file_name in CSV_FILES:
         rows = load_csv_rows(base / file_name)
         for candidate in find_candidates(rows):
+            if keep_item_names_english_in_german and candidate.key in item_name_keys:
+                continue
             (
                 english_prepared,
                 english_changed,
@@ -1107,6 +1213,8 @@ def _write_mt_review_markdown(
                     en_original_raw,
                     de_final_game_ready,
                 )
+                if _should_apply_final_spacing_normalizer(entry):
+                    de_final_game_ready = _normalize_final_empyrion_spacing(de_final_game_ready)
 
             risk_level = entry.get("risk_level", "n/a")
             risk_flags = entry.get("risk_flags", [])
@@ -1247,6 +1355,8 @@ def _write_mt_failures_markdown(
                 en_original_raw,
                 de_final_game_ready,
             )
+            if _should_apply_final_spacing_normalizer(entry):
+                de_final_game_ready = _normalize_final_empyrion_spacing(de_final_game_ready)
 
         risk_level = entry.get("risk_level", "n/a")
         risk_flags = entry.get("risk_flags", [])
@@ -1380,6 +1490,8 @@ def _write_mt_success_markdown(
                 en_original_raw,
                 de_final_game_ready,
             )
+            if _should_apply_final_spacing_normalizer(entry):
+                de_final_game_ready = _normalize_final_empyrion_spacing(de_final_game_ready)
 
         risk_level = entry.get("risk_level", "n/a")
         risk_flags = entry.get("risk_flags", [])
@@ -1638,6 +1750,10 @@ def _coalesce_transport_token_clusters(
             search_pos = match.start() + 1
             continue
 
+        if re.search(r"[.!?]", normalized_sep):
+            search_pos = match.start() + 1
+            continue
+
         core = f"TKPH{next_idx}TK"
         next_idx += 1
         if token_a.startswith("(") and token_a.endswith(")") and token_b.startswith("(") and token_b.endswith(")"):
@@ -1872,6 +1988,45 @@ def _apply_source_placeholder_boundary_spacing(
     def _has_lexical_content(value: str) -> bool:
         return bool(re.search(r"[A-Za-zÀ-ÿ0-9]", value or ""))
 
+    def _is_punctuation_only_segment(value: str) -> bool:
+        stripped = (value or "").strip()
+        return bool(stripped) and not _has_lexical_content(stripped) and bool(re.fullmatch(r"[.,:;!?]+", stripped))
+
+    def _source_segment_looks_proper_name(value: str) -> bool:
+        words = re.findall(r"[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9-]*", value or "")
+        if not words or len(words) > 4:
+            return False
+
+        def _is_proper_like(word: str) -> bool:
+            if not word:
+                return False
+            if word.isupper() or word.isdigit():
+                return True
+            first = word[0]
+            return first.isupper() or first.isdigit()
+
+        return all(_is_proper_like(word) for word in words)
+
+    def _find_lowercase_tail_start(value: str) -> Optional[int]:
+        matches = list(re.finditer(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9-]*", value or ""))
+        if len(matches) < 2:
+            return None
+
+        tail_start_word = None
+        for pos in range(len(matches) - 1, -1, -1):
+            word = matches[pos].group(0)
+            first = word[0]
+            if first.islower():
+                tail_start_word = pos
+                continue
+            break
+
+        if tail_start_word is None:
+            return None
+        if tail_start_word == 0:
+            return None
+        return matches[tail_start_word].start()
+
     for idx in range(1, len(translated_text_parts) - 1):
         source_segment = source_text_parts[idx]
         translated_segment = translated_text_parts[idx]
@@ -1891,6 +2046,72 @@ def _apply_source_placeholder_boundary_spacing(
             left = re.sub(r"[ \t\n]+$", "", translated_text_parts[target_idx])
             translated_text_parts[target_idx] = f"{left} {moved}" if left else moved
             translated_text_parts[idx] = source_segment
+
+    for idx in range(1, len(translated_text_parts) - 1):
+        source_segment = source_text_parts[idx]
+        translated_segment = translated_text_parts[idx]
+        if not _is_punctuation_only_segment(source_segment):
+            continue
+        if not _has_lexical_content(translated_segment):
+            continue
+
+        punctuation_match = re.search(r"([.,:;!?]+)\s*$", translated_segment)
+        if not punctuation_match:
+            continue
+
+        lexical_prefix = translated_segment[:punctuation_match.start()]
+        moved = re.sub(r"\s+", " ", lexical_prefix).strip()
+        if not moved:
+            translated_text_parts[idx] = punctuation_match.group(1)
+            continue
+
+        target_idx = idx - 1
+        for probe in range(idx - 1, -1, -1):
+            if _has_lexical_content(source_text_parts[probe]) or _has_lexical_content(translated_text_parts[probe]):
+                target_idx = probe
+                break
+
+        left = re.sub(r"[ \t\n]+$", "", translated_text_parts[target_idx])
+        translated_text_parts[target_idx] = f"{left} {moved}" if left else moved
+        translated_text_parts[idx] = punctuation_match.group(1)
+
+    for idx in range(0, len(translated_text_parts) - 1):
+        source_segment = source_text_parts[idx]
+        translated_segment = translated_text_parts[idx]
+        if not _source_segment_looks_proper_name(source_segment):
+            continue
+        if not _has_lexical_content(translated_segment):
+            continue
+
+        punctuation_target_idx: Optional[int] = None
+        for probe in range(idx + 1, len(source_text_parts)):
+            probe_segment = source_text_parts[probe]
+            if probe_segment.strip() == "":
+                continue
+            if _is_punctuation_only_segment(probe_segment):
+                punctuation_target_idx = probe
+            break
+
+        if punctuation_target_idx is None:
+            continue
+
+        tail_start = _find_lowercase_tail_start(translated_segment)
+        if tail_start is None:
+            continue
+
+        prefix = re.sub(r"[ \t\n]+$", "", translated_segment[:tail_start])
+        suffix = re.sub(r"^[ \t\n]+", "", translated_segment[tail_start:]).strip()
+        if not suffix:
+            continue
+
+        translated_text_parts[idx] = prefix
+        next_segment = translated_text_parts[punctuation_target_idx]
+        if re.match(r"^[.,:;!?]", next_segment):
+            translated_text_parts[punctuation_target_idx] = f"{suffix}{next_segment}"
+        elif next_segment.strip():
+            translated_text_parts[punctuation_target_idx] = f"{suffix} {next_segment.lstrip()}"
+        else:
+            translated_text_parts[punctuation_target_idx] = suffix
 
     for idx in range(len(tokens)):
         translated_text_parts[idx] = re.sub(r"[ \t\n]+$", "", translated_text_parts[idx])
@@ -3931,7 +4152,8 @@ def cmd_quality_chunk(args: argparse.Namespace) -> None:
 
 
 def cmd_apply(args: argparse.Namespace) -> None:
-    base = Path(args.base_dir)
+    base = _resolve_input_base_dir(Path(args.base_dir))
+    print(f"[INFO] Using input data directory: {base}")
     export_file = Path(args.export_file)
     translated_file = Path(args.translated_file)
     out_dir = Path(args.out_dir)
@@ -3942,6 +4164,13 @@ def cmd_apply(args: argparse.Namespace) -> None:
     glossary = load_glossary(glossary_file)
     mt_cfg = _read_mt_settings_for_non_mt_commands(args.mt_config, args.mt_local_config)
     persist_normalized_english = bool(mt_cfg.get("persist_normalized_english_in_output_csv", True))
+    keep_item_names_english_in_german = bool(mt_cfg.get("keep_item_names_english_in_german", False))
+    item_name_keys: Set[str] = set()
+    if keep_item_names_english_in_german:
+        item_name_keys = _extract_item_name_keys_from_ecf(base)
+        print(
+            f"[INFO] Item-name English lock enabled: {len(item_name_keys)} item keys extracted from ECF"
+        )
 
     exported = {entry["id"]: entry for entry in _read_jsonl(export_file)}
     translated = {entry["id"]: entry for entry in _read_jsonl(translated_file)}
@@ -3963,12 +4192,15 @@ def cmd_apply(args: argparse.Namespace) -> None:
                     continue
                 cid = make_id(file_name, key, idx)
                 exp = exported.get(cid)
-                if not exp:
+                item_name_lock_active = keep_item_names_english_in_german and key in item_name_keys
+                if not exp and not item_name_lock_active:
                     continue
 
                 current_de = row.get("Deutsch") or ""
                 source_en = row.get("English") or ""
-                normalized_en = exp.get("english") if isinstance(exp.get("english"), str) else source_en
+                normalized_en = (
+                    exp.get("english") if exp and isinstance(exp.get("english"), str) else source_en
+                )
                 english_changed = False
                 if (
                     persist_normalized_english
@@ -3982,8 +4214,11 @@ def cmd_apply(args: argparse.Namespace) -> None:
                 source_norm = _normalize_text(source_en)
 
                 new_de = None
+                if item_name_lock_active:
+                    new_de = normalized_en if normalized_en else source_en
+
                 translated_entry = translated.get(cid)
-                if translated_entry and translated_entry.get("translation_masked"):
+                if not new_de and translated_entry and translated_entry.get("translation_masked"):
                     masked = translated_entry["translation_masked"]
                     translated_protected = translated_entry.get("protected")
                     exp_protected = exp.get("protected", {})
@@ -4015,8 +4250,10 @@ def cmd_apply(args: argparse.Namespace) -> None:
                         normalized_en,
                         restored,
                     )
+                    if _should_apply_final_spacing_normalizer(exp):
+                        restored = _normalize_final_empyrion_spacing(restored)
                     new_de = enforce_glossary(restored, glossary)
-                elif source_norm in memory:
+                elif not new_de and source_norm in memory:
                     new_de = memory[source_norm]
 
                 if new_de and new_de.strip() and new_de != current_de:
@@ -4025,7 +4262,9 @@ def cmd_apply(args: argparse.Namespace) -> None:
                     if set(old_tokens.values()) - set(new_tokens.values()):
                         continue
                     row["Deutsch"] = new_de
-                    status_label = exp["status"]
+                    status_label = exp["status"] if exp else "item_name_english_locked"
+                    if item_name_lock_active:
+                        status_label = "item_name_english_locked"
                     if english_changed:
                         status_label = f"{status_label}+english_normalized"
                     rep_writer.writerow([
