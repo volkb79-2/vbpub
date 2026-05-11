@@ -44,6 +44,7 @@ ARG CIU_LATEST_TAG
 ARG CIU_LATEST_ASSET_NAME
 ARG CIU_INSTALL_REQUIRED="false"
 ARG DEVCONTAINERS_RELEASE=""
+ARG DEVCONTAINERS_VERSION=""
 
 ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
 ENV BACKPORTS_URI="${BACKPORTS_URI}"
@@ -58,7 +59,9 @@ LABEL org.opencontainers.image.title="${OCI_TITLE}" \
     org.opencontainers.image.vendor="${OCI_VENDOR}" \
     org.opencontainers.image.version="${OCI_VERSION}" \
     org.opencontainers.image.revision="${OCI_REVISION}" \
-    org.opencontainers.image.created="${OCI_CREATED}"
+    org.opencontainers.image.created="${OCI_CREATED}" \
+    net.volkb79.base-devcontainers-release="${DEVCONTAINERS_RELEASE}" \
+    net.volkb79.base-devcontainers-version="${DEVCONTAINERS_VERSION}"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -445,6 +448,17 @@ fi
 EOF
 USER root
 
+# Midnight Commander defaults for better readability in terminal sessions.
+RUN set -euo pipefail; \
+    install -d -m 0755 /home/vscode/.config/mc; \
+    cat > /home/vscode/.config/mc/ini << 'EOF'
+[Midnight-Commander]
+skin=nicedark
+EOF
+
+RUN set -euo pipefail; \
+    chown -R vscode:vscode /home/vscode/.config/mc
+
 # Manifest of included tool versions (Markdown)
 RUN set -euo pipefail; \
     manifest_dir="/usr/local/share/modern-debian-tools-python-debug"; \
@@ -471,33 +485,39 @@ RUN set -euo pipefail; \
         echo "- Debian: ${DEBIAN_VERSION}"; \
         echo "- Python: $(python3 --version 2>&1)"; \
         echo "- Image version: ${OCI_VERSION}"; \
+        echo "- Image tag: ${DEBIAN_VERSION}-py${PYTHON_VERSION}-${OCI_VERSION}"; \
         if [ -n "${DEVCONTAINERS_RELEASE:-}" ]; then \
             echo "- Devcontainers release: ${DEVCONTAINERS_RELEASE}"; \
         else \
             echo "- Devcontainers release: unknown"; \
         fi; \
+        if [ -n "${DEVCONTAINERS_VERSION:-}" ]; then \
+            echo "- Devcontainers image version: ${DEVCONTAINERS_VERSION}"; \
+        else \
+            echo "- Devcontainers image version: unknown"; \
+        fi; \
         echo ""; \
-        echo "## Tooling"; \
+        echo "## Custom Tooling"; \
         if [ -n "${ciu_version_output}" ]; then \
             echo "- CIU: ${ciu_version_output}"; \
         else \
             echo "- CIU: not-installed"; \
         fi; \
+        echo "- awscli: $(aws --version 2>&1)"; \
         echo "- b2: ${b2_version_output}"; \
         echo "- bat: $(bat --version 2>&1 | head -1)"; \
+        echo "- consul: $(consul version 2>&1 | head -1)"; \
         echo "- delta: $(delta --version 2>&1 | head -1)"; \
         echo "- fd: $(fd --version 2>&1 | head -1)"; \
-        echo "- ripgrep: $(rg --version 2>&1 | head -1)"; \
-        echo "- rga: $(rga --version 2>&1 | head -1)"; \
-        echo "- gh: $(gh --version 2>&1 | head -1)"; \
-        echo "- shellcheck: ${shellcheck_version_output}"; \
         echo "- fzf: $(fzf --version 2>&1)"; \
-        echo "- yq: $(yq --version 2>&1)"; \
-        echo "- consul: $(consul version 2>&1 | head -1)"; \
-        echo "- vault: $(vault version 2>&1 | head -1)"; \
+        echo "- gh: $(gh --version 2>&1 | head -1)"; \
         echo "- psql: $(psql --version 2>&1)"; \
         echo "- redis-cli: $(redis-cli --version 2>&1)"; \
-        echo "- awscli: $(aws --version 2>&1)"; \
+        echo "- rga: $(rga --version 2>&1 | head -1)"; \
+        echo "- ripgrep: $(rg --version 2>&1 | head -1)"; \
+        echo "- shellcheck: ${shellcheck_version_output}"; \
+        echo "- vault: $(vault version 2>&1 | head -1)"; \
+        echo "- yq: $(yq --version 2>&1)"; \
         echo ""; \
         echo "## Python packages"; \
         echo ""; \

@@ -1,178 +1,271 @@
 # Modern Debian Python Debug Images
 
-Pre-built Debian + Python tooling images for interactive debugging. Two image families are published:
+This project builds and publishes two related image families:
+- `modern-debian-tools-python-debug`
+- `modern-debian-tools-python-debug-vsc-devcontainer`
 
-- `modern-debian-tools-python-debug` (standard Python base image)
-- `modern-debian-tools-python-debug-vsc-devcontainer` (VS Code devcontainer base image)
+The purpose is to provide a curated, reproducible Debian + Python environment with modern CLI tooling for local development, CI, and VS Code devcontainers.
 
-## Images
+## Image Families
 
-Variants are built for both image families:
-- Bookworm + Python 3.11
-- Bookworm + Python 3.13
-- Trixie + Python 3.11
-- Trixie + Python 3.13
-- Trixie + Python 3.14
+1. `modern-debian-tools-python-debug`
+	- Base: `python:${PYTHON_VERSION}-${DEBIAN_VERSION}`
+	- Use when you want a plain Python image with the custom tool stack.
 
-Base images:
-- `modern-debian-tools-python-debug`: `python:${PYTHON_VERSION}-${DEBIAN_VERSION}`
-- `modern-debian-tools-python-debug-vsc-devcontainer`: `mcr.microsoft.com/devcontainers/python:1-${PYTHON_VERSION}-${DEBIAN_VERSION}`
+2. `modern-debian-tools-python-debug-vsc-devcontainer`
+	- Base: `mcr.microsoft.com/devcontainers/python:${PYTHON_VERSION}-${DEBIAN_VERSION}`
+	- Use when you want Microsoft devcontainer behavior plus custom tooling.
 
-Each image tag includes Debian version, Python version, and build date:
+## Tagging and Variants
 
+Tag format:
+
+```text
+<debian>-py<python>-<YYYYMMDD>
 ```
-<registry>/<github_username>/modern-debian-tools-python-debug:<debian>-py<python>-<YYYYMMDD>
+
+Examples:
+- `trixie-py3.14-20260511`
+- `trixie-py3.14-latest`
+- `latest` (family-wide floating tag)
+
+Enabled build group target list is in [docker-bake.hcl](docker-bake.hcl) under `group "all"`.
+
+## Build and Push Flow
+
+Entry points:
+- [build-images.py](build-images.py)
+- [push-images.py](push-images.py)
+
+Step configuration:
+- [build-push.toml](build-push.toml)
+
+Bake definition:
+- [docker-bake.hcl](docker-bake.hcl)
+
+### Critical freshness behavior
+
+`scripts/resolve-devcontainers-release.py` now **always pulls** the configured base devcontainer image before reading labels. This avoids stale local-cache metadata during build/push.
+
+During `./build-images.py` and `./push-images.py`, the resolver also performs a **dynamic registry check** against live MCR tag inventory.
+
+Default behavior is now **fail-fast**:
+- if newer stable Python/Debian streams are detected, build stops before bake starts
+- to continue intentionally, run `./build-images.py --ignore-new-releases`
+
+When the gate stops a build, `build-images.py` and `push-images.py` print a clean actionable message (no Python traceback) with explicit next steps.
+
+Example advisory:
+
+```text
+[WARN] Newer stable devcontainers/python tag(s) detected for trixie: 1-3.15-trixie, 3.15-trixie. Current base: 3.14-trixie. Recommended newest stable: 3.15-trixie.
 ```
+
+Resolver checks are dynamic and do not hardcode future version numbers.
+
+Detection scope is dynamic (live registry), and includes:
+- newer Python for your current Debian codename (minor and major streams, for example `3.15` or `4.x`)
+- additional Debian codenames for your current Python stream (helps detect new Debian variant availability)
+- newer Python streams that may already exist on other Debian variants (early visibility)
+
+The script exports:
+- `DEVCONTAINERS_RELEASE_STABLE` (example: `v0.4.26`)
+- `DEVCONTAINERS_VERSION_STABLE` (example: `3.0.7`)
+- `DEVCONTAINERS_BASE_LATEST_STABLE` (example: `mcr.microsoft.com/devcontainers/python:3.15-trixie`)
+- `DEVCONTAINERS_LATEST_STABLE_PYTHON` and `DEVCONTAINERS_LATEST_STABLE_DEBIAN`
+
+Those values are passed through `build-push.toml` into bake args and then into Dockerfile metadata and manifest content.
+
+You can change which stable base image is checked (and resolved) by overriding:
+
+```bash
+DEVCONTAINERS_BASE_STABLE=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-images.py
+```
+
+Ignore release-gate intentionally:
+
+```bash
+./build-images.py --ignore-new-releases
+```
+
+The same `DEVCONTAINERS_BASE_STABLE` variable is also used by the `trixie-py314-vsc` bake target base image in [docker-bake.hcl](docker-bake.hcl), so warning/check behavior and actual build input stay aligned.
+
+### Known-latest variables in bake file
+
+To make maintenance explicit and readable, [docker-bake.hcl](docker-bake.hcl) defines:
+- `LATEST_KNOWN_DEBIAN` (default: `trixie`)
+- `LATEST_KNOWN_PYTHON` (default: `3.14`)
+
+`DEVCONTAINERS_BASE_STABLE` is composed from these values. This does not replace live detection, but improves local intent clarity and reduces scattered hardcoded values.
+
+Policy:
+- Keep `LATEST_KNOWN_*` aligned with the currently adopted stable baseline.
+- If upstream releases move ahead, gate will fail until you either:
+	- update `LATEST_KNOWN_*` to adopt the new baseline, or
+	- run with `--ignore-new-releases` intentionally.
+
+### Latest dynamic target
+
+`docker-bake.hcl` includes a dynamic target/group:
+- target: `latest-vsc`
+- group: `detection`
+
+`latest-vsc` uses resolver-exported live values (`DEVCONTAINERS_BASE_LATEST_STABLE`, Python, Debian) so it automatically follows current upstream stable availability.
+
+Target policy:
+- `group "all"` stays deterministic and pinned to adopted baseline targets.
+- `latest-vsc` stays separate in `group "detection"` for explicit opt-in builds.
+- This avoids unexpected automatic upstream jumps in default build outputs.
+
+Example build of the dynamic latest target:
+
+```bash
+docker buildx bake -f docker-bake.hcl detection --load
+```
+
+You can still force a specific older base to validate gate behavior:
+
+```bash
+DEVCONTAINERS_BASE_STABLE=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-images.py
+```
+
+Then continue anyway only when explicitly requested:
+
+```bash
+DEVCONTAINERS_BASE_STABLE=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-images.py --ignore-new-releases
+```
+
+## Manifest Location and Content
+
+Each built image writes a markdown manifest at:
+
+```text
+/usr/local/share/modern-debian-tools-python-debug/manifest.md
+```
+
+Manifest sections:
+- `Base`
+- `Custom Tooling`
+- `Python packages`
+- `System packages`
+
+The base section includes:
+- Debian version
+- Python runtime version
+- image build version (`OCI_VERSION`)
+- computed tag pattern (`<debian>-py<python>-<date>`)
+- devcontainers release (`v0.4.x` stream)
+- devcontainers image version (`3.0.x` stream)
+
+## About `Custom Tooling` vs `System packages`
+
+- `Custom Tooling` is an operational view: tool executables and their runtime `--version` output.
+- `System packages` is a package inventory view: selected apt package names and versions.
+
+This means one component can appear in both sections without being duplicated.
 
 Example:
+- `psql` in `Custom Tooling` is the executable version output.
+- `postgresql-client=...` in `System packages` is the Debian package that provides `psql`.
+- It is not installed twice.
+
+## `python -m pip install` vs `pipx`
+
+Both are valid but solve different needs:
+
+1. `python -m pip install`
+	- Installs into the active environment.
+	- Good for a curated, integrated toolset in one venv.
+
+2. `pipx`
+	- Installs each CLI app in its own isolated venv.
+	- Better when you need strong separation between tool dependency trees.
+
+Current design here intentionally uses a shared curated environment (`/home/vscode/.venv`) for consistency across tools.
+
+## Base Version Labels on Built Images
+
+Built images include labels:
+- `net.volkb79.base-devcontainers-release`
+- `net.volkb79.base-devcontainers-version`
+
+Inspect example:
+
+```bash
+docker image inspect ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-20260511 \
+  --format '{{ index .Config.Labels "net.volkb79.base-devcontainers-release" }}'
+
+docker image inspect ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-20260511 \
+  --format '{{ index .Config.Labels "net.volkb79.base-devcontainers-version" }}'
 ```
-ghcr.io/acme/modern-debian-tools-python-debug:bookworm-py3.13-20260117
+
+## Practical Commands
+
+Build all enabled targets:
+
+```bash
+./build-images.py
 ```
 
-VS Code devcontainer tag:
+Push all enabled targets:
+
+```bash
+./push-images.py
 ```
-<registry>/<github_username>/modern-debian-tools-python-debug-vsc-devcontainer:<debian>-py<python>-<YYYYMMDD>
-```
 
-## Contents
+Override specific build variables:
 
-The image pre-installs:
-- Debian System tools from distribution (curl, git, jq, dnsutils, ...)
-- Modern tools (latest version) from its own repos (bat, fd, ripgrep, shellcheck, fzf, yq) at system level
-- Common CLIs (Consul CLI, Vault, Redis, Postgresql, AWS CLI)
-- Python packages installed into a per-user virtualenv at `/home/vscode/.venv`
-
-Python packages are installed directly in the Dockerfile (see the `pip install` list). 
-
-The image sets:
-- `VIRTUAL_ENV=/home/vscode/.venv`
-- `PATH=/home/vscode/.venv/bin:$PATH`
-
-If CIU wheel inputs are provided at build time, the CIU wheel is downloaded and installed into the same virtualenv (optional SHA256 verification via `CIU_WHEEL_SHA256`).
-
-## Environment Provisioning Flow (To-be)
-
-Chronological steps for a complete development environment vs. GitHub Actions runner. This consolidates what happens in the base image, devcontainer post-create, and CI/CD setup scripts.
-
-| Step (Chronological) | Devcontainer (modern-debian-tools-python-debug-vsc-devcontainer + post-create) | GitHub Actions (runner + env-setup) |
-| --- | --- | --- |
-| 1. Base OS | `mcr.microsoft.com/devcontainers/python:1-${PYTHON_VERSION}-${DEBIAN_VERSION}` (from [modern-debian-tools-python-debug/Dockerfile](modern-debian-tools-python-debug/Dockerfile)) | GitHub-hosted Ubuntu runner ([about runners](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners)) |
-| 2. Core system packages | Installed in Dockerfile via `apt-get` (curl, git, jq, dnsutils, etc.). | Preinstalled on runner; no Dockerfile step. |
-| 3. Modern tools + CLIs | Installed in Dockerfile (bat, fd, ripgrep, shellcheck, fzf, yq, Consul, Vault, PostgreSQL client, Redis tools, AWS CLI). | Not installed by default; add in CI if needed (not done in env-setup). |
-| 4. Python runtime + packages | `/home/vscode/.venv` created and populated in Dockerfile with common dev packages; `env-workspace-setup-generate.sh` installs repo `requirements.txt` to keep tooling aligned. | Uses runner Python; `env-workspace-setup-generate.sh` installs requirements from repo `requirements.txt`. |
-| 5. CIU install | CIU must already be available (prebaked in image or preinstalled in workspace); post-create does not install CIU. | `.github/actions/env-setup.sh` downloads wheel from `CIU_PKG_URL` and installs it before running env setup. |
-| 6. Workspace env generation + bootstrap | `.devcontainer/post-create.sh` calls `env-workspace-setup-generate.sh`, which runs `ciu --generate-env --define-root` to create `.env.ciu` and execute CIU post-bootstrap (network create/attach + TLS access checks). | `.github/actions/env-setup.sh` delegates to `env-workspace-setup-generate.sh` for the same `.env.ciu` generation and CIU bootstrap. |
-| 7. Dev UX/CI extras | Post-create sets VS Code settings, aliases, SSH agent, and PATH helpers. | CI sets `MOCK_MODE=true`, optional Docker registry login, and creates `vol-testing-results/`. |
-
-## Version overrides
-
-Defaults are `latest`. Any variable defined in docker-bake.hcl can be overridden via environment variables when invoking the build.
-
-Additional optional build args:
-- `CIU_LATEST_TAG`, `CIU_LATEST_ASSET_NAME`: derive the canonical GitHub Releases URL
-	- Latest URL scheme: https://github.com/volkb79-2/vbpub/releases/download/ciu-wheel-latest/ciu-<version>-py3-none-any.whl
-
-Example:
-
-```
+```bash
 B2_VERSION=4.5.0 ./build-images.py
 ```
 
-Checksum verification is enabled for HashiCorp binaries, AWS CLI, and B2 CLI downloads during build.
+## GHCR Credentials
 
-Debian backports are enabled for each Debian release with Pin-Priority 600.
+Use PAT with package scopes (classic token):
+- `write:packages`
+- `read:packages`
 
-## Manifest
+Configured via environment (for example `.env` loaded by your release tooling).
 
-Each image writes a manifest to:
+## Using in another repository
 
-```
-/home/vscode/devcontainer-manifest.txt
-```
+Use image reference in `.devcontainer/devcontainer.json`:
 
-It includes tool versions, Python version, pip package list, and selected Debian package versions.
-
-## Package metadata (GitHub Packages)
-
-The container image publishes OCI labels so the GitHub Packages page shows a useful description and links:
-
-- `org.opencontainers.image.description`
-- `org.opencontainers.image.source`
-- `org.opencontainers.image.documentation`
-
-This makes the package page readable before download and points to the manifest location inside the image.
-
-## Build
-
-This project uses Buildx Bake. The build date is included in tags via `BUILD_DATE`.
-
-- `docker-bake.hcl` defines base + devcontainer targets and an `all` group.
-- `./build-images.py` runs the config-driven build step and builds all variants.
-
-### Shared credentials
-
-`build-images.py` and `push-images.py` will load a shared repo-root env file if present:
-- vbpub/.env (preferred)
-- modern-debian-tools-python-debug/.env (fallback)
-
-This lets you store GitHub credentials once for multiple vbpub projects.
-
-## Push to GitHub Artifact Registry
-
-Use `./push-images.py` (or run Bake with `--push`) after validation. Configure registry owner via environment variables in the script or your shell.
-
-`push-images.py` also updates the `latest` tag (and per-variant `*-latest` tags) to point at the most recently pushed images.
-
-### GHCR (personal account)
-
-Note: GitHub Packages only supports authentication using a personal access token (classic). See:
-https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry
-
-
-1. Copy `.env.sample` to `.env` and fill in:
-	- `GITHUB_USERNAME`
-	- `GITHUB_REPO`
-	- `GITHUB_PUSH_PAT`
-2. Create a GitHub Personal Access Token with:
-	- `write:packages` (required for push)
-	- `read:packages` (required for pull)
-3. Run `./push-images.py` (the script will login if `GITHUB_PUSH_PAT` is set).
-
-## Usage in other repositories
-
-Reference one of the tags in your `.devcontainer/devcontainer.json` under `image` (do not use `build`).
-
-Example:
-
-```
+```json
 {
-	"image": "ghcr.io/acme/modern-debian-tools-python-debug-vsc-devcontainer:bookworm-py3.13-20260117",
-	"remoteUser": "vscode"
+  "image": "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-20260511",
+  "remoteUser": "vscode"
 }
 ```
 
-Counterexample (do NOT do this):
+Avoid building from Dockerfile in consumer repos when a published image already exists.
 
+## Checking Available Upstream Devcontainer Tags
+
+Run:
+
+```bash
+./check-mcr-devcontainer-tags.py
 ```
-{
-	"build": {
-		"dockerfile": "Dockerfile"
-	}
-}
-```
 
-# Check MCR devcontainer released images
+This compares discovered tags against upstream manifest data and helps spot newly available variants.
 
-run `./check-mcr-devcontainer-tags.py ` to check the availability. As of 2025-02:
+Example output:
 
-```txt
-debian    3.12   3.13   3.14   3.15   3.16 
+```text
+debian    3.12   3.13   3.14   3.15   3.16
 --------  -----  -----  -----  -----  -----
-bookworm  1pd    1pd    pd     .      .    
-trixie    pd     pd     pd     .      .    
-forky     .      .      .      .      .    
+bookworm  1pd    1pd    pd     .      .
+trixie    pd     pd     pd     .      .
+forky     .      .      .      .      .
 
 Legend: 1 = 1- prefix, p = plain, d = dev- prefix, . = missing
 
 Secondary manifest variants: 10 (https://raw.githubusercontent.com/devcontainers/images/main/src/python/manifest.json)
 ```
+
+## References
+
+- Upstream devcontainers images: https://github.com/devcontainers/images
+- Python manifest: https://raw.githubusercontent.com/devcontainers/images/main/src/python/manifest.json
+

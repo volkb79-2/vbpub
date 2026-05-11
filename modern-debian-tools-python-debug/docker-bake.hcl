@@ -15,6 +15,35 @@ variable "GITHUB_REPO" {
   default = ""
 }
 
+
+// keep updated with the latest known versions to get info on the latest devcontainer base images and to set the default for the detection test target
+variable "LATEST_KNOWN_DEBIAN" {
+  default = "trixie"
+}
+
+// keep updated with the latest known versions to get info on the latest devcontainer base images and to set the default for the detection test target
+variable "LATEST_KNOWN_PYTHON" {
+  default = "3.13"
+}
+
+variable "DEVCONTAINERS_BASE_STABLE" {
+  default = "mcr.microsoft.com/devcontainers/python:${LATEST_KNOWN_PYTHON}-${LATEST_KNOWN_DEBIAN}"
+}
+
+variable "DEVCONTAINERS_BASE_LATEST_STABLE" {
+  default = "mcr.microsoft.com/devcontainers/python:${LATEST_KNOWN_PYTHON}-${LATEST_KNOWN_DEBIAN}"
+}
+
+variable "DEVCONTAINERS_LATEST_STABLE_PYTHON" {
+  default = "${LATEST_KNOWN_PYTHON}"
+}
+
+variable "DEVCONTAINERS_LATEST_STABLE_DEBIAN" {
+  default = "${LATEST_KNOWN_DEBIAN}"
+}
+
+
+
 // Used in tags; build script sets BUILD_DATE if not provided.
 variable "BUILD_DATE" {
   default = "19700101"
@@ -63,6 +92,23 @@ variable "OCI_REVISION" {
 variable "OCI_CREATED" {
   default = "unknown"
 }
+
+variable "DEVCONTAINERS_RELEASE_STABLE" {
+  default = ""
+}
+
+variable "DEVCONTAINERS_RELEASE_DEV" {
+  default = ""
+}
+
+variable "DEVCONTAINERS_VERSION_STABLE" {
+  default = ""
+}
+
+variable "DEVCONTAINERS_VERSION_DEV" {
+  default = ""
+}
+
 
 variable "DELTA_VERSION" {
   default = "latest"
@@ -135,10 +181,6 @@ variable "CIU_LATEST_ASSET_NAME" {
 variable "CIU_INSTALL_REQUIRED" {
   default = "false"
 }
-variable "DEVCONTAINERS_RELEASE_STABLE" {
-  default = ""
-}
-
 
 function "base_tag" {
   params = [debian, python]
@@ -195,6 +237,10 @@ target "base" {
     CIU_LATEST_TAG = "${CIU_LATEST_TAG}"
     CIU_LATEST_ASSET_NAME = "${CIU_LATEST_ASSET_NAME}"
     CIU_INSTALL_REQUIRED = "${CIU_INSTALL_REQUIRED}"
+    DEVCONTAINERS_RELEASE_STABLE = "${DEVCONTAINERS_RELEASE_STABLE}"
+    DEVCONTAINERS_RELEASE_DEV = "${DEVCONTAINERS_RELEASE_DEV}"
+    DEVCONTAINERS_VERSION_STABLE = "${DEVCONTAINERS_VERSION_STABLE}"
+    DEVCONTAINERS_VERSION_DEV = "${DEVCONTAINERS_VERSION_DEV}"
   }
 }
 
@@ -257,6 +303,7 @@ target "trixie-py311-vsc" {
     PYTHON_VERSION = "3.11"
     DEBIAN_VERSION = "trixie"
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
+    DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
   }
   tags = [vsc_tag("trixie", "3.11"), vsc_latest_tag("trixie", "3.11")]
 }
@@ -268,22 +315,49 @@ target "trixie-py313-vsc" {
     PYTHON_VERSION = "3.13"
     DEBIAN_VERSION = "trixie"
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
+    DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
   }
   tags = [vsc_tag("trixie", "3.13"), vsc_latest_tag("trixie", "3.13")]
 }
 
+
 # to manually extract the used devcontainer version:
-# `docker image inspect mcr.microsoft.com/devcontainers/python:3.14-trixie --format '{{ index .Config.Labels "dev.containers.release" }}'` 
+# `docker image inspect <image> --format '{{ index .Config.Labels "net.volkb79.base-devcontainers-release" }}'`
+# `docker image inspect <image> --format '{{ index .Config.Labels "net.volkb79.base-devcontainers-version" }}'`
 target "trixie-py314-vsc" {
   inherits = ["base"]
   args = {
-    BASE_IMAGE = "mcr.microsoft.com/devcontainers/python:3.14-trixie"
+    BASE_IMAGE = "${DEVCONTAINERS_BASE_STABLE}"
     PYTHON_VERSION = "3.14"
     DEBIAN_VERSION = "trixie"
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
+    DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
   }
   tags = [vsc_tag("trixie", "3.14"), vsc_latest_tag("trixie", "3.14"), "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:latest"]
 }
+
+
+# Dynamic target that picks latest stable python/debian combination from live resolver output.
+# Resolver sets DEVCONTAINERS_BASE_LATEST_STABLE, DEVCONTAINERS_LATEST_STABLE_PYTHON,
+# and DEVCONTAINERS_LATEST_STABLE_DEBIAN.
+target "latest-vsc" {
+  inherits = ["base"]
+  args = {
+    BASE_IMAGE = "${DEVCONTAINERS_BASE_LATEST_STABLE}"
+    PYTHON_VERSION = "${DEVCONTAINERS_LATEST_STABLE_PYTHON}"
+    DEBIAN_VERSION = "${DEVCONTAINERS_LATEST_STABLE_DEBIAN}"
+    DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
+    DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
+  }
+  tags = ["${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:latest-stable"]
+}
+
+group "detection" {
+  targets = [
+    "latest-vsc"
+  ]
+}
+
 
 
 # currently missing newer versions for devcontainer, run `./check-mcr-devcontainer-tags.py` to see what is available
@@ -292,8 +366,8 @@ group "all" {
     # "bookworm-py311",
     # "bookworm-py313",
     "trixie-py311",
-    #"trixie-py313",
-    "trixie-py314",
-    "trixie-py314-vsc"
+    "trixie-py313-vsc",
+    #"trixie-py314",
+    #"trixie-py314-vsc"
   ]
 }
