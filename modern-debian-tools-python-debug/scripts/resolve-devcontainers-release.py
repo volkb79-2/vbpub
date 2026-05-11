@@ -349,6 +349,10 @@ def family_readme_relpath(package_name: str) -> str:
     return f"package-manifests-versioned/{package_name}/README.md"
 
 
+def family_latest_relpath(package_name: str) -> str:
+    return f"package-manifests-versioned/{package_name}/latest.md"
+
+
 def package_catalog(latest_python: str | None, latest_debian: str | None) -> list[dict[str, str]]:
     entries = [
         {
@@ -417,19 +421,53 @@ def package_catalog(latest_python: str | None, latest_debian: str | None) -> lis
         },
     ]
 
-    if latest_python and latest_debian:
-        entries.append(
-            {
-                "package_name": "modern-debian-tools-python-debug-vsc-devcontainer",
-                "family_title": "Modern Debian Tools + Python Debug VS Code Devcontainer",
-                "family_kind": "vsc",
-                "target": "latest-vsc",
-                "debian": latest_debian,
-                "python": latest_python,
-            }
-        )
-
     return entries
+
+
+def normalize_description_text(description: str) -> str:
+    parts = [line.strip() for line in description.splitlines() if line.strip()]
+    return " ".join(parts)
+
+
+def build_display_description(
+    description: str,
+    *,
+    username: str,
+    repo: str,
+    package_name: str,
+) -> str:
+    base = normalize_description_text(description) or "Versioned package documentation is available in the source repository."
+    docs_url = repo_blob_url(username, repo, family_latest_relpath(package_name))
+    suffix = f" Docs: {docs_url}"
+    max_len = 512
+
+    if len(base) + len(suffix) <= max_len:
+        return base + suffix
+
+    available = max_len - len(suffix)
+    if available <= 4:
+        return (base + suffix)[:max_len]
+
+    trimmed = base[: available - 3].rstrip() + "..."
+    return trimmed + suffix
+
+
+def choose_latest_entry(
+    entries: list[dict[str, str]],
+    *,
+    latest_python: str | None,
+    latest_debian: str | None,
+) -> dict[str, str]:
+    family_kind = entries[0]["family_kind"]
+    if family_kind == "vsc" and latest_python and latest_debian:
+        for entry in entries:
+            if entry["python"] == latest_python and entry["debian"] == latest_debian:
+                return entry
+
+    return sorted(
+        entries,
+        key=lambda item: (to_version_tuple(item["python"]), item["debian"], item["target"]),
+    )[-1]
 
 
 def render_manifest(entry: dict[str, str], *, username: str, repo: str, build_date: str, description: str) -> str:
@@ -504,10 +542,13 @@ def render_family_readme(
     repo: str,
     build_date: str,
 ) -> str:
+    latest_url = repo_blob_url(username, repo, family_latest_relpath(package_name))
     lines = [
         f"# {family_title}",
         "",
         f"Versioned Markdown pages for `{package_name}` that are used as GHCR-friendly rich documentation targets.",
+        "",
+        f"Stable current-docs link: {latest_url}",
         "",
         "## Current Release Pages",
         "",
@@ -533,6 +574,58 @@ def render_family_readme(
     return "\n".join(lines)
 
 
+def render_family_latest(
+    package_name: str,
+    family_title: str,
+    latest_entry: dict[str, str],
+    entries: list[dict[str, str]],
+    *,
+    username: str,
+    repo: str,
+    build_date: str,
+) -> str:
+    latest_manifest_relpath = manifest_relpath(
+        package_name,
+        latest_entry["debian"],
+        latest_entry["python"],
+        build_date,
+    )
+    latest_manifest_url = repo_blob_url(username, repo, latest_manifest_relpath)
+    family_readme_url = repo_blob_url(username, repo, family_readme_relpath(package_name))
+
+    lines = [
+        f"# {family_title} Latest Docs",
+        "",
+        f"Stable documentation landing page for `{package_name}`.",
+        "",
+        "## Current Recommended Release",
+        "",
+        f"- Target: `{latest_entry['target']}`",
+        f"- Debian: `{latest_entry['debian']}`",
+        f"- Python: `{latest_entry['python']}`",
+        f"- Build date: `{build_date}`",
+        f"- Versioned manifest: {latest_manifest_url}",
+        f"- Family index: {family_readme_url}",
+        "",
+        "## Other Release Pages",
+        "",
+    ]
+
+    for entry in sorted(entries, key=lambda item: (item["debian"], item["python"], item["target"])):
+        relpath = manifest_relpath(package_name, entry["debian"], entry["python"], build_date)
+        url = repo_blob_url(username, repo, relpath)
+        lines.append(f"- `{entry['target']}`: {url}")
+
+    lines.extend(
+        [
+            "",
+            "This stable page exists so OCI metadata can point to one durable documentation URL while the release-specific manifests remain versioned.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def render_root_readme(grouped_entries: dict[str, list[dict[str, str]]], *, username: str, repo: str) -> str:
     lines = [
         "# Versioned Package Manifests",
@@ -545,7 +638,8 @@ def render_root_readme(grouped_entries: dict[str, list[dict[str, str]]], *, user
     for package_name in sorted(grouped_entries):
         relpath = family_readme_relpath(package_name)
         url = repo_blob_url(username, repo, relpath)
-        lines.append(f"- [{package_name}]({url})")
+        latest_url = repo_blob_url(username, repo, family_latest_relpath(package_name))
+        lines.append(f"- [{package_name}]({url}) - stable current docs: {latest_url}")
     lines.extend(
         [
             "",
@@ -576,10 +670,27 @@ def write_package_docs(build_date: str, latest_python: str | None, latest_debian
     for package_name, package_entries in grouped.items():
         package_dir = PACKAGE_DOCS_ROOT / package_name
         package_dir.mkdir(parents=True, exist_ok=True)
+        latest_entry = choose_latest_entry(
+            package_entries,
+            latest_python=latest_python,
+            latest_debian=latest_debian,
+        )
         (package_dir / "README.md").write_text(
             render_family_readme(
                 package_name,
                 package_entries[0]["family_title"],
+                package_entries,
+                username=username,
+                repo=repo,
+                build_date=build_date,
+            ),
+            encoding="utf-8",
+        )
+        (package_dir / "latest.md").write_text(
+            render_family_latest(
+                package_name,
+                package_entries[0]["family_title"],
+                latest_entry,
                 package_entries,
                 username=username,
                 repo=repo,
@@ -636,7 +747,29 @@ def main() -> int:
     if not build_date:
         raise RuntimeError("BUILD_DATE must be set before generating package manifests")
 
+    description_base = os.getenv("OCI_DESCRIPTION_BASE") or os.getenv("OCI_DESCRIPTION") or ""
+    description_vsc = os.getenv("OCI_DESCRIPTION_VSC") or os.getenv("OCI_DESCRIPTION") or ""
+
     write_package_docs(build_date, latest_python, latest_debian)
+
+    print(
+        "OCI_DESCRIPTION_BASE="
+        + build_display_description(
+            description_base,
+            username=os.getenv("GITHUB_USERNAME") or "volkb79-2",
+            repo=os.getenv("GITHUB_REPO") or "vbpub",
+            package_name="modern-debian-tools-python-debug",
+        )
+    )
+    print(
+        "OCI_DESCRIPTION_VSC="
+        + build_display_description(
+            description_vsc,
+            username=os.getenv("GITHUB_USERNAME") or "volkb79-2",
+            repo=os.getenv("GITHUB_REPO") or "vbpub",
+            package_name="modern-debian-tools-python-debug-vsc-devcontainer",
+        )
+    )
 
     # Export latest stable tuple for downstream bake targets (dynamic, live-derived).
     if latest_tag:

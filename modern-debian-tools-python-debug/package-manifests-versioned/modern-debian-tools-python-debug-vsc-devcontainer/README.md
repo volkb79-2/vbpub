@@ -2,11 +2,12 @@
 
 Versioned Markdown pages for `modern-debian-tools-python-debug-vsc-devcontainer` that are used as GHCR-friendly rich documentation targets.
 
+Stable current-docs link: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/latest.md
+
 ## Current Release Pages
 
 - `trixie-py311-vsc`: [trixie-py3.11-20260511](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.11-20260511.md)
 - `trixie-py313-vsc`: [trixie-py3.13-20260511](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.13-20260511.md)
-- `latest-vsc`: [trixie-py3.14-20260511](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260511.md)
 - `trixie-py314-vsc`: [trixie-py3.14-20260511](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260511.md)
 
 ## Why These Pages Exist

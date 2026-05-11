@@ -5,7 +5,7 @@ Versioned package manifest for `modern-debian-tools-python-debug-vsc-devcontaine
 ## Release
 
 - Build date: `20260511`
-- Target: `latest-vsc`
+- Target: `trixie-py314-vsc`
 - Debian: `trixie`
 - Python: `3.14`
 - Immutable image tag: `trixie-py3.14-20260511`
@@ -19,8 +19,7 @@ docker pull ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:
 
 ## Purpose
 
-Modern Debian Tools + Python Debug VS Code devcontainer image.
-Microsoft devcontainers base plus curated CLI tooling, managed venv helpers, and repository-hosted release manifests for richer per-package documentation.
+No description provided.
 
 ## Rich Documentation Links
 

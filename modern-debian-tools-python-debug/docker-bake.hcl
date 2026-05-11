@@ -234,6 +234,16 @@ function "package_docs_readme_url" {
   result = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/blob/main/modern-debian-tools-python-debug/${package_docs_readme_relpath(package_name)}"
 }
 
+function "package_latest_relpath" {
+  params = [package_name]
+  result = "${package_docs_dir(package_name)}/latest.md"
+}
+
+function "package_latest_url" {
+  params = [package_name]
+  result = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/blob/main/modern-debian-tools-python-debug/${package_latest_relpath(package_name)}"
+}
+
 function "package_manifest_url" {
   params = [package_name, debian, python]
   result = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/blob/main/modern-debian-tools-python-debug/${package_manifest_relpath(package_name, debian, python)}"
@@ -292,7 +302,7 @@ target "bookworm-py311" {
     DEBIAN_VERSION = "bookworm"
     OCI_DESCRIPTION = OCI_DESCRIPTION_BASE
     OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug", "bookworm", "3.11")
-    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug")
     PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug", "bookworm", "3.11")
   }
   tags = [base_tag("bookworm", "3.11"), base_latest_tag("bookworm", "3.11")]
@@ -306,7 +316,7 @@ target "bookworm-py313" {
     DEBIAN_VERSION = "bookworm"
     OCI_DESCRIPTION = OCI_DESCRIPTION_BASE
     OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug", "bookworm", "3.13")
-    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug")
     PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug", "bookworm", "3.13")
   }
   tags = [base_tag("bookworm", "3.13"), base_latest_tag("bookworm", "3.13")]
@@ -320,7 +330,7 @@ target "trixie-py311" {
     DEBIAN_VERSION = "trixie"
     OCI_DESCRIPTION = OCI_DESCRIPTION_BASE
     OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug", "trixie", "3.11")
-    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug")
     PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug", "trixie", "3.11")
   }
   tags = [base_tag("trixie", "3.11"), base_latest_tag("trixie", "3.11")]
@@ -334,7 +344,7 @@ target "trixie-py313" {
     DEBIAN_VERSION = "trixie"
     OCI_DESCRIPTION = OCI_DESCRIPTION_BASE
     OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug", "trixie", "3.13")
-    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug")
     PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug", "trixie", "3.13")
   }
   tags = [base_tag("trixie", "3.13"), base_latest_tag("trixie", "3.13")]
@@ -348,7 +358,7 @@ target "trixie-py314" {
     DEBIAN_VERSION = "trixie"
     OCI_DESCRIPTION = OCI_DESCRIPTION_BASE
     OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug", "trixie", "3.14")
-    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug")
     PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug", "trixie", "3.14")
   }
   tags = [base_tag("trixie", "3.14"), base_latest_tag("trixie", "3.14"), "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug:latest"]
@@ -364,7 +374,7 @@ target "trixie-py311-vsc" {
     DEBIAN_VERSION = "trixie"
     OCI_DESCRIPTION = OCI_DESCRIPTION_VSC
     OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.11")
-    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug-vsc-devcontainer")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug-vsc-devcontainer")
     PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.11")
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
@@ -380,7 +390,7 @@ target "trixie-py313-vsc" {
     DEBIAN_VERSION = "trixie"
     OCI_DESCRIPTION = OCI_DESCRIPTION_VSC
     OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.13")
-    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug-vsc-devcontainer")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug-vsc-devcontainer")
     PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.13")
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
@@ -400,7 +410,7 @@ target "trixie-py314-vsc" {
     DEBIAN_VERSION = "trixie"
     OCI_DESCRIPTION = OCI_DESCRIPTION_VSC
     OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14")
-    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug-vsc-devcontainer")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug-vsc-devcontainer")
     PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14")
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
@@ -420,7 +430,7 @@ target "latest-vsc" {
     DEBIAN_VERSION = "${DEVCONTAINERS_LATEST_STABLE_DEBIAN}"
     OCI_DESCRIPTION = OCI_DESCRIPTION_VSC
     OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-vsc-devcontainer", DEVCONTAINERS_LATEST_STABLE_DEBIAN, DEVCONTAINERS_LATEST_STABLE_PYTHON)
-    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug-vsc-devcontainer")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug-vsc-devcontainer")
     PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-vsc-devcontainer", DEVCONTAINERS_LATEST_STABLE_DEBIAN, DEVCONTAINERS_LATEST_STABLE_PYTHON)
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"

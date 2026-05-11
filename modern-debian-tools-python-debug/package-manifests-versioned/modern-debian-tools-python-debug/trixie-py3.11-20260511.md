@@ -19,8 +19,7 @@ docker pull ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-202
 
 ## Purpose
 
-Modern Debian Tools + Python Debug base image.
-Plain Python-on-Debian runtime with curated CLI tooling, managed venv helpers, and release manifests for repeatable CI and local automation.
+No description provided.
 
 ## Rich Documentation Links
 

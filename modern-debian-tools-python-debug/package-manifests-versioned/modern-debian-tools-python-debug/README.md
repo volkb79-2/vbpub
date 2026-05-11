@@ -2,6 +2,8 @@
 
 Versioned Markdown pages for `modern-debian-tools-python-debug` that are used as GHCR-friendly rich documentation targets.
 
+Stable current-docs link: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/latest.md
+
 ## Current Release Pages
 
 - `bookworm-py311`: [bookworm-py3.11-20260511](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/bookworm-py3.11-20260511.md)
