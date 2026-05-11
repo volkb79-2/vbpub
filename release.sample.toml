@@ -15,6 +15,12 @@ OCI_DESCRIPTION = """Modern Debian Tools + Python Debug: prebuilt devcontainer i
 Highlights: Debian-based Python devcontainer with a managed venv; CLI tooling (b2, bat, delta, fd, ripgrep, rga, fzf, yq, gh, consul, vault); clients (psql, redis-cli, awscli); VS Code devcontainer tags (vsc-devcontainer variants).
 Tool manifest: /usr/local/share/modern-debian-tools-python-debug/manifest.md
 """
+OCI_DESCRIPTION_BASE = """Modern Debian Tools + Python Debug base image.
+Plain Python-on-Debian runtime with curated CLI tooling, managed venv helpers, and release manifests for repeatable CI and local automation.
+"""
+OCI_DESCRIPTION_VSC = """Modern Debian Tools + Python Debug VS Code devcontainer image.
+Microsoft devcontainers base plus curated CLI tooling, managed venv helpers, and repository-hosted release manifests for richer per-package documentation.
+"""
 OCI_DESCRIPTION_SERVER = """PWMCP Server: WebSocket + MCP server image for browser automation. CIU usage requires pwmcp/ciu.defaults.toml.j2 and pwmcp/docker-compose.yml.j2. Then run: ciu --generate-env -d .; ciu -d .
 """
 OCI_DESCRIPTION_CLIENT = """PWMCP Client: client toolkit container for PWMCP workflows. CIU usage requires pwmcp/ciu.defaults.toml.j2 and pwmcp/docker-compose.yml.j2. Then run: ciu --generate-env -d .; ciu -d .

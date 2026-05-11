@@ -6,6 +6,8 @@ This project builds and publishes two related image families:
 
 The purpose is to provide a curated, reproducible Debian + Python environment with modern CLI tooling for local development, CI, and VS Code devcontainers.
 
+Rich GHCR-facing package docs live under [package-manifests-versioned](package-manifests-versioned/README.md). The release resolver regenerates those versioned Markdown pages on each build so OCI labels can point to repository-hosted Markdown instead of relying on flattened GHCR description text.
+
 ## Image Families
 
 1. `modern-debian-tools-python-debug`

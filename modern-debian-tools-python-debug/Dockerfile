@@ -43,6 +43,7 @@ ARG GITHUB_REPO
 ARG CIU_LATEST_TAG
 ARG CIU_LATEST_ASSET_NAME
 ARG CIU_INSTALL_REQUIRED="false"
+ARG PACKAGE_MANIFEST_SOURCE=""
 ARG DEVCONTAINERS_RELEASE=""
 ARG DEVCONTAINERS_VERSION=""
 
@@ -69,6 +70,7 @@ USER root
 
 COPY apt/backports.sources.in /tmp/backports.sources.in
 COPY apt/backports.pref.in /tmp/backports.pref.in
+COPY package-manifests-versioned /tmp/package-manifests-versioned
 
 # Ensure vscode user exists (non-devcontainers bases)
 RUN set -euo pipefail; \
@@ -459,11 +461,26 @@ EOF
 RUN set -euo pipefail; \
     chown -R vscode:vscode /home/vscode/.config/mc
 
-# Manifest of included tool versions (Markdown)
+# Repository-sourced release manifest plus installed tool inventory.
 RUN set -euo pipefail; \
     manifest_dir="/usr/local/share/modern-debian-tools-python-debug"; \
     manifest="${manifest_dir}/manifest.md"; \
+    installed_manifest="${manifest_dir}/installed-tools-manifest.md"; \
     mkdir -p "${manifest_dir}"; \
+    if [ -n "${PACKAGE_MANIFEST_SOURCE:-}" ] && [ -f "/tmp/${PACKAGE_MANIFEST_SOURCE}" ]; then \
+        install -m 0644 "/tmp/${PACKAGE_MANIFEST_SOURCE}" "${manifest}"; \
+    else \
+        { \
+            echo "# Image Manifest"; \
+            echo ""; \
+            echo "Repository-hosted versioned manifest was not available during build."; \
+            echo ""; \
+            echo "- Image version: ${OCI_VERSION}"; \
+            echo "- Debian: ${DEBIAN_VERSION}"; \
+            echo "- Python: ${PYTHON_VERSION}"; \
+            echo "- Installed tools manifest: /usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md"; \
+        } > "${manifest}"; \
+    fi; \
     if [ "${DEBIAN_VERSION}" = "trixie" ]; then \
         NETCAT_PKG="netcat-openbsd"; \
     else \
@@ -531,7 +548,7 @@ RUN set -euo pipefail; \
             bash-completion ca-certificates curl bind9-dnsutils fuse3 git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc \
             "${NETCAT_PKG}" ncdu openssl pandoc p7zip-full poppler-utils python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim wget xz-utils \
             postgresql-client redis-tools | sed 's/^/    /'; \
-    } > "${manifest}"; \
-    chmod 644 "${manifest}"
+    } > "${installed_manifest}"; \
+    chmod 644 "${manifest}" "${installed_manifest}"
 
 USER vscode

@@ -14,10 +14,13 @@ import re
 import subprocess
 import sys
 import urllib.request
+from pathlib import Path
 
 
 REGISTRY_URL = "https://mcr.microsoft.com/v2/devcontainers/python/tags/list"
 STABLE_TAG_RE = re.compile(r"^(?:1-)?(?P<python>\d+\.\d+)-(?P<debian>[a-z0-9][a-z0-9.-]*)$")
+PACKAGE_DOCS_ROOT = Path(__file__).resolve().parent.parent / "package-manifests-versioned"
+MANIFEST_DIR_IN_IMAGE = "/usr/local/share/modern-debian-tools-python-debug"
 
 
 def get_image_label(image: str, label: str) -> str:
@@ -327,6 +330,277 @@ def resolve_release_and_version(image: str) -> tuple[str, str]:
     return release, version
 
 
+def repo_blob_url(username: str, repo: str, relative_path: str) -> str:
+    return (
+        f"https://github.com/{username}/{repo}/blob/main/modern-debian-tools-python-debug/"
+        f"{relative_path}"
+    )
+
+
+def image_reference(username: str, package_name: str, debian: str, python: str, build_date: str) -> str:
+    return f"ghcr.io/{username}/{package_name}:{debian}-py{python}-{build_date}"
+
+
+def manifest_relpath(package_name: str, debian: str, python: str, build_date: str) -> str:
+    return f"package-manifests-versioned/{package_name}/{debian}-py{python}-{build_date}.md"
+
+
+def family_readme_relpath(package_name: str) -> str:
+    return f"package-manifests-versioned/{package_name}/README.md"
+
+
+def package_catalog(latest_python: str | None, latest_debian: str | None) -> list[dict[str, str]]:
+    entries = [
+        {
+            "package_name": "modern-debian-tools-python-debug",
+            "family_title": "Modern Debian Tools + Python Debug",
+            "family_kind": "base",
+            "target": "bookworm-py311",
+            "debian": "bookworm",
+            "python": "3.11",
+        },
+        {
+            "package_name": "modern-debian-tools-python-debug",
+            "family_title": "Modern Debian Tools + Python Debug",
+            "family_kind": "base",
+            "target": "bookworm-py313",
+            "debian": "bookworm",
+            "python": "3.13",
+        },
+        {
+            "package_name": "modern-debian-tools-python-debug",
+            "family_title": "Modern Debian Tools + Python Debug",
+            "family_kind": "base",
+            "target": "trixie-py311",
+            "debian": "trixie",
+            "python": "3.11",
+        },
+        {
+            "package_name": "modern-debian-tools-python-debug",
+            "family_title": "Modern Debian Tools + Python Debug",
+            "family_kind": "base",
+            "target": "trixie-py313",
+            "debian": "trixie",
+            "python": "3.13",
+        },
+        {
+            "package_name": "modern-debian-tools-python-debug",
+            "family_title": "Modern Debian Tools + Python Debug",
+            "family_kind": "base",
+            "target": "trixie-py314",
+            "debian": "trixie",
+            "python": "3.14",
+        },
+        {
+            "package_name": "modern-debian-tools-python-debug-vsc-devcontainer",
+            "family_title": "Modern Debian Tools + Python Debug VS Code Devcontainer",
+            "family_kind": "vsc",
+            "target": "trixie-py311-vsc",
+            "debian": "trixie",
+            "python": "3.11",
+        },
+        {
+            "package_name": "modern-debian-tools-python-debug-vsc-devcontainer",
+            "family_title": "Modern Debian Tools + Python Debug VS Code Devcontainer",
+            "family_kind": "vsc",
+            "target": "trixie-py313-vsc",
+            "debian": "trixie",
+            "python": "3.13",
+        },
+        {
+            "package_name": "modern-debian-tools-python-debug-vsc-devcontainer",
+            "family_title": "Modern Debian Tools + Python Debug VS Code Devcontainer",
+            "family_kind": "vsc",
+            "target": "trixie-py314-vsc",
+            "debian": "trixie",
+            "python": "3.14",
+        },
+    ]
+
+    if latest_python and latest_debian:
+        entries.append(
+            {
+                "package_name": "modern-debian-tools-python-debug-vsc-devcontainer",
+                "family_title": "Modern Debian Tools + Python Debug VS Code Devcontainer",
+                "family_kind": "vsc",
+                "target": "latest-vsc",
+                "debian": latest_debian,
+                "python": latest_python,
+            }
+        )
+
+    return entries
+
+
+def render_manifest(entry: dict[str, str], *, username: str, repo: str, build_date: str, description: str) -> str:
+    package_name = entry["package_name"]
+    family_title = entry["family_title"]
+    debian = entry["debian"]
+    python = entry["python"]
+    tag = f"{debian}-py{python}-{build_date}"
+    package_readme_url = repo_blob_url(username, repo, family_readme_relpath(package_name))
+    release_manifest_url = repo_blob_url(
+        username,
+        repo,
+        manifest_relpath(package_name, debian, python, build_date),
+    )
+    source_url = f"https://github.com/{username}/{repo}/tree/main/modern-debian-tools-python-debug"
+    image_ref = image_reference(username, package_name, debian, python, build_date)
+    latest_tag = f"{debian}-py{python}-latest"
+
+    lines = [
+        f"# {family_title}",
+        "",
+        f"Versioned package manifest for `{package_name}`.",
+        "",
+        "## Release",
+        "",
+        f"- Build date: `{build_date}`",
+        f"- Target: `{entry['target']}`",
+        f"- Debian: `{debian}`",
+        f"- Python: `{python}`",
+        f"- Immutable image tag: `{tag}`",
+        f"- Floating image tag: `{latest_tag}`",
+        "",
+        "## Pull",
+        "",
+        "```bash",
+        f"docker pull {image_ref}",
+        "```",
+        "",
+        "## Purpose",
+        "",
+    ]
+    lines.extend((description.strip() or "No description provided.").splitlines())
+    lines.extend(
+        [
+            "",
+            "## Rich Documentation Links",
+            "",
+            f"- Family overview: {package_readme_url}",
+            f"- This release page: {release_manifest_url}",
+            f"- Source tree: {source_url}",
+            "",
+            "## In-Image Files",
+            "",
+            f"- Release manifest: `{MANIFEST_DIR_IN_IMAGE}/manifest.md`",
+            f"- Installed tool inventory: `{MANIFEST_DIR_IN_IMAGE}/installed-tools-manifest.md`",
+            "",
+            "## Notes",
+            "",
+            "This repository-hosted page exists because GHCR package descriptions render as flattened plain text.",
+            "The image labels therefore point to GitHub-hosted Markdown for richer, package-specific release notes.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def render_family_readme(
+    package_name: str,
+    family_title: str,
+    entries: list[dict[str, str]],
+    *,
+    username: str,
+    repo: str,
+    build_date: str,
+) -> str:
+    lines = [
+        f"# {family_title}",
+        "",
+        f"Versioned Markdown pages for `{package_name}` that are used as GHCR-friendly rich documentation targets.",
+        "",
+        "## Current Release Pages",
+        "",
+    ]
+
+    for entry in sorted(entries, key=lambda item: (item["debian"], item["python"], item["target"])):
+        relpath = manifest_relpath(package_name, entry["debian"], entry["python"], build_date)
+        url = repo_blob_url(username, repo, relpath)
+        lines.append(f"- `{entry['target']}`: [{entry['debian']}-py{entry['python']}-{build_date}]({url})")
+
+    lines.extend(
+        [
+            "",
+            "## Why These Pages Exist",
+            "",
+            "GHCR stores the plain-text OCI description but does not provide a rich README surface for container packages.",
+            "These GitHub-hosted Markdown pages are the richer per-package documentation target linked from OCI labels.",
+            "",
+            f"Repository root: https://github.com/{username}/{repo}/tree/main/modern-debian-tools-python-debug",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def render_root_readme(grouped_entries: dict[str, list[dict[str, str]]], *, username: str, repo: str) -> str:
+    lines = [
+        "# Versioned Package Manifests",
+        "",
+        "Repository-hosted Markdown targets for GHCR package metadata.",
+        "",
+        "## Package Families",
+        "",
+    ]
+    for package_name in sorted(grouped_entries):
+        relpath = family_readme_relpath(package_name)
+        url = repo_blob_url(username, repo, relpath)
+        lines.append(f"- [{package_name}]({url})")
+    lines.extend(
+        [
+            "",
+            "Each family directory contains a landing page plus versioned release manifests that can also be copied into the image build output.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def write_package_docs(build_date: str, latest_python: str | None, latest_debian: str | None) -> None:
+    username = os.getenv("GITHUB_USERNAME") or "volkb79-2"
+    repo = os.getenv("GITHUB_REPO") or "vbpub"
+    description_base = os.getenv("OCI_DESCRIPTION_BASE") or os.getenv("OCI_DESCRIPTION") or ""
+    description_vsc = os.getenv("OCI_DESCRIPTION_VSC") or os.getenv("OCI_DESCRIPTION") or ""
+
+    entries = package_catalog(latest_python, latest_debian)
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for entry in entries:
+        grouped.setdefault(entry["package_name"], []).append(entry)
+
+    PACKAGE_DOCS_ROOT.mkdir(parents=True, exist_ok=True)
+    (PACKAGE_DOCS_ROOT / "README.md").write_text(
+        render_root_readme(grouped, username=username, repo=repo),
+        encoding="utf-8",
+    )
+
+    for package_name, package_entries in grouped.items():
+        package_dir = PACKAGE_DOCS_ROOT / package_name
+        package_dir.mkdir(parents=True, exist_ok=True)
+        (package_dir / "README.md").write_text(
+            render_family_readme(
+                package_name,
+                package_entries[0]["family_title"],
+                package_entries,
+                username=username,
+                repo=repo,
+                build_date=build_date,
+            ),
+            encoding="utf-8",
+        )
+        for entry in package_entries:
+            description = description_vsc if entry["family_kind"] == "vsc" else description_base
+            (package_dir / f"{entry['debian']}-py{entry['python']}-{build_date}.md").write_text(
+                render_manifest(
+                    entry,
+                    username=username,
+                    repo=repo,
+                    build_date=build_date,
+                    description=description,
+                ),
+                encoding="utf-8",
+            )
+
+
 def main() -> int:
     stable_image = os.getenv(
         "DEVCONTAINERS_BASE_STABLE",
@@ -357,6 +631,12 @@ def main() -> int:
 
     stable_release, stable_version = resolve_release_and_version(stable_image)
     dev_release, dev_version = resolve_release_and_version(dev_image)
+
+    build_date = os.getenv("BUILD_DATE")
+    if not build_date:
+        raise RuntimeError("BUILD_DATE must be set before generating package manifests")
+
+    write_package_docs(build_date, latest_python, latest_debian)
 
     # Export latest stable tuple for downstream bake targets (dynamic, live-derived).
     if latest_tag:

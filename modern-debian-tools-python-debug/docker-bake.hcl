@@ -61,6 +61,14 @@ variable "OCI_DESCRIPTION" {
   default = ""
 }
 
+variable "OCI_DESCRIPTION_BASE" {
+  default = "${OCI_DESCRIPTION}"
+}
+
+variable "OCI_DESCRIPTION_VSC" {
+  default = "${OCI_DESCRIPTION}"
+}
+
 variable "OCI_SOURCE" {
   default = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}"
 }
@@ -182,6 +190,10 @@ variable "CIU_INSTALL_REQUIRED" {
   default = "false"
 }
 
+variable "PACKAGE_MANIFEST_ROOT" {
+  default = "package-manifests-versioned"
+}
+
 function "base_tag" {
   params = [debian, python]
   result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug:${debian}-py${python}-${BUILD_DATE}"
@@ -202,6 +214,31 @@ function "vsc_latest_tag" {
   result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:${debian}-py${python}-latest"
 }
 
+function "package_docs_dir" {
+  params = [package_name]
+  result = "${PACKAGE_MANIFEST_ROOT}/${package_name}"
+}
+
+function "package_docs_readme_relpath" {
+  params = [package_name]
+  result = "${package_docs_dir(package_name)}/README.md"
+}
+
+function "package_manifest_relpath" {
+  params = [package_name, debian, python]
+  result = "${package_docs_dir(package_name)}/${debian}-py${python}-${BUILD_DATE}.md"
+}
+
+function "package_docs_readme_url" {
+  params = [package_name]
+  result = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/blob/main/modern-debian-tools-python-debug/${package_docs_readme_relpath(package_name)}"
+}
+
+function "package_manifest_url" {
+  params = [package_name, debian, python]
+  result = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/blob/main/modern-debian-tools-python-debug/${package_manifest_relpath(package_name, debian, python)}"
+}
+
 target "base" {
   context = "."
   dockerfile = "Dockerfile"
@@ -217,6 +254,8 @@ target "base" {
     GH_VERSION = "${GH_VERSION}"
     OCI_TITLE = "${OCI_TITLE}"
     OCI_DESCRIPTION = "${OCI_DESCRIPTION}"
+    OCI_DESCRIPTION_BASE = "${OCI_DESCRIPTION_BASE}"
+    OCI_DESCRIPTION_VSC = "${OCI_DESCRIPTION_VSC}"
     OCI_SOURCE = "${OCI_SOURCE}"
     OCI_DOCUMENTATION = "${OCI_DOCUMENTATION}"
     OCI_URL = "${OCI_URL}"
@@ -237,6 +276,7 @@ target "base" {
     CIU_LATEST_TAG = "${CIU_LATEST_TAG}"
     CIU_LATEST_ASSET_NAME = "${CIU_LATEST_ASSET_NAME}"
     CIU_INSTALL_REQUIRED = "${CIU_INSTALL_REQUIRED}"
+    PACKAGE_MANIFEST_SOURCE = ""
     DEVCONTAINERS_RELEASE_STABLE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_RELEASE_DEV = "${DEVCONTAINERS_RELEASE_DEV}"
     DEVCONTAINERS_VERSION_STABLE = "${DEVCONTAINERS_VERSION_STABLE}"
@@ -250,6 +290,10 @@ target "bookworm-py311" {
     BASE_IMAGE = "python:3.11-bookworm"
     PYTHON_VERSION = "3.11"
     DEBIAN_VERSION = "bookworm"
+    OCI_DESCRIPTION = OCI_DESCRIPTION_BASE
+    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug", "bookworm", "3.11")
+    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug", "bookworm", "3.11")
   }
   tags = [base_tag("bookworm", "3.11"), base_latest_tag("bookworm", "3.11")]
 }
@@ -260,6 +304,10 @@ target "bookworm-py313" {
     BASE_IMAGE = "python:3.13-bookworm"
     PYTHON_VERSION = "3.13"
     DEBIAN_VERSION = "bookworm"
+    OCI_DESCRIPTION = OCI_DESCRIPTION_BASE
+    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug", "bookworm", "3.13")
+    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug", "bookworm", "3.13")
   }
   tags = [base_tag("bookworm", "3.13"), base_latest_tag("bookworm", "3.13")]
 }
@@ -270,6 +318,10 @@ target "trixie-py311" {
     BASE_IMAGE = "python:3.11-trixie"
     PYTHON_VERSION = "3.11"
     DEBIAN_VERSION = "trixie"
+    OCI_DESCRIPTION = OCI_DESCRIPTION_BASE
+    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug", "trixie", "3.11")
+    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug", "trixie", "3.11")
   }
   tags = [base_tag("trixie", "3.11"), base_latest_tag("trixie", "3.11")]
 }
@@ -280,6 +332,10 @@ target "trixie-py313" {
     BASE_IMAGE = "python:3.13-trixie"
     PYTHON_VERSION = "3.13"
     DEBIAN_VERSION = "trixie"
+    OCI_DESCRIPTION = OCI_DESCRIPTION_BASE
+    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug", "trixie", "3.13")
+    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug", "trixie", "3.13")
   }
   tags = [base_tag("trixie", "3.13"), base_latest_tag("trixie", "3.13")]
 }
@@ -290,6 +346,10 @@ target "trixie-py314" {
     BASE_IMAGE = "python:3.14-trixie"
     PYTHON_VERSION = "3.14"
     DEBIAN_VERSION = "trixie"
+    OCI_DESCRIPTION = OCI_DESCRIPTION_BASE
+    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug", "trixie", "3.14")
+    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug", "trixie", "3.14")
   }
   tags = [base_tag("trixie", "3.14"), base_latest_tag("trixie", "3.14"), "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug:latest"]
 }
@@ -302,6 +362,10 @@ target "trixie-py311-vsc" {
     BASE_IMAGE = "mcr.microsoft.com/devcontainers/python:3.11-trixie"
     PYTHON_VERSION = "3.11"
     DEBIAN_VERSION = "trixie"
+    OCI_DESCRIPTION = OCI_DESCRIPTION_VSC
+    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.11")
+    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug-vsc-devcontainer")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.11")
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
   }
@@ -314,6 +378,10 @@ target "trixie-py313-vsc" {
     BASE_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-trixie"
     PYTHON_VERSION = "3.13"
     DEBIAN_VERSION = "trixie"
+    OCI_DESCRIPTION = OCI_DESCRIPTION_VSC
+    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.13")
+    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug-vsc-devcontainer")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.13")
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
   }
@@ -330,6 +398,10 @@ target "trixie-py314-vsc" {
     BASE_IMAGE = "${DEVCONTAINERS_BASE_STABLE}"
     PYTHON_VERSION = "3.14"
     DEBIAN_VERSION = "trixie"
+    OCI_DESCRIPTION = OCI_DESCRIPTION_VSC
+    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14")
+    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug-vsc-devcontainer")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14")
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
   }
@@ -346,6 +418,10 @@ target "latest-vsc" {
     BASE_IMAGE = "${DEVCONTAINERS_BASE_LATEST_STABLE}"
     PYTHON_VERSION = "${DEVCONTAINERS_LATEST_STABLE_PYTHON}"
     DEBIAN_VERSION = "${DEVCONTAINERS_LATEST_STABLE_DEBIAN}"
+    OCI_DESCRIPTION = OCI_DESCRIPTION_VSC
+    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-vsc-devcontainer", DEVCONTAINERS_LATEST_STABLE_DEBIAN, DEVCONTAINERS_LATEST_STABLE_PYTHON)
+    OCI_URL = package_docs_readme_url("modern-debian-tools-python-debug-vsc-devcontainer")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-vsc-devcontainer", DEVCONTAINERS_LATEST_STABLE_DEBIAN, DEVCONTAINERS_LATEST_STABLE_PYTHON)
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
   }
