@@ -1,0 +1,29 @@
+# Plesk Configuration
+
+[plesk]
+base_url = "https://xxx.webhosting.systems" # the management URL of your Plesk server
+username = "k235179"
+password = "YOUR_PASSWORD_HERE"
+
+# TODO: automatic retrieval of domain IDs
+[domains]
+# Map domain names to their Plesk domain IDs
+"hostaccount.servername.netcup.net" = "792"
+"mydomain.de" = "1132"
+"domain2.de" = "1057"
+
+# TODO: clarify purpose of this section, what are they used for?
+[email_server]
+hostname = "xxx.webhosting.systems"
+imap_port = 993
+smtp_port = 587
+encryption = "TLS"
+
+[smtp]
+# SMTP settings for sending notifications
+host = "xxx.webhosting.systems"
+port = 587
+use_tls = true
+from_address = "noreply@xxx.xxx.netcup.net"
+username = ""  # Optional
+password = ""  # Optional
