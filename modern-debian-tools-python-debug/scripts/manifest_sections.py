@@ -9,10 +9,14 @@ from typing import Mapping, Sequence
 
 CUSTOM_TOOL_ORDER = [
     "CIU",
+    "aider",
+    "antigravity",
     "awscli",
     "b2",
     "bat",
+    "claude",
     "consul",
+    "codex",
     "delta",
     "fd",
     "fzf",

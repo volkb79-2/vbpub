@@ -38,6 +38,12 @@ TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504}
 DEFAULT_RETRIES = 3
 DOWNLOAD_TIMEOUT_SECONDS = 90
 AWSCLI_VERSION_RE = re.compile(r"aws-cli/(?P<version>[0-9][^\s]+)")
+CLAUDE_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.+-]+)?$")
+
+ANTIGRAVITY_MANIFEST_LINUX_AMD64_URL = (
+    "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/"
+    "linux_amd64.json"
+)
 
 
 class StageError(RuntimeError):
@@ -92,6 +98,17 @@ def _request_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha512(path: Path) -> str:
+    digest = hashlib.sha512()
     with path.open("rb") as handle:
         while True:
             chunk = handle.read(1024 * 1024)
@@ -159,6 +176,15 @@ def _download_first_available(destination: Path, urls: Iterable[str]) -> tuple[s
     )
 
 
+def _download_text(url: str, *, headers: dict[str, str] | None = None) -> str:
+    payload_path = STAGE_ROOT / "tmp-text-response"
+    _download(url, payload_path, headers=headers)
+    try:
+        return payload_path.read_text(encoding="utf-8")
+    finally:
+        payload_path.unlink(missing_ok=True)
+
+
 def _fetch_json(url: str, *, headers: dict[str, str] | None = None) -> dict:
     payload_path = STAGE_ROOT / "tmp-json-response"
     final_url = _download(url, payload_path, headers=headers)
@@ -197,6 +223,38 @@ def _resolve_version(requested: str | None, repo: str) -> str:
     if value and value != "latest":
         return value
     return _resolve_latest_release(repo)
+
+
+def _normalize_codex_version(value: str) -> str:
+    normalized = value.strip().removeprefix("rust-v").removeprefix("v")
+    if not normalized:
+        raise StageError(f"Invalid Codex release version: {value!r}")
+    return normalized
+
+
+def _resolve_codex_version(requested: str | None) -> str:
+    value = (requested or "").strip()
+    if value and value != "latest":
+        return _normalize_codex_version(value)
+
+    latest_tag = _resolve_latest_release("openai/codex")
+    return _normalize_codex_version(latest_tag)
+
+
+def _resolve_claude_code_version(requested: str | None) -> str:
+    value = (requested or "").strip()
+    if value and value != "latest":
+        if not CLAUDE_VERSION_RE.fullmatch(value):
+            raise StageError(f"Unsupported CLAUDE_CODE_VERSION value: {value!r}")
+        return value
+
+    latest = _download_text("https://downloads.claude.ai/claude-code-releases/latest").strip()
+    if not CLAUDE_VERSION_RE.fullmatch(latest):
+        raise StageError(
+            "Failed to resolve latest Claude Code release version from "
+            "downloads.claude.ai"
+        )
+    return latest
 
 
 def _tar_contains_binary(archive: Path, binary_name: str) -> bool:
@@ -284,9 +342,39 @@ def _parse_hashicorp_sha256(sums_file: Path, expected_file_name: str) -> str:
         if len(parts) < 2:
             continue
         checksum, name = parts[0], parts[1]
-        if name == expected_file_name:
-            return checksum
+        if name.lstrip("*") == expected_file_name:
+            return checksum.lower()
     raise StageError(f"Unable to find checksum entry for {expected_file_name}")
+
+
+def _parse_claude_sha256(manifest: dict, platform: str) -> str:
+    platforms = manifest.get("platforms")
+    if not isinstance(platforms, dict):
+        raise StageError("Claude manifest missing 'platforms' map")
+
+    entry = platforms.get(platform)
+    if not isinstance(entry, dict):
+        raise StageError(f"Claude manifest missing platform entry for {platform}")
+
+    checksum = str(entry.get("checksum") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", checksum):
+        raise StageError(f"Claude manifest contains invalid checksum for platform {platform}")
+    return checksum
+
+
+def _parse_antigravity_manifest(payload: dict) -> tuple[str, str, str]:
+    version = str(payload.get("version") or "").strip()
+    url = str(payload.get("url") or "").strip()
+    sha512 = str(payload.get("sha512") or "").strip().lower()
+
+    if not version:
+        raise StageError("Antigravity manifest missing version")
+    if not url.startswith("https://"):
+        raise StageError("Antigravity manifest missing secure download URL")
+    if not re.fullmatch(r"[0-9a-f]{128}", sha512):
+        raise StageError("Antigravity manifest has invalid sha512 digest")
+
+    return version, url, sha512
 
 
 def _record_artifact(
@@ -412,8 +500,155 @@ def _stage_zip_tool(
     )
 
 
+def _stage_codex(version: str, records: list[StagedArtifact]) -> None:
+    release_tag = f"rust-v{version}"
+    archive_name = "codex-package-x86_64-unknown-linux-musl.tar.gz"
+    sums_name = "codex-package_SHA256SUMS"
+
+    base_url = f"https://github.com/openai/codex/releases/download/{release_tag}"
+    archive_url = f"{base_url}/{archive_name}"
+    sums_url = f"{base_url}/{sums_name}"
+
+    archive_path = DOWNLOADS_DIR / f"codex-{version}.tar.gz"
+    sums_path = DOWNLOADS_DIR / f"codex-{version}-SHA256SUMS"
+
+    sums_final_url = _download(sums_url, sums_path)
+    archive_final_url = _download(archive_url, archive_path)
+
+    expected_sha = _parse_hashicorp_sha256(sums_path, archive_name)
+    actual_sha = _sha256(archive_path)
+    if expected_sha != actual_sha:
+        raise StageError(
+            f"Codex checksum mismatch: expected {expected_sha}, got {actual_sha}"
+        )
+
+    if not _tar_contains_binary(archive_path, "codex"):
+        raise StageError("Downloaded Codex package does not contain codex binary")
+
+    _record_artifact(
+        records,
+        tool="codex",
+        version=version,
+        source_url=archive_url,
+        final_url=archive_final_url,
+        path=archive_path,
+        kind="tar.gz",
+        verification="sha256 from codex-package_SHA256SUMS + archive contains codex",
+    )
+    _record_artifact(
+        records,
+        tool="codex-sha256sums",
+        version=version,
+        source_url=sums_url,
+        final_url=sums_final_url,
+        path=sums_path,
+        kind="checksum-file",
+        verification="downloaded",
+    )
+
+
+def _stage_claude_code(version: str, records: list[StagedArtifact]) -> None:
+    platform = "linux-x64"
+    manifest_url = f"https://downloads.claude.ai/claude-code-releases/{version}/manifest.json"
+    binary_url = f"https://downloads.claude.ai/claude-code-releases/{version}/{platform}/claude"
+
+    manifest_path = DOWNLOADS_DIR / f"claude-{version}-manifest.json"
+    binary_path = DOWNLOADS_DIR / f"claude-{version}-{platform}"
+
+    manifest_final_url = _download(manifest_url, manifest_path)
+    try:
+        manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise StageError("Invalid Claude manifest JSON payload") from exc
+
+    expected_sha = _parse_claude_sha256(manifest_payload, platform)
+    binary_final_url = _download(binary_url, binary_path)
+    actual_sha = _sha256(binary_path)
+    if expected_sha != actual_sha:
+        raise StageError(
+            f"Claude checksum mismatch: expected {expected_sha}, got {actual_sha}"
+        )
+
+    _record_artifact(
+        records,
+        tool="claude",
+        version=version,
+        source_url=binary_url,
+        final_url=binary_final_url,
+        path=binary_path,
+        kind="binary",
+        verification="sha256 from versioned manifest.json",
+    )
+    _record_artifact(
+        records,
+        tool="claude-manifest",
+        version=version,
+        source_url=manifest_url,
+        final_url=manifest_final_url,
+        path=manifest_path,
+        kind="manifest",
+        verification="downloaded",
+    )
+
+
+def _stage_antigravity(requested: str, records: list[StagedArtifact]) -> str:
+    requested_normalized = (requested or "").strip()
+    if requested_normalized and requested_normalized != "latest":
+        _log(
+            "ANTIGRAVITY_VERSION currently supports only 'latest'; "
+            f"ignoring requested value {requested_normalized!r}"
+        )
+
+    manifest_path = DOWNLOADS_DIR / "antigravity-linux-amd64-manifest.json"
+    manifest_final_url = _download(ANTIGRAVITY_MANIFEST_LINUX_AMD64_URL, manifest_path)
+    try:
+        manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise StageError("Invalid Antigravity manifest JSON payload") from exc
+
+    version, archive_url, expected_sha512 = _parse_antigravity_manifest(manifest_payload)
+    archive_path = DOWNLOADS_DIR / f"antigravity-{version}.tar.gz"
+    archive_final_url = _download(archive_url, archive_path)
+
+    actual_sha512 = _sha512(archive_path)
+    if expected_sha512 != actual_sha512:
+        raise StageError(
+            f"Antigravity checksum mismatch: expected {expected_sha512}, got {actual_sha512}"
+        )
+
+    if not _tar_contains_binary(archive_path, "antigravity"):
+        raise StageError("Downloaded Antigravity archive does not contain antigravity binary")
+
+    _record_artifact(
+        records,
+        tool="antigravity",
+        version=version,
+        source_url=archive_url,
+        final_url=archive_final_url,
+        path=archive_path,
+        kind="tar.gz",
+        verification="sha512 from linux_amd64 manifest + archive contains antigravity",
+    )
+    _record_artifact(
+        records,
+        tool="antigravity-manifest",
+        version=version,
+        source_url=ANTIGRAVITY_MANIFEST_LINUX_AMD64_URL,
+        final_url=manifest_final_url,
+        path=manifest_path,
+        kind="manifest",
+        verification="downloaded",
+    )
+
+    return version
+
+
 def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     records: list[StagedArtifact] = []
+
+    _stage_codex(resolved["CODEX_VER"], records)
+    _stage_claude_code(resolved["CLAUDE_CODE_VER"], records)
+    resolved["ANTIGRAVITY_VER"] = _stage_antigravity(resolved["ANTIGRAVITY_VER"], records)
 
     _stage_b2(resolved["B2_VER"], records)
 
@@ -677,6 +912,10 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
 
 def _resolve_versions() -> dict[str, str]:
     resolved = {
+        "CODEX_VER": _resolve_codex_version(os.getenv("CODEX_VERSION")),
+        "CLAUDE_CODE_VER": _resolve_claude_code_version(os.getenv("CLAUDE_CODE_VERSION")),
+        "ANTIGRAVITY_VER": (os.getenv("ANTIGRAVITY_VERSION") or "latest").strip() or "latest",
+        "AIDER_VER": (os.getenv("AIDER_VERSION") or "latest").strip() or "latest",
         "B2_VER": _resolve_version(os.getenv("B2_VERSION"), "Backblaze/B2_Command_Line_Tool"),
         "BAT_VER": _resolve_version(os.getenv("BAT_VERSION"), "sharkdp/bat"),
         "FD_VER": _resolve_version(os.getenv("FD_VERSION"), "sharkdp/fd"),

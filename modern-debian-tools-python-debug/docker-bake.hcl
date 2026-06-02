@@ -182,6 +182,38 @@ variable "YQ_VERSION" {
   default = "latest"
 }
 
+variable "CODEX_VERSION" {
+  default = "latest"
+}
+
+variable "CLAUDE_CODE_VERSION" {
+  default = "latest"
+}
+
+variable "ANTIGRAVITY_VERSION" {
+  default = "latest"
+}
+
+variable "AIDER_VERSION" {
+  default = "latest"
+}
+
+variable "INSTALL_CODEX" {
+  default = "true"
+}
+
+variable "INSTALL_CLAUDE_CODE" {
+  default = "true"
+}
+
+variable "INSTALL_ANTIGRAVITY" {
+  default = "true"
+}
+
+variable "INSTALL_AIDER" {
+  default = "true"
+}
+
 variable "CIU_WHEEL_TAG" {
   default = ""
 }
@@ -271,6 +303,14 @@ target "base" {
     FD_VERSION = "${FD_VERSION}"
     FZF_VERSION = "${FZF_VERSION}"
     GH_VERSION = "${GH_VERSION}"
+    CODEX_VERSION = "${CODEX_VERSION}"
+    CLAUDE_CODE_VERSION = "${CLAUDE_CODE_VERSION}"
+    ANTIGRAVITY_VERSION = "${ANTIGRAVITY_VERSION}"
+    AIDER_VERSION = "${AIDER_VERSION}"
+    INSTALL_CODEX = "${INSTALL_CODEX}"
+    INSTALL_CLAUDE_CODE = "${INSTALL_CLAUDE_CODE}"
+    INSTALL_ANTIGRAVITY = "${INSTALL_ANTIGRAVITY}"
+    INSTALL_AIDER = "${INSTALL_AIDER}"
     OCI_TITLE = "${OCI_TITLE}"
     OCI_DESCRIPTION = "${OCI_DESCRIPTION}"
     OCI_DESCRIPTION_BASE = "${OCI_DESCRIPTION_BASE}"

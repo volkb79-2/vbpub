@@ -26,10 +26,14 @@ STABLE_TAG_RE = re.compile(r"^(?:1-)?(?P<python>\d+\.\d+)-(?P<debian>[a-z0-9][a-
 PACKAGE_DOCS_ROOT = Path(__file__).resolve().parent.parent / "package-manifests-versioned"
 MANIFEST_DIR_IN_IMAGE = "/usr/local/share/modern-debian-tools-python-debug"
 TOOL_VERSION_DISPLAY_ORDER = [
+    ("aider", "AIDER_VER"),
+    ("antigravity", "ANTIGRAVITY_VER"),
     ("awscli", "AWSCLI_VER"),
     ("b2", "B2_VER"),
     ("bat", "BAT_VER"),
+    ("claude", "CLAUDE_CODE_VER"),
     ("consul", "CONSUL_VER"),
+    ("codex", "CODEX_VER"),
     ("delta", "DELTA_VER"),
     ("fd", "FD_VER"),
     ("fzf", "FZF_VER"),
@@ -541,12 +545,51 @@ def build_runtime_custom_tooling_map(tool_metadata: dict | None, ciu_wheel_versi
         if isinstance(raw, dict):
             resolved_versions = raw
 
+    def install_enabled(env_name: str) -> bool:
+        value = os.getenv(env_name)
+        if value is None:
+            return True
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+
+    install_aider = install_enabled("INSTALL_AIDER")
+    install_antigravity = install_enabled("INSTALL_ANTIGRAVITY")
+    install_claude = install_enabled("INSTALL_CLAUDE_CODE")
+    install_codex = install_enabled("INSTALL_CODEX")
+
+    aider_requested = str(
+        resolved_versions.get("AIDER_VER") or (os.getenv("AIDER_VERSION") or "latest")
+    ).strip() or "latest"
+    if install_aider:
+        aider_display = (
+            "latest (resolved at image build time)"
+            if aider_requested == "latest"
+            else aider_requested
+        )
+    else:
+        aider_display = "not-installed"
+
     tooling = {
         "CIU": ciu_wheel_version or "not-installed",
+        "aider": aider_display,
+        "antigravity": (
+            str(resolved_versions.get("ANTIGRAVITY_VER") or "unknown")
+            if install_antigravity
+            else "not-installed"
+        ),
         "awscli": str(resolved_versions.get("AWSCLI_VER") or "unknown"),
         "b2": str(resolved_versions.get("B2_VER") or "unknown"),
         "bat": str(resolved_versions.get("BAT_VER") or "unknown"),
+        "claude": (
+            str(resolved_versions.get("CLAUDE_CODE_VER") or "unknown")
+            if install_claude
+            else "not-installed"
+        ),
         "consul": str(resolved_versions.get("CONSUL_VER") or "unknown"),
+        "codex": (
+            str(resolved_versions.get("CODEX_VER") or "unknown")
+            if install_codex
+            else "not-installed"
+        ),
         "delta": str(resolved_versions.get("DELTA_VER") or "unknown"),
         "fd": str(resolved_versions.get("FD_VER") or "unknown"),
         "fzf": str(resolved_versions.get("FZF_VER") or "unknown"),

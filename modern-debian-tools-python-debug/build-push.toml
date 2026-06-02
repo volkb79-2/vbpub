@@ -6,7 +6,7 @@ release_config = "../release.toml"
 OCI_VENDOR = "Volker Badziong"
 OCI_DESCRIPTION = """Modern Debian Tools + Python Debug image family.
 Includes a curated Debian + Python environment with managed venv and CIU-focused workflow tooling.
-Custom Tooling highlights: awscli, b2, bat, consul, delta, fd, fzf, gh, psql, redis-cli, rga, ripgrep, shellcheck, vault, yq.
+Custom Tooling highlights: aider, agy, awscli, b2, bat, claude, codex, consul, delta, fd, fzf, gh, psql, redis-cli, rga, ripgrep, shellcheck, vault, yq.
 Midnight Commander defaults to nicedark skin.
 Image manifest path: /usr/local/share/modern-debian-tools-python-debug/manifest.md
 """
@@ -31,6 +31,14 @@ bake_set_vars = [
   "B2_VERSION",
   "BACKPORTS_URI",
   "BAT_VERSION",
+  "CODEX_VERSION",
+  "CLAUDE_CODE_VERSION",
+  "ANTIGRAVITY_VERSION",
+  "AIDER_VERSION",
+  "INSTALL_CODEX",
+  "INSTALL_CLAUDE_CODE",
+  "INSTALL_ANTIGRAVITY",
+  "INSTALL_AIDER",
   "DELTA_VERSION",
   "GH_VERSION",
   "CONSUL_VERSION",
@@ -81,6 +89,14 @@ bake_set_vars = [
   "B2_VERSION",
   "BACKPORTS_URI",
   "BAT_VERSION",
+  "CODEX_VERSION",
+  "CLAUDE_CODE_VERSION",
+  "ANTIGRAVITY_VERSION",
+  "AIDER_VERSION",
+  "INSTALL_CODEX",
+  "INSTALL_CLAUDE_CODE",
+  "INSTALL_ANTIGRAVITY",
+  "INSTALL_AIDER",
   "DELTA_VERSION",
   "GH_VERSION",
   "CONSUL_VERSION",

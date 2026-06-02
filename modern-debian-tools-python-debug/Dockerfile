@@ -27,6 +27,10 @@ ARG OCI_CREATED=""
 ARG AWSCLI_VERSION
 ARG B2_VERSION
 ARG BAT_VERSION
+ARG CODEX_VERSION
+ARG CLAUDE_CODE_VERSION
+ARG ANTIGRAVITY_VERSION
+ARG AIDER_VERSION
 ARG DELTA_VERSION
 ARG GH_VERSION
 ARG CONSUL_VERSION
@@ -39,6 +43,10 @@ ARG RGA_VERSION
 ARG SHELLCHECK_VERSION
 ARG VAULT_VERSION
 ARG YQ_VERSION
+ARG INSTALL_CODEX="true"
+ARG INSTALL_CLAUDE_CODE="true"
+ARG INSTALL_ANTIGRAVITY="true"
+ARG INSTALL_AIDER="true"
 ARG GITHUB_USERNAME
 ARG GITHUB_REPO
 ARG CIU_WHEEL_TAG
@@ -202,6 +210,26 @@ RUN set -euo pipefail; \
         fi; \
         install -m 755 "${bin_path}" "/usr/local/bin/${bin_name}"; \
     }; \
+    if [ "${INSTALL_CODEX}" = "true" ]; then \
+        require_file "${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz"; \
+        require_file "${DOWNLOADS_DIR}/codex-${CODEX_VER}-SHA256SUMS"; \
+        EXPECTED_CODEX_SHA256="$(awk '$2 == "codex-package-x86_64-unknown-linux-musl.tar.gz" {print $1; exit}' "${DOWNLOADS_DIR}/codex-${CODEX_VER}-SHA256SUMS")"; \
+        if [ -z "${EXPECTED_CODEX_SHA256}" ]; then \
+            echo "[ERROR] Missing Codex checksum entry in staged SHA256SUMS" >&2; \
+            exit 1; \
+        fi; \
+        echo "${EXPECTED_CODEX_SHA256}  ${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz" | sha256sum -c -; \
+        install_from_tar "${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz" codex /tmp/codex-extract; \
+    fi; \
+    if [ "${INSTALL_CLAUDE_CODE}" = "true" ]; then \
+        require_file "${DOWNLOADS_DIR}/claude-${CLAUDE_CODE_VER}-linux-x64"; \
+        install -m 755 "${DOWNLOADS_DIR}/claude-${CLAUDE_CODE_VER}-linux-x64" /usr/local/bin/claude; \
+    fi; \
+    if [ "${INSTALL_ANTIGRAVITY}" = "true" ]; then \
+        require_file "${DOWNLOADS_DIR}/antigravity-${ANTIGRAVITY_VER}.tar.gz"; \
+        install_from_tar "${DOWNLOADS_DIR}/antigravity-${ANTIGRAVITY_VER}.tar.gz" antigravity /tmp/antigravity-extract; \
+        install -m 755 /usr/local/bin/antigravity /usr/local/bin/agy; \
+    fi; \
     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux"; \
     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt"; \
     EXPECTED_B2_SHA256="$(grep '^sha256' "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt" | awk '{print $2}')"; \
@@ -242,9 +270,11 @@ RUN set -euo pipefail; \
     unzip -q "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip" -d /tmp/awscli; \
     /tmp/awscli/aws/install -i /usr/local/aws -b /usr/local/bin; \
     rm -rf \
+        /tmp/codex-extract \
         /tmp/bat-extract \
         /tmp/delta-extract \
         /tmp/fd-extract \
+        /tmp/antigravity-extract \
         /tmp/rga-extract \
         /tmp/ripgrep-extract \
         "/tmp/shellcheck-v${SHELLCHECK_VER}" \
@@ -304,7 +334,14 @@ RUN set -euo pipefail; \
         rich \
         ruff \
         structlog \
-        tomli_w
+        tomli_w; \
+    if [ "${INSTALL_AIDER}" = "true" ]; then \
+        if [ -n "${AIDER_VERSION}" ] && [ "${AIDER_VERSION}" != "latest" ]; then \
+            /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat==${AIDER_VERSION}"; \
+        else \
+            /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet aider-chat; \
+        fi; \
+    fi
 RUN set -euo pipefail; \
     if [ -n "${GITHUB_USERNAME}" ] && [ -n "${GITHUB_REPO}" ]; then \
         skip_ciu=0; \
@@ -419,9 +456,29 @@ RUN set -euo pipefail; \
         else \
             echo "CIU=not-installed"; \
         fi; \
+        if command -v aider >/dev/null 2>&1; then \
+            echo "aider=$(aider --version 2>&1 | head -1)"; \
+        else \
+            echo "aider=not-installed"; \
+        fi; \
+        if command -v agy >/dev/null 2>&1; then \
+            echo "antigravity=$(agy --version 2>&1 | head -1)"; \
+        else \
+            echo "antigravity=not-installed"; \
+        fi; \
         echo "awscli=$(aws --version 2>&1)"; \
         echo "b2=${b2_version_output}"; \
         echo "bat=$(bat --version 2>&1 | head -1)"; \
+        if command -v claude >/dev/null 2>&1; then \
+            echo "claude=$(claude --version 2>&1 | head -1)"; \
+        else \
+            echo "claude=not-installed"; \
+        fi; \
+        if command -v codex >/dev/null 2>&1; then \
+            echo "codex=$(codex --version 2>&1 | head -1)"; \
+        else \
+            echo "codex=not-installed"; \
+        fi; \
         echo "consul=$(consul version 2>&1 | head -1)"; \
         echo "delta=$(delta --version 2>&1 | head -1)"; \
         echo "fd=$(fd --version 2>&1 | head -1)"; \

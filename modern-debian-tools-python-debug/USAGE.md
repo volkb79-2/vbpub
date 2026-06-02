@@ -11,6 +11,8 @@ Environment configuration:
 
 Optional overrides (environment variables):
 - `REGISTRY`, `GITHUB_USERNAME`, `BUILD_DATE`, `BACKPORTS_URI`, `CIU_INSTALL_REQUIRED`
+- `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `ANTIGRAVITY_VERSION`, `AIDER_VERSION`
+- `INSTALL_CODEX`, `INSTALL_CLAUDE_CODE`, `INSTALL_ANTIGRAVITY`, `INSTALL_AIDER`
 
 Resolver-emitted build coordinates (normally not set manually):
 - `CIU_WHEEL_TAG`, `CIU_WHEEL_ASSET_NAME`, `CIU_WHEEL_VERSION`
@@ -25,6 +27,14 @@ Example:
 ```
 B2_VERSION=4.5.0 ./build-images.py
 ```
+
+Disable optional AI tooling for a minimal image:
+
+```
+INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_AIDER=false ./build-images.py
+```
+
+`ANTIGRAVITY_VERSION` currently uses upstream latest-manifest resolution during artifact staging.
 
 ## Push (registry)
 

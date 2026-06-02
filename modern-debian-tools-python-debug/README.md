@@ -221,6 +221,22 @@ Override specific build variables:
 B2_VERSION=4.5.0 ./build-images.py
 ```
 
+Pin AI tooling versions when needed:
+
+```bash
+CODEX_VERSION=0.34.0 CLAUDE_CODE_VERSION=1.0.27 AIDER_VERSION=0.64.0 ./build-images.py
+```
+
+Disable optional AI tooling across all image variants:
+
+```bash
+INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_AIDER=false ./build-images.py
+```
+
+Notes:
+- `ANTIGRAVITY_VERSION` currently follows upstream `latest` manifest resolution during staging.
+- `AIDER_VERSION=latest` resolves at image build time via pip.
+
 ## GHCR Credentials
 
 Use PAT with package scopes (classic token):
