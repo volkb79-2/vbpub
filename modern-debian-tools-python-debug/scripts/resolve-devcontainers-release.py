@@ -13,14 +13,73 @@ import os
 import re
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
+
+from manifest_sections import netcat_package_for_debian, render_runtime_probe_sections
+from stage_tool_artifacts import stage_tool_artifacts
 
 
 REGISTRY_URL = "https://mcr.microsoft.com/v2/devcontainers/python/tags/list"
 STABLE_TAG_RE = re.compile(r"^(?:1-)?(?P<python>\d+\.\d+)-(?P<debian>[a-z0-9][a-z0-9.-]*)$")
 PACKAGE_DOCS_ROOT = Path(__file__).resolve().parent.parent / "package-manifests-versioned"
 MANIFEST_DIR_IN_IMAGE = "/usr/local/share/modern-debian-tools-python-debug"
+TOOL_VERSION_DISPLAY_ORDER = [
+    ("awscli", "AWSCLI_VER"),
+    ("b2", "B2_VER"),
+    ("bat", "BAT_VER"),
+    ("consul", "CONSUL_VER"),
+    ("delta", "DELTA_VER"),
+    ("fd", "FD_VER"),
+    ("fzf", "FZF_VER"),
+    ("gh", "GH_VER"),
+    ("rga", "RGA_VER"),
+    ("ripgrep", "RIPGREP_VER"),
+    ("shellcheck", "SHELLCHECK_VER"),
+    ("vault", "VAULT_VER"),
+    ("yq", "YQ_VER"),
+]
+CIU_VERSION_FROM_WHEEL_RE = re.compile(r"^ciu-(?P<version>.+)-py[0-9].*\.whl$")
+SYSTEM_PACKAGE_NAMES = [
+    "bash-completion",
+    "ca-certificates",
+    "curl",
+    "bind9-dnsutils",
+    "fuse3",
+    "git",
+    "git-lfs",
+    "gnupg",
+    "gzip",
+    "htop",
+    "httpie",
+    "iputils-ping",
+    "jq",
+    "less",
+    "lsb-release",
+    "lsof",
+    "man-db",
+    "mc",
+    "ncdu",
+    "openssl",
+    "pandoc",
+    "p7zip-full",
+    "poppler-utils",
+    "python3-venv",
+    "psmisc",
+    "rsync",
+    "sqlite3",
+    "strace",
+    "sshfs",
+    "tar",
+    "tree",
+    "unzip",
+    "vim",
+    "wget",
+    "xz-utils",
+    "postgresql-client",
+    "redis-tools",
+]
 
 
 def get_image_label(image: str, label: str) -> str:
@@ -217,7 +276,7 @@ def emit_newer_stable_advisory(stable_image: str) -> tuple[bool, str | None, str
     image_tag = parse_image_tag(stable_image)
     if not image_tag:
         print(
-            f"[WARN] Could not parse tag from DEVCONTAINERS_BASE_STABLE={stable_image}; "
+            f"[WARN] Could not parse tag from DEVCONTAINERS_BASE_PINNED={stable_image}; "
             "skipping newer-version check.",
             file=sys.stderr,
         )
@@ -330,6 +389,216 @@ def resolve_release_and_version(image: str) -> tuple[str, str]:
     return release, version
 
 
+def github_api_headers() -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "modern-debian-tools-python-debug/resolve-devcontainers-release",
+    }
+    token = (os.getenv("GITHUB_PUSH_PAT") or os.getenv("GITHUB_TOKEN") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def github_api_json(url: str) -> dict:
+    req = urllib.request.Request(url, headers=github_api_headers(), method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            if isinstance(payload, dict):
+                return payload
+            raise RuntimeError(f"Unexpected JSON payload for {url}")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace") if exc.fp else ""
+        raise RuntimeError(f"GitHub API request failed for {url}: HTTP {exc.code}: {body}") from exc
+
+
+def github_release_tag_exists(owner: str, repo: str, tag: str) -> bool:
+    url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"
+    req = urllib.request.Request(url, headers=github_api_headers(), method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=20):
+            return True
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        body = exc.read().decode("utf-8", "replace") if exc.fp else ""
+        raise RuntimeError(f"GitHub API request failed for {url}: HTTP {exc.code}: {body}") from exc
+
+
+def pick_ciu_wheel_asset_name(release_payload: dict) -> str:
+    assets = release_payload.get("assets")
+    if not isinstance(assets, list):
+        return ""
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name") or "").strip()
+        if name.endswith(".whl"):
+            return name
+    return ""
+
+
+def derive_ciu_version_from_asset_name(asset_name: str) -> str:
+    match = CIU_VERSION_FROM_WHEEL_RE.match(asset_name.strip())
+    if not match:
+        return ""
+    return match.group("version")
+
+
+def resolve_ciu_wheel_coordinates() -> tuple[str, str, str]:
+    owner = (os.getenv("GITHUB_USERNAME") or "").strip()
+    repo = (os.getenv("GITHUB_REPO") or "").strip()
+    if not owner or not repo:
+        print(
+            "[WARN] GITHUB_USERNAME/GITHUB_REPO not set; CIU wheel coordinates remain unset",
+            file=sys.stderr,
+        )
+        return "", "", ""
+
+    latest_alias_tag = (os.getenv("CIU_LATEST_TAG") or "ciu-wheel-latest").strip() or "ciu-wheel-latest"
+    explicit_asset_name = (os.getenv("CIU_LATEST_ASSET_NAME") or "").strip()
+
+    try:
+        latest_release = github_api_json(
+            f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{latest_alias_tag}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            "[WARN] Failed to resolve CIU latest release metadata "
+            f"for tag {latest_alias_tag}: {exc}",
+            file=sys.stderr,
+        )
+        return latest_alias_tag, explicit_asset_name, ""
+
+    asset_name = explicit_asset_name or pick_ciu_wheel_asset_name(latest_release)
+    if not asset_name:
+        print(
+            f"[WARN] No wheel asset found for CIU latest tag {latest_alias_tag}",
+            file=sys.stderr,
+        )
+        return latest_alias_tag, "", ""
+
+    wheel_version = derive_ciu_version_from_asset_name(asset_name)
+    resolved_tag = latest_alias_tag
+    if wheel_version:
+        candidate_tag = f"ciu-wheel-{wheel_version}"
+        if candidate_tag != latest_alias_tag:
+            try:
+                if github_release_tag_exists(owner, repo, candidate_tag):
+                    resolved_tag = candidate_tag
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    "[WARN] Failed while checking CIU concrete release tag "
+                    f"{candidate_tag}: {exc}",
+                    file=sys.stderr,
+                )
+
+    return resolved_tag, asset_name, wheel_version
+
+
+def probe_system_package_candidates(debian: str, python: str) -> list[str]:
+    image = f"python:{python}-{debian}"
+    netcat_pkg = netcat_package_for_debian(debian)
+    packages = [*SYSTEM_PACKAGE_NAMES]
+    packages.insert(18, netcat_pkg)
+    package_list_expr = " ".join(packages)
+
+    probe_script = (
+        "set -euo pipefail\n"
+        "apt-get update -qq >/dev/null\n"
+        f"for pkg in {package_list_expr}; do\n"
+        "  ver=$(apt-cache policy \"$pkg\" | awk '/Candidate:/ {print $2; exit}')\n"
+        "  if [ -z \"$ver\" ] || [ \"$ver\" = \"(none)\" ]; then\n"
+        "    ver=not-available\n"
+        "  fi\n"
+        "  printf '%s=%s\\n' \"$pkg\" \"$ver\"\n"
+        "done\n"
+    )
+
+    result = subprocess.run(
+        ["docker", "run", "--rm", "--entrypoint", "bash", image, "-lc", probe_script],
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(
+            "Failed to probe system package versions via docker for "
+            f"{image}: {stderr or 'no stderr output'}"
+        )
+
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise RuntimeError(f"System package probe returned no lines for {image}")
+    return lines
+
+
+def build_runtime_custom_tooling_map(tool_metadata: dict | None, ciu_wheel_version: str) -> dict[str, str]:
+    resolved_versions = {}
+    if isinstance(tool_metadata, dict):
+        raw = tool_metadata.get("resolved_versions")
+        if isinstance(raw, dict):
+            resolved_versions = raw
+
+    tooling = {
+        "CIU": ciu_wheel_version or "not-installed",
+        "awscli": str(resolved_versions.get("AWSCLI_VER") or "unknown"),
+        "b2": str(resolved_versions.get("B2_VER") or "unknown"),
+        "bat": str(resolved_versions.get("BAT_VER") or "unknown"),
+        "consul": str(resolved_versions.get("CONSUL_VER") or "unknown"),
+        "delta": str(resolved_versions.get("DELTA_VER") or "unknown"),
+        "fd": str(resolved_versions.get("FD_VER") or "unknown"),
+        "fzf": str(resolved_versions.get("FZF_VER") or "unknown"),
+        "gh": str(resolved_versions.get("GH_VER") or "unknown"),
+        "rga": str(resolved_versions.get("RGA_VER") or "unknown"),
+        "ripgrep": str(resolved_versions.get("RIPGREP_VER") or "unknown"),
+        "shellcheck": str(resolved_versions.get("SHELLCHECK_VER") or "unknown"),
+        "vault": str(resolved_versions.get("VAULT_VER") or "unknown"),
+        "yq": str(resolved_versions.get("YQ_VER") or "unknown"),
+    }
+
+    psql_version = (os.getenv("POSTGRESQL_CLIENT_VERSION") or "latest").strip() or "latest"
+    redis_tools_version = (os.getenv("REDIS_TOOLS_VERSION") or "latest").strip() or "latest"
+    tooling["psql"] = psql_version if psql_version != "latest" else "latest (see apt probe below)"
+    tooling["redis-cli"] = (
+        redis_tools_version
+        if redis_tools_version != "latest"
+        else "latest (see apt probe below)"
+    )
+    return tooling
+
+
+def collect_runtime_probe_sections(
+    entries: list[dict[str, str]],
+    tool_metadata: dict | None,
+    ciu_wheel_version: str,
+) -> dict[str, list[str]]:
+    custom_tooling = build_runtime_custom_tooling_map(tool_metadata, ciu_wheel_version)
+    probe_cache: dict[tuple[str, str], list[str]] = {}
+    runtime_sections: dict[str, list[str]] = {}
+
+    for entry in entries:
+        key = (entry["debian"], entry["python"])
+        if key not in probe_cache:
+            try:
+                probe_cache[key] = probe_system_package_candidates(entry["debian"], entry["python"])
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    "[WARN] Runtime package probe failed for "
+                    f"{entry['target']} ({entry['python']}-{entry['debian']}): {exc}",
+                    file=sys.stderr,
+                )
+                probe_cache[key] = ["probe-unavailable"]
+
+        runtime_sections[entry["target"]] = render_runtime_probe_sections(
+            custom_tooling,
+            probe_cache[key],
+        )
+
+    return runtime_sections
+
+
 def repo_blob_url(username: str, repo: str, relative_path: str) -> str:
     return (
         f"https://github.com/{username}/{repo}/blob/main/modern-debian-tools-python-debug/"
@@ -431,25 +700,81 @@ def normalize_description_text(description: str) -> str:
 
 def build_display_description(
     description: str,
-    *,
-    username: str,
-    repo: str,
-    package_name: str,
 ) -> str:
     base = normalize_description_text(description) or "Versioned package documentation is available in the source repository."
-    docs_url = repo_blob_url(username, repo, family_latest_relpath(package_name))
-    suffix = f" Docs: {docs_url}"
     max_len = 512
 
-    if len(base) + len(suffix) <= max_len:
-        return base + suffix
+    if len(base) <= max_len:
+        return base
 
-    available = max_len - len(suffix)
-    if available <= 4:
-        return (base + suffix)[:max_len]
+    if max_len <= 4:
+        return base[:max_len]
 
-    trimmed = base[: available - 3].rstrip() + "..."
-    return trimmed + suffix
+    return base[: max_len - 3].rstrip() + "..."
+
+
+def load_tool_artifact_metadata(metadata_path: Path) -> dict:
+    if not metadata_path.exists():
+        raise RuntimeError(f"Missing tool artifact metadata file: {metadata_path}")
+    try:
+        return json.loads(metadata_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid tool artifact metadata JSON: {metadata_path}") from exc
+
+
+def render_tool_artifact_lines(tool_metadata: dict | None) -> list[str]:
+    if not tool_metadata:
+        return []
+
+    resolved_versions = tool_metadata.get("resolved_versions")
+    artifacts = tool_metadata.get("artifacts")
+    lines: list[str] = [
+        "## Staged Tool Artifacts",
+        "",
+    ]
+
+    if isinstance(resolved_versions, dict):
+        lines.append("### Resolved Tool Versions")
+        lines.append("")
+        emitted_keys: set[str] = set()
+        for display_name, version_key in TOOL_VERSION_DISPLAY_ORDER:
+            version_value = str(resolved_versions.get(version_key) or "").strip()
+            if not version_value:
+                continue
+            emitted_keys.add(version_key)
+            lines.append(f"- {display_name}: `{version_value}`")
+
+        for version_key in sorted(resolved_versions):
+            if version_key in emitted_keys:
+                continue
+            version_value = str(resolved_versions.get(version_key) or "").strip()
+            if not version_value:
+                continue
+            lines.append(f"- {version_key}: `{version_value}`")
+
+        lines.append("")
+
+    if isinstance(artifacts, list) and artifacts:
+        lines.append("### Artifact Sources and Digests")
+        lines.append("")
+        for raw_item in artifacts:
+            if not isinstance(raw_item, dict):
+                continue
+            tool = str(raw_item.get("tool") or "unknown").strip()
+            version = str(raw_item.get("version") or "").strip()
+            kind = str(raw_item.get("kind") or "artifact").strip()
+            digest = str(raw_item.get("sha256") or "").strip()
+            source_url = str(raw_item.get("source_url") or "").strip()
+            lines.append(
+                f"- {tool} {version} ({kind}): sha256 `{digest}`; source `{source_url}`"
+            )
+        lines.append("")
+
+    lines.append(
+        "Generated from local pre-staging metadata to make release documentation auditable and reproducible."
+    )
+    lines.append("")
+    return lines
 
 
 def choose_latest_entry(
@@ -470,7 +795,16 @@ def choose_latest_entry(
     )[-1]
 
 
-def render_manifest(entry: dict[str, str], *, username: str, repo: str, build_date: str, description: str) -> str:
+def render_manifest(
+    entry: dict[str, str],
+    *,
+    username: str,
+    repo: str,
+    build_date: str,
+    description: str,
+    tool_metadata: dict | None,
+    runtime_probe_sections: list[str] | None,
+) -> str:
     package_name = entry["package_name"]
     family_title = entry["family_title"]
     debian = entry["debian"]
@@ -510,6 +844,9 @@ def render_manifest(entry: dict[str, str], *, username: str, repo: str, build_da
         "",
     ]
     lines.extend((description.strip() or "No description provided.").splitlines())
+    lines.extend(render_tool_artifact_lines(tool_metadata))
+    if runtime_probe_sections:
+        lines.extend(runtime_probe_sections)
     lines.extend(
         [
             "",
@@ -650,13 +987,25 @@ def render_root_readme(grouped_entries: dict[str, list[dict[str, str]]], *, user
     return "\n".join(lines)
 
 
-def write_package_docs(build_date: str, latest_python: str | None, latest_debian: str | None) -> None:
+def write_package_docs(
+    build_date: str,
+    latest_python: str | None,
+    latest_debian: str | None,
+    *,
+    tool_metadata: dict | None,
+    ciu_wheel_version: str,
+) -> None:
     username = os.getenv("GITHUB_USERNAME") or "volkb79-2"
     repo = os.getenv("GITHUB_REPO") or "vbpub"
     description_base = os.getenv("OCI_DESCRIPTION_BASE") or os.getenv("OCI_DESCRIPTION") or ""
     description_vsc = os.getenv("OCI_DESCRIPTION_VSC") or os.getenv("OCI_DESCRIPTION") or ""
 
     entries = package_catalog(latest_python, latest_debian)
+    runtime_probe_sections = collect_runtime_probe_sections(
+        entries,
+        tool_metadata,
+        ciu_wheel_version,
+    )
     grouped: dict[str, list[dict[str, str]]] = {}
     for entry in entries:
         grouped.setdefault(entry["package_name"], []).append(entry)
@@ -707,15 +1056,18 @@ def write_package_docs(build_date: str, latest_python: str | None, latest_debian
                     repo=repo,
                     build_date=build_date,
                     description=description,
+                    tool_metadata=tool_metadata,
+                    runtime_probe_sections=runtime_probe_sections.get(entry["target"]),
                 ),
                 encoding="utf-8",
             )
 
 
 def main() -> int:
-    stable_image = os.getenv(
-        "DEVCONTAINERS_BASE_STABLE",
-        "mcr.microsoft.com/devcontainers/python:3.14-trixie",
+    stable_image = (
+        os.getenv("DEVCONTAINERS_BASE_PINNED")
+        or os.getenv("DEVCONTAINERS_BASE_STABLE")
+        or "mcr.microsoft.com/devcontainers/python:3.14-trixie"
     )
     dev_image = os.getenv(
         "DEVCONTAINERS_BASE_DEV",
@@ -740,57 +1092,67 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    stable_release, stable_version = resolve_release_and_version(stable_image)
-    dev_release, dev_version = resolve_release_and_version(dev_image)
-
     build_date = os.getenv("BUILD_DATE")
     if not build_date:
         raise RuntimeError("BUILD_DATE must be set before generating package manifests")
 
+    staging_result = stage_tool_artifacts(build_date=build_date)
+    ciu_wheel_tag, ciu_wheel_asset_name, ciu_wheel_version = resolve_ciu_wheel_coordinates()
+    ciu_install_required = is_truthy_env(os.getenv("CIU_INSTALL_REQUIRED"))
+    if ciu_install_required and (not ciu_wheel_tag or not ciu_wheel_asset_name):
+        raise RuntimeError(
+            "CIU_INSTALL_REQUIRED=true but CIU wheel coordinates could not be resolved "
+            "(CIU_WHEEL_TAG/CIU_WHEEL_ASSET_NAME)"
+        )
+
+    stable_release, stable_version = resolve_release_and_version(stable_image)
+    dev_release, dev_version = resolve_release_and_version(dev_image)
+
     description_base = os.getenv("OCI_DESCRIPTION_BASE") or os.getenv("OCI_DESCRIPTION") or ""
     description_vsc = os.getenv("OCI_DESCRIPTION_VSC") or os.getenv("OCI_DESCRIPTION") or ""
 
-    write_package_docs(build_date, latest_python, latest_debian)
+    tool_metadata = load_tool_artifact_metadata(staging_result.metadata_path)
+    write_package_docs(
+        build_date,
+        latest_python,
+        latest_debian,
+        tool_metadata=tool_metadata,
+        ciu_wheel_version=ciu_wheel_version,
+    )
 
     print(
-        "OCI_DESCRIPTION_BASE="
-        + build_display_description(
-            description_base,
-            username=os.getenv("GITHUB_USERNAME") or "volkb79-2",
-            repo=os.getenv("GITHUB_REPO") or "vbpub",
-            package_name="modern-debian-tools-python-debug",
-        )
+        "OCI_DESCRIPTION_BASE=" + build_display_description(description_base)
     )
     print(
-        "OCI_DESCRIPTION_VSC="
-        + build_display_description(
-            description_vsc,
-            username=os.getenv("GITHUB_USERNAME") or "volkb79-2",
-            repo=os.getenv("GITHUB_REPO") or "vbpub",
-            package_name="modern-debian-tools-python-debug-vsc-devcontainer",
-        )
+        "OCI_DESCRIPTION_VSC=" + build_display_description(description_vsc)
     )
+    print(f"TOOL_ARTIFACTS_STAGE_ROOT={staging_result.stage_root}")
+    print(f"TOOL_ARTIFACTS_METADATA={staging_result.metadata_path}")
+    print(f"TOOL_ARTIFACTS_VERSIONS_ENV={staging_result.versions_env_path}")
+    print(f"CIU_WHEEL_TAG={ciu_wheel_tag}")
+    print(f"CIU_WHEEL_ASSET_NAME={ciu_wheel_asset_name}")
+    print(f"CIU_WHEEL_VERSION={ciu_wheel_version}")
 
     # Export latest stable tuple for downstream bake targets (dynamic, live-derived).
     if latest_tag:
-        print(f"DEVCONTAINERS_LATEST_STABLE_TAG={latest_tag}")
+        print(f"DEVCONTAINERS_DYNAMIC_LATEST_TAG={latest_tag}")
     else:
-        print("DEVCONTAINERS_LATEST_STABLE_TAG=")
+        print("DEVCONTAINERS_DYNAMIC_LATEST_TAG=")
 
     if latest_python:
-        print(f"DEVCONTAINERS_LATEST_STABLE_PYTHON={latest_python}")
+        print(f"DEVCONTAINERS_DYNAMIC_LATEST_PYTHON={latest_python}")
     else:
-        print("DEVCONTAINERS_LATEST_STABLE_PYTHON=")
+        print("DEVCONTAINERS_DYNAMIC_LATEST_PYTHON=")
 
     if latest_debian:
-        print(f"DEVCONTAINERS_LATEST_STABLE_DEBIAN={latest_debian}")
+        print(f"DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN={latest_debian}")
     else:
-        print("DEVCONTAINERS_LATEST_STABLE_DEBIAN=")
+        print("DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN=")
 
     if latest_tag:
-        print(f"DEVCONTAINERS_BASE_LATEST_STABLE=mcr.microsoft.com/devcontainers/python:{latest_tag}")
+        print(f"DEVCONTAINERS_BASE_DYNAMIC_LATEST=mcr.microsoft.com/devcontainers/python:{latest_tag}")
     else:
-        print("DEVCONTAINERS_BASE_LATEST_STABLE=")
+        print("DEVCONTAINERS_BASE_DYNAMIC_LATEST=")
 
     print(f"DEVCONTAINERS_RELEASE_STABLE={stable_release}")
     print(f"DEVCONTAINERS_RELEASE_DEV={dev_release}")

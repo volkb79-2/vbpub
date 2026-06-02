@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish pwmcp-client wheel using config-driven step runner."""
+"""Publish pwmcp-server wheel using config-driven step runner."""
 from __future__ import annotations
 
 import sys
@@ -16,7 +16,7 @@ from release_manager.step_runner import run_step  # noqa: E402
 
 def main() -> None:
     config_path = ROOT / "build-push.toml"
-    run_step(config_path, "publish-client-wheel", None)
+    run_step(config_path, "publish-server-wheel", None)
 
 
 if __name__ == "__main__":

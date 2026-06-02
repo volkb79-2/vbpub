@@ -27,6 +27,7 @@ class Command:
 @dataclass(frozen=True)
 class ProjectConfig:
     name: str
+    env: Mapping[str, str]
     steps: Mapping[str, List[Command]]
 
 
@@ -139,10 +140,19 @@ def load_json(url: str, token: str) -> tuple[list, dict]:
     return json.loads(body), headers
 
 
-def run_commands(commands: Iterable[Command]) -> None:
+def run_commands(commands: Iterable[Command], project_env: Optional[Mapping[str, str]] = None) -> None:
+    merged_env = os.environ.copy()
+    if project_env:
+        for key, value in project_env.items():
+            if value is None:
+                continue
+            value_str = str(value).strip()
+            if value_str:
+                merged_env.setdefault(key, value_str)
+
     for command in commands:
         log_info(command.label)
-        subprocess.run(command.argv, check=True, cwd=str(command.cwd))
+        subprocess.run(command.argv, check=True, cwd=str(command.cwd), env=merged_env)
 
 
 def resolve_repo_root(config_path: Path, raw_value: str) -> Path:
@@ -239,6 +249,15 @@ def load_config(
 
     projects: dict[str, ProjectConfig] = {}
     for name, project in projects_section.items():
+        if not isinstance(project, dict):
+            raise ValueError(f"projects.{name} must be a table")
+
+        project_env = project.get("env") or {}
+        if project_env is None:
+            project_env = {}
+        if not isinstance(project_env, dict):
+            raise ValueError(f"projects.{name}.env must be a table")
+
         steps_section = project.get("steps") if isinstance(project, dict) else None
         if not steps_section or not isinstance(steps_section, dict):
             raise ValueError(f"projects.{name}.steps is required")
@@ -248,7 +267,7 @@ def load_config(
             if commands_config is None:
                 raise ValueError(f"projects.{name}.steps.{step_name}.commands is required")
             steps[step_name] = parse_commands(config_path, repo_root, step_name, commands_config)
-        projects[name] = ProjectConfig(name=name, steps=steps)
+        projects[name] = ProjectConfig(name=name, env=project_env, steps=steps)
 
     cleanup_section = config.get("cleanup")
     if not cleanup_section or not isinstance(cleanup_section, dict):
@@ -665,7 +684,7 @@ def main() -> None:
                 commands = project.steps.get(step, [])
                 if not commands:
                     continue
-                run_commands(commands)
+                run_commands(commands, project.env)
     else:
         for step in steps:
             ordered_names = step_project_order.get(step) or selected_names
@@ -678,7 +697,7 @@ def main() -> None:
                 commands = project.steps.get(step, [])
                 if not commands:
                     continue
-                run_commands(commands)
+                run_commands(commands, project.env)
 
     if args.remove_assets:
         remove_assets(args.remove_assets, args.dry_run, cleanup, github_config, env_config)

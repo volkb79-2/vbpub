@@ -10,6 +10,7 @@ FROM ${BASE_IMAGE}
 
 SHELL ["/bin/bash", "-c"]
 
+ARG PYTHON_VERSION
 ARG DEBIAN_VERSION
 
 ARG BACKPORTS_URI
@@ -40,8 +41,8 @@ ARG VAULT_VERSION
 ARG YQ_VERSION
 ARG GITHUB_USERNAME
 ARG GITHUB_REPO
-ARG CIU_LATEST_TAG
-ARG CIU_LATEST_ASSET_NAME
+ARG CIU_WHEEL_TAG
+ARG CIU_WHEEL_ASSET_NAME
 ARG CIU_INSTALL_REQUIRED="false"
 ARG PACKAGE_MANIFEST_SOURCE=""
 ARG DEVCONTAINERS_RELEASE=""
@@ -71,6 +72,7 @@ USER root
 COPY apt/backports.sources.in /tmp/backports.sources.in
 COPY apt/backports.pref.in /tmp/backports.pref.in
 COPY package-manifests-versioned /tmp/package-manifests-versioned
+COPY scripts/manifest_sections.py /tmp/manifest_sections.py
 
 # Ensure vscode user exists (non-devcontainers bases)
 RUN set -euo pipefail; \
@@ -144,124 +146,48 @@ RUN set -euo pipefail; \
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
-# Modern tools installation
-RUN set -euo pipefail; \
-    get_latest_release() { \
-        local repo="$1"; \
-        local location=""; \
-        location="$(curl -fsSLI "https://github.com/${repo}/releases/latest" \
-            | awk -F': ' 'tolower($1)=="location"{print $2}' \
-            | tail -1 \
-            | tr -d '\r\n')"; \
-        if [ -n "${location}" ]; then \
-            basename "${location}" | sed 's/^v//' | tr -d '\r\n'; \
-            return 0; \
-        fi; \
-        curl -fsSL "https://api.github.com/repos/${repo}/releases/latest" \
-            | jq -r '.tag_name // empty' \
-            | sed 's/^v//' \
-            | tr -d '\r\n'; \
-    }; \
-    resolve_version() { \
-        local requested="$1"; \
-        local repo="$2"; \
-        if [ -n "${requested}" ] && [ "${requested}" != "latest" ]; then \
-            echo "${requested}"; \
-        else \
-            get_latest_release "${repo}"; \
-        fi; \
-    }; \
-    B2_VER="$(resolve_version "${B2_VERSION}" "Backblaze/B2_Command_Line_Tool")"; \
-    BAT_VER="$(resolve_version "${BAT_VERSION}" "sharkdp/bat")"; \
-    FD_VER="$(resolve_version "${FD_VERSION}" "sharkdp/fd")"; \
-    RIPGREP_VER="$(resolve_version "${RIPGREP_VERSION}" "BurntSushi/ripgrep")"; \
-    SHELLCHECK_VER="$(resolve_version "${SHELLCHECK_VERSION}" "koalaman/shellcheck")"; \
-    FZF_VER="$(resolve_version "${FZF_VERSION}" "junegunn/fzf")"; \
-    YQ_VER="$(resolve_version "${YQ_VERSION}" "mikefarah/yq")"; \
-    CONSUL_VER="$(resolve_version "${CONSUL_VERSION}" "hashicorp/consul")"; \
-    DELTA_VER="$(resolve_version "${DELTA_VERSION}" "dandavison/delta")"; \
-    GH_VER="$(resolve_version "${GH_VERSION}" "cli/cli")"; \
-    RGA_VER="$(resolve_version "${RGA_VERSION}" "phiresky/ripgrep-all")"; \
-    VAULT_VER="$(resolve_version "${VAULT_VERSION}" "hashicorp/vault")"; \
-    echo "B2_VER=${B2_VER}" > /tmp/tool-versions.env; \
-    echo "BAT_VER=${BAT_VER}" >> /tmp/tool-versions.env; \
-    echo "FD_VER=${FD_VER}" >> /tmp/tool-versions.env; \
-    echo "RIPGREP_VER=${RIPGREP_VER}" >> /tmp/tool-versions.env; \
-    echo "SHELLCHECK_VER=${SHELLCHECK_VER}" >> /tmp/tool-versions.env; \
-    echo "FZF_VER=${FZF_VER}" >> /tmp/tool-versions.env; \
-    echo "YQ_VER=${YQ_VER}" >> /tmp/tool-versions.env; \
-    echo "CONSUL_VER=${CONSUL_VER}" >> /tmp/tool-versions.env; \
-    echo "DELTA_VER=${DELTA_VER}" >> /tmp/tool-versions.env; \
-    echo "GH_VER=${GH_VER}" >> /tmp/tool-versions.env; \
-    echo "RGA_VER=${RGA_VER}" >> /tmp/tool-versions.env; \
-    echo "VAULT_VER=${VAULT_VER}" >> /tmp/tool-versions.env
+COPY build/tool-artifacts-staging /tmp/tool-artifacts-staging
 
+# If PACKAGE_MANIFEST_SOURCE was provided but not present in the build context,
+# try downloading it from the documented blob URL (OCI_DOCUMENTATION).
 RUN set -euo pipefail; \
-    . /tmp/tool-versions.env; \
-    curl -fsSL "https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v${B2_VER}/b2-linux" -o /tmp/b2-linux; \
-    curl -fsSL "https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v${B2_VER}/b2-linux_hashes.txt" -o /tmp/b2-linux_hashes.txt; \
-    EXPECTED_SHA256=$(grep "^sha256" /tmp/b2-linux_hashes.txt | awk '{print $2}'); \
-    echo "${EXPECTED_SHA256}  /tmp/b2-linux" | sha256sum -c -; \
-    install -m 755 /tmp/b2-linux /usr/local/bin/b2; \
-    rm -f /tmp/b2-linux /tmp/b2-linux_hashes.txt
-
-RUN set -euo pipefail; \
-    . /tmp/tool-versions.env; \
-    download_first_available() { \
-        local output="$1"; \
-        shift; \
-        local url=""; \
-        for url in "$@"; do \
-            if curl -fsSL "${url}" -o "${output}"; then \
-                echo "${url}"; \
-                return 0; \
+    if [ -n "${PACKAGE_MANIFEST_SOURCE:-}" ]; then \
+        TARGET="/tmp/${PACKAGE_MANIFEST_SOURCE}"; \
+        if [ ! -f "$TARGET" ]; then \
+            if [ -n "${OCI_DOCUMENTATION:-}" ]; then \
+                mkdir -p "$(dirname "$TARGET")"; \
+                echo "[INFO] Manifest not found in build context: $TARGET"; \
+                echo "[INFO] Attempting to download from: ${OCI_DOCUMENTATION}"; \
+                curl -fsSL "${OCI_DOCUMENTATION}" -o "$TARGET"; \
+                echo "[INFO] Downloaded manifest to: $TARGET"; \
+            else \
+                echo "[WARN] PACKAGE_MANIFEST_SOURCE set but OCI_DOCUMENTATION empty; skipping manifest download"; \
             fi; \
-        done; \
-        return 1; \
-    }; \
-    BAT_URL="$(download_first_available /tmp/bat.tar.gz \
-        "https://github.com/sharkdp/bat/releases/download/v${BAT_VER}/bat-v${BAT_VER}-x86_64-unknown-linux-gnu.tar.gz" \
-        "https://github.com/sharkdp/bat/releases/download/v${BAT_VER}/bat-${BAT_VER}-x86_64-unknown-linux-gnu.tar.gz" \
-        "https://github.com/sharkdp/bat/releases/download/v${BAT_VER}/bat-v${BAT_VER}-x86_64-unknown-linux-musl.tar.gz" \
-        "https://github.com/sharkdp/bat/releases/download/v${BAT_VER}/bat-${BAT_VER}-x86_64-unknown-linux-musl.tar.gz" \
-    )"; \
-    DELTA_URL="$(download_first_available /tmp/delta.tar.gz \
-        "https://github.com/dandavison/delta/releases/download/${DELTA_VER}/delta-${DELTA_VER}-x86_64-unknown-linux-gnu.tar.gz" \
-        "https://github.com/dandavison/delta/releases/download/v${DELTA_VER}/delta-${DELTA_VER}-x86_64-unknown-linux-gnu.tar.gz" \
-        "https://github.com/dandavison/delta/releases/download/${DELTA_VER}/delta-${DELTA_VER}-x86_64-unknown-linux-musl.tar.gz" \
-        "https://github.com/dandavison/delta/releases/download/v${DELTA_VER}/delta-${DELTA_VER}-x86_64-unknown-linux-musl.tar.gz" \
-    )"; \
-    FD_URL="$(download_first_available /tmp/fd.tar.gz \
-        "https://github.com/sharkdp/fd/releases/download/v${FD_VER}/fd-v${FD_VER}-x86_64-unknown-linux-gnu.tar.gz" \
-        "https://github.com/sharkdp/fd/releases/download/v${FD_VER}/fd-${FD_VER}-x86_64-unknown-linux-gnu.tar.gz" \
-        "https://github.com/sharkdp/fd/releases/download/v${FD_VER}/fd-v${FD_VER}-x86_64-unknown-linux-musl.tar.gz" \
-        "https://github.com/sharkdp/fd/releases/download/v${FD_VER}/fd-${FD_VER}-x86_64-unknown-linux-musl.tar.gz" \
-    )"; \
-    RGA_URL="$(download_first_available /tmp/rga.tar.gz \
-        "https://github.com/phiresky/ripgrep-all/releases/download/${RGA_VER}/ripgrep_all-v${RGA_VER}-x86_64-unknown-linux-gnu.tar.gz" \
-        "https://github.com/phiresky/ripgrep-all/releases/download/v${RGA_VER}/ripgrep_all-v${RGA_VER}-x86_64-unknown-linux-gnu.tar.gz" \
-        "https://github.com/phiresky/ripgrep-all/releases/download/${RGA_VER}/ripgrep_all-v${RGA_VER}-x86_64-unknown-linux-musl.tar.gz" \
-        "https://github.com/phiresky/ripgrep-all/releases/download/v${RGA_VER}/ripgrep_all-v${RGA_VER}-x86_64-unknown-linux-musl.tar.gz" \
-        "https://github.com/phiresky/ripgrep-all/releases/download/${RGA_VER}/ripgrep_all-${RGA_VER}-x86_64-unknown-linux-gnu.tar.gz" \
-        "https://github.com/phiresky/ripgrep-all/releases/download/v${RGA_VER}/ripgrep_all-${RGA_VER}-x86_64-unknown-linux-gnu.tar.gz" \
-        "https://github.com/phiresky/ripgrep-all/releases/download/${RGA_VER}/ripgrep_all-${RGA_VER}-x86_64-unknown-linux-musl.tar.gz" \
-        "https://github.com/phiresky/ripgrep-all/releases/download/v${RGA_VER}/ripgrep_all-${RGA_VER}-x86_64-unknown-linux-musl.tar.gz" \
-    )"; \
-    RIPGREP_URL="$(download_first_available /tmp/ripgrep.tar.gz \
-        "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VER}/ripgrep-${RIPGREP_VER}-x86_64-unknown-linux-gnu.tar.gz" \
-        "https://github.com/BurntSushi/ripgrep/releases/download/v${RIPGREP_VER}/ripgrep-${RIPGREP_VER}-x86_64-unknown-linux-gnu.tar.gz" \
-        "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VER}/ripgrep-${RIPGREP_VER}-x86_64-unknown-linux-musl.tar.gz" \
-        "https://github.com/BurntSushi/ripgrep/releases/download/v${RIPGREP_VER}/ripgrep-${RIPGREP_VER}-x86_64-unknown-linux-musl.tar.gz" \
-    )"; \
-    if [ -z "${BAT_URL}" ] || [ -z "${DELTA_URL}" ] || [ -z "${FD_URL}" ] || [ -z "${RGA_URL}" ] || [ -z "${RIPGREP_URL}" ]; then \
-        echo "[ERROR] Failed to download one or more release tarballs." >&2; \
-        echo "[ERROR] BAT_URL=${BAT_URL}" >&2; \
-        echo "[ERROR] DELTA_URL=${DELTA_URL}" >&2; \
-        echo "[ERROR] FD_URL=${FD_URL}" >&2; \
-        echo "[ERROR] RGA_URL=${RGA_URL}" >&2; \
-        echo "[ERROR] RIPGREP_URL=${RIPGREP_URL}" >&2; \
+        else \
+            echo "[INFO] Manifest already present in build context: $TARGET"; \
+        fi; \
+    fi
+
+# Modern tools installation from local pre-staged artifacts.
+RUN set -euo pipefail; \
+    STAGE_DIR="/tmp/tool-artifacts-staging"; \
+    DOWNLOADS_DIR="${STAGE_DIR}/downloads"; \
+    if [ ! -f "${STAGE_DIR}/tool-versions.env" ]; then \
+        echo "[ERROR] Missing staged tool version file: ${STAGE_DIR}/tool-versions.env" >&2; \
         exit 1; \
     fi; \
+    if [ ! -d "${DOWNLOADS_DIR}" ]; then \
+        echo "[ERROR] Missing staged downloads directory: ${DOWNLOADS_DIR}" >&2; \
+        exit 1; \
+    fi; \
+    . "${STAGE_DIR}/tool-versions.env"; \
+    require_file() { \
+        local path="$1"; \
+        if [ ! -f "${path}" ]; then \
+            echo "[ERROR] Missing staged artifact: ${path}" >&2; \
+            exit 1; \
+        fi; \
+    }; \
     install_from_tar() { \
         local tarball="$1"; \
         local bin_name="$2"; \
@@ -276,69 +202,58 @@ RUN set -euo pipefail; \
         fi; \
         install -m 755 "${bin_path}" "/usr/local/bin/${bin_name}"; \
     }; \
-    install_from_tar /tmp/bat.tar.gz bat /tmp/bat-extract; \
-    install_from_tar /tmp/delta.tar.gz delta /tmp/delta-extract; \
-    install_from_tar /tmp/fd.tar.gz fd /tmp/fd-extract; \
-    install_from_tar /tmp/rga.tar.gz rga /tmp/rga-extract; \
-    install_from_tar /tmp/ripgrep.tar.gz rg /tmp/ripgrep-extract; \
-    rm -rf /tmp/bat.tar.gz /tmp/delta.tar.gz /tmp/fd.tar.gz /tmp/rga.tar.gz /tmp/ripgrep.tar.gz \
-        /tmp/bat-extract /tmp/delta-extract /tmp/fd-extract /tmp/rga-extract /tmp/ripgrep-extract
-
-RUN set -euo pipefail; \
-    . /tmp/tool-versions.env; \
-    curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VER}/shellcheck-v${SHELLCHECK_VER}.linux.x86_64.tar.xz" -o /tmp/shellcheck.tar.xz; \
-    tar -xf /tmp/shellcheck.tar.xz -C /tmp; \
+    require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux"; \
+    require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt"; \
+    EXPECTED_B2_SHA256="$(grep '^sha256' "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt" | awk '{print $2}')"; \
+    echo "${EXPECTED_B2_SHA256}  ${DOWNLOADS_DIR}/b2-${B2_VER}-linux" | sha256sum -c -; \
+    install -m 755 "${DOWNLOADS_DIR}/b2-${B2_VER}-linux" /usr/local/bin/b2; \
+    require_file "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz"; \
+    require_file "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz"; \
+    require_file "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz"; \
+    require_file "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz"; \
+    require_file "${DOWNLOADS_DIR}/ripgrep-${RIPGREP_VER}.tar.gz"; \
+    install_from_tar "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz" bat /tmp/bat-extract; \
+    install_from_tar "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz" delta /tmp/delta-extract; \
+    install_from_tar "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz" fd /tmp/fd-extract; \
+    install_from_tar "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz" rga /tmp/rga-extract; \
+    install_from_tar "${DOWNLOADS_DIR}/ripgrep-${RIPGREP_VER}.tar.gz" rg /tmp/ripgrep-extract; \
+    require_file "${DOWNLOADS_DIR}/shellcheck-${SHELLCHECK_VER}.tar.xz"; \
+    tar -xf "${DOWNLOADS_DIR}/shellcheck-${SHELLCHECK_VER}.tar.xz" -C /tmp; \
     install -m 755 "/tmp/shellcheck-v${SHELLCHECK_VER}/shellcheck" /usr/local/bin/shellcheck; \
-    rm -rf /tmp/shellcheck.tar.xz "/tmp/shellcheck-v${SHELLCHECK_VER}"
-
-RUN set -euo pipefail; \
-    . /tmp/tool-versions.env; \
-    curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VER}/fzf-${FZF_VER}-linux_amd64.tar.gz" -o /tmp/fzf.tar.gz; \
-    tar -xzf /tmp/fzf.tar.gz -C /tmp; \
+    require_file "${DOWNLOADS_DIR}/fzf-${FZF_VER}.tar.gz"; \
+    tar -xzf "${DOWNLOADS_DIR}/fzf-${FZF_VER}.tar.gz" -C /tmp; \
     install -m 755 /tmp/fzf /usr/local/bin/fzf; \
-    rm -rf /tmp/fzf.tar.gz /tmp/fzf
-
-RUN set -euo pipefail; \
-    . /tmp/tool-versions.env; \
-    curl -fsSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VER}/yq_linux_amd64" -o /usr/local/bin/yq; \
-    chmod 755 /usr/local/bin/yq
-
-RUN set -euo pipefail; \
-    . /tmp/tool-versions.env; \
-    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.tar.gz" -o /tmp/gh.tar.gz; \
-    tar -xzf /tmp/gh.tar.gz -C /tmp; \
+    require_file "${DOWNLOADS_DIR}/yq-${YQ_VER}-linux_amd64"; \
+    install -m 755 "${DOWNLOADS_DIR}/yq-${YQ_VER}-linux_amd64" /usr/local/bin/yq; \
+    require_file "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz"; \
+    tar -xzf "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz" -C /tmp; \
     install -m 755 "/tmp/gh_${GH_VER}_linux_amd64/bin/gh" /usr/local/bin/gh; \
-    rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VER}_linux_amd64"
-
-RUN set -euo pipefail; \
-    . /tmp/tool-versions.env; \
-    curl -fsSL "https://releases.hashicorp.com/consul/${CONSUL_VER}/consul_${CONSUL_VER}_SHA256SUMS" -o /tmp/consul_SHA256SUMS; \
-    curl -fsSL "https://releases.hashicorp.com/consul/${CONSUL_VER}/consul_${CONSUL_VER}_linux_amd64.zip" -o "/tmp/consul_${CONSUL_VER}_linux_amd64.zip"; \
-    cd /tmp && grep "consul_${CONSUL_VER}_linux_amd64.zip" consul_SHA256SUMS | sha256sum -c -; \
-    unzip "/tmp/consul_${CONSUL_VER}_linux_amd64.zip" -d /usr/local/bin; \
-    chmod 755 /usr/local/bin/consul; \
-    rm -f "/tmp/consul_${CONSUL_VER}_linux_amd64.zip" /tmp/consul_SHA256SUMS
-
-RUN set -euo pipefail; \
-    . /tmp/tool-versions.env; \
-    curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VER}/vault_${VAULT_VER}_SHA256SUMS" -o /tmp/vault_SHA256SUMS; \
-    curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VER}/vault_${VAULT_VER}_linux_amd64.zip" -o "/tmp/vault_${VAULT_VER}_linux_amd64.zip"; \
-    cd /tmp && grep "vault_${VAULT_VER}_linux_amd64.zip" vault_SHA256SUMS | sha256sum -c -; \
-    unzip -q -o "/tmp/vault_${VAULT_VER}_linux_amd64.zip" -d /tmp/vault-extract; \
+    require_file "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_SHA256SUMS"; \
+    require_file "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_linux_amd64.zip"; \
+    (cd "${DOWNLOADS_DIR}" && grep "consul_${CONSUL_VER}_linux_amd64.zip" "consul_${CONSUL_VER}_SHA256SUMS" | sha256sum -c -); \
+    unzip -q -o "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_linux_amd64.zip" -d /tmp/consul-extract; \
+    install -m 755 /tmp/consul-extract/consul /usr/local/bin/consul; \
+    require_file "${DOWNLOADS_DIR}/vault_${VAULT_VER}_SHA256SUMS"; \
+    require_file "${DOWNLOADS_DIR}/vault_${VAULT_VER}_linux_amd64.zip"; \
+    (cd "${DOWNLOADS_DIR}" && grep "vault_${VAULT_VER}_linux_amd64.zip" "vault_${VAULT_VER}_SHA256SUMS" | sha256sum -c -); \
+    unzip -q -o "${DOWNLOADS_DIR}/vault_${VAULT_VER}_linux_amd64.zip" -d /tmp/vault-extract; \
     install -m 755 /tmp/vault-extract/vault /usr/local/bin/vault; \
-    rm -rf "/tmp/vault_${VAULT_VER}_linux_amd64.zip" /tmp/vault-extract /tmp/vault_SHA256SUMS /tmp/tool-versions.env
-
-# AWS CLI v2 (latest) - no checksum file available
-RUN set -euo pipefail; \
-    if [ "${AWSCLI_VERSION}" = "latest" ]; then \
-        AWSCLI_ZIP_URL="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"; \
-    else \
-        AWSCLI_ZIP_URL="https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWSCLI_VERSION}.zip"; \
-    fi; \
-    curl -fsSL "${AWSCLI_ZIP_URL}" -o /tmp/awscliv2.zip; \
-    unzip -q /tmp/awscliv2.zip -d /tmp/awscli; \
+    require_file "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip"; \
+    unzip -q "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip" -d /tmp/awscli; \
     /tmp/awscli/aws/install -i /usr/local/aws -b /usr/local/bin; \
-    rm -rf /tmp/awscliv2.zip /tmp/awscli
+    rm -rf \
+        /tmp/bat-extract \
+        /tmp/delta-extract \
+        /tmp/fd-extract \
+        /tmp/rga-extract \
+        /tmp/ripgrep-extract \
+        "/tmp/shellcheck-v${SHELLCHECK_VER}" \
+        /tmp/fzf \
+        "/tmp/gh_${GH_VER}_linux_amd64" \
+        /tmp/consul-extract \
+        /tmp/vault-extract \
+        /tmp/awscli \
+        /tmp/tool-artifacts-staging
 
 # Latest PostgreSQL and Redis clients (override versions via build args)
 RUN set -euo pipefail; \
@@ -396,23 +311,23 @@ RUN set -euo pipefail; \
         wheel_dir="/tmp/ciu-wheel"; \
         install -d -m 0755 "${wheel_dir}"; \
         wheel_path="${wheel_dir}/ciu.whl"; \
-        ciu_latest_tag="${CIU_LATEST_TAG:-ciu-wheel-latest}"; \
-        ciu_asset_name="${CIU_LATEST_ASSET_NAME:-}"; \
+        ciu_wheel_tag="${CIU_WHEEL_TAG:-ciu-wheel-latest}"; \
+        ciu_asset_name="${CIU_WHEEL_ASSET_NAME:-}"; \
         if [ -z "${ciu_asset_name}" ]; then \
-            ciu_asset_name="$(curl -fsSL "https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/tags/${ciu_latest_tag}" \
+            ciu_asset_name="$(curl -fsSL "https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/tags/${ciu_wheel_tag}" \
                 | jq -r '.assets[].name | select(endswith(".whl"))' \
                 | head -n 1 || true)"; \
         fi; \
         if [ -z "${ciu_asset_name}" ]; then \
             if [ "${CIU_INSTALL_REQUIRED}" = "true" ]; then \
-                echo "[ERROR] Failed to resolve CIU wheel asset name for tag ${ciu_latest_tag}" >&2; \
+                echo "[ERROR] Failed to resolve CIU wheel asset name for tag ${ciu_wheel_tag}" >&2; \
                 exit 1; \
             fi; \
-            echo "[WARN] CIU wheel asset not found for tag ${ciu_latest_tag}; skipping CIU install" >&2; \
+            echo "[WARN] CIU wheel asset not found for tag ${ciu_wheel_tag}; skipping CIU install" >&2; \
             skip_ciu=1; \
         fi; \
         if [ "${skip_ciu}" -eq 0 ]; then \
-            ciu_url="https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/download/${ciu_latest_tag}/${ciu_asset_name}"; \
+            ciu_url="https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/download/${ciu_wheel_tag}/${ciu_asset_name}"; \
             if ! curl -fsSL "${ciu_url}" -o "${wheel_path}"; then \
                 if [ "${CIU_INSTALL_REQUIRED}" = "true" ]; then \
                     echo "[ERROR] Failed to download CIU wheel from ${ciu_url}" >&2; \
@@ -487,68 +402,56 @@ RUN set -euo pipefail; \
         NETCAT_PKG="netcat-traditional"; \
     fi; \
     b2_version_output="$(b2 version 2>&1 | head -1 || true)"; \
-    if [ -z "$b2_version_output" ]; then \
+    if [ -z "${b2_version_output}" ]; then \
         b2_version_output="$(b2 --version 2>&1 | head -1 || true)"; \
     fi; \
     shellcheck_version_output="$(shellcheck --version 2>&1 | awk -F': ' '/version/ {print $2; exit}' || true)"; \
-    if [ -z "$shellcheck_version_output" ]; then \
+    if [ -z "${shellcheck_version_output}" ]; then \
         shellcheck_version_output="$(shellcheck --version 2>&1 | head -1 || true)"; \
     fi; \
     ciu_version_output="$(/home/vscode/.venv/bin/python -c 'import importlib.metadata as m; print(m.version("ciu"))' 2>/dev/null || true)"; \
+    custom_tooling_file="$(mktemp /tmp/custom-tooling.XXXXXX)"; \
+    python_packages_file="$(mktemp /tmp/python-packages.XXXXXX)"; \
+    system_packages_file="$(mktemp /tmp/system-packages.XXXXXX)"; \
     { \
-        echo "# Image Manifest"; \
-        echo ""; \
-        echo "## Base"; \
-        echo "- Debian: ${DEBIAN_VERSION}"; \
-        echo "- Python: $(python3 --version 2>&1)"; \
-        echo "- Image version: ${OCI_VERSION}"; \
-        echo "- Image tag: ${DEBIAN_VERSION}-py${PYTHON_VERSION}-${OCI_VERSION}"; \
-        if [ -n "${DEVCONTAINERS_RELEASE:-}" ]; then \
-            echo "- Devcontainers release: ${DEVCONTAINERS_RELEASE}"; \
-        else \
-            echo "- Devcontainers release: unknown"; \
-        fi; \
-        if [ -n "${DEVCONTAINERS_VERSION:-}" ]; then \
-            echo "- Devcontainers image version: ${DEVCONTAINERS_VERSION}"; \
-        else \
-            echo "- Devcontainers image version: unknown"; \
-        fi; \
-        echo ""; \
-        echo "## Custom Tooling"; \
         if [ -n "${ciu_version_output}" ]; then \
-            echo "- CIU: ${ciu_version_output}"; \
+            echo "CIU=${ciu_version_output}"; \
         else \
-            echo "- CIU: not-installed"; \
+            echo "CIU=not-installed"; \
         fi; \
-        echo "- awscli: $(aws --version 2>&1)"; \
-        echo "- b2: ${b2_version_output}"; \
-        echo "- bat: $(bat --version 2>&1 | head -1)"; \
-        echo "- consul: $(consul version 2>&1 | head -1)"; \
-        echo "- delta: $(delta --version 2>&1 | head -1)"; \
-        echo "- fd: $(fd --version 2>&1 | head -1)"; \
-        echo "- fzf: $(fzf --version 2>&1)"; \
-        echo "- gh: $(gh --version 2>&1 | head -1)"; \
-        echo "- psql: $(psql --version 2>&1)"; \
-        echo "- redis-cli: $(redis-cli --version 2>&1)"; \
-        echo "- rga: $(rga --version 2>&1 | head -1)"; \
-        echo "- ripgrep: $(rg --version 2>&1 | head -1)"; \
-        echo "- shellcheck: ${shellcheck_version_output}"; \
-        echo "- vault: $(vault version 2>&1 | head -1)"; \
-        echo "- yq: $(yq --version 2>&1)"; \
-        echo ""; \
-        echo "## Python packages"; \
-        echo ""; \
-        echo "    (installed via pip)"; \
-        /home/vscode/.venv/bin/pip list --format=freeze | sed 's/^/    /'; \
-        echo ""; \
-        echo "## System packages"; \
-        echo ""; \
-        echo "    (installed via apt)"; \
-        dpkg-query -W -f='${Package}=${Version}\n' \
-            bash-completion ca-certificates curl bind9-dnsutils fuse3 git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc \
-            "${NETCAT_PKG}" ncdu openssl pandoc p7zip-full poppler-utils python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim wget xz-utils \
-            postgresql-client redis-tools | sed 's/^/    /'; \
-    } > "${installed_manifest}"; \
+        echo "awscli=$(aws --version 2>&1)"; \
+        echo "b2=${b2_version_output}"; \
+        echo "bat=$(bat --version 2>&1 | head -1)"; \
+        echo "consul=$(consul version 2>&1 | head -1)"; \
+        echo "delta=$(delta --version 2>&1 | head -1)"; \
+        echo "fd=$(fd --version 2>&1 | head -1)"; \
+        echo "fzf=$(fzf --version 2>&1)"; \
+        echo "gh=$(gh --version 2>&1 | head -1)"; \
+        echo "psql=$(psql --version 2>&1)"; \
+        echo "redis-cli=$(redis-cli --version 2>&1)"; \
+        echo "rga=$(rga --version 2>&1 | head -1)"; \
+        echo "ripgrep=$(rg --version 2>&1 | head -1)"; \
+        echo "shellcheck=${shellcheck_version_output}"; \
+        echo "vault=$(vault version 2>&1 | head -1)"; \
+        echo "yq=$(yq --version 2>&1)"; \
+    } > "${custom_tooling_file}"; \
+    /home/vscode/.venv/bin/pip list --format=freeze > "${python_packages_file}"; \
+    dpkg-query -W -f='${Package}=${Version}\n' \
+        bash-completion ca-certificates curl bind9-dnsutils fuse3 git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc \
+        "${NETCAT_PKG}" ncdu openssl pandoc p7zip-full poppler-utils python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim wget xz-utils \
+        postgresql-client redis-tools > "${system_packages_file}"; \
+    python3 /tmp/manifest_sections.py installed \
+        --output "${installed_manifest}" \
+        --debian-version "${DEBIAN_VERSION}" \
+        --python-version "${PYTHON_VERSION}" \
+        --image-version "${OCI_VERSION}" \
+        --devcontainers-release "${DEVCONTAINERS_RELEASE}" \
+        --devcontainers-version "${DEVCONTAINERS_VERSION}" \
+        --custom-tooling-file "${custom_tooling_file}" \
+        --python-packages-file "${python_packages_file}" \
+        --system-packages-file "${system_packages_file}"; \
+    rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}"; \
+    rm -f /tmp/manifest_sections.py; \
     chmod 644 "${manifest}" "${installed_manifest}"
 
 USER vscode

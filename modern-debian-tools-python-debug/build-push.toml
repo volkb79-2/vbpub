@@ -2,6 +2,21 @@ project_root = "."
 log_dir = "logs"
 release_config = "../release.toml"
 
+[env]
+OCI_VENDOR = "Volker Badziong"
+OCI_DESCRIPTION = """Modern Debian Tools + Python Debug image family.
+Includes a curated Debian + Python environment with managed venv and CIU-focused workflow tooling.
+Custom Tooling highlights: awscli, b2, bat, consul, delta, fd, fzf, gh, psql, redis-cli, rga, ripgrep, shellcheck, vault, yq.
+Midnight Commander defaults to nicedark skin.
+Image manifest path: /usr/local/share/modern-debian-tools-python-debug/manifest.md
+"""
+OCI_DESCRIPTION_BASE = """Modern Debian Tools + Python Debug base image.
+Plain Python-on-Debian runtime with curated CLI tooling, managed venv helpers, and release manifests for repeatable CI and local automation.
+"""
+OCI_DESCRIPTION_VSC = """Modern Debian Tools + Python Debug VS Code devcontainer image.
+Microsoft devcontainers base plus curated CLI tooling, managed venv helpers, and repository-hosted release manifests for richer per-package documentation.
+"""
+
 [build_metadata]
 date_env = "BUILD_DATE"
 date_format = "%Y%m%d"
@@ -30,8 +45,8 @@ bake_set_vars = [
   "YQ_VERSION",
   "GITHUB_USERNAME",
   "GITHUB_REPO",
-  "CIU_LATEST_TAG",
-  "CIU_LATEST_ASSET_NAME",
+  "CIU_WHEEL_TAG",
+  "CIU_WHEEL_ASSET_NAME",
   "CIU_INSTALL_REQUIRED",
   "OCI_TITLE",
   "OCI_DESCRIPTION",
@@ -49,10 +64,10 @@ bake_set_vars = [
   "DEVCONTAINERS_RELEASE_DEV",
   "DEVCONTAINERS_VERSION_STABLE",
   "DEVCONTAINERS_VERSION_DEV",
-  "DEVCONTAINERS_BASE_LATEST_STABLE",
-  "DEVCONTAINERS_LATEST_STABLE_TAG",
-  "DEVCONTAINERS_LATEST_STABLE_PYTHON",
-  "DEVCONTAINERS_LATEST_STABLE_DEBIAN",
+  "DEVCONTAINERS_BASE_DYNAMIC_LATEST",
+  "DEVCONTAINERS_DYNAMIC_LATEST_TAG",
+  "DEVCONTAINERS_DYNAMIC_LATEST_PYTHON",
+  "DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN",
 ]
 env_command = ["python3", "scripts/resolve-devcontainers-release.py"]
 commands = [
@@ -80,8 +95,8 @@ bake_set_vars = [
   "YQ_VERSION",
   "GITHUB_USERNAME",
   "GITHUB_REPO",
-  "CIU_LATEST_TAG",
-  "CIU_LATEST_ASSET_NAME",
+  "CIU_WHEEL_TAG",
+  "CIU_WHEEL_ASSET_NAME",
   "CIU_INSTALL_REQUIRED",
   "OCI_TITLE",
   "OCI_DESCRIPTION",
@@ -99,10 +114,10 @@ bake_set_vars = [
   "DEVCONTAINERS_RELEASE_DEV",
   "DEVCONTAINERS_VERSION_STABLE",
   "DEVCONTAINERS_VERSION_DEV",
-  "DEVCONTAINERS_BASE_LATEST_STABLE",
-  "DEVCONTAINERS_LATEST_STABLE_TAG",
-  "DEVCONTAINERS_LATEST_STABLE_PYTHON",
-  "DEVCONTAINERS_LATEST_STABLE_DEBIAN",
+  "DEVCONTAINERS_BASE_DYNAMIC_LATEST",
+  "DEVCONTAINERS_DYNAMIC_LATEST_TAG",
+  "DEVCONTAINERS_DYNAMIC_LATEST_PYTHON",
+  "DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN",
 ]
 env_command = ["python3", "scripts/resolve-devcontainers-release.py"]
 required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]

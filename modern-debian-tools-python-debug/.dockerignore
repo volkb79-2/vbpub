@@ -3,4 +3,11 @@
 !docker-bake.hcl
 !README.md
 !apt/**
+!build
+!build/tool-artifacts-staging
+!build/tool-artifacts-staging/**
+!package-manifests-versioned/**
+!package-manifests-versioned
+!scripts/
+!scripts/manifest_sections.py
 

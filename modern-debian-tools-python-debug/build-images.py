@@ -47,7 +47,11 @@ def _read_bake_default(var_name: str) -> str | None:
 
 
 def ensure_devcontainers_base_from_bake_defaults() -> None:
-    if os.getenv("DEVCONTAINERS_BASE_STABLE") and os.getenv("DEVCONTAINERS_BASE_DEV"):
+    legacy_pinned = os.getenv("DEVCONTAINERS_BASE_STABLE")
+    if legacy_pinned and not os.getenv("DEVCONTAINERS_BASE_PINNED"):
+        os.environ.setdefault("DEVCONTAINERS_BASE_PINNED", legacy_pinned)
+
+    if os.getenv("DEVCONTAINERS_BASE_PINNED") and os.getenv("DEVCONTAINERS_BASE_DEV"):
         return
 
     latest_python = _read_bake_default("LATEST_KNOWN_PYTHON")
@@ -56,7 +60,7 @@ def ensure_devcontainers_base_from_bake_defaults() -> None:
         return
 
     os.environ.setdefault(
-        "DEVCONTAINERS_BASE_STABLE",
+        "DEVCONTAINERS_BASE_PINNED",
         f"mcr.microsoft.com/devcontainers/python:{latest_python}-{latest_debian}",
     )
     os.environ.setdefault(
@@ -74,6 +78,11 @@ def main() -> None:
         os.environ["DEVCONTAINERS_IGNORE_NEW_RELEASES"] = "true"
 
     config_path = ROOT / "build-push.toml"
+    # Ensure package-manifests-versioned directory exists to avoid bake/build failures
+    manifests_dir = ROOT / "package-manifests-versioned"
+    if not manifests_dir.exists():
+        print(f"[INFO] Creating missing manifests directory: {manifests_dir}")
+        manifests_dir.mkdir(parents=True, exist_ok=True)
     try:
         run_step(config_path, "build-images", None)
     except subprocess.CalledProcessError as exc:

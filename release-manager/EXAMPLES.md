@@ -17,17 +17,10 @@ token = "<GITHUB_TOKEN>"
 url = "ghcr.io"
 
 [env]
-OCI_VENDOR = "Volker Badziong"
-OCI_DESCRIPTION = """# Modern Debian Tools + Python Debug
-
-Prebuilt devcontainer image focused on CIU workflows and modern CLI tooling.
-
-## Tool manifest
-The full tool manifest is embedded in the image at:
-`/usr/local/share/modern-debian-tools-python-debug/manifest.md`
-"""
-CIU_LATEST_TAG = "ciu-wheel-latest"
-CIU_LATEST_ASSET_NAME = "ciu-wheel-latest-py3-none-any.whl"
+# Shared defaults across projects.
+# Keep project-specific keys in each project's build-push.toml [env].
+# Example: modern-debian-tools-python-debug/build-push.toml owns OCI_DESCRIPTION*
+# and CIU wheel resolution defaults used during build prep.
 
 [orchestration]
 project_order = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]

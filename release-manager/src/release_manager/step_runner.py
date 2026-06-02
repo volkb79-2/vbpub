@@ -23,6 +23,7 @@ class ReleaseSecrets:
     github_owner_type: Optional[str]
     registry_url: Optional[str]
     env: Mapping[str, str]
+    project_env: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,7 @@ def load_toml(path: Path) -> dict:
         return tomllib.load(handle)
 
 
-def load_release_secrets(release_path: Path) -> ReleaseSecrets:
+def load_release_secrets(release_path: Path, *, project_name: Optional[str] = None) -> ReleaseSecrets:
     config = load_toml(release_path)
 
     github = config.get("github")
@@ -84,6 +85,22 @@ def load_release_secrets(release_path: Path) -> ReleaseSecrets:
     if not isinstance(env_section, dict):
         raise ValueError("[env] must be a table of key/value pairs")
 
+    project_env: Mapping[str, str] = {}
+    if project_name:
+        projects_section = config.get("projects")
+        if projects_section is not None and not isinstance(projects_section, dict):
+            raise ValueError("[projects] must be a table")
+        if isinstance(projects_section, dict):
+            project_section = projects_section.get(project_name)
+            if project_section is not None and not isinstance(project_section, dict):
+                raise ValueError(f"projects.{project_name} must be a table")
+            if isinstance(project_section, dict):
+                project_env = project_section.get("env") or {}
+                if project_env is None:
+                    project_env = {}
+                if not isinstance(project_env, dict):
+                    raise ValueError(f"projects.{project_name}.env must be a table")
+
     return ReleaseSecrets(
         github_username=username,
         github_repo=repo,
@@ -91,6 +108,7 @@ def load_release_secrets(release_path: Path) -> ReleaseSecrets:
         github_owner_type=owner_type,
         registry_url=registry_url,
         env=env_section,
+        project_env=project_env,
     )
 
 
@@ -106,12 +124,13 @@ def apply_release_env(secrets: ReleaseSecrets) -> None:
     if secrets.registry_url:
         os.environ.setdefault("REGISTRY", secrets.registry_url)
 
-    for key, value in secrets.env.items():
-        if value is None:
-            continue
-        value_str = str(value).strip()
-        if value_str:
-            os.environ.setdefault(key, value_str)
+    for source in (secrets.project_env, secrets.env):
+        for key, value in source.items():
+            if value is None:
+                continue
+            value_str = str(value).strip()
+            if value_str:
+                os.environ.setdefault(key, value_str)
 
 
 def compute_build_date(config: dict, log_dir: Path) -> None:
@@ -302,6 +321,8 @@ def run_step(build_config_path: Path, step_name: str, release_config_path: Optio
     if not project_root_raw:
         raise ValueError("project_root is required in build-push config")
     project_root = resolve_path(build_config_path.parent, str(project_root_raw))
+    project_name_raw = (build_config.get("project_name") or "").strip()
+    project_name = project_name_raw or project_root.name
 
     release_config_raw = None
     if release_config_path:
@@ -314,7 +335,7 @@ def run_step(build_config_path: Path, step_name: str, release_config_path: Optio
             release_config = project_root.parent / "release.toml"
     release_config = release_config.expanduser().resolve()
 
-    secrets = load_release_secrets(release_config)
+    secrets = load_release_secrets(release_config, project_name=project_name)
     apply_release_env(secrets)
 
     env_section = build_config.get("env", {})

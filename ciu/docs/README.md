@@ -126,14 +126,15 @@ Recommended distribution:
 - Versioned URL scheme:
   - https://github.com/volkb79-2/vbpub/releases/download/ciu-wheel-<version>/ciu-<version>-py3-none-any.whl
 
-### Resolve the latest wheel URL dynamically (release.toml)
+### Resolve the latest wheel URL dynamically (project-local build config)
 
-Use the release config to build the download URL at runtime.
+Use the project-local `build-push.toml` config to build the download URL at runtime.
 
 Steps:
-1. Read `release.toml` for `github.username`, `github.repo`, and `env.CIU_LATEST_TAG`.
-2. Query the release assets for that tag.
-3. Pick the `.whl` asset and build the download URL.
+1. Read `release.toml` for `github.username` and `github.repo`.
+2. Read `ciu/build-push.toml` for `env.CIU_LATEST_TAG`.
+3. Query the release assets for that tag.
+4. Pick the `.whl` asset and build the download URL.
 
 ```python
 #!/usr/bin/env python3
@@ -155,17 +156,18 @@ def load_release_config(path: Path) -> dict:
 
 def main() -> None:
   repo_root = Path(__file__).resolve().parents[2]
-  config = load_release_config(repo_root / "release.toml")
+  release_config = load_release_config(repo_root / "release.toml")
+  build_config = load_release_config(repo_root / "ciu" / "build-push.toml")
 
-  github = config.get("github") or {}
-  env = config.get("env") or {}
+  github = release_config.get("github") or {}
+  project_env = build_config.get("env") or {}
 
   owner = (github.get("username") or "").strip()
   repo = (github.get("repo") or "").strip()
-  tag = (env.get("CIU_LATEST_TAG") or "").strip()
+  tag = (project_env.get("CIU_LATEST_TAG") or "").strip()
 
   if not owner or not repo or not tag:
-    raise ValueError("github.username, github.repo, and env.CIU_LATEST_TAG are required")
+    raise ValueError("github.username, github.repo, and ciu/build-push.toml env.CIU_LATEST_TAG are required")
 
   token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_PUSH_PAT")
   if not token:

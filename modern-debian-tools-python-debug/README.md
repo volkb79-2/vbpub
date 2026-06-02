@@ -73,15 +73,15 @@ Detection scope is dynamic (live registry), and includes:
 The script exports:
 - `DEVCONTAINERS_RELEASE_STABLE` (example: `v0.4.26`)
 - `DEVCONTAINERS_VERSION_STABLE` (example: `3.0.7`)
-- `DEVCONTAINERS_BASE_LATEST_STABLE` (example: `mcr.microsoft.com/devcontainers/python:3.15-trixie`)
-- `DEVCONTAINERS_LATEST_STABLE_PYTHON` and `DEVCONTAINERS_LATEST_STABLE_DEBIAN`
+- `DEVCONTAINERS_BASE_DYNAMIC_LATEST` (example: `mcr.microsoft.com/devcontainers/python:3.15-trixie`)
+- `DEVCONTAINERS_DYNAMIC_LATEST_PYTHON` and `DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN`
 
 Those values are passed through `build-push.toml` into bake args and then into Dockerfile metadata and manifest content.
 
 You can change which stable base image is checked (and resolved) by overriding:
 
 ```bash
-DEVCONTAINERS_BASE_STABLE=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-images.py
+DEVCONTAINERS_BASE_PINNED=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-images.py
 ```
 
 Ignore release-gate intentionally:
@@ -90,7 +90,7 @@ Ignore release-gate intentionally:
 ./build-images.py --ignore-new-releases
 ```
 
-The same `DEVCONTAINERS_BASE_STABLE` variable is also used by the `trixie-py314-vsc` bake target base image in [docker-bake.hcl](docker-bake.hcl), so warning/check behavior and actual build input stay aligned.
+The same `DEVCONTAINERS_BASE_PINNED` variable is also used by the `trixie-py314-vsc` bake target base image in [docker-bake.hcl](docker-bake.hcl), so warning/check behavior and actual build input stay aligned.
 
 ### Known-latest variables in bake file
 
@@ -98,7 +98,7 @@ To make maintenance explicit and readable, [docker-bake.hcl](docker-bake.hcl) de
 - `LATEST_KNOWN_DEBIAN` (default: `trixie`)
 - `LATEST_KNOWN_PYTHON` (default: `3.14`)
 
-`DEVCONTAINERS_BASE_STABLE` is composed from these values. This does not replace live detection, but improves local intent clarity and reduces scattered hardcoded values.
+`DEVCONTAINERS_BASE_PINNED` is composed from these values. This does not replace live detection, but improves local intent clarity and reduces scattered hardcoded values.
 
 Policy:
 - Keep `LATEST_KNOWN_*` aligned with the currently adopted stable baseline.
@@ -112,12 +112,12 @@ Policy:
 - target: `latest-vsc`
 - group: `detection`
 
-`latest-vsc` uses resolver-exported live values (`DEVCONTAINERS_BASE_LATEST_STABLE`, Python, Debian) so it automatically follows current upstream stable availability.
+`latest-vsc` uses resolver-exported live values (`DEVCONTAINERS_BASE_DYNAMIC_LATEST`, Python, Debian) so it automatically follows current upstream stable availability.
 
 Target policy:
-- `group "all"` stays deterministic and pinned to adopted baseline targets.
-- `latest-vsc` stays separate in `group "detection"` for explicit opt-in builds.
-- This avoids unexpected automatic upstream jumps in default build outputs.
+- `group "all"` includes both pinned targets and `latest-vsc`.
+- `group "detection"` keeps a focused entrypoint for resolver-driven validation-only runs.
+- This allows one default build invocation to publish the pinned baseline plus one dynamic-latest candidate.
 
 Example build of the dynamic latest target:
 
@@ -128,13 +128,13 @@ docker buildx bake -f docker-bake.hcl detection --load
 You can still force a specific older base to validate gate behavior:
 
 ```bash
-DEVCONTAINERS_BASE_STABLE=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-images.py
+DEVCONTAINERS_BASE_PINNED=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-images.py
 ```
 
 Then continue anyway only when explicitly requested:
 
 ```bash
-DEVCONTAINERS_BASE_STABLE=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-images.py --ignore-new-releases
+DEVCONTAINERS_BASE_PINNED=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-images.py --ignore-new-releases
 ```
 
 ## Manifest Location and Content

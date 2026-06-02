@@ -10,7 +10,10 @@ Environment configuration:
 - Copy `.env.sample` to `.env` and adjust values as needed.
 
 Optional overrides (environment variables):
-- `REGISTRY`, `GITHUB_USERNAME`, `BUILD_DATE`, `BACKPORTS_URI`, `CIU_LATEST_TAG`, `CIU_LATEST_ASSET_NAME`
+- `REGISTRY`, `GITHUB_USERNAME`, `BUILD_DATE`, `BACKPORTS_URI`, `CIU_INSTALL_REQUIRED`
+
+Resolver-emitted build coordinates (normally not set manually):
+- `CIU_WHEEL_TAG`, `CIU_WHEEL_ASSET_NAME`, `CIU_WHEEL_VERSION`
 
 Latest CIU wheel asset scheme:
 - https://github.com/volkb79-2/vbpub/releases/download/ciu-wheel-latest/ciu-<version>-py3-none-any.whl
@@ -58,7 +61,13 @@ Counterexample (do NOT do this):
 Each image writes a manifest file at:
 
 ```
-/home/vscode/devcontainer-manifest.txt
+/usr/local/share/modern-debian-tools-python-debug/manifest.md
+```
+
+Installed tooling/program/package inventory is written at:
+
+```
+/usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md
 ```
 
 This includes tool versions, pip package list, and selected Debian package versions.

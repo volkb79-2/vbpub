@@ -9,6 +9,7 @@ The release manager is config-driven. Provide a TOML config file that defines:
 - `repo_root`
 - project order and default steps under `[orchestration]`
 - project commands under `[projects.<name>.steps.<step>.commands]`
+- shared defaults under `[env]`
 - cleanup rules under `[cleanup]`
 
 The tool is intentionally agnostic to repo-specific scripts and only executes
@@ -96,6 +97,14 @@ reference the in-image manifest at:
 
 - /usr/local/share/modern-debian-tools-python-debug/manifest.md
 
+### Project-scoped environment
+
+Put shared defaults in `[env]` and keep project-owned defaults in each project's `build-push.toml` `[env]` block.
+
+- `release-all.py`/`release_manager.cli` applies config-level `[env]` defaults.
+- `step_runner.py` applies project-local defaults from `build-push.toml` `[env]` and per-step `[steps.<name>.env]`.
+- Existing shell environment values still take precedence.
+
 ### Per-project build/push config
 
 Each project has its own build-push.toml that defines steps and commands:
@@ -117,7 +126,7 @@ Current Release Flow:
 - **PWMCP server wheel**: creates `pwmcp-server-wheel-<version>` and **recreates** `pwmcp-server-wheel-latest`. See vbpub/pwmcp/publish-server-wheel.py.
 
 How vsc‑devcontainer and dstdns consume latest:
-- **modern-debian-tools-python-debug**: uses `CIU_LATEST_TAG`/`CIU_LATEST_ASSET_NAME` during build to fetch the wheel from the **tagged latest** release (`/releases/tags/<tag>`). Recreating `ciu-wheel-latest` ensures it always resolves to the newest build.
+- **modern-debian-tools-python-debug**: resolves `ciu-wheel-latest` to concrete `CIU_WHEEL_TAG`/`CIU_WHEEL_ASSET_NAME` during prep, then builds with those pinned coordinates for that run.
 - **dstdns env‑setup**: it **only** downloads from `CIU_PKG_URL` (no discovery). See dstdns/.github/actions/env-setup.sh. You must set `CIU_PKG_URL` to the package‑specific latest asset URL (e.g. the `CIU_WHEEL_LATEST_URL` output from the publish step), not the repo‑wide `/releases/latest`.
 
 Best‑practice guidance (multi‑package repos):
