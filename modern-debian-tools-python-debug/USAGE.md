@@ -34,6 +34,22 @@ Disable optional AI tooling for a minimal image:
 INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_AIDER=false ./build-images.py
 ```
 
+### AIDER_VERSION modes (three-way)
+
+`AIDER_VERSION` accepts three kinds of values:
+
+| Value | Behavior | Use case |
+|-------|----------|----------|
+| `main` (default) | `pip install` from git `@main` branch | Python 3.13/3.14 support (PR #4899 merged but not yet released) |
+| `latest` | `pip install aider-chat` (latest PyPI release) | Stable release, Python < 3.13 only |
+| `<version>` e.g. `0.86.2` | `pip install aider-chat==<version>` | Pinned reproducible builds |
+
+**Background**: The latest PyPI release `aider-chat 0.86.2` (Feb 2026) declares `Requires: Python <3.13, >=3.10`.
+PR [Aider-AI/aider#4899](https://github.com/Aider-AI/aider/pull/4899) added Python 3.13 and 3.14 support to `main`
+(Mar 9, 2026) but no new release was cut. The default `AIDER_VERSION=main` works around this by installing
+from the upstream `main` branch directly. Switch back to `latest` or a pinned version once a PyPI release
+with 3.14 support is available.
+
 `ANTIGRAVITY_VERSION` currently uses upstream latest-manifest resolution during artifact staging.
 
 ## Push (registry)

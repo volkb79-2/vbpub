@@ -195,7 +195,7 @@ variable "ANTIGRAVITY_VERSION" {
 }
 
 variable "AIDER_VERSION" {
-  default = "latest"
+  default = "main"
 }
 
 variable "INSTALL_CODEX" {

@@ -336,10 +336,12 @@ RUN set -euo pipefail; \
         structlog \
         tomli_w; \
     if [ "${INSTALL_AIDER}" = "true" ]; then \
-        if [ -n "${AIDER_VERSION}" ] && [ "${AIDER_VERSION}" != "latest" ]; then \
-            /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat==${AIDER_VERSION}"; \
-        else \
+        if [ "${AIDER_VERSION}" = "main" ]; then \
+            /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat @ git+https://github.com/Aider-AI/aider.git@main"; \
+        elif [ "${AIDER_VERSION}" = "latest" ]; then \
             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet aider-chat; \
+        else \
+            /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat==${AIDER_VERSION}"; \
         fi; \
     fi
 RUN set -euo pipefail; \

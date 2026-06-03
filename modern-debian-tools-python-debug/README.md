@@ -287,3 +287,14 @@ Secondary manifest variants: 10 (https://raw.githubusercontent.com/devcontainers
 - Upstream devcontainers images: https://github.com/devcontainers/images
 - Python manifest: https://raw.githubusercontent.com/devcontainers/images/main/src/python/manifest.json
 
+### Critical freshness behavior
+
+`scripts/resolve-devcontainers-release.py` now **always pulls** the configured base devcontainer image before reading labels. This avoids stale local-cache metadata during build/push.
+
+### AIDER_VERSION workaround (Python 3.13/3.14)
+
+The default `AIDER_VERSION=main` installs aider-chat from upstream git `main` branch
+because the latest PyPI release (0.86.2) pins `Python <3.13`. PR
+[Aider-AI/aider#4899](https://github.com/Aider-AI/aider/pull/4899) added 3.13/3.14 support
+but no release has been cut yet. See `USAGE.md` for details on switching modes.
+
