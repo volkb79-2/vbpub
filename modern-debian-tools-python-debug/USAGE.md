@@ -2,9 +2,21 @@
 
 ## Build (local)
 
-Build all four variants:
+Build all variants:
 
-- `./build-images.py`
+```bash
+./build-push.py --build
+```
+
+This runs the environment resolver (MCR check, tool version resolution, artifact
+staging), saves the resolved state to `.build-env.json`, then runs
+`docker buildx bake all --load`.
+
+### Build counter
+
+If you run multiple builds on the same day, `BUILD_DATE` automatically appends a
+`-N` suffix starting at `-2` (e.g. `20260604-2`, `20260604-3`). Counter file:
+`logs/build-counter-YYYYMMDD.txt`.
 
 Environment configuration:
 - Copy `.env.sample` to `.env` and adjust values as needed.
@@ -24,14 +36,14 @@ Any variable in docker-bake.hcl can be overridden for a build.
 
 Example:
 
-```
-B2_VERSION=4.5.0 ./build-images.py
+```bash
+B2_VERSION=4.5.0 ./build-push.py --build
 ```
 
 Disable optional AI tooling for a minimal image:
 
-```
-INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_AIDER=false ./build-images.py
+```bash
+INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_AIDER=false ./build-push.py --build
 ```
 
 ### AIDER_VERSION modes (three-way)
@@ -54,12 +66,50 @@ with 3.14 support is available.
 
 ## Push (registry)
 
-After validation, push all variants:
+After validation, push all variants to the registry:
 
-- `./push-images.py`
+```bash
+./build-push.py --push
+```
 
-Ensure you are logged in to the registry (e.g., `docker login ghcr.io`) and that `GITHUB_USERNAME` matches your org/user.
-If `GITHUB_PUSH_PAT` and `GITHUB_USERNAME` are set in `.env`, the push script will log in automatically.
+**Optimization**: Unlike the old split scripts, `--push` does **not** re-run the
+environment resolver. It loads the resolved state from `.build-env.json` (saved
+during `--build`) and injects those values directly into the bake command. This
+saves 20–60 seconds of resolver overhead (MCR check, tool version resolution,
+artifact staging).
+
+To do both in one command:
+
+```bash
+./build-push.py --rebuild
+```
+
+Docker's build cache is checked during push: if the build context and Dockerfile
+haven't changed, cached layers are reused and only the image manifest is pushed.
+If the context changed (e.g. fresh tool downloads, counter increment), layers
+are rebuilt before pushing.
+
+Ensure you are logged in to the registry (e.g., `docker login ghcr.io`) and that
+`GITHUB_USERNAME` matches your org/user. If `GITHUB_PUSH_PAT` and
+`GITHUB_USERNAME` are set in `.env`, the push script will log in automatically.
+
+### Startup output delay
+
+Build mode (`--build`) runs the environment resolver script
+(`resolve-devcontainers-release.py`) which performs these steps silently before
+emitting the first `[INFO]` line:
+
+1. MCR registry check for newer devcontainer releases (MCR API call)
+2. Tool version resolution (GitHub API calls to determine latest releases)
+3. Downloading/verifying tool artifacts (bat, delta, fd, gh, etc. — hundreds of MB)
+4. CIU wheel coordinate resolution (GitHub API)
+5. Pulling base devcontainer images to inspect labels (`docker pull`)
+6. Writing versioned package documentation files
+
+**This can take 20-60 seconds before the first `[INFO]` output appears.**
+
+Push mode (`--push`) skips the resolver entirely, so it starts immediately with
+the Docker login and bake push.
 
 ## Use in devcontainer.json
 

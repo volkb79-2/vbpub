@@ -6,11 +6,11 @@ Stable current-docs link: https://github.com/volkb79-2/vbpub/blob/main/modern-de
 
 ## Current Release Pages
 
-- `bookworm-py311`: [bookworm-py3.11-20260603](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/bookworm-py3.11-20260603.md)
-- `bookworm-py313`: [bookworm-py3.13-20260603](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/bookworm-py3.13-20260603.md)
-- `trixie-py311`: [trixie-py3.11-20260603](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260603.md)
-- `trixie-py313`: [trixie-py3.13-20260603](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.13-20260603.md)
-- `trixie-py314`: [trixie-py3.14-20260603](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.14-20260603.md)
+- `bookworm-py311`: [bookworm-py3.11-20260604-4](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/bookworm-py3.11-20260604-4.md)
+- `bookworm-py313`: [bookworm-py3.13-20260604-4](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/bookworm-py3.13-20260604-4.md)
+- `trixie-py311`: [trixie-py3.11-20260604-4](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260604-4.md)
+- `trixie-py313`: [trixie-py3.13-20260604-4](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.13-20260604-4.md)
+- `trixie-py314`: [trixie-py3.14-20260604-4](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.14-20260604-4.md)
 
 ## Why These Pages Exist
 

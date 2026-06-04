@@ -57,12 +57,12 @@ commands = [
 
 [projects.modern-debian-tools-python-debug.steps.build]
 commands = [
-  { label = "modern-debian-tools-python-debug: build images", argv = ["python3", "build-images.py"], cwd = "modern-debian-tools-python-debug" },
+  { label = "modern-debian-tools-python-debug: build images", argv = ["python3", "build-push.py", "--build"], cwd = "modern-debian-tools-python-debug" },
 ]
 
 [projects.modern-debian-tools-python-debug.steps.push]
 commands = [
-  { label = "modern-debian-tools-python-debug: push images", argv = ["python3", "push-images.py"], cwd = "modern-debian-tools-python-debug" },
+  { label = "modern-debian-tools-python-debug: push images", argv = ["python3", "build-push.py", "--push"], cwd = "modern-debian-tools-python-debug" },
 ]
 
 [projects.pwmcp.steps.run-tests]

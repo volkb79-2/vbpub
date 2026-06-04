@@ -28,6 +28,9 @@ sdist/
 var/
 wheels/
 share/python-wheels/
+
+# Build environment state (resolver output)
+modern-debian-tools-python-debug/.build-env.json
 *.egg-info/
 .installed.cfg
 *.egg

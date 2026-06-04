@@ -77,7 +77,6 @@ bake_set_vars = [
   "DEVCONTAINERS_DYNAMIC_LATEST_PYTHON",
   "DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN",
 ]
-env_command = ["python3", "scripts/resolve-devcontainers-release.py"]
 commands = [
   { label = "modern-debian-tools-python-debug: build images", argv = ["docker", "buildx", "bake", "-f", "docker-bake.hcl", "all", "--load"], cwd = "." },
 ]
@@ -135,9 +134,7 @@ bake_set_vars = [
   "DEVCONTAINERS_DYNAMIC_LATEST_PYTHON",
   "DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN",
 ]
-env_command = ["python3", "scripts/resolve-devcontainers-release.py"]
 required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
-env = { BUILD_AUTO_INCREMENT = "1" }
 
 commands = [
   { label = "modern-debian-tools-python-debug: push images", argv = ["docker", "buildx", "bake", "-f", "docker-bake.hcl", "all", "--push"], cwd = "." },

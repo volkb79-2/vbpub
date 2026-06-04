@@ -17,6 +17,8 @@ variable "GITHUB_REPO" {
 
 
 // keep updated with the latest known versions to get info on the latest devcontainer base images and to set the default for the detection test target
+// values: "bookworm", "trixie", "forky", "Duke"
+// https://en.wikipedia.org/wiki/Debian_release_version_history
 variable "LATEST_KNOWN_DEBIAN" {
   default = "trixie"
 }
@@ -502,7 +504,7 @@ group "all" {
     # "bookworm-py313",
     "trixie-py311",
     "trixie-py314-vsc",
-    "latest-vsc",
+    #"latest-vsc",
     #"trixie-py314",
     #"trixie-py314-vsc",
     #"latest-vsc"

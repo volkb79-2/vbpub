@@ -1,0 +1,837 @@
+Login Succeeded
+[INFO] Resolving dynamic environment via: python3 scripts/resolve-devcontainers-release.py
+[INFO] Logging into ghcr.io as volkb79-2
+[INFO] Logging to /workspaces/vbpub/modern-debian-tools-python-debug/logs/push-images-20260604-081809.log
+[INFO] modern-debian-tools-python-debug: push images
+[INFO] Running: docker buildx bake -f docker-bake.hcl all --push --set base.args.BACKPORTS_URI=http://debian.anexia.at/debian --set base.args.GITHUB_USERNAME=volkb79-2 --set base.args.GITHUB_REPO=vbpub --set base.args.CIU_WHEEL_TAG=ciu-wheel-20260221 --set base.args.CIU_WHEEL_ASSET_NAME=ciu-20260221-py3-none-any.whl --set base.args.OCI_DESCRIPTION=Modern Debian Tools + Python Debug image family.
+Includes a curated Debian + Python environment with managed venv and CIU-focused workflow tooling.
+Custom Tooling highlights: aider, agy, awscli, b2, bat, claude, codex, consul, delta, fd, fzf, gh, psql, redis-cli, rga, ripgrep, shellcheck, vault, yq.
+Midnight Commander defaults to nicedark skin.
+Image manifest path: /usr/local/share/modern-debian-tools-python-debug/manifest.md --set base.args.OCI_DESCRIPTION_BASE=Modern Debian Tools + Python Debug base image. Plain Python-on-Debian runtime with curated CLI tooling, managed venv helpers, and release manifests for repeatable CI and local automation. --set base.args.OCI_DESCRIPTION_VSC=Modern Debian Tools + Python Debug VS Code devcontainer image. Microsoft devcontainers base plus curated CLI tooling, managed venv helpers, and repository-hosted release manifests for richer per-package documentation. --set base.args.OCI_VENDOR=Volker Badziong --set base.args.DEVCONTAINERS_RELEASE_STABLE=v0.4.27 --set base.args.DEVCONTAINERS_RELEASE_DEV=main --set base.args.DEVCONTAINERS_VERSION_STABLE=3.0.8 --set base.args.DEVCONTAINERS_VERSION_DEV=dev --set base.args.DEVCONTAINERS_BASE_DYNAMIC_LATEST=mcr.microsoft.com/devcontainers/python:3.14-trixie --set base.args.DEVCONTAINERS_DYNAMIC_LATEST_TAG=3.14-trixie --set base.args.DEVCONTAINERS_DYNAMIC_LATEST_PYTHON=3.14 --set base.args.DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN=trixie
+#0 building with "default" instance using docker driver
+
+#1 [internal] load local bake definitions
+#1 reading docker-bake.hcl 16.42kB / 16.42kB done
+#1 DONE 0.0s
+
+#2 [trixie-py311 internal] load build definition from Dockerfile
+#2 transferring dockerfile: 23.23kB done
+#2 DONE 0.0s
+
+#3 [trixie-py311 internal] load metadata for docker.io/library/python:3.11-trixie
+#3 DONE 0.0s
+
+#4 [latest-vsc internal] load metadata for mcr.microsoft.com/devcontainers/python:3.14-trixie
+#4 DONE 0.0s
+
+#5 [trixie-py311 internal] load .dockerignore
+#5 transferring context: 265B done
+#5 DONE 0.0s
+
+#6 [trixie-py311  1/17] FROM docker.io/library/python:3.11-trixie
+#6 DONE 0.0s
+
+#7 [latest-vsc  1/17] FROM mcr.microsoft.com/devcontainers/python:3.14-trixie
+#7 DONE 0.0s
+
+#8 [latest-vsc internal] load build context
+#8 transferring context: 768.79MB 3.6s done
+#8 DONE 3.6s
+
+#9 [latest-vsc  5/17] COPY scripts/manifest_sections.py /tmp/manifest_sections.py
+#9 CACHED
+
+#10 [latest-vsc  4/17] COPY package-manifests-versioned /tmp/package-manifests-versioned
+#10 CACHED
+
+#11 [latest-vsc  2/17] COPY apt/backports.sources.in /tmp/backports.sources.in
+#11 CACHED
+
+#12 [latest-vsc  6/17] RUN set -euo pipefail;     if ! id -u vscode >/dev/null 2>&1; then         if ! getent group vscode >/dev/null 2>&1; then             groupadd -g 1000 vscode;         fi;         useradd -m -s /bin/bash -u 1000 -g 1000 vscode;     fi
+#12 CACHED
+
+#13 [latest-vsc  3/17] COPY apt/backports.pref.in /tmp/backports.pref.in
+#13 CACHED
+
+#14 [latest-vsc  7/17] RUN set -euo pipefail;     if [ "trixie" = "trixie" ]; then         NETCAT_PKG="netcat-openbsd";     else         NETCAT_PKG="netcat-traditional";     fi;     if [ -f /etc/apt/sources.list.d/yarn.list ]; then         rm -f /etc/apt/sources.list.d/yarn.list;     fi;     BACKPORTS_SUITE="trixie-backports";     sed -e "s|@URI@|http://debian.anexia.at/debian|g" -e "s|@SUITE@|${BACKPORTS_SUITE}|g" /tmp/backports.sources.in > "/etc/apt/sources.list.d/${BACKPORTS_SUITE}.sources";     sed -e "s|@SUITE@|${BACKPORTS_SUITE}|g" /tmp/backports.pref.in > /etc/apt/preferences.d/backports;     apt-get update;     apt-get install -y --no-install-recommends         bash-completion         ca-certificates         locales         curl         bind9-dnsutils         fuse3         gdb         git         git-lfs         gnupg         gzip         htop         httpie         iputils-ping         jq         less         lsb-release         lsof         man-db         mc         "${NETCAT_PKG}"         ncdu         openssl         python3-venv         psmisc         rsync         sqlite3         strace         sshfs         tar         tree         unzip         vim         wget         xz-utils         pandoc         poppler-utils         p7zip-full     ;     sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen;     locale-gen en_US.UTF-8;     update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8;     echo "user_allow_other" >> /etc/fuse.conf;     rm -rf /var/lib/apt/lists/*
+#14 CACHED
+
+#15 [trixie-py311  3/17] COPY apt/backports.pref.in /tmp/backports.pref.in
+#15 CACHED
+
+#16 [trixie-py311  2/17] COPY apt/backports.sources.in /tmp/backports.sources.in
+#16 CACHED
+
+#17 [trixie-py311  4/17] COPY package-manifests-versioned /tmp/package-manifests-versioned
+#17 CACHED
+
+#18 [trixie-py311  6/17] RUN set -euo pipefail;     if ! id -u vscode >/dev/null 2>&1; then         if ! getent group vscode >/dev/null 2>&1; then             groupadd -g 1000 vscode;         fi;         useradd -m -s /bin/bash -u 1000 -g 1000 vscode;     fi
+#18 CACHED
+
+#19 [trixie-py311  5/17] COPY scripts/manifest_sections.py /tmp/manifest_sections.py
+#19 CACHED
+
+#20 [trixie-py311  7/17] RUN set -euo pipefail;     if [ "trixie" = "trixie" ]; then         NETCAT_PKG="netcat-openbsd";     else         NETCAT_PKG="netcat-traditional";     fi;     if [ -f /etc/apt/sources.list.d/yarn.list ]; then         rm -f /etc/apt/sources.list.d/yarn.list;     fi;     BACKPORTS_SUITE="trixie-backports";     sed -e "s|@URI@|http://debian.anexia.at/debian|g" -e "s|@SUITE@|${BACKPORTS_SUITE}|g" /tmp/backports.sources.in > "/etc/apt/sources.list.d/${BACKPORTS_SUITE}.sources";     sed -e "s|@SUITE@|${BACKPORTS_SUITE}|g" /tmp/backports.pref.in > /etc/apt/preferences.d/backports;     apt-get update;     apt-get install -y --no-install-recommends         bash-completion         ca-certificates         locales         curl         bind9-dnsutils         fuse3         gdb         git         git-lfs         gnupg         gzip         htop         httpie         iputils-ping         jq         less         lsb-release         lsof         man-db         mc         "${NETCAT_PKG}"         ncdu         openssl         python3-venv         psmisc         rsync         sqlite3         strace         sshfs         tar         tree         unzip         vim         wget         xz-utils         pandoc         poppler-utils         p7zip-full     ;     sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen;     locale-gen en_US.UTF-8;     update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8;     echo "user_allow_other" >> /etc/fuse.conf;     rm -rf /var/lib/apt/lists/*
+#20 CACHED
+
+#21 [trixie-py311  8/17] COPY build/tool-artifacts-staging /tmp/tool-artifacts-staging
+#21 DONE 3.7s
+
+#22 [latest-vsc  8/17] COPY build/tool-artifacts-staging /tmp/tool-artifacts-staging
+#22 DONE 3.7s
+
+#23 [latest-vsc  9/17] RUN set -euo pipefail;     if [ -n "package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260604.md" ]; then         TARGET="/tmp/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260604.md";         if [ ! -f "$TARGET" ]; then             if [ -n "https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260604.md" ]; then                 mkdir -p "$(dirname "$TARGET")";                 echo "[INFO] Manifest not found in build context: $TARGET";                 echo "[INFO] Attempting to download from: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260604.md";                 curl -fsSL "https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260604.md" -o "$TARGET";                 echo "[INFO] Downloaded manifest to: $TARGET";             else                 echo "[WARN] PACKAGE_MANIFEST_SOURCE set but OCI_DOCUMENTATION empty; skipping manifest download";             fi;         else             echo "[INFO] Manifest already present in build context: $TARGET";         fi;     fi
+#23 0.241 [INFO] Manifest already present in build context: /tmp/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260604.md
+#23 DONE 0.3s
+
+#24 [trixie-py311  9/17] RUN set -euo pipefail;     if [ -n "package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260604.md" ]; then         TARGET="/tmp/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260604.md";         if [ ! -f "$TARGET" ]; then             if [ -n "https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260604.md" ]; then                 mkdir -p "$(dirname "$TARGET")";                 echo "[INFO] Manifest not found in build context: $TARGET";                 echo "[INFO] Attempting to download from: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260604.md";                 curl -fsSL "https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260604.md" -o "$TARGET";                 echo "[INFO] Downloaded manifest to: $TARGET";             else                 echo "[WARN] PACKAGE_MANIFEST_SOURCE set but OCI_DOCUMENTATION empty; skipping manifest download";             fi;         else             echo "[INFO] Manifest already present in build context: $TARGET";         fi;     fi
+#24 0.232 [INFO] Manifest already present in build context: /tmp/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260604.md
+#24 DONE 0.2s
+
+#25 [latest-vsc 10/17] RUN set -euo pipefail;     STAGE_DIR="/tmp/tool-artifacts-staging";     DOWNLOADS_DIR="${STAGE_DIR}/downloads";     if [ ! -f "${STAGE_DIR}/tool-versions.env" ]; then         echo "[ERROR] Missing staged tool version file: ${STAGE_DIR}/tool-versions.env" >&2;         exit 1;     fi;     if [ ! -d "${DOWNLOADS_DIR}" ]; then         echo "[ERROR] Missing staged downloads directory: ${DOWNLOADS_DIR}" >&2;         exit 1;     fi;     . "${STAGE_DIR}/tool-versions.env";     require_file() {         local path="$1";         if [ ! -f "${path}" ]; then             echo "[ERROR] Missing staged artifact: ${path}" >&2;             exit 1;         fi;     };     install_from_tar() {         local tarball="$1";         local bin_name="$2";         local workdir="$3";         mkdir -p "${workdir}";         tar -xzf "${tarball}" -C "${workdir}";         local bin_path="";         bin_path="$(find "${workdir}" -type f -name "${bin_name}" -perm -111 | head -1)";         if [ -z "${bin_path}" ]; then             echo "[ERROR] Failed to locate ${bin_name} in ${tarball}" >&2;             exit 1;         fi;         install -m 755 "${bin_path}" "/usr/local/bin/${bin_name}";     };     if [ "true" = "true" ]; then         require_file "${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz";         require_file "${DOWNLOADS_DIR}/codex-${CODEX_VER}-SHA256SUMS";         EXPECTED_CODEX_SHA256="$(awk '$2 == "codex-package-x86_64-unknown-linux-musl.tar.gz" {print $1; exit}' "${DOWNLOADS_DIR}/codex-${CODEX_VER}-SHA256SUMS")";         if [ -z "${EXPECTED_CODEX_SHA256}" ]; then             echo "[ERROR] Missing Codex checksum entry in staged SHA256SUMS" >&2;             exit 1;         fi;         echo "${EXPECTED_CODEX_SHA256}  ${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz" | sha256sum -c -;         install_from_tar "${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz" codex /tmp/codex-extract;     fi;     if [ "true" = "true" ]; then         require_file "${DOWNLOADS_DIR}/claude-${CLAUDE_CODE_VER}-linux-x64";         install -m 755 "${DOWNLOADS_DIR}/claude-${CLAUDE_CODE_VER}-linux-x64" /usr/local/bin/claude;     fi;     if [ "true" = "true" ]; then         require_file "${DOWNLOADS_DIR}/antigravity-${ANTIGRAVITY_VER}.tar.gz";         install_from_tar "${DOWNLOADS_DIR}/antigravity-${ANTIGRAVITY_VER}.tar.gz" antigravity /tmp/antigravity-extract;         install -m 755 /usr/local/bin/antigravity /usr/local/bin/agy;     fi;     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux";     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt";     EXPECTED_B2_SHA256="$(grep '^sha256' "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt" | awk '{print $2}')";     echo "${EXPECTED_B2_SHA256}  ${DOWNLOADS_DIR}/b2-${B2_VER}-linux" | sha256sum -c -;     install -m 755 "${DOWNLOADS_DIR}/b2-${B2_VER}-linux" /usr/local/bin/b2;     require_file "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/ripgrep-${RIPGREP_VER}.tar.gz";     install_from_tar "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz" bat /tmp/bat-extract;     install_from_tar "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz" delta /tmp/delta-extract;     install_from_tar "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz" fd /tmp/fd-extract;     install_from_tar "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz" rga /tmp/rga-extract;     install_from_tar "${DOWNLOADS_DIR}/ripgrep-${RIPGREP_VER}.tar.gz" rg /tmp/ripgrep-extract;     require_file "${DOWNLOADS_DIR}/shellcheck-${SHELLCHECK_VER}.tar.xz";     tar -xf "${DOWNLOADS_DIR}/shellcheck-${SHELLCHECK_VER}.tar.xz" -C /tmp;     install -m 755 "/tmp/shellcheck-v${SHELLCHECK_VER}/shellcheck" /usr/local/bin/shellcheck;     require_file "${DOWNLOADS_DIR}/fzf-${FZF_VER}.tar.gz";     tar -xzf "${DOWNLOADS_DIR}/fzf-${FZF_VER}.tar.gz" -C /tmp;     install -m 755 /tmp/fzf /usr/local/bin/fzf;     require_file "${DOWNLOADS_DIR}/yq-${YQ_VER}-linux_amd64";     install -m 755 "${DOWNLOADS_DIR}/yq-${YQ_VER}-linux_amd64" /usr/local/bin/yq;     require_file "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz";     tar -xzf "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz" -C /tmp;     install -m 755 "/tmp/gh_${GH_VER}_linux_amd64/bin/gh" /usr/local/bin/gh;     require_file "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_SHA256SUMS";     require_file "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_linux_amd64.zip";     (cd "${DOWNLOADS_DIR}" && grep "consul_${CONSUL_VER}_linux_amd64.zip" "consul_${CONSUL_VER}_SHA256SUMS" | sha256sum -c -);     unzip -q -o "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_linux_amd64.zip" -d /tmp/consul-extract;     install -m 755 /tmp/consul-extract/consul /usr/local/bin/consul;     require_file "${DOWNLOADS_DIR}/vault_${VAULT_VER}_SHA256SUMS";     require_file "${DOWNLOADS_DIR}/vault_${VAULT_VER}_linux_amd64.zip";     (cd "${DOWNLOADS_DIR}" && grep "vault_${VAULT_VER}_linux_amd64.zip" "vault_${VAULT_VER}_SHA256SUMS" | sha256sum -c -);     unzip -q -o "${DOWNLOADS_DIR}/vault_${VAULT_VER}_linux_amd64.zip" -d /tmp/vault-extract;     install -m 755 /tmp/vault-extract/vault /usr/local/bin/vault;     require_file "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip";     unzip -q "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip" -d /tmp/awscli;     /tmp/awscli/aws/install -i /usr/local/aws -b /usr/local/bin;     rm -rf         /tmp/codex-extract         /tmp/bat-extract         /tmp/delta-extract         /tmp/fd-extract         /tmp/antigravity-extract         /tmp/rga-extract         /tmp/ripgrep-extract         "/tmp/shellcheck-v${SHELLCHECK_VER}"         /tmp/fzf         "/tmp/gh_${GH_VER}_linux_amd64"         /tmp/consul-extract         /tmp/vault-extract         /tmp/awscli         /tmp/tool-artifacts-staging
+#25 0.456 /tmp/tool-artifacts-staging/downloads/codex-0.137.0.tar.gz: OK
+#25 4.379 /tmp/tool-artifacts-staging/downloads/b2-4.7.0-linux: OK
+#25 5.390 consul_2.0.0_linux_amd64.zip: OK
+#25 7.371 vault_2.0.1_linux_amd64.zip: OK
+#25 ...
+
+#26 [trixie-py311 10/17] RUN set -euo pipefail;     STAGE_DIR="/tmp/tool-artifacts-staging";     DOWNLOADS_DIR="${STAGE_DIR}/downloads";     if [ ! -f "${STAGE_DIR}/tool-versions.env" ]; then         echo "[ERROR] Missing staged tool version file: ${STAGE_DIR}/tool-versions.env" >&2;         exit 1;     fi;     if [ ! -d "${DOWNLOADS_DIR}" ]; then         echo "[ERROR] Missing staged downloads directory: ${DOWNLOADS_DIR}" >&2;         exit 1;     fi;     . "${STAGE_DIR}/tool-versions.env";     require_file() {         local path="$1";         if [ ! -f "${path}" ]; then             echo "[ERROR] Missing staged artifact: ${path}" >&2;             exit 1;         fi;     };     install_from_tar() {         local tarball="$1";         local bin_name="$2";         local workdir="$3";         mkdir -p "${workdir}";         tar -xzf "${tarball}" -C "${workdir}";         local bin_path="";         bin_path="$(find "${workdir}" -type f -name "${bin_name}" -perm -111 | head -1)";         if [ -z "${bin_path}" ]; then             echo "[ERROR] Failed to locate ${bin_name} in ${tarball}" >&2;             exit 1;         fi;         install -m 755 "${bin_path}" "/usr/local/bin/${bin_name}";     };     if [ "true" = "true" ]; then         require_file "${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz";         require_file "${DOWNLOADS_DIR}/codex-${CODEX_VER}-SHA256SUMS";         EXPECTED_CODEX_SHA256="$(awk '$2 == "codex-package-x86_64-unknown-linux-musl.tar.gz" {print $1; exit}' "${DOWNLOADS_DIR}/codex-${CODEX_VER}-SHA256SUMS")";         if [ -z "${EXPECTED_CODEX_SHA256}" ]; then             echo "[ERROR] Missing Codex checksum entry in staged SHA256SUMS" >&2;             exit 1;         fi;         echo "${EXPECTED_CODEX_SHA256}  ${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz" | sha256sum -c -;         install_from_tar "${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz" codex /tmp/codex-extract;     fi;     if [ "true" = "true" ]; then         require_file "${DOWNLOADS_DIR}/claude-${CLAUDE_CODE_VER}-linux-x64";         install -m 755 "${DOWNLOADS_DIR}/claude-${CLAUDE_CODE_VER}-linux-x64" /usr/local/bin/claude;     fi;     if [ "true" = "true" ]; then         require_file "${DOWNLOADS_DIR}/antigravity-${ANTIGRAVITY_VER}.tar.gz";         install_from_tar "${DOWNLOADS_DIR}/antigravity-${ANTIGRAVITY_VER}.tar.gz" antigravity /tmp/antigravity-extract;         install -m 755 /usr/local/bin/antigravity /usr/local/bin/agy;     fi;     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux";     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt";     EXPECTED_B2_SHA256="$(grep '^sha256' "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt" | awk '{print $2}')";     echo "${EXPECTED_B2_SHA256}  ${DOWNLOADS_DIR}/b2-${B2_VER}-linux" | sha256sum -c -;     install -m 755 "${DOWNLOADS_DIR}/b2-${B2_VER}-linux" /usr/local/bin/b2;     require_file "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/ripgrep-${RIPGREP_VER}.tar.gz";     install_from_tar "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz" bat /tmp/bat-extract;     install_from_tar "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz" delta /tmp/delta-extract;     install_from_tar "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz" fd /tmp/fd-extract;     install_from_tar "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz" rga /tmp/rga-extract;     install_from_tar "${DOWNLOADS_DIR}/ripgrep-${RIPGREP_VER}.tar.gz" rg /tmp/ripgrep-extract;     require_file "${DOWNLOADS_DIR}/shellcheck-${SHELLCHECK_VER}.tar.xz";     tar -xf "${DOWNLOADS_DIR}/shellcheck-${SHELLCHECK_VER}.tar.xz" -C /tmp;     install -m 755 "/tmp/shellcheck-v${SHELLCHECK_VER}/shellcheck" /usr/local/bin/shellcheck;     require_file "${DOWNLOADS_DIR}/fzf-${FZF_VER}.tar.gz";     tar -xzf "${DOWNLOADS_DIR}/fzf-${FZF_VER}.tar.gz" -C /tmp;     install -m 755 /tmp/fzf /usr/local/bin/fzf;     require_file "${DOWNLOADS_DIR}/yq-${YQ_VER}-linux_amd64";     install -m 755 "${DOWNLOADS_DIR}/yq-${YQ_VER}-linux_amd64" /usr/local/bin/yq;     require_file "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz";     tar -xzf "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz" -C /tmp;     install -m 755 "/tmp/gh_${GH_VER}_linux_amd64/bin/gh" /usr/local/bin/gh;     require_file "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_SHA256SUMS";     require_file "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_linux_amd64.zip";     (cd "${DOWNLOADS_DIR}" && grep "consul_${CONSUL_VER}_linux_amd64.zip" "consul_${CONSUL_VER}_SHA256SUMS" | sha256sum -c -);     unzip -q -o "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_linux_amd64.zip" -d /tmp/consul-extract;     install -m 755 /tmp/consul-extract/consul /usr/local/bin/consul;     require_file "${DOWNLOADS_DIR}/vault_${VAULT_VER}_SHA256SUMS";     require_file "${DOWNLOADS_DIR}/vault_${VAULT_VER}_linux_amd64.zip";     (cd "${DOWNLOADS_DIR}" && grep "vault_${VAULT_VER}_linux_amd64.zip" "vault_${VAULT_VER}_SHA256SUMS" | sha256sum -c -);     unzip -q -o "${DOWNLOADS_DIR}/vault_${VAULT_VER}_linux_amd64.zip" -d /tmp/vault-extract;     install -m 755 /tmp/vault-extract/vault /usr/local/bin/vault;     require_file "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip";     unzip -q "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip" -d /tmp/awscli;     /tmp/awscli/aws/install -i /usr/local/aws -b /usr/local/bin;     rm -rf         /tmp/codex-extract         /tmp/bat-extract         /tmp/delta-extract         /tmp/fd-extract         /tmp/antigravity-extract         /tmp/rga-extract         /tmp/ripgrep-extract         "/tmp/shellcheck-v${SHELLCHECK_VER}"         /tmp/fzf         "/tmp/gh_${GH_VER}_linux_amd64"         /tmp/consul-extract         /tmp/vault-extract         /tmp/awscli         /tmp/tool-artifacts-staging
+#26 0.484 /tmp/tool-artifacts-staging/downloads/codex-0.137.0.tar.gz: OK
+#26 4.273 /tmp/tool-artifacts-staging/downloads/b2-4.7.0-linux: OK
+#26 5.237 consul_2.0.0_linux_amd64.zip: OK
+#26 6.589 vault_2.0.1_linux_amd64.zip: OK
+#26 14.94 You can now run: /usr/local/bin/aws --version
+#26 ...
+
+#25 [latest-vsc 10/17] RUN set -euo pipefail;     STAGE_DIR="/tmp/tool-artifacts-staging";     DOWNLOADS_DIR="${STAGE_DIR}/downloads";     if [ ! -f "${STAGE_DIR}/tool-versions.env" ]; then         echo "[ERROR] Missing staged tool version file: ${STAGE_DIR}/tool-versions.env" >&2;         exit 1;     fi;     if [ ! -d "${DOWNLOADS_DIR}" ]; then         echo "[ERROR] Missing staged downloads directory: ${DOWNLOADS_DIR}" >&2;         exit 1;     fi;     . "${STAGE_DIR}/tool-versions.env";     require_file() {         local path="$1";         if [ ! -f "${path}" ]; then             echo "[ERROR] Missing staged artifact: ${path}" >&2;             exit 1;         fi;     };     install_from_tar() {         local tarball="$1";         local bin_name="$2";         local workdir="$3";         mkdir -p "${workdir}";         tar -xzf "${tarball}" -C "${workdir}";         local bin_path="";         bin_path="$(find "${workdir}" -type f -name "${bin_name}" -perm -111 | head -1)";         if [ -z "${bin_path}" ]; then             echo "[ERROR] Failed to locate ${bin_name} in ${tarball}" >&2;             exit 1;         fi;         install -m 755 "${bin_path}" "/usr/local/bin/${bin_name}";     };     if [ "true" = "true" ]; then         require_file "${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz";         require_file "${DOWNLOADS_DIR}/codex-${CODEX_VER}-SHA256SUMS";         EXPECTED_CODEX_SHA256="$(awk '$2 == "codex-package-x86_64-unknown-linux-musl.tar.gz" {print $1; exit}' "${DOWNLOADS_DIR}/codex-${CODEX_VER}-SHA256SUMS")";         if [ -z "${EXPECTED_CODEX_SHA256}" ]; then             echo "[ERROR] Missing Codex checksum entry in staged SHA256SUMS" >&2;             exit 1;         fi;         echo "${EXPECTED_CODEX_SHA256}  ${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz" | sha256sum -c -;         install_from_tar "${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz" codex /tmp/codex-extract;     fi;     if [ "true" = "true" ]; then         require_file "${DOWNLOADS_DIR}/claude-${CLAUDE_CODE_VER}-linux-x64";         install -m 755 "${DOWNLOADS_DIR}/claude-${CLAUDE_CODE_VER}-linux-x64" /usr/local/bin/claude;     fi;     if [ "true" = "true" ]; then         require_file "${DOWNLOADS_DIR}/antigravity-${ANTIGRAVITY_VER}.tar.gz";         install_from_tar "${DOWNLOADS_DIR}/antigravity-${ANTIGRAVITY_VER}.tar.gz" antigravity /tmp/antigravity-extract;         install -m 755 /usr/local/bin/antigravity /usr/local/bin/agy;     fi;     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux";     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt";     EXPECTED_B2_SHA256="$(grep '^sha256' "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt" | awk '{print $2}')";     echo "${EXPECTED_B2_SHA256}  ${DOWNLOADS_DIR}/b2-${B2_VER}-linux" | sha256sum -c -;     install -m 755 "${DOWNLOADS_DIR}/b2-${B2_VER}-linux" /usr/local/bin/b2;     require_file "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/ripgrep-${RIPGREP_VER}.tar.gz";     install_from_tar "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz" bat /tmp/bat-extract;     install_from_tar "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz" delta /tmp/delta-extract;     install_from_tar "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz" fd /tmp/fd-extract;     install_from_tar "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz" rga /tmp/rga-extract;     install_from_tar "${DOWNLOADS_DIR}/ripgrep-${RIPGREP_VER}.tar.gz" rg /tmp/ripgrep-extract;     require_file "${DOWNLOADS_DIR}/shellcheck-${SHELLCHECK_VER}.tar.xz";     tar -xf "${DOWNLOADS_DIR}/shellcheck-${SHELLCHECK_VER}.tar.xz" -C /tmp;     install -m 755 "/tmp/shellcheck-v${SHELLCHECK_VER}/shellcheck" /usr/local/bin/shellcheck;     require_file "${DOWNLOADS_DIR}/fzf-${FZF_VER}.tar.gz";     tar -xzf "${DOWNLOADS_DIR}/fzf-${FZF_VER}.tar.gz" -C /tmp;     install -m 755 /tmp/fzf /usr/local/bin/fzf;     require_file "${DOWNLOADS_DIR}/yq-${YQ_VER}-linux_amd64";     install -m 755 "${DOWNLOADS_DIR}/yq-${YQ_VER}-linux_amd64" /usr/local/bin/yq;     require_file "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz";     tar -xzf "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz" -C /tmp;     install -m 755 "/tmp/gh_${GH_VER}_linux_amd64/bin/gh" /usr/local/bin/gh;     require_file "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_SHA256SUMS";     require_file "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_linux_amd64.zip";     (cd "${DOWNLOADS_DIR}" && grep "consul_${CONSUL_VER}_linux_amd64.zip" "consul_${CONSUL_VER}_SHA256SUMS" | sha256sum -c -);     unzip -q -o "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_linux_amd64.zip" -d /tmp/consul-extract;     install -m 755 /tmp/consul-extract/consul /usr/local/bin/consul;     require_file "${DOWNLOADS_DIR}/vault_${VAULT_VER}_SHA256SUMS";     require_file "${DOWNLOADS_DIR}/vault_${VAULT_VER}_linux_amd64.zip";     (cd "${DOWNLOADS_DIR}" && grep "vault_${VAULT_VER}_linux_amd64.zip" "vault_${VAULT_VER}_SHA256SUMS" | sha256sum -c -);     unzip -q -o "${DOWNLOADS_DIR}/vault_${VAULT_VER}_linux_amd64.zip" -d /tmp/vault-extract;     install -m 755 /tmp/vault-extract/vault /usr/local/bin/vault;     require_file "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip";     unzip -q "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip" -d /tmp/awscli;     /tmp/awscli/aws/install -i /usr/local/aws -b /usr/local/bin;     rm -rf         /tmp/codex-extract         /tmp/bat-extract         /tmp/delta-extract         /tmp/fd-extract         /tmp/antigravity-extract         /tmp/rga-extract         /tmp/ripgrep-extract         "/tmp/shellcheck-v${SHELLCHECK_VER}"         /tmp/fzf         "/tmp/gh_${GH_VER}_linux_amd64"         /tmp/consul-extract         /tmp/vault-extract         /tmp/awscli         /tmp/tool-artifacts-staging
+#25 15.30 You can now run: /usr/local/bin/aws --version
+#25 DONE 16.7s
+
+#26 [trixie-py311 10/17] RUN set -euo pipefail;     STAGE_DIR="/tmp/tool-artifacts-staging";     DOWNLOADS_DIR="${STAGE_DIR}/downloads";     if [ ! -f "${STAGE_DIR}/tool-versions.env" ]; then         echo "[ERROR] Missing staged tool version file: ${STAGE_DIR}/tool-versions.env" >&2;         exit 1;     fi;     if [ ! -d "${DOWNLOADS_DIR}" ]; then         echo "[ERROR] Missing staged downloads directory: ${DOWNLOADS_DIR}" >&2;         exit 1;     fi;     . "${STAGE_DIR}/tool-versions.env";     require_file() {         local path="$1";         if [ ! -f "${path}" ]; then             echo "[ERROR] Missing staged artifact: ${path}" >&2;             exit 1;         fi;     };     install_from_tar() {         local tarball="$1";         local bin_name="$2";         local workdir="$3";         mkdir -p "${workdir}";         tar -xzf "${tarball}" -C "${workdir}";         local bin_path="";         bin_path="$(find "${workdir}" -type f -name "${bin_name}" -perm -111 | head -1)";         if [ -z "${bin_path}" ]; then             echo "[ERROR] Failed to locate ${bin_name} in ${tarball}" >&2;             exit 1;         fi;         install -m 755 "${bin_path}" "/usr/local/bin/${bin_name}";     };     if [ "true" = "true" ]; then         require_file "${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz";         require_file "${DOWNLOADS_DIR}/codex-${CODEX_VER}-SHA256SUMS";         EXPECTED_CODEX_SHA256="$(awk '$2 == "codex-package-x86_64-unknown-linux-musl.tar.gz" {print $1; exit}' "${DOWNLOADS_DIR}/codex-${CODEX_VER}-SHA256SUMS")";         if [ -z "${EXPECTED_CODEX_SHA256}" ]; then             echo "[ERROR] Missing Codex checksum entry in staged SHA256SUMS" >&2;             exit 1;         fi;         echo "${EXPECTED_CODEX_SHA256}  ${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz" | sha256sum -c -;         install_from_tar "${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz" codex /tmp/codex-extract;     fi;     if [ "true" = "true" ]; then         require_file "${DOWNLOADS_DIR}/claude-${CLAUDE_CODE_VER}-linux-x64";         install -m 755 "${DOWNLOADS_DIR}/claude-${CLAUDE_CODE_VER}-linux-x64" /usr/local/bin/claude;     fi;     if [ "true" = "true" ]; then         require_file "${DOWNLOADS_DIR}/antigravity-${ANTIGRAVITY_VER}.tar.gz";         install_from_tar "${DOWNLOADS_DIR}/antigravity-${ANTIGRAVITY_VER}.tar.gz" antigravity /tmp/antigravity-extract;         install -m 755 /usr/local/bin/antigravity /usr/local/bin/agy;     fi;     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux";     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt";     EXPECTED_B2_SHA256="$(grep '^sha256' "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt" | awk '{print $2}')";     echo "${EXPECTED_B2_SHA256}  ${DOWNLOADS_DIR}/b2-${B2_VER}-linux" | sha256sum -c -;     install -m 755 "${DOWNLOADS_DIR}/b2-${B2_VER}-linux" /usr/local/bin/b2;     require_file "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz";     require_file "${DOWNLOADS_DIR}/ripgrep-${RIPGREP_VER}.tar.gz";     install_from_tar "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz" bat /tmp/bat-extract;     install_from_tar "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz" delta /tmp/delta-extract;     install_from_tar "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz" fd /tmp/fd-extract;     install_from_tar "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz" rga /tmp/rga-extract;     install_from_tar "${DOWNLOADS_DIR}/ripgrep-${RIPGREP_VER}.tar.gz" rg /tmp/ripgrep-extract;     require_file "${DOWNLOADS_DIR}/shellcheck-${SHELLCHECK_VER}.tar.xz";     tar -xf "${DOWNLOADS_DIR}/shellcheck-${SHELLCHECK_VER}.tar.xz" -C /tmp;     install -m 755 "/tmp/shellcheck-v${SHELLCHECK_VER}/shellcheck" /usr/local/bin/shellcheck;     require_file "${DOWNLOADS_DIR}/fzf-${FZF_VER}.tar.gz";     tar -xzf "${DOWNLOADS_DIR}/fzf-${FZF_VER}.tar.gz" -C /tmp;     install -m 755 /tmp/fzf /usr/local/bin/fzf;     require_file "${DOWNLOADS_DIR}/yq-${YQ_VER}-linux_amd64";     install -m 755 "${DOWNLOADS_DIR}/yq-${YQ_VER}-linux_amd64" /usr/local/bin/yq;     require_file "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz";     tar -xzf "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz" -C /tmp;     install -m 755 "/tmp/gh_${GH_VER}_linux_amd64/bin/gh" /usr/local/bin/gh;     require_file "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_SHA256SUMS";     require_file "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_linux_amd64.zip";     (cd "${DOWNLOADS_DIR}" && grep "consul_${CONSUL_VER}_linux_amd64.zip" "consul_${CONSUL_VER}_SHA256SUMS" | sha256sum -c -);     unzip -q -o "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_linux_amd64.zip" -d /tmp/consul-extract;     install -m 755 /tmp/consul-extract/consul /usr/local/bin/consul;     require_file "${DOWNLOADS_DIR}/vault_${VAULT_VER}_SHA256SUMS";     require_file "${DOWNLOADS_DIR}/vault_${VAULT_VER}_linux_amd64.zip";     (cd "${DOWNLOADS_DIR}" && grep "vault_${VAULT_VER}_linux_amd64.zip" "vault_${VAULT_VER}_SHA256SUMS" | sha256sum -c -);     unzip -q -o "${DOWNLOADS_DIR}/vault_${VAULT_VER}_linux_amd64.zip" -d /tmp/vault-extract;     install -m 755 /tmp/vault-extract/vault /usr/local/bin/vault;     require_file "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip";     unzip -q "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip" -d /tmp/awscli;     /tmp/awscli/aws/install -i /usr/local/aws -b /usr/local/bin;     rm -rf         /tmp/codex-extract         /tmp/bat-extract         /tmp/delta-extract         /tmp/fd-extract         /tmp/antigravity-extract         /tmp/rga-extract         /tmp/ripgrep-extract         "/tmp/shellcheck-v${SHELLCHECK_VER}"         /tmp/fzf         "/tmp/gh_${GH_VER}_linux_amd64"         /tmp/consul-extract         /tmp/vault-extract         /tmp/awscli         /tmp/tool-artifacts-staging
+#26 DONE 16.7s
+
+#27 [trixie-py311 11/17] RUN set -euo pipefail;     install -d -m 0755 /etc/apt/keyrings;     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg;     echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list;     curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /etc/apt/keyrings/redis-archive-keyring.gpg;     echo "deb [signed-by=/etc/apt/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" > /etc/apt/sources.list.d/redis.list;     apt-get update;     if [ -n "latest" ] && [ "latest" != "latest" ]; then         apt-get install -y --no-install-recommends "postgresql-client-latest";     else         apt-get install -y --no-install-recommends postgresql-client;     fi;     if [ -n "latest" ] && [ "latest" != "latest" ]; then         apt-get install -y --no-install-recommends "redis-tools=latest";     else         apt-get install -y --no-install-recommends redis-tools;     fi;     rm -rf /var/lib/apt/lists/*
+#27 1.336 Get:1 http://apt.postgresql.org/pub/repos/apt trixie-pgdg InRelease [180 kB]
+#27 1.339 Get:2 http://deb.debian.org/debian trixie InRelease [140 kB]
+#27 1.357 Get:3 http://debian.anexia.at/debian trixie-backports InRelease [54.0 kB]
+#27 1.359 Get:4 http://deb.debian.org/debian trixie-updates InRelease [47.3 kB]
+#27 1.366 Get:5 http://deb.debian.org/debian-security trixie-security InRelease [43.4 kB]
+#27 1.381 Get:6 http://apt.postgresql.org/pub/repos/apt trixie-pgdg/main amd64 Packages [587 kB]
+#27 1.412 Get:7 http://deb.debian.org/debian trixie/main amd64 Packages [9,671 kB]
+#27 1.440 Get:8 http://debian.anexia.at/debian trixie-backports/contrib amd64 Packages [7,752 B]
+#27 1.451 Get:9 http://debian.anexia.at/debian trixie-backports/non-free amd64 Packages [7,776 B]
+#27 1.451 Get:10 http://debian.anexia.at/debian trixie-backports/main amd64 Packages [280 kB]
+#27 1.470 Get:11 http://deb.debian.org/debian trixie-updates/main amd64 Packages [5,412 B]
+#27 1.470 Get:12 http://deb.debian.org/debian-security trixie-security/main amd64 Packages [207 kB]
+#27 1.470 Get:13 http://debian.anexia.at/debian trixie-backports/non-free-firmware amd64 Packages [6,072 B]
+#27 1.688 Get:14 https://packages.redis.io/deb trixie InRelease [3,856 B]
+#27 1.830 Get:15 https://packages.redis.io/deb trixie/main amd64 Packages [23.0 kB]
+#27 2.262 Get:16 https://packages.redis.io/deb trixie/main all Packages [3,850 B]
+#27 2.278 Fetched 11.3 MB in 1s (11.7 MB/s)
+#27 2.278 Reading package lists...
+#27 2.944 Reading package lists...
+#27 3.644 Building dependency tree...
+#27 3.852 Reading state information...
+#27 4.077 The following additional packages will be installed:
+#27 4.079   libpq-dev libpq5 postgresql-client-18 postgresql-client-common
+#27 4.080 Suggested packages:
+#27 4.080   postgresql-18 postgresql-doc-18
+#27 4.113 The following NEW packages will be installed:
+#27 4.114   postgresql-client postgresql-client-18 postgresql-client-common
+#27 4.115 The following packages will be upgraded:
+#27 4.116   libpq-dev libpq5
+#27 4.159 2 upgraded, 3 newly installed, 0 to remove and 26 not upgraded.
+#27 4.159 Need to get 2,614 kB of archives.
+#27 4.159 After this operation, 11.7 MB of additional disk space will be used.
+#27 4.159 Get:1 http://apt.postgresql.org/pub/repos/apt trixie-pgdg/main amd64 libpq-dev amd64 18.4-1.pgdg13+1 [169 kB]
+#27 4.179 Get:2 http://apt.postgresql.org/pub/repos/apt trixie-pgdg/main amd64 libpq5 amd64 18.4-1.pgdg13+1 [258 kB]
+#27 4.185 Get:3 http://apt.postgresql.org/pub/repos/apt trixie-pgdg/main amd64 postgresql-client-common all 291.pgdg13+1 [48.3 kB]
+#27 4.189 Get:4 http://apt.postgresql.org/pub/repos/apt trixie-pgdg/main amd64 postgresql-client-18 amd64 18.4-1.pgdg13+1 [2,123 kB]
+#27 4.205 Get:5 http://apt.postgresql.org/pub/repos/apt trixie-pgdg/main amd64 postgresql-client all 18+291.pgdg13+1 [15.4 kB]
+#27 5.028 Fetched 2,614 kB in 0s (35.0 MB/s)
+#27 5.064 (Reading database ... 
+(Reading database ... 5%
+(Reading database ... 10%
+(Reading database ... 15%
+(Reading database ... 20%
+(Reading database ... 25%
+(Reading database ... 30%
+(Reading database ... 35%
+(Reading database ... 40%
+(Reading database ... 45%
+(Reading database ... 50%
+(Reading database ... 55%
+(Reading database ... 60%
+(Reading database ... 65%
+(Reading database ... 70%
+(Reading database ... 75%
+(Reading database ... 80%
+(Reading database ... 85%
+(Reading database ... 90%
+(Reading database ... 95%
+(Reading database ... 100%
+(Reading database ... 35120 files and directories currently installed.)
+#27 5.177 Preparing to unpack .../libpq-dev_18.4-1.pgdg13+1_amd64.deb ...
+#27 5.187 Unpacking libpq-dev (18.4-1.pgdg13+1) over (17.10-0+deb13u1) ...
+#27 5.408 Preparing to unpack .../libpq5_18.4-1.pgdg13+1_amd64.deb ...
+#27 5.423 Unpacking libpq5:amd64 (18.4-1.pgdg13+1) over (17.10-0+deb13u1) ...
+#27 5.566 Selecting previously unselected package postgresql-client-common.
+#27 5.566 Preparing to unpack .../postgresql-client-common_291.pgdg13+1_all.deb ...
+#27 5.577 Unpacking postgresql-client-common (291.pgdg13+1) ...
+#27 5.621 Selecting previously unselected package postgresql-client-18.
+#27 5.626 Preparing to unpack .../postgresql-client-18_18.4-1.pgdg13+1_amd64.deb ...
+#27 5.628 Unpacking postgresql-client-18 (18.4-1.pgdg13+1) ...
+#27 5.771 Selecting previously unselected package postgresql-client.
+#27 5.771 Preparing to unpack .../postgresql-client_18+291.pgdg13+1_all.deb ...
+#27 5.774 Unpacking postgresql-client (18+291.pgdg13+1) ...
+#27 5.826 Setting up postgresql-client-common (291.pgdg13+1) ...
+#27 5.847 Setting up libpq5:amd64 (18.4-1.pgdg13+1) ...
+#27 5.855 Setting up libpq-dev (18.4-1.pgdg13+1) ...
+#27 5.862 Setting up postgresql-client-18 (18.4-1.pgdg13+1) ...
+#27 6.300 update-alternatives: using /usr/share/postgresql/18/man/man1/psql.1.gz to provide /usr/share/man/man1/psql.1.gz (psql.1.gz) in auto mode
+#27 6.344 Setting up postgresql-client (18+291.pgdg13+1) ...
+#27 6.351 Processing triggers for man-db (2.13.1-1) ...
+#27 7.164 Processing triggers for libc-bin (2.41-12+deb13u3) ...
+#27 7.241 Reading package lists...
+#27 7.860 Building dependency tree...
+#27 8.044 Reading state information...
+#27 8.258 The following NEW packages will be installed:
+#27 8.258   redis-tools
+#27 8.434 0 upgraded, 1 newly installed, 0 to remove and 26 not upgraded.
+#27 8.434 Need to get 499 kB of archives.
+#27 8.434 After this operation, 2,364 kB of additional disk space will be used.
+#27 8.434 Get:1 https://packages.redis.io/deb trixie/main amd64 redis-tools amd64 6:8.8.0-1rl1~trixie1 [499 kB]
+#27 9.670 Fetched 499 kB in 1s (882 kB/s)
+#27 9.692 Selecting previously unselected package redis-tools.
+#27 9.692 (Reading database ... 
+(Reading database ... 5%
+(Reading database ... 10%
+(Reading database ... 15%
+(Reading database ... 20%
+(Reading database ... 25%
+(Reading database ... 30%
+(Reading database ... 35%
+(Reading database ... 40%
+(Reading database ... 45%
+(Reading database ... 50%
+(Reading database ... 55%
+(Reading database ... 60%
+(Reading database ... 65%
+(Reading database ... 70%
+(Reading database ... 75%
+(Reading database ... 80%
+(Reading database ... 85%
+(Reading database ... 90%
+(Reading database ... 95%
+(Reading database ... 100%
+(Reading database ... 35555 files and directories currently installed.)
+#27 9.714 Preparing to unpack .../redis-tools_6%3a8.8.0-1rl1~trixie1_amd64.deb ...
+#27 9.718 Unpacking redis-tools (6:8.8.0-1rl1~trixie1) ...
+#27 9.793 Setting up redis-tools (6:8.8.0-1rl1~trixie1) ...
+#27 ...
+
+#28 [latest-vsc 11/17] RUN set -euo pipefail;     install -d -m 0755 /etc/apt/keyrings;     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg;     echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list;     curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /etc/apt/keyrings/redis-archive-keyring.gpg;     echo "deb [signed-by=/etc/apt/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" > /etc/apt/sources.list.d/redis.list;     apt-get update;     if [ -n "latest" ] && [ "latest" != "latest" ]; then         apt-get install -y --no-install-recommends "postgresql-client-latest";     else         apt-get install -y --no-install-recommends postgresql-client;     fi;     if [ -n "latest" ] && [ "latest" != "latest" ]; then         apt-get install -y --no-install-recommends "redis-tools=latest";     else         apt-get install -y --no-install-recommends redis-tools;     fi;     rm -rf /var/lib/apt/lists/*
+#28 0.865 Get:1 http://deb.debian.org/debian trixie InRelease [140 kB]
+#28 0.881 Get:2 http://deb.debian.org/debian trixie-updates InRelease [47.3 kB]
+#28 0.882 Get:3 http://apt.postgresql.org/pub/repos/apt trixie-pgdg InRelease [180 kB]
+#28 0.882 Get:4 http://debian.anexia.at/debian trixie-backports InRelease [54.0 kB]
+#28 0.884 Get:5 http://deb.debian.org/debian-security trixie-security InRelease [43.4 kB]
+#28 0.918 Get:6 http://deb.debian.org/debian trixie/main amd64 Packages [9,671 kB]
+#28 0.948 Get:7 http://apt.postgresql.org/pub/repos/apt trixie-pgdg/main amd64 Packages [587 kB]
+#28 0.969 Get:8 http://debian.anexia.at/debian trixie-backports/non-free-firmware amd64 Packages [6,072 B]
+#28 0.977 Get:9 http://deb.debian.org/debian trixie-updates/main amd64 Packages [5,412 B]
+#28 0.981 Get:10 http://deb.debian.org/debian-security trixie-security/main amd64 Packages [207 kB]
+#28 0.981 Get:11 http://debian.anexia.at/debian trixie-backports/main amd64 Packages [280 kB]
+#28 1.000 Get:12 http://debian.anexia.at/debian trixie-backports/non-free amd64 Packages [7,776 B]
+#28 1.000 Get:13 http://debian.anexia.at/debian trixie-backports/contrib amd64 Packages [7,752 B]
+#28 1.216 Get:14 https://packages.redis.io/deb trixie InRelease [3,856 B]
+#28 1.550 Get:15 https://packages.redis.io/deb trixie/main amd64 Packages [23.0 kB]
+#28 1.979 Get:16 https://packages.redis.io/deb trixie/main all Packages [3,850 B]
+#28 1.997 Fetched 11.3 MB in 1s (9,783 kB/s)
+#28 1.997 Reading package lists...
+#28 2.635 Reading package lists...
+#28 3.314 Building dependency tree...
+#28 3.506 Reading state information...
+#28 3.692 The following additional packages will be installed:
+#28 3.693   libpq-dev libpq5 postgresql-client-18 postgresql-client-common
+#28 3.694 Suggested packages:
+#28 3.694   postgresql-18 postgresql-doc-18
+#28 3.723 The following NEW packages will be installed:
+#28 3.723   postgresql-client postgresql-client-18 postgresql-client-common
+#28 3.724 The following packages will be upgraded:
+#28 3.725   libpq-dev libpq5
+#28 3.756 2 upgraded, 3 newly installed, 0 to remove and 31 not upgraded.
+#28 3.756 Need to get 2,614 kB of archives.
+#28 3.756 After this operation, 11.7 MB of additional disk space will be used.
+#28 3.756 Get:1 http://apt.postgresql.org/pub/repos/apt trixie-pgdg/main amd64 libpq-dev amd64 18.4-1.pgdg13+1 [169 kB]
+#28 3.768 Get:2 http://apt.postgresql.org/pub/repos/apt trixie-pgdg/main amd64 libpq5 amd64 18.4-1.pgdg13+1 [258 kB]
+#28 3.774 Get:3 http://apt.postgresql.org/pub/repos/apt trixie-pgdg/main amd64 postgresql-client-common all 291.pgdg13+1 [48.3 kB]
+#28 3.779 Get:4 http://apt.postgresql.org/pub/repos/apt trixie-pgdg/main amd64 postgresql-client-18 amd64 18.4-1.pgdg13+1 [2,123 kB]
+#28 3.792 Get:5 http://apt.postgresql.org/pub/repos/apt trixie-pgdg/main amd64 postgresql-client all 18+291.pgdg13+1 [15.4 kB]
+#28 4.720 Fetched 2,614 kB in 0s (46.1 MB/s)
+#28 4.758 (Reading database ... 
+(Reading database ... 5%
+(Reading database ... 10%
+(Reading database ... 15%
+(Reading database ... 20%
+(Reading database ... 25%
+(Reading database ... 30%
+(Reading database ... 35%
+(Reading database ... 40%
+(Reading database ... 45%
+(Reading database ... 50%
+(Reading database ... 55%
+(Reading database ... 60%
+(Reading database ... 65%
+(Reading database ... 70%
+(Reading database ... 75%
+(Reading database ... 80%
+(Reading database ... 85%
+(Reading database ... 90%
+(Reading database ... 95%
+(Reading database ... 100%
+(Reading database ... 40373 files and directories currently installed.)
+#28 4.894 Preparing to unpack .../libpq-dev_18.4-1.pgdg13+1_amd64.deb ...
+#28 4.906 Unpacking libpq-dev (18.4-1.pgdg13+1) over (17.10-0+deb13u1) ...
+#28 5.019 Preparing to unpack .../libpq5_18.4-1.pgdg13+1_amd64.deb ...
+#28 5.030 Unpacking libpq5:amd64 (18.4-1.pgdg13+1) over (17.10-0+deb13u1) ...
+#28 5.133 Selecting previously unselected package postgresql-client-common.
+#28 5.133 Preparing to unpack .../postgresql-client-common_291.pgdg13+1_all.deb ...
+#28 5.143 Unpacking postgresql-client-common (291.pgdg13+1) ...
+#28 5.180 Selecting previously unselected package postgresql-client-18.
+#28 5.183 Preparing to unpack .../postgresql-client-18_18.4-1.pgdg13+1_amd64.deb ...
+#28 5.188 Unpacking postgresql-client-18 (18.4-1.pgdg13+1) ...
+#28 5.430 Selecting previously unselected package postgresql-client.
+#28 5.430 Preparing to unpack .../postgresql-client_18+291.pgdg13+1_all.deb ...
+#28 5.432 Unpacking postgresql-client (18+291.pgdg13+1) ...
+#28 5.490 Setting up postgresql-client-common (291.pgdg13+1) ...
+#28 5.516 Setting up libpq5:amd64 (18.4-1.pgdg13+1) ...
+#28 5.529 Setting up libpq-dev (18.4-1.pgdg13+1) ...
+#28 5.540 Setting up postgresql-client-18 (18.4-1.pgdg13+1) ...
+#28 5.978 update-alternatives: using /usr/share/postgresql/18/man/man1/psql.1.gz to provide /usr/share/man/man1/psql.1.gz (psql.1.gz) in auto mode
+#28 6.032 Setting up postgresql-client (18+291.pgdg13+1) ...
+#28 6.041 Processing triggers for man-db (2.13.1-1) ...
+#28 7.039 Processing triggers for libc-bin (2.41-12+deb13u3) ...
+#28 7.120 Reading package lists...
+#28 7.784 Building dependency tree...
+#28 7.972 Reading state information...
+#28 8.164 The following NEW packages will be installed:
+#28 8.164   redis-tools
+#28 8.547 0 upgraded, 1 newly installed, 0 to remove and 31 not upgraded.
+#28 8.547 Need to get 499 kB of archives.
+#28 8.547 After this operation, 2,364 kB of additional disk space will be used.
+#28 8.547 Get:1 https://packages.redis.io/deb trixie/main amd64 redis-tools amd64 6:8.8.0-1rl1~trixie1 [499 kB]
+#28 9.742 Fetched 499 kB in 1s (649 kB/s)
+#28 9.772 Selecting previously unselected package redis-tools.
+#28 9.772 (Reading database ... 
+(Reading database ... 5%
+(Reading database ... 10%
+(Reading database ... 15%
+(Reading database ... 20%
+(Reading database ... 25%
+(Reading database ... 30%
+(Reading database ... 35%
+(Reading database ... 40%
+(Reading database ... 45%
+(Reading database ... 50%
+(Reading database ... 55%
+(Reading database ... 60%
+(Reading database ... 65%
+(Reading database ... 70%
+(Reading database ... 75%
+(Reading database ... 80%
+(Reading database ... 85%
+(Reading database ... 90%
+(Reading database ... 95%
+(Reading database ... 100%
+(Reading database ... 40808 files and directories currently installed.)
+#28 9.794 Preparing to unpack .../redis-tools_6%3a8.8.0-1rl1~trixie1_amd64.deb ...
+#28 9.799 Unpacking redis-tools (6:8.8.0-1rl1~trixie1) ...
+#28 9.875 Setting up redis-tools (6:8.8.0-1rl1~trixie1) ...
+#28 ...
+
+#27 [trixie-py311 11/17] RUN set -euo pipefail;     install -d -m 0755 /etc/apt/keyrings;     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg;     echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list;     curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /etc/apt/keyrings/redis-archive-keyring.gpg;     echo "deb [signed-by=/etc/apt/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" > /etc/apt/sources.list.d/redis.list;     apt-get update;     if [ -n "latest" ] && [ "latest" != "latest" ]; then         apt-get install -y --no-install-recommends "postgresql-client-latest";     else         apt-get install -y --no-install-recommends postgresql-client;     fi;     if [ -n "latest" ] && [ "latest" != "latest" ]; then         apt-get install -y --no-install-recommends "redis-tools=latest";     else         apt-get install -y --no-install-recommends redis-tools;     fi;     rm -rf /var/lib/apt/lists/*
+#27 10.00 Processing triggers for man-db (2.13.1-1) ...
+#27 DONE 10.5s
+
+#28 [latest-vsc 11/17] RUN set -euo pipefail;     install -d -m 0755 /etc/apt/keyrings;     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg;     echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list;     curl -fsSL https://packages.redis.io/gpg | gpg --dearmor -o /etc/apt/keyrings/redis-archive-keyring.gpg;     echo "deb [signed-by=/etc/apt/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" > /etc/apt/sources.list.d/redis.list;     apt-get update;     if [ -n "latest" ] && [ "latest" != "latest" ]; then         apt-get install -y --no-install-recommends "postgresql-client-latest";     else         apt-get install -y --no-install-recommends postgresql-client;     fi;     if [ -n "latest" ] && [ "latest" != "latest" ]; then         apt-get install -y --no-install-recommends "redis-tools=latest";     else         apt-get install -y --no-install-recommends redis-tools;     fi;     rm -rf /var/lib/apt/lists/*
+#28 10.07 Processing triggers for man-db (2.13.1-1) ...
+#28 DONE 10.6s
+
+#29 [trixie-py311 12/17] RUN set -euo pipefail;     python3 -m venv /home/vscode/.venv;     /home/vscode/.venv/bin/python -m pip install --upgrade pip setuptools wheel --disable-pip-version-check --quiet;     /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet         boto3         debugpy         PyYAML         aiohttp         asyncpg         black         click         coverage         hvac         ipdb         ipython         isort         jinja2         mypy         pydantic         pydantic-settings         pytest         pytest-asyncio         pytest-cov         redis         requests         rich         ruff         structlog         tomli_w;     if [ "true" = "true" ]; then         if [ "main" = "main" ]; then             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat @ git+https://github.com/Aider-AI/aider.git@main";         elif [ "main" = "latest" ]; then             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet aider-chat;         else             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat==main";         fi;     fi
+#29 ...
+
+#30 [latest-vsc 12/17] RUN set -euo pipefail;     python3 -m venv /home/vscode/.venv;     /home/vscode/.venv/bin/python -m pip install --upgrade pip setuptools wheel --disable-pip-version-check --quiet;     /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet         boto3         debugpy         PyYAML         aiohttp         asyncpg         black         click         coverage         hvac         ipdb         ipython         isort         jinja2         mypy         pydantic         pydantic-settings         pytest         pytest-asyncio         pytest-cov         redis         requests         rich         ruff         structlog         tomli_w;     if [ "true" = "true" ]; then         if [ "main" = "main" ]; then             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat @ git+https://github.com/Aider-AI/aider.git@main";         elif [ "main" = "latest" ]; then             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet aider-chat;         else             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat==main";         fi;     fi
+#30 ...
+
+#29 [trixie-py311 12/17] RUN set -euo pipefail;     python3 -m venv /home/vscode/.venv;     /home/vscode/.venv/bin/python -m pip install --upgrade pip setuptools wheel --disable-pip-version-check --quiet;     /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet         boto3         debugpy         PyYAML         aiohttp         asyncpg         black         click         coverage         hvac         ipdb         ipython         isort         jinja2         mypy         pydantic         pydantic-settings         pytest         pytest-asyncio         pytest-cov         redis         requests         rich         ruff         structlog         tomli_w;     if [ "true" = "true" ]; then         if [ "main" = "main" ]; then             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat @ git+https://github.com/Aider-AI/aider.git@main";         elif [ "main" = "latest" ]; then             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet aider-chat;         else             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat==main";         fi;     fi
+#29 DONE 60.9s
+
+#31 [trixie-py311 13/17] RUN set -euo pipefail;     if [ -n "volkb79-2" ] && [ -n "vbpub" ]; then         skip_ciu=0;         wheel_dir="/tmp/ciu-wheel";         install -d -m 0755 "${wheel_dir}";         wheel_path="${wheel_dir}/ciu.whl";         ciu_wheel_tag="ciu-wheel-20260221";         ciu_asset_name="ciu-20260221-py3-none-any.whl";         if [ -z "${ciu_asset_name}" ]; then             ciu_asset_name="$(curl -fsSL "https://api.github.com/repos/volkb79-2/vbpub/releases/tags/${ciu_wheel_tag}"                 | jq -r '.assets[].name | select(endswith(".whl"))'                 | head -n 1 || true)";         fi;         if [ -z "${ciu_asset_name}" ]; then             if [ "false" = "true" ]; then                 echo "[ERROR] Failed to resolve CIU wheel asset name for tag ${ciu_wheel_tag}" >&2;                 exit 1;             fi;             echo "[WARN] CIU wheel asset not found for tag ${ciu_wheel_tag}; skipping CIU install" >&2;             skip_ciu=1;         fi;         if [ "${skip_ciu}" -eq 0 ]; then             ciu_url="https://github.com/volkb79-2/vbpub/releases/download/${ciu_wheel_tag}/${ciu_asset_name}";             if ! curl -fsSL "${ciu_url}" -o "${wheel_path}"; then                 if [ "false" = "true" ]; then                     echo "[ERROR] Failed to download CIU wheel from ${ciu_url}" >&2;                     exit 1;                 fi;                 echo "[WARN] Failed to download CIU wheel from ${ciu_url}; skipping CIU install" >&2;                 skip_ciu=1;             fi;         fi;         if [ "${skip_ciu}" -eq 0 ]; then             wheel_name="$(/home/vscode/.venv/bin/python -c 'import sys, zipfile; from pathlib import Path; wheel_path=Path(sys.argv[1]); zf=zipfile.ZipFile(wheel_path); metadata_files=[name for name in zf.namelist() if name.endswith(".dist-info/METADATA")]; wheel_files=[name for name in zf.namelist() if name.endswith(".dist-info/WHEEL")]; assert metadata_files, "[ERROR] Missing METADATA in CIU wheel"; assert wheel_files, "[ERROR] Missing WHEEL metadata in CIU wheel"; metadata=zf.read(metadata_files[0]).decode("utf-8", "replace"); name=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Name:")), None); version=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Version:")), None); wheel_meta=zf.read(wheel_files[0]).decode("utf-8", "replace"); tag=next((line.split(":", 1)[1].strip() for line in wheel_meta.splitlines() if line.startswith("Tag:")), None); assert name and version and tag, "[ERROR] Missing Name/Version/Tag in CIU wheel metadata"; dist=name.replace("-", "_"); print(f"{dist}-{version}-{tag}.whl"); zf.close()' "${wheel_path}")";             if [ -z "${wheel_name}" ]; then                 echo "[ERROR] Failed to derive CIU wheel filename from metadata" >&2;                 exit 1;             fi;             wheel_dest="${wheel_dir}/${wheel_name}";             mv "${wheel_path}" "${wheel_dest}";             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check "${wheel_dest}";             rm -rf "${wheel_dir}";         fi;     else         echo "GITHUB_USERNAME/GITHUB_REPO not set; skipping CIU install";     fi
+#31 ...
+
+#30 [latest-vsc 12/17] RUN set -euo pipefail;     python3 -m venv /home/vscode/.venv;     /home/vscode/.venv/bin/python -m pip install --upgrade pip setuptools wheel --disable-pip-version-check --quiet;     /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet         boto3         debugpy         PyYAML         aiohttp         asyncpg         black         click         coverage         hvac         ipdb         ipython         isort         jinja2         mypy         pydantic         pydantic-settings         pytest         pytest-asyncio         pytest-cov         redis         requests         rich         ruff         structlog         tomli_w;     if [ "true" = "true" ]; then         if [ "main" = "main" ]; then             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat @ git+https://github.com/Aider-AI/aider.git@main";         elif [ "main" = "latest" ]; then             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet aider-chat;         else             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat==main";         fi;     fi
+#30 DONE 61.8s
+
+#32 [latest-vsc 13/17] RUN set -euo pipefail;     if [ -n "volkb79-2" ] && [ -n "vbpub" ]; then         skip_ciu=0;         wheel_dir="/tmp/ciu-wheel";         install -d -m 0755 "${wheel_dir}";         wheel_path="${wheel_dir}/ciu.whl";         ciu_wheel_tag="ciu-wheel-20260221";         ciu_asset_name="ciu-20260221-py3-none-any.whl";         if [ -z "${ciu_asset_name}" ]; then             ciu_asset_name="$(curl -fsSL "https://api.github.com/repos/volkb79-2/vbpub/releases/tags/${ciu_wheel_tag}"                 | jq -r '.assets[].name | select(endswith(".whl"))'                 | head -n 1 || true)";         fi;         if [ -z "${ciu_asset_name}" ]; then             if [ "false" = "true" ]; then                 echo "[ERROR] Failed to resolve CIU wheel asset name for tag ${ciu_wheel_tag}" >&2;                 exit 1;             fi;             echo "[WARN] CIU wheel asset not found for tag ${ciu_wheel_tag}; skipping CIU install" >&2;             skip_ciu=1;         fi;         if [ "${skip_ciu}" -eq 0 ]; then             ciu_url="https://github.com/volkb79-2/vbpub/releases/download/${ciu_wheel_tag}/${ciu_asset_name}";             if ! curl -fsSL "${ciu_url}" -o "${wheel_path}"; then                 if [ "false" = "true" ]; then                     echo "[ERROR] Failed to download CIU wheel from ${ciu_url}" >&2;                     exit 1;                 fi;                 echo "[WARN] Failed to download CIU wheel from ${ciu_url}; skipping CIU install" >&2;                 skip_ciu=1;             fi;         fi;         if [ "${skip_ciu}" -eq 0 ]; then             wheel_name="$(/home/vscode/.venv/bin/python -c 'import sys, zipfile; from pathlib import Path; wheel_path=Path(sys.argv[1]); zf=zipfile.ZipFile(wheel_path); metadata_files=[name for name in zf.namelist() if name.endswith(".dist-info/METADATA")]; wheel_files=[name for name in zf.namelist() if name.endswith(".dist-info/WHEEL")]; assert metadata_files, "[ERROR] Missing METADATA in CIU wheel"; assert wheel_files, "[ERROR] Missing WHEEL metadata in CIU wheel"; metadata=zf.read(metadata_files[0]).decode("utf-8", "replace"); name=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Name:")), None); version=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Version:")), None); wheel_meta=zf.read(wheel_files[0]).decode("utf-8", "replace"); tag=next((line.split(":", 1)[1].strip() for line in wheel_meta.splitlines() if line.startswith("Tag:")), None); assert name and version and tag, "[ERROR] Missing Name/Version/Tag in CIU wheel metadata"; dist=name.replace("-", "_"); print(f"{dist}-{version}-{tag}.whl"); zf.close()' "${wheel_path}")";             if [ -z "${wheel_name}" ]; then                 echo "[ERROR] Failed to derive CIU wheel filename from metadata" >&2;                 exit 1;             fi;             wheel_dest="${wheel_dir}/${wheel_name}";             mv "${wheel_path}" "${wheel_dest}";             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check "${wheel_dest}";             rm -rf "${wheel_dir}";         fi;     else         echo "GITHUB_USERNAME/GITHUB_REPO not set; skipping CIU install";     fi
+#32 0.787 Processing ./tmp/ciu-wheel/ciu-20260221-py3-none-any.whl
+#32 0.796 Requirement already satisfied: Jinja2>=3.1.2 in ./home/vscode/.venv/lib/python3.14/site-packages (from ciu==20260221) (3.1.6)
+#32 0.797 Requirement already satisfied: PyYAML>=6.0.1 in ./home/vscode/.venv/lib/python3.14/site-packages (from ciu==20260221) (6.0.3)
+#32 0.875 Collecting tomli>=2.0.0 (from ciu==20260221)
+#32 ...
+
+#31 [trixie-py311 13/17] RUN set -euo pipefail;     if [ -n "volkb79-2" ] && [ -n "vbpub" ]; then         skip_ciu=0;         wheel_dir="/tmp/ciu-wheel";         install -d -m 0755 "${wheel_dir}";         wheel_path="${wheel_dir}/ciu.whl";         ciu_wheel_tag="ciu-wheel-20260221";         ciu_asset_name="ciu-20260221-py3-none-any.whl";         if [ -z "${ciu_asset_name}" ]; then             ciu_asset_name="$(curl -fsSL "https://api.github.com/repos/volkb79-2/vbpub/releases/tags/${ciu_wheel_tag}"                 | jq -r '.assets[].name | select(endswith(".whl"))'                 | head -n 1 || true)";         fi;         if [ -z "${ciu_asset_name}" ]; then             if [ "false" = "true" ]; then                 echo "[ERROR] Failed to resolve CIU wheel asset name for tag ${ciu_wheel_tag}" >&2;                 exit 1;             fi;             echo "[WARN] CIU wheel asset not found for tag ${ciu_wheel_tag}; skipping CIU install" >&2;             skip_ciu=1;         fi;         if [ "${skip_ciu}" -eq 0 ]; then             ciu_url="https://github.com/volkb79-2/vbpub/releases/download/${ciu_wheel_tag}/${ciu_asset_name}";             if ! curl -fsSL "${ciu_url}" -o "${wheel_path}"; then                 if [ "false" = "true" ]; then                     echo "[ERROR] Failed to download CIU wheel from ${ciu_url}" >&2;                     exit 1;                 fi;                 echo "[WARN] Failed to download CIU wheel from ${ciu_url}; skipping CIU install" >&2;                 skip_ciu=1;             fi;         fi;         if [ "${skip_ciu}" -eq 0 ]; then             wheel_name="$(/home/vscode/.venv/bin/python -c 'import sys, zipfile; from pathlib import Path; wheel_path=Path(sys.argv[1]); zf=zipfile.ZipFile(wheel_path); metadata_files=[name for name in zf.namelist() if name.endswith(".dist-info/METADATA")]; wheel_files=[name for name in zf.namelist() if name.endswith(".dist-info/WHEEL")]; assert metadata_files, "[ERROR] Missing METADATA in CIU wheel"; assert wheel_files, "[ERROR] Missing WHEEL metadata in CIU wheel"; metadata=zf.read(metadata_files[0]).decode("utf-8", "replace"); name=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Name:")), None); version=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Version:")), None); wheel_meta=zf.read(wheel_files[0]).decode("utf-8", "replace"); tag=next((line.split(":", 1)[1].strip() for line in wheel_meta.splitlines() if line.startswith("Tag:")), None); assert name and version and tag, "[ERROR] Missing Name/Version/Tag in CIU wheel metadata"; dist=name.replace("-", "_"); print(f"{dist}-{version}-{tag}.whl"); zf.close()' "${wheel_path}")";             if [ -z "${wheel_name}" ]; then                 echo "[ERROR] Failed to derive CIU wheel filename from metadata" >&2;                 exit 1;             fi;             wheel_dest="${wheel_dir}/${wheel_name}";             mv "${wheel_path}" "${wheel_dest}";             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check "${wheel_dest}";             rm -rf "${wheel_dir}";         fi;     else         echo "GITHUB_USERNAME/GITHUB_REPO not set; skipping CIU install";     fi
+#31 1.525 Processing ./tmp/ciu-wheel/ciu-20260221-py3-none-any.whl
+#31 1.534 Requirement already satisfied: Jinja2>=3.1.2 in ./home/vscode/.venv/lib/python3.11/site-packages (from ciu==20260221) (3.1.6)
+#31 1.534 Requirement already satisfied: PyYAML>=6.0.1 in ./home/vscode/.venv/lib/python3.11/site-packages (from ciu==20260221) (6.0.3)
+#31 1.611 Collecting tomli>=2.0.0 (from ciu==20260221)
+#31 1.647   Downloading tomli-2.4.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (10 kB)
+#31 1.658 Requirement already satisfied: tomli_w>=1.0.0 in ./home/vscode/.venv/lib/python3.11/site-packages (from ciu==20260221) (1.2.0)
+#31 1.659 Requirement already satisfied: MarkupSafe>=2.0 in ./home/vscode/.venv/lib/python3.11/site-packages (from Jinja2>=3.1.2->ciu==20260221) (3.0.3)
+#31 1.670 Downloading tomli-2.4.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (243 kB)
+#31 1.854 Installing collected packages: tomli, ciu
+#31 1.946 
+#31 1.951 Successfully installed ciu-20260221 tomli-2.4.1
+#31 DONE 2.1s
+
+#32 [latest-vsc 13/17] RUN set -euo pipefail;     if [ -n "volkb79-2" ] && [ -n "vbpub" ]; then         skip_ciu=0;         wheel_dir="/tmp/ciu-wheel";         install -d -m 0755 "${wheel_dir}";         wheel_path="${wheel_dir}/ciu.whl";         ciu_wheel_tag="ciu-wheel-20260221";         ciu_asset_name="ciu-20260221-py3-none-any.whl";         if [ -z "${ciu_asset_name}" ]; then             ciu_asset_name="$(curl -fsSL "https://api.github.com/repos/volkb79-2/vbpub/releases/tags/${ciu_wheel_tag}"                 | jq -r '.assets[].name | select(endswith(".whl"))'                 | head -n 1 || true)";         fi;         if [ -z "${ciu_asset_name}" ]; then             if [ "false" = "true" ]; then                 echo "[ERROR] Failed to resolve CIU wheel asset name for tag ${ciu_wheel_tag}" >&2;                 exit 1;             fi;             echo "[WARN] CIU wheel asset not found for tag ${ciu_wheel_tag}; skipping CIU install" >&2;             skip_ciu=1;         fi;         if [ "${skip_ciu}" -eq 0 ]; then             ciu_url="https://github.com/volkb79-2/vbpub/releases/download/${ciu_wheel_tag}/${ciu_asset_name}";             if ! curl -fsSL "${ciu_url}" -o "${wheel_path}"; then                 if [ "false" = "true" ]; then                     echo "[ERROR] Failed to download CIU wheel from ${ciu_url}" >&2;                     exit 1;                 fi;                 echo "[WARN] Failed to download CIU wheel from ${ciu_url}; skipping CIU install" >&2;                 skip_ciu=1;             fi;         fi;         if [ "${skip_ciu}" -eq 0 ]; then             wheel_name="$(/home/vscode/.venv/bin/python -c 'import sys, zipfile; from pathlib import Path; wheel_path=Path(sys.argv[1]); zf=zipfile.ZipFile(wheel_path); metadata_files=[name for name in zf.namelist() if name.endswith(".dist-info/METADATA")]; wheel_files=[name for name in zf.namelist() if name.endswith(".dist-info/WHEEL")]; assert metadata_files, "[ERROR] Missing METADATA in CIU wheel"; assert wheel_files, "[ERROR] Missing WHEEL metadata in CIU wheel"; metadata=zf.read(metadata_files[0]).decode("utf-8", "replace"); name=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Name:")), None); version=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Version:")), None); wheel_meta=zf.read(wheel_files[0]).decode("utf-8", "replace"); tag=next((line.split(":", 1)[1].strip() for line in wheel_meta.splitlines() if line.startswith("Tag:")), None); assert name and version and tag, "[ERROR] Missing Name/Version/Tag in CIU wheel metadata"; dist=name.replace("-", "_"); print(f"{dist}-{version}-{tag}.whl"); zf.close()' "${wheel_path}")";             if [ -z "${wheel_name}" ]; then                 echo "[ERROR] Failed to derive CIU wheel filename from metadata" >&2;                 exit 1;             fi;             wheel_dest="${wheel_dir}/${wheel_name}";             mv "${wheel_path}" "${wheel_dest}";             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check "${wheel_dest}";             rm -rf "${wheel_dir}";         fi;     else         echo "GITHUB_USERNAME/GITHUB_REPO not set; skipping CIU install";     fi
+#32 0.912   Downloading tomli-2.4.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (10 kB)
+#32 0.924 Requirement already satisfied: tomli_w>=1.0.0 in ./home/vscode/.venv/lib/python3.14/site-packages (from ciu==20260221) (1.2.0)
+#32 0.925 Requirement already satisfied: MarkupSafe>=2.0 in ./home/vscode/.venv/lib/python3.14/site-packages (from Jinja2>=3.1.2->ciu==20260221) (3.0.3)
+#32 0.937 Downloading tomli-2.4.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (252 kB)
+#32 1.115 Installing collected packages: tomli, ciu
+#32 1.252 
+#32 1.263 Successfully installed ciu-20260221 tomli-2.4.1
+#32 DONE 1.4s
+
+#33 [trixie-py311 14/17] RUN set -euo pipefail;         cat > /etc/profile.d/dstdns-venv.sh << 'EOF'
+#33 DONE 0.2s
+
+#34 [trixie-py311 15/17] RUN set -euo pipefail;     install -d -m 0755 /home/vscode/.config/mc;     cat > /home/vscode/.config/mc/ini << 'EOF'
+#34 DONE 0.5s
+
+#35 [latest-vsc 14/17] RUN set -euo pipefail;         cat > /etc/profile.d/dstdns-venv.sh << 'EOF'
+#35 DONE 0.3s
+
+#36 [latest-vsc 15/17] RUN set -euo pipefail;     install -d -m 0755 /home/vscode/.config/mc;     cat > /home/vscode/.config/mc/ini << 'EOF'
+#36 DONE 0.4s
+
+#37 [trixie-py311 16/17] RUN set -euo pipefail;     chown -R vscode:vscode /home/vscode/.config/mc
+#37 DONE 0.5s
+
+#38 [trixie-py311 17/17] RUN set -euo pipefail;     manifest_dir="/usr/local/share/modern-debian-tools-python-debug";     manifest="${manifest_dir}/manifest.md";     installed_manifest="${manifest_dir}/installed-tools-manifest.md";     mkdir -p "${manifest_dir}";     if [ -n "package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260604.md" ] && [ -f "/tmp/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260604.md" ]; then         install -m 0644 "/tmp/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260604.md" "${manifest}";     else         {             echo "# Image Manifest";             echo "";             echo "Repository-hosted versioned manifest was not available during build.";             echo "";             echo "- Image version: 20260604";             echo "- Debian: trixie";             echo "- Python: 3.11";             echo "- Installed tools manifest: /usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md";         } > "${manifest}";     fi;     if [ "trixie" = "trixie" ]; then         NETCAT_PKG="netcat-openbsd";     else         NETCAT_PKG="netcat-traditional";     fi;     b2_version_output="$(b2 version 2>&1 | head -1 || true)";     if [ -z "${b2_version_output}" ]; then         b2_version_output="$(b2 --version 2>&1 | head -1 || true)";     fi;     shellcheck_version_output="$(shellcheck --version 2>&1 | awk -F': ' '/version/ {print $2; exit}' || true)";     if [ -z "${shellcheck_version_output}" ]; then         shellcheck_version_output="$(shellcheck --version 2>&1 | head -1 || true)";     fi;     ciu_version_output="$(/home/vscode/.venv/bin/python -c 'import importlib.metadata as m; print(m.version("ciu"))' 2>/dev/null || true)";     custom_tooling_file="$(mktemp /tmp/custom-tooling.XXXXXX)";     python_packages_file="$(mktemp /tmp/python-packages.XXXXXX)";     system_packages_file="$(mktemp /tmp/system-packages.XXXXXX)";     {         if [ -n "${ciu_version_output}" ]; then             echo "CIU=${ciu_version_output}";         else             echo "CIU=not-installed";         fi;         if command -v aider >/dev/null 2>&1; then             echo "aider=$(aider --version 2>&1 | head -1)";         else             echo "aider=not-installed";         fi;         if command -v agy >/dev/null 2>&1; then             echo "antigravity=$(agy --version 2>&1 | head -1)";         else             echo "antigravity=not-installed";         fi;         echo "awscli=$(aws --version 2>&1)";         echo "b2=${b2_version_output}";         echo "bat=$(bat --version 2>&1 | head -1)";         if command -v claude >/dev/null 2>&1; then             echo "claude=$(claude --version 2>&1 | head -1)";         else             echo "claude=not-installed";         fi;         if command -v codex >/dev/null 2>&1; then             echo "codex=$(codex --version 2>&1 | head -1)";         else             echo "codex=not-installed";         fi;         echo "consul=$(consul version 2>&1 | head -1)";         echo "delta=$(delta --version 2>&1 | head -1)";         echo "fd=$(fd --version 2>&1 | head -1)";         echo "fzf=$(fzf --version 2>&1)";         echo "gh=$(gh --version 2>&1 | head -1)";         echo "psql=$(psql --version 2>&1)";         echo "redis-cli=$(redis-cli --version 2>&1)";         echo "rga=$(rga --version 2>&1 | head -1)";         echo "ripgrep=$(rg --version 2>&1 | head -1)";         echo "shellcheck=${shellcheck_version_output}";         echo "vault=$(vault version 2>&1 | head -1)";         echo "yq=$(yq --version 2>&1)";     } > "${custom_tooling_file}";     /home/vscode/.venv/bin/pip list --format=freeze > "${python_packages_file}";     dpkg-query -W -f='${Package}=${Version}\n'         bash-completion ca-certificates curl bind9-dnsutils fuse3 git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc         "${NETCAT_PKG}" ncdu openssl pandoc p7zip-full poppler-utils python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim wget xz-utils         postgresql-client redis-tools > "${system_packages_file}";     python3 /tmp/manifest_sections.py installed         --output "${installed_manifest}"         --debian-version "trixie"         --python-version "3.11"         --image-version "20260604"         --devcontainers-release ""         --devcontainers-version ""         --custom-tooling-file "${custom_tooling_file}"         --python-packages-file "${python_packages_file}"         --system-packages-file "${system_packages_file}";     rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}";     rm -f /tmp/manifest_sections.py;     chmod 644 "${manifest}" "${installed_manifest}"
+#38 ...
+
+#39 [latest-vsc 16/17] RUN set -euo pipefail;     chown -R vscode:vscode /home/vscode/.config/mc
+#39 DONE 0.4s
+
+#40 [latest-vsc 17/17] RUN set -euo pipefail;     manifest_dir="/usr/local/share/modern-debian-tools-python-debug";     manifest="${manifest_dir}/manifest.md";     installed_manifest="${manifest_dir}/installed-tools-manifest.md";     mkdir -p "${manifest_dir}";     if [ -n "package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260604.md" ] && [ -f "/tmp/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260604.md" ]; then         install -m 0644 "/tmp/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260604.md" "${manifest}";     else         {             echo "# Image Manifest";             echo "";             echo "Repository-hosted versioned manifest was not available during build.";             echo "";             echo "- Image version: 20260604";             echo "- Debian: trixie";             echo "- Python: 3.14";             echo "- Installed tools manifest: /usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md";         } > "${manifest}";     fi;     if [ "trixie" = "trixie" ]; then         NETCAT_PKG="netcat-openbsd";     else         NETCAT_PKG="netcat-traditional";     fi;     b2_version_output="$(b2 version 2>&1 | head -1 || true)";     if [ -z "${b2_version_output}" ]; then         b2_version_output="$(b2 --version 2>&1 | head -1 || true)";     fi;     shellcheck_version_output="$(shellcheck --version 2>&1 | awk -F': ' '/version/ {print $2; exit}' || true)";     if [ -z "${shellcheck_version_output}" ]; then         shellcheck_version_output="$(shellcheck --version 2>&1 | head -1 || true)";     fi;     ciu_version_output="$(/home/vscode/.venv/bin/python -c 'import importlib.metadata as m; print(m.version("ciu"))' 2>/dev/null || true)";     custom_tooling_file="$(mktemp /tmp/custom-tooling.XXXXXX)";     python_packages_file="$(mktemp /tmp/python-packages.XXXXXX)";     system_packages_file="$(mktemp /tmp/system-packages.XXXXXX)";     {         if [ -n "${ciu_version_output}" ]; then             echo "CIU=${ciu_version_output}";         else             echo "CIU=not-installed";         fi;         if command -v aider >/dev/null 2>&1; then             echo "aider=$(aider --version 2>&1 | head -1)";         else             echo "aider=not-installed";         fi;         if command -v agy >/dev/null 2>&1; then             echo "antigravity=$(agy --version 2>&1 | head -1)";         else             echo "antigravity=not-installed";         fi;         echo "awscli=$(aws --version 2>&1)";         echo "b2=${b2_version_output}";         echo "bat=$(bat --version 2>&1 | head -1)";         if command -v claude >/dev/null 2>&1; then             echo "claude=$(claude --version 2>&1 | head -1)";         else             echo "claude=not-installed";         fi;         if command -v codex >/dev/null 2>&1; then             echo "codex=$(codex --version 2>&1 | head -1)";         else             echo "codex=not-installed";         fi;         echo "consul=$(consul version 2>&1 | head -1)";         echo "delta=$(delta --version 2>&1 | head -1)";         echo "fd=$(fd --version 2>&1 | head -1)";         echo "fzf=$(fzf --version 2>&1)";         echo "gh=$(gh --version 2>&1 | head -1)";         echo "psql=$(psql --version 2>&1)";         echo "redis-cli=$(redis-cli --version 2>&1)";         echo "rga=$(rga --version 2>&1 | head -1)";         echo "ripgrep=$(rg --version 2>&1 | head -1)";         echo "shellcheck=${shellcheck_version_output}";         echo "vault=$(vault version 2>&1 | head -1)";         echo "yq=$(yq --version 2>&1)";     } > "${custom_tooling_file}";     /home/vscode/.venv/bin/pip list --format=freeze > "${python_packages_file}";     dpkg-query -W -f='${Package}=${Version}\n'         bash-completion ca-certificates curl bind9-dnsutils fuse3 git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc         "${NETCAT_PKG}" ncdu openssl pandoc p7zip-full poppler-utils python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim wget xz-utils         postgresql-client redis-tools > "${system_packages_file}";     python3 /tmp/manifest_sections.py installed         --output "${installed_manifest}"         --debian-version "trixie"         --python-version "3.14"         --image-version "20260604"         --devcontainers-release "v0.4.27"         --devcontainers-version "3.0.8"         --custom-tooling-file "${custom_tooling_file}"         --python-packages-file "${python_packages_file}"         --system-packages-file "${system_packages_file}";     rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}";     rm -f /tmp/manifest_sections.py;     chmod 644 "${manifest}" "${installed_manifest}"
+#40 ...
+
+#38 [trixie-py311 17/17] RUN set -euo pipefail;     manifest_dir="/usr/local/share/modern-debian-tools-python-debug";     manifest="${manifest_dir}/manifest.md";     installed_manifest="${manifest_dir}/installed-tools-manifest.md";     mkdir -p "${manifest_dir}";     if [ -n "package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260604.md" ] && [ -f "/tmp/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260604.md" ]; then         install -m 0644 "/tmp/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260604.md" "${manifest}";     else         {             echo "# Image Manifest";             echo "";             echo "Repository-hosted versioned manifest was not available during build.";             echo "";             echo "- Image version: 20260604";             echo "- Debian: trixie";             echo "- Python: 3.11";             echo "- Installed tools manifest: /usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md";         } > "${manifest}";     fi;     if [ "trixie" = "trixie" ]; then         NETCAT_PKG="netcat-openbsd";     else         NETCAT_PKG="netcat-traditional";     fi;     b2_version_output="$(b2 version 2>&1 | head -1 || true)";     if [ -z "${b2_version_output}" ]; then         b2_version_output="$(b2 --version 2>&1 | head -1 || true)";     fi;     shellcheck_version_output="$(shellcheck --version 2>&1 | awk -F': ' '/version/ {print $2; exit}' || true)";     if [ -z "${shellcheck_version_output}" ]; then         shellcheck_version_output="$(shellcheck --version 2>&1 | head -1 || true)";     fi;     ciu_version_output="$(/home/vscode/.venv/bin/python -c 'import importlib.metadata as m; print(m.version("ciu"))' 2>/dev/null || true)";     custom_tooling_file="$(mktemp /tmp/custom-tooling.XXXXXX)";     python_packages_file="$(mktemp /tmp/python-packages.XXXXXX)";     system_packages_file="$(mktemp /tmp/system-packages.XXXXXX)";     {         if [ -n "${ciu_version_output}" ]; then             echo "CIU=${ciu_version_output}";         else             echo "CIU=not-installed";         fi;         if command -v aider >/dev/null 2>&1; then             echo "aider=$(aider --version 2>&1 | head -1)";         else             echo "aider=not-installed";         fi;         if command -v agy >/dev/null 2>&1; then             echo "antigravity=$(agy --version 2>&1 | head -1)";         else             echo "antigravity=not-installed";         fi;         echo "awscli=$(aws --version 2>&1)";         echo "b2=${b2_version_output}";         echo "bat=$(bat --version 2>&1 | head -1)";         if command -v claude >/dev/null 2>&1; then             echo "claude=$(claude --version 2>&1 | head -1)";         else             echo "claude=not-installed";         fi;         if command -v codex >/dev/null 2>&1; then             echo "codex=$(codex --version 2>&1 | head -1)";         else             echo "codex=not-installed";         fi;         echo "consul=$(consul version 2>&1 | head -1)";         echo "delta=$(delta --version 2>&1 | head -1)";         echo "fd=$(fd --version 2>&1 | head -1)";         echo "fzf=$(fzf --version 2>&1)";         echo "gh=$(gh --version 2>&1 | head -1)";         echo "psql=$(psql --version 2>&1)";         echo "redis-cli=$(redis-cli --version 2>&1)";         echo "rga=$(rga --version 2>&1 | head -1)";         echo "ripgrep=$(rg --version 2>&1 | head -1)";         echo "shellcheck=${shellcheck_version_output}";         echo "vault=$(vault version 2>&1 | head -1)";         echo "yq=$(yq --version 2>&1)";     } > "${custom_tooling_file}";     /home/vscode/.venv/bin/pip list --format=freeze > "${python_packages_file}";     dpkg-query -W -f='${Package}=${Version}\n'         bash-completion ca-certificates curl bind9-dnsutils fuse3 git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc         "${NETCAT_PKG}" ncdu openssl pandoc p7zip-full poppler-utils python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim wget xz-utils         postgresql-client redis-tools > "${system_packages_file}";     python3 /tmp/manifest_sections.py installed         --output "${installed_manifest}"         --debian-version "trixie"         --python-version "3.11"         --image-version "20260604"         --devcontainers-release ""         --devcontainers-version ""         --custom-tooling-file "${custom_tooling_file}"         --python-packages-file "${python_packages_file}"         --system-packages-file "${system_packages_file}";     rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}";     rm -f /tmp/manifest_sections.py;     chmod 644 "${manifest}" "${installed_manifest}"
+#38 DONE 5.7s
+
+#41 [trixie-py311] exporting to image
+#41 exporting layers
+#41 ...
+
+#40 [latest-vsc 17/17] RUN set -euo pipefail;     manifest_dir="/usr/local/share/modern-debian-tools-python-debug";     manifest="${manifest_dir}/manifest.md";     installed_manifest="${manifest_dir}/installed-tools-manifest.md";     mkdir -p "${manifest_dir}";     if [ -n "package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260604.md" ] && [ -f "/tmp/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260604.md" ]; then         install -m 0644 "/tmp/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260604.md" "${manifest}";     else         {             echo "# Image Manifest";             echo "";             echo "Repository-hosted versioned manifest was not available during build.";             echo "";             echo "- Image version: 20260604";             echo "- Debian: trixie";             echo "- Python: 3.14";             echo "- Installed tools manifest: /usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md";         } > "${manifest}";     fi;     if [ "trixie" = "trixie" ]; then         NETCAT_PKG="netcat-openbsd";     else         NETCAT_PKG="netcat-traditional";     fi;     b2_version_output="$(b2 version 2>&1 | head -1 || true)";     if [ -z "${b2_version_output}" ]; then         b2_version_output="$(b2 --version 2>&1 | head -1 || true)";     fi;     shellcheck_version_output="$(shellcheck --version 2>&1 | awk -F': ' '/version/ {print $2; exit}' || true)";     if [ -z "${shellcheck_version_output}" ]; then         shellcheck_version_output="$(shellcheck --version 2>&1 | head -1 || true)";     fi;     ciu_version_output="$(/home/vscode/.venv/bin/python -c 'import importlib.metadata as m; print(m.version("ciu"))' 2>/dev/null || true)";     custom_tooling_file="$(mktemp /tmp/custom-tooling.XXXXXX)";     python_packages_file="$(mktemp /tmp/python-packages.XXXXXX)";     system_packages_file="$(mktemp /tmp/system-packages.XXXXXX)";     {         if [ -n "${ciu_version_output}" ]; then             echo "CIU=${ciu_version_output}";         else             echo "CIU=not-installed";         fi;         if command -v aider >/dev/null 2>&1; then             echo "aider=$(aider --version 2>&1 | head -1)";         else             echo "aider=not-installed";         fi;         if command -v agy >/dev/null 2>&1; then             echo "antigravity=$(agy --version 2>&1 | head -1)";         else             echo "antigravity=not-installed";         fi;         echo "awscli=$(aws --version 2>&1)";         echo "b2=${b2_version_output}";         echo "bat=$(bat --version 2>&1 | head -1)";         if command -v claude >/dev/null 2>&1; then             echo "claude=$(claude --version 2>&1 | head -1)";         else             echo "claude=not-installed";         fi;         if command -v codex >/dev/null 2>&1; then             echo "codex=$(codex --version 2>&1 | head -1)";         else             echo "codex=not-installed";         fi;         echo "consul=$(consul version 2>&1 | head -1)";         echo "delta=$(delta --version 2>&1 | head -1)";         echo "fd=$(fd --version 2>&1 | head -1)";         echo "fzf=$(fzf --version 2>&1)";         echo "gh=$(gh --version 2>&1 | head -1)";         echo "psql=$(psql --version 2>&1)";         echo "redis-cli=$(redis-cli --version 2>&1)";         echo "rga=$(rga --version 2>&1 | head -1)";         echo "ripgrep=$(rg --version 2>&1 | head -1)";         echo "shellcheck=${shellcheck_version_output}";         echo "vault=$(vault version 2>&1 | head -1)";         echo "yq=$(yq --version 2>&1)";     } > "${custom_tooling_file}";     /home/vscode/.venv/bin/pip list --format=freeze > "${python_packages_file}";     dpkg-query -W -f='${Package}=${Version}\n'         bash-completion ca-certificates curl bind9-dnsutils fuse3 git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc         "${NETCAT_PKG}" ncdu openssl pandoc p7zip-full poppler-utils python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim wget xz-utils         postgresql-client redis-tools > "${system_packages_file}";     python3 /tmp/manifest_sections.py installed         --output "${installed_manifest}"         --debian-version "trixie"         --python-version "3.14"         --image-version "20260604"         --devcontainers-release "v0.4.27"         --devcontainers-version "3.0.8"         --custom-tooling-file "${custom_tooling_file}"         --python-packages-file "${python_packages_file}"         --system-packages-file "${system_packages_file}";     rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}";     rm -f /tmp/manifest_sections.py;     chmod 644 "${manifest}" "${installed_manifest}"
+#40 DONE 6.0s
+
+#42 [latest-vsc] exporting to image
+#42 ...
+
+#41 [trixie-py311] exporting to image
+#41 exporting layers 10.9s done
+#41 writing image sha256:7347a24ff97ddca40a14dda6e0360e8821d2aa009aa1b829f9112b1e467e4f4a done
+#41 naming to ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-20260604 done
+#41 naming to ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-latest done
+#41 DONE 11.0s
+
+#43 [trixie-py311] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-20260604 with docker
+#43 pushing layer d237f57e4d93
+#43 pushing layer 127ba7e4b1cb
+#43 pushing layer 58d400738ac9
+#43 pushing layer eca4a8ca7112
+#43 pushing layer 31797d701813
+#43 pushing layer 97059ec7cbd9
+#43 pushing layer 35df0d70ee5e
+#43 pushing layer a3af6087fe67
+#43 pushing layer 10fbe61ac1b2
+#43 pushing layer 24680dc3c9ae
+#43 pushing layer 42352952f270
+#43 pushing layer 5a7c9b18cf29
+#43 pushing layer ed1f848c296a
+#43 pushing layer 1db69ef39b8d
+#43 pushing layer 916d1982f739
+#43 pushing layer 3f42e2141703
+#43 pushing layer 796ab2e16ad2
+#43 pushing layer 2cdc9b740dea
+#43 pushing layer e72e1c60729b
+#43 pushing layer 0e6530456c98
+#43 pushing layer 8dc335c5db2d
+#43 pushing layer 47dffecc5540
+#43 pushing layer 17d38572a7dc
+#43 pushing layer 58d400738ac9 512B / 35B 0.5s
+#43 pushing layer 127ba7e4b1cb 4.61kB / 35B 0.5s
+#43 pushing layer 58d400738ac9 4.61kB / 35B 0.5s
+#43 pushing layer 31797d701813 1.69MB / 1.62MB 0.6s
+#43 pushing layer d237f57e4d93 3.46MB / 5.91MB 0.7s
+#43 pushing layer d237f57e4d93 5.23MB / 5.91MB 0.8s
+#43 pushing layer eca4a8ca7112 512B / 164B 1.0s
+#43 pushing layer d237f57e4d93 6.17MB / 5.91MB 1.0s
+#43 pushing layer eca4a8ca7112 3.07kB / 164B 1.0s
+#43 pushing layer 31797d701813 2.2s done
+#43 ...
+
+#42 [latest-vsc] exporting to image
+#42 exporting layers 13.0s done
+#42 writing image sha256:abb59ab9d0b1763e67dbcb2d0ada67c2294b14a199142fa95cd3b98ecf6019aa done
+#42 naming to ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:latest-stable done
+#42 DONE 13.0s
+
+#43 [trixie-py311] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-20260604 with docker
+#43 pushing layer d237f57e4d93 2.5s done
+#43 pushing layer 127ba7e4b1cb 2.5s done
+#43 pushing layer 58d400738ac9 2.7s done
+#43 pushing layer 35df0d70ee5e 2.79MB / 18.61MB 3.6s
+#43 pushing layer 35df0d70ee5e 5.01MB / 18.61MB 3.7s
+#43 pushing layer eca4a8ca7112 3.7s done
+#43 pushing layer 35df0d70ee5e 7.41MB / 18.61MB 3.8s
+#43 pushing layer 35df0d70ee5e 10.39MB / 18.61MB 3.9s
+#43 pushing layer 35df0d70ee5e 13.00MB / 18.61MB 4.0s
+#43 pushing layer 35df0d70ee5e 15.15MB / 18.61MB 4.1s
+#43 pushing layer 35df0d70ee5e 16.70MB / 18.61MB 4.2s
+#43 pushing layer 97059ec7cbd9 55.51MB / 1.06GB 4.3s
+#43 pushing layer 35df0d70ee5e 19.33MB / 18.61MB 4.3s
+#43 pushing layer 10fbe61ac1b2 4.2s done
+#43 pushing layer a3af6087fe67 70.12MB / 1.90GB 5.1s
+#43 pushing layer 24680dc3c9ae 24.48MB / 768.53MB 5.1s
+#43 pushing layer 42352952f270 9.44MB / 398.89MB 5.1s
+#43 pushing layer 35df0d70ee5e 5.6s done
+#43 pushing layer 5a7c9b18cf29 22.02kB / 8.95kB 5.9s
+#43 pushing layer 97059ec7cbd9 110.18MB / 1.06GB 6.2s
+#43 pushing layer 42352952f270 31.62MB / 398.89MB 6.1s
+#43 pushing layer 24680dc3c9ae 66.24MB / 768.53MB 6.3s
+#43 pushing layer 5a7c9b18cf29 7.3s done
+#43 pushing layer 42352952f270 53.90MB / 398.89MB 7.4s
+#43 pushing layer 24680dc3c9ae 107.46MB / 768.53MB 7.6s
+#43 pushing layer ed1f848c296a 8.70kB / 6.61kB 7.6s
+#43 pushing layer 97059ec7cbd9 166.16MB / 1.06GB 8.0s
+#43 pushing layer 42352952f270 74.51MB / 398.89MB 7.9s
+#43 pushing layer 42352952f270 94.56MB / 398.89MB 8.5s
+#43 pushing layer a3af6087fe67 165.79MB / 1.90GB 8.7s
+#43 pushing layer 24680dc3c9ae 148.05MB / 768.53MB 8.8s
+#43 pushing layer ed1f848c296a 9.1s done
+#43 pushing layer 42352952f270 115.73MB / 398.89MB 9.3s
+#43 pushing layer 1db69ef39b8d 289.79kB / 250.67kB 9.3s
+#43 pushing layer 42352952f270 136.90MB / 398.89MB 10.0s
+#43 pushing layer 97059ec7cbd9 221.40MB / 1.06GB 10.1s
+#43 pushing layer 24680dc3c9ae 187.60MB / 768.53MB 10.5s
+#43 pushing layer 42352952f270 156.96MB / 398.89MB 10.7s
+#43 pushing layer 42352952f270 178.68MB / 398.89MB 11.5s
+#43 pushing layer 24680dc3c9ae 226.04MB / 768.53MB 12.2s
+#43 pushing layer 42352952f270 201.52MB / 398.89MB 12.3s
+#43 ...
+
+#44 [latest-vsc] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:latest-stable with docker
+#44 pushing layer 8cac5381cd14
+#44 pushing layer 3c8ea3befb11
+#44 pushing layer 74b76381dd54
+#44 pushing layer c256b5818746
+#44 pushing layer cf57ce5157d9
+#44 pushing layer 41fcc7043f85
+#44 pushing layer cf13a0d8129d
+#44 pushing layer a9d346946f75
+#44 pushing layer 33a1abc83d35
+#44 pushing layer 51922aea1de1
+#44 pushing layer 86aa35831414
+#44 pushing layer 1b84f8299e26
+#44 pushing layer 08d85935a0de
+#44 pushing layer 78b148b29659
+#44 pushing layer d69bc4f5173c
+#44 pushing layer f43e1e68984b
+#44 pushing layer 8ac9dad54776
+#44 pushing layer 0c520fb3dcab
+#44 pushing layer 45fa321b9ea5
+#44 pushing layer f3028c41568c
+#44 pushing layer d56169015494
+#44 pushing layer 86e2b37ed87b
+#44 pushing layer dabc2e2b024e
+#44 pushing layer ea38ee3395fc
+#44 pushing layer 0f7e9d756111
+#44 pushing layer 2e98e78b507e
+#44 pushing layer 4d2414aceaa7
+#44 pushing layer 524a6050e1b0
+#44 pushing layer 7bcd5e8a1f82
+#44 pushing layer 5222f025e44a
+#44 ...
+
+#43 [trixie-py311] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-20260604 with docker
+#43 pushing layer 42352952f270 227.14MB / 398.89MB 13.0s
+#43 pushing layer 97059ec7cbd9 275.03MB / 1.06GB 13.2s
+#43 pushing layer 24680dc3c9ae 265.59MB / 768.53MB 13.7s
+#43 pushing layer a3af6087fe67 262.36MB / 1.90GB 13.7s
+#43 pushing layer 42352952f270 247.52MB / 398.89MB 14.0s
+#43 pushing layer 24680dc3c9ae 306.25MB / 768.53MB 15.1s
+#43 pushing layer 1db69ef39b8d 15.2s done
+#43 pushing layer 42352952f270 268.89MB / 398.89MB 15.2s
+#43 pushing layer 916d1982f739 15.8s
+#43 pushing layer 97059ec7cbd9 331.27MB / 1.06GB 16.1s
+#43 pushing layer 3f42e2141703 16.3s
+#43 pushing layer 42352952f270 291.54MB / 398.89MB 16.5s
+#43 pushing layer 796ab2e16ad2 16.4s
+#43 pushing layer 24680dc3c9ae 350.26MB / 768.53MB 16.6s
+#43 pushing layer 2cdc9b740dea 16.6s
+#43 pushing layer a3af6087fe67 360.40MB / 1.90GB 17.0s
+#43 pushing layer e72e1c60729b 17.4s
+#43 pushing layer 42352952f270 312.31MB / 398.89MB 17.5s
+#43 pushing layer 0e6530456c98 17.5s
+#43 pushing layer 8dc335c5db2d 17.7s
+#43 pushing layer 47dffecc5540 17.9s
+#43 pushing layer 24680dc3c9ae 392.02MB / 768.53MB 18.1s
+#43 pushing layer 17d38572a7dc 18.0s
+#43 pushing layer 42352952f270 332.33MB / 398.89MB 18.6s
+#43 pushing layer 97059ec7cbd9 386.34MB / 1.06GB 18.8s
+#43 pushing layer 24680dc3c9ae 433.24MB / 768.53MB 19.4s
+#43 pushing layer 42352952f270 352.81MB / 398.89MB 19.8s
+#43 pushing layer a3af6087fe67 462.34MB / 1.90GB 20.7s
+#43 pushing layer 24680dc3c9ae 472.80MB / 768.53MB 20.6s
+#43 pushing layer 42352952f270 372.85MB / 398.89MB 21.0s
+#43 pushing layer 24680dc3c9ae 511.76MB / 768.53MB 21.8s
+#43 pushing layer 97059ec7cbd9 439.59MB / 1.06GB 22.3s
+#43 pushing layer 42352952f270 395.46MB / 398.89MB 22.4s
+#43 pushing layer 24680dc3c9ae 552.92MB / 768.53MB 23.0s
+#43 pushing layer 24680dc3c9ae 591.83MB / 768.53MB 24.1s
+#43 pushing layer a3af6087fe67 559.27MB / 1.90GB 24.1s
+#43 pushing layer 97059ec7cbd9 493.58MB / 1.06GB 24.9s
+#43 pushing layer 24680dc3c9ae 630.82MB / 768.53MB 25.2s
+#43 pushing layer 42352952f270 26.1s done
+#43 pushing layer 24680dc3c9ae 672.04MB / 768.53MB 26.5s
+#43 pushing layer 97059ec7cbd9 547.14MB / 1.06GB 27.4s
+#43 pushing layer a3af6087fe67 654.50MB / 1.90GB 27.5s
+#43 pushing layer 24680dc3c9ae 713.27MB / 768.53MB 27.7s
+#43 ...
+
+#44 [latest-vsc] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:latest-stable with docker
+#44 pushing layer 8cac5381cd14 18.2s done
+#44 pushing layer 3c8ea3befb11 21.4s done
+#44 pushing layer 74b76381dd54 22.9s done
+#44 pushing layer c256b5818746 24.6s done
+#44 pushing layer cf57ce5157d9 25.2s done
+#44 pushing layer 41fcc7043f85 26.46MB / 1.07GB 25.9s
+#44 pushing layer cf13a0d8129d 8.15MB / 19.35MB 25.9s
+#44 ...
+
+#43 [trixie-py311] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-20260604 with docker
+#43 pushing layer 24680dc3c9ae 754.49MB / 768.53MB 28.8s
+#43 pushing layer 97059ec7cbd9 601.95MB / 1.06GB 29.5s
+#43 pushing layer a3af6087fe67 751.98MB / 1.90GB 31.0s
+#43 pushing layer 97059ec7cbd9 657.37MB / 1.06GB 31.5s
+#43 pushing layer 97059ec7cbd9 713.38MB / 1.06GB 33.6s
+#43 pushing layer a3af6087fe67 848.35MB / 1.90GB 34.0s
+#43 pushing layer 97059ec7cbd9 767.22MB / 1.06GB 35.6s
+#43 pushing layer 24680dc3c9ae 37.4s done
+#43 pushing layer 97059ec7cbd9 824.09MB / 1.06GB 37.9s
+#43 pushing layer a3af6087fe67 945.26MB / 1.90GB 38.8s
+#43 ...
+
+#44 [latest-vsc] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:latest-stable with docker
+#44 pushing layer 41fcc7043f85 306.45MB / 1.07GB 36.1s
+#44 pushing layer cf13a0d8129d 20.07MB / 19.35MB 33.3s
+#44 pushing layer a9d346946f75 29.42MB / 1.90GB 36.2s
+#44 ...
+
+#43 [trixie-py311] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-20260604 with docker
+#43 pushing layer 97059ec7cbd9 878.58MB / 1.06GB 40.1s
+#43 pushing layer 97059ec7cbd9 935.51MB / 1.06GB 41.4s
+#43 pushing layer 97059ec7cbd9 995.66MB / 1.06GB 42.7s
+#43 pushing layer a3af6087fe67 1.04GB / 1.90GB 43.4s
+#43 pushing layer 97059ec7cbd9 1.05GB / 1.06GB 43.9s
+#43 pushing layer a3af6087fe67 1.14GB / 1.90GB 47.1s
+#43 ...
+
+#44 [latest-vsc] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:latest-stable with docker
+#44 pushing layer 41fcc7043f85 468.83MB / 1.07GB 44.6s
+#44 pushing layer cf13a0d8129d 36.4s done
+#44 pushing layer a9d346946f75 246.36MB / 1.90GB 44.6s
+#44 pushing layer 10fbe61ac1b2 38.6s
+#44 pushing layer 33a1abc83d35 133.62MB / 355.46MB 44.7s
+#44 pushing layer 33a1abc83d35 152.56MB / 355.46MB 45.3s
+#44 pushing layer 33a1abc83d35 173.17MB / 355.46MB 46.0s
+#44 pushing layer 33a1abc83d35 194.34MB / 355.46MB 46.7s
+#44 pushing layer 33a1abc83d35 212.72MB / 355.46MB 47.0s
+#44 pushing layer 41fcc7043f85 524.65MB / 1.07GB 47.2s
+#44 pushing layer a9d346946f75 343.13MB / 1.90GB 47.7s
+#44 pushing layer 33a1abc83d35 231.55MB / 355.46MB 47.8s
+#44 pushing layer 33a1abc83d35 250.49MB / 355.46MB 48.8s
+#44 pushing layer 51922aea1de1 1.54kB 49.0s
+#44 pushing layer 41fcc7043f85 580.71MB / 1.07GB 49.2s
+#44 pushing layer 33a1abc83d35 269.76MB / 355.46MB 49.9s
+#44 pushing layer 51922aea1de1 50.5s done
+#44 pushing layer 33a1abc83d35 288.51MB / 355.46MB 50.9s
+#44 pushing layer ed1f848c296a 51.1s
+#44 pushing layer 41fcc7043f85 634.88MB / 1.07GB 51.3s
+#44 pushing layer a9d346946f75 439.50MB / 1.90GB 51.5s
+#44 pushing layer 33a1abc83d35 308.08MB / 355.46MB 51.8s
+#44 pushing layer 1db69ef39b8d 51.8s
+#44 pushing layer 916d1982f739 51.9s
+#44 pushing layer 3f42e2141703 52.1s
+#44 pushing layer 86aa35831414 52.2s
+#44 pushing layer 1b84f8299e26 52.4s
+#44 pushing layer 08d85935a0de 52.6s
+#44 pushing layer 78b148b29659 52.7s
+#44 pushing layer 33a1abc83d35 327.40MB / 355.46MB 52.9s
+#44 pushing layer d69bc4f5173c 53.0s
+#44 pushing layer f43e1e68984b 53.3s
+#44 pushing layer 8ac9dad54776 53.5s
+#44 pushing layer 41fcc7043f85 688.80MB / 1.07GB 53.7s
+#44 pushing layer 0c520fb3dcab 53.8s
+#44 pushing layer 45fa321b9ea5 54.0s
+#44 pushing layer f3028c41568c 54.1s
+#44 pushing layer d56169015494 54.3s
+#44 pushing layer 33a1abc83d35 346.84MB / 355.46MB 54.5s
+#44 pushing layer 86e2b37ed87b 54.4s
+#44 pushing layer dabc2e2b024e 54.7s
+#44 ...
+
+#43 [trixie-py311] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-20260604 with docker
+#43 pushing layer 97059ec7cbd9 51.4s done
+#43 pushing layer a3af6087fe67 1.42GB / 1.90GB 57.5s
+#43 ...
+
+#44 [latest-vsc] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:latest-stable with docker
+#44 pushing layer ea38ee3395fc 54.9s
+#44 pushing layer a9d346946f75 536.99MB / 1.90GB 54.9s
+#44 pushing layer 0f7e9d756111 55.0s
+#44 pushing layer 2e98e78b507e 55.1s
+#44 pushing layer 4d2414aceaa7 55.3s
+#44 pushing layer 524a6050e1b0 55.5s
+#44 pushing layer 41fcc7043f85 745.00MB / 1.07GB 55.7s
+#44 pushing layer 7bcd5e8a1f82 55.6s
+#44 pushing layer 5222f025e44a 55.8s
+#44 pushing layer 33a1abc83d35 57.6s done
+#44 pushing layer 41fcc7043f85 800.91MB / 1.07GB 57.8s
+#44 pushing layer a9d346946f75 633.89MB / 1.90GB 58.3s
+#44 pushing layer 41fcc7043f85 856.25MB / 1.07GB 59.9s
+#44 pushing layer 41fcc7043f85 918.48MB / 1.07GB 61.9s
+#44 pushing layer a9d346946f75 730.26MB / 1.90GB 62.0s
+#44 pushing layer 41fcc7043f85 975.36MB / 1.07GB 62.9s
+#44 pushing layer 41fcc7043f85 1.03GB / 1.07GB 64.0s
+#44 pushing layer 41fcc7043f85 1.09GB / 1.07GB 65.1s
+#44 pushing layer a9d346946f75 827.74MB / 1.90GB 65.1s
+#44 ...
+
+#43 [trixie-py311] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-20260604 with docker
+#43 pushing layer a3af6087fe67 1.76GB / 1.90GB 67.7s
+#43 ...
+
+#44 [latest-vsc] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:latest-stable with docker
+#44 pushing layer a9d346946f75 923.53MB / 1.90GB 68.8s
+#44 pushing layer 41fcc7043f85 71.4s done
+#44 pushing layer a9d346946f75 1.02GB / 1.90GB 73.2s
+#44 ...
+
+#43 [trixie-py311] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-20260604 with docker
+#43 pushing layer a3af6087fe67 1.91GB / 1.90GB 71.3s
+#43 ...
+
+#44 [latest-vsc] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:latest-stable with docker
+#44 pushing layer a9d346946f75 1.12GB / 1.90GB 76.4s
+#44 pushing layer a9d346946f75 1.21GB / 1.90GB 79.4s
+#44 pushing layer a9d346946f75 1.31GB / 1.90GB 82.4s
+#44 pushing layer a9d346946f75 1.41GB / 1.90GB 85.9s
+#44 pushing layer a9d346946f75 1.50GB / 1.90GB 88.9s
+#44 pushing layer a9d346946f75 1.60GB / 1.90GB 91.6s
+#44 pushing layer a9d346946f75 1.70GB / 1.90GB 93.8s
+#44 pushing layer a9d346946f75 1.80GB / 1.90GB 96.5s
+#44 pushing layer a9d346946f75 1.90GB / 1.90GB 98.7s
+#44 pushing layer a9d346946f75 108.1s done
+#44 pushing layer ea38ee3395fc 110.5s done
+#44 pushing layer 10fbe61ac1b2 110.5s done
+#44 pushing layer 24680dc3c9ae 110.5s done
+#44 pushing layer ed1f848c296a 110.5s done
+#44 pushing layer 1db69ef39b8d 110.5s done
+#44 pushing layer 916d1982f739 110.5s done
+#44 pushing layer 3f42e2141703 110.5s done
+#44 pushing layer 86aa35831414 110.5s done
+#44 pushing layer 1b84f8299e26 110.5s done
+#44 pushing layer 08d85935a0de 110.5s done
+#44 pushing layer 78b148b29659 110.5s done
+#44 pushing layer d69bc4f5173c 110.5s done
+#44 pushing layer f43e1e68984b 110.5s done
+#44 pushing layer 8ac9dad54776 110.5s done
+#44 pushing layer 0c520fb3dcab 110.5s done
+#44 pushing layer 45fa321b9ea5 110.5s done
+#44 pushing layer f3028c41568c 110.5s done
+#44 pushing layer d56169015494 110.5s done
+#44 pushing layer 86e2b37ed87b 110.5s done
+#44 pushing layer dabc2e2b024e 110.5s done
+#44 pushing layer 0f7e9d756111 110.5s done
+#44 pushing layer 2e98e78b507e 110.5s done
+#44 pushing layer 4d2414aceaa7 110.5s done
+#44 pushing layer 524a6050e1b0 110.5s done
+#44 pushing layer 7bcd5e8a1f82 110.5s done
+#44 pushing layer 5222f025e44a 110.5s done
+#44 DONE 110.6s
+
+#43 [trixie-py311] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-20260604 with docker
+#43 pushing layer a3af6087fe67 141.4s done
+#43 pushing layer e72e1c60729b 143.7s done
+#43 pushing layer 916d1982f739 143.7s done
+#43 pushing layer 3f42e2141703 143.7s done
+#43 pushing layer 796ab2e16ad2 143.7s done
+#43 pushing layer 2cdc9b740dea 143.7s done
+#43 pushing layer 0e6530456c98 143.7s done
+#43 pushing layer 8dc335c5db2d 143.7s done
+#43 pushing layer 47dffecc5540 143.7s done
+#43 pushing layer 17d38572a7dc 143.7s done
+#43 DONE 144.1s
+
+#45 [trixie-py311] pushing ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-latest with docker
+#45 pushing layer d237f57e4d93
+#45 pushing layer 127ba7e4b1cb
+#45 pushing layer 58d400738ac9
+#45 pushing layer eca4a8ca7112
+#45 pushing layer 31797d701813
+#45 pushing layer 97059ec7cbd9
+#45 pushing layer 35df0d70ee5e
+#45 pushing layer 10fbe61ac1b2
+#45 pushing layer 24680dc3c9ae
+#45 pushing layer 42352952f270
+#45 pushing layer 5a7c9b18cf29
+#45 pushing layer ed1f848c296a
+#45 pushing layer 1db69ef39b8d
+#45 pushing layer 916d1982f739
+#45 pushing layer 3f42e2141703
+#45 pushing layer 796ab2e16ad2
+#45 pushing layer 2cdc9b740dea
+#45 pushing layer e72e1c60729b
+#45 pushing layer 0e6530456c98
+#45 pushing layer 8dc335c5db2d
+#45 pushing layer 47dffecc5540
+#45 pushing layer 17d38572a7dc
+#45 pushing layer 58d400738ac9 1.6s done
+#45 pushing layer d237f57e4d93 1.6s done
+#45 pushing layer 127ba7e4b1cb 1.6s done
+#45 pushing layer eca4a8ca7112 1.6s done
+#45 pushing layer 31797d701813 1.6s done
+#45 pushing layer 97059ec7cbd9 1.6s done
+#45 pushing layer 35df0d70ee5e 1.6s done
+#45 pushing layer a3af6087fe67 1.6s done
+#45 pushing layer 10fbe61ac1b2 1.6s done
+#45 pushing layer 24680dc3c9ae 1.6s done
+#45 pushing layer 42352952f270 1.6s done
+#45 pushing layer 5a7c9b18cf29 1.6s done
+#45 pushing layer ed1f848c296a 1.6s done
+#45 pushing layer 1db69ef39b8d 1.6s done
+#45 pushing layer 916d1982f739 1.6s done
+#45 pushing layer 3f42e2141703 1.6s done
+#45 pushing layer 796ab2e16ad2 1.6s done
+#45 pushing layer 2cdc9b740dea 1.6s done
+#45 pushing layer e72e1c60729b 1.6s done
+#45 pushing layer 0e6530456c98 1.6s done
+#45 pushing layer 8dc335c5db2d 1.6s done
+#45 pushing layer 47dffecc5540 1.6s done
+#45 pushing layer 17d38572a7dc 1.6s done
+#45 DONE 1.7s

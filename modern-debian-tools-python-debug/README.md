@@ -35,9 +35,8 @@ Enabled build group target list is in [docker-bake.hcl](docker-bake.hcl) under `
 
 ## Build and Push Flow
 
-Entry points:
-- [build-images.py](build-images.py)
-- [push-images.py](push-images.py)
+Entry point:
+- [build-push.py](build-push.py) — unified script (`--build`, `--push`, `--rebuild`)
 
 Step configuration:
 - [build-push.toml](build-push.toml)
@@ -49,13 +48,13 @@ Bake definition:
 
 `scripts/resolve-devcontainers-release.py` now **always pulls** the configured base devcontainer image before reading labels. This avoids stale local-cache metadata during build/push.
 
-During `./build-images.py` and `./push-images.py`, the resolver also performs a **dynamic registry check** against live MCR tag inventory.
+During `./build-push.py --build`, the resolver also performs a **dynamic registry check** against live MCR tag inventory.
 
 Default behavior is now **fail-fast**:
-- if newer stable Python/Debian streams are detected, build stops before bake starts
-- to continue intentionally, run `./build-images.py --ignore-new-releases`
+- if newer stable Python **or Debian** streams are detected, build stops before bake starts
+- to continue intentionally, run `./build-push.py --build --ignore-new-releases`
 
-When the gate stops a build, `build-images.py` and `push-images.py` print a clean actionable message (no Python traceback) with explicit next steps.
+When the gate stops a build, `build-push.py` prints a clean actionable message (no Python traceback) with explicit next steps.
 
 Example advisory:
 
@@ -67,6 +66,7 @@ Resolver checks are dynamic and do not hardcode future version numbers.
 
 Detection scope is dynamic (live registry), and includes:
 - newer Python for your current Debian codename (minor and major streams, for example `3.15` or `4.x`)
+- **newer Debian codename for your current Python version** (e.g. `forky` when you have `bookworm`)
 - additional Debian codenames for your current Python stream (helps detect new Debian variant availability)
 - newer Python streams that may already exist on other Debian variants (early visibility)
 

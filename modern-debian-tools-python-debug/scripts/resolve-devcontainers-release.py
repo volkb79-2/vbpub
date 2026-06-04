@@ -268,6 +268,28 @@ def find_newer_python_other_debian(
     return [tag for _, tag in newer]
 
 
+def find_newer_debian_tags(
+    current_python: str,
+    current_debian: str,
+    tags: set[str],
+) -> list[str]:
+    """Return stable tags with newer Debian for the same Python version."""
+    candidates: list[tuple[str, str]] = []
+    for tag in tags:
+        components = parse_stable_tag_components(tag)
+        if not components:
+            continue
+        python_version, debian = components
+        if python_version != current_python:
+            continue
+        if debian == current_debian:
+            continue
+        if debian > current_debian:
+            candidates.append((debian, tag))
+    candidates.sort(key=lambda item: item[0])
+    return [tag for _, tag in candidates]
+
+
 def emit_newer_stable_advisory(stable_image: str) -> tuple[bool, str | None, str | None, str | None]:
     """Emit release advisories and return whether newer streams were found.
 
@@ -300,6 +322,7 @@ def emit_newer_stable_advisory(stable_image: str) -> tuple[bool, str | None, str
     try:
         tags = fetch_registry_tags()
         newer = find_newer_stable_tags(current_python, current_debian, tags)
+        newer_debian = find_newer_debian_tags(current_python, current_debian, tags)
         other_debian_same_python = find_other_debian_variants_for_python(
             current_python,
             current_debian,
@@ -329,7 +352,7 @@ def emit_newer_stable_advisory(stable_image: str) -> tuple[bool, str | None, str
             file=sys.stderr,
         )
 
-    if not newer and not other_debian_same_python and not newer_python_other_debian:
+    if not newer and not newer_debian and not other_debian_same_python and not newer_python_other_debian:
         print(
             f"[INFO] No newer stable devcontainers/python tag detected for {current_debian} "
             f"(current: {image_tag}).",
@@ -343,6 +366,15 @@ def emit_newer_stable_advisory(stable_image: str) -> tuple[bool, str | None, str
             "[WARN] Newer stable devcontainers/python tag(s) detected for "
             f"{current_debian}: {', '.join(newer)}. "
             f"Current base: {image_tag}. Recommended newest stable: {newest}.",
+            file=sys.stderr,
+        )
+
+    if newer_debian:
+        newest_debian = newer_debian[-1]
+        print(
+            "[WARN] Newer Debian codename(s) detected for Python "
+            f"{current_python}: {', '.join(newer_debian)}. "
+            f"Current Debian: {current_debian}. Recommended newest: {newest_debian}.",
             file=sys.stderr,
         )
 
@@ -362,9 +394,11 @@ def emit_newer_stable_advisory(stable_image: str) -> tuple[bool, str | None, str
             file=sys.stderr,
         )
 
-    # Build gate should only trigger when a newer stable tag exists for the
-    # currently selected Debian stream. Cross-Debian observations are advisory.
-    return bool(newer), latest_tag, latest_python, latest_debian
+    # Build gate triggers when a newer Python tag exists for the current Debian
+    # stream, OR when a newer Debian codename exists for the current Python version.
+    # Cross-Debian/Python observations alone are advisory.
+    has_newer = bool(newer) or bool(newer_debian)
+    return has_newer, latest_tag, latest_python, latest_debian
 
 
 def is_truthy_env(value: str | None) -> bool:
@@ -1117,6 +1151,8 @@ def main() -> int:
         "mcr.microsoft.com/devcontainers/python:dev-3.14-trixie",
     )
 
+    # Startup progress
+    sys.stderr.write("[INFO] Checking MCR registry for newer devcontainers/python releases...\n")
     # Dynamic pre-check: fail by default if newer releases are detected.
     has_newer_release, latest_tag, latest_python, latest_debian = emit_newer_stable_advisory(stable_image)
 
@@ -1139,6 +1175,7 @@ def main() -> int:
     if not build_date:
         raise RuntimeError("BUILD_DATE must be set before generating package manifests")
 
+    sys.stderr.write("[INFO] Staging tool artifacts (checking/tool-versions, download URLs...) ...\n")
     staging_result = stage_tool_artifacts(build_date=build_date)
     ciu_wheel_tag, ciu_wheel_asset_name, ciu_wheel_version = resolve_ciu_wheel_coordinates()
     ciu_install_required = is_truthy_env(os.getenv("CIU_INSTALL_REQUIRED"))
@@ -1148,7 +1185,9 @@ def main() -> int:
             "(CIU_WHEEL_TAG/CIU_WHEEL_ASSET_NAME)"
         )
 
+    sys.stderr.write(f"[INFO] Pulling base image {stable_image} to inspect labels...\n")
     stable_release, stable_version = resolve_release_and_version(stable_image)
+    sys.stderr.write(f"[INFO] Pulling base image {dev_image} to inspect labels...\n")
     dev_release, dev_version = resolve_release_and_version(dev_image)
 
     description_base = os.getenv("OCI_DESCRIPTION_BASE") or os.getenv("OCI_DESCRIPTION") or ""
