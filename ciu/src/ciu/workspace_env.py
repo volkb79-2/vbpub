@@ -13,6 +13,7 @@ import os
 import shlex
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import urllib.error
@@ -29,6 +30,15 @@ STANDALONE_ROOT_PATTERN = re.compile(
 
 
 ENV_FILE_NAME = ".env.ciu"
+
+# S2.2 — required keys always present in .env.ciu
+REQUIRED_KEYS_CORE: tuple[str, ...] = (
+    "REPO_ROOT",
+    "PHYSICAL_REPO_ROOT",
+    "DOCKER_NETWORK_INTERNAL",
+    "CONTAINER_UID",
+    "DOCKER_GID",
+)
 
 
 class WorkspaceEnvError(ValueError):
@@ -157,8 +167,9 @@ def ensure_workspace_env(required_keys: Iterable[str]) -> None:
     """Ensure required environment variables are present.
 
     Raises WorkspaceEnvError if any are missing or empty.
+    S2.5: 0 is a valid value — check is None / == "" not truthiness.
     """
-    missing = [key for key in required_keys if not os.environ.get(key)]
+    missing = [key for key in required_keys if os.environ.get(key) is None or os.environ.get(key) == ""]
     if missing:
         missing_str = ", ".join(missing)
         raise WorkspaceEnvError(
@@ -191,6 +202,12 @@ def detect_standalone_root(start_dir: Path) -> Optional[Path]:
 
 
 def _detect_env_type() -> Dict[str, str]:
+    """Detect ENV_TYPE: devcontainer | native | github-actions (S2.7).
+
+    v1's 'bare-metal' is renamed 'native' per S2.7 / Appendix C.
+    IS_NATIVE replaces IS_BARE_METAL; IS_DEVCONTAINER and IS_GITHUB_ACTIONS
+    are retained.
+    """
     env_type = os.environ.get("ENV_TYPE")
     if not env_type:
         if os.environ.get("GITHUB_ACTIONS"):
@@ -198,13 +215,13 @@ def _detect_env_type() -> Dict[str, str]:
         elif os.environ.get("REMOTE_CONTAINERS") or os.environ.get("WORKSPACE_DIR") or Path("/.dockerenv").exists():
             env_type = "devcontainer"
         else:
-            env_type = "bare-metal"
+            env_type = "native"
 
     return {
         "ENV_TYPE": env_type,
         "IS_DEVCONTAINER": "1" if env_type == "devcontainer" else "0",
         "IS_GITHUB_ACTIONS": "1" if env_type == "github-actions" else "0",
-        "IS_BARE_METAL": "1" if env_type == "bare-metal" else "0",
+        "IS_NATIVE": "1" if env_type == "native" else "0",
     }
 
 
@@ -221,7 +238,8 @@ def _detect_public_fqdn(repo_root: Path, require_fqdn: bool) -> Dict[str, str]:
                 with ciu_global.open("rb") as f:
                     config = tomllib.load(f)
                 public_fqdn = config.get("infrastructure", {}).get("public_fqdn", "")
-            except Exception:
+            except (tomllib.TOMLDecodeError, OSError, KeyError) as exc:
+                _log_warn(f"Could not parse {ciu_global}: {exc}")
                 public_fqdn = ""
 
     if not public_ip:
@@ -245,14 +263,15 @@ def _detect_public_fqdn(repo_root: Path, require_fqdn: bool) -> Dict[str, str]:
     return {
         "PUBLIC_IP": public_ip,
         "PUBLIC_FQDN": public_fqdn,
-        "PUBLIC_TLS_CRT_PEM": f"/etc/letsencrypt/live/{public_fqdn}/fullchain.pem",
-        "PUBLIC_TLS_KEY_PEM": f"/etc/letsencrypt/live/{public_fqdn}/privkey.pem",
+        "PUBLIC_TLS_CRT_PEM": os.environ.get("PUBLIC_TLS_CRT_PEM", ""),
+        "PUBLIC_TLS_KEY_PEM": os.environ.get("PUBLIC_TLS_KEY_PEM", ""),
     }
 
 
 def _detect_docker_gid() -> str:
     docker_gid = os.environ.get("DOCKER_GID", "")
-    if docker_gid:
+    # S2.5: '0' is a valid value — do not reject on falsy check
+    if docker_gid is not None and docker_gid != "":
         return docker_gid
 
     for socket_path in ("/var/run/docker-host.sock", "/var/run/docker.sock"):
@@ -286,6 +305,7 @@ def _detect_physical_repo_root(repo_root: Path) -> Path:
     except FileNotFoundError:
         pass
 
+    # S1.9: on native host PHYSICAL_REPO_ROOT == REPO_ROOT
     return repo_root.resolve()
 
 
@@ -342,6 +362,10 @@ def _ensure_network_exists(network_name: str) -> None:
 
 
 def _connect_devcontainer_to_network(network_name: str) -> None:
+    """Attach the devcontainer to the named network.
+
+    S1.9: MUST no-op cleanly when ENV_TYPE != devcontainer.
+    """
     env_type = os.environ.get("ENV_TYPE", "").lower()
     if env_type != "devcontainer":
         return
@@ -378,6 +402,11 @@ def _connect_devcontainer_to_network(network_name: str) -> None:
 
 
 def _check_tls_access() -> None:
+    """TLS accessibility probe.
+
+    S1.9 / S2.8: only runs when PUBLIC_TLS_* are set; degrades to warn on
+    non-devcontainer or when docker is unavailable.
+    """
     cert_path = os.environ.get("PUBLIC_TLS_CRT_PEM", "")
     key_path = os.environ.get("PUBLIC_TLS_KEY_PEM", "")
     if not cert_path or not key_path:
@@ -416,6 +445,70 @@ def _check_tls_access() -> None:
             _log_warn(f"TLS {label} not accessible to Docker: {path}")
 
 
+def validate_required_certs(env: Optional[Dict[str, str]] = None) -> None:
+    """Validate TLS cert/key files as given in env (S2.4).
+
+    Reads PUBLIC_TLS_CRT_PEM and PUBLIC_TLS_KEY_PEM from *env* (defaults to
+    os.environ).  For each path that is set, checks:
+      - the file exists and is readable by the calling process, AND
+      - is readable by DOCKER_GID: group-readable when st_gid == DOCKER_GID,
+        or other-readable (st_mode & 0o004).
+
+    Raises WorkspaceEnvError naming the exact failing path.
+    ABSOLUTELY NO path re-derivation — the path is validated exactly as given
+    (kills the v1 live/live bug A10 by design).
+
+    S2.5: DOCKER_GID '0' is a valid GID; falsy-safe int parse.
+    """
+    source = env if env is not None else dict(os.environ)
+
+    cert_path = source.get("PUBLIC_TLS_CRT_PEM", "")
+    key_path = source.get("PUBLIC_TLS_KEY_PEM", "")
+
+    if not cert_path and not key_path:
+        return
+
+    # S2.5: parse DOCKER_GID with falsy-safe check: '' or absent means unknown
+    raw_gid = source.get("DOCKER_GID", "")
+    docker_gid: Optional[int]
+    if raw_gid is None or raw_gid == "":
+        docker_gid = None
+    else:
+        try:
+            docker_gid = int(raw_gid)
+        except ValueError:
+            docker_gid = None
+
+    for path_str in (cert_path, key_path):
+        if not path_str:
+            continue
+        p = Path(path_str)
+        if not p.exists():
+            raise WorkspaceEnvError(
+                f"TLS file does not exist: {path_str}"
+            )
+        try:
+            st = p.stat()
+        except OSError as exc:
+            raise WorkspaceEnvError(
+                f"TLS file not readable: {path_str}: {exc}"
+            ) from exc
+
+        mode = st.st_mode
+        # other-readable — accessible regardless of GID
+        other_readable = bool(mode & stat.S_IROTH)
+        # group-readable by DOCKER_GID
+        group_readable_by_docker = (
+            docker_gid is not None
+            and st.st_gid == docker_gid
+            and bool(mode & stat.S_IRGRP)
+        )
+        if not other_readable and not group_readable_by_docker:
+            raise WorkspaceEnvError(
+                f"TLS file not readable by DOCKER_GID ({docker_gid}): {path_str}"
+            )
+
+
 def ensure_workspace_network(
     network_name: Optional[str] = None,
     auto_connect: bool = True,
@@ -427,13 +520,11 @@ def ensure_workspace_network(
         _connect_devcontainer_to_network(resolved)
 
 
-def _post_generate_env_bootstrap() -> None:
-    ensure_workspace_network()
-    _check_tls_access()
-
-
 def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Path:
     """Generate .env.ciu with autodetected values.
+
+    Side-effect: writes the .env.ciu file only (network/TLS steps belong in
+    bootstrap_env_init so tests stay simple — S2.8).
 
     Returns the path to the generated file.
     """
@@ -473,10 +564,10 @@ def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Pat
     lines.extend(_emit_section(
         "Environment type flags",
         [
-            ("ENV_TYPE", env_flags["ENV_TYPE"], "Runtime environment: devcontainer | github-actions | bare-metal"),
+            ("ENV_TYPE", env_flags["ENV_TYPE"], "Runtime environment: devcontainer | native | github-actions"),
             ("IS_DEVCONTAINER", env_flags["IS_DEVCONTAINER"], "1 when running inside a devcontainer"),
             ("IS_GITHUB_ACTIONS", env_flags["IS_GITHUB_ACTIONS"], "1 when running in GitHub Actions"),
-            ("IS_BARE_METAL", env_flags["IS_BARE_METAL"], "1 when running on bare metal"),
+            ("IS_NATIVE", env_flags["IS_NATIVE"], "1 when running on a native host"),
         ],
     ))
     lines.append("")
@@ -527,10 +618,15 @@ def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Pat
         [
             ("PUBLIC_IP", public_values["PUBLIC_IP"], "Detected public IP address (may be empty)"),
             ("PUBLIC_FQDN", public_values["PUBLIC_FQDN"], "Detected or configured public FQDN"),
-            ("PUBLIC_TLS_CRT_PEM", public_values["PUBLIC_TLS_CRT_PEM"], "Let’s Encrypt fullchain path"),
-            ("PUBLIC_TLS_KEY_PEM", public_values["PUBLIC_TLS_KEY_PEM"], "Let’s Encrypt private key path"),
+            ("PUBLIC_TLS_CRT_PEM", public_values["PUBLIC_TLS_CRT_PEM"], "TLS certificate PEM path (S2.3: required only when require_certs=true)"),
+            ("PUBLIC_TLS_KEY_PEM", public_values["PUBLIC_TLS_KEY_PEM"], "TLS private key PEM path (S2.3: required only when require_certs=true)"),
         ],
     ))
+    lines.append("")
+
+    # S7.5: CIU_HOST_PROFILE placeholder — default ciu-deploy --profile for this host
+    lines.append("# Host profile (S7.5)")
+    lines.append('# export CIU_HOST_PROFILE=""  # default ciu-deploy --profile for this host')
     lines.append("")
 
     lines.extend(_emit_section(
@@ -543,6 +639,43 @@ def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Pat
 
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return output_path
+
+
+def bootstrap_env_init(repo_root: Path) -> Path:
+    """Single bootstrap entry point for --generate-env (S2.8).
+
+    Performs the full S2.8 duty order:
+      1. generate_ciu_env  — detect + write .env.ciu
+      2. ensure_workspace_network — create DOCKER_NETWORK_INTERNAL
+      3. devcontainer self-attach  — no-op when ENV_TYPE != devcontainer (S1.9)
+      4. TLS probe (_check_tls_access) — only when PUBLIC_TLS_* set (S1.9)
+
+    generate_ciu_env is kept side-effect-light (write file only) so tests
+    remain simple; this function composes the duties.
+
+    Returns the path to the generated .env.ciu file.
+    """
+    env_path = generate_ciu_env(repo_root)
+
+    # Reload generated values into os.environ so the steps below see them
+    generated_values = parse_workspace_env(env_path)
+    for key, value in generated_values.items():
+        if key not in os.environ:
+            os.environ[key] = value
+
+    # Step 2+3: network + devcontainer attach (devcontainer attach is a no-op
+    # on native/CI per _connect_devcontainer_to_network's ENV_TYPE guard)
+    network_name = os.environ.get("DOCKER_NETWORK_INTERNAL", "")
+    if network_name:
+        try:
+            ensure_workspace_network(network_name)
+        except WorkspaceEnvError as exc:
+            _log_warn(f"Network setup skipped: {exc}")
+
+    # Step 4: TLS probe (no-op when paths not set; degrades to warn on native)
+    _check_tls_access()
+
+    return env_path
 
 
 def bootstrap_workspace_env(
@@ -573,7 +706,15 @@ def bootstrap_workspace_env(
         load_workspace_env(env_root)
 
     if generated:
-        _post_generate_env_bootstrap()
+        # Run post-generate bootstrap steps (network + TLS probe).
+        # These degrade to warn/no-op on native host per S1.9.
+        network_name = os.environ.get("DOCKER_NETWORK_INTERNAL", "")
+        if network_name:
+            try:
+                ensure_workspace_network(network_name)
+            except WorkspaceEnvError as exc:
+                _log_warn(f"Network setup skipped: {exc}")
+        _check_tls_access()
 
     if update_cert_permission:
         public_fqdn = os.environ.get("PUBLIC_FQDN")
