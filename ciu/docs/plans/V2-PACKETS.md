@@ -19,10 +19,10 @@ Baseline: 53 tests green @ branch ciu-v2 (af0987f).
 
 | ID | Packet | Files | Status |
 |---|---|---|---|
-| P4* | secret providers + materializer (S4.8–S4.16, S4.24–S4.26) | src/ciu/secrets/{providers,materialize}.py + tests | pending |
-| P5* | composefile: render, overlay gen, leak scan (S4.17–S4.23, S8.1) | src/ciu/composefile.py + tests | pending |
-| P6 | hooks v2 (S9) | src/ciu/hooks_runner.py + tests | pending |
-| P7 | deploy submodules: http_util, health, phases, profiles (S7) | src/ciu/deploy_pkg/*.py + tests | pending |
+| P4* | secret providers + materializer (S4.8–S4.16, S4.24–S4.26) | src/ciu/secrets/{providers,materialize}.py + tests | DONE |
+| P5* | composefile: render, overlay gen, leak scan (S4.17–S4.23, S8.1) | src/ciu/composefile.py + tests | DONE |
+| P6 | hooks v2 (S9) | src/ciu/hooks_runner.py + tests | DONE |
+| P7 | deploy submodules: http_util, health, phases, profiles (S7) | src/ciu/deploy_pkg/*.py + tests | DONE |
 
 ## Wave 3 — integration & cutover (* strong model)
 
@@ -43,6 +43,6 @@ Baseline: 53 tests green @ branch ciu-v2 (af0987f).
 ## Review gates
 
 - R1 after Wave 1: diff review (strong) → commit per packet — DONE (188 green, commits 87c18c6/1ab0748/2e846f4 + regex fix folded into P2)
-- R2 after Wave 2: adversarial review of P4/P5 (leak scan, idempotency) — pending
+- R2 after Wave 2: adversarial review of P4/P5 — DONE (verdict SOUND-WITH-FIXES; F1-F6 fixed, regression tests in test_ciu_r2_fixes.py; 407 green; commits bf0ebd1..8abe28f)
 - R3 after Wave 3: full suite + dry-run smoke on test-repo — pending
 - R4 after Wave 4: /code-review xhigh on the whole branch — pending
