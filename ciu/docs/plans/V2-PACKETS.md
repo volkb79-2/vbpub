@@ -28,9 +28,9 @@ Baseline: 53 tests green @ branch ciu-v2 (af0987f).
 
 | ID | Packet | Files | Status |
 |---|---|---|---|
-| P8 | workspace_env v2 (S2.7 table, S2.8 duties, S1.9 native parity, ENV_TYPE=native) | src/ciu/workspace_env.py + tests | pending |
-| P9* | engine pipeline rewrite to S8.3 + CLI (S10.1, ciu secrets) | src/ciu/engine.py, src/ciu/cli.py | pending |
-| P10* | deploy rewire: --profile, numeric phases, honest health gate, failure semantics, registry auth (S7, S10.2) | src/ciu/deploy.py | pending |
+| P8 | workspace_env v2 (S2.7 table, S2.8 duties, S1.9 native parity, ENV_TYPE=native) | src/ciu/workspace_env.py + tests | DONE |
+| P9* | engine pipeline rewrite to S8.3 + CLI (S10.1, ciu secrets) | src/ciu/engine.py, src/ciu/cli.py | DONE |
+| P10* | deploy rewire: --profile, numeric phases, honest health gate, failure semantics, registry auth (S7, S10.2) | src/ciu/deploy.py | DONE |
 
 ## Wave 4 — Stage 3 demo + contract tests
 
@@ -44,5 +44,5 @@ Baseline: 53 tests green @ branch ciu-v2 (af0987f).
 
 - R1 after Wave 1: diff review (strong) → commit per packet — DONE (188 green, commits 87c18c6/1ab0748/2e846f4 + regex fix folded into P2)
 - R2 after Wave 2: adversarial review of P4/P5 — DONE (verdict SOUND-WITH-FIXES; F1-F6 fixed, regression tests in test_ciu_r2_fixes.py; 407 green; commits bf0ebd1..8abe28f)
-- R3 after Wave 3: full suite + dry-run smoke on test-repo — pending
+- R3 after Wave 3: full suite + dry-run smoke — DONE (458 green; render-toml + dry-run deploy exit 0; found+noted UX footgun: inherited REPO_ROOT from foreign workspace wins over resolved root — harden in Wave 4). LIVE container smoke deferred to post-P11 (needs public images).
 - R4 after Wave 4: /code-review xhigh on the whole branch — pending
