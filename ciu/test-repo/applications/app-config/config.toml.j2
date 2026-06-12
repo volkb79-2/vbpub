@@ -1,0 +1,28 @@
+# ============================================================================
+# app-config — mounted application config (rendered by CIU, S5.2)
+# ============================================================================
+# This template is rendered with the merged config context PLUS the explicit
+# secret(name) function (S5.4) — the ONLY place a secret VALUE may be embedded.
+# The rendered file is mounted read-only at /etc/app/config.toml; the container
+# learns its path from the APP_CONFIG env pointer (S5.5).
+#
+# Everything here reaches the file at render time via Jinja2 — non-secret values
+# as normal interpolations, secret values only via the secret('...') function.
+
+[service]
+name = "{{ app_config.app.name }}"
+port = {{ app_config.app.internal_port }}
+# Set by pre_compose_app.py via apply_to_config (S9.4) — proves a hook value is
+# visible to the configfile render (hooks run at step 11, configfiles at step 12).
+runtime_note = "{{ app_config.runtime_note }}"
+
+[auth]
+# S5.4: secret() is the sanctioned home for secret values (and composite values
+# such as DSNs/URLs that embed a credential). api_key is THIS app's own key
+# (GEN_LOCAL); license is the ASK_EXTERNAL value.
+api_key = "{{ secret('api_key') }}"
+license = "{{ secret('license') }}"
+
+[build]
+# auto_generated is computed each run (S3.9); build_version is the git short hash.
+version = "{{ auto_generated.build_version }}"

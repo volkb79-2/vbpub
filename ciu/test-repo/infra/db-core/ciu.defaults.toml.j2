@@ -1,0 +1,33 @@
+# ============================================================================
+# infra/db-core — Postgres, the *_FILE convention demo (S4.17 / S6.7)
+# ============================================================================
+# Postgres natively supports POSTGRES_PASSWORD_FILE, so — unlike redis-core —
+# NO wrapper is needed: the image reads the secret straight from /run/secrets.
+# This is the preferred shape whenever the image supports a *_FILE variant.
+
+[db_core]
+stack_name = "db-core"
+
+[db_core.postgres]
+name = "postgres"
+internal_port = 5432
+image_name = "postgres"
+image_tag = "16-alpine"
+
+# S6.7a (fixed-UID storage pattern): the postgres:*-alpine image runs as the
+# internal `postgres` user, uid 70, and demands exclusive ownership of its data
+# dir. We create the hostdir owned uid=70, group=DOCKER_GID (default), mode 0770
+# so the SERVICE owns the data while the operator still reaches it via the docker
+# group (S6.7a; CIU provisions ownership via the S6.5 helper container when the
+# CIU process lacks privilege).
+#
+# Alternative (S6.7b): if you never need to inspect/back up the files FROM the
+# host, drop this hostdir and author a compose NAMED VOLUME in the template
+# instead — the image's entrypoint initializes ownership itself and CIU does not
+# manage named-volume contents (created by compose, removed by `--reset`).
+[db_core.postgres.hostdir]
+data = { path = "", uid = 70, mode = "0770" }
+
+# GEN_TO_VAULT into vault.paths.postgres_password (S4.2/S4.11); token via S4.16.
+[db_core.secrets]
+postgres_password = "GEN_TO_VAULT:{{ vault.paths.postgres_password }}"

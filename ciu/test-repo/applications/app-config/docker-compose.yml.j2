@@ -1,0 +1,63 @@
+# ============================================================================
+# applications/app-config — compose template (own app, S5.5 env boundary)
+# ============================================================================
+services:
+  # The compose service KEY must equal the configfile section's service key —
+  # here `app`, from [app_config.app.configfile.main] — so CIU's overlay mounts
+  # the rendered config onto THIS service (S5.3). The human-facing identity
+  # (container_name, labels, health lookup) uses app_config.app.name instead.
+  app:
+    image: {{ app_config.app.image_name }}:{{ app_config.app.image_tag }}
+    container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ app_config.app.name }}
+
+    # S4.17 consumption: these two secrets are mounted at /run/secrets/<name>.
+    # The OTHER two declared secrets are consumed differently and so are NOT
+    # listed here (CIU will note them as "consumed by no service", S4.20 — that
+    # is expected for this demo):
+    #   * license   — embedded into the mounted config via secret('license') (S5.4)
+    #   * ca_bundle  — an ASK_FILE referenced in place (S4.14); a real app would
+    #                  add it here to get /run/secrets/ca_bundle.
+    secrets:
+      - api_key
+      - run_nonce
+
+    # Simple liveness: serve an HTTP listener on the app port so the healthcheck
+    # below has something to hit. A real app would exec its own server.
+    command: ["python", "-m", "http.server", "{{ app_config.app.internal_port }}"]
+
+    # S5.5 boundary rule "env = pointers, files = config, secrets = files": the
+    # ONLY app-specific env is the bootstrap pointer to the mounted config file.
+    # Everything else (name, port, api_key, license, build version) lives in the
+    # rendered /etc/app/config.toml, not here.
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - APP_CONFIG={{ app_config.app.configfile.main.target }}
+
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider",
+             "http://127.0.0.1:{{ app_config.app.internal_port }}/"]
+      interval: {{ deploy.health.interval }}
+      timeout: {{ deploy.health.timeout }}
+      retries: {{ deploy.health.retries }}
+      start_period: {{ deploy.health.start_period }}
+
+    volumes:
+      # Host-mounted log dir (absolute physical path, S6.2).
+      - {{ app_config.app.hostdir.logs }}:/var/log/app
+      # NOTE: the config file is NOT mounted here. CIU's overlay
+      # (.ciu/docker-compose.ciu.yml) bind-mounts the rendered config read-only
+      # at the configfile target /etc/app/config.toml (S5.3) — keeping
+      # machine-derived wiring out of the author's template (S8.1 rationale).
+
+    labels:
+      - ciudemo.component=app-config
+
+    networks:
+      - workspace
+
+networks:
+  workspace:
+    external: true
+    name: {{ deploy.network_name }}

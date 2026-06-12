@@ -1,15 +1,15 @@
 """
-Contract tests for CIU hook interfaces.
+Contract tests for the demo hook interfaces (S9.1).
 
-These tests validate that required hook modules expose the expected class
-interface without executing Docker/Vault/Consul operations.
+Validates that the test-repo hook modules expose the v2 ``run(config, ctx)``
+callable without executing Docker/Vault operations. The v1 per-point class names
+(PostComposeHook, ...) are withdrawn (S9.1); v2 hooks are a module-level ``run``
+function (or a ``Hook`` class with a ``run`` method).
 """
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-
-import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,27 +25,23 @@ def _load_module(module_path: Path):
     return module
 
 
-def _assert_post_compose_interface(module) -> None:
-    hook_cls = getattr(module, "PostComposeHook", None)
-    if hook_cls is not None:
-        assert hasattr(hook_cls, "run"), "PostComposeHook.run missing"
-        return
-
-    hook_func = getattr(module, "post_compose_hook", None) or getattr(module, "run", None)
-    assert hook_func is not None, "post_compose_hook or run function missing"
-    assert callable(hook_func), "post_compose_hook must be callable"
+def _assert_v2_run_interface(module) -> None:
+    # S9.1: module-level run(config, ctx), or a Hook class exposing run.
+    run = getattr(module, "run", None)
+    if run is None:
+        hook_cls = getattr(module, "Hook", None)
+        assert hook_cls is not None, "hook must define run() or a Hook class (S9.1)"
+        run = getattr(hook_cls, "run", None)
+    assert callable(run), "hook 'run' must be callable (S9.1)"
 
 
 def test_vault_post_compose_hook_interface() -> None:
-    hook_path = TEST_REPO / "infra" / "vault-core" / "post_compose_hook.py"
-    assert hook_path.exists(), "Vault hook file missing"
-    module = _load_module(hook_path)
-    _assert_post_compose_interface(module)
+    hook_path = TEST_REPO / "infra" / "vault" / "post_compose_vault.py"
+    assert hook_path.exists(), "Vault post_compose hook file missing"
+    _assert_v2_run_interface(_load_module(hook_path))
 
 
-def test_consul_hook_interface_or_skip() -> None:
-    hook_path = TEST_REPO / "infra" / "consul-core" / "post_compose_hook.py"
-    if not hook_path.exists():
-        pytest.skip("Consul post-compose hook not implemented yet")
-    module = _load_module(hook_path)
-    _assert_post_compose_interface(module)
+def test_app_config_pre_compose_hook_interface() -> None:
+    hook_path = TEST_REPO / "applications" / "app-config" / "pre_compose_app.py"
+    assert hook_path.exists(), "app-config pre_compose hook file missing"
+    _assert_v2_run_interface(_load_module(hook_path))

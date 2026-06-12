@@ -324,7 +324,12 @@ requirements are marked *(withdrawn)*.
   `<stack>/.ciu/rendered/<service>/<cfgname>` (any text format; TOML is the
   convention for own apps).
 - **S5.3** The overlay (S4.17) bind-mounts the rendered file read-only at
-  `target` for that service, using the physical path.
+  `target` for that service, using the physical path. The mount attaches to
+  the compose service whose **key** in the compose file equals the
+  `<service>` component of the configfile section path — so a stack using
+  `[<root>.app.configfile.main]` MUST name its compose service `app`
+  (display names with hyphens belong in `container_name`/labels via the
+  `name` field, S3.8).
 - **S5.4** Configfile templates additionally receive `secret(name) -> str`,
   valid only for names declared in the stack's secrets tables (unknown name =
   abort). This is the sanctioned home for composite values (DSNs, URLs

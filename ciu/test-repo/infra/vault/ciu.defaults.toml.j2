@@ -1,0 +1,43 @@
+# ============================================================================
+# infra/vault — the bootstrap secrets provider (SPEC S3.7 / Appendix B.2)
+# ============================================================================
+# Root key is `vault_core`, NOT `vault`: a stack root key may not collide with a
+# reserved global namespace (S3.7), and `vault` is reserved (it is the global
+# [vault.paths] table). This is the exact rename B.2 calls for.
+#
+# This stack runs in Vault DEV mode (in-memory, auto-unsealed) so the live
+# `docker compose up` smoke needs no manual init/unseal. In production you would
+# run a real server + storage backend and a pre_secrets unseal hook instead.
+
+[vault_core]
+stack_name = "vault-core"
+
+# --- the Vault server service (S3.6 [<root>.<service>]) ---------------------
+[vault_core.server]
+name = "vault"
+internal_port = 8200
+image_name = "hashicorp/vault"
+image_tag = "1.17"
+
+# --- secrets (S4.1 — only recognized under the root key) --------------------
+# The bootstrap stack MUST NOT use a *_VAULT directive (S7.6): there is no Vault
+# to talk to yet — it IS the Vault. So the dev root token is generated locally
+# (GEN_LOCAL) into the PROJECT store <repo-root>/.ciu/secrets/demo/vault_root_token
+# (S4.9), byte-stable across runs (S4.11). The compose wrapper feeds it to Vault
+# as VAULT_DEV_ROOT_TOKEN_ID.
+[vault_core.secrets]
+root_token = "GEN_LOCAL:demo/vault_root_token"
+
+# --- hooks (S9.1) -----------------------------------------------------------
+# post_compose runs after the container is up (S8.3 step 17); it records the
+# token + initialized flag into [state] so the S4.16 token resolver (source #3)
+# can hand it to LATER stacks that declare ASK_VAULT/GEN_TO_VAULT secrets.
+[vault_core.hooks]
+post_compose = ["./post_compose_vault.py"]
+
+# --- state (S3.4 — the only re-render-preserved table) ----------------------
+# Written by post_compose_vault.py. `--reset` destroys the Vault data volume AND
+# this state together (S3.4): the next run re-initializes and re-records it.
+[state]
+initialized = false
+root_token = ""

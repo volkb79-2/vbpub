@@ -1,0 +1,42 @@
+# ============================================================================
+# infra/db-core — compose template (*_FILE convention, no wrapper needed)
+# ============================================================================
+services:
+  {{ db_core.postgres.name }}:
+    image: {{ db_core.postgres.image_name }}:{{ db_core.postgres.image_tag }}
+    container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ db_core.postgres.name }}
+
+    secrets:
+      - postgres_password
+
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      # S4.17: the image reads the password from the file directly — no wrapper,
+      # no value in the compose file. This is the preferred *_FILE shape.
+      - POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password
+      # Keep PGDATA in a SUBDIR of the bind mount so the mount root (owned by the
+      # hostdir's uid:gid) and Postgres' initdb target do not fight over the dir.
+      - PGDATA=/var/lib/postgresql/data/pgdata
+
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: {{ deploy.health.interval }}
+      timeout: {{ deploy.health.timeout }}
+      retries: {{ deploy.health.retries }}
+      start_period: {{ deploy.health.start_period }}
+
+    volumes:
+      - {{ db_core.postgres.hostdir.data }}:/var/lib/postgresql/data   # absolute physical path (S6.2)
+
+    labels:
+      - ciudemo.component=postgres
+
+    networks:
+      - workspace
+
+networks:
+  workspace:
+    external: true
+    name: {{ deploy.network_name }}

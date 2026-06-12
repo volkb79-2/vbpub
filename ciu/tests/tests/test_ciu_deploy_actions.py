@@ -276,7 +276,7 @@ def test_vault_preflight_aborts_without_token(monkeypatch, tmp_path):
     config = {
         **_vault_topology(),
         "deploy": {"project_name": "p", "environment_tag": "t", "phases": {}},
-        "vault": {"stack_path": "infra/vault-core"},
+        "vault": {"stack_path": "infra/vault"},
     }
     profile = Profile(name=None, phase_keys=None, config=config)
     selection = [
@@ -306,16 +306,16 @@ def test_vault_preflight_passes_when_vault_stack_precedes(monkeypatch, tmp_path)
     config = {
         **_vault_topology(),
         "deploy": {"project_name": "p", "environment_tag": "t", "phases": {}},
-        "vault": {"stack_path": "infra/vault-core"},
+        "vault": {"stack_path": "infra/vault"},
     }
     profile = Profile(name=None, phase_keys=None, config=config)
     selection = [
         {
             "phase_num": 1,
             "phase_key": "phase_1",
-            "path": "infra/vault-core",
+            "path": "infra/vault",
             "name": "vault",
-            "service": {"path": "infra/vault-core", "name": "vault", "enabled": True},
+            "service": {"path": "infra/vault", "name": "vault", "enabled": True},
         },
         {
             "phase_num": 2,
@@ -327,7 +327,7 @@ def test_vault_preflight_passes_when_vault_stack_precedes(monkeypatch, tmp_path)
     ]
     rendered = {
         # vault stack declares no *_VAULT directives (S7.6 bootstrap rule).
-        "infra/vault-core": {"vault_core": {"name": "vault"}},
+        "infra/vault": {"vault_core": {"name": "vault"}},
         "applications/app": {"app": {"secrets": {"db_password": "ASK_VAULT:secret/db"}}},
     }
 
@@ -342,7 +342,7 @@ def test_vault_preflight_passes_with_token(monkeypatch, tmp_path):
     config = {
         **_vault_topology(),
         "deploy": {"project_name": "p", "environment_tag": "t", "phases": {}},
-        "vault": {"stack_path": "infra/vault-core"},
+        "vault": {"stack_path": "infra/vault"},
     }
     profile = Profile(name=None, phase_keys=None, config=config)
     selection = [
