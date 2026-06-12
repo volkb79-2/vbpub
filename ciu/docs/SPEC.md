@@ -283,6 +283,8 @@ requirements are marked *(withdrawn)*.
   additionally injected into the **compose process env** under that name so
   `${ENV_NAME}` interpolation works. This is per-secret, opt-in, and
   discouraged; CIU MUST log a notice naming each exposed secret.
+  `expose_env` is invalid on `ASK_FILE` (CIU never loads the file's content,
+  so there is no value to expose) — rejected at parse time.
 - **S4.20** CIU MUST warn when a declared secret is consumed by no service in
   the rendered compose file, and abort when a service references an
   undeclared secret name.

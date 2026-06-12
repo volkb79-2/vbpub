@@ -234,6 +234,11 @@ def parse_value(name: str, value: Any, table_path: str) -> SecretSpec:
 
     # --- Extract inline-table options ---
     expose_env: str | None = options.get("expose_env", None)
+    if expose_env is not None and verb == "ASK_FILE":
+        raise ValueError(
+            f"[S4.19] 'expose_env' is not valid for ASK_FILE for {ctx}: "
+            "CIU never loads ASK_FILE content, so there is no value to expose"
+        )
     mode: str = options.get("mode", "0440")
     uid_raw = options.get("uid", None)
     uid: int | None = None
