@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Demo pre-compose hook: injects a Vault bootstrap token."""
+"""Demo pre_compose hook (v2): inject a Vault bootstrap token into the config.
+
+S9.1 — provides ``run(config, ctx) -> dict``. S9.4 — structured return only;
+``apply_to_config`` makes the value visible to the compose template
+(``{{ app_vault.env.VAULT_BOOTSTRAP_TOKEN }}``). This is NOT a secret (plain
+demo value), so it is fine to surface via config rather than a secret store.
+"""
 
 from __future__ import annotations
 
 
-def pre_compose_hook(config: dict, env: dict) -> dict:
+def run(config: dict, ctx) -> dict:
     _ = config
-    _ = env
+    _ = ctx
     return {
         "app_vault.env.VAULT_BOOTSTRAP_TOKEN": {
             "value": "demo-token",
-            "persist": "toml",
             "apply_to_config": True,
         }
     }

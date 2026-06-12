@@ -32,6 +32,9 @@ def _set_env_defaults() -> None:
     os.environ["REPO_ROOT"] = str(TEST_REPO)
     os.environ["PHYSICAL_REPO_ROOT"] = str(TEST_REPO)
     os.environ["DOCKER_NETWORK_INTERNAL"] = "ciu-test-network"
+    # v2 engine-path tests run --dry-run / --render-toml (no docker):
+    os.environ["SKIP_DEPENDENCY_CHECK"] = "1"
+    os.environ["CIU_SKIP_DOOD_PREFLIGHT"] = "1"
 
 
 def test_test_repo_exists() -> None:
@@ -106,19 +109,27 @@ def test_render_global_and_stack_configs(monkeypatch) -> None:
 
 def test_ciu_main_execution_runs_hooks(monkeypatch) -> None:
     _set_env_defaults()
-    os.environ["SKIP_DEPENDENCY_CHECK"] = "1"
 
-    monkeypatch.chdir(TEST_REPO / "applications" / "app-vault")
+    # No docker in this path: stub the network attach step.
+    monkeypatch.setattr(engine, "ensure_workspace_network", lambda *a, **k: None)
+
+    stack = TEST_REPO / "applications" / "app-vault"
+    monkeypatch.chdir(stack)
     result = engine.main_execution(
-        working_dir=TEST_REPO / "applications" / "app-vault",
+        working_dir=stack,
         dry_run=True,
         print_context=False,
         generate_env=True,
     )
 
     assert result.get("status") == "success"
-    rendered = TEST_REPO / "applications" / "app-vault" / "ciu.toml"
+    rendered = stack / "ciu.toml"
     assert rendered.exists()
+
+    # The v2 pre_compose hook applied VAULT_BOOTSTRAP_TOKEN to the config
+    # (apply_to_config), so the rendered compose carries it (steps 11 -> 13).
+    compose = (stack / "docker-compose.yml").read_text()
+    assert "VAULT_BOOTSTRAP_TOKEN=demo-token" in compose
 
 
 def test_detects_standalone_root() -> None:

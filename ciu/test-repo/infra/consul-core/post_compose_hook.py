@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Demo post-compose hook: simulate Consul KV seeding."""
+"""Demo post_compose hook (v2): simulate Consul KV seeding.
+
+S9.1 — ``run(config, ctx) -> dict``. S9.4 — structured return; the value is
+applied to the in-memory config and persisted under the stack's ``[state]``.
+"""
 
 from __future__ import annotations
 
 
-def post_compose_hook(config: dict, env: dict) -> dict:
+def run(config: dict, ctx) -> dict:
     _ = config
-    _ = env
+    _ = ctx
     return {
-        "consul_core.env.CONSUL_SEEDED": {
-            "value": "true",
-            "persist": "toml",
+        "consul_seeded": {
+            "value": True,
             "apply_to_config": True,
+            "persist": "state",
         }
     }

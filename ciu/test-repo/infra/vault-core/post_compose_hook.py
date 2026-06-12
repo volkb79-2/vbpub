@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Demo post-compose hook: simulate Vault initialization."""
+"""Demo post_compose hook (v2): simulate Vault initialization.
+
+S9.1 — ``run(config, ctx) -> dict``. S9.4 — structured return; the value is
+applied to the in-memory config and persisted under the stack's ``[state]``
+(the only persistable destination in v2).
+"""
 
 from __future__ import annotations
 
 
-def post_compose_hook(config: dict, env: dict) -> dict:
+def run(config: dict, ctx) -> dict:
     _ = config
-    _ = env
+    _ = ctx
     return {
-        "vault_core.env.VAULT_INITIALIZED": {
-            "value": "true",
-            "persist": "toml",
+        "vault_initialized": {
+            "value": True,
             "apply_to_config": True,
+            "persist": "state",
         }
     }

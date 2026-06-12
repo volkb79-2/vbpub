@@ -1,0 +1,15 @@
+# CIU machine-owned artifacts (S1.6/S1.7) — humans MUST NOT edit, MUST be gitignored
+**/.ciu/
+
+# Rendered config outputs (S1.8 — gitignored as in v1, see .gitignored.ciu)
+ciu-global.toml
+**/ciu.toml
+**/docker-compose.yml
+
+# Workspace environment (machine identity layer, S2)
+**/.env.ciu
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/

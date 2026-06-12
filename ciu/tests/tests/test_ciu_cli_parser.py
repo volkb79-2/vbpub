@@ -8,7 +8,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from ciu.engine import parse_arguments  # noqa: E402
+from ciu.engine import parse_arguments, _build_secrets_subparser  # noqa: E402
 
 
 class TestParseArgumentsDefaults:
@@ -78,6 +78,16 @@ class TestParseArgumentsFlags:
         args = parse_arguments(["--no-auto-connect-network"])
         assert args.auto_connect_network is False
 
+    def test_secrets_flag_defaults_false(self):
+        args = parse_arguments([])
+        assert args.secrets is False
+
+    def test_reset_with_secrets_flag(self):
+        args = parse_arguments(["--reset", "--secrets", "-y"])
+        assert args.reset is True
+        assert args.secrets is True
+        assert args.yes is True
+
     def test_version_flag_exits(self, capsys):
         with pytest.raises(SystemExit) as exc:
             parse_arguments(["--version"])
@@ -103,3 +113,28 @@ class TestParseArgumentsHelp:
     def test_has_docstring(self):
         assert parse_arguments.__doc__ is not None
         assert "arguments" in parse_arguments.__doc__.lower()
+
+
+class TestSecretsSubcommand:
+    def test_secrets_list_parses(self):
+        sub = _build_secrets_subparser().parse_args(["list", "-d", "/tmp/stack"])
+        assert sub.action == "list"
+        assert sub.dir == Path("/tmp/stack")
+        assert sub.yes is False
+        assert sub.name is None
+
+    def test_secrets_reset_with_name_and_yes(self):
+        sub = _build_secrets_subparser().parse_args(
+            ["reset", "--name", "redis_password", "-y"]
+        )
+        assert sub.action == "reset"
+        assert sub.name == "redis_password"
+        assert sub.yes is True
+
+    def test_secrets_invalid_action_rejected(self):
+        with pytest.raises(SystemExit):
+            _build_secrets_subparser().parse_args(["delete"])
+
+    def test_secrets_define_root_alias(self):
+        sub = _build_secrets_subparser().parse_args(["list", "--root-folder", "/r"])
+        assert sub.define_root == Path("/r")

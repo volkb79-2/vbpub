@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
-"""
-CIU create_hostdirs() tests.
+"""CIU v2 create_hostdirs() tests (S6).
+
+v2 signature:
+    create_hostdirs(config, stack_dir, *, repo_root, physical_root=None, chown_fn=None)
+
+Key v2 behaviours pinned here:
+- S6.2: every hostdir value is rewritten to its ABSOLUTE PHYSICAL path string.
+- S6.1: "" auto-generates ``<stack>/vol-<service-name>-<purpose>``; non-empty
+  relative paths resolve against the stack dir; inline tables override uid/mode.
+- S6.6: ``seed`` copies a tree on first creation only.
+- S6.3: pre-existing incompatible ownership aborts (we inject a chown_fn and a
+  fake stat to drive the incompatible path).
+
+REPO_ROOT == PHYSICAL_REPO_ROOT == tmp so physical == logical (identity map).
 """
 
+import os
+import stat as stat_mod
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,52 +41,129 @@ def _base_config() -> dict:
     }
 
 
-def test_creates_explicit_hostdir_paths():
+def test_rewrites_value_to_absolute_physical_path(tmp_path):
     config = _base_config()
     config["service"] = {
         "name": "demo-service",
-        "hostdir": {
-            "data": "./vol-demo-service-data",
-            "logs": "./vol-demo-service-logs",
-        },
+        "hostdir": {"data": "vol-x", "logs": ""},
     }
 
-    with patch("pathlib.Path.mkdir") as mock_mkdir, patch("os.chown") as mock_chown:
-        create_hostdirs(config)
+    calls = []
+    create_hostdirs(
+        config, tmp_path, repo_root=tmp_path, physical_root=tmp_path,
+        chown_fn=lambda p, u, g: calls.append((str(p), u, g)),
+    )
 
-        assert mock_mkdir.call_count == 2
-        assert mock_chown.call_count == 2
+    data_val = config["service"]["hostdir"]["data"]
+    logs_val = config["service"]["hostdir"]["logs"]
+    # Absolute physical path strings (S6.2), resolved under the stack dir.
+    assert data_val == str((tmp_path / "vol-x").resolve())
+    assert logs_val == str((tmp_path / "vol-demo-service-logs").resolve())
+    assert (tmp_path / "vol-x").is_dir()
+    assert (tmp_path / "vol-demo-service-logs").is_dir()
+    # Default ownership applied (1000:994) via injected chown_fn.
+    assert all(u == 1000 and g == 994 for _, u, g in calls)
 
 
-def test_generates_missing_hostdir_paths():
+def test_generates_missing_hostdir_paths(tmp_path):
+    config = _base_config()
+    config["service"] = {"name": "demo-service", "hostdir": {"data": "", "logs": ""}}
+
+    create_hostdirs(config, tmp_path, repo_root=tmp_path, physical_root=tmp_path,
+                    chown_fn=lambda *a: None)
+
+    assert config["service"]["hostdir"]["data"] == str((tmp_path / "vol-demo-service-data").resolve())
+    assert config["service"]["hostdir"]["logs"] == str((tmp_path / "vol-demo-service-logs").resolve())
+
+
+def test_inline_table_uid_and_mode(tmp_path):
     config = _base_config()
     config["service"] = {
-        "name": "demo-service",
-        "hostdir": {
-            "data": "",
-            "logs": "",
-        },
+        "name": "pg",
+        "hostdir": {"data": {"path": "", "uid": 999, "gid": 994, "mode": "0770"}},
     }
 
-    with patch("pathlib.Path.mkdir"), patch("os.chown"):
-        create_hostdirs(config)
+    seen = {}
+    create_hostdirs(
+        config, tmp_path, repo_root=tmp_path, physical_root=tmp_path,
+        chown_fn=lambda p, u, g: seen.update({"uid": u, "gid": g}),
+    )
 
-    assert config["service"]["hostdir"]["data"] == "./vol-demo-service-data"
-    assert config["service"]["hostdir"]["logs"] == "./vol-demo-service-logs"
+    created = tmp_path / "vol-pg-data"
+    assert created.is_dir()
+    assert seen == {"uid": 999, "gid": 994}
+    # mode 0770 honoured on creation.
+    assert stat_mod.S_IMODE(created.stat().st_mode) == 0o770
 
 
-def test_requires_service_name_for_hostdir():
+def test_seed_copies_tree_on_first_creation(tmp_path):
+    seed_src = tmp_path / "seed-data"
+    seed_src.mkdir()
+    (seed_src / "bootstrap.cfg").write_text("hello")
+
     config = _base_config()
     config["service"] = {
-        "hostdir": {
-            "data": "",
-        }
+        "name": "svc",
+        "hostdir": {"data": {"path": "", "seed": "seed-data"}},
     }
+
+    create_hostdirs(config, tmp_path, repo_root=tmp_path, physical_root=tmp_path,
+                    chown_fn=lambda *a: None)
+
+    seeded = tmp_path / "vol-svc-data" / "bootstrap.cfg"
+    assert seeded.exists()
+    assert seeded.read_text() == "hello"
+
+
+def test_incompatible_ownership_aborts(tmp_path):
+    config = _base_config()
+    existing = tmp_path / "vol-svc-data"
+    existing.mkdir(mode=0o700)
+    config["service"] = {"name": "svc", "hostdir": {"data": "vol-svc-data"}}
+
+    # Fake a stat reporting a foreign owner/group and a private mode so the
+    # compatibility check (S6.3) fails.
+    real_stat = Path.stat
+
+    class FakeStat:
+        st_uid = 4242
+        st_gid = 4242
+        st_mode = stat_mod.S_IFDIR | 0o700
+
+    def fake_stat(self, *a, **k):
+        if self == existing:
+            return FakeStat()
+        return real_stat(self, *a, **k)
+
+    with patch.object(Path, "stat", fake_stat):
+        with pytest.raises(ValueError, match=r"\[S6.3\].*incompatible"):
+            create_hostdirs(config, tmp_path, repo_root=tmp_path, physical_root=tmp_path,
+                            chown_fn=lambda *a: None)
+
+
+def test_requires_service_name_for_auto_hostdir(tmp_path):
+    config = _base_config()
+    config["service"] = {"hostdir": {"data": ""}}
 
     with pytest.raises(ValueError, match="hostdir section found without service name"):
-        create_hostdirs(config)
+        create_hostdirs(config, tmp_path, repo_root=tmp_path, physical_root=tmp_path,
+                        chown_fn=lambda *a: None)
 
 
-def test_requires_deploy_shared_values():
+def test_requires_deploy_shared_values(tmp_path):
     with pytest.raises(ValueError, match="CONTAINER_UID/DOCKER_GID"):
-        create_hostdirs({})
+        create_hostdirs({}, tmp_path, repo_root=tmp_path, physical_root=tmp_path)
+
+
+def test_gid_zero_is_valid(tmp_path):
+    """B7 / S2.5: GID 0 is a valid default, not falsy-replaced."""
+    config = {
+        "deploy": {"env": {"shared": {"CONTAINER_UID": "0", "DOCKER_GID": "0"}}}
+    }
+    config["service"] = {"name": "svc", "hostdir": {"data": ""}}
+
+    seen = {}
+    create_hostdirs(config, tmp_path, repo_root=tmp_path, physical_root=tmp_path,
+                    chown_fn=lambda p, u, g: seen.update({"uid": u, "gid": g}))
+
+    assert seen == {"uid": 0, "gid": 0}
