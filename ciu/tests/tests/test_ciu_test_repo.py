@@ -9,9 +9,10 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from ciu import config_model  # noqa: E402
 from ciu import deploy  # noqa: E402
 from ciu import engine  # noqa: E402
-from ciu.render_utils import load_global_config, render_global_config_if_missing, render_stack_configs  # noqa: E402
+from ciu.deploy_pkg import profiles as profiles_pkg  # noqa: E402
 from ciu.workspace_env import bootstrap_workspace_env, detect_standalone_root  # noqa: E402
 
 
@@ -92,8 +93,7 @@ def test_render_global_and_stack_configs(monkeypatch) -> None:
         ],
     )
 
-    render_global_config_if_missing(TEST_REPO)
-    global_config = load_global_config(TEST_REPO)
+    global_config = config_model.render_global_chain(TEST_REPO, TEST_REPO)
 
     stack_paths = {
         TEST_REPO / "applications" / "app-simple",
@@ -101,7 +101,8 @@ def test_render_global_and_stack_configs(monkeypatch) -> None:
         TEST_REPO / "infra" / "vault-core",
         TEST_REPO / "infra" / "consul-core",
     }
-    render_stack_configs(stack_paths, global_config, preserve_state=True)
+    for stack_path in stack_paths:
+        config_model.render_stack(stack_path, global_config, preserve_state=True)
 
     for stack_path in stack_paths:
         assert (stack_path / "ciu.toml").exists()
@@ -164,9 +165,17 @@ def test_deploy_render_all_configs_respects_phases(monkeypatch) -> None:
     if app_simple_rendered.exists():
         app_simple_rendered.unlink()
 
-    global_config = render_global_config_if_missing(TEST_REPO)
-    phases = deploy.load_deployment_phases(global_config)
-    deploy.render_all_configs(TEST_REPO, phases, selected_phases=[1])
+    # v2 render path: load global → resolve (default) profile → build a
+    # phase-restricted selection → render only those stacks (S7.1 / S8.3 step 3).
+    global_config = deploy.load_global_config(TEST_REPO)
+    profile = profiles_pkg.resolve_profile(global_config, None)
+    selection = deploy.build_selection(profile, cli_phases={"phase_1"})
+    rendered = deploy.render_selected_stacks(TEST_REPO, profile, selection)
+
+    # Only phase_1 stacks are rendered (numeric order honoured by build_selection).
+    assert "infra/vault-core" in rendered
+    assert "infra/consul-core" in rendered
+    assert "applications/app-simple" not in rendered
 
     assert (TEST_REPO / "infra" / "vault-core" / "ciu.toml").exists()
     assert (TEST_REPO / "infra" / "consul-core" / "ciu.toml").exists()

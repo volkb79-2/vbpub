@@ -23,10 +23,14 @@ DOCKER_GID = "$DOCKER_GID"
 VAULT_ADDR = "http://vault:8200"
 CONSUL_ADDR = "http://consul:8500"
 
-[deploy.groups]
-infra = ["phase_1"]
-apps = ["phase_2"]
-all = ["phase_1", "phase_2"]
+[deploy.profiles.infra]
+phases = ["phase_1"]
+
+[deploy.profiles.apps]
+phases = ["phase_2"]
+
+[deploy.profiles.all]
+phases = ["phase_1", "phase_2"]
 
 [deploy.phases.phase_1]
 name = "Infra"

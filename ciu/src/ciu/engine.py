@@ -28,10 +28,10 @@ Most v1 logic (template rendering, secret resolution, hook loading, vault I/O,
 flatten/env-build, registry auth, cert validation) has been DELETED here and now
 lives in the dedicated modules listed above (see SPEC Appendix A / C).
 
-Two v1 function names — ``render_global_config_chain`` and
-``render_stack_config`` — survive as **transitional shims** delegating to
-config_model, because the current ``render_utils.py`` (used by the v1
-``deploy.py``) imports them. They are removed in P10.
+P10 removed the last two transitional shims (``render_global_config_chain`` /
+``render_stack_config``): the v2 ``deploy.py`` and tests call
+``config_model.render_global_chain`` / ``config_model.render_stack`` directly,
+and ``render_utils.py`` is deleted.
 """
 
 from __future__ import annotations
@@ -843,8 +843,16 @@ def main_execution(
     generate_env: bool = False,
     update_cert_permission: bool = False,
     auto_connect_network: Optional[bool] = None,
+    compose_profiles: Optional[list[str]] = None,
 ) -> dict:
-    """Run the S8.3 pipeline for one stack. Returns a result dict with 'status'."""
+    """Run the S8.3 pipeline for one stack. Returns a result dict with 'status'.
+
+    *compose_profiles* (P10 / S7.4): compose profile names joined into the
+    compose process env's ``COMPOSE_PROFILES`` (step 16, via
+    composefile.compose_process_env). The deploy orchestrator passes
+    ``service.profiles + profile.compose_profiles`` here so the right compose
+    services are activated; ``None`` means no profiles (single-stack ``ciu``).
+    """
     working_dir = Path(working_dir).resolve()
     result: dict = {"status": "success", "dry_run": dry_run}
 
@@ -1095,7 +1103,9 @@ def main_execution(
             print("[STEP 16/17] --dry-run: skipping docker compose up", flush=True)
         else:
             print("[STEP 16/17] Starting stack (docker compose up -d)...", flush=True)
-            compose_env = composefile.compose_process_env(specs, materialized, compose_profiles=None)
+            compose_env = composefile.compose_process_env(
+                specs, materialized, compose_profiles=compose_profiles
+            )
             file_args = composefile.compose_file_args(working_dir, overlay_path)
             docker_result = execute_docker_compose_with_logs(file_args, cwd=working_dir, env=compose_env)
             if docker_result["status"] == "error":
@@ -1339,40 +1349,6 @@ def main(argv: Optional[list] = None) -> int:
     return 1
 
 
-# ===========================================================================
-# Transitional shims for deploy.py / render_utils.py (REMOVE in P10)
-# ===========================================================================
-
-
-def render_global_config_chain(working_dir: Path, repo_root_override: Optional[Path] = None) -> dict:
-    """# transitional shim for deploy.py until P10 — delegates to config_model.
-
-    render_utils.py (used by the v1 deploy.py) imports this name. It mirrors the
-    v1 signature: repo_root from *repo_root_override* (with the --define-root vs
-    REPO_ROOT mismatch guard) else REPO_ROOT.
-    """
-    if repo_root_override is not None:
-        repo_root = Path(repo_root_override).resolve()
-        env_repo_root = os.environ.get("REPO_ROOT")
-        if env_repo_root and Path(env_repo_root).resolve() != repo_root:
-            raise ValueError(
-                f"[ERROR] --define-root ({repo_root}) does not match REPO_ROOT ({env_repo_root}). "
-                "Update .env.ciu or use a matching --define-root."
-            )
-    else:
-        env_repo_root = os.environ.get("REPO_ROOT")
-        if not env_repo_root:
-            raise ValueError(
-                "[ERROR] REPO_ROOT not set or invalid. Ensure .env.ciu is loaded before running CIU."
-            )
-        repo_root = Path(env_repo_root).resolve()
-    return config_model.render_global_chain(Path(working_dir).resolve(), repo_root)
-
-
-def render_stack_config(working_dir: Path, global_config: dict, preserve_state: bool) -> dict:
-    """# transitional shim for deploy.py until P10 — delegates to config_model."""
-    return config_model.render_stack(Path(working_dir).resolve(), global_config, preserve_state=preserve_state)
-
-
 if __name__ == "__main__":
     raise SystemExit(main())
+
