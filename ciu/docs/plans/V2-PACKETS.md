@@ -36,13 +36,13 @@ Baseline: 53 tests green @ branch ciu-v2 (af0987f).
 
 | ID | Packet | Files | Status |
 |---|---|---|---|
-| P11 | rebuild test-repo as miniature dstdns | test-repo/** | pending |
-| P12 | contract tests keyed to spec IDs | tests/tests/test_spec_*.py | pending |
-| P13 | finalize MIGRATION-V2.md; ARCHITECTURE.md; rewrite CONFIG/CIU/CIU-DEPLOY as guides | docs/** | pending |
+| P11 | rebuild test-repo as miniature dstdns | test-repo/** | DONE |
+| P12 | contract tests keyed to spec IDs | tests/tests/test_spec_*.py | DONE |
+| P13 | finalize MIGRATION-V2.md; ARCHITECTURE.md; rewrite CONFIG/CIU/CIU-DEPLOY as guides | docs/** | DONE |
 
 ## Review gates
 
 - R1 after Wave 1: diff review (strong) → commit per packet — DONE (188 green, commits 87c18c6/1ab0748/2e846f4 + regex fix folded into P2)
 - R2 after Wave 2: adversarial review of P4/P5 — DONE (verdict SOUND-WITH-FIXES; F1-F6 fixed, regression tests in test_ciu_r2_fixes.py; 407 green; commits bf0ebd1..8abe28f)
 - R3 after Wave 3: full suite + dry-run smoke — DONE (458 green; render-toml + dry-run deploy exit 0; found+noted UX footgun: inherited REPO_ROOT from foreign workspace wins over resolved root — harden in Wave 4). LIVE container smoke deferred to post-P11 (needs public images).
-- R4 after Wave 4: /code-review xhigh on the whole branch — pending
+- R4 after Wave 4: multi-angle strong review (engine/deploy/seams) — DONE: 2 high + 4 medium + lows all fixed (stale build/ in wheel, v1 example hooks, preflight exit codes, HookExecutionError, S3.8 withdrawal, overlay scan, atomic writes); 501 green; wheel verified; live smoke done in P11 (4/4 healthy incl. cross-stack vault chain)
