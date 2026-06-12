@@ -472,8 +472,13 @@ def render_configfiles(
 
             out_path = rendered_root / service_name / cfg_name
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(rendered_text, encoding="utf-8")
-            os.chmod(out_path, int(mode, 8))
+            # Atomic replace (S8.4) — also the only way a SECOND run can
+            # overwrite the previous 0440 rendered file without write
+            # permission on it (os.replace needs only the directory).
+            tmp_path = out_path.with_name(out_path.name + ".tmp")
+            tmp_path.write_text(rendered_text, encoding="utf-8")
+            os.chmod(tmp_path, int(mode, 8))
+            os.replace(tmp_path, out_path)
 
             mounts.append(
                 ConfigFileMount(

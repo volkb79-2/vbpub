@@ -131,3 +131,32 @@ class TestF6FoldedLeak:
         text = "passwordwithspaces and other text"
         spec = _spec("pw", "GEN_LOCAL", "pw")
         leak_scan(text, {"pw": _Mat(spec, value, tmp_path / "f")})  # no raise
+
+
+class TestConfigfileRerunOverwrite:
+    """S8.4 — a second render over an existing 0440 rendered configfile
+    succeeds (atomic os.replace; plain write_text raised PermissionError).
+    Found by P12 hermetic re-run testing."""
+
+    def test_second_render_over_0440_succeeds(self, tmp_path, monkeypatch):
+        from ciu.composefile import render_configfiles
+
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        (stack / "config.toml.j2").write_text('key = "{{ app.title }}"\n')
+        config = {
+            "app": {
+                "title": "one",
+                "svc": {"configfile": {"main": {
+                    "template": "config.toml.j2",
+                    "target": "/etc/app/config.toml",
+                }}},
+            }
+        }
+        m1 = render_configfiles(stack, "app", config, lambda n: "x")
+        assert (m1[0].rendered_path.stat().st_mode & 0o777) == 0o440
+
+        config["app"]["title"] = "two"
+        m2 = render_configfiles(stack, "app", config, lambda n: "x")
+        assert m2[0].rendered_path.read_text().rstrip("\n") == 'key = "two"'
+        assert (m2[0].rendered_path.stat().st_mode & 0o777) == 0o440
