@@ -170,9 +170,13 @@ requirements are marked *(withdrawn)*.
   (dstdns's vault stack root key `vault` collides with global `[vault.paths]`
   and must be renamed, e.g. `vault_core` — see Appendix B.2.)
 - **S3.8** TOML keys use `snake_case`; hyphens in Docker names belong in
-  `name` fields. Directory→service definition mapping
-  (`[service.<cat>.<proj>.<svc>]` exposure as top-level keys) is retained
-  from v1; a missing mapping is INFO-level, not an error.
+  `name` fields. The v1 directory→service auto-exposure
+  (`[service.<cat>.<proj>.<svc>]` lifted to a top-level key by path
+  matching) is **withdrawn**: stacks reference the global `[service.*]`
+  registry directly in their TOML templates
+  (`name = "{{ service.infra.redis_core.redis.name }}"`), which is what
+  dstdns already does — the auto-exposure was redundant with it and
+  silently no-op'd on any path mismatch.
 - **S3.9** `auto_generated` (build_version, build_time, uid, gid, docker_gid)
   is computed each run and exposed to templates. Templates MUST use
   `{{ auto_generated.* }}` (not `${BUILD_VERSION}` interpolation).

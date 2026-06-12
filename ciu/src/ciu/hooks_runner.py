@@ -31,6 +31,15 @@ import tomli_w
 
 HOOK_POINTS: tuple[str, ...] = ("pre_secrets", "pre_compose", "post_compose")
 
+
+class HookExecutionError(RuntimeError):
+    """Raised when a hook's body raises an unexpected exception (exit 1).
+
+    Wraps the original exception via exception chaining so the cause is
+    preserved.  The runner only wraps body exceptions — [S9.2] FileNotFoundError
+    and [S9.4] contract ValueErrors propagate unchanged.
+    """
+
 # v1 per-point names that were withdrawn in S9.1, used only for migration hints
 _V1_FUNCTION_NAMES = frozenset(
     ("pre_compose_hook", "post_compose_hook", "pre_secrets_hook")
@@ -243,7 +252,18 @@ def run_hooks(
         # Snapshot process environment before each hook (S9.4)
         env_snapshot = dict(os.environ)
 
-        result = hook_fn(config, ctx)
+        try:
+            result = hook_fn(config, ctx)
+        except Exception as exc:
+            # [S9.2] / [S9.4] contract violations (FileNotFoundError,
+            # ValueError) must propagate unchanged — only re-wrap genuine hook
+            # body exceptions that are NOT part of the runner's own contract.
+            # In practice: FileNotFoundError is caught before Phase 2 (load_hook
+            # raises it) and the [S9.4] ValueErrors are raised AFTER the call,
+            # so any exception from the hook body itself lands here.
+            raise HookExecutionError(
+                f"[hook] {_p}: {exc}"
+            ) from exc
 
         # Detect any environment mutation
         if dict(os.environ) != env_snapshot:

@@ -272,7 +272,9 @@ def _vault_topology() -> dict:
 
 def test_vault_preflight_aborts_without_token(monkeypatch, tmp_path):
     # A single app stack that consumes a *_VAULT secret, no vault stack in the
-    # selection, and no token resolves → abort (S7.6).
+    # selection, and no token resolves → S7.6 ValueError (exit 2).
+    import pytest
+
     config = {
         **_vault_topology(),
         "deploy": {"project_name": "p", "environment_tag": "t", "phases": {}},
@@ -295,14 +297,17 @@ def test_vault_preflight_aborts_without_token(monkeypatch, tmp_path):
     }
 
     monkeypatch.setattr(deploy, "resolve_vault_token", lambda cfg, root: None)
-    err = deploy.vault_preflight(tmp_path, profile, selection, rendered)
-    assert err is not None
-    assert "[S7.6]" in err
+    with pytest.raises(ValueError) as exc_info:
+        deploy.vault_preflight(tmp_path, profile, selection, rendered)
+    assert "[S7.6]" in str(exc_info.value)
+    # S7.6 no-token is a config error → exit 2 (pinned).
+    from ciu import engine as _engine
+    assert _engine._exit_code_for(exc_info.value) == 2
 
 
 def test_vault_preflight_passes_when_vault_stack_precedes(monkeypatch, tmp_path):
     # Vault stack in phase_1, vault-consuming app in phase_2 → ordering satisfied
-    # even with NO token (S7.6).
+    # even with NO token (S7.6) — no exception raised.
     config = {
         **_vault_topology(),
         "deploy": {"project_name": "p", "environment_tag": "t", "phases": {}},
@@ -331,10 +336,9 @@ def test_vault_preflight_passes_when_vault_stack_precedes(monkeypatch, tmp_path)
         "applications/app": {"app": {"secrets": {"db_password": "ASK_VAULT:secret/db"}}},
     }
 
-    # No token available, but ordering alone must satisfy the gate.
+    # No token available, but ordering alone must satisfy the gate (no raise).
     monkeypatch.setattr(deploy, "resolve_vault_token", lambda cfg, root: None)
-    err = deploy.vault_preflight(tmp_path, profile, selection, rendered)
-    assert err is None
+    deploy.vault_preflight(tmp_path, profile, selection, rendered)  # must not raise
 
 
 def test_vault_preflight_passes_with_token(monkeypatch, tmp_path):
@@ -357,8 +361,7 @@ def test_vault_preflight_passes_with_token(monkeypatch, tmp_path):
     rendered = {"applications/app": {"app": {"secrets": {"db_password": "ASK_VAULT:secret/db"}}}}
 
     monkeypatch.setattr(deploy, "resolve_vault_token", lambda cfg, root: "s.token")
-    err = deploy.vault_preflight(tmp_path, profile, selection, rendered)
-    assert err is None
+    deploy.vault_preflight(tmp_path, profile, selection, rendered)  # must not raise
 
 
 def test_vault_preflight_noop_without_vault_directives(tmp_path):
@@ -377,11 +380,13 @@ def test_vault_preflight_noop_without_vault_directives(tmp_path):
         }
     ]
     rendered = {"applications/app": {"app": {"env": {"FOO": "bar"}}}}
-    assert deploy.vault_preflight(tmp_path, profile, selection, rendered) is None
+    deploy.vault_preflight(tmp_path, profile, selection, rendered)  # must not raise
 
 
 def test_vault_preflight_flags_misplaced_directive(tmp_path):
-    # A directive string OUTSIDE a secrets table is a violation (S4.5).
+    # A directive string OUTSIDE a secrets table is a violation (S4.5) → ValueError.
+    import pytest
+
     config = {"deploy": {"project_name": "p", "environment_tag": "t", "phases": {}}}
     profile = Profile(name=None, phase_keys=None, config=config)
     selection = [
@@ -394,9 +399,9 @@ def test_vault_preflight_flags_misplaced_directive(tmp_path):
         }
     ]
     rendered = {"applications/app": {"app": {"token": "ASK_VAULT:secret/oops"}}}
-    err = deploy.vault_preflight(tmp_path, profile, selection, rendered)
-    assert err is not None
-    assert "S4.5" in err or "S4.1" in err
+    with pytest.raises(ValueError) as exc_info:
+        deploy.vault_preflight(tmp_path, profile, selection, rendered)
+    assert "S4.5" in str(exc_info.value) or "S4.1" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------

@@ -43,7 +43,6 @@ from pathlib import Path
 from typing import Optional
 
 from . import config_model
-from . import deploy_pkg
 from . import engine
 from . import procutil
 from .cli_utils import get_cli_version
@@ -322,7 +321,7 @@ def vault_preflight(
     profile: profiles_pkg.Profile,
     selection: list[dict],
     rendered: dict[str, dict],
-) -> Optional[str]:
+) -> None:
     """S7.6 vault ordering + S4.1/S4.5 misplaced-directive check.
 
     For each selected stack (using the already-rendered configs):
@@ -334,8 +333,19 @@ def vault_preflight(
 
     If vault-backed directives exist, the gate passes only when either the
     vault stack is in an EARLIER phase of the selection, or a Vault
-    token+address resolve via S4.16. Returns an error string on failure (so
-    the caller can abort BEFORE starting anything), else None.
+    token+address resolve via S4.16.
+
+    Raises
+    ------
+    ValueError
+        Static validation failures (S10.3 → exit 2):
+          - validate_stack_shape failure
+          - misplaced-directive violation [S4.5/S4.1]
+          - S7.6 no-token failure (configuration error: the stack TOML
+            declares vault-backed secrets but the operator has not provided
+            a token or placed the vault stack first)
+    VaultError
+        Runtime I/O failure resolving the Vault address (S10.3 → exit 1).
     """
     config = profile.config
     needs_vault = False
@@ -345,15 +355,13 @@ def vault_preflight(
     for entry in selection:
         rel = entry["path"]
         merged = config_model.deep_merge(config, rendered[rel])
-        try:
-            root_key = config_model.validate_stack_shape(rendered[rel])
-        except ValueError as exc:
-            return str(exc)
+        # validate_stack_shape raises ValueError on bad config (exit 2).
+        root_key = config_model.validate_stack_shape(rendered[rel])
 
         misplaced = secret_directives.find_misplaced(merged, stack_root_key=root_key)
         if misplaced:
             paths = ", ".join(p for p, _ in misplaced)
-            return (
+            raise ValueError(
                 f"[S4.5/S4.1] secret directive(s) or secrets table(s) outside "
                 f"the '{root_key}.secrets' scope in stack '{rel}' at: {paths}"
             )
@@ -369,28 +377,25 @@ def vault_preflight(
                 vault_stack_at = entry["phase_num"]
 
     if not needs_vault:
-        return None
+        return
 
     # The vault stack runs strictly earlier in the selection → ordering satisfied.
     if vault_stack_at is not None and needs_vault_at is not None and vault_stack_at < needs_vault_at:
         info("[S7.6] vault stack precedes vault-backed stacks in the selection — OK")
-        return None
+        return
 
     # Otherwise a token + address must resolve now (S4.16).
-    try:
-        token = resolve_vault_token(config, repo_root)
-        addr = vault_addr_from_config(config)
-    except VaultError as exc:
-        return f"[S7.6] {exc}"
+    # VaultError from I/O issues propagates as-is (exit 1).
+    token = resolve_vault_token(config, repo_root)
+    addr = vault_addr_from_config(config)
     if not token:
-        return (
+        raise ValueError(
             "[S7.6] the selection declares *_VAULT secrets but the vault stack "
             "is not in an earlier phase and no Vault token resolved (VAULT_TOKEN "
             "env, vault.token_file, or the vault stack's [state].root_token). "
             "Aborting before any phase runs."
         )
     info(f"[S7.6] Vault token + address ({addr}) resolved — OK")
-    return None
 
 
 # ===========================================================================
@@ -398,18 +403,20 @@ def vault_preflight(
 # ===========================================================================
 
 
-def registry_preflight(config: dict) -> Optional[str]:
+def registry_preflight(config: dict) -> None:
     """S7.9 — when deploy.registry.url is set, require Docker credentials.
 
-    Returns an error string on failure, else None.
+    Raises ValueError (S10.3 → exit 2) when credentials are missing for the
+    configured registry URL: the operator must run ``docker login`` first —
+    this is a configuration/setup failure, not a runtime I/O failure.
     """
     url = config.get("deploy", {}).get("registry", {}).get("url", "")
     if not url:
-        return None
+        return
     if registry_pkg.check_registry_auth(url):
         info(f"[S7.9] registry credentials present for {url} — OK")
-        return None
-    return (
+        return
+    raise ValueError(
         f"[S7.9] deploy.registry.url is '{url}' but no credentials were found "
         "in the Docker config (auths/credHelpers/credsStore). Run `docker "
         "login` for that registry, then retry."
@@ -681,8 +688,6 @@ def _print_deploy_summary(deployed: list[str], failed: list[str], skipped: list[
 def action_healthcheck(
     profile: profiles_pkg.Profile,
     selection: list[dict],
-    *,
-    ignore_errors: bool,
 ) -> int:
     """--healthcheck: run the health gate over the whole selection (S7.7)."""
     info("=" * 60)
@@ -1125,16 +1130,13 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
 
     # Vault + registry preflight BEFORE any phase runs (S7.6 / S7.9), only for
     # actions that actually start stacks.
+    # vault_preflight / registry_preflight now raise on failure (ValueError →
+    # exit 2 via engine._exit_code_for; VaultError → exit 1) — the outer
+    # try/except in main() catches and maps them.
     if deploy_needs_preflight and not args.dry_run:
         rendered = render_selected_stacks(repo_root, profile, selection)
-        verr = vault_preflight(repo_root, profile, selection, rendered)
-        if verr:
-            error(verr)
-            return 1
-        rerr = registry_preflight(profile.config)
-        if rerr:
-            error(rerr)
-            return 1
+        vault_preflight(repo_root, profile, selection, rendered)
+        registry_preflight(profile.config)
         # Ensure the workspace network exists before compose (devcontainer no-op
         # off-devcontainer); reads the profile-resolved auto_connect setting.
         ensure_workspace_network(
@@ -1145,10 +1147,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         # I/O is forced because the engine won't start anything), matching S8.3
         # "everything else runs" intent.
         rendered = render_selected_stacks(repo_root, profile, selection)
-        verr = vault_preflight(repo_root, profile, selection, rendered)
-        if verr:
-            error(verr)
-            return 1
+        vault_preflight(repo_root, profile, selection, rendered)
 
     for action in actions:
         info(f">>> action: {action}")
@@ -1167,7 +1166,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         elif action == "build_no_cache":
             ac = action_build(repo_root, selection, use_cache=False)
         elif action == "healthcheck":
-            ac = action_healthcheck(profile, selection, ignore_errors=args.ignore_errors)
+            ac = action_healthcheck(profile, selection)
         elif action == "deploy":
             ac = action_deploy(
                 repo_root,

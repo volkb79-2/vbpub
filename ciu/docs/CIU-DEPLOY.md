@@ -204,7 +204,9 @@ service's Docker health status until `--health-timeout` or all services are
 | No healthcheck | Reported as `no-healthcheck` (warning), not silently passing |
 
 Container lookups use anchored name/label filters (`^<project>-<env>-<name>$`)
-to avoid substring matches [S7.8].
+to avoid substring matches [S7.8]. The gate looks up containers as
+`<project>-<env>-<NAME>` where NAME is the phase entry's `name` field, which
+MUST equal the stack TOML's service `name` used in `container_name`.
 
 ---
 

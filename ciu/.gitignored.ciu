@@ -1,5 +1,8 @@
 # CIU-generated files (do not commit)
 
+# CIU machine-owned artifact directory (S1.7)
+**/.ciu/
+
 # Workspace env
 .env.ciu
 

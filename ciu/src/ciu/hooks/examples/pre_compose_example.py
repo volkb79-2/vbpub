@@ -1,40 +1,37 @@
-#!/usr/bin/env python3
-"""
-Example pre-compose hook for CIU.
+"""Minimal v2 pre_compose hook example (SPEC S9).
 
-This sample demonstrates the class-based interface and metadata return format.
-It performs no external I/O and is safe to use as a template.
+Hook point: pre_compose — runs after secrets are materialized, before
+docker-compose.yml is rendered (S8.3 step 11).
+
+Signature (S9.1):  run(config: dict, ctx) -> dict
+
+Return value (S9.4): a dict where every value is a dict containing
+at least 'value'.  Two optional keys control side-effects:
+
+  apply_to_config: True   → merge the value into the in-memory config
+                             dict at the dotted path (the key).
+  persist: 'state'        → write the value under [state].<key> in
+                             the stack's ciu.toml (atomic tmp + replace).
+
+Return None or {} for a no-op hook.
+
+ctx.secret_file(name) returns the Path of a secret's store file (S9.3).
+
+Live examples in the test-repo:
+  test-repo/applications/app-config/pre_compose_app.py
 """
 from __future__ import annotations
 
-from typing import Dict
 
+def run(config: dict, ctx) -> dict:
+    """Example: inject a computed value into the in-memory config."""
+    # Read something from config to illustrate the pattern.
+    project = config.get("deploy", {}).get("project_name", "unknown")
 
-def _build_updates() -> Dict[str, object]:
     return {
-        "EXAMPLE_FLAG": "true",
-        "state.example_pre_compose": {
-            "value": "example-pre",
-            "persist": "toml",
+        # Dotted key path → applied to config["deploy"]["computed_tag"]
+        "deploy.computed_tag": {
+            "value": f"{project}-ready",
             "apply_to_config": True,
         },
     }
-
-
-class PreComposeHook:
-    """Sample class-based pre-compose hook."""
-
-    def __init__(self, env: dict | None = None) -> None:
-        self.env = env or {}
-
-    def run(self, env: dict) -> dict:
-        """Return example updates without touching external systems."""
-        _ = env  # explicit to show the env parameter is available
-        return _build_updates()
-
-
-def pre_compose_hook(config: dict, env: dict) -> dict:
-    """Function-based variant (supported by CIU)."""
-    _ = config
-    _ = env
-    return _build_updates()

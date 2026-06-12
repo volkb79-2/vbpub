@@ -19,9 +19,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from ciu import engine as _engine  # noqa: E402
 from ciu.hooks_runner import (  # noqa: E402
     HOOK_POINTS,
     HookContext,
+    HookExecutionError,
     load_hook,
     run_hooks,
     set_nested,
@@ -484,12 +486,40 @@ class TestRunHooksEnvMutationGuard:
 
 
 # ---------------------------------------------------------------------------
-# run_hooks — hook exception propagates unchanged
+# run_hooks — hook body exceptions become HookExecutionError (exit 1)
 # ---------------------------------------------------------------------------
 
 
 class TestRunHooksExceptionPropagates:
-    def test_runtime_error_from_hook_propagates(self, tmp_path: Path) -> None:
+    def test_hook_body_raising_value_error_becomes_hook_execution_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A ValueError raised by the hook body becomes HookExecutionError (exit 1).
+
+        The [S9.4] contract ValueErrors are raised AFTER the call, so a
+        ValueError FROM the hook body itself lands in HookExecutionError.
+        Exit code: 1 (runtime), NOT 2 (config).
+        """
+        hook = _write_hook(
+            tmp_path,
+            "h_ve.py",
+            """\
+            def run(config, ctx):
+                raise ValueError("bad hook internal state")
+            """,
+        )
+        ctx = _ctx(tmp_path)
+        with pytest.raises(HookExecutionError) as exc_info:
+            run_hooks([str(hook)], "pre_secrets", {}, ctx, tmp_path / "ciu.toml")
+        # The original exception is chained
+        assert isinstance(exc_info.value.__cause__, ValueError)
+        # Engine mapper: HookExecutionError → exit 1 (runtime)
+        assert _engine._exit_code_for(exc_info.value) == 1
+
+    def test_hook_body_raising_runtime_error_becomes_hook_execution_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A RuntimeError from a hook body becomes HookExecutionError (exit 1)."""
         hook = _write_hook(
             tmp_path,
             "h_exc.py",
@@ -499,8 +529,35 @@ class TestRunHooksExceptionPropagates:
             """,
         )
         ctx = _ctx(tmp_path)
-        with pytest.raises(RuntimeError, match="vault is sealed"):
+        with pytest.raises(HookExecutionError) as exc_info:
             run_hooks([str(hook)], "pre_secrets", {}, ctx, tmp_path / "ciu.toml")
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+        assert _engine._exit_code_for(exc_info.value) == 1
+
+    def test_s9_4_contract_violation_still_raises_value_error(
+        self, tmp_path: Path
+    ) -> None:
+        """[S9.4] contract violations (plain {K: v} return) raise ValueError, NOT HookExecutionError.
+
+        The contract check runs AFTER the hook call so it is NOT wrapped in
+        HookExecutionError; it propagates as ValueError → exit 2.
+        """
+        hook = _write_hook(
+            tmp_path,
+            "h_contract.py",
+            """\
+            def run(config, ctx):
+                return {"VAULT_TOKEN": "s.abc123"}
+            """,
+        )
+        ctx = _ctx(tmp_path)
+        with pytest.raises(ValueError, match="S9.4"):
+            run_hooks([str(hook)], "post_compose", {}, ctx, tmp_path / "ciu.toml")
+        # Verify via the exit-code mapper that this is exit 2, not exit 1.
+        try:
+            run_hooks([str(hook)], "post_compose", {}, ctx, tmp_path / "ciu.toml")
+        except ValueError as exc:
+            assert _engine._exit_code_for(exc) == 2
 
 
 # ---------------------------------------------------------------------------

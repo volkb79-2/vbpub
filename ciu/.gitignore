@@ -13,3 +13,8 @@ ciu-global.toml
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/

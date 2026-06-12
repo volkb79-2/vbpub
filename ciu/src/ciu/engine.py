@@ -102,15 +102,15 @@ def check_runtime_dependencies() -> None:
         )
 
     try:
-        result = subprocess.run(["docker", "--version"], capture_output=True, text=True, timeout=5)
-        if result and result.returncode != 0:
+        result = procutil.run_cmd(["docker", "--version"], timeout=5, check=False)
+        if result.returncode != 0:
             missing_deps.append(("docker", "Docker Engine", "https://docs.docker.com/engine/install/"))
     except (FileNotFoundError, subprocess.TimeoutExpired):
         missing_deps.append(("docker", "Docker Engine", "https://docs.docker.com/engine/install/"))
 
     try:
-        result = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True, timeout=5)
-        if result and result.returncode != 0:
+        result = procutil.run_cmd(["docker", "compose", "version"], timeout=5, check=False)
+        if result.returncode != 0:
             missing_deps.append(("docker compose", "Docker Compose v2", "https://docs.docker.com/compose/install/"))
     except (FileNotFoundError, subprocess.TimeoutExpired):
         missing_deps.append(("docker compose", "Docker Compose v2", "https://docs.docker.com/compose/install/"))
@@ -174,13 +174,9 @@ def configure_logging(log_level: str = "INFO") -> None:
 def get_git_hash() -> str:
     """Return the current git commit hash (short, 8 chars), with -dirty suffix."""
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short=8", "HEAD"], capture_output=True, text=True, check=True
-        )
+        result = procutil.run_cmd(["git", "rev-parse", "--short=8", "HEAD"], check=True)
         git_hash = result.stdout.strip()
-        result = subprocess.run(
-            ["git", "status", "--porcelain"], capture_output=True, text=True, check=True
-        )
+        result = procutil.run_cmd(["git", "status", "--porcelain"], check=True)
         is_dirty = len(result.stdout.strip()) > 0
         return f"{git_hash}{'-dirty' if is_dirty else ''}"
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -192,49 +188,6 @@ def get_timestamp() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
-
-
-def extract_service_definitions(config: dict, working_dir: Path) -> dict:
-    """Extract a service definition from global [service.X.Y.Z] for this dir.
-
-    A missing mapping is INFO-level, not an error (S3.8).
-    """
-    repo_path = config.get("ciu", {}).get("repo_root")
-    if not repo_path:
-        print("[INFO] ciu.repo_root not set, skipping service extraction", flush=True)
-        return config
-
-    repo_root = Path(repo_path).resolve()
-    working_resolved = working_dir.resolve()
-    try:
-        relative_path = working_resolved.relative_to(repo_root)
-    except ValueError:
-        print(f"[INFO] {working_dir} not under repo root {repo_root}, skipping service extraction", flush=True)
-        return config
-
-    path_parts = [part.replace("-", "_") for part in relative_path.parts]
-    if not path_parts:
-        return config
-
-    current = config.get("service", {})
-    for part in path_parts[:-1]:
-        if part not in current:
-            print(f"[INFO] No service definition for path: {relative_path}", flush=True)
-            return config
-        current = current[part]
-
-    service_name = path_parts[-1]
-    if service_name not in current:
-        print(f"[INFO] No service definition for: {relative_path}", flush=True)
-        return config
-
-    service_def = current[service_name]
-    print(f"[INFO] Extracting service definition: service.{'.'.join(path_parts)} -> {service_name}", flush=True)
-    if service_name in config:
-        config[service_name] = config_model.deep_merge(service_def, config[service_name])
-    else:
-        config[service_name] = service_def
-    return config
 
 
 def auto_generate_values(config: dict) -> dict:
@@ -1079,7 +1032,10 @@ def main_execution(
         if compose_template.suffix == ".j2":
             rendered_compose = composefile.render_compose(compose_template, guarded)
             output_path = working_dir / DOCKER_COMPOSE_OUTPUT
-            output_path.write_text(rendered_compose, encoding="utf-8")
+            # S8.4: atomic write via tmp sibling + os.replace (no partial writes).
+            tmp_path = output_path.with_suffix(".yml.tmp")
+            tmp_path.write_text(rendered_compose, encoding="utf-8")
+            os.replace(tmp_path, output_path)
         else:
             rendered_compose = compose_template.read_text(encoding="utf-8")
 
@@ -1097,6 +1053,9 @@ def main_execution(
             working_dir, materialized, configfile_mounts,
             repo_root=repo_root, physical_root=None,
         )
+        # S4.22 completeness: scan the overlay for secret leaks too.
+        if overlay_path is not None and overlay_path.exists():
+            composefile.leak_scan(overlay_path.read_text(encoding="utf-8"), materialized)
 
         # ---- Step 16: compose up (S8.1) ----
         if dry_run:
@@ -1140,11 +1099,16 @@ def _check_gitignore(stack_dir: Path) -> None:
     not-yet-existing ``.ciu`` with the canonical directory pattern ``**/.ciu/``
     reports "not ignored" until the directory exists; the under-path query is
     stable for both ``**/.ciu/`` and ``.ciu/`` patterns (creates no files).
+
+    git check-ignore returncode semantics (preserved exactly):
+      0  — path IS ignored
+      1  — path is NOT ignored
+      128 — not inside a git repository
     """
     try:
-        inside = subprocess.run(
+        inside = procutil.run_cmd(
             ["git", "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, cwd=str(stack_dir),
+            check=False,
         )
     except FileNotFoundError:
         return  # git not installed — skip
@@ -1153,16 +1117,13 @@ def _check_gitignore(stack_dir: Path) -> None:
 
     ciu_dir = stack_dir / ".ciu"
     probe = ciu_dir / "secrets"
-    ignored = subprocess.run(
-        ["git", "check-ignore", "-q", str(probe)], cwd=str(stack_dir)
-    )
+    # rc=0 → ignored, rc=1 → not ignored, rc=128 → no repo (treat as not ignored)
+    ignored = procutil.run_cmd(["git", "check-ignore", "-q", str(probe)], check=False)
     if ignored.returncode == 0:
         return
     # Fall back to the literal `.ciu` path (covers the case where it already
     # exists as a directory and the pattern matches it directly).
-    ignored_dir = subprocess.run(
-        ["git", "check-ignore", "-q", str(ciu_dir)], cwd=str(stack_dir)
-    )
+    ignored_dir = procutil.run_cmd(["git", "check-ignore", "-q", str(ciu_dir)], check=False)
     if ignored_dir.returncode == 0:
         return
     raise ValueError(
@@ -1269,7 +1230,9 @@ def _exit_code_for(exc: BaseException) -> int:
         return 3
     if isinstance(exc, ValueError):
         return 2  # validation / [S...] config errors
-    # SecretLeakError, VaultError, ComposeError, hook failures, anything else.
+    if isinstance(exc, hooks_runner.HookExecutionError):
+        return 1  # runtime: hook body raised
+    # SecretLeakError, VaultError, ComposeError, anything else.
     return 1
 
 
