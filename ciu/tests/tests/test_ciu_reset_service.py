@@ -45,13 +45,13 @@ class TestResetServiceDockerComposeDown:
 
     def test_down_includes_overlay_when_present(self, tmp_path):
         config = _base_config()
-        overlay = tmp_path / ".ciu" / "docker-compose.ciu.yml"
+        overlay = tmp_path / ".ciu" / "ciu.compose.overlay.yml"
         overlay.parent.mkdir(parents=True)
         overlay.write_text("secrets: {}\n")
         with patch.object(engine.procutil, "run_cmd", return_value=_ok()) as mock_run:
             reset_service(config, tmp_path, assume_yes=True)
             first_cmd = mock_run.call_args_list[0].args[0]
-            assert ".ciu/docker-compose.ciu.yml" in first_cmd
+            assert ".ciu/ciu.compose.overlay.yml" in first_cmd
 
 
 class TestResetServiceVolumeDirectories:
@@ -82,9 +82,9 @@ class TestResetServiceVolumeDirectories:
 class TestResetServiceConfigFiles:
     def test_removes_rendered_files_and_overlay(self, tmp_path):
         config = _base_config()
-        (tmp_path / "docker-compose.yml").touch()
+        (tmp_path / "ciu.compose.yml").touch()
         (tmp_path / "ciu.toml").touch()
-        overlay = tmp_path / ".ciu" / "docker-compose.ciu.yml"
+        overlay = tmp_path / ".ciu" / "ciu.compose.overlay.yml"
         overlay.parent.mkdir(parents=True)
         overlay.touch()
         rendered = tmp_path / ".ciu" / "rendered"
@@ -94,7 +94,7 @@ class TestResetServiceConfigFiles:
         with patch.object(engine.procutil, "run_cmd", return_value=_ok()):
             reset_service(config, tmp_path, assume_yes=True)
 
-        assert not (tmp_path / "docker-compose.yml").exists()
+        assert not (tmp_path / "ciu.compose.yml").exists()
         assert not (tmp_path / "ciu.toml").exists()
         assert not overlay.exists()
         assert not rendered.exists()

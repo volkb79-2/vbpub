@@ -1,7 +1,7 @@
 """Minimal v2 pre_compose hook example (SPEC S9).
 
 Hook point: pre_compose — runs after secrets are materialized, before
-docker-compose.yml is rendered (S8.3 step 11).
+ciu.compose.yml is rendered (S8.3 step 11).
 
 Signature (S9.1):  run(config: dict, ctx) -> dict
 

@@ -52,8 +52,15 @@ from . import composefile
 from . import hooks_runner
 from . import procutil
 from .config_constants import (
-    DOCKER_COMPOSE_OUTPUT,
+    CIU_COMPOSE_OUTPUT,
+    CIU_COMPOSE_TEMPLATE,
     GLOBAL_CONFIG_DEFAULTS,
+    GLOBAL_CONFIG_RENDERED,
+    MACHINE_DIR,
+    OVERLAY_NAME,
+    RENDERED_SUBDIR,
+    SECRETS_SUBDIR,
+    SHIPPED_COMPOSE,
     STACK_CONFIG_RENDERED,
 )
 from .cli_utils import get_cli_version
@@ -212,7 +219,7 @@ def auto_generate_values(config: dict) -> dict:
     if _unset(container_uid) or _unset(docker_gid):
         raise ValueError(
             "[ERROR] Missing required deploy.env.shared values for hostdir ownership. "
-            "Ensure CONTAINER_UID and DOCKER_GID are set via .env.ciu."
+            "Ensure CONTAINER_UID and DOCKER_GID are set via ciu.env."
         )
 
     config["auto_generated"]["uid"] = container_uid
@@ -275,8 +282,8 @@ Examples:
 
     parser.add_argument("-d", "--dir", type=Path, default=Path.cwd(), metavar="PATH",
                         help="Working directory containing service files (default: current directory)")
-    parser.add_argument("-f", "--file", type=str, default="docker-compose.yml.j2", metavar="NAME",
-                        help="Compose file name (default: docker-compose.yml.j2)")
+    parser.add_argument("-f", "--file", type=str, default=CIU_COMPOSE_TEMPLATE, metavar="NAME",
+                        help=f"Compose template name (default: {CIU_COMPOSE_TEMPLATE})")
     parser.add_argument("--dry-run", action="store_true",
                         help="Run everything except docker compose up (S8.3)")
     parser.add_argument("--print-context", action="store_true",
@@ -303,7 +310,7 @@ Examples:
                                help="Disable devcontainer network auto-connect (override config)")
 
     parser.add_argument("--generate-env", action="store_true",
-                        help="Generate .env.ciu with autodetected values (S2.8 bootstrap)")
+                        help="Generate ciu.env with autodetected values (S2.8 bootstrap)")
     parser.add_argument("--version", action="version", version=f"ciu {get_cli_version()}")
     parser.add_argument("--update-cert-permission", action="store_true",
                         help="Update Let's Encrypt cert permissions (requires root)")
@@ -313,6 +320,10 @@ Examples:
                         help="Clean service to fresh state (containers, volumes, rendered configs)")
     parser.add_argument("--secrets", action="store_true",
                         help="With --reset: also delete the stack's secret store files (S4.25)")
+    parser.add_argument("--shipped", action="store_true",
+                        help=f"Run a maintainer's pre-shipped {SHIPPED_COMPOSE} through CIU "
+                             f"(env+network+DooD preflight, no secrets/overlay; S8.5). "
+                             f"Override the file with -f.")
 
     return parser.parse_args(argv)
 
@@ -429,7 +440,7 @@ def create_hostdirs(
     if default_uid is None or default_gid is None:
         raise ValueError(
             "CONTAINER_UID/DOCKER_GID not found in config - "
-            "ensure .env.ciu is loaded before running CIU"
+            "ensure ciu.env is loaded before running CIU"
         )
 
     print(f"[INFO] Scanning for volume directories (UID:{default_uid}, GID:{default_gid})...", flush=True)
@@ -565,7 +576,7 @@ def reset_service(
     config: dict,
     stack_dir: Path,
     *,
-    compose_file: str = "docker-compose.yml.j2",
+    compose_file: str = CIU_COMPOSE_TEMPLATE,
     remove_secrets: bool = False,
     assume_yes: bool = False,
     specs: Optional[list] = None,
@@ -577,7 +588,7 @@ def reset_service(
       1. ``docker compose down -v`` (with the overlay ``-f`` when it exists).
       2. Remove ``<stack>/vol-*`` directories — resolved against the STACK DIR,
          never the process cwd (B14 / S6.4).
-      3. Remove rendered ``docker-compose.yml`` + ``ciu.toml`` + ``.ciu/rendered/``
+      3. Remove rendered ``ciu.compose.yml`` + ``ciu.toml`` + ``.ciu/rendered/``
          + the overlay.
       4. Orphan cleanup via the anchored label filter
          ``<prefix>.component=<service>`` (docker ps label equality, S6.4).
@@ -598,13 +609,13 @@ def reset_service(
     service_name = stack_dir.name
     print(f"[INFO] Resetting service: {service_name} (project: {project_name})", flush=True)
 
-    overlay_path = stack_dir / ".ciu" / "docker-compose.ciu.yml"
+    overlay_path = stack_dir / MACHINE_DIR / OVERLAY_NAME
 
     # Step 1: docker compose down -v (with overlay args when present).
     print("[INFO]   Step 1/4: Stopping containers and removing volumes...", flush=True)
-    down_cmd = ["docker", "compose", "-f", "docker-compose.yml"]
+    down_cmd = ["docker", "compose", "-f", CIU_COMPOSE_OUTPUT]
     if overlay_path.exists():
-        down_cmd += ["-f", ".ciu/docker-compose.ciu.yml"]
+        down_cmd += ["-f", f"{MACHINE_DIR}/{OVERLAY_NAME}"]
     down_cmd += ["down", "-v"]
     try:
         result = procutil.run_cmd(down_cmd, check=False)
@@ -628,7 +639,7 @@ def reset_service(
     # Step 3: remove rendered outputs + overlay + rendered configfiles.
     print("[INFO]   Step 3/4: Removing generated configuration files...", flush=True)
     targets = [
-        stack_dir / DOCKER_COMPOSE_OUTPUT,
+        stack_dir / CIU_COMPOSE_OUTPUT,
         stack_dir / STACK_CONFIG_RENDERED,
         overlay_path,
     ]
@@ -638,7 +649,7 @@ def reset_service(
             f.unlink()
             print(f"[INFO]     Removed: {f}", flush=True)
             removed += 1
-    rendered_dir = stack_dir / ".ciu" / "rendered"
+    rendered_dir = stack_dir / MACHINE_DIR / RENDERED_SUBDIR
     if rendered_dir.exists():
         shutil.rmtree(rendered_dir)
         print(f"[INFO]     Removed: {rendered_dir}", flush=True)
@@ -653,7 +664,7 @@ def reset_service(
             for d in deleted:
                 print(f"[INFO]     Removed secret store: {d}", flush=True)
         # Fallback for callers without specs: drop the per-stack secrets dir.
-        stack_secrets = stack_dir / ".ciu" / "secrets"
+        stack_secrets = stack_dir / MACHINE_DIR / SECRETS_SUBDIR
         if stack_secrets.exists():
             shutil.rmtree(stack_secrets)
             print(f"[INFO]     Removed secret store dir: {stack_secrets}", flush=True)
@@ -782,7 +793,7 @@ def execute_docker_compose_with_logs(
 
 def main_execution(
     working_dir: Path,
-    compose_file: str = "docker-compose.yml.j2",
+    compose_file: str = CIU_COMPOSE_TEMPLATE,
     dry_run: bool = False,
     reset: bool = False,
     yes: bool = False,
@@ -837,7 +848,7 @@ def main_execution(
                 raise WorkspaceEnvError(
                     "[S1.2] standalone_root is true but REPO_ROOT does not match. "
                     f"Expected: {standalone_root}, got: {env_repo_root}. "
-                    "Regenerate .env.ciu from the standalone root."
+                    "Regenerate ciu.env from the standalone root."
                 )
 
         # repo_root from --define-root or env REPO_ROOT (keep v1 mismatch rule).
@@ -847,13 +858,13 @@ def main_execution(
             if env_repo_root and Path(env_repo_root).resolve() != repo_root:
                 raise ValueError(
                     f"[ERROR] --define-root ({repo_root}) does not match REPO_ROOT ({env_repo_root}). "
-                    "Update .env.ciu or use a matching --define-root."
+                    "Update ciu.env or use a matching --define-root."
                 )
         else:
             env_repo_root = os.environ.get("REPO_ROOT")
             if not env_repo_root:
                 raise WorkspaceEnvError(
-                    "[ERROR] REPO_ROOT not set. Ensure .env.ciu is loaded before running CIU."
+                    "[ERROR] REPO_ROOT not set. Ensure ciu.env is loaded before running CIU."
                 )
             repo_root = Path(env_repo_root).resolve()
 
@@ -873,7 +884,7 @@ def main_execution(
         stack_config = config_model.render_stack(working_dir, global_config, preserve_state=True)
 
         if render_toml:
-            print("[SUCCESS] Rendered CIU TOML files (ciu-global.toml, ciu.toml)", flush=True)
+            print("[SUCCESS] Rendered CIU TOML files (ciu.global.toml, ciu.toml)", flush=True)
             return result
 
         ensure_workspace_network(auto_connect=auto_connect_setting)
@@ -1021,7 +1032,7 @@ def main_execution(
         configfile_mounts = composefile.render_configfiles(working_dir, root_key, merged, _secret_value)
 
         # ---- Step 13: render compose template (S4.21) ----
-        print("[STEP 13/17] Rendering docker-compose template...", flush=True)
+        print("[STEP 13/17] Rendering compose template...", flush=True)
         guarded = composefile.guard_config(merged, specs)
 
         if print_context:
@@ -1031,7 +1042,7 @@ def main_execution(
         compose_template = working_dir / compose_file
         if compose_template.suffix == ".j2":
             rendered_compose = composefile.render_compose(compose_template, guarded)
-            output_path = working_dir / DOCKER_COMPOSE_OUTPUT
+            output_path = working_dir / CIU_COMPOSE_OUTPUT
             # S8.4: atomic write via tmp sibling + os.replace (no partial writes).
             tmp_path = output_path.with_suffix(".yml.tmp")
             tmp_path.write_text(rendered_compose, encoding="utf-8")
@@ -1091,6 +1102,105 @@ def main_execution(
         os.chdir(original_cwd)
 
 
+def run_shipped(
+    working_dir: Path,
+    *,
+    compose_file: str = SHIPPED_COMPOSE,
+    dry_run: bool = False,
+    define_root: Optional[Path] = None,
+    generate_env: bool = False,
+    update_cert_permission: bool = False,
+    auto_connect_network: Optional[bool] = None,
+    compose_profiles: Optional[list[str]] = None,
+) -> dict:
+    """Run a maintainer's pre-shipped compose file *through* CIU (S8.5).
+
+    The ``--shipped`` passthrough: it does NOT require a CIU stack config
+    (``ciu.defaults.toml.j2``) and performs none of the secret / overlay /
+    configfile steps. It still adds the value a plain ``docker compose up``
+    cannot: loads ``ciu.env`` (machine identity, S2), renders the global chain
+    for the ``auto_connect_network`` setting, ensures/attaches the workspace
+    network (S2.8), runs the DooD reachability preflight (S1.5), then runs
+    ``docker compose -f <compose_file> up -d`` (default ``docker-compose.yml``)
+    with the same cwd/project convention as the native path.
+
+    CIU never writes *compose_file* — it is the maintainer's committed file.
+    """
+    working_dir = Path(working_dir).resolve()
+    result: dict = {"status": "success", "dry_run": dry_run, "shipped": True}
+
+    print("[INFO] Checking runtime dependencies...", flush=True)
+    check_runtime_dependencies()
+
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(working_dir)
+
+        # ---- Load env (S2) — same bootstrap as the native path's step 1 ----
+        print("[SHIPPED 1/4] Loading workspace environment...", flush=True)
+        bootstrap_workspace_env(
+            start_dir=working_dir,
+            define_root=define_root,
+            defaults_filename=GLOBAL_CONFIG_DEFAULTS,
+            generate_env=generate_env,
+            update_cert_permission=update_cert_permission,
+            required_keys=REQUIRED_KEYS_CORE,
+        )
+
+        if define_root:
+            repo_root = Path(define_root).resolve()
+        else:
+            env_repo_root = os.environ.get("REPO_ROOT")
+            if not env_repo_root:
+                raise WorkspaceEnvError(
+                    "[ERROR] REPO_ROOT not set. Ensure ciu.env is loaded before running CIU."
+                )
+            repo_root = Path(env_repo_root).resolve()
+
+        # ---- Global chain only (no stack config in shipped mode) ----
+        print("[SHIPPED 2/4] Rendering global configuration...", flush=True)
+        global_config = config_model.render_global_chain(working_dir, repo_root)
+        configure_logging(global_config.get("deploy", {}).get("log_level", "INFO"))
+        auto_connect_setting = global_config.get("ciu", {}).get("auto_connect_network", True)
+        if auto_connect_network is not None:
+            auto_connect_setting = auto_connect_network
+        ensure_workspace_network(auto_connect=auto_connect_setting)
+
+        # ---- DooD preflight (S1.5) before the first daemon bind use ----
+        _dood_preflight(to_physical_path(working_dir, repo_root=repo_root))
+
+        compose_path = working_dir / compose_file
+        if not compose_path.is_file():
+            raise FileNotFoundError(
+                f"[--shipped] no pre-shipped compose file at {compose_path}. "
+                f"Ship a '{compose_file}' next to the stack, or pass -f <name>."
+            )
+
+        # ---- Compose up (S8.5) — no overlay, no expose_env secrets ----
+        compose_env = composefile.compose_process_env(
+            [], {}, compose_profiles=compose_profiles
+        )
+        if dry_run:
+            print("[SHIPPED 3/4] --dry-run: skipping docker compose up", flush=True)
+            print(f"[SHIPPED 4/4] would run: docker compose -f {compose_file} up -d", flush=True)
+            return result
+
+        print(f"[SHIPPED 3/4] Starting shipped stack (docker compose -f {compose_file} up -d)...", flush=True)
+        docker_result = execute_docker_compose_with_logs(
+            ["-f", compose_file], cwd=working_dir, env=compose_env
+        )
+        if docker_result["status"] == "error":
+            raise ComposeError(docker_result["message"])
+        if docker_result["status"] == "interrupted":
+            result["status"] = "interrupted"
+            result["message"] = "User aborted shipped deployment"
+        result["stdout"] = docker_result.get("stdout", "")
+        print("[SHIPPED 4/4] Done.", flush=True)
+        return result
+    finally:
+        os.chdir(original_cwd)
+
+
 def _check_gitignore(stack_dir: Path) -> None:
     """S1.7 — abort when ``<stack>/.ciu`` is not gitignored inside a git work tree.
 
@@ -1115,8 +1225,8 @@ def _check_gitignore(stack_dir: Path) -> None:
     if inside.returncode != 0 or inside.stdout.strip() != "true":
         return  # not a git work tree — skip silently
 
-    ciu_dir = stack_dir / ".ciu"
-    probe = ciu_dir / "secrets"
+    ciu_dir = stack_dir / MACHINE_DIR
+    probe = ciu_dir / SECRETS_SUBDIR
     # rc=0 → ignored, rc=1 → not ignored, rc=128 → no repo (treat as not ignored)
     ignored = procutil.run_cmd(["git", "check-ignore", "-q", str(probe)], check=False)
     if ignored.returncode == 0:
@@ -1263,6 +1373,7 @@ def main(argv: Optional[list] = None) -> int:
         and not args.skip_hostdir_check
         and not args.skip_hooks
         and not args.skip_secrets
+        and not args.shipped
     )
     if generate_env_only:
         try:
@@ -1279,6 +1390,27 @@ def main(argv: Optional[list] = None) -> int:
         except BaseException as exc:  # noqa: BLE001
             print(f"[ERROR] {exc}", flush=True)
             return _exit_code_for(exc)
+
+    if args.shipped:
+        # Default to the pre-shipped compose name unless the user overrode -f.
+        shipped_file = SHIPPED_COMPOSE if args.file == CIU_COMPOSE_TEMPLATE else args.file
+        try:
+            result = run_shipped(
+                working_dir=args.dir,
+                compose_file=shipped_file,
+                dry_run=args.dry_run,
+                define_root=args.define_root,
+                generate_env=args.generate_env,
+                update_cert_permission=args.update_cert_permission,
+                auto_connect_network=args.auto_connect_network,
+            )
+        except SystemExit:
+            raise
+        except BaseException as exc:  # noqa: BLE001
+            print(f"[ERROR] {exc}", flush=True)
+            return _exit_code_for(exc)
+        status = result.get("status")
+        return 0 if status == "success" else 1
 
     try:
         result = main_execution(

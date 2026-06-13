@@ -23,9 +23,9 @@ requirements are marked *(withdrawn)*.
 ## S0 — Terminology
 
 - **Workspace / repo root** — the directory identified by `REPO_ROOT`, holding
-  `ciu-global.defaults.toml.j2` and `.env.ciu`.
+  `ciu.global.defaults.toml.j2` and `ciu.env`.
 - **Stack** — a directory containing `ciu.defaults.toml.j2` and
-  `docker-compose.yml.j2`; the unit `ciu` renders and starts.
+  `ciu.compose.yml.j2`; the unit `ciu` renders and starts.
 - **Stack root key** — the single non-reserved top-level TOML table of a stack
   config (e.g. `redis_core`).
 - **Service** — one compose service; a stack MAY contain several
@@ -34,8 +34,13 @@ requirements are marked *(withdrawn)*.
   a secret value is obtained.
 - **Materialization** — writing the resolved secret value to its secret file.
 - **Overlay** — the CIU-generated compose file
-  `<stack>/.ciu/docker-compose.ciu.yml` containing top-level `secrets:`
+  `<stack>/.ciu/ciu.compose.overlay.yml` containing top-level `secrets:`
   definitions and configfile mounts.
+- **CIU compose** — the stack author's compose template `ciu.compose.yml.j2`
+  and its gitignored rendered output `ciu.compose.yml` (the file CIU runs).
+- **Shipped compose** — an OPTIONAL, maintainer-authored, committed
+  `docker-compose.yml` for a plain `docker compose up` / `ciu --shipped` path.
+  CIU runs it but NEVER renders or overwrites it (S8.5).
 - **DooD** — docker-outside-of-docker: the CIU process runs in a container
   (devcontainer) while the Docker daemon runs on the host.
 - **Logical path** — a path as seen by the CIU process (`REPO_ROOT`-based).
@@ -48,8 +53,8 @@ requirements are marked *(withdrawn)*.
 
 - **S1.1** CIU MUST resolve the repo root in this order: `--define-root`
   (alias `--root-folder`) → `REPO_ROOT` from the environment → walk-up from the
-  working directory to the nearest dir containing `ciu-global.defaults.toml.j2`.
-- **S1.2** A repo whose `ciu-global.defaults.toml.j2` sets
+  working directory to the nearest dir containing `ciu.global.defaults.toml.j2`.
+- **S1.2** A repo whose `ciu.global.defaults.toml.j2` sets
   `standalone_root = true` is a standalone root: CIU MUST refuse to run with a
   `REPO_ROOT` that does not match that directory.
 - **S1.3** Two path namespaces exist (DooD): logical (`REPO_ROOT`) and physical
@@ -69,8 +74,11 @@ requirements are marked *(withdrawn)*.
 - **S1.7** `**/.ciu/` MUST be gitignored. At startup CIU MUST verify via
   `git check-ignore` (when inside a git work tree) that its `.ciu/` paths are
   ignored, and abort if not.
-- **S1.8** Rendered outputs (`ciu-global.toml`, `ciu.toml`,
-  `docker-compose.yml`) remain gitignored as in v1 (see `.gitignored.ciu`).
+- **S1.8** Rendered outputs (`ciu.global.toml`, `ciu.toml`,
+  `ciu.compose.yml`) and the auto-created override templates
+  (`ciu.global.toml.j2`, `ciu.toml.j2`) are gitignored (see `.gitignored.ciu`).
+  A maintainer-authored `docker-compose.yml` for the shipped path (S8.5) is
+  the one compose-shaped file that is **committed**, not ignored.
 - **S1.9** CIU MUST run identically in three execution environments:
   **devcontainer** (DooD), **native host**, and **CI**. On a native host
   `PHYSICAL_REPO_ROOT == REPO_ROOT` and `to_physical_path` is the identity;
@@ -78,9 +86,9 @@ requirements are marked *(withdrawn)*.
   named-volume concern) MUST no-op cleanly outside a devcontainer. No
   feature may assume a devcontainer.
 
-## S2 — Workspace environment (`.env.ciu`)
+## S2 — Workspace environment (`ciu.env`)
 
-- **S2.1** `.env.ciu` at the repo root is the authoritative workspace
+- **S2.1** `ciu.env` at the repo root is the authoritative workspace
   environment. CIU MUST generate it when missing and MUST regenerate it on
   `--generate-env`.
 - **S2.2** Required keys (always): `REPO_ROOT`, `PHYSICAL_REPO_ROOT`,
@@ -96,9 +104,9 @@ requirements are marked *(withdrawn)*.
 - **S2.5** `0` is a valid `CONTAINER_UID`/`CONTAINER_GID`/`DOCKER_GID`.
   Numeric env values MUST be validated as integers with falsy-safe checks
   (`is None` / `== ""`, never truthiness).
-- **S2.6** All `.env.ciu` keys remain visible to `docker compose` `${VAR}`
+- **S2.6** All `ciu.env` keys remain visible to `docker compose` `${VAR}`
   interpolation (the compose process env inherits `os.environ`, see S8.2).
-- **S2.7** `.env.ciu` is the **machine identity layer** — detected facts
+- **S2.7** `ciu.env` is the **machine identity layer** — detected facts
   about this machine, not project configuration (project configuration is
   TOML; TOML may reference machine facts via `$VAR` expansion, S3.2).
   Every key is autodetected; a pre-set environment value always wins:
@@ -114,7 +122,7 @@ requirements are marked *(withdrawn)*.
   | `PUBLIC_IP`/`PUBLIC_FQDN`/`PUBLIC_TLS_*` | config → ipify → reverse DNS → `localhost` fallback (S2.3 gates whether required) |
 
 - **S2.8** `ciu --generate-env` is the **single bootstrap entry point** and
-  MUST perform: detect + write `.env.ciu` → ensure `DOCKER_NETWORK_INTERNAL`
+  MUST perform: detect + write `ciu.env` → ensure `DOCKER_NETWORK_INTERNAL`
   exists → attach the devcontainer to it (devcontainer only; the network
   need not pre-exist the devcontainer — attachment is dynamic via the host
   daemon, so there is **no** chicken-and-egg) → TLS accessibility probe via
@@ -130,9 +138,9 @@ requirements are marked *(withdrawn)*.
 ### Files and layering
 
 - **S3.1** File roles (unchanged from v1):
-  `ciu-global.defaults.toml.j2` (committed) + `ciu-global.toml.j2`
+  `ciu.global.defaults.toml.j2` (committed) + `ciu.global.toml.j2`
   (gitignored override, auto-created from defaults) → rendered
-  `ciu-global.toml`; per stack `ciu.defaults.toml.j2` (committed) +
+  `ciu.global.toml`; per stack `ciu.defaults.toml.j2` (committed) +
   `ciu.toml.j2` (gitignored override) → rendered `ciu.toml`.
 - **S3.2** Render pipeline per template: Jinja2 render (context = config
   merged so far + `env` = process environment) → `$VAR`/`${VAR}` expansion
@@ -271,11 +279,11 @@ requirements are marked *(withdrawn)*.
 
 ### Consumption
 
-- **S4.17** CIU generates `<stack>/.ciu/docker-compose.ciu.yml` (the
+- **S4.17** CIU generates `<stack>/.ciu/ciu.compose.overlay.yml` (the
   overlay) declaring every secret of the stack:
   `secrets: { <name>: { file: <physical path> } }`, plus configfile mounts
   (S5.5). CIU runs
-  `docker compose -f docker-compose.yml -f .ciu/docker-compose.ciu.yml ...`.
+  `docker compose -f ciu.compose.yml -f .ciu/ciu.compose.overlay.yml ...`.
   Templates declare consumption only: `services.<svc>.secrets: [<name>]` and
   read `/run/secrets/<name>` — the *_FILE convention
   (`POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password`) where the image
@@ -300,7 +308,7 @@ requirements are marked *(withdrawn)*.
   the run naming the secret and pointing to `secrets:`/`/run/secrets` usage.
   Configfile templates (S5.4) are the only place secret values can be
   embedded, via the explicit `secret('<name>')` function.
-- **S4.22** After rendering, CIU MUST scan `docker-compose.yml` (and the
+- **S4.22** After rendering, CIU MUST scan `ciu.compose.yml` (and the
   overlay) for every resolved secret value of length ≥ 8 and abort on a hit,
   naming the secret (never printing the value). Rendered configfiles are
   exempt from the scan but MUST be mode `0440` and mounted read-only.
@@ -418,11 +426,11 @@ requirements are marked *(withdrawn)*.
   addressing: host B's profile points `topology.services.vault` at host A's
   external address).
 - **S7.5** CLI: `ciu-deploy --profile <name>`; default from
-  `CIU_HOST_PROFILE` in `.env.ciu`. `[deploy.groups]` and `--groups` do
+  `CIU_HOST_PROFILE` in `ciu.env`. `[deploy.groups]` and `--groups` do
   **not** exist in v2 (greenfield — no aliases, no fallbacks); the validator
   rejects `[deploy.groups]` with a pointer to profiles.
 - **S7.5a** *Multi-host workflow.* Each host carries a clone of the project,
-  its own generated `.env.ciu` (machine identity, S2.7), and a
+  its own generated `ciu.env` (machine identity, S2.7), and a
   `CIU_HOST_PROFILE`. The admin orders execution manually across hosts
   (e.g. `--profile core_infra` on host A **first**, then
   `--profile workers` on host B whose `topology_overrides` points
@@ -458,13 +466,13 @@ requirements are marked *(withdrawn)*.
 ## S8 — Compose execution
 
 - **S8.1** Per stack, the compose invocation is
-  `docker compose -f docker-compose.yml -f .ciu/docker-compose.ciu.yml up -d`
+  `docker compose -f ciu.compose.yml -f .ciu/ciu.compose.overlay.yml up -d`
   (the overlay is omitted only when the stack declares no secrets and no
   configfiles).
 
   *Why a separate overlay instead of injecting into the rendered
-  `docker-compose.yml` (informative):* both files are generated, but by
-  different authors. `docker-compose.yml` is the byte-exact output of the
+  `ciu.compose.yml` (informative):* both files are generated, but by
+  different authors. `ciu.compose.yml` is the byte-exact output of the
   **stack author's** template — when it is wrong, the template is wrong;
   nothing else touched it. The overlay is **machine-derived wiring**
   (secret-store and configfile paths that embed `PHYSICAL_REPO_ROOT`, i.e.
@@ -477,7 +485,7 @@ requirements are marked *(withdrawn)*.
   mechanism; the overlay is also the single file a security review reads to
   see every secret exposure of a stack.
 - **S8.2** The compose process environment is exactly: `os.environ`
-  (which includes the sourced `.env.ciu`) + `PWD` + `COMPOSE_PROFILES`
+  (which includes the sourced `ciu.env`) + `PWD` + `COMPOSE_PROFILES`
   (when set by profile/service) + `expose_env` secrets (S4.19).
   **TOML config flattening into env is withdrawn** — `flatten_dict` /
   `ENV_<KEY>` / `UPPER_SNAKE` placeholders no longer exist. All non-secret
@@ -503,6 +511,31 @@ requirements are marked *(withdrawn)*.
 - **S8.4** On any abort, CIU restores the process working directory and does
   not leave partial overlay/configfile artifacts referenced by a previous
   successful overlay (atomic replace per file).
+
+### Dual shipping
+
+- **S8.5** CIU's rendered compose output is `ciu.compose.yml` at the stack
+  root (rendered from `ciu.compose.yml.j2`, gitignored). A maintainer MAY
+  additionally commit a hand-written `docker-compose.yml` in the same stack
+  directory for a plain `docker compose up` path; CIU MUST NOT render to,
+  rename, or otherwise overwrite that file. `--reset` (S6.4) removes
+  `ciu.compose.yml` and the overlay but MUST NOT remove a hand-written
+  `docker-compose.yml`. This lets a project offer two deploy paths
+  side-by-side: the CIU-managed path (`ciu.compose.yml` + overlay, with
+  secrets/configfiles/hostdirs) and the plain path (`docker-compose.yml`).
+- **S8.6** *Shipped-compose passthrough.* `ciu --shipped` runs a maintainer's
+  pre-shipped compose (default `docker-compose.yml`; override with `-f`)
+  **through** CIU without requiring a stack config (`ciu.defaults.toml.j2`)
+  and without the secret / overlay / configfile steps. It MUST still:
+  load `ciu.env` (S2), render the global chain for the `auto_connect_network`
+  setting, ensure/attach the workspace network (S2.8), run the DooD preflight
+  (S1.5), then `docker compose -f <file> up -d` with the same cwd/project
+  convention as the native path. The compose process env is S8.2 minus
+  `expose_env` secrets (none are resolved). `--dry-run` stops before the
+  compose up. `ciu-deploy` exposes the same path per service via a boolean
+  `shipped` key in `[deploy.phases.*].services` (default `false`; non-bool =
+  abort, S7.2); a `shipped` service participates in phases and the health
+  gate exactly like a native stack.
 
 ## S9 — Hooks
 
@@ -533,12 +566,15 @@ requirements are marked *(withdrawn)*.
 - **S10.1** `ciu`: unchanged flags `-d/-f/-y/--dry-run/--print-context/
   --render-toml/--define-root/--root-folder/--skip-hostdir-check/
   --skip-hooks/--skip-secrets/--generate-env/--update-cert-permission/
-  --version/--reset`; new `--secrets` (with `--reset`, S4.25) and
-  subcommand `ciu secrets list|reset` (S4.25). `--skip-secrets` skips
-  materialization and overlay generation (compose will fail if the template
-  consumes secrets — cleanup-mode only).
+  --version/--reset`; new `--secrets` (with `--reset`, S4.25), new
+  `--shipped` (S8.6 — run the pre-shipped `docker-compose.yml`; `-f`
+  overrides the file name), and subcommand `ciu secrets list|reset` (S4.25).
+  `--skip-secrets` skips materialization and overlay generation (compose will
+  fail if the template consumes secrets — cleanup-mode only). `-f` defaults to
+  `ciu.compose.yml.j2`; the rendered output is `ciu.compose.yml` (S8.5).
 - **S10.2** `ciu-deploy`: new `--profile <name>` (S7.5); `--groups` removed
-  (S7.5, greenfield); all other v1 actions retained.
+  (S7.5, greenfield); per-service `shipped = true` (S8.6) routes a stack
+  through its pre-shipped `docker-compose.yml`; all other v1 actions retained.
 - **S10.3** Exit codes: `0` success · `1` runtime failure (compose, health,
   hooks, vault I/O) · `2` configuration/validation error (S3/S4/S7 static
   checks, argparse) · `3` environment/bootstrap error (S1/S2: missing env
@@ -550,9 +586,10 @@ Checked after merge, before reset/hostdirs/hooks: S3.5 single root key ·
 S3.7 namespace collision · S4.1/S4.5 directive placement · S4.4 directive
 shape · S4.6 name uniqueness/pattern · S4.20 declared-vs-consumed ·
 S5.4 unknown `secret()` name · S6.1 hostdir value shape · S7.1 phase
-naming · S7.2 enabled flags · S7.5 `[deploy.groups]` rejection ·
-S7.6 vault ordering · S2.2/S2.3 env keys · S1.7 gitignore. Each failure
-reports the spec ID it enforces.
+naming · S7.2 enabled flags + `shipped` bool (S8.6) ·
+S7.5 `[deploy.groups]` rejection · S7.6 vault ordering · S2.2/S2.3 env keys ·
+S1.7 gitignore (incl. the auto-created override templates `ciu.toml.j2` /
+`ciu.global.toml.j2`). Each failure reports the spec ID it enforces.
 
 ## S12 — Extension points (reserved, not implemented)
 
@@ -630,7 +667,7 @@ post_compose = ["./post_compose_redis.py"]
 # built-in source order (S4.16), no env-exporting hook needed.
 ```
 
-`docker-compose.yml.j2` (delta to v1 — wrapper pattern per S4.18; `${REDIS_CORE_SECRETS_REDIS_PASSWORD}` placeholders are gone):
+`ciu.compose.yml.j2` (delta to v1 — wrapper pattern per S4.18; `${REDIS_CORE_SECRETS_REDIS_PASSWORD}` placeholders are gone):
 
 ```yaml
 services:
@@ -650,7 +687,7 @@ services:
       - {{ redis_core.redis.hostdir.data }}:/data   # absolute physical path (S6.2)
 ```
 
-CIU generates `.ciu/docker-compose.ciu.yml`:
+CIU generates `.ciu/ciu.compose.overlay.yml`:
 
 ```yaml
 secrets:
@@ -728,7 +765,7 @@ log_level = "{{ controller.settings.log_level }}"
 build_version = "{{ auto_generated.build_version }}"
 ```
 
-`docker-compose.yml.j2` env shrinks to bootstrap pointers (S5.5):
+`ciu.compose.yml.j2` env shrinks to bootstrap pointers (S5.5):
 
 ```yaml
 services:
@@ -761,5 +798,8 @@ configfile mounts + `secret()`, host profiles + `topology_overrides` +
 hostdir inline options (`uid`/`gid`/`mode`/`seed`) + helper-container
 provisioning (S6.5), `ciu secrets` subcommands, exit-code contract,
 leak scan, native-host parity (S1.9), `--generate-env` as the single
-bootstrap (S2.8).
+bootstrap (S2.8), unified `ciu.`-prefixed file naming (`ciu.global.*`,
+`ciu.compose.yml[.j2]`, `ciu.env`, `.ciu/ciu.compose.overlay.yml`), and
+dual shipping — `ciu.compose.yml` alongside an optional committed
+`docker-compose.yml` + `ciu --shipped` / per-service `shipped` (S8.5–S8.6).
 Migration recipes: docs/MIGRATION-V2.md.

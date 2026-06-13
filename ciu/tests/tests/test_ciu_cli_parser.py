@@ -16,7 +16,7 @@ class TestParseArgumentsDefaults:
         args = parse_arguments([])
 
         assert args.dir == Path.cwd()
-        assert args.file == "docker-compose.yml.j2"
+        assert args.file == "ciu.compose.yml.j2"
         assert args.dry_run is False
         assert args.render_toml is False
         assert args.print_context is False

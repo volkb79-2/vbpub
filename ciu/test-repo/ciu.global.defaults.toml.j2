@@ -3,8 +3,8 @@
 # ============================================================================
 # This file is the committed global config for the demo workspace (S3.1). It is
 # rendered through the S3.2 pipeline (Jinja2 -> env-var expansion -> TOML parse):
-# every dollar-VAR below is resolved from .env.ciu (the machine identity layer,
-# S2.7) at render time. The rendered result is `ciu-global.toml` (gitignored).
+# every dollar-VAR below is resolved from ciu.env (the machine identity layer,
+# S2.7) at render time. The rendered result is `ciu.global.toml` (gitignored).
 #
 # Each section is annotated with the spec ID it demonstrates. Read top-to-bottom
 # as a guided tour of every v2 global-config feature.
@@ -12,7 +12,7 @@
 
 # --- [ciu] : workspace-level switches (S2.3 / S1.9 / S2.8) ------------------
 [ciu]
-workspace_env_file = ".env.ciu"
+workspace_env_file = "ciu.env"
 # S2.3: require_fqdn / require_certs both default FALSE (the v1 docs/code
 # mismatch is resolved by the spec). We omit require_fqdn entirely to show the
 # default applies (absent -> false); PUBLIC_FQDN/PUBLIC_TLS_* are therefore not
@@ -27,7 +27,7 @@ auto_connect_network = false
 [deploy]
 project_name = "ciudemo"
 environment_tag = "dev"
-# network_name expands from .env.ciu (S2.6); compose templates emit it as an
+# network_name expands from ciu.env (S2.6); compose templates emit it as an
 # EXTERNAL network (deploy.network_name) so every stack shares one user-defined
 # bridge.
 network_name = "$DOCKER_NETWORK_INTERNAL"
@@ -53,7 +53,7 @@ TZ = "UTC"
 PYTHONUNBUFFERED = "1"
 
 # --- [deploy.env.shared] : machine facts exposed to templates (S2.6 / S2.7) -
-# These come straight from .env.ciu via env-var expansion; CONTAINER_UID/DOCKER_GID
+# These come straight from ciu.env via env-var expansion; CONTAINER_UID/DOCKER_GID
 # drive hostdir + secret-file ownership (S6.3 / S4.10), and the repo-root pair
 # documents the logical/physical DooD split (S1.3/S1.4).
 [deploy.env.shared]

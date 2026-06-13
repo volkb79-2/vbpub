@@ -47,7 +47,7 @@ services:
       # Host-mounted log dir (absolute physical path, S6.2).
       - {{ app_config.app.hostdir.logs }}:/var/log/app
       # NOTE: the config file is NOT mounted here. CIU's overlay
-      # (.ciu/docker-compose.ciu.yml) bind-mounts the rendered config read-only
+      # (.ciu/ciu.compose.overlay.yml) bind-mounts the rendered config read-only
       # at the configfile target /etc/app/config.toml (S5.3) — keeping
       # machine-derived wiring out of the author's template (S8.1 rationale).
 

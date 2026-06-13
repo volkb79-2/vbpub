@@ -68,11 +68,11 @@ def run(config, ctx):
 
 
 def _write_repo(tmp_path: Path) -> Path:
-    (tmp_path / "ciu-global.defaults.toml.j2").write_text(GLOBAL_DEFAULTS)
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text(GLOBAL_DEFAULTS)
     stack = tmp_path / "applications" / "demo"
     stack.mkdir(parents=True)
     (stack / "ciu.defaults.toml.j2").write_text(STACK_DEFAULTS)
-    (stack / "docker-compose.yml.j2").write_text(COMPOSE)
+    (stack / "ciu.compose.yml.j2").write_text(COMPOSE)
     (stack / "hook.py").write_text(HOOK)
     (tmp_path / ".gitignore").write_text("**/.ciu/\n")
     return stack
@@ -92,8 +92,8 @@ def _set_env(tmp_path: Path) -> None:
 def test_engine_runs_pre_compose_hook_apply_and_persist(tmp_path, monkeypatch):
     stack = _write_repo(tmp_path)
     _set_env(tmp_path)
-    # Avoid generating .env.ciu (machine detection) and skip the network step.
-    (tmp_path / ".env.ciu").write_text(
+    # Avoid generating ciu.env (machine detection) and skip the network step.
+    (tmp_path / "ciu.env").write_text(
         "\n".join(
             f'export {k}="{os.environ[k]}"'
             for k in (
@@ -115,7 +115,7 @@ def test_engine_runs_pre_compose_hook_apply_and_persist(tmp_path, monkeypatch):
     assert result.get("status") == "success"
 
     # apply_to_config reached the compose render (step 13, after step 11 hook).
-    rendered = (stack / "docker-compose.yml").read_text()
+    rendered = (stack / "ciu.compose.yml").read_text()
     assert "SEEDED=yes" in rendered
 
     # persist: 'state' wrote to ciu.toml [state] via hooks_runner.
@@ -126,7 +126,7 @@ def test_engine_runs_pre_compose_hook_apply_and_persist(tmp_path, monkeypatch):
 def test_engine_skip_hooks_bypasses_hook(tmp_path, monkeypatch):
     stack = _write_repo(tmp_path)
     _set_env(tmp_path)
-    (tmp_path / ".env.ciu").write_text(
+    (tmp_path / "ciu.env").write_text(
         "\n".join(
             f'export {k}="{os.environ[k]}"'
             for k in (
@@ -147,5 +147,5 @@ def test_engine_skip_hooks_bypasses_hook(tmp_path, monkeypatch):
     )
 
     assert result.get("status") == "success"
-    rendered = (stack / "docker-compose.yml").read_text()
+    rendered = (stack / "ciu.compose.yml").read_text()
     assert "SEEDED=no" in rendered  # hook did not run

@@ -25,4 +25,4 @@ covers multiple configuration layouts:
 - Standard multi-stack repo with vault + consul + apps
 - App without vault
 - App with vault hook
-- Standalone project with its own ciu-global.defaults.toml.j2
+- Standalone project with its own ciu.global.defaults.toml.j2

@@ -14,7 +14,7 @@ Design rules (all enforced below):
   attach step is monkeypatched to a no-op. Vault-backed flows monkeypatch
   ``engine.VaultKV2`` with an in-memory fake.
 * **Hermetic + parallel-safe.** Each test fabricates a minimal repo root under
-  ``tmp_path`` (``ciu-global.defaults.toml.j2`` copied from the demo, ``.env.ciu``
+  ``tmp_path`` (``ciu.global.defaults.toml.j2`` copied from the demo, ``ciu.env``
   generated with ``REPO_ROOT == PHYSICAL_REPO_ROOT == tmp``) and copytree's only
   the stack(s) it needs. The real ``test-repo`` is NEVER mutated.
 * **Inherited-env hazard.** The devcontainer exports a *foreign* dstdns
@@ -49,7 +49,7 @@ from ciu.secrets import providers as providers_pkg  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEST_REPO = REPO_ROOT / "test-repo"
 
-GLOBAL_DEFAULTS = "ciu-global.defaults.toml.j2"
+GLOBAL_DEFAULTS = "ciu.global.defaults.toml.j2"
 
 # Demo stack source dirs (copied per-test into tmp; never mutated in place).
 SRC_VAULT = TEST_REPO / "infra" / "vault"
@@ -88,7 +88,7 @@ def _hermetic_env(monkeypatch):
     monkeypatch.setenv("CIU_SKIP_DOOD_PREFLIGHT", "1")
     monkeypatch.setenv("SKIP_DEPENDENCY_CHECK", "1")
 
-    # Machine-identity facts the demo global config expands from .env.ciu.
+    # Machine-identity facts the demo global config expands from ciu.env.
     # Use the REAL process uid/gid for the ownership knobs so the hostdir chown
     # (S6.3/S4.10) is a genuine no-op success: created vol-* dirs then naturally
     # carry matching ownership, and a SECOND run passes the S6.3 compatibility
@@ -127,9 +127,9 @@ def _hermetic_env(monkeypatch):
 def build_repo(tmp_path: Path, monkeypatch) -> Path:
     """Fabricate a minimal CIU repo root under *tmp_path* and set its env.
 
-    Copies the demo ``ciu-global.defaults.toml.j2`` verbatim (it is
-    self-contained — every ``$VAR`` resolves from ``.env.ciu``) and generates
-    ``.env.ciu`` with ``REPO_ROOT == PHYSICAL_REPO_ROOT == repo_root`` (S2.7:
+    Copies the demo ``ciu.global.defaults.toml.j2`` verbatim (it is
+    self-contained — every ``$VAR`` resolves from ``ciu.env``) and generates
+    ``ciu.env`` with ``REPO_ROOT == PHYSICAL_REPO_ROOT == repo_root`` (S2.7:
     the pre-set env wins, so the generated file carries the tmp paths). The repo
     lives under ``/tmp`` which is NOT a git work tree, so the S1.7 gitignore
     probe no-ops cleanly.
@@ -170,7 +170,7 @@ def add_stack(repo_root: Path, src: Path, rel: str) -> Path:
     def _ignore(_dir, names):
         drop = set()
         for n in names:
-            if n in (".ciu", "__pycache__", "ciu.toml", "docker-compose.yml") or n.startswith("vol-"):
+            if n in (".ciu", "__pycache__", "ciu.toml", "ciu.compose.yml") or n.startswith("vol-"):
                 drop.add(n)
         return drop
 
@@ -185,7 +185,7 @@ def run_engine(stack_dir: Path, monkeypatch, **kwargs):
     """Run ``engine.main_execution`` for *stack_dir* with sane test defaults.
 
     ``dry_run=True`` and ``generate_env=False`` by default (the repo's
-    ``.env.ciu`` already exists from :func:`build_repo`). Extra kwargs override.
+    ``ciu.env`` already exists from :func:`build_repo`). Extra kwargs override.
     """
     params = dict(working_dir=stack_dir, dry_run=True, generate_env=False)
     params.update(kwargs)
@@ -206,15 +206,15 @@ def clear_render_artifacts(stack_dir: Path) -> None:
     finding — it is an engine concern, out of scope for this test packet.)
     """
     shutil.rmtree(stack_dir / ".ciu" / "rendered", ignore_errors=True)
-    (stack_dir / "docker-compose.yml").unlink(missing_ok=True)
+    (stack_dir / "ciu.compose.yml").unlink(missing_ok=True)
 
 
 def read_overlay(stack_dir: Path) -> str:
-    return (stack_dir / ".ciu" / "docker-compose.ciu.yml").read_text()
+    return (stack_dir / ".ciu" / "ciu.compose.overlay.yml").read_text()
 
 
 def read_compose(stack_dir: Path) -> str:
-    return (stack_dir / "docker-compose.yml").read_text()
+    return (stack_dir / "ciu.compose.yml").read_text()
 
 
 def rendered_config(stack_dir: Path) -> str:
@@ -232,7 +232,7 @@ def store_value(repo_root: Path, rel: str) -> bytes:
 
 def doctor_compose(stack_dir: Path, new_text: str) -> None:
     """Overwrite the COPY's compose template (only ever the tmp copy)."""
-    (stack_dir / "docker-compose.yml.j2").write_text(new_text, encoding="utf-8")
+    (stack_dir / "ciu.compose.yml.j2").write_text(new_text, encoding="utf-8")
 
 
 def doctor_config_template(stack_dir: Path, new_text: str) -> None:
@@ -432,7 +432,7 @@ class TestLeakContainment:
     def test_compose_and_overlay_contain_no_store_value(self, tmp_path, monkeypatch):
         """S4.22 — no resolved store-file value appears in compose or overlay.
 
-        After a clean dry-run the rendered docker-compose.yml and the overlay
+        After a clean dry-run the rendered ciu.compose.yml and the overlay
         carry only names/paths; every materialized secret VALUE is absent.
         """
         repo = build_repo(tmp_path, monkeypatch)
@@ -667,7 +667,7 @@ class TestConfigfile:
         """S5.3 — the configfile mounts read_only at the target via a PHYSICAL path.
 
         A dedicated DooD split: PHYSICAL_REPO_ROOT differs from REPO_ROOT. The
-        ``.env.ciu`` is generated with both equal (build_repo), then we OVERRIDE
+        ``ciu.env`` is generated with both equal (build_repo), then we OVERRIDE
         PHYSICAL_REPO_ROOT in the env for the run, so the overlay's mount source
         must start with the physical prefix (S1.4). DooD preflight is skipped.
         """
@@ -1000,7 +1000,7 @@ class TestDeployOrchestration:
 
 
 def _load_demo_global(monkeypatch) -> dict:
-    """Render the REAL demo ciu-global.defaults.toml.j2 (no tmp copy needed).
+    """Render the REAL demo ciu.global.defaults.toml.j2 (no tmp copy needed).
 
     Sets the env keys the template expands, then renders the global chain with
     working_dir == repo_root == test-repo. Used by the deploy-selection tests

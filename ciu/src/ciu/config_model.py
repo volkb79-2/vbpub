@@ -94,15 +94,15 @@ def expand_env_vars_or_fail(raw_text: str, source: str) -> str:
         missing_list = ", ".join(sorted(missing))
         raise ValueError(
             f"[ERROR] Missing required environment values in {source}: {missing_list}.\n"
-            "[ERROR] .env.ciu is authoritative. Run ciu --generate-env "
-            "and source .env.ciu before running CIU."
+            "[ERROR] ciu.env is authoritative. Run ciu --generate-env "
+            "and source ciu.env before running CIU."
         )
 
     leftover = ENV_VAR_PATTERN.search(expanded)
     if leftover:
         raise ValueError(
             f"[ERROR] Unresolved environment placeholders remain in {source}: {leftover.group(0)}\n"
-            "[ERROR] Ensure all required values are set in .env.ciu."
+            "[ERROR] Ensure all required values are set in ciu.env."
         )
 
     return expanded
@@ -269,7 +269,7 @@ def render_global_chain(working_dir: Path, repo_root: Path) -> dict:
       - overrides present → render against config-so-far, merge
 
     Each template is rendered against the config merged SO FAR (v1 behaviour).
-    After the chain: write ciu-global.toml at repo_root; empty result → ValueError.
+    After the chain: write ciu.global.toml at repo_root; empty result → ValueError.
 
     S3.3 fix (B11): the leaf directory (working_dir) IS processed; repo_root
     is NOT processed twice.

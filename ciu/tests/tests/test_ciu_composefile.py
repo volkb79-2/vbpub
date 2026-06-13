@@ -394,7 +394,7 @@ class TestGenerateOverlay:
 
         mats = {"pw": _mat("pw", "value", secret_file)}
         path = generate_overlay(stack, mats, [])
-        assert path == stack / ".ciu" / "docker-compose.ciu.yml"
+        assert path == stack / ".ciu" / "ciu.compose.overlay.yml"
 
         doc = yaml.safe_load(path.read_text())
         file_str = doc["secrets"]["pw"]["file"]
@@ -446,7 +446,7 @@ class TestGenerateOverlay:
         stack.mkdir()
         assert generate_overlay(stack, {}, []) is None
         # No overlay file is written.
-        assert not (stack / ".ciu" / "docker-compose.ciu.yml").exists()
+        assert not (stack / ".ciu" / "ciu.compose.overlay.yml").exists()
 
     def test_no_secret_values_in_overlay_text_s4_22(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -554,15 +554,15 @@ class TestComposeProcessEnv:
 
 class TestComposeFileArgs:
     def test_base_only_without_overlay_s8_1(self, tmp_path: Path) -> None:
-        assert compose_file_args(tmp_path, None) == ["-f", "docker-compose.yml"]
+        assert compose_file_args(tmp_path, None) == ["-f", "ciu.compose.yml"]
 
     def test_includes_overlay_when_present_s8_1(self, tmp_path: Path) -> None:
-        overlay = tmp_path / ".ciu" / "docker-compose.ciu.yml"
+        overlay = tmp_path / ".ciu" / "ciu.compose.overlay.yml"
         assert compose_file_args(tmp_path, overlay) == [
             "-f",
-            "docker-compose.yml",
+            "ciu.compose.yml",
             "-f",
-            ".ciu/docker-compose.ciu.yml",
+            ".ciu/ciu.compose.overlay.yml",
         ]
 
 
@@ -572,7 +572,7 @@ class TestComposeFileArgs:
 
 class TestRenderCompose:
     def test_render_compose_leaks_guard_raises_s4_21(self, tmp_path: Path) -> None:
-        tmpl = tmp_path / "docker-compose.yml.j2"
+        tmpl = tmp_path / "ciu.compose.yml.j2"
         tmpl.write_text("services:\n  api:\n    x: {{ app.secrets.pw }}\n", encoding="utf-8")
         config = {"app": {"secrets": {"pw": "GEN_LOCAL:app/pw"}}}
         guarded = guard_config(config, discover("app", config))
@@ -580,7 +580,7 @@ class TestRenderCompose:
             render_compose(tmpl, guarded)
 
     def test_render_compose_non_secret_ok_s4_21(self, tmp_path: Path) -> None:
-        tmpl = tmp_path / "docker-compose.yml.j2"
+        tmpl = tmp_path / "ciu.compose.yml.j2"
         tmpl.write_text("services:\n  api:\n    image: {{ app.name }}\n", encoding="utf-8")
         config = {"app": {"name": "myimage", "secrets": {"pw": "GEN_LOCAL:app/pw"}}}
         guarded = guard_config(config, discover("app", config))

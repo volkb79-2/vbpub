@@ -5,7 +5,7 @@ Covers:
 - ENV_TYPE native naming (S2.7 — 'bare-metal' retired → 'native')
 - REQUIRED_KEYS_CORE content (S2.2)
 - validate_required_certs (S2.4): path-as-given, readable checks, DOCKER_GID falsy-safe
-- _detect_public_fqdn: malformed ciu-global.toml → '' + WARN (review finding)
+- _detect_public_fqdn: malformed ciu.global.toml → '' + WARN (review finding)
 - generate_ciu_env: ENV_TYPE=native emitted, CIU_HOST_PROFILE placeholder emitted
 """
 from __future__ import annotations
@@ -285,15 +285,15 @@ class TestValidateRequiredCerts:
 
 
 # ---------------------------------------------------------------------------
-# _detect_public_fqdn: malformed ciu-global.toml → WARN
+# _detect_public_fqdn: malformed ciu.global.toml → WARN
 # ---------------------------------------------------------------------------
 
 class TestDetectPublicFqdnMalformedToml:
     """Review finding: silent Exception swallow → now warns on malformed toml."""
 
     def test_malformed_toml_returns_empty_and_warns(self, tmp_path, capsys, monkeypatch):
-        """Malformed ciu-global.toml: public_fqdn returns '' and a WARN is printed."""
-        ciu_global = tmp_path / "ciu-global.toml"
+        """Malformed ciu.global.toml: public_fqdn returns '' and a WARN is printed."""
+        ciu_global = tmp_path / "ciu.global.toml"
         ciu_global.write_text("this is not valid toml ][", encoding="utf-8")
 
         monkeypatch.delenv("PUBLIC_FQDN", raising=False)
@@ -310,7 +310,7 @@ class TestDetectPublicFqdnMalformedToml:
         assert result["PUBLIC_FQDN"] != ""  # falls back, not crashes
 
     def test_missing_toml_no_warn(self, tmp_path, capsys, monkeypatch):
-        """No ciu-global.toml: no WARN emitted (file simply doesn't exist)."""
+        """No ciu.global.toml: no WARN emitted (file simply doesn't exist)."""
         monkeypatch.delenv("PUBLIC_FQDN", raising=False)
         monkeypatch.delenv("PUBLIC_IP", raising=False)
 
@@ -334,7 +334,7 @@ class TestGenerateCiuEnvNative:
         monkeypatch.setattr("ciu.workspace_env._detect_physical_repo_root", lambda repo_root: repo_root)
 
     def test_env_type_native_in_generated_file(self, tmp_path, monkeypatch):
-        """ENV_TYPE=native must appear in the generated .env.ciu."""
+        """ENV_TYPE=native must appear in the generated ciu.env."""
         monkeypatch.setenv("ENV_TYPE", "native")
         monkeypatch.delenv("PUBLIC_FQDN", raising=False)
         monkeypatch.delenv("PUBLIC_IP", raising=False)
@@ -348,7 +348,7 @@ class TestGenerateCiuEnvNative:
         assert "bare-metal" not in content
 
     def test_is_native_in_generated_file(self, tmp_path, monkeypatch):
-        """IS_NATIVE=1 must appear in the generated .env.ciu (replaces IS_BARE_METAL)."""
+        """IS_NATIVE=1 must appear in the generated ciu.env (replaces IS_BARE_METAL)."""
         monkeypatch.setenv("ENV_TYPE", "native")
         monkeypatch.delenv("PUBLIC_FQDN", raising=False)
         monkeypatch.delenv("PUBLIC_IP", raising=False)

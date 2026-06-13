@@ -55,6 +55,12 @@ from typing import Any, Iterable, Mapping
 
 import yaml
 
+from .config_constants import (
+    CIU_COMPOSE_OUTPUT,
+    MACHINE_DIR,
+    OVERLAY_NAME,
+    RENDERED_SUBDIR,
+)
 from .config_model import render_jinja2_text
 from .paths import to_physical_path
 from .secrets.directives import SecretSpec
@@ -430,7 +436,7 @@ def render_configfiles(
     guarded = guard_config(config, specs)
     secret_fn = _make_secret_fn(secret_value_fn, declared_names)
 
-    rendered_root = stack_dir / ".ciu" / "rendered"
+    rendered_root = stack_dir / MACHINE_DIR / RENDERED_SUBDIR
     mounts: list[ConfigFileMount] = []
 
     for service_name, service_block in root.items():
@@ -505,7 +511,7 @@ def generate_overlay(
     repo_root: Path | None = None,
     physical_root: Path | None = None,
 ) -> Path | None:
-    """Write ``<stack>/.ciu/docker-compose.ciu.yml`` (the overlay); S4.17/S8.1.
+    """Write ``<stack>/.ciu/ciu.compose.overlay.yml`` (the overlay); S4.17/S8.1.
 
     Builds::
 
@@ -562,7 +568,7 @@ def generate_overlay(
             svc.setdefault("volumes", []).append(volume_entry)
         overlay["services"] = services
 
-    overlay_path = stack_dir / ".ciu" / "docker-compose.ciu.yml"
+    overlay_path = stack_dir / MACHINE_DIR / OVERLAY_NAME
     overlay_path.parent.mkdir(parents=True, exist_ok=True)
     text = yaml.safe_dump(overlay, sort_keys=False, default_flow_style=False)
     # Atomic replace (S8.4): write to a temp sibling, then os.replace.
@@ -628,8 +634,8 @@ def compose_process_env(
 def compose_file_args(stack_dir: Path | str, overlay_path: Path | str | None) -> list[str]:
     """Return the ``-f`` arguments for the compose invocation (S8.1).
 
-    Always ``['-f', 'docker-compose.yml']``; appends
-    ``['-f', '.ciu/docker-compose.ciu.yml']`` when *overlay_path* is set
+    Always ``['-f', 'ciu.compose.yml']``; appends
+    ``['-f', '.ciu/ciu.compose.overlay.yml']`` when *overlay_path* is set
     (i.e. the stack has secrets and/or configfiles, S8.1). Paths are relative —
     the engine runs compose with ``cwd = stack_dir``.
 
@@ -637,7 +643,7 @@ def compose_file_args(stack_dir: Path | str, overlay_path: Path | str | None) ->
     future absolute-path emission; the returned paths are relative by design so
     the overlay merge works regardless of where the daemon resolves them.
     """
-    args = ["-f", "docker-compose.yml"]
+    args = ["-f", CIU_COMPOSE_OUTPUT]
     if overlay_path is not None:
-        args += ["-f", ".ciu/docker-compose.ciu.yml"]
+        args += ["-f", f"{MACHINE_DIR}/{OVERLAY_NAME}"]
     return args

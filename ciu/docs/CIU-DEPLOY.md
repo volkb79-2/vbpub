@@ -1,7 +1,7 @@
 # CIU-DEPLOY — Multi-Stack Orchestrator Guide
 
 `ciu-deploy` sequences multiple stacks across deployment phases, driven by
-`[deploy.phases.*]` and `[deploy.profiles.*]` in `ciu-global.toml`. Each stack
+`[deploy.phases.*]` and `[deploy.profiles.*]` in `ciu.global.toml`. Each stack
 is started by delegating to `ciu`; `ciu-deploy` does no rendering itself.
 Normative contract: [SPEC.md](SPEC.md).
 
@@ -12,7 +12,7 @@ Normative contract: [SPEC.md](SPEC.md).
 ```bash
 # Bootstrap workspace (once per machine)
 ciu-deploy --generate-env
-source .env.ciu
+source ciu.env
 
 # Render all stack TOMLs (fresh workspace preflight)
 ciu-deploy --render-toml
@@ -62,10 +62,10 @@ These are two **distinct concepts** and must not be confused:
 
 | Concept | Configured in | Selects | CLI / env |
 |---|---|---|---|
-| **Host profile** | `[deploy.profiles.<name>]` | Which **stacks** run on this host | `--profile <name>` or `CIU_HOST_PROFILE` in `.env.ciu` |
+| **Host profile** | `[deploy.profiles.<name>]` | Which **stacks** run on this host | `--profile <name>` or `CIU_HOST_PROFILE` in `ciu.env` |
 | **Compose profile** | `compose_profiles = [...]` under a host profile entry | Which **services** inside a stack are activated | Sets `COMPOSE_PROFILES` env for that stack |
 
-Host profiles from `test-repo/ciu-global.defaults.toml.j2`:
+Host profiles from `test-repo/ciu.global.defaults.toml.j2`:
 
 ```toml
 # Host A: the shared backbone
@@ -98,8 +98,8 @@ compose_profiles = ["monitoring", "debug"]   # → COMPOSE_PROFILES=monitoring,d
 
 ## Multi-Host Workflow [S7.5a]
 
-Each host carries a clone of the project, its own `.env.ciu` (machine identity),
-and sets `CIU_HOST_PROFILE` in `.env.ciu` to control which stacks run.
+Each host carries a clone of the project, its own `ciu.env` (machine identity),
+and sets `CIU_HOST_PROFILE` in `ciu.env` to control which stacks run.
 
 **Order matters**: the admin executes manually, starting with the host that
 provides the shared services (Vault, databases) before the hosts that consume them.
@@ -109,7 +109,7 @@ provides the shared services (Vault, databases) before the hosts that consume th
 **Host A** — core infrastructure:
 
 ```bash
-# .env.ciu on Host A:
+# ciu.env on Host A:
 # CIU_HOST_PROFILE=core_infra
 
 ciu --generate-env           # detects Host A's identity
@@ -119,7 +119,7 @@ ciu-deploy --deploy          # runs phase_1 (Vault) + phase_2 (data)
 **Host B** — worker tier (after Host A is healthy):
 
 ```bash
-# .env.ciu on Host B:
+# ciu.env on Host B:
 # CIU_HOST_PROFILE=workers
 
 ciu --generate-env           # detects Host B's identity
@@ -168,6 +168,28 @@ flag name = abort. Expressions are forbidden (v1 `eval()` withdrawn) [S7.2]:
 enable_app = true   # flip to false to disable phase_3's service
 ```
 
+### Shipped services [S8.6]
+
+A service entry MAY carry `shipped = true` (a plain bool; non-bool = abort,
+S7.2) to route that stack through its hand-written `docker-compose.yml` instead
+of CIU's rendered `ciu.compose.yml`. The stack still participates in phase
+ordering and the health gate exactly like a native one; CIU just runs the
+pre-shipped compose (loading `ciu.env`, ensuring the network, DooD preflight)
+without the secret / overlay / configfile steps:
+
+```toml
+[deploy.phases.phase_2]
+name = "Data"
+services = [
+  { path = "infra/redis-core", name = "redis", enabled = true },
+  { path = "vendor/legacy",    name = "legacy", enabled = true, shipped = true },
+]
+```
+
+This lets a fleet mix CIU-managed stacks and plain `docker-compose.yml` stacks
+in the same phased deployment. See [CIU.md](CIU.md#dual-shipping-s85s86) for the
+single-stack `ciu --shipped` equivalent.
+
 ---
 
 ## Vault Preflight and Token Source Order [S7.6, S4.16]
@@ -215,7 +237,7 @@ MUST equal the stack TOML's service `name` used in `container_name`.
 The environment passed to `docker compose` for each stack is exactly:
 
 ```
-os.environ (which includes .env.ciu)
+os.environ (which includes ciu.env)
 + PWD
 + COMPOSE_PROFILES (when set by a host profile's compose_profiles)
 + expose_env secrets (per-secret opt-in, discouraged — S4.19)

@@ -29,6 +29,32 @@ phases, three hook points with structured-only returns, hostdir inline options
 + helper-container provisioning, `ciu secrets` subcommands, exit-code contract,
 leak scan, native-host parity.
 
+### File renames (unified `ciu.` prefix, S1.8/S8.5)
+
+Every CIU file now groups under a `ciu.` prefix; rename on migration (the rename
+is the only change for most files — content is unaffected):
+
+| v1 name | v2 name |
+|---|---|
+| `ciu-global.defaults.toml.j2` | `ciu.global.defaults.toml.j2` |
+| `ciu-global.toml.j2` / `ciu-global.toml` | `ciu.global.toml.j2` / `ciu.global.toml` |
+| `docker-compose.yml.j2` | `ciu.compose.yml.j2` |
+| `docker-compose.yml` (CIU's rendered output) | `ciu.compose.yml` |
+| `.env.ciu` | `ciu.env` |
+| `.ciu/docker-compose.ciu.yml` (overlay) | `.ciu/ciu.compose.overlay.yml` |
+
+`ciu.defaults.toml.j2` / `ciu.toml.j2` / `ciu.toml` are unchanged. Update
+`.gitignore` from the new [`.gitignored.ciu`](../.gitignored.ciu); external
+scripts (devcontainer `post-create.sh`, etc.) that referenced `.env.ciu` or
+sourced it now use `ciu.env`.
+
+**Dual shipping (optional, S8.5–S8.6):** because CIU now renders to
+`ciu.compose.yml`, the name `docker-compose.yml` is freed for a hand-written
+compose you MAY commit for a plain `docker compose up` / `ciu --shipped` path.
+You don't have to add one — but if a stack already had a hand-edited compose you
+wanted to keep runnable as-is, commit it as `docker-compose.yml` and mark its
+deploy service `shipped = true`.
+
 ### Validator-driven workflow
 
 The fastest path from v1 to v2 is to let the validator tell you what to fix:
@@ -75,7 +101,7 @@ understand the contract and use the section in this guide that matches it.
 - [ ] Upgrade wheel to ciu 2.x on a **branch**; run `ciu --render-toml` per
   stack — the v2 validator [S11] lists every violation with its spec ID.
 - [ ] Add `**/.ciu/` to `.gitignore` [S1.7 aborts otherwise].
-- [ ] Regenerate `.env.ciu` (`ciu --generate-env`); note `PUBLIC_*` keys are
+- [ ] Regenerate `ciu.env` (`ciu --generate-env`); note `PUBLIC_*` keys are
   now required only when `require_fqdn`/`require_certs` is enabled [S2.3].
 
 ---
@@ -108,7 +134,7 @@ template using `secret()` (§8), or a hook.
 `${<ROOT>_SECRETS_<NAME>}` and `${ENV_<KEY>}` placeholders no longer exist —
 env flattening is withdrawn [S8.2].
 
-For each `${<ROOT>_SECRETS_<NAME>}` in a `docker-compose.yml.j2`:
+For each `${<ROOT>_SECRETS_<NAME>}` in a `ciu.compose.yml.j2`:
 
 1. Add `secrets: [<name>]` to the consuming service.
 2. Pick the consumption pattern:
@@ -116,7 +142,7 @@ For each `${<ROOT>_SECRETS_<NAME>}` in a `docker-compose.yml.j2`:
      (postgres, mariadb, grafana, …);
    - No file support → `sh -c '… "$(cat /run/secrets/<name>)" …'` wrapper
      (redis: see SPEC Appendix B.1 — covers `--requirepass` **and** the
-     healthcheck). Test-repo: `test-repo/infra/redis-core/docker-compose.yml.j2`
+     healthcheck). Test-repo: `test-repo/infra/redis-core/ciu.compose.yml.j2`
    - Last resort → `expose_env = "<NAME>"` on the secret and keep `${NAME}`
      [S4.19; logged, discouraged].
 3. Delete the old `environment:` line that injected the secret.
@@ -166,7 +192,7 @@ infra = ["phase_1", "phase_2"]    phases = ["phase_1", "phase_2"]
 
 `[deploy.groups]` and `--groups` are **removed** (greenfield, S7.5) — the
 validator rejects them with a pointer to profiles. Per host, set
-`CIU_HOST_PROFILE` in that host's `.env.ciu` and order the runs manually
+`CIU_HOST_PROFILE` in that host's `ciu.env` and order the runs manually
 (core infra host first — S7.5a). Phase keys must be `phase_<int>` strings;
 numeric ordering is now guaranteed [S7.1]. `enabled` expressions become
 `[deploy.control]` flag names [S7.2].
@@ -241,6 +267,6 @@ app keeps its env interface with secrets via `*_FILE` / wrapper / `expose_env`.
 
 - [ ] `ciu -d <stack> --dry-run` passes validation, leak scan included.
 - [ ] `ciu -d <stack>` twice → `diff` of `.ciu/secrets/` is empty
-  (idempotency, S4.11) and `docker-compose.yml` contains no secret value.
+  (idempotency, S4.11) and `ciu.compose.yml` contains no secret value.
 - [ ] `docker exec <c> cat /run/secrets/<name>` matches the store file.
 - [ ] `ciu-deploy --profile <name> --healthcheck` honest (`starting` ≠ pass) [S7.7].

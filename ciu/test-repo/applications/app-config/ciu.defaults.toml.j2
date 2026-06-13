@@ -39,7 +39,7 @@ ca_bundle = "ASK_FILE:files/demo-ca.pem"
 # --- configfile mount (S5.1/S5.2/S5.3) --------------------------------------
 # CIU renders config.toml.j2 with the merged config + secret('<name>') and mounts
 # the result read-only at `target` via the overlay (the mount does NOT appear in
-# docker-compose.yml — see the comment in the compose template).
+# ciu.compose.yml — see the comment in the compose template).
 [app_config.app.configfile.main]
 template = "config.toml.j2"
 target = "/etc/app/config.toml"

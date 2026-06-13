@@ -1,0 +1,26 @@
+# Dual shipping demo (SPEC S8.5/S8.6).
+#
+# This is a HAND-WRITTEN, COMMITTED compose file — the "plain" deploy path. CIU
+# never renders or overwrites it (it renders its own `ciu.compose.yml`). There
+# is deliberately NO `ciu.defaults.toml.j2` in this directory: a shipped stack
+# needs no CIU config.
+#
+# Run it three ways:
+#   docker compose up -d                         # no CIU at all
+#   ciu --shipped -d shipped-example             # through CIU: loads ciu.env,
+#                                                #   ensures the network, DooD
+#                                                #   preflight, then compose up
+#   (in ciu-deploy: add `shipped = true` to a service entry, see CIU-DEPLOY.md)
+#
+# `${DOCKER_NETWORK_INTERNAL}` below resolves from ciu.env when run via
+# `ciu --shipped` — the machine-identity value a plain `docker compose up` would
+# not have unless the admin sourced ciu.env first.
+services:
+  shipped_hello:
+    image: alpine:3
+    command: ["sh", "-c", "echo 'shipped stack up (S8.5)'; sleep 3600"]
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 5s
+      timeout: 2s
+      retries: 3

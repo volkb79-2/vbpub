@@ -1,87 +1,101 @@
 #!/usr/bin/env python3
 """
-Configuration filename constants for DST-DNS project.
+File- and directory-name constants for CIU.
 
-CRITICAL: This is the SINGLE SOURCE OF TRUTH for all config filenames.
-All scripts MUST import from this file instead of using hardcoded strings.
+CRITICAL: This is the SINGLE SOURCE OF TRUTH for every CIU file and directory
+name. All modules MUST import from this file instead of hardcoding strings, so
+a rename is a one-line change here.
 
-Naming Convention (Greenfield Standard):
-- *.defaults.toml.j2 = Template defaults (committed)
-- *.toml.j2 = Template overrides (gitignored)
-- *.toml = Rendered runtime config (gitignored)
+Naming convention (greenfield standard):
+- ``*.defaults.toml.j2`` = committed template defaults
+- ``*.toml.j2``          = gitignored override template (auto-created from defaults)
+- ``*.toml``             = gitignored rendered runtime config
+- ``ciu.compose.yml.j2`` = committed compose template
+- ``ciu.compose.yml``    = gitignored rendered compose (what CIU runs)
+- ``docker-compose.yml`` = OPTIONAL hand-written compose a maintainer MAY ship;
+                           CIU never writes it. The ``--shipped`` path runs it.
+- ``ciu.env``            = gitignored workspace machine-identity env
+- ``.ciu/``              = machine-owned artifact dir (overlay, secrets, rendered,
+                           lock); humans MUST NOT edit its contents (S1.6).
+
+Processing order reads straight off the suffix chain: a ``.j2`` suffix marks a
+template (input); stripping it yields the rendered output.
 """
 
 # ============================================================================
-# TOML Configuration Filenames (CANONICAL - DO NOT HARDCODE)
+# TOML configuration filenames
 # ============================================================================
 
 # Global configuration (repository root)
-GLOBAL_CONFIG_DEFAULTS = 'ciu-global.defaults.toml.j2'
-GLOBAL_CONFIG_OVERRIDES = 'ciu-global.toml.j2'
-GLOBAL_CONFIG_RENDERED = 'ciu-global.toml'
+GLOBAL_CONFIG_DEFAULTS = 'ciu.global.defaults.toml.j2'
+GLOBAL_CONFIG_OVERRIDES = 'ciu.global.toml.j2'
+GLOBAL_CONFIG_RENDERED = 'ciu.global.toml'
 
-# Stack configuration (per-service directory: applications/*, infra/*, infra-global/*, tools/*)
+# Stack configuration (per stack directory: applications/*, infra/*, tools/*)
 STACK_CONFIG_DEFAULTS = 'ciu.defaults.toml.j2'
 STACK_CONFIG_OVERRIDES = 'ciu.toml.j2'
 STACK_CONFIG_RENDERED = 'ciu.toml'
 
-# Docker Compose generated files
-DOCKER_COMPOSE_TEMPLATE = 'docker-compose.yml.j2'
-DOCKER_COMPOSE_OUTPUT = 'docker-compose.yml'
+# ============================================================================
+# Compose filenames
+# ============================================================================
+
+# CIU's own compose: committed template -> gitignored rendered output.
+CIU_COMPOSE_TEMPLATE = 'ciu.compose.yml.j2'
+CIU_COMPOSE_OUTPUT = 'ciu.compose.yml'
+
+# A maintainer-authored, committed compose for the plain `docker compose` /
+# `--shipped` path. CIU runs it but NEVER renders or overwrites it.
+SHIPPED_COMPOSE = 'docker-compose.yml'
 
 # ============================================================================
-# Helper Functions
+# Workspace environment (machine-identity layer, S2)
+# ============================================================================
+
+WORKSPACE_ENV = 'ciu.env'
+
+# ============================================================================
+# Machine-owned artifact directory (.ciu/, S1.6) and its contents
+# ============================================================================
+
+MACHINE_DIR = '.ciu'                       # per-stack and project-scoped
+OVERLAY_NAME = 'ciu.compose.overlay.yml'   # generated overlay, under MACHINE_DIR
+SECRETS_SUBDIR = 'secrets'                 # secret store, under MACHINE_DIR
+RENDERED_SUBDIR = 'rendered'               # rendered configfiles, under MACHINE_DIR
+LOCK_NAME = 'lock'                         # exclusive run lock, under MACHINE_DIR
+
+
+# ============================================================================
+# Helper functions
 # ============================================================================
 
 
 def get_rendered_config_name(defaults_name: str) -> str:
-    """
-    Get the corresponding rendered filename for a defaults template.
-
-    Args:
-        defaults_name: The .defaults.toml.j2 filename
-
-    Returns:
-        The corresponding .toml filename
+    """Map a ``*.defaults.toml.j2`` template name to its rendered ``*.toml``.
 
     Examples:
         >>> get_rendered_config_name('ciu.defaults.toml.j2')
         'ciu.toml'
-        >>> get_rendered_config_name('ciu-global.defaults.toml.j2')
-        'ciu-global.toml'
+        >>> get_rendered_config_name('ciu.global.defaults.toml.j2')
+        'ciu.global.toml'
     """
     return defaults_name.replace('.defaults.toml.j2', '.toml')
 
 
 def get_defaults_template_name(rendered_name: str) -> str:
-    """
-    Get the corresponding defaults template filename for a rendered TOML.
-
-    Args:
-        rendered_name: The rendered .toml filename
-
-    Returns:
-        The corresponding .defaults.toml.j2 filename
+    """Map a rendered ``*.toml`` name back to its ``*.defaults.toml.j2`` template.
 
     Examples:
         >>> get_defaults_template_name('ciu.toml')
         'ciu.defaults.toml.j2'
-        >>> get_defaults_template_name('ciu-global.toml')
-        'ciu-global.defaults.toml.j2'
+        >>> get_defaults_template_name('ciu.global.toml')
+        'ciu.global.defaults.toml.j2'
     """
     return rendered_name.replace('.toml', '.defaults.toml.j2')
 
 
 def is_config_file(filename: str) -> bool:
-    """
-    Check if a filename is a recognized configuration file.
-
-    Args:
-        filename: The filename to check
-
-    Returns:
-        True if the filename matches a known config pattern
-    """
+    """True if *filename* is a recognized CIU configuration file name."""
     config_files = {
         GLOBAL_CONFIG_DEFAULTS,
         GLOBAL_CONFIG_OVERRIDES,

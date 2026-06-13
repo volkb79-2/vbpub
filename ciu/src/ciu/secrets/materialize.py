@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
+from ciu.config_constants import LOCK_NAME, MACHINE_DIR, SECRETS_SUBDIR
 from ciu.secrets.directives import SecretSpec
 from ciu.secrets.providers import VaultError, VaultKV2
 
@@ -72,7 +73,7 @@ class MaterializedSecret:
 
 def stack_store(stack_dir: Path) -> Path:
     """Per-stack secret store directory ``<stack>/.ciu/secrets`` (S4.9)."""
-    return Path(stack_dir) / ".ciu" / "secrets"
+    return Path(stack_dir) / MACHINE_DIR / SECRETS_SUBDIR
 
 
 def project_store(repo_root: Path) -> Path:
@@ -81,7 +82,7 @@ def project_store(repo_root: Path) -> Path:
     GEN_LOCAL secrets live here so unrelated stacks can share a generated
     value without Vault; their ``<name>`` MAY contain ``/`` namespacing.
     """
-    return Path(repo_root) / ".ciu" / "secrets"
+    return Path(repo_root) / MACHINE_DIR / SECRETS_SUBDIR
 
 
 def _store_file(spec: SecretSpec, stack_dir: Path, repo_root: Path) -> Path:
@@ -214,7 +215,7 @@ def _ensure_dir_mode(parent: Path, leaf_target: Path) -> None:
     while True:
         with contextlib.suppress(OSError):
             os.chmod(current, _STORE_DIR_MODE)
-        at_store_root = current.name == "secrets" and current.parent.name == ".ciu"
+        at_store_root = current.name == SECRETS_SUBDIR and current.parent.name == MACHINE_DIR
         if at_store_root or current.parent == current:
             break
         current = current.parent
@@ -311,8 +312,8 @@ def materialize(
     # S4.26: always serialize on the stack lock; additionally take the project
     # lock when GEN_LOCAL writes are in play. Order (stack then project) is
     # fixed to avoid deadlocks across concurrent runs.
-    stack_lock = stack_dir / ".ciu" / "lock"
-    project_lock = repo_root / ".ciu" / "lock"
+    stack_lock = stack_dir / MACHINE_DIR / LOCK_NAME
+    project_lock = repo_root / MACHINE_DIR / LOCK_NAME
 
     with contextlib.ExitStack() as locks:
         locks.enter_context(_flock(stack_lock))

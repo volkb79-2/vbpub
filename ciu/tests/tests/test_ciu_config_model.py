@@ -112,8 +112,8 @@ def test_write_rendered_toml_roundtrip(tmp_path):
 
 
 def test_ensure_override_template_creates_when_missing(tmp_path):
-    defaults = tmp_path / "ciu-global.defaults.toml.j2"
-    overrides = tmp_path / "ciu-global.toml.j2"
+    defaults = tmp_path / "ciu.global.defaults.toml.j2"
+    overrides = tmp_path / "ciu.global.toml.j2"
     defaults.write_text('[ciu]\nkey = "default"\n', encoding="utf-8")
     ensure_override_template(defaults, overrides)
     assert overrides.exists()
@@ -121,8 +121,8 @@ def test_ensure_override_template_creates_when_missing(tmp_path):
 
 
 def test_ensure_override_template_does_not_overwrite(tmp_path):
-    defaults = tmp_path / "ciu-global.defaults.toml.j2"
-    overrides = tmp_path / "ciu-global.toml.j2"
+    defaults = tmp_path / "ciu.global.defaults.toml.j2"
+    overrides = tmp_path / "ciu.global.toml.j2"
     defaults.write_text('[ciu]\nkey = "default"\n', encoding="utf-8")
     overrides.write_text('[ciu]\nkey = "custom"\n', encoding="utf-8")
     ensure_override_template(defaults, overrides)
@@ -241,20 +241,20 @@ def test_chain_dirs_sibling_raises(tmp_path):
 
 
 def _write_global_defaults(directory: Path, content: str) -> None:
-    (directory / "ciu-global.defaults.toml.j2").write_text(content, encoding="utf-8")
+    (directory / "ciu.global.defaults.toml.j2").write_text(content, encoding="utf-8")
 
 
 def _write_global_overrides(directory: Path, content: str) -> None:
-    (directory / "ciu-global.toml.j2").write_text(content, encoding="utf-8")
+    (directory / "ciu.global.toml.j2").write_text(content, encoding="utf-8")
 
 
 def test_render_global_chain_simple(tmp_path, monkeypatch):
-    """Root-only global config renders and writes ciu-global.toml."""
+    """Root-only global config renders and writes ciu.global.toml."""
     monkeypatch.setenv("REPO_ROOT", str(tmp_path))
     _write_global_defaults(tmp_path, '[ciu]\nenv = "test"\n')
     result = render_global_chain(tmp_path, tmp_path)
     assert result["ciu"]["env"] == "test"
-    assert (tmp_path / "ciu-global.toml").exists()
+    assert (tmp_path / "ciu.global.toml").exists()
 
 
 def test_render_global_chain_override_wins(tmp_path, monkeypatch):
@@ -323,11 +323,11 @@ def test_render_global_chain_empty_raises(tmp_path, monkeypatch):
 
 
 def test_render_global_chain_writes_global_toml(tmp_path, monkeypatch):
-    """ciu-global.toml is written at repo_root."""
+    """ciu.global.toml is written at repo_root."""
     monkeypatch.setenv("REPO_ROOT", str(tmp_path))
     _write_global_defaults(tmp_path, '[ciu]\nenv = "test"\n')
     render_global_chain(tmp_path, tmp_path)
-    assert (tmp_path / "ciu-global.toml").exists()
+    assert (tmp_path / "ciu.global.toml").exists()
 
 
 def test_render_global_chain_jinja2_context_uses_merged_config(tmp_path, monkeypatch):

@@ -1,13 +1,22 @@
 # CIU machine-owned artifacts (S1.6/S1.7) — humans MUST NOT edit, MUST be gitignored
 **/.ciu/
 
-# Rendered config outputs (S1.8 — gitignored as in v1, see .gitignored.ciu)
-ciu-global.toml
+# Rendered config outputs (S1.8 — gitignored, see .gitignored.ciu)
+ciu.global.toml
 **/ciu.toml
-**/docker-compose.yml
+# CIU's own rendered compose (a hand-written docker-compose.yml for the
+# --shipped path is intentionally NOT ignored — maintainers commit it)
+**/ciu.compose.yml
+# The monorepo root .gitignore ignores **/docker-compose.yml globally; re-include
+# it under ciu/ so a hand-written shipped compose (S8.5) stays committable.
+!**/docker-compose.yml
+
+# Auto-created override templates (gitignored; humans MAY edit, never committed)
+ciu.global.toml.j2
+**/ciu.toml.j2
 
 # Workspace environment (machine identity layer, S2)
-**/.env.ciu
+**/ciu.env
 
 # Python caches
 __pycache__/

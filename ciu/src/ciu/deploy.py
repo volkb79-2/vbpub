@@ -46,7 +46,11 @@ from . import config_model
 from . import engine
 from . import procutil
 from .cli_utils import get_cli_version
-from .config_constants import GLOBAL_CONFIG_DEFAULTS, GLOBAL_CONFIG_RENDERED
+from .config_constants import (
+    GLOBAL_CONFIG_DEFAULTS,
+    GLOBAL_CONFIG_RENDERED,
+    STACK_CONFIG_RENDERED,
+)
 from .deploy_pkg import health as health_pkg
 from .deploy_pkg import phases as phases_pkg
 from .deploy_pkg import profiles as profiles_pkg
@@ -154,7 +158,7 @@ def resolve_repo_root(define_root: Optional[Path]) -> Path:
         if env_repo_root and Path(env_repo_root).resolve() != repo_root:
             raise ValueError(
                 f"[ERROR] --define-root ({repo_root}) does not match "
-                f"REPO_ROOT ({env_repo_root}). Update .env.ciu or pass a "
+                f"REPO_ROOT ({env_repo_root}). Update ciu.env or pass a "
                 "matching --define-root."
             )
         return repo_root
@@ -162,7 +166,7 @@ def resolve_repo_root(define_root: Optional[Path]) -> Path:
     if not env_repo_root:
         raise WorkspaceEnvError(
             "[ERROR] REPO_ROOT not set. Run ciu-deploy --generate-env and "
-            "source .env.ciu."
+            "source ciu.env."
         )
     return Path(env_repo_root).resolve()
 
@@ -292,6 +296,11 @@ def render_selected_stacks(
         rel = entry["path"]
         if rel in rendered:
             continue
+        # Shipped stacks (S8.6) have no CIU config to render; skip them so
+        # --render-toml and the vault preflight (S7.6) don't choke on a
+        # missing ciu.defaults.toml.j2.
+        if phases_pkg.service_shipped(entry["service"]):
+            continue
         stack_dir = (repo_root / rel).resolve()
         rendered[rel] = config_model.render_stack(
             stack_dir, global_config=profile.config, preserve_state=True
@@ -354,6 +363,10 @@ def vault_preflight(
 
     for entry in selection:
         rel = entry["path"]
+        # Shipped stacks (S8.6) have no CIU config/secrets — not rendered, not
+        # vault-checked.
+        if phases_pkg.service_shipped(entry["service"]):
+            continue
         merged = config_model.deep_merge(config, rendered[rel])
         # validate_stack_shape raises ValueError on bad config (exit 2).
         root_key = config_model.validate_stack_shape(rendered[rel])
@@ -504,7 +517,7 @@ def action_render_toml(repo_root: Path, profile: profiles_pkg.Profile, selection
         warn("No stacks selected to render")
         return 0
     for rel in sorted(rendered):
-        info(f"  rendered: {rel}/ciu.toml")
+        info(f"  rendered: {rel}/{STACK_CONFIG_RENDERED}")
     success(f"Rendered {len(rendered)} stack config(s)")
     return 0
 
@@ -573,14 +586,17 @@ def action_deploy(
             svc_env = dict(env)
             for k, v in (svc.get("env_overrides") or {}).items():
                 svc_env[k] = str(v)
+            shipped = phases_pkg.service_shipped(svc)
 
-            info(f"--- deploying {entry['path']} (service '{entry['name']}') ---")
+            shipped_note = " [shipped]" if shipped else ""
+            info(f"--- deploying {entry['path']} (service '{entry['name']}'){shipped_note} ---")
             ok = _run_stack(
                 stack_dir,
                 env=svc_env,
                 compose_profiles=compose_profiles,
                 dry_run=dry_run,
                 update_cert_permission=update_cert_permission,
+                shipped=shipped,
             )
             if ok:
                 deployed.append(entry["path"])
@@ -621,6 +637,7 @@ def _run_stack(
     compose_profiles: list[str],
     dry_run: bool,
     update_cert_permission: bool,
+    shipped: bool = False,
 ) -> bool:
     """Run engine.main_execution for one stack in-process. Returns success bool.
 
@@ -642,13 +659,21 @@ def _run_stack(
             saved[k] = os.environ.get(k)
             os.environ[k] = v
     try:
-        result = engine.main_execution(
-            working_dir=stack_dir,
-            dry_run=dry_run,
-            yes=True,
-            update_cert_permission=update_cert_permission,
-            compose_profiles=compose_profiles or None,
-        )
+        if shipped:
+            result = engine.run_shipped(
+                working_dir=stack_dir,
+                dry_run=dry_run,
+                update_cert_permission=update_cert_permission,
+                compose_profiles=compose_profiles or None,
+            )
+        else:
+            result = engine.main_execution(
+                working_dir=stack_dir,
+                dry_run=dry_run,
+                yes=True,
+                update_cert_permission=update_cert_permission,
+                compose_profiles=compose_profiles or None,
+            )
     except engine.ComposeError as exc:
         error(str(exc))
         return False
@@ -939,7 +964,7 @@ def action_list_profiles(config: dict) -> int:
 
 def action_generate_env(define_root: Optional[Path], dir_hint: Path) -> int:
     """--generate-env: the single bootstrap entry point (S2.8). Returns exit code."""
-    info("Generating .env.ciu (S2.8 bootstrap)...")
+    info("Generating ciu.env (S2.8 bootstrap)...")
     env_root = resolve_env_root(
         start_dir=dir_hint,
         define_root=define_root,
@@ -1016,7 +1041,7 @@ Examples:
     actions.add_argument("--list-profiles", dest="list_profiles", action="store_true",
                          help="List host profiles (replaces v1 --list-groups) (S7.4)")
     actions.add_argument("--generate-env", dest="generate_env", action="store_true",
-                         help="Generate .env.ciu (S2.8 bootstrap) and stop")
+                         help="Generate ciu.env (S2.8 bootstrap) and stop")
 
     control = parser.add_argument_group("Control")
     control.add_argument("--profile", default=None, metavar="NAME",

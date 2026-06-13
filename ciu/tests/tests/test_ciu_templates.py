@@ -1,8 +1,8 @@
 """
 Sanity checks for the demo's committed global template and its core sections.
 
-Only the *defaults* template (``ciu-global.defaults.toml.j2``) is committed; the
-override ``ciu-global.toml.j2`` is gitignored and auto-created from the defaults
+Only the *defaults* template (``ciu.global.defaults.toml.j2``) is committed; the
+override ``ciu.global.toml.j2`` is gitignored and auto-created from the defaults
 on first run (S3.1), so it is NOT asserted to pre-exist in a clean checkout.
 """
 from __future__ import annotations
@@ -19,12 +19,12 @@ def _read_text(path: Path) -> str:
 
 
 def test_ciu_global_defaults_template_exists() -> None:
-    defaults_path = TEST_REPO / "ciu-global.defaults.toml.j2"
-    assert defaults_path.exists(), "ciu-global.defaults.toml.j2 missing"
+    defaults_path = TEST_REPO / "ciu.global.defaults.toml.j2"
+    assert defaults_path.exists(), "ciu.global.defaults.toml.j2 missing"
 
 
 def test_ciu_global_defaults_have_core_sections() -> None:
-    content = _read_text(TEST_REPO / "ciu-global.defaults.toml.j2")
+    content = _read_text(TEST_REPO / "ciu.global.defaults.toml.j2")
     for section in (
         "[ciu]",
         "[deploy]",

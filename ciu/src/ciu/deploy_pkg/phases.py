@@ -90,6 +90,27 @@ def service_enabled(service: dict, control: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# S7.2 — service_shipped (dual-ship opt-in)
+# ---------------------------------------------------------------------------
+
+def service_shipped(service: dict) -> bool:
+    """Evaluate the optional 'shipped' field of a service dict (S8.5).
+
+    - Absent → False (the default CIU-native path).
+    - bool   → itself.
+    - Any other type → ValueError [S7.2] (no flag/expression form; this is a
+      plain per-service toggle that routes the stack through the pre-shipped
+      ``docker-compose.yml`` instead of CIU's rendered compose).
+    """
+    raw = service.get("shipped", False)
+    if isinstance(raw, bool):
+        return raw
+    raise ValueError(
+        f"[S7.2] service 'shipped' must be a bool; got {type(raw).__name__} {raw!r}."
+    )
+
+
+# ---------------------------------------------------------------------------
 # S7.1/S7.2 — iter_enabled_services
 # ---------------------------------------------------------------------------
 

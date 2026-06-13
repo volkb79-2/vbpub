@@ -16,8 +16,9 @@ demonstrates. Read the templates alongside [`docs/SPEC.md`](../docs/SPEC.md).
 | `infra/redis-core` | `redis_core` | `redis:7-alpine` | third-party image, no `*_FILE` support → S4.18 wrapper for `--requirepass` + healthcheck (**SPEC B.1** verbatim); `GEN_TO_VAULT` (**S4.2/S4.11**); auto hostdir (**S6.1/S6.2**) |
 | `infra/db-core` | `db_core` | `postgres:16-alpine` | the `*_FILE` convention (`POSTGRES_PASSWORD_FILE`, **S4.17**) — no wrapper; fixed-UID hostdir `{uid=70, mode="0770"}` (**S6.7a**); `GEN_TO_VAULT` |
 | `applications/app-config` | `app_config` | `python:3.12-alpine` | **own app**: all four non-Vault directives — `GEN_LOCAL`, `ASK_EXTERNAL`, `GEN_EPHEMERAL`, `ASK_FILE` (**S4.2**); configfile mount + `secret()` (**S5**); `pre_compose` hook `apply_to_config` (**S9.4**); env-as-pointer boundary (**S5.5**); runs its **full** pipeline under `--dry-run` with no Vault |
+| `shipped-example` | — | `alpine:3` | **dual shipping** (**S8.5/S8.6**): a hand-written, committed `docker-compose.yml` with **no** CIU config; run it plainly or via `ciu --shipped` |
 
-Global config (`ciu-global.defaults.toml.j2`) demonstrates: phases in numeric
+Global config (`ciu.global.defaults.toml.j2`) demonstrates: phases in numeric
 order (**S7.1**), the `enabled = "enable_app"` string control flag (**S7.2** +
 `[deploy.control]`), host **profiles** with `topology_overrides` (**S7.4 /
 S7.5a**), the `[vault.paths]` map + `topology.services.vault` address (**S4.16**),
@@ -41,7 +42,7 @@ services inside a stack** are activated. They are distinct concepts.
 # 0. ASK_EXTERNAL (S4.13): app-config's `license` secret must be supplied.
 export CIUDEMO_LICENSE=demo            # or: export CIU_SECRET_LICENSE=demo
 
-# 1. Bootstrap the machine-identity env file (.env.ciu) — single entry point (S2.8).
+# 1. Bootstrap the machine-identity env file (ciu.env) — single entry point (S2.8).
 ciu --generate-env
 
 # 2. Bring up the shared backbone (Vault, then Redis + Postgres) — host A.
@@ -66,6 +67,23 @@ ciu-deploy --clean -y
 without starting anything (**S8.3** step 3) — handy for reviewing the merged
 config.
 
+### Dual shipping (S8.5/S8.6)
+
+`shipped-example/` carries only a hand-written `docker-compose.yml` — the
+"plain" path a maintainer can ship alongside the CIU path. CIU renders its own
+`ciu.compose.yml` and never touches `docker-compose.yml`:
+
+```sh
+docker compose -f shipped-example/docker-compose.yml up -d   # no CIU at all
+ciu --shipped -d shipped-example                             # through CIU
+```
+
+`ciu --shipped` still loads `ciu.env`, ensures the network, and runs the DooD
+preflight before `docker compose up` — so `${DOCKER_NETWORK_INTERNAL}` in the
+shipped file resolves to the same machine-identity value the CIU path uses. In
+`ciu-deploy`, a service entry with `shipped = true` routes that stack through
+its `docker-compose.yml` while still honoring phases and the health gate.
+
 ### Notes
 
 - `CIUDEMO_LICENSE` (or `CIU_SECRET_LICENSE`) **must** be set before running
@@ -74,5 +92,5 @@ config.
 - The Vault stack runs in **dev mode** (in-memory, auto-unsealed) so the live
   smoke needs no manual init/unseal. Production would use a real backend + an
   unseal `pre_secrets` hook.
-- Everything under any `.ciu/` directory, plus `ciu-global.toml`, `ciu.toml`,
-  and `docker-compose.yml`, is machine-generated and gitignored (**S1.6–S1.8**).
+- Everything under any `.ciu/` directory, plus `ciu.global.toml`, `ciu.toml`,
+  and `ciu.compose.yml`, is machine-generated and gitignored (**S1.6–S1.8**).

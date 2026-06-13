@@ -80,7 +80,7 @@ def _clean_stack_artifacts(stack_dir: Path) -> None:
     for vol in stack_dir.glob("vol-*"):
         shutil.rmtree(vol, ignore_errors=True)
     shutil.rmtree(stack_dir / ".ciu", ignore_errors=True)
-    for name in ("ciu.toml", "ciu.toml.j2", "docker-compose.yml"):
+    for name in ("ciu.toml", "ciu.toml.j2", "ciu.compose.yml"):
         (stack_dir / name).unlink(missing_ok=True)
 
 
@@ -89,7 +89,7 @@ def _bootstrap(monkeypatch) -> None:
     bootstrap_workspace_env(
         start_dir=TEST_REPO,
         define_root=None,
-        defaults_filename="ciu-global.defaults.toml.j2",
+        defaults_filename="ciu.global.defaults.toml.j2",
         generate_env=True,
         update_cert_permission=False,
         required_keys=[
@@ -107,7 +107,7 @@ def _bootstrap(monkeypatch) -> None:
 
 def test_test_repo_exists() -> None:
     # Global config + every demo stack's committed source files (S3.1).
-    assert (TEST_REPO / "ciu-global.defaults.toml.j2").exists()
+    assert (TEST_REPO / "ciu.global.defaults.toml.j2").exists()
     assert (TEST_REPO / "README.md").exists()
     assert (VAULT_STACK / "ciu.defaults.toml.j2").exists()
     assert (VAULT_STACK / "post_compose_vault.py").exists()
@@ -127,7 +127,7 @@ def test_test_repo_exists() -> None:
 def test_bootstrap_workspace_env_generates_env_file(monkeypatch) -> None:
     _set_env_defaults()
     _bootstrap(monkeypatch)
-    assert (TEST_REPO / ".env.ciu").exists()
+    assert (TEST_REPO / "ciu.env").exists()
 
 
 def test_render_global_and_stack_configs(monkeypatch) -> None:
@@ -176,7 +176,7 @@ def test_app_config_full_pipeline_runs_under_dry_run(monkeypatch) -> None:
     assert 'license = "demo"' in rendered_cfg
 
     # The overlay declares all four secrets + the configfile mount (S4.17/S5.3).
-    overlay = (APP_STACK / ".ciu" / "docker-compose.ciu.yml").read_text()
+    overlay = (APP_STACK / ".ciu" / "ciu.compose.overlay.yml").read_text()
     for name in ("api_key", "license", "run_nonce", "ca_bundle"):
         assert name in overlay
     assert "/etc/app/config.toml" in overlay
@@ -236,7 +236,7 @@ def test_deploy_render_all_configs_respects_phases(monkeypatch) -> None:
 
 
 def test_deploy_profiles_and_phases_match_spec(monkeypatch) -> None:
-    # Pin the global profile/phase wiring authored in ciu-global.defaults.toml.j2
+    # Pin the global profile/phase wiring authored in ciu.global.defaults.toml.j2
     # (S7.1 numeric phases, S7.4 profiles, S7.5a topology_overrides).
     _set_env_defaults()
     _bootstrap(monkeypatch)

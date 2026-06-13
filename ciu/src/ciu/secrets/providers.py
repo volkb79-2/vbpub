@@ -24,6 +24,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from ciu.config_constants import STACK_CONFIG_RENDERED
+
 
 class VaultError(RuntimeError):
     """A Vault address / token / I/O failure.
@@ -139,7 +141,7 @@ def resolve_vault_token(config: dict[str, Any], repo_root: Path) -> str | None:
 
     # (3) local vault stack ciu.toml [state].root_token
     stack_path = vault_cfg.get("stack_path") or "infra/vault"
-    stack_toml = repo_root / stack_path / "ciu.toml"
+    stack_toml = repo_root / stack_path / STACK_CONFIG_RENDERED
     if stack_toml.is_file():
         try:
             with stack_toml.open("rb") as fh:
