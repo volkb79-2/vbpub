@@ -1,0 +1,51 @@
+# ============================================================================
+# infra/redis-core — compose template (SPEC Appendix B.1, S4.18 wrapper)
+# ============================================================================
+# The password is consumed via `secrets: [redis_password]` and read from
+# /run/secrets/redis_password inside the container; CIU's overlay supplies the
+# top-level secrets: block (S4.17). The value never appears in this file.
+
+services:
+  {{ redis_core.redis.name }}:
+    image: {{ redis_core.redis.image_name }}:{{ redis_core.redis.image_tag }}
+    container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ redis_core.redis.name }}
+
+    secrets:
+      - redis_password
+
+    # S4.18 wrapper: redis-server has no *_FILE flag, so we exec it from `sh -c`
+    # and substitute the password from the mounted secret file at runtime.
+    entrypoint: ["sh", "-c"]
+    command:
+      - >
+        exec redis-server
+        --requirepass "$(cat /run/secrets/redis_password)"
+        --appendonly yes --appendfsync everysec
+
+    # Same wrapper trick for the health probe (S7.7).
+    healthcheck:
+      test: ["CMD", "sh", "-c",
+             "redis-cli -a \"$(cat /run/secrets/redis_password)\" ping | grep PONG"]
+      interval: {{ deploy.health.interval }}
+      timeout: {{ deploy.health.timeout }}
+      retries: {{ deploy.health.retries }}
+      start_period: {{ deploy.health.start_period }}
+
+    environment:
+      {% for key, value in deploy.env.defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+
+    volumes:
+      - {{ redis_core.redis.hostdir.data }}:/data   # absolute physical path (S6.2)
+
+    labels:
+      - ciudemo.component=redis
+
+    networks:
+      - workspace
+
+networks:
+  workspace:
+    external: true
+    name: {{ deploy.network_name }}

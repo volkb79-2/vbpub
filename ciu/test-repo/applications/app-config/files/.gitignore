@@ -1,0 +1,5 @@
+# The monorepo root .gitignore has a broad `*.pem` rule (real cert/key safety).
+# demo-ca.pem is a DUMMY fixture for the ASK_FILE directive (S4.14), not a real
+# certificate, so it must be committed — un-ignore it here without weakening the
+# global rule anywhere else.
+!demo-ca.pem

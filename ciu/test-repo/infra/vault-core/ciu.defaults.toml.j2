@@ -1,9 +1,0 @@
-[vault_core]
-name = "vault"
-image = "hashicorp/vault:1.15"
-
-[vault_core.env]
-VAULT_DEV_ROOT_TOKEN_ID = "root"
-
-[vault_core.hooks]
-post_compose = ["./post_compose_hook.py"]

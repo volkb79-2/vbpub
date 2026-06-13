@@ -1,15 +1,20 @@
-# CIU-generated files (do not commit)
+# CIU-generated files (do not commit). Sample rules to copy into a project's
+# .gitignore. Note: a hand-written docker-compose.yml (for the plain
+# `docker compose` / `ciu --shipped` path) is committed and NOT listed here.
 
-# Workspace env
-.env.ciu
+# CIU machine-owned artifact directory (S1.6/S1.7)
+**/.ciu/
+
+# Workspace env (machine identity layer, S2)
+ciu.env
 
 # Rendered global config + override template (auto-created when missing)
-ciu-global.toml
-ciu-global.toml.j2
+ciu.global.toml
+ciu.global.toml.j2
 
 # Rendered stack config + override templates (auto-created when missing)
 **/ciu.toml
 **/ciu.toml.j2
 
-# Rendered compose output
-**/docker-compose.yml
+# CIU's own rendered compose output
+**/ciu.compose.yml

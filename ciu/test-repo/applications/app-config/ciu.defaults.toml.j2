@@ -1,0 +1,51 @@
+# ============================================================================
+# applications/app-config — own app: configfile mount + the non-Vault secret
+# directives (S4 / S5 / S9)
+# ============================================================================
+# This is the "own application" stack. It exercises EVERY secret directive that
+# does NOT need Vault, so its full pipeline (incl. configfile render + overlay)
+# runs end-to-end under `--dry-run` with no Vault and no docker. The data tier
+# (redis/postgres) uses GEN_TO_VAULT and therefore can only be dry-run once Vault
+# is up — that is the whole reason this stack avoids *_VAULT directives.
+
+[app_config]
+stack_name = "app-config"
+
+[app_config.app]
+name = "app-config"
+image_name = "python"
+image_tag = "3.12-alpine"
+internal_port = 8080
+
+# Auto-generated hostdir <stack>/vol-app-config-logs (S6.1), mounted at /var/log/app.
+[app_config.app.hostdir]
+logs = ""
+
+# --- secrets: one of each non-Vault directive (S4.2) ------------------------
+[app_config.secrets]
+# GEN_LOCAL: generated once into the project store, byte-stable (S4.9/S4.11).
+api_key = "GEN_LOCAL:demo/app_api_key"
+# ASK_EXTERNAL: supplied by the operator/CI via env CIUDEMO_LICENSE (or
+# CIU_SECRET_LICENSE), then cached to the stack store (S4.13). Set one of those
+# before running, e.g. `export CIUDEMO_LICENSE=demo`.
+license = "ASK_EXTERNAL:CIUDEMO_LICENSE"
+# GEN_EPHEMERAL: a fresh value every run (S4.2) — e.g. a per-deploy nonce.
+run_nonce = "GEN_EPHEMERAL"
+# ASK_FILE: a pre-provisioned file referenced IN PLACE (no copy into .ciu/),
+# remapped to a physical path in the overlay (S4.14). Path is relative to this
+# stack dir.
+ca_bundle = "ASK_FILE:files/demo-ca.pem"
+
+# --- configfile mount (S5.1/S5.2/S5.3) --------------------------------------
+# CIU renders config.toml.j2 with the merged config + secret('<name>') and mounts
+# the result read-only at `target` via the overlay (the mount does NOT appear in
+# ciu.compose.yml — see the comment in the compose template).
+[app_config.app.configfile.main]
+template = "config.toml.j2"
+target = "/etc/app/config.toml"
+
+# --- hooks (S9.1) -----------------------------------------------------------
+# pre_compose runs after secret materialization (S8.3 step 11), before configfile
+# render (step 12), so its apply_to_config value is visible inside config.toml.j2.
+[app_config.hooks]
+pre_compose = ["./pre_compose_app.py"]

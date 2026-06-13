@@ -1,33 +1,30 @@
-#!/usr/bin/env python3
-"""
-Example post-compose hook for CIU.
+"""Minimal v2 post_compose hook example (SPEC S9).
 
-This sample demonstrates returning env-only updates and does not persist state.
+Hook point: post_compose — runs after docker compose up succeeds (S8.3 step 17).
+
+Signature (S9.1):  run(config: dict, ctx) -> dict
+
+Return value (S9.4): a dict where every value is a dict containing
+at least 'value'.  Use persist:'state' to write the value under [state]
+in the stack's ciu.toml (useful for tokens, URIs produced by compose).
+
+ctx.secret_file(name) returns the Path of a secret's store file (S9.3).
+
+Live example in the test-repo:
+  test-repo/infra/vault/post_compose_vault.py
 """
 from __future__ import annotations
 
-from typing import Dict
 
+def run(config: dict, ctx) -> dict:
+    """Example: persist a computed runtime value into [state] of ciu.toml."""
+    project = config.get("deploy", {}).get("project_name", "unknown")
+    env_tag = config.get("deploy", {}).get("environment_tag", "dev")
 
-def _build_updates() -> Dict[str, str]:
     return {
-        "EXAMPLE_POST_FLAG": "true",
+        # 'root_token' → written to ciu.toml [state].root_token
+        "root_token": {
+            "value": f"placeholder-{project}-{env_tag}",
+            "persist": "state",
+        },
     }
-
-
-class PostComposeHook:
-    """Sample class-based post-compose hook."""
-
-    def __init__(self, env: dict | None = None) -> None:
-        self.env = env or {}
-
-    def run(self, env: dict) -> dict:
-        _ = env
-        return _build_updates()
-
-
-def post_compose_hook(config: dict, env: dict) -> dict:
-    """Function-based variant (supported by CIU)."""
-    _ = config
-    _ = env
-    return _build_updates()

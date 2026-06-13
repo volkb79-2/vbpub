@@ -10,7 +10,7 @@ import pytest
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from ciu.engine import check_runtime_dependencies  # noqa: E402
+from ciu.engine import check_runtime_dependencies, DependencyError  # noqa: E402
 
 
 class TestDependencyChecking:
@@ -23,7 +23,7 @@ class TestDependencyChecking:
         os.environ.pop("SKIP_DEPENDENCY_CHECK", None)
 
         with patch("subprocess.run", side_effect=FileNotFoundError()):
-            with pytest.raises(SystemExit):
+            with pytest.raises(DependencyError):
                 check_runtime_dependencies()
 
     def test_checks_docker_compose_availability(self):
@@ -35,7 +35,7 @@ class TestDependencyChecking:
                 FileNotFoundError(),
             ]
 
-            with pytest.raises(SystemExit):
+            with pytest.raises(DependencyError):
                 check_runtime_dependencies()
 
     def test_warns_on_missing_hvac(self):
@@ -74,5 +74,5 @@ class TestDependencyChecking:
                 return real_import(name, *args, **kwargs)
 
             with patch("builtins.__import__", side_effect=mock_import):
-                with pytest.raises(SystemExit):
+                with pytest.raises(DependencyError):
                     check_runtime_dependencies()

@@ -1,0 +1,28 @@
+# ============================================================================
+# infra/redis-core — third-party image, no *_FILE support (SPEC Appendix B.1)
+# ============================================================================
+# Redis takes its password on the command line / via redis-cli, with no
+# *_FILE convention. This is the canonical S4.18 wrapper-pattern stack, lifted
+# verbatim from the spec's worked example.
+
+[redis_core]
+stack_name = "redis-core"
+
+[redis_core.redis]
+name = "redis"
+internal_port = 6379
+image_name = "redis"
+image_tag = "7-alpine"
+
+# Empty string auto-generates the hostdir <stack>/vol-redis-data, owned
+# CONTAINER_UID:DOCKER_GID mode 0775 (S6.1/S6.3). After merge the template sees
+# an absolute PHYSICAL path here (S6.2).
+[redis_core.redis.hostdir]
+data = ""
+
+# GEN_TO_VAULT: generate once, write to Vault at vault.paths.redis_password
+# (resolved from the global [vault.paths] map), then read it back each run
+# (S4.2/S4.11). The token to reach Vault resolves via S4.16 source #3 — the
+# root_token the vault stack persisted to its [state] in phase 1.
+[redis_core.secrets]
+redis_password = "GEN_TO_VAULT:{{ vault.paths.redis_password }}"

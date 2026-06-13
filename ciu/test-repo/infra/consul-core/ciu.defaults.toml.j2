@@ -1,9 +1,0 @@
-[consul_core]
-name = "consul"
-image = "hashicorp/consul:1.16"
-
-[consul_core.env]
-CONSUL_BOOTSTRAP = "true"
-
-[consul_core.hooks]
-post_compose = ["./post_compose_hook.py"]
