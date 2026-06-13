@@ -16,6 +16,9 @@ dependencies = [
 	"tomli_w>=1.0.0",
 ]
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.setuptools.dynamic]
 version = {attr = "ciu.__version__"}
 
