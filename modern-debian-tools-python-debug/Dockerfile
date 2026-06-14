@@ -144,6 +144,7 @@ RUN set -euo pipefail; \
         pandoc \
         poppler-utils \
         p7zip-full \
+        skopeo \
     ; \
     sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen; \
     locale-gen en_US.UTF-8; \
@@ -334,7 +335,17 @@ RUN set -euo pipefail; \
         rich \
         ruff \
         structlog \
-        tomli_w; \
+        tomli_w \
+        build \
+        twine \
+        setuptools-scm \
+        pip-audit \
+        pre-commit \
+        tox \
+        pytest-xdist \
+        pytest-mock \
+        check-wheel-contents \
+        uv; \
     if [ "${INSTALL_AIDER}" = "true" ]; then \
         if [ "${AIDER_VERSION}" = "main" ]; then \
             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat @ git+https://github.com/Aider-AI/aider.git@main"; \

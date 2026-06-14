@@ -494,7 +494,7 @@ def resolve_ciu_wheel_coordinates() -> tuple[str, str, str]:
         )
         return "", "", ""
 
-    latest_alias_tag = (os.getenv("CIU_LATEST_TAG") or "ciu-wheel-latest").strip() or "ciu-wheel-latest"
+    latest_alias_tag = (os.getenv("CIU_LATEST_TAG") or "ciu-latest").strip() or "ciu-latest"
     explicit_asset_name = (os.getenv("CIU_LATEST_ASSET_NAME") or "").strip()
 
     try:
@@ -520,7 +520,7 @@ def resolve_ciu_wheel_coordinates() -> tuple[str, str, str]:
     wheel_version = derive_ciu_version_from_asset_name(asset_name)
     resolved_tag = latest_alias_tag
     if wheel_version:
-        candidate_tag = f"ciu-wheel-{wheel_version}"
+        candidate_tag = f"ciu-v{wheel_version}".replace("+", "-")
         if candidate_tag != latest_alias_tag:
             try:
                 if github_release_tag_exists(owner, repo, candidate_tag):

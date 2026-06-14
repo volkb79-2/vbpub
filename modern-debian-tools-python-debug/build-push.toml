@@ -17,11 +17,11 @@ OCI_DESCRIPTION_VSC = """Modern Debian Tools + Python Debug VS Code devcontainer
 Microsoft devcontainers base plus curated CLI tooling, managed venv helpers, and repository-hosted release manifests for richer per-package documentation.
 """
 
+# BUILD_DATE is commit-derived by the release-manager (no counter; the
+# auto-increment keys were retired with the move to git-tag versioning).
 [build_metadata]
 date_env = "BUILD_DATE"
 date_format = "%Y%m%d"
-auto_increment_env = "BUILD_AUTO_INCREMENT"
-counter_file_template = "build-counter-{date}.txt"
 
 [steps.build-images]
 no_cache_env = "BUILD_NO_CACHE"
