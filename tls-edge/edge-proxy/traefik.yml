@@ -1,0 +1,106 @@
+# ─── GENERATED FILE — edit ciu-stack/traefik.yml.j2 + re-render, not this ─────
+# Static Traefik configuration.  Changes require re-render + container restart.
+# Traefik's static-config sources are mutually exclusive (file > flags > env),
+# so environment variables CANNOT override values here — re-render instead.
+# Dynamic config (TLS options, middlewares, static certs) lives in conf.d/
+# and is hot-reloaded.
+
+global:
+  checkNewVersion: false       # no phone-home version checks
+  sendAnonymousUsage: false    # no telemetry
+
+# ─── API & Dashboard ──────────────────────────────────────────────────────────
+# Disabled in production.  For local debugging set [tls_edge.traefik]
+# api_insecure = true, re-render, and publish 127.0.0.1:8080:8080 manually.
+api:
+  insecure: false
+  dashboard: false
+
+# Health endpoint for the container healthcheck (`traefik healthcheck --ping`).
+ping:
+  entryPoint: ping
+
+# ─── Entrypoints ──────────────────────────────────────────────────────────────
+entryPoints:
+
+  # Container-loopback only; never published.
+  ping:
+    address: "127.0.0.1:8082"
+
+  # Port 80 / HTTP entrypoint disabled (ports.expose_http = false): the edge
+  # is TLS-only and there is no HTTP->HTTPS redirect — clients must use
+  # https:// URLs.  Enable via ciu.toml.j2 + re-render, or install.sh
+  # --enable-port-80.
+
+  # Primary HTTPS entrypoint — subdomain-based routing (preferred).
+  # TLS is enabled here for ALL routers on this entrypoint: consumers do not
+  # need tls=true or certresolver labels.
+  websecure:
+    address: ":443"
+    http:
+
+      middlewares:
+        - secure-headers@file
+
+      tls:
+        certResolver: letsencrypt
+
+  # Alternative HTTPS entrypoint — port-based routing fallback.
+  websecure-alt:
+    address: ":8443"
+    http:
+
+      middlewares:
+        - secure-headers@file
+
+      tls:
+        certResolver: letsencrypt
+
+# ─── ACME (Let's Encrypt) ─────────────────────────────────────────────────────
+# Certificates are issued automatically for every Host() a consumer router
+# declares (or one wildcard cert in acme-dns mode with wildcard_main set).
+# Renewal is automatic and zero-downtime; state lives in the acme-data volume.
+certificatesResolvers:
+  letsencrypt:
+    acme:
+
+      storage: /etc/traefik/acme/acme.json
+      caServer: "https://acme-v02.api.letsencrypt.org/directory"
+
+      # TLS-ALPN-01: the whole challenge happens on :443 — no port 80 needed.
+      tlsChallenge: {}
+
+# ─── Providers ────────────────────────────────────────────────────────────────
+providers:
+
+  # Docker provider: discovers routing config from container labels, through
+  # the socket proxy (never the raw socket).
+  docker:
+    endpoint: "tcp://dockerproxy:2375"
+    # Route upstream traffic over this network only, even when a container is
+    # attached to several networks.
+    network: ingress_public
+    # Containers must opt in with traefik.enable=true.
+    exposedByDefault: false
+    watch: true
+
+  # File provider: TLS options, middlewares, static certificate store.
+  # Watched via inotify; changes are hot-reloaded without restart.
+  file:
+    directory: /etc/traefik/conf.d
+    watch: true
+
+# ─── Logging ──────────────────────────────────────────────────────────────────
+log:
+  level: INFO
+
+# Access log on stdout in JSON (machine-parseable audit trail: RouterName,
+# ServiceName, upstream, status, duration per request).
+accessLog:
+  format: json
+  fields:
+    defaultMode: keep
+    headers:
+      defaultMode: drop
+      names:
+        User-Agent: keep

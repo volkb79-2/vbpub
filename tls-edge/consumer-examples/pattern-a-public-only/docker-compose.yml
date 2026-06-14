@@ -1,0 +1,66 @@
+# ─── Pattern A: Public-only service ───────────────────────────────────────────
+#
+# Use case: a container that offers a single public API or web UI.
+#           It has no private backends.  All traffic arrives through Traefik.
+#
+# Routing: subdomain-based (preferred).
+#   Request to https://svc.my.domain  →  Traefik  →  app:8080
+#   The subdomain must resolve to this host (wildcard DNS record, or an
+#   explicit record per subdomain).  In ACME modes the certificate for it is
+#   issued automatically — no cert work needed.
+#
+# Routing fallback: port-based (use when the subdomain cannot be made to
+#   resolve or, in static-cert mode, is not in the certificate SAN list).
+#   Replace entrypoints=websecure with entrypoints=websecure-alt and reach
+#   the service at https://my.domain:8443 instead.
+#
+# NOTE: the edge serves TLS only — port 80 is off by default, so there is no
+#   HTTP→HTTPS redirect.  Always publish https:// URLs.
+#
+# Naming convention (REQUIRED): router and service names in labels must be
+#   unique across the whole host, not just this stack.  Use <stack>-<service>
+#   (here: pattern-a-app).  Two stacks declaring the same router name conflict
+#   and Traefik will drop or misroute them.
+#
+# Network layout:
+#   ingress_public  – shared with Traefik.  Required for routing.
+#   private         – stack-internal; no other stack or Traefik can reach it.
+
+services:
+
+  app:
+    image: your-image:tag          # replace with actual image
+    restart: unless-stopped
+    expose:
+      - "8080"                     # container port the app listens on
+    networks:
+      - ingress_public             # must join this for Traefik to route to it
+      - private                    # optional: needed only if app has local peers
+    labels:
+      # ── Required: opt in to Traefik routing ────────────────────────────────
+      - traefik.enable=true
+
+      # ── Subdomain routing (preferred) ──────────────────────────────────────
+      # Replace svc.my.domain with the actual subdomain for this service.
+      # TLS is enabled at the entrypoint level by the edge proxy — no
+      # tls=true or certresolver labels are needed.
+      - traefik.http.routers.pattern-a-app.rule=Host(`svc.my.domain`)
+      - traefik.http.routers.pattern-a-app.entrypoints=websecure
+
+      # ── Port-based routing fallback ────────────────────────────────────────
+      # Use these labels INSTEAD of the subdomain labels above.  The service
+      # is then reached at https://my.domain:8443.
+      # - traefik.http.routers.pattern-a-app.rule=Host(`my.domain`)
+      # - traefik.http.routers.pattern-a-app.entrypoints=websecure-alt
+
+      # ── Service definition: tell Traefik which port to use upstream ─────────
+      - traefik.http.services.pattern-a-app.loadbalancer.server.port=8080
+
+# ─── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  ingress_public:
+    external: true           # created and owned by the edge-proxy stack
+
+  private:
+    driver: bridge
+    internal: true           # no outbound internet access from this network

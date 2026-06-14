@@ -1,0 +1,11 @@
+# Prometheus scrape config for the ops sidecar (Pattern C).
+# Prometheus shares the app's network namespace, so the app's loopback-bound
+# ops endpoint is reachable at 127.0.0.1:<ops-port>.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: app-ops
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:9090"]

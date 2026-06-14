@@ -1,0 +1,19 @@
+# ─── Shared middlewares (dynamic config, hot-reloaded) ────────────────────────
+# secure-headers is attached at the ENTRYPOINT level (see traefik.yml), so
+# every consumer router inherits it without any labels.  Edit values here and
+# they apply on save — no restart needed.
+#
+# Consumers can add their own per-router middlewares via labels, e.g.:
+#   - traefik.http.routers.<name>.middlewares=my-mw@docker
+http:
+  middlewares:
+    secure-headers:
+      headers:
+        # HSTS: 180 days.  Raise to 31536000 + preload once proven stable.
+        stsSeconds: 15552000
+        stsIncludeSubdomains: false
+        contentTypeNosniff: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        # frameDeny intentionally NOT set: it would break consumers that are
+        # legitimately embedded in iframes.  Consumers that want it add their
+        # own headers middleware per router.

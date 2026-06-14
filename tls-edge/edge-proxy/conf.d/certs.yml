@@ -1,0 +1,7 @@
+# ─── Static certificate store (dynamic config, hot-reloaded) ──────────────────
+# GENERATED from ciu-stack/conf.d/certs.yml.j2 — re-render to change.
+
+# ACME mode (acme-tls): certificates are issued and stored by
+# Traefik itself (acme-data volume).  This file intentionally defines none.
+
+# rendered: -

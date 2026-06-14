@@ -1,0 +1,83 @@
+# ─── Pattern B: Public service + private stack-internal backends ───────────────
+#
+# Use case: an API container that:
+#   - is publicly reachable through Traefik on HTTPS, AND
+#   - talks to a database / cache / worker that must NEVER be reachable
+#     from outside the stack.
+#
+# Routing: https://api.my.domain  →  Traefik  →  api:8080
+#
+# Network layout:
+#   ingress_public  – shared with Traefik.  Only 'api' joins this.
+#   private         – stack-internal only.  'api', 'db', 'cache' all join this.
+#                     'db' and 'cache' are never reachable from ingress_public.
+#
+# Key rules:
+#   - Only services that need to be routed by Traefik join ingress_public.
+#     Backends (databases, queues, caches) stay on private only.
+#   - Router/service names in labels are HOST-unique: use <stack>-<service>
+#     (here: pattern-b-api).
+#
+# Before first start, create the database password secret (gitignored):
+#   mkdir -p secrets && printf '%s' 'change-me' > secrets/db_password.txt
+
+services:
+
+  # ── Public-facing service ──────────────────────────────────────────────────
+  api:
+    image: your-api:tag           # replace with actual image
+    restart: unless-stopped
+    expose:
+      - "8080"
+    networks:
+      - ingress_public            # required: Traefik routes to api via this network
+      - private                   # required: api talks to db/cache via this network
+    depends_on:
+      - db
+    labels:
+      - traefik.enable=true
+      # TLS comes from the entrypoint — no tls=true label needed.
+      - traefik.http.routers.pattern-b-api.rule=Host(`api.my.domain`)
+      - traefik.http.routers.pattern-b-api.entrypoints=websecure
+      - traefik.http.services.pattern-b-api.loadbalancer.server.port=8080
+
+      # Port-based fallback (use instead of the subdomain labels above):
+      # - traefik.http.routers.pattern-b-api.rule=Host(`my.domain`)
+      # - traefik.http.routers.pattern-b-api.entrypoints=websecure-alt
+
+  # ── Private database – never on ingress_public ────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_DB: appdb
+    secrets:
+      - db_password
+    networks:
+      - private                   # private only: NOT on ingress_public
+    # No labels: Traefik will never see this container
+    # No ports: no host port publishing; reachable only from private network
+
+  # ── Private cache – never on ingress_public ───────────────────────────────
+  cache:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - private
+    # No labels, no ports
+
+# ─── Secrets ──────────────────────────────────────────────────────────────────
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt   # create before first start; gitignored
+
+# ─── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  ingress_public:
+    external: true
+
+  private:
+    driver: bridge
+    internal: true

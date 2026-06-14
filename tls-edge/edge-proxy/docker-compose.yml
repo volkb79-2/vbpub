@@ -1,0 +1,129 @@
+# ─── GENERATED from ciu-stack/ciu.compose.yml.j2 — do not edit copies ─────────
+# Edit the template, then re-render:
+#   standalone : scripts/render.sh   (writes edge-proxy/docker-compose.yml)
+#   ciu v2     : run `ciu` in the ciu-stack directory (renders ciu.compose.yml + overlay)
+#
+# Two containers:
+#   dockerproxy – restricts Traefik to read-only Docker API calls (POST: 0).
+#   traefik     – TLS terminator and label-driven service router.
+#
+# ciu SPEC S5.3: the service key `traefik` must not be renamed — the
+# [tls_edge.traefik.configfile.*] mounts are keyed by it.
+
+name: edge-proxy
+
+services:
+
+  # ── Docker socket proxy ────────────────────────────────────────────────────
+  dockerproxy:
+    image: tecnativa/docker-socket-proxy:v0.4.2
+    container_name: edge-dockerproxy
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1   # read container inspect/list
+      NETWORKS:   1   # read network info for service discovery
+      SERVICES:   1   # read swarm service info (no-op on standalone Docker)
+      TASKS:      1   # read swarm task info (no-op on standalone Docker)
+      POST:       0   # DENY all mutating/write calls to the Docker API
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - internal
+    read_only: true
+    tmpfs:
+      - /run            # haproxy pid/socket
+      - /tmp            # entrypoint writes the generated haproxy.cfg here
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2375/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Traefik TLS edge proxy ─────────────────────────────────────────────────
+  traefik:
+    image: traefik:v3.7
+    container_name: edge-traefik
+    restart: unless-stopped
+    depends_on:
+      dockerproxy:
+        condition: service_healthy
+
+    ports:
+
+      # Port 80 is OFF (TLS-only edge; no HTTP->HTTPS redirect).  To enable it,
+      # set [tls_edge.ports] expose_http = true in ciu.toml.j2 and re-render
+      # (scripts/render.sh), or run scripts/install.sh --enable-port-80.
+
+      # Primary HTTPS: subdomain-based routing (preferred).
+      - "443:443"
+      # Alternative HTTPS: port-based routing fallback.
+      - "8443:8443"
+
+    volumes:
+
+      # Static Traefik config — re-render + restart container on change.
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      # Dynamic config — Traefik hot-reloads changes via inotify.  :ro blocks
+      # writes from INSIDE the container only; host-side writes still propagate
+      # and trigger the reload (this is how cert renewal works in static mode).
+      - ./conf.d:/etc/traefik/conf.d:ro
+
+      # ACME account + issued certificates (acme.json, created 0600 by traefik).
+      # NOTE: `docker compose down -v` / `ciu --reset` destroys this volume and
+      # forces re-issuance on next start (mind Let's Encrypt rate limits).
+      - acme-data:/etc/traefik/acme
+
+    networks:
+      - ingress
+      - internal
+
+    # ── Hardening ──────────────────────────────────────────────────────────
+    read_only: true
+    tmpfs:
+      - /tmp            # Traefik scratch space; in-memory only
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE  # bind ports < 1024 (443, optionally 80)
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ─── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  # Shared public ingress network; consumer stacks join it as external: true.
+  # Only containers with traefik.enable=true labels are routed.
+  ingress:
+    name: ingress_public
+    driver: bridge
+
+  # Isolated bridge between traefik and dockerproxy only.  internal: no
+  # outbound connectivity; no other container may join.
+  internal:
+    name: traefik_internal
+    driver: bridge
+    internal: true
+
+# ─── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+
+  acme-data:
+

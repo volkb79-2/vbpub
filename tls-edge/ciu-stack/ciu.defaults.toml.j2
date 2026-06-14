@@ -1,0 +1,165 @@
+# ─── tls-edge stack configuration — SINGLE SOURCE OF TRUTH ────────────────────
+# This file serves two render contexts:
+#   ciu v2     : a regular stack package (`ciu` run inside this directory);
+#                ciu renders it through its S3.2 pipeline.
+#   standalone : scripts/render.sh reads the same file (plus an optional
+#                gitignored ciu.toml.j2 override) and renders the plain
+#                docker-compose.yml / traefik.yml into ../edge-proxy/.
+#
+# To change values, create a gitignored ciu.toml.j2 NEXT TO this file with the
+# same schema and only the keys you want to override.  Do not edit defaults.
+#
+# NOTE (ciu SPEC S5.3): the compose service for Traefik MUST keep the service
+# key `traefik`, or the [tls_edge.traefik.configfile.*] mounts silently detach.
+
+[tls_edge]
+stack_name = "edge-proxy"
+# Forced to true by scripts/render_standalone.py; ciu leaves it false.
+standalone = false
+# Filesystem location prefix for the standalone bind mounts of traefik.yml and
+# conf.d/.  The standalone renderer overrides this with the physical path of
+# the output directory when running under DooD (devcontainer).  Unused by ciu.
+base_dir = "."
+# Timestamp marker rendered into conf.d/certs.yml; the certbot deploy hook
+# rewrites that line to trigger Traefik's file-provider reload.
+render_stamp = "-"
+# Container name prefix.  In a ciu repo this resolves to
+# "<project>-<environment>" (required by ciu-deploy's health gate, which
+# matches ^<project>-<env>-<service>$); standalone falls back to "edge",
+# giving the documented container name "edge-traefik".
+container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}edge{% endif %}"
+# Shared ingress network consumers join (external: true on their side).
+ingress_network = "ingress_public"
+# Isolated bridge between traefik and the docker socket proxy.  Nothing else
+# may join it.
+internal_network = "traefik_internal"
+# ciu repos only: additionally attach traefik to the shared workspace network
+# ({{ '{{ deploy.network_name }}' }}) so ciu-managed app stacks can be routed
+# without joining ingress_network.
+join_workspace_network = false
+
+[tls_edge.traefik]
+# Service metadata.  `name` doubles as the ciu service identity.
+name = "traefik"
+image = "traefik:v3.7"
+# Traefik's own log level: ERROR | WARN | INFO | DEBUG.
+# Static config is baked into traefik.yml at render time (Traefik ignores env
+# vars when a config file exists) — changing this requires re-render + restart.
+log_level = "INFO"
+# DEV ONLY.  true enables the api/dashboard on the internal :8080 entrypoint.
+# Never expose the dashboard port on 0.0.0.0 in production.
+api_insecure = false
+
+[tls_edge.dockerproxy]
+name = "dockerproxy"
+image = "tecnativa/docker-socket-proxy:v0.4.2"
+
+[tls_edge.ports]
+# "" binds dual-stack (IPv4 + IPv6 when the host supports it).  Set "0.0.0.0"
+# to force IPv4-only (e.g. when a dangling AAAA record exists), or a specific
+# host address.  No trailing colon.
+bind_ip = ""
+http = 80
+https = 443
+https_alt = 8443
+# DEFAULT OFF: the edge is a TLS-only service; port 80 stays free on the host.
+# Enabling adds the HTTP->HTTPS redirect entrypoint and permits tls.mode
+# "acme-http" (HTTP-01 challenge).
+expose_http = false
+
+[tls_edge.health]
+interval = "10s"
+timeout = "5s"
+retries = 5
+start_period = "15s"
+
+[tls_edge.tls]
+# acme-tls  : Let's Encrypt via TLS-ALPN-01 entirely on :443 (default).
+#             Per-hostname certs are issued automatically for every consumer
+#             router whose Host() resolves to this host.  No port 80 needed.
+# acme-http : Let's Encrypt via HTTP-01.  Requires ports.expose_http = true.
+# acme-dns  : Let's Encrypt via DNS-01 (wildcard-capable).  Requires an
+#             API-capable DNS provider (lego); see [tls_edge.acme.dns].
+#             Traefik has NO interactive "create this TXT record" mode — for
+#             a manual-TXT wildcard use mode "static" + certbot --manual.
+# static    : certificates provided as files (host certbot, corporate certs,
+#             manual wildcard).  See [tls_edge.static].
+# dev       : self-signed certificates from scripts/dev-certs.sh, using the
+#             static file layout.  For devcontainers / hosts without public DNS.
+mode = "acme-tls"
+# (sniStrict and cipher suites live in conf.d/options.yml — dynamic config,
+#  editable + hot-reloaded without re-render.)
+
+[tls_edge.acme]
+# Contact email for the Let's Encrypt account (recommended; may stay empty).
+email = ""
+ca_server = "https://acme-v02.api.letsencrypt.org/directory"
+# Use the staging CA for first-time experiments to avoid LE rate limits:
+#   ca_server = "https://acme-staging-v02.api.letsencrypt.org/directory"
+resolver_name = "letsencrypt"
+
+[tls_edge.acme.dns]
+# lego provider code: cloudflare | hetzner | route53 | desec | rfc2136 | ...
+# https://doc.traefik.io/traefik/https/acme/#providers
+provider = "cloudflare"
+# Set to your zone (e.g. "my.domain") to request one wildcard certificate
+# covering "my.domain" + "*.my.domain" instead of per-hostname certs.
+wildcard_main = ""
+
+# Environment variables handed to the traefik container for the lego provider.
+# ciu mode: point *_FILE variables at /run/secrets/<name> and declare the
+#           matching secret in [tls_edge.secrets] (see below).
+# standalone mode: leave this empty and put the plain variables in the
+#           gitignored edge-proxy/.env instead (loaded via env_file).
+[tls_edge.acme.dns.environment]
+# CF_DNS_API_TOKEN_FILE = "/run/secrets/dns_api_token"
+
+[tls_edge.static]
+# PARENT directory containing live/<domain>/ and archive/<domain>/.
+# BOTH subtrees are mounted so certbot's relative symlinks
+# (live/<d>/fullchain.pem -> ../../archive/<d>/fullchainN.pem) stay resolvable
+# inside the container.  Mounting live/<d> and archive/<d> individually breaks
+# symlink resolution and Traefik silently serves its self-signed default cert.
+cert_base = "/etc/letsencrypt"
+# Certificate lineage directory names under live/ (usually the primary domain).
+# The first entry becomes the default certificate.
+domains = []
+# bind   : bind-mount cert_base from the host (normal static mode).
+# volume : read certs from the named volume "certs-dev" (dev mode under DooD,
+#          filled by scripts/dev-certs.sh --target volume).
+source = "bind"
+
+[tls_edge.headers]
+# Attach the secure-headers middleware (conf.d/middlewares.yml) to both HTTPS
+# entrypoints so every consumer inherits HSTS & friends without labels.
+enabled = true
+
+[tls_edge.logging]
+# json-file caps for both containers (access log goes to stdout).
+max_size = "10m"
+max_file = "3"
+
+[tls_edge.secrets]
+# Empty by default — the standalone renderer rejects entries here (secrets
+# directives need ciu).  ciu users running acme-dns add to their gitignored
+# ciu.toml.j2:
+#   [tls_edge.secrets]
+#   dns_api_token = "ASK_EXTERNAL:CF_DNS_API_TOKEN"   # or ASK_VAULT:<path>
+
+# ─── ciu configfile mounts (S5; ignored by the standalone renderer, which
+#     bind-mounts ./traefik.yml and ./conf.d instead) ──────────────────────────
+[tls_edge.traefik.configfile.static]
+template = "traefik.yml.j2"
+target = "/etc/traefik/traefik.yml"
+
+[tls_edge.traefik.configfile.options]
+template = "conf.d/options.yml"
+target = "/etc/traefik/conf.d/options.yml"
+
+[tls_edge.traefik.configfile.middlewares]
+template = "conf.d/middlewares.yml"
+target = "/etc/traefik/conf.d/middlewares.yml"
+
+[tls_edge.traefik.configfile.certs]
+template = "conf.d/certs.yml.j2"
+target = "/etc/traefik/conf.d/certs.yml"

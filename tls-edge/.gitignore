@@ -1,0 +1,23 @@
+# ── ciu render outputs (ciu-stack/ is the template package) ──────────────────
+**/.ciu/
+ciu-stack/ciu.toml
+ciu-stack/ciu.toml.j2
+ciu-stack/ciu.compose.yml
+ciu-stack/traefik.yml
+
+# ── un-ignore committed docker-compose.yml files (repo-root .gitignore blocks
+#    **/docker-compose.yml because ciu renders to that name) ──────────────────
+!edge-proxy/docker-compose.yml
+!consumer-examples/**/docker-compose.yml
+
+# ── standalone runtime files (edge-proxy/ committed files are pre-rendered
+#    defaults; local installs may modify them — backups and secrets stay out) ──
+edge-proxy/.env
+*.bak
+
+# ── dev-mode certificates (local CA, never commit keys) ──────────────────────
+certs-dev/
+
+# ── consumer example secrets ──────────────────────────────────────────────────
+consumer-examples/**/secrets/*
+!consumer-examples/**/secrets/.gitignore

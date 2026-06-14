@@ -1,0 +1,99 @@
+# ─── Pattern C: Public API + ops endpoints isolated to a sidecar ──────────────
+#
+# Use case: a service that exposes:
+#   - a public business API  →  must be reachable through Traefik on HTTPS
+#   - an ops endpoint        →  health checks, Prometheus metrics, admin stats
+#                               must NOT be reachable by any peer container
+#                               or via the public HTTPS entry
+#
+# Isolation mechanism: sidecar shares the app network namespace.
+#   The app binds its ops listener to 127.0.0.1:<ops-port> (loopback only).
+#   127.0.0.1 inside a container is per-network-namespace, not the Docker host
+#   or physical host.  Other containers on ingress_public or private can only
+#   reach the app via its Docker network IP (e.g. 172.x.x.x), NOT via its
+#   loopback interface.
+#   The sidecar uses `network_mode: service:app`, which shares the app's exact
+#   network namespace.  The sidecar therefore shares the same 127.0.0.1 and
+#   can reach the ops endpoint directly at http://127.0.0.1:<ops-port>.
+#
+# Requirements (BOTH application-level configuration, not Docker features):
+#   1. The app MUST bind the ops listener to 127.0.0.1, not 0.0.0.0.  If it
+#      binds 0.0.0.0, any container on the same Docker network can reach it.
+#   2. EVERY listener the sidecar opens must also bind 127.0.0.1, on a port
+#      the app does not use.  The namespace is shared: a sidecar listening on
+#      0.0.0.0 is reachable by peers through the app's network IP, and two
+#      processes binding the same port collide (EADDRINUSE).
+#
+# Naming convention: router/service label names are HOST-unique —
+#   <stack>-<service> (here: pattern-c-app).
+#
+# Network layout:
+#   ingress_public   – shared with Traefik; only 'app' joins it
+#   private          – stack-internal for any private backends
+#   ops-agent        – uses `network_mode: service:app`; has no independent
+#                      network attachment of its own
+
+services:
+
+  # ── Main application ───────────────────────────────────────────────────────
+  app:
+    image: your-app:tag           # replace with actual image
+    restart: unless-stopped
+    # The app must bind its two listeners on different addresses:
+    #   public API  → 0.0.0.0:8080  (reachable by Traefik via ingress_public)
+    #   ops/metrics → 127.0.0.1:9090 (loopback only; NOT reachable by peers)
+    # How to configure this depends on your application framework.
+    # Example using command-line flags:
+    # command: ["./app", "--api-addr=0.0.0.0:8080", "--ops-addr=127.0.0.1:9090"]
+    expose:
+      - "8080"                    # public API port; ops port is intentionally omitted
+    networks:
+      - ingress_public
+      - private
+    labels:
+      - traefik.enable=true
+      # TLS comes from the entrypoint — no tls=true label needed.
+      - traefik.http.routers.pattern-c-app.rule=Host(`app.my.domain`)
+      - traefik.http.routers.pattern-c-app.entrypoints=websecure
+      # Explicitly tell Traefik to route to port 8080 only.  Without this,
+      # Traefik guesses the first exposed port; if the app exposes several,
+      # the wrong one could be selected.
+      - traefik.http.services.pattern-c-app.loadbalancer.server.port=8080
+
+      # Port-based fallback (use instead of the subdomain labels above):
+      # - traefik.http.routers.pattern-c-app.rule=Host(`my.domain`)
+      # - traefik.http.routers.pattern-c-app.entrypoints=websecure-alt
+
+  # ── Ops sidecar ───────────────────────────────────────────────────────────
+  # Shares app's network namespace.  Has no independent Docker network.
+  # Reaches the app's ops endpoint at http://127.0.0.1:9090.
+  ops-agent:
+    image: prom/prometheus:v3.12.0
+    restart: unless-stopped
+    network_mode: "service:app"    # join app's network namespace
+    depends_on:
+      - app
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # CRITICAL: bind Prometheus's own UI to loopback on a port the app does
+      # not use.  The default (0.0.0.0:9090) would (a) collide with the app's
+      # ops port and crash-loop, and (b) expose the Prometheus UI to every
+      # peer container via the app's network IP — exactly what this pattern
+      # is meant to prevent.
+      - --web.listen-address=127.0.0.1:9091
+    volumes:
+      # NOTE: under Docker-outside-of-Docker (devcontainers) this relative
+      # bind resolves against the HOST filesystem — run from a host path or
+      # adjust accordingly.
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    # No labels: not routed by Traefik.
+    # No networks block: network_mode and networks are mutually exclusive.
+
+# ─── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  ingress_public:
+    external: true
+
+  private:
+    driver: bridge
+    internal: true

@@ -1,0 +1,26 @@
+# ─── Static certificate store (dynamic config, hot-reloaded) ──────────────────
+# GENERATED from ciu-stack/conf.d/certs.yml.j2 — re-render to change.
+{% if tls_edge.tls.mode in ['static', 'dev'] %}
+# Certificates are provided as files (mode: {{ tls_edge.tls.mode }}) and
+# mounted under /certs (live/ + archive/ parents, symlink-safe).
+#
+# Renewal: the certbot deploy hook rewrites the "rendered:" stamp at the
+# bottom of this file ON THE HOST; the bind mount propagates the change and
+# Traefik's file watcher reloads the certificates with zero downtime.
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/live/{{ tls_edge.static.domains[0] }}/fullchain.pem
+        keyFile:  /certs/live/{{ tls_edge.static.domains[0] }}/privkey.pem
+
+  certificates:
+{% for domain in tls_edge.static.domains %}
+    - certFile: /certs/live/{{ domain }}/fullchain.pem
+      keyFile:  /certs/live/{{ domain }}/privkey.pem
+{% endfor %}
+{% else %}
+# ACME mode ({{ tls_edge.tls.mode }}): certificates are issued and stored by
+# Traefik itself (acme-data volume).  This file intentionally defines none.
+{% endif %}
+# rendered: {{ tls_edge.render_stamp }}
