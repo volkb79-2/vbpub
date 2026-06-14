@@ -13,13 +13,11 @@ PWMCP_CLIENT_LATEST_NOTES = "## PWMCP client wheel (latest)\nLatest client SDK f
 PWMCP_SERVER_RELEASE_NOTES = "## PWMCP server wheel\nWebSocket + MCP server package.\n\n**Includes**\n- Server runtime\n- Health and WebSocket services\n- Playwright backend\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
 PWMCP_SERVER_LATEST_NOTES = "## PWMCP server wheel (latest)\nLatest server SDK for PWMCP.\n\n**Includes**\n- Server runtime\n- Health and WebSocket services\n- Playwright backend\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
 
+# BUILD_DATE (docker image tags) is commit-derived by the release-manager;
+# wheel versions come from setuptools-scm. No counter, no clock.
 [build_metadata]
 date_env = "BUILD_DATE"
 date_format = "%Y%m%d"
-auto_increment_env = "BUILD_AUTO_INCREMENT"
-counter_file_template = "build-counter-{date}.txt"
-version_env = "VERSION"
-version_from_env = "BUILD_DATE"
 
 [steps.build-images]
 commands = [
@@ -28,7 +26,6 @@ commands = [
 
 [steps.push-images]
 required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
-env = { BUILD_AUTO_INCREMENT = "1" }
 
 commands = [
   { label = "pwmcp: push images", argv = ["docker", "buildx", "bake", "all", "--push"], cwd = "." },
@@ -43,24 +40,24 @@ required = true
 [steps.build-shared-wheel]
 clean_dirs = ["dist/shared"]
 commands = [
-  { label = "pwmcp-shared: build wheel", argv = ["python3", "-m", "pip", "wheel", ".", "-w", "../dist/shared"], cwd = "shared" },
+  { label = "pwmcp-shared: build wheel", argv = ["python3", "-m", "build", "--wheel", "--outdir", "../dist/shared"], cwd = "shared" },
 ]
 
 [steps.build-client-wheel]
 clean_dirs = ["dist/client"]
 commands = [
-  { label = "pwmcp-client: build wheel", argv = ["python3", "-m", "pip", "wheel", ".", "-w", "../dist/client", "--find-links", "../dist/shared"], cwd = "client" },
+  { label = "pwmcp-client: build wheel", argv = ["python3", "-m", "build", "--wheel", "--outdir", "../dist/client"], cwd = "client" },
 ]
 
 [steps.build-server-wheel]
 clean_dirs = ["dist/server"]
 commands = [
-  { label = "pwmcp-server: build wheel", argv = ["python3", "-m", "pip", "wheel", ".", "-w", "../dist/server", "--find-links", "../dist/shared"], cwd = "server" },
+  { label = "pwmcp-server: build wheel", argv = ["python3", "-m", "build", "--wheel", "--outdir", "../dist/server"], cwd = "server" },
 ]
 
 [steps.publish-client-wheel]
 commands = [
-  { label = "pwmcp-client: publish wheel", argv = ["python3", "publish-client-wheel-fixed.py"], cwd = "." },
+  { label = "pwmcp-client: publish wheel", argv = ["python3", "publish-client-wheel-release.py"], cwd = "." },
 ]
 
 [steps.publish-server-wheel]

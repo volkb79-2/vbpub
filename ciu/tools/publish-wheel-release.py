@@ -23,11 +23,8 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -100,21 +97,38 @@ def parse_json(body: str, context: str) -> Dict[str, Any]:
     return {}
 
 
-def build_wheel(project_root: Path, wheel_glob: str) -> Path:
-    dist_dir = project_root / "dist"
-    if dist_dir.exists():
-        shutil.rmtree(dist_dir)
-    dist_dir.mkdir(parents=True, exist_ok=True)
-
-    subprocess.run(
-        [sys.executable, "-m", "pip", "wheel", ".", "-w", str(dist_dir)],
-        check=True,
-        cwd=str(project_root),
-    )
+def find_built_wheel(dist_dir: Path, wheel_glob: str) -> Path:
+    """Return the wheel the build step produced (never rebuilds — a rebuild would
+    differ in bytes/version from what was tested)."""
     wheels = sorted(dist_dir.glob(wheel_glob))
     if not wheels:
-        fail(f"Wheel not found in dist/ (glob: {wheel_glob})")
+        fail(f"No wheel in {dist_dir} (glob: {wheel_glob}). Run the build step first.")
+    if len(wheels) > 1:
+        fail(f"Multiple wheels in {dist_dir}: {[w.name for w in wheels]}; clean + rebuild.")
     return wheels[0]
+
+
+def read_wheel_version(wheel_path: Path) -> str:
+    """Canonical version from the wheel METADATA (single source of truth)."""
+    import zipfile
+
+    with zipfile.ZipFile(wheel_path) as zf:
+        meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+        for line in zf.read(meta).decode("utf-8").splitlines():
+            if line.startswith("Version:"):
+                return line.split(":", 1)[1].strip()
+    fail(f"No Version field in {wheel_path.name} METADATA")
+    return ""
+
+
+def is_release_version(version: str) -> bool:
+    """True only for a clean tagged release (no .dev / +local / dirty segment)."""
+    return ".dev" not in version and "+" not in version
+
+
+def version_to_tag(prefix: str, version: str) -> str:
+    """Git/release tag for a version; sanitize PEP 440 '+' for ref names."""
+    return f"{prefix}-v{version}".replace("+", "-")
 
 
 def get_release_by_tag(api_base: str, owner: str, repo: str, tag: str, token: str) -> Optional[Dict[str, Any]]:
@@ -231,98 +245,56 @@ def main() -> None:
     data = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
     project_meta = data.get("project", {})
 
-    version = os.getenv("CIU_BUILD_VERSION") or os.getenv("CIU_VERSION")
-
-    if not version:
-        try:
-            sys.path.insert(0, str(project_root / "src"))
-            import ciu  # type: ignore
-
-            version = getattr(ciu, "__version__", "")
-        except Exception:
-            version = ""
-
-    if not version:
-        version = datetime.now(timezone.utc).strftime("%Y%m%d")
-
-    if not version:
-        fail("Unable to resolve CIU version for release tagging")
     package_name = os.getenv("CIU_PACKAGE_NAME", project_meta.get("name", "ciu"))
     if not package_name:
         fail("Unable to read project.name from pyproject.toml")
     dist_name = package_name.replace("-", "_")
     wheel_glob = os.getenv("CIU_WHEEL_GLOB", f"{dist_name}-*.whl")
 
+    # Upload the artifact the build step produced — never rebuild. Version is the
+    # wheel's own METADATA version (matches exactly what was built/tested).
+    dist_dir = project_root / "dist"
+    wheel_path = find_built_wheel(dist_dir, wheel_glob)
+    version = read_wheel_version(wheel_path)
+    wheel_hash = sha256(wheel_path.read_bytes()).hexdigest()
+
     token = os.getenv("GITHUB_PUSH_PAT")
     if not token:
         fail("GITHUB_PUSH_PAT is required")
-
     owner = os.getenv("GITHUB_USERNAME")
     repo = os.getenv("GITHUB_REPO")
     if not owner or not repo:
         fail("GITHUB_USERNAME and GITHUB_REPO are required")
     api_base = "https://api.github.com"
 
-    tag = f"{package_name}-wheel-{version}"
-    release_title = os.getenv("CIU_RELEASE_TITLE", f"{package_name}-wheel-{version}-py3-none-any")
-    release_notes = os.getenv(
-        "CIU_RELEASE_NOTES",
-        (
-            f"{package_name} wheel {version}\n\n"
-            "Includes:\n"
-            "- CIU CLI entrypoints (ciu, ciu-deploy)\n"
-            "- Config-driven orchestration helpers\n"
-            "- Installable wheel for devcontainers and CI runners\n\n"
-            "Install:\n"
-            "```bash\n"
-            "python -m pip install ./<wheel-file>\n"
-            "```"
-        ),
-    )
+    latest_tag = f"{package_name}-latest"
+    latest_notes = os.getenv("CIU_LATEST_NOTES", f"{package_name} (latest → {version})")
 
-    wheel_path = build_wheel(project_root, wheel_glob)
-    wheel_hash = sha256(wheel_path.read_bytes()).hexdigest()
-
-    publish_release_asset(api_base, owner, repo, tag, release_title, release_notes, wheel_path, wheel_path.name, token)
-
-    latest_tag = os.getenv("CIU_LATEST_TAG", f"{package_name}-wheel-latest")
-    latest_asset_name = os.getenv("CIU_LATEST_ASSET_NAME", wheel_path.name)
-    latest_title = os.getenv("CIU_LATEST_TITLE", f"{package_name}-wheel-latest")
-    latest_notes = os.getenv(
-        "CIU_LATEST_NOTES",
-        (
-            f"{package_name} wheel latest (points to {version})\n\n"
-            "Includes:\n"
-            "- Latest CIU CLI wheel\n"
-            "- Updated orchestration helpers\n\n"
-            "Install:\n"
-            "```bash\n"
-            "python -m pip install ./<wheel-file>\n"
-            "```"
-        ),
-    )
+    # A clean tagged release gets an immutable `<pkg>-v<version>` release; a dev or
+    # dirty build only moves `<pkg>-latest` (no per-commit tag spam).
+    if is_release_version(version):
+        release_tag = version_to_tag(package_name, version)
+        release_notes = os.getenv("CIU_RELEASE_NOTES", f"{package_name} {version}")
+        publish_release_asset(
+            api_base, owner, repo, release_tag,
+            os.getenv("CIU_RELEASE_TITLE", release_tag), release_notes,
+            wheel_path, wheel_path.name, token,
+        )
+        print(f"[INFO] Published release {release_tag}")
+    else:
+        print(f"[INFO] Dev build {version} — moving {latest_tag} only (no version tag)")
 
     publish_release_asset(
-        api_base,
-        owner,
-        repo,
-        latest_tag,
-        latest_title,
-        latest_notes,
-        wheel_path,
-        latest_asset_name,
-        token,
+        api_base, owner, repo, latest_tag,
+        os.getenv("CIU_LATEST_TITLE", latest_tag), latest_notes,
+        wheel_path, wheel_path.name, token,
         recreate=True,
     )
 
-    wheel_url = f"https://github.com/{owner}/{repo}/releases/download/{tag}/{wheel_path.name}"
-    latest_wheel_url = f"https://github.com/{owner}/{repo}/releases/download/{latest_tag}/{latest_asset_name}"
-
-    print(f"[INFO] Published {package_name} wheel")
-    print(f"[INFO] CIU_WHEEL_URL={wheel_url}")
-    print(f"[INFO] CIU_WHEEL_SHA256={wheel_hash}")
+    latest_wheel_url = f"https://github.com/{owner}/{repo}/releases/download/{latest_tag}/{wheel_path.name}"
+    print(f"[INFO] Published {package_name} {version}")
     print(f"[INFO] CIU_WHEEL_LATEST_URL={latest_wheel_url}")
-    print(f"[INFO] CIU_WHEEL_LATEST_SHA256={wheel_hash}")
+    print(f"[INFO] CIU_WHEEL_SHA256={wheel_hash}")
 
 
 if __name__ == "__main__":

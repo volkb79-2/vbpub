@@ -11,3 +11,7 @@ certs/
 
 # Build artifacts
 .build-hash
+dist/
+
+# setuptools-scm generated version files (written at build time)
+**/_version.py

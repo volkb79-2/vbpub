@@ -1,5 +1,6 @@
+# Pinned build toolchain for reproducible wheels (see docs/VERSIONING.md).
 [build-system]
-requires = ["setuptools>=69.0", "wheel"]
+requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -23,8 +24,13 @@ Homepage = "https://github.com/volkb79-2/vbpub/tree/main/pwmcp"
 Source = "https://github.com/volkb79-2/vbpub"
 Documentation = "https://github.com/volkb79-2/vbpub/tree/main/pwmcp/docs"
 
-[tool.setuptools.dynamic]
-version = { attr = "pwmcp_shared.version.__version__" }
+# Version derived from git tag `pwmcp-shared-vX.Y.Z` by setuptools-scm.
+[tool.setuptools_scm]
+root = "../.."
+tag_regex = "^pwmcp-shared-v(?P<version>[0-9].*)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "pwmcp-shared-v*"]
+version_file = "src/pwmcp_shared/_version.py"
+fallback_version = "0.1.0"
 
 [tool.setuptools.packages.find]
 where = ["src"]

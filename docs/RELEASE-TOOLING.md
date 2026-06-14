@@ -12,6 +12,14 @@ vbpub uses a config-driven release workflow:
 - **Step runner**: release-manager/src/release_manager/step_runner.py
 
 
+## Versioning & reproducible builds
+
+Artifact versions are **SemVer derived from git tags** (via setuptools-scm), not the clock,
+and wheels are reproducible. See **[VERSIONING.md](VERSIONING.md)** for the tag convention,
+how to cut a release, and the reproducibility recipe. In short: tag `<dist>-vX.Y.Z`, push it,
+then run the orchestrator — the build picks up the clean SemVer; untagged commits build as
+`X.Y.Z.devN+g<sha>`.
+
 ## Primary entrypoints (Python)
 
 ```bash

@@ -27,3 +27,6 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+
+# setuptools-scm generated version file (written at build time)
+src/ciu/_version.py

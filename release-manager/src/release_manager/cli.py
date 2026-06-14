@@ -356,49 +356,59 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
             os.environ.setdefault(key, value_str)
 
 
-def compute_release_date(repo_root: Path) -> None:
-    date_env = os.getenv("RELEASE_DATE_ENV", "BUILD_DATE").strip() or "BUILD_DATE"
-    date_format = os.getenv("RELEASE_DATE_FORMAT", "%Y%m%d").strip() or "%Y%m%d"
-    auto_increment = os.getenv("RELEASE_AUTO_INCREMENT", "1").strip()
-    counter_template = os.getenv("RELEASE_COUNTER_TEMPLATE", "release-counter-{date}.txt").strip()
-    counter_dir_raw = os.getenv("RELEASE_COUNTER_DIR", "")
+# Per-distribution git tag prefixes. Versions are derived from these tags by
+# setuptools-scm at build time; the orchestrator only PINS the clean SemVer when
+# HEAD is exactly on a release tag (see resolve_versions_from_git).
+_DIST_TAG_PREFIXES = {
+    "ciu": "ciu-v",
+    "pwmcp-shared": "pwmcp-shared-v",
+    "pwmcp-client": "pwmcp-client-v",
+    "pwmcp-server": "pwmcp-server-v",
+}
 
-    base_date = os.getenv(date_env)
-    if not base_date:
-        base_date = datetime.now(timezone.utc).strftime(date_format)
 
-    if auto_increment != "1":
-        os.environ[date_env] = base_date
-        return
+def _git(repo_root: Path, *args: str) -> Optional[str]:
+    """Run ``git <args>`` under *repo_root*; return stripped stdout or None."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    out = result.stdout.strip()
+    return out if (result.returncode == 0 and out) else None
 
-    counter_dir = Path(counter_dir_raw) if counter_dir_raw else (repo_root / "logs")
-    counter_dir.mkdir(parents=True, exist_ok=True)
-    counter_file = counter_dir / counter_template.format(date=base_date)
 
-    if counter_file.exists():
-        counter_value_raw = counter_file.read_text(encoding="utf-8").strip()
-    else:
-        counter_value_raw = "0"
+def resolve_versions_from_git(repo_root: Path) -> None:
+    """Export reproducible-build + git-derived version env for every project (no clock).
 
-    if not counter_value_raw.isdigit():
-        raise ValueError(f"Invalid release counter value in {counter_file}: {counter_value_raw}")
+    Replaces the old date/counter scheme:
+    - ``SOURCE_DATE_EPOCH`` = HEAD commit time → reproducible wheel/image timestamps.
+    - ``OCI_REVISION`` / ``OCI_CREATED`` = HEAD sha + RFC3339(commit time) for image labels.
+    - ``SETUPTOOLS_SCM_PRETEND_VERSION_FOR_<DIST>`` only when HEAD is exactly on that
+      package's ``<prefix>-v*`` tag, pinning the wheel to the clean SemVer. Untagged
+      commits let setuptools-scm derive ``X.Y.Z.devN+g<sha>`` itself at build time.
+    """
+    epoch = _git(repo_root, "log", "-1", "--format=%ct")
+    if epoch:
+        os.environ.setdefault("SOURCE_DATE_EPOCH", epoch)
+        created = datetime.fromtimestamp(int(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        os.environ.setdefault("OCI_CREATED", created)
+    revision = _git(repo_root, "rev-parse", "HEAD")
+    if revision:
+        os.environ.setdefault("OCI_REVISION", revision)
 
-    counter_value = int(counter_value_raw)
-    build_date = base_date
-    if counter_value == 0:
-        counter_value = 1
-        counter_file.write_text(str(counter_value), encoding="utf-8")
-    else:
-        build_date = f"{base_date}.{counter_value}"
-        counter_value += 1
-        counter_file.write_text(str(counter_value), encoding="utf-8")
-
-    os.environ[date_env] = build_date
-
-    os.environ.setdefault("CIU_BUILD_VERSION", build_date)
-    os.environ.setdefault("CIU_VERSION", build_date)
-    os.environ.setdefault("PWMCP_BUILD_VERSION", build_date)
-    os.environ.setdefault("PWMCP_VERSION", build_date)
+    for dist, prefix in _DIST_TAG_PREFIXES.items():
+        exact = _git(repo_root, "describe", "--tags", "--exact-match", "--match", f"{prefix}*")
+        if not exact:
+            continue
+        semver = exact[len(prefix):]
+        env_name = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_" + dist.upper().replace("-", "_")
+        os.environ.setdefault(env_name, semver)
+        log_info(f"{dist}: HEAD on {exact} → {env_name}={semver}")
 
 
 def list_releases(owner: str, repo: str, token: str) -> list[dict]:
@@ -676,7 +686,7 @@ def main() -> None:
         steps = default_steps
 
     if steps:
-        compute_release_date(repo_root)
+        resolve_versions_from_git(repo_root)
 
     if execution_mode == "project-first":
         for project in selected:

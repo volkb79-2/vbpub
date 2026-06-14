@@ -133,7 +133,48 @@ def apply_release_env(secrets: ReleaseSecrets) -> None:
                 os.environ.setdefault(key, value_str)
 
 
-def compute_build_date(config: dict, log_dir: Path) -> None:
+def _git_out(start: Path, *args: str) -> Optional[str]:
+    """Run ``git <args>`` under *start*; return stripped stdout or None."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(start), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    out = result.stdout.strip()
+    return out if (result.returncode == 0 and out) else None
+
+
+def apply_reproducible_env(project_root: Path) -> None:
+    """Seed SOURCE_DATE_EPOCH / OCI_REVISION / OCI_CREATED from the HEAD commit when
+    unset, so a standalone build/publish (not driven by the orchestrator) is still
+    reproducible. The orchestrator sets the same vars first; ``setdefault`` avoids
+    clobbering them.
+    """
+    epoch = os.getenv("SOURCE_DATE_EPOCH") or _git_out(project_root, "log", "-1", "--format=%ct")
+    if epoch:
+        os.environ.setdefault("SOURCE_DATE_EPOCH", epoch)
+        os.environ.setdefault(
+            "OCI_CREATED",
+            datetime.fromtimestamp(int(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+    head = _git_out(project_root, "rev-parse", "HEAD")
+    if head:
+        os.environ.setdefault("OCI_REVISION", head)
+
+
+def compute_build_date(config: dict, project_root: Path) -> None:
+    """Seed the reproducible-build env and a commit-derived ``BUILD_DATE``.
+
+    No wall clock and no auto-increment counter: ``BUILD_DATE`` (consumed by docker
+    image tags) is derived from the HEAD commit time, so rebuilding the same commit
+    yields the same tag. Wheel versions come from setuptools-scm, not from here.
+    """
+    apply_reproducible_env(project_root)
+
     metadata = config.get("build_metadata")
     if not metadata:
         return
@@ -142,41 +183,14 @@ def compute_build_date(config: dict, log_dir: Path) -> None:
 
     date_env = (metadata.get("date_env") or "BUILD_DATE").strip()
     date_format = (metadata.get("date_format") or "%Y%m%d").strip()
-    auto_increment_env = (metadata.get("auto_increment_env") or "BUILD_AUTO_INCREMENT").strip()
-    counter_template = (metadata.get("counter_file_template") or "build-counter-{date}.txt").strip()
-    version_env = (metadata.get("version_env") or "").strip()
-    version_from_env = (metadata.get("version_from_env") or "").strip()
-
-    base_date = os.getenv(date_env)
-    if not base_date:
-        base_date = datetime.now(timezone.utc).strftime(date_format)
-
-    build_date = base_date
-    if os.getenv(auto_increment_env) == "1":
-        counter_file = log_dir / counter_template.format(date=base_date)
-        if counter_file.exists():
-            counter_value_raw = counter_file.read_text(encoding="utf-8").strip()
-        else:
-            counter_value_raw = "0"
-
-        if not counter_value_raw.isdigit():
-            raise ValueError(f"Invalid build counter value in {counter_file}: {counter_value_raw}")
-
-        counter_value = int(counter_value_raw)
-        if counter_value == 0:
-            counter_value = 1
-            counter_file.write_text(str(counter_value), encoding="utf-8")
-        else:
-            build_date = f"{base_date}.{counter_value}"
-            counter_value += 1
-            counter_file.write_text(str(counter_value), encoding="utf-8")
-
-    os.environ[date_env] = build_date
-
-    if version_env and version_from_env and not os.getenv(version_env):
-        source_value = os.getenv(version_from_env)
-        if source_value:
-            os.environ[version_env] = source_value
+    if not os.getenv(date_env):
+        epoch = os.getenv("SOURCE_DATE_EPOCH")
+        base = (
+            datetime.fromtimestamp(int(epoch), timezone.utc)
+            if epoch
+            else datetime.now(timezone.utc)
+        )
+        os.environ[date_env] = base.strftime(date_format)
 
 
 def parse_step(config: dict, step_name: str) -> StepConfig:
@@ -354,7 +368,7 @@ def run_step(build_config_path: Path, step_name: str, release_config_path: Optio
     log_dir = resolve_path(project_root, str(log_dir_raw))
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    compute_build_date(build_config, log_dir)
+    compute_build_date(build_config, project_root)
 
     step = parse_step(build_config, step_name)
     for key, value in step.step_env.items():

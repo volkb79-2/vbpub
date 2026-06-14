@@ -29,9 +29,9 @@ validate = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
 # Apply cleanup globally regardless of tag prefix.
 release_tag_prefixes = ["*"]
 keep_release_tags = [
-  "ciu-wheel-latest",
-  "pwmcp-client-wheel-latest",
-  "pwmcp-server-wheel-latest",
+  "ciu-latest",
+  "pwmcp-client-latest",
+  "pwmcp-server-latest",
 ]
 ghcr_packages = ["*"]
 
@@ -83,7 +83,6 @@ commands = [
   { label = "pwmcp-client: publish wheel", argv = ["python3", "publish-client-wheel.py"], cwd = "pwmcp" },
   { label = "pwmcp-server: publish wheel", argv = ["python3", "publish-server-wheel-step.py"], cwd = "pwmcp" },
   { label = "pwmcp: push images", argv = ["python3", "push-images.py"], cwd = "pwmcp" },
-  { label = "pwmcp: upload release assets", argv = ["python3", "upload-release-assets.py"], cwd = "pwmcp" },
 ]
 
 [projects.pwmcp.steps.validate]

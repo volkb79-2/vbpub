@@ -11,6 +11,11 @@ This document is the **single normative contract** for CIU v2. Where any other
 document, example, or code comment conflicts with this specification, this
 specification wins.
 
+**Package versioning.** The `ciu` wheel is versioned with SemVer derived from git tags
+(`ciu-vX.Y.Z`; see `/docs/VERSIONING.md`). The wheel's **MAJOR tracks this SPEC's MAJOR** —
+a breaking change to this contract bumps both. ciu is seeded at `2.0.0` to match SPEC
+`2.0.0`. Untagged commits build as `X.Y.Z.devN+g<sha>`.
+
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY**
 are to be interpreted as described in RFC 2119.
 

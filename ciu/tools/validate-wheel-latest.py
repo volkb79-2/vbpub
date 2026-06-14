@@ -61,56 +61,24 @@ def main() -> None:
         raise SystemExit(1)
 
     token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_PUSH_PAT")
-    latest_tag = os.getenv("CIU_LATEST_TAG", "ciu-wheel-latest")
-
-    import tomllib
-
-    project_root = script_dir.parent
-    data = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
-    project_meta = data.get("project", {})
-    version = project_meta.get("version")
-
-    if not version:
-        dynamic_meta = data.get("tool", {}).get("setuptools", {}).get("dynamic", {})
-        version_attr = dynamic_meta.get("version", {}).get("attr")
-        if not version_attr:
-            print("[ERROR] Unable to resolve project version from pyproject.toml", file=sys.stderr)
-            raise SystemExit(1)
-
-        module_path, _, attr_name = version_attr.rpartition(".")
-        if not module_path or not attr_name:
-            print(f"[ERROR] Invalid dynamic version attr: {version_attr}", file=sys.stderr)
-            raise SystemExit(1)
-
-        sys.path.insert(0, str(project_root / "src"))
-        try:
-            module = __import__(module_path, fromlist=[attr_name])
-        except ImportError as exc:
-            print(f"[ERROR] Unable to import {module_path} for version lookup: {exc}", file=sys.stderr)
-            raise SystemExit(1) from exc
-
-        version = getattr(module, attr_name, None)
-        if not version:
-            print("[ERROR] Dynamic version attribute resolved to empty", file=sys.stderr)
-            raise SystemExit(1)
-
-    asset_name = os.getenv("CIU_LATEST_ASSET_NAME", f"ciu-{version}-py3-none-any.whl")
+    # The moving pointer carries whatever version was last published; validate by
+    # presence of a wheel asset, not by reconstructing a filename from a version.
+    latest_tag = os.getenv("CIU_LATEST_TAG", "ciu-latest")
 
     api_base = "https://api.github.com"
     release = api_request(f"{api_base}/repos/{owner}/{repo}/releases/tags/{latest_tag}", token)
-    assets = release.get("assets", [])
-
-    asset = next((item for item in assets if item.get("name") == asset_name), None)
-    if not asset:
-        print(f"[ERROR] Latest release missing asset: {asset_name}", file=sys.stderr)
+    wheels = [a for a in release.get("assets", []) if str(a.get("name", "")).endswith(".whl")]
+    if not wheels:
+        print(f"[ERROR] Release '{latest_tag}' has no .whl asset", file=sys.stderr)
         raise SystemExit(1)
 
+    asset = wheels[0]
     download_url = asset.get("browser_download_url")
     if not download_url:
         print("[ERROR] Latest asset missing download URL", file=sys.stderr)
         raise SystemExit(1)
 
-    print("[INFO] CIU wheel latest release asset found")
+    print(f"[INFO] CIU latest asset: {asset.get('name')}")
     print(f"[INFO] CIU_WHEEL_LATEST_URL={download_url}")
 
 

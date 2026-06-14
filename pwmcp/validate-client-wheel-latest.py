@@ -57,47 +57,24 @@ def main() -> None:
         raise SystemExit(1)
 
     token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_PUSH_PAT")
-    latest_tag = os.getenv("PWMCP_LATEST_TAG", "pwmcp-client-wheel-latest")
-
-    import tomllib
-
-    with open(script_dir / "client" / "pyproject.toml", "rb") as handle:
-        data = tomllib.load(handle)
-    project_meta = data.get("project", {})
-    version = project_meta.get("version")
-    if not version:
-        version = os.getenv("PWMCP_VERSION") or os.getenv("VERSION") or os.getenv("BUILD_DATE")
-
-    if not version:
-        # Import after env file load to honor PWMCP_VERSION/VERSION/BUILD_DATE.
-        try:
-            from pwmcp_client.version import __version__ as module_version
-        except Exception:
-            module_version = None
-        if module_version and module_version != "0.1.0":
-            version = module_version
-
-    if not version:
-        print("[ERROR] Unable to resolve package version from pyproject.toml or environment", file=sys.stderr)
-        raise SystemExit(1)
-
-    asset_name = os.getenv("PWMCP_LATEST_ASSET_NAME", f"pwmcp_client-{version}-py3-none-any.whl")
+    # The moving pointer carries whatever version was last published; validate by
+    # presence of a wheel asset, not by reconstructing a filename from a version.
+    latest_tag = os.getenv("PWMCP_LATEST_TAG", "pwmcp-client-latest")
 
     api_base = "https://api.github.com"
     release = api_request(f"{api_base}/repos/{owner}/{repo}/releases/tags/{latest_tag}", token)
-    assets = release.get("assets", [])
-
-    asset = next((item for item in assets if item.get("name") == asset_name), None)
-    if not asset:
-        print(f"[ERROR] Latest release missing asset: {asset_name}", file=sys.stderr)
+    wheels = [a for a in release.get("assets", []) if str(a.get("name", "")).endswith(".whl")]
+    if not wheels:
+        print(f"[ERROR] Release '{latest_tag}' has no .whl asset", file=sys.stderr)
         raise SystemExit(1)
 
+    asset = wheels[0]
     download_url = asset.get("browser_download_url")
     if not download_url:
         print("[ERROR] Latest asset missing download URL", file=sys.stderr)
         raise SystemExit(1)
 
-    print("[INFO] pwmcp-client latest release asset found")
+    print(f"[INFO] pwmcp-client latest asset: {asset.get('name')}")
     print(f"[INFO] PWMCP_WHEEL_LATEST_URL={download_url}")
 
 

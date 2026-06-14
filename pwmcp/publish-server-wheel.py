@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.error import HTTPError
@@ -80,25 +77,38 @@ def parse_json(body: str, context: str) -> Dict[str, Any]:
     return {}
 
 
-def build_wheel(
-    project_root: Path,
-    dist_dir: Path,
-    wheel_glob: str,
-    find_links: Path | None = None,
-) -> Path:
-    if dist_dir.exists():
-        shutil.rmtree(dist_dir)
-    dist_dir.mkdir(parents=True, exist_ok=True)
-
-    command = [sys.executable, "-m", "pip", "wheel", ".", "-w", str(dist_dir)]
-    if find_links:
-        command.extend(["--find-links", str(find_links)])
-
-    subprocess.run(command, check=True, cwd=str(project_root))
+def find_built_wheel(dist_dir: Path, wheel_glob: str) -> Path:
+    """Return the wheel the build step produced (never rebuilds — a rebuild would
+    differ in bytes/version from what was tested)."""
     wheels = sorted(dist_dir.glob(wheel_glob))
     if not wheels:
-        fail(f"Wheel not found in dist/ (glob: {wheel_glob})")
+        fail(f"No wheel in {dist_dir} (glob: {wheel_glob}). Run the build step first.")
+    if len(wheels) > 1:
+        fail(f"Multiple wheels in {dist_dir}: {[w.name for w in wheels]}; clean + rebuild.")
     return wheels[0]
+
+
+def read_wheel_version(wheel_path: Path) -> str:
+    """Canonical version from the wheel METADATA (single source of truth)."""
+    import zipfile
+
+    with zipfile.ZipFile(wheel_path) as zf:
+        meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+        for line in zf.read(meta).decode("utf-8").splitlines():
+            if line.startswith("Version:"):
+                return line.split(":", 1)[1].strip()
+    fail(f"No Version field in {wheel_path.name} METADATA")
+    return ""
+
+
+def is_release_version(version: str) -> bool:
+    """True only for a clean tagged release (no .dev / +local / dirty segment)."""
+    return ".dev" not in version and "+" not in version
+
+
+def version_to_tag(prefix: str, version: str) -> str:
+    """Git/release tag for a version; sanitize PEP 440 '+' for ref names."""
+    return f"{prefix}-v{version}".replace("+", "-")
 
 
 def get_release_by_tag(api_base: str, owner: str, repo: str, tag: str, token: str) -> Optional[Dict[str, Any]]:
@@ -202,7 +212,6 @@ def main() -> None:
     repo_root = root.parent
     project_root = root / "server"
     dist_dir = root / "dist" / "server"
-    shared_dist = root / "dist" / "shared"
 
     env_file = Path(os.getenv("PWMCP_ENV_FILE", repo_root / ".env"))
     if env_file.exists():
@@ -214,19 +223,13 @@ def main() -> None:
         data = tomllib.load(handle)
     project_meta = data.get("project", {})
 
-    version = os.getenv("PWMCP_BUILD_VERSION") or os.getenv("PWMCP_VERSION")
-    if not version:
-        version = datetime.now(timezone.utc).strftime("%Y%m%d")
-
     package_name = os.getenv("PWMCP_PACKAGE_NAME", project_meta.get("name", "pwmcp-server"))
     dist_name = package_name.replace("-", "_")
     wheel_glob = os.getenv("PWMCP_WHEEL_GLOB", f"{dist_name}-*.whl")
 
-    shared_wheels = sorted(shared_dist.glob("pwmcp_shared-*.whl"))
-    if not shared_wheels:
-        fail("pwmcp-shared wheel not found in dist/shared; run build-shared-wheel first")
-
-    wheel_path = build_wheel(project_root, dist_dir, wheel_glob, find_links=shared_dist)
+    # Upload the artifact the build step produced; version comes from its METADATA.
+    wheel_path = find_built_wheel(dist_dir, wheel_glob)
+    version = read_wheel_version(wheel_path)
 
     token = os.getenv("GITHUB_PUSH_PAT") or os.getenv("GH_TOKEN")
     if not token:
@@ -237,56 +240,33 @@ def main() -> None:
     if not owner or not repo:
         fail("GITHUB_USERNAME and GITHUB_REPO are required")
 
-    latest_tag = os.getenv("PWMCP_LATEST_TAG", f"{package_name}-wheel-latest")
-    release_tag = os.getenv("PWMCP_RELEASE_TAG", f"{package_name}-wheel-{version}")
-
-    release_title = os.getenv("PWMCP_RELEASE_TITLE", release_tag)
-    latest_title = os.getenv("PWMCP_LATEST_TITLE", latest_tag)
-
-    release_notes = os.getenv(
-        "PWMCP_SERVER_RELEASE_NOTES",
-        (
-            f"{package_name} wheel {version}\n\n"
-            "Includes:\n"
-            "- PWMCP server package\n"
-        ),
-    )
-
-    latest_notes = os.getenv(
-        "PWMCP_SERVER_LATEST_NOTES",
-        (
-            f"{package_name} wheel (latest)\n\n"
-            "Includes:\n"
-            "- PWMCP server package\n"
-        ),
-    )
-
     api_base = os.getenv("GITHUB_API", "https://api.github.com")
+    latest_tag = f"{package_name}-latest"
+    latest_notes = os.getenv("PWMCP_SERVER_LATEST_NOTES", f"{package_name} (latest → {version})")
+
+    # A clean tagged release gets an immutable `<pkg>-v<version>` release; a dev or
+    # dirty build only moves `<pkg>-latest` (no per-commit tag spam).
+    if is_release_version(version):
+        release_tag = version_to_tag(package_name, version)
+        release_notes = os.getenv("PWMCP_SERVER_RELEASE_NOTES", f"{package_name} {version}")
+        publish_release_asset(
+            api_base, owner, repo, release_tag,
+            os.getenv("PWMCP_RELEASE_TITLE", release_tag), release_notes,
+            wheel_path, wheel_path.name, token,
+        )
+        print(f"[INFO] Published release {release_tag}")
+    else:
+        print(f"[INFO] Dev build {version} — moving {latest_tag} only (no version tag)")
 
     publish_release_asset(
-        api_base,
-        owner,
-        repo,
-        release_tag,
-        release_title,
-        release_notes,
-        wheel_path,
-        wheel_path.name,
-        token,
-    )
-
-    publish_release_asset(
-        api_base,
-        owner,
-        repo,
-        latest_tag,
-        latest_title,
-        latest_notes,
-        wheel_path,
-        wheel_path.name,
-        token,
+        api_base, owner, repo, latest_tag,
+        os.getenv("PWMCP_LATEST_TITLE", latest_tag), latest_notes,
+        wheel_path, wheel_path.name, token,
         recreate=True,
     )
+    url = f"https://github.com/{owner}/{repo}/releases/download/{latest_tag}/{wheel_path.name}"
+    print(f"[INFO] {package_name} {version}")
+    print(f"[INFO] PWMCP_WHEEL_LATEST_URL={url}")
 
 
 if __name__ == "__main__":
