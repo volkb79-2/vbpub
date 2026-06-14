@@ -372,7 +372,11 @@ requirements are marked *(withdrawn)*.
 - **S6.4** `--reset` removes `vol-*` dirs **of the stack directory** (resolved
   against the stack dir, never the process cwd), rendered outputs, and
   stack containers; orphan cleanup uses the anchored label filter
-  `<prefix>.component=<service>`.
+  `<prefix>.component=<service>`. A `vol-*` removal the operator lacks
+  privilege for — an image-UID-owned subtree from S6.7 Pattern (a), e.g.
+  postgres/pgAdmin data — MUST degrade to the S6.5 root helper container so the
+  wipe completes; it MUST NOT abort on `Permission denied` and leave data
+  un-wiped (the daemon is root even when the operator is not).
 - **S6.5** Ownership/permission operations (chown/chmod on hostdirs, secret
   files) run directly when the CIU process has the privilege; otherwise CIU
   MUST perform them automatically via a one-shot helper container

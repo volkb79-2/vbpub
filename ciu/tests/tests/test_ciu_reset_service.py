@@ -79,6 +79,69 @@ class TestResetServiceVolumeDirectories:
         assert (elsewhere / "vol-decoy").exists()  # cwd decoy untouched (B14)
 
 
+class TestResetServicePrivilegeFallback:
+    def test_permission_denied_falls_back_to_helper_container(self, tmp_path):
+        """S6.4/S6.5: an image-UID-owned vol-* the operator cannot rmtree is wiped
+        via the root helper container instead of aborting the reset."""
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        (stack / "vol-postgres-data").mkdir()
+        (stack / "vol-redis-data").mkdir()
+        rendered = stack / ".ciu" / "rendered"
+        rendered.mkdir(parents=True)
+
+        real_rmtree = engine.shutil.rmtree
+
+        def fake_rmtree(path, *a, **k):
+            # Image-owned data dirs deny the unprivileged operator; everything
+            # else (e.g. the rendered dir in Step 3) still deletes normally.
+            if Path(path).name.startswith("vol-"):
+                raise PermissionError(13, "Permission denied")
+            return real_rmtree(path, *a, **k)
+
+        config = _base_config()
+        with patch.object(engine.procutil, "run_cmd", return_value=_ok()), \
+             patch.object(engine.shutil, "rmtree", side_effect=fake_rmtree), \
+             patch.object(engine, "privileged_rmtree") as mock_helper:
+            # MUST NOT raise: the wipe completes via the helper (S6.4).
+            reset_service(config, stack, assume_yes=True)
+
+        assert mock_helper.call_count == 2  # both vol dirs routed to root helper
+        targets = {Path(c.args[0]).name for c in mock_helper.call_args_list}
+        assert targets == {"vol-postgres-data", "vol-redis-data"}
+        assert not rendered.exists()  # Step 3 (no permission issue) still ran
+
+    def test_writable_vol_dirs_skip_the_helper(self, tmp_path):
+        """No PermissionError → direct rmtree, helper container never invoked."""
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        (stack / "vol-data").mkdir()
+
+        config = _base_config()
+        with patch.object(engine.procutil, "run_cmd", return_value=_ok()), \
+             patch.object(engine, "privileged_rmtree") as mock_helper:
+            reset_service(config, stack, assume_yes=True)
+
+        assert mock_helper.call_count == 0
+        assert not (stack / "vol-data").exists()
+
+
+class TestPrivilegedRmtree:
+    def test_mounts_parent_and_rm_rf_named_child(self, tmp_path):
+        """S6.5 deletion helper: mount the PARENT, rm -rf the named child so the
+        directory itself goes (mounting the dir would leave the mountpoint)."""
+        target = tmp_path / "vol-postgres-data"
+        with patch.object(engine.procutil, "docker", return_value=_ok()) as mock_docker:
+            engine.privileged_rmtree(target)
+
+        cmd = mock_docker.call_args.args[0]
+        assert cmd[:3] == ["run", "--rm", "-v"]
+        assert cmd[3] == f"{tmp_path}:/t"  # PARENT mounted, not the target itself
+        assert "alpine" in cmd
+        assert cmd[-3:] == ["rm", "-rf", "/t/vol-postgres-data"]  # named child
+        assert mock_docker.call_args.kwargs.get("check") is True
+
+
 class TestResetServiceConfigFiles:
     def test_removes_rendered_files_and_overlay(self, tmp_path):
         config = _base_config()

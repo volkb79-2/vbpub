@@ -368,6 +368,51 @@ def privileged_fs_op(physical_path: Path, op: str, *args: str) -> None:
     )
 
 
+def privileged_rmtree(physical_path: Path) -> None:
+    """Remove a directory tree (including itself) via a root helper container (S6.5).
+
+    The deletion mirror of :func:`privileged_fs_op`. ``--reset`` (S6.4) must wipe
+    hostdirs that hold image-UID-owned data — postgres uid 999, pgAdmin 5050 and
+    friends provisioned per S6.7 Pattern (a) — but the unprivileged operator
+    cannot recurse the ``0700`` subtrees those entrypoints create, so a host-side
+    ``shutil.rmtree`` dies on ``Permission denied``. The daemon is root, so we
+    mount the target's PARENT and ``rm -rf`` the named child: the directory and
+    all of its contents go regardless of owner. Module-level so tests can
+    monkeypatch it.
+    """
+    procutil.docker(
+        ["run", "--rm", "-v", f"{physical_path.parent}:/t", "alpine",
+         "rm", "-rf", f"/t/{physical_path.name}"],
+        check=True,
+    )
+
+
+def _rmtree_with_fallback(vol_dir: Path, *, repo_root: Optional[Path]) -> None:
+    """shutil.rmtree; on PermissionError recover via the S6.5 root helper (S6.4).
+
+    A partial rmtree (some entries removed before hitting an image-owned ``0700``
+    subdir) is fine — the helper's ``rm -rf`` cleans whatever remains.
+    """
+    try:
+        shutil.rmtree(vol_dir)
+        return
+    except PermissionError:
+        pass
+    # The operator lacks privilege over an image-UID-owned subtree. Mount the
+    # PHYSICAL path (S1.4) so the daemon-side bind resolves on the host; fall back
+    # to the logical path when there is no DooD context (native host, S1.9).
+    try:
+        physical = to_physical_path(vol_dir, repo_root=repo_root)
+    except ValueError:
+        physical = vol_dir
+    print(
+        f"[INFO]     Operator lacks privilege over {vol_dir}; "
+        "removing via root helper container (S6.5)",
+        flush=True,
+    )
+    privileged_rmtree(physical)
+
+
 def _chown_with_fallback(
     path: Path, uid: int, gid: int, *, physical_path: Path, chown_fn: Optional[Callable]
 ) -> None:
@@ -626,12 +671,15 @@ def reset_service(
     except FileNotFoundError as e:
         raise RuntimeError(f"docker not available for reset: {e}") from e
 
-    # Step 2: remove vol-* dirs of THIS stack dir (B14).
+    # Step 2: remove vol-* dirs of THIS stack dir (B14). Fixed-UID images write
+    # data owned by the image UID (postgres 999, pgAdmin 5050 — S6.7 Pattern (a)),
+    # which the unprivileged operator cannot rmtree; on PermissionError we degrade
+    # to the S6.5 root helper container so the wipe completes instead of aborting.
     print("[INFO]   Step 2/4: Removing host-mounted volume directories...", flush=True)
     removed = 0
     for vol_dir in stack_dir.glob("vol-*"):
         if vol_dir.is_dir():
-            shutil.rmtree(vol_dir)
+            _rmtree_with_fallback(vol_dir, repo_root=repo_root)
             print(f"[INFO]     Removed: {vol_dir}", flush=True)
             removed += 1
     print(f"[INFO]   Removed {removed} volume directories" if removed else "[INFO]   No volume directories to remove", flush=True)
