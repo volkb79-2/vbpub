@@ -84,6 +84,8 @@ You can change which stable base image is checked (and resolved) by overriding:
 DEVCONTAINERS_BASE_PINNED=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-images.py
 ```
 
+see also (https://mcr.microsoft.com/v2/devcontainers/python/tags/list)
+
 Ignore release-gate intentionally:
 
 ```bash
