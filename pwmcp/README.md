@@ -1,51 +1,30 @@
-# PWMCP Standalone Service
+# PWMCP — Playwright-as-a-Service
 
-Standalone PWMCP service with **WebSocket** and **MCP** interfaces, designed for multi-project browser automation with public access, strong authentication, and optional TLS via reverse proxy.
+PWMCP is a thin, hardened [ciu](https://github.com/volkb79-2/vbpub/tree/main/ciu) packaging of the **official Microsoft Playwright images**. It runs two services so a project never installs a browser into its own devcontainer or CI runner.
 
-## Key Features
+## Services
 
-- WebSocket API for full Playwright control (recommended for tests)
-- MCP server for VS Code Copilot chat
-- Token authentication (required by default)
-- Optional TLS via Nginx + Let’s Encrypt
-- Optional video capture via `PLAYWRIGHT_VIDEO_DIR`
-- Live event stream for command telemetry (per session)
-- Optional console event streaming (per session)
-- Workspace isolation with per-session artifact directories
-- Artifact API for screenshots, traces, console logs, HARs, storage state
-- Optional HTTP artifact download server
-- Optional browser context pooling for faster test startups
-- Buildx Bake build/push workflow
-- CIU-ready standalone project (ships CIU defaults + compose templates)
+| Service | Image | Port | Purpose |
+|---|---|---|---|
+| `pwmcp-playwright` | `ghcr.io/volkb79-2/pwmcp-playwright:<version>` | 3000 | Native Playwright `run-server` endpoint — full Playwright API via `connect()` |
+| `pwmcp-mcp` | `mcr.microsoft.com/playwright/mcp:latest` | 8931 | MCP (HTTP/SSE) surface for AI clients (VS Code Copilot, etc.) at `/mcp` |
+
+The `pwmcp-playwright` image is the official Microsoft Playwright base image with the matching playwright JS package pre-installed so `run-server` works offline in an egress-restricted container.
+
+## Deployment Modes
+
+**internal** (default): both services join the project Docker network with plain HTTP and no authentication. Sibling containers (test runner, devcontainer) reach them by **container name** on the shared network — never via `localhost`:
+
+```
+PLAYWRIGHT_SERVER_WS=ws://pwmcp-playwright:3000/
+MCP endpoint: http://pwmcp-mcp:8931/mcp
+```
+
+The network boundary is the access control. This is the correct mode for dev and CI.
+
+**external** (`external.enabled = true`): front with a running [tls-edge](https://github.com/volkb79-2/vbpub/tree/main/tls-edge) (Traefik). Each service gets a TLS-terminated route on its own hostname, protected by a per-route basicAuth guard. See `ciu.defaults.toml.j2` for the `[pwmcp.external]` settings.
 
 ## Quick Start
-
-1. Copy and edit env file:
-
-```bash
-cp .env.sample .env
-```
-
-2. Set required fields:
-- `ACCESS_TOKEN`
-- `PUBLIC_FQDN` (for reverse proxy)
-- `LETSENCRYPT_DIR` (parent directory, e.g., `/etc/letsencrypt`)
-
-3. Start the container:
-
-```bash
-docker compose -f docker-compose.manual.yml up -d
-```
-
-4. (Optional) Start reverse proxy:
-
-```bash
-docker compose -f docker-compose.manual.yml --profile proxy up -d
-```
-
-## CIU Quick Start (Standalone)
-
-If you prefer CIU orchestration, this repo includes standalone CIU configs:
 
 ```bash
 cd pwmcp
@@ -53,132 +32,80 @@ ciu --generate-env -d .
 ciu -d .
 ```
 
-Standalone means: all CIU defaults and templates live inside this repo, so users can run
-`ciu` directly after download without external configuration.
+## Consumer Connection
 
-To expose direct WS/MCP/health ports without the reverse proxy, set:
-`pwmcp_server.ports.expose_ws = true`, `expose_mcp = true`, `expose_health = true`, or `expose_artifact_http = true`
-in [ciu.defaults.toml.j2](vbpub/pwmcp/ciu.defaults.toml.j2).
+### Playwright `connect()` (test suites)
 
-## Endpoints
+```python
+# pip install playwright==1.60.0   ← must match the pinned version
+from playwright.async_api import async_playwright
 
-- WS (direct): `ws://HOST:WS_EXTERNAL_PORT`
-- MCP (direct): `http://HOST:MCP_EXTERNAL_PORT/mcp`
-- WS (TLS): `wss://PUBLIC_FQDN/ws`
-- MCP (TLS): `https://PUBLIC_FQDN/mcp`
-- Health: `http://HOST:HEALTH_EXTERNAL_PORT/health`
-- Selftest (egress): `http://HOST:HEALTH_EXTERNAL_PORT/selftest`
-- Artifacts (optional): `http://HOST:ARTIFACT_HTTP_EXTERNAL_PORT/artifacts/<workspace_id>/<path>`
+async with async_playwright() as p:
+    browser = await p.chromium.connect("ws://pwmcp-playwright:3000/")
+    page = await browser.new_page()
+    await page.goto("https://example.com")
+    await browser.close()
+```
 
-When using a public FQDN, ensure `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`
-include the public host to satisfy MCP transport security.
+The `pip install playwright` version **must** match `pwmcp.playwright_version` in `ciu.defaults.toml.j2` (currently `1.60.0`). The Dockerfile bakes in the same version so the wire protocol is in lockstep.
 
-Artifact downloads require `Authorization: Bearer <token>` if `ARTIFACT_HTTP_AUTH_REQUIRED=true`.
-Set `ARTIFACT_HTTP_HOST` to a client-reachable hostname to make `http_url` usable.
+### MCP (AI clients)
+
+Add to your MCP client configuration (e.g. VS Code `settings.json`):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "pwmcp-mcp": {
+        "type": "http",
+        "url": "http://pwmcp-mcp:8931/mcp"
+      }
+    }
+  }
+}
+```
+
+In external mode the URL becomes `https://<mcp_host>/mcp` (set `pwmcp.external.mcp_host`).
+
+## Version Pin
+
+`pwmcp.playwright_version` in `ciu.defaults.toml.j2` is the single source of truth. It pins:
+- the base image tag (`mcr.microsoft.com/playwright:v<version>-<distro>`)
+- the playwright JS package baked into `pwmcp-playwright`
+- the version consumers must `pip install playwright==<version>`
+
+When upgrading, update `playwright_version` (and `playwright_server.image.tag`) in `ciu.defaults.toml.j2` and rebuild the image (`docker buildx bake all --push`).
+
+## Browser Isolation Hardening
+
+Applied to **both services in both modes**:
+
+- Run as UID/GID 1000 (non-root user shipped by the official base image)
+- `cap_drop: ALL`
+- `no-new-privileges: true`
+- `shm_size: 2gb` (Chromium requires shared memory)
 
 ## Build & Push
 
 ```bash
-./build-images.py
-./push-images.py
+# Build (local load)
+docker buildx bake all --load
+
+# Push to GHCR
+GITHUB_USERNAME=<user> GITHUB_PUSH_PAT=<token> docker buildx bake all --push
 ```
 
-## Browser selection
-
-By default the container uses the system Chromium binary for stable builds.
-You can override the Chromium source with environment variables:
-
-- `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium` (preferred for stable)
-- `PLAYWRIGHT_CHROMIUM_CHANNEL=chrome` (uses system Chrome channel, if installed)
-
-## Usage Demo
-
-Run the demo client script:
+Or use the ciu build runner:
 
 ```bash
-WS_URL=ws://localhost:3000 ACCESS_TOKEN=<token> python3 usage-demo.py
-```
-
-## CLI
-
-```bash
-pwmcp ws ping --url ws://localhost:3000 --token <token>
-pwmcp ws navigate --url ws://localhost:3000 --token <token> --page https://example.com
-pwmcp ws screenshot --url ws://localhost:3000 --token <token> --path /workspaces/artifacts/example.png
-pwmcp ws health --url ws://localhost:3000 --token <token>
-pwmcp ws login --url ws://localhost:3000 --token <token> --login-url https://app.example/login --username admin --password <secret>
-pwmcp ws console-logs --url ws://localhost:3000 --token <token>
-pwmcp ws trace-start --url ws://localhost:3000 --token <token>
-pwmcp ws trace-stop --url ws://localhost:3000 --token <token> --path trace.zip
-pwmcp ws state-export --url ws://localhost:3000 --token <token> --path storage-state.json
-pwmcp ws state-import --url ws://localhost:3000 --token <token> --path storage-state.json
-pwmcp ws video-path --url ws://localhost:3000 --token <token>
-```
-
-## Client Toolkit (pwmcp-client)
-
-The client package provides reusable helpers for UI testing against the MCP WebSocket service:
-- `PlaywrightMCPConfig` (env-driven config, proxy + viewport settings)
-- `ArtifactManager` (consistent output paths)
-- `UIHarness` (navigate/wait/click/fill, layout guards, artifact capture, storage state helpers)
-- `SessionManager` + `SessionBundle` (persist storage state + cookies together)
-- `RetryPolicy` + `async_retry` (retry with backoff)
- - `LayoutSelectors` helpers (app-specific layout guards)
-
-Config highlights:
-- `PWMCP_BASE_URL`, `PWMCP_EXTERNAL_BASE_URL`, `PWMCP_PROXY_BASE_URL`
-- `PWMCP_TIMEOUT`, `PWMCP_NAV_TIMEOUT_MS`, `PWMCP_ACTION_TIMEOUT_MS`
-- `PWMCP_VIEWPORT_WIDTH`, `PWMCP_VIEWPORT_HEIGHT`, `PWMCP_HEADLESS`
-- `PWMCP_ARTIFACTS_DIR`
-
-Import example:
-
-```python
-from pwmcp_client import PlaywrightMCPConfig, PlaywrightWSClient, UIHarness, ArtifactManager
-
-config = PlaywrightMCPConfig.from_env()
-artifacts = ArtifactManager(config.artifacts_dir)
-
-async with PlaywrightWSClient(url=config.ws_url, auth_token=config.auth_token, timeout=config.timeout) as client:
-	ui = UIHarness(client=client, config=config, artifacts=artifacts)
-	await ui.goto("/login")
-	await ui.assert_visible("#username")
-	await ui.capture_artifacts(prefix="login")
-
-session = SessionManager(client=client, artifacts=artifacts)
-await session.ensure()
-
-selectors = default_layout_selectors()
-await ui.assert_layout(selectors.as_list())
-```
-
-## Build & Publish Wheels
-
-```bash
-./build-shared-wheel.py
-./build-client-wheel.py
-./build-server-wheel.py
-./publish-client-wheel.py
-./publish-server-wheel.py
-```
-
-## Client Toolkit Tests
-
-```bash
-./run-client-tests.py
+ciu-build -d . build-images
+ciu-build -d . push-images
 ```
 
 ## Documentation
 
-- docs/ARCHITECTURE.md
-- docs/SECURITY.md
-- docs/DEPLOYMENT.md
-- docs/USAGE.md
-- docs/GAP-ANALYSIS.md
-- docs/CONFIG-EXAMPLES.md
-- docs/CLIENT.md
-- docs/SERVER.md
-
-## Notes
-
-This project was extracted from `netcup-api-filter/tooling/playwright` and upgraded for public, multi-project use.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — two-service design
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — internal and external deploy procedures
+- [docs/SECURITY.md](docs/SECURITY.md) — browser isolation rationale and hardening
+- [docs/USAGE.md](docs/USAGE.md) — consumer connect() and MCP usage details

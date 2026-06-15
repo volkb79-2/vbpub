@@ -2,33 +2,16 @@ project_root = "."
 log_dir = "logs"
 release_config = "../release.toml"
 
-[env]
-OCI_VENDOR = "Volker Badziong"
-OCI_DESCRIPTION_SERVER = """PWMCP Server: WebSocket + MCP server image for browser automation. CIU usage requires pwmcp/ciu.defaults.toml.j2 and pwmcp/docker-compose.yml.j2. Then run: ciu --generate-env -d .; ciu -d .
-"""
-OCI_DESCRIPTION_CLIENT = """PWMCP Client: client toolkit container for PWMCP workflows. CIU usage requires pwmcp/ciu.defaults.toml.j2 and pwmcp/docker-compose.yml.j2. Then run: ciu --generate-env -d .; ciu -d .
-"""
-PWMCP_CLIENT_RELEASE_NOTES = "## PWMCP client wheel\nWebSocket client SDK for PWMCP.\n\n**Includes**\n- Client SDK + helpers\n- UI harness + retry utilities\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
-PWMCP_CLIENT_LATEST_NOTES = "## PWMCP client wheel (latest)\nLatest client SDK for Python integrations.\n\n**Includes**\n- Client SDK + helpers\n- UI harness + retry utilities\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
-PWMCP_SERVER_RELEASE_NOTES = "## PWMCP server wheel\nWebSocket + MCP server package.\n\n**Includes**\n- Server runtime\n- Health and WebSocket services\n- Playwright backend\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
-PWMCP_SERVER_LATEST_NOTES = "## PWMCP server wheel (latest)\nLatest server SDK for PWMCP.\n\n**Includes**\n- Server runtime\n- Health and WebSocket services\n- Playwright backend\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
-
-# BUILD_DATE (docker image tags) is commit-derived by the release-manager;
-# wheel versions come from setuptools-scm. No counter, no clock.
-[build_metadata]
-date_env = "BUILD_DATE"
-date_format = "%Y%m%d"
-
 [steps.build-images]
 commands = [
-  { label = "pwmcp: build images", argv = ["docker", "buildx", "bake", "all", "--load"], cwd = "." },
+  { label = "pwmcp: build playwright-server image", argv = ["docker", "buildx", "bake", "all", "--load"], cwd = "." },
 ]
 
 [steps.push-images]
 required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
 
 commands = [
-  { label = "pwmcp: push images", argv = ["docker", "buildx", "bake", "all", "--push"], cwd = "." },
+  { label = "pwmcp: push playwright-server image", argv = ["docker", "buildx", "bake", "all", "--push"], cwd = "." },
 ]
 
 [steps.push-images.login]
@@ -36,31 +19,3 @@ registry = "ghcr.io"
 username_env = "GITHUB_USERNAME"
 token_env = "GITHUB_PUSH_PAT"
 required = true
-
-[steps.build-shared-wheel]
-clean_dirs = ["dist/shared"]
-commands = [
-  { label = "pwmcp-shared: build wheel", argv = ["python3", "-m", "build", "--wheel", "--outdir", "../dist/shared"], cwd = "shared" },
-]
-
-[steps.build-client-wheel]
-clean_dirs = ["dist/client"]
-commands = [
-  { label = "pwmcp-client: build wheel", argv = ["python3", "-m", "build", "--wheel", "--outdir", "../dist/client"], cwd = "client" },
-]
-
-[steps.build-server-wheel]
-clean_dirs = ["dist/server"]
-commands = [
-  { label = "pwmcp-server: build wheel", argv = ["python3", "-m", "build", "--wheel", "--outdir", "../dist/server"], cwd = "server" },
-]
-
-[steps.publish-client-wheel]
-commands = [
-  { label = "pwmcp-client: publish wheel", argv = ["python3", "publish-client-wheel-release.py"], cwd = "." },
-]
-
-[steps.publish-server-wheel]
-commands = [
-  { label = "pwmcp-server: publish wheel", argv = ["python3", "publish-server-wheel.py"], cwd = "." },
-]

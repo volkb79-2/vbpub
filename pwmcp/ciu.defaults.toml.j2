@@ -1,89 +1,88 @@
 # ==========================================================================
-# PWMCP stack defaults (standalone)
+# PWMCP — Playwright-as-a-Service (official Microsoft images), ciu stack
 # ==========================================================================
+#
+# pwmcp is a thin, hardened ciu packaging of the OFFICIAL Playwright images.
+# It runs two services so a project never installs a browser into its own
+# devcontainer / CI runner:
+#
+#   playwright_server :  mcr.microsoft.com/playwright  running `npx playwright
+#                        run-server`  ->  native Playwright connect() endpoint
+#                        (FULL API) for test suites.
+#   playwright_mcp    :  mcr.microsoft.com/playwright/mcp  ->  MCP surface
+#                        (HTTP/SSE) for AI clients (VS Code Copilot, etc.).
+#
+# Deployment modes
+# ----------------
+#   internal (default): both services join the project Docker network with NO
+#       TLS and NO auth. Sibling containers (the test runner / devcontainer)
+#       reach them BY CONTAINER NAME on the shared network — never localhost:
+#           PLAYWRIGHT_SERVER_WS = ws://<playwright_server.name>:<port>/
+#       The network boundary is the control; this is correct for dev + CI.
+#
+#   external (external.enabled = true): front with a running tls-edge (Traefik).
+#       The route is TLS-terminated and (by default) protected by a per-route
+#       basicAuth guard — a secret the consumer defines — so the public URL is
+#       not usable without it. See pwmcp.external below + tls-edge guard docs.
+#
+# Browser isolation hardening (non-root, dropped caps, no-new-privileges) is
+# applied in BOTH modes — that is the whole reason the browser is offloaded.
 
-[pwmcp_server]
-name = "pwmcp-server"
+[pwmcp]
+# The single source of truth for the Playwright version. It pins:
+#   - the base image tag (mcr.microsoft.com/playwright:v<version>-<distro>),
+#   - the playwright JS package baked into the playwright-server image, and
+#   - the version connect() consumers must install (`pip install playwright==<version>`).
+playwright_version = "1.60.0"
+image_distro = "noble"            # -> mcr.microsoft.com/playwright:v<version>-<distro>
 
-[pwmcp_server.image]
+[pwmcp.network]
+ingress_network = "ingress_public"   # shared tls-edge network (external mode only)
+
+[pwmcp.playwright_server]
+name = "pwmcp-playwright"
+port = 3000                       # run-server listens here (container-internal)
+expose = false                    # publish to host 127.0.0.1 (dev convenience only)
+host_port = 3000
+
+# The playwright-server image = official base + the matching playwright JS pkg
+# (the base ships only browsers). Built from containers/playwright-server/Dockerfile.
+# tag should track playwright_version so the consumer pin stays in lockstep.
+[pwmcp.playwright_server.image]
 registry = "ghcr.io"
 namespace = "volkb79-2"
-name = "pwmcp-server"
-tag = "latest"
+name = "pwmcp-playwright"
+tag = "1.60.0"
 
-[pwmcp_server.ports]
-ws_internal = 3000
-mcp_internal = 8765
-health_internal = 8081
-artifact_http_internal = 8090
-
-ws_external = 3000
-mcp_external = 8765
-health_external = 8081
-artifact_http_external = 8090
-
-expose_ws = false
-expose_mcp = false
-expose_health = false
-expose_artifact_http = false
-
-[pwmcp_server.runtime]
-auth_required = true
-access_token = "ASK_EXTERNAL:ACCESS_TOKEN"
-ws_auth_token = ""
-mcp_auth_token = ""
-
-container_user = "vscode"
-container_uid = 1000
-container_gid = 1000
-
-ws_max_sessions = 20
-ws_session_timeout = 3600
-ws_event_stream_enabled = true
-ws_console_stream_enabled = false
-ws_artifact_root = "/workspaces/artifacts"
-ws_workspace_root = "/workspaces"
-ws_artifact_max_bytes = 5242880
-
-artifact_http_enabled = false
-artifact_http_host = "0.0.0.0"
-artifact_http_auth_required = true
-
-ws_har_enabled = false
-ws_har_content = "omit"
-
-browser_pool_enabled = false
-browser_pool_size = 4
-
-playwright_headless = true
-playwright_browser = "chromium"
-
-mcp_enabled = true
-mcp_server_name = "pwmcp-server"
-mcp_allowed_hosts = "localhost,127.0.0.1"
-mcp_allowed_origins = "http://localhost,http://127.0.0.1"
-
-[pwmcp_server.health]
+[pwmcp.playwright_mcp]
 enabled = true
-socket_timeout = 2
-selftest_url = "https://www.google.de"
-selftest_timeout = 5
+name = "pwmcp-mcp"
+image_tag = "latest"              # @playwright/mcp has its OWN version line (not Playwright's)
+port = 8931
+expose = false
+host_port = 8931
+browser = "chromium"
+extra_args = ""                   # e.g. "--caps=vision,pdf"
 
-[pwmcp_server.volumes]
-workspaces_dir = "./vol-workspaces"
-certs_dir = "./certs"
+[pwmcp.hardening]
+# Applied to BOTH services, in BOTH modes.
+run_as_uid = 1000                 # official image ships a non-root user at 1000
+run_as_gid = 1000
+no_new_privileges = true
+drop_all_caps = true
+shm_size = "2gb"                  # Chromium needs shared memory
 
-[reverse_proxy]
-enabled = true
-public_fqdn = "example.com"
-letsencrypt_dir = "/etc/letsencrypt"
-https_port = 443
-http_enabled = false
-http_port = 80
-
-[pwmcp_server.hooks]
-pre_compose = []
-post_compose = []
+[pwmcp.external]
+# External exposure via a running tls-edge. Leave disabled for dev/CI.
+enabled = false
+server_host = ""                  # e.g. "pw.example.com"  -> playwright_server (wss connect)
+mcp_host = ""                     # e.g. "pw-mcp.example.com" -> playwright_mcp
+# Per-route access guard (Traefik basicAuth). The consumer defines the secret;
+# supply the htpasswd hash (generate once: `htpasswd -nbB <user> <secret>`).
+# A bare "$" is fine here — the compose template escapes it to "$$".
+guard_enabled = true
+guard_user = "pwmcp"
+guard_htpasswd = "ASK_EXTERNAL:PWMCP_GUARD_HTPASSWD"
 
 [state]
 initialized = false

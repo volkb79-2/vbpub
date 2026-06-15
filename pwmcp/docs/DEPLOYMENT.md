@@ -1,156 +1,99 @@
 # Deployment
 
-## Build (Local)
+## Prerequisites
 
-This project uses Buildx Bake.
+- [ciu](https://github.com/volkb79-2/vbpub/tree/main/ciu) installed
+- Docker with Buildx plugin
+
+## Internal Mode (Dev / CI — Default)
+
+Both services run on the project Docker network with plain HTTP and no auth.  
+Sibling containers reach services by **container name** — never via `localhost`.
 
 ```bash
-cd /workspaces/vbpub/pwmcp
-./build-images.py
+cd pwmcp
+
+# First time: generate .env.ciu from ciu.defaults.toml.j2
+ciu --generate-env -d .
+
+# Start the stack
+ciu -d .
 ```
 
-## Push (GHCR)
+Services come up as:
+- `<project>-<env>-pwmcp-playwright` on port 3000 (project network only)
+- `<project>-<env>-pwmcp-mcp` on port 8931 (project network only)
 
-```bash
-cd /workspaces/vbpub/pwmcp
-cp .env.sample .env
-# Fill GITHUB_USERNAME and GITHUB_PUSH_PAT in vbpub/.env or local .env
-./push-images.py
+To expose a port to the host for local debugging, set `pwmcp.playwright_server.expose = true` (or `pwmcp.playwright_mcp.expose = true`) in `ciu.toml.j2` (overrides file) and re-run `ciu -d .`. Exposed ports bind to `127.0.0.1` only.
+
+## External Mode (TLS via tls-edge)
+
+External mode fronts both services with a running [tls-edge](https://github.com/volkb79-2/vbpub/tree/main/tls-edge) (Traefik) on the `ingress_public` network.
+
+### Requirements
+
+- tls-edge deployed and the `ingress_public` Docker network exists
+- DNS records for `server_host` and `mcp_host` pointing to the Traefik host
+- A basicAuth htpasswd hash for the access guard (generate once):
+  ```bash
+  htpasswd -nbB pwmcp <secret>
+  ```
+
+### Configuration
+
+In your `ciu.toml.j2` (override file in this directory):
+
+```toml
+[pwmcp.external]
+enabled = true
+server_host = "pw.example.com"       # playwright-server (wss connect)
+mcp_host = "pw-mcp.example.com"      # playwright-mcp (MCP surface)
+guard_enabled = true
+guard_user = "pwmcp"
+guard_htpasswd = "$2y$05$..."         # htpasswd -nbB output
 ```
 
-## Stack Bundle (CIU + Manual)
-
-The release script creates a portable stack bundle that includes:
-- `ciu.defaults.toml.j2`
-- `ciu-global.defaults.toml.j2`
-- `docker-compose.yml.j2`
-- `docker-compose.manual.yml`
-- `.env.sample`
-- `docs/`
-- `reverse-proxy/`
-- `client/` (wheel files for offline installs)
-
-Bundle output:
-- `dist/pwmcp-stack-bundle-<version>.tar.gz`
-
-Distribution:
-- Publish the versioned bundle asset to:
-	- `pwmcp-stack-bundle-<version>`
-	- `pwmcp-stack-bundle-latest`
-
-## CIU (Recommended)
-
-This repository is a standalone CIU project: it ships its own
-`ciu-global.defaults.toml.j2`, stack `ciu.defaults.toml.j2`, and
-`docker-compose.yml.j2`, so a user can run CIU directly without any
-external orchestration or shared repo configuration.
+Then redeploy:
 
 ```bash
-cd /workspaces/vbpub/pwmcp
 ciu --generate-env -d .
 ciu -d .
 ```
 
-Full deployment flow example (external checks):
+External endpoints:
+- Playwright connect: `wss://pw.example.com/` (consumers use this as the WebSocket URL)
+- MCP: `https://pw-mcp.example.com/mcp`
+
+### Access Guard
+
+The basicAuth guard is applied per-route at Traefik level. The consumer includes credentials in the request:
+- For Playwright `connect()`: pass auth via the URL or the `extra_http_headers` option in the Playwright `connect()` call
+- For MCP HTTP clients: standard HTTP Basic Auth header
+
+## Image Build & Push
+
+The `pwmcp-playwright` image must be built and pushed before deploying. The `pwmcp-mcp` service pulls from `mcr.microsoft.com` directly.
 
 ```bash
-ciu-deploy --update-cert-permission --generate-env --stop --build --deploy --healthcheck external --selftest external
+# Build locally
+docker buildx bake all --load
+
+# Push to GHCR
+GITHUB_USERNAME=<user> GITHUB_PUSH_PAT=<token> docker buildx bake all --push
 ```
 
-Why this order:
-- `--update-cert-permission` ensures TLS certs are readable before compose (skip if certs are not provisioned yet).
-- `--generate-env` ensures `.env.ciu` exists and is current.
-- `--stop` + `--build` ensures a clean, fresh image deployment.
-- `--deploy` starts the stack.
-- `--healthcheck external` validates reverse-proxy routes.
-- `--selftest external` validates egress and external connectivity.
-
-## Docker Compose (Manual)
-
-### Direct Ports (WS + MCP)
+Or via the ciu build runner (uses `build-push.toml`):
 
 ```bash
-cp .env.sample .env
-# Edit ACCESS_TOKEN and PUBLIC_FQDN
-
-docker compose -f docker-compose.manual.yml up -d
+ciu-build -d . build-images
+ciu-build -d . push-images
 ```
 
-Endpoints:
-- WS: `ws://<host>:${WS_EXTERNAL_PORT}`
-- MCP: `http://<host>:${MCP_EXTERNAL_PORT}/mcp`
-- Health: `http://<host>:${HEALTH_EXTERNAL_PORT}/health`
+The bake file reads `PLAYWRIGHT_VERSION` and `PLAYWRIGHT_DISTRO` from environment; defaults match `ciu.defaults.toml.j2`.
 
-### Reverse Proxy (TLS)
+## Upgrading the Playwright Version
 
-```bash
-cp .env.sample .env
-# Set PUBLIC_FQDN and LETSENCRYPT_DIR
-
-docker compose -f docker-compose.manual.yml --profile proxy up -d
-```
-
-Endpoints:
-- WS: `wss://PUBLIC_FQDN/ws`
-- MCP: `https://PUBLIC_FQDN/mcp`
-
-## Ports
-- WebSocket server: `WS_PORT` (default 3000)
-- MCP server: `MCP_PORT` (default 8765)
-- Health server: `HEALTH_PORT` (default 8081)
-- Proxy TLS: `REVERSE_PROXY_HTTPS_PORT` (default 443)
-
-## Volumes
-- `WORKSPACES_DIR` -> `/workspaces`
-- `CERTS_DIR` -> `/certs`
-
-Artifacts are stored under `/workspaces/artifacts` (controlled by `WS_ARTIFACT_ROOT`).
-
-## Runtime User (CIU)
-
-To align with VS Code devcontainers while staying compatible with hosted CI/CD
-environments, the PWMCP stack exposes the runtime user via CIU config:
-
-- `pwmcp_server.runtime.container_user`
-- `pwmcp_server.runtime.container_uid`
-- `pwmcp_server.runtime.container_gid`
-
-Default values are set to the `vscode` user (UID/GID 1000). Override these
-values in your active CIU config when running in GitHub-hosted or other
-non-`vscode` environments.
-
-## Health Checks
-- `/health` and `/ready` perform WS/MCP socket checks.
-- `/selftest` performs an external GET (default https://www.google.de).
-
-## TLS Requirements (CIU)
-
-CIU supports `ciu.require_certs` (default: false) to fail fast when certificates
-are required. When enabled, CIU validates that the Let’s Encrypt files exist
-and are readable for `DOCKER_GID` before starting the reverse proxy.
-
-`ciu.require_fqdn` (default: false) controls whether `.env.ciu` generation must resolve
-`PUBLIC_FQDN`. Disable it when reverse DNS is unreliable.
-
-For this project, both are set to true in [ciu-global.defaults.toml.j2](vbpub/pwmcp/ciu-global.defaults.toml.j2).
-
-This repo also sets `ciu.standalone_root = true`, which requires running CIU
-from the project root (regenerate `.env.ciu` in that directory if you move the repo).
-
-## Publish & Push Options
-
-### GHCR (Recommended for GitHub orgs)
-Pros: integrated auth, supports private/public images, good CI/CD fit.
-Cons: GitHub token management required, rate limits for anonymous pulls.
-
-### Docker Hub
-Pros: widest ecosystem compatibility, familiar UX.
-Cons: stricter rate limits, public naming collisions, org paid plans for private.
-
-### Private Registry (self-hosted)
-Pros: full control, on‑prem compliance, no external rate limits.
-Cons: ops overhead, TLS/credentials management.
-
-### Air‑gapped / offline
-Pros: no registry dependency; ships as tarball.
-Cons: manual distribution and load (`docker save`/`docker load`).
+1. Update `pwmcp.playwright_version` (and `pwmcp.playwright_server.image.tag`) in `ciu.defaults.toml.j2`
+2. Rebuild and push the `pwmcp-playwright` image
+3. Notify consumers: they must update their `pip install playwright==<new-version>`
+4. Redeploy the stack: `ciu --generate-env -d . && ciu -d .`

@@ -1,6 +1,0 @@
-fastapi>=0.110.0
-fastmcp>=2.0.0
-mcp>=1.22.0
-playwright>=1.56.0
-uvicorn>=0.30.0
-websockets>=13.0
