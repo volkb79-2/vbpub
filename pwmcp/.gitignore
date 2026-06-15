@@ -15,3 +15,6 @@ dist/
 
 # setuptools-scm generated version files (written at build time)
 **/_version.py
+
+# ciu-generated resolved env (may contain secrets) — never commit
+ciu.env

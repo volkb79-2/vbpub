@@ -29,14 +29,16 @@
 #   Example: if htpasswd outputs  user:$2y$12$abc...xyz
 #            write it in labels as  user:$$2y$$12$$abc...xyz
 #
-# Supplying the real hash:
-#   Option A — .env file (recommended for single-host, non-secret-managed stacks):
-#     echo 'GUARD_HASH=user:$$2y$$12$$...' > .env    # note $$ in the .env value too
-#     # Compose then substitutes ${GUARD_HASH} below at runtime.
+# Supplying the real hash — two reliable methods (both avoid .env $-escaping pitfalls):
+#   Option A — hardcode the $$-escaped hash directly in the label (see below).
 #   Option B — ciu secret (recommended for ciu-managed stacks):
 #     [secrets]
 #     guard_hash = "ASK_EXTERNAL:GUARD_HASH"
-#     Then use ${GUARD_HASH} below; ciu resolves and injects the value.
+#     Then reference ${GUARD_HASH} in the label; ciu resolves and injects the value.
+#   (.env substitution also works, but whether a $ in a .env value is written as
+#    $ or $$ depends on your Compose version's .env interpolation. If you use it,
+#    verify with `docker compose config` that the rendered basicauth.users value
+#    EXACTLY equals your htpasswd output.)
 #
 # Naming convention (REQUIRED): router and service names in labels must be
 #   unique across the whole host, not just this stack.  Use <stack>-<service>
@@ -82,11 +84,11 @@ services:
       # Every $ in the htpasswd hash must be doubled to $$ here.
       # Example real value (bcrypt):  user:$$2y$$12$$XyZ...abcDEF0123456789..
       #
-      # To avoid pasting hashes into this file, use substitution:
-      #   Set GUARD_HASH in .env (remember: $$ in the .env value):
-      #     GUARD_HASH=user:$$2y$$12$$XyZ...
-      #   Then use the variable reference below (single $ is fine inside ${}):
+      # To avoid pasting hashes here, reference a variable instead:
       #     - traefik.http.middlewares.pattern-d-app-guard.basicauth.users=${GUARD_HASH}
+      #   supplied via a ciu secret (preferred) or a .env file. If using .env,
+      #   confirm with `docker compose config` that the rendered value matches your
+      #   htpasswd output (Compose .env $-escaping is version-dependent).
       - traefik.http.middlewares.pattern-d-app-guard.basicauth.users=user:$$2y$$12$$REPLACEWITHREALHASHDOUBLEDDOLLARSIGNS
       # Remove the auth prompt header shown to browsers (optional — omit to keep the default):
       # - traefik.http.middlewares.pattern-d-app-guard.basicauth.realm=Restricted

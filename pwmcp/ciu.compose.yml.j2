@@ -28,7 +28,7 @@ services:
     {% endif %}
     networks:
       - default
-      {% if pwmcp.external.enabled %}
+      {% if pwmcp.external.enabled and pwmcp.external.server_host %}
       - ingress
       {% endif %}
     {% if pwmcp.external.enabled and pwmcp.external.server_host %}
@@ -51,7 +51,7 @@ services:
     image: mcr.microsoft.com/playwright/mcp:{{ pwmcp.playwright_mcp.image_tag }}
     container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.playwright_mcp.name }}
     entrypoint: ["node"]
-    command: ["/app/cli.js", "--headless", "--browser", "{{ pwmcp.playwright_mcp.browser }}", "--no-sandbox", "--port", "{{ pwmcp.playwright_mcp.port }}", "--host", "0.0.0.0"{% if pwmcp.playwright_mcp.extra_args %}, "{{ pwmcp.playwright_mcp.extra_args }}"{% endif %}]
+    command: ["/app/cli.js", "--headless", "--browser", "{{ pwmcp.playwright_mcp.browser }}", "--no-sandbox", "--port", "{{ pwmcp.playwright_mcp.port }}", "--host", "0.0.0.0"{% for a in pwmcp.playwright_mcp.extra_args.split() %}, "{{ a }}"{% endfor %}]
     user: "{{ pwmcp.hardening.run_as_uid }}:{{ pwmcp.hardening.run_as_gid }}"
     {% if pwmcp.hardening.drop_all_caps %}
     cap_drop:

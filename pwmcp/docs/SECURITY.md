@@ -20,7 +20,7 @@ The following hardening is applied to **both services** in **both deployment mod
 | No privilege escalation | `no-new-privileges: true` | Prevents setuid/setgid bits from granting elevated privileges at runtime |
 | Shared memory | `shm_size: 2gb` | Chromium writes renderer frames to `/dev/shm`; too small causes crashes |
 
-These are set in `docker-compose.yml.j2` under `[pwmcp.hardening]` and cannot be overridden per-mode.
+These are set in `ciu.compose.yml.j2` under `[pwmcp.hardening]` and cannot be overridden per-mode.
 
 ## Internal Mode Access Control
 
