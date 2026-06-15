@@ -1,0 +1,107 @@
+# ─── Pattern D: Public service with per-route basicAuth guard ──────────────────
+#
+# Use case: a service that must not be reached without a shared secret.
+#           Common for staging environments, tooling endpoints, or any route
+#           that should not be publicly browsable.
+#
+# Guard mechanism: Traefik basicAuth middleware declared entirely in labels.
+#   Traefik auto-discovers the middleware from the container's labels — no
+#   changes to the edge-proxy stack are needed.
+#
+# How it works:
+#   1. A middleware named pattern-d-app-guard is defined on this container with
+#      a list of user:hash entries.
+#   2. The router attaches the middleware: any request without valid credentials
+#      receives 401 Unauthorized (WWW-Authenticate: Basic realm="...).
+#   3. Clients pass credentials as:
+#        curl -u user:secret https://guarded.my.domain/
+#        Authorization: Basic <base64(user:secret)>
+#
+# Hash format: bcrypt (htpasswd -nbB) or MD5-APR1 (openssl passwd -apr1).
+#   Bcrypt is strongly preferred.  Generate with scripts/gen-guard-secret.sh.
+#
+# IMPORTANT — dollar-sign escaping in Compose labels:
+#   Bcrypt and APR1 hashes contain literal $ characters.
+#   In docker-compose.yml label values, $ is a variable reference prefix.
+#   Each $ in the hash MUST be written as $$ so that Compose emits a single $.
+#   Failure to escape produces a wrong hash (Traefik rejects all credentials).
+#
+#   Example: if htpasswd outputs  user:$2y$12$abc...xyz
+#            write it in labels as  user:$$2y$$12$$abc...xyz
+#
+# Supplying the real hash:
+#   Option A — .env file (recommended for single-host, non-secret-managed stacks):
+#     echo 'GUARD_HASH=user:$$2y$$12$$...' > .env    # note $$ in the .env value too
+#     # Compose then substitutes ${GUARD_HASH} below at runtime.
+#   Option B — ciu secret (recommended for ciu-managed stacks):
+#     [secrets]
+#     guard_hash = "ASK_EXTERNAL:GUARD_HASH"
+#     Then use ${GUARD_HASH} below; ciu resolves and injects the value.
+#
+# Naming convention (REQUIRED): router and service names in labels must be
+#   unique across the whole host, not just this stack.  Use <stack>-<service>
+#   (here: pattern-d-app).  Middleware names must also be unique host-wide;
+#   convention: <router-name>-guard.
+#
+# Network layout:
+#   ingress_public  – shared with Traefik.  Required for routing.
+#   private         – stack-internal; no other stack or Traefik can reach it.
+
+services:
+
+  app:
+    image: your-image:tag          # replace with actual image
+    restart: unless-stopped
+    expose:
+      - "8080"                     # container port the app listens on
+    networks:
+      - ingress_public             # must join this for Traefik to route to it
+      - private                    # optional: needed only if app has local peers
+    labels:
+      # ── Required: opt in to Traefik routing ────────────────────────────────
+      - traefik.enable=true
+
+      # ── Subdomain routing (preferred) ──────────────────────────────────────
+      # Replace guarded.my.domain with the actual subdomain for this service.
+      - traefik.http.routers.pattern-d-app.rule=Host(`guarded.my.domain`)
+      - traefik.http.routers.pattern-d-app.entrypoints=websecure
+
+      # ── Port-based routing fallback ────────────────────────────────────────
+      # Use these labels INSTEAD of the subdomain labels above.
+      # - traefik.http.routers.pattern-d-app.rule=Host(`my.domain`)
+      # - traefik.http.routers.pattern-d-app.entrypoints=websecure-alt
+
+      # ── Service definition: tell Traefik which port to use upstream ─────────
+      - traefik.http.services.pattern-d-app.loadbalancer.server.port=8080
+
+      # ── basicAuth guard ────────────────────────────────────────────────────
+      # Define the middleware.  The value is a comma-separated list of
+      # user:hash pairs (one entry is the common case).
+      #
+      # Placeholder hash below — replace with output of scripts/gen-guard-secret.sh.
+      # Every $ in the htpasswd hash must be doubled to $$ here.
+      # Example real value (bcrypt):  user:$$2y$$12$$XyZ...abcDEF0123456789..
+      #
+      # To avoid pasting hashes into this file, use substitution:
+      #   Set GUARD_HASH in .env (remember: $$ in the .env value):
+      #     GUARD_HASH=user:$$2y$$12$$XyZ...
+      #   Then use the variable reference below (single $ is fine inside ${}):
+      #     - traefik.http.middlewares.pattern-d-app-guard.basicauth.users=${GUARD_HASH}
+      - traefik.http.middlewares.pattern-d-app-guard.basicauth.users=user:$$2y$$12$$REPLACEWITHREALHASHDOUBLEDDOLLARSIGNS
+      # Remove the auth prompt header shown to browsers (optional — omit to keep the default):
+      # - traefik.http.middlewares.pattern-d-app-guard.basicauth.realm=Restricted
+
+      # ── Attach the guard to the router ────────────────────────────────────
+      # List all middlewares for this router here (comma-separated if more than one).
+      # The shared secure-headers middleware is attached at the entrypoint level
+      # and does not need to appear here.
+      - traefik.http.routers.pattern-d-app.middlewares=pattern-d-app-guard
+
+# ─── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  ingress_public:
+    external: true           # created and owned by the edge-proxy stack
+
+  private:
+    driver: bridge
+    internal: true           # no outbound internet access from this network

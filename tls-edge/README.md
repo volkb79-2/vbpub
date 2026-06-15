@@ -35,12 +35,14 @@ tls-edge/
     install.sh                ← interactive guided installer (see Quickstart B)
     verify.sh                 ← post-install verification checks
     dev-certs.sh              ← self-signed CA + cert generation for dev mode
+    gen-guard-secret.sh       ← generate bcrypt/APR1 hash for Pattern D basicAuth guard
     update-rendered.sh        ← update edge-proxy/ from templates (CI helper)
 
   consumer-examples/          ← ready-to-copy example stacks
     pattern-a-public-only/
     pattern-b-public-and-private/
     pattern-c-public-and-ops-sidecar/
+    pattern-d-guarded/          ← basicAuth per-route guard (labels only; no edge changes)
 
   ARCHITECTURE.md             ← design rationale, tradeoffs, rejected alternatives
   CONSUMER_GUIDE.md           ← onboarding guide for service teams

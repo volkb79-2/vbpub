@@ -199,6 +199,114 @@ Checklist:
 
 ---
 
+### Pattern D – Guarding a route (per-route basicAuth)
+
+**File**: `consumer-examples/pattern-d-guarded/docker-compose.yml`
+
+**Helper**: `scripts/gen-guard-secret.sh`
+
+Protects the route with HTTP Basic Authentication declared entirely in Docker
+Compose labels.  Traefik discovers the middleware automatically — no changes to
+the edge-proxy stack are needed.
+
+#### How it works
+
+A Traefik `basicAuth` middleware is defined on the consumer container and
+attached to its router.  Any unauthenticated request receives `401 Unauthorized`.
+Traefik checks credentials against a list of `user:hash` pairs embedded in the
+label value.
+
+#### Generating the hash
+
+```sh
+# Helper (bcrypt preferred; falls back to openssl APR1 if htpasswd unavailable):
+tls-edge/scripts/gen-guard-secret.sh user mysecret
+
+# Or directly:
+htpasswd -nbB user mysecret          # bcrypt (apache2-utils package)
+openssl passwd -apr1 mysecret        # APR1-MD5 fallback
+```
+
+#### Dollar-sign escaping in Compose labels
+
+**This is the most common mistake.**  Bcrypt hashes contain literal `$`
+characters (e.g. `$2y$12$...`).  In a `docker-compose.yml` label value, `$`
+is a variable prefix that Compose expands.  Each `$` in the hash must be
+written as `$$`.
+
+The helper script prints both the raw hash and the `$$`-escaped form ready to
+paste into a label.
+
+```yaml
+labels:
+  - traefik.enable=true
+  - traefik.http.routers.mystack-app.rule=Host(`guarded.my.domain`)
+  - traefik.http.routers.mystack-app.entrypoints=websecure
+  - traefik.http.services.mystack-app.loadbalancer.server.port=8080
+
+  # Define the basicAuth middleware (every $ in hash → $$ in label value):
+  - traefik.http.middlewares.mystack-app-guard.basicauth.users=user:$$2y$$12$$xyz...
+
+  # Attach the middleware to the router:
+  - traefik.http.routers.mystack-app.middlewares=mystack-app-guard
+```
+
+Using a `.env` variable avoids manual `$$`-escaping — see the example stack's
+`README.md` for details.
+
+#### What clients send
+
+```sh
+# curl with credentials:
+curl -u user:mysecret https://guarded.my.domain/
+
+# Explicit header:
+curl -H "Authorization: Basic $(printf 'user:mysecret' | base64)" \
+     https://guarded.my.domain/
+```
+
+#### Playwright / WebSocket note
+
+Playwright's `connect()` sends a WebSocket upgrade request.  Most WS client
+libraries do not forward `Authorization: Basic` headers on the upgrade, so
+guarded WS routes require either URL-embedded credentials
+(`wss://user:secret@host/`) or — more reliably — placing automated clients on
+the `private` internal network and reserving the basicAuth guard for HTTP routes
+only (e.g. an MCP SSE endpoint or a docs page).  For true bearer-token
+protection of WS routes, see the "Follow-up" section below.
+
+Checklist:
+- [ ] Hash generated with `gen-guard-secret.sh` (not the placeholder)
+- [ ] Every `$` in the hash is `$$`-escaped in the label value (or hash comes from `${VAR}`)
+- [ ] Middleware name is unique on this host: `<stack>-<service>-guard`
+- [ ] Middleware is listed in `traefik.http.routers.<name>.middlewares`
+
+---
+
+### Follow-up: bearer-token guard via forwardAuth
+
+True `Authorization: Bearer <token>` validation requires an external auth
+service that Traefik calls for every request via the `forwardAuth` middleware.
+The auth service receives the full request headers, validates the token (JWT
+signature check, OIDC introspection, etc.), and responds with `2xx` (allow) or
+`401`/`403` (deny).
+
+This pattern is **not yet provided** in tls-edge.  When it is, the consumer
+labels will look like:
+
+```yaml
+# Hypothetical future labels — not yet implemented:
+- traefik.http.middlewares.mystack-bearer.forwardauth.address=http://auth-svc:8080/verify
+- traefik.http.middlewares.mystack-bearer.forwardauth.authResponseHeaders=X-User,X-Roles
+- traefik.http.routers.mystack-app.middlewares=mystack-bearer
+```
+
+Until then, use the basicAuth pattern (Pattern D) for simple shared-secret
+access control, or run the auth service yourself and point `forwardauth.address`
+at it.
+
+---
+
 ## Verification
 
 ### 1. Run the codified check suite
@@ -423,6 +531,8 @@ or when adding new domains.
 | `traefik.http.services.<n>.loadbalancer.server.port` | yes | Container port to forward to |
 | `traefik.http.routers.<n>.tls=true` | no | TLS is enabled at the entrypoint level — not needed |
 | `traefik.http.routers.<n>.tls.certresolver` | no | Cert resolver is set at the entrypoint level — not needed |
+| `traefik.http.middlewares.<m>.basicauth.users` | no | Comma-separated `user:hash` list for per-route basic auth (Pattern D); every `$` in the hash must be `$$` in the label value |
+| `traefik.http.routers.<n>.middlewares` | no | Comma-separated middleware names to attach to this router |
 
 `<n>` must be a unique name per router/service **across all containers on the host**.
 Convention: `<stack>-<service>`.
@@ -466,6 +576,10 @@ tls-edge/
       docker-compose.yml
     pattern-c-public-and-ops-sidecar/
       docker-compose.yml
+    pattern-d-guarded/
+      docker-compose.yml
+      .env.example
+      README.md
 ```
 
 To change any configuration value, edit `ciu-stack/ciu.toml.j2` (create it if
