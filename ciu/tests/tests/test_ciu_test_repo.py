@@ -99,8 +99,6 @@ def _bootstrap(monkeypatch) -> None:
             "CONTAINER_UID",
             "DOCKER_GID",
             "PUBLIC_FQDN",
-            "PUBLIC_TLS_CRT_PEM",
-            "PUBLIC_TLS_KEY_PEM",
         ],
     )
 

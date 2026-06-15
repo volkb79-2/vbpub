@@ -91,6 +91,21 @@ ciu-deploy --deploy --profile <host-profile>   # orchestrate many
 
 `ciu --help` / `ciu-deploy --help` list every flag.
 
+## Release scripts
+
+Three Python scripts handle the build/release cycle. Run them in order, or let
+the parent `release-all.py` pipeline drive them via `release.sample.toml`:
+
+| Script | Purpose | Calls into |
+|---|---|---|
+| `run-ciu-tests.py` | Run the full pytest suite | `pytest tests/` |
+| `build-wheel.py` | Build the wheel into `dist/` (cleans first) | `python -m build`, config: `build-push.toml [steps.build-wheel]` |
+| `publish-wheel.py` | Publish to GitHub Releases and validate | `tools/publish-wheel-release.py`, `tools/validate-wheel-latest.py`, config: `build-push.toml [steps.publish-wheel]` |
+
+The `tools/` directory also contains two helper scripts invoked internally:
+`cleanup-legacy-releases.sh` deletes the old `ciu-wheel-latest` GitHub release tag,
+and `cleanup-and-validate.sh` wraps that cleanup with a post-publish validation pass.
+
 ## Requirements
 
 - Python 3.11+
