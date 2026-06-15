@@ -80,9 +80,18 @@ mcp_host = ""                     # e.g. "pw-mcp.example.com" -> playwright_mcp
 # Per-route access guard (Traefik basicAuth). The consumer defines the secret;
 # supply the htpasswd hash (generate once: `htpasswd -nbB <user> <secret>`).
 # A bare "$" is fine here — the compose template escapes it to "$$".
+# Default empty: fill it in your gitignored override (ciu.toml.j2) when you
+# enable external+guard, or wire a ciu-managed secret via [pwmcp.secrets] below.
 guard_enabled = true
 guard_user = "pwmcp"
-guard_htpasswd = "ASK_EXTERNAL:PWMCP_GUARD_HTPASSWD"
+guard_htpasswd = ""
+
+# ciu secrets table. Empty by default — the standalone renderer rejects active
+# ASK_EXTERNAL/ASK_VAULT entries in committed defaults. For ciu-managed injection
+# of the guard hash, declare it in your override (ciu.toml.j2):
+#   [pwmcp.secrets]
+#   guard_htpasswd = "ASK_EXTERNAL:PWMCP_GUARD_HTPASSWD"   # or ASK_VAULT:<path>
+[pwmcp.secrets]
 
 [state]
 initialized = false

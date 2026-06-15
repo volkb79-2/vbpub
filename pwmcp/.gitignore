@@ -18,3 +18,9 @@ dist/
 
 # ciu-generated resolved env (may contain secrets) — never commit
 ciu.env
+**/.ciu/
+ciu.toml
+ciu.toml.j2
+ciu.global.toml
+ciu.global.toml.j2
+ciu.compose.yml

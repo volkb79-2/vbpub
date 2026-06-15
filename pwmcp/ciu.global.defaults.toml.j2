@@ -1,0 +1,24 @@
+# ==========================================================================
+# Global CIU defaults for PWMCP (standalone)
+# ==========================================================================
+
+[deploy]
+project_name = "pwmcp"
+environment_tag = "local"
+network_name = "pwmcp"
+log_level = "INFO"
+
+# Hostdir ownership values (ciu S6/S7), expanded from ciu.env. pwmcp mounts no
+# host volumes, but ciu requires these to be present.
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+CONTAINER_GID = "$DOCKER_GID"
+DOCKER_GID = "$DOCKER_GID"
+
+[ciu]
+standalone_root = true
+# pwmcp NEVER terminates its own TLS — tls-edge does that at the edge, and the
+# internal mode is plain HTTP on the project network. So no certs/FQDN here.
+require_certs = false
+require_fqdn = false
+auto_connect_network = true
