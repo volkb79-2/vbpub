@@ -16,6 +16,7 @@ from ciu_forge.runner import (  # noqa: E402
     apply_reproducible_env,
     compute_build_date,
     ensure_required_env,
+    execute_step,
     load_release_secrets,
     load_toml,
     log_error,

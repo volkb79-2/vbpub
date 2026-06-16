@@ -24,6 +24,8 @@ from urllib.request import Request, urlopen
 
 import tomllib
 
+from ciu_forge.runner import StepConfig, execute_step
+
 
 @dataclass(frozen=True)
 class Command:
@@ -149,6 +151,7 @@ def load_json(url: str, token: str) -> tuple[list, dict]:
 
 
 def run_commands(commands: Iterable[Command], project_env: Optional[Mapping[str, str]] = None) -> None:
+    """Legacy direct runner. Kept for backwards compatibility; new callers use execute_step."""
     merged_env = os.environ.copy()
     if project_env:
         for key, value in project_env.items():
@@ -161,6 +164,39 @@ def run_commands(commands: Iterable[Command], project_env: Optional[Mapping[str,
     for command in commands:
         log_info(command.label)
         subprocess.run(command.argv, check=True, cwd=str(command.cwd), env=merged_env)
+
+
+def _build_step_config(step_name: str, commands: List[Command]) -> StepConfig:
+    """Convert orchestrator Command objects to a StepConfig for the unified runner."""
+    return StepConfig(
+        name=step_name,
+        commands=[
+            {"label": cmd.label, "argv": cmd.argv, "cwd": str(cmd.cwd)}
+            for cmd in commands
+        ],
+        bake_set_prefix=None,
+        bake_set_vars=[],
+        no_cache_env=None,
+        clean_dirs=[],
+        required_env=[],
+        login=None,
+        step_env={},
+        env_command=None,
+    )
+
+
+def run_project_step(
+    project: "ProjectConfig",
+    step_name: str,
+    repo_root: Path,
+    log_dir: Path,
+) -> None:
+    """Route a project step through the unified runner contract (S3)."""
+    commands = project.steps.get(step_name, [])
+    if not commands:
+        return
+    step = _build_step_config(step_name, list(commands))
+    execute_step(step, repo_root, log_dir, extra_env=dict(project.env) if project.env else None)
 
 
 def resolve_repo_root(config_path: Path, raw_value: str) -> Path:
@@ -695,16 +731,15 @@ def main() -> None:
     if not steps and not args.remove_assets:
         steps = default_steps
 
+    log_dir = repo_root / "logs"
+
     if steps:
         resolve_versions_from_git(repo_root)
 
     if execution_mode == "project-first":
         for project in selected:
             for step in steps:
-                commands = project.steps.get(step, [])
-                if not commands:
-                    continue
-                run_commands(commands, project.env)
+                run_project_step(project, step, repo_root, log_dir)
     else:
         for step in steps:
             ordered_names = step_project_order.get(step) or selected_names
@@ -714,10 +749,7 @@ def main() -> None:
                 if project_name not in selected_names:
                     continue
                 project = configs[project_name]
-                commands = project.steps.get(step, [])
-                if not commands:
-                    continue
-                run_commands(commands, project.env)
+                run_project_step(project, step, repo_root, log_dir)
 
     if args.remove_assets:
         remove_assets(args.remove_assets, args.dry_run, cleanup, github_config, env_config)

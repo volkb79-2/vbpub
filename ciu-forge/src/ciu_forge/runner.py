@@ -333,54 +333,36 @@ def run_command(argv: list[str], cwd: Path, log_handle) -> None:
         raise subprocess.CalledProcessError(exit_code, argv)
 
 
-def run_step(build_config_path: Path, step_name: str, release_config_path: Optional[Path]) -> None:
-    build_config = load_toml(build_config_path)
-    project_root_raw = build_config.get("project_root")
-    if not project_root_raw:
-        raise ValueError("project_root is required in build-push config")
-    project_root = resolve_path(build_config_path.parent, str(project_root_raw))
-    project_name_raw = (build_config.get("project_name") or "").strip()
-    project_name = project_name_raw or project_root.name
+def execute_step(
+    step: StepConfig,
+    project_root: Path,
+    log_dir: Path,
+    *,
+    extra_env: Optional[Mapping[str, str]] = None,
+) -> None:
+    """Execute a pre-parsed StepConfig. Called by both run_step() and the orchestrator.
 
-    release_config_raw = None
-    if release_config_path:
-        release_config = release_config_path
-    else:
-        release_config_raw = build_config.get("release_config") or os.getenv("RELEASE_MANAGER_CONFIG")
-        if release_config_raw:
-            release_config = resolve_path(build_config_path.parent, str(release_config_raw))
-        else:
-            release_config = project_root.parent / "release.toml"
-    release_config = release_config.expanduser().resolve()
-
-    secrets = load_release_secrets(release_config, project_name=project_name)
-    apply_release_env(secrets)
-
-    env_section = build_config.get("env", {})
-    if env_section is None:
-        env_section = {}
-    if not isinstance(env_section, dict):
-        raise ValueError("[env] must be a table in build-push config")
-    for key, value in env_section.items():
-        if value is None:
-            continue
-        value_str = str(value).strip()
-        if value_str:
-            os.environ.setdefault(key, value_str)
-
-    log_dir_raw = build_config.get("log_dir") or "logs"
-    log_dir = resolve_path(project_root, str(log_dir_raw))
+    This is the single execution path every build step flows through (S3 contract).
+    ``extra_env`` carries project-level env from the orchestrator (applied with setdefault
+    so it does not override already-set vars or step_env).
+    """
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    compute_build_date(build_config, project_root)
+    if extra_env:
+        for key, value in extra_env.items():
+            if value is None:
+                continue
+            value_str = str(value).strip()
+            if value_str:
+                os.environ.setdefault(key, value_str)
 
-    step = parse_step(build_config, step_name)
     for key, value in step.step_env.items():
         if value is None:
             continue
         value_str = str(value).strip()
         if value_str:
             os.environ.setdefault(key, value_str)
+
     apply_env_command(step.env_command, project_root)
     ensure_required_env(step.required_env)
     maybe_login(step.login)
@@ -422,6 +404,50 @@ def run_step(build_config_path: Path, step_name: str, release_config_path: Optio
 
             log_info(label)
             run_command(effective_argv, cwd, handle)
+
+
+def run_step(build_config_path: Path, step_name: str, release_config_path: Optional[Path]) -> None:
+    build_config = load_toml(build_config_path)
+    project_root_raw = build_config.get("project_root")
+    if not project_root_raw:
+        raise ValueError("project_root is required in build-push config")
+    project_root = resolve_path(build_config_path.parent, str(project_root_raw))
+    project_name_raw = (build_config.get("project_name") or "").strip()
+    project_name = project_name_raw or project_root.name
+
+    release_config_raw = None
+    if release_config_path:
+        release_config = release_config_path
+    else:
+        release_config_raw = build_config.get("release_config") or os.getenv("RELEASE_MANAGER_CONFIG")
+        if release_config_raw:
+            release_config = resolve_path(build_config_path.parent, str(release_config_raw))
+        else:
+            release_config = project_root.parent / "release.toml"
+    release_config = release_config.expanduser().resolve()
+
+    secrets = load_release_secrets(release_config, project_name=project_name)
+    apply_release_env(secrets)
+
+    env_section = build_config.get("env", {})
+    if env_section is None:
+        env_section = {}
+    if not isinstance(env_section, dict):
+        raise ValueError("[env] must be a table in build-push config")
+    for key, value in env_section.items():
+        if value is None:
+            continue
+        value_str = str(value).strip()
+        if value_str:
+            os.environ.setdefault(key, value_str)
+
+    log_dir_raw = build_config.get("log_dir") or "logs"
+    log_dir = resolve_path(project_root, str(log_dir_raw))
+
+    compute_build_date(build_config, project_root)
+
+    step = parse_step(build_config, step_name)
+    execute_step(step, project_root, log_dir)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

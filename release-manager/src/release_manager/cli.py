@@ -29,4 +29,5 @@ from ciu_forge.cli import (  # noqa: E402
     remove_assets,
     resolve_versions_from_git,
     run_commands,
+    run_project_step,
 )
