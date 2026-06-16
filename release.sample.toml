@@ -77,6 +77,14 @@ commands = [
   { label = "pwmcp: publish stack bundle", argv = ["python3", "scripts/publish-bundle.py"], cwd = "pwmcp" },
 ]
 
+[projects.tls-edge.steps.push]
+# tls-edge has no build step — a release is just a git tag.
+# Before running: echo "TLS_EDGE_VERSION=0.2.0" > tls-edge/.release-vars
+# After running:  git push origin main tls-edge-v<version>
+commands = [
+  { label = "tls-edge: bump VERSION, commit, and create release tag", argv = ["bash", "scripts/release.sh"], cwd = "tls-edge" },
+]
+
 [projects.empyrion-translation.steps.build]
 commands = [
   { label = "empyrion: package DE translation artifact", argv = ["python3", "release-empyrion-translation.py"], cwd = "game_stuff/empyrion" },

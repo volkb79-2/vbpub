@@ -353,6 +353,43 @@ bash scripts/verify.sh
 
 ---
 
+## Cutting a release
+
+Releases are git tags in the `vbpub` monorepo — no Docker builds, no upload
+artifacts.  The `scripts/release.sh` script handles the mechanics.
+
+### Standalone (simplest)
+
+```bash
+bash tls-edge/scripts/release.sh 0.2.0
+# → updates VERSION, commits, creates annotated tag tls-edge-v0.2.0
+# → prints the push command when done
+
+git push origin main tls-edge-v0.2.0
+```
+
+Accepts an optional leading `v` (`0.2.0` and `v0.2.0` both work).
+
+### Via release-runner (consistent with other vbpub projects)
+
+```bash
+echo "TLS_EDGE_VERSION=0.2.0" > tls-edge/.release-vars
+python3 release-runner.py --project tls-edge
+# → runs scripts/release.sh, same outcome as above
+
+git push origin main tls-edge-v0.2.0
+```
+
+`.release-vars` is gitignored; remove it after the release.
+
+### What happens on `git push`
+
+`get.sh` resolves the latest release via `git ls-remote --tags` on the public
+repo.  Once the tag is visible on GitHub, `tls-edge update` on any installed
+host will offer the new version.
+
+---
+
 ## Further reading
 
 - **ARCHITECTURE.md** — full design rationale: network model, TLS strategy,
