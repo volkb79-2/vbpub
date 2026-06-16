@@ -40,6 +40,20 @@ target "pwmcp-playwright" {
   ]
 }
 
+target "pwmcp" {
+  context    = "."
+  dockerfile = "containers/pwmcp/Dockerfile"
+  args = {
+    PLAYWRIGHT_VERSION = "${PLAYWRIGHT_VERSION}"
+    PLAYWRIGHT_DISTRO  = "${PLAYWRIGHT_DISTRO}"
+  }
+  tags = [
+    "${REGISTRY}/${NAMESPACE}/pwmcp:${PWMCP_VERSION}",
+    "${REGISTRY}/${NAMESPACE}/pwmcp:${PLAYWRIGHT_VERSION}",
+    "${REGISTRY}/${NAMESPACE}/pwmcp:latest",
+  ]
+}
+
 group "all" {
-  targets = ["pwmcp-playwright"]
+  targets = ["pwmcp-playwright", "pwmcp"]
 }

@@ -3,30 +3,39 @@
 ## Version coupling — read this first
 
 The Playwright wire protocol is **version-strict**: the client library version you `pip install`
-must exactly match the Playwright version baked into the running `pwmcp-playwright` image.
+must exactly match the Playwright version baked into the running `pwmcp` image.
 A version mismatch causes protocol errors at connect time.
 
 **How to read the required version from the bundle:**
 
 ```bash
 grep 'playwright_version' ciu.defaults.toml.j2
-# playwright_version = "1.60.0"
-pip install playwright==1.60.0   # use that exact value — do not omit the pin
+# playwright_version = "1.61.0"
+pip install playwright==1.61.0   # use that exact value — do not omit the pin
 ```
 
 Do **not** run `playwright install` — browser binaries belong in the pwmcp container,
 not in your project.
 
+## Unified Image: Two Services, One Hostname
+
+The unified image exposes both endpoints from the single service alias `pwmcp`:
+
+| Endpoint | URL | Purpose |
+|---|---|---|
+| Playwright run-server | `ws://pwmcp:3000/` | Full Playwright API via `connect()` |
+| MCP | `http://pwmcp:8931/mcp` | MCP-compatible AI clients |
+
 ## Playwright `connect()` — Test Suites
 
-The `pwmcp-playwright` service exposes the native Playwright remote server protocol on port 3000. Test suites connect to it with `chromium.connect()` (or `firefox.connect()`, `webkit.connect()`) and get the **full Playwright API** — the same as running a local browser.
+The `pwmcp` service exposes the native Playwright remote server protocol on port 3000. Test suites connect to it with `chromium.connect()` (or `firefox.connect()`, `webkit.connect()`) and get the **full Playwright API**.
 
 ### Install Requirement
 
-The `playwright` Python (or JS) package version **must match** the pinned `pwmcp.playwright_version` in `ciu.defaults.toml.j2` (currently `1.60.0`). Mismatched versions cause protocol errors.
+The `playwright` Python (or JS) package version **must match** the pinned `pwmcp.playwright_version` in `ciu.defaults.toml.j2` (currently `1.61.0`). Mismatched versions cause protocol errors.
 
 ```bash
-pip install playwright==1.60.0
+pip install playwright==1.61.0
 ```
 
 ### Python Example
@@ -38,7 +47,7 @@ from playwright.async_api import async_playwright
 async def main():
     async with async_playwright() as p:
         # container-name addressing on the shared Docker network
-        browser = await p.chromium.connect("ws://pwmcp-playwright:3000/")
+        browser = await p.chromium.connect("ws://pwmcp:3000/")
         page = await browser.new_page()
         await page.goto("https://example.com")
         screenshot = await page.screenshot()
@@ -53,7 +62,7 @@ Pass the WebSocket URL via environment variable so it works in both local dev an
 
 ```bash
 # In docker-compose or CI env:
-PLAYWRIGHT_SERVER_WS=ws://pwmcp-playwright:3000/
+PLAYWRIGHT_SERVER_WS=ws://pwmcp:3000/
 ```
 
 ```python
@@ -81,42 +90,40 @@ browser = await p.chromium.connect(
 
 ## MCP — AI Clients
 
-The `pwmcp-mcp` service (`mcr.microsoft.com/playwright/mcp`) provides an MCP-compatible HTTP/SSE interface for AI clients such as VS Code Copilot.
+The `pwmcp` service provides an MCP-compatible HTTP/SSE interface for AI clients such as VS Code Copilot at port 8931.
 
 ### Endpoint
 
-- Internal: `http://pwmcp-mcp:8931/mcp`
-- External (tls-edge): `https://<mcp_host>/mcp`
+- Internal: `http://pwmcp:8931/mcp`
+- External (tls-edge): `https://<unified_host>/mcp`
 
 SSE streaming is also available at `/sse`.
 
-### DNS-rebinding protection and `--allowed-hosts`
+### `PWMCP_MCP_ALLOWED_HOSTS` and DNS-rebinding protection
 
-`@playwright/mcp` (`cli.js`) implements DNS-rebinding protection: every incoming request is checked against an allowlist of permitted `Host` header values. The server's default allowlist contains only its bind address (`0.0.0.0`), which does **not** match the `Host: pwmcp-mcp:8931` header sent by a sibling container accessing the service by name. Without correction this returns **HTTP 403** to every internal caller.
+`@playwright/mcp` implements DNS-rebinding protection: every incoming request is checked against an allowlist of permitted `Host` header values. The server's default allowlist contains only its bind address (`0.0.0.0`), which does **not** match the `Host: pwmcp:8931` header sent by a sibling container accessing the service by name. Without correction this returns **HTTP 403** to every internal caller.
 
-The ciu template resolves this by passing `--allowed-hosts` with both ciu-derived names for the container (templated at render time):
+The ciu template resolves this by injecting `PWMCP_MCP_ALLOWED_HOSTS` with both ciu-derived names for the container:
 
 ```
---allowed-hosts pwmcp-mcp:8931,<project>-<env>-pwmcp-mcp:8931
+PWMCP_MCP_ALLOWED_HOSTS=pwmcp:8931,<project>-<env>-pwmcp:8931
 ```
 
-This is the preferred fix: it pins the allowlist to known internal names rather than using `*` (which disables the check). The Docker network boundary already controls who can reach the port; `--allowed-hosts` controls which `Host` header values the server accepts.
+The `supervisord.conf` passes `--allowed-hosts %(ENV_PWMCP_MCP_ALLOWED_HOSTS)s` to `playwright-mcp`. This is the preferred fix: it pins the allowlist to known internal names rather than using `*` (which disables the check). The Docker network boundary already controls who can reach the port.
 
-To add extra allowed hosts (e.g. a custom DNS alias), use `extra_args`:
+To add extra allowed hosts (e.g. a custom DNS alias), set `extra_args` in `ciu.toml.j2`:
 
 ```toml
-[pwmcp.playwright_mcp]
-extra_args = "--allowed-hosts my-alias:8931"
+[pwmcp.unified]
+extra_args = "my-alias:8931"
 ```
 
 To disable the check entirely (not recommended; use only if you control the network):
 
 ```toml
-[pwmcp.playwright_mcp]
-extra_args = "--allowed-hosts *"
+[pwmcp.unified]
+extra_args = "*"
 ```
-
-Note: `extra_args` entries are appended **after** the template's `--allowed-hosts` arg. If `@playwright/mcp` merges multiple `--allowed-hosts` flags, this extends the list; if it takes only the last flag, put all entries in one `extra_args` value.
 
 ### VS Code MCP Configuration (internal)
 
@@ -126,14 +133,14 @@ Note: `extra_args` entries are appended **after** the template's `--allowed-host
     "servers": {
       "playwright": {
         "type": "http",
-        "url": "http://pwmcp-mcp:8931/mcp"
+        "url": "http://pwmcp:8931/mcp"
       }
     }
   }
 }
 ```
 
-This works when VS Code is running inside a devcontainer on the same Docker network as `pwmcp-mcp`.
+This works when VS Code is running inside a devcontainer on the same Docker network as `pwmcp`.
 
 ### VS Code MCP Configuration (external with guard)
 
@@ -143,7 +150,7 @@ This works when VS Code is running inside a devcontainer on the same Docker netw
     "servers": {
       "playwright": {
         "type": "http",
-        "url": "https://pw-mcp.example.com/mcp",
+        "url": "https://pw.example.com/mcp",
         "headers": {
           "Authorization": "Basic <base64(pwmcp:secret)>"
         }
@@ -155,19 +162,21 @@ This works when VS Code is running inside a devcontainer on the same Docker netw
 
 ### MCP Browser Options
 
-The default browser is `chromium`. To change it or add extra options, set `pwmcp.playwright_mcp.browser` or `pwmcp.playwright_mcp.extra_args` in `ciu.toml.j2`:
+The default browser is `chromium` (the only browser available in the unified image via `--executable-path`). The `browser` setting in `pwmcp.unified` controls the browser argument passed to `playwright-mcp`. To change browser type or add capabilities, set in `ciu.toml.j2`:
 
 ```toml
-[pwmcp.playwright_mcp]
+[pwmcp.unified]
 browser = "chromium"
-extra_args = "--caps=vision,pdf"
+extra_args = "my-alias:8931"   # comma-separated extra allowed-hosts
 ```
+
+For `--caps` or other playwright-mcp flags, they cannot be passed directly via the current `extra_args` field (which only controls allowed-hosts extensions). For advanced configuration, override the supervisord.conf by mounting a custom one.
 
 ## Multiple Consumers
 
 Both services support multiple simultaneous consumers:
-- `pwmcp-playwright`: each `browser.connect()` call creates an independent browser session; isolate further by using separate browser contexts or pages
-- `pwmcp-mcp`: the MCP image handles concurrent MCP clients
+- `run-server` (port 3000): each `browser.connect()` call creates an independent browser session; isolate further by using separate browser contexts or pages
+- `@playwright/mcp` (port 8931): the MCP server handles concurrent MCP clients
 
 No per-consumer authentication exists in internal mode — the network boundary is the control.
 
@@ -180,7 +189,7 @@ No Docker build is needed — the image is on GHCR.
 
 ```bash
 # Pin a specific release or use "pwmcp-latest" for the rolling latest:
-PWMCP_VERSION="pwmcp-v1.60.0-r1"
+PWMCP_VERSION="pwmcp-v1.61.0-r1"
 mkdir -p services/pwmcp
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/${PWMCP_VERSION}/${PWMCP_VERSION#pwmcp-v}.tar.gz" \
   | tar -xJ --strip-components=1 -C services/pwmcp
@@ -193,15 +202,14 @@ pip install playwright==${PW_VER}   # must match exactly — do not omit the pin
 cd services/pwmcp && ciu --generate-env -d . && ciu -d .
 ```
 
-Services come up on the `pwmcp` Docker network as `pwmcp-playwright` (port 3000) and
-`pwmcp-mcp` (port 8931).
+The unified container comes up as `pwmcp-pwmcp` (default project name `pwmcp`) on the `pwmcp` Docker network, serving port 3000 (WS) and port 8931 (MCP).
 
 ### Staying up-to-date
 
 Download a newer bundle, re-read `playwright_version`, reinstall the pinned client, redeploy:
 
 ```bash
-PWMCP_VERSION="pwmcp-v1.61.0-r1"
+PWMCP_VERSION="pwmcp-v1.62.0-r1"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/${PWMCP_VERSION}/${PWMCP_VERSION#pwmcp-v}.tar.gz" \
   | tar -xJ --strip-components=1 -C services/pwmcp
 PW_VER=$(grep playwright_version services/pwmcp/ciu.defaults.toml.j2 | grep -oP '"\K[^"]+')
@@ -211,14 +219,14 @@ ciu -d services/pwmcp
 
 ### Connecting from consumer containers
 
-Add the consumer service to the `pwmcp` Docker network so it can reach the services by
-container name:
+Add the consumer service to the `pwmcp` Docker network so it can reach the service by container name:
 
 ```yaml
 services:
   my-test-runner:
     environment:
-      PLAYWRIGHT_SERVER_WS: ws://pwmcp-playwright:3000/
+      PLAYWRIGHT_SERVER_WS: ws://pwmcp:3000/
+      MCP_URL: http://pwmcp:8931/mcp
     networks:
       - pwmcp   # join the pwmcp stack's network (never use localhost)
 

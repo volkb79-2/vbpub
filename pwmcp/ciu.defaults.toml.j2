@@ -54,6 +54,48 @@ namespace = "volkb79-2"
 name = "pwmcp-playwright"
 tag = "1.61.0-r1"
 
+# ============================================================
+# Unified single-image deployment (DEFAULT — recommended)
+# ============================================================
+# The unified image (ghcr.io/volkb79-2/pwmcp) bundles BOTH the Playwright
+# run-server (port 3000) AND @playwright/mcp (port 8931) in a single container
+# under a single hostname "pwmcp". This is the recommended deployment mode.
+#
+# Consumers on the shared Docker network:
+#   ws://pwmcp:3000/          — Playwright connect() (full API, test suites)
+#   http://pwmcp:8931/mcp     — MCP surface (AI clients, VS Code Copilot, etc.)
+#
+# --allowed-hosts note (MCP DNS-rebinding protection):
+# @playwright/mcp rejects requests whose Host header does not match its allowlist.
+# The ciu compose injects PWMCP_MCP_ALLOWED_HOSTS at container start with the two
+# ciu-derived names for this container:
+#   <name>:<mcp_port>                              (short service alias)
+#   <project>-<env>-<name>:<mcp_port>              (full ciu container name)
+# This pins the allowlist to known internal names (secure; avoids "*").
+# To add extra hosts, append them via extra_args: extra_args = "my-alias:8931"
+
+[pwmcp.unified]
+enabled = true
+name = "pwmcp"
+ws_port = 3000                    # Playwright run-server (connect() WebSocket)
+mcp_port = 8931                   # @playwright/mcp HTTP/SSE surface
+browser = "chromium"
+extra_args = ""                   # comma-separated extra allowed-hosts entries, e.g. "my-alias:8931"
+expose = false                    # publish to host 127.0.0.1 (dev convenience only)
+host_ws_port = 3000
+host_mcp_port = 8931
+
+[pwmcp.unified.image]
+registry = "ghcr.io"
+namespace = "volkb79-2"
+name = "pwmcp"
+tag = "1.61.0-r1"
+
+# ============================================================
+# Legacy two-image deployment (kept for reference / fallback)
+# Set pwmcp.unified.enabled = false to activate this mode.
+# ============================================================
+
 [pwmcp.playwright_mcp]
 enabled = true
 name = "pwmcp-mcp"
@@ -93,6 +135,10 @@ shm_size = "2gb"                  # Chromium needs shared memory
 [pwmcp.external]
 # External exposure via a running tls-edge. Leave disabled for dev/CI.
 enabled = false
+# Unified mode: single host fronts BOTH ports (Traefik routes by path/port).
+# Set both server_host and mcp_host to the same value for unified mode, or
+# use separate hostnames for the two endpoints.
+unified_host = ""                 # e.g. "pw.example.com" — used when unified.enabled=true
 server_host = ""                  # e.g. "pw.example.com"  -> playwright_server (wss connect)
 mcp_host = ""                     # e.g. "pw-mcp.example.com" -> playwright_mcp
 # Per-route access guard (Traefik basicAuth). The consumer defines the secret;
