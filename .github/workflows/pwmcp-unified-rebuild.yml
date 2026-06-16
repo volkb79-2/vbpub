@@ -78,7 +78,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pwmcp/ciu.defaults.toml.j2 pwmcp/docker-bake.hcl pwmcp/.release-vars
+          # .release-vars is generated each run and gitignored — do not commit it.
+          git add pwmcp/ciu.defaults.toml.j2 pwmcp/docker-bake.hcl
           # Only commit if there are staged changes (version actually bumped)
           git diff --cached --quiet || \
             git commit -m "chore(pwmcp): bump Playwright to ${PWMCP_VERSION} [automated]"
@@ -96,9 +97,12 @@ jobs:
             git push origin HEAD "${TAG}"
           fi
 
-      - name: Upload bundle artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pwmcp-bundle-${{ steps.release-vars.outputs.PWMCP_VERSION }}
-          path: pwmcp/dist/pwmcp-${{ steps.release-vars.outputs.PWMCP_VERSION }}.tar.xz
-          retention-days: 30
+      - name: Publish bundle to GitHub Releases
+        # Refresh the consumer bundle (pwmcp-v<version> + moving pwmcp-latest) so
+        # consumers pulling the release get the bumped version pin, not a stale one.
+        working-directory: pwmcp
+        env:
+          GITHUB_USERNAME: ${{ github.actor }}
+          GITHUB_PUSH_PAT: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: vbpub
+        run: python3 scripts/publish-bundle.py
