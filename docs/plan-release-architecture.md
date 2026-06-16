@@ -1,6 +1,6 @@
 # Plan: unified release architecture (vbpub monorepo + dstdns consumer)
 
-**Status:** awaiting go/no-go on implementation transition.
+**Status:** IMPLEMENTED & SHIPPED 2026-06-16 — all phases executed, holistically reviewed, published, and e2e-verified (see "Outcome" at the end).
 **Date:** 2026-06-16.
 **Driver:** consolidate to one pwmcp image, de-duplicate releases, give tls-edge a
 visible artifact release, and make releases reproducible — across *every* vbpub product
@@ -117,3 +117,34 @@ Plus a sibling `SHA256SUMS` release asset.
   confirm + logging.
 - Two repos: most edits in `vbpub`; consumer edits in `dstdns` (CI action, devcontainer,
   vendored pwmcp bundle).
+
+## Outcome (2026-06-16)
+
+Shipped and verified:
+- **Keystone** `release-manager/src/release_manager/github_release.py` — versioned +
+  `.sha256` sidecar + thin `latest.json` + semver `resolve_latest` (the `-rN` counter is
+  ordered numerically after the holistic review caught a lexical-sort bug: `r10 > r2`).
+- **pwmcp**: legacy two-service mode removed (compose/defaults/bake/Dockerfile +
+  `playwright-server/` dir); `pwmcp-playwright` GHCR package **deleted**;
+  `pwmcp-v1.61.0-r2` re-published from its *existing bytes* with a `.sha256`;
+  `pwmcp-latest` reduced to a 385-byte `latest.json` pointer (redundancy gone). The `r2`
+  image was NOT rebuilt — no phantom version bump. `@playwright/mcp@0.0.76` pinned.
+- **tls-edge**: first artifact release **`tls-edge-v0.2.0`** (72 KB tarball + `.sha256` +
+  thin pointer); tag pushed before publish (no commit desync); `get.sh` is now a
+  resolve→download→sha256-verify→install/update bootstrap with a git-clone fallback.
+- **ciu**: code aligned to the resolver contract; it activates on the next *clean* ciu
+  release — only a `.dev` wheel exists today, so a versioned release was NOT faked. No
+  consumer regression (the `CIU_PKG_URL` secret still backs dstdns CI, as before).
+- **Consumers** (dstdns CI `resolve_ciu_pkg_url.py`, modern-debian-tools resolver +
+  Dockerfile, vendored unified-only bundle) read `latest.json` / scan `<prefix>-v*` and
+  verify checksums.
+- **E2E verified**: for pwmcp + tls-edge, downloaded-artifact sha == `.sha256` sidecar ==
+  `latest.json` sha.
+
+Commits: vbpub `10c834d` (architecture) + `ee2ff39` (tls-edge v0.2.0); dstdns `f3f5406`.
+All pushed to `main`; `tls-edge-v0.2.0` tag pushed.
+
+Open follow-ups (non-blocking): pin `supervisor` apt version (TODO in pwmcp Dockerfile);
+optionally pin the dstdns devcontainer image by digest (`...-vsc-devcontainer:latest` is
+floating); the next pwmcp weekly-CI rebuild auto-publishes `r3` with the unified bundle
+under the new scheme.
