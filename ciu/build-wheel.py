@@ -7,11 +7,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
-MANAGER_SRC = REPO_ROOT / "release-manager" / "src"
+sys.path.insert(0, str(REPO_ROOT / "ciu-forge" / "src"))
 
-sys.path.insert(0, str(MANAGER_SRC))
-
-from release_manager.step_runner import run_step  # noqa: E402
+from ciu_forge.runner import run_step  # noqa: E402
 
 
 def main() -> None:

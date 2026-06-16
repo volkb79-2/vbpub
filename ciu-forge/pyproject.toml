@@ -15,8 +15,8 @@ dependencies = []
 
 [project.scripts]
 ciu-forge = "ciu_forge.cli:forge_main"
-# vbpub-release shim: kept for transition until P6 migration of all consumers.
-vbpub-release = "release_manager.cli:main"
+# vbpub-release: backward-compat alias; points to ciu_forge now that release_manager shim is removed (P6).
+vbpub-release = "ciu_forge.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

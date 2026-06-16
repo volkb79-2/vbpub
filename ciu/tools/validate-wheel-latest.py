@@ -23,8 +23,8 @@ from pathlib import Path
 
 # ── keystone import (stdlib-only; no install needed) ─────────────────────────
 # parents[2] from ciu/tools/validate-wheel-latest.py  →  vbpub repo root
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "release-manager" / "src"))
-from release_manager.github_release import GitHubReleases  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "ciu-forge" / "src"))
+from ciu_forge.release import GitHubReleases  # noqa: E402
 
 
 def load_env_file(env_path: Path) -> None:

@@ -16,7 +16,7 @@ PWMCP_DIR = Path(__file__).resolve().parent.parent
 RELEASE_VARS_FILE = PWMCP_DIR / ".release-vars"
 BUNDLE_TOML = PWMCP_DIR / "bundle.toml"
 
-RELEASE_MANAGER_SRC = PWMCP_DIR.parent / "release-manager" / "src"
+CIU_FORGE_SRC = PWMCP_DIR.parent / "ciu-forge" / "src"
 
 
 def load_release_vars(path: Path) -> None:
@@ -41,8 +41,8 @@ def main() -> None:
 
     print(f"[INFO] Building bundle for pwmcp-{pwmcp_version}")
 
-    sys.path.insert(0, str(RELEASE_MANAGER_SRC))
-    from release_manager.bundle_builder import run_bundle  # noqa: PLC0415
+    sys.path.insert(0, str(CIU_FORGE_SRC))
+    from ciu_forge.bundle import run_bundle  # noqa: PLC0415
 
     archive = run_bundle(BUNDLE_TOML)
     print(f"[INFO] Bundle: {archive}")
