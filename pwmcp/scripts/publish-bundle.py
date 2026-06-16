@@ -184,12 +184,33 @@ def find_bundle(dist_dir: Path, pwmcp_version: str) -> Path:
     return expected
 
 
+def load_release_toml_credentials(repo_root: Path) -> None:
+    """Populate GITHUB_USERNAME / GITHUB_PUSH_PAT / GITHUB_REPO from release.toml."""
+    release_toml = repo_root / "release.toml"
+    if not release_toml.exists():
+        return
+    try:
+        import tomllib
+        with release_toml.open("rb") as fh:
+            config = tomllib.load(fh)
+        github = config.get("github", {})
+        if not os.environ.get("GITHUB_USERNAME") and github.get("username"):
+            os.environ["GITHUB_USERNAME"] = str(github["username"])
+        if not os.environ.get("GITHUB_PUSH_PAT") and github.get("token"):
+            os.environ["GITHUB_PUSH_PAT"] = str(github["token"])
+        if not os.environ.get("GITHUB_REPO") and github.get("repo"):
+            os.environ["GITHUB_REPO"] = str(github["repo"])
+    except Exception:
+        pass
+
+
 def main() -> None:
     load_release_vars(RELEASE_VARS_FILE)
 
     repo_root = PWMCP_DIR.parent
     for env_path in [repo_root / ".env", PWMCP_DIR / ".env"]:
         load_env_file(env_path)
+    load_release_toml_credentials(repo_root)
 
     pwmcp_version = os.environ.get("PWMCP_VERSION", "")
     if not pwmcp_version:
