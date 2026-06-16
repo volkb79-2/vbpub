@@ -14,6 +14,7 @@ from ciu_forge.cli import (  # noqa: E402
     GitHubConfig,
     ProjectConfig,
     ReleaseEnvConfig,
+    _build_step_config,
     apply_release_env,
     build_arg_parser,
     cleanup_ghcr,

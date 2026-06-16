@@ -4,7 +4,7 @@ repo_root = "."
 username = "your-github-username"
 repo = "vbpub"
 token = ""
-# owner_type = "org"
+owner_type = "user"   # required: "user" | "org" (removes the modern-debian-tools probe)
 
 [registry]
 url = "ghcr.io"
@@ -34,6 +34,11 @@ keep_release_tags = [
 ]
 ghcr_packages = ["*"]
 
+[projects.ciu]
+# prefix + scm_dist enable per-project version pinning via setuptools_scm (S12)
+prefix = "ciu-v"
+scm_dist = "ciu"
+
 [projects.ciu.steps.run-tests]
 commands = [
   { label = "CIU: run tests", argv = ["python3", "run-ciu-tests.py"], cwd = "ciu" },
@@ -54,6 +59,9 @@ commands = [
   { label = "CIU: validate latest wheel", argv = ["python3", "tools/validate-wheel-latest.py"], cwd = "ciu" },
 ]
 
+[projects.modern-debian-tools-python-debug]
+prefix = "modern-debian-tools-python-debug-v"
+
 [projects.modern-debian-tools-python-debug.steps.build]
 commands = [
   { label = "modern-debian-tools-python-debug: build images", argv = ["python3", "build-push.py", "--build"], cwd = "modern-debian-tools-python-debug" },
@@ -63,6 +71,9 @@ commands = [
 commands = [
   { label = "modern-debian-tools-python-debug: push images", argv = ["python3", "build-push.py", "--push"], cwd = "modern-debian-tools-python-debug" },
 ]
+
+[projects.pwmcp]
+prefix = "pwmcp-v"
 
 [projects.pwmcp.steps.build]
 commands = [
@@ -77,6 +88,9 @@ commands = [
   { label = "pwmcp: publish stack bundle", argv = ["python3", "scripts/publish-bundle.py"], cwd = "pwmcp" },
 ]
 
+[projects.tls-edge]
+prefix = "tls-edge-v"
+
 [projects.tls-edge.steps.push]
 # tls-edge has no build step — a release is just a git tag.
 # Before running: echo "TLS_EDGE_VERSION=0.2.0" > tls-edge/.release-vars
@@ -84,6 +98,9 @@ commands = [
 commands = [
   { label = "tls-edge: bump VERSION, commit, and create release tag", argv = ["bash", "scripts/release.sh"], cwd = "tls-edge" },
 ]
+
+[projects.empyrion-translation]
+prefix = "empyrion-translation-v"
 
 [projects.empyrion-translation.steps.build]
 commands = [

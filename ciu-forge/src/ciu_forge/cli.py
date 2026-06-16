@@ -39,6 +39,8 @@ class ProjectConfig:
     name: str
     env: Mapping[str, str]
     steps: Mapping[str, List[Command]]
+    prefix: Optional[str] = None    # git tag prefix, e.g. "ciu-v"  (S12; required for auto-version)
+    scm_dist: Optional[str] = None  # setuptools dist name for SETUPTOOLS_SCM_PRETEND_VERSION_FOR_*
 
 
 @dataclass(frozen=True)
@@ -54,7 +56,7 @@ class GitHubConfig:
     username: str
     repo: str
     token: str
-    owner_type: Optional[str]
+    owner_type: str  # required: "user" | "org"  (V03; replaces the modern-debian-tools probe)
 
 
 @dataclass(frozen=True)
@@ -311,7 +313,12 @@ def load_config(
             if commands_config is None:
                 raise ValueError(f"projects.{name}.steps.{step_name}.commands is required")
             steps[step_name] = parse_commands(config_path, repo_root, step_name, commands_config)
-        projects[name] = ProjectConfig(name=name, env=project_env, steps=steps)
+        proj_prefix = (project.get("prefix") or "").strip() or None
+        proj_scm_dist = (project.get("scm_dist") or "").strip() or None
+        projects[name] = ProjectConfig(
+            name=name, env=project_env, steps=steps,
+            prefix=proj_prefix, scm_dist=proj_scm_dist,
+        )
 
     cleanup_section = config.get("cleanup")
     if not cleanup_section or not isinstance(cleanup_section, dict):
@@ -342,9 +349,13 @@ def load_config(
     username = (github.get("username") or "").strip()
     repo = (github.get("repo") or "").strip()
     token = (github.get("token") or "").strip()
-    owner_type = (github.get("owner_type") or "").strip() or None
+    owner_type = (github.get("owner_type") or "").strip()
     if not username or not repo:
         raise ValueError("github.username and github.repo are required in config")
+    if not owner_type:
+        raise ValueError("github.owner_type is required (\"user\" or \"org\") — V03")
+    if owner_type not in ("user", "org"):
+        raise ValueError("github.owner_type must be \"user\" or \"org\"")
 
     github_config = GitHubConfig(
         username=username,
@@ -387,8 +398,7 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
         os.environ.setdefault("GITHUB_REPO", github.repo)
     if github.token:
         os.environ.setdefault("GITHUB_PUSH_PAT", github.token)
-    if github.owner_type:
-        os.environ.setdefault("GITHUB_OWNER_TYPE", github.owner_type)
+    os.environ.setdefault("GITHUB_OWNER_TYPE", github.owner_type)
     if env_config.registry_url:
         os.environ.setdefault("REGISTRY", env_config.registry_url)
 
@@ -398,18 +408,6 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
         value_str = str(value).strip()
         if value_str:
             os.environ.setdefault(key, value_str)
-
-
-# Per-distribution git tag prefixes. Versions are derived from these tags by
-# setuptools-scm at build time; the orchestrator only PINS the clean SemVer when
-# HEAD is exactly on a release tag (see resolve_versions_from_git).
-# TODO(P3): replace with [project.<name>.version] config (S12).
-_DIST_TAG_PREFIXES = {
-    "ciu": "ciu-v",
-    "pwmcp-shared": "pwmcp-shared-v",
-    "pwmcp-client": "pwmcp-client-v",
-    "pwmcp-server": "pwmcp-server-v",
-}
 
 
 def _git(repo_root: Path, *args: str) -> Optional[str]:
@@ -427,15 +425,20 @@ def _git(repo_root: Path, *args: str) -> Optional[str]:
     return out if (result.returncode == 0 and out) else None
 
 
-def resolve_versions_from_git(repo_root: Path) -> None:
+def resolve_versions_from_git(
+    repo_root: Path,
+    projects: Optional[Mapping[str, "ProjectConfig"]] = None,
+) -> None:
     """Export reproducible-build + git-derived version env for every project (no clock).
 
-    Replaces the old date/counter scheme:
     - ``SOURCE_DATE_EPOCH`` = HEAD commit time → reproducible wheel/image timestamps.
     - ``OCI_REVISION`` / ``OCI_CREATED`` = HEAD sha + RFC3339(commit time) for image labels.
     - ``SETUPTOOLS_SCM_PRETEND_VERSION_FOR_<DIST>`` only when HEAD is exactly on that
-      package's ``<prefix>-v*`` tag, pinning the wheel to the clean SemVer. Untagged
-      commits let setuptools-scm derive ``X.Y.Z.devN+g<sha>`` itself at build time.
+      project's ``<prefix>*`` tag and the project has ``scm_dist`` set.
+
+    ``projects``: pass the loaded project config map; projects with both ``prefix`` and
+    ``scm_dist`` set get the pretend-version treatment (S12). Without ``projects``,
+    only SOURCE_DATE_EPOCH / OCI_* are set.
     """
     epoch = _git(repo_root, "log", "-1", "--format=%ct")
     if epoch:
@@ -446,14 +449,19 @@ def resolve_versions_from_git(repo_root: Path) -> None:
     if revision:
         os.environ.setdefault("OCI_REVISION", revision)
 
-    for dist, prefix in _DIST_TAG_PREFIXES.items():
-        exact = _git(repo_root, "describe", "--tags", "--exact-match", "--match", f"{prefix}*")
+    if not projects:
+        return
+    for project in projects.values():
+        if not project.prefix or not project.scm_dist:
+            continue
+        prefix_tag = f"{project.prefix}"
+        exact = _git(repo_root, "describe", "--tags", "--exact-match", "--match", f"{prefix_tag}*")
         if not exact:
             continue
-        semver = exact[len(prefix):]
-        env_name = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_" + dist.upper().replace("-", "_")
+        semver = exact[len(prefix_tag):]
+        env_name = "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_" + project.scm_dist.upper().replace("-", "_")
         os.environ.setdefault(env_name, semver)
-        log_info(f"{dist}: HEAD on {exact} → {env_name}={semver}")
+        log_info(f"{project.scm_dist}: HEAD on {exact} → {env_name}={semver}")
 
 
 def list_releases(owner: str, repo: str, token: str) -> list[dict]:
@@ -602,21 +610,7 @@ def delete_package(owner: str, package: str, token: str, owner_type: str, dry_ru
         raise RuntimeError(f"Failed to delete {package} package: {body}")
 
 
-def resolve_owner_type(owner: str, token: str) -> str:
-    # TODO(P3): drop this probe; require github.owner_type in config (V03).
-    for candidate in ("org", "user"):
-        try:
-            list_package_versions(owner, "modern-debian-tools-python-debug", token, candidate)
-            return candidate
-        except RuntimeError:
-            continue
-    return "org"
-
-
-def cleanup_ghcr(owner: str, token: str, cutoff: datetime, dry_run: bool, cleanup: CleanupConfig) -> None:
-    owner_type = os.getenv("GITHUB_OWNER_TYPE")
-    if not owner_type:
-        owner_type = resolve_owner_type(owner, token)
+def cleanup_ghcr(owner: str, token: str, owner_type: str, cutoff: datetime, dry_run: bool, cleanup: CleanupConfig) -> None:
 
     wildcard_packages = not cleanup.ghcr_packages or "*" in cleanup.ghcr_packages
     packages = list_container_packages(owner, token, owner_type) if wildcard_packages else cleanup.ghcr_packages
@@ -657,7 +651,7 @@ def remove_assets(
 
     log_info(f"Removing assets older than {age} (cutoff {cutoff.isoformat()})")
     cleanup_releases(owner, repo, token, cutoff, dry_run, cleanup)
-    cleanup_ghcr(owner, token, cutoff, dry_run, cleanup)
+    cleanup_ghcr(owner, token, github.owner_type, cutoff, dry_run, cleanup)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -734,7 +728,7 @@ def main() -> None:
     log_dir = repo_root / "logs"
 
     if steps:
-        resolve_versions_from_git(repo_root)
+        resolve_versions_from_git(repo_root, configs)
 
     if execution_mode == "project-first":
         for project in selected:
