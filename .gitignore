@@ -244,3 +244,6 @@ scripts/*.key
 
 # Claude Code local config
 .claude/
+/claude/
+/truenas/
+.release-vars
