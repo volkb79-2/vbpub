@@ -373,14 +373,70 @@ Traefik talks to `tcp://dockerproxy:2375` and never touches
 
 ## 6. Docker Socket Security
 
-See [Section 5](#5-edge-proxy-selection) for the socket proxy rationale.
+### Why the raw Docker socket is not mounted into Traefik
 
-Additional controls:
-- Socket proxy container has `security_opt: no-new-privileges:true`.
-- Socket proxy is on `traefik_internal` only — completely isolated from all
-  application networks.
-- If Traefik is compromised, it can read Docker metadata but cannot start,
-  stop, modify, or delete containers.
+The Docker daemon socket (`/var/run/docker.sock`) is effectively a **root
+backdoor to the host**.  Any process that holds a file descriptor to it can:
+
+- Start, stop, pause, or delete any container on the host.
+- Execute arbitrary commands inside running containers (`docker exec`).
+- Pull and run new images.
+- Mount host directories into new containers.
+- Escape to the host filesystem entirely via a privileged container.
+
+No additional Linux capabilities or kernel exploits are needed: the socket API
+alone is sufficient for a complete host takeover.
+
+Traefik is internet-facing by design.  It terminates TLS for all public
+services and processes every inbound HTTP(S) connection.  An unpatched zero-day
+in Traefik, a server-side request forgery (SSRF) in a proxied application, or a
+misconfigured route that exposes Traefik's internal API would all give an
+attacker a foothold in the proxy process.  If that process holds the Docker
+socket, the game is over.
+
+### Mitigation: `tecnativa/docker-socket-proxy`
+
+The socket proxy is a minimal HAProxy container that interposes between
+Traefik and the Docker daemon.  Traefik speaks to `tcp://dockerproxy:2375`
+(inside `traefik_internal`) and never holds a file descriptor to
+`/var/run/docker.sock`.  Only the socket proxy container mounts the socket.
+
+The proxy enforces an endpoint allowlist.  Traefik needs:
+
+```
+CONTAINERS: 1   # read container state and labels
+NETWORKS:   1   # read network topology
+EVENTS:     1   # watch for container start/stop events
+VERSION:    1   # Traefik version probe on startup
+INFO:       1   # daemon capabilities probe on startup
+```
+
+Everything else — and critically, **all write operations (POST is denied
+globally)** — is blocked at the proxy layer before the request ever reaches
+the Docker daemon.
+
+### Blast radius analysis
+
+| Scenario | Without proxy | With proxy |
+|---|---|---|
+| Traefik crash / restart | Normal recovery | Normal recovery |
+| Traefik process compromise | Full host takeover via socket | Read-only Docker metadata |
+| Socket proxy compromise | n/a | Read-only Docker metadata (proxy has no other capabilities) |
+| Both compromised | Full host takeover | Full host takeover |
+
+The common case — a compromised Traefik process — changes from "total loss"
+to "attacker can enumerate running containers and read their labels."  No
+lateral movement to other containers, no persistence mechanism, no host escape.
+
+### Additional hardening applied
+
+- `security_opt: no-new-privileges:true` on the socket proxy container.
+- Socket proxy is attached to `traefik_internal` only — it is not reachable
+  from `ingress_public` or any consumer network.
+- Socket proxy image is version-pinned (`tecnativa/docker-socket-proxy:v0.4.2`)
+  for reproducibility.
+
+See [Section 5](#5-edge-proxy-selection) for the edge proxy selection rationale.
 
 **Future option**: use Docker Swarm secrets or a dedicated control-plane
 service to further restrict which labels Traefik acts on, enforcing that only

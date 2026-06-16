@@ -10,6 +10,47 @@ Traefik.
 
 ---
 
+## Install
+
+On any Linux host with Docker and git already installed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.sh | sudo bash
+```
+
+This installs tls-edge to `/opt/tls-edge-src` and places a `tls-edge` command
+at `/usr/local/bin/tls-edge`.  When it finishes, run:
+
+```bash
+tls-edge install
+```
+
+### Pin a specific version
+
+```bash
+TLS_EDGE_VERSION=tls-edge-v0.1.0 \
+  curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.sh | sudo bash
+```
+
+### Update to a newer release
+
+```bash
+tls-edge update
+```
+
+Fetches the latest `tls-edge-v*` tag, checks out the new version, and
+reinstalls the CLI wrapper.  Your site-specific config
+(`ciu-stack/ciu.toml.j2`, `edge-proxy/.env`) is preserved across updates.
+
+### Releases
+
+Releases are git tags in the `vbpub` monorepo following the convention
+`tls-edge-v<semver>` (e.g. `tls-edge-v0.1.0`).  No pre-built artifacts are
+required — the installer clones only the `tls-edge/` subtree directly from the
+tagged commit.
+
+---
+
 ## Repository layout
 
 ```
