@@ -33,7 +33,7 @@
 #   - the base image tag (mcr.microsoft.com/playwright:v<version>-<distro>),
 #   - the playwright JS package baked into the playwright-server image, and
 #   - the version connect() consumers must install (`pip install playwright==<version>`).
-playwright_version = "1.60.0"
+playwright_version = "1.61.0"
 image_distro = "noble"            # -> mcr.microsoft.com/playwright:v<version>-<distro>
 
 [pwmcp.network]
@@ -52,7 +52,7 @@ host_port = 3000
 registry = "ghcr.io"
 namespace = "volkb79-2"
 name = "pwmcp-playwright"
-tag = "1.60.0"
+tag = "1.61.0-r1"
 
 [pwmcp.playwright_mcp]
 enabled = true

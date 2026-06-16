@@ -7,7 +7,7 @@ variable "NAMESPACE" {
 }
 
 variable "PLAYWRIGHT_VERSION" {
-  default = "1.60.0"
+  default = "1.61.0"
 }
 
 variable "PLAYWRIGHT_DISTRO" {
@@ -15,7 +15,7 @@ variable "PLAYWRIGHT_DISTRO" {
 }
 
 variable "PWMCP_VERSION" {
-  default = "1.60.0-r1"
+  default = "1.61.0-r1"
 }
 
 variable "OCI_SOURCE" {
