@@ -106,6 +106,39 @@ The `tools/` directory also contains two helper scripts invoked internally:
 `cleanup-legacy-releases.sh` deletes the old `ciu-wheel-latest` GitHub release tag,
 and `cleanup-and-validate.sh` wraps that cleanup with a post-publish validation pass.
 
+### Release a new version (SemVer)
+
+The publish script at `tools/publish-wheel-release.py:275` has a branch:
+
+- Dev build (2.0.1.dev8.g2f597cf): only moves ciu-latest — no per-commit tag spam
+- Clean tagged release (2.0.1): creates both an immutable ciu-v2.0.1 release and updates ciu-latest
+
+So yes, the versioned-tag-plus-latest-alias pattern is already there — you're just not triggering it because
+you're on an untagged commit.
+
+Why you're seeing a dev version
+
+The only ciu git tag is ciu-v2.0.0. You're now 8 commits past it (2f597cf). setuptools_scm computes the version
+as 2.0.1.dev8.g2f597cf — "next patch after 2.0.0, 8 commits ahead, at this sha." That's why the wheel in
+ciu-latest has that name.
+
+How to cut 2.0.1 (or skip to 2.0.2) 
+
+```bash
+# On the commit you want to release:
+git tag -a ciu-v2.0.1 -m "ciu 2.0.1"
+git push origin ciu-v2.0.1   # needs workflow scope — see PAT note below
+```
+
+Then run the build+publish pipeline. setuptools_scm will produce clean version 2.0.1, and the publish script
+will create:
+1. An immutable ciu-v2.0.1 GitHub release with ciu-2.0.1-py3-none-any.whl
+2. ciu-latest updated to the same wheel
+
+Version increment is not automatic — you must create the git tag. setuptools_scm reads tags, it doesn't write
+them. The .devN suffix is what you get between releases.
+
+
 ## Requirements
 
 - Python 3.11+
