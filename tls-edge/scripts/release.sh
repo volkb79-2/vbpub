@@ -63,8 +63,14 @@ git -C "$REPO_ROOT" tag -l "$TAG" | grep -q "^${TAG}$" \
 info "Bumping VERSION → $NEW_VERSION"
 printf '%s\n' "$NEW_VERSION" > "$VERSION_FILE"
 git -C "$REPO_ROOT" add "$VERSION_FILE"
-git -C "$REPO_ROOT" commit -m "tls-edge: release v${NEW_VERSION}"
-ok "Committed version bump."
+if git -C "$REPO_ROOT" diff --cached --quiet -- "$VERSION_FILE"; then
+    # VERSION already equals NEW_VERSION (e.g. first release at the current
+    # version) — nothing to commit; tag the current HEAD instead of failing.
+    info "VERSION already $NEW_VERSION — no bump commit needed; tagging current HEAD."
+else
+    git -C "$REPO_ROOT" commit -m "tls-edge: release v${NEW_VERSION}"
+    ok "Committed version bump."
+fi
 
 # ─── Create annotated tag ─────────────────────────────────────────────────────
 git -C "$REPO_ROOT" tag -a "$TAG" -m "tls-edge ${NEW_VERSION}"
