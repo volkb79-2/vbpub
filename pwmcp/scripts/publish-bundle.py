@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Publish the pwmcp stack bundle to GitHub Releases.
 
-Routes through ciu_forge.release (ciu-forge/src/ciu_forge/release.py).
+Routes through cmru.release (cmru/src/cmru/release.py).
 so the release scheme stays uniform across all vbpub projects.
 
 Required environment (from release.toml or shell):
@@ -24,8 +24,8 @@ from pathlib import Path
 
 # ── Keystone import ──────────────────────────────────────────────────────────
 # parents[2] from pwmcp/scripts/publish-bundle.py == the vbpub repo root.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ciu-forge" / "src"))
-from ciu_forge.release import GitHubReleases, publish_versioned
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cmru" / "src"))
+from cmru.release import GitHubReleases, publish_versioned
 
 PWMCP_DIR = Path(__file__).resolve().parent.parent
 RELEASE_VARS_FILE = PWMCP_DIR / ".release-vars"

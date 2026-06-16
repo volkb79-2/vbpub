@@ -62,7 +62,7 @@ def _latest_tag_for_prefix(repo_root: Path, prefix: str) -> Optional[str]:
     tags = [t for t in result.stdout.splitlines() if t.strip()]
     if not tags:
         return None
-    from ciu_forge.release import _semver_key
+    from cmru.release import _semver_key
     def _tag_key(tag: str) -> tuple:
         ver = tag[len(prefix):]
         return _semver_key(ver)

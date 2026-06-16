@@ -108,7 +108,7 @@ def render_get_sh(
 
 def render_from_config(project_name: str, config_path: Path) -> str:
     """Render get.sh for a project using ciu-forge.toml config."""
-    from ciu_forge.config import load_forge_config
+    from cmru.config import load_forge_config
     config = load_forge_config(config_path)
     proj = config.projects.get(project_name)
     if not proj:

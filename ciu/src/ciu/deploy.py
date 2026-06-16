@@ -995,8 +995,6 @@ def build_action_sequence(argv: list[str]) -> list[str]:
         "--clean": "clean",
         "--healthcheck": "healthcheck",
         "--render-toml": "render_toml",
-        "--build": "build",
-        "--build-no-cache": "build_no_cache",
         "--list-phases": "list_phases",
         "--list-profiles": "list_profiles",
     }
@@ -1033,15 +1031,10 @@ Examples:
     actions.add_argument("--healthcheck", action="store_true", help="Run the health gate over the selection (S7.7)")
     actions.add_argument("--render-toml", dest="render_toml", action="store_true",
                          help="Render global + selected stack configs and stop (S8.3 step 3)")
-    actions.add_argument("--build", action="store_true", help="docker buildx bake selected targets")
-    actions.add_argument("--build-no-cache", dest="build_no_cache", action="store_true",
-                         help="docker buildx bake with --no-cache")
     actions.add_argument("--list-phases", dest="list_phases", action="store_true",
                          help="List numbered phases with service counts (S7.1)")
     actions.add_argument("--list-profiles", dest="list_profiles", action="store_true",
                          help="List host profiles (replaces v1 --list-groups) (S7.4)")
-    actions.add_argument("--generate-env", dest="generate_env", action="store_true",
-                         help="Generate ciu.env (S2.8 bootstrap) and stop")
 
     control = parser.add_argument_group("Control")
     control.add_argument("--profile", default=None, metavar="NAME",
@@ -1110,14 +1103,11 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
     # --- env bootstrap (S2 / S2.8) ---
     define_root = Path(args.define_root).resolve() if args.define_root else None
 
-    if args.generate_env and not _other_actions_requested(args):
-        return action_generate_env(define_root, Path.cwd())
-
     bootstrap_workspace_env(
         start_dir=Path.cwd(),
         define_root=define_root,
         defaults_filename=GLOBAL_CONFIG_DEFAULTS,
-        generate_env=args.generate_env,
+        generate_env=False,
         update_cert_permission=args.update_cert_permission,
         required_keys=REQUIRED_KEYS_CORE,
     )
@@ -1186,10 +1176,6 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             ac = action_stop(profile.config)
         elif action == "clean":
             ac = action_clean(repo_root, profile, selection, ignore_errors=args.ignore_errors)
-        elif action == "build":
-            ac = action_build(repo_root, selection, use_cache=True)
-        elif action == "build_no_cache":
-            ac = action_build(repo_root, selection, use_cache=False)
         elif action == "healthcheck":
             ac = action_healthcheck(profile, selection)
         elif action == "deploy":
@@ -1215,7 +1201,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
 
 
 def _other_actions_requested(args: argparse.Namespace) -> bool:
-    """True when any action besides --generate-env was requested."""
+    """True when any explicit action was requested."""
     return any(
         (
             args.deploy,
@@ -1223,8 +1209,6 @@ def _other_actions_requested(args: argparse.Namespace) -> bool:
             args.clean,
             args.healthcheck,
             args.render_toml,
-            args.build,
-            args.build_no_cache,
             args.list_phases,
             args.list_profiles,
         )

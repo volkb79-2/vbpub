@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Publish the tls-edge artifact to GitHub Releases.
 
-Routes through ciu_forge.release (ciu-forge/src/ciu_forge/release.py).
+Routes through cmru.release (cmru/src/cmru/release.py).
 so the release scheme stays uniform across all vbpub projects.
 
 Required credentials (from release.toml [github] or environment):
@@ -25,8 +25,8 @@ from pathlib import Path
 
 # ── Keystone import ──────────────────────────────────────────────────────────
 # parents[2] from tls-edge/scripts/publish-release.py == the vbpub repo root.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ciu-forge" / "src"))
-from ciu_forge.release import GitHubReleases, publish_versioned
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cmru" / "src"))
+from cmru.release import GitHubReleases, publish_versioned
 
 TLS_EDGE_DIR = Path(__file__).resolve().parent.parent
 VERSION_FILE = TLS_EDGE_DIR / "VERSION"

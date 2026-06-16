@@ -5,18 +5,16 @@ requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ciu-forge"
+name = "cmru"
 dynamic = ["version"]
-description = "Build, publish, and release orchestration for CIU-family monorepos."
+description = "CMRU — Configurable Multi Release Utility for CIU-family monorepos."
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Volker Badziong"}]
 dependencies = []
 
 [project.scripts]
-ciu-forge = "ciu_forge.cli:forge_main"
-# vbpub-release: backward-compat alias; points to ciu_forge now that release_manager shim is removed (P6).
-vbpub-release = "ciu_forge.cli:main"
+cmru = "cmru.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -26,8 +24,9 @@ testpaths = ["tests"]
 addopts = "-v"
 
 # Version is derived from git tags by setuptools-scm (no clock, no manual bump).
-# Release = annotated tag `ciu-forge-vX.Y.Z`; untagged = `X.Y.(Z+1).devN+g<sha>`.
+# Release = annotated tag `cmru-vX.Y.Z`; untagged = `X.Y.(Z+1).devN+g<sha>`.
 [tool.setuptools_scm]
 root = ".."
-tag_regex = "^ciu-forge-v(?P<version>[0-9].*)$"
-git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "ciu-forge-v*"]
+tag_regex = "^cmru-v(?P<version>[0-9].*)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "cmru-v*"]
+fallback_version = "0.2.0"

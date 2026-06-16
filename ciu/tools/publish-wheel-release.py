@@ -28,8 +28,8 @@ from pathlib import Path
 
 # ── keystone import (stdlib-only; no install needed) ─────────────────────────
 # parents[2] from ciu/tools/publish-wheel-release.py  →  vbpub repo root
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "ciu-forge" / "src"))
-from ciu_forge.release import GitHubReleases, publish_versioned, is_release_version, version_to_tag  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "cmru" / "src"))
+from cmru.release import GitHubReleases, publish_versioned, is_release_version, version_to_tag  # noqa: E402
 
 
 def log_debug(message: str) -> None:

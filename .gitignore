@@ -148,6 +148,7 @@ celerybeat.pid
 .env
 .envrc
 .env.ciu
+ciu.env
 .venv
 release.toml
 game_stuff/empyrion/tools/mt.toml

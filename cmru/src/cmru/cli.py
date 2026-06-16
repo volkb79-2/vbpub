@@ -24,7 +24,7 @@ from urllib.request import Request, urlopen
 
 import tomllib
 
-from ciu_forge.runner import StepConfig, execute_step
+from cmru.runner import StepConfig, execute_step
 
 
 @dataclass(frozen=True)
@@ -675,7 +675,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def _orchestrate() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
 
@@ -751,59 +751,81 @@ def main() -> None:
     log_info("Release manager complete")
 
 
-def forge_main(argv: Optional[List[str]] = None) -> None:
-    """Entry point for the ``ciu-forge`` CLI (P4).
+def _cmru_version() -> str:
+    try:
+        from importlib.metadata import version as _mv
+        return _mv("cmru")
+    except Exception:
+        return "dev"
 
-    Dispatches to sub-verbs: run / build / resolve / get-sh / release / status / cleanup.
-    ``ciu-forge run`` is equivalent to the legacy ``vbpub-release`` orchestrator.
+
+def main(argv: Optional[List[str]] = None) -> None:
+    """Entry point for the ``cmru`` CLI.
+
+    Dispatches to sub-verbs: run / build / resolve / get / release / status / cleanup.
+    ``cmru run`` is equivalent to the legacy ``vbpub-release`` orchestrator.
     """
     import sys as _sys
 
     av = argv if argv is not None else _sys.argv[1:]
     if not av or av[0] in ("-h", "--help"):
         print(
-            "usage: ciu-forge <verb> [args...]\n"
+            f"CMRU {_cmru_version()} — Configurable Multi Release Utility\n"
+            "Uses: cmru.toml\n"
             "\n"
-            "verbs:\n"
-            "  run        Orchestrate N projects × steps (equiv. to vbpub-release)\n"
-            "  build      Execute one build step via runner (--config --step)\n"
-            "  resolve    Resolve latest release for a project (--project)\n"
-            "  get-sh     Emit get.sh bootstrap for a project (--project --config)\n"
-            "  release    Detect changes, tag, and trigger build+publish\n"
-            "  status     Dry-run preview: changed projects + next versions\n"
-            "  cleanup    Remove old releases / GHCR images (--remove-assets AGE)\n"
+            "  PLANNING\n"
+            "    status   [--project P]                        preview next releases (dry-run)\n"
+            "\n"
+            "  BUILD\n"
+            "    run      [--project P] [--step S ...]         orchestrate N projects × steps\n"
+            "    build    [--project P]                        build release artifact\n"
+            "\n"
+            "  RELEASE\n"
+            "    publish  [--project P]                        publish artifact + .sha256\n"
+            "    release  [--project P] [--minor|--major|--set-version V]\n"
+            "                                                  detect → version → tag → build → publish\n"
+            "\n"
+            "  CONSUMPTION\n"
+            "    resolve  [--project P] [--format env|json|url]   resolve latest version\n"
+            "    get      [--project P]                        emit standalone get.py installer\n"
+            "\n"
+            "  MAINTENANCE\n"
+            "    cleanup  [--days N]                           age-based release cleanup\n"
         )
+        return
+
+    if av[0] == "--version":
+        print(f"cmru {_cmru_version()}")
         return
 
     verb = av[0]
     rest = av[1:]
 
     if verb == "run":
-        # Legacy orchestrator — pass remaining args through to main()
-        _sys.argv = ["vbpub-release"] + rest
-        main()
+        _sys.argv = ["cmru"] + rest
+        _orchestrate()
 
     elif verb == "build":
-        from ciu_forge.runner import main as runner_main
+        from cmru.runner import main as runner_main
         runner_main(rest)
 
     elif verb == "resolve":
-        from ciu_forge.resolve import resolve_main
+        from cmru.resolve import resolve_main
         resolve_main(rest)
 
-    elif verb == "get-sh":
-        from ciu_forge.getsh import getsh_main
+    elif verb in ("get", "get-sh"):
+        from cmru.getsh import getsh_main
         getsh_main(rest)
 
     elif verb in ("release", "status"):
         import argparse as _ap
-        parser = _ap.ArgumentParser(description=f"ciu-forge {verb}")
+        parser = _ap.ArgumentParser(description=f"cmru {verb}")
         parser.add_argument("--project", help="Limit to one project")
         parser.add_argument("--minor", action="store_true")
         parser.add_argument("--major", action="store_true")
         parser.add_argument("--set-version", metavar="VER")
         parser.add_argument("--dry-run", action="store_true")
-        parser.add_argument("--config", help="Path to release.toml")
+        parser.add_argument("--config", help="Path to cmru.toml or release.toml")
         vargs = parser.parse_args(rest)
 
         default_config = Path(__file__).resolve().parents[3] / "release.toml"
@@ -812,7 +834,7 @@ def forge_main(argv: Optional[List[str]] = None) -> None:
 
         (repo_root, configs, *_rest) = load_config(cfg_path)
 
-        from ciu_forge.version import status_cmd, release_cmd
+        from cmru.version import status_cmd, release_cmd
         if verb == "status":
             status_cmd(
                 repo_root, configs,
@@ -832,10 +854,10 @@ def forge_main(argv: Optional[List[str]] = None) -> None:
 
     elif verb == "cleanup":
         import argparse as _ap
-        parser = _ap.ArgumentParser(description="ciu-forge cleanup")
+        parser = _ap.ArgumentParser(description="cmru cleanup")
         parser.add_argument("--remove-assets", metavar="AGE", required=True)
         parser.add_argument("--dry-run", action="store_true")
-        parser.add_argument("--config", help="Path to release.toml")
+        parser.add_argument("--config", help="Path to cmru.toml or release.toml")
         vargs = parser.parse_args(rest)
 
         default_config = Path(__file__).resolve().parents[3] / "release.toml"
@@ -848,9 +870,9 @@ def forge_main(argv: Optional[List[str]] = None) -> None:
         remove_assets(vargs.remove_assets, vargs.dry_run, cleanup, github_config, env_config)
 
     else:
-        log_error(f"Unknown verb '{verb}'. Run 'ciu-forge --help' for usage.")
+        log_error(f"Unknown verb '{verb}'. Run 'cmru --help' for usage.")
         _sys.exit(2)
 
 
 if __name__ == "__main__":
-    forge_main()
+    main()

@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ciu_forge.version import (
+from cmru.version import (
     _latest_tag_for_prefix,
     _next_counter_version,
     bump_version,
@@ -34,9 +34,9 @@ def _git(*args, cwd):
 class _TempRepo:
     """Context manager: creates a minimal, configured git repo in a temp dir."""
     def __enter__(self):
-        self.root = Path(tempfile.mkdtemp(prefix="ciu_forge_test_"))
+        self.root = Path(tempfile.mkdtemp(prefix="cmru_test_"))
         _git("init", cwd=self.root)
-        _git("config", "user.email", "test@ciu-forge.test", cwd=self.root)
+        _git("config", "user.email", "test@cmru.test", cwd=self.root)
         _git("config", "user.name", "CIU Forge Test", cwd=self.root)
         # Seed an initial commit so tags have something to attach to
         (self.root / "README.md").write_text("init\n")

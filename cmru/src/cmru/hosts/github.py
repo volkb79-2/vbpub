@@ -1,6 +1,6 @@
 """GitHub ReleaseHost implementation (S11.2 v1).
 
-Wraps the GitHubReleases REST client from ciu_forge.release and implements
+Wraps the GitHubReleases REST client from cmru.release and implements
 the ReleaseHost ABC. GH Enterprise is nearly free: pass api_base.
 
 Convention: ``prefix`` in ReleaseHost methods is the full tag prefix
@@ -11,8 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ciu_forge.hosts import ReleaseHost
-from ciu_forge.release import (
+from cmru.hosts import ReleaseHost
+from cmru.release import (
     GitHubReleases,
     _semver_key,
 )

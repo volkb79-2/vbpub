@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import json
 import unittest
-from ciu_forge.resolve import format_result
+from cmru.resolve import format_result
 
 _RESULT = {
     "version": "0.2.0",
@@ -52,12 +52,12 @@ class TestFormatResultEnv(unittest.TestCase):
         self.assertIn(f"TLS_EDGE_URL={_RESULT['url']}", lines)
         self.assertIn("TLS_EDGE_SHA256=abc123def456", lines)
 
-    def test_ciu_forge_prefix(self):
+    def test_cmru_prefix(self):
         # Hyphens in project name → underscores; multi-hyphen name handled
-        result = {**_RESULT, "tag": "ciu-forge-v0.1.0", "version": "0.1.0"}
+        result = {**_RESULT, "tag": "cmru-v0.2.0", "version": "0.2.0"}
         lines = self._lines(result)
-        self.assertIn("CIU_FORGE_VERSION=0.1.0", lines)
-        self.assertIn("CIU_FORGE_TAG=ciu-forge-v0.1.0", lines)
+        self.assertIn("CMRU_VERSION=0.2.0", lines)
+        self.assertIn("CMRU_TAG=cmru-v0.2.0", lines)
 
     def test_ciu_prefix(self):
         result = {**_RESULT, "tag": "ciu-v2.1.0", "version": "2.1.0"}

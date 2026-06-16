@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ciu"
 dynamic = ["version"]
-description = "CIU deployment CLI"
+description = "CIU — Container Infrastructure Utility (compose · init · up)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -33,4 +33,3 @@ fallback_version = "2.0.0"
 
 [project.scripts]
 ciu = "ciu.cli:main"
-ciu-deploy = "ciu.deploy:main"

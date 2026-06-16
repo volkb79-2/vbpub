@@ -18,7 +18,7 @@ if sys.version_info >= (3, 11):
 else:
     import tomllib  # type: ignore[no-redef]
 
-from ciu_forge import exit_codes
+from cmru import exit_codes
 
 
 # ─── Config dataclasses (S2) ─────────────────────────────────────────────────

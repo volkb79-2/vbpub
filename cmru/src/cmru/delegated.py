@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from ciu_forge import exit_codes
+from cmru import exit_codes
 
 
 def _which(tool: str) -> Optional[str]:

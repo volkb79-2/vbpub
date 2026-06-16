@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import unittest
 from unittest.mock import patch
-from ciu_forge.release import GitHubReleases
+from cmru.release import GitHubReleases
 
 
 def _rel(tag, *, draft=False, prerelease=False, assets=None):
@@ -97,15 +97,15 @@ class TestResolveLatest(unittest.TestCase):
 
     def test_asset_names_and_urls(self):
         assets = [
-            {"name": "ciu_forge-0.1.0-py3-none-any.whl",
+            {"name": "cmru-0.2.0-py3-none-any.whl",
              "browser_download_url": "https://example.com/ciu.whl"},
-            {"name": "ciu_forge-0.1.0-py3-none-any.whl.sha256",
+            {"name": "cmru-0.2.0-py3-none-any.whl.sha256",
              "browser_download_url": "https://example.com/ciu.whl.sha256"},
         ]
-        releases = [_rel("ciu-forge-v0.1.0", assets=assets)]
-        r = self._resolve(releases, "ciu-forge")
+        releases = [_rel("cmru-v0.2.0", assets=assets)]
+        r = self._resolve(releases, "cmru")
         self.assertEqual(len(r["assets"]), 2)
-        self.assertEqual(r["assets"][0]["name"], "ciu_forge-0.1.0-py3-none-any.whl")
+        self.assertEqual(r["assets"][0]["name"], "cmru-0.2.0-py3-none-any.whl")
 
     def test_no_assets_returns_empty_list(self):
         releases = [_rel("ciu-v1.0.0")]

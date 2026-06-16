@@ -4,8 +4,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import unittest
-from ciu_forge.release import _semver_key
-from ciu_forge.version import _bump_from_commits, bump_version, _parse_semver
+from cmru.release import _semver_key
+from cmru.version import _bump_from_commits, bump_version, _parse_semver
 
 
 class TestSemverKey(unittest.TestCase):

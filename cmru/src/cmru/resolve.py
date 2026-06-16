@@ -87,13 +87,13 @@ def resolve_main(argv: Optional[list] = None) -> None:
     parser.add_argument("--config", help="Path to release.toml or ciu-forge.toml")
     args = parser.parse_args(argv)
 
-    from ciu_forge.hosts.github import github_host_from_env
+    from cmru.hosts.github import github_host_from_env
     host = github_host_from_env()
 
     prefix = args.prefix
     if not prefix:
         if args.config:
-            from ciu_forge.cli import load_config
+            from cmru.cli import load_config
             from pathlib import Path as P
             result_tuple = load_config(P(args.config).expanduser().resolve())
             configs = result_tuple[1]

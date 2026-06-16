@@ -6,9 +6,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT / "ciu-forge" / "src"))
+sys.path.insert(0, str(ROOT / "cmru" / "src"))
 
-from ciu_forge.cli import main  # noqa: E402
+from cmru.cli import main  # noqa: E402
 
 
 if __name__ == "__main__":
