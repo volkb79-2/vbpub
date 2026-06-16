@@ -55,6 +55,8 @@ Two services are composed together:
 
 **internal** (default): services on the project Docker network only, plain HTTP, no auth. The network boundary is the access control.
 
+pwmcp **joins the project network it is placed in** via the ciu `deploy.network_name` variable. When deployed as a sub-stack of a parent project (e.g. `dstdns`), containers are named `<project>-<env>-pwmcp-playwright` and `<project>-<env>-pwmcp-mcp` and join the parent project's network. They are reachable from any sibling container using the short service alias (`pwmcp-mcp:8931`, `ws://pwmcp-playwright:3000/`) or the full container name. When run standalone the project name defaults to `pwmcp`.
+
 **external** (`pwmcp.external.enabled = true`): services also join the `ingress_public` network and gain Traefik labels for TLS termination and optional basicAuth guard via tls-edge.
 
 ## Hardening

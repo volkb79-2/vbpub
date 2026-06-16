@@ -10,6 +10,21 @@
 Both services run on the project Docker network with plain HTTP and no auth.  
 Sibling containers reach services by **container name** — never via `localhost`.
 
+### Network joining
+
+pwmcp **joins the project network it is placed in**, controlled by `deploy.network_name` (a ciu variable). When pwmcp is deployed as a sub-stack of a parent project, that project passes its own network name via `deploy.network_name`, so all pwmcp containers land on the parent project's shared network alongside the rest of the project's services.
+
+Container names in that case become `<project>-<env>-pwmcp-playwright` and `<project>-<env>-pwmcp-mcp`, and they are reachable from sibling containers using either the **short service alias** or the **full container name**:
+
+```
+ws://pwmcp-playwright:3000/           # short alias (service name in compose)
+ws://<project>-<env>-pwmcp-playwright:3000/  # full container name
+http://pwmcp-mcp:8931/mcp             # short alias
+http://<project>-<env>-pwmcp-mcp:8931/mcp   # full container name
+```
+
+When pwmcp is run standalone (not as a sub-stack), `deploy.project_name` defaults to `pwmcp` and the standard `pwmcp-dev` network is used.
+
 ```bash
 cd pwmcp
 
@@ -25,6 +40,25 @@ Services come up as:
 - `<project>-<env>-pwmcp-mcp` on port 8931 (project network only)
 
 To expose a port to the host for local debugging, set `pwmcp.playwright_server.expose = true` (or `pwmcp.playwright_mcp.expose = true`) in `ciu.toml.j2` (overrides file) and re-run `ciu -d .`. Exposed ports bind to `127.0.0.1` only.
+
+### `--allowed-hosts` and the HTTP 403 on container-name access
+
+The `@playwright/mcp` server (`pwmcp-mcp`) has built-in DNS-rebinding protection: it rejects any request whose `Host` header does not match an allowed host. When bound to `0.0.0.0`, the server's default allowed host is `"0.0.0.0"` — which does **not** match `pwmcp-mcp:8931`, the `Host` header a sibling container sends when it reaches the service by name. Without an explicit allowlist this produces **HTTP 403** for every internal caller, silently breaking internal mode.
+
+The ciu template fixes this by passing `--allowed-hosts` with the two ciu-derived host:port values for the container:
+
+```
+--allowed-hosts pwmcp-mcp:8931,<project>-<env>-pwmcp-mcp:8931
+```
+
+This is the secure approach: the allowlist is pinned to the known internal names rather than using `*` (which disables the check entirely). The network boundary already restricts who can reach the port; `--allowed-hosts` pins which `Host` header value the server honours.
+
+If you need to add further aliases (e.g. a custom DNS name or `*` as a last resort), append them via `extra_args` in your `ciu.toml.j2` override:
+
+```toml
+[pwmcp.playwright_mcp]
+extra_args = "--allowed-hosts my-custom-alias:8931"
+```
 
 ## External Mode (TLS via tls-edge)
 

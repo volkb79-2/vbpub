@@ -63,6 +63,24 @@ expose = false
 host_port = 8931
 browser = "chromium"
 extra_args = ""                   # e.g. "--caps=vision,pdf"
+# --allowed-hosts note:
+# @playwright/mcp cli.js has DNS-rebinding protection: it rejects requests whose
+# Host header does not match the server's bound address. With --host 0.0.0.0 the
+# default allowed host is "0.0.0.0", which does NOT match "pwmcp-mcp:8931" — the
+# Host header sent by a sibling container reaching it by service name. This causes
+# HTTP 403 for all internal-mode callers.
+#
+# The ciu.compose.yml.j2 template therefore always passes --allowed-hosts with the
+# two ciu-derived names for this container:
+#   <name>:<port>                                  (short service alias)
+#   <project>-<env>-<name>:<port>                  (full ciu container name)
+# These are templated directly into the command — no config key needed here.
+# The network boundary already restricts who can connect; --allowed-hosts pins
+# which Host header value is honoured, not who can reach the port.
+#
+# To add further hosts (e.g. a custom alias, or "*" to disable the check entirely),
+# append them via extra_args: extra_args = "--allowed-hosts my-alias:8931"
+# Any extra_args entries are appended AFTER the template-derived --allowed-hosts arg.
 
 [pwmcp.hardening]
 # Applied to BOTH services, in BOTH modes.

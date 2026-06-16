@@ -90,6 +90,34 @@ The `pwmcp-mcp` service (`mcr.microsoft.com/playwright/mcp`) provides an MCP-com
 
 SSE streaming is also available at `/sse`.
 
+### DNS-rebinding protection and `--allowed-hosts`
+
+`@playwright/mcp` (`cli.js`) implements DNS-rebinding protection: every incoming request is checked against an allowlist of permitted `Host` header values. The server's default allowlist contains only its bind address (`0.0.0.0`), which does **not** match the `Host: pwmcp-mcp:8931` header sent by a sibling container accessing the service by name. Without correction this returns **HTTP 403** to every internal caller.
+
+The ciu template resolves this by passing `--allowed-hosts` with both ciu-derived names for the container (templated at render time):
+
+```
+--allowed-hosts pwmcp-mcp:8931,<project>-<env>-pwmcp-mcp:8931
+```
+
+This is the preferred fix: it pins the allowlist to known internal names rather than using `*` (which disables the check). The Docker network boundary already controls who can reach the port; `--allowed-hosts` controls which `Host` header values the server accepts.
+
+To add extra allowed hosts (e.g. a custom DNS alias), use `extra_args`:
+
+```toml
+[pwmcp.playwright_mcp]
+extra_args = "--allowed-hosts my-alias:8931"
+```
+
+To disable the check entirely (not recommended; use only if you control the network):
+
+```toml
+[pwmcp.playwright_mcp]
+extra_args = "--allowed-hosts *"
+```
+
+Note: `extra_args` entries are appended **after** the template's `--allowed-hosts` arg. If `@playwright/mcp` merges multiple `--allowed-hosts` flags, this extends the list; if it takes only the last flag, put all entries in one `extra_args` value.
+
 ### VS Code MCP Configuration (internal)
 
 ```json
