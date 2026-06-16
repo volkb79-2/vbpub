@@ -11,6 +11,7 @@ from ciu_forge.runner import *  # noqa: F401, F403, E402
 from ciu_forge.runner import (  # noqa: E402
     ReleaseSecrets,
     StepConfig,
+    _docker_login,
     apply_env_command,
     apply_release_env,
     apply_reproducible_env,
@@ -23,6 +24,7 @@ from ciu_forge.runner import (  # noqa: E402
     log_info,
     main,
     maybe_login,
+    maybe_login_multi,
     parse_step,
     resolve_path,
     run_command,

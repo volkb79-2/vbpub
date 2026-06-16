@@ -14,7 +14,7 @@ authors = [{name = "Volker Badziong"}]
 dependencies = []
 
 [project.scripts]
-ciu-forge = "ciu_forge.cli:main"
+ciu-forge = "ciu_forge.cli:forge_main"
 # vbpub-release shim: kept for transition until P6 migration of all consumers.
 vbpub-release = "release_manager.cli:main"
 

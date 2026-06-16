@@ -26,6 +26,7 @@ class ReleaseSecrets:
     github_token: str
     github_owner_type: Optional[str]
     registry_url: Optional[str]
+    registries: list  # [targets].registry list (S11 multi-push); first entry = REGISTRY
     env: Mapping[str, str]
     project_env: Mapping[str, str]
 
@@ -42,6 +43,7 @@ class StepConfig:
     login: Optional[dict]
     step_env: Mapping[str, str]
     env_command: Optional[list[str]]
+    registries: list = None  # [targets].registry for multi-push (S11); None = single-registry compat
 
 
 def log_info(message: str) -> None:
@@ -83,6 +85,18 @@ def load_release_secrets(release_path: Path, *, project_name: Optional[str] = No
     if isinstance(registry, dict):
         registry_url = (registry.get("url") or "").strip() or None
 
+    # [targets].registry supersedes [registry].url when present (S11 multi-push)
+    registries: list = []
+    targets = config.get("targets", {})
+    if isinstance(targets, dict):
+        reg_list = targets.get("registry")
+        if isinstance(reg_list, list):
+            registries = [str(r) for r in reg_list if r]
+        elif isinstance(reg_list, str) and reg_list:
+            registries = [reg_list]
+    if registries and not registry_url:
+        registry_url = registries[0]
+
     env_section = config.get("env", {})
     if env_section is None:
         env_section = {}
@@ -111,6 +125,7 @@ def load_release_secrets(release_path: Path, *, project_name: Optional[str] = No
         github_token=token,
         github_owner_type=owner_type,
         registry_url=registry_url,
+        registries=registries,
         env=env_section,
         project_env=project_env,
     )
@@ -127,6 +142,9 @@ def apply_release_env(secrets: ReleaseSecrets) -> None:
         os.environ.setdefault("GITHUB_OWNER_TYPE", secrets.github_owner_type)
     if secrets.registry_url:
         os.environ.setdefault("REGISTRY", secrets.registry_url)
+    if secrets.registries:
+        # Expose comma-separated list for bake targets that support multi-registry (S11)
+        os.environ.setdefault("REGISTRIES", ",".join(secrets.registries))
 
     for source in (secrets.project_env, secrets.env):
         for key, value in source.items():
@@ -288,6 +306,16 @@ def apply_env_command(env_command: Optional[list[str]], cwd: Path) -> None:
         os.environ[key] = value
 
 
+def _docker_login(registry: str, username: str, token: str) -> None:
+    log_info(f"Logging into {registry} as {username}")
+    subprocess.run(
+        ["docker", "login", registry, "-u", username, "--password-stdin"],
+        input=f"{token}\n",
+        text=True,
+        check=True,
+    )
+
+
 def maybe_login(login: Optional[dict]) -> None:
     if not login:
         return
@@ -304,14 +332,23 @@ def maybe_login(login: Optional[dict]) -> None:
         return
     if not username:
         raise RuntimeError(f"{username_env} is required for registry login")
+    _docker_login(registry, username, token)
 
-    log_info(f"Logging into {registry} as {username}")
-    subprocess.run(
-        ["docker", "login", registry, "-u", username, "--password-stdin"],
-        input=f"{token}\n",
-        text=True,
-        check=True,
-    )
+
+def maybe_login_multi(login: Optional[dict], registries: Optional[list]) -> None:
+    """Login to the step's single registry then any additional [targets].registry entries (S11)."""
+    maybe_login(login)
+
+    if not registries or len(registries) <= 1:
+        return
+
+    # Additional registries beyond the first (which is handled by REGISTRY/login above)
+    username = os.getenv("GITHUB_USERNAME") or ""
+    token = os.getenv("GITHUB_PUSH_PAT") or ""
+    if not username or not token:
+        return
+    for reg in registries[1:]:
+        _docker_login(reg, username, token)
 
 
 def run_command(argv: list[str], cwd: Path, log_handle) -> None:
@@ -365,7 +402,7 @@ def execute_step(
 
     apply_env_command(step.env_command, project_root)
     ensure_required_env(step.required_env)
-    maybe_login(step.login)
+    maybe_login_multi(step.login, step.registries)
 
     for target in step.clean_dirs:
         clean_path = resolve_path(project_root, str(target))

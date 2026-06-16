@@ -19,6 +19,7 @@ from ciu_forge.cli import (  # noqa: E402
     build_arg_parser,
     cleanup_ghcr,
     cleanup_releases,
+    forge_main,
     load_config,
     load_json,
     log_error,

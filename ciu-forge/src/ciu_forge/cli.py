@@ -751,5 +751,106 @@ def main() -> None:
     log_info("Release manager complete")
 
 
+def forge_main(argv: Optional[List[str]] = None) -> None:
+    """Entry point for the ``ciu-forge`` CLI (P4).
+
+    Dispatches to sub-verbs: run / build / resolve / get-sh / release / status / cleanup.
+    ``ciu-forge run`` is equivalent to the legacy ``vbpub-release`` orchestrator.
+    """
+    import sys as _sys
+
+    av = argv if argv is not None else _sys.argv[1:]
+    if not av or av[0] in ("-h", "--help"):
+        print(
+            "usage: ciu-forge <verb> [args...]\n"
+            "\n"
+            "verbs:\n"
+            "  run        Orchestrate N projects × steps (equiv. to vbpub-release)\n"
+            "  build      Execute one build step via runner (--config --step)\n"
+            "  resolve    Resolve latest release for a project (--project)\n"
+            "  get-sh     Emit get.sh bootstrap for a project (--project --config)\n"
+            "  release    Detect changes, tag, and trigger build+publish\n"
+            "  status     Dry-run preview: changed projects + next versions\n"
+            "  cleanup    Remove old releases / GHCR images (--remove-assets AGE)\n"
+        )
+        return
+
+    verb = av[0]
+    rest = av[1:]
+
+    if verb == "run":
+        # Legacy orchestrator — pass remaining args through to main()
+        _sys.argv = ["vbpub-release"] + rest
+        main()
+
+    elif verb == "build":
+        from ciu_forge.runner import main as runner_main
+        runner_main(rest)
+
+    elif verb == "resolve":
+        from ciu_forge.resolve import resolve_main
+        resolve_main(rest)
+
+    elif verb == "get-sh":
+        from ciu_forge.getsh import getsh_main
+        getsh_main(rest)
+
+    elif verb in ("release", "status"):
+        import argparse as _ap
+        parser = _ap.ArgumentParser(description=f"ciu-forge {verb}")
+        parser.add_argument("--project", help="Limit to one project")
+        parser.add_argument("--minor", action="store_true")
+        parser.add_argument("--major", action="store_true")
+        parser.add_argument("--set-version", metavar="VER")
+        parser.add_argument("--dry-run", action="store_true")
+        parser.add_argument("--config", help="Path to release.toml")
+        vargs = parser.parse_args(rest)
+
+        default_config = Path(__file__).resolve().parents[3] / "release.toml"
+        cfg_path = Path(vargs.config or os.getenv("RELEASE_MANAGER_CONFIG") or str(default_config))
+        cfg_path = cfg_path.expanduser().resolve()
+
+        (repo_root, configs, *_rest) = load_config(cfg_path)
+
+        from ciu_forge.version import status_cmd, release_cmd
+        if verb == "status":
+            status_cmd(
+                repo_root, configs,
+                minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+            )
+        else:
+            created = release_cmd(
+                repo_root, configs,
+                project_filter=vargs.project,
+                minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+                dry_run=vargs.dry_run,
+            )
+            if created:
+                log_info(f"Tagged: {', '.join(created)}")
+            else:
+                log_info("No tags created.")
+
+    elif verb == "cleanup":
+        import argparse as _ap
+        parser = _ap.ArgumentParser(description="ciu-forge cleanup")
+        parser.add_argument("--remove-assets", metavar="AGE", required=True)
+        parser.add_argument("--dry-run", action="store_true")
+        parser.add_argument("--config", help="Path to release.toml")
+        vargs = parser.parse_args(rest)
+
+        default_config = Path(__file__).resolve().parents[3] / "release.toml"
+        cfg_path = Path(vargs.config or os.getenv("RELEASE_MANAGER_CONFIG") or str(default_config))
+        cfg_path = cfg_path.expanduser().resolve()
+
+        (_repo_root, _configs, _project_order, _default_projects, _default_steps,
+         _execution_mode, _step_project_order, cleanup, github_config, env_config) = load_config(cfg_path)
+
+        remove_assets(vargs.remove_assets, vargs.dry_run, cleanup, github_config, env_config)
+
+    else:
+        log_error(f"Unknown verb '{verb}'. Run 'ciu-forge --help' for usage.")
+        _sys.exit(2)
+
+
 if __name__ == "__main__":
-    main()
+    forge_main()
