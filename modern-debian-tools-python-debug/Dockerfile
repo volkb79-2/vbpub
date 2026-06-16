@@ -448,25 +448,12 @@ EOF
 RUN set -euo pipefail; \
     chown -R vscode:vscode /home/vscode/.config/mc
 
-# Repository-sourced release manifest plus installed tool inventory.
+# Unified devcontainer manifest (release provenance + installed tool inventory).
 RUN set -euo pipefail; \
-    manifest_dir="/usr/local/share/modern-debian-tools-python-debug"; \
-    manifest="${manifest_dir}/manifest.md"; \
-    installed_manifest="${manifest_dir}/installed-tools-manifest.md"; \
-    mkdir -p "${manifest_dir}"; \
+    unified_manifest="/home/vscode/devcontainer-manifest-${DEBIAN_VERSION}-py${PYTHON_VERSION}-${OCI_VERSION}.md"; \
+    source_manifest=""; \
     if [ -n "${PACKAGE_MANIFEST_SOURCE:-}" ] && [ -f "/tmp/${PACKAGE_MANIFEST_SOURCE}" ]; then \
-        install -m 0644 "/tmp/${PACKAGE_MANIFEST_SOURCE}" "${manifest}"; \
-    else \
-        { \
-            echo "# Image Manifest"; \
-            echo ""; \
-            echo "Repository-hosted versioned manifest was not available during build."; \
-            echo ""; \
-            echo "- Image version: ${OCI_VERSION}"; \
-            echo "- Debian: ${DEBIAN_VERSION}"; \
-            echo "- Python: ${PYTHON_VERSION}"; \
-            echo "- Installed tools manifest: /usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md"; \
-        } > "${manifest}"; \
+        source_manifest="/tmp/${PACKAGE_MANIFEST_SOURCE}"; \
     fi; \
     if [ "${DEBIAN_VERSION}" = "trixie" ]; then \
         NETCAT_PKG="netcat-openbsd"; \
@@ -532,8 +519,9 @@ RUN set -euo pipefail; \
         bash-completion ca-certificates curl bind9-dnsutils fuse3 git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc \
         "${NETCAT_PKG}" ncdu openssl pandoc p7zip-full poppler-utils python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim wget xz-utils \
         postgresql-client redis-tools > "${system_packages_file}"; \
-    python3 /tmp/manifest_sections.py installed \
-        --output "${installed_manifest}" \
+    python3 /tmp/manifest_sections.py unified \
+        --output "${unified_manifest}" \
+        --source-manifest "${source_manifest}" \
         --debian-version "${DEBIAN_VERSION}" \
         --python-version "${PYTHON_VERSION}" \
         --image-version "${OCI_VERSION}" \
@@ -544,6 +532,7 @@ RUN set -euo pipefail; \
         --system-packages-file "${system_packages_file}"; \
     rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}"; \
     rm -f /tmp/manifest_sections.py; \
-    chmod 644 "${manifest}" "${installed_manifest}"
+    chown vscode:vscode "${unified_manifest}"; \
+    chmod 644 "${unified_manifest}"
 
 USER vscode

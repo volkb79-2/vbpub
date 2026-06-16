@@ -24,7 +24,6 @@ from stage_tool_artifacts import stage_tool_artifacts
 REGISTRY_URL = "https://mcr.microsoft.com/v2/devcontainers/python/tags/list"
 STABLE_TAG_RE = re.compile(r"^(?:1-)?(?P<python>\d+\.\d+)-(?P<debian>[a-z0-9][a-z0-9.-]*)$")
 PACKAGE_DOCS_ROOT = Path(__file__).resolve().parent.parent / "package-manifests-versioned"
-MANIFEST_DIR_IN_IMAGE = "/usr/local/share/modern-debian-tools-python-debug"
 TOOL_VERSION_DISPLAY_ORDER = [
     ("aider", "AIDER_VER"),
     ("antigravity", "ANTIGRAVITY_VER"),
@@ -933,10 +932,9 @@ def render_manifest(
             f"- This release page: {release_manifest_url}",
             f"- Source tree: {source_url}",
             "",
-            "## In-Image Files",
+            "## In-Image File",
             "",
-            f"- Release manifest: `{MANIFEST_DIR_IN_IMAGE}/manifest.md`",
-            f"- Installed tool inventory: `{MANIFEST_DIR_IN_IMAGE}/installed-tools-manifest.md`",
+            f"- Devcontainer manifest: `/home/vscode/devcontainer-manifest-{tag}.md`",
             "",
             "## Notes",
             "",

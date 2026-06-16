@@ -7,16 +7,16 @@ Stable documentation landing page for `modern-debian-tools-python-debug`.
 - Target: `trixie-py314`
 - Debian: `trixie`
 - Python: `3.14`
-- Build date: `20260616-2`
-- Versioned manifest: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.14-20260616-2.md
+- Build date: `20260616-3`
+- Versioned manifest: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.14-20260616-3.md
 - Family index: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/README.md
 
 ## Other Release Pages
 
-- `bookworm-py311`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/bookworm-py3.11-20260616-2.md
-- `bookworm-py313`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/bookworm-py3.13-20260616-2.md
-- `trixie-py311`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260616-2.md
-- `trixie-py313`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.13-20260616-2.md
-- `trixie-py314`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.14-20260616-2.md
+- `bookworm-py311`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/bookworm-py3.11-20260616-3.md
+- `bookworm-py313`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/bookworm-py3.13-20260616-3.md
+- `trixie-py311`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.11-20260616-3.md
+- `trixie-py313`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.13-20260616-3.md
+- `trixie-py314`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.14-20260616-3.md
 
 This stable page exists so OCI metadata can point to one durable documentation URL while the release-specific manifests remain versioned.

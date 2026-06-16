@@ -188,6 +188,118 @@ def render_installed_manifest(
     return "\n".join(lines)
 
 
+def parse_source_manifest_sections(content: str) -> dict[str, str]:
+    """Parse a markdown document into {h2_title: content} mapping.
+
+    The title (h1) and any text before the first ## are stored under "__preamble__".
+    Content for each section is stripped of leading/trailing whitespace.
+    """
+    sections: dict[str, str] = {}
+    current_key = "__preamble__"
+    current_lines: list[str] = []
+
+    for line in content.splitlines():
+        if line.startswith("## "):
+            sections[current_key] = "\n".join(current_lines).strip()
+            current_key = line[3:].strip()
+            current_lines = []
+        else:
+            current_lines.append(line)
+
+    sections[current_key] = "\n".join(current_lines).strip()
+    return sections
+
+
+def _section_block(title: str, content: str) -> list[str]:
+    """Return lines for a ## section with normalized blank-line framing."""
+    lines = [f"## {title}", ""]
+    stripped = content.strip()
+    if stripped:
+        lines.extend(stripped.splitlines())
+    lines.append("")
+    return lines
+
+
+def render_unified_manifest(
+    *,
+    source_manifest_content: str,
+    debian_version: str,
+    python_version: str,
+    image_version: str,
+    devcontainers_release: str,
+    devcontainers_version: str,
+    custom_tooling: Mapping[str, str],
+    python_packages: Sequence[str],
+    system_packages: Sequence[str],
+) -> str:
+    tag = f"{debian_version}-py{python_version}-{image_version}"
+    src = parse_source_manifest_sections(source_manifest_content) if source_manifest_content else {}
+
+    lines: list[str] = [f"# Devcontainer Manifest — {tag}", ""]
+
+    if "Release" in src:
+        lines.extend(_section_block("Release", src["Release"]))
+    else:
+        lines.extend([
+            "## Release", "",
+            f"- Image tag: `{tag}`",
+            f"- Debian: `{debian_version}`",
+            f"- Python: `{python_version}`",
+            f"- Image version: `{image_version}`",
+            "",
+        ])
+
+    if "Pull" in src:
+        lines.extend(_section_block("Pull", src["Pull"]))
+
+    release_val = devcontainers_release.strip() or "unknown"
+    version_val = devcontainers_version.strip() or "unknown"
+    lines.extend([
+        "## Base", "",
+        f"- Debian: {debian_version}",
+        f"- Python: {python_version}",
+        f"- Image version: {image_version}",
+        f"- Image tag: {tag}",
+        f"- Devcontainers release: {release_val}",
+        f"- Devcontainers image version: {version_val}",
+        "",
+    ])
+
+    lines.extend(["## Custom Tooling", ""])
+    lines.extend(render_custom_tooling_lines(custom_tooling))
+    lines.append("")
+
+    if "Staged Tool Artifacts" in src:
+        lines.extend(_section_block("Staged Tool Artifacts", src["Staged Tool Artifacts"]))
+
+    lines.extend(["## Python Packages", "", "    (installed via pip)"])
+    if python_packages:
+        lines.extend([f"    {item}" for item in python_packages])
+    else:
+        lines.append("    unavailable")
+    lines.append("")
+
+    lines.extend(["## System Packages", "", "    (installed via apt)"])
+    if system_packages:
+        lines.extend([f"    {item}" for item in system_packages])
+    else:
+        lines.append("    unavailable")
+    lines.append("")
+
+    for key in ("Runtime Version Snapshot (Pre-build Probe)", "Runtime Version Snapshot"):
+        if key in src:
+            lines.extend(_section_block(key, src[key]))
+            break
+
+    if "Rich Documentation Links" in src:
+        lines.extend(_section_block("Rich Documentation Links", src["Rich Documentation Links"]))
+
+    if "Notes" in src:
+        lines.extend(_section_block("Notes", src["Notes"]))
+
+    return "\n".join(lines)
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render manifest markdown sections")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -202,6 +314,18 @@ def _parse_args() -> argparse.Namespace:
     installed.add_argument("--custom-tooling-file", required=True)
     installed.add_argument("--python-packages-file", required=True)
     installed.add_argument("--system-packages-file", required=True)
+
+    unified = subparsers.add_parser("unified", help="Render unified devcontainer manifest")
+    unified.add_argument("--output", required=True, help="Output markdown file path")
+    unified.add_argument("--source-manifest", default="", help="Path to repo-hosted source manifest (may be empty)")
+    unified.add_argument("--debian-version", required=True)
+    unified.add_argument("--python-version", required=True)
+    unified.add_argument("--image-version", required=True)
+    unified.add_argument("--devcontainers-release", default="")
+    unified.add_argument("--devcontainers-version", default="")
+    unified.add_argument("--custom-tooling-file", required=True)
+    unified.add_argument("--python-packages-file", required=True)
+    unified.add_argument("--system-packages-file", required=True)
 
     return parser.parse_args()
 
@@ -227,10 +351,39 @@ def _run_installed(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_unified(args: argparse.Namespace) -> int:
+    output_path = Path(args.output)
+    source_path = Path(args.source_manifest) if args.source_manifest else None
+    source_content = ""
+    if source_path and source_path.exists():
+        source_content = source_path.read_text(encoding="utf-8")
+
+    custom_tooling = read_key_value_file(Path(args.custom_tooling_file))
+    python_packages = read_list_file(Path(args.python_packages_file))
+    system_packages = read_list_file(Path(args.system_packages_file))
+
+    rendered = render_unified_manifest(
+        source_manifest_content=source_content,
+        debian_version=args.debian_version,
+        python_version=args.python_version,
+        image_version=args.image_version,
+        devcontainers_release=args.devcontainers_release,
+        devcontainers_version=args.devcontainers_version,
+        custom_tooling=custom_tooling,
+        python_packages=python_packages,
+        system_packages=system_packages,
+    )
+
+    output_path.write_text(rendered, encoding="utf-8")
+    return 0
+
+
 def main() -> int:
     args = _parse_args()
     if args.command == "installed":
         return _run_installed(args)
+    if args.command == "unified":
+        return _run_unified(args)
     raise RuntimeError(f"Unsupported command: {args.command}")
 
 
