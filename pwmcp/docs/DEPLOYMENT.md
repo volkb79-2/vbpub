@@ -93,7 +93,27 @@ The bake file reads `PLAYWRIGHT_VERSION` and `PLAYWRIGHT_DISTRO` from environmen
 
 ## Upgrading the Playwright Version
 
-1. Update `pwmcp.playwright_version` (and `pwmcp.playwright_server.image.tag`) in `ciu.defaults.toml.j2`
-2. Rebuild and push the `pwmcp-playwright` image
-3. Notify consumers: they must update their `pip install playwright==<new-version>`
-4. Redeploy the stack: `ciu --generate-env -d . && ciu -d .`
+Run the resolve script to auto-detect the latest npm version, update config files,
+and compute the next release number:
+
+```bash
+cd pwmcp
+python3 scripts/resolve-playwright-version.py
+```
+
+The script updates `ciu.defaults.toml.j2`, `ciu.toml.j2`, and `docker-bake.hcl` with the
+new `playwright_version` and `image.tag` (e.g., `1.61.0-r1`). Then complete the release:
+
+```bash
+# Build and push the new image + bundle via the release orchestrator:
+python3 ../release-runner.py --project pwmcp --step build
+python3 ../release-runner.py --project pwmcp --step push
+
+# After publish-bundle.py runs, create the git tag it prints:
+git tag -a pwmcp-v1.61.0-r1 -m "pwmcp 1.61.0-r1"
+git push origin pwmcp-v1.61.0-r1
+```
+
+Notify consumers: they must update `pip install playwright==<new-version>` to match the
+new `playwright_version` in their extracted bundle's `ciu.defaults.toml.j2`.
+Then redeploy: `ciu --generate-env -d . && ciu -d .`

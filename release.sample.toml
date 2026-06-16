@@ -30,8 +30,7 @@ validate = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
 release_tag_prefixes = ["*"]
 keep_release_tags = [
   "ciu-latest",
-  "pwmcp-client-latest",
-  "pwmcp-server-latest",
+  "pwmcp-latest",
 ]
 ghcr_packages = ["*"]
 
@@ -65,29 +64,17 @@ commands = [
   { label = "modern-debian-tools-python-debug: push images", argv = ["python3", "build-push.py", "--push"], cwd = "modern-debian-tools-python-debug" },
 ]
 
-[projects.pwmcp.steps.run-tests]
-commands = [
-  { label = "pwmcp-client: run tests", argv = ["python3", "run-client-tests.py"], cwd = "pwmcp" },
-]
-
 [projects.pwmcp.steps.build]
 commands = [
-  { label = "pwmcp-shared: build wheel", argv = ["python3", "build-shared-wheel.py"], cwd = "pwmcp" },
-  { label = "pwmcp-client: build wheel", argv = ["python3", "build-client-wheel.py"], cwd = "pwmcp" },
-  { label = "pwmcp-server: build wheel", argv = ["python3", "build-server-wheel.py"], cwd = "pwmcp" },
-  { label = "pwmcp: build images", argv = ["python3", "build-images.py"], cwd = "pwmcp" },
+  { label = "pwmcp: resolve playwright version + compute release tag", argv = ["python3", "scripts/resolve-playwright-version.py"], cwd = "pwmcp" },
+  { label = "pwmcp: build playwright-server image", argv = ["python3", "build-push.py", "--build"], cwd = "pwmcp" },
+  { label = "pwmcp: build stack bundle", argv = ["python3", "scripts/build-bundle.py"], cwd = "pwmcp" },
 ]
 
 [projects.pwmcp.steps.push]
 commands = [
-  { label = "pwmcp-client: publish wheel", argv = ["python3", "publish-client-wheel.py"], cwd = "pwmcp" },
-  { label = "pwmcp-server: publish wheel", argv = ["python3", "publish-server-wheel-step.py"], cwd = "pwmcp" },
-  { label = "pwmcp: push images", argv = ["python3", "push-images.py"], cwd = "pwmcp" },
-]
-
-[projects.pwmcp.steps.validate]
-commands = [
-  { label = "pwmcp-client: validate latest wheel", argv = ["python3", "validate-client-wheel-latest.py"], cwd = "pwmcp" },
+  { label = "pwmcp: push playwright-server image", argv = ["python3", "build-push.py", "--push"], cwd = "pwmcp" },
+  { label = "pwmcp: publish stack bundle", argv = ["python3", "scripts/publish-bundle.py"], cwd = "pwmcp" },
 ]
 
 [projects.empyrion-translation.steps.build]

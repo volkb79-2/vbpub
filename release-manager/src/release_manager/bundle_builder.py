@@ -26,6 +26,7 @@ class BundleConfig:
     archive_template: str
     archive_version_env: str
     archive_fallback_env: str
+    archive_format: str
     copy_files: list[str]
     copy_dirs: list[str]
 
@@ -83,6 +84,10 @@ def parse_config(config_path: Path) -> BundleConfig:
     archive_template = str(archive.get("name_template") or "bundle-{version}.tar.gz")
     archive_version_env = str(archive.get("version_env") or "VERSION")
     archive_fallback_env = str(archive.get("fallback_env") or "BUILD_DATE")
+    _valid_formats = {"tar", "gztar", "bztar", "xztar", "zip"}
+    archive_format = str(archive.get("format") or "gztar")
+    if archive_format not in _valid_formats:
+        raise ValueError(f"[archive].format must be one of {sorted(_valid_formats)}, got {archive_format!r}")
 
     copy = config.get("copy")
     if not copy or not isinstance(copy, dict):
@@ -104,6 +109,7 @@ def parse_config(config_path: Path) -> BundleConfig:
         archive_template=archive_template,
         archive_version_env=archive_version_env,
         archive_fallback_env=archive_fallback_env,
+        archive_format=archive_format,
         copy_files=[str(item) for item in copy_files],
         copy_dirs=[str(item) for item in copy_dirs],
     )
@@ -152,7 +158,7 @@ def create_archive(config: BundleConfig) -> Path:
     log_info(f"Creating archive {tarball_path}")
     shutil.make_archive(
         tarball_path.with_suffix("").with_suffix(""),
-        "gztar",
+        config.archive_format,
         root_dir=config.dist_dir,
         base_dir=config.bundle_dir.name,
     )

@@ -1,5 +1,22 @@
 # Usage
 
+## Version coupling — read this first
+
+The Playwright wire protocol is **version-strict**: the client library version you `pip install`
+must exactly match the Playwright version baked into the running `pwmcp-playwright` image.
+A version mismatch causes protocol errors at connect time.
+
+**How to read the required version from the bundle:**
+
+```bash
+grep 'playwright_version' ciu.defaults.toml.j2
+# playwright_version = "1.60.0"
+pip install playwright==1.60.0   # use that exact value — do not omit the pin
+```
+
+Do **not** run `playwright install` — browser binaries belong in the pwmcp container,
+not in your project.
+
 ## Playwright `connect()` — Test Suites
 
 The `pwmcp-playwright` service exposes the native Playwright remote server protocol on port 3000. Test suites connect to it with `chromium.connect()` (or `firefox.connect()`, `webkit.connect()`) and get the **full Playwright API** — the same as running a local browser.
@@ -125,3 +142,59 @@ Both services support multiple simultaneous consumers:
 - `pwmcp-mcp`: the MCP image handles concurrent MCP clients
 
 No per-consumer authentication exists in internal mode — the network boundary is the control.
+
+## Consumer Integration (external projects)
+
+External projects consume pwmcp by downloading the versioned bundle from GitHub Releases.
+No Docker build is needed — the image is on GHCR.
+
+### Initial setup
+
+```bash
+# Pin a specific release or use "pwmcp-latest" for the rolling latest:
+PWMCP_VERSION="pwmcp-v1.60.0-r1"
+mkdir -p services/pwmcp
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/${PWMCP_VERSION}/${PWMCP_VERSION#pwmcp-v}.tar.gz" \
+  | tar -xJ --strip-components=1 -C services/pwmcp
+
+# Read the required Playwright version from the bundle (wire protocol pin):
+PW_VER=$(grep playwright_version services/pwmcp/ciu.defaults.toml.j2 | grep -oP '"\K[^"]+')
+pip install playwright==${PW_VER}   # must match exactly — do not omit the pin
+
+# Start the stack (installs ciu if needed: pip install ciu):
+cd services/pwmcp && ciu --generate-env -d . && ciu -d .
+```
+
+Services come up on the `pwmcp` Docker network as `pwmcp-playwright` (port 3000) and
+`pwmcp-mcp` (port 8931).
+
+### Staying up-to-date
+
+Download a newer bundle, re-read `playwright_version`, reinstall the pinned client, redeploy:
+
+```bash
+PWMCP_VERSION="pwmcp-v1.61.0-r1"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/${PWMCP_VERSION}/${PWMCP_VERSION#pwmcp-v}.tar.gz" \
+  | tar -xJ --strip-components=1 -C services/pwmcp
+PW_VER=$(grep playwright_version services/pwmcp/ciu.defaults.toml.j2 | grep -oP '"\K[^"]+')
+pip install playwright==${PW_VER}
+ciu -d services/pwmcp
+```
+
+### Connecting from consumer containers
+
+Add the consumer service to the `pwmcp` Docker network so it can reach the services by
+container name:
+
+```yaml
+services:
+  my-test-runner:
+    environment:
+      PLAYWRIGHT_SERVER_WS: ws://pwmcp-playwright:3000/
+    networks:
+      - pwmcp   # join the pwmcp stack's network (never use localhost)
+
+networks:
+  pwmcp:
+    external: true   # owned by the pwmcp stack; must be running first
+```

@@ -14,6 +14,10 @@ variable "PLAYWRIGHT_DISTRO" {
   default = "noble"
 }
 
+variable "PWMCP_VERSION" {
+  default = "1.60.0-r1"
+}
+
 variable "OCI_SOURCE" {
   default = "https://github.com/volkb79-2/vbpub"
 }
@@ -30,6 +34,7 @@ target "pwmcp-playwright" {
     PLAYWRIGHT_DISTRO  = "${PLAYWRIGHT_DISTRO}"
   }
   tags = [
+    "${REGISTRY}/${NAMESPACE}/pwmcp-playwright:${PWMCP_VERSION}",
     "${REGISTRY}/${NAMESPACE}/pwmcp-playwright:${PLAYWRIGHT_VERSION}",
     "${REGISTRY}/${NAMESPACE}/pwmcp-playwright:latest",
   ]
