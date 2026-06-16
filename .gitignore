@@ -241,3 +241,6 @@ scripts/*.key
 *.pem
 *.key
 
+
+# Claude Code local config
+.claude/
