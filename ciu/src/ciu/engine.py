@@ -258,7 +258,7 @@ class ComposeError(RuntimeError):
 def parse_arguments(argv: Optional[list] = None) -> argparse.Namespace:
     """Parse command-line arguments for ``ciu`` (the non-subcommand surface)."""
     parser = argparse.ArgumentParser(
-        description="CIU: TOML-based Docker Compose orchestration",
+        description=f"CIU {get_cli_version()}: TOML-based Docker Compose orchestration",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

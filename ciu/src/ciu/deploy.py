@@ -1006,7 +1006,7 @@ def build_action_sequence(argv: list[str]) -> list[str]:
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     """Argparse for ``ciu-deploy`` (S10.2). NOTE: --groups is NOT defined (S7.5)."""
     parser = argparse.ArgumentParser(
-        description="CIU v2 deployment orchestrator (S7).",
+        description=f"CIU-deploy {get_cli_version()}: deployment orchestrator (S7).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Host profiles (--profile) select which stacks run on THIS host (S7.4); compose
