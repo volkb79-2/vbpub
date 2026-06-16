@@ -21,6 +21,10 @@ vbpub-release = "ciu_forge.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+
 # Version is derived from git tags by setuptools-scm (no clock, no manual bump).
 # Release = annotated tag `ciu-forge-vX.Y.Z`; untagged = `X.Y.(Z+1).devN+g<sha>`.
 [tool.setuptools_scm]
