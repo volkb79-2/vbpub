@@ -59,19 +59,6 @@ If you need to add further aliases (e.g. a custom DNS name or `*` as a last reso
 extra_args = "my-custom-alias:8931"
 ```
 
-## Legacy Two-Service Mode
-
-To use the original two-container setup (one for `playwright-server`, one for `playwright-mcp`), set in `ciu.toml.j2`:
-
-```toml
-[pwmcp.unified]
-enabled = false
-```
-
-Then redeploy. Services come up as:
-- `<project>-<env>-pwmcp-playwright` on port 3000
-- `<project>-<env>-pwmcp-mcp` on port 8931
-
 ## External Mode (TLS via tls-edge)
 
 External mode fronts the unified service with a running [tls-edge](https://github.com/volkb79-2/vbpub/tree/main/tls-edge) (Traefik) on the `ingress_public` network.
@@ -92,7 +79,7 @@ In your `ciu.toml.j2` (override file in this directory):
 ```toml
 [pwmcp.external]
 enabled = true
-unified_host = "pw.example.com"      # single host for both endpoints (unified mode)
+unified_host = "pw.example.com"      # single host for both endpoints
 guard_enabled = true
 guard_user = "pwmcp"
 guard_htpasswd = "$2y$05$..."         # htpasswd -nbB output
@@ -117,17 +104,14 @@ The basicAuth guard is applied per-route at Traefik level. The consumer includes
 
 ## Image Build & Push
 
-The unified `pwmcp` image and the legacy `pwmcp-playwright` image must be built before deploying.
+The unified `pwmcp` image must be built before deploying.
 
 ```bash
-# Build all images locally
-docker buildx bake all --load
-
-# Or build just the unified image
+# Build unified image locally
 docker buildx bake pwmcp --load
 
 # Push to GHCR
-GITHUB_USERNAME=<user> GITHUB_PUSH_PAT=<token> docker buildx bake all --push
+GITHUB_USERNAME=<user> GITHUB_PUSH_PAT=<token> docker buildx bake pwmcp --push
 ```
 
 Or via the ciu build runner (uses `build-push.toml`):
@@ -148,10 +132,10 @@ cd pwmcp
 python3 scripts/resolve-playwright-version.py
 ```
 
-The script updates `ciu.defaults.toml.j2` (both `playwright_server.image.tag` and `unified.image.tag`), `ciu.toml.j2`, and `docker-bake.hcl`. Then complete the release:
+The script updates `ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`, and `docker-bake.hcl`. Then complete the release:
 
 ```bash
-# Build and push the new images + bundle via the release orchestrator:
+# Build and push the new image + bundle via the release orchestrator:
 python3 ../release-runner.py --project pwmcp --step build
 python3 ../release-runner.py --project pwmcp --step push
 
@@ -161,3 +145,18 @@ git push origin pwmcp-v1.61.0-r1
 ```
 
 Notify consumers: they must update `pip install playwright==<new-version>` to match the new `playwright_version` in their extracted bundle's `ciu.defaults.toml.j2`. Then redeploy: `ciu --generate-env -d . && ciu -d .`
+
+## Bundle Verification
+
+Every published bundle has a `.sha256` sidecar in the same release:
+
+```bash
+VERSION="1.61.0-r2"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
+  -o "pwmcp-${VERSION}.tar.xz.sha256"
+sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"
+```
+
+The SHA256 digest is also embedded in the release notes for a quick manual check.
+
+"Latest" is resolved by scanning `pwmcp-v*` releases for the highest semver. The thin `pwmcp-latest` release contains only `latest.json` — a JSON pointer to the current versioned release — with no bundle duplication.

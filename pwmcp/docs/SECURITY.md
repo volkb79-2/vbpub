@@ -11,7 +11,7 @@ PWMCP solves this by running the browser in a dedicated, hardened container. The
 
 ## Browser Isolation Hardening
 
-The following hardening is applied to **both services** in **both deployment modes** (internal and external). It is not optional — it is the justification for offloading the browser in the first place.
+The following hardening is applied in **both deployment modes** (internal and external). It is not optional — it is the justification for offloading the browser in the first place.
 
 | Control | Setting | Rationale |
 |---|---|---|
@@ -26,7 +26,7 @@ These are set in `ciu.compose.yml.j2` under `[pwmcp.hardening]` and cannot be ov
 
 In internal mode the Docker network is the access control boundary. Services are not exposed outside the project network. Any container on the same network can connect — no additional auth is applied. This is appropriate for dev and CI where the network is already controlled.
 
-Do not expose `pwmcp-playwright` or `pwmcp-mcp` ports to `0.0.0.0` in internal mode.
+Do not expose `pwmcp` ports to `0.0.0.0` in internal mode.
 
 ## External Mode Access Control
 

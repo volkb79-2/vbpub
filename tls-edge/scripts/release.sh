@@ -13,7 +13,9 @@
 #   2. Updates tls-edge/VERSION
 #   3. Commits with a conventional message
 #   4. Creates an annotated tag  tls-edge-v<version>
-#   5. Prints the push command — you run that manually to publish
+#   5. Builds the release artifact (scripts/build-artifact.sh)
+#   6. Publishes to GitHub Releases with checksum sidecar (scripts/publish-release.py)
+#   7. Prints the push command — you run that manually to push
 #
 set -euo pipefail
 
@@ -75,6 +77,16 @@ fi
 # ─── Create annotated tag ─────────────────────────────────────────────────────
 git -C "$REPO_ROOT" tag -a "$TAG" -m "tls-edge ${NEW_VERSION}"
 ok "Created tag: $TAG"
+
+# ─── Build release artifact ───────────────────────────────────────────────────
+info "Building release artifact (dist/${TAG}.tar.xz)..."
+bash "$SCRIPT_DIR/build-artifact.sh"
+ok "Artifact built."
+
+# ─── Publish to GitHub Releases ───────────────────────────────────────────────
+info "Publishing to GitHub Releases..."
+python3 "$SCRIPT_DIR/publish-release.py"
+ok "GitHub Release published."
 
 # ─── Done ─────────────────────────────────────────────────────────────────────
 echo

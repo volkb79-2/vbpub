@@ -113,16 +113,7 @@ def update_toml_j2(path: Path, pw_version: str, image_tag: str) -> None:
         f'\\1"{pw_version}"',
         content,
     )
-    # Update image.tag — under [pwmcp.playwright_server.image]
-    # The section header immediately precedes the tag field, so we match the block.
-    content = re.sub(
-        r'(\[pwmcp\.playwright_server\.image\][^\[]*tag\s*=\s*)"[^"]+"',
-        lambda m: m.group(0).rsplit('"', 2)[0] + f'"{image_tag}"',
-        content,
-        flags=re.DOTALL,
-    )
-    # Also update image.tag under [pwmcp.unified.image] (same tag value keeps
-    # the unified image in lockstep with the playwright-server image).
+    # Update image.tag under [pwmcp.unified.image].
     content = re.sub(
         r'(\[pwmcp\.unified\.image\][^\[]*tag\s*=\s*)"[^"]+"',
         lambda m: m.group(0).rsplit('"', 2)[0] + f'"{image_tag}"',

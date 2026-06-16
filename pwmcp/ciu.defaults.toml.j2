@@ -2,23 +2,20 @@
 # PWMCP — Playwright-as-a-Service (official Microsoft images), ciu stack
 # ==========================================================================
 #
-# pwmcp is a thin, hardened ciu packaging of the OFFICIAL Playwright images.
-# It runs two services so a project never installs a browser into its own
-# devcontainer / CI runner:
+# pwmcp is a thin, hardened ciu packaging of the OFFICIAL Playwright unified
+# image. It runs a single container that hosts both services so a project never
+# installs a browser into its own devcontainer / CI runner:
 #
-#   playwright_server :  mcr.microsoft.com/playwright  running `npx playwright
-#                        run-server`  ->  native Playwright connect() endpoint
-#                        (FULL API) for test suites.
-#   playwright_mcp    :  mcr.microsoft.com/playwright/mcp  ->  MCP surface
-#                        (HTTP/SSE) for AI clients (VS Code Copilot, etc.).
+#   ws://pwmcp:3000/          — native Playwright connect() endpoint (FULL API)
+#   http://pwmcp:8931/mcp     — MCP surface (HTTP/SSE) for AI clients
 #
 # Deployment modes
 # ----------------
-#   internal (default): both services join the project Docker network with NO
+#   internal (default): the service joins the project Docker network with NO
 #       TLS and NO auth. Sibling containers (the test runner / devcontainer)
-#       reach them BY CONTAINER NAME on the shared network — never localhost:
-#           PLAYWRIGHT_SERVER_WS = ws://<playwright_server.name>:<port>/
-#       The network boundary is the control; this is correct for dev + CI.
+#       reach both endpoints BY CONTAINER NAME on the shared network — never
+#       via localhost. The network boundary is the control; this is correct for
+#       dev + CI.
 #
 #   external (external.enabled = true): front with a running tls-edge (Traefik).
 #       The route is TLS-terminated and (by default) protected by a per-route
@@ -26,12 +23,12 @@
 #       not usable without it. See pwmcp.external below + tls-edge guard docs.
 #
 # Browser isolation hardening (non-root, dropped caps, no-new-privileges) is
-# applied in BOTH modes — that is the whole reason the browser is offloaded.
+# applied in both modes — that is the whole reason the browser is offloaded.
 
 [pwmcp]
 # The single source of truth for the Playwright version. It pins:
 #   - the base image tag (mcr.microsoft.com/playwright:v<version>-<distro>),
-#   - the playwright JS package baked into the playwright-server image, and
+#   - the playwright JS package baked into the unified image, and
 #   - the version connect() consumers must install (`pip install playwright==<version>`).
 playwright_version = "1.61.0"
 image_distro = "noble"            # -> mcr.microsoft.com/playwright:v<version>-<distro>
@@ -39,27 +36,12 @@ image_distro = "noble"            # -> mcr.microsoft.com/playwright:v<version>-<
 [pwmcp.network]
 ingress_network = "ingress_public"   # shared tls-edge network (external mode only)
 
-[pwmcp.playwright_server]
-name = "pwmcp-playwright"
-port = 3000                       # run-server listens here (container-internal)
-expose = false                    # publish to host 127.0.0.1 (dev convenience only)
-host_port = 3000
-
-# The playwright-server image = official base + the matching playwright JS pkg
-# (the base ships only browsers). Built from containers/playwright-server/Dockerfile.
-# tag should track playwright_version so the consumer pin stays in lockstep.
-[pwmcp.playwright_server.image]
-registry = "ghcr.io"
-namespace = "volkb79-2"
-name = "pwmcp-playwright"
-tag = "1.61.0-r1"
-
 # ============================================================
-# Unified single-image deployment (DEFAULT — recommended)
+# Unified single-image deployment (the only supported mode)
 # ============================================================
 # The unified image (ghcr.io/volkb79-2/pwmcp) bundles BOTH the Playwright
 # run-server (port 3000) AND @playwright/mcp (port 8931) in a single container
-# under a single hostname "pwmcp". This is the recommended deployment mode.
+# under a single hostname "pwmcp". This is the only deployment mode.
 #
 # Consumers on the shared Docker network:
 #   ws://pwmcp:3000/          — Playwright connect() (full API, test suites)
@@ -75,7 +57,6 @@ tag = "1.61.0-r1"
 # To add extra hosts, append them via extra_args: extra_args = "my-alias:8931"
 
 [pwmcp.unified]
-enabled = true
 name = "pwmcp"
 ws_port = 3000                    # Playwright run-server (connect() WebSocket)
 mcp_port = 8931                   # @playwright/mcp HTTP/SSE surface
@@ -89,43 +70,10 @@ host_mcp_port = 8931
 registry = "ghcr.io"
 namespace = "volkb79-2"
 name = "pwmcp"
-tag = "1.61.0-r1"
-
-# ============================================================
-# Legacy two-image deployment (kept for reference / fallback)
-# Set pwmcp.unified.enabled = false to activate this mode.
-# ============================================================
-
-[pwmcp.playwright_mcp]
-enabled = true
-name = "pwmcp-mcp"
-image_tag = "latest"              # @playwright/mcp has its OWN version line (not Playwright's)
-port = 8931
-expose = false
-host_port = 8931
-browser = "chromium"
-extra_args = ""                   # e.g. "--caps=vision,pdf"
-# --allowed-hosts note:
-# @playwright/mcp cli.js has DNS-rebinding protection: it rejects requests whose
-# Host header does not match the server's bound address. With --host 0.0.0.0 the
-# default allowed host is "0.0.0.0", which does NOT match "pwmcp-mcp:8931" — the
-# Host header sent by a sibling container reaching it by service name. This causes
-# HTTP 403 for all internal-mode callers.
-#
-# The ciu.compose.yml.j2 template therefore always passes --allowed-hosts with the
-# two ciu-derived names for this container:
-#   <name>:<port>                                  (short service alias)
-#   <project>-<env>-<name>:<port>                  (full ciu container name)
-# These are templated directly into the command — no config key needed here.
-# The network boundary already restricts who can connect; --allowed-hosts pins
-# which Host header value is honoured, not who can reach the port.
-#
-# To add further hosts (e.g. a custom alias, or "*" to disable the check entirely),
-# append them via extra_args: extra_args = "--allowed-hosts my-alias:8931"
-# Any extra_args entries are appended AFTER the template-derived --allowed-hosts arg.
+tag = "1.61.0-r2"
 
 [pwmcp.hardening]
-# Applied to BOTH services, in BOTH modes.
+# Applied in both internal and external modes.
 run_as_uid = 1000                 # official image ships a non-root user at 1000
 run_as_gid = 1000
 no_new_privileges = true
@@ -136,11 +84,7 @@ shm_size = "2gb"                  # Chromium needs shared memory
 # External exposure via a running tls-edge. Leave disabled for dev/CI.
 enabled = false
 # Unified mode: single host fronts BOTH ports (Traefik routes by path/port).
-# Set both server_host and mcp_host to the same value for unified mode, or
-# use separate hostnames for the two endpoints.
-unified_host = ""                 # e.g. "pw.example.com" — used when unified.enabled=true
-server_host = ""                  # e.g. "pw.example.com"  -> playwright_server (wss connect)
-mcp_host = ""                     # e.g. "pw-mcp.example.com" -> playwright_mcp
+unified_host = ""                 # e.g. "pw.example.com"
 # Per-route access guard (Traefik basicAuth). The consumer defines the secret;
 # supply the htpasswd hash (generate once: `htpasswd -nbB <user> <secret>`).
 # A bare "$" is fine here — the compose template escapes it to "$$".

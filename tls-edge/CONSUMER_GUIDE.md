@@ -17,6 +17,45 @@ via Compose labels.  No access to the edge-proxy stack itself is needed.
 
 ---
 
+## Installing tls-edge
+
+If tls-edge is not already installed on the host, bootstrap it in one command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.sh | sudo bash
+```
+
+This downloads the latest release artifact from GitHub Releases, verifies its
+SHA256 checksum, and extracts it to `/opt/tls-edge-src/tls-edge`.
+
+**Pin a specific version** (recommended in production):
+
+```sh
+TLS_EDGE_VERSION=tls-edge-v0.2.0 \
+  curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.sh | sudo bash
+```
+
+**Update to a newer release**:
+
+```sh
+tls-edge update
+```
+
+User config (`ciu-stack/ciu.toml.j2`, `edge-proxy/.env`) is backed up and
+restored automatically across updates.
+
+**Air-gapped / dev installs** (no GitHub Releases access):
+
+```sh
+TLS_EDGE_INSTALL_VIA=git \
+  curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.sh | sudo bash
+```
+
+This falls back to a sparse git clone (no artifact download, no checksum
+verification). Requires `git`.
+
+---
+
 ## Prerequisites
 
 1. The edge-proxy stack is running (any of these starts it):

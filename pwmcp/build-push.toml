@@ -4,14 +4,14 @@ release_config = "../release.toml"
 
 [steps.build-images]
 commands = [
-  { label = "pwmcp: build playwright-server image", argv = ["docker", "buildx", "bake", "all", "--load"], cwd = "." },
+  { label = "pwmcp: build unified image", argv = ["docker", "buildx", "bake", "all", "--load"], cwd = "." },
 ]
 
 [steps.push-images]
 required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
 
 commands = [
-  { label = "pwmcp: push playwright-server image", argv = ["docker", "buildx", "bake", "all", "--push"], cwd = "." },
+  { label = "pwmcp: push unified image", argv = ["docker", "buildx", "bake", "all", "--push"], cwd = "." },
 ]
 
 [steps.push-images.login]

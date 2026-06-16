@@ -53,6 +53,34 @@ python -m pip wheel . -w dist
 python3 publish-wheel.py    # requires GITHUB_PUSH_PAT, GITHUB_USERNAME, GITHUB_REPO
 ```
 
+### Installing a released wheel from GitHub Releases
+
+The release scheme uses **immutable `ciu-v<version>` releases** as the source
+of truth. Each release carries the wheel and a `.whl.sha256` sidecar.
+
+```bash
+# Install the latest release (substitute the resolved version)
+pip install https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/ciu-<version>-py3-none-any.whl
+
+# Pin a specific version
+pip install https://github.com/<owner>/<repo>/releases/download/ciu-v2.0.1/ciu-2.0.1-py3-none-any.whl
+
+# Verify integrity before installing
+curl -LO https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/ciu-<version>-py3-none-any.whl
+curl -LO https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/ciu-<version>-py3-none-any.whl.sha256
+sha256sum -c ciu-<version>-py3-none-any.whl.sha256
+pip install ciu-<version>-py3-none-any.whl
+```
+
+**Resolving "latest":** the highest-semver `ciu-v*` release is the latest. The
+`ciu-latest` tag exists only as a thin redirect (`latest.json` manifest) — it
+does not carry a copy of the wheel. Use `tools/validate-wheel-latest.py` to
+resolve the current version and print the download URLs:
+
+```bash
+GITHUB_USERNAME=<owner> GITHUB_REPO=<repo> python3 tools/validate-wheel-latest.py
+```
+
 ## Running Tests
 
 ```bash

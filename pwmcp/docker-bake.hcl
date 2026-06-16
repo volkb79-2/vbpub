@@ -15,7 +15,7 @@ variable "PLAYWRIGHT_DISTRO" {
 }
 
 variable "PWMCP_VERSION" {
-  default = "1.61.0-r1"
+  default = "1.61.0-r2"
 }
 
 variable "OCI_SOURCE" {
@@ -24,20 +24,6 @@ variable "OCI_SOURCE" {
 
 variable "OCI_DOCUMENTATION" {
   default = "https://github.com/volkb79-2/vbpub/tree/main/pwmcp"
-}
-
-target "pwmcp-playwright" {
-  context    = "."
-  dockerfile = "containers/playwright-server/Dockerfile"
-  args = {
-    PLAYWRIGHT_VERSION = "${PLAYWRIGHT_VERSION}"
-    PLAYWRIGHT_DISTRO  = "${PLAYWRIGHT_DISTRO}"
-  }
-  tags = [
-    "${REGISTRY}/${NAMESPACE}/pwmcp-playwright:${PWMCP_VERSION}",
-    "${REGISTRY}/${NAMESPACE}/pwmcp-playwright:${PLAYWRIGHT_VERSION}",
-    "${REGISTRY}/${NAMESPACE}/pwmcp-playwright:latest",
-  ]
 }
 
 target "pwmcp" {
@@ -55,5 +41,5 @@ target "pwmcp" {
 }
 
 group "all" {
-  targets = ["pwmcp-playwright", "pwmcp"]
+  targets = ["pwmcp"]
 }

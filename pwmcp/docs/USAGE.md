@@ -185,14 +185,30 @@ No per-consumer authentication exists in internal mode — the network boundary 
 External projects consume pwmcp by downloading the versioned bundle from GitHub Releases.
 No Docker build is needed — the image is on GHCR.
 
+### Resolving the latest version
+
+Scan `pwmcp-v*` releases for the highest semver, or check `pwmcp-latest/latest.json` for the thin redirect:
+
+```bash
+# latest.json contains: version, tag, asset name, sha256, download URL
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-latest/latest.json"
+```
+
 ### Initial setup
 
 ```bash
-# Pin a specific release or use "pwmcp-latest" for the rolling latest:
-PWMCP_VERSION="pwmcp-v1.61.0-r1"
+# Pin a specific release:
+VERSION="1.61.0-r2"
 mkdir -p services/pwmcp
-curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/${PWMCP_VERSION}/${PWMCP_VERSION#pwmcp-v}.tar.gz" \
-  | tar -xJ --strip-components=1 -C services/pwmcp
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
+  -o "pwmcp-${VERSION}.tar.xz"
+
+# Verify the bundle (sidecar lives in the same release):
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
+  -o "pwmcp-${VERSION}.tar.xz.sha256"
+sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"
+
+tar -xJf "pwmcp-${VERSION}.tar.xz" --strip-components=1 -C services/pwmcp
 
 # Read the required Playwright version from the bundle (wire protocol pin):
 PW_VER=$(grep playwright_version services/pwmcp/ciu.defaults.toml.j2 | grep -oP '"\K[^"]+')
@@ -206,12 +222,16 @@ The unified container comes up as `pwmcp-pwmcp` (default project name `pwmcp`) o
 
 ### Staying up-to-date
 
-Download a newer bundle, re-read `playwright_version`, reinstall the pinned client, redeploy:
+Download a newer bundle, verify it, re-read `playwright_version`, reinstall the pinned client, redeploy:
 
 ```bash
-PWMCP_VERSION="pwmcp-v1.62.0-r1"
-curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/${PWMCP_VERSION}/${PWMCP_VERSION#pwmcp-v}.tar.gz" \
-  | tar -xJ --strip-components=1 -C services/pwmcp
+VERSION="1.62.0-r1"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
+  -o "pwmcp-${VERSION}.tar.xz"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
+  -o "pwmcp-${VERSION}.tar.xz.sha256"
+sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"
+tar -xJf "pwmcp-${VERSION}.tar.xz" --strip-components=1 -C services/pwmcp
 PW_VER=$(grep playwright_version services/pwmcp/ciu.defaults.toml.j2 | grep -oP '"\K[^"]+')
 pip install playwright==${PW_VER}
 ciu -d services/pwmcp

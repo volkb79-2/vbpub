@@ -1,14 +1,30 @@
 #!/usr/bin/env python3
-"""Validate CIU latest wheel asset from GitHub Releases."""
+"""Validate the latest CIU wheel via the resolver contract.
+
+Resolves "latest ciu wheel" = highest-semver ``ciu-v*`` release (the
+monorepo-safe definition), asserts it carries both a ``.whl`` asset and a
+matching ``.whl.sha256`` sidecar, and prints the resolved version + download URL.
+
+Required environment:
+- GITHUB_USERNAME
+- GITHUB_REPO
+
+Optional environment:
+- GH_TOKEN or GITHUB_PUSH_PAT (unauthenticated works for public repos, but
+  authenticated avoids rate limits)
+- CIU_ENV_FILE (default: repo-root/.env)
+"""
 from __future__ import annotations
 
-import json
 import os
 import sys
+import pathlib
 from pathlib import Path
-from typing import Any, Dict, Optional
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+
+# ── keystone import (stdlib-only; no install needed) ─────────────────────────
+# parents[2] from ciu/tools/validate-wheel-latest.py  →  vbpub repo root
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "release-manager" / "src"))
+from release_manager.github_release import GitHubReleases  # noqa: E402
 
 
 def load_env_file(env_path: Path) -> None:
@@ -24,29 +40,11 @@ def load_env_file(env_path: Path) -> None:
         os.environ[key.strip()] = value.strip().strip('"').strip("'")
 
 
-def api_request(url: str, token: Optional[str]) -> Dict[str, Any]:
-    headers = {
-        "Accept": "application/vnd.github+json",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = Request(url, headers=headers)
-    try:
-        with urlopen(req) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except HTTPError as exc:
-        body = exc.read().decode("utf-8") if exc.fp else ""
-        print(f"[ERROR] GitHub API error: {exc.code}", file=sys.stderr)
-        if body:
-            print(f"[ERROR] {body}", file=sys.stderr)
-        raise SystemExit(1) from exc
-
-
 def main() -> None:
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent.parent
 
-    env_file = Path(os.getenv("CIU_ENV_FILE", repo_root / ".env"))
+    env_file = Path(os.getenv("CIU_ENV_FILE", str(repo_root / ".env")))
     if env_file.exists():
         load_env_file(env_file)
     else:
@@ -60,26 +58,47 @@ def main() -> None:
         print("[ERROR] GITHUB_USERNAME and GITHUB_REPO are required", file=sys.stderr)
         raise SystemExit(1)
 
-    token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_PUSH_PAT")
-    # The moving pointer carries whatever version was last published; validate by
-    # presence of a wheel asset, not by reconstructing a filename from a version.
-    latest_tag = os.getenv("CIU_LATEST_TAG", "ciu-latest")
+    token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_PUSH_PAT") or ""
 
-    api_base = "https://api.github.com"
-    release = api_request(f"{api_base}/repos/{owner}/{repo}/releases/tags/{latest_tag}", token)
-    wheels = [a for a in release.get("assets", []) if str(a.get("name", "")).endswith(".whl")]
+    gh = GitHubReleases(owner, repo, token)
+
+    # Resolve via the contract: highest-semver ciu-v* release (not the thin
+    # ciu-latest pointer, which holds only latest.json since the refactor).
+    info = gh.resolve_latest("ciu")
+    if info is None:
+        print("[ERROR] No ciu-v* releases found in the repository", file=sys.stderr)
+        raise SystemExit(1)
+
+    version = info["version"]
+    assets = {a["name"]: a["url"] for a in info["assets"]}
+
+    # Locate the wheel asset
+    wheels = [name for name in assets if name.endswith(".whl")]
     if not wheels:
-        print(f"[ERROR] Release '{latest_tag}' has no .whl asset", file=sys.stderr)
+        print(f"[ERROR] Release ciu-v{version} has no .whl asset", file=sys.stderr)
+        raise SystemExit(1)
+    if len(wheels) > 1:
+        print(f"[WARN] Multiple .whl assets in ciu-v{version}: {wheels}; using first")
+    wheel_name = wheels[0]
+
+    # Assert the sha256 sidecar is present
+    sidecar_name = wheel_name + ".sha256"
+    if sidecar_name not in assets:
+        print(
+            f"[ERROR] Release ciu-v{version} is missing the .sha256 sidecar "
+            f"({sidecar_name}); cannot verify integrity",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
 
-    asset = wheels[0]
-    download_url = asset.get("browser_download_url")
-    if not download_url:
-        print("[ERROR] Latest asset missing download URL", file=sys.stderr)
-        raise SystemExit(1)
+    download_url = assets[wheel_name]
+    sha256_url = assets[sidecar_name]
 
-    print(f"[INFO] CIU latest asset: {asset.get('name')}")
+    print(f"[INFO] CIU latest version: {version} (resolved from highest ciu-v* release)")
+    print(f"[INFO] CIU_WHEEL_NAME={wheel_name}")
     print(f"[INFO] CIU_WHEEL_LATEST_URL={download_url}")
+    print(f"[INFO] CIU_WHEEL_SHA256_URL={sha256_url}")
+    print(f"[INFO] Verify: curl -LO {download_url} && curl -LO {sha256_url} && sha256sum -c {sidecar_name}")
 
 
 if __name__ == "__main__":

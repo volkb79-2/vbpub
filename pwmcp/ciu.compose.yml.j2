@@ -1,16 +1,12 @@
 # PWMCP — Playwright-as-a-Service. Rendered by ciu from ciu.defaults.toml.j2
 # (+ optional ciu.toml.j2 overrides). See that file for the full mode docs.
 #
-# UNIFIED MODE (pwmcp.unified.enabled = true, default):
+# UNIFIED MODE (only supported mode):
 #   One container "pwmcp" exposes both endpoints under a single hostname:
 #     ws://{{ pwmcp.unified.name }}:{{ pwmcp.unified.ws_port }}/    — Playwright connect()
 #     http://{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}/mcp  — MCP surface
-#
-# LEGACY TWO-SERVICE MODE (pwmcp.unified.enabled = false):
-#   Two separate containers: pwmcp-playwright (port 3000) + pwmcp-mcp (port 8931).
 
 services:
-{% if pwmcp.unified.enabled %}
   # ── Unified single-image service ──────────────────────────────────────────
   {{ pwmcp.unified.name }}:
     # Unified image: Playwright run-server (:{{ pwmcp.unified.ws_port }}) +
@@ -66,90 +62,6 @@ services:
       - traefik.http.middlewares.{{ pwmcp.unified.name }}-guard.basicauth.users={{ pwmcp.external.guard_user }}:{{ pwmcp.external.guard_htpasswd | replace("$", "$$") }}
       {% endif %}
     {% endif %}
-
-{% else %}
-  # ── Legacy two-service deployment ─────────────────────────────────────────
-  {{ pwmcp.playwright_server.name }}:
-    # Native Playwright `run-server` endpoint (full API via connect()).
-    image: {{ pwmcp.playwright_server.image.registry }}/{{ pwmcp.playwright_server.image.namespace }}/{{ pwmcp.playwright_server.image.name }}:{{ pwmcp.playwright_server.image.tag }}
-    container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.playwright_server.name }}
-    command: ["run-server", "--port", "{{ pwmcp.playwright_server.port }}", "--host", "0.0.0.0"]
-    user: "{{ pwmcp.hardening.run_as_uid }}:{{ pwmcp.hardening.run_as_gid }}"
-    {% if pwmcp.hardening.drop_all_caps %}
-    cap_drop:
-      - ALL
-    {% endif %}
-    {% if pwmcp.hardening.no_new_privileges %}
-    security_opt:
-      - no-new-privileges:true
-    {% endif %}
-    shm_size: "{{ pwmcp.hardening.shm_size }}"
-    restart: unless-stopped
-    {% if pwmcp.playwright_server.expose %}
-    ports:
-      - "127.0.0.1:{{ pwmcp.playwright_server.host_port }}:{{ pwmcp.playwright_server.port }}"
-    {% endif %}
-    networks:
-      - default
-      {% if pwmcp.external.enabled and pwmcp.external.server_host %}
-      - ingress
-      {% endif %}
-    {% if pwmcp.external.enabled and pwmcp.external.server_host %}
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network={{ pwmcp.network.ingress_network }}
-      - traefik.http.routers.{{ pwmcp.playwright_server.name }}.rule=Host(`{{ pwmcp.external.server_host }}`)
-      - traefik.http.routers.{{ pwmcp.playwright_server.name }}.entrypoints=websecure
-      - traefik.http.routers.{{ pwmcp.playwright_server.name }}.tls=true
-      - traefik.http.services.{{ pwmcp.playwright_server.name }}.loadbalancer.server.port={{ pwmcp.playwright_server.port }}
-      {% if pwmcp.external.guard_enabled %}
-      - traefik.http.routers.{{ pwmcp.playwright_server.name }}.middlewares={{ pwmcp.playwright_server.name }}-guard
-      - traefik.http.middlewares.{{ pwmcp.playwright_server.name }}-guard.basicauth.users={{ pwmcp.external.guard_user }}:{{ pwmcp.external.guard_htpasswd | replace("$", "$$") }}
-      {% endif %}
-    {% endif %}
-
-  {% if pwmcp.playwright_mcp.enabled %}
-  {{ pwmcp.playwright_mcp.name }}:
-    # Official @playwright/mcp — MCP (HTTP/SSE) surface for AI clients at /mcp.
-    image: mcr.microsoft.com/playwright/mcp:{{ pwmcp.playwright_mcp.image_tag }}
-    container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.playwright_mcp.name }}
-    entrypoint: ["node"]
-    command: ["/app/cli.js", "--headless", "--browser", "{{ pwmcp.playwright_mcp.browser }}", "--no-sandbox", "--port", "{{ pwmcp.playwright_mcp.port }}", "--host", "0.0.0.0", "--allowed-hosts", "{{ pwmcp.playwright_mcp.name }}:{{ pwmcp.playwright_mcp.port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.playwright_mcp.name }}:{{ pwmcp.playwright_mcp.port }}"{% for a in pwmcp.playwright_mcp.extra_args.split() %}, "{{ a }}"{% endfor %}]
-    user: "{{ pwmcp.hardening.run_as_uid }}:{{ pwmcp.hardening.run_as_gid }}"
-    {% if pwmcp.hardening.drop_all_caps %}
-    cap_drop:
-      - ALL
-    {% endif %}
-    {% if pwmcp.hardening.no_new_privileges %}
-    security_opt:
-      - no-new-privileges:true
-    {% endif %}
-    shm_size: "{{ pwmcp.hardening.shm_size }}"
-    restart: unless-stopped
-    {% if pwmcp.playwright_mcp.expose %}
-    ports:
-      - "127.0.0.1:{{ pwmcp.playwright_mcp.host_port }}:{{ pwmcp.playwright_mcp.port }}"
-    {% endif %}
-    networks:
-      - default
-      {% if pwmcp.external.enabled and pwmcp.external.mcp_host %}
-      - ingress
-      {% endif %}
-    {% if pwmcp.external.enabled and pwmcp.external.mcp_host %}
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network={{ pwmcp.network.ingress_network }}
-      - traefik.http.routers.{{ pwmcp.playwright_mcp.name }}.rule=Host(`{{ pwmcp.external.mcp_host }}`)
-      - traefik.http.routers.{{ pwmcp.playwright_mcp.name }}.entrypoints=websecure
-      - traefik.http.routers.{{ pwmcp.playwright_mcp.name }}.tls=true
-      - traefik.http.services.{{ pwmcp.playwright_mcp.name }}.loadbalancer.server.port={{ pwmcp.playwright_mcp.port }}
-      {% if pwmcp.external.guard_enabled %}
-      - traefik.http.routers.{{ pwmcp.playwright_mcp.name }}.middlewares={{ pwmcp.playwright_mcp.name }}-guard
-      - traefik.http.middlewares.{{ pwmcp.playwright_mcp.name }}-guard.basicauth.users={{ pwmcp.external.guard_user }}:{{ pwmcp.external.guard_htpasswd | replace("$", "$$") }}
-      {% endif %}
-    {% endif %}
-  {% endif %}
-{% endif %}
 
 networks:
   default:

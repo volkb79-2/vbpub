@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish CIU wheel to GitHub Releases using the REST API.
+"""Publish CIU wheel to GitHub Releases via the shared release-manager keystone.
 
 Required environment:
 - GITHUB_PUSH_PAT
@@ -9,33 +9,27 @@ Required environment:
 Optional environment:
 - CIU_PROJECT_ROOT (default: repo-root/ciu)
 - CIU_PACKAGE_NAME (default: project.name from pyproject.toml)
-- CIU_WHEEL_GLOB (default: <dist_name>-*.whl)
-- CIU_RELEASE_TITLE
-- CIU_RELEASE_NOTES
-- CIU_LATEST_TAG (default: <package_name>-wheel-<version>)
-- CIU_LATEST_ASSET_NAME (default: <package_name>-wheel-latest-py3-none-any.whl)
-- CIU_LATEST_TITLE
-- CIU_LATEST_NOTES
-- CIU_DEBUG_API=1 for verbose API logging
-- CIU_ENV_FILE to override env file location (defaults to repo-root/.env)
+- CIU_WHEEL_GLOB   (default: <dist_name>-*.whl)
+- CIU_RELEASE_NOTES (default: "ciu <version>")
+- CIU_ENV_FILE     (default: repo-root/.env)
+- CIU_DEBUG_API=1  (passed through to GitHubReleases for verbose logging)
+
+Removed knobs (superseded by the keystone):
+- CIU_LATEST_TAG         — always "ciu-latest" (keystone handles it)
+- CIU_LATEST_ASSET_NAME  — latest release now holds only latest.json (thin pointer)
+- CIU_RELEASE_TITLE / CIU_LATEST_TITLE / CIU_LATEST_NOTES — keystone owns release titles
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
-from dataclasses import dataclass
-from hashlib import sha256
+import pathlib
 from pathlib import Path
-from typing import Any, Dict, Optional
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
-
-@dataclass
-class ApiResponse:
-    status: int
-    body: str
+# ── keystone import (stdlib-only; no install needed) ─────────────────────────
+# parents[2] from ciu/tools/publish-wheel-release.py  →  vbpub repo root
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "release-manager" / "src"))
+from release_manager.github_release import GitHubReleases, publish_versioned, is_release_version, version_to_tag  # noqa: E402
 
 
 def log_debug(message: str) -> None:
@@ -43,12 +37,8 @@ def log_debug(message: str) -> None:
         print(f"[DEBUG] {message}")
 
 
-def fail(message: str, status: Optional[int] = None, body: str | None = None) -> None:
+def fail(message: str) -> None:
     print(f"[ERROR] {message}", file=sys.stderr)
-    if status is not None:
-        print(f"[ERROR] HTTP status: {status}", file=sys.stderr)
-    if body:
-        print(f"[ERROR] Response body: {body}", file=sys.stderr)
     raise SystemExit(1)
 
 
@@ -65,36 +55,6 @@ def load_env_file(env_path: Path) -> None:
         key = key.strip()
         value = value.strip().strip('"').strip("'")
         os.environ[key] = value
-
-
-def api_request(method: str, url: str, token: str, data: bytes | None = None, content_type: str | None = None) -> ApiResponse:
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    }
-    if content_type:
-        headers["Content-Type"] = content_type
-
-    req = Request(url, method=method, headers=headers, data=data)
-    try:
-        with urlopen(req) as resp:
-            body = resp.read().decode("utf-8")
-            log_debug(f"{method} {url} -> {resp.status}")
-            return ApiResponse(resp.status, body)
-    except HTTPError as exc:
-        body = exc.read().decode("utf-8") if exc.fp else ""
-        log_debug(f"{method} {url} -> {exc.code}")
-        return ApiResponse(exc.code, body)
-
-
-def parse_json(body: str, context: str) -> Dict[str, Any]:
-    if not body.strip():
-        fail(f"Empty JSON input for {context}")
-    try:
-        return json.loads(body)
-    except json.JSONDecodeError as exc:
-        fail(f"Invalid JSON input for {context}: {exc}")
-    return {}
 
 
 def find_built_wheel(dist_dir: Path, wheel_glob: str) -> Path:
@@ -121,118 +81,12 @@ def read_wheel_version(wheel_path: Path) -> str:
     return ""
 
 
-def is_release_version(version: str) -> bool:
-    """True only for a clean tagged release (no .dev / +local / dirty segment)."""
-    return ".dev" not in version and "+" not in version
-
-
-def version_to_tag(prefix: str, version: str) -> str:
-    """Git/release tag for a version; sanitize PEP 440 '+' for ref names."""
-    return f"{prefix}-v{version}".replace("+", "-")
-
-
-def get_release_by_tag(api_base: str, owner: str, repo: str, tag: str, token: str) -> Optional[Dict[str, Any]]:
-    resp = api_request("GET", f"{api_base}/repos/{owner}/{repo}/releases/tags/{tag}", token)
-    if resp.status == 404:
-        return None
-    if resp.status >= 400:
-        fail(f"Failed to fetch release tag {tag}", resp.status, resp.body)
-    return parse_json(resp.body, f"release tag {tag}")
-
-
-def create_release(api_base: str, owner: str, repo: str, tag: str, title: str, notes: str, token: str) -> Dict[str, Any]:
-    payload = json.dumps({"tag_name": tag, "name": title, "body": notes}).encode("utf-8")
-    resp = api_request("POST", f"{api_base}/repos/{owner}/{repo}/releases", token, data=payload, content_type="application/json")
-    if resp.status >= 400:
-        fail(f"Failed to create release {tag}", resp.status, resp.body)
-    return parse_json(resp.body, f"create release {tag}")
-
-
-def update_release(api_base: str, owner: str, repo: str, release_id: int, title: str, notes: str, token: str) -> Dict[str, Any]:
-    payload = json.dumps({"name": title, "body": notes}).encode("utf-8")
-    resp = api_request("PATCH", f"{api_base}/repos/{owner}/{repo}/releases/{release_id}", token, data=payload, content_type="application/json")
-    if resp.status >= 400:
-        fail(f"Failed to update release {release_id}", resp.status, resp.body)
-    return parse_json(resp.body, f"update release {release_id}")
-
-
-def delete_release(api_base: str, owner: str, repo: str, release_id: int, token: str) -> None:
-    resp = api_request("DELETE", f"{api_base}/repos/{owner}/{repo}/releases/{release_id}", token)
-    if resp.status >= 400:
-        fail(f"Failed to delete release {release_id}", resp.status, resp.body)
-
-
-def list_assets(api_base: str, owner: str, repo: str, release_id: int, token: str) -> list[Dict[str, Any]]:
-    resp = api_request("GET", f"{api_base}/repos/{owner}/{repo}/releases/{release_id}/assets", token)
-    if resp.status >= 400:
-        fail(f"Failed to list assets for release {release_id}", resp.status, resp.body)
-    return parse_json(resp.body, f"list assets {release_id}")
-
-
-def delete_asset(api_base: str, owner: str, repo: str, asset_id: int, token: str) -> None:
-    resp = api_request("DELETE", f"{api_base}/repos/{owner}/{repo}/releases/assets/{asset_id}", token)
-    if resp.status >= 400:
-        fail(f"Failed to delete existing asset {asset_id}", resp.status, resp.body)
-
-
-def upload_asset(upload_url: str, asset_path: Path, asset_name: str, token: str) -> None:
-    upload_url = upload_url.split("{", 1)[0]
-    data = asset_path.read_bytes()
-    resp = api_request(
-        "POST",
-        f"{upload_url}?name={asset_name}",
-        token,
-        data=data,
-        content_type="application/octet-stream",
-    )
-    if resp.status >= 400:
-        fail(f"Failed to upload asset {asset_name}", resp.status, resp.body)
-
-
-def publish_release_asset(
-    api_base: str,
-    owner: str,
-    repo: str,
-    tag: str,
-    title: str,
-    notes: str,
-    asset_path: Path,
-    asset_name: str,
-    token: str,
-    *,
-    recreate: bool = False,
-) -> None:
-    release = get_release_by_tag(api_base, owner, repo, tag, token)
-    if release is None:
-        release = create_release(api_base, owner, repo, tag, title, notes, token)
-    else:
-        release_id = release.get("id")
-        if release_id and recreate:
-            delete_release(api_base, owner, repo, int(release_id), token)
-            release = create_release(api_base, owner, repo, tag, title, notes, token)
-        elif release_id:
-            update_release(api_base, owner, repo, int(release_id), title, notes, token)
-
-    release_id = release.get("id")
-    upload_url = release.get("upload_url")
-    if not release_id or not upload_url:
-        fail(f"Release response missing id/upload_url for tag {tag}")
-
-    assets = list_assets(api_base, owner, repo, int(release_id), token)
-    for asset in assets:
-        if asset.get("name") == asset_name and asset.get("id"):
-            delete_asset(api_base, owner, repo, int(asset["id"]), token)
-            break
-
-    upload_asset(str(upload_url), asset_path, asset_name, token)
-
-
 def main() -> None:
     default_project_root = Path(__file__).resolve().parent.parent
-    project_root = Path(os.getenv("CIU_PROJECT_ROOT", default_project_root)).resolve()
+    project_root = Path(os.getenv("CIU_PROJECT_ROOT", str(default_project_root))).resolve()
     repo_root = project_root.parent
 
-    env_file = Path(os.getenv("CIU_ENV_FILE", repo_root / ".env"))
+    env_file = Path(os.getenv("CIU_ENV_FILE", str(repo_root / ".env")))
     if env_file.exists():
         load_env_file(env_file)
     else:
@@ -256,7 +110,6 @@ def main() -> None:
     dist_dir = project_root / "dist"
     wheel_path = find_built_wheel(dist_dir, wheel_glob)
     version = read_wheel_version(wheel_path)
-    wheel_hash = sha256(wheel_path.read_bytes()).hexdigest()
 
     token = os.getenv("GITHUB_PUSH_PAT")
     if not token:
@@ -265,36 +118,26 @@ def main() -> None:
     repo = os.getenv("GITHUB_REPO")
     if not owner or not repo:
         fail("GITHUB_USERNAME and GITHUB_REPO are required")
-    api_base = "https://api.github.com"
 
-    latest_tag = f"{package_name}-latest"
-    latest_notes = os.getenv("CIU_LATEST_NOTES", f"{package_name} (latest → {version})")
+    notes = os.getenv("CIU_RELEASE_NOTES", f"ciu {version}")
 
-    # A clean tagged release gets an immutable `<pkg>-v<version>` release; a dev or
-    # dirty build only moves `<pkg>-latest` (no per-commit tag spam).
-    if is_release_version(version):
-        release_tag = version_to_tag(package_name, version)
-        release_notes = os.getenv("CIU_RELEASE_NOTES", f"{package_name} {version}")
-        publish_release_asset(
-            api_base, owner, repo, release_tag,
-            os.getenv("CIU_RELEASE_TITLE", release_tag), release_notes,
-            wheel_path, wheel_path.name, token,
-        )
-        print(f"[INFO] Published release {release_tag}")
-    else:
-        print(f"[INFO] Dev build {version} — moving {latest_tag} only (no version tag)")
-
-    publish_release_asset(
-        api_base, owner, repo, latest_tag,
-        os.getenv("CIU_LATEST_TITLE", latest_tag), latest_notes,
-        wheel_path, wheel_path.name, token,
-        recreate=True,
+    # Route through the shared keystone:
+    #   - clean version → immutable ciu-v<version> release + thin ciu-latest pointer
+    #   - dev/dirty     → moves ciu-latest only (no per-commit tag spam)
+    gh = GitHubReleases(owner, repo, token)
+    result = publish_versioned(
+        gh,
+        prefix="ciu",
+        version=version,
+        asset_path=wheel_path,
+        notes=notes,
+        latest_pointer=True,
     )
 
-    latest_wheel_url = f"https://github.com/{owner}/{repo}/releases/download/{latest_tag}/{wheel_path.name}"
-    print(f"[INFO] Published {package_name} {version}")
-    print(f"[INFO] CIU_WHEEL_LATEST_URL={latest_wheel_url}")
-    print(f"[INFO] CIU_WHEEL_SHA256={wheel_hash}")
+    print(f"[INFO] Published ciu {version}")
+    print(f"[INFO] CIU_WHEEL_SHA256={result['sha256']}")
+    if result.get("asset_url"):
+        print(f"[INFO] CIU_WHEEL_ASSET_URL={result['asset_url']}")
 
 
 if __name__ == "__main__":

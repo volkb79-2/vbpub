@@ -483,7 +483,195 @@ def derive_ciu_version_from_asset_name(asset_name: str) -> str:
     return match.group("version")
 
 
-def resolve_ciu_wheel_coordinates() -> tuple[str, str, str]:
+def fetch_url_bytes(url: str, *, timeout: int = 20) -> bytes:
+    """Fetch raw bytes from a URL (no auth headers)."""
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        return response.read()
+
+
+def resolve_ciu_wheel_via_latest_json(owner: str, repo: str) -> tuple[str, str, str, str, str]:
+    """Resolve CIU wheel coordinates from the ciu-latest/latest.json pointer file.
+
+    The ciu-latest release now holds ONLY a ``latest.json`` with shape:
+        {version, tag, asset, sha256, url}
+
+    The wheel itself lives at the immutable ``ciu-v<semver>`` release, NOT at
+    ``ciu-latest``.  Any code that previously downloaded a ``.whl`` directly
+    from ``ciu-latest`` would now 404.
+
+    Returns (resolved_tag, asset_name, wheel_version, wheel_url, wheel_sha256).
+    Empty strings on failure.
+    """
+    latest_json_url = (
+        f"https://github.com/{owner}/{repo}/releases/download/ciu-latest/latest.json"
+    )
+    try:
+        raw = fetch_url_bytes(latest_json_url)
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[WARN] Failed to fetch ciu-latest/latest.json from {latest_json_url}: {exc}",
+            file=sys.stderr,
+        )
+        return "", "", "", "", ""
+
+    if not isinstance(payload, dict):
+        print(
+            "[WARN] ciu-latest/latest.json returned unexpected structure (expected object)",
+            file=sys.stderr,
+        )
+        return "", "", "", "", ""
+
+    wheel_version = str(payload.get("version") or "").strip()
+    resolved_tag = str(payload.get("tag") or "").strip()
+    asset_name = str(payload.get("asset") or "").strip()
+    wheel_sha256 = str(payload.get("sha256") or "").strip()
+    wheel_url = str(payload.get("url") or "").strip()
+
+    if not (wheel_version and resolved_tag and asset_name and wheel_url):
+        print(
+            "[WARN] ciu-latest/latest.json is missing required fields "
+            "(version/tag/asset/url); falling back to ciu-v* scan",
+            file=sys.stderr,
+        )
+        return "", "", "", "", ""
+
+    print(
+        f"[INFO] CIU latest resolved via ciu-latest/latest.json: "
+        f"tag={resolved_tag}, asset={asset_name}, version={wheel_version}",
+        file=sys.stderr,
+    )
+    return resolved_tag, asset_name, wheel_version, wheel_url, wheel_sha256
+
+
+def github_api_list(url: str) -> list:
+    """Fetch a JSON array from a GitHub API endpoint."""
+    req = urllib.request.Request(url, headers=github_api_headers(), method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            if isinstance(payload, list):
+                return payload
+            raise RuntimeError(f"Expected JSON array for {url}, got {type(payload).__name__}")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace") if exc.fp else ""
+        raise RuntimeError(f"GitHub API request failed for {url}: HTTP {exc.code}: {body}") from exc
+
+
+def resolve_ciu_wheel_via_release_scan(owner: str, repo: str) -> tuple[str, str, str, str, str]:
+    """Fallback: scan ciu-v* releases via GitHub Releases API for the highest semver.
+
+    Downloads the sibling ``<wheel>.sha256`` asset if present.
+
+    Returns (resolved_tag, asset_name, wheel_version, wheel_url, wheel_sha256).
+    Empty strings on failure.
+    """
+    semver_re = re.compile(r"^ciu-v(\d+\.\d+\.\d+.*)$")
+    try:
+        # Fetch up to 100 releases (enough for typical repos; not paginated further)
+        releases = github_api_list(
+            f"https://api.github.com/repos/{owner}/{repo}/releases?per_page=100"
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[WARN] Failed to list GitHub releases for {owner}/{repo}: {exc}",
+            file=sys.stderr,
+        )
+        return "", "", "", "", ""
+
+    best_version_tuple: tuple[int, ...] | None = None
+    best: tuple[str, str, str, str] = ("", "", "", "")  # tag, asset_name, wheel_url, sha256_url
+
+    for release in releases:
+        if not isinstance(release, dict):
+            continue
+        tag = str(release.get("tag_name") or "").strip()
+        m = semver_re.match(tag)
+        if not m:
+            continue
+        version_str = m.group(1)
+        try:
+            vtuple = tuple(int(p) for p in version_str.split(".")[:3])
+        except ValueError:
+            continue
+
+        assets = release.get("assets")
+        if not isinstance(assets, list):
+            continue
+        whl_asset: str = ""
+        sha256_asset_url: str = ""
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            name = str(asset.get("name") or "").strip()
+            durl = str(asset.get("browser_download_url") or "").strip()
+            if name.endswith(".whl") and not whl_asset:
+                whl_asset = name
+                whl_url_candidate = durl
+            if name.endswith(".sha256") and name.replace(".sha256", "") == whl_asset:
+                sha256_asset_url = durl
+
+        if not whl_asset:
+            continue
+
+        if best_version_tuple is None or vtuple > best_version_tuple:
+            best_version_tuple = vtuple
+            best = (tag, whl_asset, whl_url_candidate, sha256_asset_url)
+
+    if not best_version_tuple:
+        print(
+            f"[WARN] No ciu-v* release with a .whl asset found in {owner}/{repo}",
+            file=sys.stderr,
+        )
+        return "", "", "", "", ""
+
+    resolved_tag, asset_name, wheel_url, sha256_asset_url = best
+    wheel_version = ".".join(str(p) for p in best_version_tuple)
+
+    # Attempt to download the .sha256 sidecar
+    wheel_sha256 = ""
+    if sha256_asset_url:
+        try:
+            raw = fetch_url_bytes(sha256_asset_url)
+            # Format is typically "<hex>  <filename>" (sha256sum output) or just the hex
+            first_token = raw.decode("utf-8", "replace").strip().split()[0]
+            if len(first_token) == 64 and all(c in "0123456789abcdefABCDEF" for c in first_token):
+                wheel_sha256 = first_token.lower()
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[WARN] Failed to fetch CIU wheel sha256 sidecar from {sha256_asset_url}: {exc}",
+                file=sys.stderr,
+            )
+
+    print(
+        f"[INFO] CIU latest resolved via ciu-v* release scan: "
+        f"tag={resolved_tag}, asset={asset_name}, version={wheel_version}",
+        file=sys.stderr,
+    )
+    return resolved_tag, asset_name, wheel_version, wheel_url, wheel_sha256
+
+
+def resolve_ciu_wheel_coordinates() -> tuple[str, str, str, str, str]:
+    """Resolve CIU wheel coordinates (tag, asset_name, version, direct_url, sha256).
+
+    Resolution order (new scheme as of ciu-v2.0.0+):
+
+    1. If CIU_WHEEL_TAG is already set to a concrete ``ciu-v<semver>`` tag, use it
+       directly — caller has pinned an explicit version.  CIU_WHEEL_ASSET_NAME must
+       also be set (or will be discovered from the release API).  CIU_WHEEL_URL and
+       CIU_WHEEL_SHA256 may also be provided to skip the API calls entirely.
+
+    2. Fetch ``https://github.com/<owner>/<repo>/releases/download/ciu-latest/latest.json``
+       which is the new pointer file (``{version, tag, asset, sha256, url}``).
+       The ``ciu-latest`` release itself no longer holds the wheel.
+
+    3. Fallback: scan ``ciu-v*`` releases via the GitHub Releases API and pick the
+       highest semver, downloading the sibling ``.sha256`` sidecar if present.
+
+    Returns (resolved_tag, asset_name, wheel_version, wheel_url, wheel_sha256).
+    All empty on failure (non-fatal unless CIU_INSTALL_REQUIRED=true).
+    """
     owner = (os.getenv("GITHUB_USERNAME") or "").strip()
     repo = (os.getenv("GITHUB_REPO") or "").strip()
     if not owner or not repo:
@@ -491,47 +679,55 @@ def resolve_ciu_wheel_coordinates() -> tuple[str, str, str]:
             "[WARN] GITHUB_USERNAME/GITHUB_REPO not set; CIU wheel coordinates remain unset",
             file=sys.stderr,
         )
-        return "", "", ""
+        return "", "", "", "", ""
 
-    latest_alias_tag = (os.getenv("CIU_LATEST_TAG") or "ciu-latest").strip() or "ciu-latest"
-    explicit_asset_name = (os.getenv("CIU_LATEST_ASSET_NAME") or "").strip()
+    # --- Step 1: respect explicit pin ---
+    explicit_tag = (os.getenv("CIU_WHEEL_TAG") or "").strip()
+    explicit_asset = (os.getenv("CIU_WHEEL_ASSET_NAME") or "").strip()
+    explicit_url = (os.getenv("CIU_WHEEL_URL") or "").strip()
+    explicit_sha256 = (os.getenv("CIU_WHEEL_SHA256") or "").strip()
 
-    try:
-        latest_release = github_api_json(
-            f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{latest_alias_tag}"
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(
-            "[WARN] Failed to resolve CIU latest release metadata "
-            f"for tag {latest_alias_tag}: {exc}",
-            file=sys.stderr,
-        )
-        return latest_alias_tag, explicit_asset_name, ""
-
-    asset_name = explicit_asset_name or pick_ciu_wheel_asset_name(latest_release)
-    if not asset_name:
-        print(
-            f"[WARN] No wheel asset found for CIU latest tag {latest_alias_tag}",
-            file=sys.stderr,
-        )
-        return latest_alias_tag, "", ""
-
-    wheel_version = derive_ciu_version_from_asset_name(asset_name)
-    resolved_tag = latest_alias_tag
-    if wheel_version:
-        candidate_tag = f"ciu-v{wheel_version}".replace("+", "-")
-        if candidate_tag != latest_alias_tag:
+    semver_tag_re = re.compile(r"^ciu-v\d+\.\d+")
+    if explicit_tag and semver_tag_re.match(explicit_tag):
+        # Pinned to a concrete version; resolve asset/url/sha256 if not fully specified
+        if not explicit_asset:
             try:
-                if github_release_tag_exists(owner, repo, candidate_tag):
-                    resolved_tag = candidate_tag
+                release_payload = github_api_json(
+                    f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{explicit_tag}"
+                )
+                explicit_asset = pick_ciu_wheel_asset_name(release_payload)
             except Exception as exc:  # noqa: BLE001
                 print(
-                    "[WARN] Failed while checking CIU concrete release tag "
-                    f"{candidate_tag}: {exc}",
+                    f"[WARN] Failed to resolve CIU asset name for pinned tag {explicit_tag}: {exc}",
                     file=sys.stderr,
                 )
 
-    return resolved_tag, asset_name, wheel_version
+        wheel_version = derive_ciu_version_from_asset_name(explicit_asset) if explicit_asset else ""
+        if not explicit_url and explicit_asset:
+            explicit_url = (
+                f"https://github.com/{owner}/{repo}/releases/download/{explicit_tag}/{explicit_asset}"
+            )
+        print(
+            f"[INFO] CIU wheel pinned via CIU_WHEEL_TAG={explicit_tag}: "
+            f"asset={explicit_asset}, version={wheel_version}",
+            file=sys.stderr,
+        )
+        return explicit_tag, explicit_asset, wheel_version, explicit_url, explicit_sha256
+
+    # --- Step 2: resolve via ciu-latest/latest.json (preferred) ---
+    resolved_tag, asset_name, wheel_version, wheel_url, wheel_sha256 = (
+        resolve_ciu_wheel_via_latest_json(owner, repo)
+    )
+
+    if resolved_tag:
+        return resolved_tag, asset_name, wheel_version, wheel_url, wheel_sha256
+
+    # --- Step 3: fallback — scan ciu-v* releases ---
+    print(
+        "[INFO] Falling back to ciu-v* release scan for CIU wheel resolution",
+        file=sys.stderr,
+    )
+    return resolve_ciu_wheel_via_release_scan(owner, repo)
 
 
 def probe_system_package_candidates(debian: str, python: str) -> list[str]:
@@ -1175,7 +1371,9 @@ def main() -> int:
 
     sys.stderr.write("[INFO] Staging tool artifacts (checking/tool-versions, download URLs...) ...\n")
     staging_result = stage_tool_artifacts(build_date=build_date)
-    ciu_wheel_tag, ciu_wheel_asset_name, ciu_wheel_version = resolve_ciu_wheel_coordinates()
+    ciu_wheel_tag, ciu_wheel_asset_name, ciu_wheel_version, ciu_wheel_url, ciu_wheel_sha256 = (
+        resolve_ciu_wheel_coordinates()
+    )
     ciu_install_required = is_truthy_env(os.getenv("CIU_INSTALL_REQUIRED"))
     if ciu_install_required and (not ciu_wheel_tag or not ciu_wheel_asset_name):
         raise RuntimeError(
@@ -1212,6 +1410,11 @@ def main() -> int:
     print(f"CIU_WHEEL_TAG={ciu_wheel_tag}")
     print(f"CIU_WHEEL_ASSET_NAME={ciu_wheel_asset_name}")
     print(f"CIU_WHEEL_VERSION={ciu_wheel_version}")
+    # Direct download URL and sha256 resolved from ciu-latest/latest.json or ciu-v* scan.
+    # The Dockerfile uses CIU_WHEEL_URL to download directly from the immutable ciu-v<semver>
+    # release and CIU_WHEEL_SHA256 to verify the download.  Both were absent before v2.0.0.
+    print(f"CIU_WHEEL_URL={ciu_wheel_url}")
+    print(f"CIU_WHEEL_SHA256={ciu_wheel_sha256}")
 
     # Export latest stable tuple for downstream bake targets (dynamic, live-derived).
     if latest_tag:

@@ -106,23 +106,49 @@ The `tools/` directory also contains two helper scripts invoked internally:
 `cleanup-legacy-releases.sh` deletes the old `ciu-wheel-latest` GitHub release tag,
 and `cleanup-and-validate.sh` wraps that cleanup with a post-publish validation pass.
 
-### Release a new version (SemVer)
+### Release scheme
 
-The publish script at `tools/publish-wheel-release.py:275` has a branch:
+`tools/publish-wheel-release.py` routes through the shared `release-manager`
+keystone (`release-manager/src/release_manager/github_release.py`), which
+enforces a uniform scheme across the monorepo:
 
-- Dev build (2.0.1.dev8.g2f597cf): only moves ciu-latest — no per-commit tag spam
-- Clean tagged release (2.0.1): creates both an immutable ciu-v2.0.1 release and updates ciu-latest
+- **Dev build** (`2.0.1.dev8+gabcdef`): moves the thin `ciu-latest` pointer
+  only — no per-commit tag spam.
+- **Clean tagged release** (`2.0.1`): creates an immutable `ciu-v2.0.1` release
+  carrying the wheel, a `.whl.sha256` sidecar, and the SHA256 digest in the
+  release notes; then refreshes the thin `ciu-latest` redirect (`latest.json`
+  only — no heavy asset duplication).
 
-So yes, the versioned-tag-plus-latest-alias pattern is already there — you're just not triggering it because
-you're on an untagged commit.
+**Consumer contract** ("latest ciu wheel"):
 
-Why you're seeing a dev version
+- Source of truth: highest-semver `ciu-v*` release; `.whl` asset is the wheel;
+  `.whl.sha256` sibling asset is the verifiable checksum.
+- `ciu-latest` holds only a `latest.json` manifest pointing at the versioned
+  release — a stable discovery URL, not a duplicate of the artifact.
 
-The only ciu git tag is ciu-v2.0.0. You're now 8 commits past it (2f597cf). setuptools_scm computes the version
-as 2.0.1.dev8.g2f597cf — "next patch after 2.0.0, 8 commits ahead, at this sha." That's why the wheel in
-ciu-latest has that name.
+### Installing a released wheel
 
-How to cut 2.0.1 (or skip to 2.0.2) 
+```bash
+# Latest release (resolve highest ciu-v* tag)
+pip install https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/ciu-<version>-py3-none-any.whl
+
+# Pin a specific version
+pip install https://github.com/<owner>/<repo>/releases/download/ciu-v2.0.1/ciu-2.0.1-py3-none-any.whl
+
+# Verify checksum after download
+curl -LO https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/ciu-<version>-py3-none-any.whl
+curl -LO https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/ciu-<version>-py3-none-any.whl.sha256
+sha256sum -c ciu-<version>-py3-none-any.whl.sha256
+```
+
+Use `tools/validate-wheel-latest.py` to resolve the current latest version and
+print the download + checksum URLs programmatically:
+
+```bash
+GITHUB_USERNAME=<owner> GITHUB_REPO=<repo> python3 tools/validate-wheel-latest.py
+```
+
+### Cutting a new release (SemVer)
 
 ```bash
 # On the commit you want to release:
@@ -130,10 +156,15 @@ git tag -a ciu-v2.0.1 -m "ciu 2.0.1"
 git push origin ciu-v2.0.1   # needs workflow scope — see PAT note below
 ```
 
-Then run the build+publish pipeline. setuptools_scm will produce clean version 2.0.1, and the publish script
-will create:
-1. An immutable ciu-v2.0.1 GitHub release with ciu-2.0.1-py3-none-any.whl
-2. ciu-latest updated to the same wheel
+Then run the build+publish pipeline. `setuptools_scm` will produce clean version
+`2.0.1`, and the publish script will create:
+
+1. An immutable `ciu-v2.0.1` GitHub release with the wheel + `.sha256` sidecar.
+2. The thin `ciu-latest` redirect refreshed to point at `ciu-v2.0.1`.
+
+Version increment is not automatic — you must create the git tag. `setuptools_scm`
+reads tags; it does not write them. The `.devN` suffix is what you get between
+releases.
 
 Version increment is not automatic — you must create the git tag. setuptools_scm reads tags, it doesn't write
 them. The .devN suffix is what you get between releases.

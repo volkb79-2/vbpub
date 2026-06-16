@@ -2,11 +2,11 @@
 
 ## Overview
 
-PWMCP is a thin ciu packaging of the **official Microsoft Playwright images**. It provides browser automation as a service so consuming projects never install a browser into their own devcontainer or CI runner.
+PWMCP is a thin ciu packaging of the **official Microsoft Playwright unified image**. It provides browser automation as a service so consuming projects never install a browser into their own devcontainer or CI runner.
 
-## Unified Image (Default)
+## Unified Image (Only Supported Mode)
 
-The unified image bundles **both** the Playwright `run-server` and `@playwright/mcp` into a **single container** under a **single hostname**. This is the default and recommended deployment.
+The unified image bundles **both** the Playwright `run-server` and `@playwright/mcp` into a **single container** under a **single hostname**. This is the only deployment mode.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -36,7 +36,7 @@ The unified image bundles **both** the Playwright `run-server` and `@playwright/
 - **Base image**: `mcr.microsoft.com/playwright:v<playwright_version>-<image_distro>` (ships browser binaries)
 - **Layers added**:
   - `playwright@<playwright_version>` JS package installed globally via npm (needed for `run-server`)
-  - `@playwright/mcp` installed globally via npm (MCP HTTP/SSE server; exposes `playwright-mcp` bin)
+  - `@playwright/mcp@0.0.76` installed globally via npm (MCP HTTP/SSE server; exposes `playwright-mcp` bin; pinned for reproducibility — track upstream when bumping PLAYWRIGHT_VERSION)
   - `supervisor` (apt) — PID-1 process manager
   - `/etc/pwmcp-chromium-path.txt` — baked chromium binary path (see below)
 - **Process manager**: `supervisord --nodaemon` as PID 1; manages two programs (`run-server`, `mcp`)
@@ -62,42 +62,30 @@ PWMCP_MCP_ALLOWED_HOSTS=pwmcp:8931,<project>-<env>-pwmcp:8931
 
 `supervisord.conf` passes `--allowed-hosts %(ENV_PWMCP_MCP_ALLOWED_HOSTS)s` to `playwright-mcp`. The image default (for standalone use) is `localhost:8931,127.0.0.1:8931`.
 
-## Legacy Two-Image Setup
+## Release Model
 
-The two-image setup is still supported (set `pwmcp.unified.enabled = false` in `ciu.toml.j2`):
+Versioned bundles are published to GitHub Releases following the monorepo-wide scheme:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Project Docker network (e.g. myproject-dev)                        │
-│                                                                     │
-│  ┌───────────────────────────┐  ┌────────────────────────────────┐  │
-│  │  pwmcp-playwright         │  │  pwmcp-mcp                     │  │
-│  │  (playwright-server)      │  │  (playwright/mcp)              │  │
-│  │                           │  │                                │  │
-│  │  ghcr.io/volkb79-2/       │  │  mcr.microsoft.com/            │  │
-│  │  pwmcp-playwright:<ver>   │  │  playwright/mcp:latest         │  │
-│  │  + playwright@<ver> JS    │  │                                │  │
-│  │                           │  │                                │  │
-│  │  run-server :3000         │  │  MCP (HTTP/SSE) at /mcp :8931  │  │
-│  └───────────────────────────┘  └────────────────────────────────┘  │
-│          ▲                                ▲                          │
-│          │ ws://pwmcp-playwright:3000/    │ http://pwmcp-mcp:8931/mcp│
-│  ┌───────┴──────────────────────────────┴──────────────────────┐   │
-│  │  test runner / devcontainer / AI client (sibling container)  │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
+- **Immutable versioned release**: `pwmcp-v<version>` — carries the bundle artifact plus a `.sha256` sidecar. The SHA256 is also recorded in the release notes for verification without downloading the sidecar. This is the source of truth.
+- **Thin "latest" redirect**: `pwmcp-latest` — contains only `latest.json`, a manifest pointing at the versioned release. No heavy asset duplication. This exists only as a stable discovery URL.
+- **Resolving "latest"**: scan `pwmcp-v*` releases and pick the highest semver. This is monorepo-safe (GitHub's repo-global "Latest" badge is not per-project).
+
+### Bundle verification
+
+```bash
+sha256sum -c pwmcp-<version>.tar.xz.sha256
 ```
 
 ## Version Pin
 
 `pwmcp.playwright_version` in `ciu.defaults.toml.j2` is the single source of truth:
-- Determines the base image tag for both unified and playwright-server images
-- Determines the playwright JS package version baked into the images
+- Determines the base image tag for the unified image
+- Determines the playwright JS package version baked into the image
 - Consumers must `pip install playwright==<playwright_version>` to match the wire protocol
 
 ## Deployment Modes
 
-**internal** (default): service(s) on the project Docker network only, plain HTTP, no auth. The network boundary is the access control.
+**internal** (default): service on the project Docker network only, plain HTTP, no auth. The network boundary is the access control.
 
 PWMCP **joins the project network it is placed in** via the ciu `deploy.network_name` variable. When deployed as a sub-stack of a parent project (e.g. `dstdns`), the unified container is named `<project>-<env>-pwmcp` and joins the parent project's shared network. It is reachable from any sibling container using either the **short service alias** or the **full container name**:
 

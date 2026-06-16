@@ -51,6 +51,12 @@ ARG GITHUB_USERNAME
 ARG GITHUB_REPO
 ARG CIU_WHEEL_TAG
 ARG CIU_WHEEL_ASSET_NAME
+# CIU_WHEEL_URL: direct download URL for the .whl from the immutable ciu-v<semver> release.
+# Resolved by resolve-devcontainers-release.py from ciu-latest/latest.json (or ciu-v* scan).
+# The ciu-latest release no longer holds the wheel; it holds only a latest.json pointer.
+ARG CIU_WHEEL_URL
+# CIU_WHEEL_SHA256: expected sha256 hex digest of the wheel (from latest.json or .sha256 sidecar).
+ARG CIU_WHEEL_SHA256
 ARG CIU_INSTALL_REQUIRED="false"
 ARG PACKAGE_MANIFEST_SOURCE=""
 ARG DEVCONTAINERS_RELEASE=""
@@ -377,29 +383,70 @@ RUN set -euo pipefail; \
                 uv debugpy ruff; \
         done; \
     fi
+# Install the ciu Python wheel.
+# Resolution (performed by resolve-devcontainers-release.py at pipeline-prep time):
+#   1. CIU_WHEEL_URL is the direct download URL for the .whl from the immutable
+#      ciu-v<semver> release (resolved via ciu-latest/latest.json or ciu-v* scan).
+#   2. CIU_WHEEL_SHA256 is the expected sha256 of that wheel (from latest.json or
+#      the .sha256 sidecar asset on the ciu-v<semver> release).
+#   3. CIU_WHEEL_TAG / CIU_WHEEL_ASSET_NAME are kept as fallback / override path
+#      for callers that pin a version without a pre-resolved URL.
+# NOTE: The ciu-latest release now holds ONLY a latest.json pointer — NOT the wheel.
+#       Downloading a .whl directly from ciu-latest would 404.  This step uses
+#       CIU_WHEEL_URL which always points to the correct immutable ciu-v<semver> asset.
 RUN set -euo pipefail; \
     if [ -n "${GITHUB_USERNAME}" ] && [ -n "${GITHUB_REPO}" ]; then \
         skip_ciu=0; \
         wheel_dir="/tmp/ciu-wheel"; \
         install -d -m 0755 "${wheel_dir}"; \
         wheel_path="${wheel_dir}/ciu.whl"; \
-        ciu_wheel_tag="${CIU_WHEEL_TAG:-ciu-wheel-latest}"; \
+        ciu_url="${CIU_WHEEL_URL:-}"; \
+        ciu_expected_sha256="${CIU_WHEEL_SHA256:-}"; \
         ciu_asset_name="${CIU_WHEEL_ASSET_NAME:-}"; \
-        if [ -z "${ciu_asset_name}" ]; then \
-            ciu_asset_name="$(curl -fsSL "https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/tags/${ciu_wheel_tag}" \
-                | jq -r '.assets[].name | select(endswith(".whl"))' \
-                | head -n 1 || true)"; \
+        ciu_wheel_tag="${CIU_WHEEL_TAG:-}"; \
+        \
+        # If CIU_WHEEL_URL was not resolved by the pre-build step, construct a
+        # fallback URL from CIU_WHEEL_TAG + CIU_WHEEL_ASSET_NAME (pinned override
+        # path).  If neither is available, discover via the GitHub API.  This
+        # mirrors the old behaviour for backwards-compatibility when callers have
+        # not yet adopted the new scheme.
+        if [ -z "${ciu_url}" ]; then \
+            if [ -z "${ciu_wheel_tag}" ]; then \
+                echo "[WARN] CIU_WHEEL_URL not set; attempting to resolve via ciu-latest/latest.json" >&2; \
+                ciu_latest_json="$(curl -fsSL "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/download/ciu-latest/latest.json" 2>/dev/null || true)"; \
+                if [ -n "${ciu_latest_json}" ]; then \
+                    ciu_url="$(printf '%s' "${ciu_latest_json}" | jq -r '.url // empty')"; \
+                    ciu_expected_sha256="$(printf '%s' "${ciu_latest_json}" | jq -r '.sha256 // empty')"; \
+                    ciu_asset_name="$(printf '%s' "${ciu_latest_json}" | jq -r '.asset // empty')"; \
+                    ciu_wheel_tag="$(printf '%s' "${ciu_latest_json}" | jq -r '.tag // empty')"; \
+                fi; \
+            fi; \
         fi; \
-        if [ -z "${ciu_asset_name}" ]; then \
+        \
+        # Still no URL — last resort: use CIU_WHEEL_TAG + CIU_WHEEL_ASSET_NAME
+        # (or discover asset from the release) to build a direct download URL.
+        if [ -z "${ciu_url}" ] && [ -n "${ciu_wheel_tag}" ]; then \
+            if [ -z "${ciu_asset_name}" ]; then \
+                ciu_asset_name="$(curl -fsSL "https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/tags/${ciu_wheel_tag}" \
+                    | jq -r '.assets[].name | select(endswith(".whl"))' \
+                    | head -n 1 || true)"; \
+            fi; \
+            if [ -n "${ciu_asset_name}" ]; then \
+                ciu_url="https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/download/${ciu_wheel_tag}/${ciu_asset_name}"; \
+            fi; \
+        fi; \
+        \
+        if [ -z "${ciu_url}" ]; then \
             if [ "${CIU_INSTALL_REQUIRED}" = "true" ]; then \
-                echo "[ERROR] Failed to resolve CIU wheel asset name for tag ${ciu_wheel_tag}" >&2; \
+                echo "[ERROR] Failed to resolve CIU wheel download URL" >&2; \
                 exit 1; \
             fi; \
-            echo "[WARN] CIU wheel asset not found for tag ${ciu_wheel_tag}; skipping CIU install" >&2; \
+            echo "[WARN] CIU wheel URL could not be resolved; skipping CIU install" >&2; \
             skip_ciu=1; \
         fi; \
+        \
         if [ "${skip_ciu}" -eq 0 ]; then \
-            ciu_url="https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/download/${ciu_wheel_tag}/${ciu_asset_name}"; \
+            echo "[INFO] Downloading CIU wheel from ${ciu_url}" >&2; \
             if ! curl -fsSL "${ciu_url}" -o "${wheel_path}"; then \
                 if [ "${CIU_INSTALL_REQUIRED}" = "true" ]; then \
                     echo "[ERROR] Failed to download CIU wheel from ${ciu_url}" >&2; \
@@ -409,6 +456,18 @@ RUN set -euo pipefail; \
                 skip_ciu=1; \
             fi; \
         fi; \
+        \
+        # Verify sha256 checksum when available (reproducibility gate).
+        if [ "${skip_ciu}" -eq 0 ] && [ -n "${ciu_expected_sha256}" ]; then \
+            echo "${ciu_expected_sha256}  ${wheel_path}" | sha256sum -c - || { \
+                echo "[ERROR] CIU wheel sha256 mismatch for ${ciu_url}" >&2; \
+                exit 1; \
+            }; \
+            echo "[INFO] CIU wheel sha256 verified: ${ciu_expected_sha256}" >&2; \
+        elif [ "${skip_ciu}" -eq 0 ]; then \
+            echo "[WARN] CIU_WHEEL_SHA256 not set; skipping checksum verification" >&2; \
+        fi; \
+        \
         if [ "${skip_ciu}" -eq 0 ]; then \
             wheel_name="$(/home/vscode/.venv/bin/python -c 'import sys, zipfile; from pathlib import Path; wheel_path=Path(sys.argv[1]); zf=zipfile.ZipFile(wheel_path); metadata_files=[name for name in zf.namelist() if name.endswith(".dist-info/METADATA")]; wheel_files=[name for name in zf.namelist() if name.endswith(".dist-info/WHEEL")]; assert metadata_files, "[ERROR] Missing METADATA in CIU wheel"; assert wheel_files, "[ERROR] Missing WHEEL metadata in CIU wheel"; metadata=zf.read(metadata_files[0]).decode("utf-8", "replace"); name=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Name:")), None); version=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Version:")), None); wheel_meta=zf.read(wheel_files[0]).decode("utf-8", "replace"); tag=next((line.split(":", 1)[1].strip() for line in wheel_meta.splitlines() if line.startswith("Tag:")), None); assert name and version and tag, "[ERROR] Missing Name/Version/Tag in CIU wheel metadata"; dist=name.replace("-", "_"); print(f"{dist}-{version}-{tag}.whl"); zf.close()' "${wheel_path}")"; \
             if [ -z "${wheel_name}" ]; then \

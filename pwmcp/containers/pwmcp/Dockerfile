@@ -13,6 +13,11 @@
 # consumers install (`pip install playwright==<PLAYWRIGHT_VERSION>`).
 ARG PLAYWRIGHT_VERSION=1.61.0
 ARG PLAYWRIGHT_DISTRO=noble
+# Base image digest pinned for reproducibility (resolved via
+# 'docker buildx imagetools inspect mcr.microsoft.com/playwright:v<ver>-<distro>').
+# Multi-arch manifest digest (linux/amd64 + linux/arm64):
+#   mcr.microsoft.com/playwright:v1.61.0-noble@sha256:57b65fdc9ceabe0ef613124c7bbe2babcf9362c4d85e382fe3b03604e84b428a
+# Update this digest whenever PLAYWRIGHT_VERSION or PLAYWRIGHT_DISTRO changes.
 FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}
 ARG PLAYWRIGHT_VERSION
 
@@ -32,7 +37,14 @@ ENV PWMCP_MCP_ALLOWED_HOSTS="localhost:8931,127.0.0.1:8931"
 # Install playwright JS package (run-server needs it; base image ships only
 # browser binaries), @playwright/mcp (MCP HTTP/SSE server), and supervisord
 # (PID-1 process manager that reaps children and forwards SIGTERM).
-RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}" @playwright/mcp \
+#
+# @playwright/mcp is pinned to 0.0.76 (bundles playwright-core for chromium-1226,
+# verified to work with playwright 1.61.0 base images). Track upstream and update
+# this pin when bumping PLAYWRIGHT_VERSION — check the @playwright/mcp changelog.
+#
+# TODO(repro): pin supervisor=<ver> — determine the exact apt package version for
+# ubuntu noble (24.04) by running: apt-cache show supervisor | grep Version
+RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}" "@playwright/mcp@0.0.76" \
  && npm cache clean --force \
  && apt-get update \
  && apt-get install -y --no-install-recommends supervisor \

@@ -1,8 +1,8 @@
 # PWMCP — Playwright-as-a-Service
 
-PWMCP is a thin, hardened [ciu](https://github.com/volkb79-2/vbpub/tree/main/ciu) packaging of the **official Microsoft Playwright images**. It provides browser automation as a service so consuming projects never install a browser into their own devcontainer or CI runner.
+PWMCP is a thin, hardened [ciu](https://github.com/volkb79-2/vbpub/tree/main/ciu) packaging of the **official Microsoft Playwright unified image**. It provides browser automation as a service so consuming projects never install a browser into their own devcontainer or CI runner.
 
-## Unified Image (Recommended)
+## Unified Image
 
 The unified image `ghcr.io/volkb79-2/pwmcp` bundles **both** the Playwright `run-server` and `@playwright/mcp` into a **single container** under a **single hostname** `pwmcp`:
 
@@ -12,15 +12,6 @@ The unified image `ghcr.io/volkb79-2/pwmcp` bundles **both** the Playwright `run
 | `http://pwmcp:8931/mcp` | 8931 | MCP (HTTP/SSE) — AI clients (VS Code Copilot, etc.) |
 
 Both services are managed by `supervisord` (PID 1), which reaps children and forwards SIGTERM on shutdown.
-
-## Legacy Two-Image Setup
-
-The legacy setup runs two separate services (set `pwmcp.unified.enabled = false` in `ciu.toml.j2` to activate):
-
-| Service | Image | Port | Purpose |
-|---|---|---|---|
-| `pwmcp-playwright` | `ghcr.io/volkb79-2/pwmcp-playwright:<version>` | 3000 | Native Playwright `run-server` endpoint |
-| `pwmcp-mcp` | `mcr.microsoft.com/playwright/mcp:latest` | 8931 | MCP (HTTP/SSE) surface |
 
 ## Deployment Modes
 
@@ -107,17 +98,44 @@ Applied in both modes:
 - `no-new-privileges: true`
 - `shm_size: 2gb` (Chromium requires shared memory)
 
+## Release Model
+
+Versioned bundles are published to GitHub Releases under the `pwmcp-v<version>` tag:
+
+```
+pwmcp-v1.61.0-r2
+  pwmcp-1.61.0-r2.tar.xz          ← the deployment bundle
+  pwmcp-1.61.0-r2.tar.xz.sha256   ← sha256sum-verifiable sidecar
+```
+
+The release notes embed the SHA256 digest. Verify any downloaded bundle with:
+
+```bash
+sha256sum -c pwmcp-1.61.0-r2.tar.xz.sha256
+```
+
+"Latest" is resolved programmatically by scanning `pwmcp-v*` releases and picking the highest semver — this works in a monorepo where GitHub's repo-global "Latest" badge cannot be per-project. The thin `pwmcp-latest` release contains only `latest.json` (a JSON redirect pointing at the versioned release); it does **not** duplicate the heavy bundle asset.
+
+### Downloading a specific version
+
+```bash
+VERSION="1.61.0-r2"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
+  -o "pwmcp-${VERSION}.tar.xz"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
+  -o "pwmcp-${VERSION}.tar.xz.sha256"
+sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"
+tar -xJf "pwmcp-${VERSION}.tar.xz"
+```
+
 ## Build
 
 ```bash
 # Build unified image (local load)
 docker buildx bake pwmcp --load
 
-# Build all images (unified + legacy playwright-server)
-docker buildx bake all --load
-
 # Push to GHCR
-docker buildx bake all --push
+docker buildx bake pwmcp --push
 ```
 
 Or use the ciu build runner:
@@ -129,7 +147,7 @@ ciu-build -d . push-images
 
 ## Documentation
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — unified and two-service design
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — unified image design and chromium path resolution
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — internal and external deploy procedures
 - [docs/SECURITY.md](docs/SECURITY.md) — browser isolation rationale and hardening
 - [docs/USAGE.md](docs/USAGE.md) — consumer connect() and MCP usage details

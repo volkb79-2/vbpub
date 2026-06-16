@@ -12,14 +12,15 @@ Traefik.
 
 ## Install
 
-On any Linux host with Docker and git already installed:
+On any Linux host with Docker installed (requires `curl`, `python3`, `sha256sum`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.sh | sudo bash
 ```
 
-This installs tls-edge to `/opt/tls-edge-src` and places a `tls-edge` command
-at `/usr/local/bin/tls-edge`.  When it finishes, run:
+This downloads the latest release artifact from GitHub Releases, **verifies its
+SHA256 checksum**, extracts to `/opt/tls-edge-src/tls-edge`, and places a
+`tls-edge` command at `/usr/local/bin/tls-edge`.  When it finishes, run:
 
 ```bash
 tls-edge install
@@ -28,9 +29,12 @@ tls-edge install
 ### Pin a specific version
 
 ```bash
-TLS_EDGE_VERSION=tls-edge-v0.1.0 \
+TLS_EDGE_VERSION=tls-edge-v0.2.0 \
   curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.sh | sudo bash
 ```
+
+`TLS_EDGE_VERSION` accepts either the full tag (`tls-edge-v0.2.0`) or a bare
+semver (`0.2.0`).
 
 ### Update to a newer release
 
@@ -38,16 +42,45 @@ TLS_EDGE_VERSION=tls-edge-v0.1.0 \
 tls-edge update
 ```
 
-Fetches the latest `tls-edge-v*` tag, checks out the new version, and
-reinstalls the CLI wrapper.  Your site-specific config
-(`ciu-stack/ciu.toml.j2`, `edge-proxy/.env`) is preserved across updates.
+Downloads the latest release artifact, verifies its checksum, and extracts it
+over the install directory.  Your site-specific config
+(`ciu-stack/ciu.toml.j2`, `edge-proxy/.env`) is backed up to `*.pre-update`
+before extraction and restored if the new artifact does not provide them.
+
+### Checksum verification
+
+Every release artifact (`tls-edge-v<ver>.tar.xz`) ships with a
+`tls-edge-v<ver>.tar.xz.sha256` sidecar that `get.sh` verifies automatically
+with `sha256sum -c`.  Installation is aborted on mismatch.
+
+To verify manually after download:
+
+```bash
+sha256sum -c tls-edge-v0.2.0.tar.xz.sha256
+```
+
+### Air-gapped / dev installs (git-clone fallback)
+
+For hosts without internet access to GitHub Releases, or for development
+purposes, force the legacy git-clone path:
+
+```bash
+TLS_EDGE_INSTALL_VIA=git \
+  curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.sh | sudo bash
+```
+
+This performs a sparse, blobless clone of the `vbpub` repo and checks out the
+resolved tag — no artifact download, no checksum verification.  Requires `git`.
 
 ### Releases
 
-Releases are git tags in the `vbpub` monorepo following the convention
-`tls-edge-v<semver>` (e.g. `tls-edge-v0.1.0`).  No pre-built artifacts are
-required — the installer clones only the `tls-edge/` subtree directly from the
-tagged commit.
+Releases are immutable GitHub Releases in the `vbpub` monorepo tagged
+`tls-edge-v<semver>` (e.g. `tls-edge-v0.2.0`).  Each release carries:
+- `tls-edge-v<ver>.tar.xz` — the runtime artifact
+- `tls-edge-v<ver>.tar.xz.sha256` — SHA256 checksum sidecar
+
+"Latest" is resolved by scanning `tls-edge-v*` releases and picking the
+highest semver — no separate "latest" release is used as the source of truth.
 
 ---
 
@@ -355,14 +388,22 @@ bash scripts/verify.sh
 
 ## Cutting a release
 
-Releases are git tags in the `vbpub` monorepo — no Docker builds, no upload
-artifacts.  The `scripts/release.sh` script handles the mechanics.
+`scripts/release.sh` handles the full release pipeline in one step:
+
+1. Validates git state (on `main`, clean working tree, tag not taken)
+2. Updates `VERSION`, commits, creates annotated tag `tls-edge-v<version>`
+3. Runs `scripts/build-artifact.sh` to package `dist/tls-edge-v<ver>.tar.xz`
+4. Runs `scripts/publish-release.py` to create the GitHub Release with the
+   artifact + `.sha256` sidecar, and refreshes the `tls-edge-latest` pointer
+
+Credentials for the publish step are read from (in priority order):
+environment → `tls-edge/.release-vars` → `release.toml [github]`.
 
 ### Standalone (simplest)
 
 ```bash
 bash tls-edge/scripts/release.sh 0.2.0
-# → updates VERSION, commits, creates annotated tag tls-edge-v0.2.0
+# → bumps VERSION, commits, tags, builds artifact, publishes release
 # → prints the push command when done
 
 git push origin main tls-edge-v0.2.0
@@ -382,11 +423,28 @@ git push origin main tls-edge-v0.2.0
 
 `.release-vars` is gitignored; remove it after the release.
 
-### What happens on `git push`
+### What happens after publish
 
-`get.sh` resolves the latest release via `git ls-remote --tags` on the public
-repo.  Once the tag is visible on GitHub, `tls-edge update` on any installed
-host will offer the new version.
+`get.sh` resolves the latest release by querying the GitHub Releases API and
+picking the highest-semver `tls-edge-v*` tag.  Once the release is published,
+`tls-edge update` on any installed host will download and verify the new
+artifact automatically.
+
+### Artifact filename scheme
+
+```
+tls-edge-v<semver>.tar.xz         ← runtime artifact
+tls-edge-v<semver>.tar.xz.sha256  ← SHA256 sidecar (sha256sum -c format)
+```
+
+Example for version 0.2.0:
+```
+tls-edge-v0.2.0.tar.xz
+tls-edge-v0.2.0.tar.xz.sha256
+```
+
+The tarball contains a single top-level directory `tls-edge-v<ver>/` so
+`tar -xJf … --strip-components=1` extracts cleanly to any target path.
 
 ---
 

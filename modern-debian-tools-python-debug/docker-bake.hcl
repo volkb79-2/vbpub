@@ -224,6 +224,22 @@ variable "CIU_WHEEL_ASSET_NAME" {
   default = ""
 }
 
+// Direct download URL for the .whl from the immutable ciu-v<semver> release.
+// Resolved by resolve-devcontainers-release.py via ciu-latest/latest.json (preferred)
+// or ciu-v* release scan (fallback).  The ciu-latest release no longer holds the
+// wheel itself — only a latest.json pointer.  Leave empty to let the Dockerfile
+// resolve at build time (requires network + jq; avoid in air-gapped builds).
+variable "CIU_WHEEL_URL" {
+  default = ""
+}
+
+// Expected sha256 hex digest of the wheel (from latest.json or the .sha256 sidecar
+// on the ciu-v<semver> release).  Used by the Dockerfile for reproducibility
+// verification via sha256sum.  Leave empty to skip verification (not recommended).
+variable "CIU_WHEEL_SHA256" {
+  default = ""
+}
+
 variable "CIU_INSTALL_REQUIRED" {
   default = "false"
 }
@@ -354,6 +370,8 @@ target "base" {
     GITHUB_REPO = "${GITHUB_REPO}"
     CIU_WHEEL_TAG = "${CIU_WHEEL_TAG}"
     CIU_WHEEL_ASSET_NAME = "${CIU_WHEEL_ASSET_NAME}"
+    CIU_WHEEL_URL = "${CIU_WHEEL_URL}"
+    CIU_WHEEL_SHA256 = "${CIU_WHEEL_SHA256}"
     CIU_INSTALL_REQUIRED = "${CIU_INSTALL_REQUIRED}"
     SECONDARY_PYTHON_VERSIONS = "${SECONDARY_PYTHON_VERSIONS}"
     PACKAGE_MANIFEST_SOURCE = ""

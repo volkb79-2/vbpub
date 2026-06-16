@@ -21,3 +21,6 @@ certs-dev/
 # ── consumer example secrets ──────────────────────────────────────────────────
 consumer-examples/**/secrets/*
 !consumer-examples/**/secrets/.gitignore
+
+# Release artifacts (build-artifact.sh output)
+/dist/
