@@ -1,0 +1,104 @@
+name: PWMCP Unified Image Rebuild
+
+# Builds and pushes ghcr.io/volkb79-2/pwmcp (unified image) and
+# ghcr.io/volkb79-2/pwmcp-playwright (legacy) on a weekly schedule or on demand.
+#
+# Auth note: GITHUB_TOKEN with packages:write suffices — no PAT needed.
+# Fine-grained PAT fallback: create a PAT with "write:packages" scope and
+# store it as the secret GHCR_PAT, then swap secrets.GITHUB_TOKEN for
+# secrets.GHCR_PAT in the docker/login-action step below.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"   # weekly Monday 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write     # for git tag creation and resolve-playwright-version.py
+  packages: write     # to push to ghcr.io
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history for tag scanning in resolve-playwright-version.py
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve latest Playwright version
+        working-directory: pwmcp
+        run: python3 scripts/resolve-playwright-version.py
+
+      - name: Load release vars
+        id: release-vars
+        working-directory: pwmcp
+        run: |
+          set -a
+          source .release-vars
+          set +a
+          echo "PLAYWRIGHT_VERSION=${PLAYWRIGHT_VERSION}" >> $GITHUB_OUTPUT
+          echo "PLAYWRIGHT_DISTRO=${PLAYWRIGHT_DISTRO}" >> $GITHUB_OUTPUT
+          echo "PWMCP_VERSION=${PWMCP_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          # To use a fine-grained PAT instead:
+          #   password: ${{ secrets.GHCR_PAT }}
+
+      - name: Build and push all images
+        working-directory: pwmcp
+        env:
+          PLAYWRIGHT_VERSION: ${{ steps.release-vars.outputs.PLAYWRIGHT_VERSION }}
+          PLAYWRIGHT_DISTRO: ${{ steps.release-vars.outputs.PLAYWRIGHT_DISTRO }}
+          PWMCP_VERSION: ${{ steps.release-vars.outputs.PWMCP_VERSION }}
+        run: |
+          docker buildx bake all --push
+
+      - name: Build bundle
+        working-directory: pwmcp
+        run: python3 scripts/build-bundle.py
+
+      - name: Commit updated config files
+        env:
+          PWMCP_VERSION: ${{ steps.release-vars.outputs.PWMCP_VERSION }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pwmcp/ciu.defaults.toml.j2 pwmcp/docker-bake.hcl pwmcp/.release-vars
+          # Only commit if there are staged changes (version actually bumped)
+          git diff --cached --quiet || \
+            git commit -m "chore(pwmcp): bump Playwright to ${PWMCP_VERSION} [automated]"
+
+      - name: Create git tag and push
+        env:
+          PWMCP_VERSION: ${{ steps.release-vars.outputs.PWMCP_VERSION }}
+        run: |
+          TAG="pwmcp-v${PWMCP_VERSION}"
+          # Skip tagging if this tag already exists (version unchanged since last run)
+          if git rev-parse --verify "refs/tags/${TAG}" 2>/dev/null; then
+            echo "Tag ${TAG} already exists — skipping."
+          else
+            git tag -a "${TAG}" -m "pwmcp ${PWMCP_VERSION}"
+            git push origin HEAD "${TAG}"
+          fi
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pwmcp-bundle-${{ steps.release-vars.outputs.PWMCP_VERSION }}
+          path: pwmcp/dist/pwmcp-${{ steps.release-vars.outputs.PWMCP_VERSION }}.tar.xz
+          retention-days: 30
