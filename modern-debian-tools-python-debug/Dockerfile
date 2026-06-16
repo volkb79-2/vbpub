@@ -55,6 +55,7 @@ ARG CIU_INSTALL_REQUIRED="false"
 ARG PACKAGE_MANIFEST_SOURCE=""
 ARG DEVCONTAINERS_RELEASE=""
 ARG DEVCONTAINERS_VERSION=""
+ARG SECONDARY_PYTHON_VERSIONS=""
 
 ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
 ENV BACKPORTS_URI="${BACKPORTS_URI}"
@@ -306,6 +307,9 @@ RUN set -euo pipefail; \
     fi; \
     rm -rf /var/lib/apt/lists/*
 
+# ── Primary Python venv — full development toolkit ────────────────────────────
+# Installed into /home/vscode/.venv using the base-image Python.
+# Consumer-facing list: see README.md § "Primary Venv Packages".
 USER vscode
 RUN set -euo pipefail; \
     python3 -m venv /home/vscode/.venv; \
@@ -354,6 +358,24 @@ RUN set -euo pipefail; \
         else \
             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat==${AIDER_VERSION}"; \
         fi; \
+    fi
+# ── Secondary Python venvs — lean (uv + debugpy + ruff only) ─────────────────
+# Driven by SECONDARY_PYTHON_VERSIONS build arg (space-separated dotted versions, e.g. "3.11 3.9").
+# Each version gets /home/vscode/.venv-py{nodot} (e.g. .venv-py311, .venv-py39).
+# Install project deps on demand: uv pip install -r requirements.txt --python .venv-py311/bin/python
+# Consumer-facing docs: see README.md § "Multi-Python Devcontainer Variants".
+RUN set -euo pipefail; \
+    if [ -n "${SECONDARY_PYTHON_VERSIONS}" ]; then \
+        for pyver in ${SECONDARY_PYTHON_VERSIONS}; do \
+            venv_name=".venv-py${pyver//./}"; \
+            echo "Installing secondary Python ${pyver} → /home/vscode/${venv_name}"; \
+            /home/vscode/.venv/bin/uv python install "${pyver}"; \
+            /home/vscode/.venv/bin/uv venv --python "${pyver}" "/home/vscode/${venv_name}"; \
+            /home/vscode/.venv/bin/uv pip install \
+                --python "/home/vscode/${venv_name}/bin/python" \
+                --quiet \
+                uv debugpy ruff; \
+        done; \
     fi
 RUN set -euo pipefail; \
     if [ -n "${GITHUB_USERNAME}" ] && [ -n "${GITHUB_REPO}" ]; then \

@@ -228,6 +228,13 @@ variable "CIU_INSTALL_REQUIRED" {
   default = "false"
 }
 
+// Space-separated Python versions to install as lean secondary environments.
+// Each version gets /home/vscode/.venv-py{nodot} with uv + debugpy + ruff only.
+// Set per-target; inferred from the target name convention (e.g. trixie-py314-py311-vsc → "3.11").
+variable "SECONDARY_PYTHON_VERSIONS" {
+  default = ""
+}
+
 variable "PACKAGE_MANIFEST_ROOT" {
   default = "package-manifests-versioned"
 }
@@ -250,6 +257,17 @@ function "vsc_tag" {
 function "vsc_latest_tag" {
   params = [debian, python]
   result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:${debian}-py${python}-latest"
+}
+
+// Multi-Python variants: pythons_label is the full label, e.g. "py314-py311"
+function "vsc_multi_tag" {
+  params = [debian, pythons_label]
+  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:${debian}-${pythons_label}-${BUILD_DATE}"
+}
+
+function "vsc_multi_latest_tag" {
+  params = [debian, pythons_label]
+  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:${debian}-${pythons_label}-latest"
 }
 
 function "package_docs_dir" {
@@ -337,6 +355,7 @@ target "base" {
     CIU_WHEEL_TAG = "${CIU_WHEEL_TAG}"
     CIU_WHEEL_ASSET_NAME = "${CIU_WHEEL_ASSET_NAME}"
     CIU_INSTALL_REQUIRED = "${CIU_INSTALL_REQUIRED}"
+    SECONDARY_PYTHON_VERSIONS = "${SECONDARY_PYTHON_VERSIONS}"
     PACKAGE_MANIFEST_SOURCE = ""
     DEVCONTAINERS_RELEASE_STABLE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_RELEASE_DEV = "${DEVCONTAINERS_RELEASE_DEV}"
@@ -470,6 +489,46 @@ target "trixie-py314-vsc" {
 }
 
 
+# Multi-Python devcontainers: primary Python (full toolkit) + secondary Pythons (lean venvs).
+# Secondary venvs at /home/vscode/.venv-py{nodot}; switch via VS Code "Python: Select Interpreter".
+# SECONDARY_PYTHON_VERSIONS: space-separated dotted versions, e.g. "3.11 3.9".
+# See README.md § "Multi-Python Devcontainer Variants" for full docs and package lists.
+
+target "trixie-py314-py311-vsc" {
+  inherits = ["base"]
+  args = {
+    BASE_IMAGE = "${DEVCONTAINERS_BASE_PINNED}"
+    PYTHON_VERSION = "3.14"
+    DEBIAN_VERSION = "trixie"
+    SECONDARY_PYTHON_VERSIONS = "3.11"
+    OCI_DESCRIPTION = description_with_manifest_docs(OCI_DESCRIPTION_VSC, "modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14")
+    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug-vsc-devcontainer")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14")
+    DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
+    DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
+  }
+  tags = [vsc_multi_tag("trixie", "py314-py311"), vsc_multi_latest_tag("trixie", "py314-py311")]
+}
+
+target "trixie-py314-py311-py39-vsc" {
+  inherits = ["base"]
+  args = {
+    BASE_IMAGE = "${DEVCONTAINERS_BASE_PINNED}"
+    PYTHON_VERSION = "3.14"
+    DEBIAN_VERSION = "trixie"
+    SECONDARY_PYTHON_VERSIONS = "3.11 3.9"
+    OCI_DESCRIPTION = description_with_manifest_docs(OCI_DESCRIPTION_VSC, "modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14")
+    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug-vsc-devcontainer")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14")
+    DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
+    DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
+  }
+  tags = [vsc_multi_tag("trixie", "py314-py311-py39"), vsc_multi_latest_tag("trixie", "py314-py311-py39"), "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:latest"]
+}
+
+
 # Dynamic target that picks latest stable python/debian combination from live resolver output.
 # Resolver sets DEVCONTAINERS_BASE_DYNAMIC_LATEST, DEVCONTAINERS_DYNAMIC_LATEST_PYTHON,
 # and DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN.
@@ -502,8 +561,9 @@ group "all" {
   targets = [
     # "bookworm-py311",
     # "bookworm-py313",
-    "trixie-py311",
-    "trixie-py314-vsc",
+    "trixie-py314",
+    #"trixie-py314-vsc",
+    "trixie-py314-py311-py39-vsc"
     #"latest-vsc",
     #"trixie-py314",
     #"trixie-py314-vsc",

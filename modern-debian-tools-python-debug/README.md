@@ -33,6 +33,99 @@ Examples:
 
 Enabled build group target list is in [docker-bake.hcl](docker-bake.hcl) under `group "all"`.
 
+The docker images use date-based tags (`trixie-py3.14-20260616`, `20260616-2` for same-day rebuilds) plus floating `latest`. 
+
+## Multi-Python Devcontainer Variants
+
+Standard single-Python targets ship one Python version (from the base image) in a full primary venv. Multi-Python targets additionally bake in one or more lean secondary environments at image build time — no post-create download needed.
+
+### Python Environments in the Image
+
+| Venv | Path | Contents |
+|------|------|----------|
+| Primary | `/home/vscode/.venv` | Full toolkit — see [Primary Venv Packages](#primary-venv-packages) below |
+| Secondary 3.11 | `/home/vscode/.venv-py311` | Lean: `uv`, `debugpy`, `ruff` |
+| Secondary 3.9 | `/home/vscode/.venv-py39` | Lean: `uv`, `debugpy`, `ruff` |
+
+VS Code discovers all venvs automatically. Switch via `Python: Select Interpreter` or:
+
+```bash
+source /home/vscode/.venv-py311/bin/activate
+```
+
+### Available Multi-Python Targets
+
+| Target | Primary Python | Secondaries | Tag example |
+|--------|---------------|-------------|-------------|
+| `trixie-py314-vsc` | 3.14 (full) | — | `trixie-py314-latest` |
+| `trixie-py314-py311-vsc` | 3.14 (full) | 3.11 (lean) | `trixie-py314-py311-latest` |
+| `trixie-py314-py311-py39-vsc` | 3.14 (full) | 3.11, 3.9 (lean) | `trixie-py314-py311-py39-latest` |
+
+Tag format for multi-Python variants: `<debian>-<primary>-<secondary...>-<YYYYMMDD>` with a matching `-latest` floating tag.
+
+### Primary Venv Packages
+
+Full toolkit installed into `/home/vscode/.venv`:
+
+```
+boto3            debugpy          PyYAML           aiohttp          asyncpg
+black            click            coverage         hvac             ipdb
+ipython          isort            jinja2           mypy             pydantic
+pydantic-settings  pytest         pytest-asyncio   pytest-cov       redis
+requests         rich             ruff             structlog        tomli_w
+build            twine            setuptools-scm   pip-audit        pre-commit
+tox              pytest-xdist     pytest-mock      check-wheel-contents  uv
+```
+
+Optional (controlled by `INSTALL_*` build args, all enabled by default):
+- `aider-chat` — `INSTALL_AIDER=true`
+- `codex`, `claude-code`, `antigravity` — npm-based, installed separately from the venv
+
+### Lean Venv Packages (Secondary Pythons)
+
+Each secondary venv (`/home/vscode/.venv-py{nodot}`) contains only:
+
+```
+pip (latest)   uv   debugpy   ruff
+```
+
+Install project-specific dependencies on demand:
+
+```bash
+uv pip install -r requirements.txt --python /home/vscode/.venv-py311/bin/python
+```
+
+### Adding More Secondary Versions or Targets
+
+Copy an existing multi-Python target in `docker-bake.hcl`, update `SECONDARY_PYTHON_VERSIONS` (space-separated dotted versions) and the target name and tags to match. Example — adding 3.13 alongside 3.11:
+
+```hcl
+target "trixie-py314-py313-py311-vsc" {
+  inherits = ["base"]
+  args = {
+    BASE_IMAGE = "${DEVCONTAINERS_BASE_PINNED}"
+    PYTHON_VERSION = "3.14"
+    DEBIAN_VERSION = "trixie"
+    SECONDARY_PYTHON_VERSIONS = "3.13 3.11"
+    ...
+  }
+  tags = [vsc_multi_tag("trixie", "py314-py313-py311"), vsc_multi_latest_tag("trixie", "py314-py313-py311")]
+}
+```
+
+The `vsc_multi_tag` / `vsc_multi_latest_tag` HCL functions accept any `<debian>` and `<pythons_label>` string, so naming is fully flexible.
+
+### Python Version Support Status
+
+CPython has no odd/even stability distinction (unlike the Linux kernel). All released minor versions are production-quality. Support windows as of June 2026:
+
+| Version | EOL | Notes |
+|---------|-----|-------|
+| 3.9 | Oct 2025 | **EOL** — include only for legacy compatibility testing |
+| 3.11 | Oct 2027 | Active — production staple, matches netcup-api-filter deploy target |
+| 3.13 | Oct 2029 | Active — previous stable release |
+| 3.14 | Oct 2030 | **Current stable** — primary base image |
+
 ## Build and Push Flow
 
 Entry point:

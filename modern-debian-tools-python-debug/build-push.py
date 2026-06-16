@@ -101,12 +101,9 @@ def run_resolver() -> dict[str, str]:
         [sys.executable, str(RESOLVER_SCRIPT)],
         cwd=str(ROOT),
         text=True,
-        capture_output=True,
+        stdout=subprocess.PIPE,  # capture KEY=VALUE output for parsing
+        # stderr inherits parent → streams live to terminal
     )
-
-    # Print stderr from resolver (progress info)
-    if result.stderr:
-        sys.stderr.write(result.stderr)
 
     if result.returncode == 3:
         sys.stderr.write(
