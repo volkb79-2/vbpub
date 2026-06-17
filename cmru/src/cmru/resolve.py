@@ -21,7 +21,11 @@ def resolve_via_latest_json(
     from urllib.request import urlopen
     from urllib.error import HTTPError
 
-    latest_tag = f"{prefix}-latest"
+    # The thin pointer tag is "<project>-latest" (e.g. "ciu-latest"), while the
+    # resolver prefix is the full tag prefix "<project>-v" (e.g. "ciu-v"). Strip a
+    # trailing "-v" so the latest.json URL is correct for both conventions.
+    base = prefix[:-2] if prefix.endswith("-v") else prefix
+    latest_tag = f"{base}-latest"
     latest_json_url = f"{gh_releases_url}/download/{latest_tag}/latest.json"
     try:
         with urlopen(latest_json_url, timeout=10) as resp:
@@ -78,14 +82,18 @@ def format_result(result: Dict[str, Any], fmt: str) -> str:
 
 
 def resolve_main(argv: Optional[list] = None) -> None:
-    """Entry point for ``ciu-forge resolve``."""
+    """Entry point for ``cmru resolve``."""
     import argparse
+    import os
     parser = argparse.ArgumentParser(description="Resolve latest release for a project (S5)")
-    parser.add_argument("--project", required=True, help="Project name (maps to prefix via config)")
-    parser.add_argument("--prefix", help="Tag prefix override (e.g. tls-edge-v)")
+    parser.add_argument("--project", help="Project name (maps to prefix via config)")
+    parser.add_argument("--prefix", help="Tag prefix override (e.g. ciu-v, tls-edge-v)")
     parser.add_argument("--format", choices=["json", "env", "url"], default="json")
-    parser.add_argument("--config", help="Path to release.toml or ciu-forge.toml")
+    parser.add_argument("--config", help="Path to release.toml or cmru.toml")
     args = parser.parse_args(argv)
+
+    if not args.project and not args.prefix:
+        parser.error("one of --project or --prefix is required")
 
     from cmru.hosts.github import github_host_from_env
     host = github_host_from_env()
@@ -102,7 +110,13 @@ def resolve_main(argv: Optional[list] = None) -> None:
         else:
             prefix = f"{args.project}-v"
 
-    result = resolve(host, prefix)
+    # Build the Releases base URL so resolve() can try the fast latest.json path
+    # (single request) before falling back to scanning the releases list (S5.3/S5.4).
+    owner = os.environ.get("GITHUB_USERNAME") or ""
+    repo = os.environ.get("GITHUB_REPO") or ""
+    gh_releases_url = f"https://github.com/{owner}/{repo}/releases" if owner and repo else None
+
+    result = resolve(host, prefix, gh_releases_url=gh_releases_url)
     if not result:
         print(f"[ERROR] No releases found for prefix '{prefix}'", file=sys.stderr)
         sys.exit(1)

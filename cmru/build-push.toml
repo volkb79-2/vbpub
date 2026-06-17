@@ -3,16 +3,16 @@ log_dir = "logs"
 release_config = "../release.toml"
 
 [env]
-CIU_FORGE_RELEASE_NOTES = "## ciu-forge wheel\nBuild, publish, and release orchestration for CIU-family monorepos.\n\n**Install**\n```bash\npipx install ciu_forge-*.whl\n# or\npython -m pip install ciu_forge-*.whl\n```"
+CMRU_RELEASE_NOTES = "## cmru wheel\nBuild, publish, and release orchestration for CIU-family monorepos.\n\n**Install**\n```bash\npipx install cmru-*.whl\n# or\npython -m pip install cmru-*.whl\n```"
 
 [steps.build-wheel]
 clean_dirs = ["dist"]
 commands = [
-  { label = "ciu-forge: build wheel", argv = ["python3", "-m", "build", "--wheel", "--outdir", "dist"], cwd = "." },
+  { label = "cmru: build wheel", argv = ["python3", "-m", "build", "--wheel", "--outdir", "dist"], cwd = "." },
 ]
 
 [steps.publish-wheel]
 required_env = ["GITHUB_PUSH_PAT", "GITHUB_USERNAME", "GITHUB_REPO"]
 commands = [
-  { label = "ciu-forge: publish wheel", argv = ["python3", "scripts/publish-wheel.py"], cwd = "." },
+  { label = "cmru: publish wheel", argv = ["python3", "scripts/publish-wheel.py"], cwd = "." },
 ]

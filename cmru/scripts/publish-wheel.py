@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish ciu-forge wheel to GitHub Releases.
+"""Publish cmru wheel to GitHub Releases.
 
 Required environment (set by release.toml / step runner):
 - GITHUB_PUSH_PAT
@@ -15,10 +15,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = ROOT.parent
-CIU_FORGE_SRC = ROOT / "src"
-sys.path.insert(0, str(CIU_FORGE_SRC))
+CMRU_SRC = ROOT / "src"
+sys.path.insert(0, str(CMRU_SRC))
 
-from ciu_forge.release import GitHubReleases, publish_versioned  # noqa: E402
+from cmru.release import GitHubReleases, publish_versioned  # noqa: E402
 
 
 def fail(message: str) -> None:
@@ -27,7 +27,7 @@ def fail(message: str) -> None:
 
 
 def find_wheel(dist_dir: Path) -> Path:
-    wheels = sorted(dist_dir.glob("ciu_forge-*.whl"))
+    wheels = sorted(dist_dir.glob("cmru-*.whl"))
     if not wheels:
         fail(f"No wheel found in {dist_dir}. Run build step first.")
     if len(wheels) > 1:
@@ -57,22 +57,22 @@ def main() -> None:
     dist_dir = ROOT / "dist"
     wheel = find_wheel(dist_dir)
     version = read_wheel_version(wheel)
-    notes = os.getenv("CIU_FORGE_RELEASE_NOTES", f"ciu-forge {version}")
+    notes = os.getenv("CMRU_RELEASE_NOTES", f"cmru {version}")
 
     gh = GitHubReleases(owner=owner, repo=repo, token=token)
     result = publish_versioned(
         gh,
-        prefix="ciu-forge",
+        prefix="cmru",
         version=version,
         asset_path=wheel,
         notes=notes,
         latest_pointer=True,
     )
 
-    print(f"[INFO] Published ciu-forge {version}")
-    print(f"[INFO] CIU_FORGE_WHEEL_SHA256={result['sha256']}")
+    print(f"[INFO] Published cmru {version}")
+    print(f"[INFO] CMRU_WHEEL_SHA256={result['sha256']}")
     if result.get("asset_url"):
-        print(f"[INFO] CIU_FORGE_WHEEL_ASSET_URL={result['asset_url']}")
+        print(f"[INFO] CMRU_WHEEL_ASSET_URL={result['asset_url']}")
 
 
 if __name__ == "__main__":
