@@ -89,9 +89,13 @@ class GitHubReleases:
     def _request(self, method: str, url: str, data: bytes | None = None,
                  content_type: str | None = None) -> tuple[int, str]:
         headers = {
-            "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
         }
+        # Only send an Authorization header when a token is present. An empty
+        # "Bearer " header makes GitHub return 401 even for public repos, which
+        # breaks unauthenticated reads (e.g. resolving a public wheel).
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
         if content_type:
             headers["Content-Type"] = content_type
         req = Request(url, method=method, headers=headers, data=data)

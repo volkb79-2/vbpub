@@ -64,7 +64,18 @@ def main() -> None:
 
     # Resolve via the contract: highest-semver ciu-v* release (not the thin
     # ciu-latest pointer, which holds only latest.json since the refactor).
-    info = gh.resolve_latest("ciu")
+    # This runs immediately after publish, where GitHub's releases-list endpoint
+    # can briefly lag behind release creation (eventual consistency), so retry.
+    import time
+
+    info = None
+    for attempt in range(6):
+        info = gh.resolve_latest("ciu")
+        if info is not None:
+            break
+        if attempt < 5:
+            print(f"[INFO] No ciu-v* release visible yet; retrying ({attempt + 1}/6)…")
+            time.sleep(5)
     if info is None:
         print("[ERROR] No ciu-v* releases found in the repository", file=sys.stderr)
         raise SystemExit(1)
