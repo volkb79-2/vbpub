@@ -49,13 +49,15 @@ RENDER_ONLY_STACKS = (VAULT_STACK, REDIS_STACK, DB_STACK)
 
 
 def _set_env_defaults() -> None:
-    os.environ.setdefault("DOCKER_GID", "999")
-    os.environ.setdefault("CONTAINER_UID", "1000")
-    os.environ.setdefault("CONTAINER_GID", "999")
-    os.environ.setdefault("USER_UID", "1000")
-    os.environ.setdefault("USER_GID", "1000")
+    uid = str(os.getuid())
+    gid = str(os.getgid())
+    os.environ["DOCKER_GID"] = gid
+    os.environ["CONTAINER_UID"] = uid
+    os.environ["CONTAINER_GID"] = gid
+    os.environ["USER_UID"] = uid
+    os.environ["USER_GID"] = gid
     os.environ.setdefault("USER_NAME", "tester")
-    os.environ.setdefault("DOCKER_UID", "1000")
+    os.environ["DOCKER_UID"] = uid
     os.environ.setdefault("PUBLIC_FQDN", "example.test")
     os.environ.setdefault("PUBLIC_IP", "127.0.0.1")
     os.environ["REPO_ROOT"] = str(TEST_REPO)

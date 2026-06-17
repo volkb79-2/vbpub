@@ -21,7 +21,6 @@ from ciu.config_model import (  # noqa: E402
     RESERVED_GLOBAL_NAMESPACES,
     chain_dirs,
     deep_merge,
-    ensure_override_template,
     expand_env_vars_or_fail,
     parse_toml,
     parse_toml_string,
@@ -105,29 +104,6 @@ def test_write_rendered_toml_roundtrip(tmp_path):
     write_rendered_toml(out, cfg)
     assert out.exists()
     assert parse_toml(out) == cfg
-
-
-# ---------------------------------------------------------------------------
-# ensure_override_template
-# ---------------------------------------------------------------------------
-
-
-def test_ensure_override_template_creates_when_missing(tmp_path):
-    defaults = tmp_path / "ciu.global.defaults.toml.j2"
-    overrides = tmp_path / "ciu.global.toml.j2"
-    defaults.write_text('[ciu]\nkey = "default"\n', encoding="utf-8")
-    ensure_override_template(defaults, overrides)
-    assert overrides.exists()
-    assert overrides.read_text() == defaults.read_text()
-
-
-def test_ensure_override_template_does_not_overwrite(tmp_path):
-    defaults = tmp_path / "ciu.global.defaults.toml.j2"
-    overrides = tmp_path / "ciu.global.toml.j2"
-    defaults.write_text('[ciu]\nkey = "default"\n', encoding="utf-8")
-    overrides.write_text('[ciu]\nkey = "custom"\n', encoding="utf-8")
-    ensure_override_template(defaults, overrides)
-    assert overrides.read_text() == '[ciu]\nkey = "custom"\n'
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +351,62 @@ def test_render_stack_overrides_win(tmp_path):
 
 def test_render_stack_missing_defaults_raises(tmp_path):
     with pytest.raises(FileNotFoundError, match="ciu.defaults.toml.j2"):
+        render_stack(tmp_path, {})
+
+
+# --- CIU-8: per-stack override mirrors the global sparse model (S3.1a) -------
+
+
+def test_render_stack_does_not_auto_create_override(tmp_path):
+    """CIU-8: render_stack MUST NOT auto-create ciu.toml.j2 from defaults.
+
+    The generated full intermediate was what shadowed later defaults edits and
+    survived clean. Mirrors test_render_global_chain_skips_auto_create.
+    """
+    _write_stack_defaults(tmp_path, '[redis_core]\nenv = "test"\n')
+    render_stack(tmp_path, {})
+    assert not (tmp_path / "ciu.toml.j2").exists(), (
+        "render_stack must not auto-create the per-stack override (CIU-8)"
+    )
+
+
+def test_render_stack_defaults_edit_not_shadowed(tmp_path):
+    """CIU-8: editing committed defaults takes effect on re-render — no stale shadow.
+
+    Before the fix, the auto-created ciu.toml.j2 (a full copy of the old
+    defaults) deep-merged over defaults and pinned the old value.
+    """
+    _write_stack_defaults(tmp_path, '[redis_core]\nimage_tag = "7-alpine"\n')
+    first = render_stack(tmp_path, {})
+    assert first["redis_core"]["image_tag"] == "7-alpine"
+
+    # Edit the committed defaults only (no override file is ever created).
+    _write_stack_defaults(tmp_path, '[redis_core]\nimage_tag = "8-alpine"\n')
+    second = render_stack(tmp_path, {})
+    assert second["redis_core"]["image_tag"] == "8-alpine", (
+        "an edit to ciu.defaults.toml.j2 must not be shadowed (CIU-8)"
+    )
+
+
+def test_render_stack_sparse_override_falls_through(tmp_path):
+    """A present (committed) sparse override sets only what differs; the rest
+    falls through from defaults — exactly the global override semantics."""
+    _write_stack_defaults(
+        tmp_path, '[redis_core]\nimage_tag = "7-alpine"\nname = "redis"\n'
+    )
+    _write_stack_overrides(tmp_path, '[redis_core]\nimage_tag = "8-alpine"\n')
+    result = render_stack(tmp_path, {})
+    assert result["redis_core"]["image_tag"] == "8-alpine"   # overridden
+    assert result["redis_core"]["name"] == "redis"           # fell through
+
+
+def test_render_stack_secret_in_override_aborts(tmp_path):
+    """S3.1a parity: a hardcoded credential in ciu.toml.j2 aborts render_stack."""
+    _write_stack_defaults(tmp_path, '[redis_core]\nname = "redis"\n')
+    _write_stack_overrides(
+        tmp_path, '[redis_core]\ndb_password = "very-long-secret-value"\n'
+    )
+    with pytest.raises(ValueError, match="S3.1a"):
         render_stack(tmp_path, {})
 
 

@@ -259,9 +259,12 @@ license  = "{{ secret('license') }}"
 version = "{{ auto_generated.build_version }}"   # [S3.9]
 ```
 
-The compose service KEY must equal the `<service>` component of the configfile
-section path — here `app` from `[app_config.app.configfile.main]` [S5.3]. The
-mount appears in the overlay, not in `ciu.compose.yml`:
+For a single service, the compose service key usually equals the `<service>`
+component of the configfile section path — here `app` from
+`[app_config.app.configfile.main]` [S5.3]. For replicated services, one base
+section such as `[app_config.worker.configfile.main]` fans out to rendered
+compose keys `worker-1`, `worker-2`, and so on. The mount appears in the
+overlay, not in `ciu.compose.yml`:
 
 ```yaml
 # ciu.compose.yml.j2

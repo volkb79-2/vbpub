@@ -160,18 +160,36 @@ class TestInlineTableForm:
         assert spec.mode == "0400"
         assert spec.uid == 999
 
+    def test_inline_consumed_by_hook_s4_20(self) -> None:
+        spec = parse_value(
+            "bootstrap_token",
+            {"directive": "GEN_LOCAL:bootstrap", "consumed_by": "hook"},
+            "stack.secrets",
+        )
+        assert spec.consumed_by == "hook"
+
+    def test_inline_consumed_by_rejects_unknown_s4_20(self) -> None:
+        with pytest.raises(ValueError, match=r"\[S4\.20\].*consumed_by"):
+            parse_value(
+                "bootstrap_token",
+                {"directive": "GEN_LOCAL:bootstrap", "consumed_by": "sidecar"},
+                "stack.secrets",
+            )
+
     def test_inline_all_options_s4_4(self) -> None:
         spec = parse_value(
             "consul_tok",
             {
                 "directive": "GEN_TO_VAULT:consul/token",
                 "expose_env": "CONSUL_TOKEN",
+                "consumed_by": "hook",
                 "mode": "0440",
                 "uid": 0,
             },
             "stack.secrets",
         )
         assert spec.expose_env == "CONSUL_TOKEN"
+        assert spec.consumed_by == "hook"
         assert spec.uid == 0
 
     def test_inline_missing_directive_key_s4_4(self) -> None:

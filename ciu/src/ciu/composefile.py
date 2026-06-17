@@ -37,9 +37,9 @@ guard_config(config, specs) -> dict
 redact_config(config, specs) -> dict
 render_compose(template_path, guarded_config) -> str
 leak_scan(rendered_text, materialized) -> None
-validate_consumption(compose_yaml_text, declared) -> list[str]
+validate_consumption(compose_yaml_text, declared, *, configfile_mounts=(), hook_consumed=()) -> list[str]
 render_configfiles(stack_dir, root_key, config, secret_value_fn) -> list[ConfigFileMount]
-generate_overlay(stack_dir, materialized, configfile_mounts, *, repo_root, physical_root) -> Path | None
+generate_overlay(stack_dir, materialized, configfile_mounts, *, repo_root, physical_root, compose_yaml_text) -> Path | None
 compose_process_env(specs, materialized, *, base, compose_profiles) -> dict
 compose_file_args(stack_dir, overlay_path) -> list[str]
 """
@@ -313,13 +313,21 @@ def _service_secret_names(service_block: Any) -> list[str]:
     return names
 
 
-def validate_consumption(compose_yaml_text: str, declared: set[str]) -> list[str]:
-    """Cross-check compose secret consumption against *declared* names (S4.20).
+def validate_consumption(
+    compose_yaml_text: str,
+    declared: set[str],
+    *,
+    configfile_mounts: Iterable["ConfigFileMount"] = (),
+    hook_consumed: Iterable[str] = (),
+) -> list[str]:
+    """Cross-check secret consumption against *declared* names (S4.20).
 
     Parses *compose_yaml_text*, collects every ``services.*.secrets`` reference
     (short and long form). A reference to a name not in *declared* raises
-    ``ValueError`` tagged ``[S4.20]``. Returns the sorted list of declared names
-    consumed by no service (the caller emits the S4.20 warning).
+    ``ValueError`` tagged ``[S4.20]``. Also counts secrets consumed by S5
+    configfiles and secrets explicitly marked as hook-consumed. Returns the
+    sorted list of declared names consumed by no channel (the caller emits the
+    S4.20 warning).
     """
     doc = yaml.safe_load(compose_yaml_text)
     services = {}
@@ -339,6 +347,24 @@ def validate_consumption(compose_yaml_text: str, declared: set[str]) -> list[str
                 )
             consumed.add(ref)
 
+    for mount in configfile_mounts:
+        for name in mount.consumed_secrets:
+            if name not in declared:
+                raise ValueError(
+                    f"[S4.20] configfile '{mount.service}.{mount.name}' references "
+                    f"undeclared secret '{name}'. Declare it in a `secrets` table "
+                    "under the stack root key."
+                )
+            consumed.add(name)
+
+    for name in hook_consumed:
+        if name not in declared:
+            raise ValueError(
+                f"[S4.20] hook consumption marker references undeclared secret "
+                f"'{name}'. Declare it in a `secrets` table under the stack root key."
+            )
+        consumed.add(name)
+
     return sorted(declared - consumed)
 
 
@@ -357,6 +383,8 @@ class ConfigFileMount:
     rendered_path  : logical path of the rendered file under ``.ciu/rendered/``.
     target         : absolute container path the overlay binds it to (S5.3).
     mode           : octal mode string, default ``"0440"`` (S5.1).
+    consumed_secrets: secret names read by this template via ``secret()``
+                      (S4.20/S5.4).
     """
 
     service: str
@@ -364,6 +392,7 @@ class ConfigFileMount:
     rendered_path: Path
     target: str
     mode: str = "0440"
+    consumed_secrets: tuple[str, ...] = ()
 
 
 def _make_secret_fn(secret_value_fn, declared_names: set[str]):
@@ -473,7 +502,18 @@ def render_configfiles(
                 )
 
             raw = template_path.read_text(encoding="utf-8")
-            context = {**guarded, "env": dict(os.environ), "secret": secret_fn}
+            consumed_here: set[str] = set()
+
+            def configfile_secret(name: str) -> str:
+                value = secret_fn(name)
+                consumed_here.add(name)
+                return value
+
+            context = {
+                **guarded,
+                "env": dict(os.environ),
+                "secret": configfile_secret,
+            }
             rendered_text = render_jinja2_text(raw, context)
 
             out_path = rendered_root / service_name / cfg_name
@@ -493,6 +533,7 @@ def render_configfiles(
                     rendered_path=out_path,
                     target=target,
                     mode=mode,
+                    consumed_secrets=tuple(sorted(consumed_here)),
                 )
             )
 
@@ -503,6 +544,49 @@ def render_configfiles(
 # generate_overlay (S4.17 / S8.1)
 # ---------------------------------------------------------------------------
 
+_INSTANCE_SERVICE_RE_TEMPLATE = r"^{base}-([1-9][0-9]*)$"
+
+
+def _compose_service_names(compose_yaml_text: str | None) -> set[str]:
+    """Return service keys from a rendered compose document, if available."""
+    if not compose_yaml_text:
+        return set()
+    doc = yaml.safe_load(compose_yaml_text)
+    if not isinstance(doc, Mapping):
+        return set()
+    services = doc.get("services")
+    if not isinstance(services, Mapping):
+        return set()
+    return {str(name) for name in services}
+
+
+def _configfile_mount_services(base_service: str, compose_services: set[str]) -> list[str]:
+    """Resolve one configfile service selector to concrete compose services.
+
+    Exact compose service keys keep the historical behavior. If no exact key
+    exists, a base selector fans out to instance-indexed keys named
+    ``<base>-1``, ``<base>-2``, ... . With no rendered compose service data, or
+    no match, we preserve the selector as-is for backward compatibility.
+    """
+    if base_service in compose_services:
+        return [base_service]
+    if not compose_services:
+        return [base_service]
+
+    pattern = re.compile(
+        _INSTANCE_SERVICE_RE_TEMPLATE.format(base=re.escape(base_service))
+    )
+    matches: list[tuple[int, str]] = []
+    for service_name in compose_services:
+        m = pattern.match(service_name)
+        if m:
+            matches.append((int(m.group(1)), service_name))
+
+    if not matches:
+        return [base_service]
+    return [service_name for _, service_name in sorted(matches)]
+
+
 def generate_overlay(
     stack_dir: Path | str,
     materialized: Mapping[str, Any],
@@ -510,6 +594,7 @@ def generate_overlay(
     *,
     repo_root: Path | None = None,
     physical_root: Path | None = None,
+    compose_yaml_text: str | None = None,
 ) -> Path | None:
     """Write ``<stack>/.ciu/ciu.compose.overlay.yml`` (the overlay); S4.17/S8.1.
 
@@ -519,7 +604,7 @@ def generate_overlay(
           <name>:
             file: <physical path of the secret file>      # every materialized secret
         services:
-          <service>:
+          <service-or-expanded-instance>:
             volumes:
               - "<physical rendered path>:<target>:ro"     # per configfile mount
 
@@ -550,6 +635,7 @@ def generate_overlay(
 
     if configfile_mounts:
         services: dict[str, Any] = {}
+        compose_services = _compose_service_names(compose_yaml_text)
         for mount in configfile_mounts:
             phys = to_physical_path(
                 Path(mount.rendered_path),
@@ -564,8 +650,9 @@ def generate_overlay(
                 "target": mount.target,
                 "read_only": True,
             }
-            svc = services.setdefault(mount.service, {})
-            svc.setdefault("volumes", []).append(volume_entry)
+            for service_name in _configfile_mount_services(mount.service, compose_services):
+                svc = services.setdefault(service_name, {})
+                svc.setdefault("volumes", []).append(volume_entry)
         overlay["services"] = services
 
     overlay_path = stack_dir / MACHINE_DIR / OVERLAY_NAME

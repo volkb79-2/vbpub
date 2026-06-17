@@ -146,10 +146,17 @@ requirements are marked *(withdrawn)*.
   `ciu.global.defaults.toml.j2` (committed, full defaults) +
   `ciu.global.toml.j2` (**committed sparse override**, see S3.1a; optional —
   if absent, defaults apply only) → rendered `ciu.global.toml` (gitignored);
-  per stack `ciu.defaults.toml.j2` (committed) +
-  `ciu.toml.j2` (gitignored, auto-created from defaults) → rendered `ciu.toml`.
+  per stack `ciu.defaults.toml.j2` (committed, full defaults) +
+  `ciu.toml.j2` (**committed sparse override**, see S3.1a; optional, **not
+  auto-created** — if absent, defaults apply only) → rendered `ciu.toml`
+  (gitignored). The per-stack override mirrors the global override exactly:
+  CIU never copies defaults into it. (Before CIU-8, CIU auto-created
+  `ciu.toml.j2` as a full copy of defaults; that generated intermediate then
+  shadowed later edits to the committed defaults and survived `clean`. There is
+  no generated intermediate now, so nothing can go stale.)
 
-- **S3.1a** Global override constraints (`ciu.global.toml.j2`):
+- **S3.1a** Override constraints — apply identically to the global override
+  (`ciu.global.toml.j2`) and the per-stack override (`ciu.toml.j2`):
   1. **Secret-free**: CIU MUST scan the raw template text before rendering.
      Any PEM key/certificate block (`-----BEGIN`) or sensitive key name
      (`password`, `token`, `secret`, `api_key`, `credential`, …) paired
@@ -162,8 +169,10 @@ requirements are marked *(withdrawn)*.
      recursively. Lists in the override replace the defaults list entirely
      (no concatenation). Key deletion is not supported — use the falsy
      equivalent (`false`, `""`, `[]`) to disable a default.
-  4. **Not auto-created**: CIU never generates this file. Create it manually
-     in the repository with only the structural overrides needed.
+  4. **Not auto-created**: CIU never generates either override file. Create it
+     manually in the repository with only the structural overrides needed; an
+     absent override is the normal case (defaults apply alone). `clean`/`--reset`
+     remove rendered outputs but MUST NOT remove a committed override.
 
 - **S3.2** Render pipeline per template: Jinja2 render (context = config
   merged so far + `env` = process environment) → `$VAR`/`${VAR}` expansion
@@ -320,9 +329,11 @@ requirements are marked *(withdrawn)*.
   discouraged; CIU MUST log a notice naming each exposed secret.
   `expose_env` is invalid on `ASK_FILE` (CIU never loads the file's content,
   so there is no value to expose) — rejected at parse time.
-- **S4.20** CIU MUST warn when a declared secret is consumed by no service in
-  the rendered compose file, and abort when a service references an
-  undeclared secret name.
+- **S4.20** CIU MUST warn when a declared secret is consumed by no channel,
+  and abort when any channel references an undeclared secret name. Consumption
+  channels are: rendered compose `services.*.secrets`, S5 configfile templates
+  that call `secret('<name>')`, and explicit hook consumption marked on the
+  secret declaration with `consumed_by = "hook"`.
 
 ### Leak prevention
 
@@ -359,12 +370,13 @@ requirements are marked *(withdrawn)*.
   `<stack>/.ciu/rendered/<service>/<cfgname>` (any text format; TOML is the
   convention for own apps).
 - **S5.3** The overlay (S4.17) bind-mounts the rendered file read-only at
-  `target` for that service, using the physical path. The mount attaches to
-  the compose service whose **key** in the compose file equals the
-  `<service>` component of the configfile section path — so a stack using
-  `[<root>.app.configfile.main]` MUST name its compose service `app`
-  (display names with hyphens belong in `container_name`/labels via the
-  `name` field, S3.8).
+  `target` for that service, using the physical path. If the rendered compose
+  file has a service key exactly equal to the `<service>` component of the
+  configfile section path, the mount attaches to that service. Otherwise, the
+  section is treated as a base service selector and fans out to every rendered
+  compose service key named `<service>-<positive-int>` (for instance-indexed
+  services such as `worker-1`, `worker-2`). If neither form exists, CIU
+  preserves the selector as written for compose to diagnose.
 - **S5.4** Configfile templates additionally receive `secret(name) -> str`,
   valid only for names declared in the stack's secrets tables (unknown name =
   abort). This is the sanctioned home for composite values (DSNs, URLs

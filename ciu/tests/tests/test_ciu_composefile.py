@@ -55,6 +55,7 @@ def _spec(name: str, table_path: str = "app.secrets", **kw) -> SecretSpec:
         kind=kw.get("kind", "GEN_LOCAL"),
         locator=kw.get("locator", "x"),
         expose_env=kw.get("expose_env"),
+        consumed_by=kw.get("consumed_by"),
         table_path=table_path,
     )
 
@@ -277,6 +278,31 @@ services:
         unconsumed = validate_consumption(yaml_text, {"a", "b", "c"})
         assert unconsumed == ["c"]
 
+    def test_configfile_consumption_counts_s4_20(self, tmp_path: Path) -> None:
+        mount = ConfigFileMount(
+            service="api",
+            name="main",
+            rendered_path=tmp_path / "main",
+            target="/etc/app/config.toml",
+            consumed_secrets=("db_password",),
+        )
+        yaml_text = "services:\n  api:\n    image: app\n"
+        unconsumed = validate_consumption(
+            yaml_text,
+            {"db_password", "unused"},
+            configfile_mounts=[mount],
+        )
+        assert unconsumed == ["unused"]
+
+    def test_hook_consumption_marker_counts_s4_20(self) -> None:
+        yaml_text = "services:\n  api:\n    image: app\n"
+        unconsumed = validate_consumption(
+            yaml_text,
+            {"bootstrap_token", "unused"},
+            hook_consumed={"bootstrap_token"},
+        )
+        assert unconsumed == ["unused"]
+
 
 # ---------------------------------------------------------------------------
 # S5 — render_configfiles
@@ -314,6 +340,7 @@ class TestRenderConfigfiles:
 
         mounts = render_configfiles(stack, "app", config, secret_value_fn)
         assert len(mounts) == 1
+        assert mounts[0].consumed_secrets == ("pw",)
         rendered = mounts[0].rendered_path.read_text()
         assert 'dsn = "postgres://admin:S3cretValue@db"' in rendered
 
@@ -440,6 +467,76 @@ class TestGenerateOverlay:
             "read_only": True,
         }]
         assert "secrets" not in doc
+
+    def test_configfile_base_service_fans_out_to_instances_s5_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CIU-2: a base configfile section mounts to worker-1/worker-2."""
+        import yaml
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        monkeypatch.setenv("REPO_ROOT", str(repo))
+        monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(repo))
+
+        stack = repo / "apps" / "workers"
+        stack.mkdir(parents=True)
+        rendered = stack / ".ciu" / "rendered" / "worker" / "main"
+        rendered.parent.mkdir(parents=True)
+        rendered.write_text("cfg", encoding="utf-8")
+
+        mount = ConfigFileMount(
+            service="worker",
+            name="main",
+            rendered_path=rendered,
+            target="/etc/worker/config.toml",
+        )
+        compose_yaml = """
+services:
+  worker-2:
+    image: worker
+  worker-1:
+    image: worker
+  api:
+    image: api
+"""
+        path = generate_overlay(stack, {}, [mount], compose_yaml_text=compose_yaml)
+        doc = yaml.safe_load(path.read_text())
+        assert sorted(doc["services"]) == ["worker-1", "worker-2"]
+        assert doc["services"]["worker-1"]["volumes"] == doc["services"]["worker-2"]["volumes"]
+
+    def test_configfile_exact_service_wins_over_instance_fanout_s5_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import yaml
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        monkeypatch.setenv("REPO_ROOT", str(repo))
+        monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(repo))
+
+        stack = repo / "apps" / "workers"
+        stack.mkdir(parents=True)
+        rendered = stack / ".ciu" / "rendered" / "worker" / "main"
+        rendered.parent.mkdir(parents=True)
+        rendered.write_text("cfg", encoding="utf-8")
+
+        mount = ConfigFileMount(
+            service="worker",
+            name="main",
+            rendered_path=rendered,
+            target="/etc/worker/config.toml",
+        )
+        compose_yaml = """
+services:
+  worker:
+    image: worker
+  worker-1:
+    image: worker
+"""
+        path = generate_overlay(stack, {}, [mount], compose_yaml_text=compose_yaml)
+        doc = yaml.safe_load(path.read_text())
+        assert sorted(doc["services"]) == ["worker"]
 
     def test_returns_none_when_nothing_to_wire_s8_1(self, tmp_path: Path) -> None:
         stack = tmp_path / "stack"

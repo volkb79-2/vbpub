@@ -20,7 +20,6 @@ expand_env_vars_or_fail(text, source) -> str
 parse_toml_string(text, source)  -> dict
 parse_toml(path)                 -> dict
 write_rendered_toml(path, config)
-ensure_override_template(defaults, overrides)
 scan_override_for_secrets(template_text, source)
 render_jinja2_text(template_text, context) -> str
 render_toml_template(path, context)  -> dict
@@ -36,7 +35,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import tomllib
 from pathlib import Path
 
@@ -144,24 +142,6 @@ def write_rendered_toml(output_path: Path, config: dict) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "wb") as fh:
         tomli_w.dump(config, fh)
-
-
-def ensure_override_template(defaults_path: Path, overrides_path: Path) -> None:
-    """Create the overrides template from defaults when it does not yet exist.
-
-    Used for per-stack ciu.toml.j2 (gitignored, auto-created). NOT called for
-    the global override ciu.global.toml.j2 (committed, sparse — see S3.1a).
-    """
-    if overrides_path.exists():
-        return
-    if not defaults_path.exists():
-        return
-    overrides_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(defaults_path, overrides_path)
-    print(
-        f"[INFO] Created override template from defaults: {overrides_path}",
-        flush=True,
-    )
 
 
 # S3.1a — sensitive key name pattern used in the secret scan
@@ -390,16 +370,25 @@ def render_stack(
 ) -> dict:
     """Render stack templates into ciu.toml and return the merged stack config.
 
-    Pipeline (v1 behaviour, plus S3.4 fix):
+    The per-stack override mirrors the global override model exactly (S3.1a):
+    ``ciu.toml.j2`` is an **optional, committed, sparse** override that CIU
+    **never auto-creates** from defaults. CIU used to copy
+    ``ciu.defaults.toml.j2`` → ``ciu.toml.j2`` on first run; that generated
+    full intermediate then shadowed later edits to the committed defaults and
+    survived ``clean`` (CIU-8). With no generated intermediate, there is nothing
+    to go stale.
+
+    Pipeline (plus S3.4 fix):
       1. Render ciu.defaults.toml.j2 against global_config context.
-      2. Render ciu.toml.j2 (overrides) against deep_merge(global, defaults).
-      3. Deep-merge: defaults then overrides.
-      4. S3.4: if preserve_state and a rendered ciu.toml already exists,
+      2. If ciu.toml.j2 exists: secret-scan it (S3.1a), render against
+         deep_merge(global, defaults), then deep-merge over defaults.
+      3. S3.4: if preserve_state and a rendered ciu.toml already exists,
          carry over ONLY its top-level [state] table.
          [secrets] is explicitly NOT carried (S3.4 withdrawal).
-      5. Write ciu.toml and return.
+      4. Write ciu.toml and return.
 
     Raises FileNotFoundError when ciu.defaults.toml.j2 is missing.
+    Raises ValueError when ciu.toml.j2 contains a raw credential (S3.1a).
     """
     working_dir = Path(working_dir).resolve()
     defaults_path = working_dir / STACK_CONFIG_DEFAULTS
@@ -411,14 +400,16 @@ def render_stack(
             f"{STACK_CONFIG_DEFAULTS} not found in {working_dir}"
         )
 
-    ensure_override_template(defaults_path, overrides_path)
-
     defaults_config = render_toml_template(
         defaults_path, _make_render_context(global_config)
     )
     merged_stack: dict = defaults_config
 
     if overrides_path.exists():
+        # Committed sparse override — same constraints as the global override
+        # (S3.1a): scanned for raw credentials before rendering.
+        raw_override = overrides_path.read_text(encoding="utf-8")
+        scan_override_for_secrets(raw_override, str(overrides_path))
         overrides_context = _make_render_context(
             deep_merge(global_config, defaults_config)
         )

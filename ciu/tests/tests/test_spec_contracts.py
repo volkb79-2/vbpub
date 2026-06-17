@@ -533,8 +533,9 @@ class TestConsumptionValidation:
     def test_declared_but_unconsumed_warns_and_succeeds(self, tmp_path, monkeypatch, capsys):
         """S4.20 — declared-but-unconsumed secrets warn, the run still succeeds.
 
-        The demo declares ``license`` and ``ca_bundle`` but consumes neither in
-        the compose ``secrets:`` list — CIU must warn (naming each) and finish.
+        The demo declares ``ca_bundle`` but consumes it through no compose,
+        configfile, or hook channel — CIU must warn and finish. ``license`` is
+        consumed by the S5 configfile and must not warn.
         """
         repo = build_repo(tmp_path, monkeypatch)
         stack = add_stack(repo, SRC_APP, "applications/app-config")
@@ -544,8 +545,9 @@ class TestConsumptionValidation:
         assert result["status"] == "success"
 
         out = capsys.readouterr().out
-        assert "consumed by no service" in out
-        assert "license" in out and "ca_bundle" in out
+        assert "consumed by no channel" in out
+        assert "ca_bundle" in out
+        assert "declared secret 'license'" not in out
 
 
 # ===========================================================================

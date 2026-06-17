@@ -43,11 +43,11 @@ generated."
 | File | Status | Purpose |
 |---|---|---|
 | `ciu.global.defaults.toml.j2` | Committed (repo-root marker, S1.1) | Canonical global defaults; used as-is if no override exists |
-| `ciu.global.toml.j2` | Gitignored, auto-created | Global override layer; auto-copied from defaults when missing — you MAY edit |
+| `ciu.global.toml.j2` | **Committed, OPTIONAL** | Global sparse override; **not auto-created** (S3.1a) — author only the keys that differ from defaults; absent = defaults apply alone |
 | `ciu.global.toml` | Gitignored, rendered | Runtime global config; read by `ciu-deploy` |
 | `ciu.env` | Gitignored, generated | Machine-identity env (S2); written by `ciu --generate-env` |
 | `<stack>/ciu.defaults.toml.j2` | Committed (stack marker) | Stack defaults |
-| `<stack>/ciu.toml.j2` | Gitignored, auto-created | Stack override layer — you MAY edit |
+| `<stack>/ciu.toml.j2` | **Committed, OPTIONAL** | Stack sparse override; **not auto-created** (S3.1a, CIU-8) — author only the keys that differ from defaults; absent = defaults apply alone |
 | `<stack>/ciu.toml` | Gitignored, rendered | Runtime stack config; `[state]` preserved across re-renders |
 | `<stack>/ciu.compose.yml.j2` | Committed | CIU compose template (Jinja2) |
 | `<stack>/ciu.compose.yml` | Gitignored, rendered | Runtime compose file (what CIU runs) |
@@ -224,6 +224,7 @@ Optional inline-table fields on any directive (except `ASK_FILE`):
 | Field | Effect | Spec |
 |---|---|---|
 | `expose_env = "<NAME>"` | Injects secret value into compose process env under `<NAME>` | S4.19 |
+| `consumed_by = "hook"` | Marks a secret read by a hook via `ctx.secret_file()` so S4.20 does not warn | S4.20 |
 | `mode = "0444"` | Override file mode (default `0440`) | S4.10 |
 | `uid = <int>` | Override file owner UID | S4.10 |
 

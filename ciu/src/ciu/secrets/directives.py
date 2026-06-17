@@ -56,7 +56,13 @@ _REQUIRES_LOCATOR: frozenset[str] = frozenset(
 _VAULT_FIELD_DIRECTIVES: frozenset[str] = frozenset({"ASK_VAULT"})
 
 # S4.4 — allowed inline-table keys (beyond 'directive')
-_ALLOWED_INLINE_KEYS: frozenset[str] = frozenset({"directive", "expose_env", "mode", "uid"})
+_ALLOWED_INLINE_KEYS: frozenset[str] = frozenset({
+    "directive",
+    "expose_env",
+    "mode",
+    "uid",
+    "consumed_by",
+})
 
 # S4.7 / S12 — reserved extension keys (reject with a targeted message)
 _RESERVED_EXTENSION_KEYS: frozenset[str] = frozenset({"length", "charset", "transform"})
@@ -85,6 +91,8 @@ class SecretSpec:
     locator     : provider path/key; None for GEN_EPHEMERAL.
     field       : Vault #field selector (ASK_VAULT only, S4.15); else None.
     expose_env  : optional ENV_NAME to inject into compose process env (S4.19).
+    consumed_by : optional non-compose consumer marker; currently only "hook"
+                  (S4.20).
     mode        : secret-file mode string, default "0440" (S4.10).
     uid         : optional owner UID override (S4.10).
     table_path  : dotted path of the secrets table this spec came from (S4.7).
@@ -95,6 +103,7 @@ class SecretSpec:
     locator: str | None
     field: str | None = dc_field(default=None)
     expose_env: str | None = dc_field(default=None)
+    consumed_by: str | None = dc_field(default=None)
     mode: str = dc_field(default="0440")
     uid: int | None = dc_field(default=None)
     table_path: str = dc_field(default="")
@@ -239,6 +248,13 @@ def parse_value(name: str, value: Any, table_path: str) -> SecretSpec:
             f"[S4.19] 'expose_env' is not valid for ASK_FILE for {ctx}: "
             "CIU never loads ASK_FILE content, so there is no value to expose"
         )
+    consumed_by: str | None = options.get("consumed_by", None)
+    if consumed_by is not None:
+        if consumed_by != "hook":
+            raise ValueError(
+                f"[S4.20] 'consumed_by' for {ctx} must be 'hook' when set, "
+                f"got {consumed_by!r}"
+            )
     mode: str = options.get("mode", "0440")
     uid_raw = options.get("uid", None)
     uid: int | None = None
@@ -256,6 +272,7 @@ def parse_value(name: str, value: Any, table_path: str) -> SecretSpec:
         locator=locator,
         field=vault_field,
         expose_env=expose_env,
+        consumed_by=consumed_by,
         mode=mode,
         uid=uid,
         table_path=table_path,

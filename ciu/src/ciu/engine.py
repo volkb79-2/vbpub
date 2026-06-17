@@ -1102,15 +1102,25 @@ def main_execution(
         print("[STEP 14/17] Scanning rendered compose for leaks...", flush=True)
         composefile.leak_scan(rendered_compose, materialized)
         declared_names = {s.name for s in specs}
-        unconsumed = composefile.validate_consumption(rendered_compose, declared_names)
+        hook_consumed = {
+            spec.name for spec in specs
+            if getattr(spec, "consumed_by", None) == "hook"
+        }
+        unconsumed = composefile.validate_consumption(
+            rendered_compose,
+            declared_names,
+            configfile_mounts=configfile_mounts,
+            hook_consumed=hook_consumed,
+        )
         for name in unconsumed:
-            print(f"[WARN] declared secret '{name}' is consumed by no service (S4.20)", flush=True)
+            print(f"[WARN] declared secret '{name}' is consumed by no channel (S4.20)", flush=True)
 
         # ---- Step 15: overlay (S4.17/S8.1) ----
         print("[STEP 15/17] Generating overlay...", flush=True)
         overlay_path = composefile.generate_overlay(
             working_dir, materialized, configfile_mounts,
             repo_root=repo_root, physical_root=None,
+            compose_yaml_text=rendered_compose,
         )
         # S4.22 completeness: scan the overlay for secret leaks too.
         if overlay_path is not None and overlay_path.exists():
@@ -1494,4 +1504,3 @@ def main(argv: Optional[list] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
