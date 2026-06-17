@@ -95,7 +95,7 @@ def expand_env_vars_or_fail(raw_text: str, source: str) -> str:
         missing_list = ", ".join(sorted(missing))
         raise ValueError(
             f"[ERROR] Missing required environment values in {source}: {missing_list}.\n"
-            "[ERROR] ciu.env is authoritative. Run ciu --generate-env "
+            "[ERROR] ciu.env is authoritative. Run 'ciu env generate' "
             "and source ciu.env before running CIU."
         )
 

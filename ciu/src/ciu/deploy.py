@@ -165,7 +165,7 @@ def resolve_repo_root(define_root: Optional[Path]) -> Path:
     env_repo_root = os.environ.get("REPO_ROOT")
     if not env_repo_root:
         raise WorkspaceEnvError(
-            "[ERROR] REPO_ROOT not set. Run ciu-deploy --generate-env and "
+            "[ERROR] REPO_ROOT not set. Run 'ciu env generate' and "
             "source ciu.env."
         )
     return Path(env_repo_root).resolve()

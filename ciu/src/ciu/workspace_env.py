@@ -112,7 +112,7 @@ def find_workspace_env(start_dir: Path) -> Path:
 
     raise WorkspaceEnvError(
         f"Workspace environment file {ENV_FILE_NAME} not found. "
-        "Run: ciu --generate-env (or ciu-deploy --generate-env)."
+        "Run: ciu env generate"
     )
 
 
@@ -181,7 +181,7 @@ def ensure_workspace_env(required_keys: Iterable[str]) -> None:
         raise WorkspaceEnvError(
             "Missing required workspace environment variables: "
             f"{missing_str}. "
-            "Run: ciu --generate-env and source ciu.env."
+            "Run: ciu env generate and source ciu.env."
         )
 
 
