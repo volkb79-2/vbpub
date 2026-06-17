@@ -15,7 +15,7 @@ Design (see docs/SPEC.md S4–S5):
     a stable discovery URL for humans/external consumers, nothing more.
 
 Stdlib only (urllib/json/hashlib) so project publish scripts can import it without
-installing anything — they just add ``ciu-forge/src`` to ``sys.path``.
+installing anything — they just add ``cmru/src`` to ``sys.path``.
 
 Moved from ``release_manager.github_release`` in P1; ``release_manager.github_release``
 is now a re-export shim kept for backwards compatibility until P6.
@@ -274,7 +274,7 @@ def publish_versioned(
             f"**SHA256:** `{digest}`\n\n"
             f"Verify: `sha256sum -c {asset_path.name}.sha256`\n\n"
             f"Resolve latest programmatically by scanning `{prefix}-v*` releases "
-            f"(highest semver); see ciu-forge docs/SPEC.md S5."
+            f"(highest semver); see cmru docs/SPEC.md S5."
         )
         gh.publish(release_tag, release_tag, body, [asset_path, sidecar, *extras],
                    target_commitish=target_commitish)

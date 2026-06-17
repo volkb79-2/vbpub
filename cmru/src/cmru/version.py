@@ -1,8 +1,8 @@
 """Auto-versioning: change detection, bump, and release trigger (S12).
 
 CLI verbs:
-  ciu-forge status  — dry-run: show which projects changed and their next versions
-  ciu-forge release — detect → version → tag → (caller does build+publish)
+  cmru status  — dry-run: show which projects changed and their next versions
+  cmru release — detect → version → tag → (caller does build+publish)
 
 Bump precedence (S12.4):
   1. --major / --minor / --set-version override

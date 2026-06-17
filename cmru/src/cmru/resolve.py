@@ -1,6 +1,6 @@
 """Resolver — pick highest-semver release for a project prefix (S5).
 
-CLI: ciu-forge resolve --project <name> [--format json|env|url]
+CLI: cmru resolve --project <name> [--format json|env|url]
 
 The resolver is differentiator #2: monorepo-safe per-project "latest",
 replacing GitHub's single repo-global "Latest" badge.

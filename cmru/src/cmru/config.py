@@ -1,6 +1,6 @@
-"""ciu-forge unified config schema (S2) — parser for ciu-forge.toml.
+"""cmru unified config schema (S2) — parser for cmru.toml.
 
-This module parses the new S2 config format (``ciu-forge.toml``). The legacy
+This module parses the new S2 config format (``cmru.toml``). The legacy
 ``release.toml`` format is still handled by ``cli.py`` until P6 migration is complete.
 
 S2 top-level tables: [github], [orchestration], [targets], [cleanup], [project.<name>]
@@ -99,7 +99,7 @@ class CleanupS2Config:
 
 @dataclass(frozen=True)
 class ForgeConfig:
-    """Parsed ciu-forge.toml (S2 schema)."""
+    """Parsed cmru.toml (S2 schema)."""
     github: GitHubS2Config
     targets: TargetsConfig
     orchestration: Optional[OrchestrationConfig]
@@ -195,7 +195,7 @@ def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
 
 
 def load_forge_config(config_path: Path) -> ForgeConfig:
-    """Parse a ciu-forge.toml file (S2 schema). Exits with code 2 on config errors."""
+    """Parse a cmru.toml file (S2 schema). Exits with code 2 on config errors."""
     if not config_path.exists():
         print(f"[ERROR] Config file not found: {config_path}")
         raise SystemExit(exit_codes.CONFIG_ERROR)

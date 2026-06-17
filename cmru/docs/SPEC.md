@@ -1,4 +1,4 @@
-# ciu-forge SPEC
+# cmru SPEC
 
 CIU conventions apply: section numbers are stable identifiers (S-numbers).
 Breaking changes to a section bump the wheel MAJOR and include the S-ID in the changelog.
@@ -17,9 +17,9 @@ RFC 2119 key words (MUST, SHOULD, MAY, etc.) are normative.
 | **release** | A GitHub Releases entry whose `tag_name` equals a `<prefix><semver>` tag. |
 | **sidecar** | A `.sha256` file uploaded alongside an artifact containing its `sha256sum -c`-compatible checksum. |
 | **latest.json** | A thin pointer file (`<prefix>latest/latest.json`) recording the highest-semver tag, no asset duplication. |
-| **runner** | The ciu-forge component that executes a single build step in a reproducible, logged environment. |
+| **runner** | The cmru component that executes a single build step in a reproducible, logged environment. |
 | **host** | A release storage provider implementing the `ReleaseHost` interface (S11). |
-| **resolver** | The ciu-forge component that returns `{version, tag, asset, sha256, url}` for the highest-semver release. |
+| **resolver** | The cmru component that returns `{version, tag, asset, sha256, url}` for the highest-semver release. |
 | **get.sh** | A per-project emitted bootstrap script implementing the S6 contract. |
 | **delegated step** | A commodity operation (sign, SBOM, changelog, package) delegated to an external OSS tool (S7). |
 
@@ -27,7 +27,7 @@ RFC 2119 key words (MUST, SHOULD, MAY, etc.) are normative.
 
 ## S1 — Project & Artifact Model
 
-ciu-forge manages N independent projects, each with its own semver line, all sharing **one** GitHub Releases page per repository.
+cmru manages N independent projects, each with its own semver line, all sharing **one** GitHub Releases page per repository.
 
 **S1.1** Each project has a `prefix` that MUST be unique within the repository. Tags take the form `<prefix><semver>` (e.g., `tls-edge-v0.2.0`). Tags are immutable once pushed; updating a tag is a violation of this SPEC.
 
@@ -52,7 +52,7 @@ ciu-forge manages N independent projects, each with its own semver line, all sha
 
 ## S2 — Config Schema
 
-ciu-forge reads a single TOML file per repository (default: `ciu-forge.toml` at the repo root). During migration a project MAY `include = "build-push.toml"` to merge a legacy config.
+cmru reads a single TOML file per repository (default: `cmru.toml` at the repo root). During migration a project MAY `include = "build-push.toml"` to merge a legacy config.
 
 **S2.1** The config MUST be validated on startup. An invalid config MUST cause an exit 2 (S8).
 
@@ -115,7 +115,7 @@ nfpm      = false                 # nfpm deb/rpm
 
 ## S3 — Single Runner Contract
 
-Every build step MUST be executed through the ciu-forge runner. The orchestrator MUST NOT invoke build commands directly.
+Every build step MUST be executed through the cmru runner. The orchestrator MUST NOT invoke build commands directly.
 
 **S3.1** Required runner capabilities:
 
@@ -151,13 +151,13 @@ bake_set      = ["*.tags=ghcr.io/foo/bar:latest"]
 
 ## S4 — Publish
 
-**S4.1** `ciu-forge publish` uploads the artifact and sidecar to the release host (S11).
+**S4.1** `cmru publish` uploads the artifact and sidecar to the release host (S11).
 
-**S4.2** Before uploading, ciu-forge MUST compute `sha256sum` of the artifact and write a `.sha256` sidecar in `sha256sum -c` compatible format (one line: `<hash>  <filename>`).
+**S4.2** Before uploading, cmru MUST compute `sha256sum` of the artifact and write a `.sha256` sidecar in `sha256sum -c` compatible format (one line: `<hash>  <filename>`).
 
 **S4.3** The release notes body MUST include the artifact's SHA-256 digest and, for OCI artifacts, the manifest digest.
 
-**S4.4** If `latest_json = true`, ciu-forge MUST create or update `<prefix>latest/latest.json` (see S5.3) as a separate release (or asset on a `<prefix>latest` tag).
+**S4.4** If `latest_json = true`, cmru MUST create or update `<prefix>latest/latest.json` (see S5.3) as a separate release (or asset on a `<prefix>latest` tag).
 
 **S4.5** Dev builds (untagged commits, version contains `.dev`) MUST NOT mint a `<prefix>-v` release. They MAY upload to a `<prefix>-dev` pre-release slot.
 
@@ -169,7 +169,7 @@ bake_set      = ["*.tags=ghcr.io/foo/bar:latest"]
 
 The resolver implements differentiator #2: highest-semver selection, replacing GitHub's single repo-global "Latest" badge.
 
-**S5.1** `ciu-forge resolve --project <name>` returns `{version, tag, asset, sha256, url}` for the highest-semver release matching `prefix`.
+**S5.1** `cmru resolve --project <name>` returns `{version, tag, asset, sha256, url}` for the highest-semver release matching `prefix`.
 
 **S5.2** Semver comparison MUST be numeric-aware per segment: `r10 > r2 > r1` (not lexicographic).
 
@@ -195,7 +195,7 @@ The resolver implements differentiator #2: highest-semver selection, replacing G
 
 The emitted `get.sh` is differentiator #4: a per-project bootstrap that handles install, update, version pin, and user-config preservation.
 
-**S6.1** `ciu-forge get-sh --project <name>` emits a standalone bash script to stdout. The project's get.sh is the rendered output of `templates/get.sh.tmpl`.
+**S6.1** `cmru get-sh --project <name>` emits a standalone bash script to stdout. The project's get.sh is the rendered output of `templates/get.sh.tmpl`.
 
 **S6.2** The emitted script MUST implement:
 1. **resolve** — call resolver (S5) to find the highest-semver tag (or honour `<PREFIX>_VERSION` pin).
@@ -216,7 +216,7 @@ The emitted `get.sh` is differentiator #4: a per-project bootstrap that handles 
 
 ## S7 — Delegated Steps
 
-Commodity concerns are delegated to external OSS tools and MUST NOT be reimplemented in ciu-forge.
+Commodity concerns are delegated to external OSS tools and MUST NOT be reimplemented in cmru.
 
 **S7.1** Delegated tools:
 
@@ -227,9 +227,9 @@ Commodity concerns are delegated to external OSS tools and MUST NOT be reimpleme
 | `changelog` | `git-cliff` | Changelog from conventional commits |
 | `nfpm` | `nfpm` | Build `.deb` / `.rpm` packages |
 
-**S7.2** If a delegated tool is absent and `required = false` (default), ciu-forge MUST skip that step silently (or with a one-line note at `--verbose`).
+**S7.2** If a delegated tool is absent and `required = false` (default), cmru MUST skip that step silently (or with a one-line note at `--verbose`).
 
-**S7.3** If a delegated tool is absent and `required = true`, ciu-forge MUST exit 3 (S8).
+**S7.3** If a delegated tool is absent and `required = true`, cmru MUST exit 3 (S8).
 
 **S7.4** Delegated tools MUST be called via subprocess; their output MUST be captured to the step log.
 
@@ -237,7 +237,7 @@ Commodity concerns are delegated to external OSS tools and MUST NOT be reimpleme
 
 ## S8 — Exit Codes
 
-ciu-forge uses a four-value exit code scheme identical to CIU S10.3:
+cmru uses a four-value exit code scheme identical to CIU S10.3:
 
 | Code | Meaning |
 |---|---|
@@ -304,7 +304,7 @@ class ReleaseHost:
 
 ## S12 — Versioning & Release Trigger
 
-**S12.1** `ciu-forge status` performs a dry-run: for each project, reports whether the subtree changed since last `<prefix>-v*` tag and what version would be minted.
+**S12.1** `cmru status` performs a dry-run: for each project, reports whether the subtree changed since last `<prefix>-v*` tag and what version would be minted.
 
 **S12.2** Change detection: a project is eligible for release iff `git log <last_tag>..HEAD -- <paths>` is non-empty. If no prior tag exists, the project is always eligible (first release).
 
@@ -326,7 +326,7 @@ class ReleaseHost:
 
 **S12.6** Dev builds: when HEAD is untagged, the version MUST be `X.Y.Z.devN+g<hash>`. These MUST NOT produce a `<prefix>-v` tag or immutable release.
 
-**S12.7** `ciu-forge release` MUST refuse to run on a dirty working tree.
+**S12.7** `cmru release` MUST refuse to run on a dirty working tree.
 
 **S12.8** Commit/tag ordering: for `file` strategy — write VERSION, stage, commit, then tag. For `scm`/`counter` — tag HEAD directly. In all cases: tag first, then build, then publish.
 
@@ -334,7 +334,7 @@ class ReleaseHost:
 
 ## S13 — Reserved / Out of Scope
 
-The following are explicitly **out of scope** for ciu-forge v1 and MUST NOT be implemented:
+The following are explicitly **out of scope** for cmru v1 and MUST NOT be implemented:
 
 - macOS/Windows code signing (Authenticode, Apple notarization).
 - FTP/SFTP deploy targets (e.g., netcup `deploy.zip`). These are deploy operations, not releases.

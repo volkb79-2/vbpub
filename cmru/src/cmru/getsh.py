@@ -1,6 +1,6 @@
 """get.sh emitter — render templates/get.sh.tmpl for a project (S6).
 
-CLI: ciu-forge get-sh --project <name>
+CLI: cmru get-sh --project <name>
 
 The emitted get.sh is differentiator #4: a per-project bootstrap that handles
 install, update, version pin, and config preservation.
@@ -107,7 +107,7 @@ def render_get_sh(
 
 
 def render_from_config(project_name: str, config_path: Path) -> str:
-    """Render get.sh for a project using ciu-forge.toml config."""
+    """Render get.sh for a project using cmru.toml config."""
     from cmru.config import load_forge_config
     config = load_forge_config(config_path)
     proj = config.projects.get(project_name)
@@ -134,11 +134,11 @@ def render_from_config(project_name: str, config_path: Path) -> str:
 
 
 def getsh_main(argv: Optional[list] = None) -> None:
-    """Entry point for ``ciu-forge get-sh``."""
+    """Entry point for ``cmru get-sh``."""
     import argparse
     parser = argparse.ArgumentParser(description="Emit get.sh for a project (S6)")
     parser.add_argument("--project", required=True)
-    parser.add_argument("--config", help="Path to ciu-forge.toml")
+    parser.add_argument("--config", help="Path to cmru.toml")
     parser.add_argument("--output", help="Write to file instead of stdout")
     args = parser.parse_args(argv)
 
@@ -146,7 +146,7 @@ def getsh_main(argv: Optional[list] = None) -> None:
         script = render_from_config(args.project, Path(args.config).expanduser().resolve())
     else:
         # Minimal render using env vars / defaults for standalone use
-        print("[ERROR] --config is required for ciu-forge get-sh", file=sys.stderr)
+        print("[ERROR] --config is required for cmru get-sh", file=sys.stderr)
         sys.exit(2)
 
     if args.output:

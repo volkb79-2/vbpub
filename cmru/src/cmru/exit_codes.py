@@ -1,4 +1,4 @@
-"""Exit code constants for ciu-forge (S8 = CIU S10.3)."""
+"""Exit code constants for cmru (S8 = CIU S10.3)."""
 
 OK = 0
 FAILURE = 1        # build / publish / upload error
