@@ -21,6 +21,7 @@ parse_toml_string(text, source)  -> dict
 parse_toml(path)                 -> dict
 write_rendered_toml(path, config)
 ensure_override_template(defaults, overrides)
+scan_override_for_secrets(template_text, source)
 render_jinja2_text(template_text, context) -> str
 render_toml_template(path, context)  -> dict
 deep_merge(base, override)       -> dict   (S3.3: tables merge, lists replace)
@@ -146,7 +147,11 @@ def write_rendered_toml(output_path: Path, config: dict) -> None:
 
 
 def ensure_override_template(defaults_path: Path, overrides_path: Path) -> None:
-    """Create the overrides template from defaults when it does not yet exist."""
+    """Create the overrides template from defaults when it does not yet exist.
+
+    Used for per-stack ciu.toml.j2 (gitignored, auto-created). NOT called for
+    the global override ciu.global.toml.j2 (committed, sparse — see S3.1a).
+    """
     if overrides_path.exists():
         return
     if not defaults_path.exists():
@@ -157,6 +162,60 @@ def ensure_override_template(defaults_path: Path, overrides_path: Path) -> None:
         f"[INFO] Created override template from defaults: {overrides_path}",
         flush=True,
     )
+
+
+# S3.1a — sensitive key name pattern used in the secret scan
+_OVERRIDE_SENSITIVE_KEY_RE: re.Pattern[str] = re.compile(
+    r"password|passwd|secret|token|api_key|private_key|credential|auth_token|auth_key",
+    re.IGNORECASE,
+)
+_OVERRIDE_TEMPLATE_REF_RE: re.Pattern[str] = re.compile(
+    r"\{\{[^}]+\}\}|\$[A-Z_][A-Z0-9_]*|\$\{[^}]+\}"
+)
+
+
+def scan_override_for_secrets(template_text: str, source: str) -> None:
+    """S3.1a — refuse to render a global override that contains raw credentials.
+
+    Checks:
+    - PEM key/certificate blocks (``-----BEGIN``).
+    - Keys with sensitive names (password, token, secret, …) paired with
+      literal string values that are not Jinja2/env-var references.
+
+    Raises ValueError (→ exit 2) listing every violation found.
+    Only applied to the global override template (ciu.global.toml.j2).
+    """
+    violations: list[str] = []
+    for lineno, line in enumerate(template_text.splitlines(), 1):
+        if "-----BEGIN" in line:
+            violations.append(f"line {lineno}: PEM private key or certificate block")
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        m = re.match(r"^([\w.]+)\s*=\s*[\"']([^\"']*)[\"']", stripped)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2)
+        if not _OVERRIDE_SENSITIVE_KEY_RE.search(key):
+            continue
+        if _OVERRIDE_TEMPLATE_REF_RE.search(value):
+            continue  # safe: {{ env.VAR }} or $VAR reference
+        if "/" in value:
+            continue  # Vault path or file path reference, not a raw credential
+        if len(value) < 8:
+            continue  # short literals (e.g., "none", "basic") are not secrets
+        violations.append(
+            f"line {lineno}: key '{key}' has a literal string value — "
+            f"use '{{{{ env.{key.upper()} }}}}' or '$ENV_VAR' instead"
+        )
+    if violations:
+        raise ValueError(
+            f"[S3.1a] {source} appears to contain hardcoded credentials:\n"
+            + "\n".join(f"  {v}" for v in violations)
+            + "\n[S3.1a] Global override templates must use {{ env.VAR }} or $VAR "
+            "references for sensitive values. No raw credentials in tracked files."
+        )
 
 
 def render_jinja2_text(template_text: str, context: dict) -> str:
@@ -265,8 +324,13 @@ def render_global_chain(working_dir: Path, repo_root: Path) -> dict:
 
     For each directory in chain_dirs(repo_root, working_dir):
       - overrides present without defaults → ValueError (v1 rule retained)
-      - defaults present → ensure_override_template, render defaults, merge
-      - overrides present → render against config-so-far, merge
+      - defaults present → render defaults and merge
+      - overrides present → secret scan (S3.1a), render, merge
+
+    S3.1a: the global override (ciu.global.toml.j2) is committed and sparse.
+    CIU never auto-creates it from defaults. If absent, defaults apply only.
+    The override is scanned for raw credentials before rendering; any violation
+    aborts with exit 2.
 
     Each template is rendered against the config merged SO FAR (v1 behaviour).
     After the chain: write ciu.global.toml at repo_root; empty result → ValueError.
@@ -291,13 +355,14 @@ def render_global_chain(working_dir: Path, repo_root: Path) -> dict:
             )
 
         if defaults_path.exists():
-            ensure_override_template(defaults_path, overrides_path)
             defaults_config = render_toml_template(
                 defaults_path, _make_render_context(merged)
             )
             merged = deep_merge(merged, defaults_config)
 
         if overrides_path.exists():
+            raw_override = overrides_path.read_text(encoding="utf-8")
+            scan_override_for_secrets(raw_override, str(overrides_path))
             overrides_config = render_toml_template(
                 overrides_path, _make_render_context(merged)
             )

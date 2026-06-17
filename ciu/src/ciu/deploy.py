@@ -499,6 +499,15 @@ def _print_health_summary(summary: dict) -> None:
             info(f"  {bucket}: {', '.join(members)}")
         else:
             info(f"  {bucket}: -")
+    pending = summary.get("pending", [])
+    if pending:
+        warn(
+            "Containers still in 'starting' state — they may still be within "
+            "their start_period. If the service is up, the probe may be misconfigured "
+            "(e.g. references a tool the image lacks). "
+            f"Inspect with: docker logs {pending[0]}"
+        )
+        warn("  Run 'ciu health --preflight' to probe image/tool availability.")
 
 
 # ===========================================================================
@@ -731,6 +740,60 @@ def action_healthcheck(
         return 0
     error("[S7.7] health gate failed")
     return 1
+
+
+def action_healthcheck_preflight(
+    repo_root: Path,
+    profile: profiles_pkg.Profile,
+    selection: list[dict],
+    *,
+    strict: bool = False,
+) -> int:
+    """--preflight: probe healthcheck tool availability in service images.
+
+    Reads the rendered compose file (ciu.compose.yml or docker-compose.yml) for
+    each selected stack and checks whether the tools referenced in
+    CMD/CMD-SHELL healthcheck.test entries exist in the declared image.
+
+    Returns 0 (with WARNs) unless --strict is set, in which case any missing
+    tool is a hard failure (exit 1). Requires Docker to be running and images
+    to be available locally (pull or already present).
+    """
+    from .config_constants import CIU_COMPOSE_OUTPUT, SHIPPED_COMPOSE
+    from .deploy_pkg.health import preflight_probe
+
+    info("=" * 60)
+    info("PREFLIGHT: probing healthcheck tool availability in images")
+    info("=" * 60)
+
+    compose_paths: list[Path] = []
+    for entry in selection:
+        stack_dir = (repo_root / entry["path"]).resolve()
+        for fname in (CIU_COMPOSE_OUTPUT, SHIPPED_COMPOSE):
+            cp = stack_dir / fname
+            if cp.exists():
+                compose_paths.append(cp)
+                info(f"  found: {entry['path']}/{fname}")
+                break
+        else:
+            warn(f"  no compose file in {entry['path']} — run 'ciu render' first")
+
+    if not compose_paths:
+        warn("No rendered compose files found. Run 'ciu render' before --preflight.")
+        return 0
+
+    warnings = preflight_probe(compose_paths, warn_fn=warn, info_fn=info)
+
+    if not warnings:
+        success("Preflight probe passed — all healthchecks reference available tools")
+        return 0
+
+    count = len(warnings)
+    if strict:
+        error(f"Preflight probe: {count} issue(s) found (--strict → exit 1)")
+        return 1
+    warn(f"Preflight probe: {count} potential issue(s). Use --strict to fail the build.")
+    return 0
 
 
 def _matching_containers(config: dict) -> list[str]:
@@ -994,6 +1057,7 @@ def build_action_sequence(argv: list[str]) -> list[str]:
         "--stop": "stop",
         "--clean": "clean",
         "--healthcheck": "healthcheck",
+        "--preflight": "preflight",
         "--render-toml": "render_toml",
         "--list-phases": "list_phases",
         "--list-profiles": "list_profiles",
@@ -1029,6 +1093,8 @@ Examples:
     actions.add_argument("--stop", action="store_true", help="Stop project containers (preserve volumes)")
     actions.add_argument("--clean", action="store_true", help="Remove containers, volumes, rendered artifacts")
     actions.add_argument("--healthcheck", action="store_true", help="Run the health gate over the selection (S7.7)")
+    actions.add_argument("--preflight", action="store_true",
+                         help="Probe healthcheck tool availability in service images (ciu health --preflight)")
     actions.add_argument("--render-toml", dest="render_toml", action="store_true",
                          help="Render global + selected stack configs and stop (S8.3 step 3)")
     actions.add_argument("--list-phases", dest="list_phases", action="store_true",
@@ -1051,6 +1117,8 @@ Examples:
                          metavar="PATH", help="Repository root override (S1.1)")
     control.add_argument("--update-cert-permission", dest="update_cert_permission", action="store_true",
                          help="Update Let's Encrypt cert permissions (requires root)")
+    control.add_argument("--strict", action="store_true",
+                         help="Preflight: treat any missing-tool warning as a hard failure (exit 1)")
     control.add_argument("--version", action="version", version=f"ciu-deploy {get_cli_version()}")
 
     return parser.parse_args(argv)
@@ -1178,6 +1246,11 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             ac = action_clean(repo_root, profile, selection, ignore_errors=args.ignore_errors)
         elif action == "healthcheck":
             ac = action_healthcheck(profile, selection)
+        elif action == "preflight":
+            ac = action_healthcheck_preflight(
+                repo_root, profile, selection,
+                strict=getattr(args, "strict", False),
+            )
         elif action == "deploy":
             ac = action_deploy(
                 repo_root,

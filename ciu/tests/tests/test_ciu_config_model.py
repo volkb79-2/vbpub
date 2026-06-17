@@ -29,6 +29,7 @@ from ciu.config_model import (  # noqa: E402
     render_jinja2_text,
     render_stack,
     render_toml_template,
+    scan_override_for_secrets,
     validate_stack_shape,
     write_rendered_toml,
 )
@@ -556,3 +557,109 @@ def test_render_toml_template_missing_env_var_surfaces_name(tmp_path, monkeypatc
     tpl.write_text('[s]\nv = "$UNDEFINED_CIU_VAR"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="UNDEFINED_CIU_VAR"):
         render_toml_template(tpl, {})
+
+
+# ===========================================================================
+# scan_override_for_secrets (S3.1a)
+# ===========================================================================
+
+
+def test_scan_override_clean_structural_passes():
+    """Structural-only override (no sensitive keys) passes without error."""
+    text = """
+[deploy]
+project_name = "myproject"
+environment_tag = "prod"
+
+[ciu]
+require_certs = false
+require_fqdn = false
+"""
+    scan_override_for_secrets(text, "ciu.global.toml.j2")  # must not raise
+
+
+def test_scan_override_env_var_reference_passes():
+    """Sensitive keys with {{ env.VAR }} references are safe."""
+    text = 'api_token = "{{ env.MY_API_TOKEN }}"\n'
+    scan_override_for_secrets(text, "ciu.global.toml.j2")  # must not raise
+
+
+def test_scan_override_dollar_var_reference_passes():
+    """Sensitive keys with $VAR references are safe."""
+    text = 'auth_key = "$MY_AUTH_KEY"\n'
+    scan_override_for_secrets(text, "ciu.global.toml.j2")  # must not raise
+
+
+def test_scan_override_pem_block_raises():
+    """PEM private key block causes immediate abort (S3.1a)."""
+    text = "-----BEGIN RSA PRIVATE KEY-----\nABCDEF...\n-----END RSA PRIVATE KEY-----\n"
+    with pytest.raises(ValueError, match="S3.1a"):
+        scan_override_for_secrets(text, "ciu.global.toml.j2")
+
+
+def test_scan_override_pem_cert_raises():
+    """PEM certificate block is also rejected (S3.1a)."""
+    text = "tls_cert = \"-----BEGIN CERTIFICATE-----\"\n"
+    with pytest.raises(ValueError, match="S3.1a"):
+        scan_override_for_secrets(text, "ciu.global.toml.j2")
+
+
+def test_scan_override_hardcoded_password_raises():
+    """Literal password value for a sensitive key causes abort (S3.1a)."""
+    text = 'db_password = "super-secret-password"\n'
+    with pytest.raises(ValueError, match="S3.1a"):
+        scan_override_for_secrets(text, "ciu.global.toml.j2")
+
+
+def test_scan_override_hardcoded_token_raises():
+    """Literal token value for a sensitive key causes abort (S3.1a)."""
+    text = 'api_token = "ghp_abcdef1234567890ABCDEF"\n'
+    with pytest.raises(ValueError, match="S3.1a"):
+        scan_override_for_secrets(text, "ciu.global.toml.j2")
+
+
+def test_scan_override_short_value_passes():
+    """Short literal values on sensitive keys are not flagged (below 8 chars)."""
+    text = 'auth_key = "none"\n'
+    scan_override_for_secrets(text, "ciu.global.toml.j2")  # "none" is 4 chars, safe
+
+
+def test_scan_override_comment_ignored():
+    """Comments are not scanned for secrets."""
+    text = "# password = 'hardcoded-secret-value-here'\n[deploy]\nproject_name = \"x\"\n"
+    scan_override_for_secrets(text, "ciu.global.toml.j2")  # must not raise
+
+
+def test_scan_override_error_names_source():
+    """Error message includes the source file path."""
+    text = 'db_password = "very-long-secret"\n'
+    with pytest.raises(ValueError, match="my/override.toml.j2"):
+        scan_override_for_secrets(text, "my/override.toml.j2")
+
+
+def test_render_global_chain_skips_auto_create(tmp_path, monkeypatch):
+    """S3.1a: render_global_chain no longer auto-creates ciu.global.toml.j2."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SOME_VAR", "test")
+
+    defaults = tmp_path / "ciu.global.defaults.toml.j2"
+    defaults.write_text("[deploy]\nproject_name = \"test\"\n", encoding="utf-8")
+
+    render_global_chain(tmp_path, tmp_path)
+
+    override = tmp_path / "ciu.global.toml.j2"
+    assert not override.exists(), "render_global_chain must not auto-create the override"
+
+
+def test_render_global_chain_secret_in_override_aborts(tmp_path, monkeypatch):
+    """S3.1a: a hardcoded credential in the override aborts render_global_chain."""
+    monkeypatch.chdir(tmp_path)
+
+    defaults = tmp_path / "ciu.global.defaults.toml.j2"
+    defaults.write_text("[deploy]\nproject_name = \"test\"\n", encoding="utf-8")
+
+    override = tmp_path / "ciu.global.toml.j2"
+    override.write_text('db_password = "super-secret-password"\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="S3.1a"):
+        render_global_chain(tmp_path, tmp_path)

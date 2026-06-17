@@ -22,5 +22,4 @@ ciu.env
 ciu.toml
 ciu.toml.j2
 ciu.global.toml
-ciu.global.toml.j2
 ciu.compose.yml

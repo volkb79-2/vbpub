@@ -160,8 +160,8 @@ env.bak/
 venv.bak/
 
 # CIU rendered outputs (never commit)
-ciu-global.toml
-ciu-global.toml.j2
+# Note: ciu.global.toml.j2 is intentionally tracked (S3.1a: committed sparse override)
+ciu.global.toml
 **/ciu.toml
 **/ciu.toml.j2
 **/docker-compose.yml

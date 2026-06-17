@@ -142,11 +142,29 @@ requirements are marked *(withdrawn)*.
 
 ### Files and layering
 
-- **S3.1** File roles (unchanged from v1):
-  `ciu.global.defaults.toml.j2` (committed) + `ciu.global.toml.j2`
-  (gitignored override, auto-created from defaults) → rendered
-  `ciu.global.toml`; per stack `ciu.defaults.toml.j2` (committed) +
-  `ciu.toml.j2` (gitignored override) → rendered `ciu.toml`.
+- **S3.1** File roles:
+  `ciu.global.defaults.toml.j2` (committed, full defaults) +
+  `ciu.global.toml.j2` (**committed sparse override**, see S3.1a; optional —
+  if absent, defaults apply only) → rendered `ciu.global.toml` (gitignored);
+  per stack `ciu.defaults.toml.j2` (committed) +
+  `ciu.toml.j2` (gitignored, auto-created from defaults) → rendered `ciu.toml`.
+
+- **S3.1a** Global override constraints (`ciu.global.toml.j2`):
+  1. **Secret-free**: CIU MUST scan the raw template text before rendering.
+     Any PEM key/certificate block (`-----BEGIN`) or sensitive key name
+     (`password`, `token`, `secret`, `api_key`, `credential`, …) paired
+     with a literal string value that is not a `{{ env.VAR }}` or `$VAR`
+     reference causes an immediate abort (exit 2). All sensitive values
+     MUST use environment variable references.
+  2. **Sparse**: SHOULD contain only keys that differ from defaults. Keys
+     absent from the override fall through from defaults automatically.
+  3. **Merge semantics**: override values replace scalars; tables merge
+     recursively. Lists in the override replace the defaults list entirely
+     (no concatenation). Key deletion is not supported — use the falsy
+     equivalent (`false`, `""`, `[]`) to disable a default.
+  4. **Not auto-created**: CIU never generates this file. Create it manually
+     in the repository with only the structural overrides needed.
+
 - **S3.2** Render pipeline per template: Jinja2 render (context = config
   merged so far + `env` = process environment) → `$VAR`/`${VAR}` expansion
   (missing/empty value = abort, naming the variable and source file) → TOML

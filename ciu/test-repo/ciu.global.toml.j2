@@ -1,0 +1,145 @@
+# ============================================================================
+# CIU v2 reference demo — workspace global defaults
+# ============================================================================
+# This file is the committed global config for the demo workspace (S3.1). It is
+# rendered through the S3.2 pipeline (Jinja2 -> env-var expansion -> TOML parse):
+# every dollar-VAR below is resolved from ciu.env (the machine identity layer,
+# S2.7) at render time. The rendered result is `ciu.global.toml` (gitignored).
+#
+# Each section is annotated with the spec ID it demonstrates. Read top-to-bottom
+# as a guided tour of every v2 global-config feature.
+# ============================================================================
+
+# --- [ciu] : workspace-level switches (S2.3 / S1.9 / S2.8) ------------------
+[ciu]
+workspace_env_file = "ciu.env"
+# S2.3: require_fqdn / require_certs both default FALSE (the v1 docs/code
+# mismatch is resolved by the spec). We omit require_fqdn entirely to show the
+# default applies (absent -> false); PUBLIC_FQDN/PUBLIC_TLS_* are therefore not
+# required to run this demo.
+require_certs = false
+# auto_connect_network=false keeps the demo self-attach step a no-op so a plain
+# `docker compose up` smoke works on any machine (S2.8 / S1.9). On a real
+# devcontainer you would leave this true to dynamically attach to the network.
+auto_connect_network = false
+
+# --- [deploy] : project identity (S7 / S8.2) -------------------------------
+[deploy]
+project_name = "ciudemo"
+environment_tag = "dev"
+# network_name expands from ciu.env (S2.6); compose templates emit it as an
+# EXTERNAL network (deploy.network_name) so every stack shares one user-defined
+# bridge.
+network_name = "$DOCKER_NETWORK_INTERNAL"
+log_level = "INFO"
+
+# --- [deploy.labels] : container label prefix (S6.4 orphan cleanup) --------
+[deploy.labels]
+prefix = "ciudemo"
+
+# --- [deploy.health] : health-gate timings (S7.7) --------------------------
+# Deliberately short so the live smoke gate resolves quickly.
+[deploy.health]
+interval = "5s"
+timeout = "3s"
+retries = 3
+start_period = "5s"
+
+# --- [deploy.env.defaults] : env applied to every service (S5.5) -----------
+# Bootstrap-pointer / cross-cutting env only (TZ, buffering) — never config or
+# secrets (the S5.5 "env = pointers" boundary rule).
+[deploy.env.defaults]
+TZ = "UTC"
+PYTHONUNBUFFERED = "1"
+
+# --- [deploy.env.shared] : machine facts exposed to templates (S2.6 / S2.7) -
+# These come straight from ciu.env via env-var expansion; CONTAINER_UID/DOCKER_GID
+# drive hostdir + secret-file ownership (S6.3 / S4.10), and the repo-root pair
+# documents the logical/physical DooD split (S1.3/S1.4).
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+DOCKER_GID = "$DOCKER_GID"
+REPO_ROOT = "$REPO_ROOT"
+PHYSICAL_REPO_ROOT = "$PHYSICAL_REPO_ROOT"
+
+# --- [deploy.control] : boolean flags for phase enablement (S7.2) ----------
+# A service's `enabled` may be the NAME of a flag here (string), letting an
+# operator toggle whole apps from config without editing phase tables. Used by
+# phase_3 below (enabled = "enable_app").
+[deploy.control]
+enable_app = true
+
+# --- [vault] : where the Vault stack lives + KV path map (S4.16 / S4.9) -----
+# stack_path tells the token resolver (S4.16 source #3) which stack's
+# ciu.toml [state] carries root_token. vault.paths.* are the canonical KV2
+# paths data stacks write to and apps read from (kept in ONE place so a path
+# rename is a single edit).
+[vault]
+stack_path = "infra/vault"
+
+[vault.paths]
+redis_password = "demo/redis_password"
+postgres_password = "demo/postgres_password"
+
+# --- [topology.services.vault] : Vault address for secret I/O (S4.16) -------
+# CIU builds http://<internal_host>:<internal_port> to reach Vault. internal_host
+# is the in-network container name {project}-{env}-vault.
+[topology.services.vault]
+internal_host = "ciudemo-dev-vault"
+internal_port = 8200
+
+# ============================================================================
+# Deployment phases (S7.1) — executed in NUMERIC order (phase_2 < phase_10).
+# Each service: { path, name, enabled }. `enabled` is a bool or a
+# [deploy.control] flag name (S7.2); expressions are forbidden (v1 eval gone).
+# ============================================================================
+
+# Phase 1 — bring Vault up first so later stacks can resolve their token (S7.6).
+[deploy.phases.phase_1]
+name = "Vault"
+services = [
+  { path = "infra/vault", name = "vault", enabled = true },
+]
+
+# Phase 2 — data services that GENERATE their passwords into Vault (GEN_TO_VAULT).
+[deploy.phases.phase_2]
+name = "Data"
+services = [
+  { path = "infra/redis-core", name = "redis", enabled = true },
+  { path = "infra/db-core", name = "postgres", enabled = true },
+]
+
+# Phase 3 — the application. `enabled = "enable_app"` is the string-flag demo
+# (S7.2): the service runs iff [deploy.control].enable_app is true.
+[deploy.phases.phase_3]
+name = "Apps"
+services = [
+  { path = "applications/app-config", name = "app-config", enabled = "enable_app" },
+]
+
+# ============================================================================
+# Host profiles (S7.4 / S7.5 / S7.5a) — which stacks run on THIS host.
+# "Host profile" (these tables) and compose `profiles` (compose_profiles) are
+# DISTINCT concepts (S7.5a): the former picks stacks, the latter picks services
+# inside a stack. Default profile (no --profile) = all phases.
+# ============================================================================
+
+# core_infra: the shared backbone — Vault + data. Deploy this on host A first.
+[deploy.profiles.core_infra]
+phases = ["phase_1", "phase_2"]
+
+# workers: the app tier. On a multi-host setup you deploy this AFTER core_infra,
+# on a different host (host B), pointing topology at host A (S7.5a).
+[deploy.profiles.workers]
+phases = ["phase_3"]
+
+# topology_overrides is deep-merged over [topology.*] while this profile is
+# active (S7.4). Here it sets the SAME value as the global default purely to
+# demonstrate the S7.5a mechanism; on a real host B this internal_host would be
+# host A's externally reachable address (published port / VPN / tailnet name).
+[deploy.profiles.workers.topology_overrides.services.vault]
+internal_host = "ciudemo-dev-vault"
+
+# all: single-host convenience — every phase in order (Vault, Data, Apps).
+[deploy.profiles.all]
+phases = ["phase_1", "phase_2", "phase_3"]

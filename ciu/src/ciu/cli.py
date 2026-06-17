@@ -27,6 +27,7 @@ Uses: ciu.global.toml + .env.ciu
     down [--profile NAME]                stop stack (preserve volumes)
     clean                                remove containers and volumes
     health [--profile NAME]              health gate check
+    health --preflight [--strict]        probe images for missing healthcheck tools
 
   DEV-LOOP BUILDS
     bake [targets ...] [--no-cache]      docker buildx bake --load
@@ -119,6 +120,9 @@ def main() -> None:
 
     elif verb == "health":
         from .deploy import main as deploy_main
+        if "--preflight" in rest:
+            extra = [r for r in rest if r != "--preflight"]
+            raise SystemExit(deploy_main(["--preflight"] + extra))
         raise SystemExit(deploy_main(["--healthcheck"] + rest))
 
     elif verb == "bake":
@@ -134,7 +138,13 @@ def main() -> None:
         raise SystemExit(engine_main(["secrets"] + rest))
 
     else:
-        print(f"ciu: unknown verb '{verb}'. Run 'ciu' for usage.", file=sys.stderr)
+        if verb == "-d" and rest:
+            print(
+                f"ciu: '-d' is not a verb. Did you mean: ciu up --dir {rest[0]!r}?",
+                file=sys.stderr,
+            )
+        else:
+            print(f"ciu: unknown verb '{verb}'. Run 'ciu' for usage.", file=sys.stderr)
         raise SystemExit(2)
 
 

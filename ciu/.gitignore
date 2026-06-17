@@ -11,8 +11,8 @@ ciu.global.toml
 # it under ciu/ so a hand-written shipped compose (S8.5) stays committable.
 !**/docker-compose.yml
 
-# Auto-created override templates (gitignored; humans MAY edit, never committed)
-ciu.global.toml.j2
+# Per-stack override templates (gitignored; auto-created from defaults, humans MAY edit)
+# Note: ciu.global.toml.j2 is intentionally tracked (S3.1a: committed sparse override)
 **/ciu.toml.j2
 
 # Workspace environment (machine identity layer, S2)
