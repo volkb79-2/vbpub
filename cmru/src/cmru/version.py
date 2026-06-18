@@ -181,10 +181,18 @@ def _apply_strategy_file(
         return tag
     vfile.write_text(next_version + "\n", encoding="utf-8")
     subprocess.run(["git", "add", str(vfile)], cwd=repo_root, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", f"chore: bump {prefix} to {next_version}"],
-        cwd=repo_root, check=True,
-    )
+    # Only commit if VERSION actually changed; otherwise tag current HEAD. This makes a
+    # re-release at the existing version idempotent instead of failing on an empty commit.
+    has_staged = subprocess.run(
+        ["git", "diff", "--cached", "--quiet", "--", str(vfile)], cwd=repo_root
+    ).returncode != 0
+    if has_staged:
+        subprocess.run(
+            ["git", "commit", "-m", f"chore: bump {prefix} to {next_version}"],
+            cwd=repo_root, check=True,
+        )
+    else:
+        print(f"[INFO] {version_file} already {next_version} — tagging current HEAD.")
     rc = subprocess.run(
         ["git", "tag", "-a", tag, "-m", f"Release {tag}"],
         cwd=repo_root,
