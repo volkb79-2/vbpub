@@ -25,10 +25,15 @@ from pathlib import Path
 # ── Keystone import ──────────────────────────────────────────────────────────
 # parents[2] from pwmcp/scripts/publish-bundle.py == the vbpub repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cmru" / "src"))
-from cmru.release import GitHubReleases, publish_versioned
+from cmru.release import GitHubReleases, publish_versioned  # noqa: E402
+
+# Shared self-healing vars loader (sibling _vars.py in pwmcp/scripts/).
+# Insert the script dir explicitly: the cmru/src insert above pushed sys.path[0] off the
+# script dir, so a bare ``import _vars`` would otherwise be fragile.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _vars import load_vars  # noqa: E402
 
 PWMCP_DIR = Path(__file__).resolve().parent.parent
-RELEASE_VARS_FILE = PWMCP_DIR / "cmru.vars"
 DIST_DIR = PWMCP_DIR / "dist"
 
 
@@ -43,17 +48,6 @@ def fail(msg: str, status: int | None = None, body: str | None = None) -> None:
     if body:
         print(f"[ERROR] Response body: {body}", file=sys.stderr)
     raise SystemExit(1)
-
-
-def load_release_vars(path: Path) -> None:
-    if not path.exists():
-        fail(f"{path} not found — run resolve-playwright-version.py first")
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        os.environ.setdefault(key.strip(), value.strip())
 
 
 def load_env_file(path: Path) -> None:
@@ -121,7 +115,7 @@ def find_bundle(dist_dir: Path, pwmcp_version: str) -> Path:
 
 
 def main() -> None:
-    load_release_vars(RELEASE_VARS_FILE)
+    load_vars()
 
     repo_root = PWMCP_DIR.parent
     for env_path in [repo_root / ".env", PWMCP_DIR / ".env"]:

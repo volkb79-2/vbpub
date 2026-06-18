@@ -21,7 +21,10 @@ import sys
 from pathlib import Path
 
 PWMCP_DIR = Path(__file__).resolve().parent
-RELEASE_VARS_FILE = PWMCP_DIR / "cmru.vars"
+
+# Shared self-healing vars loader (pwmcp/scripts/_vars.py).
+sys.path.insert(0, str(PWMCP_DIR / "scripts"))
+from _vars import load_vars  # noqa: E402
 
 
 def log(msg: str) -> None:
@@ -31,17 +34,6 @@ def log(msg: str) -> None:
 def fail(msg: str) -> None:
     print(f"[ERROR] {msg}", file=sys.stderr)
     raise SystemExit(1)
-
-
-def load_release_vars(path: Path) -> None:
-    if not path.exists():
-        fail(f"{path} not found — run scripts/resolve-playwright-version.py first")
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        os.environ.setdefault(key.strip(), value.strip())
 
 
 def load_cmru_credentials() -> None:
@@ -90,7 +82,7 @@ def run(argv: list[str], cwd: Path | None = None) -> None:
 
 
 def do_build() -> None:
-    load_release_vars(RELEASE_VARS_FILE)
+    load_vars()
     pw_ver = os.environ.get("PLAYWRIGHT_VERSION", "?")
     pwmcp_ver = os.environ.get("PWMCP_VERSION", "?")
     log(f"Building pwmcp-playwright  PW={pw_ver}  PWMCP={pwmcp_ver}")
@@ -99,7 +91,7 @@ def do_build() -> None:
 
 
 def do_push() -> None:
-    load_release_vars(RELEASE_VARS_FILE)
+    load_vars()
     load_cmru_credentials()
 
     username = os.environ.get("GITHUB_USERNAME", "")

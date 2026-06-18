@@ -13,26 +13,17 @@ import sys
 from pathlib import Path
 
 PWMCP_DIR = Path(__file__).resolve().parent.parent
-RELEASE_VARS_FILE = PWMCP_DIR / "cmru.vars"
 BUNDLE_TOML = PWMCP_DIR / "bundle.toml"
 
 CIU_FORGE_SRC = PWMCP_DIR.parent / "cmru" / "src"
 
-
-def load_release_vars(path: Path) -> None:
-    if not path.exists():
-        print(f"[ERROR] {path} not found — run resolve-playwright-version.py first", file=sys.stderr)
-        raise SystemExit(1)
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        os.environ.setdefault(key.strip(), value.strip())
+# Shared self-healing vars loader (sibling _vars.py in pwmcp/scripts/).
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # ensure script dir wins for _vars
+from _vars import load_vars  # noqa: E402
 
 
 def main() -> None:
-    load_release_vars(RELEASE_VARS_FILE)
+    load_vars()
 
     pwmcp_version = os.environ.get("PWMCP_VERSION", "")
     if not pwmcp_version:
