@@ -15,7 +15,7 @@ variable "PLAYWRIGHT_DISTRO" {
 }
 
 variable "PWMCP_VERSION" {
-  default = "1.61.0-r2"
+  default = "1.61.0-r3"
 }
 
 variable "OCI_SOURCE" {
