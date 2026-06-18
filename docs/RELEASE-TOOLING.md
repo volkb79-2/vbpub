@@ -1,65 +1,53 @@
-# Release Tooling (Config-Driven)
+# Release Tooling — **cmru**
 
-## Overview
+vbpub builds & releases every product with **cmru** (Configurable Multi Release Utility).
+One config, one CLI, `cmru.*`-named files. The normative contract is
+[`cmru/docs/SPEC.md`](../cmru/docs/SPEC.md) — start at *"S-CLI — CLI at a glance"*.
 
-vbpub uses a config-driven release workflow:
+## Files (all `cmru.`-prefixed)
 
-- **Main config**: vbpub/release.toml (local copy with secrets; gitignored)
-- **Repo defaults**: vbpub/release.sample.toml (committed, no secrets)
-- **Syntax reference**: release-manager/release.sample.toml (repo-agnostic spec)
-- **Per-project steps**: build-push.toml in each project
-- **Runner**: release-all.py
-- **Step runner**: release-manager/src/release_manager/step_runner.py
+| File | Tracked? | Purpose |
+|---|---|---|
+| [`cmru.toml`](../cmru.toml) | committed | The one config: github, targets, orchestration, projects. **No secrets.** |
+| `cmru.secret.toml` | gitignored | Token overlay: `[github] token = "…"` (or use `$GITHUB_PUSH_PAT`). |
+| [`cmru.sample.toml`](../cmru.sample.toml) | committed | Template for `cmru.toml`. |
+| `<project>/cmru.build.toml` | committed | Per-project step config a project's build script consumes. |
+| `<project>/cmru.vars` | gitignored | Generated `KEY=VALUE` build vars passed between steps. |
+| `cmru.py` / `cmru.*.sh` | committed | Entry point + discoverable per-verb shims. |
 
+Token resolution (SPEC S2.4): `$GITHUB_PUSH_PAT`/`$GITHUB_TOKEN` → `cmru.secret.toml` → never `cmru.toml`.
 
-## Versioning & reproducible builds
-
-Artifact versions are **SemVer derived from git tags** (via setuptools-scm), not the clock,
-and wheels are reproducible. See **[VERSIONING.md](VERSIONING.md)** for the tag convention,
-how to cut a release, and the reproducibility recipe. In short: tag `<dist>-vX.Y.Z`, push it,
-then run the orchestrator — the build picks up the clean SemVer; untagged commits build as
-`X.Y.Z.devN+g<sha>`.
-
-## Primary entrypoints (Python)
+## Workflow
 
 ```bash
-python3 /workspaces/vbpub/release-all.py --config /workspaces/vbpub/release.toml
-python3 /workspaces/vbpub/release-runner.py
+./cmru.status.sh                       # preview what would be released (read-only)
+./cmru.release.sh                      # one-shot: detect → tag → push → build → publish
+./cmru.release.sh --dry-run            # preview tags, no writes
+./cmru.build.sh   --project cmru       # build artifact only
+./cmru.publish.sh --project cmru       # upload artifact + .sha256
+./cmru.cleanup.sh --remove-assets 30d  # prune old releases/GHCR versions
+./cmru.py --help                       # all verbs
 ```
 
-## Config lifecycle
+Versions are SemVer from git tags via setuptools-scm (see [VERSIONING.md](VERSIONING.md));
+untagged commits build as `X.Y.Z.devN+g<sha>`. `release` is idempotent — re-running on a HEAD
+that already carries a tag finishes a half-done release.
 
-1. Copy the repo defaults into a local config:
-  - vbpub/release.sample.toml → vbpub/release.toml
-2. Fill in secrets in vbpub/release.toml (GitHub token, usernames).
-3. Run the pipeline via release-runner.
+## Auto-released set vs. on-demand
 
-The release runner auto-creates release.toml from release.sample.toml when missing
-and exits immediately to force you to fill in secrets.
+`orchestration.project_order` in `cmru.toml` lists what `status`/`release` act on:
+**ciu, cmru, modern-debian-tools-python-debug, pwmcp**. Two products are `delegated`
+(self-versioned) and released on demand, not in `release` all:
 
-## OCI image description
-
-OCI_DESCRIPTION values are Markdown. Include a short tool manifest summary and
-reference the in-image manifest at:
-
-- /usr/local/share/modern-debian-tools-python-debug/manifest.md
-
-## Per-project configs
-
-- [ciu/build-push.toml](../ciu/build-push.toml)
-- [modern-debian-tools-python-debug/build-push.toml](../modern-debian-tools-python-debug/build-push.toml)
-- [playwright-mcp/build-push.toml](../playwright-mcp/build-push.toml)
-
-## Cleanup by age
-
-```bash
-python3 /workspaces/vbpub/release-all.py \
-  --config /workspaces/vbpub/release.toml \
-  --remove-assets 10min
-```
+- **pwmcp** — version is playwright-driven (`pwmcp-v<pw>-r<N>`), computed at build; cmru's
+  `delegated` flow builds → commits/pushes the build-input bump → publishes.
+- **tls-edge** — `scripts/release.sh` self-manages bump/tag/build/publish but needs an
+  explicit version: `echo "TLS_EDGE_VERSION=0.2.1" > tls-edge/cmru.vars && ./cmru.publish.sh --project tls-edge`.
+- **empyrion-translation** — date-tagged game asset; `./cmru.build.sh`/`./cmru.publish.sh --project empyrion-translation`.
 
 ## Notes
 
-- GitHub credentials are loaded from release.toml, not .env.
+- GitHub credentials come from env or `cmru.secret.toml`, never committed.
 - The pipeline is config-driven; no project logic is hardcoded in the orchestrator.
-- For empyrion-translation, `--push` is publish-only and reuses the latest artifact/report from `game_stuff/empyrion/dist/`.
+- `release-all.py` / `release-runner.py` are kept one release as deprecation shims → use `cmru.py`.
+- The pre-cmru `release-manager/` package has been retired (its source moved into `cmru/`).

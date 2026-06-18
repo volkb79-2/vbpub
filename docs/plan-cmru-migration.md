@@ -64,19 +64,27 @@ CLI coherence in `cmru/src/cmru/cli.py` — done, tests green (75 passed):
    pre-release commit step (commit the bump, *then* tag), not an in-`build` mutation.
 5. `release-manager/` deleted; `RELEASE-TOOLING.md`/`VERSIONING.md` updated; CLI dispatch tests added.
 
-## D. Phased execution (each phase = code + tests + SPEC/docs in lockstep)
+## D. Phased execution — DONE
 
-- **P0 (done):** CLI verb coherence + wrapper scripts (section A).
-- **P1 — schema unification:** single loader; `cli.py` consumes S2; legacy `release.toml`
-  accepted via a thin compat shim for one release, then removed. Add `cli.py` dispatch tests.
-- **P2 — pwmcp conformance:** declare `version.strategy = "counter"`; move
-  `resolve-playwright-version.py` mutations into a committed pre-tag step; verify
-  cmru tag == published version.
-- **P3 — tls-edge conformance:** split `release.sh` into build-artifact + (cmru-owned)
-  publish; add to `project_order`; `version.strategy = "scm"`, `file:VERSION` bump.
-- **P4 — empyrion decision:** either model as `counter`/date strategy in cmru, or
-  explicitly mark out-of-scope (game asset, not a CIU-family product) and document.
-- **P5 — cleanup:** delete `release-manager/`; gitignore `cmru/build/`; rewrite stale docs.
+- **P0 ✅** CLI verb coherence (publish/build/release one-shot, clear usage) + wrapper scripts.
+- **P1 ✅** One schema: `cli.py:load_config` reads S2 `cmru.toml` (legacy keys tolerated one
+  release); `cmru.toml` + `cmru.secret.toml` + `cmru.sample.toml`; `./cmru.py` entry; token
+  resolution S2.4; +6 CLI dispatch tests.
+- **P2 ✅** pwmcp `version.strategy = "delegated"` — cmru detects the change and runs
+  build/publish; `_run_delegated_project` builds → commits & pushes the resolver's build-input
+  bump → publishes (no tree-dirty; tag == published version). `.release-vars` → `cmru.vars`;
+  credentials → `cmru.toml`/`cmru.secret.toml`.
+- **P3 ✅** tls-edge → `cmru.vars` + cmru credentials; `delegated`. Kept OUT of `project_order`
+  (release.sh needs an explicit version → not unattended-safe); on-demand command documented.
+  *(Did not split release.sh — delegated is the lower-risk, equivalent outcome.)*
+- **P4 ✅** empyrion-translation → `delegated`, OUT of `project_order` (date-tagged game asset);
+  on-demand release documented.
+- **P5 ✅** Retired `release-manager/` (no code left; source already in `cmru/`); `cmru/build/`
+  gitignored; rewrote `RELEASE-TOOLING.md`, updated `VERSIONING.md`; renamed every
+  `build-push.toml` → `cmru.build.toml`; discoverable `cmru.*.sh` shims + README section.
+
+**Auto-release set (`project_order`): ciu, cmru, modern-debian-tools-python-debug, pwmcp.**
+Delegated/on-demand: pwmcp (in project_order, self-versioned), tls-edge, empyrion-translation.
 
 ## E. Open decisions (need user input)
 

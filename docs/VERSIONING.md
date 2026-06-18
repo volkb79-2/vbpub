@@ -41,11 +41,12 @@ git status --porcelain            # must be empty
 git tag -a ciu-v2.1.0 -m "ciu 2.1.0"
 git push origin ciu-v2.1.0
 
-# 3. Build + publish via the orchestrator (sees the tag → clean SemVer wheel).
-python3 release-runner.py --project ciu
+# 3. Build + publish via cmru (sees the tag → clean SemVer wheel).
+#    Or just `./cmru.release.sh --project ciu` to do steps 2+3 in one shot.
+./cmru.build.sh --project ciu && ./cmru.publish.sh --project ciu
 ```
 
-The orchestrator ([release-manager `resolve_versions_from_git`]) detects HEAD is exactly on
+The orchestrator (cmru `resolve_versions_from_git`) detects HEAD is exactly on
 `ciu-v2.1.0`, exports `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CIU=2.1.0`, and the build produces
 `ciu-2.1.0-py3-none-any.whl`.
 
