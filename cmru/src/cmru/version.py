@@ -286,6 +286,12 @@ def status_cmd(
             print(f"  {name:<38} {(last_tag or '(none)'):<30} {'deleg.':<8} (self-versioned at build)")
             continue
 
+        if not getattr(proj, "mint_tag", True):
+            # oci-image / version='none': published to a registry (ghcr), no git tag.
+            note = "(registry publish — ghcr, no tag)"
+            print(f"  {name:<38} {(last_tag or '(none)'):<30} {'image':<8} {note}")
+            continue
+
         if set_version:
             next_ver = set_version
         elif bump_override:
@@ -346,9 +352,11 @@ def release_cmd(
         version_file = getattr(version_cfg, "file", "VERSION") if version_cfg else "VERSION"
         project_cwd = repo_root / (getattr(proj, "cwd", None) or name)
 
-        if strategy == "delegated":
-            # No cmru tag: the project's build/publish steps own the version/tag.
-            print(f"[INFO] {name}: delegated versioning — build/publish steps own the tag.")
+        if strategy == "delegated" or not getattr(proj, "mint_tag", True):
+            # No cmru tag. delegated → project owns the tag; oci-image/none → published
+            # to a registry, never git-tagged. build/publish steps do the work.
+            why = "delegated versioning" if strategy == "delegated" else f"{strategy} / registry publish"
+            print(f"[INFO] {name}: {why} — cmru mints no tag; build/publish steps own publishing.")
             continue
 
         if set_version:

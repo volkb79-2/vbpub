@@ -40,10 +40,10 @@ ghcr_delete_packages = ["modern-debian-tools-python-debug-vsc-devcontainer-dev"]
 
 # ─── ciu — Python wheel ───────────────────────────────────────────────────────
 [project.ciu]
-prefix   = "ciu-v"
-artifact = "wheel"
-scm_dist = "ciu"
-cwd      = "ciu"
+prefix    = "ciu-v"
+artifacts = ["wheel"]        # → wheel profile: semver tag + GitHub Release + latest.json
+scm_dist  = "ciu"
+cwd       = "ciu"
 [project.ciu.version]
 strategy = "scm"
 bump     = "conventional"
@@ -66,10 +66,10 @@ commands = [
 
 # ─── cmru — Python wheel (dogfood) ────────────────────────────────────────────
 [project.cmru]
-prefix   = "cmru-v"
-artifact = "wheel"
-scm_dist = "cmru"
-cwd      = "cmru"
+prefix    = "cmru-v"
+artifacts = ["wheel"]        # → wheel profile (dogfood)
+scm_dist  = "cmru"
+cwd       = "cmru"
 [project.cmru.version]
 strategy = "scm"
 bump     = "conventional"
@@ -84,13 +84,18 @@ commands = [
 ]
 
 # ─── modern-debian-tools-python-debug — OCI images ────────────────────────────
+# Deliverable is the ghcr image(s) only — NOT a GitHub Release. So: no semver git tag
+# (version = image tag / BUILD_DATE), push images, and commit the regenerated manifests
+# (build inputs/docs) via the generic commit_generated path. cmru orchestrates; the
+# build step (build-push.py) owns what an image build + manifest regen actually means.
 [project.modern-debian-tools-python-debug]
-prefix   = "modern-debian-tools-python-debug-v"
-artifact = "oci"
-cwd      = "modern-debian-tools-python-debug"
+prefix    = "modern-debian-tools-python-debug-v"   # kept for resolve/cleanup symmetry; unused for tagging
+artifacts = ["oci-image"]
+cwd       = "modern-debian-tools-python-debug"
 [project.modern-debian-tools-python-debug.version]
-strategy = "scm"
-bump     = "conventional"
+strategy = "none"          # OCI images aren't git-tagged
+[project.modern-debian-tools-python-debug.release]
+commit_generated = ["package-manifests-versioned"]   # project-relative; committed after build
 [project.modern-debian-tools-python-debug.steps.build]
 commands = [
   { label = "modern-debian-tools-python-debug: build images", argv = ["python3", "build-push.py", "--build"], cwd = "modern-debian-tools-python-debug" },
@@ -105,11 +110,11 @@ commands = [
 # scripts/resolve-playwright-version.py during build. So versioning is "delegated":
 # cmru detects the change and runs build/publish, but the project owns its tag.
 [project.pwmcp]
-prefix   = "pwmcp-v"
-artifact = "bundle"
-cwd      = "pwmcp"
+prefix    = "pwmcp-v"
+artifacts = ["oci-image", "bundle"]   # emits BOTH a ghcr image and a GitHub-Release bundle
+cwd       = "pwmcp"
 [project.pwmcp.version]
-strategy = "delegated"
+strategy = "delegated"                 # playwright-driven pwmcp-v<pw>-r<N>; project owns the tag
 [project.pwmcp.steps.build]
 commands = [
   { label = "pwmcp: resolve playwright version + compute release tag", argv = ["python3", "scripts/resolve-playwright-version.py"], cwd = "pwmcp" },
@@ -127,9 +132,9 @@ commands = [
 # argument, so it can't run unattended. Released on demand:
 #   echo "TLS_EDGE_VERSION=0.2.1" > tls-edge/cmru.vars  &&  ./cmru.publish.sh --project tls-edge
 [project.tls-edge]
-prefix   = "tls-edge-v"
-artifact = "tarball"
-cwd      = "tls-edge"
+prefix    = "tls-edge-v"
+artifacts = ["tarball"]
+cwd       = "tls-edge"
 [project.tls-edge.version]
 strategy = "delegated"
 [project.tls-edge.steps.push]
@@ -141,9 +146,9 @@ commands = [
 # Self-managed, date-tagged (empyrion-de-translation-YYYYMMDD); not a CIU-family product.
 # Released on demand via ./cmru.build.sh / ./cmru.publish.sh --project empyrion-translation.
 [project.empyrion-translation]
-prefix   = "empyrion-translation-v"
-artifact = "tarball"
-cwd      = "game_stuff/empyrion"
+prefix    = "empyrion-translation-v"
+artifacts = ["tarball"]
+cwd       = "game_stuff/empyrion"
 [project.empyrion-translation.version]
 strategy = "delegated"
 [project.empyrion-translation.steps.build]

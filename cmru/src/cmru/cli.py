@@ -52,9 +52,15 @@ class ProjectConfig:
     prefix: Optional[str] = None    # git tag prefix, e.g. "ciu-v"  (S12; required for auto-version)
     scm_dist: Optional[str] = None  # setuptools dist name for SETUPTOOLS_SCM_PRETEND_VERSION_FOR_*
     cwd: Optional[str] = None       # build working dir (relative to repo root); default = name
-    artifact: Optional[str] = None  # wheel | oci | tarball | bundle (S1.2)
+    artifact: Optional[str] = None  # legacy singular; superseded by `artifacts` (S1.2)
     version: Optional[VersionSpec] = None
     paths: Optional[List[str]] = None  # change-detection watch paths; default = [cwd]
+    # Publish profile (S-REL): what `cmru release` emits. Resolved from `artifacts`
+    # presets + [project.X.release] overrides. cmru is the orchestrator — these only
+    # control cmru's *generic* git side-effects; project step commands own the rest.
+    artifacts: tuple = ()           # e.g. ("wheel",) | ("oci-image",) | ("oci-image","bundle")
+    mint_tag: bool = True           # does cmru mint+push <prefix><semver> at HEAD?
+    commit_generated: tuple = ()    # project-relative paths cmru commits after build
 
 
 @dataclass(frozen=True)
@@ -288,6 +294,75 @@ def _parse_version_spec(raw: object, name: str) -> Optional[VersionSpec]:
                        base_version=base_version, file=version_file)
 
 
+# Publish-profile presets (S-REL). Each artifact profile expands to release
+# capabilities; cmru only acts on `mint_tag` + `commit_generated` itself — everything
+# else (GitHub Release, asset upload, ghcr push, latest.json) is the project's push
+# step. A project may list several artifacts; their capabilities union.
+_PROFILE_PRESETS = {
+    "wheel": {"mint_tag": True},
+    "bundle": {"mint_tag": True},
+    "tarball": {"mint_tag": True},
+    "oci-image": {"mint_tag": False},
+}
+_ARTIFACT_ALIASES = {"oci": "oci-image"}
+
+
+def _resolve_release_profile(
+    project: dict, name: str, version_spec: Optional[VersionSpec]
+) -> tuple[tuple, bool, tuple]:
+    """Resolve (artifacts, mint_tag, commit_generated) for a project (S-REL).
+
+    - artifacts: ``[project.X].artifacts`` (list) or the legacy singular ``artifact``.
+    - mint_tag:  union of preset ``mint_tag`` over artifacts, overridden by
+      ``[project.X.release].git_tag``; forced False for version strategy
+      ``none``/``delegated`` (no cmru-owned tag).
+    - commit_generated: ``[project.X.release].commit_generated`` (project-relative).
+    """
+    raw = project.get("artifacts")
+    if raw is None:
+        single = (project.get("artifact") or "").strip()
+        raw = [single] if single else []
+    if not isinstance(raw, list):
+        raise ValueError(f"project.{name}.artifacts must be a list")
+    artifacts: list[str] = []
+    for item in raw:
+        norm = _ARTIFACT_ALIASES.get(str(item).strip(), str(item).strip())
+        if norm:
+            artifacts.append(norm)
+    unknown = [a for a in artifacts if a not in _PROFILE_PRESETS]
+    if unknown:
+        raise ValueError(
+            f"project.{name}: unknown artifact/profile {unknown}; "
+            f"valid: {sorted(_PROFILE_PRESETS)} (alias: 'oci'→'oci-image')"
+        )
+
+    strategy = getattr(version_spec, "strategy", "scm") if version_spec else "scm"
+    mint_tag = any(_PROFILE_PRESETS[a]["mint_tag"] for a in artifacts) if artifacts else True
+
+    release_cfg = project.get("release") or {}
+    if not isinstance(release_cfg, dict):
+        raise ValueError(f"project.{name}.release must be a table")
+    if "git_tag" in release_cfg:
+        mint_tag = bool(release_cfg["git_tag"])
+    commit_generated = release_cfg.get("commit_generated") or []
+    if not isinstance(commit_generated, list):
+        raise ValueError(f"project.{name}.release.commit_generated must be a list")
+
+    if strategy in ("none", "delegated"):
+        mint_tag = False
+
+    # Guard against the bug that produced modern-debian-tools-python-debug-v0.1.0:
+    # an OCI-only project must not pair with a semver-tagging strategy.
+    if artifacts and all(a == "oci-image" for a in artifacts) and strategy not in ("none", "delegated"):
+        raise ValueError(
+            f"project.{name}: oci-image artifact must use version.strategy='none' "
+            f"(or 'delegated'), not '{strategy}' — OCI images are published to a registry, "
+            "not git-tagged / GitHub-Released."
+        )
+
+    return tuple(artifacts), mint_tag, tuple(str(p) for p in commit_generated)
+
+
 def load_config(
     config_path: Path,
 ) -> tuple[
@@ -347,6 +422,9 @@ def load_config(
         proj_cwd = (project.get("cwd") or "").strip() or None
         proj_artifact = (project.get("artifact") or "").strip() or None
         version_spec = _parse_version_spec(project.get("version"), name)
+        artifacts, mint_tag, commit_generated = _resolve_release_profile(
+            project, name, version_spec
+        )
         # Change-detection watches the project cwd plus any extra version.paths (S12.3).
         extra_paths = list(version_spec.paths) if (version_spec and version_spec.paths) else []
         watch_paths = [proj_cwd or name] + extra_paths
@@ -355,6 +433,7 @@ def load_config(
             prefix=proj_prefix, scm_dist=proj_scm_dist,
             cwd=proj_cwd, artifact=proj_artifact,
             version=version_spec, paths=watch_paths,
+            artifacts=artifacts, mint_tag=mint_tag, commit_generated=commit_generated,
         )
 
     # orchestration: sensible defaults so a minimal cmru.toml still works.
@@ -911,6 +990,46 @@ def _run_delegated_project(repo_root: Path, configs: Mapping[str, "ProjectConfig
         run_project_step(project, "push", repo_root, log_dir)
 
 
+def _run_registry_project(repo_root: Path, configs: Mapping[str, "ProjectConfig"], name: str) -> None:
+    """Release a registry/OCI project (e.g. modern-debian-tools-python-debug): build
+    (which regenerates the project's manifests) → commit the declared generated paths →
+    push images. No git tag, no GitHub Release — the deliverable is the ghcr image; the
+    committed manifests are the build's documentation inputs for next time.
+
+    cmru stays generic here: it only commits the paths the project declared in
+    ``[project.X.release].commit_generated`` and runs the project's own build/push steps.
+    """
+    resolve_versions_from_git(repo_root, dict(configs))
+    log_dir = repo_root / "logs"
+    project = configs[name]
+    cwd = getattr(project, "cwd", None) or name
+
+    if "build" in project.steps:
+        log_info(f"{name}: running step 'build'")
+        run_project_step(project, "build", repo_root, log_dir)
+
+    # Commit the project-declared generated paths (e.g. package-manifests-versioned),
+    # resolved relative to the project cwd. Skip cleanly if the build produced no diff.
+    gen_paths = [f"{cwd}/{p}" for p in getattr(project, "commit_generated", ())]
+    if gen_paths:
+        dirty = _git(repo_root, "status", "--porcelain", "--", *gen_paths)
+        if dirty:
+            subprocess.run(["git", "-C", str(repo_root), "add", "--", *gen_paths], check=False)
+            rc = subprocess.run(
+                ["git", "-C", str(repo_root), "commit", "-m", f"chore({name}): release manifests"],
+            ).returncode
+            if rc == 0:
+                log_info(f"{name}: committed generated manifests")
+                if subprocess.run(["git", "-C", str(repo_root), "push", "origin", "HEAD"]).returncode != 0:
+                    log_warn(f"{name}: push of manifest commit failed; commit it manually.")
+        else:
+            log_info(f"{name}: no manifest changes to commit")
+
+    if "push" in project.steps:
+        log_info(f"{name}: running step 'push'")
+        run_project_step(project, "push", repo_root, log_dir)
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     """Entry point for the ``cmru`` CLI.
 
@@ -1059,8 +1178,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         #   tagged  = non-delegated projects whose HEAD now carries their tag
         #             (covers just-created tags AND a half-finished prior release)
         #   delegated = delegated-versioned projects that changed (self-version at build)
+        #   tagged    = mint_tag projects whose HEAD now carries their <prefix><semver>
+        #   delegated = delegated-versioned projects (self-version at build, own the tag)
+        #   registry  = oci-image / version='none' projects (push images, no tag)
         tagged: dict[str, str] = {}
         delegated: list[str] = []
+        registry: list[str] = []
         for name, proj in ordered.items():
             if vargs.project and name != vargs.project:
                 continue
@@ -1068,11 +1191,15 @@ def main(argv: Optional[List[str]] = None) -> None:
                 if name in changed_names:
                     delegated.append(name)
                 continue
+            if not getattr(proj, "mint_tag", True):
+                if name in changed_names:
+                    registry.append(name)
+                continue
             tag = _tag_on_head(repo_root, proj.prefix or f"{name}-v")
             if tag:
                 tagged[name] = tag
 
-        if not tagged and not delegated:
+        if not tagged and not delegated and not registry:
             log_info("Nothing to release (no changed/tagged projects).")
             return
 
@@ -1082,7 +1209,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             log_info(f"--no-build: tagged + pushed {', '.join(tagged.values())}; skipped build/publish.")
             return
 
-        # Build + publish in project_order; delegated projects self-version.
+        # Build + publish in project_order. Each release kind has its own driver.
         released: list[str] = []
         for name in project_order:
             if name in tagged:
@@ -1093,6 +1220,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 log_info(f"Building + publishing {name} (delegated versioning)")
                 _run_delegated_project(repo_root, configs, name)
                 released.append(f"{name} (delegated)")
+            elif name in registry:
+                log_info(f"Building + pushing {name} (oci-image — registry, no tag)")
+                _run_registry_project(repo_root, configs, name)
+                released.append(f"{name} (image)")
         log_info(f"Released: {', '.join(released)}")
 
     elif verb == "cleanup":

@@ -88,13 +88,63 @@ cmru manages N independent projects, each with its own semver line, all sharing 
 | `tarball` | Archive (`.tar.xz`, `.tar.gz`) | `tar` + custom build |
 | `bundle` | Browser-automation bundle (`.zip`) or similar composite | project-specific bundler |
 
-**S1.3** Each release MUST upload:
+**S1.3** Each **GitHub-Release** profile (`wheel`/`bundle`/`tarball`) MUST upload:
 - The artifact file itself (immutable, content-addressed by version+hash in release notes).
 - A `.sha256` sidecar containing one line in `sha256sum -c` format.
+(The `oci-image` profile creates no GitHub Release — see S-REL.)
 
-**S1.4** OCI images MUST record the pushed manifest digest (`sha256:…`) in the release notes.
+**S1.4** OCI images are published to a registry (ghcr) with a dated immutable tag plus a
+floating `:latest`; their manifest digest is the content address. They are **not**
+git-tagged and create **no** GitHub Release (S-REL).
 
 **S1.5** N projects, one Releases page is the first differentiator. The `prefix` mechanism is the key: the resolver (S5) and get.sh (S6) filter by prefix, so projects never interfere with each other.
+
+---
+
+## S-REL — Release model (two axes)
+
+A `cmru release` is governed by **two independent axes**, so the same versioning can drive
+very different publishing:
+
+**S-REL.1 — Versioning** (`[project.X.version].strategy`): `scm` | `counter` | `file:PATH`
+| `delegated` | `none`. Determines the version string and whether cmru owns a git tag.
+`none` = no version/tag at all (identity is the artifact's own tag, e.g. an OCI image
+tag / BUILD_DATE); `delegated` = the project's own scripts mint the tag.
+
+**S-REL.2 — Publish profile** (`[project.X].artifacts`): a list of artifact profiles. Each
+profile expands to a capability set; a project may list **several** (their capabilities
+union). Presets:
+
+| profile | git tag | GitHub Release + assets | registry push | latest.json | commit generated |
+|---|:--:|:--:|:--:|:--:|:--:|
+| `wheel` | ✓ | ✓ | — | ✓ | — |
+| `bundle` | ✓ | ✓ | — | ✓ | — |
+| `tarball` | ✓ | ✓ | — | ✓ | — |
+| `oci-image` | — | — | ✓ ghcr | — | ✓ |
+
+`oci` is an alias for `oci-image`. Example — pwmcp emits both:
+`artifacts = ["oci-image", "bundle"]`.
+
+**S-REL.3 — cmru is the orchestrator; the project owns the *how*.** cmru only performs the
+**generic** git/host side-effects it can do for any project — mint+push `<prefix><semver>`,
+commit declared generated paths, push the commit. The artifact-specific work (build the
+wheel/image/bundle, create the GitHub Release + upload assets, push to ghcr, write
+`latest.json`) is performed by the **project's own `build`/`push` step commands**. cmru
+never hardcodes a project's file paths.
+
+**S-REL.4 — Overrides & guards** (`[project.X.release]`): `git_tag = false/true` overrides
+the profile's tag capability; `commit_generated = ["<project-relative path>", …]` lists
+build outputs cmru must `git add`+commit after `build` (e.g. mdt's
+`package-manifests-versioned`). An `oci-image`-only project paired with a tagging strategy
+(`scm`/`counter`/`file`) is a config error (exit 2) — OCI images are not git-tagged.
+
+**S-REL.5 — Reproducibility / commit model.** Before building, cmru requires the project's
+tracked source to be clean (commit first → the artifact maps to a committed state; wheels
+get a clean `X.Y.Z` from setuptools-scm). cmru auto-commits **only** the declared
+`commit_generated` outputs (mechanical), never hand-edited source. OCI flow: clean-gate →
+build (resolver regenerates manifests pre-build, bake embeds them) → commit
+`commit_generated` → push commit → push images. Wheel flow: clean-gate → tag at HEAD →
+build → push tag → (project step) Release + asset + `latest.json`.
 
 ---
 

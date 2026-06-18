@@ -45,7 +45,7 @@ ghcr_delete_packages = ["modern-debian-tools-python-debug-vsc-devcontainer-dev"]
 # ─── ciu — Python wheel ───────────────────────────────────────────────────────
 [project.ciu]
 prefix   = "ciu-v"
-artifact = "wheel"
+artifacts = ["wheel"]
 scm_dist = "ciu"
 cwd      = "ciu"
 [project.ciu.version]
@@ -71,7 +71,7 @@ commands = [
 # ─── cmru — Python wheel (dogfood) ────────────────────────────────────────────
 [project.cmru]
 prefix   = "cmru-v"
-artifact = "wheel"
+artifacts = ["wheel"]
 scm_dist = "cmru"
 cwd      = "cmru"
 [project.cmru.version]
@@ -86,14 +86,15 @@ commands = [
   { label = "cmru: publish wheel", argv = ["python3", "scripts/publish-wheel.py"], cwd = "cmru" },
 ]
 
-# ─── modern-debian-tools-python-debug — OCI images ────────────────────────────
+# ─── modern-debian-tools-python-debug — OCI images (no git tag, no Release) ────
 [project.modern-debian-tools-python-debug]
-prefix   = "modern-debian-tools-python-debug-v"
-artifact = "oci"
-cwd      = "modern-debian-tools-python-debug"
+prefix    = "modern-debian-tools-python-debug-v"   # for resolve/cleanup symmetry; not tagged
+artifacts = ["oci-image"]
+cwd       = "modern-debian-tools-python-debug"
 [project.modern-debian-tools-python-debug.version]
-strategy = "scm"
-bump     = "conventional"
+strategy = "none"          # OCI images are published to ghcr, not git-tagged (S-REL)
+[project.modern-debian-tools-python-debug.release]
+commit_generated = ["package-manifests-versioned"]   # cmru commits these after build
 [project.modern-debian-tools-python-debug.steps.build]
 commands = [
   { label = "modern-debian-tools-python-debug: build images", argv = ["python3", "build-push.py", "--build"], cwd = "modern-debian-tools-python-debug" },
@@ -103,17 +104,16 @@ commands = [
   { label = "modern-debian-tools-python-debug: push images", argv = ["python3", "build-push.py", "--push"], cwd = "modern-debian-tools-python-debug" },
 ]
 
-# ─── pwmcp — OCI image + stack bundle ─────────────────────────────────────────
-# NOTE (P2): pwmcp's real version is computed by scripts/resolve-playwright-version.py
-# (pwmcp-v<playwright>-r<N>). Until P2 wires cmru to delegate to it, keep the scm
-# default so cmru's tag math doesn't fight the resolver.
+# ─── pwmcp — OCI image + stack bundle (emits BOTH) ────────────────────────────
+# pwmcp's version is computed by scripts/resolve-playwright-version.py
+# (pwmcp-v<playwright>-r<N>), so versioning is "delegated": the project owns its tag,
+# while cmru orchestrates build/push of both the ghcr image and the Release bundle.
 [project.pwmcp]
-prefix   = "pwmcp-v"
-artifact = "bundle"
-cwd      = "pwmcp"
+prefix    = "pwmcp-v"
+artifacts = ["oci-image", "bundle"]
+cwd       = "pwmcp"
 [project.pwmcp.version]
-strategy = "scm"
-bump     = "conventional"
+strategy = "delegated"
 [project.pwmcp.steps.build]
 commands = [
   { label = "pwmcp: resolve playwright version + compute release tag", argv = ["python3", "scripts/resolve-playwright-version.py"], cwd = "pwmcp" },
@@ -129,7 +129,7 @@ commands = [
 # ─── tls-edge — tarball (not yet in project_order; P3) ─────────────────────────
 [project.tls-edge]
 prefix   = "tls-edge-v"
-artifact = "tarball"
+artifacts = ["tarball"]
 cwd      = "tls-edge"
 [project.tls-edge.version]
 strategy = "file:VERSION"
@@ -142,7 +142,7 @@ commands = [
 # ─── empyrion-translation — game asset (not yet in project_order; P4) ──────────
 [project.empyrion-translation]
 prefix   = "empyrion-translation-v"
-artifact = "tarball"
+artifacts = ["tarball"]
 cwd      = "game_stuff/empyrion"
 [project.empyrion-translation.version]
 strategy = "scm"
