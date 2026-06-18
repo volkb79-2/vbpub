@@ -788,6 +788,20 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
         records=records,
     )
 
+    # grpcurl — gRPC inspection client (SkyWalking/OTel speak gRPC). Published by
+    # fullstorydev/grpcurl as a tarball containing the `grpcurl` binary at top level.
+    _stage_tarball_tool(
+        tool="grpcurl",
+        version=resolved["GRPCURL_VER"],
+        destination=DOWNLOADS_DIR / f"grpcurl-{resolved['GRPCURL_VER']}.tar.gz",
+        urls=[
+            f"https://github.com/fullstorydev/grpcurl/releases/download/v{resolved['GRPCURL_VER']}/grpcurl_{resolved['GRPCURL_VER']}_linux_x86_64.tar.gz",
+        ],
+        expected_binary="grpcurl",
+        archive_kind="tar.gz",
+        records=records,
+    )
+
     consul_zip_name = f"consul_{resolved['CONSUL_VER']}_linux_amd64.zip"
     consul_zip_path = DOWNLOADS_DIR / consul_zip_name
     consul_sums_path = DOWNLOADS_DIR / f"consul_{resolved['CONSUL_VER']}_SHA256SUMS"
@@ -926,6 +940,7 @@ def _resolve_versions() -> dict[str, str]:
         "CONSUL_VER": _resolve_version(os.getenv("CONSUL_VERSION"), "hashicorp/consul"),
         "DELTA_VER": _resolve_version(os.getenv("DELTA_VERSION"), "dandavison/delta"),
         "GH_VER": _resolve_version(os.getenv("GH_VERSION"), "cli/cli"),
+        "GRPCURL_VER": _resolve_version(os.getenv("GRPCURL_VERSION"), "fullstorydev/grpcurl"),
         "RGA_VER": _resolve_version(os.getenv("RGA_VERSION"), "phiresky/ripgrep-all"),
         "VAULT_VER": _resolve_version(os.getenv("VAULT_VERSION"), "hashicorp/vault"),
     }

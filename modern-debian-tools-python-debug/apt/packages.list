@@ -1,0 +1,48 @@
+# apt system packages for the debug cockpit image.
+# One package per line. Text after '#' is a comment (stripped at install time via
+#   sed 's/#.*//' apt/packages.list | xargs apt-get install -y --no-install-recommends
+# ).
+#
+# Doctrine (docs/CONTAINER-DOCTRINE.md): this image is the COCKPIT — inspection/debug
+# tooling and CLI clients that *drive* other containers. It must NOT carry browser
+# engines (→ pwmcp) or any project's app/runtime packages (→ app/test images).
+# The one version-conditional package historically here was netcat; we standardise on
+# netcat-openbsd (available on bookworm and trixie), so the list is now unconditional.
+
+bash-completion    # interactive shell tab-completion
+ca-certificates    # TLS trust roots for HTTPS
+locales            # generate the en_US.UTF-8 locale
+curl               # HTTP client / artifact downloads
+bind9-dnsutils     # dig / nslookup / host — DNS inspection (e.g. dstdns worker-io)
+fuse3              # userspace filesystem support (backs sshfs)
+gdb                # native / C debugger
+git                # version control
+git-lfs            # git large file storage
+gnupg              # GPG — verify apt repo keys, sign artifacts
+gzip               # gzip (de)compression
+htop               # interactive process viewer
+httpie             # human-friendly HTTP client (`http`/`https`) for poking REST APIs
+iputils-ping       # ping reachability checks
+jq                 # JSON query/format — parse API and CLI output
+less               # pager
+lsb-release        # distro codename (used to add the pgdg/redis apt repos)
+lsof               # list open files/sockets — connection inspection
+man-db             # man pages
+mc                 # Midnight Commander — terminal file manager
+netcat-openbsd     # nc — TCP/UDP port probing (works on bookworm + trixie)
+ncdu               # interactive disk-usage explorer
+openssl            # TLS toolkit — inspect certs / debug handshakes
+python3-venv       # create virtual environments
+psmisc             # killall / pstree / fuser
+rsync              # efficient file sync
+sqlite3            # SQLite CLI — inspect local databases
+strace             # syscall tracer — debug hangs / I/O
+sshfs              # mount remote filesystems over SSH (the only fuse use we ship)
+tar                # tar archives (also used to install pre-staged tools)
+tree               # directory tree view
+unzip              # zip extraction (used to install consul/vault/awscli)
+vim                # terminal editor
+w3m                # terminal web browser — render STATIC HTML readably; JS-rendered → drive pwmcp
+wget               # downloader (alternative to curl)
+xz-utils           # xz (de)compression (e.g. the shellcheck tarball)
+skopeo             # inspect / copy OCI images without a Docker daemon

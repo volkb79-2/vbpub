@@ -21,6 +21,7 @@ CUSTOM_TOOL_ORDER = [
     "fd",
     "fzf",
     "gh",
+    "grpcurl",
     "psql",
     "redis-cli",
     "rga",
@@ -32,7 +33,9 @@ CUSTOM_TOOL_ORDER = [
 
 
 def netcat_package_for_debian(debian_version: str) -> str:
-    return "netcat-openbsd" if debian_version.strip() == "trixie" else "netcat-traditional"
+    # Standardised on netcat-openbsd for all variants (available on bookworm + trixie).
+    # The parameter is kept for call-site compatibility.
+    return "netcat-openbsd"
 
 
 def parse_key_value_lines(lines: Sequence[str]) -> dict[str, str]:

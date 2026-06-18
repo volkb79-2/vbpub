@@ -33,6 +33,7 @@ ARG ANTIGRAVITY_VERSION
 ARG AIDER_VERSION
 ARG DELTA_VERSION
 ARG GH_VERSION
+ARG GRPCURL_VERSION
 ARG CONSUL_VERSION
 ARG FD_VERSION
 ARG FZF_VERSION
@@ -86,6 +87,8 @@ USER root
 
 COPY apt/backports.sources.in /tmp/backports.sources.in
 COPY apt/backports.pref.in /tmp/backports.pref.in
+COPY apt/packages.list /tmp/packages.list
+COPY requirements/toolkit.txt /tmp/requirements/toolkit.txt
 COPY package-manifests-versioned /tmp/package-manifests-versioned
 COPY scripts/manifest_sections.py /tmp/manifest_sections.py
 
@@ -100,11 +103,6 @@ RUN set -euo pipefail; \
 
 # Core system packages
 RUN set -euo pipefail; \
-    if [ "${DEBIAN_VERSION}" = "trixie" ]; then \
-        NETCAT_PKG="netcat-openbsd"; \
-    else \
-        NETCAT_PKG="netcat-traditional"; \
-    fi; \
     if [ -f /etc/apt/sources.list.d/yarn.list ]; then \
         rm -f /etc/apt/sources.list.d/yarn.list; \
     fi; \
@@ -112,47 +110,8 @@ RUN set -euo pipefail; \
     sed -e "s|@URI@|${BACKPORTS_URI}|g" -e "s|@SUITE@|${BACKPORTS_SUITE}|g" /tmp/backports.sources.in > "/etc/apt/sources.list.d/${BACKPORTS_SUITE}.sources"; \
     sed -e "s|@SUITE@|${BACKPORTS_SUITE}|g" /tmp/backports.pref.in > /etc/apt/preferences.d/backports; \
     apt-get update; \
-    apt-get install -y --no-install-recommends \
-        bash-completion \
-        ca-certificates \
-        locales \
-        curl \
-        bind9-dnsutils \
-        fuse3 \
-        gdb \
-        git \
-        git-lfs \
-        gnupg \
-        gzip \
-        htop \
-        httpie \
-        iputils-ping \
-        jq \
-        less \
-        lsb-release \
-        lsof \
-        man-db \
-        mc \
-        "${NETCAT_PKG}" \
-        ncdu \
-        openssl \
-        python3-venv \
-        psmisc \
-        rsync \
-        sqlite3 \
-        strace \
-        sshfs \
-        tar \
-        tree \
-        unzip \
-        vim \
-        wget \
-        xz-utils \
-        pandoc \
-        poppler-utils \
-        p7zip-full \
-        skopeo \
-    ; \
+    # Package list lives in apt/packages.list (one per line; '#' starts a comment). \
+    sed 's/#.*//' /tmp/packages.list | xargs apt-get install -y --no-install-recommends; \
     sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen; \
     locale-gen en_US.UTF-8; \
     update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; \
@@ -264,6 +223,8 @@ RUN set -euo pipefail; \
     require_file "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz"; \
     tar -xzf "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz" -C /tmp; \
     install -m 755 "/tmp/gh_${GH_VER}_linux_amd64/bin/gh" /usr/local/bin/gh; \
+    require_file "${DOWNLOADS_DIR}/grpcurl-${GRPCURL_VER}.tar.gz"; \
+    install_from_tar "${DOWNLOADS_DIR}/grpcurl-${GRPCURL_VER}.tar.gz" grpcurl /tmp/grpcurl-extract; \
     require_file "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_SHA256SUMS"; \
     require_file "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_linux_amd64.zip"; \
     (cd "${DOWNLOADS_DIR}" && grep "consul_${CONSUL_VER}_linux_amd64.zip" "consul_${CONSUL_VER}_SHA256SUMS" | sha256sum -c -); \
@@ -280,6 +241,7 @@ RUN set -euo pipefail; \
     rm -rf \
         /tmp/codex-extract \
         /tmp/bat-extract \
+        /tmp/grpcurl-extract \
         /tmp/delta-extract \
         /tmp/fd-extract \
         /tmp/antigravity-extract \
@@ -321,41 +283,7 @@ RUN set -euo pipefail; \
     python3 -m venv /home/vscode/.venv; \
     /home/vscode/.venv/bin/python -m pip install --upgrade pip setuptools wheel --disable-pip-version-check --quiet; \
     /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet \
-        boto3 \
-        debugpy \
-        PyYAML \
-        aiohttp \
-        asyncpg \
-        black \
-        click \
-        coverage \
-        hvac \
-        ipdb \
-        ipython \
-        isort \
-        jinja2 \
-        mypy \
-        pydantic \
-        pydantic-settings \
-        pytest \
-        pytest-asyncio \
-        pytest-cov \
-        redis \
-        requests \
-        rich \
-        ruff \
-        structlog \
-        tomli_w \
-        build \
-        twine \
-        setuptools-scm \
-        pip-audit \
-        pre-commit \
-        tox \
-        pytest-xdist \
-        pytest-mock \
-        check-wheel-contents \
-        uv; \
+        -r /tmp/requirements/toolkit.txt; \
     if [ "${INSTALL_AIDER}" = "true" ]; then \
         if [ "${AIDER_VERSION}" = "main" ]; then \
             /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat @ git+https://github.com/Aider-AI/aider.git@main"; \
@@ -514,11 +442,6 @@ RUN set -euo pipefail; \
     if [ -n "${PACKAGE_MANIFEST_SOURCE:-}" ] && [ -f "/tmp/${PACKAGE_MANIFEST_SOURCE}" ]; then \
         source_manifest="/tmp/${PACKAGE_MANIFEST_SOURCE}"; \
     fi; \
-    if [ "${DEBIAN_VERSION}" = "trixie" ]; then \
-        NETCAT_PKG="netcat-openbsd"; \
-    else \
-        NETCAT_PKG="netcat-traditional"; \
-    fi; \
     b2_version_output="$(b2 version 2>&1 | head -1 || true)"; \
     if [ -z "${b2_version_output}" ]; then \
         b2_version_output="$(b2 --version 2>&1 | head -1 || true)"; \
@@ -565,6 +488,7 @@ RUN set -euo pipefail; \
         echo "fd=$(fd --version 2>&1 | head -1)"; \
         echo "fzf=$(fzf --version 2>&1)"; \
         echo "gh=$(gh --version 2>&1 | head -1)"; \
+        echo "grpcurl=$(grpcurl --version 2>&1 | head -1)"; \
         echo "psql=$(psql --version 2>&1)"; \
         echo "redis-cli=$(redis-cli --version 2>&1)"; \
         echo "rga=$(rga --version 2>&1 | head -1)"; \
@@ -575,8 +499,8 @@ RUN set -euo pipefail; \
     } > "${custom_tooling_file}"; \
     /home/vscode/.venv/bin/pip list --format=freeze > "${python_packages_file}"; \
     dpkg-query -W -f='${Package}=${Version}\n' \
-        bash-completion ca-certificates curl bind9-dnsutils fuse3 git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc \
-        "${NETCAT_PKG}" ncdu openssl pandoc p7zip-full poppler-utils python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim wget xz-utils \
+        bash-completion ca-certificates locales curl bind9-dnsutils fuse3 gdb git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc \
+        netcat-openbsd ncdu openssl python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim w3m wget xz-utils skopeo \
         postgresql-client redis-tools > "${system_packages_file}"; \
     python3 /tmp/manifest_sections.py unified \
         --output "${unified_manifest}" \

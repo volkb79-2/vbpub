@@ -28,6 +28,52 @@ production crash**.
 Making the toolkit "complete" re-couples results to the devcontainer and reintroduces exactly this
 class of bug. Don't.
 
+## Lean ≠ bare: this is a *debug* cockpit
+
+The image is named `…-python-debug` on purpose. "Lean" is about the **trust boundary and the
+ship-gate** — not about starving the cockpit of inspection tooling. Two activities look alike but have
+opposite requirements:
+
+| | **Debugging** (this image's mission) | **Ship-gate testing** |
+|---|---|---|
+| Mode | interactive, human-in-the-loop | automated pass/fail |
+| Runs against | a **running** deployed stack | the test image's own closure |
+| A wrong library version | is *seen immediately* by the human | silently flips red→green |
+| Rich inspection libs | **help** — keep them | irrelevant; must equal prod |
+
+So the fidelity rule governs **where the gating suite runs**, never what the debug image *contains*.
+"Green in this cockpit" is never a ship signal; the gating suite runs in a test image built
+`FROM <app-base>` (see *Tests run in a test container*). Given that boundary, shipping a curated set
+of inspection libraries in the venv is correct, not a violation.
+
+### Inspection client ≠ app library
+
+The cockpit talks to services two ways; keep them distinct:
+
+- **Inspection CLIs** — `psql`, `redis-cli`, `vault`, `consul`, `aws` (→ S3 / MinIO), `dig`,
+  `grpcurl`, `http`/`curl`, `w3m`. These *are* the cockpit driving services over the wire — pure
+  doctrine, and most of a stack's services already have one.
+- **Python inspection libs** — `asyncpg`, `redis`, `hvac`, `httpx`, `sqlalchemy`, … in the venv, used
+  from `ipython` for richer-than-CLI probing (decode a Redis Stream envelope, pretty-print a
+  TimescaleDB hypertable query).
+
+Note the trap this dissolves: there is no `hvac` *command* — you inspect Vault with the `vault` CLI;
+python `hvac` is an *app library*, useful only as a scratch convenience. "We can talk to Redis" is
+satisfied by `redis-tools` (the CLI), independent of whether python `redis` is in the venv.
+
+### The AI-CLI corollary
+
+This image ships AI coding agents (Claude Code, Codex). They reach for `python -c "import asyncpg…"`
+**by default** — so libs-present makes their default correct by construction. "Ship the AI CLIs but
+forbid Python / CLI-only" is the inefficient incoherent corner: you pay the agents' (real) attack
+surface *and* kneecap them, while relying on probabilistic adherence to negative instructions and
+burning turns on failed imports + `pip install` retries (which succeed anyway in a networked cockpit,
+falsifying "unavailable on purpose"). Guidance to consuming repos must therefore be **positive**
+(here's the inspection kit; ad-hoc `pip install` is fine — this venv is scratch) plus exactly **one
+boundary** (the gating suite runs in the test image). Never write "python libs unavailable on
+purpose." See [CONSUMER-AI-GUIDANCE.md](CONSUMER-AI-GUIDANCE.md) for the block consumers paste into
+their AI instruction files.
+
 ## The layers
 
 | Layer | Scope | Holds | Must never hold |
@@ -64,6 +110,14 @@ binaries:
 pip install playwright==<version>   # match the pwmcp image tag
 # never: playwright install
 ```
+
+**Text browsers are fine; JS engines are not.** A no-JS terminal browser (`w3m`, `links2`) is just
+"`curl` + an HTML renderer" — low surface, and a real upgrade over staring at `curl` output for
+static pages; `w3m` ships in the image. But any **JS-capable** browser (`browsh` → Firefox,
+`carbonyl` → Chromium, engine-backed `elinks`) *is* a browser engine — exactly the surface this
+section pushes out. "JS must be supported" and "no engine in the cockpit" are mutually exclusive by
+construction, so JS-rendered pages go to `pwmcp`, which returns the post-JS DOM / a screenshot while
+the engine stays outside the trust boundary.
 
 ### Tests run in a test container, never in the toolkit — *fidelity*
 

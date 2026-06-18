@@ -3,6 +3,8 @@
 !docker-bake.hcl
 !README.md
 !apt/**
+!requirements
+!requirements/**
 !build
 !build/tool-artifacts-staging
 !build/tool-artifacts-staging/**

@@ -1,0 +1,62 @@
+# Primary devcontainer venv (/home/vscode/.venv) — the debug cockpit's Python toolkit.
+# Installed via: pip install -r requirements/toolkit.txt
+#
+# Doctrine (docs/CONTAINER-DOCTRINE.md):
+#   - This is interactive inspection + dev/build tooling for a DEBUG cockpit.
+#   - It is deliberately NOT any project's gating test closure. "Green in this venv" is
+#     never a ship signal — the gating suite runs in a test image built FROM <app-base>.
+#   - Unpinned by design (latest-at-build): this is debug tooling, not a shipped artifact.
+#   - Text after '#' is a comment. Keep this file as the single source of truth (README and
+#     the manifest derive from what is actually installed, not a hand-copied list).
+
+# --- debug / REPL ---
+debugpy               # remote debugging (VS Code attach)
+ipdb                  # IPython-enhanced pdb
+ipython               # rich interactive REPL for scratch inspection
+
+# --- lint / format / type ---
+ruff                  # linter + formatter + import sorting (supersedes black & isort)
+mypy                  # static type checker
+
+# --- test tooling (LAUNCHER / scratch only — gating suite runs in the test image) ---
+pytest                # test runner
+pytest-asyncio        # async test support
+pytest-cov            # coverage plugin
+pytest-mock           # mocker fixture
+pytest-xdist          # parallel test execution
+coverage              # coverage measurement
+
+# --- packaging / release / supply-chain ---
+build                 # PEP 517 build frontend
+twine                 # upload to PyPI
+setuptools-scm        # derive version from VCS tags
+check-wheel-contents  # lint built wheels
+pip-audit             # audit dependencies for known CVEs
+pre-commit            # git hook runner
+
+# --- multi-version / orchestration ---
+uv                    # fast installer + Python version manager
+tox                   # multi-interpreter test matrices
+
+# --- inspection / AI-scratch libraries -------------------------------------------------
+# Talk to running services interactively (ipython, quick `python -c`). These are an
+# inspection convenience, NOT a guarantee of any app's closure. AI CLIs (claude/codex)
+# reach for these by default, so shipping them makes the agents' default correct.
+requests              # simple synchronous HTTP
+httpx                 # modern sync/async HTTP (AI default; fills the requests↔aiohttp gap)
+aiohttp               # async HTTP client/server
+boto3                 # AWS / S3-compatible (MinIO) SDK
+asyncpg               # async PostgreSQL driver — poke Postgres/TimescaleDB
+redis                 # Redis client — inspect queues / streams / keys
+hvac                  # HashiCorp Vault API client
+sqlalchemy            # ORM/Core for richer interactive DB inspection
+dnspython             # DNS toolkit (matches dstdns worker-io DNS work)
+websockets            # WebSocket client — poke WS endpoints (e.g. webapp-server)
+pydantic              # data validation (config/model scratch)
+pydantic-settings     # settings models
+structlog             # structured logging
+PyYAML                # YAML parse/emit
+jinja2                # templating (also a CIU dependency)
+tomli_w               # write TOML (also a CIU dependency)
+click                 # build quick CLIs
+rich                  # pretty terminal output / tables

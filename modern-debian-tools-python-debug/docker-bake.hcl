@@ -132,6 +132,10 @@ variable "GH_VERSION" {
   default = "latest"
 }
 
+variable "GRPCURL_VERSION" {
+  default = "latest"
+}
+
 variable "RGA_VERSION" {
   default = "latest"
 }
@@ -339,6 +343,7 @@ target "base" {
     FD_VERSION = "${FD_VERSION}"
     FZF_VERSION = "${FZF_VERSION}"
     GH_VERSION = "${GH_VERSION}"
+    GRPCURL_VERSION = "${GRPCURL_VERSION}"
     CODEX_VERSION = "${CODEX_VERSION}"
     CLAUDE_CODE_VERSION = "${CLAUDE_CODE_VERSION}"
     ANTIGRAVITY_VERSION = "${ANTIGRAVITY_VERSION}"
@@ -579,9 +584,10 @@ group "all" {
   targets = [
     # "bookworm-py311",
     # "bookworm-py313",
-    "trixie-py314",
-    #"trixie-py314-vsc",
-    "trixie-py314-py311-py39-vsc"
+    #"trixie-py314",
+    "trixie-py311-vsc",
+    "trixie-py314-vsc",
+    #"trixie-py314-py311-py39-vsc"
     #"latest-vsc",
     #"trixie-py314",
     #"trixie-py314-vsc",

@@ -65,17 +65,19 @@ Tag format for multi-Python variants: `<debian>-<primary>-<secondary...>-<YYYYMM
 
 ### Primary Venv Packages
 
-Full toolkit installed into `/home/vscode/.venv`:
+The full toolkit installed into `/home/vscode/.venv` is defined in
+[`requirements/toolkit.txt`](requirements/toolkit.txt) — the single source of truth, with every entry
+annotated for what it's for. It splits into dev/build tooling (`ruff`, `mypy`, `pytest`, `build`,
+`uv`, `tox`, …) and **inspection / AI-scratch libraries** (`httpx`, `asyncpg`, `redis`, `hvac`,
+`sqlalchemy`, `dnspython`, `websockets`, …) used to talk to running services interactively.
 
-```
-boto3            debugpy          PyYAML           aiohttp          asyncpg
-black            click            coverage         hvac             ipdb
-ipython          isort            jinja2           mypy             pydantic
-pydantic-settings  pytest         pytest-asyncio   pytest-cov       redis
-requests         rich             ruff             structlog        tomli_w
-build            twine            setuptools-scm   pip-audit        pre-commit
-tox              pytest-xdist     pytest-mock      check-wheel-contents  uv
-```
+`ruff` supersedes `black` and `isort` (formatting + import sorting), so those are no longer installed.
+
+> This venv is a **debug cockpit**, not a gating test environment. "Green here" is never a ship
+> signal — a project's gating tests run in a test image built `FROM <app-base>`. See
+> [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md), and
+> [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) for what to put in your repo's AI
+> instruction files. The apt system-package list lives in [`apt/packages.list`](apt/packages.list).
 
 Optional (controlled by `INSTALL_*` build args, all enabled by default):
 - `aider-chat` — `INSTALL_AIDER=true`
