@@ -8,6 +8,7 @@ not stale cached local copies.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -728,6 +729,200 @@ def resolve_ciu_wheel_coordinates() -> tuple[str, str, str, str, str]:
     return resolve_ciu_wheel_via_release_scan(owner, repo)
 
 
+WHEELS_LIST_PATH = Path(__file__).resolve().parent.parent / "pip" / "wheels.list"
+WHEELS_CONTEXT_DIR = Path(__file__).resolve().parent.parent / "pip" / "wheels"
+
+
+def parse_wheels_list(path: Path) -> list[str]:
+    """Parse pip/wheels.list — one package name per line; '#' starts a comment."""
+    if not path.exists():
+        return []
+    names: list[str] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if line:
+            names.append(line)
+    return names
+
+
+def _sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _verify_wheel_sha256(whl_path: Path, expected_sha256: str) -> None:
+    """Verify sha256 of a wheel file; raise RuntimeError on mismatch."""
+    actual = _sha256_hex(whl_path.read_bytes())
+    if actual.lower() != expected_sha256.lower():
+        raise RuntimeError(
+            f"sha256 mismatch for {whl_path.name}: "
+            f"expected {expected_sha256}, got {actual}"
+        )
+
+
+def resolve_first_party_wheels(
+    owner: str, repo: str
+) -> list[dict[str, str]]:
+    """Resolve, download, and verify first-party wheels from pip/wheels.list.
+
+    For each package name ``N`` in wheels.list, calls
+    ``cmru.release.GitHubReleases.resolve_latest(N)`` (owner/repo from cmru.toml;
+    token optional for public repos) to find the highest-semver ``N-v*`` release,
+    then downloads the ``.whl`` and its ``.whl.sha256`` sidecar into
+    ``pip/wheels/`` and verifies the checksum.
+
+    A missing release is a **non-fatal skip** (logged as [WARN]) so that the
+    existing resolve flow is never broken by an as-yet-unpublished wheel.
+    The actual publish happens in the FINAL CUT after cmru's P7 re-release.
+
+    Returns a list of dicts with keys: name, version, sha256, whl_filename.
+    """
+    # Import cmru.release from the monorepo source tree (editable install or
+    # sys.path fallback).  We import at call time to avoid a hard failure when
+    # the caller's Python environment lacks the cmru package.
+    try:
+        # Prefer the editable-installed package (pip install -e cmru/).
+        from cmru.release import GitHubReleases  # type: ignore[import-untyped]
+    except ImportError:
+        # Fallback: add the monorepo cmru/src to sys.path.
+        _cmru_src = Path(__file__).resolve().parent.parent.parent / "cmru" / "src"
+        if str(_cmru_src) not in sys.path:
+            sys.path.insert(0, str(_cmru_src))
+        try:
+            from cmru.release import GitHubReleases  # type: ignore[import-untyped]
+        except ImportError as exc:
+            print(
+                f"[WARN] cmru.release not importable; skipping first-party wheel resolution: {exc}",
+                file=sys.stderr,
+            )
+            return []
+
+    names = parse_wheels_list(WHEELS_LIST_PATH)
+    if not names:
+        return []
+
+    token = (os.getenv("GITHUB_PUSH_PAT") or os.getenv("GITHUB_TOKEN") or "").strip()
+    gh = GitHubReleases(owner=owner, repo=repo, token=token)
+
+    WHEELS_CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
+
+    resolved: list[dict[str, str]] = []
+
+    for name in names:
+        print(f"[INFO] Resolving first-party wheel: {name}", file=sys.stderr)
+        try:
+            info = gh.resolve_latest(name)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[WARN] Failed to resolve latest release for wheel '{name}': {exc} — skipping",
+                file=sys.stderr,
+            )
+            continue
+
+        if info is None:
+            print(
+                f"[WARN] No '{name}-v*' release found on {owner}/{repo}; "
+                "skipping (wheel will be available after the FINAL CUT re-release). "
+                "See docs/plan-cmru-finish.md §2B.",
+                file=sys.stderr,
+            )
+            continue
+
+        version = info.get("version") or ""
+        assets = info.get("assets") or []
+
+        # Find the .whl asset and its .sha256 sidecar.
+        whl_asset: dict[str, str] | None = None
+        sha256_asset: dict[str, str] | None = None
+        for asset in assets:
+            asset_name = str(asset.get("name") or "")
+            asset_url = str(asset.get("url") or "")
+            if asset_name.endswith(".whl") and whl_asset is None:
+                whl_asset = {"name": asset_name, "url": asset_url}
+            elif asset_name.endswith(".whl.sha256") and sha256_asset is None:
+                sha256_asset = {"name": asset_name, "url": asset_url}
+
+        if whl_asset is None:
+            print(
+                f"[WARN] No .whl asset in release '{name}-v{version}'; skipping",
+                file=sys.stderr,
+            )
+            continue
+
+        whl_filename = whl_asset["name"]
+        whl_url = whl_asset["url"]
+        whl_dest = WHEELS_CONTEXT_DIR / whl_filename
+
+        # Download wheel.
+        print(f"[INFO] Downloading {whl_filename} from {whl_url}", file=sys.stderr)
+        try:
+            req = urllib.request.Request(whl_url, method="GET")
+            with urllib.request.urlopen(req, timeout=60) as response:
+                whl_bytes = response.read()
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[WARN] Failed to download wheel '{whl_filename}': {exc} — skipping",
+                file=sys.stderr,
+            )
+            continue
+
+        actual_sha256 = _sha256_hex(whl_bytes)
+
+        # Download and verify the .sha256 sidecar if present.
+        expected_sha256 = ""
+        if sha256_asset:
+            sha256_filename = sha256_asset["name"]
+            sha256_url = sha256_asset["url"]
+            sha256_dest = WHEELS_CONTEXT_DIR / sha256_filename
+            try:
+                req256 = urllib.request.Request(sha256_url, method="GET")
+                with urllib.request.urlopen(req256, timeout=20) as response:
+                    sha256_raw = response.read().decode("utf-8", "replace").strip()
+                # Format: "<hex>  <filename>" (sha256sum output) or just the hex.
+                first_token = sha256_raw.split()[0] if sha256_raw else ""
+                if len(first_token) == 64 and all(
+                    c in "0123456789abcdefABCDEF" for c in first_token
+                ):
+                    expected_sha256 = first_token.lower()
+                sha256_dest.write_bytes(sha256_raw.encode("utf-8"))
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[WARN] Failed to fetch sha256 sidecar for '{whl_filename}': {exc}",
+                    file=sys.stderr,
+                )
+
+        if expected_sha256 and actual_sha256.lower() != expected_sha256.lower():
+            print(
+                f"[WARN] sha256 mismatch for {whl_filename}: "
+                f"expected {expected_sha256}, got {actual_sha256} — skipping",
+                file=sys.stderr,
+            )
+            continue
+
+        whl_dest.write_bytes(whl_bytes)
+        sha256_used = expected_sha256 or actual_sha256
+
+        if expected_sha256:
+            print(
+                f"[INFO] Wheel {whl_filename} verified (sha256 {sha256_used[:16]}...)",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"[INFO] Wheel {whl_filename} downloaded (sha256 {sha256_used[:16]}...; "
+                "no sidecar — checksum is computed locally)",
+                file=sys.stderr,
+            )
+
+        resolved.append({
+            "name": name,
+            "version": version,
+            "sha256": sha256_used,
+            "whl_filename": whl_filename,
+        })
+
+    return resolved
+
+
 def probe_system_package_candidates(debian: str, python: str) -> list[str]:
     image = f"python:{python}-{debian}"
     netcat_pkg = netcat_package_for_debian(debian)
@@ -765,7 +960,11 @@ def probe_system_package_candidates(debian: str, python: str) -> list[str]:
     return lines
 
 
-def build_runtime_custom_tooling_map(tool_metadata: dict | None, ciu_wheel_version: str) -> dict[str, str]:
+def build_runtime_custom_tooling_map(
+    tool_metadata: dict | None,
+    ciu_wheel_version: str,
+    first_party_wheels: list[dict[str, str]] | None = None,
+) -> dict[str, str]:
     resolved_versions = {}
     if isinstance(tool_metadata, dict):
         raw = tool_metadata.get("resolved_versions")
@@ -795,7 +994,16 @@ def build_runtime_custom_tooling_map(tool_metadata: dict | None, ciu_wheel_versi
     else:
         aider_display = "not-installed"
 
+    # Derive cmru version from first_party_wheels resolution result.
+    cmru_version = ""
+    if first_party_wheels:
+        for w in first_party_wheels:
+            if w.get("name") == "cmru":
+                cmru_version = w.get("version") or ""
+                break
+
     tooling = {
+        "cmru": cmru_version or "not-installed",
         "CIU": ciu_wheel_version or "not-installed",
         "aider": aider_display,
         "antigravity": (
@@ -843,8 +1051,11 @@ def collect_runtime_probe_sections(
     entries: list[dict[str, str]],
     tool_metadata: dict | None,
     ciu_wheel_version: str,
+    first_party_wheels: list[dict[str, str]] | None = None,
 ) -> dict[str, list[str]]:
-    custom_tooling = build_runtime_custom_tooling_map(tool_metadata, ciu_wheel_version)
+    custom_tooling = build_runtime_custom_tooling_map(
+        tool_metadata, ciu_wheel_version, first_party_wheels
+    )
     probe_cache: dict[tuple[str, str], list[str]] = {}
     runtime_sections: dict[str, list[str]] = {}
 
@@ -1035,11 +1246,16 @@ def load_tool_artifact_metadata(metadata_path: Path) -> dict:
 
 
 def render_tool_artifact_lines(tool_metadata: dict | None) -> list[str]:
+    """Render '## Staged Tool Artifacts' section (resolved versions only; no sha256 list).
+
+    The full sha256 digest listing is moved to an appendix at the end of the manifest
+    via :func:`render_artifact_digests_appendix` so the top of the document stays
+    readable at a glance.
+    """
     if not tool_metadata:
         return []
 
     resolved_versions = tool_metadata.get("resolved_versions")
-    artifacts = tool_metadata.get("artifacts")
     lines: list[str] = [
         "## Staged Tool Artifacts",
         "",
@@ -1066,25 +1282,43 @@ def render_tool_artifact_lines(tool_metadata: dict | None) -> list[str]:
 
         lines.append("")
 
-    if isinstance(artifacts, list) and artifacts:
-        lines.append("### Artifact Sources and Digests")
-        lines.append("")
-        for raw_item in artifacts:
-            if not isinstance(raw_item, dict):
-                continue
-            tool = str(raw_item.get("tool") or "unknown").strip()
-            version = str(raw_item.get("version") or "").strip()
-            kind = str(raw_item.get("kind") or "artifact").strip()
-            digest = str(raw_item.get("sha256") or "").strip()
-            source_url = str(raw_item.get("source_url") or "").strip()
-            lines.append(
-                f"- {tool} {version} ({kind}): sha256 `{digest}`; source `{source_url}`"
-            )
-        lines.append("")
-
     lines.append(
         "Generated from local pre-staging metadata to make release documentation auditable and reproducible."
     )
+    lines.append("")
+    return lines
+
+
+def render_artifact_digests_appendix(tool_metadata: dict | None) -> list[str]:
+    """Render the appendix section with full sha256 digest listing.
+
+    Placed at the END of the manifest to keep the top readable. Consumers who need
+    to verify an artifact can find the digests here without cluttering the summary.
+    """
+    if not tool_metadata:
+        return []
+
+    artifacts = tool_metadata.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        return []
+
+    lines: list[str] = [
+        "## Appendix: Artifact Sources and Digests",
+        "",
+        "Full sha256 digests for all staged artifacts. Use these to verify reproducibility.",
+        "",
+    ]
+    for raw_item in artifacts:
+        if not isinstance(raw_item, dict):
+            continue
+        tool = str(raw_item.get("tool") or "unknown").strip()
+        version = str(raw_item.get("version") or "").strip()
+        kind = str(raw_item.get("kind") or "artifact").strip()
+        digest = str(raw_item.get("sha256") or "").strip()
+        source_url = str(raw_item.get("source_url") or "").strip()
+        lines.append(
+            f"- {tool} {version} ({kind}): sha256 `{digest}`; source `{source_url}`"
+        )
     lines.append("")
     return lines
 
@@ -1107,6 +1341,21 @@ def choose_latest_entry(
     )[-1]
 
 
+def render_first_party_wheels_section(
+    wheels: list[dict[str, str]] | None,
+) -> list[str]:
+    """Render the '## First-Party Wheels' section lines for a manifest."""
+    if not wheels:
+        return []
+    lines = ["## First-Party Wheels", ""]
+    for w in wheels:
+        lines.append(
+            f"- {w['name']} `{w['version']}` — sha256: `{w['sha256']}`"
+        )
+    lines.append("")
+    return lines
+
+
 def render_manifest(
     entry: dict[str, str],
     *,
@@ -1116,6 +1365,7 @@ def render_manifest(
     description: str,
     tool_metadata: dict | None,
     runtime_probe_sections: list[str] | None,
+    first_party_wheels: list[dict[str, str]] | None = None,
 ) -> str:
     package_name = entry["package_name"]
     family_title = entry["family_title"]
@@ -1156,12 +1406,14 @@ def render_manifest(
         "",
     ]
     lines.extend((description.strip() or "No description provided.").splitlines())
+    lines.append("")
+    # First-party wheels summary (name + version + sha256) — before tool artifacts.
+    lines.extend(render_first_party_wheels_section(first_party_wheels))
     lines.extend(render_tool_artifact_lines(tool_metadata))
     if runtime_probe_sections:
         lines.extend(runtime_probe_sections)
     lines.extend(
         [
-            "",
             "## Rich Documentation Links",
             "",
             f"- Family overview: {package_readme_url}",
@@ -1176,8 +1428,11 @@ def render_manifest(
             "",
             "This repository-hosted page exists because GHCR package descriptions render as flattened plain text.",
             "The image labels therefore point to GitHub-hosted Markdown for richer, package-specific release notes.",
+            "",
         ]
     )
+    # Appendix: full sha256 digest listing at the END so the top stays readable.
+    lines.extend(render_artifact_digests_appendix(tool_metadata))
     return "\n".join(lines) + "\n"
 
 
@@ -1305,6 +1560,7 @@ def write_package_docs(
     *,
     tool_metadata: dict | None,
     ciu_wheel_version: str,
+    first_party_wheels: list[dict[str, str]] | None = None,
 ) -> None:
     username = os.getenv("GITHUB_USERNAME") or "volkb79-2"
     repo = os.getenv("GITHUB_REPO") or "vbpub"
@@ -1316,6 +1572,7 @@ def write_package_docs(
         entries,
         tool_metadata,
         ciu_wheel_version,
+        first_party_wheels,
     )
     grouped: dict[str, list[dict[str, str]]] = {}
     for entry in entries:
@@ -1369,6 +1626,7 @@ def write_package_docs(
                     description=description,
                     tool_metadata=tool_metadata,
                     runtime_probe_sections=runtime_probe_sections.get(entry["target"]),
+                    first_party_wheels=first_party_wheels,
                 ),
                 encoding="utf-8",
             )
@@ -1430,12 +1688,22 @@ def main() -> int:
     description_vsc = os.getenv("OCI_DESCRIPTION_VSC") or os.getenv("OCI_DESCRIPTION") or ""
 
     tool_metadata = load_tool_artifact_metadata(staging_result.metadata_path)
+
+    # Resolve first-party wheels (cmru and any future entries in pip/wheels.list).
+    # Non-fatal when a release is not yet published (skip with [WARN]).
+    # The actual rebuild happens in the FINAL CUT after cmru's P7 re-release.
+    _github_owner = os.getenv("GITHUB_USERNAME") or "volkb79-2"
+    _github_repo = os.getenv("GITHUB_REPO") or "vbpub"
+    sys.stderr.write("[INFO] Resolving first-party wheels from pip/wheels.list...\n")
+    first_party_wheels = resolve_first_party_wheels(_github_owner, _github_repo)
+
     write_package_docs(
         build_date,
         latest_python,
         latest_debian,
         tool_metadata=tool_metadata,
         ciu_wheel_version=ciu_wheel_version,
+        first_party_wheels=first_party_wheels,
     )
 
     print(
@@ -1455,6 +1723,15 @@ def main() -> int:
     # release and CIU_WHEEL_SHA256 to verify the download.  Both were absent before v2.0.0.
     print(f"CIU_WHEEL_URL={ciu_wheel_url}")
     print(f"CIU_WHEEL_SHA256={ciu_wheel_sha256}")
+
+    # Export first-party wheel results (from pip/wheels.list) for bake/downstream use.
+    # One var per resolved wheel: FIRST_PARTY_WHEEL_<NAME>_VERSION and _SHA256.
+    # Empty when a wheel was skipped (release not yet published).
+    for _w in first_party_wheels:
+        _wname = _w["name"].upper().replace("-", "_")
+        print(f"FIRST_PARTY_WHEEL_{_wname}_VERSION={_w['version']}")
+        print(f"FIRST_PARTY_WHEEL_{_wname}_SHA256={_w['sha256']}")
+        print(f"FIRST_PARTY_WHEEL_{_wname}_FILENAME={_w['whl_filename']}")
 
     # Export latest stable tuple for downstream bake targets (dynamic, live-derived).
     if latest_tag:

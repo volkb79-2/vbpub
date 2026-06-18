@@ -1,0 +1,4 @@
+# This directory holds pre-resolved first-party wheel files downloaded by
+# scripts/resolve-devcontainers-release.py. The downloaded .whl and .whl.sha256
+# files are gitignored (binary build artifacts); .gitkeep ensures the directory
+# is tracked so the Dockerfile COPY pip/wheels/ path is always valid.

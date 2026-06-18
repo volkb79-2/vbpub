@@ -3,6 +3,9 @@
 !docker-bake.hcl
 !README.md
 !apt/**
+!pip/wheels.list
+!pip/wheels/
+!pip/wheels/**
 !requirements
 !requirements/**
 !build

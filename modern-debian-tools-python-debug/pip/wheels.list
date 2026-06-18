@@ -1,0 +1,14 @@
+# First-party wheels to install into the mdt image.
+# One package name per line. Text after '#' is a comment.
+# Resolved pre-build by scripts/resolve-devcontainers-release.py; wheels are
+# downloaded into pip/wheels/ and installed via `pip install --no-index --find-links`.
+#
+# Format mirrors apt/packages.list: one entry per line, '#' starts a comment.
+#
+# Depends on <name>-latest GitHub Release existing at build time.
+# The actual download is skipped (non-fatal warning) when no release is found;
+# the first rebuild after cmru's P7 re-release will populate pip/wheels/.
+#
+# See: docs/plan-cmru-finish.md §2B (deferred build / cmru-latest dependency).
+
+cmru  # https://github.com/volkb79-2/vbpub/releases — cmru-v* releases carry the wheel

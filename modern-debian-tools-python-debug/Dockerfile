@@ -88,6 +88,8 @@ USER root
 COPY apt/backports.sources.in /tmp/backports.sources.in
 COPY apt/backports.pref.in /tmp/backports.pref.in
 COPY apt/packages.list /tmp/packages.list
+COPY pip/wheels.list /tmp/pip/wheels.list
+COPY pip/wheels/ /tmp/pip/wheels/
 COPY requirements/toolkit.txt /tmp/requirements/toolkit.txt
 COPY package-manifests-versioned /tmp/package-manifests-versioned
 COPY scripts/manifest_sections.py /tmp/manifest_sections.py
@@ -311,6 +313,31 @@ RUN set -euo pipefail; \
                 uv debugpy ruff; \
         done; \
     fi
+# ── First-party wheels (pip/wheels.list) ─────────────────────────────────────
+# Resolved and downloaded pre-build by scripts/resolve-devcontainers-release.py.
+# pip/wheels/ holds the .whl files (populated from cmru-v* GitHub Releases).
+# pip install --no-index --find-links so no network access is needed at build time.
+# Skipped (non-fatal) when pip/wheels/ is empty (release not yet published).
+# Source: https://github.com/volkb79-2/vbpub/releases — cmru-v* and future entries.
+RUN set -euo pipefail; \
+    wheels_dir="/tmp/pip/wheels"; \
+    wheels_list="/tmp/pip/wheels.list"; \
+    if [ ! -d "${wheels_dir}" ] || [ -z "$(ls "${wheels_dir}"/*.whl 2>/dev/null || true)" ]; then \
+        echo "[INFO] pip/wheels/ is empty — no first-party wheels to install (FINAL CUT will populate it)" >&2; \
+    else \
+        wheel_names="$(sed 's/#.*//;/^[[:space:]]*$/d' "${wheels_list}" | tr '\n' ' ')"; \
+        if [ -n "${wheel_names}" ]; then \
+            echo "[INFO] Installing first-party wheels: ${wheel_names}" >&2; \
+            /home/vscode/.venv/bin/python -m pip install \
+                --disable-pip-version-check \
+                --no-index \
+                --find-links="${wheels_dir}" \
+                ${wheel_names}; \
+        else \
+            echo "[INFO] pip/wheels.list has no non-comment entries; skipping" >&2; \
+        fi; \
+    fi
+
 # Install the ciu Python wheel.
 # Resolution (performed by resolve-devcontainers-release.py at pipeline-prep time):
 #   1. CIU_WHEEL_URL is the direct download URL for the .whl from the immutable
@@ -451,10 +478,16 @@ RUN set -euo pipefail; \
         shellcheck_version_output="$(shellcheck --version 2>&1 | head -1 || true)"; \
     fi; \
     ciu_version_output="$(/home/vscode/.venv/bin/python -c 'import importlib.metadata as m; print(m.version("ciu"))' 2>/dev/null || true)"; \
+    cmru_version_output="$(/home/vscode/.venv/bin/python -c 'import importlib.metadata as m; print(m.version("cmru"))' 2>/dev/null || true)"; \
     custom_tooling_file="$(mktemp /tmp/custom-tooling.XXXXXX)"; \
     python_packages_file="$(mktemp /tmp/python-packages.XXXXXX)"; \
     system_packages_file="$(mktemp /tmp/system-packages.XXXXXX)"; \
     { \
+        if [ -n "${cmru_version_output}" ]; then \
+            echo "cmru=${cmru_version_output}"; \
+        else \
+            echo "cmru=not-installed"; \
+        fi; \
         if [ -n "${ciu_version_output}" ]; then \
             echo "CIU=${ciu_version_output}"; \
         else \

@@ -8,6 +8,7 @@ from typing import Mapping, Sequence
 
 
 CUSTOM_TOOL_ORDER = [
+    "cmru",
     "CIU",
     "aider",
     "antigravity",
@@ -235,6 +236,19 @@ def render_unified_manifest(
     python_packages: Sequence[str],
     system_packages: Sequence[str],
 ) -> str:
+    """Render the unified devcontainer manifest (in-image + repo-hosted).
+
+    Structure:
+    1. Release / Pull / Base  (from source or generated)
+    2. Custom Tooling         (live-inspected at image build time)
+    3. First-Party Wheels     (from source manifest's ## First-Party Wheels section)
+    4. Staged Tool Artifacts  (resolved versions; from source manifest)
+    5. Python Packages        (pip freeze inside image)
+    6. System Packages        (dpkg-query inside image)
+    7. Runtime Version Snapshot (pre-build probe from source manifest)
+    8. Rich Documentation Links / Notes (from source manifest)
+    9. Appendix: Artifact Sources and Digests  (moved to end for readability)
+    """
     tag = f"{debian_version}-py{python_version}-{image_version}"
     src = parse_source_manifest_sections(source_manifest_content) if source_manifest_content else {}
 
@@ -272,9 +286,15 @@ def render_unified_manifest(
     lines.extend(render_custom_tooling_lines(custom_tooling))
     lines.append("")
 
+    # First-Party Wheels — carry through from the repo-hosted source manifest.
+    if "First-Party Wheels" in src:
+        lines.extend(_section_block("First-Party Wheels", src["First-Party Wheels"]))
+
+    # Staged Tool Artifacts — resolved versions only (digests go to appendix).
     if "Staged Tool Artifacts" in src:
         lines.extend(_section_block("Staged Tool Artifacts", src["Staged Tool Artifacts"]))
 
+    # Python Packages (pip freeze inside the image — the actual installed closure).
     lines.extend(["## Python Packages", "", "    (installed via pip)"])
     if python_packages:
         lines.extend([f"    {item}" for item in python_packages])
@@ -299,6 +319,14 @@ def render_unified_manifest(
 
     if "Notes" in src:
         lines.extend(_section_block("Notes", src["Notes"]))
+
+    # Appendix: Artifact Sources and Digests — moved to end for readability.
+    # The key changed from "Staged Tool Artifacts" (old) to "Appendix: Artifact Sources
+    # and Digests" (new).  Accept both to stay compatible with manifests built before
+    # this change.
+    appendix_key = "Appendix: Artifact Sources and Digests"
+    if appendix_key in src:
+        lines.extend(_section_block(appendix_key, src[appendix_key]))
 
     return "\n".join(lines)
 
