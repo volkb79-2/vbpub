@@ -210,6 +210,34 @@ Delete on origin + local as the first concrete act of P0:
 - **Re-pushing ghcr after reset:** `:latest` re-points; dated tags are immutable — same
   BUILD_DATE on the same day reuses the counter suffix (`-2`, `-3`).
 
+## 7b. Ready-to-execute runbook — P0 wipe + P7 re-release
+
+**Status:** P1–P4 + tls-edge promotion DONE & pushed (`778c70a`). Stray tags
+(`mdt-v0.1.0`, `pwmcp-{client,server,shared}-v0.1.0`) already deleted. The steps below are
+the remaining destructive/build phase. Decisions: keep current versions, **floor 1.0.0**
+(ciu 3.1.0, cmru 1.0.0, pwmcp self-versions, **tls-edge 1.0.0**); empyrion untouched;
+**mdt deferred to P5** (avoid double image build → wipe mdt ghcr + rebuild together there).
+
+**P0 — wipe (token from `cmru.secret.toml`; never echo it):**
+1. Delete all 13 GitHub Releases: `ciu-v3.0.0/3.0.1/3.0.2/3.1.0`, `ciu-latest`,
+   `cmru-v0.2.0/1.0.0`, `cmru-latest`, `pwmcp-v1.61.0-r2/r3`, `pwmcp-latest`,
+   `tls-edge-v0.2.0`, `tls-edge-latest` (`DELETE /repos/volkb79-2/vbpub/releases/{id}`).
+2. Delete tags origin+local for every `*-v*`/`*-latest` **except** `empyrion-de-translation-*`.
+3. ghcr: prune old `pwmcp` versions **after** its re-push (gap-safe); mdt ghcr at P5.
+
+**P7 — re-release (per-project so mdt is skipped):**
+```
+./cmru.py release --project ciu      --set-version 3.1.0
+./cmru.py release --project cmru     --set-version 1.0.0
+./cmru.py release --project tls-edge --set-version 1.0.0
+./cmru.py release --project pwmcp                       # delegated, self-versions
+```
+Each runs build+push steps only (no run-tests). Verify after: tags, the 4 GitHub Releases
++ `.sha256`, and `-latest`/latest.json resolve (`./cmru.py resolve --project X`).
+
+**Gotcha:** run the wipe BEFORE the re-release (else `ciu-v3.1.0` etc. already exist).
+mdt is intentionally not in the per-project list (P5 rebuilds it once).
+
 ## 8. Resolved (2026-06-18)
 
 1. **ghcr scope:** FULL wipe — delete all `*-v*` + `*-latest` tags, all GitHub Releases,
