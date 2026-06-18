@@ -1,0 +1,14 @@
+# ============================================================================
+# workers — mounted config, rendered ONCE and fanned out to every instance (S5.2)
+# ============================================================================
+# The same rendered file is bind-mounted into worker-1, worker-2, … via the
+# overlay (S5.3 / CIU-2). Per-instance identity (which replica am I?) belongs in
+# the compose env, not here — this file is shared.
+
+[worker]
+name = "{{ workers.worker.name }}"
+instances = {{ workers.worker.instances }}
+
+[queue]
+# S5.4: secret() is the only place a secret value may be embedded.
+token = "{{ secret('queue_token') }}"

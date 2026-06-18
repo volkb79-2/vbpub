@@ -565,8 +565,14 @@ def _configfile_mount_services(base_service: str, compose_services: set[str]) ->
 
     Exact compose service keys keep the historical behavior. If no exact key
     exists, a base selector fans out to instance-indexed keys named
-    ``<base>-1``, ``<base>-2``, ... . With no rendered compose service data, or
-    no match, we preserve the selector as-is for backward compatibility.
+    ``<base>-1``, ``<base>-2``, ... . With no rendered compose service data we
+    preserve the selector as-is for backward compatibility.
+
+    When compose service data IS available but the selector matches neither an
+    exact key nor any ``<base>-<N>`` instance, the mount would target a phantom
+    service (S5.3). We still preserve the selector (so compose can diagnose the
+    bad name) but emit a ``[WARN]`` so the misconfiguration fails loud instead
+    of silently producing a file no container receives.
     """
     if base_service in compose_services:
         return [base_service]
@@ -583,6 +589,15 @@ def _configfile_mount_services(base_service: str, compose_services: set[str]) ->
             matches.append((int(m.group(1)), service_name))
 
     if not matches:
+        print(
+            f"[WARN] configfile selector '{base_service}' matches no rendered "
+            f"compose service: no exact key '{base_service}' and no "
+            f"'{base_service}-<N>' instance keys exist (S5.3). The mount will "
+            "target a phantom service and no container will receive the file. "
+            "Check the [<root>.<service>.configfile.*] service name and the "
+            "instance index (CIU fans out 1-based: <base>-1, <base>-2, ...).",
+            flush=True,
+        )
         return [base_service]
     return [service_name for _, service_name in sorted(matches)]
 

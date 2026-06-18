@@ -71,6 +71,16 @@ class HookContext:
     """Given a secret name, returns its store-file path.
     Raises KeyError for unknown names (wired by the engine, S9.3)."""
 
+    wait_healthy: Callable[..., bool] | None = None
+    """Readiness probe (S9.3/CIU-4): ``wait_healthy(service, *, timeout_s=120.0)``
+    polls the named service's Docker health until healthy and returns True, or
+    False on timeout. Wired by the engine; None only in bare/unit construction."""
+
+    wait_tcp: Callable[..., bool] | None = None
+    """Readiness probe (S9.3/CIU-4): ``wait_tcp(host, port, *, timeout_s=30.0)``
+    polls a TCP endpoint until it accepts a connection (for images without a
+    healthcheck). Wired by the engine; None only in bare/unit construction."""
+
     extra: dict = field(default_factory=dict)
     """Arbitrary extra data the engine may inject (extensible)."""
 

@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu.engine import parse_arguments, _build_secrets_subparser  # noqa: E402
+from ciu import cli  # noqa: E402
 
 
 class TestParseArgumentsDefaults:
@@ -138,3 +139,44 @@ class TestSecretsSubcommand:
     def test_secrets_define_root_alias(self):
         sub = _build_secrets_subparser().parse_args(["list", "--root-folder", "/r"])
         assert sub.define_root == Path("/r")
+
+
+class TestPerVerbHelp:
+    """CIU-7 / S10.1 — `ciu <verb> --help` is verb-scoped, not the legacy surface."""
+
+    def _help_out(self, capsys, monkeypatch, argv: list[str]) -> str:
+        monkeypatch.setattr(sys, "argv", ["ciu", *argv])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 0
+        return capsys.readouterr().out
+
+    def test_clean_help_shows_clean_options_not_legacy(self, capsys, monkeypatch):
+        out = self._help_out(capsys, monkeypatch, ["clean", "--help"])
+        assert "ciu clean" in out
+        assert "--ignore-errors" in out and "-y" in out
+        # The legacy ciu-deploy argparse surface must NOT leak through.
+        assert "--deploy" not in out
+        assert "--stop" not in out
+
+    def test_short_flag_also_works(self, capsys, monkeypatch):
+        out = self._help_out(capsys, monkeypatch, ["up", "-h"])
+        assert "ciu up" in out and "--dir" in out and "--deploy" not in out
+
+    def test_every_verb_has_a_help_entry(self):
+        # Every dispatchable verb (except the bare top-level) is covered.
+        expected = {
+            "env", "render", "profiles", "up", "down", "clean",
+            "health", "bake", "dev", "secrets",
+        }
+        assert expected <= set(cli._VERB_HELP)
+
+    def test_env_generate_help_is_not_intercepted(self):
+        # `env generate --help` must fall through to its own argparse help.
+        assert cli._wants_verb_help("env", ["generate", "--help"]) is False
+        # but `env --help` IS the verb's help
+        assert cli._wants_verb_help("env", ["--help"]) is True
+
+    def test_health_help_lists_preflight(self, capsys, monkeypatch):
+        out = self._help_out(capsys, monkeypatch, ["health", "--help"])
+        assert "--preflight" in out and "--strict" in out

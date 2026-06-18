@@ -16,6 +16,7 @@ demonstrates. Read the templates alongside [`docs/SPEC.md`](../docs/SPEC.md).
 | `infra/redis-core` | `redis_core` | `redis:7-alpine` | third-party image, no `*_FILE` support → S4.18 wrapper for `--requirepass` + healthcheck (**SPEC B.1** verbatim); `GEN_TO_VAULT` (**S4.2/S4.11**); auto hostdir (**S6.1/S6.2**) |
 | `infra/db-core` | `db_core` | `postgres:16-alpine` | the `*_FILE` convention (`POSTGRES_PASSWORD_FILE`, **S4.17**) — no wrapper; fixed-UID hostdir `{uid=70, mode="0770"}` (**S6.7a**); `GEN_TO_VAULT` |
 | `applications/app-config` | `app_config` | `python:3.12-alpine` | **own app**: all four non-Vault directives — `GEN_LOCAL`, `ASK_EXTERNAL`, `GEN_EPHEMERAL`, `ASK_FILE` (**S4.2**); configfile mount + `secret()` (**S5**); `pre_compose` hook `apply_to_config` (**S9.4**); env-as-pointer boundary (**S5.5**); runs its **full** pipeline under `--dry-run` with no Vault |
+| `applications/workers` | `workers` | `python:3.12-alpine` | **replicated service**: `instances = 2` → compose keys `worker-1`/`worker-2`; ONE base configfile section `[workers.worker.configfile.main]` **fans out** to both instances (**S5.3 / CIU-2**) instead of one section per replica; `secret()` in the configfile is the S4.20 configfile consumption channel; carries a `[workers.dev]` dev-loop profile (**S5a / CIU-5**) |
 | `shipped-example` | — | `alpine:3` | **dual shipping** (**S8.5/S8.6**): a hand-written, committed `docker-compose.yml` with **no** CIU config; run it plainly or via `ciu --shipped` |
 
 Global config (`ciu.global.defaults.toml.j2`) demonstrates: phases in numeric

@@ -538,6 +538,38 @@ services:
         doc = yaml.safe_load(path.read_text())
         assert sorted(doc["services"]) == ["worker"]
 
+    def test_configfile_phantom_selector_warns_s5_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """CIU-2: a selector matching neither an exact key nor any instance warns."""
+        import yaml
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        monkeypatch.setenv("REPO_ROOT", str(repo))
+        monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(repo))
+
+        stack = repo / "apps" / "workers"
+        stack.mkdir(parents=True)
+        rendered = stack / ".ciu" / "rendered" / "worker" / "main"
+        rendered.parent.mkdir(parents=True)
+        rendered.write_text("cfg", encoding="utf-8")
+
+        mount = ConfigFileMount(
+            service="worker",
+            name="main",
+            rendered_path=rendered,
+            target="/etc/worker/config.toml",
+        )
+        # Compose has only 'api' — no 'worker' key and no 'worker-<N>' instances.
+        compose_yaml = "services:\n  api:\n    image: api\n"
+        path = generate_overlay(stack, {}, [mount], compose_yaml_text=compose_yaml)
+        out = capsys.readouterr().out
+        assert "[WARN]" in out and "phantom service" in out and "worker" in out
+        # Selector is preserved (so compose surfaces the bad name), not dropped.
+        doc = yaml.safe_load(path.read_text())
+        assert sorted(doc["services"]) == ["worker"]
+
     def test_returns_none_when_nothing_to_wire_s8_1(self, tmp_path: Path) -> None:
         stack = tmp_path / "stack"
         stack.mkdir()

@@ -374,9 +374,11 @@ requirements are marked *(withdrawn)*.
   file has a service key exactly equal to the `<service>` component of the
   configfile section path, the mount attaches to that service. Otherwise, the
   section is treated as a base service selector and fans out to every rendered
-  compose service key named `<service>-<positive-int>` (for instance-indexed
-  services such as `worker-1`, `worker-2`). If neither form exists, CIU
-  preserves the selector as written for compose to diagnose.
+  compose service key named `<service>-<positive-int>` (1-based:
+  `worker-1`, `worker-2`, … as CIU emits for instance-indexed services). If
+  neither form exists, CIU preserves the selector as written for compose to
+  diagnose **and logs a `[WARN]`** naming the selector — the mount would
+  otherwise target a phantom service that no container receives (CIU-2).
 - **S5.4** Configfile templates additionally receive `secret(name) -> str`,
   valid only for names declared in the stack's secrets tables (unknown name =
   abort). This is the sanctioned home for composite values (DSNs, URLs
@@ -387,6 +389,36 @@ requirements are marked *(withdrawn)*.
   secrets = files".
 - **S5.6** v1's unused `SERVICE_CONFIG_DEFAULTS`/`SERVICE_CONFIG_ACTIVE`
   constants are withdrawn.
+
+## S5a — Dev-loop profile (`ciu dev`)
+
+`ciu bake` builds the **production** image; some stacks also need an iterative
+**dev loop** that a production build does not model — a hot-reload server
+(Vite/Next/`uvicorn --reload`) and/or a contract-coupled pre-build chain that
+depends on a *live* service (e.g. fetch a running backend's OpenAPI → codegen
+types → start the dev server). S5a declares that loop declaratively and
+build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
+
+- **S5a.1** A stack MAY declare `[<root>.dev]` with keys: `command` (required —
+  the long-running dev-server command); one of `image` (a base image) **or**
+  `build` (a `{context, dockerfile, target, tag}` table); optional `prebuild`
+  (ordered list of shell commands run before `command`, aborting on the first
+  failure); `port` (int, `"host:container"` string, or list — published ports);
+  `mount` (list of `docker -v` specs — source bind + anonymous volumes);
+  `depends_on` (list of service names gated on health before prebuild, reusing
+  the S9.3 readiness probe); `workdir` (default `/app`); `env` (table);
+  `network` (defaults to the stack's `deploy.network_name`).
+- **S5a.2** `ciu dev <stack>` renders the stack config (S3), validates the
+  profile (shape errors abort with `[S5a]`, exit 2), waits for each `depends_on`
+  service to become healthy (exit 1 on timeout), resolves the image (uses
+  `image` or builds from `build`), then runs prebuild steps and `command` in a
+  **single** ephemeral `--rm` container with the source bind-mounted and `port`
+  published — `sh -c '<prebuild…> && exec <command>'`, so generated files land
+  in the served tree and a failed prebuild never starts the server.
+- **S5a.3** `--no-prebuild` re-runs only the dev server (skips prebuild);
+  `--profile` selects the host profile for rendering; `--define-root` overrides
+  the repo root. The verb is for the local dev loop only — it is **not** part of
+  the `up`/`down`/`clean` lifecycle and creates no rendered/overlay artifacts.
 
 ## S6 — Hostdirs & permissions
 
@@ -412,6 +444,23 @@ requirements are marked *(withdrawn)*.
   postgres/pgAdmin data — MUST degrade to the S6.5 root helper container so the
   wipe completes; it MUST NOT abort on `Permission denied` and leave data
   un-wiped (the daemon is root even when the operator is not).
+
+  **Teardown completeness (CIU-3).** Teardown MUST be exhaustive — a partial
+  "clean" that leaves persisted state behind silently desynchronises a
+  disposable-greenfield rebuild (a stale Vault token vs a freshly-bootstrapped
+  Consul, a stale Postgres role vs a regenerated password). Therefore:
+  1. `docker compose down` runs with **`-v --remove-orphans`** so one-shot
+     init/sidecar containers (e.g. `*-vault-init`, `Exited (0)`) declared in the
+     project but outside the current selection are removed — an exited sidecar
+     otherwise pins the project's named volumes through teardown.
+  2. The project container sweep MUST include **exited** containers
+     (`docker ps -a`), not running only; an exited container is invisible to a
+     plain `docker ps` yet still pins volumes. (`--stop` keeps running-only.)
+  3. **Post-clean invariant (normative):** after `clean` completes, **zero**
+     project-labelled containers (any state) **and zero** project-prefixed
+     named volumes remain. A surviving volume is an **error**, not a warning
+     (it almost always means a container still references it); `clean` exits
+     non-zero and names the survivors and the likely cause.
 - **S6.5** Ownership/permission operations (chown/chmod on hostdirs, secret
   files) run directly when the CIU process has the privilege; otherwise CIU
   MUST perform them automatically via a one-shot helper container
@@ -547,6 +596,14 @@ requirements are marked *(withdrawn)*.
   rendering so `apply_to_config` updates are visible to configfile
   templates. `--render-toml` stops after step 3; `--dry-run` stops before
   step 16 (everything else runs, including the leak scan).
+
+  Step 17 runs **immediately** after `compose up` (step 16) — CIU does not
+  implicitly block the whole step on a global health gate. A service-touching
+  `post_compose` hook owns its own readiness wait using the helpers CIU
+  provides on the context (S9.3): `ctx.wait_healthy(<service>)` /
+  `ctx.wait_tcp(<host>, <port>)`. This avoids every hook re-implementing a poll
+  loop while keeping CIU agnostic about which services a given hook touches
+  (CIU-4).
 - **S8.4** On any abort, CIU restores the process working directory and does
   not leave partial overlay/configfile artifacts referenced by a previous
   successful overlay (atomic replace per file).
@@ -589,6 +646,19 @@ requirements are marked *(withdrawn)*.
   A `pre_compose`/`post_compose` hook needing a secret value reads the
   store file (`ctx.secret_file(name)`) or `/run/secrets` inside a
   container; `pre_secrets` hooks run before values exist by definition.
+  The context additionally provides two **readiness helpers** (CIU-4) so a
+  `post_compose` hook can wait for a service it touches instead of racing
+  startup:
+  - `ctx.wait_healthy(service, *, timeout_s=120.0) -> bool` — resolve *service*
+    to its project-scoped container (`<project>-<env>-<service>`) and poll its
+    Docker health (via `classify`) until `healthy`/`no-healthcheck`, returning
+    `True`, or `False` on timeout. `no-healthcheck` counts as ready (nothing to
+    wait on).
+  - `ctx.wait_tcp(host, port, *, timeout_s=30.0) -> bool` — dependency-free port
+    probe for images that expose no Docker healthcheck; `True` on first
+    successful connect, `False` on timeout.
+  Both are wired by the engine; a hook MUST NOT hand-roll a poll loop where a
+  helper suffices.
 - **S9.4** Return contract — structured form **only**:
   `{ "<dotted.path>": { "value": ..., "apply_to_config": bool, "persist": "state" } }`.
   `apply_to_config` mutates the in-memory merged config (visible to later
@@ -618,6 +688,12 @@ requirements are marked *(withdrawn)*.
   hooks, vault I/O) · `2` configuration/validation error (S3/S4/S7 static
   checks, argparse) · `3` environment/bootstrap error (S1/S2: missing env
   keys, DooD preflight, dependencies).
+- **S10.4** v3 flat verb CLI (`ciu <verb> …`): each verb's `-h`/`--help` MUST
+  print that verb's **own** synopsis and options, never the legacy `ciu-deploy`
+  argparse surface (which still exposes withdrawn flags such as
+  `--deploy`/`--stop`). Help is verb-scoped (CIU-7). Verbs: `env`, `render`,
+  `profiles`, `up`, `down`, `clean`, `health`, `bake`, `dev` (S5a), `secrets`.
+  A sub-subcommand with its own parser (`env generate`) keeps its argparse help.
 
 ## S11 — Validation catalog (static, pre-execution)
 

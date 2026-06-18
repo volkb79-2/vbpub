@@ -1,0 +1,24 @@
+# ============================================================================
+# workers — compose template: N instances via an index loop (S5.3 / CIU-2)
+# ============================================================================
+# The loop emits `worker-1`, `worker-2`, … . The configfile mount is NOT listed
+# here — it is injected by the generated overlay (S4.17), fanned out to each
+# instance key. Per-instance identity goes in env (WORKER_INSTANCE).
+services:
+{% for i in range(1, workers.worker.instances + 1) %}
+  {{ workers.worker.name }}-{{ i }}:
+    image: {{ workers.worker.image_name }}:{{ workers.worker.image_tag }}
+    container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ workers.worker.name }}-{{ i }}
+    hostname: {{ workers.worker.name }}-{{ i }}
+    environment:
+      - WORKER_INSTANCE={{ workers.worker.name }}-{{ i }}
+      - WORKER_CONFIG=/etc/worker/config.toml
+    networks:
+      - default
+    restart: unless-stopped
+{% endfor %}
+
+networks:
+  default:
+    name: {{ deploy.network_name }}
+    external: true

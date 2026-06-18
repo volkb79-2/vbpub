@@ -123,6 +123,80 @@ def wait_for_gate(
 
 
 # ---------------------------------------------------------------------------
+# S9.3 / CIU-4 — readiness probes for hooks (ctx.wait_healthy / ctx.wait_tcp)
+# ---------------------------------------------------------------------------
+
+# Statuses (from classify) that mean "ready, stop waiting". 'no-healthcheck'
+# counts as ready: there is nothing to poll, so a hook must not block on it.
+_READY_STATUSES: frozenset[str] = frozenset({"healthy", "no-healthcheck"})
+
+
+def wait_healthy(
+    status_fn: Callable[[], str],
+    *,
+    timeout_s: float = 120.0,
+    interval_s: float = 2.0,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Poll *status_fn* until a container is healthy or *timeout_s* elapses.
+
+    *status_fn* returns a :func:`classify` result for the container of interest
+    (the engine binds it to one resolved container name). Returns ``True`` as
+    soon as the status is ``healthy`` or ``no-healthcheck`` (nothing to wait
+    on), ``False`` on timeout. *sleep_fn*/*clock* are injectable for tests.
+
+    This is the readiness API hooks call instead of re-implementing a poll loop
+    (S9.3 / CIU-4) — e.g. a redis ACL hook does ``ctx.wait_healthy("redis-core")``
+    before connecting, rather than racing ``docker compose up -d``.
+    """
+    deadline = clock() + timeout_s
+    while True:
+        if status_fn() in _READY_STATUSES:
+            return True
+        if clock() >= deadline:
+            return False
+        sleep_fn(interval_s)
+
+
+def wait_tcp(
+    host: str,
+    port: int,
+    *,
+    timeout_s: float = 30.0,
+    interval_s: float = 0.5,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    connect_fn: Callable[[str, int], object] | None = None,
+) -> bool:
+    """Poll ``host:port`` until a TCP connection succeeds or *timeout_s* elapses.
+
+    A dependency-free readiness probe (S9.3 / CIU-4) for images that expose no
+    Docker healthcheck — the hook waits for the port to bind rather than hitting
+    "connection refused". Returns ``True`` on the first successful connect,
+    ``False`` on timeout. *connect_fn*/*sleep_fn*/*clock* are injectable so the
+    poll is deterministic in tests (no real sockets or wall-clock).
+    """
+    if connect_fn is None:
+        import socket
+
+        def connect_fn(h: str, p: int) -> object:  # type: ignore[misc]
+            with socket.create_connection((h, p), timeout=interval_s):
+                return True
+
+    deadline = clock() + timeout_s
+    while True:
+        try:
+            connect_fn(host, port)
+            return True
+        except OSError:
+            pass
+        if clock() >= deadline:
+            return False
+        sleep_fn(interval_s)
+
+
+# ---------------------------------------------------------------------------
 # S7.8 — anchored_name_filter
 # ---------------------------------------------------------------------------
 

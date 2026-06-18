@@ -51,6 +51,7 @@ from . import config_model
 from . import composefile
 from . import hooks_runner
 from . import procutil
+from .deploy_pkg import health as _health
 from .config_constants import (
     CIU_COMPOSE_OUTPUT,
     CIU_COMPOSE_TEMPLATE,
@@ -656,12 +657,16 @@ def reset_service(
 
     overlay_path = stack_dir / MACHINE_DIR / OVERLAY_NAME
 
-    # Step 1: docker compose down -v (with overlay args when present).
+    # Step 1: docker compose down -v --remove-orphans (with overlay args when
+    # present). --remove-orphans tears down one-shot init/sidecar containers
+    # declared in the project but absent from the current compose selection;
+    # without it an exited *-init sidecar lingers and pins the project's named
+    # volumes through teardown (CIU-3, S6.4).
     print("[INFO]   Step 1/4: Stopping containers and removing volumes...", flush=True)
     down_cmd = ["docker", "compose", "-f", CIU_COMPOSE_OUTPUT]
     if overlay_path.exists():
         down_cmd += ["-f", f"{MACHINE_DIR}/{OVERLAY_NAME}"]
-    down_cmd += ["down", "-v"]
+    down_cmd += ["down", "-v", "--remove-orphans"]
     try:
         result = procutil.run_cmd(down_cmd, check=False)
         if result.returncode != 0:
@@ -1008,6 +1013,53 @@ def main_execution(
         ctx = hooks_runner.HookContext(
             point="", stack_dir=working_dir, repo_root=repo_root, secret_file=_secret_file,
         )
+
+        # S9.3 / CIU-4: readiness helpers on the hook context so service-touching
+        # hooks don't race `docker compose up -d`. wait_healthy resolves a service
+        # name to its project-scoped container and polls Docker health; wait_tcp is
+        # a dependency-free port probe for images that expose no healthcheck.
+        _deploy_cfg = merged.get("deploy", {})
+        _project = _deploy_cfg.get("project_name")
+        _env_tag = _deploy_cfg.get("environment_tag")
+
+        def _container_status(service: str) -> str:
+            cname = (
+                f"{_project}-{_env_tag}-{service}"
+                if _project and _env_tag
+                else service
+            )
+            try:
+                res = procutil.docker(
+                    ["inspect", "--format", "{{json .State}}", cname], check=False
+                )
+            except FileNotFoundError:
+                return "not-found"
+            if res.returncode != 0 or not (res.stdout or "").strip():
+                return "not-found"
+            try:
+                state = json.loads(res.stdout)
+            except (ValueError, TypeError):
+                return "not-found"
+            return _health.classify(state)
+
+        def _wait_healthy(
+            service: str, *, timeout_s: float = 120.0, interval_s: float = 2.0
+        ) -> bool:
+            return _health.wait_healthy(
+                lambda: _container_status(service),
+                timeout_s=timeout_s,
+                interval_s=interval_s,
+            )
+
+        def _wait_tcp(
+            host: str, port: int, *, timeout_s: float = 30.0, interval_s: float = 0.5
+        ) -> bool:
+            return _health.wait_tcp(
+                host, port, timeout_s=timeout_s, interval_s=interval_s
+            )
+
+        ctx.wait_healthy = _wait_healthy
+        ctx.wait_tcp = _wait_tcp
 
         def _hooks_for(point: str) -> list:
             return list(merged.get(root_key, {}).get("hooks", {}).get(point, []))

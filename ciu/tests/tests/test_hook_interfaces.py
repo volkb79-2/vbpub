@@ -9,11 +9,106 @@ function (or a ``Hook`` class with a ``run`` method).
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEST_REPO = REPO_ROOT / "test-repo"
+
+sys.path.insert(0, str(REPO_ROOT / "src"))
+from ciu.deploy_pkg import health  # noqa: E402
+from ciu.hooks_runner import HookContext  # noqa: E402
+
+
+class _FakeClock:
+    """Deterministic monotonic clock: yields the given values in order, then
+    repeats the last. Makes the readiness poll loops time-travel without sleeping.
+    """
+
+    def __init__(self, steps: list[float]) -> None:
+        self._steps = list(steps)
+        self._i = 0
+
+    def __call__(self) -> float:
+        v = self._steps[min(self._i, len(self._steps) - 1)]
+        self._i += 1
+        return v
+
+
+def _no_sleep(_seconds: float) -> None:
+    return None
+
+
+# ---------------------------------------------------------------------------
+# S9.3 / CIU-4 — readiness probes (ctx.wait_tcp / ctx.wait_healthy)
+# ---------------------------------------------------------------------------
+
+
+class TestReadinessProbes:
+    def test_wait_tcp_returns_true_on_open_port(self) -> None:
+        # connect_fn succeeds immediately → ready, no real socket used.
+        ok = health.wait_tcp(
+            "host", 1234,
+            connect_fn=lambda h, p: True,
+            sleep_fn=_no_sleep,
+            clock=_FakeClock([0.0]),
+        )
+        assert ok is True
+
+    def test_wait_tcp_times_out_on_closed_port(self) -> None:
+        def refuse(_h, _p):
+            raise OSError("connection refused")
+
+        ok = health.wait_tcp(
+            "host", 1234,
+            timeout_s=30.0,
+            connect_fn=refuse,
+            sleep_fn=_no_sleep,
+            clock=_FakeClock([0.0, 100.0]),  # second read is past the deadline
+        )
+        assert ok is False
+
+    def test_wait_healthy_returns_true_when_healthy(self) -> None:
+        ok = health.wait_healthy(
+            lambda: "healthy", sleep_fn=_no_sleep, clock=_FakeClock([0.0])
+        )
+        assert ok is True
+
+    def test_wait_healthy_treats_no_healthcheck_as_ready(self) -> None:
+        # Nothing to poll → must not block.
+        calls = {"n": 0}
+
+        def status():
+            calls["n"] += 1
+            return "no-healthcheck"
+
+        assert health.wait_healthy(status, sleep_fn=_no_sleep, clock=_FakeClock([0.0])) is True
+        assert calls["n"] == 1
+
+    def test_wait_healthy_times_out_while_starting(self) -> None:
+        ok = health.wait_healthy(
+            lambda: "starting",
+            timeout_s=30.0,
+            sleep_fn=_no_sleep,
+            clock=_FakeClock([0.0, 100.0]),
+        )
+        assert ok is False
+
+    def test_hookcontext_exposes_readiness_fields(self) -> None:
+        # Fields exist and default to None (engine wires them at runtime, S9.3).
+        ctx = HookContext(
+            point="post_compose",
+            stack_dir=Path("/tmp"),
+            repo_root=Path("/tmp"),
+            secret_file=lambda name: Path("/tmp") / name,
+        )
+        assert ctx.wait_healthy is None
+        assert ctx.wait_tcp is None
+        # A hook author calls them through ctx once wired:
+        ctx.wait_tcp = lambda host, port, **kw: True
+        assert ctx.wait_tcp("redis-core", 6379) is True
 
 
 def _load_module(module_path: Path):

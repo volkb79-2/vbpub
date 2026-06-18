@@ -43,6 +43,15 @@ class TestResetServiceDockerComposeDown:
             calls = [str(c) for c in mock_run.call_args_list]
             assert any("compose" in c and "down" in c for c in calls)
 
+    def test_down_includes_remove_orphans(self, tmp_path):
+        """CIU-3 / S6.4: down tears down orphans (exited init/sidecars) too."""
+        config = _base_config()
+        with patch.object(engine.procutil, "run_cmd", return_value=_ok()) as mock_run:
+            reset_service(config, tmp_path, assume_yes=True)
+            first_cmd = mock_run.call_args_list[0].args[0]
+            assert "down" in first_cmd and "-v" in first_cmd
+            assert "--remove-orphans" in first_cmd
+
     def test_down_includes_overlay_when_present(self, tmp_path):
         config = _base_config()
         overlay = tmp_path / ".ciu" / "ciu.compose.overlay.yml"

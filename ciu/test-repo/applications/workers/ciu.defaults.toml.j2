@@ -1,0 +1,45 @@
+# ============================================================================
+# applications/workers — replicated service: configfile fan-out (S5.3 / CIU-2)
+#                        + the dev-loop profile (S5a / CIU-5)
+# ============================================================================
+# This stack runs N instances of one service (compose keys `worker-1`,
+# `worker-2`, … from an instance loop) and demonstrates that a SINGLE base
+# configfile section fans out to every instance — you do NOT declare one section
+# per replica. It also carries a [workers.dev] profile so `ciu dev` has a worked
+# example. Render-only in the demo (no docker needed).
+
+[workers]
+stack_name = "workers"
+
+[workers.worker]
+name = "worker"
+image_name = "python"
+image_tag = "3.12-alpine"
+# Number of instances; the compose template loops 1..instances to emit
+# `worker-1`, `worker-2`, … (1-based — the convention CIU's fan-out matches).
+instances = 2
+
+# --- secrets ----------------------------------------------------------------
+# A GEN_LOCAL token consumed by the configfile via secret() (S5.4) — also shows
+# the S4.20 configfile consumption channel (no "consumed by no channel" warning).
+[workers.secrets]
+queue_token = "GEN_LOCAL:demo/worker_queue_token"
+
+# --- configfile mount: ONE base section, fanned out to all instances --------
+# [workers.worker.configfile.main] targets the BASE service `worker`. Because the
+# rendered compose has no exact `worker` key but has `worker-1`/`worker-2`, the
+# overlay mounts the rendered file into BOTH instances (S5.3 / CIU-2). Adding a
+# 3rd replica needs no new section here.
+[workers.worker.configfile.main]
+template = "config.toml.j2"
+target = "/etc/worker/config.toml"
+
+# --- dev loop (S5a / CIU-5) -------------------------------------------------
+# `ciu dev applications/workers` runs the prebuild then the reload server in one
+# ephemeral container with the source bind-mounted and the port published.
+[workers.dev]
+image = "python:3.12-alpine"
+prebuild = ["python -m pip install -e ."]
+command = "python -m worker --reload"
+port = 9100
+mount = ["./:/app"]

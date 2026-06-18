@@ -796,11 +796,17 @@ def action_healthcheck_preflight(
     return 0
 
 
-def _matching_containers(config: dict) -> list[str]:
-    """Return running containers whose name matches ``^{project}-{env}-`` (S7.8).
+def _matching_containers(config: dict, *, all_states: bool = False) -> list[str]:
+    """Return containers whose name matches ``^{project}-{env}-`` (S7.8).
 
     Uses ``docker ps --filter name=`` (substring) then re-filters in Python with
     an anchored regex, so unrelated projects sharing a substring are excluded.
+
+    With ``all_states=True`` the listing adds ``-a`` so **exited** containers are
+    included — required for teardown (``clean``), where an exited one-shot
+    init/sidecar (``*-vault-init``, ``Exited (0)``) is invisible to a plain
+    ``docker ps`` yet still pins the project's named volumes (CIU-3, S6.4).
+    Callers that only want running containers (``--stop``) keep the default.
     """
     deploy_cfg = config.get("deploy", {})
     project = deploy_cfg.get("project_name")
@@ -809,11 +815,12 @@ def _matching_containers(config: dict) -> list[str]:
         raise ValueError("[ERROR] deploy.project_name/environment_tag not set in config")
     prefix = f"{project}-{env_tag}-"
     anchored = re.compile(rf"^{re.escape(prefix)}")
+    cmd = ["ps"]
+    if all_states:
+        cmd.append("-a")
+    cmd += ["--filter", f"name={prefix}", "--format", "{{.Names}}"]
     try:
-        result = procutil.docker(
-            ["ps", "--filter", f"name={prefix}", "--format", "{{.Names}}"],
-            check=False,
-        )
+        result = procutil.docker(cmd, check=False)
     except FileNotFoundError as exc:
         raise ValueError(f"[ERROR] docker not available: {exc}") from exc
     if result.returncode != 0:
@@ -877,8 +884,10 @@ def action_clean(
     config = profile.config
     rc = 0
 
-    # Step 1: stop + remove project containers (anchored).
-    containers = _matching_containers(config)
+    # Step 1: stop + remove project containers (anchored). all_states=True so an
+    # exited one-shot init/sidecar (e.g. *-vault-init) is removed too — otherwise
+    # it pins the project's named volumes through teardown (CIU-3, S6.4).
+    containers = _matching_containers(config, all_states=True)
     if containers:
         info(f"Removing {len(containers)} container(s): {', '.join(containers)}")
         result = procutil.docker(["rm", "-f", *containers], check=False)
@@ -910,7 +919,32 @@ def action_clean(
             os.environ["COMPOSE_PROFILES"] = saved_profiles
 
     # Step 3: remove project-prefixed named volumes (single ls + one rm batch).
-    _remove_project_volumes(config)
+    survivors = _remove_project_volumes(config)
+
+    # Step 4: enforce the S6.4 post-clean invariant — zero project containers AND
+    # zero project volumes remain. A surviving volume is an ERROR (not a warning):
+    # it almost always means a container still references it, exactly the failure
+    # that silently left stale Vault/Postgres state behind before (CIU-3).
+    # Degrade gracefully if docker became unavailable mid-clean so the action
+    # still returns its own typed result instead of escaping as an exception.
+    try:
+        remaining_containers = _matching_containers(config, all_states=True)
+    except ValueError as exc:
+        warn(f"post-clean container check skipped (docker unavailable): {exc}")
+        remaining_containers = []
+    if remaining_containers:
+        error(
+            f"post-clean invariant violated (S6.4): {len(remaining_containers)} "
+            f"project container(s) remain: {', '.join(remaining_containers)}"
+        )
+        rc = 1
+    if survivors:
+        error(
+            f"post-clean invariant violated (S6.4): {len(survivors)} project "
+            f"volume(s) survived removal: {', '.join(survivors)} — most likely "
+            "still referenced by a container that was not torn down"
+        )
+        rc = 1
 
     if rc == 0:
         success("clean complete")
@@ -919,31 +953,46 @@ def action_clean(
     return rc
 
 
-def _remove_project_volumes(config: dict) -> None:
-    """Remove docker volumes named ``{project}-{env}-*`` (single ls + rm batch)."""
+def _list_project_volumes(config: dict) -> list[str]:
+    """Return docker volume names matching ``{project}-{env}-*`` (or [] if none/
+    no project naming / docker unavailable)."""
     deploy_cfg = config.get("deploy", {})
     project = deploy_cfg.get("project_name")
     env_tag = deploy_cfg.get("environment_tag")
     if not project or not env_tag:
-        return
+        return []
     prefix = f"{project}-{env_tag}-"
     try:
         result = procutil.docker(["volume", "ls", "--format", "{{.Name}}"], check=False)
     except FileNotFoundError:
-        return
+        return []
     if result.returncode != 0:
-        return
-    vols = [
+        return []
+    return [
         v.strip()
         for v in (result.stdout or "").splitlines()
         if v.strip().startswith(prefix)
     ]
+
+
+def _remove_project_volumes(config: dict) -> list[str]:
+    """Remove docker volumes named ``{project}-{env}-*`` (single ls + rm batch).
+
+    Returns the list of volumes that **survived** removal (empty = fully clean).
+    ``docker volume rm`` only warns on failure here; the caller re-checks and
+    treats survivors as a hard error so a "volume is in use" no longer passes
+    silently and leaves stale state behind (CIU-3, S6.4 post-clean invariant).
+    """
+    vols = _list_project_volumes(config)
     if not vols:
-        return
+        return []
     info(f"Removing {len(vols)} project volume(s): {', '.join(vols)}")
     rm = procutil.docker(["volume", "rm", *vols], check=False)
     if rm.returncode != 0:
         warn(f"docker volume rm reported errors: {rm.stderr}")
+    # Re-list: rm may have partially failed (a volume pinned by a surviving
+    # container). Survivors are reported as an error by action_clean.
+    return _list_project_volumes(config)
 
 
 def action_build(repo_root: Path, selection: list[dict], *, use_cache: bool) -> int:

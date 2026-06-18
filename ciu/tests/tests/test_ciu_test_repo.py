@@ -28,8 +28,10 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from ciu import composefile  # noqa: E402
 from ciu import config_model  # noqa: E402
 from ciu import deploy  # noqa: E402
+from ciu import dev  # noqa: E402
 from ciu import engine  # noqa: E402
 from ciu.deploy_pkg import profiles as profiles_pkg  # noqa: E402
 from ciu.workspace_env import bootstrap_workspace_env, detect_standalone_root  # noqa: E402
@@ -256,3 +258,60 @@ def test_deploy_profiles_and_phases_match_spec(monkeypatch) -> None:
     # S7.5a: the workers profile carries a topology_overrides for Vault.
     workers_topo = profiles["workers"]["topology_overrides"]["services"]["vault"]
     assert workers_topo["internal_host"] == "ciudemo-dev-vault"
+
+
+WORKERS_STACK = TEST_REPO / "applications" / "workers"
+
+
+def test_workers_stack_configfile_fans_out_and_dev_profile(monkeypatch) -> None:
+    """Living example for CIU-2 (configfile fan-out) + CIU-5 (dev profile).
+
+    The `applications/workers` stack declares ONE base configfile section
+    `[workers.worker.configfile.main]`; the overlay must mount it into every
+    rendered instance key (`worker-1`, `worker-2`). The same stack's
+    `[workers.dev]` profile must parse (S5a).
+    """
+    _set_env_defaults()
+    _bootstrap(monkeypatch)
+    global_config = config_model.render_global_chain(TEST_REPO, TEST_REPO)
+    stack_config = config_model.render_stack(
+        WORKERS_STACK, global_config, preserve_state=True
+    )
+    root_key = config_model.validate_stack_shape(stack_config)
+    assert root_key == "workers"
+    assert stack_config["workers"]["worker"]["instances"] == 2
+
+    merged = config_model.deep_merge(global_config, stack_config)
+    try:
+        # S5: render the single configfile; base service is 'worker', and it
+        # consumes the queue_token secret via secret() (S4.20 configfile channel).
+        mounts = composefile.render_configfiles(
+            WORKERS_STACK, root_key, merged, secret_value_fn=lambda name: "tok"
+        )
+        assert len(mounts) == 1
+        assert mounts[0].service == "worker"
+        assert mounts[0].consumed_secrets == ("queue_token",)
+
+        # S5.3 / CIU-2: the overlay fans the one mount out to worker-1, worker-2.
+        compose_yaml = (
+            "services:\n  worker-1:\n    image: w\n  worker-2:\n    image: w\n"
+        )
+        overlay = composefile.generate_overlay(
+            WORKERS_STACK, {}, mounts,
+            repo_root=TEST_REPO, compose_yaml_text=compose_yaml,
+        )
+        import yaml
+        doc = yaml.safe_load(overlay.read_text())
+        assert sorted(doc["services"]) == ["worker-1", "worker-2"]
+        assert (
+            doc["services"]["worker-1"]["volumes"]
+            == doc["services"]["worker-2"]["volumes"]
+        )
+
+        # S5a / CIU-5: the [workers.dev] profile parses with its declared shape.
+        profile = dev.parse_dev_profile(stack_config, root_key)
+        assert profile.command == "python -m worker --reload"
+        assert profile.prebuild == ("python -m pip install -e .",)
+        assert profile.ports == ((9100, 9100),)
+    finally:
+        _clean_stack_artifacts(WORKERS_STACK)

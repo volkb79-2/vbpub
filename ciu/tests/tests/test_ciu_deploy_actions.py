@@ -455,3 +455,99 @@ def test_reject_groups_via_load_global_config(monkeypatch, tmp_path):
     with pytest.raises(ValueError) as exc:
         deploy.load_global_config(tmp_path)
     assert "[S7.5]" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# CIU-3 — complete teardown (S6.4 post-clean invariant)
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
+
+
+def _proc(returncode=0, stdout="", stderr=""):
+    m = MagicMock()
+    m.returncode = returncode
+    m.stdout = stdout
+    m.stderr = stderr
+    return m
+
+
+def _teardown_config() -> dict:
+    return {"deploy": {"project_name": "proj", "environment_tag": "env"}}
+
+
+def test_matching_containers_all_states_adds_dash_a(monkeypatch):
+    """CIU-3: all_states=True lists exited containers too (docker ps -a)."""
+    calls: list[list[str]] = []
+
+    def fake_docker(args, **kw):
+        calls.append(args)
+        return _proc(stdout="proj-env-vault-init\nproj-env-vault\n")
+
+    monkeypatch.setattr(deploy.procutil, "docker", fake_docker)
+    names = deploy._matching_containers(_teardown_config(), all_states=True)
+    assert names == ["proj-env-vault-init", "proj-env-vault"]
+    assert calls[0][0] == "ps" and "-a" in calls[0]
+
+
+def test_matching_containers_default_running_only(monkeypatch):
+    """The --stop path must stay running-only (no -a)."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        deploy.procutil, "docker",
+        lambda args, **kw: (calls.append(args), _proc(stdout=""))[1],
+    )
+    deploy._matching_containers(_teardown_config())
+    assert "-a" not in calls[0]
+
+
+def test_remove_project_volumes_returns_survivors(monkeypatch):
+    """CIU-3: a volume still present after rm (in use) is returned as a survivor."""
+    seq = iter([
+        _proc(stdout="proj-env-vault-data\n"),            # initial ls
+        _proc(returncode=1, stderr="volume is in use"),    # rm fails
+        _proc(stdout="proj-env-vault-data\n"),            # re-list: still there
+    ])
+    monkeypatch.setattr(deploy.procutil, "docker", lambda args, **kw: next(seq))
+    survivors = deploy._remove_project_volumes(_teardown_config())
+    assert survivors == ["proj-env-vault-data"]
+
+
+def test_remove_project_volumes_clean_returns_empty(monkeypatch):
+    seq = iter([
+        _proc(stdout="proj-env-vault-data\n"),  # initial ls
+        _proc(returncode=0),                     # rm ok
+        _proc(stdout=""),                        # re-list: gone
+    ])
+    monkeypatch.setattr(deploy.procutil, "docker", lambda args, **kw: next(seq))
+    assert deploy._remove_project_volumes(_teardown_config()) == []
+
+
+def test_action_clean_invariant_fails_on_surviving_volume(monkeypatch, tmp_path):
+    """CIU-3: a project volume that survives teardown makes clean exit 1 (S6.4)."""
+    config = _teardown_config()
+    profile = MagicMock()
+    profile.config = config
+
+    # No stacks to reset (skip engine/render); focus on the invariant check.
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *a, **k: {})
+    # First container sweep: empty; final invariant sweep: also empty.
+    monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
+    # A volume survives removal.
+    monkeypatch.setattr(deploy, "_remove_project_volumes",
+                        lambda cfg: ["proj-env-vault-data"])
+
+    rc = deploy.action_clean(tmp_path, profile, [], ignore_errors=True)
+    assert rc == 1
+
+
+def test_action_clean_invariant_passes_when_clean(monkeypatch, tmp_path):
+    config = _teardown_config()
+    profile = MagicMock()
+    profile.config = config
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *a, **k: {})
+    monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
+    monkeypatch.setattr(deploy, "_remove_project_volumes", lambda cfg: [])
+    rc = deploy.action_clean(tmp_path, profile, [], ignore_errors=True)
+    assert rc == 0

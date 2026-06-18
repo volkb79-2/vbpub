@@ -160,10 +160,11 @@ env.bak/
 venv.bak/
 
 # CIU rendered outputs (never commit)
-# Note: ciu.global.toml.j2 is intentionally tracked (S3.1a: committed sparse override)
+# Note: ciu.global.toml.j2 AND per-stack ciu.toml.j2 are intentionally tracked
+# (S3.1a / CIU-8: committed sparse overrides, never auto-created). Only the
+# *rendered* ciu.toml / ciu.global.toml are gitignored.
 ciu.global.toml
 **/ciu.toml
-**/ciu.toml.j2
 **/docker-compose.yml
 
 # Spyder project settings

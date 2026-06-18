@@ -41,6 +41,26 @@ ciu -d infra/redis-core --reset --secrets  # [S4.25, S6.4]
 
 ## CLI Reference
 
+CIU ships one console entrypoint, **`ciu`**, a flat verb dispatcher. The full
+verb table and legacy-flag mapping live in **[FEATURES.md](FEATURES.md)**; the
+common verbs are:
+
+| Verb | Purpose |
+|---|---|
+| `ciu env [generate]` | show / regenerate `.env.ciu` |
+| `ciu render` | render global + stack config (TOML only) |
+| `ciu up [--profile N \| --dir PATH]` | render + secrets + `compose up` |
+| `ciu down` | stop containers (volumes preserved) |
+| `ciu clean` | complete teardown (S6.4 invariant) |
+| `ciu health [--preflight]` | health gate / image tool probe |
+| `ciu bake` · `ciu dev <stack>` | build prod image · run the dev loop (S5a) |
+| `ciu secrets list\|reset` | inspect / delete secret store files |
+
+`ciu <verb> -h` prints that verb's own options. The remainder of this section
+documents the **single-stack engine flags** (the `ciu -d <stack> …` form, which
+`ciu up --dir`/`ciu render`/`ciu clean` wrap) — useful when driving one stack
+directly.
+
 ### Stack selection
 
 | Flag | Meaning |
@@ -123,6 +143,50 @@ When to prefer the shipped path: trivial stacks, or environments that need a
 literal `docker-compose.yml` for other tooling. Otherwise the CIU path
 (`ciu.compose.yml` + overlay) gives you secrets, configfiles, and host-aware
 paths — see the value proposition in the [project README](../README.md).
+
+---
+
+## Dev loop (`ciu dev`) [S5a]
+
+`ciu bake` builds the **production** image. A stack that also needs an iterative
+dev loop — a hot-reload server, and/or a pre-build chain coupled to a *live*
+service — declares it as `[<root>.dev]` and runs it with `ciu dev <stack>`. CIU
+stays build-tool-agnostic: the profile describes any dev server (Vite, Next,
+`uvicorn --reload`), no framework specifics live in CIU [CIU-5].
+
+```toml
+# applications/webapp-ui/ciu.defaults.toml.j2
+[webapp_ui.dev]
+image      = "node:22-alpine"
+# contract-coupled pre-build: pull the LIVE backend's OpenAPI, then codegen types
+prebuild   = ["npm run fetch:openapi", "npm run gen:api"]
+command    = "npm run dev"                 # the long-running dev server (HMR)
+port       = 5173                          # publish the HMR port
+mount      = ["./:/app", "/app/node_modules"]   # source bind + anon node_modules
+depends_on = ["webapp-server"]             # wait_healthy before prebuild (CIU-4)
+# image OR build = { context = ".", dockerfile = "Dockerfile", target = "dev" }
+```
+
+```bash
+ciu dev applications/webapp-ui            # render → wait deps → prebuild → dev server
+ciu dev applications/webapp-ui --no-prebuild   # re-run the server only
+```
+
+What `ciu dev` does [S5a.2]: renders the stack config, validates the profile
+(`[S5a]` shape errors exit 2), waits for each `depends_on` service to be healthy
+(exit 1 on timeout — start it with `ciu up` first), resolves the image (`image`
+or builds `build`), then runs prebuild steps **and** `command` in one ephemeral
+`--rm` container — `sh -c '<prebuild…> && exec <command>'`. The single container
+means prebuild output lands in the same mounted source tree the server serves,
+and a failed prebuild aborts before the server starts. `network` defaults to the
+stack's `deploy.network_name`, so prebuild steps reach the live `depends_on`
+service. `ciu dev` is the local loop only — it is not part of the
+`up`/`down`/`clean` lifecycle and writes no rendered/overlay artifacts.
+
+> Edge cases: `port` accepts an int, `"host:container"`, or a list; `image` and
+> `build` are mutually sufficient (give one); without `depends_on` the loop
+> starts immediately; a missing `command` or both-`image`-and-`build`-absent is a
+> hard `[S5a]` abort.
 
 ---
 
@@ -368,6 +432,27 @@ A `Hook` class with a `run` method is also accepted. v1 function names
 **Context object** (`ctx`): provides `ctx.secret_file(name) -> Path` — the
 store-file path for a resolved secret [S9.3]. `pre_secrets` hooks run before
 values exist; they must not call `ctx.secret_file`.
+
+The context also carries two **readiness helpers** [S9.3, CIU-4]. `post_compose`
+hooks run immediately after `docker compose up -d` (step 17) with no implicit
+health gate, so a hook that talks to a service must wait for it itself:
+
+| Helper | Signature | Use |
+|---|---|---|
+| `ctx.wait_healthy` | `wait_healthy(service, *, timeout_s=120.0) -> bool` | Poll the service's container Docker health until `healthy` (`no-healthcheck` counts as ready). |
+| `ctx.wait_tcp` | `wait_tcp(host, port, *, timeout_s=30.0) -> bool` | Dependency-free port probe for images with no healthcheck. |
+
+```python
+# A redis ACL hook waits for the port instead of racing startup:
+def run(config: dict, ctx) -> dict:
+    if not ctx.wait_healthy("redis-core"):        # or ctx.wait_tcp("redis-core", 6379)
+        raise RuntimeError("redis-core did not become healthy in time")
+    # ... now safe to connect and apply ACLs ...
+    return {}
+```
+
+Both return `False` on timeout (the hook decides whether that is fatal); neither
+is available to `pre_*` hooks (containers do not exist yet).
 
 **Structured return** [S9.4]:
 
