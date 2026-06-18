@@ -246,7 +246,7 @@ def do_build(ignore_new_releases: bool) -> None:
 
     # Run build
     sys.stderr.write("[INFO] Step 3/3: Running docker buildx bake --load ...\n")
-    config_path = ROOT / "build-push.toml"
+    config_path = ROOT / "cmru.build.toml"
     try:
         run_step(config_path, "build-images", None)
     except subprocess.CalledProcessError as exc:
@@ -271,7 +271,7 @@ def do_push() -> None:
     sys.stderr.write(
         f"[INFO] Step 2/2: Running docker buildx bake --push ...\n"
     )
-    config_path = ROOT / "build-push.toml"
+    config_path = ROOT / "cmru.build.toml"
     try:
         run_step(config_path, "push-images", None)
     except subprocess.CalledProcessError as exc:

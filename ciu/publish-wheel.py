@@ -13,7 +13,7 @@ from cmru.runner import run_step  # noqa: E402
 
 
 def main() -> None:
-    config_path = ROOT / "build-push.toml"
+    config_path = ROOT / "cmru.build.toml"
     run_step(config_path, "publish-wheel", None)
 
 

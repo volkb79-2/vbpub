@@ -100,16 +100,15 @@ commands = [
 ]
 
 # ─── pwmcp — OCI image + stack bundle ─────────────────────────────────────────
-# NOTE (P2): pwmcp's real version is computed by scripts/resolve-playwright-version.py
-# (pwmcp-v<playwright>-r<N>). Until P2 wires cmru to delegate to it, keep the scm
-# default so cmru's tag math doesn't fight the resolver.
+# pwmcp's version is playwright-driven (pwmcp-v<playwright>-r<N>), computed by
+# scripts/resolve-playwright-version.py during build. So versioning is "delegated":
+# cmru detects the change and runs build/publish, but the project owns its tag.
 [project.pwmcp]
 prefix   = "pwmcp-v"
 artifact = "bundle"
 cwd      = "pwmcp"
 [project.pwmcp.version]
-strategy = "scm"
-bump     = "conventional"
+strategy = "delegated"
 [project.pwmcp.steps.build]
 commands = [
   { label = "pwmcp: resolve playwright version + compute release tag", argv = ["python3", "scripts/resolve-playwright-version.py"], cwd = "pwmcp" },

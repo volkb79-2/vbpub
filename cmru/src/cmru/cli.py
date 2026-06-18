@@ -879,6 +879,38 @@ def _run_project_steps(
                 log_info(f"{name}: no '{step}' step — skipping")
 
 
+def _run_delegated_project(repo_root: Path, configs: Mapping[str, "ProjectConfig"], name: str) -> None:
+    """Release a delegated-versioned project (e.g. pwmcp): build → commit & push any
+    build-input edits the build produced → publish. Committing+pushing before publish
+    keeps the working tree clean and ensures the release tag points at the exact commit
+    whose inputs were built (no tree-dirtying, tag == published version)."""
+    resolve_versions_from_git(repo_root, dict(configs))
+    log_dir = repo_root / "logs"
+    project = configs[name]
+    cwd = getattr(project, "cwd", None) or name
+
+    if "build" in project.steps:
+        log_info(f"{name}: running step 'build'")
+        run_project_step(project, "build", repo_root, log_dir)
+
+    # The build may rewrite tracked inputs (pwmcp's resolver bumps the playwright pin).
+    # Commit just this project's subtree (cmru.vars is gitignored) and push before publish.
+    dirty = _git(repo_root, "status", "--porcelain", "--", cwd)
+    if dirty:
+        subprocess.run(["git", "-C", str(repo_root), "add", "--", cwd], check=False)
+        rc = subprocess.run(
+            ["git", "-C", str(repo_root), "commit", "-m", f"chore({name}): release build inputs"],
+        ).returncode
+        if rc == 0:
+            log_info(f"{name}: committed build-input changes")
+            if subprocess.run(["git", "-C", str(repo_root), "push", "origin", "HEAD"]).returncode != 0:
+                log_warn(f"{name}: push of build-input commit failed; publish tag may lag remote HEAD.")
+
+    if "push" in project.steps:
+        log_info(f"{name}: running step 'push'")
+        run_project_step(project, "push", repo_root, log_dir)
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     """Entry point for the ``cmru`` CLI.
 
@@ -918,7 +950,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             "\n"
             "MAINTENANCE\n"
             "    cleanup  --remove-assets AGE [--dry-run]      age-based release/GHCR cleanup\n"
-            "    run-step --config C --step S                  execute one build-push.toml step (raw)\n"
+            "    run-step --config C --step S                  execute one cmru.build.toml step (raw)\n"
         )
         return
 
@@ -1002,6 +1034,17 @@ def main(argv: Optional[List[str]] = None) -> None:
             return
 
         # --- release: detect → tag → push → build → publish -------------------
+        from cmru.version import release_cmd, detect_changed_projects
+
+        def _strategy(proj) -> str:
+            return proj.version.strategy if getattr(proj, "version", None) else "scm"
+
+        changed = detect_changed_projects(repo_root, ordered)
+        if vargs.project:
+            changed = [c for c in changed if c[0] == vargs.project]
+        changed_names = {c[0] for c in changed}
+
+        # Tag the non-delegated changed projects (clean-tree guard lives in release_cmd).
         created = release_cmd(
             repo_root, ordered,
             project_filter=vargs.project,
@@ -1012,33 +1055,45 @@ def main(argv: Optional[List[str]] = None) -> None:
             log_info("[DRY RUN] No tags pushed, nothing built/published.")
             return
 
-        # Release set = every selected project whose HEAD now carries its tag
-        # (covers both just-created tags and a half-finished prior release).
-        release_set: list[tuple[str, str]] = []
+        # What to build/publish:
+        #   tagged  = non-delegated projects whose HEAD now carries their tag
+        #             (covers just-created tags AND a half-finished prior release)
+        #   delegated = delegated-versioned projects that changed (self-version at build)
+        tagged: dict[str, str] = {}
+        delegated: list[str] = []
         for name, proj in ordered.items():
             if vargs.project and name != vargs.project:
                 continue
-            prefix = proj.prefix or f"{name}-v"
-            tag = _tag_on_head(repo_root, prefix)
+            if _strategy(proj) == "delegated":
+                if name in changed_names:
+                    delegated.append(name)
+                continue
+            tag = _tag_on_head(repo_root, proj.prefix or f"{name}-v")
             if tag:
-                release_set.append((name, tag))
+                tagged[name] = tag
 
-        if not release_set:
-            log_info("No tagged projects at HEAD — nothing to build or publish.")
-            if created:
-                log_info(f"Tagged (no steps run): {', '.join(created)}")
+        if not tagged and not delegated:
+            log_info("Nothing to release (no changed/tagged projects).")
             return
 
-        _push_tags(repo_root, [tag for _, tag in release_set])
+        _push_tags(repo_root, list(tagged.values()))
 
         if vargs.no_build:
-            log_info(f"--no-build: tagged + pushed {', '.join(t for _, t in release_set)}; skipped build/publish.")
+            log_info(f"--no-build: tagged + pushed {', '.join(tagged.values())}; skipped build/publish.")
             return
 
-        names = [name for name, _ in release_set]
-        log_info(f"Building + publishing: {', '.join(names)}")
-        _run_project_steps(repo_root, configs, names, ["build", "push"])
-        log_info(f"Released: {', '.join(f'{n} ({t})' for n, t in release_set)}")
+        # Build + publish in project_order; delegated projects self-version.
+        released: list[str] = []
+        for name in project_order:
+            if name in tagged:
+                log_info(f"Building + publishing {name} ({tagged[name]})")
+                _run_project_steps(repo_root, configs, [name], ["build", "push"])
+                released.append(f"{name} ({tagged[name]})")
+            elif name in delegated:
+                log_info(f"Building + publishing {name} (delegated versioning)")
+                _run_delegated_project(repo_root, configs, name)
+                released.append(f"{name} (delegated)")
+        log_info(f"Released: {', '.join(released)}")
 
     elif verb == "cleanup":
         import argparse as _ap

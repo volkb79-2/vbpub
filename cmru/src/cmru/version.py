@@ -280,6 +280,12 @@ def status_cmd(
         version_cfg = getattr(proj, "version", None)
         strategy = getattr(version_cfg, "strategy", "scm") if version_cfg else "scm"
 
+        if strategy == "delegated":
+            # The project computes its own version during build/publish (e.g. pwmcp's
+            # playwright-driven -r<N>). cmru reports "changed" but mints no tag here.
+            print(f"  {name:<38} {(last_tag or '(none)'):<30} {'deleg.':<8} (self-versioned at build)")
+            continue
+
         if set_version:
             next_ver = set_version
         elif bump_override:
@@ -339,6 +345,11 @@ def release_cmd(
         strategy = getattr(version_cfg, "strategy", "scm") if version_cfg else "scm"
         version_file = getattr(version_cfg, "file", "VERSION") if version_cfg else "VERSION"
         project_cwd = repo_root / (getattr(proj, "cwd", None) or name)
+
+        if strategy == "delegated":
+            # No cmru tag: the project's build/publish steps own the version/tag.
+            print(f"[INFO] {name}: delegated versioning — build/publish steps own the tag.")
+            continue
 
         if set_version:
             next_ver = set_version
