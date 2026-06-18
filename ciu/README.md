@@ -1,14 +1,16 @@
 # CIU
 
 CIU renders and runs Docker Compose stacks from layered templates, with secrets,
-host-aware paths, and multi-stack orchestration built in. It ships two console
-entrypoints:
+host-aware paths, and multi-stack orchestration built in. It ships **one**
+console entrypoint, **`ciu`**, a flat verb dispatcher:
 
-- **`ciu`** — render and run a single stack
-- **`ciu-deploy`** — orchestrate multi-stack, multi-host deployments
+- single stack: `ciu up --dir <stack>`, `ciu render`, `ciu dev <stack>`
+- multi-stack / multi-host: `ciu up`, `ciu down`, `ciu clean`, `ciu health` (by host profile)
 
-Normative behaviour is defined in [docs/SPEC.md](docs/SPEC.md); the guides under
-[docs/](docs/README.md) are the place to start.
+(The former separate `ciu-deploy` script is withdrawn — its actions are now
+verbs.) The canonical feature list and CLI surface is **[docs/FEATURES.md](docs/FEATURES.md)**;
+normative behaviour is defined in [docs/SPEC.md](docs/SPEC.md); the task guides
+under [docs/](docs/README.md) are the place to start.
 
 ## Two ways to ship a stack
 

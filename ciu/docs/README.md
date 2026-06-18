@@ -1,5 +1,11 @@
 # CIU v2 — Documentation Index
 
+## Start here
+
+| Document | Purpose |
+|---|---|
+| [FEATURES.md](FEATURES.md) | **Canonical feature list + CLI surface.** Capability matrix, the v3 `ciu <verb>` reference, common workflows, and the edge cases worth knowing. |
+
 ## Normative
 
 | Document | Purpose |
@@ -10,7 +16,7 @@
 
 | Document | Audience |
 |---|---|
-| [CIU.md](CIU.md) | Single-stack CLI users: quick start, 17-step pipeline, stack authoring, hooks, secret directives |
+| [CIU.md](CIU.md) | Single-stack CLI users: quick start, 17-step pipeline, stack authoring, hooks, secret directives, dev loop |
 | [CIU-DEPLOY.md](CIU-DEPLOY.md) | Multi-stack orchestration: actions, host profiles, multi-host workflow, phases, health gate |
 | [CONFIG.md](CONFIG.md) | Configuration reference: file roles, layering, all sections + spec IDs, directive table, `ciu.env` key provenance |
 
@@ -38,6 +44,7 @@ has a corresponding file here:
 | `test-repo/infra/redis-core/` | `GEN_TO_VAULT`, S4.18 wrapper pattern, auto-generated hostdir |
 | `test-repo/infra/db-core/` | `GEN_TO_VAULT`, `*_FILE` convention, fixed-UID hostdir [S6.7a] |
 | `test-repo/applications/app-config/` | All non-Vault directives, configfile mount + `secret()`, `pre_compose` hook, `apply_to_config` |
+| `test-repo/applications/workers/` | Replicated service: ONE configfile section fanned out to `worker-1`/`worker-2` (S5.3 / CIU-2), plus a `[workers.dev]` dev-loop profile (S5a / CIU-5) |
 | `test-repo/ciu.global.defaults.toml.j2` | Full annotated global config: `[ciu]`, `[deploy]`, phases, host profiles, `topology_overrides` |
 
 ## Build and Install
