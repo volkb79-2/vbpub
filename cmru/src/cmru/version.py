@@ -39,11 +39,23 @@ def _git(repo_root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+# Release-control files live inside a project's subtree but are not product source —
+# editing them (e.g. repointing release_config during a migration) MUST NOT trigger a
+# version bump for that product. Excluded from change detection (S12.2).
+_RELEASE_CONTROL_EXCLUDES = (
+    ":(exclude,glob)**/build-push.toml",
+    ":(exclude,glob)**/cmru.build.toml",
+    ":(exclude,glob)**/cmru.vars",
+    ":(exclude,glob)**/.release-vars",
+)
+
+
 def _git_log(repo_root: Path, since_ref: str, *paths: str) -> List[str]:
-    """Commit messages reachable from HEAD but not from since_ref, touching paths."""
+    """Commit messages reachable from HEAD but not from since_ref, touching paths
+    (release-control files excluded)."""
     cmd = ["git", "log", f"{since_ref}..HEAD", "--format=%s"]
     if paths:
-        cmd += ["--"] + list(paths)
+        cmd += ["--"] + list(paths) + list(_RELEASE_CONTROL_EXCLUDES)
     result = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True)
     return [line for line in result.stdout.splitlines() if line.strip()]
 
