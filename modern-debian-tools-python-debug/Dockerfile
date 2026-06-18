@@ -277,6 +277,20 @@ RUN set -euo pipefail; \
     fi; \
     rm -rf /var/lib/apt/lists/*
 
+# ── Docker CLI (client + buildx + compose plugins; NO daemon) ─────────────────
+# The mdt image is a cockpit that drives docker against a mounted socket
+# (docker-outside-of-docker), so it needs the client + plugins but not dockerd.
+# Official Docker apt repo (trixie is published); same keyring pattern as above.
+# Source: https://docs.docker.com/engine/install/debian/
+RUN set -euo pipefail; \
+    install -d -m 0755 /etc/apt/keyrings; \
+    curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg; \
+    chmod a+r /etc/apt/keyrings/docker.gpg; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo "${VERSION_CODENAME}") stable" > /etc/apt/sources.list.d/docker.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin docker-compose-plugin; \
+    rm -rf /var/lib/apt/lists/*
+
 # ── Primary Python venv — full development toolkit ────────────────────────────
 # Installed into /home/vscode/.venv using the base-image Python.
 # Consumer-facing list: see README.md § "Primary Venv Packages".
@@ -315,127 +329,27 @@ RUN set -euo pipefail; \
     fi
 # ── First-party wheels (pip/wheels.list) ─────────────────────────────────────
 # Resolved and downloaded pre-build by scripts/resolve-devcontainers-release.py.
-# pip/wheels/ holds the .whl files (populated from cmru-v* GitHub Releases).
-# pip install --no-index --find-links so no network access is needed at build time.
+# pip/wheels/ holds the .whl files (ciu + cmru, from ciu-v* / cmru-v* GitHub Releases).
+# Installed with --no-index --find-links (no build-time network): each wheel's
+# runtime deps must already be in the venv — cmru has none; ciu's Jinja2 / PyYAML /
+# tomli_w come from requirements/toolkit.txt (installed above).
 # Skipped (non-fatal) when pip/wheels/ is empty (release not yet published).
-# Source: https://github.com/volkb79-2/vbpub/releases — cmru-v* and future entries.
+# Source: https://github.com/volkb79-2/vbpub/releases — ciu-v* / cmru-v* releases.
 RUN set -euo pipefail; \
     wheels_dir="/tmp/pip/wheels"; \
     wheels_list="/tmp/pip/wheels.list"; \
     if [ ! -d "${wheels_dir}" ] || [ -z "$(ls "${wheels_dir}"/*.whl 2>/dev/null || true)" ]; then \
         echo "[INFO] pip/wheels/ is empty — no first-party wheels to install (FINAL CUT will populate it)" >&2; \
     else \
-        wheel_names="$(sed 's/#.*//;/^[[:space:]]*$/d' "${wheels_list}" | tr '\n' ' ')"; \
-        if [ -n "${wheel_names}" ]; then \
-            echo "[INFO] Installing first-party wheels: ${wheel_names}" >&2; \
-            /home/vscode/.venv/bin/python -m pip install \
-                --disable-pip-version-check \
-                --no-index \
-                --find-links="${wheels_dir}" \
-                ${wheel_names}; \
-        else \
-            echo "[INFO] pip/wheels.list has no non-comment entries; skipping" >&2; \
-        fi; \
-    fi
-
-# Install the ciu Python wheel.
-# Resolution (performed by resolve-devcontainers-release.py at pipeline-prep time):
-#   1. CIU_WHEEL_URL is the direct download URL for the .whl from the immutable
-#      ciu-v<semver> release (resolved via ciu-latest/latest.json or ciu-v* scan).
-#   2. CIU_WHEEL_SHA256 is the expected sha256 of that wheel (from latest.json or
-#      the .sha256 sidecar asset on the ciu-v<semver> release).
-#   3. CIU_WHEEL_TAG / CIU_WHEEL_ASSET_NAME are kept as fallback / override path
-#      for callers that pin a version without a pre-resolved URL.
-# NOTE: The ciu-latest release now holds ONLY a latest.json pointer — NOT the wheel.
-#       Downloading a .whl directly from ciu-latest would 404.  This step uses
-#       CIU_WHEEL_URL which always points to the correct immutable ciu-v<semver> asset.
-RUN set -euo pipefail; \
-    if [ -n "${GITHUB_USERNAME}" ] && [ -n "${GITHUB_REPO}" ]; then \
-        skip_ciu=0; \
-        wheel_dir="/tmp/ciu-wheel"; \
-        install -d -m 0755 "${wheel_dir}"; \
-        wheel_path="${wheel_dir}/ciu.whl"; \
-        ciu_url="${CIU_WHEEL_URL:-}"; \
-        ciu_expected_sha256="${CIU_WHEEL_SHA256:-}"; \
-        ciu_asset_name="${CIU_WHEEL_ASSET_NAME:-}"; \
-        ciu_wheel_tag="${CIU_WHEEL_TAG:-}"; \
-        \
-        # If CIU_WHEEL_URL was not resolved by the pre-build step, construct a
-        # fallback URL from CIU_WHEEL_TAG + CIU_WHEEL_ASSET_NAME (pinned override
-        # path).  If neither is available, discover via the GitHub API.  This
-        # mirrors the old behaviour for backwards-compatibility when callers have
-        # not yet adopted the new scheme.
-        if [ -z "${ciu_url}" ]; then \
-            if [ -z "${ciu_wheel_tag}" ]; then \
-                echo "[WARN] CIU_WHEEL_URL not set; attempting to resolve via ciu-latest/latest.json" >&2; \
-                ciu_latest_json="$(curl -fsSL "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/download/ciu-latest/latest.json" 2>/dev/null || true)"; \
-                if [ -n "${ciu_latest_json}" ]; then \
-                    ciu_url="$(printf '%s' "${ciu_latest_json}" | jq -r '.url // empty')"; \
-                    ciu_expected_sha256="$(printf '%s' "${ciu_latest_json}" | jq -r '.sha256 // empty')"; \
-                    ciu_asset_name="$(printf '%s' "${ciu_latest_json}" | jq -r '.asset // empty')"; \
-                    ciu_wheel_tag="$(printf '%s' "${ciu_latest_json}" | jq -r '.tag // empty')"; \
-                fi; \
-            fi; \
-        fi; \
-        \
-        # Still no URL — last resort: use CIU_WHEEL_TAG + CIU_WHEEL_ASSET_NAME
-        # (or discover asset from the release) to build a direct download URL.
-        if [ -z "${ciu_url}" ] && [ -n "${ciu_wheel_tag}" ]; then \
-            if [ -z "${ciu_asset_name}" ]; then \
-                ciu_asset_name="$(curl -fsSL "https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/tags/${ciu_wheel_tag}" \
-                    | jq -r '.assets[].name | select(endswith(".whl"))' \
-                    | head -n 1 || true)"; \
-            fi; \
-            if [ -n "${ciu_asset_name}" ]; then \
-                ciu_url="https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/download/${ciu_wheel_tag}/${ciu_asset_name}"; \
-            fi; \
-        fi; \
-        \
-        if [ -z "${ciu_url}" ]; then \
-            if [ "${CIU_INSTALL_REQUIRED}" = "true" ]; then \
-                echo "[ERROR] Failed to resolve CIU wheel download URL" >&2; \
-                exit 1; \
-            fi; \
-            echo "[WARN] CIU wheel URL could not be resolved; skipping CIU install" >&2; \
-            skip_ciu=1; \
-        fi; \
-        \
-        if [ "${skip_ciu}" -eq 0 ]; then \
-            echo "[INFO] Downloading CIU wheel from ${ciu_url}" >&2; \
-            if ! curl -fsSL "${ciu_url}" -o "${wheel_path}"; then \
-                if [ "${CIU_INSTALL_REQUIRED}" = "true" ]; then \
-                    echo "[ERROR] Failed to download CIU wheel from ${ciu_url}" >&2; \
-                    exit 1; \
-                fi; \
-                echo "[WARN] Failed to download CIU wheel from ${ciu_url}; skipping CIU install" >&2; \
-                skip_ciu=1; \
-            fi; \
-        fi; \
-        \
-        # Verify sha256 checksum when available (reproducibility gate).
-        if [ "${skip_ciu}" -eq 0 ] && [ -n "${ciu_expected_sha256}" ]; then \
-            echo "${ciu_expected_sha256}  ${wheel_path}" | sha256sum -c - || { \
-                echo "[ERROR] CIU wheel sha256 mismatch for ${ciu_url}" >&2; \
-                exit 1; \
-            }; \
-            echo "[INFO] CIU wheel sha256 verified: ${ciu_expected_sha256}" >&2; \
-        elif [ "${skip_ciu}" -eq 0 ]; then \
-            echo "[WARN] CIU_WHEEL_SHA256 not set; skipping checksum verification" >&2; \
-        fi; \
-        \
-        if [ "${skip_ciu}" -eq 0 ]; then \
-            wheel_name="$(/home/vscode/.venv/bin/python -c 'import sys, zipfile; from pathlib import Path; wheel_path=Path(sys.argv[1]); zf=zipfile.ZipFile(wheel_path); metadata_files=[name for name in zf.namelist() if name.endswith(".dist-info/METADATA")]; wheel_files=[name for name in zf.namelist() if name.endswith(".dist-info/WHEEL")]; assert metadata_files, "[ERROR] Missing METADATA in CIU wheel"; assert wheel_files, "[ERROR] Missing WHEEL metadata in CIU wheel"; metadata=zf.read(metadata_files[0]).decode("utf-8", "replace"); name=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Name:")), None); version=next((line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("Version:")), None); wheel_meta=zf.read(wheel_files[0]).decode("utf-8", "replace"); tag=next((line.split(":", 1)[1].strip() for line in wheel_meta.splitlines() if line.startswith("Tag:")), None); assert name and version and tag, "[ERROR] Missing Name/Version/Tag in CIU wheel metadata"; dist=name.replace("-", "_"); print(f"{dist}-{version}-{tag}.whl"); zf.close()' "${wheel_path}")"; \
-            if [ -z "${wheel_name}" ]; then \
-                echo "[ERROR] Failed to derive CIU wheel filename from metadata" >&2; \
-                exit 1; \
-            fi; \
-            wheel_dest="${wheel_dir}/${wheel_name}"; \
-            mv "${wheel_path}" "${wheel_dest}"; \
-            /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check "${wheel_dest}"; \
-            rm -rf "${wheel_dir}"; \
-        fi; \
-    else \
-        echo "GITHUB_USERNAME/GITHUB_REPO not set; skipping CIU install"; \
+        wheel_expected="$(sed 's/#.*//;/^[[:space:]]*$/d' "${wheels_list}" | tr '\n' ' ')"; \
+        echo "[INFO] wheels.list declares: ${wheel_expected:-<none>}" >&2; \
+        echo "[INFO] Installing resolved first-party wheels present in ${wheels_dir}:" >&2; \
+        ls -1 "${wheels_dir}"/*.whl >&2; \
+        /home/vscode/.venv/bin/python -m pip install \
+            --disable-pip-version-check \
+            --no-index \
+            --find-links="${wheels_dir}" \
+            "${wheels_dir}"/*.whl; \
     fi
 
 ENV VIRTUAL_ENV="/home/vscode/.venv"
