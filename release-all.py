@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Repo-root entry point for the cmru CLI.
+"""DEPRECATED — use ``./cmru.py`` (or install: ``pip install -e cmru`` → ``cmru``).
 
-This is a thin shim: it puts ``cmru/src`` on ``sys.path`` and calls ``cmru.cli:main``,
-so ``./release-all.py <verb> [args]`` is exactly ``cmru <verb> [args]``. Run
-``./release-all.py --help`` for the verb list and the typical workflow. For a logged,
-end-to-end run with optional asset cleanup, use ``./release-runner.py`` instead.
+Kept as a back-compat shim for one deprecation release (SPEC S-CLI.4): it warns, then
+forwards to the cmru CLI unchanged. Will be removed next release.
 """
 from __future__ import annotations
 
@@ -18,4 +16,5 @@ from cmru.cli import main  # noqa: E402
 
 
 if __name__ == "__main__":
+    print("[WARN] release-all.py is deprecated — use ./cmru.py instead (SPEC S-CLI.4).", file=sys.stderr)
     main()

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Logged, end-to-end release driver — thin wrapper over ``release-all.py`` (the cmru CLI).
+"""Logged, end-to-end release driver — thin wrapper over ``./cmru.py`` (the cmru CLI).
 
-For an ad-hoc release just run ``./release-all.py release``. Use this wrapper when you
-want the whole run captured to a timestamped file under ``logs/`` and (optionally) old
-release assets / GHCR versions pruned afterwards.
+For an ad-hoc release just run ``./cmru.py release``. Use this wrapper when you want the
+whole run captured to a timestamped file under ``logs/`` and (optionally) old release
+assets / GHCR versions pruned afterwards.
 
   ./release-runner.py                       # cmru release (all orchestrated projects), logged
   ./release-runner.py --project cmru        # one project
@@ -76,9 +76,9 @@ def main() -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     log_file = log_dir / f"release-{timestamp}.log"
-    release_all = str(repo_root / "release-all.py")
+    cmru_py = str(repo_root / "cmru.py")
 
-    release_cmd = [sys.executable, release_all, "release"]
+    release_cmd = [sys.executable, cmru_py, "release"]
     for project_name in cli_args.project:
         release_cmd.extend(["--project", project_name])
     if cli_args.dry_run:
@@ -93,7 +93,7 @@ def main() -> int:
             print(f"[ERROR] `cmru release` exited {rc}; skipping cleanup.")
             return rc
         if cli_args.remove_assets and not cli_args.dry_run:
-            cleanup_cmd = [sys.executable, release_all, "cleanup", "--remove-assets", cli_args.remove_assets]
+            cleanup_cmd = [sys.executable, cmru_py, "cleanup", "--remove-assets", cli_args.remove_assets]
             rc = _tee(cleanup_cmd, repo_root, handle)
     return rc
 

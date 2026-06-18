@@ -249,3 +249,6 @@ scripts/*.key
 /claude/
 /truenas/
 .release-vars
+cmru.secret.toml
+cmru.vars
+cmru/build/

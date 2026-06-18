@@ -1,6 +1,7 @@
 # Plan: migrate all of vbpub fully to cmru
 
-**Status:** DRAFT — awaiting go-ahead on execution scope.
+**Status:** APPROVED 2026-06-18 — full migration P1–P5, then release ALL products.
+Naming locked: every user-facing file is `cmru.*` (see SPEC S-CLI). Spec written first.
 **Date:** 2026-06-18.
 **Driver:** the release CLI was confusing (advertised `publish` verb 404'd; `release`
 only tagged; two config schemas; per-product scripts conflicting with cmru versioning).

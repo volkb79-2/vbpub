@@ -35,12 +35,26 @@ class Command:
 
 
 @dataclass(frozen=True)
+class VersionSpec:
+    """Per-project versioning rules (S12). Defaults match cmru's historical behaviour."""
+    strategy: str = "scm"            # "scm" | "counter" | "file:<PATH>"
+    bump: str = "conventional"       # "conventional" | "patch"
+    paths: tuple = ()                # extra subtrees to watch for change detection
+    base_version: str = "1.0.0"      # counter strategy: <base>-r<N>
+    file: str = "VERSION"            # file strategy fallback filename
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     name: str
     env: Mapping[str, str]
     steps: Mapping[str, List[Command]]
     prefix: Optional[str] = None    # git tag prefix, e.g. "ciu-v"  (S12; required for auto-version)
     scm_dist: Optional[str] = None  # setuptools dist name for SETUPTOOLS_SCM_PRETEND_VERSION_FOR_*
+    cwd: Optional[str] = None       # build working dir (relative to repo root); default = name
+    artifact: Optional[str] = None  # wheel | oci | tarball | bundle (S1.2)
+    version: Optional[VersionSpec] = None
+    paths: Optional[List[str]] = None  # change-detection watch paths; default = [cwd]
 
 
 @dataclass(frozen=True)
@@ -235,6 +249,45 @@ def parse_commands(config_path: Path, repo_root: Path, step_name: str, raw_comma
     return commands
 
 
+def _resolve_token(config: dict, config_path: Path) -> str:
+    """Resolve the GitHub token per SPEC S2.4 (env → cmru.secret.toml → config).
+
+    Keeps ``cmru.toml`` secret-free: the committed config carries no token; the live
+    token comes from the environment or a gitignored ``cmru.secret.toml`` overlay.
+    """
+    for env_name in ("GITHUB_PUSH_PAT", "GITHUB_TOKEN"):
+        val = (os.getenv(env_name) or "").strip()
+        if val:
+            return val
+    secret_path = config_path.parent / "cmru.secret.toml"
+    if secret_path.exists():
+        try:
+            with secret_path.open("rb") as fh:
+                secret = tomllib.load(fh)
+            tok = ((secret.get("github") or {}).get("token") or "").strip()
+            if tok:
+                return tok
+        except Exception as exc:  # malformed secret file should not crash reads
+            log_warn(f"Could not read {secret_path.name}: {exc}")
+    return ((config.get("github") or {}).get("token") or "").strip()
+
+
+def _parse_version_spec(raw: object, name: str) -> Optional[VersionSpec]:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"project.{name}.version must be a table")
+    strategy = str(raw.get("strategy") or "scm").strip()
+    bump = str(raw.get("bump") or "conventional").strip()
+    if bump not in ("conventional", "patch"):
+        raise ValueError(f"project.{name}.version.bump must be 'conventional' or 'patch'")
+    paths = tuple(str(p) for p in (raw.get("paths") or []))
+    base_version = str(raw.get("base_version") or "1.0.0").strip()
+    version_file = str(raw.get("file") or "VERSION").strip()
+    return VersionSpec(strategy=strategy, bump=bump, paths=paths,
+                       base_version=base_version, file=version_file)
+
+
 def load_config(
     config_path: Path,
 ) -> tuple[
@@ -249,30 +302,72 @@ def load_config(
     GitHubConfig,
     ReleaseEnvConfig,
 ]:
+    """Load the cmru config (S2 ``cmru.toml``). Tolerant of the retired legacy keys
+    (``[projects]`` plural, ``github.username``, ``[registry].url``) for one deprecation
+    release so an old ``release.toml`` still works (S-CLI.4)."""
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
     with config_path.open("rb") as handle:
         config = tomllib.load(handle)
 
+    # repo_root: explicit, else the directory holding the config (cmru.toml lives at root).
     repo_root_value = config.get("repo_root")
-    if not repo_root_value:
-        raise ValueError("repo_root is required in config")
-    repo_root = resolve_repo_root(config_path, repo_root_value)
+    repo_root = resolve_repo_root(config_path, repo_root_value) if repo_root_value else config_path.parent
 
-    orchestration = config.get("orchestration")
-    if not orchestration:
-        raise ValueError("[orchestration] section is required in config")
-    project_order = orchestration.get("project_order")
-    if not project_order or not isinstance(project_order, list):
+    orchestration = config.get("orchestration") or {}
+    if not isinstance(orchestration, dict):
+        raise ValueError("[orchestration] must be a table")
+
+    # projects: S2 [project.<name>] (singular) preferred; legacy [projects] accepted.
+    projects_section = config.get("project") or config.get("projects")
+    if not projects_section or not isinstance(projects_section, dict):
+        raise ValueError("[project.<name>] section is required in config")
+
+    projects: dict[str, ProjectConfig] = {}
+    for name, project in projects_section.items():
+        if not isinstance(project, dict):
+            raise ValueError(f"project.{name} must be a table")
+
+        project_env = project.get("env") or {}
+        if not isinstance(project_env, dict):
+            raise ValueError(f"project.{name}.env must be a table")
+
+        steps_section = project.get("steps")
+        if not steps_section or not isinstance(steps_section, dict):
+            raise ValueError(f"project.{name}.steps is required")
+        steps: dict[str, List[Command]] = {}
+        for step_name, step_config in steps_section.items():
+            commands_config = step_config.get("commands") if isinstance(step_config, dict) else None
+            if commands_config is None:
+                raise ValueError(f"project.{name}.steps.{step_name}.commands is required")
+            steps[step_name] = parse_commands(config_path, repo_root, step_name, commands_config)
+
+        proj_prefix = (project.get("prefix") or "").strip() or None
+        proj_scm_dist = (project.get("scm_dist") or "").strip() or None
+        proj_cwd = (project.get("cwd") or "").strip() or None
+        proj_artifact = (project.get("artifact") or "").strip() or None
+        version_spec = _parse_version_spec(project.get("version"), name)
+        # Change-detection watches the project cwd plus any extra version.paths (S12.3).
+        extra_paths = list(version_spec.paths) if (version_spec and version_spec.paths) else []
+        watch_paths = [proj_cwd or name] + extra_paths
+        projects[name] = ProjectConfig(
+            name=name, env=project_env, steps=steps,
+            prefix=proj_prefix, scm_dist=proj_scm_dist,
+            cwd=proj_cwd, artifact=proj_artifact,
+            version=version_spec, paths=watch_paths,
+        )
+
+    # orchestration: sensible defaults so a minimal cmru.toml still works.
+    project_order = orchestration.get("project_order") or list(projects.keys())
+    if not isinstance(project_order, list):
         raise ValueError("orchestration.project_order must be a list")
-    default_projects = orchestration.get("default_projects")
-    if not default_projects or not isinstance(default_projects, list):
+    default_projects = orchestration.get("default_projects") or list(project_order)
+    if not isinstance(default_projects, list):
         raise ValueError("orchestration.default_projects must be a list")
-    default_steps = orchestration.get("default_steps")
-    if not default_steps or not isinstance(default_steps, list):
+    default_steps = orchestration.get("default_steps") or ["build", "push"]
+    if not isinstance(default_steps, list):
         raise ValueError("orchestration.default_steps must be a list")
-
-    execution_mode = (orchestration.get("execution_mode") or "step-first").strip()
+    execution_mode = (orchestration.get("execution_mode") or "project-first").strip()
     if execution_mode not in {"step-first", "project-first"}:
         raise ValueError("orchestration.execution_mode must be 'step-first' or 'project-first'")
 
@@ -281,97 +376,50 @@ def load_config(
         raise ValueError("orchestration.step_project_order must be a table")
     step_project_order: dict[str, list[str]] = {}
     for step_name, step_projects in step_project_order_raw.items():
-        if not isinstance(step_name, str):
-            raise ValueError("orchestration.step_project_order keys must be strings")
-        if not isinstance(step_projects, list) or not all(isinstance(item, str) for item in step_projects):
-            raise ValueError(
-                f"orchestration.step_project_order.{step_name} must be a list of project names"
-            )
+        if not isinstance(step_projects, list) or not all(isinstance(i, str) for i in step_projects):
+            raise ValueError(f"orchestration.step_project_order.{step_name} must be a list")
         step_project_order[step_name] = step_projects
 
-    projects_section = config.get("projects")
-    if not projects_section or not isinstance(projects_section, dict):
-        raise ValueError("[projects] section is required in config")
-
-    projects: dict[str, ProjectConfig] = {}
-    for name, project in projects_section.items():
-        if not isinstance(project, dict):
-            raise ValueError(f"projects.{name} must be a table")
-
-        project_env = project.get("env") or {}
-        if project_env is None:
-            project_env = {}
-        if not isinstance(project_env, dict):
-            raise ValueError(f"projects.{name}.env must be a table")
-
-        steps_section = project.get("steps") if isinstance(project, dict) else None
-        if not steps_section or not isinstance(steps_section, dict):
-            raise ValueError(f"projects.{name}.steps is required")
-        steps: dict[str, List[Command]] = {}
-        for step_name, step_config in steps_section.items():
-            commands_config = step_config.get("commands") if isinstance(step_config, dict) else None
-            if commands_config is None:
-                raise ValueError(f"projects.{name}.steps.{step_name}.commands is required")
-            steps[step_name] = parse_commands(config_path, repo_root, step_name, commands_config)
-        proj_prefix = (project.get("prefix") or "").strip() or None
-        proj_scm_dist = (project.get("scm_dist") or "").strip() or None
-        projects[name] = ProjectConfig(
-            name=name, env=project_env, steps=steps,
-            prefix=proj_prefix, scm_dist=proj_scm_dist,
-        )
-
-    cleanup_section = config.get("cleanup")
-    if not cleanup_section or not isinstance(cleanup_section, dict):
-        raise ValueError("[cleanup] section is required in config")
-    release_tag_prefixes = cleanup_section.get("release_tag_prefixes")
-    keep_release_tags = cleanup_section.get("keep_release_tags")
-    ghcr_packages = cleanup_section.get("ghcr_packages")
-    ghcr_delete_packages = cleanup_section.get("ghcr_delete_packages") or []
-    if not release_tag_prefixes or not isinstance(release_tag_prefixes, list):
-        raise ValueError("cleanup.release_tag_prefixes must be a list")
-    if not keep_release_tags or not isinstance(keep_release_tags, list):
-        raise ValueError("cleanup.keep_release_tags must be a list")
-    if not ghcr_packages or not isinstance(ghcr_packages, list):
-        raise ValueError("cleanup.ghcr_packages must be a list")
-    if not isinstance(ghcr_delete_packages, list):
-        raise ValueError("cleanup.ghcr_delete_packages must be a list")
-
+    # cleanup: optional; wildcards by default.
+    cleanup_section = config.get("cleanup") or {}
+    if not isinstance(cleanup_section, dict):
+        raise ValueError("[cleanup] must be a table")
     cleanup = CleanupConfig(
-        release_tag_prefixes=release_tag_prefixes,
-        keep_release_tags=keep_release_tags,
-        ghcr_packages=ghcr_packages,
-        ghcr_delete_packages=ghcr_delete_packages,
+        release_tag_prefixes=cleanup_section.get("release_tag_prefixes") or ["*"],
+        keep_release_tags=cleanup_section.get("keep_release_tags") or [],
+        ghcr_packages=cleanup_section.get("ghcr_packages") or ["*"],
+        ghcr_delete_packages=cleanup_section.get("ghcr_delete_packages") or [],
     )
 
     github = config.get("github")
     if not github or not isinstance(github, dict):
         raise ValueError("[github] section is required in config")
-    username = (github.get("username") or "").strip()
+    owner = (github.get("owner") or github.get("username") or "").strip()
     repo = (github.get("repo") or "").strip()
-    token = (github.get("token") or "").strip()
     owner_type = (github.get("owner_type") or "").strip()
-    if not username or not repo:
-        raise ValueError("github.username and github.repo are required in config")
-    if not owner_type:
-        raise ValueError("github.owner_type is required (\"user\" or \"org\") — V03")
+    token = _resolve_token(config, config_path)
+    if not owner or not repo:
+        raise ValueError("github.owner and github.repo are required in config")
     if owner_type not in ("user", "org"):
-        raise ValueError("github.owner_type must be \"user\" or \"org\"")
+        raise ValueError("github.owner_type must be \"user\" or \"org\" (V03)")
 
-    github_config = GitHubConfig(
-        username=username,
-        repo=repo,
-        token=token,
-        owner_type=owner_type,
-    )
+    github_config = GitHubConfig(username=owner, repo=repo, token=token, owner_type=owner_type)
 
-    registry = config.get("registry", {})
+    # registry: S2 [targets].registry (list) preferred; legacy [registry].url accepted.
     registry_url = None
-    if isinstance(registry, dict):
-        registry_url = (registry.get("url") or "").strip() or None
+    targets = config.get("targets") or {}
+    if isinstance(targets, dict):
+        reg = targets.get("registry")
+        if isinstance(reg, list) and reg:
+            registry_url = str(reg[0]).strip() or None
+        elif isinstance(reg, str) and reg.strip():
+            registry_url = reg.strip()
+    if not registry_url:
+        legacy_registry = config.get("registry") or {}
+        if isinstance(legacy_registry, dict):
+            registry_url = (legacy_registry.get("url") or "").strip() or None
 
-    env_section = config.get("env", {})
-    if env_section is None:
-        env_section = {}
+    env_section = config.get("env") or {}
     if not isinstance(env_section, dict):
         raise ValueError("[env] must be a table of key/value pairs")
 
@@ -679,11 +727,7 @@ def _orchestrate() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    default_config = Path(__file__).resolve().parents[3] / "release.toml"
-    config_path_raw = args.config or os.getenv("RELEASE_MANAGER_CONFIG") or str(default_config)
-    if not config_path_raw:
-        raise ValueError("Release manager config is required (--config or RELEASE_MANAGER_CONFIG)")
-    config_path = Path(config_path_raw).expanduser().resolve()
+    config_path = _resolve_config(args.config)
 
     (
         repo_root,
@@ -760,13 +804,17 @@ def _cmru_version() -> str:
 
 
 def _default_config_path() -> Path:
-    """Repo-root ``release.toml`` (the legacy schema the CLI currently reads).
-
-    Override with ``--config`` or ``RELEASE_MANAGER_CONFIG``. The S2 ``cmru.toml``
-    schema (cmru/config.py) is consumed only by ``cmru get`` today; unifying on it
-    is tracked in docs/plan-cmru-migration.md.
-    """
-    return Path(__file__).resolve().parents[3] / "release.toml"
+    """Repo-root ``cmru.toml`` (S2). Falls back to a legacy ``release.toml`` for one
+    deprecation release (S-CLI.4). Override with ``--config`` / ``RELEASE_MANAGER_CONFIG``."""
+    root = Path(__file__).resolve().parents[3]
+    cmru_toml = root / "cmru.toml"
+    if cmru_toml.exists():
+        return cmru_toml
+    legacy = root / "release.toml"
+    if legacy.exists():
+        log_warn("Using legacy release.toml — rename it to cmru.toml (see SPEC S-CLI.4).")
+        return legacy
+    return cmru_toml
 
 
 def _resolve_config(config_opt: Optional[str]) -> Path:

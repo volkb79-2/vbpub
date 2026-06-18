@@ -6,6 +6,54 @@ RFC 2119 key words (MUST, SHOULD, MAY, etc.) are normative.
 
 ---
 
+## S-CLI — CLI at a glance (the intuitive contract)
+
+cmru is one CLI over a monorepo of independently-versioned **projects**. Everything a user
+touches is named `cmru.*` so the association is unambiguous.
+
+### Verbs, in the order you use them
+
+```
+cmru status                 # 1. preview: what changed + the next version (read-only)
+cmru release                # 2. the one-shot: detect → tag → push tag → build → publish
+   ├─ cmru build            #    (same two steps, split out: artifact only)
+   └─ cmru publish          #    (upload artifact + .sha256 to the release)
+cmru cleanup --remove-assets 30d   # 3. prune old releases/images (optional)
+
+cmru resolve --project P    # consumer: highest-semver published version  (read-only)
+cmru get     --project P    # consumer: emit a standalone installer       (read-only)
+cmru run     [--build --push ...]  # escape hatch: run explicit steps × projects
+cmru run-step --config C --step S  # raw single-step runner (rarely needed)
+```
+
+**S-CLI.1** `release` is the normal path and MUST be idempotent: re-running it on a HEAD
+that already carries a project's tag re-uses that tag (finishes a half-done release) rather
+than minting a new one.
+
+**S-CLI.2** `status` and `release` MUST operate only on the orchestrated set
+(`orchestration.project_order`); a project is released only once it is listed there.
+
+**S-CLI.3** Verbs that write to the host (`release`, `build`, `publish`, `run`) MUST be
+clearly distinguished in `--help` from read-only verbs (`status`, `resolve`, `get`).
+
+### File conventions (all `cmru.`-prefixed)
+
+| File | Tracked? | Purpose |
+|---|---|---|
+| `cmru.toml` | committed | The one config (S2 schema): github, targets, orchestration, projects. **No secrets.** |
+| `cmru.secret.toml` | gitignored | Token only: `[github] token = "…"`. Optional — env wins (see S2.4). |
+| `cmru.sample.toml` | committed | Template for `cmru.toml` (no secrets). |
+| `cmru.vars` | gitignored | Generated `KEY=VALUE` build vars a step emits for later steps (was `.release-vars`). |
+| `<project>/cmru.build.toml` | committed | Per-project step config consumed by that project's build script (was `build-push.toml`). |
+| `./cmru` | committed | Repo-root entry point (`./cmru <verb>` ≡ `cmru <verb>`; was `release-all.py`). |
+
+**S-CLI.4** The names `release.toml`, `release.sample.toml`, `.release-vars`,
+`build-push.toml`, `release-all.py`, `release-runner.py` are **retired**. A single
+deprecation release MAY keep read-only shims that emit a warning and point at the `cmru.*`
+name; they MUST be removed the following release.
+
+---
+
 ## S0 — Terminology
 
 | Term | Definition |
@@ -52,7 +100,9 @@ cmru manages N independent projects, each with its own semver line, all sharing 
 
 ## S2 — Config Schema
 
-cmru reads a single TOML file per repository (default: `cmru.toml` at the repo root). During migration a project MAY `include = "build-push.toml"` to merge a legacy config.
+cmru reads `cmru.toml` at the repo root (override with `--config` or `RELEASE_MANAGER_CONFIG`).
+Secrets are **never** in `cmru.toml`: the token is resolved per S2.4. Per-project build
+details that a project's own build script needs live in `<project>/cmru.build.toml`.
 
 **S2.1** The config MUST be validated on startup. An invalid config MUST cause an exit 2 (S8).
 
@@ -110,6 +160,13 @@ nfpm      = false                 # nfpm deb/rpm
 ```
 
 **S2.3** Unknown keys MUST be rejected (fail-fast). All required fields MUST be present or the config is invalid.
+
+**S2.4** Token resolution order (first hit wins), so `cmru.toml` stays secret-free:
+1. `GITHUB_PUSH_PAT` env var, then `GITHUB_TOKEN` env var.
+2. `cmru.secret.toml` → `[github].token` (a gitignored overlay next to `cmru.toml`).
+3. `[github].token` in `cmru.toml` itself — DISCOURAGED; allowed only for throwaway repos.
+
+If none is found and a write verb is invoked, cmru MUST exit 3 (V10).
 
 ---
 

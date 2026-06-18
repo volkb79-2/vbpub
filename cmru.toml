@@ -1,0 +1,153 @@
+# cmru.toml — the one config for releasing this monorepo (SPEC S2 schema).
+#
+# NO SECRETS here (this file is committed). The GitHub token is resolved at run time
+# from $GITHUB_PUSH_PAT / $GITHUB_TOKEN, or the gitignored cmru.secret.toml overlay
+# ([github].token). See SPEC S2.4 and cmru.sample.toml.
+#
+# Usage:  ./cmru status   ./cmru release   ./cmru cleanup --remove-assets 30d
+
+[github]
+owner      = "volkb79-2"
+repo       = "vbpub"
+owner_type = "user"          # "user" | "org"  (V03)
+
+[targets]
+host     = "github"          # release host (S11)
+registry = ["ghcr.io"]       # OCI registries to push images to (S11.3)
+
+[orchestration]
+# Only projects listed here are auto-tagged/released by `status`/`release` (S-CLI.2).
+# tls-edge and empyrion-translation are defined below but not yet migrated in (P3/P4).
+project_order    = ["ciu", "cmru", "modern-debian-tools-python-debug", "pwmcp"]
+default_projects = ["ciu", "cmru", "modern-debian-tools-python-debug", "pwmcp"]
+default_steps    = ["run-tests", "build", "push", "validate"]
+execution_mode   = "project-first"
+
+[orchestration.step_project_order]
+run-tests = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
+build     = ["ciu", "cmru", "modern-debian-tools-python-debug", "pwmcp"]
+push      = ["ciu", "cmru", "modern-debian-tools-python-debug", "pwmcp"]
+validate  = ["ciu", "modern-debian-tools-python-debug", "pwmcp"]
+
+[cleanup]
+release_tag_prefixes = ["*"]
+keep_release_tags    = ["ciu-latest", "cmru-latest", "pwmcp-latest"]
+ghcr_packages        = ["*"]
+ghcr_delete_packages = ["modern-debian-tools-python-debug-vsc-devcontainer-dev"]
+
+[env]
+# Shared env for all projects. Per-project defaults live in <project>/cmru.build.toml [env].
+
+# ─── ciu — Python wheel ───────────────────────────────────────────────────────
+[project.ciu]
+prefix   = "ciu-v"
+artifact = "wheel"
+scm_dist = "ciu"
+cwd      = "ciu"
+[project.ciu.version]
+strategy = "scm"
+bump     = "conventional"
+[project.ciu.steps.run-tests]
+commands = [
+  { label = "CIU: run tests", argv = ["python3", "run-ciu-tests.py"], cwd = "ciu" },
+]
+[project.ciu.steps.build]
+commands = [
+  { label = "CIU: build wheel", argv = ["python3", "build-wheel.py"], cwd = "ciu" },
+]
+[project.ciu.steps.push]
+commands = [
+  { label = "CIU: publish wheel", argv = ["python3", "publish-wheel.py"], cwd = "ciu" },
+]
+[project.ciu.steps.validate]
+commands = [
+  { label = "CIU: validate latest wheel", argv = ["python3", "tools/validate-wheel-latest.py"], cwd = "ciu" },
+]
+
+# ─── cmru — Python wheel (dogfood) ────────────────────────────────────────────
+[project.cmru]
+prefix   = "cmru-v"
+artifact = "wheel"
+scm_dist = "cmru"
+cwd      = "cmru"
+[project.cmru.version]
+strategy = "scm"
+bump     = "conventional"
+[project.cmru.steps.build]
+commands = [
+  { label = "cmru: build wheel", argv = ["python3", "-m", "build", "--wheel", "--outdir", "dist"], cwd = "cmru" },
+]
+[project.cmru.steps.push]
+commands = [
+  { label = "cmru: publish wheel", argv = ["python3", "scripts/publish-wheel.py"], cwd = "cmru" },
+]
+
+# ─── modern-debian-tools-python-debug — OCI images ────────────────────────────
+[project.modern-debian-tools-python-debug]
+prefix   = "modern-debian-tools-python-debug-v"
+artifact = "oci"
+cwd      = "modern-debian-tools-python-debug"
+[project.modern-debian-tools-python-debug.version]
+strategy = "scm"
+bump     = "conventional"
+[project.modern-debian-tools-python-debug.steps.build]
+commands = [
+  { label = "modern-debian-tools-python-debug: build images", argv = ["python3", "build-push.py", "--build"], cwd = "modern-debian-tools-python-debug" },
+]
+[project.modern-debian-tools-python-debug.steps.push]
+commands = [
+  { label = "modern-debian-tools-python-debug: push images", argv = ["python3", "build-push.py", "--push"], cwd = "modern-debian-tools-python-debug" },
+]
+
+# ─── pwmcp — OCI image + stack bundle ─────────────────────────────────────────
+# NOTE (P2): pwmcp's real version is computed by scripts/resolve-playwright-version.py
+# (pwmcp-v<playwright>-r<N>). Until P2 wires cmru to delegate to it, keep the scm
+# default so cmru's tag math doesn't fight the resolver.
+[project.pwmcp]
+prefix   = "pwmcp-v"
+artifact = "bundle"
+cwd      = "pwmcp"
+[project.pwmcp.version]
+strategy = "scm"
+bump     = "conventional"
+[project.pwmcp.steps.build]
+commands = [
+  { label = "pwmcp: resolve playwright version + compute release tag", argv = ["python3", "scripts/resolve-playwright-version.py"], cwd = "pwmcp" },
+  { label = "pwmcp: build playwright-server image", argv = ["python3", "build-push.py", "--build"], cwd = "pwmcp" },
+  { label = "pwmcp: build stack bundle", argv = ["python3", "scripts/build-bundle.py"], cwd = "pwmcp" },
+]
+[project.pwmcp.steps.push]
+commands = [
+  { label = "pwmcp: push playwright-server image", argv = ["python3", "build-push.py", "--push"], cwd = "pwmcp" },
+  { label = "pwmcp: publish stack bundle", argv = ["python3", "scripts/publish-bundle.py"], cwd = "pwmcp" },
+]
+
+# ─── tls-edge — tarball (not yet in project_order; P3) ─────────────────────────
+[project.tls-edge]
+prefix   = "tls-edge-v"
+artifact = "tarball"
+cwd      = "tls-edge"
+[project.tls-edge.version]
+strategy = "file:VERSION"
+bump     = "conventional"
+[project.tls-edge.steps.push]
+commands = [
+  { label = "tls-edge: build + publish release", argv = ["bash", "scripts/release.sh"], cwd = "tls-edge" },
+]
+
+# ─── empyrion-translation — game asset (not yet in project_order; P4) ──────────
+[project.empyrion-translation]
+prefix   = "empyrion-translation-v"
+artifact = "tarball"
+cwd      = "game_stuff/empyrion"
+[project.empyrion-translation.version]
+strategy = "scm"
+bump     = "patch"
+[project.empyrion-translation.steps.build]
+commands = [
+  { label = "empyrion: package DE translation artifact", argv = ["python3", "release-empyrion-translation.py"], cwd = "game_stuff/empyrion" },
+]
+[project.empyrion-translation.steps.push]
+commands = [
+  { label = "empyrion: publish DE translation artifact", argv = ["python3", "release-empyrion-translation.py", "--publish-github", "--publish-only"], cwd = "game_stuff/empyrion" },
+]

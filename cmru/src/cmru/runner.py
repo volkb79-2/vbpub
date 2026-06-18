@@ -68,6 +68,25 @@ def load_toml(path: Path) -> dict:
         return tomllib.load(handle)
 
 
+def _resolve_token(config: dict, github: dict, config_path: Path) -> str:
+    """Resolve the GitHub token per SPEC S2.4: env → cmru.secret.toml → config."""
+    for env_name in ("GITHUB_PUSH_PAT", "GITHUB_TOKEN"):
+        val = (os.getenv(env_name) or "").strip()
+        if val:
+            return val
+    secret_path = config_path.parent / "cmru.secret.toml"
+    if secret_path.exists():
+        try:
+            with secret_path.open("rb") as fh:
+                secret = tomllib.load(fh)
+            tok = ((secret.get("github") or {}).get("token") or "").strip()
+            if tok:
+                return tok
+        except Exception:
+            pass
+    return (github.get("token") or "").strip()
+
+
 def load_release_secrets(release_path: Path, *, project_name: Optional[str] = None) -> ReleaseSecrets:
     config = load_toml(release_path)
 
@@ -75,9 +94,9 @@ def load_release_secrets(release_path: Path, *, project_name: Optional[str] = No
     if not github or not isinstance(github, dict):
         raise ValueError("[github] section required in release config")
 
-    username = (github.get("username") or "").strip()
+    username = (github.get("username") or github.get("owner") or "").strip()
     repo = (github.get("repo") or "").strip()
-    token = (github.get("token") or "").strip()
+    token = _resolve_token(config, github, release_path)
     owner_type = (github.get("owner_type") or "").strip() or None
 
     registry = config.get("registry", {})
@@ -105,7 +124,7 @@ def load_release_secrets(release_path: Path, *, project_name: Optional[str] = No
 
     project_env: Mapping[str, str] = {}
     if project_name:
-        projects_section = config.get("projects")
+        projects_section = config.get("project") or config.get("projects")
         if projects_section is not None and not isinstance(projects_section, dict):
             raise ValueError("[projects] must be a table")
         if isinstance(projects_section, dict):
@@ -460,7 +479,10 @@ def run_step(build_config_path: Path, step_name: str, release_config_path: Optio
         if release_config_raw:
             release_config = resolve_path(build_config_path.parent, str(release_config_raw))
         else:
-            release_config = project_root.parent / "release.toml"
+            parent = project_root.parent
+            release_config = parent / "cmru.toml"
+            if not release_config.exists() and (parent / "release.toml").exists():
+                release_config = parent / "release.toml"  # legacy fallback (S-CLI.4)
     release_config = release_config.expanduser().resolve()
 
     secrets = load_release_secrets(release_config, project_name=project_name)
