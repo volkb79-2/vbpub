@@ -892,75 +892,117 @@ def family_latest_relpath(package_name: str) -> str:
     return f"package-manifests-versioned/{package_name}/latest.md"
 
 
-def package_catalog(latest_python: str | None, latest_debian: str | None) -> list[dict[str, str]]:
-    entries = [
-        {
-            "package_name": "modern-debian-tools-python-debug",
-            "family_title": "Modern Debian Tools + Python Debug",
-            "family_kind": "base",
-            "target": "bookworm-py311",
-            "debian": "bookworm",
-            "python": "3.11",
-        },
-        {
-            "package_name": "modern-debian-tools-python-debug",
-            "family_title": "Modern Debian Tools + Python Debug",
-            "family_kind": "base",
-            "target": "bookworm-py313",
-            "debian": "bookworm",
-            "python": "3.13",
-        },
-        {
-            "package_name": "modern-debian-tools-python-debug",
-            "family_title": "Modern Debian Tools + Python Debug",
-            "family_kind": "base",
-            "target": "trixie-py311",
-            "debian": "trixie",
-            "python": "3.11",
-        },
-        {
-            "package_name": "modern-debian-tools-python-debug",
-            "family_title": "Modern Debian Tools + Python Debug",
-            "family_kind": "base",
-            "target": "trixie-py313",
-            "debian": "trixie",
-            "python": "3.13",
-        },
-        {
-            "package_name": "modern-debian-tools-python-debug",
-            "family_title": "Modern Debian Tools + Python Debug",
-            "family_kind": "base",
-            "target": "trixie-py314",
-            "debian": "trixie",
-            "python": "3.14",
-        },
-        {
-            "package_name": "modern-debian-tools-python-debug-vsc-devcontainer",
-            "family_title": "Modern Debian Tools + Python Debug VS Code Devcontainer",
-            "family_kind": "vsc",
-            "target": "trixie-py311-vsc",
-            "debian": "trixie",
-            "python": "3.11",
-        },
-        {
-            "package_name": "modern-debian-tools-python-debug-vsc-devcontainer",
-            "family_title": "Modern Debian Tools + Python Debug VS Code Devcontainer",
-            "family_kind": "vsc",
-            "target": "trixie-py313-vsc",
-            "debian": "trixie",
-            "python": "3.13",
-        },
-        {
-            "package_name": "modern-debian-tools-python-debug-vsc-devcontainer",
-            "family_title": "Modern Debian Tools + Python Debug VS Code Devcontainer",
-            "family_kind": "vsc",
-            "target": "trixie-py314-vsc",
-            "debian": "trixie",
-            "python": "3.14",
-        },
-    ]
+BAKE_FILE = PACKAGE_DOCS_ROOT.parent / "docker-bake.hcl"
 
+_FAMILY_TITLES = {
+    "modern-debian-tools-python-debug": "Modern Debian Tools + Python Debug",
+    "modern-debian-tools-python-debug-vsc-devcontainer": (
+        "Modern Debian Tools + Python Debug VS Code Devcontainer"
+    ),
+}
+
+
+def _package_name_from_target(name: str, spec: dict) -> str:
+    """Derive the GHCR package name for a bake target.
+
+    Preferred source is the target's own ``PACKAGE_MANIFEST_SOURCE`` arg
+    (``package-manifests-versioned/<package_name>/...``) so the manifest filename
+    and the built image can never disagree. Falls back to the image refs / target
+    name suffix for the (vsc vs base) distinction.
+    """
+    args = spec.get("args") or {}
+    manifest_source = args.get("PACKAGE_MANIFEST_SOURCE") or ""
+    parts = manifest_source.split("/")
+    if len(parts) >= 2 and parts[0] == "package-manifests-versioned" and parts[1]:
+        return parts[1]
+    tags = spec.get("tags") or []
+    is_vsc = any("-vsc-devcontainer" in str(tag) for tag in tags) or name.endswith("-vsc")
+    return (
+        "modern-debian-tools-python-debug-vsc-devcontainer"
+        if is_vsc
+        else "modern-debian-tools-python-debug"
+    )
+
+
+def built_target_entries() -> list[dict[str, str]]:
+    """The authoritative documentation matrix = the bake ``all`` build matrix.
+
+    We enumerate exactly the targets in ``group "all"`` via
+    ``docker buildx bake ... all --print`` (the same group the build/push steps
+    bake) and emit one entry per *distinct* manifest. Multi-Python targets that
+    share a primary (e.g. ``trixie-py314-vsc`` and ``trixie-py314-py311-vsc``)
+    collapse to one entry. This guarantees manifest/build parity: a manifest is
+    only ever generated for an image that is actually built and pushed.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "buildx", "bake", "-f", str(BAKE_FILE), "all", "--print"],
+            cwd=str(BAKE_FILE.parent),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "docker buildx is required to enumerate built targets for manifest "
+            f"generation but was not found: {exc}"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"`docker buildx bake -f {BAKE_FILE.name} all --print` failed "
+            f"(exit {exc.returncode}): {exc.stderr.strip()}"
+        ) from exc
+
+    bake = json.loads(result.stdout)
+    target_names = ((bake.get("group") or {}).get("all") or {}).get("targets") or []
+    targets = bake.get("target") or {}
+
+    entries: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for name in target_names:
+        spec = targets.get(name) or {}
+        args = spec.get("args") or {}
+        debian = args.get("DEBIAN_VERSION")
+        python = args.get("PYTHON_VERSION")
+        if not debian or not python:
+            sys.stderr.write(
+                f"[WARN] bake target {name!r} has no DEBIAN_VERSION/PYTHON_VERSION; "
+                "skipping manifest entry\n"
+            )
+            continue
+        package_name = _package_name_from_target(name, spec)
+        key = (package_name, debian, python)
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(
+            {
+                "package_name": package_name,
+                "family_title": _FAMILY_TITLES.get(package_name, package_name),
+                "family_kind": "vsc" if package_name.endswith("-vsc-devcontainer") else "base",
+                "target": name,
+                "debian": debian,
+                "python": python,
+            }
+        )
+
+    if not entries:
+        raise RuntimeError(
+            f"no buildable targets in the 'all' group of {BAKE_FILE.name}; "
+            "nothing to document (did the group get fully commented out?)"
+        )
     return entries
+
+
+def package_catalog(latest_python: str | None, latest_debian: str | None) -> list[dict[str, str]]:
+    """Products to document — derived dynamically from the bake build matrix.
+
+    ``latest_python`` / ``latest_debian`` are accepted for call-site compatibility
+    (latest-pointer selection lives in :func:`choose_latest_entry`); the catalog
+    itself is now driven entirely by :func:`built_target_entries`, so it can never
+    drift from what was built.
+    """
+    return built_target_entries()
 
 
 def normalize_description_text(description: str) -> str:
