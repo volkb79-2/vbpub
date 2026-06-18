@@ -75,6 +75,7 @@ strategy = "scm"
 bump     = "conventional"
 [project.cmru.steps.build]
 commands = [
+  { label = "cmru: clean stale wheels", argv = ["bash", "-c", "rm -f dist/cmru-*.whl"], cwd = "cmru" },
   { label = "cmru: build wheel", argv = ["python3", "-m", "build", "--wheel", "--outdir", "dist"], cwd = "cmru" },
 ]
 [project.cmru.steps.push]
