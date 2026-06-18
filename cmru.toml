@@ -64,24 +64,21 @@ commands = [
   { label = "CIU: validate latest wheel", argv = ["python3", "tools/validate-wheel-latest.py"], cwd = "ciu" },
 ]
 
-# ─── cmru — Python wheel (dogfood) ────────────────────────────────────────────
+# ─── cmru — Python wheel (dogfood: zero step scripts, cmru built-in handlers) ──
+# Declares the wheel profile and NO [steps.*]: cmru builds/publishes/validates it via
+# its own built-in handlers (cmru/handlers.py). The only project-specific input is the
+# release-notes text below (read by wheel-publish via --notes-env CMRU_RELEASE_NOTES).
+# Proof that a standard Python wheel project needs ~7 lines of config and no scripts.
 [project.cmru]
 prefix    = "cmru-v"
-artifacts = ["wheel"]        # → wheel profile (dogfood)
+artifacts = ["wheel"]
 scm_dist  = "cmru"
 cwd       = "cmru"
 [project.cmru.version]
 strategy = "scm"
 bump     = "conventional"
-[project.cmru.steps.build]
-commands = [
-  { label = "cmru: clean stale wheels", argv = ["bash", "-c", "rm -f dist/cmru-*.whl"], cwd = "cmru" },
-  { label = "cmru: build wheel", argv = ["python3", "-m", "build", "--wheel", "--outdir", "dist"], cwd = "cmru" },
-]
-[project.cmru.steps.push]
-commands = [
-  { label = "cmru: publish wheel", argv = ["python3", "scripts/publish-wheel.py"], cwd = "cmru" },
-]
+[project.cmru.env]
+CMRU_RELEASE_NOTES = "## cmru wheel\nBuild, publish, and release orchestration for CIU-family monorepos.\n\n**Install**\n```bash\npipx install cmru-*.whl\n```"
 
 # ─── modern-debian-tools-python-debug — OCI images ────────────────────────────
 # Deliverable is the ghcr image(s) only — NOT a GitHub Release. So: no semver git tag

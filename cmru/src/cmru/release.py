@@ -307,3 +307,91 @@ def publish_versioned(
             print(f"[INFO] Moved {latest_tag} (dev asset → {version})")
 
     return result
+
+
+# ─── profile glue (was duplicated across project publish scripts) ─────────────
+# These are the per-artifact helpers every wheel project re-implemented (find the
+# built wheel, read its version, assert the published "latest" is well-formed). They
+# now live here once so a project can route through cmru's built-in handlers (see
+# cmru.handlers) instead of carrying its own copy.
+def _die(message: str) -> None:
+    print(f"[ERROR] {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def find_built_wheel(dist_dir: Path, wheel_glob: str) -> Path:
+    """Return the single wheel the build step produced (never rebuilds — a rebuild
+    would differ in bytes/version from what was tested). Errors if 0 or >1 match."""
+    dist_dir = Path(dist_dir)
+    wheels = sorted(dist_dir.glob(wheel_glob))
+    if not wheels:
+        _die(f"No wheel in {dist_dir} (glob: {wheel_glob}). Run the build step first.")
+    if len(wheels) > 1:
+        _die(f"Multiple wheels in {dist_dir}: {[w.name for w in wheels]}; clean + rebuild.")
+    return wheels[0]
+
+
+def read_wheel_version(wheel_path: Path) -> str:
+    """Canonical version from the wheel METADATA (single source of truth)."""
+    import zipfile
+
+    with zipfile.ZipFile(wheel_path) as zf:
+        meta = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+        for line in zf.read(meta).decode("utf-8").splitlines():
+            if line.startswith("Version:"):
+                return line.split(":", 1)[1].strip()
+    _die(f"No Version field in {Path(wheel_path).name} METADATA")
+    return ""  # unreachable (_die raises)
+
+
+def validate_latest_release(
+    gh: "GitHubReleases",
+    prefix: str,
+    *,
+    artifact_suffix: str = ".whl",
+    require_sha256: bool = True,
+    retries: int = 6,
+    delay: int = 5,
+) -> Dict[str, Any]:
+    """Assert the resolved "latest" for ``prefix`` is a well-formed release.
+
+    Resolves the highest-semver ``<prefix>-v*`` release (the monorepo-safe "latest",
+    *not* the thin ``-latest`` pointer), asserts it carries an artifact ending in
+    ``artifact_suffix`` plus (optionally) a matching ``.sha256`` sidecar. Retries to
+    absorb GitHub's brief releases-list eventual-consistency right after a publish.
+
+    Returns ``{version, tag, asset, url, sha256_url}``. Generic over artifact type
+    (wheel ``.whl``, tarball ``.tar.xz``, …) so every profile can reuse it.
+    """
+    import time
+
+    info = None
+    for attempt in range(retries):
+        info = gh.resolve_latest(prefix)
+        if info is not None:
+            break
+        if attempt < retries - 1:
+            print(f"[INFO] No {prefix}-v* release visible yet; retrying ({attempt + 1}/{retries})…")
+            time.sleep(delay)
+    if info is None:
+        _die(f"No {prefix}-v* releases found in the repository")
+
+    assets = {a["name"]: a["url"] for a in info["assets"]}
+    matches = [n for n in assets if n.endswith(artifact_suffix)]
+    if not matches:
+        _die(f"Release {prefix}-v{info['version']} has no {artifact_suffix} asset")
+    if len(matches) > 1:
+        print(f"[WARN] Multiple {artifact_suffix} assets in {prefix}-v{info['version']}: "
+              f"{matches}; using first")
+    primary = matches[0]
+    sidecar = primary + ".sha256"
+    if require_sha256 and sidecar not in assets:
+        _die(f"Release {prefix}-v{info['version']} is missing the {sidecar} sidecar; "
+             "cannot verify integrity")
+    return {
+        "version": info["version"],
+        "tag": info["tag"],
+        "asset": primary,
+        "url": assets[primary],
+        "sha256_url": assets.get(sidecar),
+    }

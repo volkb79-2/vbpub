@@ -213,11 +213,19 @@ def run_project_step(
     repo_root: Path,
     log_dir: Path,
 ) -> None:
-    """Route a project step through the unified runner contract (S3)."""
-    commands = project.steps.get(step_name, [])
+    """Route a project step through the unified runner contract (S3).
+
+    An explicit ``[steps.<step>]`` wins; if absent, a profile built-in (e.g. the wheel
+    handler) is synthesized so a project declaring ``artifacts=["wheel"]`` needs no
+    script. Falls through silently when neither exists."""
+    commands = list(project.steps.get(step_name, []))
+    if not commands:
+        builtin = _builtin_step_command(project, step_name, repo_root)
+        if builtin is not None:
+            commands = [builtin]
     if not commands:
         return
-    step = _build_step_config(step_name, list(commands))
+    step = _build_step_config(step_name, commands)
     execute_step(step, repo_root, log_dir, extra_env=dict(project.env) if project.env else None)
 
 
@@ -363,6 +371,56 @@ def _resolve_release_profile(
     return tuple(artifacts), mint_tag, tuple(str(p) for p in commit_generated)
 
 
+# ─── built-in profile steps (S-REL "batteries included") ─────────────────────
+# Profiles whose build/publish/validate cmru implements itself (see cmru/handlers.py).
+# A project that declares such a profile may OMIT the matching [steps.<step>] — cmru
+# synthesizes a step that runs the built-in handler. Any explicit step overrides it.
+_PROFILE_BUILTIN_STEPS = {
+    "wheel": ("build", "push", "validate"),
+}
+# Absolute path so the step works whether cmru is pip-installed or run from a checkout
+# (a bare `-m cmru.handlers` would fail in a subprocess that didn't inherit sys.path).
+_HANDLERS_PY = Path(__file__).resolve().parent / "handlers.py"
+
+
+def _bare_prefix(prefix: Optional[str]) -> str:
+    """`ciu-v` → `ciu` (the release prefix the keystone/handlers expect)."""
+    prefix = prefix or ""
+    return prefix[:-2] if prefix.endswith("-v") else prefix
+
+
+def _builtin_step_command(
+    project: "ProjectConfig", step_name: str, repo_root: Path
+) -> Optional[Command]:
+    """Synthesized Command for a profile's built-in ``step_name``, or None.
+
+    Returns None when no declared artifact profile provides a built-in for this step,
+    so callers fall back to "no step" (skip). cmru stays the orchestrator: the built-in
+    is just a default *step command*, run through the same runner as a project script.
+    """
+    cwd_rel = project.cwd or project.name
+    cwd_abs = resolve_cwd(repo_root, cwd_rel)
+    bare = _bare_prefix(project.prefix)
+    notes_env = f"{bare.upper().replace('-', '_')}_RELEASE_NOTES" if bare else None
+    for artifact in project.artifacts:
+        if artifact != "wheel" or step_name not in _PROFILE_BUILTIN_STEPS["wheel"]:
+            continue
+        base = [sys.executable, str(_HANDLERS_PY)]
+        if step_name == "build":
+            argv = base + ["wheel-build", "--cwd", str(cwd_abs)]
+        elif step_name == "push":
+            argv = base + ["wheel-publish", "--prefix", bare, "--cwd", str(cwd_abs)]
+            if notes_env:
+                argv += ["--notes-env", notes_env]
+        else:  # validate
+            argv = base + ["wheel-validate", "--prefix", bare]
+        return Command(
+            label=f"{project.name}: wheel {step_name} (cmru built-in)",
+            argv=argv, cwd=cwd_abs,
+        )
+    return None
+
+
 def load_config(
     config_path: Path,
 ) -> tuple[
@@ -407,11 +465,12 @@ def load_config(
         if not isinstance(project_env, dict):
             raise ValueError(f"project.{name}.env must be a table")
 
+        # steps are OPTIONAL when an artifacts profile provides built-ins (checked below).
         steps_section = project.get("steps")
-        if not steps_section or not isinstance(steps_section, dict):
-            raise ValueError(f"project.{name}.steps is required")
+        if steps_section is not None and not isinstance(steps_section, dict):
+            raise ValueError(f"project.{name}.steps must be a table")
         steps: dict[str, List[Command]] = {}
-        for step_name, step_config in steps_section.items():
+        for step_name, step_config in (steps_section or {}).items():
             commands_config = step_config.get("commands") if isinstance(step_config, dict) else None
             if commands_config is None:
                 raise ValueError(f"project.{name}.steps.{step_name}.commands is required")
@@ -425,6 +484,13 @@ def load_config(
         artifacts, mint_tag, commit_generated = _resolve_release_profile(
             project, name, version_spec
         )
+        # A project must be runnable: either it declares steps, or it declares an
+        # artifacts profile cmru can build/publish itself (S-REL batteries-included).
+        if not steps and not any(a in _PROFILE_BUILTIN_STEPS for a in artifacts):
+            raise ValueError(
+                f"project.{name}: define [steps.*] or declare an artifacts profile with "
+                f"built-in steps {sorted(_PROFILE_BUILTIN_STEPS)}"
+            )
         # Change-detection watches the project cwd plus any extra version.paths (S12.3).
         extra_paths = list(version_spec.paths) if (version_spec and version_spec.paths) else []
         watch_paths = [proj_cwd or name] + extra_paths
@@ -953,6 +1019,9 @@ def _run_project_steps(
         for step in steps:
             if step in project.steps:
                 log_info(f"{name}: running step '{step}'")
+                run_project_step(project, step, repo_root, log_dir)
+            elif _builtin_step_command(project, step, repo_root) is not None:
+                log_info(f"{name}: running step '{step}' (cmru built-in)")
                 run_project_step(project, step, repo_root, log_dir)
             else:
                 log_info(f"{name}: no '{step}' step — skipping")

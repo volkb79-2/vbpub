@@ -248,3 +248,41 @@ mdt is intentionally not in the per-project list (P5 rebuilds it once).
 4. **Operational ordering (safety):** build & verify the new cmru (P1–P4) *before* the
    destructive wipe, then P0 wipe → P7 re-release. Never leave a "wiped but no tool"
    window. Delete the stray `mdt-v0.1.0` tag as part of P0.
+
+## 9. P8 — batteries-included profile handlers (done 2026-06-18, Phase A)
+
+**Why:** "how much can cmru do so projects do less?" Audit found ciu's
+`tools/publish-wheel-release.py` (145) + `tools/validate-wheel-latest.py` (116) and
+`cmru/scripts/publish-wheel.py` (79) were ~60% the *same* glue (find wheel → read METADATA
+version → `publish_versioned` / `resolve_latest`). The profile model already declared
+*capabilities*; it stopped short of *behaviour*.
+
+**Design:** profiles can now carry a **default implementation**. A project that declares
+`artifacts = ["wheel"]` and omits `[steps.*]` gets build/publish/validate from cmru's own
+handlers. Mechanism = a *synthesized step* (no new hot-path plumbing):
+
+- `cmru/handlers.py` (NEW) — `wheel-build` (`python -m build`), `wheel-publish`
+  (find+version+`publish_versioned`), `wheel-validate` (`validate_latest_release`). Invoked
+  by **absolute path** (`sys.executable <…>/handlers.py …`) so it works installed *or* from a
+  checkout; reads the same `GITHUB_*` env `apply_release_env` already exports.
+- `cmru/src/cmru/release.py` — `find_built_wheel`, `read_wheel_version`,
+  `validate_latest_release` (generic over `artifact_suffix`, reusable for tarball later).
+- `cli.py` — `_PROFILE_BUILTIN_STEPS = {"wheel": (...)}`, `_builtin_step_command()`,
+  fallback in `run_project_step`/`_run_project_steps`. `load_config` steps now **optional**
+  when a built-in-capable profile is present (guard: else `ValueError`).
+
+**Done (Phase A):** capability + tests (102 pass, +13). Dogfood: monorepo `cmru.toml`
+`[project.cmru]` → zero `[steps.*]` (only `CMRU_RELEASE_NOTES`). Duplication killed:
+3 scripts 340→88 lines, now pure one-line delegations to the handler.
+
+**Phase B (TODO):** full ciu zero-script migration — switch `[project.ciu]` to built-ins,
+move `CIU_RELEASE_NOTES` into `cmru.toml [project.ciu.env]`, delete the 4 ciu scripts +
+`cmru/scripts/publish-wheel.py`, converge `cmru/cmru.toml`/`cmru.build.toml`, update
+`ciu/README.md`, `ciu/docs/README.md`, `ciu/tools/cleanup-and-validate.sh`,
+`dstdns/.vscode/rebuild-ciu-wheel.sh`, `docs/plan-cmru-migration.md`. Optionally a `tarball`
+built-in (tls-edge) and a `validate` built-in for non-wheel artifacts.
+
+**Hardening (separate):** keep `cmru.vars` gitignored (it's a generated scratchpad, §README);
+make pwmcp's `build-bundle.py`/`build-push.py` **self-heal** — re-run
+`resolve-playwright-version.py` if `cmru.vars` is missing — so out-of-order partial
+invocations (`cmru publish` with no prior build) don't fail on a missing scratchpad.

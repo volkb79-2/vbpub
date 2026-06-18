@@ -1,116 +1,27 @@
 #!/usr/bin/env python3
-"""Validate the latest CIU wheel via the resolver contract.
+"""Validate the latest CIU wheel — thin delegate to cmru's built-in validator.
 
-Resolves "latest ciu wheel" = highest-semver ``ciu-v*`` release (the
-monorepo-safe definition), asserts it carries both a ``.whl`` asset and a
-matching ``.whl.sha256`` sidecar, and prints the resolved version + download URL.
+Resolution + asset/sha256 assertions live once in cmru.release.validate_latest_release
+(via cmru.handlers wheel-validate). This wrapper only locates the repo .env for
+standalone runs and passes CIU's prefix.
 
-Required environment:
-- GITHUB_USERNAME
-- GITHUB_REPO
-
-Optional environment:
-- GH_TOKEN or GITHUB_PUSH_PAT (unauthenticated works for public repos, but
-  authenticated avoids rate limits)
-- CIU_ENV_FILE (default: repo-root/.env)
+Env contract: GITHUB_USERNAME, GITHUB_REPO (token optional for public repos:
+GH_TOKEN / GITHUB_PUSH_PAT).
 """
 from __future__ import annotations
 
 import os
 import sys
-import pathlib
 from pathlib import Path
 
-# ── keystone import (stdlib-only; no install needed) ─────────────────────────
-# parents[2] from ciu/tools/validate-wheel-latest.py  →  vbpub repo root
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "cmru" / "src"))
-from cmru.release import GitHubReleases  # noqa: E402
+REPO_ROOT = Path(__file__).resolve().parents[2]   # vbpub repo root
+CIU_ROOT = Path(__file__).resolve().parents[1]    # ciu/
+sys.path.insert(0, str(REPO_ROOT / "cmru" / "src"))
 
-
-def load_env_file(env_path: Path) -> None:
-    if not env_path.exists():
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        os.environ[key.strip()] = value.strip().strip('"').strip("'")
-
-
-def main() -> None:
-    script_dir = Path(__file__).resolve().parent
-    repo_root = script_dir.parent.parent
-
-    env_file = Path(os.getenv("CIU_ENV_FILE", str(repo_root / ".env")))
-    if env_file.exists():
-        load_env_file(env_file)
-    else:
-        fallback_env = script_dir.parent / ".env"
-        if fallback_env.exists():
-            load_env_file(fallback_env)
-
-    owner = os.getenv("GITHUB_USERNAME")
-    repo = os.getenv("GITHUB_REPO")
-    if not owner or not repo:
-        print("[ERROR] GITHUB_USERNAME and GITHUB_REPO are required", file=sys.stderr)
-        raise SystemExit(1)
-
-    token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_PUSH_PAT") or ""
-
-    gh = GitHubReleases(owner, repo, token)
-
-    # Resolve via the contract: highest-semver ciu-v* release (not the thin
-    # ciu-latest pointer, which holds only latest.json since the refactor).
-    # This runs immediately after publish, where GitHub's releases-list endpoint
-    # can briefly lag behind release creation (eventual consistency), so retry.
-    import time
-
-    info = None
-    for attempt in range(6):
-        info = gh.resolve_latest("ciu")
-        if info is not None:
-            break
-        if attempt < 5:
-            print(f"[INFO] No ciu-v* release visible yet; retrying ({attempt + 1}/6)…")
-            time.sleep(5)
-    if info is None:
-        print("[ERROR] No ciu-v* releases found in the repository", file=sys.stderr)
-        raise SystemExit(1)
-
-    version = info["version"]
-    assets = {a["name"]: a["url"] for a in info["assets"]}
-
-    # Locate the wheel asset
-    wheels = [name for name in assets if name.endswith(".whl")]
-    if not wheels:
-        print(f"[ERROR] Release ciu-v{version} has no .whl asset", file=sys.stderr)
-        raise SystemExit(1)
-    if len(wheels) > 1:
-        print(f"[WARN] Multiple .whl assets in ciu-v{version}: {wheels}; using first")
-    wheel_name = wheels[0]
-
-    # Assert the sha256 sidecar is present
-    sidecar_name = wheel_name + ".sha256"
-    if sidecar_name not in assets:
-        print(
-            f"[ERROR] Release ciu-v{version} is missing the .sha256 sidecar "
-            f"({sidecar_name}); cannot verify integrity",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-
-    download_url = assets[wheel_name]
-    sha256_url = assets[sidecar_name]
-
-    print(f"[INFO] CIU latest version: {version} (resolved from highest ciu-v* release)")
-    print(f"[INFO] CIU_WHEEL_NAME={wheel_name}")
-    print(f"[INFO] CIU_WHEEL_LATEST_URL={download_url}")
-    print(f"[INFO] CIU_WHEEL_SHA256_URL={sha256_url}")
-    print(f"[INFO] Verify: curl -LO {download_url} && curl -LO {sha256_url} && sha256sum -c {sidecar_name}")
-
+from cmru.handlers import main  # noqa: E402
 
 if __name__ == "__main__":
-    main()
+    env_file = os.getenv("CIU_ENV_FILE") or str(REPO_ROOT / ".env")
+    if not Path(env_file).exists():
+        env_file = str(CIU_ROOT / ".env")
+    main(["wheel-validate", "--prefix", "ciu", "--env-file", env_file])

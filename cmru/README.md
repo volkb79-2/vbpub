@@ -82,6 +82,22 @@ setuptools-scm). cmru auto-commits **only** the declared `commit_generated` outp
 `cmru.secret.toml [github].token` → `cmru.toml [github].token` (discouraged). Never commit
 a token.
 
+**Why `cmru.vars` is gitignored (and not a missing "starting point"):** it is a *generated
+scratchpad* — a build step writes computed values (e.g. pwmcp's playwright-driven version)
+for a *later* step in the **same** run to read. The committed starting point is git tags +
+`VERSION` files + `cmru.toml`; `cmru status`/`release` read those and never read `cmru.vars`.
+A fresh clone regenerates it on the next build. Committing it would turn a derived cache into
+an authoritative-looking input that drifts from the tags — the opposite of reproducible.
+
+## Built-in profiles ("batteries included")
+
+For a standard `wheel` project, declaring the profile is enough — cmru runs its own
+`build`/`push`/`validate` (see `cmru/handlers.py`), so the project needs **no release
+scripts**. cmru itself is the dogfood (`[project.cmru]` has `artifacts = ["wheel"]` and zero
+`[steps.*]`; only a `CMRU_RELEASE_NOTES` string). The single project-specific input is the
+release-notes text. An explicit `[project.X.steps.<step>]` always overrides the built-in —
+the escape hatch for multi-wheel repos, bespoke validation, or extra assets.
+
 ## Differentiators
 
 1. **N products, one Releases page** via per-product `prefix` (`ciu-v…`, `pwmcp-v…`).
