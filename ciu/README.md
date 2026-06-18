@@ -99,24 +99,28 @@ ciu-deploy --deploy --profile <host-profile>   # orchestrate many
 
 `ciu --help` / `ciu-deploy --help` list every flag.
 
-## Release scripts
+## Release: driven by cmru's built-in wheel handlers
 
-Three Python scripts handle the build/release cycle. Run them in order, or let
-the parent `cmru` pipeline drive them via the repo-root `cmru.toml`:
+ciu is a standard Python wheel project, so the parent **cmru** pipeline builds,
+publishes, and validates it with its **built-in wheel handlers** — ciu carries **no
+release scripts of its own**. The repo-root `cmru.toml` declares
+`[project.ciu] artifacts = ["wheel"]` with only two ciu-specific inputs: the test
+command and `CIU_RELEASE_NOTES` (see [`../docs/ciu-vs-cmru.md`](../docs/ciu-vs-cmru.md)
+and [`../cmru/README.md`](../cmru/README.md) → *Built-in profiles*).
 
-| Script | Purpose | Calls into |
-|---|---|---|
-| `run-ciu-tests.py` | Run the full pytest suite | `pytest tests/` |
-| `build-wheel.py` | Build the wheel into `dist/` (cleans first) | `python -m build`, config: `cmru.build.toml [steps.build-wheel]` |
-| `publish-wheel.py` | Publish to GitHub Releases and validate | `tools/publish-wheel-release.py`, `tools/validate-wheel-latest.py`, config: `cmru.build.toml [steps.publish-wheel]` |
+```bash
+cmru release --project ciu     # run-tests (ciu) → build → publish → validate (built-in)
+cmru build   --project ciu     # build the wheel only (cmru built-in)
+cmru resolve --project ciu     # resolve the current latest (version / url / sha256)
+```
 
-The `tools/` directory also contains two helper scripts invoked internally:
-`cleanup-legacy-releases.sh` deletes the old `ciu-wheel-latest` GitHub release tag,
-and `cleanup-and-validate.sh` wraps that cleanup with a post-publish validation pass.
+The only ciu-owned release helper is `run-ciu-tests.py` (the pytest suite). The `tools/`
+directory keeps `cleanup-legacy-releases.sh` / `cleanup-and-validate.sh` for one-off
+maintenance.
 
 ### Release scheme
 
-`tools/publish-wheel-release.py` routes through the shared `cmru` release host
+The built-in handler routes through the shared `cmru` release host
 (`cmru/src/cmru/release.py`), which enforces a uniform scheme across the monorepo:
 
 - **Dev build** (`2.0.1.dev8+gabcdef`): moves the thin `ciu-latest` pointer
@@ -148,11 +152,12 @@ curl -LO https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/ciu-
 sha256sum -c ciu-<version>-py3-none-any.whl.sha256
 ```
 
-Use `tools/validate-wheel-latest.py` to resolve the current latest version and
-print the download + checksum URLs programmatically:
+Use `cmru resolve --project ciu` (or `cmru.handlers wheel-validate --prefix ciu`) to
+resolve the current latest version and print the download + checksum URLs
+programmatically:
 
 ```bash
-GITHUB_USERNAME=<owner> GITHUB_REPO=<repo> python3 tools/validate-wheel-latest.py
+cmru resolve --project ciu
 ```
 
 ### Cutting a new release (SemVer)

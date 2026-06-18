@@ -38,8 +38,8 @@ CLI coherence in `cmru/src/cmru/cli.py` — done, tests green (75 passed):
 |---|---|---|
 | Config schema | `release.toml` (legacy `[projects.X.steps]`) read by everything **except** `cmru get`, which reads `cmru.toml` (S2 `[project.X]`) via `config.py:load_forge_config` | Two schemas, two loaders; SPEC.md documents S2 but the CLI ignores it |
 | Versioning | cmru tag-based (scm/patch/counter) | per-product scripts re-derive their own versions |
-| ciu | wheel via `build-wheel.py`/`publish-wheel.py` steps | conforms ✓ |
-| cmru | wheel via `scripts/publish-wheel.py` | conforms ✓ (dogfood) |
+| ciu | wheel via cmru built-in handlers (P8; no ciu release scripts) | conforms ✓ |
+| cmru | wheel via cmru built-in handlers (P8 dogfood; zero step scripts) | conforms ✓ (dogfood) |
 | modern-debian-tools-python-debug | images via `build-push.py` | conforms ✓ |
 | pwmcp | `resolve-playwright-version.py` rewrites tracked files + uses **counter `-r<N>`** in `.release-vars` | dirties tree (breaks clean-tree guard); cmru `pwmcp-v1.61.1` tag ≠ published version |
 | tls-edge | `scripts/release.sh` does its **own** bump+tag+build+publish | double-tags vs cmru `release`; not in `project_order` |

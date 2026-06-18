@@ -53,11 +53,9 @@ has a corresponding file here:
 # Editable install (development)
 pip install -e /path/to/vbpub/ciu
 
-# Build wheel
-python -m pip wheel . -w dist
-
-# Publish wheel to GitHub Releases
-python3 publish-wheel.py    # requires GITHUB_PUSH_PAT, GITHUB_USERNAME, GITHUB_REPO
+# Build + publish the wheel via cmru's built-in handler (from the repo root)
+cmru build   --project ciu   # python -m build --wheel
+cmru publish --project ciu   # requires GITHUB_PUSH_PAT, GITHUB_USERNAME, GITHUB_REPO
 ```
 
 ### Installing a released wheel from GitHub Releases
@@ -81,11 +79,11 @@ pip install ciu-<version>-py3-none-any.whl
 
 **Resolving "latest":** the highest-semver `ciu-v*` release is the latest. The
 `ciu-latest` tag exists only as a thin redirect (`latest.json` manifest) — it
-does not carry a copy of the wheel. Use `tools/validate-wheel-latest.py` to
+does not carry a copy of the wheel. Use `cmru resolve --project ciu` to
 resolve the current version and print the download URLs:
 
 ```bash
-GITHUB_USERNAME=<owner> GITHUB_REPO=<repo> python3 tools/validate-wheel-latest.py
+cmru resolve --project ciu
 ```
 
 ## Running Tests

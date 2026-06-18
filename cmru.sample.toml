@@ -42,7 +42,10 @@ ghcr_delete_packages = ["modern-debian-tools-python-debug-vsc-devcontainer-dev"]
 [env]
 # Shared env for all projects. Per-project defaults live in <project>/cmru.build.toml [env].
 
-# ─── ciu — Python wheel ───────────────────────────────────────────────────────
+# ─── ciu — Python wheel (built-in handlers) ───────────────────────────────────
+# A standard wheel project: declare the profile, omit build/push/validate — cmru's
+# built-in wheel handlers do them. The only project-specific inputs are the test
+# command and the release-notes env (read by wheel-publish via --notes-env).
 [project.ciu]
 prefix   = "ciu-v"
 artifacts = ["wheel"]
@@ -51,24 +54,14 @@ cwd      = "ciu"
 [project.ciu.version]
 strategy = "scm"
 bump     = "conventional"
+[project.ciu.env]
+CIU_RELEASE_NOTES = "## CIU CLI wheel\nConfig-inheritance + Docker Compose stack orchestrator.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
 [project.ciu.steps.run-tests]
 commands = [
   { label = "CIU: run tests", argv = ["python3", "run-ciu-tests.py"], cwd = "ciu" },
 ]
-[project.ciu.steps.build]
-commands = [
-  { label = "CIU: build wheel", argv = ["python3", "build-wheel.py"], cwd = "ciu" },
-]
-[project.ciu.steps.push]
-commands = [
-  { label = "CIU: publish wheel", argv = ["python3", "publish-wheel.py"], cwd = "ciu" },
-]
-[project.ciu.steps.validate]
-commands = [
-  { label = "CIU: validate latest wheel", argv = ["python3", "tools/validate-wheel-latest.py"], cwd = "ciu" },
-]
 
-# ─── cmru — Python wheel (dogfood) ────────────────────────────────────────────
+# ─── cmru — Python wheel (dogfood: zero step scripts, cmru built-in handlers) ──
 [project.cmru]
 prefix   = "cmru-v"
 artifacts = ["wheel"]
@@ -77,14 +70,8 @@ cwd      = "cmru"
 [project.cmru.version]
 strategy = "scm"
 bump     = "conventional"
-[project.cmru.steps.build]
-commands = [
-  { label = "cmru: build wheel", argv = ["python3", "-m", "build", "--wheel", "--outdir", "dist"], cwd = "cmru" },
-]
-[project.cmru.steps.push]
-commands = [
-  { label = "cmru: publish wheel", argv = ["python3", "scripts/publish-wheel.py"], cwd = "cmru" },
-]
+[project.cmru.env]
+CMRU_RELEASE_NOTES = "## cmru wheel\nBuild, publish, and release orchestration for CIU-family monorepos.\n\n**Install**\n```bash\npipx install cmru-*.whl\n```"
 
 # ─── modern-debian-tools-python-debug — OCI images (no git tag, no Release) ────
 [project.modern-debian-tools-python-debug]

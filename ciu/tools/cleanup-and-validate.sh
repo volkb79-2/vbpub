@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON_BIN="/workspaces/vbpub/.venv/bin/python"
 
 bash "${SCRIPT_DIR}/cleanup-legacy-releases.sh"
-"${PYTHON_BIN}" "${SCRIPT_DIR}/validate-wheel-latest.py"
+# Validation now lives in cmru's built-in wheel handler (no ciu-local script).
+cmru resolve --project ciu

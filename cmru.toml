@@ -38,7 +38,9 @@ ghcr_delete_packages = ["modern-debian-tools-python-debug-vsc-devcontainer-dev"]
 [env]
 # Shared env for all projects. Per-project defaults live in <project>/cmru.build.toml [env].
 
-# ─── ciu — Python wheel ───────────────────────────────────────────────────────
+# ─── ciu — Python wheel (built-in handlers; only run-tests is ciu-specific) ────
+# build/push/validate come from cmru's built-in wheel handlers (cmru/handlers.py).
+# The only project-specific inputs are the test command and the release-notes text.
 [project.ciu]
 prefix    = "ciu-v"
 artifacts = ["wheel"]        # → wheel profile: semver tag + GitHub Release + latest.json
@@ -47,21 +49,11 @@ cwd       = "ciu"
 [project.ciu.version]
 strategy = "scm"
 bump     = "conventional"
+[project.ciu.env]
+CIU_RELEASE_NOTES = "## CIU CLI wheel\nConfig-inheritance + Docker Compose stack orchestrator (render, up/down, health, bake, dev).\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
 [project.ciu.steps.run-tests]
 commands = [
   { label = "CIU: run tests", argv = ["python3", "run-ciu-tests.py"], cwd = "ciu" },
-]
-[project.ciu.steps.build]
-commands = [
-  { label = "CIU: build wheel", argv = ["python3", "build-wheel.py"], cwd = "ciu" },
-]
-[project.ciu.steps.push]
-commands = [
-  { label = "CIU: publish wheel", argv = ["python3", "publish-wheel.py"], cwd = "ciu" },
-]
-[project.ciu.steps.validate]
-commands = [
-  { label = "CIU: validate latest wheel", argv = ["python3", "tools/validate-wheel-latest.py"], cwd = "ciu" },
 ]
 
 # ─── cmru — Python wheel (dogfood: zero step scripts, cmru built-in handlers) ──
