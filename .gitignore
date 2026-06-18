@@ -252,3 +252,10 @@ scripts/*.key
 cmru.secret.toml
 cmru.vars
 cmru/build/
+
+# cleanup hardening (2026-06-18)
+core
+*.core
+.venv-1/
+/logs/
+**/logs/
