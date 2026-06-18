@@ -89,7 +89,7 @@ def resolve_main(argv: Optional[list] = None) -> None:
     parser.add_argument("--project", help="Project name (maps to prefix via config)")
     parser.add_argument("--prefix", help="Tag prefix override (e.g. ciu-v, tls-edge-v)")
     parser.add_argument("--format", choices=["json", "env", "url"], default="json")
-    parser.add_argument("--config", help="Path to release.toml or cmru.toml")
+    parser.add_argument("--config", help="Path to cmru.toml")
     args = parser.parse_args(argv)
 
     if not args.project and not args.prefix:

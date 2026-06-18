@@ -121,27 +121,30 @@ commands = [
   { label = "pwmcp: publish stack bundle", argv = ["python3", "scripts/publish-bundle.py"], cwd = "pwmcp" },
 ]
 
-# ─── tls-edge — tarball (not yet in project_order; P3) ─────────────────────────
+# ─── tls-edge — tarball (delegated; NOT in project_order) ──────────────────────
+# scripts/release.sh self-manages bump+tag+build+publish but needs an explicit version
+# argument, so it can't run unattended. Released on demand:
+#   echo "TLS_EDGE_VERSION=0.2.1" > tls-edge/cmru.vars  &&  ./cmru.publish.sh --project tls-edge
 [project.tls-edge]
 prefix   = "tls-edge-v"
 artifact = "tarball"
 cwd      = "tls-edge"
 [project.tls-edge.version]
-strategy = "file:VERSION"
-bump     = "conventional"
+strategy = "delegated"
 [project.tls-edge.steps.push]
 commands = [
   { label = "tls-edge: build + publish release", argv = ["bash", "scripts/release.sh"], cwd = "tls-edge" },
 ]
 
-# ─── empyrion-translation — game asset (not yet in project_order; P4) ──────────
+# ─── empyrion-translation — game asset (delegated; NOT in project_order) ────────
+# Self-managed, date-tagged (empyrion-de-translation-YYYYMMDD); not a CIU-family product.
+# Released on demand via ./cmru.build.sh / ./cmru.publish.sh --project empyrion-translation.
 [project.empyrion-translation]
 prefix   = "empyrion-translation-v"
 artifact = "tarball"
 cwd      = "game_stuff/empyrion"
 [project.empyrion-translation.version]
-strategy = "scm"
-bump     = "patch"
+strategy = "delegated"
 [project.empyrion-translation.steps.build]
 commands = [
   { label = "empyrion: package DE translation artifact", argv = ["python3", "release-empyrion-translation.py"], cwd = "game_stuff/empyrion" },

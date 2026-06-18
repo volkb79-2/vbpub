@@ -4,10 +4,10 @@
 Routes through cmru.release (cmru/src/cmru/release.py).
 so the release scheme stays uniform across all vbpub projects.
 
-Required credentials (from release.toml [github] or environment):
-  GITHUB_PUSH_PAT
-  GITHUB_USERNAME
-  GITHUB_REPO  (default: vbpub)
+Required credentials (from cmru.toml [github] / cmru.secret.toml [github] or environment):
+  GITHUB_PUSH_PAT  (or GITHUB_TOKEN)
+  GITHUB_USERNAME  (derived from cmru.toml [github].owner)
+  GITHUB_REPO      (derived from cmru.toml [github].repo; default: vbpub)
 
 Reads VERSION from tls-edge/VERSION (written by scripts/release.sh).
 Expects dist/tls-edge-v<VERSION>.tar.xz to exist (built by build-artifact.sh).
@@ -30,7 +30,7 @@ from cmru.release import GitHubReleases, publish_versioned
 
 TLS_EDGE_DIR = Path(__file__).resolve().parent.parent
 VERSION_FILE = TLS_EDGE_DIR / "VERSION"
-RELEASE_VARS_FILE = TLS_EDGE_DIR / ".release-vars"
+RELEASE_VARS_FILE = TLS_EDGE_DIR / "cmru.vars"
 DIST_DIR = TLS_EDGE_DIR / "dist"
 
 
@@ -59,30 +59,45 @@ def load_kv_file(path: Path, *, strip_quotes: bool = False) -> None:
         os.environ.setdefault(key, value)
 
 
-def load_release_toml_credentials(repo_root: Path) -> None:
-    """Populate GITHUB_USERNAME / GITHUB_PUSH_PAT / GITHUB_REPO from release.toml."""
-    release_toml = repo_root / "release.toml"
-    if not release_toml.exists():
-        return
+def load_cmru_credentials(repo_root: Path) -> None:
+    """Populate GITHUB_USERNAME / GITHUB_REPO from cmru.toml and token from
+    cmru.secret.toml.
+
+    Credential resolution order: env > cmru.secret.toml > cmru.toml
+    - Identity (owner→GITHUB_USERNAME, repo→GITHUB_REPO) comes from cmru.toml [github].
+    - Token comes from env (GITHUB_PUSH_PAT / GITHUB_TOKEN) first, then
+      cmru.secret.toml [github].token.  cmru.toml never contains a token.
+    """
     try:
         import tomllib  # Python 3.11+
     except ImportError:
         try:
             import tomli as tomllib  # type: ignore[no-redef]
         except ImportError:
-            return  # Best-effort; fallback to env vars / .release-vars
-    try:
-        with release_toml.open("rb") as fh:
-            config = tomllib.load(fh)
-        github = config.get("github", {})
-        if not os.environ.get("GITHUB_USERNAME") and github.get("username"):
-            os.environ["GITHUB_USERNAME"] = str(github["username"])
-        if not os.environ.get("GITHUB_PUSH_PAT") and github.get("token"):
-            os.environ["GITHUB_PUSH_PAT"] = str(github["token"])
-        if not os.environ.get("GITHUB_REPO") and github.get("repo"):
-            os.environ["GITHUB_REPO"] = str(github["repo"])
-    except Exception as exc:
-        print(f"[WARN] Could not parse release.toml: {exc}", file=sys.stderr)
+            return  # Best-effort; fallback to env vars
+
+    def _load_toml(path: Path) -> dict:
+        if not path.exists():
+            return {}
+        try:
+            with path.open("rb") as fh:
+                return tomllib.load(fh)
+        except Exception as exc:
+            print(f"[WARN] Could not parse {path.name}: {exc}", file=sys.stderr)
+            return {}
+
+    # cmru.toml — identity only (no token)
+    cmru_github = _load_toml(repo_root / "cmru.toml").get("github", {})
+    if not os.environ.get("GITHUB_USERNAME") and cmru_github.get("owner"):
+        os.environ["GITHUB_USERNAME"] = str(cmru_github["owner"])
+    if not os.environ.get("GITHUB_REPO") and cmru_github.get("repo"):
+        os.environ["GITHUB_REPO"] = str(cmru_github["repo"])
+
+    # cmru.secret.toml — token only; never stored in cmru.toml
+    secret_github = _load_toml(repo_root / "cmru.secret.toml").get("github", {})
+    if not os.environ.get("GITHUB_PUSH_PAT") and not os.environ.get("GITHUB_TOKEN"):
+        if secret_github.get("token"):
+            os.environ["GITHUB_PUSH_PAT"] = str(secret_github["token"])
 
 
 def read_version() -> str:
@@ -115,27 +130,27 @@ def find_tarball(dist_dir: Path, version: str) -> Path:
 
 
 def main() -> None:
-    # ── Credential resolution order: env > .release-vars > release.toml ──────
+    # ── Credential resolution order: env > cmru.secret.toml > cmru.toml ──────
     load_kv_file(RELEASE_VARS_FILE)
     repo_root = TLS_EDGE_DIR.parent
     for env_path in [repo_root / ".env", TLS_EDGE_DIR / ".env"]:
         load_kv_file(env_path, strip_quotes=True)
-    load_release_toml_credentials(repo_root)
+    load_cmru_credentials(repo_root)
 
     version = read_version()
     log(f"Version: {version}")
 
-    token = os.environ.get("GITHUB_PUSH_PAT", "")
+    token = os.environ.get("GITHUB_PUSH_PAT") or os.environ.get("GITHUB_TOKEN", "")
     if not token:
         fail(
-            "GITHUB_PUSH_PAT is required.\n"
-            "  Set it in the environment, release.toml [github].token, or tls-edge/.release-vars."
+            "A GitHub token is required (GITHUB_PUSH_PAT or GITHUB_TOKEN).\n"
+            "  Set it in the environment or in cmru.secret.toml [github].token."
         )
     owner = os.environ.get("GITHUB_USERNAME", "")
     if not owner:
         fail(
             "GITHUB_USERNAME is required.\n"
-            "  Set it in the environment or release.toml [github].username."
+            "  Set it in the environment or via cmru.toml [github].owner."
         )
     repo = os.environ.get("GITHUB_REPO", "vbpub")
 

@@ -6,10 +6,10 @@ Steps:
   2. Compute the next r<N> counter by scanning git tags (pwmcp-v<pw_ver>-r*).
   3. Update ciu.defaults.toml.j2 and ciu.toml.j2 (playwright_version + image.tag).
   4. Update docker-bake.hcl defaults (PLAYWRIGHT_VERSION + PWMCP_VERSION).
-  5. Write .release-vars for downstream scripts (build-bundle.py, publish-bundle.py).
+  5. Write cmru.vars for downstream scripts (build-bundle.py, publish-bundle.py).
 
 Outputs:
-  pwmcp/.release-vars  — KEY=VALUE env file consumed by build-bundle.py / publish-bundle.py
+  pwmcp/cmru.vars  — KEY=VALUE env file consumed by build-bundle.py / publish-bundle.py
   ciu.defaults.toml.j2 — playwright_version and image.tag updated in-place
   ciu.toml.j2          — same (kept in sync with defaults)
   docker-bake.hcl      — PLAYWRIGHT_VERSION and PWMCP_VERSION defaults updated in-place
@@ -33,7 +33,7 @@ PWMCP_DIR = Path(__file__).resolve().parent.parent
 DEFAULTS_FILE = PWMCP_DIR / "ciu.defaults.toml.j2"
 TOML_OVERRIDE_FILE = PWMCP_DIR / "ciu.toml.j2"
 BAKE_FILE = PWMCP_DIR / "docker-bake.hcl"
-RELEASE_VARS_FILE = PWMCP_DIR / ".release-vars"
+RELEASE_VARS_FILE = PWMCP_DIR / "cmru.vars"
 
 
 def log(msg: str) -> None:

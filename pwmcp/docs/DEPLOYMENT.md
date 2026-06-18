@@ -121,7 +121,7 @@ ciu-build -d . build-images
 ciu-build -d . push-images
 ```
 
-The bake file reads `PLAYWRIGHT_VERSION`, `PLAYWRIGHT_DISTRO`, and `PWMCP_VERSION` from environment; defaults match `ciu.defaults.toml.j2` and `.release-vars`.
+The bake file reads `PLAYWRIGHT_VERSION`, `PLAYWRIGHT_DISTRO`, and `PWMCP_VERSION` from environment; defaults match `ciu.defaults.toml.j2` and `cmru.vars`.
 
 ## Upgrading the Playwright Version
 

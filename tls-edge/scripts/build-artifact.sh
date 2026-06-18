@@ -17,7 +17,7 @@
 # EXCLUDE:
 #   get.sh (lives on raw GitHub; must NOT be in the tarball)
 #   scripts/update-rendered.sh (maintainer-only)
-#   .release-vars, .claude/, .git/
+#   cmru.vars, .claude/, .git/
 #   Gitignored runtime files: ciu-stack/ciu.toml.j2, ciu-stack/ciu.toml,
 #   ciu-stack/ciu.compose.yml, ciu-stack/traefik.yml, edge-proxy/.env,
 #   *.bak, certs-dev/, .ciu/

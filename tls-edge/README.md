@@ -397,7 +397,7 @@ bash scripts/verify.sh
    artifact + `.sha256` sidecar, and refreshes the `tls-edge-latest` pointer
 
 Credentials for the publish step are read from (in priority order):
-environment → `tls-edge/.release-vars` → `release.toml [github]`.
+environment → `cmru.secret.toml [github].token` → `cmru.toml [github]`.
 
 ### Standalone (simplest)
 
@@ -414,14 +414,14 @@ Accepts an optional leading `v` (`0.2.0` and `v0.2.0` both work).
 ### Via release-runner (consistent with other vbpub projects)
 
 ```bash
-echo "TLS_EDGE_VERSION=0.2.0" > tls-edge/.release-vars
+echo "TLS_EDGE_VERSION=0.2.0" > tls-edge/cmru.vars
 python3 release-runner.py --project tls-edge
 # → runs scripts/release.sh, same outcome as above
 
 git push origin main tls-edge-v0.2.0
 ```
 
-`.release-vars` is gitignored; remove it after the release.
+`cmru.vars` is gitignored; remove it after the release.
 
 ### What happens after publish
 

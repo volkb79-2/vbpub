@@ -1,7 +1,8 @@
-"""cmru unified config schema (S2) — parser for cmru.toml.
+"""cmru unified config schema (S2) — strict parser for cmru.toml, used by ``cmru get``.
 
-This module parses the new S2 config format (``cmru.toml``). The legacy
-``release.toml`` format is still handled by ``cli.py`` until P6 migration is complete.
+The orchestrator (``cli.py:load_config``) reads the same ``cmru.toml`` via a more
+lenient loader that maps it onto the runner model; this module is the strict S2 reader
+(unknown-key rejection, full validation) consumed by getsh. Both read one file: cmru.toml.
 
 S2 top-level tables: [github], [orchestration], [targets], [cleanup], [project.<name>]
 See docs/SPEC.md S2 for the full schema.

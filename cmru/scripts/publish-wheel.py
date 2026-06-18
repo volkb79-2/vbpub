@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Publish cmru wheel to GitHub Releases.
 
-Required environment (set by release.toml / step runner):
+Required environment (set by cmru.toml / step runner):
 - GITHUB_PUSH_PAT
 - GITHUB_USERNAME
 - GITHUB_REPO

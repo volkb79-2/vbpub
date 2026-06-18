@@ -4,8 +4,8 @@
 # Standalone (most common):
 #   bash tls-edge/scripts/release.sh 0.2.0
 #
-# Via release-runner (set TLS_EDGE_VERSION in .release-vars first):
-#   echo "TLS_EDGE_VERSION=0.2.0" > tls-edge/.release-vars
+# Via release-runner (set TLS_EDGE_VERSION in cmru.vars first):
+#   echo "TLS_EDGE_VERSION=0.2.0" > tls-edge/cmru.vars
 #   python3 release-runner.py --project tls-edge
 #
 # What this script does:
@@ -22,7 +22,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 TLS_EDGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(git -C "$TLS_EDGE_ROOT" rev-parse --show-toplevel)"
-RELEASE_VARS="$TLS_EDGE_ROOT/.release-vars"
+RELEASE_VARS="$TLS_EDGE_ROOT/cmru.vars"
 VERSION_FILE="$TLS_EDGE_ROOT/VERSION"
 
 # ─── Colour helpers ──────────────────────────────────────────────────────────
@@ -32,7 +32,7 @@ info()  { echo -e "${CYN}==>${RST} $*"; }
 fatal() { echo -e "${RED}  ✗${RST}  $*" >&2; exit 1; }
 
 # ─── Resolve version ─────────────────────────────────────────────────────────
-# Priority: positional arg → TLS_EDGE_VERSION env → .release-vars
+# Priority: positional arg → TLS_EDGE_VERSION env → cmru.vars
 NEW_VERSION="${1:-${TLS_EDGE_VERSION:-}}"
 
 if [[ -z "$NEW_VERSION" ]] && [[ -f "$RELEASE_VARS" ]]; then
@@ -43,7 +43,7 @@ fi
 
 [[ -n "$NEW_VERSION" ]] || fatal "Version not specified.
   Usage: $0 <version>       (e.g. $0 0.2.0)
-  Or:    echo \"TLS_EDGE_VERSION=0.2.0\" > tls-edge/.release-vars
+  Or:    echo \"TLS_EDGE_VERSION=0.2.0\" > tls-edge/cmru.vars
          python3 release-runner.py --project tls-edge"
 
 NEW_VERSION="${NEW_VERSION#v}"   # strip optional leading 'v'
@@ -54,7 +54,7 @@ CURRENT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
 [[ "$CURRENT_BRANCH" == "main" ]] \
     || fatal "Must be on 'main' (currently on '$CURRENT_BRANCH')."
 
-DIRTY=$(git -C "$REPO_ROOT" status --porcelain -- . ":(exclude)$TLS_EDGE_ROOT/.release-vars")
+DIRTY=$(git -C "$REPO_ROOT" status --porcelain -- . ":(exclude)$TLS_EDGE_ROOT/cmru.vars")
 [[ -z "$DIRTY" ]] \
     || fatal "Working tree is dirty — commit or stash changes first:\n$DIRTY"
 

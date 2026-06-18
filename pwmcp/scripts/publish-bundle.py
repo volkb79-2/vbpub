@@ -4,12 +4,12 @@
 Routes through cmru.release (cmru/src/cmru/release.py).
 so the release scheme stays uniform across all vbpub projects.
 
-Required environment (from release.toml or shell):
+Required environment (from cmru.toml / cmru.secret.toml or shell):
   GITHUB_PUSH_PAT
   GITHUB_USERNAME
   GITHUB_REPO  (default: vbpub)
 
-Reads PWMCP_VERSION from .release-vars (written by resolve-playwright-version.py).
+Reads PWMCP_VERSION from cmru.vars (written by resolve-playwright-version.py).
 
 Publish strategy (delegated to publish_versioned in the keystone):
   - Immutable release  pwmcp-v<version>  with the versioned bundle + .sha256 sidecar.
@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cmru" / "src"))
 from cmru.release import GitHubReleases, publish_versioned
 
 PWMCP_DIR = Path(__file__).resolve().parent.parent
-RELEASE_VARS_FILE = PWMCP_DIR / ".release-vars"
+RELEASE_VARS_FILE = PWMCP_DIR / "cmru.vars"
 DIST_DIR = PWMCP_DIR / "dist"
 
 
@@ -69,22 +69,41 @@ def load_env_file(path: Path) -> None:
         os.environ[key] = value
 
 
-def load_release_toml_credentials(repo_root: Path) -> None:
-    """Populate GITHUB_USERNAME / GITHUB_PUSH_PAT / GITHUB_REPO from release.toml."""
-    release_toml = repo_root / "release.toml"
-    if not release_toml.exists():
+def load_cmru_credentials(repo_root: Path) -> None:
+    """Populate GITHUB_USERNAME / GITHUB_PUSH_PAT / GITHUB_REPO from cmru.toml / cmru.secret.toml.
+
+    Resolution order:
+      - GITHUB_USERNAME: env, then cmru.toml [github].owner
+      - GITHUB_REPO:     env, then cmru.toml [github].repo
+      - GITHUB_PUSH_PAT: env GITHUB_PUSH_PAT, then env GITHUB_TOKEN,
+                         then cmru.secret.toml [github].token
+    Missing config files are silently skipped.
+    """
+    if os.environ.get("GITHUB_USERNAME") and os.environ.get("GITHUB_PUSH_PAT"):
         return
     try:
         import tomllib
-        with release_toml.open("rb") as fh:
-            config = tomllib.load(fh)
-        github = config.get("github", {})
-        if not os.environ.get("GITHUB_USERNAME") and github.get("username"):
-            os.environ["GITHUB_USERNAME"] = str(github["username"])
-        if not os.environ.get("GITHUB_PUSH_PAT") and github.get("token"):
-            os.environ["GITHUB_PUSH_PAT"] = str(github["token"])
-        if not os.environ.get("GITHUB_REPO") and github.get("repo"):
-            os.environ["GITHUB_REPO"] = str(github["repo"])
+        # Load identity from cmru.toml (no token here).
+        cmru_toml = repo_root / "cmru.toml"
+        if cmru_toml.exists():
+            with cmru_toml.open("rb") as fh:
+                config = tomllib.load(fh)
+            github = config.get("github", {})
+            if not os.environ.get("GITHUB_USERNAME") and github.get("owner"):
+                os.environ["GITHUB_USERNAME"] = str(github["owner"])
+            if not os.environ.get("GITHUB_REPO") and github.get("repo"):
+                os.environ["GITHUB_REPO"] = str(github["repo"])
+        # Resolve token: env vars first, then cmru.secret.toml.
+        if not os.environ.get("GITHUB_PUSH_PAT"):
+            token = os.environ.get("GITHUB_TOKEN", "")
+            if not token:
+                secret_toml = repo_root / "cmru.secret.toml"
+                if secret_toml.exists():
+                    with secret_toml.open("rb") as fh:
+                        secret = tomllib.load(fh)
+                    token = str(secret.get("github", {}).get("token", ""))
+            if token:
+                os.environ["GITHUB_PUSH_PAT"] = token
     except Exception:
         pass
 
@@ -107,7 +126,7 @@ def main() -> None:
     repo_root = PWMCP_DIR.parent
     for env_path in [repo_root / ".env", PWMCP_DIR / ".env"]:
         load_env_file(env_path)
-    load_release_toml_credentials(repo_root)
+    load_cmru_credentials(repo_root)
 
     pwmcp_version = os.environ.get("PWMCP_VERSION", "")
     if not pwmcp_version:

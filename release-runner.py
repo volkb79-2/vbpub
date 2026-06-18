@@ -61,15 +61,16 @@ def _tee(argv: list[str], cwd: Path, log_handle) -> int:
 def main() -> int:
     cli_args = parse_args()
     repo_root = Path(__file__).resolve().parent
-    config_path = repo_root / "release.toml"
-    sample_path = repo_root / "release.sample.toml"
+    config_path = repo_root / "cmru.toml"
+    sample_path = repo_root / "cmru.sample.toml"
     if not config_path.exists():
         if not sample_path.exists():
-            print("[ERROR] release.sample.toml not found; cannot initialize release.toml")
+            print("[ERROR] cmru.sample.toml not found; cannot initialize cmru.toml")
             return 1
         shutil.copy(sample_path, config_path)
-        print("[INFO] Created release.toml from release.sample.toml")
-        print("[ERROR] Fill in secrets (GitHub token, usernames) before running the release pipeline.")
+        print("[INFO] Created cmru.toml from cmru.sample.toml")
+        print("[ERROR] Edit cmru.toml (owner/repo) and provide a token via $GITHUB_PUSH_PAT")
+        print("[ERROR] or a gitignored cmru.secret.toml before running the release pipeline.")
         return 1
 
     log_dir = repo_root / "logs"

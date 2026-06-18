@@ -5,10 +5,10 @@ Usage:
   python3 build-push.py --build   # Build images locally (docker buildx bake --load)
   python3 build-push.py --push    # Login to GHCR and push images
 
-Reads PLAYWRIGHT_VERSION and PWMCP_VERSION from .release-vars
+Reads PLAYWRIGHT_VERSION and PWMCP_VERSION from cmru.vars
 (written by scripts/resolve-playwright-version.py).
 
-Credentials for push (from environment or release.toml [github]):
+Credentials for push (from environment or cmru.toml / cmru.secret.toml [github]):
   GITHUB_USERNAME
   GITHUB_PUSH_PAT
 """
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 PWMCP_DIR = Path(__file__).resolve().parent
-RELEASE_VARS_FILE = PWMCP_DIR / ".release-vars"
+RELEASE_VARS_FILE = PWMCP_DIR / "cmru.vars"
 
 
 def log(msg: str) -> None:
@@ -44,22 +44,42 @@ def load_release_vars(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
-def load_release_toml_credentials() -> None:
-    """Populate GITHUB_USERNAME / GITHUB_PUSH_PAT from ../release.toml if not already set."""
+def load_cmru_credentials() -> None:
+    """Populate GITHUB_USERNAME / GITHUB_PUSH_PAT from cmru.toml / cmru.secret.toml if not already set.
+
+    Resolution order:
+      - GITHUB_USERNAME: env, then cmru.toml [github].owner
+      - GITHUB_REPO:     env, then cmru.toml [github].repo
+      - GITHUB_PUSH_PAT: env GITHUB_PUSH_PAT, then env GITHUB_TOKEN,
+                         then cmru.secret.toml [github].token
+    Missing config files are silently skipped.
+    """
     if os.environ.get("GITHUB_USERNAME") and os.environ.get("GITHUB_PUSH_PAT"):
         return
-    release_toml = PWMCP_DIR.parent / "release.toml"
-    if not release_toml.exists():
-        return
+    repo_root = PWMCP_DIR.parent
     try:
         import tomllib
-        with release_toml.open("rb") as fh:
-            config = tomllib.load(fh)
-        github = config.get("github", {})
-        if not os.environ.get("GITHUB_USERNAME") and github.get("username"):
-            os.environ["GITHUB_USERNAME"] = str(github["username"])
-        if not os.environ.get("GITHUB_PUSH_PAT") and github.get("token"):
-            os.environ["GITHUB_PUSH_PAT"] = str(github["token"])
+        # Load identity from cmru.toml (no token here).
+        cmru_toml = repo_root / "cmru.toml"
+        if cmru_toml.exists():
+            with cmru_toml.open("rb") as fh:
+                config = tomllib.load(fh)
+            github = config.get("github", {})
+            if not os.environ.get("GITHUB_USERNAME") and github.get("owner"):
+                os.environ["GITHUB_USERNAME"] = str(github["owner"])
+            if not os.environ.get("GITHUB_REPO") and github.get("repo"):
+                os.environ["GITHUB_REPO"] = str(github["repo"])
+        # Resolve token: env vars first, then cmru.secret.toml.
+        if not os.environ.get("GITHUB_PUSH_PAT"):
+            token = os.environ.get("GITHUB_TOKEN", "")
+            if not token:
+                secret_toml = repo_root / "cmru.secret.toml"
+                if secret_toml.exists():
+                    with secret_toml.open("rb") as fh:
+                        secret = tomllib.load(fh)
+                    token = str(secret.get("github", {}).get("token", ""))
+            if token:
+                os.environ["GITHUB_PUSH_PAT"] = token
     except Exception:
         pass
 
@@ -80,7 +100,7 @@ def do_build() -> None:
 
 def do_push() -> None:
     load_release_vars(RELEASE_VARS_FILE)
-    load_release_toml_credentials()
+    load_cmru_credentials()
 
     username = os.environ.get("GITHUB_USERNAME", "")
     pat = os.environ.get("GITHUB_PUSH_PAT", "")
