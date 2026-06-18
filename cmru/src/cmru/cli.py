@@ -376,7 +376,8 @@ def _resolve_release_profile(
 # A project that declares such a profile may OMIT the matching [steps.<step>] — cmru
 # synthesizes a step that runs the built-in handler. Any explicit step overrides it.
 _PROFILE_BUILTIN_STEPS = {
-    "wheel": ("build", "push", "validate"),
+    "wheel":   ("build", "push", "validate"),
+    "tarball": ("push", "validate"),          # build stays project-owned
 }
 # Absolute path so the step works whether cmru is pip-installed or run from a checkout
 # (a bare `-m cmru.handlers` would fail in a subprocess that didn't inherit sys.path).
@@ -403,21 +404,38 @@ def _builtin_step_command(
     bare = _bare_prefix(project.prefix)
     notes_env = f"{bare.upper().replace('-', '_')}_RELEASE_NOTES" if bare else None
     for artifact in project.artifacts:
-        if artifact != "wheel" or step_name not in _PROFILE_BUILTIN_STEPS["wheel"]:
+        if artifact not in _PROFILE_BUILTIN_STEPS:
+            continue
+        if step_name not in _PROFILE_BUILTIN_STEPS[artifact]:
             continue
         base = [sys.executable, str(_HANDLERS_PY)]
-        if step_name == "build":
-            argv = base + ["wheel-build", "--cwd", str(cwd_abs)]
-        elif step_name == "push":
-            argv = base + ["wheel-publish", "--prefix", bare, "--cwd", str(cwd_abs)]
-            if notes_env:
-                argv += ["--notes-env", notes_env]
-        else:  # validate
-            argv = base + ["wheel-validate", "--prefix", bare]
-        return Command(
-            label=f"{project.name}: wheel {step_name} (cmru built-in)",
-            argv=argv, cwd=cwd_abs,
-        )
+        if artifact == "wheel":
+            if step_name == "build":
+                argv = base + ["wheel-build", "--cwd", str(cwd_abs)]
+            elif step_name == "push":
+                argv = base + ["wheel-publish", "--prefix", bare, "--cwd", str(cwd_abs)]
+                if notes_env:
+                    argv += ["--notes-env", notes_env]
+            else:  # validate
+                argv = base + ["wheel-validate", "--prefix", bare]
+            return Command(
+                label=f"{project.name}: wheel {step_name} (cmru built-in)",
+                argv=argv, cwd=cwd_abs,
+            )
+        elif artifact == "tarball":
+            if step_name == "push":
+                argv = (base + ["tarball-publish", "--prefix", bare,
+                                "--cwd", str(cwd_abs),
+                                "--glob", f"{bare}-v*.tar.xz",
+                                "--version-file", "VERSION"])
+                if notes_env:
+                    argv += ["--notes-env", notes_env]
+            else:  # validate
+                argv = base + ["tarball-validate", "--prefix", bare]
+            return Command(
+                label=f"{project.name}: tarball {step_name} (cmru built-in)",
+                argv=argv, cwd=cwd_abs,
+            )
     return None
 
 
@@ -490,6 +508,13 @@ def load_config(
             raise ValueError(
                 f"project.{name}: define [steps.*] or declare an artifacts profile with "
                 f"built-in steps {sorted(_PROFILE_BUILTIN_STEPS)}"
+            )
+        # Tarball profile has no built-in build — the project must supply its own.
+        # (build stays project-owned; there is no universal tarball build command.)
+        if "tarball" in artifacts and "build" not in steps:
+            raise ValueError(
+                f"project.{name}: tarball artifact requires a project-owned build step — "
+                f"define [steps.build] (no universal tarball build; only push/validate are built-in)"
             )
         # Change-detection watches the project cwd plus any extra version.paths (S12.3).
         extra_paths = list(version_spec.paths) if (version_spec and version_spec.paths) else []
@@ -847,6 +872,291 @@ def remove_assets(
     cleanup_ghcr(owner, token, github.owner_type, cutoff, dry_run, cleanup)
 
 
+def delete_git_tag_remote(repo_root: Path, tag: str, dry_run: bool) -> None:
+    """Delete *tag* on origin; skip gracefully if it does not exist (idempotent)."""
+    if dry_run:
+        log_info(f"[DRY RUN] Would delete remote tag {tag}")
+        return
+    rc = subprocess.run(
+        ["git", "-C", str(repo_root), "push", "origin", f":refs/tags/{tag}"],
+        capture_output=True, text=True,
+    ).returncode
+    if rc == 0:
+        log_info(f"  Deleted remote tag {tag}")
+    else:
+        log_info(f"  Remote tag {tag} not found or already deleted — skipping")
+
+
+def delete_git_tag_local(repo_root: Path, tag: str, dry_run: bool) -> None:
+    """Delete *tag* locally; skip gracefully if it does not exist (idempotent)."""
+    if dry_run:
+        log_info(f"[DRY RUN] Would delete local tag {tag}")
+        return
+    rc = subprocess.run(
+        ["git", "-C", str(repo_root), "tag", "-d", tag],
+        capture_output=True, text=True,
+    ).returncode
+    if rc == 0:
+        log_info(f"  Deleted local tag {tag}")
+    else:
+        log_info(f"  Local tag {tag} not found — skipping")
+
+
+def list_remote_tags_matching(repo_root: Path, pattern: str) -> list[str]:
+    """List remote tags matching *pattern* (git ls-remote --tags)."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "ls-remote", "--tags", "origin", f"refs/tags/{pattern}"],
+        capture_output=True, text=True, check=False,
+    )
+    tags = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line or "^{}" in line:
+            continue
+        # format: "<sha>\trefs/tags/<name>"
+        parts = line.split("\t", 1)
+        if len(parts) == 2:
+            ref = parts[1].strip()
+            if ref.startswith("refs/tags/"):
+                tags.append(ref[len("refs/tags/"):])
+    return tags
+
+
+def cleanup_project_releases_and_tags(
+    repo_root: Path,
+    owner: str,
+    repo: str,
+    token: str,
+    prefix: str,
+    keep_tags: list[str],
+    dry_run: bool,
+) -> list[str]:
+    """Delete all GitHub Releases (and their git tags) for *prefix*-v* except kept ones.
+
+    *keep_tags* is a combined list of ``keep_release_tags`` from config PLUS the
+    ``<prefix>-latest`` pointer (never deleted by cleanup).  Returns a list of
+    tags that were (or would have been) deleted.
+
+    Edge cases:
+    - Missing Release for a tag (tag-only) → delete the tag anyway (tag cleanup).
+    - Missing tag for a Release → delete the Release.
+    - 404 on delete → log and continue (idempotent).
+    """
+    all_releases = list_releases(owner, repo, token)
+    # Collect all versioned releases for this prefix.
+    version_marker = f"{prefix}-v"
+    latest_tag = f"{prefix}-latest"
+    # Build keep set: always keep -latest + explicit keep_release_tags list.
+    keep_set = set(keep_tags) | {latest_tag}
+
+    # GitHub Releases to delete.
+    to_delete_releases: list[tuple[str, int]] = []  # (tag_name, release_id)
+    for rel in all_releases:
+        tag = rel.get("tag_name") or ""
+        if not tag.startswith(version_marker) and tag != latest_tag:
+            continue
+        if tag in keep_set:
+            log_info(f"  Keeping Release {tag} (in keep list)")
+            continue
+        release_id = rel.get("id")
+        if release_id:
+            to_delete_releases.append((tag, int(release_id)))
+
+    # Remote tags to delete (covers tags without a matching Release).
+    remote_versioned = list_remote_tags_matching(repo_root, f"{prefix}-v*")
+    to_delete_tags: list[str] = []
+    for tag in remote_versioned:
+        if tag in keep_set:
+            continue
+        to_delete_tags.append(tag)
+
+    # Union: anything mentioned in either set.
+    all_to_delete_tags = set(t for t, _ in to_delete_releases) | set(to_delete_tags)
+    deleted: list[str] = []
+
+    for tag, release_id in to_delete_releases:
+        log_info(f"Cleanup: deleting GitHub Release {tag}")
+        if not dry_run:
+            delete_release(owner, repo, token, release_id, dry_run=False)
+        else:
+            log_info(f"[DRY RUN] Would delete GitHub Release {tag} (id={release_id})")
+        deleted.append(tag)
+
+    for tag in sorted(all_to_delete_tags):
+        log_info(f"Cleanup: deleting git tag {tag}")
+        delete_git_tag_remote(repo_root, tag, dry_run)
+        delete_git_tag_local(repo_root, tag, dry_run)
+        if tag not in [t for t, _ in to_delete_releases]:
+            deleted.append(tag)
+
+    return deleted
+
+
+def cleanup_project_step(
+    repo_root: Path,
+    project: "ProjectConfig",
+    version: str,
+    dry_run: bool,
+) -> bool:
+    """Invoke ``[steps.clean]`` for the project if defined, passing ``CMRU_VERSION`` in env.
+
+    Returns True if the step ran (caller may then commit any resulting file deletions).
+    """
+    if "clean" not in project.steps:
+        return False
+    if dry_run:
+        log_info(f"[DRY RUN] Would run steps.clean for {project.name} with CMRU_VERSION={version}")
+        return False
+    log_info(f"{project.name}: running steps.clean (CMRU_VERSION={version})")
+    log_dir = repo_root / "logs"
+    step_env = dict(project.env) if project.env else {}
+    step_env["CMRU_VERSION"] = version
+    step = _build_step_config("clean", project.steps["clean"])
+    from cmru.runner import execute_step
+    execute_step(step, repo_root, log_dir, extra_env=step_env)
+    return True
+
+
+def cleanup_commit_deletions(
+    repo_root: Path,
+    project_name: str,
+    deleted_tags: list[str],
+    dry_run: bool,
+) -> None:
+    """Commit any file deletions produced by the project's clean step.
+
+    Only commits if there are actually staged changes (no empty commits).
+    """
+    if dry_run or not deleted_tags:
+        return
+    dirty = _git(repo_root, "status", "--porcelain")
+    if not dirty:
+        log_info(f"{project_name}: no file changes to commit after cleanup")
+        return
+    subprocess.run(["git", "-C", str(repo_root), "add", "-A"], check=False)
+    cached = _git(repo_root, "diff", "--cached", "--name-only")
+    if not cached:
+        log_info(f"{project_name}: nothing staged — skipping cleanup commit")
+        return
+    tags_summary = ", ".join(deleted_tags[:5])
+    if len(deleted_tags) > 5:
+        tags_summary += f" (+{len(deleted_tags) - 5} more)"
+    rc = subprocess.run(
+        ["git", "-C", str(repo_root), "commit", "-m",
+         f"chore({project_name}): cleanup deleted {tags_summary}"],
+    ).returncode
+    if rc == 0:
+        log_info(f"{project_name}: committed cleanup changes")
+    else:
+        log_warn(f"{project_name}: cleanup commit failed — check working tree")
+
+
+def _latest_version_for_prefix(owner: str, repo: str, token: str, bare: str) -> str:
+    """Highest-semver surviving ``<bare>-v*`` release version, or ``""`` if none.
+
+    Used to pass ``CMRU_VERSION`` to a project's optional ``[steps.clean]``. Reuses the
+    same release listing + semver ordering as ``cmru resolve`` so the value the clean
+    step sees matches what consumers resolve as "latest". Drafts/prereleases and the
+    thin ``<bare>-latest`` pointer are ignored.
+    """
+    from cmru.release import _semver_key
+    marker = f"{bare}-v"
+    versions = [
+        (rel.get("tag_name") or "")[len(marker):]
+        for rel in list_releases(owner, repo, token)
+        if (rel.get("tag_name") or "").startswith(marker)
+        and not rel.get("draft") and not rel.get("prerelease")
+    ]
+    if not versions:
+        return ""
+    return max(versions, key=_semver_key)
+
+
+def run_cleanup_verb(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_order: list[str],
+    cleanup: "CleanupConfig",
+    github_config: "GitHubConfig",
+    env_config: "ReleaseEnvConfig",
+    project_filter: Optional[str],
+    dry_run: bool,
+) -> None:
+    """Generic ``cmru cleanup``: per project, delete old Releases, prune ghcr, delete
+    stale tags, optionally invoke ``[steps.clean]``, and commit the result.
+
+    Keeps ``<prefix>-latest`` and any tag in ``cleanup.keep_release_tags``.
+    Everything is idempotent: missing targets are skipped, not errors.
+    """
+    apply_release_env(github_config, env_config)
+    owner = github_config.username
+    repo = github_config.repo
+    token = github_config.token
+    if not token:
+        raise RuntimeError("github.token is required for cleanup")
+
+    # Export reproducible-build env (SOURCE_DATE_EPOCH / SETUPTOOLS_SCM_* / OCI_*) so any
+    # [steps.clean] that rebuilds an artifact gets the same provenance as a release build.
+    # NOTE: the per-project CMRU_VERSION is resolved separately below from the surviving
+    # <prefix>-v* releases — this call does NOT set it.
+    resolve_versions_from_git(repo_root, configs)
+
+    names = [project_filter] if project_filter else list(project_order)
+    missing = [n for n in names if n not in configs]
+    if missing:
+        raise ValueError(f"Unknown project(s): {', '.join(missing)}")
+
+    keep_tags = list(cleanup.keep_release_tags)
+
+    any_deleted: list[str] = []
+    for name in names:
+        project = configs[name]
+        prefix = project.prefix
+        if not prefix:
+            log_info(f"{name}: no prefix configured — skipping Release/tag cleanup")
+            continue
+        # Strip trailing "-v" to get the bare prefix for -latest.
+        bare = _bare_prefix(prefix)
+
+        log_info(f"Cleanup: {name} (prefix={prefix})")
+
+        # 1. Delete old Releases + their git tags; keep -latest + keep_release_tags.
+        deleted = cleanup_project_releases_and_tags(
+            repo_root, owner, repo, token,
+            bare, keep_tags, dry_run,
+        )
+        any_deleted.extend(deleted)
+
+        # 2. Optional per-project clean step (e.g. delete referenced manifests).
+        #    CMRU_VERSION = highest-semver surviving <prefix>-v* release (post-cleanup),
+        #    or "" when none survive. (In --dry-run nothing was deleted, so this is the
+        #    current latest.)
+        version = _latest_version_for_prefix(owner, repo, token, bare)
+        step_ran = cleanup_project_step(repo_root, project, version, dry_run)
+
+        # 3. Commit any file deletions the clean step produced.
+        if step_ran or deleted:
+            cleanup_commit_deletions(repo_root, name, deleted, dry_run)
+
+    # 4. Prune old ghcr package versions (whole-repo, not per-project).
+    # ghcr pruning is age-based; use ``cmru cleanup --remove-assets AGE`` for that path.
+    # Here we only prune packages declared in ghcr_delete_packages (explicit wipe list).
+    if cleanup.ghcr_delete_packages:
+        if dry_run:
+            log_info(
+                f"[DRY RUN] Would delete GHCR packages: {', '.join(cleanup.ghcr_delete_packages)}"
+            )
+        else:
+            for pkg in cleanup.ghcr_delete_packages:
+                log_info(f"Cleanup: deleting GHCR package {pkg} (ghcr_delete_packages list)")
+                delete_package(owner, pkg, token, github_config.owner_type, dry_run=False)
+
+    if any_deleted:
+        log_info(f"Cleanup complete. Deleted: {', '.join(any_deleted)}")
+    else:
+        log_info("Cleanup complete. Nothing deleted.")
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="vbpub release manager")
     parser.add_argument(
@@ -1119,7 +1429,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             "  1. status                  preview what changed + the next version (no writes)\n"
             "  2. release                 the one-shot: tag → push tag → build → publish\n"
             "       step-by-step instead: build  then  publish   (act on the tag at HEAD)\n"
-            "  3. cleanup --remove-assets 30d     prune old releases/images (optional)\n"
+            "  3. cleanup [--project P] [--dry-run]  prune old releases/images (keeps -latest)\n"
+            "     cleanup --remove-assets AGE         age-based prune (e.g. 30d)\n"
             "\n"
             "PLANNING (read-only)\n"
             "    status   [--project P] [--minor|--major]     preview next releases (dry-run)\n"
@@ -1297,20 +1608,41 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     elif verb == "cleanup":
         import argparse as _ap
-        parser = _ap.ArgumentParser(description="cmru cleanup")
-        parser.add_argument("--remove-assets", metavar="AGE", required=True)
-        parser.add_argument("--dry-run", action="store_true")
+        parser = _ap.ArgumentParser(
+            description=(
+                "cmru cleanup — delete old Releases, stale tags, and prune ghcr.\n\n"
+                "Without --remove-assets: project-aware cleanup driven by [cleanup] config\n"
+                "  (keeps <prefix>-latest + keep_release_tags; deletes the rest).\n"
+                "With --remove-assets AGE: age-based legacy cleanup (backwards-compat)."
+            ),
+            formatter_class=_ap.RawDescriptionHelpFormatter,
+        )
+        parser.add_argument(
+            "--remove-assets", metavar="AGE",
+            help="Age-based cleanup: remove Releases/ghcr versions older than AGE (e.g. 30d, 2w)",
+        )
+        parser.add_argument("--project", help="Limit to one project (project-aware mode only)")
+        parser.add_argument("--dry-run", action="store_true",
+                            help="List what would be deleted without deleting")
         parser.add_argument("--config", help="Path to cmru.toml or release.toml")
         vargs = parser.parse_args(rest)
 
-        default_config = Path(__file__).resolve().parents[3] / "release.toml"
-        cfg_path = Path(vargs.config or os.getenv("RELEASE_MANAGER_CONFIG") or str(default_config))
-        cfg_path = cfg_path.expanduser().resolve()
+        cfg_path = _resolve_config(vargs.config)
 
-        (_repo_root, _configs, _project_order, _default_projects, _default_steps,
+        (repo_root, configs, project_order, _default_projects, _default_steps,
          _execution_mode, _step_project_order, cleanup, github_config, env_config) = load_config(cfg_path)
 
-        remove_assets(vargs.remove_assets, vargs.dry_run, cleanup, github_config, env_config)
+        if vargs.remove_assets:
+            # Legacy age-based path (backwards-compatible).
+            remove_assets(vargs.remove_assets, vargs.dry_run, cleanup, github_config, env_config)
+        else:
+            # New project-aware cleanup: keep -latest + keep_release_tags, delete the rest.
+            run_cleanup_verb(
+                repo_root, configs, project_order, cleanup,
+                github_config, env_config,
+                project_filter=vargs.project,
+                dry_run=vargs.dry_run,
+            )
 
     else:
         log_error(f"Unknown verb '{verb}'. Run 'cmru --help' for usage.")

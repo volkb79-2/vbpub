@@ -319,16 +319,24 @@ def _die(message: str) -> None:
     raise SystemExit(1)
 
 
+def find_artifact(directory: Path, glob: str) -> Path:
+    """Return the single artifact the build step produced (never rebuilds — a rebuild
+    would differ in bytes/version from what was tested). Errors if 0 or >1 match.
+
+    Generic over artifact type (wheel ``.whl``, tarball ``.tar.xz``, …) — every profile
+    can route through this rather than carrying its own discovery logic."""
+    directory = Path(directory)
+    matches = sorted(directory.glob(glob))
+    if not matches:
+        _die(f"No artifact in {directory} (glob: {glob}). Run the build step first.")
+    if len(matches) > 1:
+        _die(f"Multiple artifacts in {directory}: {[m.name for m in matches]}; clean + rebuild.")
+    return matches[0]
+
+
 def find_built_wheel(dist_dir: Path, wheel_glob: str) -> Path:
-    """Return the single wheel the build step produced (never rebuilds — a rebuild
-    would differ in bytes/version from what was tested). Errors if 0 or >1 match."""
-    dist_dir = Path(dist_dir)
-    wheels = sorted(dist_dir.glob(wheel_glob))
-    if not wheels:
-        _die(f"No wheel in {dist_dir} (glob: {wheel_glob}). Run the build step first.")
-    if len(wheels) > 1:
-        _die(f"Multiple wheels in {dist_dir}: {[w.name for w in wheels]}; clean + rebuild.")
-    return wheels[0]
+    """Return the single wheel the build step produced. Alias for :func:`find_artifact`."""
+    return find_artifact(dist_dir, wheel_glob)
 
 
 def read_wheel_version(wheel_path: Path) -> str:

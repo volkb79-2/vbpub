@@ -32,6 +32,7 @@ from pathlib import Path
 try:
     from cmru.release import (
         GitHubReleases,
+        find_artifact,
         find_built_wheel,
         publish_versioned,
         read_wheel_version,
@@ -41,6 +42,7 @@ except ModuleNotFoundError:  # invoked by file path from a checkout without inst
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from cmru.release import (  # noqa: E402
         GitHubReleases,
+        find_artifact,
         find_built_wheel,
         publish_versioned,
         read_wheel_version,
@@ -137,6 +139,52 @@ def cmd_wheel_validate(args: argparse.Namespace) -> None:
               f"&& sha256sum -c {info['asset']}.sha256")
 
 
+def cmd_tarball_publish(args: argparse.Namespace) -> None:
+    """Find the built tarball, read the version, publish via the keystone."""
+    _load_env_file(getattr(args, "env_file", None))
+    cwd = Path(args.cwd).resolve()
+    token = _require_env("GITHUB_PUSH_PAT")
+    owner = _require_env("GITHUB_USERNAME")
+    repo = _require_env("GITHUB_REPO")
+
+    if args.version_file:
+        version_path = cwd / args.version_file
+        version = version_path.read_text(encoding="utf-8").strip()
+    else:
+        version = _require_env(args.version_env)
+
+    art = find_artifact(cwd / "dist", args.glob)
+    notes = (os.getenv(args.notes_env) if args.notes_env else None) or None
+
+    gh = GitHubReleases(owner, repo, token)
+    result = publish_versioned(
+        gh, prefix=args.prefix, version=version, asset_path=art,
+        notes=notes, latest_pointer=True,
+    )
+    print(f"[INFO] Published {args.prefix} {version}")
+    print(result)
+
+
+def cmd_tarball_validate(args: argparse.Namespace) -> None:
+    """Assert the resolved latest <prefix>-v* release carries a tarball + .sha256."""
+    _load_env_file(getattr(args, "env_file", None))
+    owner = _require_env("GITHUB_USERNAME")
+    repo = _require_env("GITHUB_REPO")
+    token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_PUSH_PAT") or ""
+
+    artifact_suffix = getattr(args, "artifact_suffix", None) or ".tar.xz"
+    gh = GitHubReleases(owner, repo, token)
+    info = validate_latest_release(gh, args.prefix, artifact_suffix=artifact_suffix)
+    print(f"[INFO] {args.prefix} latest: {info['version']} "
+          f"(resolved from highest {args.prefix}-v* release)")
+    print(f"[INFO] {args.prefix.upper()}_TARBALL_NAME={info['asset']}")
+    print(f"[INFO] {args.prefix.upper()}_TARBALL_LATEST_URL={info['url']}")
+    if info.get("sha256_url"):
+        print(f"[INFO] {args.prefix.upper()}_TARBALL_SHA256_URL={info['sha256_url']}")
+        print(f"[INFO] Verify: curl -LO {info['url']} && curl -LO {info['sha256_url']} "
+              f"&& sha256sum -c {info['asset']}.sha256")
+
+
 def main(argv: list | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="cmru.handlers",
@@ -163,6 +211,29 @@ def main(argv: list | None = None) -> None:
     p_val.add_argument("--env-file", dest="env_file",
                        help="optional .env to seed GITHUB_* when run standalone (env wins)")
     p_val.set_defaults(func=cmd_wheel_validate)
+
+    p_tpub = sub.add_parser("tarball-publish", help="publish the built tarball to GitHub Releases")
+    p_tpub.add_argument("--prefix", required=True, help="release prefix, e.g. 'tls-edge' (no -v)")
+    p_tpub.add_argument("--cwd", required=True, help="project directory (dist/ holds the tarball)")
+    p_tpub.add_argument("--glob", required=True, help="tarball glob, e.g. 'tls-edge-v*.tar.xz'")
+    _tver = p_tpub.add_mutually_exclusive_group(required=True)
+    _tver.add_argument("--version-file", dest="version_file",
+                       help="path relative to --cwd holding the version string (e.g. VERSION)")
+    _tver.add_argument("--version-env", dest="version_env",
+                       help="env var holding the version string")
+    p_tpub.add_argument("--notes-env", dest="notes_env",
+                        help="env var holding release notes (optional)")
+    p_tpub.add_argument("--env-file", dest="env_file",
+                        help="optional .env to seed GITHUB_* when run standalone (env wins)")
+    p_tpub.set_defaults(func=cmd_tarball_publish)
+
+    p_tval = sub.add_parser("tarball-validate", help="validate the resolved latest tarball release")
+    p_tval.add_argument("--prefix", required=True, help="release prefix, e.g. 'tls-edge' (no -v)")
+    p_tval.add_argument("--artifact-suffix", dest="artifact_suffix", default=".tar.xz",
+                        help="expected artifact file extension (default: .tar.xz)")
+    p_tval.add_argument("--env-file", dest="env_file",
+                        help="optional .env to seed GITHUB_* when run standalone (env wins)")
+    p_tval.set_defaults(func=cmd_tarball_validate)
 
     args = parser.parse_args(argv)
     args.func(args)

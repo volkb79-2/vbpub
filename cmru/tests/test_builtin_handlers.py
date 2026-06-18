@@ -184,3 +184,122 @@ strategy = "none"
 """)
     with pytest.raises(ValueError, match="define \\[steps"):
         cli.load_config(cfg)
+
+
+# ─── find_artifact (generic discovery) ───────────────────────────────────────
+def test_find_artifact_single(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    art = dist / "myproject-v1.2.3.tar.xz"
+    art.write_bytes(b"data")
+    assert release.find_artifact(dist, "myproject-v*.tar.xz") == art
+
+
+def test_find_artifact_none_exits(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    with pytest.raises(SystemExit):
+        release.find_artifact(dist, "myproject-v*.tar.xz")
+
+
+def test_find_artifact_multiple_exits(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "myproject-v1.0.0.tar.xz").write_bytes(b"a")
+    (dist / "myproject-v2.0.0.tar.xz").write_bytes(b"b")
+    with pytest.raises(SystemExit):
+        release.find_artifact(dist, "myproject-v*.tar.xz")
+
+
+# find_built_wheel is now an alias — ensure it still works via find_artifact
+def test_find_built_wheel_alias(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    w = _make_wheel(dist / "pkg-1.0.0-py3-none-any.whl", "1.0.0")
+    assert release.find_built_wheel(dist, "pkg-*.whl") == w
+
+
+# ─── tarball built-in step synthesis ─────────────────────────────────────────
+def _tarball_project(tmp_path):
+    """A synthetic tarball project (prefix=myapp-v, cwd=myapp, artifacts=(tarball,))."""
+    return cli.ProjectConfig(
+        name="myapp", env={}, steps={}, prefix="myapp-v", cwd="myapp",
+        artifacts=("tarball",),
+    )
+
+
+def test_builtin_step_command_tarball_push(tmp_path):
+    proj = _tarball_project(tmp_path)
+    push = cli._builtin_step_command(proj, "push", tmp_path)
+    assert push is not None
+    assert "tarball-publish" in push.argv
+    assert "--prefix" in push.argv
+    assert "myapp" in push.argv
+    assert "--glob" in push.argv
+    # glob contains bare prefix and v*.tar.xz pattern
+    glob_idx = push.argv.index("--glob") + 1
+    assert "myapp-v*.tar.xz" == push.argv[glob_idx]
+    assert "--version-file" in push.argv
+    assert "--notes-env" in push.argv
+    assert "MYAPP_RELEASE_NOTES" in push.argv
+
+
+def test_builtin_step_command_tarball_validate(tmp_path):
+    proj = _tarball_project(tmp_path)
+    validate = cli._builtin_step_command(proj, "validate", tmp_path)
+    assert validate is not None
+    assert "tarball-validate" in validate.argv
+    assert "--prefix" in validate.argv
+    assert "myapp" in validate.argv
+
+
+def test_builtin_step_command_tarball_build_is_none(tmp_path):
+    proj = _tarball_project(tmp_path)
+    # tarball has no built-in build
+    assert cli._builtin_step_command(proj, "build", tmp_path) is None
+
+
+# ─── load_config: tarball project validation ─────────────────────────────────
+_BUILD_STEP = """
+[[project.p.steps.build.commands]]
+label = "build tarball"
+argv = ["bash", "scripts/build-artifact.sh"]
+cwd = "p"
+"""
+
+
+def test_tarball_project_without_build_step_rejected(tmp_path):
+    """A tarball project with no [steps.build] is rejected at config load time."""
+    cfg = tmp_path / "cmru.toml"
+    cfg.write_text(_BASE + """
+[project.p]
+prefix = "p-v"
+artifacts = ["tarball"]
+cwd = "p"
+[project.p.version]
+strategy = "file:VERSION"
+""")
+    with pytest.raises(ValueError, match="define \\[steps"):
+        cli.load_config(cfg)
+
+
+def test_tarball_project_with_build_step_loads(tmp_path):
+    """A tarball project WITH a [steps.build] loads successfully."""
+    # Create the project cwd so resolve_cwd doesn't fail
+    (tmp_path / "p").mkdir()
+    cfg = tmp_path / "cmru.toml"
+    cfg.write_text(_BASE + """
+[project.p]
+prefix = "p-v"
+artifacts = ["tarball"]
+cwd = "p"
+[project.p.version]
+strategy = "file:VERSION"
+""" + _BUILD_STEP)
+    _, projects, *_ = cli.load_config(cfg)
+    assert projects["p"].artifacts == ("tarball",)
+    assert "build" in projects["p"].steps
+    # push and validate are built-in
+    assert cli._builtin_step_command(projects["p"], "push", tmp_path) is not None
+    assert cli._builtin_step_command(projects["p"], "validate", tmp_path) is not None
+    assert cli._builtin_step_command(projects["p"], "build", tmp_path) is None
