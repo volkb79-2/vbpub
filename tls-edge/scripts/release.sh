@@ -6,7 +6,7 @@
 #
 # Via release-runner (set TLS_EDGE_VERSION in cmru.vars first):
 #   echo "TLS_EDGE_VERSION=0.2.0" > tls-edge/cmru.vars
-#   python3 release-runner.py --project tls-edge
+#   ./cmru.publish.sh --project tls-edge
 #
 # What this script does:
 #   1. Validates git state (on main, clean working tree, tag not taken)
@@ -44,7 +44,7 @@ fi
 [[ -n "$NEW_VERSION" ]] || fatal "Version not specified.
   Usage: $0 <version>       (e.g. $0 0.2.0)
   Or:    echo \"TLS_EDGE_VERSION=0.2.0\" > tls-edge/cmru.vars
-         python3 release-runner.py --project tls-edge"
+         ./cmru.publish.sh --project tls-edge"
 
 NEW_VERSION="${NEW_VERSION#v}"   # strip optional leading 'v'
 TAG="tls-edge-v${NEW_VERSION}"

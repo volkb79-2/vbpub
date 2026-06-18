@@ -135,9 +135,9 @@ python3 scripts/resolve-playwright-version.py
 The script updates `ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`, and `docker-bake.hcl`. Then complete the release:
 
 ```bash
-# Build and push the new image + bundle via the release orchestrator:
-python3 ../release-runner.py --project pwmcp --step build
-python3 ../release-runner.py --project pwmcp --step push
+# Build and push the new image + bundle via cmru (run from the repo root):
+./cmru.build.sh   --project pwmcp
+./cmru.publish.sh --project pwmcp
 
 # After publish-bundle.py runs, create the git tag it prints:
 git tag -a pwmcp-v1.61.0-r1 -m "pwmcp 1.61.0-r1"

@@ -411,11 +411,11 @@ git push origin main tls-edge-v0.2.0
 
 Accepts an optional leading `v` (`0.2.0` and `v0.2.0` both work).
 
-### Via release-runner (consistent with other vbpub projects)
+### Via cmru (consistent with other vbpub projects)
 
 ```bash
 echo "TLS_EDGE_VERSION=0.2.0" > tls-edge/cmru.vars
-python3 release-runner.py --project tls-edge
+./cmru.publish.sh --project tls-edge   # run from the repo root
 # → runs scripts/release.sh, same outcome as above
 
 git push origin main tls-edge-v0.2.0

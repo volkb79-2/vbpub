@@ -49,5 +49,6 @@ that already carries a tag finishes a half-done release.
 
 - GitHub credentials come from env or `cmru.secret.toml`, never committed.
 - The pipeline is config-driven; no project logic is hardcoded in the orchestrator.
-- `release-all.py` / `release-runner.py` are kept one release as deprecation shims → use `cmru.py`.
-- The pre-cmru `release-manager/` package has been retired (its source moved into `cmru/`).
+- **No legacy remains:** the entry point is `cmru.py` + the `cmru.*.sh` shims. The
+  pre-cmru `release-manager/` package and the `release-all.py` / `release-runner.py`
+  deprecation shims have been removed (their behaviour lives in `cmru`).

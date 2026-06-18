@@ -97,13 +97,13 @@ ciu-deploy --deploy --profile <host-profile>   # orchestrate many
 ## Release scripts
 
 Three Python scripts handle the build/release cycle. Run them in order, or let
-the parent `release-all.py` pipeline drive them via `release.sample.toml`:
+the parent `cmru` pipeline drive them via the repo-root `cmru.toml`:
 
 | Script | Purpose | Calls into |
 |---|---|---|
 | `run-ciu-tests.py` | Run the full pytest suite | `pytest tests/` |
-| `build-wheel.py` | Build the wheel into `dist/` (cleans first) | `python -m build`, config: `build-push.toml [steps.build-wheel]` |
-| `publish-wheel.py` | Publish to GitHub Releases and validate | `tools/publish-wheel-release.py`, `tools/validate-wheel-latest.py`, config: `build-push.toml [steps.publish-wheel]` |
+| `build-wheel.py` | Build the wheel into `dist/` (cleans first) | `python -m build`, config: `cmru.build.toml [steps.build-wheel]` |
+| `publish-wheel.py` | Publish to GitHub Releases and validate | `tools/publish-wheel-release.py`, `tools/validate-wheel-latest.py`, config: `cmru.build.toml [steps.publish-wheel]` |
 
 The `tools/` directory also contains two helper scripts invoked internally:
 `cleanup-legacy-releases.sh` deletes the old `ciu-wheel-latest` GitHub release tag,
@@ -111,9 +111,8 @@ and `cleanup-and-validate.sh` wraps that cleanup with a post-publish validation 
 
 ### Release scheme
 
-`tools/publish-wheel-release.py` routes through the shared `release-manager`
-keystone (`release-manager/src/release_manager/github_release.py`), which
-enforces a uniform scheme across the monorepo:
+`tools/publish-wheel-release.py` routes through the shared `cmru` release host
+(`cmru/src/cmru/release.py`), which enforces a uniform scheme across the monorepo:
 
 - **Dev build** (`2.0.1.dev8+gabcdef`): moves the thin `ciu-latest` pointer
   only — no per-commit tag spam.

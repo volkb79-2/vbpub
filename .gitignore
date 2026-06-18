@@ -247,8 +247,8 @@ scripts/*.key
 # Claude Code local config
 .claude/
 /claude/
-/truenas/
-.release-vars
+
+# cmru release toolchain (no legacy remains: .release-vars/build-push.toml retired)
 cmru.secret.toml
 cmru.vars
 cmru/build/

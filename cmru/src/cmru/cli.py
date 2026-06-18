@@ -925,9 +925,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     if not av or av[0] in ("-h", "--help"):
         print(
             f"CMRU {_cmru_version()} — Configurable Multi Release Utility\n"
-            "Config: release.toml (repo root) — override with --config / RELEASE_MANAGER_CONFIG\n"
+            "Config: cmru.toml (repo root) — override with --config / RELEASE_MANAGER_CONFIG\n"
             "\n"
-            "TYPICAL WORKFLOW  (run from repo root, e.g. ./release-all.py <verb>):\n"
+            "TYPICAL WORKFLOW  (run from repo root, e.g. ./cmru.py <verb>):\n"
             "  1. status                  preview what changed + the next version (no writes)\n"
             "  2. release                 the one-shot: tag → push tag → build → publish\n"
             "       step-by-step instead: build  then  publish   (act on the tag at HEAD)\n"

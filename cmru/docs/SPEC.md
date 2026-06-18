@@ -45,12 +45,12 @@ clearly distinguished in `--help` from read-only verbs (`status`, `resolve`, `ge
 | `cmru.sample.toml` | committed | Template for `cmru.toml` (no secrets). |
 | `cmru.vars` | gitignored | Generated `KEY=VALUE` build vars a step emits for later steps (was `.release-vars`). |
 | `<project>/cmru.build.toml` | committed | Per-project step config consumed by that project's build script (was `build-push.toml`). |
-| `./cmru` | committed | Repo-root entry point (`./cmru <verb>` ≡ `cmru <verb>`; was `release-all.py`). |
+| `cmru.py` | committed | Repo-root entry point (`./cmru.py <verb>` ≡ `cmru <verb>`); `cmru.*.sh` shims wrap each verb. |
 
 **S-CLI.4** The names `release.toml`, `release.sample.toml`, `.release-vars`,
-`build-push.toml`, `release-all.py`, `release-runner.py` are **retired**. A single
-deprecation release MAY keep read-only shims that emit a warning and point at the `cmru.*`
-name; they MUST be removed the following release.
+`build-push.toml`, `release-all.py`, `release-runner.py` are **retired and removed** — no
+legacy remains. The only release entry points are `cmru.py` (and the `cmru.*.sh` shims) or
+the installed `cmru` console script.
 
 ---
 

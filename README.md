@@ -44,8 +44,6 @@ pointer to a `cmru` verb):
 - **Contract & rationale:** [`cmru/docs/SPEC.md`](cmru/docs/SPEC.md) — start at *"S-CLI — CLI at a glance"*.
   Tooling overview: [`docs/RELEASE-TOOLING.md`](docs/RELEASE-TOOLING.md).
 
-`release-all.py` / `release-runner.py` remain one release as deprecation shims → use `cmru.py`.
-
 ## Repo layout
 
 ```
