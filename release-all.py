@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Repo-root wrapper for vbpub release manager."""
+"""Repo-root entry point for the cmru CLI.
+
+This is a thin shim: it puts ``cmru/src`` on ``sys.path`` and calls ``cmru.cli:main``,
+so ``./release-all.py <verb> [args]`` is exactly ``cmru <verb> [args]``. Run
+``./release-all.py --help`` for the verb list and the typical workflow. For a logged,
+end-to-end run with optional asset cleanup, use ``./release-runner.py`` instead.
+"""
 from __future__ import annotations
 
 import sys

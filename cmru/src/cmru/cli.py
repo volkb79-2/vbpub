@@ -759,11 +759,85 @@ def _cmru_version() -> str:
         return "dev"
 
 
+def _default_config_path() -> Path:
+    """Repo-root ``release.toml`` (the legacy schema the CLI currently reads).
+
+    Override with ``--config`` or ``RELEASE_MANAGER_CONFIG``. The S2 ``cmru.toml``
+    schema (cmru/config.py) is consumed only by ``cmru get`` today; unifying on it
+    is tracked in docs/plan-cmru-migration.md.
+    """
+    return Path(__file__).resolve().parents[3] / "release.toml"
+
+
+def _resolve_config(config_opt: Optional[str]) -> Path:
+    raw = config_opt or os.getenv("RELEASE_MANAGER_CONFIG") or str(_default_config_path())
+    return Path(raw).expanduser().resolve()
+
+
+def _ordered_configs(
+    configs: Mapping[str, "ProjectConfig"],
+    project_order: List[str],
+) -> "dict[str, ProjectConfig]":
+    """Project configs limited to ``project_order`` (the orchestrated set), in order.
+
+    ``status``/``release`` use this so they never auto-tag projects that still own a
+    bespoke pipeline (tls-edge, empyrion) and are not yet migrated into the orchestrator.
+    """
+    return {name: configs[name] for name in project_order if name in configs}
+
+
+def _push_tags(repo_root: Path, tags: List[str]) -> None:
+    """Push annotated release tags to origin. A failure is non-fatal: the GitHub
+    Release API recreates the tag at publish time, so we warn rather than abort."""
+    if not tags:
+        return
+    log_info(f"Pushing tags to origin: {', '.join(tags)}")
+    rc = subprocess.run(["git", "-C", str(repo_root), "push", "origin", *tags]).returncode
+    if rc != 0:
+        log_warn("git push of tags failed — continuing; publish will create the tag via the API.")
+
+
+def _tag_on_head(repo_root: Path, prefix: str) -> Optional[str]:
+    """Return the project's ``<prefix>*`` tag pointing at HEAD (highest semver), else None."""
+    out = _git(repo_root, "tag", "--points-at", "HEAD", "--list", f"{prefix}*")
+    if not out:
+        return None
+    tags = [t for t in out.splitlines() if t.strip() and not t.endswith("-latest")]
+    if not tags:
+        return None
+    from cmru.release import _semver_key
+    return max(tags, key=lambda t: _semver_key(t[len(prefix):]))
+
+
+def _run_project_steps(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: List[str],
+    steps: List[str],
+) -> None:
+    """Run ``steps`` (in order) for each named project through the unified runner (S3).
+
+    Seeds reproducible-build + SETUPTOOLS_SCM pretend-version env first so a wheel
+    built here matches the tag on HEAD. Missing steps are skipped with a note."""
+    resolve_versions_from_git(repo_root, dict(configs))
+    log_dir = repo_root / "logs"
+    for name in project_names:
+        project = configs[name]
+        for step in steps:
+            if step in project.steps:
+                log_info(f"{name}: running step '{step}'")
+                run_project_step(project, step, repo_root, log_dir)
+            else:
+                log_info(f"{name}: no '{step}' step — skipping")
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     """Entry point for the ``cmru`` CLI.
 
-    Dispatches to sub-verbs: run / build / resolve / get / release / status / cleanup.
-    ``cmru run`` is equivalent to the legacy ``vbpub-release`` orchestrator.
+    Verb dispatch. Normal release path:  ``status`` → ``release`` (→ ``cleanup``).
+    ``release`` is the one-shot (tag → push → build → publish); ``build``/``publish``
+    are the same two steps split out, operating on the tag at HEAD. ``run`` is the
+    explicit-steps escape hatch; ``run-step`` is the raw single-step runner.
     """
     import sys as _sys
 
@@ -771,26 +845,32 @@ def main(argv: Optional[List[str]] = None) -> None:
     if not av or av[0] in ("-h", "--help"):
         print(
             f"CMRU {_cmru_version()} — Configurable Multi Release Utility\n"
-            "Uses: cmru.toml\n"
+            "Config: release.toml (repo root) — override with --config / RELEASE_MANAGER_CONFIG\n"
             "\n"
-            "  PLANNING\n"
-            "    status   [--project P]                        preview next releases (dry-run)\n"
+            "TYPICAL WORKFLOW  (run from repo root, e.g. ./release-all.py <verb>):\n"
+            "  1. status                  preview what changed + the next version (no writes)\n"
+            "  2. release                 the one-shot: tag → push tag → build → publish\n"
+            "       step-by-step instead: build  then  publish   (act on the tag at HEAD)\n"
+            "  3. cleanup --remove-assets 30d     prune old releases/images (optional)\n"
             "\n"
-            "  BUILD\n"
-            "    run      [--project P] [--step S ...]         orchestrate N projects × steps\n"
-            "    build    [--project P]                        build release artifact\n"
+            "PLANNING (read-only)\n"
+            "    status   [--project P] [--minor|--major]     preview next releases (dry-run)\n"
             "\n"
-            "  RELEASE\n"
-            "    publish  [--project P]                        publish artifact + .sha256\n"
-            "    release  [--project P] [--minor|--major|--set-version V]\n"
-            "                                                  detect → version → tag → build → publish\n"
+            "RELEASE (writes to GitHub)\n"
+            "    release  [--project P] [--minor|--major|--set-version V] [--dry-run]\n"
+            "                                                  detect → tag → push → build → publish\n"
+            "    build    [--project P]                        run the 'build' step (artifact only)\n"
+            "    publish  [--project P]                        run the 'push' step (upload + .sha256)\n"
+            "    run      [--project P] [--run-tests --build --push --validate]\n"
+            "                                                  low-level: explicit steps × projects\n"
             "\n"
-            "  CONSUMPTION\n"
-            "    resolve  [--project P] [--format env|json|url]   resolve latest version\n"
+            "CONSUMPTION (read-only)\n"
+            "    resolve  [--project P] [--format env|json|url]   resolve latest published version\n"
             "    get      [--project P]                        emit standalone get.py installer\n"
             "\n"
-            "  MAINTENANCE\n"
-            "    cleanup  [--days N]                           age-based release cleanup\n"
+            "MAINTENANCE\n"
+            "    cleanup  --remove-assets AGE [--dry-run]      age-based release/GHCR cleanup\n"
+            "    run-step --config C --step S                  execute one build-push.toml step (raw)\n"
         )
         return
 
@@ -805,9 +885,35 @@ def main(argv: Optional[List[str]] = None) -> None:
         _sys.argv = ["cmru"] + rest
         _orchestrate()
 
-    elif verb == "build":
+    elif verb == "run-step":
+        # Raw single-step runner (was the old `cmru build`): needs --config + --step.
         from cmru.runner import main as runner_main
         runner_main(rest)
+
+    elif verb in ("build", "publish"):
+        import argparse as _ap
+        parser = _ap.ArgumentParser(description=f"cmru {verb}")
+        parser.add_argument("--project", help="Limit to one project (default: all orchestrated)")
+        parser.add_argument("--config", help="Path to release.toml")
+        # Back-compat: `cmru build --config C --step S` still hits the raw runner.
+        if verb == "build" and ("--step" in rest):
+            from cmru.runner import main as runner_main
+            runner_main(rest)
+            return
+        vargs = parser.parse_args(rest)
+        cfg_path = _resolve_config(vargs.config)
+        (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
+        github_config, env_config = _rest[-2], _rest[-1]
+        apply_release_env(github_config, env_config)
+        ordered = _ordered_configs(configs, project_order)
+        names = [vargs.project] if vargs.project else list(ordered.keys())
+        missing = [n for n in names if n not in configs]
+        if missing:
+            log_error(f"Unknown project(s): {', '.join(missing)}")
+            _sys.exit(2)
+        step = "build" if verb == "build" else "push"
+        _run_project_steps(repo_root, configs, names, [step])
+        log_info(f"cmru {verb} complete")
 
     elif verb == "resolve":
         from cmru.resolve import resolve_main
@@ -825,32 +931,66 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser.add_argument("--major", action="store_true")
         parser.add_argument("--set-version", metavar="VER")
         parser.add_argument("--dry-run", action="store_true")
-        parser.add_argument("--config", help="Path to cmru.toml or release.toml")
+        parser.add_argument("--no-build", action="store_true",
+                            help="release: tag + push only; skip build/publish")
+        parser.add_argument("--config", help="Path to release.toml")
         vargs = parser.parse_args(rest)
 
-        default_config = Path(__file__).resolve().parents[3] / "release.toml"
-        cfg_path = Path(vargs.config or os.getenv("RELEASE_MANAGER_CONFIG") or str(default_config))
-        cfg_path = cfg_path.expanduser().resolve()
+        cfg_path = _resolve_config(vargs.config)
+        (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
+        github_config, env_config = _rest[-2], _rest[-1]
+        apply_release_env(github_config, env_config)
 
-        (repo_root, configs, *_rest) = load_config(cfg_path)
+        # Restrict versioning verbs to the orchestrated set so un-migrated projects
+        # with their own pipelines (tls-edge, empyrion) are never auto-tagged.
+        ordered = _ordered_configs(configs, project_order)
 
         from cmru.version import status_cmd, release_cmd
         if verb == "status":
             status_cmd(
-                repo_root, configs,
+                repo_root, ordered,
                 minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
             )
-        else:
-            created = release_cmd(
-                repo_root, configs,
-                project_filter=vargs.project,
-                minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-                dry_run=vargs.dry_run,
-            )
+            return
+
+        # --- release: detect → tag → push → build → publish -------------------
+        created = release_cmd(
+            repo_root, ordered,
+            project_filter=vargs.project,
+            minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+            dry_run=vargs.dry_run,
+        )
+        if vargs.dry_run:
+            log_info("[DRY RUN] No tags pushed, nothing built/published.")
+            return
+
+        # Release set = every selected project whose HEAD now carries its tag
+        # (covers both just-created tags and a half-finished prior release).
+        release_set: list[tuple[str, str]] = []
+        for name, proj in ordered.items():
+            if vargs.project and name != vargs.project:
+                continue
+            prefix = proj.prefix or f"{name}-v"
+            tag = _tag_on_head(repo_root, prefix)
+            if tag:
+                release_set.append((name, tag))
+
+        if not release_set:
+            log_info("No tagged projects at HEAD — nothing to build or publish.")
             if created:
-                log_info(f"Tagged: {', '.join(created)}")
-            else:
-                log_info("No tags created.")
+                log_info(f"Tagged (no steps run): {', '.join(created)}")
+            return
+
+        _push_tags(repo_root, [tag for _, tag in release_set])
+
+        if vargs.no_build:
+            log_info(f"--no-build: tagged + pushed {', '.join(t for _, t in release_set)}; skipped build/publish.")
+            return
+
+        names = [name for name, _ in release_set]
+        log_info(f"Building + publishing: {', '.join(names)}")
+        _run_project_steps(repo_root, configs, names, ["build", "push"])
+        log_info(f"Released: {', '.join(f'{n} ({t})' for n, t in release_set)}")
 
     elif verb == "cleanup":
         import argparse as _ap
