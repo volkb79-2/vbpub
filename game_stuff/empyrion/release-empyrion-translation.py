@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import os
 import sys
 import zipfile
 from datetime import datetime, timezone
 import subprocess
 from pathlib import Path
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+
+# ── Keystone import ──────────────────────────────────────────────────────────
+# parents[2] from game_stuff/empyrion/release-empyrion-translation.py == the vbpub repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cmru" / "src"))
+from cmru.release import GitHubReleases, write_sha256_sidecar
 
 FINAL_FILES = [
     "Dialogues.de.completed.csv",
@@ -24,6 +26,47 @@ SUMMARY_REPORT_NAME = "translation-report.md"
 FAILURES_REPORT_NAME = "translation-failures.md"
 SUCCESS_REPORT_NAME = "translation-success.md"
 WORKFLOW_LOG_DEFAULT = "workflow.latest.log"
+
+
+def load_cmru_credentials(repo_root: Path) -> None:
+    """Populate GITHUB_USERNAME / GITHUB_REPO from cmru.toml and token from
+    cmru.secret.toml.  Mirrors the pattern in tls-edge/scripts/publish-release.py.
+
+    Credential resolution order: env > cmru.secret.toml > cmru.toml
+    - Identity (owner→GITHUB_USERNAME, repo→GITHUB_REPO) comes from cmru.toml [github].
+    - Token comes from env (GITHUB_PUSH_PAT / GITHUB_TOKEN) first, then
+      cmru.secret.toml [github].token.  cmru.toml never contains a token.
+    """
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError:
+            return  # Best-effort; fallback to env vars
+
+    def _load_toml(path: Path) -> dict:
+        if not path.exists():
+            return {}
+        try:
+            with path.open("rb") as fh:
+                return tomllib.load(fh)
+        except Exception as exc:
+            print(f"[WARN] Could not parse {path.name}: {exc}", file=sys.stderr)
+            return {}
+
+    # cmru.toml — identity only (no token)
+    cmru_github = _load_toml(repo_root / "cmru.toml").get("github", {})
+    if not os.environ.get("GITHUB_USERNAME") and cmru_github.get("owner"):
+        os.environ["GITHUB_USERNAME"] = str(cmru_github["owner"])
+    if not os.environ.get("GITHUB_REPO") and cmru_github.get("repo"):
+        os.environ["GITHUB_REPO"] = str(cmru_github["repo"])
+
+    # cmru.secret.toml — token only; never stored in cmru.toml
+    secret_github = _load_toml(repo_root / "cmru.secret.toml").get("github", {})
+    if not os.environ.get("GITHUB_PUSH_PAT") and not os.environ.get("GITHUB_TOKEN"):
+        if secret_github.get("token"):
+            os.environ["GITHUB_PUSH_PAT"] = str(secret_github["token"])
 
 
 def load_release_metadata_from_env() -> dict:
@@ -52,145 +95,6 @@ def parse_repo(metadata: dict) -> tuple[str, str]:
     return owner, repo
 
 
-def parse_json(body: str, context: str):
-    if not body.strip():
-        raise RuntimeError(f"Empty JSON body for {context}")
-    try:
-        return json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid JSON for {context}: {exc}") from exc
-
-
-def api_request(
-    method: str,
-    url: str,
-    token: str,
-    data: bytes | None = None,
-    content_type: str | None = None,
-) -> tuple[int, str]:
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    }
-    if content_type:
-        headers["Content-Type"] = content_type
-
-    req = Request(url, method=method, headers=headers, data=data)
-    try:
-        with urlopen(req) as resp:
-            return resp.status, resp.read().decode("utf-8")
-    except HTTPError as exc:
-        body = exc.read().decode("utf-8") if exc.fp else ""
-        return exc.code, body
-
-
-def get_release_by_tag(api_base: str, owner: str, repo: str, tag: str, token: str) -> dict | None:
-    status, body = api_request(
-        "GET", f"{api_base}/repos/{owner}/{repo}/releases/tags/{tag}", token
-    )
-    if status == 404:
-        return None
-    if status >= 400:
-        raise RuntimeError(f"Failed to fetch release tag {tag}: status={status} body={body}")
-    return parse_json(body, f"release tag {tag}")
-
-
-def create_release(
-    api_base: str,
-    owner: str,
-    repo: str,
-    tag: str,
-    title: str,
-    notes: str,
-    token: str,
-    draft: bool,
-    prerelease: bool,
-) -> dict:
-    payload = json.dumps(
-        {
-            "tag_name": tag,
-            "name": title,
-            "body": notes,
-            "draft": draft,
-            "prerelease": prerelease,
-        }
-    ).encode("utf-8")
-    status, body = api_request(
-        "POST",
-        f"{api_base}/repos/{owner}/{repo}/releases",
-        token,
-        data=payload,
-        content_type="application/json",
-    )
-    if status >= 400:
-        raise RuntimeError(f"Failed to create release {tag}: status={status} body={body}")
-    return parse_json(body, f"create release {tag}")
-
-
-def update_release(
-    api_base: str,
-    owner: str,
-    repo: str,
-    release_id: int,
-    title: str,
-    notes: str,
-    token: str,
-    draft: bool,
-    prerelease: bool,
-) -> dict:
-    payload = json.dumps(
-        {
-            "name": title,
-            "body": notes,
-            "draft": draft,
-            "prerelease": prerelease,
-        }
-    ).encode("utf-8")
-    status, body = api_request(
-        "PATCH",
-        f"{api_base}/repos/{owner}/{repo}/releases/{release_id}",
-        token,
-        data=payload,
-        content_type="application/json",
-    )
-    if status >= 400:
-        raise RuntimeError(f"Failed to update release {release_id}: status={status} body={body}")
-    return parse_json(body, f"update release {release_id}")
-
-
-def list_assets(api_base: str, owner: str, repo: str, release_id: int, token: str) -> list[dict]:
-    status, body = api_request(
-        "GET", f"{api_base}/repos/{owner}/{repo}/releases/{release_id}/assets", token
-    )
-    if status >= 400:
-        raise RuntimeError(f"Failed to list assets for release {release_id}: status={status} body={body}")
-    parsed = parse_json(body, f"list assets for release {release_id}")
-    if isinstance(parsed, list):
-        return parsed
-    raise RuntimeError(f"Unexpected assets payload for release {release_id}")
-
-
-def delete_asset(api_base: str, owner: str, repo: str, asset_id: int, token: str) -> None:
-    status, body = api_request(
-        "DELETE", f"{api_base}/repos/{owner}/{repo}/releases/assets/{asset_id}", token
-    )
-    if status >= 400:
-        raise RuntimeError(f"Failed to delete asset {asset_id}: status={status} body={body}")
-
-
-def upload_asset(upload_url: str, asset_path: Path, token: str) -> None:
-    upload_url = upload_url.split("{", 1)[0]
-    status, body = api_request(
-        "POST",
-        f"{upload_url}?name={asset_path.name}",
-        token,
-        data=asset_path.read_bytes(),
-        content_type="application/octet-stream",
-    )
-    if status >= 400:
-        raise RuntimeError(f"Failed to upload asset {asset_path.name}: status={status} body={body}")
-
-
 def publish_github_release_assets(
     metadata: dict,
     tag: str,
@@ -199,12 +103,23 @@ def publish_github_release_assets(
     draft: bool,
     prerelease: bool,
 ) -> None:
-    token = (os.getenv("GITHUB_PUSH_PAT") or "").strip()
+    """Publish assets to a GitHub Release using the shared cmru keystone.
+
+    Routes through GitHubReleases.publish() (cmru/src/cmru/release.py) so the release
+    scheme stays uniform across all vbpub projects.  A .sha256 sidecar is written and
+    uploaded alongside each asset for integrity verification.
+
+    The date tag (empyrion-de-translation-YYYYMMDD) is preserved exactly as-is —
+    this project does not use semver and does NOT go through publish_versioned().
+    """
+    token = (os.getenv("GITHUB_PUSH_PAT") or os.getenv("GITHUB_TOKEN") or "").strip()
     if not token:
-        raise ValueError("GITHUB_PUSH_PAT is required in environment for publish mode")
+        raise ValueError(
+            "A GitHub token is required (GITHUB_PUSH_PAT or GITHUB_TOKEN).\n"
+            "  Set it in the environment or in cmru.secret.toml [github].token."
+        )
 
     owner, repo = parse_repo(metadata)
-    api_base = "https://api.github.com"
     notes = (
         "Empyrion German translation artifact release.\n\n"
         "- Includes final translated CSV files and translation report\n"
@@ -212,52 +127,20 @@ def publish_github_release_assets(
         "- Installation uses local Steam library root placeholder\n"
     )
 
-    release = get_release_by_tag(api_base, owner, repo, tag, token)
-    if release is None:
-        release = create_release(
-            api_base,
-            owner,
-            repo,
-            tag,
-            release_name,
-            notes,
-            token,
-            draft=draft,
-            prerelease=prerelease,
-        )
-    else:
-        release_id = int(release.get("id", 0))
-        if not release_id:
-            raise RuntimeError(f"Release payload missing id for tag {tag}")
-        release = update_release(
-            api_base,
-            owner,
-            repo,
-            release_id,
-            release_name,
-            notes,
-            token,
-            draft=draft,
-            prerelease=prerelease,
-        )
-
-    release_id = int(release.get("id", 0))
-    upload_url = str(release.get("upload_url", ""))
-    if not release_id or not upload_url:
-        raise RuntimeError(f"Release payload missing id/upload_url for tag {tag}")
-
-    assets = list_assets(api_base, owner, repo, release_id, token)
-    existing_assets: dict[str, int] = {}
-    for asset in assets:
-        name = str(asset.get("name", ""))
-        asset_id = int(asset.get("id", 0))
-        if name and asset_id:
-            existing_assets[name] = asset_id
-
+    # Build the full asset list: each zip + its .sha256 sidecar
+    all_assets: list[Path] = []
+    seen_names: set[str] = set()
     for asset_path in assets_to_upload:
-        if asset_path.name in existing_assets:
-            delete_asset(api_base, owner, repo, existing_assets[asset_path.name], token)
-        upload_asset(upload_url, asset_path, token)
+        if asset_path.name not in seen_names:
+            sidecar = write_sha256_sidecar(asset_path)
+            all_assets.append(asset_path)
+            all_assets.append(sidecar)
+            seen_names.add(asset_path.name)
+            seen_names.add(sidecar.name)
+
+    gh = GitHubReleases(owner, repo, token)
+    gh.publish(tag, release_name, notes, all_assets)
+    print(f"[INFO] GitHub release published via keystone: tag={tag}")
 
 
 def run_qa(script_dir: Path, input_dir: Path) -> None:
@@ -471,6 +354,11 @@ def main() -> None:
     if args.publish_only and not args.publish_github:
         raise ValueError("--publish-only requires --publish-github")
 
+    # ── Credential resolution: env > cmru.secret.toml > cmru.toml ────────────
+    # parents[2] from game_stuff/empyrion/ == the vbpub repo root.
+    repo_root = script_dir.parents[1]
+    load_cmru_credentials(repo_root)
+
     metadata = load_release_metadata_from_env()
     workflow_log_path = _resolve_workflow_log_path(script_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -560,7 +448,6 @@ def main() -> None:
             draft=args.draft,
             prerelease=args.prerelease,
         )
-        print(f"[INFO] GitHub release published: tag={tag}")
 
 
 if __name__ == "__main__":

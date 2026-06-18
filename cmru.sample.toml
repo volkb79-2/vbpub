@@ -113,17 +113,20 @@ commands = [
   { label = "pwmcp: publish stack bundle", argv = ["python3", "scripts/publish-bundle.py"], cwd = "pwmcp" },
 ]
 
-# ─── tls-edge — tarball (not yet in project_order; P3) ─────────────────────────
+# ─── tls-edge — tarball (built-in publish; build step is project-owned) ─────────
+# push + validate come from the tarball built-in (cmru/handlers.py tarball-publish /
+# tarball-validate). Only build is project-specific (build-artifact.sh).
 [project.tls-edge]
-prefix   = "tls-edge-v"
+prefix    = "tls-edge-v"
 artifacts = ["tarball"]
-cwd      = "tls-edge"
+cwd       = "tls-edge"
 [project.tls-edge.version]
 strategy = "file:VERSION"
-bump     = "conventional"
-[project.tls-edge.steps.push]
+[project.tls-edge.env]
+TLS_EDGE_RELEASE_NOTES = "## tls-edge tarball\nEdge proxy + TLS termination stack.\n\n**Verify**\n```bash\nsha256sum -c tls-edge-v*.tar.xz.sha256\n```"
+[project.tls-edge.steps.build]
 commands = [
-  { label = "tls-edge: build + publish release", argv = ["bash", "scripts/release.sh"], cwd = "tls-edge" },
+  { label = "tls-edge: build tarball", argv = ["bash", "scripts/build-artifact.sh"], cwd = "tls-edge" },
 ]
 
 # ─── empyrion-translation — game asset (not yet in project_order; P4) ──────────
