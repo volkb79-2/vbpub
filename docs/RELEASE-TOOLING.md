@@ -4,6 +4,10 @@ vbpub builds & releases every product with **cmru** (Configurable Multi Release 
 One config, one CLI, `cmru.*`-named files. The normative contract is
 [`cmru/docs/SPEC.md`](../cmru/docs/SPEC.md) — start at *"S-CLI — CLI at a glance"*.
 
+> **cmru releases; ciu builds-and-runs.** If you're unsure which tool owns a build, read
+> [`docs/ciu-vs-cmru.md`](ciu-vs-cmru.md) — roles, the "double bake", and the one-question
+> border (*is this artifact published for external consumption?*).
+
 ## Files (all `cmru.`-prefixed)
 
 | File | Tracked? | Purpose |

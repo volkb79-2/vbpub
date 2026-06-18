@@ -12,6 +12,11 @@ verbs.) The canonical feature list and CLI surface is **[docs/FEATURES.md](docs/
 normative behaviour is defined in [docs/SPEC.md](docs/SPEC.md); the task guides
 under [docs/](docs/README.md) are the place to start.
 
+> **ciu builds-and-runs; cmru releases.** ciu is the **inner loop** (build local images,
+> run the stack on this host); its sibling **cmru** is the **outer loop** (version + publish
+> products). For the full role/overlap map and the border question, see
+> [../docs/ciu-vs-cmru.md](../docs/ciu-vs-cmru.md).
+
 ## Two ways to ship a stack
 
 A project maintainer can offer **both** deploy paths from the same repository,

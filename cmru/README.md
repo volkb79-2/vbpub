@@ -106,6 +106,14 @@ the escape hatch for multi-wheel repos, bespoke validation, or extra assets.
 3. **Profile-driven publishing** — wheels, OCI images, bundles and tarballs each release
    correctly from one config, with cmru as the generic orchestrator.
 
+## cmru vs ciu
+
+cmru is the **outer loop** (build-to-release: version + publish across products). Its
+sibling **ciu** is the **inner loop** (build-to-run: build local images and run a stack on
+this host). They overlap only in that both can trigger a docker build — over the *same*
+`docker-bake.hcl`, for different ends (ciu `--load`s + runs; cmru pushes). Full map, incl.
+the border question: [`../docs/ciu-vs-cmru.md`](../docs/ciu-vs-cmru.md).
+
 ## More
 
 - Full contract & rationale: [`docs/SPEC.md`](docs/SPEC.md) — start at *S-CLI* and *S-REL*.
