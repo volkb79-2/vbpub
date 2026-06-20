@@ -275,6 +275,9 @@ if [[ -z "$DOMAIN" ]]; then
     skip "no domain — skipping TLS check"
 else
     # One-shot openssl container on ingress_public → edge container port 443.
+    # Checks: a cert is served AND it is not the Traefik default self-signed cert.
+    # Does NOT perform full chain validation (that requires the CA bundle
+    # and an internet-routable TLS handshake; use 'openssl verify' manually if needed).
     _TLS_OUT="$(docker run --rm --entrypoint sh --network ingress_public alpine/openssl -c \
         "openssl s_client -connect edge-traefik:443 -servername $DOMAIN </dev/null 2>/dev/null \
          | openssl x509 -noout -subject -issuer" 2>/dev/null || true)"
@@ -282,7 +285,7 @@ else
         fail "TLS: Traefik is serving its self-signed default cert (real cert not loaded)"
         echo "$_TLS_OUT" | sed 's/^/     /'
     elif [[ -n "$_TLS_OUT" ]]; then
-        pass "TLS cert loaded for $DOMAIN"
+        pass "TLS cert loaded for $DOMAIN (not the Traefik default self-signed)"
         echo "$_TLS_OUT" | sed 's/^/     /'
     else
         fail "TLS: no certificate response from edge-traefik:443 (servername $DOMAIN)"
@@ -294,7 +297,7 @@ echo
 echo "$(_bold "8. Mode-specific certificate check ($TLS_MODE)")"
 
 if is_acme_mode; then
-    # acme-data volume must have a non-empty acme.json
+    # acme-data volume must have a non-empty acme.json with mode 0600
     _ACME_CHECK="$(docker run --rm \
         -v edge-proxy_acme-data:/a:ro \
         alpine:3.20 sh -c 'test -s /a/acme.json && echo "ok" || echo "missing"' 2>/dev/null || true)"
@@ -302,6 +305,15 @@ if is_acme_mode; then
         pass "acme.json exists and is non-empty"
     else
         fail "acme.json missing or empty in acme-data volume (certificate not yet issued?)"
+    fi
+
+    _ACME_PERMS="$(docker run --rm \
+        -v edge-proxy_acme-data:/a:ro \
+        alpine:3.20 sh -c 'stat -c "%a" /a/acme.json 2>/dev/null || echo "?"' 2>/dev/null || true)"
+    if [[ "$_ACME_PERMS" == "600" ]]; then
+        pass "acme.json permissions are 0600"
+    else
+        fail "acme.json permissions: expected 0600, got ${_ACME_PERMS:-(unknown)}"
     fi
 
     if [[ -n "$DOMAIN" ]]; then

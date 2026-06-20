@@ -5,7 +5,7 @@ Moved from ``release_manager.cli`` in P1; ``release_manager.cli``
 is now a re-export shim kept for backwards compatibility until P6.
 
 NOTE: This module currently contains the legacy ``vbpub-release`` CLI (P1 faithful move).
-The new ``cmru`` CLI verb structure (run/build/publish/resolve/get-sh/release/status)
+The new ``cmru`` CLI verb structure (run/build/publish/resolve/get/release/status)
 is introduced in P3. Until P3, the ``cmru`` entry point invokes this same ``main``.
 """
 from __future__ import annotations
@@ -1498,9 +1498,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         from cmru.resolve import resolve_main
         resolve_main(rest)
 
-    elif verb in ("get", "get-sh"):
-        from cmru.getsh import getsh_main
-        getsh_main(rest)
+    elif verb in ("get", "get-py"):
+        from cmru.getpy import getpy_main
+        getpy_main(rest)
 
     elif verb in ("release", "status"):
         import argparse as _ap

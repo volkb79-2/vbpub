@@ -12,10 +12,11 @@ Traefik.
 
 ## Install
 
-On any Linux host with Docker installed (requires `curl`, `python3`, `sha256sum`):
+On any Linux host with Docker installed (requires `curl`, `python3`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.py \
+  | sudo python3 - install
 ```
 
 This downloads the latest release artifact from GitHub Releases, **verifies its
@@ -29,11 +30,11 @@ tls-edge install
 ### Pin a specific version
 
 ```bash
-TLS_EDGE_VERSION=tls-edge-v0.2.0 \
-  curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.py \
+  | sudo python3 - install --version tls-edge-v0.2.0
 ```
 
-`TLS_EDGE_VERSION` accepts either the full tag (`tls-edge-v0.2.0`) or a bare
+`--version` accepts either the full tag (`tls-edge-v0.2.0`) or a bare
 semver (`0.2.0`).
 
 ### Update to a newer release
@@ -50,8 +51,8 @@ before extraction and restored if the new artifact does not provide them.
 ### Checksum verification
 
 Every release artifact (`tls-edge-v<ver>.tar.xz`) ships with a
-`tls-edge-v<ver>.tar.xz.sha256` sidecar that `get.sh` verifies automatically
-with `sha256sum -c`.  Installation is aborted on mismatch.
+`tls-edge-v<ver>.tar.xz.sha256` sidecar.  `get.py` verifies the SHA256
+automatically before extraction; installation is aborted on mismatch.
 
 To verify manually after download:
 
@@ -62,11 +63,11 @@ sha256sum -c tls-edge-v0.2.0.tar.xz.sha256
 ### Air-gapped / dev installs (git-clone fallback)
 
 For hosts without internet access to GitHub Releases, or for development
-purposes, force the legacy git-clone path:
+purposes, force the git-clone path:
 
 ```bash
-TLS_EDGE_INSTALL_VIA=git \
-  curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.py \
+  | sudo python3 - install --via git
 ```
 
 This performs a sparse, blobless clone of the `vbpub` repo and checks out the
@@ -372,8 +373,8 @@ only `live/` causes silent TLS failure inside the container.
 |---|---|
 | Stack health | Both containers report healthy (`docker inspect`) |
 | Port binding | 443 and 8443 are bound on the expected interface |
-| TLS handshake | `openssl s_client` against the host FQDN; cert chain valid |
-| ACME volume | `acme.json` exists and is mode 0600 |
+| TLS handshake | `openssl s_client` against the host FQDN; cert loaded (not the Traefik default self-signed) |
+| ACME volume | `acme.json` exists, is non-empty, and has mode 0600 |
 | Network | `ingress_public` network exists and Traefik is attached |
 | DNS | Host FQDN resolves to the host's public IP |
 | Port 80 | Reports whether HTTP→HTTPS redirect is active or port is closed |
@@ -425,7 +426,7 @@ git push origin main tls-edge-v0.2.0
 
 ### What happens after publish
 
-`get.sh` resolves the latest release by querying the GitHub Releases API and
+`get.py` resolves the latest release by querying the GitHub Releases API and
 picking the highest-semver `tls-edge-v*` tag.  Once the release is published,
 `tls-edge update` on any installed host will download and verify the new
 artifact automatically.

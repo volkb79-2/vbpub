@@ -8,6 +8,7 @@
 #
 # INCLUDE:
 #   VERSION
+#   get.py  (ships in artifact so 'tls-edge update' works without re-fetching)
 #   scripts/  (all except update-rendered.sh)
 #   ciu-stack/ (*.j2 + conf.d/{certs.yml.j2,options.yml,middlewares.yml})
 #   edge-proxy/ (docker-compose.yml, traefik.yml, .env.example, conf.d/*)
@@ -15,8 +16,8 @@
 #   README.md, ARCHITECTURE.md, CONSUMER_GUIDE.md, KNOWN_ISSUES.md
 #
 # EXCLUDE:
-#   get.sh (lives on raw GitHub; must NOT be in the tarball)
 #   scripts/update-rendered.sh (maintainer-only)
+#   __pycache__/, *.pyc
 #   cmru.vars, .claude/, .git/
 #   Gitignored runtime files: ciu-stack/ciu.toml.j2, ciu-stack/ciu.toml,
 #   ciu-stack/ciu.compose.yml, ciu-stack/traefik.yml, edge-proxy/.env,
@@ -57,14 +58,17 @@ trap 'rm -rf "$STAGE"; rm -f "$TMP_LIST"' EXIT
 
 {
     # Top-level single files
-    for doc in VERSION README.md ARCHITECTURE.md CONSUMER_GUIDE.md KNOWN_ISSUES.md; do
+    for doc in VERSION get.py README.md ARCHITECTURE.md CONSUMER_GUIDE.md KNOWN_ISSUES.md; do
         [[ -f "$TLS_EDGE_ROOT/$doc" ]] && echo "$doc"
     done
 
-    # scripts/ — everything except update-rendered.sh
+    # scripts/ — everything except update-rendered.sh, __pycache__, .pyc
     find "$TLS_EDGE_ROOT/scripts" -type f | sort | while IFS= read -r f; do
         rel="${f#$TLS_EDGE_ROOT/}"
-        [[ "$(basename "$f")" == "update-rendered.sh" ]] && continue
+        base="$(basename "$f")"
+        [[ "$base" == "update-rendered.sh" ]] && continue
+        [[ "$base" == *.pyc ]] && continue
+        [[ "$f" == */__pycache__/* ]] && continue
         echo "$rel"
     done
 
@@ -94,13 +98,14 @@ trap 'rm -rf "$STAGE"; rm -f "$TMP_LIST"' EXIT
         echo "$rel"
     done
 
-    # consumer-examples/ — all committed files; exclude secrets dirs and *.bak
+    # consumer-examples/ — all committed files; exclude secrets dirs, *.bak, __pycache__
     find "$TLS_EDGE_ROOT/consumer-examples" -type f | sort | while IFS= read -r f; do
         rel="${f#$TLS_EDGE_ROOT/}"
         base="$(basename "$f")"
         case "$base" in
-            *.bak) continue ;;
+            *.bak|*.pyc) continue ;;
         esac
+        [[ "$f" == */__pycache__/* ]] && continue
         # skip gitignored consumer-examples/**/secrets/* (except .gitignore placeholder)
         case "$rel" in
             consumer-examples/*/secrets/*)

@@ -68,7 +68,7 @@ the installed `cmru` console script.
 | **runner** | The cmru component that executes a single build step in a reproducible, logged environment. |
 | **host** | A release storage provider implementing the `ReleaseHost` interface (S11). |
 | **resolver** | The cmru component that returns `{version, tag, asset, sha256, url}` for the highest-semver release. |
-| **get.sh** | A per-project emitted bootstrap script implementing the S6 contract. |
+| **get.py** | A per-project emitted Python 3 bootstrap installer implementing the S6 contract (ships inside the artifact). |
 | **delegated step** | A commodity operation (sign, SBOM, changelog, package) delegated to an external OSS tool (S7). |
 
 ---
@@ -97,7 +97,7 @@ cmru manages N independent projects, each with its own semver line, all sharing 
 floating `:latest`; their manifest digest is the content address. They are **not**
 git-tagged and create **no** GitHub Release (S-REL).
 
-**S1.5** N projects, one Releases page is the first differentiator. The `prefix` mechanism is the key: the resolver (S5) and get.sh (S6) filter by prefix, so projects never interfere with each other.
+**S1.5** N projects, one Releases page is the first differentiator. The `prefix` mechanism is the key: the resolver (S5) and get.py (S6) filter by prefix, so projects never interfere with each other.
 
 ---
 
@@ -196,11 +196,13 @@ latest_json = true                # emit latest.json pointer
 [project.<name>.resolve]
 asset_glob = "*.whl"              # glob to match asset in release
 
-[project.<name>.getsh]
+[project.<name>.getsh]            # inputs for the emitted get.py installer (S6)
 install_dir = "/opt/<name>-src"   # default install root
 preserve    = [                   # config files preserved across updates
   "<name>/config.toml",
 ]
+deps        = ["docker"]          # extra runtime tools the installer checks for
+next_steps  = ["<name> install"]  # post-install hint lines the installer prints
 
 [project.<name>.delegated]
 sign      = false                 # cosign sign
@@ -300,26 +302,26 @@ The resolver implements differentiator #2: highest-semver selection, replacing G
 
 ---
 
-## S6 — get.sh Contract
+## S6 — get.py Contract
 
-The emitted `get.sh` is differentiator #4: a per-project bootstrap that handles install, update, version pin, and user-config preservation.
+The emitted `get.py` is differentiator #4: a per-project bootstrap that handles install, update, version pin, and user-config preservation. Unlike a curl-only bootstrap, `get.py` ships **inside** the release artifact, so `<project> update` works out of the box without re-fetching the installer from GitHub.
 
-**S6.1** `cmru get-sh --project <name>` emits a standalone bash script to stdout. The project's get.sh is the rendered output of `templates/get.sh.tmpl`.
+**S6.1** `cmru get-py --project <name>` (alias `cmru get`) emits a standalone Python 3 installer to stdout. The project's get.py is the rendered output of `templates/get.py.tmpl`. (The legacy bash `get.sh` emitter was removed — Python avoids the env-across-pipe pitfall and ships in the artifact.)
 
-**S6.2** The emitted script MUST implement:
-1. **resolve** — call resolver (S5) to find the highest-semver tag (or honour `<PREFIX>_VERSION` pin).
+**S6.2** The emitted installer MUST implement:
+1. **resolve** — call resolver (S5) to find the highest-semver tag (or honour the `--version` pin).
 2. **download** — fetch artifact + sidecar from the release host.
-3. **verify** — `sha256sum -c <sidecar>` MUST pass before any extraction. Verification is non-optional.
+3. **verify** — the artifact's SHA256 MUST match its `.sha256` sidecar before any extraction. Verification is non-optional.
 4. **install/update** — extract to `install_dir`; write `VERSION` file.
 5. **preserve** — on update, back up files listed in `[project.getsh].preserve` and restore them if the new artifact does not supply them.
 
-**S6.3** Air-gapped fallback: if `<PREFIX>_INSTALL_VIA=git`, use `git sparse-checkout` to install. No checksum verification in git mode (the user is trusting the git transport). MUST warn.
+**S6.3** Air-gapped fallback: `--via git` installs via `git sparse-checkout`. No checksum verification in git mode (the user is trusting the git transport). MUST warn.
 
-**S6.4** The script MUST require `python3 >= 3.11` (for the semver resolver inline script).
+**S6.4** The installer is Python 3 **stdlib-only** (urllib/tarfile/hashlib/argparse); no third-party dependencies.
 
-**S6.5** All dependency checks (curl, sha256sum, python3, project-specific deps) MUST run before any network I/O.
+**S6.5** All dependency checks (`[project.getsh].deps`, e.g. docker) MUST run before any network I/O.
 
-**S6.6** `<PREFIX>_VERSION` env var pins the install to a specific tag (bare semver or full tag).
+**S6.6** `--version <TAG>` pins the install to a specific tag (bare semver or full tag). Arguments go to the right side of the pipe (`curl … | sudo python3 - install --version …`), so there is no env-var-across-pipe footgun.
 
 ---
 

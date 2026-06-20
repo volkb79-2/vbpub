@@ -1,0 +1,399 @@
+#!/usr/bin/env python3
+"""[[PROJECT_NAME]] bootstrap installer / updater — get.py
+
+This installer ships inside the release artifact, so '[[PROJECT_NAME]] update'
+works out of the box without re-fetching from GitHub.
+
+Usage
+-----
+Fresh install (latest):
+    curl -fsSL https://raw.githubusercontent.com/[[REPO_OWNER]]/[[REPO_NAME]]/main/[[SUBDIR]]/get.py \
+      | sudo python3 - install
+
+Pin a specific release (args go to python3, not curl — no env-across-pipe issue):
+    curl -fsSL ... | sudo python3 - install --version [[TAG_PREFIX]]0.1.0
+
+Update an existing install:
+    [[PROJECT_NAME]] update
+    # or directly:
+    sudo python3 [[INSTALL_DIR_DEFAULT]]/[[SUBDIR]]/get.py update
+
+Air-gapped / dev (git-clone, no checksum):
+    curl -fsSL ... | sudo python3 - install --via git
+
+Requires: python3 (stdlib only)[[REQUIRED_DEPS_COMMENT]]
+"""
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+from urllib.error import URLError
+from urllib.request import Request, urlopen
+
+# ─── Project constants ────────────────────────────────────────────────────────
+REPO_OWNER          = "[[REPO_OWNER]]"
+REPO_NAME           = "[[REPO_NAME]]"
+TAG_PREFIX          = "[[TAG_PREFIX]]"
+INSTALL_DIR_DEFAULT = "[[INSTALL_DIR_DEFAULT]]"
+SUBDIR              = "[[SUBDIR]]"
+WRAPPER_BIN         = "[[WRAPPER_BIN]]"
+WRAPPER_SCRIPT_REL  = "[[WRAPPER_SCRIPT_REL]]"
+ASSET_SUFFIX        = "[[ASSET_SUFFIX]]"
+
+REPO_URL     = f"https://github.com/{REPO_OWNER}/{REPO_NAME}.git"
+RELEASES_API = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases"
+
+# ─── ANSI helpers (suppressed when not a TTY) ────────────────────────────────
+_NO_COLOUR = not sys.stdout.isatty()
+_C = {"RED": "\033[0;31m", "YEL": "\033[0;33m", "GRN": "\033[0;32m",
+      "CYN": "\033[0;36m", "BLD": "\033[1m",    "RST": "\033[0m"}
+
+
+def _c(code: str, text: str) -> str:
+    return text if _NO_COLOUR else f"{_C[code]}{text}{_C['RST']}"
+
+
+def info(msg: str)  -> None: print(f"{_c('CYN', '==>')} {msg}")
+def ok(msg: str)    -> None: print(f"{_c('GRN', '  ✓')} {msg}")
+def warn(msg: str)  -> None: print(f"{_c('YEL', '  ⚠')}  {msg}", file=sys.stderr)
+def err(msg: str)   -> None: print(f"{_c('RED', '  ✗')}  {msg}", file=sys.stderr)
+def fatal(msg: str) -> None: err(msg); sys.exit(1)
+def hr()            -> None: print("─" * 79)
+
+
+# ─── Tag resolution ───────────────────────────────────────────────────────────
+def _semver_key(tag: str) -> tuple:
+    ver = tag[len(TAG_PREFIX):]
+    parts: list = []
+    for chunk in ver.replace("-", ".").split("."):
+        try:
+            parts.append((0, int(chunk)))
+        except ValueError:
+            parts.append((1, chunk))
+    return tuple(parts)
+
+
+def _gh_get(url: str, timeout: int = 15) -> object:
+    req = Request(url, headers={
+        "Accept":     "application/vnd.github+json",
+        "User-Agent": "[[PROJECT_NAME]]/get.py",
+    })
+    with urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
+def _resolve_via_api() -> str:
+    releases = _gh_get(f"{RELEASES_API}?per_page=100")
+    assert isinstance(releases, list)
+    candidates = [
+        r["tag_name"] for r in releases
+        if isinstance(r, dict)
+        and r.get("tag_name", "").startswith(TAG_PREFIX)
+        and not r.get("draft")
+    ]
+    if not candidates:
+        raise ValueError("no releases found")
+    return max(candidates, key=_semver_key)
+
+
+def _resolve_via_git() -> str:
+    result = subprocess.run(
+        ["git", "ls-remote", "--tags", "--sort=-v:refname",
+         REPO_URL, f"refs/tags/{TAG_PREFIX}*"],
+        capture_output=True, text=True, timeout=30, check=True,
+    )
+    for line in result.stdout.splitlines():
+        ref = line.split()[-1]
+        if ref.endswith("^{}"):
+            continue
+        return ref.removeprefix("refs/tags/")
+    raise ValueError("no matching tags")
+
+
+def resolve_latest_tag() -> str:
+    """Return highest-semver [[TAG_PREFIX]]* tag from GitHub Releases."""
+    try:
+        return _resolve_via_api()
+    except Exception as exc:
+        warn(f"GitHub Releases API failed ({exc}); falling back to git ls-remote…")
+    try:
+        return _resolve_via_git()
+    except Exception as exc2:
+        fatal(
+            f"Could not resolve latest [[PROJECT_NAME]] release: {exc2}\n"
+            "  Check network access or pass --version."
+        )
+        return ""  # unreachable
+
+
+def normalize_tag(version_arg: str) -> str:
+    if version_arg.startswith(TAG_PREFIX):
+        return version_arg
+    return f"{TAG_PREFIX}{version_arg.lstrip('v')}"
+
+
+# ─── Download + verify ────────────────────────────────────────────────────────
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _download(url: str, dest: Path) -> None:
+    req = Request(url, headers={"User-Agent": "[[PROJECT_NAME]]/get.py"})
+    try:
+        with urlopen(req, timeout=300) as resp, open(dest, "wb") as out:
+            shutil.copyfileobj(resp, out)
+    except URLError as exc:
+        fatal(f"Download failed: {url}\n  {exc}")
+
+
+def download_and_verify(tag: str, workdir: Path) -> Path:
+    asset_name   = f"{tag}{ASSET_SUFFIX}"
+    sidecar_name = f"{asset_name}.sha256"
+    base_url     = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/download/{tag}"
+
+    asset   = workdir / asset_name
+    sidecar = workdir / sidecar_name
+
+    info(f"Downloading {asset_name} …")
+    _download(f"{base_url}/{asset_name}", asset)
+
+    info(f"Downloading {sidecar_name} …")
+    _download(f"{base_url}/{sidecar_name}", sidecar)
+
+    info("Verifying SHA256 checksum…")
+    expected = sidecar.read_text().split()[0]
+    actual   = _sha256(asset)
+    if actual != expected:
+        fatal(
+            f"SHA256 mismatch — refusing to install.\n"
+            f"  expected: {expected}\n"
+            f"  got:      {actual}"
+        )
+    ok("Checksum verified.")
+    return asset
+
+
+# ─── Install paths ────────────────────────────────────────────────────────────
+def artifact_install(tag: str, project_home: Path) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        asset = download_and_verify(tag, Path(tmp))
+        info(f"Extracting to {project_home} …")
+        project_home.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(asset, "r:xz") as tf:
+            members = []
+            for member in tf.getmembers():
+                parts = Path(member.name).parts
+                if len(parts) < 2:
+                    continue
+                m = copy.copy(member)
+                m.name = str(Path(*parts[1:]))
+                members.append(m)
+            kw: dict = {}
+            if sys.version_info >= (3, 12):
+                kw["filter"] = "data"
+            tf.extractall(project_home, members=members, **kw)
+        ok("Extracted.")
+
+
+def git_install(tag: str, install_dir: Path) -> None:
+    if not shutil.which("git"):
+        fatal("git not found (required for --via git).")
+    info(f"git-clone install: {tag}")
+    if (install_dir / ".git").exists():
+        info("Updating existing clone…")
+        subprocess.run(["git", "-C", str(install_dir), "fetch", "--tags", "--quiet"], check=True)
+        subprocess.run(["git", "-C", str(install_dir), "checkout", "--quiet", tag], check=True)
+    else:
+        subprocess.run([
+            "git", "clone", "--filter=blob:none", "--sparse", "--quiet",
+            REPO_URL, str(install_dir),
+        ], check=True)
+        subprocess.run(
+            ["git", "-C", str(install_dir), "sparse-checkout", "set", SUBDIR], check=True)
+        subprocess.run(
+            ["git", "-C", str(install_dir), "fetch", "--tags", "--quiet"], check=True)
+        subprocess.run(
+            ["git", "-C", str(install_dir), "checkout", "--quiet", tag], check=True)
+
+
+def write_wrapper(project_home: Path) -> None:
+    src  = project_home / WRAPPER_SCRIPT_REL
+    dest = Path(WRAPPER_BIN)
+    shutil.copy2(src, dest)
+    dest.chmod(0o755)
+    text = dest.read_text()
+    text = re.sub(
+        r"^[[ENV_PREFIX]]_HOME=.*$",
+        f"[[ENV_PREFIX]]_HOME={project_home}",
+        text, count=1, flags=re.MULTILINE,
+    )
+    dest.write_text(text)
+    ok(f"CLI wrapper installed: {dest}")
+
+
+# ─── Config file preservation across updates ──────────────────────────────────
+[[PRESERVE_FILES_FUNC]]
+
+
+# ─── Install ──────────────────────────────────────────────────────────────────
+def do_install(args: argparse.Namespace) -> None:
+    install_dir  = Path(args.install_dir)
+    project_home = install_dir / SUBDIR
+
+    hr()
+    print(f"  {_c('BLD', '[[PROJECT_NAME]]')}  ·  get.py")
+    hr()
+
+    if (project_home / "VERSION").exists():
+        warn(f"Existing install found at {project_home} — running update instead.")
+        do_update(args)
+        return
+
+    if args.version:
+        tag = normalize_tag(args.version)
+        info(f"Pinned version: {_c('BLD', tag)}")
+    else:
+        info("Resolving latest release…")
+        tag = resolve_latest_tag()
+        info(f"Latest release: {_c('BLD', tag)}")
+
+    install_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.via == "git":
+        warn("git-clone fallback (--via git). No checksum verification.")
+        git_install(tag, install_dir)
+    else:
+        artifact_install(tag, project_home)
+
+    (project_home / "VERSION").write_text(tag.removeprefix(TAG_PREFIX) + "\n")
+    write_wrapper(project_home)
+
+    hr()
+    ok(f"[[PROJECT_NAME]] {tag} installed.")
+    print()
+    print("  Next step:")
+[[NEXT_STEPS_MSG]]
+    print()
+
+
+# ─── Update ───────────────────────────────────────────────────────────────────
+def do_update(args: argparse.Namespace) -> None:
+    install_dir  = Path(args.install_dir)
+    project_home = install_dir / SUBDIR
+    version_file = project_home / "VERSION"
+
+    if not version_file.exists():
+        fatal(f"No install found at {project_home}. Run 'python3 get.py install' first.")
+
+    current     = version_file.read_text().strip()
+    current_tag = f"{TAG_PREFIX}{current}"
+
+    if args.version:
+        latest_tag = normalize_tag(args.version)
+        info(f"Pinned version: {_c('BLD', latest_tag)}")
+    else:
+        info("Resolving latest release…")
+        latest_tag = resolve_latest_tag()
+        info(f"Latest release: {_c('BLD', latest_tag)}")
+
+    if latest_tag == current_tag:
+        ok(f"Already up to date ({latest_tag}).")
+        return
+
+    info(f"Updating {current_tag} → {latest_tag} …")
+
+    backed_up = preserve_config_files(project_home)
+
+    if args.via == "git":
+        warn("git-clone fallback (--via git). No checksum verification.")
+        git_install(latest_tag, install_dir)
+    else:
+        artifact_install(latest_tag, project_home)
+
+    (project_home / "VERSION").write_text(latest_tag.removeprefix(TAG_PREFIX) + "\n")
+    restore_config_files(project_home, backed_up)
+    write_wrapper(project_home)
+
+    ok(f"Updated to {latest_tag}.")
+
+    try:
+        notes = _gh_get(
+            f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}"
+            f"/releases/tags/{latest_tag}"
+        )
+        assert isinstance(notes, dict)
+        body = notes.get("body", "").strip()
+        if body:
+            info(f"Release notes for {latest_tag}:")
+            for line in body.splitlines()[:20]:
+                print(f"    {line}")
+            if len(body.splitlines()) > 20:
+                print("    …(see GitHub for full release notes)")
+    except Exception:
+        pass
+
+    print()
+
+
+# ─── Entry point ──────────────────────────────────────────────────────────────
+def main() -> None:
+    if os.geteuid() != 0:
+        fatal("This script must be run as root. Use: sudo python3 get.py <command>")
+    if platform.system() != "Linux":
+        fatal("[[PROJECT_NAME]] requires Linux.")
+
+    for dep in [[REQUIRED_DEPS_LIST]]:
+        if not shutil.which(dep):
+            fatal(f"Required tool not found: {dep}. Install it and re-run.")
+
+    parser = argparse.ArgumentParser(
+        prog="get.py",
+        description="[[PROJECT_NAME]] installer / updater",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  sudo python3 get.py install\n"
+            "  sudo python3 get.py install --version [[TAG_PREFIX]]0.2.0\n"
+            "  sudo python3 get.py update\n"
+            "  curl -fsSL https://raw.githubusercontent.com/[[REPO_OWNER]]/[[REPO_NAME]]"
+            "/main/[[SUBDIR]]/get.py | sudo python3 - install\n"
+        ),
+    )
+    parser.add_argument("command", choices=["install", "update"])
+    parser.add_argument(
+        "--version", metavar="TAG",
+        help=f"Pin a specific release, e.g. {TAG_PREFIX}0.1.0 or 0.1.0",
+    )
+    parser.add_argument(
+        "--install-dir", default=INSTALL_DIR_DEFAULT, metavar="DIR",
+        help=f"Install root (default: {INSTALL_DIR_DEFAULT})",
+    )
+    parser.add_argument(
+        "--via", choices=["artifact", "git"], default="artifact",
+        help="'artifact' (default, with SHA256 verify) or 'git' (clone, no checksum)",
+    )
+    args = parser.parse_args()
+
+    if args.command == "install":
+        do_install(args)
+    else:
+        do_update(args)
+
+
+if __name__ == "__main__":
+    main()

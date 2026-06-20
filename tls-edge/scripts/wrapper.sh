@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# /usr/local/bin/tls-edge — installed by get.sh; do not edit by hand
+# /usr/local/bin/tls-edge — installed by get.py; do not edit by hand
 # To update: tls-edge update
 TLS_EDGE_HOME=/opt/tls-edge-src/tls-edge
 
@@ -7,7 +7,7 @@ _need_home() {
     if [[ ! -d "$TLS_EDGE_HOME" ]]; then
         echo "error: tls-edge not found at $TLS_EDGE_HOME" >&2
         echo "  Re-run the bootstrap installer to repair:" >&2
-        echo "    curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.sh | sudo bash" >&2
+        echo "    curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.py | sudo python3 - install" >&2
         exit 1
     fi
 }
@@ -17,7 +17,7 @@ case "${1:-}" in
     render)    _need_home; shift; exec bash "$TLS_EDGE_HOME/scripts/render.sh" "$@" ;;
     verify)    _need_home; shift; exec bash "$TLS_EDGE_HOME/scripts/verify.sh" "$@" ;;
     dev-certs) _need_home; shift; exec bash "$TLS_EDGE_HOME/scripts/dev-certs.sh" "$@" ;;
-    update)    _need_home; exec bash "$TLS_EDGE_HOME/get.sh" --update ;;
+    update)    _need_home; exec python3 "$TLS_EDGE_HOME/get.py" update ;;
     version)
         _need_home
         git -C "$TLS_EDGE_HOME" describe --tags --match 'tls-edge-v*' 2>/dev/null \

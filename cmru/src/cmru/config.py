@@ -2,7 +2,8 @@
 
 The orchestrator (``cli.py:load_config``) reads the same ``cmru.toml`` via a more
 lenient loader that maps it onto the runner model; this module is the strict S2 reader
-(unknown-key rejection, full validation) consumed by getsh. Both read one file: cmru.toml.
+(full validation) consumed by getpy. Both read one file: cmru.toml, and both accept the
+same artifact schema (``artifacts = [...]`` list, ``oci`` → ``oci-image`` alias).
 
 S2 top-level tables: [github], [orchestration], [targets], [cleanup], [project.<name>]
 See docs/SPEC.md S2 for the full schema.
@@ -60,6 +61,8 @@ class ResolveConfig:
 class GetShConfig:
     install_dir: str         # default install root
     preserve: List[str]      # config files preserved across updates (S6.5)
+    deps: List[str]          # extra runtime tools the installer checks for (e.g. "docker")
+    next_steps: List[str]    # post-install hint lines printed by the emitted installer
 
 
 @dataclass(frozen=True)
@@ -131,12 +134,41 @@ def _parse_version(raw: dict, project_name: str) -> VersionConfig:
     return VersionConfig(strategy=strategy, paths=[str(p) for p in paths], bump=bump)
 
 
+_ARTIFACT_ALIASES = {"oci": "oci-image"}
+_VALID_ARTIFACTS = {"wheel", "tarball", "oci-image", "bundle"}
+
+
+def _parse_artifacts(name: str, raw: dict) -> List[str]:
+    """Resolve a project's artifact profiles, mirroring cli.py's orchestrator loader.
+
+    Accepts the canonical ``artifacts = [...]`` list (with the legacy singular
+    ``artifact`` as a fallback) and applies the ``oci`` → ``oci-image`` alias so both
+    readers stay in lock-step against one cmru.toml."""
+    items = raw.get("artifacts")
+    if items is None:
+        single = str(raw.get("artifact") or "").strip()
+        items = [single] if single else []
+    if not isinstance(items, list):
+        print(f"[ERROR] project.{name}.artifacts must be a list")
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+    artifacts = [
+        _ARTIFACT_ALIASES.get(str(i).strip(), str(i).strip())
+        for i in items if str(i).strip()
+    ]
+    if not artifacts:
+        print(f"[ERROR] project.{name}.artifacts is required (or legacy 'artifact')")
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+    unknown = [a for a in artifacts if a not in _VALID_ARTIFACTS]
+    if unknown:
+        print(f"[ERROR] project.{name}.artifacts: unknown {unknown}; "
+              f"valid: {sorted(_VALID_ARTIFACTS)} (alias: 'oci'→'oci-image')")
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+    return artifacts
+
+
 def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
     prefix = str(_require(raw, "prefix", f"project.{name}"))
-    artifact = str(_require(raw, "artifact", f"project.{name}"))
-    if artifact not in ("wheel", "oci", "tarball", "bundle"):
-        print(f"[ERROR] project.{name}.artifact must be wheel|oci|tarball|bundle")
-        raise SystemExit(exit_codes.CONFIG_ERROR)
+    artifact = _parse_artifacts(name, raw)[0]   # primary profile (getpy doesn't use it)
     cwd = str(_require(raw, "cwd", f"project.{name}"))
     scm_dist = raw.get("scm_dist")
 
@@ -163,6 +195,8 @@ def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
         getsh = GetShConfig(
             install_dir=str(g.get("install_dir") or f"/opt/{name}-src"),
             preserve=[str(p) for p in (g.get("preserve") or [])],
+            deps=[str(d) for d in (g.get("deps") or [])],
+            next_steps=[str(s) for s in (g.get("next_steps") or [])],
         )
 
     delegated: Optional[DelegatedConfig] = None

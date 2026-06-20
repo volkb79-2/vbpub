@@ -119,14 +119,21 @@ commands = [
 # ─── tls-edge — tarball (built-in publish; in project_order) ───────────────────
 # build step is project-owned (build-artifact.sh); push + validate come from the
 # tarball built-in (cmru/handlers.py tarball-publish / tarball-validate).
-# scripts/release.sh stays for standalone manual cuts; publish-release.py deleted
-# (the tarball built-in is an exact replacement).
+# scripts/release.sh stays for standalone manual cuts; it calls scripts/publish-release.py,
+# which routes through cmru.release.publish_versioned — the same keystone as the built-in.
+# [project.tls-edge.getsh] is the single source for the emitted get.py installer:
+#   `cmru get-py --project tls-edge --config cmru.toml` regenerates tls-edge/get.py.
 [project.tls-edge]
 prefix    = "tls-edge-v"
 artifacts = ["tarball"]
 cwd       = "tls-edge"
 [project.tls-edge.version]
 strategy = "file:VERSION"     # version from tls-edge/VERSION; cmru tags + commits it
+[project.tls-edge.getsh]
+install_dir = "/opt/tls-edge-src"
+preserve    = ["ciu-stack/ciu.toml.j2", "edge-proxy/.env"]
+deps        = ["docker"]      # installer checks for docker before install/update
+next_steps  = ["tls-edge install"]
 [project.tls-edge.env]
 TLS_EDGE_RELEASE_NOTES = "## tls-edge tarball\nEdge proxy + TLS termination stack for the vbpub infra.\n\n**Verify**\n```bash\nsha256sum -c tls-edge-v*.tar.xz.sha256\n```"
 [project.tls-edge.steps.build]
