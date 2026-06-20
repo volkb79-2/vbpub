@@ -28,7 +28,7 @@ A release is governed by two orthogonal choices, so the *same* versioning can pu
 | `tarball` | ✓ | ✓ | — | ✓ | — |
 | `oci-image` | — | — | ✓ | — | ✓ |
 
-So a **wheel** (`ciu`, `cmru`) gets a semver tag + GitHub Release + `latest.json`; an **OCI image** (`modern-debian-tools-python-debug`) is pushed to ghcr with **no git tag and no Release** (its version is the image tag / `BUILD_DATE`), and cmru commits the regenerated manifests; **pwmcp** emits *both* (`["oci-image", "bundle"]`).
+So a **wheel** (`ciu`, `cmru`) gets a semver tag + GitHub Release + `latest.json`; an **OCI image** (`modern-debian-tools-python-debug`) is pushed to ghcr with **no git tag and no Release** (its version is the image tag / `BUILD_DATE`), and cmru commits the regenerated manifests; GHCR package visibility is then reconciled to the source repository visibility; **pwmcp** emits *both* (`["oci-image", "bundle"]`).
 
 `[project.X.release]` overrides a preset: `git_tag = false`, or `commit_generated = ["<project-relative path>"]` for build outputs cmru should commit.
 

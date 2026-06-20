@@ -27,6 +27,9 @@ STABLE_TAG_RE = re.compile(r"^(?:1-)?(?P<python>\d+\.\d+)-(?P<debian>[a-z0-9][a-
 PACKAGE_DOCS_ROOT = Path(__file__).resolve().parent.parent / "package-manifests-versioned"
 TOOL_VERSION_DISPLAY_ORDER = [
     ("aider", "AIDER_VER"),
+    ("reasonix", "REASONIX_VER"),
+    ("deepcode", "DEEPCODE_VER"),
+    ("openclaw", "OPENCLAW_VER"),
     ("antigravity", "ANTIGRAVITY_VER"),
     ("awscli", "AWSCLI_VER"),
     ("b2", "B2_VER"),
@@ -44,6 +47,15 @@ TOOL_VERSION_DISPLAY_ORDER = [
     ("vault", "VAULT_VER"),
     ("yq", "YQ_VER"),
 ]
+AI_CLI_TOOL_NAMES = {
+    "aider",
+    "reasonix",
+    "deepcode",
+    "openclaw",
+    "codex",
+    "claude",
+    "antigravity",
+}
 CIU_VERSION_FROM_WHEEL_RE = re.compile(r"^ciu-(?P<version>.+)-py[0-9].*\.whl$")
 SYSTEM_PACKAGE_NAMES = [
     "bash-completion",
@@ -978,6 +990,9 @@ def build_runtime_custom_tooling_map(
         return value.strip().lower() not in {"0", "false", "no", "off"}
 
     install_aider = install_enabled("INSTALL_AIDER")
+    install_reasonix = install_enabled("INSTALL_REASONIX")
+    install_deepcode = install_enabled("INSTALL_DEEPCODE")
+    install_openclaw = install_enabled("INSTALL_OPENCLAW")
     install_antigravity = install_enabled("INSTALL_ANTIGRAVITY")
     install_claude = install_enabled("INSTALL_CLAUDE_CODE")
     install_codex = install_enabled("INSTALL_CODEX")
@@ -1006,6 +1021,21 @@ def build_runtime_custom_tooling_map(
         "cmru": cmru_version or "not-installed",
         "CIU": ciu_wheel_version or "not-installed",
         "aider": aider_display,
+        "reasonix": (
+            str(resolved_versions.get("REASONIX_VER") or "unknown")
+            if install_reasonix
+            else "not-installed"
+        ),
+        "deepcode": (
+            str(resolved_versions.get("DEEPCODE_VER") or "unknown")
+            if install_deepcode
+            else "not-installed"
+        ),
+        "openclaw": (
+            str(resolved_versions.get("OPENCLAW_VER") or "unknown")
+            if install_openclaw
+            else "not-installed"
+        ),
         "antigravity": (
             str(resolved_versions.get("ANTIGRAVITY_VER") or "unknown")
             if install_antigravity
@@ -1262,15 +1292,26 @@ def render_tool_artifact_lines(tool_metadata: dict | None) -> list[str]:
     ]
 
     if isinstance(resolved_versions, dict):
-        lines.append("### Resolved Tool Versions")
-        lines.append("")
+        ai_lines: list[str] = []
+        support_lines: list[str] = []
         emitted_keys: set[str] = set()
         for display_name, version_key in TOOL_VERSION_DISPLAY_ORDER:
             version_value = str(resolved_versions.get(version_key) or "").strip()
             if not version_value:
                 continue
             emitted_keys.add(version_key)
-            lines.append(f"- {display_name}: `{version_value}`")
+            target_lines = ai_lines if display_name in AI_CLI_TOOL_NAMES else support_lines
+            target_lines.append(f"- {display_name}: `{version_value}`")
+
+        if ai_lines:
+            lines.extend(["### AI CLI Tools", ""])
+            lines.extend(ai_lines)
+            lines.append("")
+
+        if support_lines:
+            lines.extend(["### Supporting Tool Versions", ""])
+            lines.extend(support_lines)
+            lines.append("")
 
         for version_key in sorted(resolved_versions):
             if version_key in emitted_keys:
@@ -1561,7 +1602,7 @@ def write_package_docs(
     tool_metadata: dict | None,
     ciu_wheel_version: str,
     first_party_wheels: list[dict[str, str]] | None = None,
-) -> None:
+) -> list[str]:
     username = os.getenv("GITHUB_USERNAME") or "volkb79-2"
     repo = os.getenv("GITHUB_REPO") or "vbpub"
     description_base = os.getenv("OCI_DESCRIPTION_BASE") or os.getenv("OCI_DESCRIPTION") or ""
@@ -1631,6 +1672,8 @@ def write_package_docs(
                 encoding="utf-8",
             )
 
+    return sorted(grouped)
+
 
 def main() -> int:
     stable_image = (
@@ -1697,7 +1740,7 @@ def main() -> int:
     sys.stderr.write("[INFO] Resolving first-party wheels from pip/wheels.list...\n")
     first_party_wheels = resolve_first_party_wheels(_github_owner, _github_repo)
 
-    write_package_docs(
+    package_names = write_package_docs(
         build_date,
         latest_python,
         latest_debian,
@@ -1715,6 +1758,7 @@ def main() -> int:
     print(f"TOOL_ARTIFACTS_STAGE_ROOT={staging_result.stage_root}")
     print(f"TOOL_ARTIFACTS_METADATA={staging_result.metadata_path}")
     print(f"TOOL_ARTIFACTS_VERSIONS_ENV={staging_result.versions_env_path}")
+    print(f"GHCR_PACKAGE_NAMES={','.join(package_names)}")
     print(f"CIU_WHEEL_TAG={ciu_wheel_tag}")
     print(f"CIU_WHEEL_ASSET_NAME={ciu_wheel_asset_name}")
     print(f"CIU_WHEEL_VERSION={ciu_wheel_version}")

@@ -25,6 +25,8 @@ PWMCP_DIR = Path(__file__).resolve().parent
 # Shared self-healing vars loader (pwmcp/scripts/_vars.py).
 sys.path.insert(0, str(PWMCP_DIR / "scripts"))
 from _vars import load_vars  # noqa: E402
+sys.path.insert(0, str(PWMCP_DIR.parent / "cmru" / "src"))
+from cmru.ghcr import GitHubPackages  # noqa: E402
 
 
 def log(msg: str) -> None:
@@ -42,11 +44,16 @@ def load_cmru_credentials() -> None:
     Resolution order:
       - GITHUB_USERNAME: env, then cmru.toml [github].owner
       - GITHUB_REPO:     env, then cmru.toml [github].repo
+      - GITHUB_OWNER_TYPE: env, then cmru.toml [github].owner_type
       - GITHUB_PUSH_PAT: env GITHUB_PUSH_PAT, then env GITHUB_TOKEN,
                          then cmru.secret.toml [github].token
     Missing config files are silently skipped.
     """
-    if os.environ.get("GITHUB_USERNAME") and os.environ.get("GITHUB_PUSH_PAT"):
+    if (
+        os.environ.get("GITHUB_USERNAME")
+        and os.environ.get("GITHUB_PUSH_PAT")
+        and os.environ.get("GITHUB_OWNER_TYPE")
+    ):
         return
     repo_root = PWMCP_DIR.parent
     try:
@@ -61,6 +68,8 @@ def load_cmru_credentials() -> None:
                 os.environ["GITHUB_USERNAME"] = str(github["owner"])
             if not os.environ.get("GITHUB_REPO") and github.get("repo"):
                 os.environ["GITHUB_REPO"] = str(github["repo"])
+            if not os.environ.get("GITHUB_OWNER_TYPE") and github.get("owner_type"):
+                os.environ["GITHUB_OWNER_TYPE"] = str(github["owner_type"])
         # Resolve token: env vars first, then cmru.secret.toml.
         if not os.environ.get("GITHUB_PUSH_PAT"):
             token = os.environ.get("GITHUB_TOKEN", "")
@@ -74,6 +83,28 @@ def load_cmru_credentials() -> None:
                 os.environ["GITHUB_PUSH_PAT"] = token
     except Exception:
         pass
+
+
+def sync_ghcr_package_visibility(package_names: list[str]) -> None:
+    """Mirror repo visibility onto GHCR packages that this release just pushed."""
+    names = [name.strip() for name in package_names if name and str(name).strip()]
+    if not names:
+        return
+
+    username = os.environ.get("GITHUB_USERNAME", "").strip()
+    repo = os.environ.get("GITHUB_REPO", "").strip()
+    token = os.environ.get("GITHUB_PUSH_PAT", "").strip()
+    owner_type = os.environ.get("GITHUB_OWNER_TYPE", "").strip()
+    if not username or not repo or not token or not owner_type:
+        log("Skipping GHCR visibility sync (missing GitHub identity/token)")
+        return
+
+    ghcr = GitHubPackages(username, repo, token, owner_type)
+    repo_visibility = ghcr.repo_visibility()
+    log(f"Mirroring GHCR package visibility to {repo_visibility}: {', '.join(names)}")
+    for package_name in names:
+        ghcr.mirror_package_visibility(package_name, expected_visibility=repo_visibility)
+        log(f"Synced {package_name} visibility to {repo_visibility}")
 
 
 def run(argv: list[str], cwd: Path | None = None) -> None:
@@ -110,6 +141,12 @@ def do_push() -> None:
     pwmcp_ver = os.environ.get("PWMCP_VERSION", "?")
     log(f"Pushing pwmcp-playwright  PW={pw_ver}  PWMCP={pwmcp_ver}")
     run(["docker", "buildx", "bake", "all", "--push"], cwd=PWMCP_DIR)
+    package_names = [
+        name.strip()
+        for name in (os.environ.get("GHCR_PACKAGE_NAMES") or "pwmcp").split(",")
+        if name.strip()
+    ]
+    sync_ghcr_package_visibility(package_names)
     log("Push complete.")
 
 

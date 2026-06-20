@@ -6,10 +6,12 @@ Steps:
   2. Compute the next r<N> counter by scanning git tags (pwmcp-v<pw_ver>-r*).
   3. Update ciu.defaults.toml.j2 and ciu.toml.j2 (playwright_version + image.tag).
   4. Update docker-bake.hcl defaults (PLAYWRIGHT_VERSION + PWMCP_VERSION).
-  5. Write cmru.vars for downstream scripts (build-bundle.py, publish-bundle.py).
+  5. Write cmru.vars for downstream scripts (build-bundle.py, publish-bundle.py,
+     and GHCR visibility sync).
 
 Outputs:
   pwmcp/cmru.vars  — KEY=VALUE env file consumed by build-bundle.py / publish-bundle.py
+                     and build-push.py
   ciu.defaults.toml.j2 — playwright_version and image.tag updated in-place
   ciu.toml.j2          — same (kept in sync with defaults)
   docker-bake.hcl      — PLAYWRIGHT_VERSION and PWMCP_VERSION defaults updated in-place
@@ -145,7 +147,8 @@ def write_release_vars(pw_version: str, distro: str, pwmcp_version: str) -> None
     RELEASE_VARS_FILE.write_text(
         f"PLAYWRIGHT_VERSION={pw_version}\n"
         f"PLAYWRIGHT_DISTRO={distro}\n"
-        f"PWMCP_VERSION={pwmcp_version}\n",
+        f"PWMCP_VERSION={pwmcp_version}\n"
+        "GHCR_PACKAGE_NAMES=pwmcp\n",
         encoding="utf-8",
     )
 

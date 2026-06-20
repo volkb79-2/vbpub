@@ -7,17 +7,26 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 
-CUSTOM_TOOL_ORDER = [
+FIRST_PARTY_WHEEL_ORDER = [
     "cmru",
     "CIU",
+]
+
+AI_CLI_TOOL_ORDER = [
     "aider",
+    "reasonix",
+    "deepcode",
+    "openclaw",
+    "codex",
+    "claude",
     "antigravity",
+]
+
+CUSTOM_TOOL_ORDER = [
     "awscli",
     "b2",
     "bat",
-    "claude",
     "consul",
-    "codex",
     "delta",
     "fd",
     "fzf",
@@ -65,21 +74,24 @@ def read_list_file(path: Path) -> list[str]:
     return [line.rstrip("\n") for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def ordered_custom_tool_items(custom_tooling: Mapping[str, str]) -> list[tuple[str, str]]:
+def ordered_tool_items(
+    tooling: Mapping[str, str],
+    order: Sequence[str],
+) -> list[tuple[str, str]]:
     items: list[tuple[str, str]] = []
     seen: set[str] = set()
 
-    for key in CUSTOM_TOOL_ORDER:
-        value = str(custom_tooling.get(key) or "").strip()
+    for key in order:
+        value = str(tooling.get(key) or "").strip()
         if not value:
             continue
         items.append((key, value))
         seen.add(key)
 
-    for key in sorted(custom_tooling):
+    for key in sorted(tooling):
         if key in seen:
             continue
-        value = str(custom_tooling.get(key) or "").strip()
+        value = str(tooling.get(key) or "").strip()
         if not value:
             continue
         items.append((key, value))
@@ -87,8 +99,34 @@ def ordered_custom_tool_items(custom_tooling: Mapping[str, str]) -> list[tuple[s
     return items
 
 
+def select_tooling(custom_tooling: Mapping[str, str], names: Sequence[str]) -> dict[str, str]:
+    selected: dict[str, str] = {}
+    for key in names:
+        value = str(custom_tooling.get(key) or "").strip()
+        if not value:
+            continue
+        selected[key] = value
+    return selected
+
+
 def render_custom_tooling_lines(custom_tooling: Mapping[str, str]) -> list[str]:
-    items = ordered_custom_tool_items(custom_tooling)
+    excluded = set(FIRST_PARTY_WHEEL_ORDER) | set(AI_CLI_TOOL_ORDER)
+    filtered = {key: value for key, value in custom_tooling.items() if key not in excluded}
+    items = ordered_tool_items(filtered, CUSTOM_TOOL_ORDER)
+    if not items:
+        return ["- unavailable"]
+    return [f"- {name}: {value}" for name, value in items]
+
+
+def render_first_party_wheel_lines(custom_tooling: Mapping[str, str]) -> list[str]:
+    items = ordered_tool_items(select_tooling(custom_tooling, FIRST_PARTY_WHEEL_ORDER), FIRST_PARTY_WHEEL_ORDER)
+    if not items:
+        return ["- unavailable"]
+    return [f"- {name}: {value}" for name, value in items]
+
+
+def render_ai_cli_tool_lines(custom_tooling: Mapping[str, str]) -> list[str]:
+    items = ordered_tool_items(select_tooling(custom_tooling, AI_CLI_TOOL_ORDER), AI_CLI_TOOL_ORDER)
     if not items:
         return ["- unavailable"]
     return [f"- {name}: {value}" for name, value in items]
@@ -101,9 +139,29 @@ def render_runtime_probe_sections(
     lines = [
         "## Runtime Version Snapshot (Pre-build Probe)",
         "",
-        "### Custom Tooling",
-        "",
     ]
+    lines.extend(
+        [
+            "### First-Party Wheels",
+            "",
+        ]
+    )
+    lines.extend(render_first_party_wheel_lines(custom_tooling))
+    lines.extend(
+        [
+            "",
+            "### AI CLI Tools",
+            "",
+        ]
+    )
+    lines.extend(render_ai_cli_tool_lines(custom_tooling))
+    lines.extend(
+        [
+            "",
+            "### Custom Tooling",
+            "",
+        ]
+    )
     lines.extend(render_custom_tooling_lines(custom_tooling))
     lines.extend(
         [
@@ -153,6 +211,22 @@ def render_installed_manifest(
         f"- Devcontainers image version: {version_value if version_value else 'unknown'}"
     )
 
+    lines.extend(
+        [
+            "",
+            "## First-Party Wheels",
+            "",
+        ]
+    )
+    lines.extend(render_first_party_wheel_lines(custom_tooling))
+    lines.extend(
+        [
+            "",
+            "## AI CLI Tools",
+            "",
+        ]
+    )
+    lines.extend(render_ai_cli_tool_lines(custom_tooling))
     lines.extend(
         [
             "",
@@ -240,9 +314,9 @@ def render_unified_manifest(
 
     Structure:
     1. Release / Pull / Base  (from source or generated)
-    2. Custom Tooling         (live-inspected at image build time)
-    3. First-Party Wheels     (from source manifest's ## First-Party Wheels section)
-    4. Staged Tool Artifacts  (resolved versions; from source manifest)
+    2. First-Party Wheels     (live-inspected at image build time)
+    3. AI CLI Tools           (live-inspected at image build time)
+    4. Custom Tooling         (live-inspected at image build time)
     5. Python Packages        (pip freeze inside image)
     6. System Packages        (dpkg-query inside image)
     7. Runtime Version Snapshot (pre-build probe from source manifest)

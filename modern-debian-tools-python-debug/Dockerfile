@@ -48,6 +48,9 @@ ARG INSTALL_CODEX="true"
 ARG INSTALL_CLAUDE_CODE="true"
 ARG INSTALL_ANTIGRAVITY="true"
 ARG INSTALL_AIDER="true"
+ARG INSTALL_REASONIX="true"
+ARG INSTALL_DEEPCODE="true"
+ARG INSTALL_OPENCLAW="true"
 ARG GITHUB_USERNAME
 ARG GITHUB_REPO
 ARG CIU_WHEEL_TAG
@@ -63,6 +66,9 @@ ARG PACKAGE_MANIFEST_SOURCE=""
 ARG DEVCONTAINERS_RELEASE=""
 ARG DEVCONTAINERS_VERSION=""
 ARG SECONDARY_PYTHON_VERSIONS=""
+ARG REASONIX_VERSION="latest"
+ARG DEEPCODE_VERSION="latest"
+ARG OPENCLAW_VERSION="latest"
 
 ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
 ENV BACKPORTS_URI="${BACKPORTS_URI}"
@@ -93,6 +99,8 @@ COPY pip/wheels/ /tmp/pip/wheels/
 COPY requirements/toolkit.txt /tmp/requirements/toolkit.txt
 COPY package-manifests-versioned /tmp/package-manifests-versioned
 COPY scripts/manifest_sections.py /tmp/manifest_sections.py
+COPY ai-cli-tools.list /tmp/ai-cli-tools.list
+COPY scripts/install_ai_cli_tools.py /tmp/install_ai_cli_tools.py
 
 # Ensure vscode user exists (non-devcontainers bases)
 RUN set -euo pipefail; \
@@ -179,26 +187,6 @@ RUN set -euo pipefail; \
         fi; \
         install -m 755 "${bin_path}" "/usr/local/bin/${bin_name}"; \
     }; \
-    if [ "${INSTALL_CODEX}" = "true" ]; then \
-        require_file "${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz"; \
-        require_file "${DOWNLOADS_DIR}/codex-${CODEX_VER}-SHA256SUMS"; \
-        EXPECTED_CODEX_SHA256="$(awk '$2 == "codex-package-x86_64-unknown-linux-musl.tar.gz" {print $1; exit}' "${DOWNLOADS_DIR}/codex-${CODEX_VER}-SHA256SUMS")"; \
-        if [ -z "${EXPECTED_CODEX_SHA256}" ]; then \
-            echo "[ERROR] Missing Codex checksum entry in staged SHA256SUMS" >&2; \
-            exit 1; \
-        fi; \
-        echo "${EXPECTED_CODEX_SHA256}  ${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz" | sha256sum -c -; \
-        install_from_tar "${DOWNLOADS_DIR}/codex-${CODEX_VER}.tar.gz" codex /tmp/codex-extract; \
-    fi; \
-    if [ "${INSTALL_CLAUDE_CODE}" = "true" ]; then \
-        require_file "${DOWNLOADS_DIR}/claude-${CLAUDE_CODE_VER}-linux-x64"; \
-        install -m 755 "${DOWNLOADS_DIR}/claude-${CLAUDE_CODE_VER}-linux-x64" /usr/local/bin/claude; \
-    fi; \
-    if [ "${INSTALL_ANTIGRAVITY}" = "true" ]; then \
-        require_file "${DOWNLOADS_DIR}/antigravity-${ANTIGRAVITY_VER}.tar.gz"; \
-        install_from_tar "${DOWNLOADS_DIR}/antigravity-${ANTIGRAVITY_VER}.tar.gz" antigravity /tmp/antigravity-extract; \
-        install -m 755 /usr/local/bin/antigravity /usr/local/bin/agy; \
-    fi; \
     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux"; \
     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt"; \
     EXPECTED_B2_SHA256="$(grep '^sha256' "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt" | awk '{print $2}')"; \
@@ -240,6 +228,7 @@ RUN set -euo pipefail; \
     require_file "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip"; \
     unzip -q "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip" -d /tmp/awscli; \
     /tmp/awscli/aws/install -i /usr/local/aws -b /usr/local/bin; \
+    python3 /tmp/install_ai_cli_tools.py root; \
     rm -rf \
         /tmp/codex-extract \
         /tmp/bat-extract \
@@ -254,6 +243,8 @@ RUN set -euo pipefail; \
         "/tmp/gh_${GH_VER}_linux_amd64" \
         /tmp/consul-extract \
         /tmp/vault-extract \
+        /root/.npm \
+        /root/.cache \
         /tmp/awscli \
         /tmp/tool-artifacts-staging
 
@@ -300,15 +291,7 @@ RUN set -euo pipefail; \
     /home/vscode/.venv/bin/python -m pip install --upgrade pip setuptools wheel --disable-pip-version-check --quiet; \
     /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet \
         -r /tmp/requirements/toolkit.txt; \
-    if [ "${INSTALL_AIDER}" = "true" ]; then \
-        if [ "${AIDER_VERSION}" = "main" ]; then \
-            /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat @ git+https://github.com/Aider-AI/aider.git@main"; \
-        elif [ "${AIDER_VERSION}" = "latest" ]; then \
-            /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet aider-chat; \
-        else \
-            /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet "aider-chat==${AIDER_VERSION}"; \
-        fi; \
-    fi
+    python3 /tmp/install_ai_cli_tools.py venv
 # ── Secondary Python venvs — lean (uv + debugpy + ruff only) ─────────────────
 # Driven by SECONDARY_PYTHON_VERSIONS build arg (space-separated dotted versions, e.g. "3.11 3.9").
 # Each version gets /home/vscode/.venv-py{nodot} (e.g. .venv-py311, .venv-py39).
@@ -356,6 +339,7 @@ ENV VIRTUAL_ENV="/home/vscode/.venv"
 ENV PATH="/home/vscode/.venv/bin:${PATH}"
 
 USER root
+RUN rm -f /tmp/install_ai_cli_tools.py /tmp/ai-cli-tools.list
 RUN set -euo pipefail; \
         cat > /etc/profile.d/dstdns-venv.sh << 'EOF'
 if [ -n "${BASH_VERSION:-}" ] && [[ $- == *i* ]] && [ -d /home/vscode/.venv ]; then
@@ -412,6 +396,21 @@ RUN set -euo pipefail; \
         else \
             echo "aider=not-installed"; \
         fi; \
+        if command -v reasonix >/dev/null 2>&1; then \
+            echo "reasonix=$(reasonix --version 2>&1 | head -1 || true)"; \
+        else \
+            echo "reasonix=not-installed"; \
+        fi; \
+        if command -v deepcode >/dev/null 2>&1; then \
+            echo "deepcode=$(deepcode --version 2>&1 | head -1 || true)"; \
+        else \
+            echo "deepcode=not-installed"; \
+        fi; \
+        if command -v openclaw >/dev/null 2>&1; then \
+            echo "openclaw=$(openclaw --version 2>&1 | head -1 || true)"; \
+        else \
+            echo "openclaw=not-installed"; \
+        fi; \
         if command -v agy >/dev/null 2>&1; then \
             echo "antigravity=$(agy --version 2>&1 | head -1)"; \
         else \
@@ -447,7 +446,7 @@ RUN set -euo pipefail; \
     /home/vscode/.venv/bin/pip list --format=freeze > "${python_packages_file}"; \
     dpkg-query -W -f='${Package}=${Version}\n' \
         bash-completion ca-certificates locales curl bind9-dnsutils fuse3 gdb git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc \
-        netcat-openbsd ncdu openssl python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim w3m wget xz-utils skopeo \
+        netcat-openbsd ncdu openssl python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim w3m wget xz-utils nodejs npm skopeo \
         postgresql-client redis-tools > "${system_packages_file}"; \
     python3 /tmp/manifest_sections.py unified \
         --output "${unified_manifest}" \

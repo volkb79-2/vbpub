@@ -63,7 +63,7 @@ satisfied by `redis-tools` (the CLI), independent of whether python `redis` is i
 
 ### The AI-CLI corollary
 
-This image ships AI coding agents (Claude Code, Codex). They reach for `python -c "import asyncpg…"`
+This image ships AI coding agents (Claude Code, Codex, Reasonix, DeepCode, OpenClaw). They reach for `python -c "import asyncpg…"`
 **by default** — so libs-present makes their default correct by construction. "Ship the AI CLIs but
 forbid Python / CLI-only" is the inefficient incoherent corner: you pay the agents' (real) attack
 surface *and* kneecap them, while relying on probabilistic adherence to negative instructions and

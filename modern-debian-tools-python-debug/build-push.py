@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
 sys.path.insert(0, str(REPO_ROOT / "cmru" / "src"))
 
+from cmru.ghcr import GitHubPackages  # noqa: E402
 from cmru.runner import run_step  # noqa: E402
 
 BUILD_ENV_FILE = ROOT / ".build-env.json"
@@ -85,6 +86,72 @@ def ensure_devcontainers_base_from_bake_defaults() -> None:
         "DEVCONTAINERS_BASE_DEV",
         f"mcr.microsoft.com/devcontainers/python:dev-{latest_python}-{latest_debian}",
     )
+
+
+def load_cmru_credentials() -> None:
+    """Seed GitHub identity from cmru.toml / cmru.secret.toml when running standalone."""
+    if (
+        os.environ.get("GITHUB_USERNAME")
+        and os.environ.get("GITHUB_REPO")
+        and os.environ.get("GITHUB_OWNER_TYPE")
+        and os.environ.get("GITHUB_PUSH_PAT")
+    ):
+        return
+
+    repo_root = ROOT.parent
+    try:
+        import tomllib
+
+        cmru_toml = repo_root / "cmru.toml"
+        if cmru_toml.exists():
+            with cmru_toml.open("rb") as fh:
+                config = tomllib.load(fh)
+            github = config.get("github", {})
+            if not os.environ.get("GITHUB_USERNAME") and github.get("owner"):
+                os.environ["GITHUB_USERNAME"] = str(github["owner"])
+            if not os.environ.get("GITHUB_REPO") and github.get("repo"):
+                os.environ["GITHUB_REPO"] = str(github["repo"])
+            if not os.environ.get("GITHUB_OWNER_TYPE") and github.get("owner_type"):
+                os.environ["GITHUB_OWNER_TYPE"] = str(github["owner_type"])
+
+        if not os.environ.get("GITHUB_PUSH_PAT"):
+            token = os.environ.get("GITHUB_TOKEN", "")
+            if not token:
+                secret_toml = repo_root / "cmru.secret.toml"
+                if secret_toml.exists():
+                    with secret_toml.open("rb") as fh:
+                        secret = tomllib.load(fh)
+                    token = str(secret.get("github", {}).get("token", ""))
+            if token:
+                os.environ["GITHUB_PUSH_PAT"] = token
+    except Exception:
+        pass
+
+
+def sync_ghcr_package_visibility(package_names: list[str]) -> None:
+    """Mirror repo visibility onto GHCR packages that this release just pushed."""
+    names = [name.strip() for name in package_names if name and str(name).strip()]
+    if not names:
+        return
+
+    username = os.environ.get("GITHUB_USERNAME", "").strip()
+    repo = os.environ.get("GITHUB_REPO", "").strip()
+    token = os.environ.get("GITHUB_PUSH_PAT", "").strip()
+    owner_type = os.environ.get("GITHUB_OWNER_TYPE", "").strip()
+    if not username or not repo or not token or not owner_type:
+        sys.stderr.write("[WARN] Skipping GHCR visibility sync (missing GitHub identity/token)\n")
+        return
+
+    ghcr = GitHubPackages(username, repo, token, owner_type)
+    repo_visibility = ghcr.repo_visibility()
+    sys.stderr.write(
+        f"[INFO] Syncing GHCR package visibility to {repo_visibility}: {', '.join(names)}\n"
+    )
+    for package_name in names:
+        ghcr.mirror_package_visibility(package_name, expected_visibility=repo_visibility)
+        sys.stderr.write(
+            f"[INFO] Synced {package_name} visibility to {repo_visibility}\n"
+        )
 
 
 def run_resolver() -> dict[str, str]:
@@ -216,6 +283,7 @@ def do_build(ignore_new_releases: bool) -> None:
     sys.stderr.write("[INFO] === modern-debian-tools-python-debug: build ===\n")
 
     ensure_devcontainers_base_from_bake_defaults()
+    load_cmru_credentials()
 
     # Compute BUILD_DATE first (resolver depends on it)
     base_date = os.getenv("BUILD_DATE") or datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -262,21 +330,32 @@ def do_build(ignore_new_releases: bool) -> None:
 def do_push() -> None:
     """Push phase: load saved env, push to registry (no resolver re-run)."""
     sys.stderr.write("[INFO] === modern-debian-tools-python-debug: push ===\n")
-    sys.stderr.write("[INFO] Step 1/2: Loading saved build environment...\n")
+    sys.stderr.write("[INFO] Step 1/3: Loading saved build environment...\n")
+
+    load_cmru_credentials()
 
     # Load and apply saved env vars
     env_vars = load_build_env()
     apply_env_to_os(env_vars)
 
-    sys.stderr.write(
-        f"[INFO] Step 2/2: Running docker buildx bake --push ...\n"
-    )
+    sys.stderr.write("[INFO] Step 2/3: Running docker buildx bake --push ...\n")
     config_path = ROOT / "cmru.build.toml"
     try:
         run_step(config_path, "push-images", None)
     except subprocess.CalledProcessError as exc:
         sys.stderr.write(f"[ERROR] Push failed. Exit code: {exc.returncode}\n")
         raise SystemExit(exc.returncode) from None
+
+    sys.stderr.write("[INFO] Step 3/3: Syncing GHCR package visibility ...\n")
+    package_names = [
+        name.strip()
+        for name in (
+            env_vars.get("GHCR_PACKAGE_NAMES")
+            or "modern-debian-tools-python-debug,modern-debian-tools-python-debug-vsc-devcontainer"
+        ).split(",")
+        if name.strip()
+    ]
+    sync_ghcr_package_visibility(package_names)
 
 
 def main() -> None:

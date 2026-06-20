@@ -81,7 +81,9 @@ annotated for what it's for. It splits into dev/build tooling (`ruff`, `mypy`, `
 
 Optional (controlled by `INSTALL_*` build args, all enabled by default):
 - `aider-chat` — `INSTALL_AIDER=true`
-- `codex`, `claude-code`, `antigravity` — npm-based, installed separately from the venv
+- `reasonix`, `openclaw` — npm-based, installed separately from the venv and backed by the image's `nodejs` / `npm`
+- `deepcode` — pip-based (`deepcode-hku`), installed separately from the venv
+- `codex`, `claude-code`, `antigravity` — installed separately from the venv
 
 ### Lean Venv Packages (Secondary Pythons)
 
@@ -244,6 +246,8 @@ Each built image writes a markdown manifest at:
 
 Manifest sections:
 - `Base`
+- `First-Party Wheels`
+- `AI CLI Tools`
 - `Custom Tooling`
 - `Python packages`
 - `System packages`
@@ -258,10 +262,14 @@ The base section includes:
 
 ## About `Custom Tooling` vs `System packages`
 
+- `First-Party Wheels` is the wheel inventory view: image-owned releases (`ciu`, `cmru`).
+- `AI CLI Tools` is the agent CLI inventory view: `aider`, `reasonix`, `deepcode`, `openclaw`, `codex`, `claude`, `antigravity`.
 - `Custom Tooling` is an operational view: tool executables and their runtime `--version` output.
 - `System packages` is a package inventory view: selected apt package names and versions.
 
 This means one component can appear in both sections without being duplicated.
+The manifest now splits first-party wheels and AI CLI tools into their own sections so the
+release inventory reads the same way as the image build pipeline.
 
 Example:
 - `psql` in `Custom Tooling` is the executable version output.
@@ -327,7 +335,7 @@ CODEX_VERSION=0.34.0 CLAUDE_CODE_VERSION=1.0.27 AIDER_VERSION=0.64.0 ./build-ima
 Disable optional AI tooling across all image variants:
 
 ```bash
-INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_AIDER=false ./build-images.py
+INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_AIDER=false INSTALL_REASONIX=false INSTALL_DEEPCODE=false INSTALL_OPENCLAW=false ./build-images.py
 ```
 
 Notes:
@@ -341,6 +349,23 @@ Use PAT with package scopes (classic token):
 - `read:packages`
 
 Configured via environment (for example `.env` loaded by your release tooling).
+The release pipeline mirrors each GHCR package's visibility to the source repository after push, so new releases should not need a manual package-settings toggle.
+
+## Persisting AI Tool State
+
+If you want agent state to survive devcontainer rebuilds, keep the workspace mount persistent and
+add the tool-specific home directories below:
+
+- Workspace root for `reasonix.toml`, `deepcode_config.json`, `AGENTS.md`, and any repo-local scratch files
+- `/home/vscode/.config/reasonix`
+- `/home/vscode/.deepcode`
+- `/home/vscode/.openclaw`
+
+The key files and directories are:
+
+- Reasonix user config: `~/.config/reasonix/`
+- DeepCode sessions: `~/.deepcode/sessions/`
+- OpenClaw config: `~/.openclaw/openclaw.json`
 
 ## Using in another repository
 
@@ -394,4 +419,3 @@ The default `AIDER_VERSION=main` installs aider-chat from upstream git `main` br
 because the latest PyPI release (0.86.2) pins `Python <3.13`. PR
 [Aider-AI/aider#4899](https://github.com/Aider-AI/aider/pull/4899) added 3.13/3.14 support
 but no release has been cut yet. See `USAGE.md` for details on switching modes.
-

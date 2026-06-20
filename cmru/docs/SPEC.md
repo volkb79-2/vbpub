@@ -270,6 +270,8 @@ bake_set      = ["*.tags=ghcr.io/foo/bar:latest"]
 
 **S4.6** `target_commitish` in the GitHub release MUST be set to the commit SHA at build time.
 
+**S4.7** OCI publishes to GHCR MUST reconcile package visibility with the source repository visibility after push. The repository visibility is authoritative: a public repo MUST produce public GHCR packages, and a private repo MUST keep its packages private.
+
 ---
 
 ## S5 — Resolver

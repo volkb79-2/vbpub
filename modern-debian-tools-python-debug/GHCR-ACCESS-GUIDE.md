@@ -3,13 +3,13 @@
 ## Image Privacy Status
 
 ### When is public/private decided?
-- **Images are PRIVATE by default** when pushed to GHCR
-- Privacy is controlled in GitHub's package settings (web UI), **not during push**
-- The `docker push` command does not set visibility
+- GHCR still creates new packages as private by default
+- cmru mirrors the package visibility to the source repository after push
+- The `docker push` command itself does not set visibility; the post-push sync does
 
 ### How to make images public:
 
-1. **Navigate to package settings:**
+1. **Use the package settings UI only for legacy packages:**
   - URL pattern: `https://github.com/users/volkb79-2/packages/container/modern-debian-tools-python-debug/settings`
    - Or: GitHub Profile → Packages → Select package → Settings
 
@@ -19,9 +19,11 @@
    - Select "Public"
    - Confirm the action
 
+For new releases, the release pipeline should keep the package visibility aligned automatically.
+
 ### Published Images:
 ```bash
-# Available images (currently private):
+# Available images (visibility should follow the repository; legacy packages may still need a one-time sync):
 ghcr.io/volkb79-2/modern-debian-tools-python-debug:bookworm-py3.11-20260118
 ghcr.io/volkb79-2/modern-debian-tools-python-debug:bookworm-py3.13-20260118
 ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.11-20260118

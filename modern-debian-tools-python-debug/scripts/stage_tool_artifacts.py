@@ -39,6 +39,7 @@ DEFAULT_RETRIES = 3
 DOWNLOAD_TIMEOUT_SECONDS = 90
 AWSCLI_VERSION_RE = re.compile(r"aws-cli/(?P<version>[0-9][^\s]+)")
 CLAUDE_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.+-]+)?$")
+NPM_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.+-]+)?$")
 
 ANTIGRAVITY_MANIFEST_LINUX_AMD64_URL = (
     "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/"
@@ -223,6 +224,32 @@ def _resolve_version(requested: str | None, repo: str) -> str:
     if value and value != "latest":
         return value
     return _resolve_latest_release(repo)
+
+
+def _resolve_npm_version(requested: str | None, package_name: str) -> str:
+    value = (requested or "").strip()
+    if value and value != "latest":
+        return value
+
+    payload = _fetch_json(f"https://registry.npmjs.org/{package_name}/latest")
+    version = str(payload.get("version") or "").strip()
+    if not version:
+        raise StageError(f"Unable to determine latest npm version for {package_name}")
+    if not NPM_VERSION_RE.fullmatch(version):
+        _log(f"npm registry returned non-semver version for {package_name}: {version}")
+    return version
+
+
+def _resolve_pypi_version(requested: str | None, package_name: str) -> str:
+    value = (requested or "").strip()
+    if value and value != "latest":
+        return value
+
+    payload = _fetch_json(f"https://pypi.org/pypi/{package_name}/json")
+    version = str(payload.get("info", {}).get("version") or "").strip()
+    if not version:
+        raise StageError(f"Unable to determine latest PyPI version for {package_name}")
+    return version
 
 
 def _normalize_codex_version(value: str) -> str:
@@ -930,6 +957,9 @@ def _resolve_versions() -> dict[str, str]:
         "CLAUDE_CODE_VER": _resolve_claude_code_version(os.getenv("CLAUDE_CODE_VERSION")),
         "ANTIGRAVITY_VER": (os.getenv("ANTIGRAVITY_VERSION") or "latest").strip() or "latest",
         "AIDER_VER": (os.getenv("AIDER_VERSION") or "latest").strip() or "latest",
+        "REASONIX_VER": _resolve_npm_version(os.getenv("REASONIX_VERSION"), "reasonix"),
+        "DEEPCODE_VER": _resolve_pypi_version(os.getenv("DEEPCODE_VERSION"), "deepcode-hku"),
+        "OPENCLAW_VER": _resolve_npm_version(os.getenv("OPENCLAW_VERSION"), "openclaw"),
         "B2_VER": _resolve_version(os.getenv("B2_VERSION"), "Backblaze/B2_Command_Line_Tool"),
         "BAT_VER": _resolve_version(os.getenv("BAT_VERSION"), "sharkdp/bat"),
         "FD_VER": _resolve_version(os.getenv("FD_VERSION"), "sharkdp/fd"),

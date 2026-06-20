@@ -1,0 +1,10 @@
+# AI CLI tools installed by the debug cockpit image.
+# Format: tool|mode, where mode is either "root" or "venv".
+# Comments after '#' are ignored.
+aider|venv
+reasonix|root
+deepcode|venv
+openclaw|root
+codex|root
+claude|root
+antigravity|root

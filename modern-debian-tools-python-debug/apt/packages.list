@@ -45,4 +45,6 @@ vim                # terminal editor
 w3m                # terminal web browser — render STATIC HTML readably; JS-rendered → drive pwmcp
 wget               # downloader (alternative to curl)
 xz-utils           # xz (de)compression (e.g. the shellcheck tarball)
+nodejs             # runtime for npm-based AI CLI tools (reasonix, openclaw)
+npm                # package manager for reasonix/openclaw installs
 skopeo             # inspect / copy OCI images without a Docker daemon

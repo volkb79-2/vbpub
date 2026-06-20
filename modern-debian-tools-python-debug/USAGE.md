@@ -24,7 +24,9 @@ Environment configuration:
 Optional overrides (environment variables):
 - `REGISTRY`, `GITHUB_USERNAME`, `BUILD_DATE`, `BACKPORTS_URI`, `CIU_INSTALL_REQUIRED`
 - `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `ANTIGRAVITY_VERSION`, `AIDER_VERSION`
+- `REASONIX_VERSION`, `DEEPCODE_VERSION`, `OPENCLAW_VERSION`
 - `INSTALL_CODEX`, `INSTALL_CLAUDE_CODE`, `INSTALL_ANTIGRAVITY`, `INSTALL_AIDER`
+- `INSTALL_REASONIX`, `INSTALL_DEEPCODE`, `INSTALL_OPENCLAW`
 
 Resolver-emitted build coordinates (normally not set manually):
 - `CIU_WHEEL_TAG`, `CIU_WHEEL_ASSET_NAME`, `CIU_WHEEL_VERSION`
@@ -43,7 +45,7 @@ B2_VERSION=4.5.0 ./build-push.py --build
 Disable optional AI tooling for a minimal image:
 
 ```bash
-INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_AIDER=false ./build-push.py --build
+INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_AIDER=false INSTALL_REASONIX=false INSTALL_DEEPCODE=false INSTALL_OPENCLAW=false ./build-push.py --build
 ```
 
 ### AIDER_VERSION modes (three-way)
@@ -147,3 +149,17 @@ Installed tooling/program/package inventory is written at:
 ```
 
 This includes tool versions, pip package list, and selected Debian package versions.
+
+## Persisting Agent State
+
+To keep tool state across rebuilds, persist the workspace mount plus these home directories:
+
+- `/home/vscode/.config/reasonix` for Reasonix user config
+- `/home/vscode/.deepcode` for DeepCode sessions and local state
+- `/home/vscode/.openclaw` for OpenClaw config and gateway state
+
+Relevant workspace files that should stay on the host mount:
+
+- `reasonix.toml`
+- `deepcode_config.json`
+- any repo-local `AGENTS.md` / AI-instruction files
