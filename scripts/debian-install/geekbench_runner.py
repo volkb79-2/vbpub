@@ -8,123 +8,182 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
-from datetime import datetime
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 
 class GeekbenchRunner:
-    """Download, install and run Geekbench benchmarks"""
-    
-    # Constants
-    URL_CHECK_TIMEOUT = 5  # Seconds to wait for URL validation
-    
+    """Download, install and run Geekbench 6 benchmarks"""
+
+    # geekbench.com sits behind Cloudflare and 403s scripted requests, so we do NOT
+    # scrape the download page. cdn.geekbench.com is a plain CDN with a stable naming
+    # scheme (Geekbench-<major>.<minor>.<patch>-<Linux|LinuxARMPreview>.tar.gz); we
+    # probe it directly with a 1-byte ranged GET to discover the latest version.
+    CDN_BASE = "https://cdn.geekbench.com"
+    MAJOR = 6
+    # Safety net used only if probing finds nothing (e.g. CDN naming changes); bump as needed.
+    FALLBACK_VERSION = "6.7.1"
+    USER_AGENT = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+
     def __init__(self, version=6, work_dir=None):
+        if version != 6:
+            raise ValueError("Only Geekbench 6 is supported")
         self.version = version
         self.work_dir = work_dir or tempfile.mkdtemp(prefix='geekbench_')
         self.geekbench_path = None
         self.results = {}
-    
-    def _get_download_url(self):
-        """Get Geekbench download URL based on system architecture
-        
-        Dynamically finds the latest minor version by trying common patterns.
-        Downloads from https://www.geekbench.com/download/ or https://cdn.geekbench.com/
-        """
-        arch = platform.machine()
+        self.download_url = None
+        self.artifact_name = None
+        self.release_version = None
+
+    def _get_artifact_suffix(self):
+        """Return the CDN artifact suffix for this host (Linux | LinuxARMPreview)."""
         system = platform.system()
-        
         if system != 'Linux':
             raise ValueError(f"Unsupported system: {system}")
-        
-        if arch == 'x86_64':
-            base_filename = f"Geekbench-{self.version}"
-            suffix = "-Linux.tar.gz"
-        elif arch == 'aarch64' or arch == 'arm64':
-            base_filename = f"Geekbench-{self.version}"
-            suffix = "-LinuxARMPreview.tar.gz"
-        else:
-            raise ValueError(f"Unsupported architecture: {arch}")
-        
-        # Try to find the latest version by attempting common version patterns
-        # Check recent versions first (most likely to be current)
-        # Based on problem statement, current version is 6.4.0
-        version_candidates = [
-            (4, 0), (3, 0), (5, 0), (4, 1), (3, 1),  # Recent versions
-            (2, 0), (1, 0), (0, 0)  # Older fallbacks
-        ]
-        
-        for minor, patch in version_candidates:
-            version_str = f"{self.version}.{minor}.{patch}"
-            url = f"https://cdn.geekbench.com/{base_filename}.{minor}.{patch}{suffix}"
-            
-            # Quick check if URL is valid with HEAD request
-            try:
-                result = subprocess.run(
-                    ['curl', '-sI', '--max-time', str(self.URL_CHECK_TIMEOUT), '-o', '/dev/null', '-w', '%{http_code}', url],
-                    capture_output=True,
-                    text=True,
-                    timeout=self.URL_CHECK_TIMEOUT + 1  # Allow 1 extra second for subprocess overhead
-                )
-                if result.returncode == 0 and result.stdout.strip() == '200':
-                    print(f"Found Geekbench version {version_str}")
-                    return url
-            except subprocess.TimeoutExpired:
-                continue
-            except Exception:
-                continue
-        
-        # Fallback to base version without minor/patch (e.g., Geekbench-6-Linux.tar.gz)
-        fallback_url = f"https://cdn.geekbench.com/{base_filename}{suffix}"
-        print(f"Using fallback URL (will be validated during download): {fallback_url}")
-        return fallback_url
-    
-    def download_and_extract(self):
-        """Download and extract Geekbench"""
-        print(f"Downloading Geekbench {self.version}...")
-        
+
+        machine = platform.machine().lower()
+        if machine in ('x86_64', 'amd64'):
+            return 'Linux'
+        if machine in ('aarch64', 'arm64'):
+            return 'LinuxARMPreview'
+
+        raise ValueError(f"Unsupported architecture: {platform.machine()}")
+
+    def _artifact_url(self, version, suffix):
+        """Build the CDN tarball URL for a version string + artifact suffix."""
+        return f"{self.CDN_BASE}/Geekbench-{version}-{suffix}.tar.gz"
+
+    def _artifact_exists(self, url):
+        """True if the CDN serves a real binary artifact at url (1-byte ranged GET).
+
+        A real artifact answers 200/206 with an octet-stream body; a missing version
+        answers 404 (text/html). The body is never read, so this stays cheap even
+        though the artifacts are ~200 MB. A network error counts as "missing" — the
+        consecutive-miss thresholds in the caller keep one blip from ending a scan."""
+        request = Request(url, headers={'User-Agent': self.USER_AGENT,
+                                        'Range': 'bytes=0-0'})
         try:
-            url = self._get_download_url()
+            with urlopen(request, timeout=15) as response:
+                ctype = response.headers.get('Content-Type', '').lower()
+                return response.status in (200, 206) and 'text/html' not in ctype
+        except HTTPError:
+            return False
+        except (URLError, OSError):
+            return False
+
+    def _resolve_download_url(self):
+        """Resolve the newest Geekbench <MAJOR>.x.y tarball by probing the CDN.
+
+        Two cheap passes: find the highest minor that publishes an x.0, then the
+        highest patch within it. Falls back to FALLBACK_VERSION if probing finds
+        nothing. Avoids the Cloudflare-protected geekbench.com download page entirely."""
+        suffix = self._get_artifact_suffix()
+
+        # Pass 1 — highest minor (every real Geekbench minor ships an x.0).
+        best_minor = None
+        misses = 0
+        minor = 0
+        while misses < 2 and minor < 40:
+            if self._artifact_exists(self._artifact_url(f"{self.MAJOR}.{minor}.0", suffix)):
+                best_minor = minor
+                misses = 0
+            else:
+                misses += 1
+            minor += 1
+
+        if best_minor is None:
+            print(f"⚠ Could not probe {self.CDN_BASE}; "
+                  f"falling back to Geekbench {self.FALLBACK_VERSION}")
+            self.release_version = self.FALLBACK_VERSION
+        else:
+            # Pass 2 — highest patch within best_minor (x.0 already known to exist).
+            best_patch = 0
+            misses = 0
+            patch = 1
+            while misses < 2 and patch < 40:
+                if self._artifact_exists(
+                        self._artifact_url(f"{self.MAJOR}.{best_minor}.{patch}", suffix)):
+                    best_patch = patch
+                    misses = 0
+                else:
+                    misses += 1
+                patch += 1
+            self.release_version = f"{self.MAJOR}.{best_minor}.{best_patch}"
+
+        self.artifact_name = f"Geekbench-{self.release_version}-{suffix}"
+        self.download_url = self._artifact_url(self.release_version, suffix)
+        return self.download_url
+
+    def _safe_extract(self, tar, path):
+        """Extract a tarball while rejecting path traversal entries."""
+        root = Path(path).resolve()
+        for member in tar.getmembers():
+            member_path = (root / member.name).resolve()
+            if os.path.commonpath([str(root), str(member_path)]) != str(root):
+                raise ValueError(f"Unsafe path in tar archive: {member.name}")
+        tar.extractall(path)
+
+    def _find_geekbench_executable(self):
+        """Locate the extracted Geekbench binary."""
+        preferred_names = ('geekbench6', 'geekbench', 'geekbench_x86_64')
+
+        for name in preferred_names:
+            for root, _, files in os.walk(self.work_dir):
+                if name in files:
+                    candidate = Path(root) / name
+                    if candidate.is_file():
+                        return str(candidate)
+
+        for root, _, files in os.walk(self.work_dir):
+            for file in files:
+                if file.startswith('geekbench') and not file.endswith('.tar.gz'):
+                    candidate = Path(root) / file
+                    if candidate.is_file():
+                        return str(candidate)
+
+        return None
+
+    def download_and_extract(self):
+        """Download and extract the latest Geekbench artifact."""
+        print("Resolving latest Geekbench artifact...")
+
+        try:
+            url = self._resolve_download_url()
+        except (HTTPError, URLError, ValueError) as e:
+            error_msg = f"✗ Failed to determine download URL: {e}"
+            print(error_msg)
+            self.results['error'] = error_msg
+            return False
         except Exception as e:
             error_msg = f"✗ Failed to determine download URL: {e}"
             print(error_msg)
             self.results['error'] = error_msg
             return False
-        
-        tarball = os.path.join(self.work_dir, f"geekbench{self.version}.tar.gz")
-        
-        # Download
+
+        artifact_label = self.artifact_name or os.path.basename(url).removesuffix('.tar.gz')
+        print(f"Downloading {artifact_label}...")
+        tarball = os.path.join(self.work_dir, f"{artifact_label}.tar.gz")
+
         try:
-            result = subprocess.run(
-                ['curl', '-fsSL', '-o', tarball, url],
-                capture_output=True,
-                check=True,
-                timeout=300
-            )
+            request = Request(url, headers={'User-Agent': self.USER_AGENT})
+            with urlopen(request, timeout=300) as response, open(tarball, 'wb') as out:
+                shutil.copyfileobj(response, out)
             print(f"✓ Downloaded to {tarball}")
-        except subprocess.TimeoutExpired:
-            error_msg = f"✗ Download timed out after 300 seconds"
+        except (HTTPError, URLError) as e:
+            error_msg = f"✗ Download failed: {e}"
             print(error_msg)
             self.results['error'] = error_msg
-            return False
-        except subprocess.CalledProcessError as e:
-            error_msg = f"✗ Download failed: curl exit code {e.returncode}"
-            if e.stderr:
-                error_msg += f"\nError output: {e.stderr}"
-            print(error_msg)
-            self.results['error'] = error_msg
-            # Try to provide helpful hints
-            if '404' in str(e.stderr) or 'not found' in str(e.stderr).lower():
-                print("Hint: The Geekbench version may not be available. Try a different version.")
             print(f"Attempted URL: {url}")
-            return False
-        except FileNotFoundError:
-            error_msg = "✗ curl not found. Install with: apt install curl"
-            print(error_msg)
-            self.results['error'] = error_msg
             return False
         except Exception as e:
             error_msg = f"✗ Download failed with unexpected error: {e}"
@@ -164,16 +223,13 @@ class GeekbenchRunner:
         try:
             print("Extracting...")
             with tarfile.open(tarball, 'r:gz') as tar:
-                tar.extractall(self.work_dir)
-            
-            # Find geekbench executable
-            for root, dirs, files in os.walk(self.work_dir):
-                for file in files:
-                    if file == f'geekbench{self.version}' or file == 'geekbench_x86_64':
-                        self.geekbench_path = os.path.join(root, file)
-                        os.chmod(self.geekbench_path, 0o755)
-                        print(f"✓ Extracted to {self.geekbench_path}")
-                        return True
+                self._safe_extract(tar, self.work_dir)
+
+            self.geekbench_path = self._find_geekbench_executable()
+            if self.geekbench_path:
+                os.chmod(self.geekbench_path, 0o755)
+                print(f"✓ Extracted to {self.geekbench_path}")
+                return True
             
             error_msg = "✗ Geekbench executable not found after extraction"
             print(error_msg)
@@ -204,7 +260,8 @@ class GeekbenchRunner:
             self.results['error'] = error_msg
             return False
         
-        print(f"\nRunning Geekbench {self.version} benchmark...")
+        version_label = self.release_version or self.version
+        print(f"\nRunning Geekbench {version_label} benchmark...")
         print("This may take 5-10 minutes...\n")
         
         try:
@@ -534,7 +591,8 @@ class GeekbenchRunner:
         if not self.results:
             return "No results available"
         
-        summary = f"<b>🏆 Geekbench {self.version} Results</b>\n\n"
+        version_label = self.release_version or self.version
+        summary = f"<b>🏆 Geekbench {version_label} Results</b>\n\n"
         
         # System info
         if 'system' in self.results:
@@ -585,8 +643,8 @@ Examples:
         """
     )
     
-    parser.add_argument('--version', type=int, default=6, choices=[5, 6],
-                       help='Geekbench version (default: 6)')
+    parser.add_argument('--version', type=int, default=6, choices=[6],
+                       help='Geekbench version (Geekbench 6 only)')
     parser.add_argument('--run', action='store_true',
                        help='Run benchmark')
     parser.add_argument('--upload', action='store_true',

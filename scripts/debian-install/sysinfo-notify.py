@@ -57,8 +57,8 @@ IMPORTANT: Send a message to your bot first before it can message you!
                        help='Run Geekbench benchmark (requires --notify or --geekbench-only)')
     parser.add_argument('--geekbench-only', action='store_true',
                        help='Only run Geekbench without Telegram')
-    parser.add_argument('--geekbench-version', type=int, default=6, choices=[5, 6],
-                       help='Geekbench version (default: 6)')
+    parser.add_argument('--geekbench-version', type=int, default=6, choices=[6],
+                       help='Geekbench version (Geekbench 6 only)')
     parser.add_argument('--bot-token', metavar='TOKEN',
                        default=os.environ.get('TELEGRAM_BOT_TOKEN'),
                        help='Telegram bot token')
