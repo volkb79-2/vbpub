@@ -86,12 +86,20 @@ cmru manages N independent projects, each with its own semver line, all sharing 
 | `wheel` | Python distribution wheel (`.whl`) | `python -m build` |
 | `oci` | Container image | Docker buildx bake |
 | `tarball` | Archive (`.tar.xz`, `.tar.gz`) | `tar` + custom build |
-| `bundle` | Browser-automation bundle (`.zip`) or similar composite | project-specific bundler |
+| `bundle` | Deterministic release bundle (`.tar.xz`) + `manifest.json` + `manifest.json.minisig` | project allowlist + cmru bundler |
 
 **S1.3** Each **GitHub-Release** profile (`wheel`/`bundle`/`tarball`) MUST upload:
 - The artifact file itself (immutable, content-addressed by version+hash in release notes).
 - A `.sha256` sidecar containing one line in `sha256sum -c` format.
 (The `oci-image` profile creates no GitHub Release — see S-REL.)
+
+**S1.6** The `bundle` artifact is a **triple**: a deterministic `<name>.tar.xz` archive
+(byte-identical across builds from the same commit and `SOURCE_DATE_EPOCH`), a canonical
+`manifest.json` (Seam 3 schema; see S9.5), and a detached Ed25519 signature
+`manifest.json.minisig` (see S7). The manifest is the root of authenticity for remote
+deployment: it pins every content-addressed asset (wheel sha256, image digest) so the
+installer (SPEC A) can verify the entire release transitively from a single trusted
+signature check.
 
 **S1.4** OCI images are published to a registry (ghcr) with a dated immutable tag plus a
 floating `:latest`; their manifest digest is the content address. They are **not**
@@ -414,10 +422,28 @@ Commodity concerns are delegated to external OSS tools and MUST NOT be reimpleme
 
 | Key | Tool | Purpose |
 |---|---|---|
-| `sign` | `cosign` | Sign artifacts (keyless or key-based) |
+| `sign` | `cosign` | OCI image signing (keyless or key-based); optional defense-in-depth for v1 |
+| `minisign` | `minisign` | Detached Ed25519 signing of `manifest.json` (the bundle release manifest) |
 | `sbom` | `syft` + `grype` | SBOM generation and vulnerability scan |
 | `changelog` | `git-cliff` | Changelog from conventional commits |
 | `nfpm` | `nfpm` | Build `.deb` / `.rpm` packages |
+
+**S7.5** `minisign` manifest signing (`[project.<name>.delegated.minisign]`):
+
+- **Sign**: `minisign -S -s <secret_key> -m manifest.json -t "<trusted_comment>"` →
+  produces `manifest.json.minisig`.
+- **Verify**: `minisign -Vm manifest.json -p <public_key>` → exit 0 only if Ed25519
+  signature AND trusted comment both verify.
+- **Trusted comment** (tamper-evident, signed): `project=<name> tag=<tag> manifest_sha256=<hex>`.
+  The `manifest_sha256` binds the signature to the exact manifest bytes.
+- **Key generation** (one-time, operator responsibility):
+  `minisign -G -p minisign.pub -s minisign.key`
+  The **secret key** (`minisign.key`) is a release-time secret: resolve from an env var
+  or a gitignored file — **never committed**, never in `cmru.toml` (same discipline as
+  the GitHub token, S2.4). The **public key** (`minisign.pub`) is published and
+  distributed to hosts as part of the deployment enrollment seed.
+- cosign remains available for **optional** in-registry image signing as later
+  defense-in-depth; it is not used in v1 for the manifest.
 
 **S7.2** If a delegated tool is absent and `required = false` (default), cmru MUST skip that step silently (or with a one-line note at `--verbose`).
 
@@ -448,7 +474,23 @@ cmru uses a four-value exit code scheme identical to CIU S10.3:
 
 **S9.3** For the `scm` versioning strategy, the clean version string (no `.dev`) is only emitted on an annotated tag. Untagged builds MUST produce a dev suffix.
 
-**S9.4** Given the same source commit and toolchain pin, two independent builds MUST produce byte-identical artifacts (deterministic build contract).
+**S9.4** Given the same source commit and toolchain pin, two independent builds MUST produce byte-identical artifacts (deterministic build contract). For the `bundle` profile specifically:
+
+- Archive membership comes from an explicit git-tracked allowlist (never a recursive walk).
+- Every `TarInfo` is normalized: `mtime = SOURCE_DATE_EPOCH`; `uid = gid = 0`;
+  `uname = gname = ""`; mode = `0o644` (files) / `0o755` (executable files);
+  members sorted by path in byte order.
+- Compression: `tarfile` with `mode="w:xz"` (fixed format; no timestamp in container).
+- Hard excludes applied belt-and-suspenders: `.git`, `.ciu`, rendered `*.toml`, `ciu.env`,
+  `minisign.key`, `__pycache__`, `*.pyc`, `*.log`, `*.pem/.key/.crt` and similar.
+- A **build-twice gate** in the test suite asserts identical sha256 across two builds from
+  the same `SOURCE_DATE_EPOCH`; flipping the epoch asserts the digest changes.
+
+**S9.5** `manifest.json` MUST be serialized canonically so it is itself deterministic:
+UTF-8, `sort_keys=True`, `separators=(",", ":")` (compact, no spaces), trailing newline.
+Two builds of the same inputs MUST produce byte-identical `manifest.json`. The `created`
+field is derived from `SOURCE_DATE_EPOCH` (`datetime.fromtimestamp(epoch, tz=UTC)`), never
+wall-clock time.
 
 ---
 

@@ -630,9 +630,9 @@ def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Pat
     ))
     lines.append("")
 
-    # S7.5: CIU_HOST_PROFILE placeholder — default ciu-deploy --profile for this host
-    lines.append("# Host profile (S7.5)")
-    lines.append('# export CIU_HOST_PROFILE=""  # default ciu-deploy --profile for this host')
+    # Seam 4: CIU_SERVICES_PROFILE placeholder — ordered profile list for this host
+    lines.append("# Service profiles (Seam 4 / S7.5)")
+    lines.append('# export CIU_SERVICES_PROFILE="core,db,worker-io"  # ordered profile list for this host')
     lines.append("")
 
     lines.extend(_emit_section(

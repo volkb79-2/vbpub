@@ -424,13 +424,25 @@ def render_configfiles(
     """Discover and render ``configfile`` sections under each service (S5).
 
     Discovers ``[<root_key>.<service>.configfile.<cfgname>]`` tables (keys:
-    ``template``, ``target``, optional ``mode`` default ``"0440"``). Each
-    template (path relative to *stack_dir*) is rendered with a Jinja2 context of
-    the **guarded** config (secrets are NOT readable as ``{{ root.secrets.x }}``,
-    S4.21 — even here) plus ``env`` and the explicit ``secret(name)`` function
-    (S5.4). The result is written to
-    ``<stack_dir>/.ciu/rendered/<service>/<cfgname>`` (parents created) and
-    chmod'd to ``mode``.
+    ``template``, ``target``, optional ``mode`` default ``"0440"``,
+    optional ``instances`` int). Each template (path relative to *stack_dir*)
+    is rendered with a Jinja2 context of the **guarded** config (secrets are NOT
+    readable as ``{{ root.secrets.x }}``, S4.21 — even here) plus ``env`` and
+    the explicit ``secret(name)`` function (S5.4).
+
+    **Dynamic per-instance fan-out (§6):** when a configfile section declares
+    ``instances = N`` (integer ≥ 1), ``render_configfiles`` renders the template
+    *N* times — once per 1-based index — and emits *N* :class:`ConfigFileMount`
+    objects, each with a unique ``name`` (``<cfgname>-<index>``) and unique
+    ``service`` (``<service_name>-<index>``). Each render context additionally
+    exposes ``instance_index`` (1-based int) and ``instance_id``
+    (``"<service>-<index>"``) so templates can produce unique content per
+    instance. Single-instance configfiles (no ``instances`` key, or
+    ``instances = 1``) behave identically to before this change.
+
+    The result is written to
+    ``<stack_dir>/.ciu/rendered/<service[-index]>/<cfgname[-index]>`` (parents
+    created) and chmod'd to ``mode``.
 
     Parameters
     ----------
@@ -449,7 +461,8 @@ def render_configfiles(
     ------
     FileNotFoundError : a referenced template does not exist.
     ValueError        : a configfile section is missing ``template``/``target``,
-                        or a template calls ``secret()`` with an unknown name.
+                        or a template calls ``secret()`` with an unknown name,
+                        or ``instances`` is not a positive integer.
     """
     from .secrets.directives import discover as _discover
 
@@ -483,6 +496,8 @@ def render_configfiles(
             template_rel = cfg.get("template")
             target = cfg.get("target")
             mode = cfg.get("mode", "0440")
+            instances_raw = cfg.get("instances", None)
+
             if not isinstance(template_rel, str) or not template_rel:
                 raise ValueError(
                     f"[S5.1] configfile '{cfg_name}' of service '{service_name}' "
@@ -494,6 +509,19 @@ def render_configfiles(
                     f"is missing a `target` container path."
                 )
 
+            # Validate + resolve instance count
+            if instances_raw is None:
+                instance_count = 1
+                multi_instance = False
+            else:
+                if not isinstance(instances_raw, int) or isinstance(instances_raw, bool) or instances_raw < 1:
+                    raise ValueError(
+                        f"[S5.1] configfile '{cfg_name}' of service '{service_name}': "
+                        f"'instances' must be a positive integer, got {instances_raw!r}."
+                    )
+                instance_count = instances_raw
+                multi_instance = instance_count > 1
+
             template_path = stack_dir / template_rel
             if not template_path.exists():
                 raise FileNotFoundError(
@@ -502,40 +530,54 @@ def render_configfiles(
                 )
 
             raw = template_path.read_text(encoding="utf-8")
-            consumed_here: set[str] = set()
 
-            def configfile_secret(name: str) -> str:
-                value = secret_fn(name)
-                consumed_here.add(name)
-                return value
+            # Render once per instance (1-based indexing)
+            for idx in range(1, instance_count + 1):
+                consumed_here: set[str] = set()
 
-            context = {
-                **guarded,
-                "env": dict(os.environ),
-                "secret": configfile_secret,
-            }
-            rendered_text = render_jinja2_text(raw, context)
+                def configfile_secret(name: str, _consumed=consumed_here) -> str:
+                    value = secret_fn(name)
+                    _consumed.add(name)
+                    return value
 
-            out_path = rendered_root / service_name / cfg_name
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            # Atomic replace (S8.4) — also the only way a SECOND run can
-            # overwrite the previous 0440 rendered file without write
-            # permission on it (os.replace needs only the directory).
-            tmp_path = out_path.with_name(out_path.name + ".tmp")
-            tmp_path.write_text(rendered_text, encoding="utf-8")
-            os.chmod(tmp_path, int(mode, 8))
-            os.replace(tmp_path, out_path)
+                instance_id = f"{service_name}-{idx}"
+                context = {
+                    **guarded,
+                    "env": dict(os.environ),
+                    "secret": configfile_secret,
+                    "instance_index": idx,
+                    "instance_id": instance_id,
+                }
+                rendered_text = render_jinja2_text(raw, context)
 
-            mounts.append(
-                ConfigFileMount(
-                    service=service_name,
-                    name=cfg_name,
-                    rendered_path=out_path,
-                    target=target,
-                    mode=mode,
-                    consumed_secrets=tuple(sorted(consumed_here)),
+                # For multi-instance: use <service>-<idx> and <cfgname>-<idx>
+                if multi_instance:
+                    effective_service = f"{service_name}-{idx}"
+                    effective_name = f"{cfg_name}-{idx}"
+                else:
+                    effective_service = service_name
+                    effective_name = cfg_name
+
+                out_path = rendered_root / effective_service / effective_name
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                # Atomic replace (S8.4) — also the only way a SECOND run can
+                # overwrite the previous 0440 rendered file without write
+                # permission on it (os.replace needs only the directory).
+                tmp_path = out_path.with_name(out_path.name + ".tmp")
+                tmp_path.write_text(rendered_text, encoding="utf-8")
+                os.chmod(tmp_path, int(mode, 8))
+                os.replace(tmp_path, out_path)
+
+                mounts.append(
+                    ConfigFileMount(
+                        service=effective_service,
+                        name=effective_name,
+                        rendered_path=out_path,
+                        target=target,
+                        mode=mode,
+                        consumed_secrets=tuple(sorted(consumed_here)),
+                    )
                 )
-            )
 
     return mounts
 

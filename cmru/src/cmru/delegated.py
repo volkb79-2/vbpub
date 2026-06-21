@@ -7,7 +7,17 @@ S7 contract:
   - Never vendor these tools; always delegate.
 
 Supported delegated steps: cosign (sign), syft+grype (sbom+scan),
-git-cliff (changelog), nfpm (deb/rpm packaging).
+git-cliff (changelog), nfpm (deb/rpm packaging), minisign (manifest signing).
+
+Minisign (Ed25519 detached manifest signing, §3 of SPEC B):
+  - minisign_sign(blob, *, secret_key, trusted_comment, required=False)
+  - minisign_verify(blob, *, public_key, required=False) -> bool
+
+Key generation (documented here per spec):
+  minisign -G -p minisign.pub -s minisign.key
+The secret key is a release-time secret: resolve from env var or a gitignored
+file — NEVER commit it, NEVER put it in cmru.toml (same discipline as the
+GitHub token, S2.4).  The public key is published and distributed to hosts.
 """
 from __future__ import annotations
 
@@ -165,6 +175,83 @@ def nfpm_package(
         sys.exit(exit_codes.FAILURE)
 
 
+def minisign_sign(
+    blob: Path,
+    *,
+    secret_key: str,
+    trusted_comment: str,
+    required: bool = False,
+) -> None:
+    """Sign blob with minisign (Ed25519 detached signature, SPEC B §3).
+
+    Produces <blob>.minisig alongside blob.  The trusted_comment is signed and
+    tamper-evident — callers MUST use build_trusted_comment() from manifest.py
+    to bind the signature to the exact manifest bytes.
+
+    secret_key: path to the minisign secret key file.
+    trusted_comment: text embedded in the signed trusted-comment field.
+    required: if True and minisign is absent, exit 3; else skip with warning.
+
+    Key generation (one-time):
+        minisign -G -p minisign.pub -s minisign.key
+    Secret key: gitignored, from env/file — NEVER committed (S2.4 discipline).
+    """
+    tool = _which("minisign")
+    if not tool:
+        if required:
+            print("[ERROR] minisign not found and required=true (S8 exit 3)", file=sys.stderr)
+            sys.exit(exit_codes.PREREQ_MISSING)
+        print(f"[WARN] minisign not found; skipping signing of {blob.name} (S7)", file=sys.stderr)
+        return
+
+    argv: List[str] = [
+        tool, "-S",
+        "-s", secret_key,
+        "-m", str(blob),
+        "-t", trusted_comment,
+    ]
+    rc = _run(argv, cwd=blob.parent)
+    if rc != 0:
+        print(f"[ERROR] minisign sign exited {rc}", file=sys.stderr)
+        sys.exit(exit_codes.FAILURE)
+
+
+def minisign_verify(
+    blob: Path,
+    *,
+    public_key: str,
+    required: bool = False,
+) -> bool:
+    """Verify a minisign detached signature for blob (SPEC B §3 / SPEC A).
+
+    Returns True if verification succeeds, False if it fails.
+    If minisign is absent and required=False, warns and returns False.
+    If minisign is absent and required=True, exits 3.
+
+    public_key: path to the minisign public key file.
+
+    Verification command: minisign -Vm <blob> -p <public_key>
+    Checks: Ed25519 signature AND the trusted-comment binding to manifest_sha256.
+    """
+    tool = _which("minisign")
+    if not tool:
+        if required:
+            print("[ERROR] minisign not found and required=true (S8 exit 3)", file=sys.stderr)
+            sys.exit(exit_codes.PREREQ_MISSING)
+        print("[WARN] minisign not found; skipping verification (S7)", file=sys.stderr)
+        return False
+
+    argv: List[str] = [tool, "-Vm", str(blob), "-p", public_key]
+    print(f"[INFO] delegated: {' '.join(argv)}")
+    result = subprocess.run(list(argv), cwd=blob.parent, capture_output=True)
+    if result.returncode == 0:
+        return True
+    # Log verification failure (not an exit — caller decides how to handle).
+    stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
+    print(f"[WARN] minisign verify failed for {blob.name}: {stderr_text}", file=sys.stderr)
+    return False
+
+
 def run_delegated_config(
     delegated_cfg: dict,
     artifact: Optional[Path] = None,
@@ -217,3 +304,33 @@ def run_delegated_config(
                 nfpm_config, target, packager,
                 required=nfpm_cfg.get("required", False),
             )
+
+    minisign_cfg = delegated_cfg.get("minisign", {})
+    if minisign_cfg and minisign_cfg.get("enabled", False) and artifact:
+        # Secret key: env var name or file path (never a literal secret in config).
+        key_env = minisign_cfg.get("secret_key_env")
+        key_file = minisign_cfg.get("secret_key_file")
+        import os as _os
+        resolved_key: Optional[str] = None
+        if key_env:
+            resolved_key = _os.environ.get(key_env)
+        if not resolved_key and key_file:
+            resolved_key = key_file
+        if not resolved_key:
+            print(
+                f"[ERROR] [project.delegated.minisign] is enabled but no secret key is "
+                f"configured (set secret_key_env or secret_key_file)",
+                file=sys.stderr,
+            )
+            sys.exit(exit_codes.CONFIG_ERROR)
+        from cmru.manifest import build_trusted_comment
+        tc = minisign_cfg.get("trusted_comment")
+        if not tc:
+            # Default: derive from artifact path (best effort; callers should supply).
+            tc = f"artifact={artifact.name}"
+        minisign_sign(
+            artifact,
+            secret_key=resolved_key,
+            trusted_comment=tc,
+            required=minisign_cfg.get("required", False),
+        )

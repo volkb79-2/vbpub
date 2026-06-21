@@ -325,11 +325,11 @@ def run_dev(
         from .deploy_pkg import profiles as _profiles
 
         global_config = global_loader(repo_root)
-        # Apply the host profile's overrides (topology/env) like the deploy path,
-        # so `--profile` is honored and network/host facts match (S7.4/S7.5).
-        # With no name and no CIU_HOST_PROFILE the default profile leaves the
+        # Apply the service profile's overrides (topology/env) like the deploy path,
+        # so `--profile` is honored and network/host facts match (S7.4 / Seam 4).
+        # With no name and no CIU_SERVICES_PROFILE the default profile leaves the
         # config unchanged; a bad name raises ValueError (caught below → exit 2).
-        global_config = _profiles.resolve_profile(global_config, profile_name).config
+        global_config = _profiles.resolve_profiles(global_config, [profile_name] if profile_name else None).config
         stack_config = config_model.render_stack(
             stack_dir, global_config=global_config, preserve_state=True
         )

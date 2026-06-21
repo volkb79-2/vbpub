@@ -1,15 +1,16 @@
 """
-Tests for src/ciu/deploy_pkg/ — CIU v2 orchestration helpers.
+Tests for src/ciu/deploy_pkg/ — CIU v3 orchestration helpers.
 
 Spec IDs covered:
-  S7.1  phase naming + numeric sort
-  S7.2  service_enabled flag semantics
-  S7.4  profile table
-  S7.5  CIU_HOST_PROFILE, groups rejection
-  S7.5a topology_overrides deep-merge (host-B case)
-  S7.7  health gate (classify + evaluate_gate + wait_for_gate)
-  S7.8  anchored_name_filter
-  S7.9  check_registry_auth (config.json parsing)
+  S7.1   phase naming + numeric sort
+  S7.2   service_enabled flag semantics
+  S7.4   profile table
+  S7.5   CIU_SERVICES_PROFILE (Seam 4), CIU_HOST_PROFILE retired, groups rejection
+  S7.5a  topology_overrides deep-merge (host-B case)
+  Seam4  multi-profile union/dedup/conflict rules
+  S7.7   health gate (classify + evaluate_gate + wait_for_gate)
+  S7.8   anchored_name_filter
+  S7.9   check_registry_auth (config.json parsing)
 
 All filesystem fixtures use tmp_path; env vars use monkeypatch.
 No subprocess, no network in this module.
@@ -30,6 +31,7 @@ from ciu.deploy_pkg import (  # noqa: E402
     anchored_name_filter,
     check_registry_auth,
     classify,
+    dedupe_keep_order,
     evaluate_gate,
     http_get_json,
     iter_enabled_services,
@@ -37,6 +39,7 @@ from ciu.deploy_pkg import (  # noqa: E402
     parse_env_overrides,
     reject_groups,
     resolve_profile,
+    resolve_profiles,
     service_enabled,
     wait_for_gate,
 )
@@ -368,8 +371,10 @@ def _global_cfg(profiles=None, topology=None, groups=None):
 
 
 class TestResolveProfile:
+    """Tests for the single-name shim (resolve_profile delegates to resolve_profiles)."""
+
     def test_no_name_no_env_returns_default_profile(self, monkeypatch):
-        """No name, no CIU_HOST_PROFILE → default Profile (all phases)."""
+        """No name, no CIU_SERVICES_PROFILE → default Profile (all phases)."""
         monkeypatch.delenv("CIU_HOST_PROFILE", raising=False)
         cfg = _global_cfg()
         p = resolve_profile(cfg, None, env={})
@@ -377,28 +382,12 @@ class TestResolveProfile:
         assert p.phase_keys is None
         assert p.extra_stacks == []
 
-    def test_ciu_host_profile_env_fallback(self):
-        """S7.5: CIU_HOST_PROFILE env sets profile name when no --profile arg."""
-        profiles = {
-            "host_a": {
-                "phases": ["phase_1"],
-                "stacks": ["infra/redis-core"],
-            }
-        }
-        cfg = _global_cfg(profiles=profiles)
-        env = {"CIU_HOST_PROFILE": "host_a"}
-        p = resolve_profile(cfg, None, env=env)
-        assert p.name == "host_a"
-        assert p.phase_keys == {"phase_1"}
-
-    def test_explicit_name_takes_priority_over_env(self):
+    def test_explicit_name_resolves_profile(self):
         profiles = {
             "explicit": {"phases": ["phase_2"]},
-            "from_env": {"phases": ["phase_1"]},
         }
         cfg = _global_cfg(profiles=profiles)
-        env = {"CIU_HOST_PROFILE": "from_env"}
-        p = resolve_profile(cfg, "explicit", env=env)
+        p = resolve_profile(cfg, "explicit", env={})
         assert p.name == "explicit"
         assert p.phase_keys == {"phase_2"}
 
@@ -406,36 +395,36 @@ class TestResolveProfile:
         profiles = {"alpha": {}, "beta": {}}
         cfg = _global_cfg(profiles=profiles)
         with pytest.raises(ValueError, match="alpha|beta"):
-            resolve_profile(cfg, "gamma")
+            resolve_profile(cfg, "gamma", env={})
 
     def test_unknown_profile_message_names_requested(self):
         profiles = {"alpha": {}}
         cfg = _global_cfg(profiles=profiles)
         with pytest.raises(ValueError, match="gamma"):
-            resolve_profile(cfg, "gamma")
+            resolve_profile(cfg, "gamma", env={})
 
     def test_profile_phase_keys_resolved(self):
         profiles = {"worker": {"phases": ["phase_1", "phase_3"]}}
         cfg = _global_cfg(profiles=profiles)
-        p = resolve_profile(cfg, "worker")
+        p = resolve_profile(cfg, "worker", env={})
         assert p.phase_keys == {"phase_1", "phase_3"}
 
     def test_profile_stacks_resolved(self):
         profiles = {"infra": {"stacks": ["infra/redis-core", "infra/postgres"]}}
         cfg = _global_cfg(profiles=profiles)
-        p = resolve_profile(cfg, "infra")
+        p = resolve_profile(cfg, "infra", env={})
         assert p.extra_stacks == ["infra/redis-core", "infra/postgres"]
 
     def test_profile_compose_profiles(self):
         profiles = {"dev": {"compose_profiles": ["debug", "mock"]}}
         cfg = _global_cfg(profiles=profiles)
-        p = resolve_profile(cfg, "dev")
+        p = resolve_profile(cfg, "dev", env={})
         assert p.compose_profiles == ["debug", "mock"]
 
     def test_profile_env_overrides(self):
         profiles = {"staging": {"env_overrides": {"LOG_LEVEL": "DEBUG"}}}
         cfg = _global_cfg(profiles=profiles)
-        p = resolve_profile(cfg, "staging")
+        p = resolve_profile(cfg, "staging", env={})
         assert p.env_overrides == {"LOG_LEVEL": "DEBUG"}
 
     def test_invalid_phase_key_in_profile_raises_s7_1(self):
@@ -443,7 +432,7 @@ class TestResolveProfile:
         profiles = {"bad": {"phases": ["not_a_phase"]}}
         cfg = _global_cfg(profiles=profiles)
         with pytest.raises(ValueError, match=r"\[S7\.1\]"):
-            resolve_profile(cfg, "bad")
+            resolve_profile(cfg, "bad", env={})
 
     def test_topology_overrides_deep_merged_s7_5a(self):
         """S7.5a: topology_overrides deep-merges into config['topology'].
@@ -471,7 +460,7 @@ class TestResolveProfile:
             }
         }
         cfg = _global_cfg(profiles=profiles, topology=original_topology)
-        p = resolve_profile(cfg, "host_b")
+        p = resolve_profile(cfg, "host_b", env={})
 
         vault_cfg = p.config["topology"]["services"]["vault"]
         # internal_host swapped to external address
@@ -488,7 +477,7 @@ class TestResolveProfile:
             }
         }
         cfg = _global_cfg(profiles=profiles, topology=original_topology)
-        resolve_profile(cfg, "mutate_test")
+        resolve_profile(cfg, "mutate_test", env={})
 
         # Original config untouched
         assert cfg["topology"]["services"]["vault"]["internal_host"] == "original"
@@ -497,7 +486,7 @@ class TestResolveProfile:
         """Profile without 'phases' key → phase_keys is None (all phases)."""
         profiles = {"minimal": {}}
         cfg = _global_cfg(profiles=profiles)
-        p = resolve_profile(cfg, "minimal")
+        p = resolve_profile(cfg, "minimal", env={})
         assert p.phase_keys is None
 
     def test_config_is_set_on_default_profile(self):
@@ -763,3 +752,280 @@ class TestCheckRegistryAuth:
         cfg = {"auths": {"registry.example.com": {"auth": "abc"}}}
         p = self._write_config(tmp_path, cfg)
         assert check_registry_auth("https://registry.example.com/v2/", p) is True
+
+
+# ===========================================================================
+# Seam 4 — resolve_profiles (multi-profile: §8 acceptance criteria)
+# ===========================================================================
+
+def _mp_cfg(profiles=None, topology=None):
+    """Build a global config dict for multi-profile tests."""
+    deploy: dict = {}
+    if profiles is not None:
+        deploy["profiles"] = profiles
+    cfg: dict = {"deploy": deploy}
+    if topology is not None:
+        cfg["topology"] = topology
+    return cfg
+
+
+class TestDedupeKeepOrder:
+    """dedupe_keep_order helper."""
+
+    def test_removes_duplicates_preserving_first_seen(self):
+        result = dedupe_keep_order(["a", "b", "a", "c", "b"])
+        assert result == ["a", "b", "c"]
+
+    def test_empty_list(self):
+        assert dedupe_keep_order([]) == []
+
+    def test_no_duplicates_unchanged(self):
+        assert dedupe_keep_order(["x", "y", "z"]) == ["x", "y", "z"]
+
+    def test_all_same(self):
+        assert dedupe_keep_order(["a", "a", "a"]) == ["a"]
+
+
+class TestResolveProfilesOrderedUnionDedup:
+    """§8 AC#1: ordered union + dedup across profiles."""
+
+    def _profiles(self):
+        return {
+            "core": {
+                "phases": ["phase_1", "phase_2"],
+                "compose_profiles": ["base"],
+                "stacks": ["infra/s1", "infra/s2"],
+            },
+            "db": {
+                "phases": ["phase_2"],         # dup phase_2
+                "compose_profiles": ["base", "postgres"],  # dup "base"
+                "stacks": ["infra/s2", "infra/s3"],        # dup "infra/s2"
+            },
+            "worker-io": {
+                "phases": ["phase_4"],
+                "compose_profiles": ["workers"],
+                "stacks": ["infra/s4"],
+            },
+        }
+
+    def test_phases_deduped_and_unioned(self):
+        cfg = _mp_cfg(profiles=self._profiles())
+        p = resolve_profiles(cfg, ["core", "db", "worker-io"])
+        # phase_1, phase_2 (from core), phase_2 (dup from db, deduped), phase_4
+        assert p.phase_keys == {"phase_1", "phase_2", "phase_4"}
+
+    def test_compose_profiles_order_preserving_dedup(self):
+        cfg = _mp_cfg(profiles=self._profiles())
+        p = resolve_profiles(cfg, ["core", "db", "worker-io"])
+        # core: ["base"], db: ["base"(dup), "postgres"], worker-io: ["workers"]
+        assert p.compose_profiles == ["base", "postgres", "workers"]
+
+    def test_stacks_order_preserving_dedup(self):
+        cfg = _mp_cfg(profiles=self._profiles())
+        p = resolve_profiles(cfg, ["core", "db", "worker-io"])
+        # core: [s1, s2], db: [s2(dup), s3], worker-io: [s4]
+        assert p.extra_stacks == ["infra/s1", "infra/s2", "infra/s3", "infra/s4"]
+
+    def test_name_is_comma_joined(self):
+        cfg = _mp_cfg(profiles=self._profiles())
+        p = resolve_profiles(cfg, ["core", "db"])
+        assert p.name == "core,db"
+
+
+class TestResolveProfilesConflictRejection:
+    """§8 AC#2: conflict rejection before any render."""
+
+    def test_topology_conflict_raises_valueerror(self):
+        profiles = {
+            "conflict_a": {
+                "topology_overrides": {"services": {"redis": {"internal_host": "host-a"}}}
+            },
+            "conflict_b": {
+                "topology_overrides": {"services": {"redis": {"internal_host": "host-b"}}}
+            },
+        }
+        cfg = _mp_cfg(profiles=profiles)
+        with pytest.raises(ValueError, match="Conflict"):
+            resolve_profiles(cfg, ["conflict_a", "conflict_b"])
+
+    def test_topology_conflict_message_names_key(self):
+        profiles = {
+            "pa": {"topology_overrides": {"services": {"redis": {"internal_host": "a"}}}},
+            "pb": {"topology_overrides": {"services": {"redis": {"internal_host": "b"}}}},
+        }
+        cfg = _mp_cfg(profiles=profiles)
+        with pytest.raises(ValueError, match="internal_host"):
+            resolve_profiles(cfg, ["pa", "pb"])
+
+    def test_topology_conflict_message_names_both_profiles(self):
+        profiles = {
+            "pa": {"topology_overrides": {"services": {"redis": {"internal_host": "a"}}}},
+            "pb": {"topology_overrides": {"services": {"redis": {"internal_host": "b"}}}},
+        }
+        cfg = _mp_cfg(profiles=profiles)
+        with pytest.raises(ValueError) as exc_info:
+            resolve_profiles(cfg, ["pa", "pb"])
+        msg = str(exc_info.value)
+        assert "pa" in msg and "pb" in msg
+
+    def test_env_override_conflict_raises_valueerror(self):
+        profiles = {
+            "a": {"env_overrides": {"SHARED_KEY": "value-a"}},
+            "b": {"env_overrides": {"SHARED_KEY": "value-b"}},
+        }
+        cfg = _mp_cfg(profiles=profiles)
+        with pytest.raises(ValueError, match="Conflict|SHARED_KEY"):
+            resolve_profiles(cfg, ["a", "b"])
+
+
+class TestResolveProfilesEqualRepeatedValues:
+    """§8 AC#3: equal repeated values accepted silently."""
+
+    def test_equal_topology_values_no_error(self):
+        profiles = {
+            "a": {"topology_overrides": {"services": {"vault": {"internal_host": "same"}}}},
+            "b": {"topology_overrides": {"services": {"vault": {"internal_host": "same"}}}},
+        }
+        cfg = _mp_cfg(profiles=profiles)
+        p = resolve_profiles(cfg, ["a", "b"])  # must not raise
+        assert p.config["topology"]["services"]["vault"]["internal_host"] == "same"
+
+    def test_equal_env_values_no_error(self):
+        profiles = {
+            "a": {"env_overrides": {"SHARED": "same-val"}},
+            "b": {"env_overrides": {"SHARED": "same-val"}},
+        }
+        cfg = _mp_cfg(profiles=profiles)
+        p = resolve_profiles(cfg, ["a", "b"])  # must not raise
+        assert p.env_overrides["SHARED"] == "same-val"
+
+
+class TestResolveProfilesCLIPrecedence:
+    """§8 AC#4: CLI list fully overrides env list."""
+
+    def test_cli_names_override_env_list(self):
+        profiles = {
+            "a": {"phases": ["phase_1"]},
+            "b": {"phases": ["phase_2"]},
+            "c": {"phases": ["phase_3"]},
+        }
+        cfg = _mp_cfg(profiles=profiles)
+        # CLI gives ["c"]; env would give "a,b" — CLI should win
+        env = {"CIU_SERVICES_PROFILE": "a,b"}
+        p = resolve_profiles(cfg, ["c"], env=env)
+        assert p.phase_keys == {"phase_3"}
+        assert "phase_1" not in (p.phase_keys or set())
+        assert "phase_2" not in (p.phase_keys or set())
+
+    def test_empty_cli_falls_through_to_env(self):
+        profiles = {
+            "from_env": {"phases": ["phase_2"]},
+        }
+        cfg = _mp_cfg(profiles=profiles)
+        env = {"CIU_SERVICES_PROFILE": "from_env"}
+        p = resolve_profiles(cfg, None, env=env)
+        assert p.name == "from_env"
+        assert p.phase_keys == {"phase_2"}
+
+
+class TestResolveProfilesEnvParsing:
+    """§8 AC#5: env var parsing handles spaces."""
+
+    def test_env_with_spaces_parsed_correctly(self):
+        profiles = {
+            "core": {"phases": ["phase_1"]},
+            "db": {"phases": ["phase_2"]},
+            "worker-io": {"phases": ["phase_4"]},
+        }
+        cfg = _mp_cfg(profiles=profiles)
+        env = {"CIU_SERVICES_PROFILE": "core, db ,worker-io"}
+        p = resolve_profiles(cfg, None, env=env)
+        assert p.phase_keys == {"phase_1", "phase_2", "phase_4"}
+
+    def test_empty_env_var_returns_default(self):
+        cfg = _mp_cfg()
+        p = resolve_profiles(cfg, None, env={"CIU_SERVICES_PROFILE": ""})
+        assert p.name is None
+        assert p.phase_keys is None
+
+
+class TestCIUHostProfileRetired:
+    """§8 AC#6: CIU_HOST_PROFILE is retired — raises/exits 2, never used."""
+
+    def test_ciu_host_profile_raises_valueerror(self):
+        cfg = _mp_cfg()
+        env = {"CIU_HOST_PROFILE": "some_profile"}
+        with pytest.raises(ValueError, match="CIU_HOST_PROFILE"):
+            resolve_profiles(cfg, None, env=env)
+
+    def test_ciu_host_profile_error_mentions_replacement(self):
+        cfg = _mp_cfg()
+        env = {"CIU_HOST_PROFILE": "some_profile"}
+        with pytest.raises(ValueError, match="CIU_SERVICES_PROFILE"):
+            resolve_profiles(cfg, None, env=env)
+
+    def test_ciu_host_profile_not_used_as_fallback(self):
+        """Even if CIU_HOST_PROFILE names a valid profile, it must raise."""
+        profiles = {"some_profile": {"phases": ["phase_1"]}}
+        cfg = _mp_cfg(profiles=profiles)
+        env = {"CIU_HOST_PROFILE": "some_profile"}
+        with pytest.raises(ValueError):
+            resolve_profiles(cfg, None, env=env)
+
+    def test_ciu_host_profile_with_cli_names_still_raises(self):
+        """CIU_HOST_PROFILE in env raises even when CLI names are given."""
+        profiles = {"valid": {"phases": ["phase_1"]}}
+        cfg = _mp_cfg(profiles=profiles)
+        env = {"CIU_HOST_PROFILE": "stale_profile"}
+        with pytest.raises(ValueError, match="CIU_HOST_PROFILE"):
+            resolve_profiles(cfg, ["valid"], env=env)
+
+
+class TestResolveProfilesCommaForm:
+    """§8 AC#7: comma CLI form equals repeatable form."""
+
+    def test_comma_form_same_as_repeatable(self):
+        """resolve_profiles(["core,db"]) equivalent to resolve_profiles(["core","db"]).
+
+        Note: the comma splitting happens in deploy.py's CLI processing, not in
+        resolve_profiles itself. Here we test that if a caller passes
+        ["core", "db"] the result is the same as iterating both. The comma
+        splitting is tested at the deploy.py layer.
+        """
+        profiles = {
+            "core": {"phases": ["phase_1", "phase_2"]},
+            "db": {"phases": ["phase_2", "phase_3"]},
+        }
+        cfg = _mp_cfg(profiles=profiles)
+        p1 = resolve_profiles(cfg, ["core", "db"], env={})
+        # Verify correct union
+        assert p1.phase_keys == {"phase_1", "phase_2", "phase_3"}
+
+    def test_unknown_profile_in_list_raises_with_available(self):
+        """§8 AC#9: unknown profile still errors with the available-profiles list."""
+        profiles = {"alpha": {}, "beta": {}}
+        cfg = _mp_cfg(profiles=profiles)
+        with pytest.raises(ValueError, match="alpha|beta"):
+            resolve_profiles(cfg, ["alpha", "unknown"], env={})
+
+
+class TestResolveProfilesAllPhasesAbsorb:
+    """Profile with no phases means 'all phases' → absorbs into None."""
+
+    def test_none_phases_profile_absorbs_to_all(self):
+        profiles = {
+            "specific": {"phases": ["phase_1"]},
+            "all_phases": {},  # no 'phases' key → None
+        }
+        cfg = _mp_cfg(profiles=profiles)
+        p = resolve_profiles(cfg, ["specific", "all_phases"], env={})
+        assert p.phase_keys is None  # None = all phases
+
+    def test_none_phases_profile_first_also_absorbs(self):
+        profiles = {
+            "all_phases": {},
+            "specific": {"phases": ["phase_2"]},
+        }
+        cfg = _mp_cfg(profiles=profiles)
+        p = resolve_profiles(cfg, ["all_phases", "specific"], env={})
+        assert p.phase_keys is None
