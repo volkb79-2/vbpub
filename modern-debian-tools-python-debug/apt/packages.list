@@ -19,6 +19,7 @@ gdb                # native / C debugger
 git                # version control
 git-lfs            # git large file storage
 gnupg              # GPG — verify apt repo keys, sign artifacts
+minisign           # Ed25519 detached signing — cmru SPEC B manifest sign/verify
 gzip               # gzip (de)compression
 htop               # interactive process viewer
 httpie             # human-friendly HTTP client (`http`/`https`) for poking REST APIs

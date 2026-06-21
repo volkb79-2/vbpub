@@ -1,20 +1,21 @@
-# CIU v3 Specification
+# CIU v4 Specification
 
 | | |
 |---|---|
-| **Status** | DRAFT — pending sign-off (Stage 0 gate) |
-| **Version** | 3.0.0-draft.1 |
+| **Status** | Active |
+| **Version** | 4.0.0 |
 | **Date** | 2026-06-21 |
 | **Supersedes** | docs/CONFIG.md + docs/CIU.md + docs/CIU-DEPLOY.md as normative sources (those become non-normative guides) |
 
-This document is the **single normative contract** for CIU v3. Where any other
+This document is the **single normative contract** for CIU v4. Where any other
 document, example, or code comment conflicts with this specification, this
 specification wins.
 
 **Package versioning.** The `ciu` wheel is versioned with SemVer derived from git tags
 (`ciu-vX.Y.Z`; see `/docs/VERSIONING.md`). The wheel's **MAJOR tracks this SPEC's MAJOR** —
-a breaking change to this contract bumps both. ciu is seeded at `3.0.0` for this
-breaking release (Seam 4: multi-profile env var rename + repeatable `--profile`).
+a breaking change to this contract bumps both. ciu **MAJOR bumps to `4.0.0`** for this
+breaking release (Seam 4: multi-profile env var rename + repeatable `--profile`),
+superseding the `3.x` line (last tag `ciu-v3.1.0`).
 Untagged commits build as `X.Y.Z.devN+g<sha>`.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY**
