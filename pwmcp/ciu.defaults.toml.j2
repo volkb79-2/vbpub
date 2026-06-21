@@ -30,7 +30,7 @@
 #   - the base image tag (mcr.microsoft.com/playwright:v<version>-<distro>),
 #   - the playwright JS package baked into the unified image, and
 #   - the version connect() consumers must install (`pip install playwright==<version>`).
-playwright_version = "1.61.0"
+playwright_version = "1.60.0"
 image_distro = "noble"            # -> mcr.microsoft.com/playwright:v<version>-<distro>
 
 [pwmcp.network]
@@ -70,7 +70,7 @@ host_mcp_port = 8931
 registry = "ghcr.io"
 namespace = "volkb79-2"
 name = "pwmcp"
-tag = "1.61.0-r1"
+tag = "1.60.0-r1"
 
 [pwmcp.hardening]
 # Applied in both internal and external modes.
