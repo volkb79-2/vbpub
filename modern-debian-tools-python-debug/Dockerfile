@@ -165,7 +165,7 @@ RUN set -euo pipefail; \
         echo "[ERROR] Missing staged downloads directory: ${DOWNLOADS_DIR}" >&2; \
         exit 1; \
     fi; \
-    . "${STAGE_DIR}/tool-versions.env"; \
+    set -a; . "${STAGE_DIR}/tool-versions.env"; set +a; \
     require_file() { \
         local path="$1"; \
         if [ ! -f "${path}" ]; then \
