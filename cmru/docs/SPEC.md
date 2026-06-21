@@ -292,7 +292,7 @@ bake_set      = ["*.tags=ghcr.io/foo/bar:latest"]
 
 **S4.6** `target_commitish` in the GitHub release MUST be set to the commit SHA at build time.
 
-**S4.7** OCI publishes to GHCR MUST reconcile package visibility with the source repository visibility after push. The repository visibility is authoritative: a public repo MUST produce public GHCR packages, and a private repo MUST keep its packages private.
+**S4.7** OCI publishes to GHCR SHOULD reconcile package visibility with the source repository visibility after push, on a **best-effort** basis. The repository visibility is authoritative (a public repo should yield public GHCR packages). **Platform limitation (verified 2026-06-21):** GitHub exposes **no REST or GraphQL API** to change a container package's visibility — the `PATCH …/packages/container/<name>` route returns `404`, classic PATs have **no `admin:packages` scope** (only `read:`/`write:`/`delete:packages`), and **fine-grained PATs cannot use the Packages API at all** (github/roadmap#558). Therefore the reconciler MUST treat a failed visibility change as a **non-fatal warning** — it MUST NOT fail a release whose image already pushed — and MUST emit the one-time manual remediation: *Your packages → `<pkg>` → Package settings → Danger Zone → Change visibility*. Visibility set once in the UI **persists across all future pushes**, so this is a one-time action per package, not per release.
 
 ---
 

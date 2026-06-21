@@ -10,7 +10,7 @@ any push.** Local `main` is ~30+ commits ahead of `origin/main` (nothing pushed 
 | **cmru** | wheel | scm+conventional | `cmru-v1.0.0` | **v1.1.0** (minor) | ships SPEC A/B/G; release FIRST (consumers depend on it) |
 | **ciu** | wheel | scm+conventional | `ciu-v3.1.0` | **v4.0.0** (breaking) | ⚠ fix `ciu/docs/SPEC.md` (Status→Active, seed `3.0.0`→`4.0.0`) + commit BEFORE tagging |
 | **tls-edge** | tarball | file:VERSION | `tls-edge-v1.0.0` | **v1.1.0** | writes `tls-edge/VERSION`, commits → push that commit after |
-| **modern-debian-tools-python-debug** | oci-image | none | — | OCI only | `build-push.py` → ghcr.io; visibility-sync makes packages public |
+| **modern-debian-tools-python-debug** | oci-image | none | — | OCI only | `build-push.py` → ghcr.io; visibility-sync is **best-effort only** (see risk #6) |
 | **pwmcp** | oci-image+bundle | delegated | `pwmcp-v1.61.0-r1` | self-versioned | the 1.60 matrix is merged (`6381f7d`); release builds BOTH targets |
 
 ## Preconditions
@@ -42,7 +42,13 @@ git -C /workspaces/vbpub push origin HEAD:main          # CONFIRM FIRST
 3. **minisign absent** → unsigned bundle. Install first if the bundle is a real delivery.
 4. **branch not on origin** — push `HEAD:main` BEFORE tags (tags would point at commits origin lacks).
 5. **ciu v4.0.0 is breaking** — dstdns consumers pinned to `ciu-v3.1.0` must move to `--profile` (SPEC C) first.
-6. **GHCR visibility-sync** makes packages public (intended, SPEC S4.7).
+6. **GHCR visibility-sync does NOT work via API** (verified 2026-06-21). GitHub has **no REST/GraphQL
+   endpoint** to change container-package visibility: `PATCH …/packages/container/<name>` → 404; classic
+   PATs have no `admin:packages` scope; **fine-grained PATs can't use the Packages API** (roadmap#558).
+   cmru now logs a **non-fatal warning** (it no longer fails the release — the image still pushes).
+   **One-time manual step:** flip each package to Public in the UI (*Your packages → pkg → Package
+   settings → Danger Zone → Change visibility → Public*). It then **persists across all future pushes**.
+   SPEC S4.7 amended from MUST to best-effort.
 
 ## Rollback reality
 Pushed tags/images can't be cleanly un-published; failures recover by a new patch release, not deletion.
