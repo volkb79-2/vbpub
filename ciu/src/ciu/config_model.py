@@ -72,10 +72,59 @@ RESERVED_GLOBAL_NAMESPACES: frozenset[str] = frozenset({
 ENV_VAR_PATTERN: re.Pattern[str] = re.compile(r"\$(\w+)|\$\{([^}]+)\}")
 
 
+def _split_toml_line_at_comment(line: str) -> tuple[str, str]:
+    """Return (value_part, comment_part) for one TOML line.
+
+    Scans the line character-by-character tracking basic-string (double-quote)
+    and literal-string (single-quote) state. A ``#`` encountered outside any
+    quoted context starts the TOML comment; everything from that ``#`` to the
+    end of the line is the comment part. A ``#`` inside a quoted string is part
+    of the value, not a comment.
+
+    Multi-line strings (triple-quoted) are intentionally not handled here because
+    ``expand_env_vars_or_fail`` processes the fully-rendered post-Jinja2 text and
+    the TOML multi-line quoting edge-case is extremely rare in ciu templates.
+    Single-line basic/literal strings cover all known real-world ciu templates.
+
+    Returns:
+        A 2-tuple ``(value_part, comment_part)`` where ``comment_part`` is the
+        ``#``-prefixed comment text (including the ``#``) or an empty string when
+        the line has no comment.
+    """
+    in_basic = False   # inside double-quoted basic string
+    in_literal = False  # inside single-quoted literal string
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if in_basic:
+            if ch == "\\" and i + 1 < len(line):
+                i += 2  # skip escape sequence
+                continue
+            if ch == '"':
+                in_basic = False
+        elif in_literal:
+            if ch == "'":
+                in_literal = False
+        else:
+            if ch == '"':
+                in_basic = True
+            elif ch == "'":
+                in_literal = True
+            elif ch == "#":
+                return line[:i], line[i:]
+        i += 1
+    return line, ""
+
+
 def expand_env_vars_or_fail(raw_text: str, source: str) -> str:
     """Expand $VAR / ${VAR} using os.environ; fail-fast on missing/empty values.
 
     Reports ALL missing variable names in a single error (S3.2).
+
+    TOML-aware: env-var tokens that appear inside TOML comment text (everything
+    from an unquoted ``#`` to the end of the line) are NOT expanded and do NOT
+    cause a missing-variable error.  A ``#`` that appears inside a quoted string
+    value is correctly treated as part of the value, not as a comment delimiter.
     """
     missing: set[str] = set()
 
@@ -87,7 +136,29 @@ def expand_env_vars_or_fail(raw_text: str, source: str) -> str:
             return match.group(0)
         return value
 
-    expanded = ENV_VAR_PATTERN.sub(_replace, raw_text)
+    # Process line-by-line: expand only the non-comment portion of each line.
+    expanded_lines: list[str] = []
+    for line in raw_text.splitlines(keepends=True):
+        # Strip the trailing newline(s) so the comment-split operates on the
+        # visible content, then re-attach afterwards.
+        eol = ""
+        stripped = line
+        if stripped.endswith("\r\n"):
+            eol = "\r\n"
+            stripped = stripped[:-2]
+        elif stripped.endswith("\n"):
+            eol = "\n"
+            stripped = stripped[:-1]
+        elif stripped.endswith("\r"):
+            eol = "\r"
+            stripped = stripped[:-1]
+
+        value_part, comment_part = _split_toml_line_at_comment(stripped)
+        expanded_value = ENV_VAR_PATTERN.sub(_replace, value_part)
+        # Comment portion is preserved verbatim — no expansion, no error.
+        expanded_lines.append(expanded_value + comment_part + eol)
+
+    expanded = "".join(expanded_lines)
 
     if missing:
         missing_list = ", ".join(sorted(missing))
@@ -97,12 +168,29 @@ def expand_env_vars_or_fail(raw_text: str, source: str) -> str:
             "and source ciu.env before running CIU."
         )
 
-    leftover = ENV_VAR_PATTERN.search(expanded)
-    if leftover:
-        raise ValueError(
-            f"[ERROR] Unresolved environment placeholders remain in {source}: {leftover.group(0)}\n"
-            "[ERROR] Ensure all required values are set in ciu.env."
-        )
+    # Check for leftover tokens only in the non-comment portions (the comment
+    # portions were never touched, so run the check line-by-line as well).
+    for line in expanded.splitlines(keepends=True):
+        eol = ""
+        stripped = line
+        if stripped.endswith("\r\n"):
+            eol = "\r\n"
+            stripped = stripped[:-2]
+        elif stripped.endswith("\n"):
+            eol = "\n"
+            stripped = stripped[:-1]
+        elif stripped.endswith("\r"):
+            eol = "\r"
+            stripped = stripped[:-1]
+
+        value_part, _comment_part = _split_toml_line_at_comment(stripped)
+        leftover = ENV_VAR_PATTERN.search(value_part)
+        if leftover:
+            raise ValueError(
+                f"[ERROR] Unresolved environment placeholders remain in {source}: "
+                f"{leftover.group(0)}\n"
+                "[ERROR] Ensure all required values are set in ciu.env."
+            )
 
     return expanded
 
