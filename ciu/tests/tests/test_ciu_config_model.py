@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu.config_model import (  # noqa: E402
     RESERVED_GLOBAL_NAMESPACES,
+    _split_toml_line_at_comment,
     chain_dirs,
     deep_merge,
     expand_env_vars_or_fail,
@@ -65,6 +66,112 @@ def test_expand_env_vars_empty_value_treated_as_missing(monkeypatch):
 def test_expand_env_vars_braces_form(monkeypatch):
     monkeypatch.setenv("BRACED", "world")
     assert expand_env_vars_or_fail("${BRACED}!", "t") == "world!"
+
+
+# ---------------------------------------------------------------------------
+# CIU-COMMENT-ENV: TOML-aware comment handling in expand_env_vars_or_fail
+# ---------------------------------------------------------------------------
+
+
+def test_expand_env_vars_comment_token_not_expanded_no_error(monkeypatch):
+    """CIU-COMMENT-ENV: ${VAR} inside a TOML comment is NOT expanded and does
+    NOT raise a missing-variable error — even when the variable is absent."""
+    monkeypatch.delenv("value.node_id", raising=False)
+    # Simulates a line like dstdns ciu.global.defaults.toml.j2:697
+    toml_text = '[section]\nname = "real"\n#     bind_name = "cmru-node-${value.node_id}"\n'
+    result = expand_env_vars_or_fail(toml_text, "test.toml")
+    # Comment is preserved verbatim
+    assert '${value.node_id}' in result
+    # No expansion took place inside the comment
+    assert 'cmru-node-${value.node_id}' in result
+
+
+def test_expand_env_vars_comment_dollar_bare_not_expanded_no_error(monkeypatch):
+    """CIU-COMMENT-ENV: $VAR (bare form) inside a TOML comment is also safe."""
+    monkeypatch.delenv("GHOST_VAR", raising=False)
+    toml_text = 'key = "val"  # example: $GHOST_VAR\n'
+    result = expand_env_vars_or_fail(toml_text, "test.toml")
+    assert "$GHOST_VAR" in result
+
+
+def test_expand_env_vars_real_value_still_expands(monkeypatch):
+    """CIU-COMMENT-ENV: a real (non-comment) value still expands correctly."""
+    monkeypatch.setenv("REAL_HOST", "db.internal")
+    toml_text = 'host = "$REAL_HOST"  # hostname for the DB\n'
+    result = expand_env_vars_or_fail(toml_text, "test.toml")
+    assert 'host = "db.internal"' in result
+    # Comment is preserved
+    assert "# hostname for the DB" in result
+
+
+def test_expand_env_vars_real_value_missing_still_fails(monkeypatch):
+    """CIU-COMMENT-ENV: missing var in a real value still raises ValueError."""
+    monkeypatch.delenv("MISSING_HOST", raising=False)
+    toml_text = 'host = "$MISSING_HOST"  # fallback: ${value.node_id}\n'
+    with pytest.raises(ValueError, match="MISSING_HOST"):
+        expand_env_vars_or_fail(toml_text, "test.toml")
+
+
+def test_expand_env_vars_hash_in_quoted_string_not_comment(monkeypatch):
+    """CIU-COMMENT-ENV: a # inside a double-quoted string is NOT a comment delimiter.
+    Env-var tokens after that # are still in value position and must expand/fail."""
+    monkeypatch.setenv("COLOR", "blue")
+    # The # here is inside a quoted string value — NOT a comment
+    toml_text = 'color = "#$COLOR"\n'
+    result = expand_env_vars_or_fail(toml_text, "test.toml")
+    assert '#blue' in result
+
+
+def test_expand_env_vars_hash_in_quoted_string_missing_var_fails(monkeypatch):
+    """CIU-COMMENT-ENV: ${VAR} after a # inside a quoted value still fails when missing."""
+    monkeypatch.delenv("HEX_COLOR", raising=False)
+    toml_text = 'color = "#${HEX_COLOR}"\n'
+    with pytest.raises(ValueError, match="HEX_COLOR"):
+        expand_env_vars_or_fail(toml_text, "test.toml")
+
+
+def test_expand_env_vars_hash_in_single_quoted_string_not_comment(monkeypatch):
+    """CIU-COMMENT-ENV: # inside a single-quoted (literal) TOML string is not a comment."""
+    monkeypatch.setenv("TAG", "v1")
+    # Single-quoted literal string — # is part of the value
+    toml_text = "label = '#$TAG'\n"
+    result = expand_env_vars_or_fail(toml_text, "test.toml")
+    assert "#v1" in result
+
+
+# _split_toml_line_at_comment unit tests
+
+
+def test_split_no_comment():
+    assert _split_toml_line_at_comment('key = "value"') == ('key = "value"', "")
+
+
+def test_split_bare_comment():
+    assert _split_toml_line_at_comment("# full comment line") == ("", "# full comment line")
+
+
+def test_split_trailing_comment():
+    value, comment = _split_toml_line_at_comment('key = "value"  # a comment')
+    assert value == 'key = "value"  '
+    assert comment == "# a comment"
+
+
+def test_split_hash_inside_double_quotes_not_split():
+    value, comment = _split_toml_line_at_comment('color = "#ff0000"')
+    assert value == 'color = "#ff0000"'
+    assert comment == ""
+
+
+def test_split_hash_inside_single_quotes_not_split():
+    value, comment = _split_toml_line_at_comment("color = '#ff0000'")
+    assert value == "color = '#ff0000'"
+    assert comment == ""
+
+
+def test_split_hash_after_closing_quote_is_comment():
+    value, comment = _split_toml_line_at_comment('color = "#ff0000" # red')
+    assert value == 'color = "#ff0000" '
+    assert comment == "# red"
 
 
 # ---------------------------------------------------------------------------
