@@ -5,8 +5,10 @@ Usage:
   python3 build-push.py --build   # Build images locally (docker buildx bake --load)
   python3 build-push.py --push    # Login to GHCR and push images
 
-Reads PLAYWRIGHT_VERSION and PWMCP_VERSION from cmru.vars
-(written by scripts/resolve-playwright-version.py).
+Reads PLAYWRIGHT_VERSION_PYPI, PLAYWRIGHT_VERSION_NPM, PWMCP_VERSION_PYPI, and
+PWMCP_VERSION_NPM from cmru.vars (written by scripts/resolve-playwright-version.py).
+PLAYWRIGHT_VERSION and PWMCP_VERSION are kept as aliases for the PyPI variants for
+backwards compatibility.
 
 Credentials for push (from environment or cmru.toml / cmru.secret.toml [github]):
   GITHUB_USERNAME
@@ -114,9 +116,15 @@ def run(argv: list[str], cwd: Path | None = None) -> None:
 
 def do_build() -> None:
     load_vars()
-    pw_ver = os.environ.get("PLAYWRIGHT_VERSION", "?")
-    pwmcp_ver = os.environ.get("PWMCP_VERSION", "?")
-    log(f"Building pwmcp-playwright  PW={pw_ver}  PWMCP={pwmcp_ver}")
+    pw_pypi = os.environ.get("PLAYWRIGHT_VERSION_PYPI") or os.environ.get("PLAYWRIGHT_VERSION", "?")
+    pw_npm = os.environ.get("PLAYWRIGHT_VERSION_NPM", "?")
+    pwmcp_pypi = os.environ.get("PWMCP_VERSION_PYPI") or os.environ.get("PWMCP_VERSION", "?")
+    pwmcp_npm = os.environ.get("PWMCP_VERSION_NPM", "?")
+    log(
+        f"Building pwmcp matrix  "
+        f"PW_PYPI={pw_pypi}  PWMCP_PYPI={pwmcp_pypi}  "
+        f"PW_NPM={pw_npm}  PWMCP_NPM={pwmcp_npm}"
+    )
     run(["docker", "buildx", "bake", "all", "--load"], cwd=PWMCP_DIR)
     log("Build complete.")
 
@@ -137,9 +145,15 @@ def do_push() -> None:
     )
     del proc
 
-    pw_ver = os.environ.get("PLAYWRIGHT_VERSION", "?")
-    pwmcp_ver = os.environ.get("PWMCP_VERSION", "?")
-    log(f"Pushing pwmcp-playwright  PW={pw_ver}  PWMCP={pwmcp_ver}")
+    pw_pypi = os.environ.get("PLAYWRIGHT_VERSION_PYPI") or os.environ.get("PLAYWRIGHT_VERSION", "?")
+    pw_npm = os.environ.get("PLAYWRIGHT_VERSION_NPM", "?")
+    pwmcp_pypi = os.environ.get("PWMCP_VERSION_PYPI") or os.environ.get("PWMCP_VERSION", "?")
+    pwmcp_npm = os.environ.get("PWMCP_VERSION_NPM", "?")
+    log(
+        f"Pushing pwmcp matrix  "
+        f"PW_PYPI={pw_pypi}  PWMCP_PYPI={pwmcp_pypi}  "
+        f"PW_NPM={pw_npm}  PWMCP_NPM={pwmcp_npm}"
+    )
     run(["docker", "buildx", "bake", "all", "--push"], cwd=PWMCP_DIR)
     package_names = [
         name.strip()

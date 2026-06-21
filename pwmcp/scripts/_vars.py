@@ -14,7 +14,16 @@ import sys
 from pathlib import Path
 
 # Keys that must be present in cmru.vars for downstream scripts to work.
-_REQUIRED_KEYS = ("PLAYWRIGHT_VERSION", "PLAYWRIGHT_DISTRO", "PWMCP_VERSION")
+# PLAYWRIGHT_VERSION and PWMCP_VERSION are backwards-compat aliases for the PyPI variants.
+_REQUIRED_KEYS = (
+    "PLAYWRIGHT_VERSION_PYPI",
+    "PLAYWRIGHT_VERSION_NPM",
+    "PLAYWRIGHT_VERSION",
+    "PLAYWRIGHT_DISTRO",
+    "PWMCP_VERSION_PYPI",
+    "PWMCP_VERSION_NPM",
+    "PWMCP_VERSION",
+)
 
 # Canonical locations relative to this file's position.
 # This file lives at pwmcp/scripts/_vars.py  →  parent is pwmcp/scripts/,
