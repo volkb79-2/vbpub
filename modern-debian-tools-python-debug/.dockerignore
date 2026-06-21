@@ -15,4 +15,6 @@
 !package-manifests-versioned
 !scripts/
 !scripts/manifest_sections.py
+!scripts/install_ai_cli_tools.py
+!ai-cli-tools.list
 
