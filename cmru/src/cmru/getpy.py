@@ -1,62 +1,40 @@
 """get.py emitter — render templates/get.py.tmpl for a project.
 
-CLI: cmru get-py --project <name>
+CLI: cmru get-py --project <name> [--config <toml>] [--output <file>]
 
-The emitted get.py is a self-contained Python 3 installer that handles install,
-update, version pin, and config preservation. It ships INSIDE the release artifact
-so 'project update' works out of the box without re-fetching from GitHub.
+The emitted get.py is a self-contained Python 3 transactional installer that handles
+install, update, rollback, status, scope (system/user), bundled-wheel venv, SHA256 +
+minisign-manifest verification, private GitHub asset auth, and the project-adapter
+invocation contract (Seam 1). It ships INSIDE the release artifact.
 
-Template variables use [[VARNAME]] syntax.
+Template variables use [[VARNAME]] syntax. All placeholders must be replaced;
+unmatched [[...]] keys trigger a warning.
 """
 from __future__ import annotations
 
 import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple
 
 
 _TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "get.py.tmpl"
 
 
-def _render_preserve_func(preserve_files: list[str] | None, env_prefix: str) -> str:
-    if not preserve_files:
-        return (
-            "def preserve_config_files(project_home: Path) -> list:\n"
-            "    return []\n"
-            "\n"
-            "\n"
-            "def restore_config_files(project_home: Path, backed_up: list) -> None:\n"
-            "    pass"
-        )
-    paths_repr = "\n".join(f'        "{f}",' for f in preserve_files)
-    return (
-        "def preserve_config_files(project_home: Path) -> list:\n"
-        "    configs = [\n"
-        f"{paths_repr}\n"
-        "    ]\n"
-        "    backed_up = []\n"
-        "    for rel in configs:\n"
-        "        cfg = project_home / rel\n"
-        "        if cfg.exists():\n"
-        "            bak = cfg.with_name(cfg.name + '.pre-update')\n"
-        "            shutil.copy2(cfg, bak)\n"
-        "            backed_up.append(cfg)\n"
-        "            info(f'Backed up: {cfg.name} \\u2192 {bak.name}')\n"
-        "    return backed_up\n"
-        "\n"
-        "\n"
-        "def restore_config_files(project_home: Path, backed_up: list) -> None:\n"
-        "    for cfg in backed_up:\n"
-        "        bak = cfg.with_name(cfg.name + '.pre-update')\n"
-        "        if not bak.exists():\n"
-        "            continue\n"
-        "        if not cfg.exists():\n"
-        "            bak.rename(cfg)\n"
-        "            info(f'Restored: {cfg.name}')\n"
-        "        else:\n"
-        "            bak.unlink()"
-    )
+def _py_str_list(items: List[str]) -> str:
+    """Render a Python list-of-strings literal."""
+    if not items:
+        return "[]"
+    inner = ", ".join(f'"{s}"' for s in items)
+    return f"[{inner}]"
+
+
+def _py_wheel_specs(wheel_specs: List[Tuple[str, str]]) -> str:
+    """Render WHEEL_SPECS as a Python list-of-tuple literal."""
+    if not wheel_specs:
+        return "[]"
+    parts = [f'("{glob}", "{dist}")' for glob, dist in wheel_specs]
+    return "[" + ", ".join(parts) + "]"
 
 
 def render_get_py(
@@ -65,55 +43,51 @@ def render_get_py(
     repo_owner: str,
     repo_name: str,
     tag_prefix: str,
-    env_prefix: str,
-    install_dir_default: str,
-    subdir: str,
-    wrapper_bin: str,
-    wrapper_script_rel: str = "scripts/wrapper.sh",
     asset_suffix: str = ".tar.xz",
-    required_deps: list[str] | None = None,
-    preserve_files: list[str] | None = None,
-    next_steps: list[str] | None = None,
+    install_dir_system: str,
+    install_dir_user: str,
+    entrypoint: str = "",
+    required_commands: Optional[List[str]] = None,
+    preserve_paths: Optional[List[str]] = None,
+    wheel_specs: Optional[List[Tuple[str, str]]] = None,
+    manifest_name: str = "manifest.json",
+    signature_name: str = "manifest.json.minisig",
     template_path: Path = _TEMPLATE_PATH,
 ) -> str:
     """Render the get.py template for a project.
 
     All [[VARNAME]] placeholders are replaced with the provided values.
-    Returns the rendered script as a string.
+    Returns the rendered script as a string. Emits a warning for any
+    unreplaced [[...]] placeholders.
     """
     template = template_path.read_text(encoding="utf-8")
 
-    # Python list literal for required deps
-    if required_deps:
-        deps_list = "[" + ", ".join(f'"{d}"' for d in required_deps) + "]"
-        deps_comment = f", {', '.join(required_deps)}"
-    else:
-        deps_list = "[]"
-        deps_comment = ""
+    cmds = required_commands or []
+    preserve = preserve_paths or []
+    wheels = wheel_specs or []
 
-    # next_steps_msg — python print() calls indented 4 spaces
-    if next_steps:
-        steps_lines = "\n".join(f'    print("    {s}")' for s in next_steps)
+    # Comment string for the docstring header: ", cmd1, cmd2"
+    if cmds:
+        required_commands_comment = ", " + ", ".join(cmds)
     else:
-        steps_lines = f'    print("    {project_name} --help")'
-
-    preserve_func = _render_preserve_func(preserve_files, env_prefix)
+        required_commands_comment = ""
 
     replacements = {
-        "[[PROJECT_NAME]]":          project_name,
-        "[[REPO_OWNER]]":            repo_owner,
-        "[[REPO_NAME]]":             repo_name,
-        "[[TAG_PREFIX]]":            tag_prefix,
-        "[[ENV_PREFIX]]":            env_prefix,
-        "[[INSTALL_DIR_DEFAULT]]":   install_dir_default,
-        "[[SUBDIR]]":                subdir,
-        "[[WRAPPER_BIN]]":           wrapper_bin,
-        "[[WRAPPER_SCRIPT_REL]]":    wrapper_script_rel,
-        "[[ASSET_SUFFIX]]":          asset_suffix,
-        "[[REQUIRED_DEPS_LIST]]":    deps_list,
-        "[[REQUIRED_DEPS_COMMENT]]": deps_comment,
-        "[[PRESERVE_FILES_FUNC]]":   preserve_func,
-        "[[NEXT_STEPS_MSG]]":        steps_lines,
+        "[[PROJECT_NAME]]":              project_name,
+        "[[REPO_OWNER]]":                repo_owner,
+        "[[REPO_NAME]]":                 repo_name,
+        "[[TAG_PREFIX]]":                tag_prefix,
+        "[[ASSET_SUFFIX]]":              asset_suffix,
+        "[[INSTALL_DIR_SYSTEM]]":        install_dir_system,
+        "[[INSTALL_DIR_USER]]":          install_dir_user,
+        "[[ENTRYPOINT]]":                entrypoint,
+        "[[REQUIRED_COMMANDS_LIST]]":    _py_str_list(cmds),
+        "[[REQUIRED_COMMANDS_STR]]":     ", ".join(cmds) if cmds else "(none)",
+        "[[REQUIRED_COMMANDS_COMMENT]]": required_commands_comment,
+        "[[PRESERVE_PATHS_LIST]]":       _py_str_list(preserve),
+        "[[WHEEL_SPECS_LIST]]":          _py_wheel_specs(wheels),
+        "[[MANIFEST_NAME]]":             manifest_name,
+        "[[SIGNATURE_NAME]]":            signature_name,
     }
 
     result = template
@@ -129,33 +103,36 @@ def render_get_py(
 
 
 def render_from_config(project_name: str, config_path: Path) -> str:
-    """Render get.py for a project using cmru.toml config."""
+    """Render get.py for a project using cmru.toml config (reads [installer] section)."""
     from cmru.config import load_forge_config
     config = load_forge_config(config_path)
     proj = config.projects.get(project_name)
     if not proj:
         raise ValueError(f"Project '{project_name}' not found in config")
-    if not proj.getsh:
+    if not proj.installer:
         raise ValueError(
-            f"Project '{project_name}' has no [project.{project_name}.getsh] section"
+            f"Project '{project_name}' has no [project.{project_name}.installer] section"
         )
 
-    tag_prefix = proj.prefix
-    env_prefix = tag_prefix.rstrip("-v").upper().replace("-", "_")
-    subdir = project_name
+    ins = proj.installer
+    wheel_specs: List[Tuple[str, str]] = [
+        (w.path, w.distribution) for w in ins.wheels
+    ]
 
     return render_get_py(
         project_name=project_name,
         repo_owner=config.github.owner,
         repo_name=config.github.repo,
-        tag_prefix=tag_prefix,
-        env_prefix=env_prefix,
-        install_dir_default=proj.getsh.install_dir,
-        subdir=subdir,
-        wrapper_bin=f"/usr/local/bin/{project_name}",
-        preserve_files=proj.getsh.preserve,
-        required_deps=proj.getsh.deps or None,
-        next_steps=proj.getsh.next_steps or None,
+        tag_prefix=proj.prefix,
+        asset_suffix=ins.asset_suffix,
+        install_dir_system=ins.install_dir_system,
+        install_dir_user=ins.install_dir_user,
+        entrypoint=ins.entrypoint or "",
+        required_commands=ins.required_commands or None,
+        preserve_paths=ins.preserve or None,
+        wheel_specs=wheel_specs or None,
+        manifest_name=ins.manifest_name,
+        signature_name=ins.signature_name,
     )
 
 

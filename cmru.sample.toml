@@ -117,7 +117,7 @@ commands = [
 # ─── tls-edge — tarball (built-in publish; build step is project-owned) ─────────
 # push + validate come from the tarball built-in (cmru/handlers.py tarball-publish /
 # tarball-validate). Only build is project-specific (build-artifact.sh).
-# The [getsh] block is the single source for the emitted get.py installer (S6):
+# The [installer] block is the single source for the emitted get.py installer (S6):
 #   `cmru get-py --project tls-edge --config cmru.toml` regenerates tls-edge/get.py.
 [project.tls-edge]
 prefix    = "tls-edge-v"
@@ -125,11 +125,15 @@ artifacts = ["tarball"]
 cwd       = "tls-edge"
 [project.tls-edge.version]
 strategy = "file:VERSION"
-[project.tls-edge.getsh]
-install_dir = "/opt/tls-edge-src"
-preserve    = ["ciu-stack/ciu.toml.j2", "edge-proxy/.env"]
-deps        = ["docker"]
-next_steps  = ["tls-edge install"]
+[project.tls-edge.installer]
+install_dir_system = "/opt/tls-edge"
+install_dir_user   = "tls-edge"
+asset_suffix       = ".tar.xz"
+# entrypoint not set — tls-edge has no bundled adapter (degrades cleanly)
+required_commands  = ["python3", "docker"]
+preserve           = ["ciu-stack/ciu.toml.j2", "edge-proxy/.env"]
+manifest_name      = "manifest.json"
+signature_name     = "manifest.json.minisig"
 [project.tls-edge.env]
 TLS_EDGE_RELEASE_NOTES = "## tls-edge tarball\nEdge proxy + TLS termination stack.\n\n**Verify**\n```bash\nsha256sum -c tls-edge-v*.tar.xz.sha256\n```"
 [project.tls-edge.steps.build]
