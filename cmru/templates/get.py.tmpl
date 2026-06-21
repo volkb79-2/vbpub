@@ -493,23 +493,27 @@ def _extract_bundle(bundle: Path, staging: Path) -> None:
 
 # ─── Wheel verification + venv install (S4, S6.3) ────────────────────────────
 
-def _verify_wheel_sha256(wheel_path: Path, manifest: dict) -> None:
-    """Check wheel sha256 against manifest (S4 step 3) before pip install."""
-    wheels_manifest = manifest.get("wheels") or {}
-    entry = wheels_manifest.get(wheel_path.name) or {}
-    expected = entry.get("sha256")
+def _verify_wheel_sha256(wheel_path: Path, manifest: dict, distribution: str) -> None:
+    """Check wheel sha256 against manifest (S4 step 3) before pip install.
+
+    Reads sha256 from the per-distribution entry in the manifest
+    (manifest[distribution]['sha256']), matching SPEC B's Seam-3 schema.
+    Distribution is the canonical package name (e.g. 'cmru', 'ciu').
+    """
+    dist_entry = manifest.get(distribution) or {}
+    expected = dist_entry.get("sha256")
     if not expected:
-        warn(f"No sha256 for {wheel_path.name} in manifest; skipping wheel hash check.")
+        warn(f"No sha256 for distribution {distribution!r} in manifest; skipping wheel hash check.")
         return
     actual = _sha256(wheel_path)
     if actual != expected:
         fatal(
-            f"Wheel SHA256 mismatch for {wheel_path.name}:\n"
+            f"Wheel SHA256 mismatch for {wheel_path.name} (distribution: {distribution!r}):\n"
             f"  expected: {expected}\n"
             f"  got:      {actual}",
             EXIT_FAIL,
         )
-    ok(f"Wheel {wheel_path.name} sha256 verified.")
+    ok(f"Wheel {wheel_path.name} ({distribution}) sha256 verified.")
 
 
 def _install_wheels(staging: Path, venv_dir: Path, manifest: dict) -> None:
@@ -527,7 +531,7 @@ def _install_wheels(staging: Path, venv_dir: Path, manifest: dict) -> None:
                 EXIT_FAIL,
             )
         wheel_path = matches[-1]
-        _verify_wheel_sha256(wheel_path, manifest)
+        _verify_wheel_sha256(wheel_path, manifest, distribution)
         info(f"Installing {wheel_path.name} into venv ...")
         subprocess.run([str(pip), "install", "--no-index", str(wheel_path)], check=True)
         ok(f"Installed {distribution} from {wheel_path.name}.")

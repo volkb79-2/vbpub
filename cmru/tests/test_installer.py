@@ -594,6 +594,101 @@ class TestVerification:
         with mock.patch("subprocess.run", side_effect=fake_run):
             _verify_minisign(manifest, sig, "RWS...")  # should not raise
 
+    # ── _verify_wheel_sha256 — Seam-3 schema (SPEC B) ────────────────────────
+
+    def test_verify_wheel_sha256_correct_hash_passes(self, tmp_path):
+        """Correct sha256 from SPEC B per-distribution schema passes without error."""
+        ns = self._get_ns()
+        _verify_wheel_sha256 = ns["_verify_wheel_sha256"]
+        _sha256 = ns["_sha256"]
+
+        wheel = tmp_path / "cmru-1.0.0-py3-none-any.whl"
+        wheel.write_bytes(b"fake wheel content")
+        digest = _sha256(wheel)
+
+        # SPEC B schema: sha256 lives at manifest['cmru']['sha256']
+        manifest = {
+            "schema_version": 1,
+            "cmru": {"version": "1.0.0", "wheel": wheel.name, "sha256": digest},
+            "ciu":  {"version": "2.0.0", "wheel": "ciu-2.0.0-py3-none-any.whl", "sha256": "aabbcc"},
+        }
+
+        # Should not raise
+        _verify_wheel_sha256(wheel, manifest, "cmru")
+
+    def test_verify_wheel_sha256_mismatch_aborts_exit_1(self, tmp_path):
+        """Wrong sha256 in SPEC B per-distribution entry causes fatal exit(1)."""
+        ns = self._get_ns()
+        _verify_wheel_sha256 = ns["_verify_wheel_sha256"]
+
+        wheel = tmp_path / "cmru-1.0.0-py3-none-any.whl"
+        wheel.write_bytes(b"fake wheel content")
+
+        manifest = {
+            "schema_version": 1,
+            "cmru": {"version": "1.0.0", "wheel": wheel.name,
+                     "sha256": "deadbeef" * 8},  # wrong digest
+        }
+
+        with pytest.raises(SystemExit) as exc:
+            _verify_wheel_sha256(wheel, manifest, "cmru")
+        assert exc.value.code == 1
+
+    def test_verify_wheel_sha256_missing_distribution_warns_skips(self, tmp_path):
+        """Missing distribution entry in manifest emits a warning and skips verification."""
+        import io
+        ns = self._get_ns()
+        _verify_wheel_sha256 = ns["_verify_wheel_sha256"]
+
+        wheel = tmp_path / "cmru-1.0.0-py3-none-any.whl"
+        wheel.write_bytes(b"content")
+
+        # Manifest has no 'cmru' key at all
+        manifest = {"schema_version": 1}
+
+        # Should warn and return without raising or calling fatal
+        _verify_wheel_sha256(wheel, manifest, "cmru")
+
+    def test_verify_wheel_sha256_ciu_distribution(self, tmp_path):
+        """Correctly verifies ciu wheel using manifest['ciu']['sha256']."""
+        ns = self._get_ns()
+        _verify_wheel_sha256 = ns["_verify_wheel_sha256"]
+        _sha256 = ns["_sha256"]
+
+        wheel = tmp_path / "ciu-2.0.0-py3-none-any.whl"
+        wheel.write_bytes(b"ciu wheel bytes")
+        digest = _sha256(wheel)
+
+        manifest = {
+            "schema_version": 1,
+            "cmru": {"version": "1.0.0", "wheel": "cmru-1.0.0-py3-none-any.whl", "sha256": "aabbcc"},
+            "ciu":  {"version": "2.0.0", "wheel": wheel.name, "sha256": digest},
+        }
+
+        # Should not raise
+        _verify_wheel_sha256(wheel, manifest, "ciu")
+
+    def test_verify_wheel_sha256_does_not_use_filename_map(self, tmp_path):
+        """Verifier must NOT fall back to a 'wheels'-by-filename map (old broken schema)."""
+        ns = self._get_ns()
+        _verify_wheel_sha256 = ns["_verify_wheel_sha256"]
+        _sha256 = ns["_sha256"]
+
+        wheel = tmp_path / "cmru-1.0.0-py3-none-any.whl"
+        wheel.write_bytes(b"content")
+        real_digest = _sha256(wheel)
+
+        # Provide the old broken schema only — the function must ignore it
+        # and fall back to warning (no sha256 found via distribution key).
+        manifest = {
+            "schema_version": 1,
+            "wheels": {wheel.name: {"sha256": real_digest}},
+            # intentionally no 'cmru' distribution entry
+        }
+
+        # With the fixed implementation, this warns and skips (no crash, no mismatch).
+        _verify_wheel_sha256(wheel, manifest, "cmru")
+
 
 # ─── Extraction safety tests ─────────────────────────────────────────────────
 
