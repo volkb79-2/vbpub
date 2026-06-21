@@ -848,7 +848,7 @@ class TestDeployOrchestration:
         postgres (numeric phase order, declaration order within a phase).
         """
         cfg = _load_demo_global(monkeypatch)
-        profile = deploy.resolve_profile(cfg, "core_infra")
+        profile = deploy.resolve_profiles(cfg, ["core_infra"])
         selection = deploy.build_selection(profile)
 
         assert [e["phase_key"] for e in selection] == ["phase_1", "phase_2", "phase_2"]
@@ -958,7 +958,7 @@ class TestDeployOrchestration:
         preflight / vault_addr_from_config reads).
         """
         cfg = _load_demo_global(monkeypatch)
-        profile = deploy.resolve_profile(cfg, "workers")
+        profile = deploy.resolve_profiles(cfg, ["workers"])
         vault = profile.config["topology"]["services"]["vault"]
         assert vault["internal_host"] == "ciudemo-dev-vault"
         # vault_addr_from_config consumes exactly this overridden topology.

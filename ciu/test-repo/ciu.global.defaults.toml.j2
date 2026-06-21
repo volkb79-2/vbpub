@@ -118,10 +118,11 @@ services = [
 ]
 
 # ============================================================================
-# Host profiles (S7.4 / S7.5 / S7.5a) — which stacks run on THIS host.
-# "Host profile" (these tables) and compose `profiles` (compose_profiles) are
-# DISTINCT concepts (S7.5a): the former picks stacks, the latter picks services
-# inside a stack. Default profile (no --profile) = all phases.
+# Service profiles (Seam 4 / S7.5) — which stacks run on THIS host.
+# CIU_SERVICES_PROFILE (comma-separated) or --profile (repeatable) selects
+# an ordered list; phases/stacks/compose_profiles are unioned (deduped,
+# first-seen order); env_overrides/topology_overrides are deep-merged with
+# conflict detection. Default (no selection) = all phases.
 # ============================================================================
 
 # core_infra: the shared backbone — Vault + data. Deploy this on host A first.
@@ -143,3 +144,62 @@ internal_host = "ciudemo-dev-vault"
 # all: single-host convenience — every phase in order (Vault, Data, Apps).
 [deploy.profiles.all]
 phases = ["phase_1", "phase_2", "phase_3"]
+
+# ============================================================================
+# Multi-profile test fixtures (Seam 4 acceptance criteria §8)
+# ============================================================================
+
+# core: phase_1 + phase_2 with compose_profiles and env_override
+[deploy.profiles.core]
+phases = ["phase_1", "phase_2"]
+compose_profiles = ["base"]
+[deploy.profiles.core.env_overrides]
+LOG_LEVEL = "INFO"
+
+# db: phase_2 (overlap with core — dedup test) + compose_profiles overlap
+[deploy.profiles.db]
+phases = ["phase_2"]
+compose_profiles = ["base", "postgres"]
+
+# worker-io: phase_4 (new phase) + unique compose_profile
+[deploy.profiles.worker-io]
+phases = ["phase_4"]
+compose_profiles = ["workers"]
+stacks = ["infra/redis-core"]
+[deploy.profiles.worker-io.topology_overrides.services.vault]
+internal_host = "ciudemo-dev-vault"
+
+# conflict_a: sets topology key to value "host-a"
+[deploy.profiles.conflict_a]
+phases = ["phase_1"]
+[deploy.profiles.conflict_a.topology_overrides.services.redis]
+internal_host = "host-a"
+
+# conflict_b: sets SAME topology key to DIFFERENT value "host-b" — conflict!
+[deploy.profiles.conflict_b]
+phases = ["phase_2"]
+[deploy.profiles.conflict_b.topology_overrides.services.redis]
+internal_host = "host-b"
+
+# env_conflict_a: sets env key to "value-a"
+[deploy.profiles.env_conflict_a]
+phases = ["phase_1"]
+[deploy.profiles.env_conflict_a.env_overrides]
+SHARED_KEY = "value-a"
+
+# env_conflict_b: sets SAME env key to "value-b" — conflict!
+[deploy.profiles.env_conflict_b]
+phases = ["phase_2"]
+[deploy.profiles.env_conflict_b.env_overrides]
+SHARED_KEY = "value-b"
+
+# equal_a + equal_b: same key same value → no conflict
+[deploy.profiles.equal_a]
+phases = ["phase_1"]
+[deploy.profiles.equal_a.env_overrides]
+SHARED_EQUAL = "same-value"
+
+[deploy.profiles.equal_b]
+phases = ["phase_2"]
+[deploy.profiles.equal_b.env_overrides]
+SHARED_EQUAL = "same-value"

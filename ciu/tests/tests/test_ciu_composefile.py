@@ -715,3 +715,159 @@ class TestRenderCompose:
         guarded = guard_config(config, discover("app", config))
         out = render_compose(tmpl, guarded)
         assert "image: myimage" in out
+
+
+# ---------------------------------------------------------------------------
+# §6 / S7.5b — dynamic per-instance configfile selector
+# ---------------------------------------------------------------------------
+
+class TestRenderConfigfilesDynamicInstances:
+    """§8 AC#8: dynamic configfiles render N instances with unique mounts."""
+
+    def _make_stack(self, tmp_path: Path, template_body: str) -> tuple:
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        (stack / "worker.conf.j2").write_text(template_body, encoding="utf-8")
+        return stack
+
+    def _make_config(self, instances: int | None, template: str = "worker.conf.j2") -> dict:
+        cfgfile: dict = {
+            "template": template,
+            "target": "/etc/worker/worker.conf",
+        }
+        if instances is not None:
+            cfgfile["instances"] = instances
+        return {
+            "mystack": {
+                "worker": {
+                    "configfile": {
+                        "cfg": cfgfile,
+                    }
+                }
+            }
+        }
+
+    def test_single_instance_default_no_index_suffix(self, tmp_path: Path) -> None:
+        """Single instance (no 'instances' key): behaves identically to before."""
+        stack = self._make_stack(tmp_path, "id={{ instance_index }}\n")
+        config = self._make_config(instances=None)
+        mounts = render_configfiles(stack, "mystack", config, lambda n: "v")
+        assert len(mounts) == 1
+        m = mounts[0]
+        assert m.service == "worker"
+        assert m.name == "cfg"
+        rel = m.rendered_path.relative_to(stack)
+        assert rel == Path(".ciu") / "rendered" / "worker" / "cfg"
+
+    def test_instances_one_behaves_same_as_no_instances(self, tmp_path: Path) -> None:
+        """instances=1: same behavior as no 'instances' key (single-instance path)."""
+        stack = self._make_stack(tmp_path, "id={{ instance_index }}\n")
+        config = self._make_config(instances=1)
+        mounts = render_configfiles(stack, "mystack", config, lambda n: "v")
+        assert len(mounts) == 1
+        m = mounts[0]
+        assert m.service == "worker"
+        assert m.name == "cfg"
+
+    def test_two_instances_emit_two_mounts(self, tmp_path: Path) -> None:
+        """§8 AC#8: instances=2 → 2 unique ConfigFileMount objects."""
+        stack = self._make_stack(tmp_path, "id={{ instance_index }}\n")
+        config = self._make_config(instances=2)
+        mounts = render_configfiles(stack, "mystack", config, lambda n: "v")
+        assert len(mounts) == 2
+
+    def test_two_instances_unique_service_names(self, tmp_path: Path) -> None:
+        """Each mount has a unique service name: worker-1, worker-2."""
+        stack = self._make_stack(tmp_path, "ok\n")
+        config = self._make_config(instances=2)
+        mounts = render_configfiles(stack, "mystack", config, lambda n: "v")
+        services = [m.service for m in mounts]
+        assert services == ["worker-1", "worker-2"]
+
+    def test_two_instances_unique_names(self, tmp_path: Path) -> None:
+        """Each mount has a unique name: cfg-1, cfg-2."""
+        stack = self._make_stack(tmp_path, "ok\n")
+        config = self._make_config(instances=2)
+        mounts = render_configfiles(stack, "mystack", config, lambda n: "v")
+        names = [m.name for m in mounts]
+        assert names == ["cfg-1", "cfg-2"]
+
+    def test_n_instances_all_unique_paths(self, tmp_path: Path) -> None:
+        """N instances → N unique rendered paths."""
+        n = 4
+        stack = self._make_stack(tmp_path, "idx={{ instance_index }}\n")
+        config = self._make_config(instances=n)
+        mounts = render_configfiles(stack, "mystack", config, lambda n_: "v")
+        paths = [m.rendered_path for m in mounts]
+        assert len(set(paths)) == n
+
+    def test_instance_index_exposed_in_template(self, tmp_path: Path) -> None:
+        """instance_index is 1-based and exposed in the render context."""
+        stack = self._make_stack(tmp_path, "idx={{ instance_index }}\n")
+        config = self._make_config(instances=3)
+        mounts = render_configfiles(stack, "mystack", config, lambda n: "v")
+        contents = [m.rendered_path.read_text().strip() for m in mounts]
+        assert contents[0] == "idx=1"
+        assert contents[1] == "idx=2"
+        assert contents[2] == "idx=3"
+
+    def test_instance_id_exposed_in_template(self, tmp_path: Path) -> None:
+        """instance_id is '<service>-<index>' and exposed in the render context."""
+        stack = self._make_stack(tmp_path, "{{ instance_id }}\n")
+        config = self._make_config(instances=2)
+        mounts = render_configfiles(stack, "mystack", config, lambda n: "v")
+        assert mounts[0].rendered_path.read_text().strip() == "worker-1"
+        assert mounts[1].rendered_path.read_text().strip() == "worker-2"
+
+    def test_single_instance_no_regression_no_index_in_content(self, tmp_path: Path) -> None:
+        """Single-instance (no 'instances') still gets instance_index in context
+        but the service/name are unchanged (backward compat)."""
+        stack = self._make_stack(tmp_path, "idx={{ instance_index }}\n")
+        config = self._make_config(instances=None)
+        mounts = render_configfiles(stack, "mystack", config, lambda n: "v")
+        assert len(mounts) == 1
+        # instance_index is still 1 in context even for single-instance
+        assert mounts[0].rendered_path.read_text().strip() == "idx=1"
+        assert mounts[0].service == "worker"  # no "-1" suffix
+
+    def test_instances_zero_raises_valueerror(self, tmp_path: Path) -> None:
+        """instances=0 is invalid → ValueError."""
+        stack = self._make_stack(tmp_path, "ok\n")
+        config = self._make_config(instances=0)
+        with pytest.raises(ValueError, match="instances"):
+            render_configfiles(stack, "mystack", config, lambda n: "v")
+
+    def test_instances_negative_raises_valueerror(self, tmp_path: Path) -> None:
+        """instances=-1 is invalid → ValueError."""
+        stack = self._make_stack(tmp_path, "ok\n")
+        config = self._make_config(instances=-1)
+        with pytest.raises(ValueError, match="instances"):
+            render_configfiles(stack, "mystack", config, lambda n: "v")
+
+    def test_instances_string_raises_valueerror(self, tmp_path: Path) -> None:
+        """instances='2' (string) is invalid → ValueError."""
+        stack = self._make_stack(tmp_path, "ok\n")
+        config = self._make_config(instances="2")  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="instances"):
+            render_configfiles(stack, "mystack", config, lambda n: "v")
+
+    def test_existing_single_instance_unchanged(self, tmp_path: Path) -> None:
+        """Configfile without 'instances' key: service and name unchanged (no regression)."""
+        stack = self._make_stack(tmp_path, "hello\n")
+        config = {
+            "mystack": {
+                "svc": {
+                    "configfile": {
+                        "myfile": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/svc/conf",
+                        }
+                    }
+                }
+            }
+        }
+        mounts = render_configfiles(stack, "mystack", config, lambda n: "v")
+        assert len(mounts) == 1
+        assert mounts[0].service == "svc"
+        assert mounts[0].name == "myfile"
+        assert mounts[0].target == "/etc/svc/conf"

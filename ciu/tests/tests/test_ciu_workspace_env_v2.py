@@ -6,7 +6,7 @@ Covers:
 - REQUIRED_KEYS_CORE content (S2.2)
 - validate_required_certs (S2.4): path-as-given, readable checks, DOCKER_GID falsy-safe
 - _detect_public_fqdn: malformed ciu.global.toml → '' + WARN (review finding)
-- generate_ciu_env: ENV_TYPE=native emitted, CIU_HOST_PROFILE placeholder emitted
+- generate_ciu_env: ENV_TYPE=native emitted, CIU_SERVICES_PROFILE placeholder emitted (Seam 4)
 """
 from __future__ import annotations
 
@@ -322,11 +322,11 @@ class TestDetectPublicFqdnMalformedToml:
 
 
 # ---------------------------------------------------------------------------
-# generate_ciu_env: ENV_TYPE=native + CIU_HOST_PROFILE placeholder
+# generate_ciu_env: ENV_TYPE=native + CIU_SERVICES_PROFILE placeholder (Seam 4)
 # ---------------------------------------------------------------------------
 
 class TestGenerateCiuEnvNative:
-    """generate_ciu_env on a native host emits native naming and S7.5 placeholder."""
+    """generate_ciu_env on a native host emits native naming and Seam 4 placeholder."""
 
     def _stub_docker(self, monkeypatch):
         """Stub docker-dependent detection to avoid real docker calls."""
@@ -361,8 +361,11 @@ class TestGenerateCiuEnvNative:
         assert 'export IS_NATIVE="1"' in content
         assert "IS_BARE_METAL" not in content
 
-    def test_ciu_host_profile_placeholder_present(self, tmp_path, monkeypatch):
-        """S7.5: CIU_HOST_PROFILE commented placeholder must be in the generated file."""
+    def test_ciu_services_profile_placeholder_present(self, tmp_path, monkeypatch):
+        """Seam 4: CIU_SERVICES_PROFILE commented placeholder must be in the generated file.
+
+        CIU_HOST_PROFILE is retired; only CIU_SERVICES_PROFILE appears.
+        """
         monkeypatch.setenv("ENV_TYPE", "native")
         monkeypatch.delenv("PUBLIC_FQDN", raising=False)
         monkeypatch.delenv("PUBLIC_IP", raising=False)
@@ -372,9 +375,11 @@ class TestGenerateCiuEnvNative:
             out = generate_ciu_env(tmp_path)
 
         content = out.read_text(encoding="utf-8")
-        assert "CIU_HOST_PROFILE" in content
+        assert "CIU_SERVICES_PROFILE" in content
         # It must be commented out (a placeholder, not a live export)
-        assert '# export CIU_HOST_PROFILE=""' in content
+        assert '# export CIU_SERVICES_PROFILE=' in content
+        # Old retired var must not appear
+        assert "CIU_HOST_PROFILE" not in content
 
     def test_env_type_comment_lists_native(self, tmp_path, monkeypatch):
         """The comment for ENV_TYPE must list 'native' not 'bare-metal'."""

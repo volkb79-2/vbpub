@@ -182,9 +182,9 @@ def load_global_config(repo_root: Path) -> dict:
     return global_cfg
 
 
-def resolve_profile(global_cfg: dict, name: Optional[str]) -> profiles_pkg.Profile:
-    """Resolve the active host profile (S7.4 / S7.5). default env CIU_HOST_PROFILE."""
-    return profiles_pkg.resolve_profile(global_cfg, name)
+def resolve_profiles(global_cfg: dict, names: Optional[list[str]]) -> profiles_pkg.Profile:
+    """Resolve the active service profile(s) (Seam 4). Default env CIU_SERVICES_PROFILE."""
+    return profiles_pkg.resolve_profiles(global_cfg, names)
 
 
 def profile_env(profile: profiles_pkg.Profile) -> dict:
@@ -1152,8 +1152,12 @@ Examples:
                          help="List host profiles (replaces v1 --list-groups) (S7.4)")
 
     control = parser.add_argument_group("Control")
-    control.add_argument("--profile", default=None, metavar="NAME",
-                         help="Host profile to activate (default: env CIU_HOST_PROFILE) (S7.5)")
+    control.add_argument("--profile", action="append", default=None, metavar="NAME",
+                         help=(
+                             "Service profile(s) to activate (repeatable; comma form also "
+                             "accepted: --profile core,db). "
+                             "Default: env CIU_SERVICES_PROFILE (Seam 4 / S7.5)."
+                         ))
     control.add_argument("--phases", default=None, metavar="N,M",
                          help="Comma-separated phase numbers to restrict to (e.g. 1,2)")
     control.add_argument("-y", "--yes", action="store_true",
@@ -1240,10 +1244,23 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
                 f"Expected: {standalone_root}, got: {env_repo_root}."
             )
 
-    # --- config + profile (S3.3 / S7.4 / S7.5) ---
+    # --- config + profile (S3.3 / S7.4 / Seam 4) ---
     global_cfg = load_global_config(repo_root)
-    profile = resolve_profile(global_cfg, args.profile)
-    info(f"Active host profile: {profile.name or '(default — all phases)'}")
+    # args.profile is now a list[str] | None (action="append"). Expand any
+    # comma forms so --profile core,db behaves like --profile core --profile db.
+    raw_profiles = args.profile  # list[str] | None
+    if raw_profiles:
+        expanded: list[str] = []
+        for entry in raw_profiles:
+            for part in entry.split(","):
+                part = part.strip()
+                if part:
+                    expanded.append(part)
+        cli_profiles: list[str] | None = expanded if expanded else None
+    else:
+        cli_profiles = None
+    profile = resolve_profiles(global_cfg, cli_profiles)
+    info(f"Active service profile(s): {profile.name or '(default — all phases)'}")
 
     cli_phases = _parse_phase_filter(args.phases)
     selection = build_selection(profile, cli_phases)
