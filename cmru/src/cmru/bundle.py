@@ -3,18 +3,83 @@
 
 Moved from ``release_manager.bundle_builder`` in P1; ``release_manager.bundle_builder``
 is now a re-export shim kept for backwards compatibility until P6.
+
+Deterministic archive support (SPEC B §4)
+------------------------------------------
+``write_deterministic_tar(members, out_path, source_date_epoch)`` produces a
+byte-identical tar.xz across builds given the same inputs:
+
+1. Allowlist-driven membership (never recursive walk).
+2. Hard excludes (.git, .ciu, *.toml renders, secrets, caches, logs, …).
+3. Normalized TarInfo: mtime=SOURCE_DATE_EPOCH, uid=gid=0, uname=gname="",
+   mode=0o644 (files) / 0o755 (dirs), executable bit preserved where intended,
+   members sorted by path in byte (C) order.
+4. Fixed compression: tarfile xz (equivalent to xz -6), no timestamp in container.
+
+``SOURCE_DATE_EPOCH`` is read from the environment (set by the cmru runner, S3.3).
+It is REQUIRED for deterministic builds; the function raises clearly if unset.
 """
 from __future__ import annotations
 
 import argparse
+import io
 import os
 import shutil
+import stat
 import subprocess
-from dataclasses import dataclass
+import tarfile
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Sequence
 
 import tomllib
+
+
+# ---------------------------------------------------------------------------
+# Hard-exclude patterns (§4.2) — belt-and-suspenders even if the allowlist
+# would never include them.
+# ---------------------------------------------------------------------------
+_HARD_EXCLUDE_NAMES = frozenset({
+    ".git", ".ciu",
+    "ciu.env", "__pycache__",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "node_modules",
+})
+
+_HARD_EXCLUDE_SUFFIXES = (
+    # rendered compose / config outputs
+    ".toml",          # rendered *.toml outputs; note: source cmru.toml is also excluded
+    ".env",
+    # secret stores / certificates
+    ".pem", ".crt", ".key", ".p12", ".pfx",
+    # runtime logs / test output
+    ".log",
+    # caches
+    ".pyc",
+)
+
+# Specific filename exclusions (exact match on name, not suffix).
+_HARD_EXCLUDE_EXACT = frozenset({
+    "ciu.env",
+    "minisign.key",       # secret signing key — must never be bundled
+})
+
+
+def _is_excluded(rel_path: str) -> bool:
+    """Return True if rel_path should be excluded from the archive."""
+    parts = Path(rel_path).parts
+    for part in parts:
+        if part in _HARD_EXCLUDE_NAMES:
+            return True
+        if part in _HARD_EXCLUDE_EXACT:
+            return True
+    name = Path(rel_path).name
+    if name in _HARD_EXCLUDE_EXACT:
+        return True
+    for suffix in _HARD_EXCLUDE_SUFFIXES:
+        if name.endswith(suffix):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -33,6 +98,147 @@ class BundleConfig:
     archive_format: str
     copy_files: list[str]
     copy_dirs: list[str]
+
+
+@dataclass
+class BundleMember:
+    """A single file to include in the deterministic archive.
+
+    archive_path: the path inside the archive (e.g. "bundle/config.py").
+    source_path:  the absolute path on disk (or None for in-memory content).
+    content:      in-memory bytes (used when source_path is None).
+    executable:   if True, mode is set to 0o755; otherwise 0o644.
+    """
+    archive_path: str
+    source_path: Optional[Path] = None
+    content: Optional[bytes] = None
+    executable: bool = False
+
+    def __post_init__(self) -> None:
+        if self.source_path is None and self.content is None:
+            raise ValueError(f"BundleMember({self.archive_path!r}): either source_path or content is required")
+
+
+def _read_source_date_epoch() -> int:
+    """Read SOURCE_DATE_EPOCH from env; raise clearly if unset."""
+    raw = os.environ.get("SOURCE_DATE_EPOCH")
+    if not raw:
+        raise RuntimeError(
+            "SOURCE_DATE_EPOCH is not set. The cmru runner sets it automatically "
+            "(SPEC.md S3.3). For standalone use: "
+            "export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)"
+        )
+    return int(raw)
+
+
+def write_deterministic_tar(
+    members: Sequence[BundleMember],
+    out_path: Path,
+    source_date_epoch: Optional[int] = None,
+) -> Path:
+    """Write a byte-deterministic tar.xz to out_path (SPEC B §4).
+
+    Determinism contract:
+    - Members sorted by archive_path in byte order (C locale, no locale-dependent collation).
+    - mtime = source_date_epoch for every member.
+    - uid = gid = 0; uname = gname = "".
+    - mode = 0o644 for files (0o755 if executable=True); 0o755 for dirs.
+    - No device/char/fifo nodes.
+    - Fixed compression: xz (tarfile w:xz).
+
+    Excluded paths (hard excludes, §4.2) are silently dropped before writing.
+
+    Args:
+        members:            Ordered-by-caller or unsorted list of BundleMembers.
+        out_path:           Destination .tar.xz path (parent must exist or be created).
+        source_date_epoch:  Unix timestamp; if None, reads from SOURCE_DATE_EPOCH env.
+
+    Returns:
+        out_path
+    """
+    if source_date_epoch is None:
+        source_date_epoch = _read_source_date_epoch()
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Filter hard-excludes, then sort by archive_path in byte (C) order.
+    filtered = [m for m in members if not _is_excluded(m.archive_path)]
+    sorted_members = sorted(filtered, key=lambda m: m.archive_path.encode())
+
+    with tarfile.open(str(out_path), mode="w:xz") as tf:
+        for member in sorted_members:
+            if member.source_path is not None:
+                data = member.source_path.read_bytes()
+            else:
+                assert member.content is not None
+                data = member.content
+
+            info = tarfile.TarInfo(name=member.archive_path)
+            info.size = len(data)
+            info.mtime = source_date_epoch
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            info.mode = 0o755 if member.executable else 0o644
+            info.type = tarfile.REGTYPE
+
+            tf.addfile(info, io.BytesIO(data))
+
+    return out_path
+
+
+def collect_allowlist_members(
+    project_root: Path,
+    allowlist: Sequence[str],
+    *,
+    archive_prefix: str = "bundle",
+    extra_members: Optional[Sequence[BundleMember]] = None,
+) -> List[BundleMember]:
+    """Expand an allowlist of project-relative paths to BundleMembers.
+
+    Each entry in allowlist is a path relative to project_root.  Directories
+    are expanded to all contained files (recursively).  Hard excludes are
+    applied at collection time (and again at write time — belt-and-suspenders).
+
+    archive_prefix: every member's archive path is prefixed with this string
+                    (e.g. "bundle" → "bundle/src/app.py").
+    extra_members:  additional members (e.g. generated manifest, built wheels)
+                    appended after the allowlist expansion.
+
+    Returns a list of BundleMembers (unsorted — write_deterministic_tar sorts them).
+    """
+    result: List[BundleMember] = []
+
+    for entry in allowlist:
+        abs_path = (project_root / entry).resolve()
+        if not abs_path.exists():
+            raise FileNotFoundError(
+                f"Allowlisted path does not exist: {abs_path} (from {entry!r})"
+            )
+        if _is_excluded(entry):
+            continue
+
+        if abs_path.is_dir():
+            for child in sorted(abs_path.rglob("*")):
+                if not child.is_file():
+                    continue
+                rel = child.relative_to(project_root).as_posix()
+                if _is_excluded(rel):
+                    continue
+                arc = f"{archive_prefix}/{rel}" if archive_prefix else rel
+                exe = bool(child.stat().st_mode & stat.S_IXUSR)
+                result.append(BundleMember(archive_path=arc, source_path=child, executable=exe))
+        else:
+            rel = abs_path.relative_to(project_root).as_posix()
+            arc = f"{archive_prefix}/{rel}" if archive_prefix else rel
+            exe = bool(abs_path.stat().st_mode & stat.S_IXUSR)
+            result.append(BundleMember(archive_path=arc, source_path=abs_path, executable=exe))
+
+    if extra_members:
+        result.extend(extra_members)
+
+    return result
 
 
 def log_info(message: str) -> None:
