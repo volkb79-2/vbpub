@@ -16,6 +16,21 @@ from urllib.request import Request, urlopen
 API_BASE = "https://api.github.com"
 
 
+class PackageVisibilityApiUnsupported(RuntimeError):
+    """Raised when GitHub returns no usable endpoint for setting package visibility.
+
+    GitHub exposes NO REST or GraphQL API to change a container package's visibility
+    (the PATCH route does not exist -> HTTP 404). Visibility must be set once in the
+    web UI; thereafter it persists across pushes. Callers treat this as non-fatal —
+    the image has already been pushed successfully by the time we get here.
+    """
+
+    def __init__(self, status: int, body: str) -> None:
+        super().__init__(f"package visibility API unsupported (HTTP {status})")
+        self.status = status
+        self.body = body
+
+
 class GitHubPackages:
     """Minimal GitHub Packages client for GHCR visibility sync."""
 
@@ -116,11 +131,11 @@ class GitHubPackages:
             content_type="application/json",
         )
         if status >= 400:
-            self._fail(
-                f"set GHCR package visibility for {package_name} to {visibility}",
-                status,
-                body,
-            )
+            # GitHub exposes NO REST/GraphQL endpoint to change container-package
+            # visibility (the PATCH route does not exist -> 404). This is expected and
+            # MUST NOT be fatal: the image already pushed. Surface it as a typed,
+            # catchable signal so callers can warn + continue.
+            raise PackageVisibilityApiUnsupported(status, body)
         return json.loads(body or "{}")
 
     def mirror_package_visibility(
@@ -156,7 +171,18 @@ class GitHubPackages:
         if current == expected_visibility:
             return expected_visibility
 
-        updated = self.set_package_visibility(package_name, expected_visibility)
+        try:
+            updated = self.set_package_visibility(package_name, expected_visibility)
+        except PackageVisibilityApiUnsupported as exc:
+            sys.stderr.write(
+                f"[WARN] Could not set GHCR visibility for {package_name} via API "
+                f"(HTTP {exc.status}): GitHub provides no REST/GraphQL endpoint to change "
+                f"container-package visibility. The image pushed fine but the package "
+                f"stays {current!r}. Set it ONCE in the UI (Your packages -> {package_name} "
+                f"-> Package settings -> Danger Zone -> Change visibility -> "
+                f"{expected_visibility}); it then persists for all future pushes.\n"
+            )
+            return current or expected_visibility
         new_visibility = str(updated.get("visibility") or "").strip()
         if new_visibility and new_visibility != expected_visibility:
             self._fail(
