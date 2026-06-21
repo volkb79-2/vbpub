@@ -1,0 +1,14 @@
+# cmru-agent systemd unit template (rendered at enroll — see agent/selfupdate.py)
+# Rendered values: {venv_python}, {scope}
+[Unit]
+Description=CMRU reconciler agent
+After=network-online.target consul.service
+
+[Service]
+Type=simple
+ExecStart=/opt/dstdns/venv/bin/cmru-agent run --scope system
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

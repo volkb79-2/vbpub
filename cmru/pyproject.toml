@@ -14,7 +14,9 @@ authors = [{name = "Volker Badziong"}]
 dependencies = []
 
 [project.scripts]
-cmru = "cmru.cli:main"
+cmru            = "cmru.cli:main"            # existing
+cmru-agent      = "cmru.agent.cli:main"      # new (spec G §4)
+cmru-controller = "cmru.controller.cli:main" # new (spec G §4)
 
 [tool.setuptools.packages.find]
 where = ["src"]
