@@ -551,3 +551,38 @@ def test_action_clean_invariant_passes_when_clean(monkeypatch, tmp_path):
     monkeypatch.setattr(deploy, "_remove_project_volumes", lambda cfg: [])
     rc = deploy.action_clean(tmp_path, profile, [], ignore_errors=True)
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Seam 4 — --profile repeatable + comma form (§8 AC#7)
+# ---------------------------------------------------------------------------
+
+class TestDeployParseArgsProfileSeam4:
+    """Tests for the deploy.parse_args --profile repeatable flag."""
+
+    def test_single_profile_produces_list(self):
+        args = deploy.parse_args(["--profile", "core"])
+        assert args.profile == ["core"]
+
+    def test_repeatable_profile_produces_list(self):
+        args = deploy.parse_args(["--profile", "core", "--profile", "db"])
+        assert args.profile == ["core", "db"]
+
+    def test_no_profile_produces_none(self):
+        args = deploy.parse_args([])
+        assert args.profile is None
+
+    def test_comma_form_single_entry(self):
+        """--profile core,db is accepted (comma split happens in _run)."""
+        args = deploy.parse_args(["--profile", "core,db"])
+        # argparse appends the raw entry — splitting happens in _run
+        assert args.profile == ["core,db"]
+
+    def test_profile_help_mentions_ciu_services_profile(self, capsys):
+        """Help text must reference CIU_SERVICES_PROFILE (not CIU_HOST_PROFILE)."""
+        import pytest
+        with pytest.raises(SystemExit):
+            deploy.parse_args(["--help"])
+        out = capsys.readouterr().out
+        assert "CIU_SERVICES_PROFILE" in out
+        assert "CIU_HOST_PROFILE" not in out

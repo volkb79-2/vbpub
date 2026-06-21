@@ -1,20 +1,21 @@
-# CIU v2 Specification
+# CIU v3 Specification
 
 | | |
 |---|---|
 | **Status** | DRAFT — pending sign-off (Stage 0 gate) |
-| **Version** | 2.0.0-draft.1 |
-| **Date** | 2026-06-11 |
+| **Version** | 3.0.0-draft.1 |
+| **Date** | 2026-06-21 |
 | **Supersedes** | docs/CONFIG.md + docs/CIU.md + docs/CIU-DEPLOY.md as normative sources (those become non-normative guides) |
 
-This document is the **single normative contract** for CIU v2. Where any other
+This document is the **single normative contract** for CIU v3. Where any other
 document, example, or code comment conflicts with this specification, this
 specification wins.
 
 **Package versioning.** The `ciu` wheel is versioned with SemVer derived from git tags
 (`ciu-vX.Y.Z`; see `/docs/VERSIONING.md`). The wheel's **MAJOR tracks this SPEC's MAJOR** —
-a breaking change to this contract bumps both. ciu is seeded at `2.0.0` to match SPEC
-`2.0.0`. Untagged commits build as `X.Y.Z.devN+g<sha>`.
+a breaking change to this contract bumps both. ciu is seeded at `3.0.0` for this
+breaking release (Seam 4: multi-profile env var rename + repeatable `--profile`).
+Untagged commits build as `X.Y.Z.devN+g<sha>`.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY**
 are to be interpreted as described in RFC 2119.
@@ -513,22 +514,45 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   deep-merged over `topology.*` while the profile is active (cross-host
   addressing: host B's profile points `topology.services.vault` at host A's
   external address).
-- **S7.5** CLI: `ciu-deploy --profile <name>`; default from
-  `CIU_HOST_PROFILE` in `ciu.env`. `[deploy.groups]` and `--groups` do
-  **not** exist in v2 (greenfield — no aliases, no fallbacks); the validator
-  rejects `[deploy.groups]` with a pointer to profiles.
+- **S7.5** CLI: `ciu-deploy --profile <name>` (repeatable; comma form also
+  accepted: `--profile core,db`); default from `CIU_SERVICES_PROFILE` in
+  `ciu.env` (comma-separated ordered list, e.g. `core,db,worker-io`).
+  `CIU_HOST_PROFILE` is **retired** (not aliased): if set, CIU MUST emit a
+  deprecation error to stderr and exit 2 — it is never used as a fallback.
+  `[deploy.groups]` and `--groups` do **not** exist in v3 (greenfield — no
+  aliases, no fallbacks); the validator rejects `[deploy.groups]` with a
+  pointer to profiles.
+  **Composition rules (Seam 4):**
+  - **Union, order-preserving, deduped:** `phases`, `stacks`, and
+    `compose_profiles` from all selected profiles are unioned preserving
+    first-seen order and deduplicating repeats. Phase execution order
+    remains numeric (S7.1 `ordered_phases`).
+  - **Override merge + conflict:** `env_overrides` and `topology_overrides`
+    from all selected profiles are deep-merged in list order. If two profiles
+    set the same key to **different** values → CIU MUST fail before any
+    render or Docker mutation with exit code 2, naming the key and both
+    conflicting profiles. Equal repeated values are accepted silently.
+  - **CLI precedence:** if any `--profile` is given on the CLI, the CLI
+    list **fully overrides** the env list (they are NOT merged).
 - **S7.5a** *Multi-host workflow.* Each host carries a clone of the project,
   its own generated `ciu.env` (machine identity, S2.7), and a
-  `CIU_HOST_PROFILE`. The admin orders execution manually across hosts
-  (e.g. `--profile core_infra` on host A **first**, then
-  `--profile workers` on host B whose `topology_overrides` points
+  `CIU_SERVICES_PROFILE` (ordered list). The admin orders execution
+  manually across hosts (e.g. `--profile core,db` on host A **first**, then
+  `--profile worker-io` on host B whose `topology_overrides` points
   Vault/Postgres/Redis addresses at host A's externally reachable
   endpoints). Cross-host reachability (published ports, VPN/tailnet) is the
   operator's responsibility; CIU's S7.6 validation tells host B *before
-  starting anything* whether its Vault address+token resolve. "Host
+  starting anything* whether its Vault address+token resolve. "Service
   profile" (`deploy.profiles`, which stacks run here) and compose `profiles`
   (`compose_profiles`, which services inside a stack are activated) are
   distinct concepts and MUST be documented side-by-side.
+- **S7.5b** *Dynamic per-instance configfile selector.* A configfile section
+  (under `[<root>.<service>.configfile.<name>]`) MAY declare
+  `instances = N` (positive integer). When present, `render_configfiles`
+  emits *N* rendered files and mounts (one per 1-based index). Each render
+  context additionally exposes `instance_index` (1-based int) and
+  `instance_id` (`"<service>-<index>"`). Single-instance configfiles (no
+  `instances` key, or `instances = 1`) behave identically to before.
 - **S7.6** Validation: if the active selection includes stacks with
   `*_VAULT` directives, the vault stack MUST be in an earlier phase of the
   same selection **or** a Vault token/address MUST resolve via S4.16 —

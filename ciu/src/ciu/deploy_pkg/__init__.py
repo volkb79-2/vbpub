@@ -1,12 +1,13 @@
 """
-CIU v2 deploy_pkg — orchestration helper package.
+CIU v3 deploy_pkg — orchestration helper package.
 
 Public API re-exported from sub-modules:
 
   http_util:  http_get_json
   phases:     PHASE_KEY_RE, ordered_phases, service_enabled,
               iter_enabled_services, parse_env_overrides
-  profiles:   Profile, resolve_profile, reject_groups
+  profiles:   Profile, resolve_profiles, resolve_profile (shim), reject_groups,
+              dedupe_keep_order
   health:     classify, evaluate_gate, wait_for_gate, anchored_name_filter
   registry:   check_registry_auth
 """
@@ -28,8 +29,10 @@ from .phases import (
 )
 from .profiles import (
     Profile,
+    dedupe_keep_order,
     reject_groups,
     resolve_profile,
+    resolve_profiles,
 )
 from .registry import check_registry_auth
 
@@ -44,8 +47,10 @@ __all__ = [
     "parse_env_overrides",
     # profiles
     "Profile",
+    "resolve_profiles",
     "resolve_profile",
     "reject_groups",
+    "dedupe_keep_order",
     # health
     "classify",
     "evaluate_gate",
