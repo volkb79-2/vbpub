@@ -1,0 +1,85 @@
+// mdt devcontainer TEMPLATE (JSONC — comments allowed).
+//
+// Copy this file (and the sibling initialize_container_environment.py) into your repo's `.devcontainer/`, then set
+// only the repo-specific bits (workspaceFolder is derived; add sibling-repo mounts /
+// features / extensions you need). The agent-state mounts + initializeCommand below are
+// the reusable core: they persist AI-CLI / signing / auth state across rebuilds and
+// pre-create the host bind-mount sources so the container never fails to start.
+//
+//   cp <vbpub>/modern-debian-tools-python-debug/templates/{devcontainer.json,initialize_container_environment.py} .devcontainer/
+//   # then "Dev Containers: Rebuild Container"
+{
+  "name": "${localWorkspaceFolderBasename}-devcontainer-${localEnv:USER}",
+
+  // Pin a concrete tag in real use (e.g. :trixie-py3.14-<date>) rather than :latest.
+  "image": "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:latest",
+
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "moby": false,
+      "dockerDashComposeVersion": "v2"
+    }
+  },
+
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "remoteUser": "vscode",
+
+  // HOST bootstrap — runs BEFORE the container is created, so every $HOME bind-mount
+  // source below exists with correct perms (else Docker creates them as root and the
+  // vscode user can't write its own state). initialize_container_environment.py derives the dir list from the mounts.
+  "initializeCommand": "python3 .devcontainer/initialize_container_environment.py",
+
+  "mounts": [
+    // --- Docker / host integration ---
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
+    // --- Auth/keys mounted read-only from the host ---
+    "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh-host,type=bind,consistency=cached,readonly",
+    // --- Persistent AGENT / TOOL STATE (survives rebuilds): login once, keys kept, history kept ---
+    // Claude Code: config, auth, projects/memory, todos
+    "source=${localEnv:HOME}/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
+    // Codex CLI: config.toml, auth.json, sessions, history
+    "source=${localEnv:HOME}/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
+    // gh auth + assorted tool configs (~/.config/gh, etc.)
+    "source=${localEnv:HOME}/.config,target=/home/vscode/.config,type=bind,consistency=cached",
+    // minisign signing key (release/bundle signing — see cmru SPEC B / KI-01)
+    "source=${localEnv:HOME}/.minisign,target=/home/vscode/.minisign,type=bind,consistency=cached",
+    // GPG keys
+    "source=${localEnv:HOME}/.gnupg,target=/home/vscode/.gnupg,type=bind,consistency=cached"
+    // NOTE: caches (~/.cache, ~/.npm) are intentionally NOT persisted — they rebuild cheaply.
+    // Add sibling-repo workspace mounts here if you use a multi-root workspace, e.g.:
+    //   ,"source=${localWorkspaceFolder}/../vbpub,target=/workspaces/vbpub,type=bind,consistency=cached"
+  ],
+
+  "containerEnv": {
+    "DOCKER_HOST": "unix:///var/run/docker.sock"
+  },
+
+  "runArgs": [
+    "--hostname", "${localWorkspaceFolderBasename}-devcontainer-${localEnv:USER}",
+    "--name", "${localWorkspaceFolderBasename}-devcontainer-${localEnv:USER}",
+    // DOCKER_GID must be exported in the host shell before launch (see repo docs).
+    "--group-add", "${localEnv:DOCKER_GID}",
+    // sshfs / mount(2) inside the container
+    "--cap-add", "SYS_ADMIN",
+    "--device", "/dev/fuse",
+    "--security-opt", "apparmor=unconfined",
+    "--security-opt", "seccomp=unconfined"
+  ],
+
+  // Optional: your repo's container setup
+  // "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "python3"
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-vscode.docker",
+        "redhat.vscode-yaml",
+        "tamasfe.even-better-toml"
+      ]
+    }
+  }
+}
