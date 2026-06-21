@@ -58,11 +58,27 @@ class ResolveConfig:
 
 
 @dataclass(frozen=True)
-class GetShConfig:
-    install_dir: str         # default install root
-    preserve: List[str]      # config files preserved across updates (S6.5)
-    deps: List[str]          # extra runtime tools the installer checks for (e.g. "docker")
-    next_steps: List[str]    # post-install hint lines printed by the emitted installer
+class InstallerWheel:
+    """A bundled wheel entry in the [installer] config (§3.1)."""
+    path: str                # glob inside release bundle, e.g. "vendor/cmru-*.whl"
+    distribution: str        # pip distribution name, e.g. "cmru"
+
+
+@dataclass(frozen=True)
+class InstallerConfig:
+    """[project.<name>.installer] — transactional installer config (§3.1).
+
+    Replaces the retired [getsh] section (V-rule: surviving [getsh] key is exit 2).
+    """
+    install_dir_system: str          # system-scope root, e.g. "/opt/<name>"
+    install_dir_user: str            # leaf under $XDG_DATA_HOME/<name>
+    asset_suffix: str                # e.g. ".tar.xz"
+    entrypoint: Optional[str]        # project adapter, relative to release root; may be absent
+    required_commands: List[str]     # checked pre-network
+    preserve: List[str]              # paths preserved under <root>/shared/
+    manifest_name: str               # default "manifest.json"
+    signature_name: str              # default "manifest.json.minisig"
+    wheels: List[InstallerWheel]     # bundled wheels to install into venv
 
 
 @dataclass(frozen=True)
@@ -83,7 +99,7 @@ class ProjectS2Config:
     version: Optional[VersionConfig]
     publish: Optional[PublishConfig]
     resolve: Optional[ResolveConfig]
-    getsh: Optional[GetShConfig]
+    installer: Optional[InstallerConfig]
     delegated: Optional[DelegatedConfig]
     steps: Mapping[str, list]
 
@@ -166,7 +182,86 @@ def _parse_artifacts(name: str, raw: dict) -> List[str]:
     return artifacts
 
 
+def _parse_installer(name: str, raw: dict) -> InstallerConfig:
+    """Parse [project.<name>.installer] — fail-fast, unknown keys rejected (V09)."""
+    _KNOWN_INSTALLER_KEYS = {
+        "install_dir_system", "install_dir_user", "asset_suffix", "entrypoint",
+        "required_commands", "preserve", "manifest_name", "signature_name", "wheels",
+    }
+    unknown = [k for k in raw if k not in _KNOWN_INSTALLER_KEYS]
+    if unknown:
+        print(f"[ERROR] project.{name}.installer: unknown keys {sorted(unknown)} (V09)")
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+
+    install_dir_system = str(
+        _require(raw, "install_dir_system", f"project.{name}.installer")
+    )
+    install_dir_user = str(
+        _require(raw, "install_dir_user", f"project.{name}.installer")
+    )
+    asset_suffix = str(raw.get("asset_suffix") or ".tar.xz")
+    entrypoint: Optional[str] = raw.get("entrypoint") or None
+    if entrypoint is not None:
+        entrypoint = str(entrypoint)
+
+    required_commands_raw = raw.get("required_commands") or []
+    if not isinstance(required_commands_raw, list):
+        print(f"[ERROR] project.{name}.installer.required_commands must be a list")
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+    required_commands = [str(c) for c in required_commands_raw]
+
+    preserve_raw = raw.get("preserve") or []
+    if not isinstance(preserve_raw, list):
+        print(f"[ERROR] project.{name}.installer.preserve must be a list")
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+    preserve = [str(p) for p in preserve_raw]
+
+    manifest_name = str(raw.get("manifest_name") or "manifest.json")
+    signature_name = str(raw.get("signature_name") or "manifest.json.minisig")
+
+    wheels_raw = raw.get("wheels") or []
+    if not isinstance(wheels_raw, list):
+        print(f"[ERROR] project.{name}.installer.wheels must be an array of tables")
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+    wheels: List[InstallerWheel] = []
+    _KNOWN_WHEEL_KEYS = {"path", "distribution"}
+    for i, w in enumerate(wheels_raw):
+        if not isinstance(w, dict):
+            print(f"[ERROR] project.{name}.installer.wheels[{i}] must be a table")
+            raise SystemExit(exit_codes.CONFIG_ERROR)
+        unknown_w = [k for k in w if k not in _KNOWN_WHEEL_KEYS]
+        if unknown_w:
+            print(
+                f"[ERROR] project.{name}.installer.wheels[{i}]: "
+                f"unknown keys {sorted(unknown_w)} (V09)"
+            )
+            raise SystemExit(exit_codes.CONFIG_ERROR)
+        wpath = str(_require(w, "path", f"project.{name}.installer.wheels[{i}]"))
+        wdist = str(_require(w, "distribution", f"project.{name}.installer.wheels[{i}]"))
+        wheels.append(InstallerWheel(path=wpath, distribution=wdist))
+
+    return InstallerConfig(
+        install_dir_system=install_dir_system,
+        install_dir_user=install_dir_user,
+        asset_suffix=asset_suffix,
+        entrypoint=entrypoint,
+        required_commands=required_commands,
+        preserve=preserve,
+        manifest_name=manifest_name,
+        signature_name=signature_name,
+        wheels=wheels,
+    )
+
+
 def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
+    # V09: reject the retired [getsh] key
+    if "getsh" in raw:
+        print(
+            f"[ERROR] project.{name}.getsh is no longer supported (V09). "
+            "Migrate to [project.<name>.installer] — see docs/SPEC.md S2."
+        )
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+
     prefix = str(_require(raw, "prefix", f"project.{name}"))
     artifact = _parse_artifacts(name, raw)[0]   # primary profile (getpy doesn't use it)
     cwd = str(_require(raw, "cwd", f"project.{name}"))
@@ -189,15 +284,9 @@ def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
         r = raw["resolve"]
         resolve = ResolveConfig(asset_glob=str(r.get("asset_glob") or "*"))
 
-    getsh: Optional[GetShConfig] = None
-    if "getsh" in raw:
-        g = raw["getsh"]
-        getsh = GetShConfig(
-            install_dir=str(g.get("install_dir") or f"/opt/{name}-src"),
-            preserve=[str(p) for p in (g.get("preserve") or [])],
-            deps=[str(d) for d in (g.get("deps") or [])],
-            next_steps=[str(s) for s in (g.get("next_steps") or [])],
-        )
+    installer: Optional[InstallerConfig] = None
+    if "installer" in raw:
+        installer = _parse_installer(name, raw["installer"])
 
     delegated: Optional[DelegatedConfig] = None
     if "delegated" in raw:
@@ -223,7 +312,7 @@ def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
         version=version,
         publish=publish,
         resolve=resolve,
-        getsh=getsh,
+        installer=installer,
         delegated=delegated,
         steps=steps,
     )

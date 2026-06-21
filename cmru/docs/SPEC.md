@@ -204,13 +204,25 @@ latest_json = true                # emit latest.json pointer
 [project.<name>.resolve]
 asset_glob = "*.whl"              # glob to match asset in release
 
-[project.<name>.getsh]            # inputs for the emitted get.py installer (S6)
-install_dir = "/opt/<name>-src"   # default install root
-preserve    = [                   # config files preserved across updates
-  "<name>/config.toml",
-]
-deps        = ["docker"]          # extra runtime tools the installer checks for
-next_steps  = ["<name> install"]  # post-install hint lines the installer prints
+[project.<name>.installer]         # inputs for the emitted get.py installer (S6)
+install_dir_system = "/opt/<name>"        # system-scope root
+install_dir_user   = "<name>"             # leaf under $XDG_DATA_HOME/<name>
+asset_suffix       = ".tar.xz"            # release asset filename suffix
+entrypoint         = "scripts/adapter.py" # project adapter, relative to release root (optional)
+required_commands  = ["python3", "docker", "minisign"]   # checked pre-network (exit 3)
+preserve           = ["shared/host.toml"] # paths kept in <root>/shared/ across updates
+manifest_name      = "manifest.json"      # manifest file inside the bundle
+signature_name     = "manifest.json.minisig"  # minisign signature for manifest
+
+[[project.<name>.installer.wheels]]  # bundled wheels to install into private venv
+path         = "vendor/cmru-*.whl"  # glob inside the release bundle
+distribution = "cmru"               # pip distribution name
+
+[[project.<name>.installer.wheels]]
+path         = "vendor/ciu-*.whl"
+distribution = "ciu"
+
+# NOTE: [project.<name>.getsh] is REMOVED (V09 rejects it — migrate to [installer]).
 
 [project.<name>.delegated]
 sign      = false                 # cosign sign
@@ -310,24 +322,93 @@ The resolver implements differentiator #2: highest-semver selection, replacing G
 
 ---
 
-## S6 — get.py Contract
+## S6 — get.py Contract (Transactional Installer)
 
-The emitted `get.py` is differentiator #4: a per-project bootstrap that handles install, update, version pin, and user-config preservation. Unlike a curl-only bootstrap, `get.py` ships **inside** the release artifact, so `<project> update` works out of the box without re-fetching the installer from GitHub.
+The emitted `get.py` is a per-project **transactional** bootstrap that handles install,
+update, rollback, and status. Unlike a curl-only bootstrap, `get.py` ships **inside** the
+release artifact, so `<project> update` works out of the box. Configuration lives in
+`[project.<name>.installer]` (see S2).
 
-**S6.1** `cmru get-py --project <name>` (alias `cmru get`) emits a standalone Python 3 installer to stdout. The project's get.py is the rendered output of `templates/get.py.tmpl`. (The legacy bash `get.sh` emitter was removed — Python avoids the env-across-pipe pitfall and ships in the artifact.)
+**S6.1** `cmru get-py --project <name> --config cmru.toml` emits a standalone Python 3
+installer to stdout. The output is a rendering of `templates/get.py.tmpl` with
+`[[VARNAME]]` placeholders replaced from the `[installer]` config. The rendering is
+deterministic (byte-identical for identical config). Any unreplaced `[[...]]` placeholder
+triggers a warning.
 
-**S6.2** The emitted installer MUST implement:
-1. **resolve** — call resolver (S5) to find the highest-semver tag (or honour the `--version` pin).
-2. **download** — fetch artifact + sidecar from the release host.
-3. **verify** — the artifact's SHA256 MUST match its `.sha256` sidecar before any extraction. Verification is non-optional.
-4. **install/update** — extract to `install_dir`; write `VERSION` file.
-5. **preserve** — on update, back up files listed in `[project.getsh].preserve` and restore them if the new artifact does not supply them.
+**S6.2** Commands emitted:
 
-**S6.3** Air-gapped fallback: `--via git` installs via `git sparse-checkout`. No checksum verification in git mode (the user is trusting the git transport). MUST warn.
+```
+get.py install  --config HOST.toml [--version TAG] [--scope system|user]
+get.py update   [--version TAG] [--scope system|user]
+get.py status   [--scope system|user]
+get.py rollback [--version TAG] [--scope system|user]
+```
 
-**S6.4** The installer is Python 3 **stdlib-only** (urllib/tarfile/hashlib/argparse); no third-party dependencies.
+**S6.3** Transactional pipeline (install / update):
 
-**S6.5** All dependency checks (`[project.getsh].deps`, e.g. docker) MUST run before any network I/O.
+1. **Pre-flight** — check `required_commands` BEFORE any network I/O (exit 3 if missing).
+2. **Resolve** — resolve the highest-semver `TAG_PREFIX*` release via the GitHub Releases API,
+   or use `--version`. Public requests carry **no** Authorization header. Private assets are
+   resolved by API asset-ID with the Authorization header stripped before the CDN redirect.
+3. **Download** — fetch `<tag><asset_suffix>` + its `.sha256` sidecar.
+4. **Verify SHA256** — recompute and compare; mismatch → exit 1, before extraction.
+5. **Verify minisign** — if `--manifest-pubkey` is supplied (or pubkey in host config),
+   extract `manifest_name` + `signature_name` from the bundle and run
+   `minisign -Vm manifest.json -P <pubkey>` (or `-p <pubkey-file>`). Failure → exit 1.
+6. **Stage** — extract into `<root>/releases/<tag>.staging/` with `filter="data"` (py≥3.12)
+   plus a pre-scan that rejects: absolute paths, `..` traversal, device nodes, absolute
+   symlinks, and symlink/hardlink traversal escapes.
+7. **Install wheels** — if `installer.wheels` is non-empty, create `<root>/venv` via
+   `python3 -m venv` and `venv/bin/pip install --no-index <wheel>` for each glob match.
+   Wheel sha256s from the manifest are verified before pip install (exit 1 on mismatch).
+8. **Invoke adapter** (`bootstrap` on install, `apply` on update) — if `entrypoint` is set.
+   Non-zero exit aborts before the `current` swap (previous release stays live).
+9. **Atomic swap** — `os.symlink` to a temp name + `os.replace` onto `current`.
+10. **Finalize** — rename `.staging` → final release dir; prune old releases (keep 2 by default).
+
+**S6.4** Release layout:
+
+```
+<root>/releases/<tag>/    # immutable dir per installed version
+<root>/current            # symlink → releases/<current-tag>  (atomic swap)
+<root>/shared/            # preserved config/state (never inside releases/)
+<root>/venv/              # private interpreter; bundled wheels live here
+```
+
+`<root>` = `install_dir_system` (system scope) or `$XDG_DATA_HOME/<install_dir_user>` /
+`~/.local/share/<install_dir_user>` (user scope).
+
+**S6.5** Preserve: files in `installer.preserve` are copied to `<root>/shared/` before
+staging and symlinked back into the new release dir after extraction. They survive across
+updates and rollbacks.
+
+**S6.6** Rollback: `get.py rollback [--version TAG]` re-points `current` to the previous
+(or named) release dir and re-runs the adapter with `action=rollback`.
+
+**S6.7** Scope-exclusive lock (`flock` on `<root>/.lock`) serialises concurrent invocations.
+SIGINT/SIGTERM handler cleans up staging dir and releases the lock.
+
+**S6.8** Adapter invocation contract (Seam 1):
+
+```
+<root>/venv/bin/python <root>/current/<entrypoint> <action> \
+    --release-root <root>/releases/<tag> \
+    --config <root>/shared/host.toml \
+    --manifest <root>/releases/<tag>/manifest.json
+```
+
+`<action>` ∈ `{bootstrap, apply, health, rollback}`. Non-zero adapter exit → exit 1.
+The GitHub token is **stripped** from the child-process environment.
+
+**S6.9** The installer is Python 3 **stdlib-only** (urllib/tarfile/hashlib/argparse/fcntl);
+no third-party dependencies. `minisign`, `docker`, and the project adapter are shelled out.
+
+**S6.10** Auth (token) precedence: `--github-token` (warns: leaks via ps/history) >
+`--github-token-file FILE` (rejected if loose perms / wrong owner) > `--github-token-stdin`
+> `CMRU_GITHUB_TOKEN` / `GITHUB_TOKEN` env. Token is never logged in full.
+
+**S6.11** `install_dir_user` degrades gracefully: if `entrypoint` is empty and `wheels`
+is empty, no adapter is called and no venv is created (tls-edge minimal path).
 
 **S6.6** `--version <TAG>` pins the install to a specific tag (bare semver or full tag). Arguments go to the right side of the pipe (`curl … | sudo python3 - install --version …`), so there is no env-var-across-pipe footgun.
 
@@ -427,10 +508,15 @@ _This section enumerates all config validation rules. Each rule references the s
 | V06 | `artifact` is one of `wheel\|oci\|tarball\|bundle` | 2 |
 | V07 | `version.strategy` is `scm`, `file:<path>`, or `counter` | 2 |
 | V08 | `version.bump` is `conventional` or `patch` | 2 |
-| V09 | No unknown keys at any config level | 2 |
+| V09 | No unknown keys at any config level (including `[getsh]` — retired; use `[installer]`) | 2 |
 | V10 | `github.token` present or `GITHUB_TOKEN` env var set (for publish) | 3 |
 | V11 | All `required_env` vars present before step execution | 3 |
 | V12 | All `required = true` delegated tools present before step execution | 3 |
+| V13 | `[installer].install_dir_system` is required when `[installer]` is present | 2 |
+| V14 | `[installer].install_dir_user` is required when `[installer]` is present | 2 |
+| V15 | `[installer.wheels[*]].path` and `.distribution` are required | 2 |
+| V16 | `installer.required_commands` are checked before network I/O (exit 3) | 3 |
+| V17 | Token file for `--github-token-file` must be owned by current user and chmod 600 | 2 |
 
 ---
 
