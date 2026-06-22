@@ -864,6 +864,20 @@ def resolve_first_party_wheels(
         whl_url = whl_asset["url"]
         whl_dest = WHEELS_CONTEXT_DIR / whl_filename
 
+        # Purge any pre-existing wheels (and their .sha256 sidecars) for this
+        # package before staging the new one.  The Dockerfile installs via a
+        # bare glob ("pip install *.whl") which cannot tolerate two versions of
+        # the same package — pip raises ResolutionImpossible.
+        for stale in list(WHEELS_CONTEXT_DIR.glob(f"{name}-*.whl")):
+            if stale != whl_dest:
+                print(f"[INFO] Removing stale wheel {stale.name}", file=sys.stderr)
+                stale.unlink()
+        for stale in list(WHEELS_CONTEXT_DIR.glob(f"{name}-*.whl.sha256")):
+            stale_whl = stale.with_suffix("")  # strip .sha256 → .whl path
+            if stale_whl != whl_dest:
+                print(f"[INFO] Removing stale wheel sidecar {stale.name}", file=sys.stderr)
+                stale.unlink()
+
         # Download wheel.
         print(f"[INFO] Downloading {whl_filename} from {whl_url}", file=sys.stderr)
         try:
