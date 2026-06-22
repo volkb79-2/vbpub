@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Devcontainer base image (pre-built)
 # Supports multiple Debian + Python variants via build args.
 
@@ -154,7 +155,8 @@ RUN set -euo pipefail; \
     fi
 
 # Modern tools installation from local pre-staged artifacts.
-RUN set -euo pipefail; \
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    set -euo pipefail; \
     STAGE_DIR="/tmp/tool-artifacts-staging"; \
     DOWNLOADS_DIR="${STAGE_DIR}/downloads"; \
     if [ ! -f "${STAGE_DIR}/tool-versions.env" ]; then \
@@ -243,13 +245,14 @@ RUN set -euo pipefail; \
         "/tmp/gh_${GH_VER}_linux_amd64" \
         /tmp/consul-extract \
         /tmp/vault-extract \
-        /root/.npm \
         /root/.cache \
         /tmp/awscli \
         /tmp/tool-artifacts-staging
 
 # Latest PostgreSQL and Redis clients (override versions via build args)
-RUN set -euo pipefail; \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    set -euo pipefail; \
     install -d -m 0755 /etc/apt/keyrings; \
     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg; \
     echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list; \
@@ -273,7 +276,9 @@ RUN set -euo pipefail; \
 # (docker-outside-of-docker), so it needs the client + plugins but not dockerd.
 # Official Docker apt repo (trixie is published); same keyring pattern as above.
 # Source: https://docs.docker.com/engine/install/debian/
-RUN set -euo pipefail; \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    set -euo pipefail; \
     install -d -m 0755 /etc/apt/keyrings; \
     curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg; \
     chmod a+r /etc/apt/keyrings/docker.gpg; \
@@ -286,7 +291,8 @@ RUN set -euo pipefail; \
 # Installed into /home/vscode/.venv using the base-image Python.
 # Consumer-facing list: see README.md § "Primary Venv Packages".
 USER vscode
-RUN set -euo pipefail; \
+RUN --mount=type=cache,target=/home/vscode/.cache/pip,sharing=locked \
+    set -euo pipefail; \
     python3 -m venv /home/vscode/.venv; \
     /home/vscode/.venv/bin/python -m pip install --upgrade pip setuptools wheel --disable-pip-version-check --quiet; \
     /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check --quiet \
