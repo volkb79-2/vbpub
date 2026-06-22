@@ -291,7 +291,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Installed into /home/vscode/.venv using the base-image Python.
 # Consumer-facing list: see README.md § "Primary Venv Packages".
 USER vscode
-RUN --mount=type=cache,target=/home/vscode/.cache/pip,sharing=locked \
+RUN --mount=type=cache,target=/home/vscode/.cache/pip,uid=1000,gid=1000,sharing=locked \
     set -euo pipefail; \
     python3 -m venv /home/vscode/.venv; \
     /home/vscode/.venv/bin/python -m pip install --upgrade pip setuptools wheel --disable-pip-version-check --quiet; \
