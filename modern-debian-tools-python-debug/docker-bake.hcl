@@ -1,260 +1,303 @@
-// Defaults are injected from project-local build-push.toml [env] via step_runner.
-// Keep these empty so config comes from project env defaults or explicit env vars.
+// === Registry / identity ===================================================
+// step_runner seeds these from project-local env defaults; empty values keep local
+// builds portable and let explicit env vars / release automation override them.
 variable "REGISTRY" {
   default = ""
 }
 
-// Set GITHUB_USERNAME to your GHCR org/user (e.g., volkb79-2) so pushes land at
-// ghcr.io/<username>/modern-debian-tools-python-debug:<variant> and
-// ghcr.io/<username>/modern-debian-tools-python-debug-vsc-devcontainer:<variant>.
+// GHCR owner used in image tags and OCI URLs; build-push / cmru fill this from env.
 variable "GITHUB_USERNAME" {
   default = ""
 }
 
+// Repository name used in OCI source/documentation URLs and package-manifest links.
 variable "GITHUB_REPO" {
   default = ""
 }
 
-
-// keep updated with the latest known versions to get info on the latest devcontainer base images and to set the default for the detection test target
-// values: "bookworm", "trixie", "forky", "Duke"
-// https://en.wikipedia.org/wiki/Debian_release_version_history
+// === Base-image selection ==================================================
+// Human-maintained baseline Debian codename for the "known latest" devcontainer base.
+// Update this when MCR publishes a newer stable devcontainer Debian release.
 variable "LATEST_KNOWN_DEBIAN" {
   default = "trixie"
 }
 
-// keep updated with the latest known versions to get info on the latest devcontainer base images and to set the default for the detection test target
+// Human-maintained baseline Python major.minor for the "known latest" devcontainer base.
+// Update this when MCR publishes a newer stable devcontainer Python release.
 variable "LATEST_KNOWN_PYTHON" {
   default = "3.14"
 }
 
+// Hard-pinned devcontainer base image for the release baseline; build-push defaults to this.
 variable "DEVCONTAINERS_BASE_PINNED" {
   default = "mcr.microsoft.com/devcontainers/python:${LATEST_KNOWN_PYTHON}-${LATEST_KNOWN_DEBIAN}"
 }
 
+// Resolver injection point for the live latest devcontainer base; build-push overrides it.
 variable "DEVCONTAINERS_BASE_DYNAMIC_LATEST" {
   default = "mcr.microsoft.com/devcontainers/python:${LATEST_KNOWN_PYTHON}-${LATEST_KNOWN_DEBIAN}"
 }
 
+// Resolver-injected tag suffix for the live latest devcontainer base image.
 variable "DEVCONTAINERS_DYNAMIC_LATEST_TAG" {
   default = "${LATEST_KNOWN_PYTHON}-${LATEST_KNOWN_DEBIAN}"
 }
 
+// Resolver-injected Python version for the live latest devcontainer base image.
 variable "DEVCONTAINERS_DYNAMIC_LATEST_PYTHON" {
   default = "${LATEST_KNOWN_PYTHON}"
 }
 
+// Resolver-injected Debian codename for the live latest devcontainer base image.
 variable "DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN" {
   default = "${LATEST_KNOWN_DEBIAN}"
 }
 
-
-
-// Used in tags; build script sets BUILD_DATE if not provided.
+// === Build / OCI metadata ==================================================
+// Date stamp used in tags; build-push sets this when it orchestrates a release.
 variable "BUILD_DATE" {
   default = "19700101"
 }
 
+// Mirror used for backports installs; callers override only when they need a different mirror.
 variable "BACKPORTS_URI" {
   default = "http://debian.anexia.at/debian"
 }
 
+// Short image title recorded in OCI metadata labels.
 variable "OCI_TITLE" {
   default = "modern-debian-tools-python-debug"
 }
 
+// Base human-readable image description; targets extend this with manifest links.
 variable "OCI_DESCRIPTION" {
   default = ""
 }
 
+// Base-package description placeholder passed through so target-specific docs can append details.
 variable "OCI_DESCRIPTION_BASE" {
   default = "${OCI_DESCRIPTION}"
 }
 
+// VSC-package description placeholder passed through so target-specific docs can append details.
 variable "OCI_DESCRIPTION_VSC" {
   default = "${OCI_DESCRIPTION}"
 }
 
+// OCI source URL shown in image metadata; usually the GitHub repository root.
 variable "OCI_SOURCE" {
   default = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}"
 }
 
+// OCI documentation URL for the release docs page; targets override this per manifest.
 variable "OCI_DOCUMENTATION" {
   default = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/tree/main/modern-debian-tools-python-debug"
 }
 
+// Canonical project URL mirrored into OCI metadata.
 variable "OCI_URL" {
   default = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/tree/main/modern-debian-tools-python-debug"
 }
 
+// SPDX license identifier for the published images.
 variable "OCI_LICENSES" {
   default = "MIT"
 }
 
+// Optional vendor string; build-push / env may fill this in.
 variable "OCI_VENDOR" {
   default = ""
 }
 
+// Image version label; build-push populates this with the release date or git-derived version.
 variable "OCI_VERSION" {
   default = "${BUILD_DATE}"
 }
 
+// Git revision label written into image metadata.
 variable "OCI_REVISION" {
   default = "unknown"
 }
 
+// Creation timestamp label written into image metadata.
 variable "OCI_CREATED" {
   default = "unknown"
 }
 
+// === Devcontainer release metadata =======================================
+// Stable devcontainer release identifier copied into image labels by the resolver.
 variable "DEVCONTAINERS_RELEASE_STABLE" {
   default = ""
 }
 
+// Dev-only devcontainer release identifier; resolver still emits it for compatibility/debugging.
 variable "DEVCONTAINERS_RELEASE_DEV" {
   default = ""
 }
 
+// Stable devcontainer version identifier copied into image labels by the resolver.
 variable "DEVCONTAINERS_VERSION_STABLE" {
   default = ""
 }
 
+// Dev-only devcontainer version identifier; resolver still emits it for compatibility/debugging.
 variable "DEVCONTAINERS_VERSION_DEV" {
   default = ""
 }
 
-
+// === Tool versions =========================================================
+// Version pin for delta; "latest" means resolve the newest release during staging.
 variable "DELTA_VERSION" {
   default = "latest"
 }
 
+// Version pin for GitHub CLI; "latest" resolves at staging time for reproducibility control.
 variable "GH_VERSION" {
   default = "latest"
 }
 
+// Version pin for grpcurl; "latest" resolves at staging time for reproducibility control.
 variable "GRPCURL_VERSION" {
   default = "latest"
 }
 
+// Version pin for ripgrep-all; "latest" resolves at staging time for reproducibility control.
 variable "RGA_VERSION" {
   default = "latest"
 }
 
+// Version pin for AWS CLI; "latest" resolves at staging time for reproducibility control.
 variable "AWSCLI_VERSION" {
   default = "latest"
 }
 
+// Version pin for Backblaze B2 CLI; "latest" resolves at staging time for reproducibility control.
 variable "B2_VERSION" {
   default = "latest"
 }
 
+// Version pin for bat; "latest" resolves at staging time for reproducibility control.
 variable "BAT_VERSION" {
   default = "latest"
 }
 
+// Version pin for Consul; "latest" resolves at staging time for reproducibility control.
 variable "CONSUL_VERSION" {
   default = "latest"
 }
 
+// Version pin for fd; "latest" resolves at staging time for reproducibility control.
 variable "FD_VERSION" {
   default = "latest"
 }
 
+// Version pin for fzf; "latest" resolves at staging time for reproducibility control.
 variable "FZF_VERSION" {
   default = "latest"
 }
 
+// Version pin for PostgreSQL client packages; "latest" leaves apt to choose the newest.
 variable "POSTGRESQL_CLIENT_VERSION" {
   default = "latest"
 }
 
+// Version pin for redis-tools; "latest" leaves apt to choose the newest.
 variable "REDIS_TOOLS_VERSION" {
   default = "latest"
 }
 
+// Version pin for ripgrep; "latest" resolves at staging time for reproducibility control.
 variable "RIPGREP_VERSION" {
   default = "latest"
 }
 
+// Version pin for shellcheck; "latest" resolves at staging time for reproducibility control.
 variable "SHELLCHECK_VERSION" {
   default = "latest"
 }
 
+// Version pin for Vault; "latest" resolves at staging time for reproducibility control.
 variable "VAULT_VERSION" {
   default = "latest"
 }
 
+// Version pin for yq; "latest" resolves at staging time for reproducibility control.
 variable "YQ_VERSION" {
   default = "latest"
 }
 
+// Version pin for Codex; "latest" resolves at staging time for reproducibility control.
 variable "CODEX_VERSION" {
   default = "latest"
 }
 
+// Version pin for Claude Code; "latest" resolves at staging time for reproducibility control.
 variable "CLAUDE_CODE_VERSION" {
   default = "latest"
 }
 
+// Version pin for Antigravity; "latest" resolves at staging time for reproducibility control.
 variable "ANTIGRAVITY_VERSION" {
   default = "latest"
 }
 
+// Version pin for Aider; "main" tracks upstream main unless callers override it.
 variable "AIDER_VERSION" {
   default = "main"
 }
 
+// Boolean toggle for whether Codex is installed into the image.
 variable "INSTALL_CODEX" {
   default = "true"
 }
 
+// Boolean toggle for whether Claude Code is installed into the image.
 variable "INSTALL_CLAUDE_CODE" {
   default = "true"
 }
 
+// Boolean toggle for whether Antigravity is installed into the image.
 variable "INSTALL_ANTIGRAVITY" {
   default = "true"
 }
 
+// Boolean toggle for whether Aider is installed into the image.
 variable "INSTALL_AIDER" {
   default = "true"
 }
 
+// CIU release tag resolved by the release resolver; used to inject the first-party wheel.
 variable "CIU_WHEEL_TAG" {
   default = ""
 }
 
+// CIU release asset name resolved by the release resolver; used to inject the first-party wheel.
 variable "CIU_WHEEL_ASSET_NAME" {
   default = ""
 }
 
-// Direct download URL for the .whl from the immutable ciu-v<semver> release.
-// Resolved by resolve-devcontainers-release.py via ciu-latest/latest.json (preferred)
-// or ciu-v* release scan (fallback).  The ciu-latest release no longer holds the
-// wheel itself — only a latest.json pointer.  Leave empty to let the Dockerfile
-// resolve at build time (requires network + jq; avoid in air-gapped builds).
+// CIU wheel URL injected by the resolver; empty means the Dockerfile must resolve it at build time.
 variable "CIU_WHEEL_URL" {
   default = ""
 }
 
-// Expected sha256 hex digest of the wheel (from latest.json or the .sha256 sidecar
-// on the ciu-v<semver> release).  Used by the Dockerfile for reproducibility
-// verification via sha256sum.  Leave empty to skip verification (not recommended).
+// CIU wheel SHA256 injected by the resolver; empty skips verification and weakens reproducibility.
 variable "CIU_WHEEL_SHA256" {
   default = ""
 }
 
+// CIU install gate; resolver flips this when the wheel is required for the chosen release.
 variable "CIU_INSTALL_REQUIRED" {
   default = "false"
 }
 
 // Space-separated Python versions to install as lean secondary environments.
-// Each version gets /home/vscode/.venv-py{nodot} with uv + debugpy + ruff only.
-// Set per-target; inferred from the target name convention (e.g. trixie-py314-py311-vsc → "3.11").
+// Each target sets this explicitly, and the value controls which .venv-py* directories are added.
 variable "SECONDARY_PYTHON_VERSIONS" {
   default = ""
 }
 
+// Root directory for versioned package manifest markdown files in the repo checkout.
 variable "PACKAGE_MANIFEST_ROOT" {
   default = "package-manifests-versioned"
 }
@@ -330,6 +373,8 @@ function "description_with_manifest_docs" {
   result = "${description} Docs: ${package_manifest_url(package_name, debian, python)}"
 }
 
+// Shared argument bag only: each concrete target still builds the whole Dockerfile
+// from its own BASE_IMAGE, so this is not a reusable image layer/stage.
 target "base" {
   context = "."
   dockerfile = "Dockerfile"
@@ -571,26 +616,37 @@ target "latest-vsc" {
   tags = ["${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:latest-stable"]
 }
 
+// === Build groups ==========================================================
+// Run a group with: docker buildx bake -f docker-bake.hcl <group> --push
+//
+// Two image families are published to GHCR:
+//   - modern-debian-tools-python-debug
+//   - modern-debian-tools-python-debug-vsc-devcontainer
+//
+// "all" stays equivalent to today's release set: only the VSC devcontainers.
+// Add "base" or "multi" explicitly when you also want the base package images.
+group "vsc" {
+  targets = ["trixie-py311-vsc", "trixie-py314-vsc"]
+}
+
+group "base" {
+  targets = ["trixie-py311", "trixie-py313", "trixie-py314"]
+}
+
+group "multi" {
+  targets = ["trixie-py314-py311-vsc", "trixie-py314-py311-py39-vsc"]
+}
+
+group "all" {
+  targets = ["vsc"]
+}
+
+group "everything" {
+  targets = ["vsc", "base", "multi"]
+}
+
 group "detection" {
   targets = [
     "latest-vsc"
-  ]
-}
-
-
-
-# currently missing newer versions for devcontainer, run `./check-mcr-devcontainer-tags.py` to see what is available
-group "all" {
-  targets = [
-    # "bookworm-py311",
-    # "bookworm-py313",
-    #"trixie-py314",
-    "trixie-py311-vsc",
-    "trixie-py314-vsc",
-    #"trixie-py314-py311-py39-vsc"
-    #"latest-vsc",
-    #"trixie-py314",
-    #"trixie-py314-vsc",
-    #"latest-vsc"
   ]
 }
