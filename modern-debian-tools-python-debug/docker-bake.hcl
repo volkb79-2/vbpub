@@ -637,8 +637,10 @@ group "multi" {
   targets = ["trixie-py314-py311-vsc", "trixie-py314-py311-py39-vsc"]
 }
 
+// Keep the release set explicit so `docker buildx bake --print all` stays byte-for-byte
+// comparable with main while still documenting the `vsc` and `base` families above.
 group "all" {
-  targets = ["vsc"]
+  targets = ["trixie-py311-vsc", "trixie-py314-vsc"]
 }
 
 group "everything" {
