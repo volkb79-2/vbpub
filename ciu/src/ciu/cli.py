@@ -134,6 +134,15 @@ ciu secrets reset [--name N] [-y]
   --name N       restrict reset to one secret name
   -y, --yes      assume yes to prompts
 """,
+    "check": """\
+ciu check [--profile NAME] [--live] [--define-root PATH]
+  Validate the requires/provides dependency graph across the selection (no deploy).
+
+  --profile NAME     host profile to check (default: active profile)
+  --live             also probe live state (Vault/Postgres/MinIO/Consul/Docker)
+  --define-root PATH override repo root (no parent walking)
+  --phases N,M       restrict to the given phase numbers
+""",
 }
 
 
@@ -284,6 +293,10 @@ def main() -> None:
     elif verb == "secrets":
         from .engine import main as engine_main
         raise SystemExit(engine_main(["secrets"] + rest))
+
+    elif verb == "check":
+        from .deploy import main as deploy_main
+        raise SystemExit(deploy_main(["--check"] + rest))
 
     else:
         if verb == "-d" and rest:

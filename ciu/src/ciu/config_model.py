@@ -558,3 +558,89 @@ def validate_stack_shape(stack_config: dict) -> str:
         )
 
     return root_key
+
+
+# ---------------------------------------------------------------------------
+# Provisioning: requires / provides grammar validation
+# ---------------------------------------------------------------------------
+
+VALID_REF_KINDS = frozenset({"vault", "pg", "minio", "consul", "stack"})
+_REF_RE = re.compile(
+    r"^(vault):secret/(.+)"                     # vault:secret/<path>
+    r"|^(pg):(role|db)/([a-zA-Z0-9_-]+)"        # pg:role/<name> or pg:db/<name>
+    r"|^(minio):user/([a-zA-Z0-9_-]+)"          # minio:user/<name>
+    r"|^(consul):token/([a-zA-Z0-9_-]+)"        # consul:token/<svc>
+    r"|^(stack):([a-zA-Z0-9_/-]+):healthy$"     # stack:<name>:healthy
+)
+
+
+def validate_provisioning_ref(ref: str) -> None:
+    """Validate a single typed provisioning ref string.
+
+    Raises ValueError with a clear message if malformed.
+    """
+    if not _REF_RE.match(ref):
+        if ":" not in ref:
+            raise ValueError(
+                f"[ERROR] Malformed provisioning ref {ref!r}: missing kind prefix "
+                f"(expected <kind>:<selector>, e.g. vault:secret/path or pg:role/name)"
+            )
+        kind = ref.split(":", 1)[0]
+        if kind not in VALID_REF_KINDS:
+            raise ValueError(
+                f"[ERROR] Unknown ref kind {kind!r} in {ref!r}. "
+                f"Valid kinds: {', '.join(sorted(VALID_REF_KINDS))}"
+            )
+        raise ValueError(
+            f"[ERROR] Malformed provisioning ref {ref!r}: does not match any valid pattern. "
+            f"Examples: vault:secret/db/pass, pg:role/myuser, pg:db/mydb, "
+            f"minio:user/worker, consul:token/myapp, stack:db-core:healthy"
+        )
+
+
+def validate_stack_provisioning(stack_config: dict, source: str = "<unknown>") -> None:
+    """Validate requires/provides lists in a stack config dict.
+
+    Checks that:
+    - requires and provides, if present, are lists of strings
+    - each string matches the typed-ref grammar
+
+    Raises ValueError listing ALL violations (never partial).
+    Source is used in error messages.
+    """
+    violations: list[str] = []
+    for field in ("requires", "provides"):
+        # Look in root key section - find the non-state top-level key
+        # We check both at top-level and inside any root key
+        val = stack_config.get(field)
+        # Also check inside any root-key sub-table
+        for key, sub in stack_config.items():
+            if key != "state" and isinstance(sub, dict):
+                sub_val = sub.get(field)
+                if sub_val is not None:
+                    val = sub_val
+                    break
+
+        if val is None:
+            continue
+        if not isinstance(val, list):
+            violations.append(
+                f"[{source}] '{field}' must be a list of strings, got {type(val).__name__}"
+            )
+            continue
+        for i, item in enumerate(val):
+            if not isinstance(item, str):
+                violations.append(
+                    f"[{source}] '{field}[{i}]' must be a string, got {type(item).__name__}"
+                )
+                continue
+            try:
+                validate_provisioning_ref(item)
+            except ValueError as exc:
+                violations.append(str(exc))
+
+    if violations:
+        raise ValueError(
+            f"[ERROR] Stack provisioning validation failed for {source}:\n"
+            + "\n".join(f"  {v}" for v in violations)
+        )

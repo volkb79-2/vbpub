@@ -412,6 +412,84 @@ def vault_preflight(
 
 
 # ===========================================================================
+# Provisioning preflight (requires/provides graph + live probe)
+# ===========================================================================
+
+
+def provisioning_preflight(
+    repo_root: Path,
+    profile: profiles_pkg.Profile,
+    selection: list[dict],
+    rendered: dict[str, dict],
+    *,
+    no_preflight: bool = False,
+) -> None:
+    """Check requires/provides graph and probe live state for each stack's requires.
+
+    Raises ValueError with a precise message on failure.
+    Skipped when no_preflight=True (break-glass) or when no stack has requires/provides.
+    """
+    if no_preflight:
+        info("[INFO] --no-preflight: skipping provisioning preflight")
+        return
+
+    from . import provisioning as provisioning_pkg
+
+    # Collect requires/provides from all rendered stacks
+    stacks: dict[str, dict] = {}
+    for entry in selection:
+        rel = entry["path"]
+        if rel not in rendered:
+            continue
+        stack_cfg = rendered[rel]
+        # requires/provides live inside the root key table
+        try:
+            root_key = config_model.validate_stack_shape(stack_cfg)
+        except ValueError:
+            continue
+        root_section = stack_cfg.get(root_key, {})
+        requires = root_section.get("requires", [])
+        provides = root_section.get("provides", [])
+        if requires or provides:
+            # Reject malformed typed refs early (spec §2 grammar). ValueError
+            # propagates → exit 2 via engine._exit_code_for.
+            config_model.validate_stack_provisioning(stack_cfg, source=rel)
+            stacks[rel] = {"requires": requires, "provides": provides}
+
+    if not stacks:
+        return  # no stack uses requires/provides — skip entirely
+
+    # Graph lint
+    lint_errors = provisioning_pkg.lint_graph(stacks)
+    if lint_errors:
+        raise ValueError(
+            "[ERROR] Provisioning graph lint failed:\n"
+            + "\n".join(f"  {e}" for e in lint_errors)
+        )
+    info("[INFO] Provisioning graph lint passed")
+
+    # Live probing: probe each stack's requires
+    config = profile.config
+    all_failed: list[str] = []
+    for entry in selection:
+        rel = entry["path"]
+        if rel not in stacks:
+            continue
+        requires = stacks[rel].get("requires", [])
+        for ref in requires:
+            result = provisioning_pkg.probe_ref(ref, config, repo_root)
+            if not result.satisfied:
+                all_failed.append(f"  stack '{rel}' requires '{ref}': {result.reason}")
+
+    if all_failed:
+        raise ValueError(
+            "[ERROR] Provisioning preflight failed — unsatisfied requirements:\n"
+            + "\n".join(all_failed)
+        )
+    info("[INFO] Provisioning preflight passed")
+
+
+# ===========================================================================
 # Registry preflight (S7.9)
 # ===========================================================================
 
@@ -796,6 +874,86 @@ def action_healthcheck_preflight(
     return 0
 
 
+def action_check(
+    repo_root: Path,
+    profile: profiles_pkg.Profile,
+    selection: list[dict],
+    rendered: dict[str, dict],
+    *,
+    live: bool = False,
+) -> int:
+    """--check: validate the requires/provides dependency graph (no deploy).
+
+    Runs lint_graph and optionally probes live state when --live is set.
+    Exit non-zero on any failure.
+    """
+    from . import provisioning as provisioning_pkg
+
+    info("=" * 60)
+    info("CHECK: validating requires/provides dependency graph")
+    info("=" * 60)
+
+    stacks: dict[str, dict] = {}
+    for entry in selection:
+        rel = entry["path"]
+        if rel not in rendered:
+            continue
+        stack_cfg = rendered[rel]
+        try:
+            root_key = config_model.validate_stack_shape(stack_cfg)
+        except ValueError:
+            continue
+        root_section = stack_cfg.get(root_key, {})
+        requires = root_section.get("requires", [])
+        provides = root_section.get("provides", [])
+        if not (requires or provides):
+            continue
+        # Reject malformed typed refs (spec §2 grammar) before linting.
+        try:
+            config_model.validate_stack_provisioning(stack_cfg, source=rel)
+        except ValueError as exc:
+            error(str(exc))
+            return 2
+        stacks[rel] = {"requires": requires, "provides": provides}
+
+    if not stacks:
+        info("No stacks with requires/provides — nothing to check")
+        success("check passed (no provisioning refs)")
+        return 0
+
+    lint_errors = provisioning_pkg.lint_graph(stacks)
+    if lint_errors:
+        for e in lint_errors:
+            error(e)
+        error("Graph lint failed")
+        return 2
+
+    info("Graph lint passed")
+
+    if live:
+        info("Probing live state...")
+        config = profile.config
+        all_failed: list[str] = []
+        for entry in selection:
+            rel = entry["path"]
+            if rel not in stacks:
+                continue
+            for ref in stacks[rel].get("requires", []):
+                result = provisioning_pkg.probe_ref(ref, config, repo_root)
+                if result.satisfied:
+                    info(f"  OK  {ref}")
+                else:
+                    error(f"  FAIL {ref}: {result.reason}")
+                    all_failed.append(ref)
+        if all_failed:
+            error(f"Live probe failed: {len(all_failed)} unsatisfied requirement(s)")
+            return 1
+        info("Live probe passed")
+
+    success("check passed")
+    return 0
+
+
 def _matching_containers(config: dict, *, all_states: bool = False) -> list[str]:
     """Return containers whose name matches ``^{project}-{env}-`` (S7.8).
 
@@ -1107,6 +1265,7 @@ def build_action_sequence(argv: list[str]) -> list[str]:
         "--clean": "clean",
         "--healthcheck": "healthcheck",
         "--preflight": "preflight",
+        "--check": "check",
         "--render-toml": "render_toml",
         "--list-phases": "list_phases",
         "--list-profiles": "list_profiles",
@@ -1144,6 +1303,8 @@ Examples:
     actions.add_argument("--healthcheck", action="store_true", help="Run the health gate over the selection (S7.7)")
     actions.add_argument("--preflight", action="store_true",
                          help="Probe healthcheck tool availability in service images (ciu health --preflight)")
+    actions.add_argument("--check", action="store_true",
+                         help="Validate the requires/provides dependency graph (no deploy)")
     actions.add_argument("--render-toml", dest="render_toml", action="store_true",
                          help="Render global + selected stack configs and stop (S8.3 step 3)")
     actions.add_argument("--list-phases", dest="list_phases", action="store_true",
@@ -1172,6 +1333,10 @@ Examples:
                          help="Update Let's Encrypt cert permissions (requires root)")
     control.add_argument("--strict", action="store_true",
                          help="Preflight: treat any missing-tool warning as a hard failure (exit 1)")
+    control.add_argument("--no-preflight", dest="no_preflight", action="store_true",
+                         help="Skip provisioning preflight checks (break-glass)")
+    control.add_argument("--live", action="store_true",
+                         help="With --check: also probe live state (Vault/Postgres/MinIO/Consul/Docker)")
     control.add_argument("--version", action="version", version=f"ciu-deploy {get_cli_version()}")
 
     return parser.parse_args(argv)
@@ -1282,9 +1447,14 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
     # vault_preflight / registry_preflight now raise on failure (ValueError →
     # exit 2 via engine._exit_code_for; VaultError → exit 1) — the outer
     # try/except in main() catches and maps them.
+    rendered: Optional[dict[str, dict]] = None
     if deploy_needs_preflight and not args.dry_run:
         rendered = render_selected_stacks(repo_root, profile, selection)
         vault_preflight(repo_root, profile, selection, rendered)
+        provisioning_preflight(
+            repo_root, profile, selection, rendered,
+            no_preflight=getattr(args, 'no_preflight', False),
+        )
         registry_preflight(profile.config)
         # Ensure the workspace network exists before compose (devcontainer no-op
         # off-devcontainer); reads the profile-resolved auto_connect setting.
@@ -1297,6 +1467,10 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         # "everything else runs" intent.
         rendered = render_selected_stacks(repo_root, profile, selection)
         vault_preflight(repo_root, profile, selection, rendered)
+        provisioning_preflight(
+            repo_root, profile, selection, rendered,
+            no_preflight=getattr(args, 'no_preflight', False),
+        )
 
     for action in actions:
         info(f">>> action: {action}")
@@ -1316,6 +1490,13 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             ac = action_healthcheck_preflight(
                 repo_root, profile, selection,
                 strict=getattr(args, "strict", False),
+            )
+        elif action == "check":
+            if rendered is None:
+                rendered = render_selected_stacks(repo_root, profile, selection)
+            ac = action_check(
+                repo_root, profile, selection, rendered,
+                live=getattr(args, 'live', False),
             )
         elif action == "deploy":
             ac = action_deploy(
@@ -1347,6 +1528,8 @@ def _other_actions_requested(args: argparse.Namespace) -> bool:
             args.stop,
             args.clean,
             args.healthcheck,
+            args.preflight,
+            args.check,
             args.render_toml,
             args.list_phases,
             args.list_profiles,
