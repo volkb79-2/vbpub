@@ -5,7 +5,7 @@
 
 ARG PYTHON_VERSION="3.14"
 ARG DEBIAN_VERSION="trixie"
-ARG BASE_IMAGE="mcr.microsoft.com/devcontainers/python:1-${PYTHON_VERSION}-${DEBIAN_VERSION}"
+ARG BASE_IMAGE="mcr.microsoft.com/devcontainers/python:${PYTHON_VERSION}-${DEBIAN_VERSION}"
 # BASE_IMAGE is set by `docker-bake.hcl` during build
 FROM ${BASE_IMAGE}
 
