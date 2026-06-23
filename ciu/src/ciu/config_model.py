@@ -566,9 +566,9 @@ def validate_stack_shape(stack_config: dict) -> str:
 
 VALID_REF_KINDS = frozenset({"vault", "pg", "minio", "consul", "stack"})
 _REF_RE = re.compile(
-    r"^(vault):secret/(.+)"                     # vault:secret/<path>
-    r"|^(pg):(role|db)/([a-zA-Z0-9_-]+)"        # pg:role/<name> or pg:db/<name>
-    r"|^(minio):user/([a-zA-Z0-9_-]+)"          # minio:user/<name>
+    r"^(vault):secret/(.+)"                       # vault:secret/<path>
+    r"|^(pg):(role|db|schema)/([a-zA-Z0-9_-]+)"   # pg:role/<n>, pg:db/<n>, or pg:schema/<n>
+    r"|^(minio):user/([a-zA-Z0-9_-]+)"            # minio:user/<name>
     r"|^(consul):token/([a-zA-Z0-9_-]+)"        # consul:token/<svc>
     r"|^(stack):([a-zA-Z0-9_/-]+):healthy$"     # stack:<name>:healthy
 )
@@ -593,7 +593,7 @@ def validate_provisioning_ref(ref: str) -> None:
             )
         raise ValueError(
             f"[ERROR] Malformed provisioning ref {ref!r}: does not match any valid pattern. "
-            f"Examples: vault:secret/db/pass, pg:role/myuser, pg:db/mydb, "
+            f"Examples: vault:secret/db/pass, pg:role/myuser, pg:db/mydb, pg:schema/myschema, "
             f"minio:user/worker, consul:token/myapp, stack:db-core:healthy"
         )
 

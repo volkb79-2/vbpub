@@ -800,3 +800,133 @@ def test_parse_args_defaults():
     assert args.check is False
     assert args.no_preflight is False
     assert args.live is False
+
+
+# ---------------------------------------------------------------------------
+# 4.2: pg:schema ref kind
+# ---------------------------------------------------------------------------
+
+
+def test_parse_ref_pg_schema():
+    ref = parse_ref("pg:schema/authentik")
+    assert ref.kind == "pg"
+    assert ref.subkind == "schema"
+    assert ref.selector == "authentik"
+
+
+def test_validate_provisioning_ref_accepts_pg_schema():
+    validate_provisioning_ref("pg:schema/authentik")  # should not raise
+
+
+def test_probe_ref_pg_schema_found_targets_app_db():
+    """A pg:schema probe must query the APP database (-d), not the default 'postgres'
+    db, because information_schema.schemata is per-database."""
+    seen = {}
+
+    def docker_exec_fn(container, cmd):
+        seen["cmd"] = cmd
+        return (0, "1\n")
+
+    result = probe_ref(
+        "pg:schema/authentik",
+        config={"registry": {"postgresql": {"database": "dstdns"}}},
+        repo_root=Path("/tmp"),
+        docker_exec_fn=docker_exec_fn,
+    )
+    assert result.satisfied is True
+    assert "authentik" in result.reason
+    assert "-d" in seen["cmd"] and "dstdns" in seen["cmd"]
+    assert "information_schema.schemata" in " ".join(seen["cmd"])
+
+
+def test_probe_ref_pg_schema_not_found():
+    def docker_exec_fn(container, cmd):
+        return (0, "\n")
+
+    result = probe_ref(
+        "pg:schema/missing",
+        config={"registry": {"postgresql": {"database": "dstdns"}}},
+        repo_root=Path("/tmp"),
+        docker_exec_fn=docker_exec_fn,
+    )
+    assert result.satisfied is False
+
+
+# ---------------------------------------------------------------------------
+# 4.2: consul:token configurable Vault path
+# ---------------------------------------------------------------------------
+
+
+def test_consul_token_path_is_configurable():
+    seen = []
+
+    class TrackingVault:
+        def read(self, path, field=None):
+            seen.append(path)
+            return "tok"
+
+    result = probe_ref(
+        "consul:token/controller",
+        config={"registry": {"consul": {"token_vault_path": "consul/{svc}/token"}}},
+        repo_root=Path("/tmp"),
+        vault_client=TrackingVault(),
+    )
+    assert result.satisfied is True
+    assert seen == ["consul/controller/token"]
+
+
+def test_consul_token_path_defaults_when_unset():
+    seen = []
+
+    class TrackingVault:
+        def read(self, path, field=None):
+            seen.append(path)
+            return "tok"
+
+    probe_ref(
+        "consul:token/myapp",
+        config={},
+        repo_root=Path("/tmp"),
+        vault_client=TrackingVault(),
+    )
+    assert seen == ["consul/acl/tokens/myapp"]
+
+
+# ---------------------------------------------------------------------------
+# 4.2: stack:<name>:healthy treats an exited-0 one-shot as satisfied
+# ---------------------------------------------------------------------------
+
+
+def test_probe_stack_oneshot_exited_zero_is_satisfied(monkeypatch):
+    import json as _json
+    from ciu import procutil
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": False, "ExitCode": 0, "Health": {}})
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+    result = probe_ref(
+        "stack:db-init:healthy",
+        config={"deploy": {"project_name": "p", "environment_tag": "t"}},
+        repo_root=Path("/tmp"),
+    )
+    assert result.satisfied is True
+    assert "exited 0" in result.reason or "one-shot" in result.reason
+
+
+def test_probe_stack_exited_nonzero_is_unsatisfied(monkeypatch):
+    import json as _json
+    from ciu import procutil
+
+    class _R:
+        returncode = 0
+        stdout = _json.dumps({"Running": False, "ExitCode": 1, "Health": {}})
+
+    monkeypatch.setattr(procutil, "docker", lambda *a, **k: _R())
+    result = probe_ref(
+        "stack:db-init:healthy",
+        config={"deploy": {"project_name": "p", "environment_tag": "t"}},
+        repo_root=Path("/tmp"),
+    )
+    assert result.satisfied is False

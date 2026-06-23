@@ -19,7 +19,7 @@ from typing import Optional
 @dataclass
 class ProvisioningRef:
     kind: str        # 'vault', 'pg', 'minio', 'consul', 'stack'
-    subkind: str     # 'secret', 'role', 'db', 'user', 'token', or '' for stack
+    subkind: str     # 'secret', 'role', 'db', 'schema', 'user', 'token', or '' for stack
     selector: str    # the path/name/etc
 
 
@@ -32,7 +32,7 @@ class ProbeResult:
 
 # Regex patterns for each ref kind
 _VAULT_RE = re.compile(r'^vault:secret/(.+)$')
-_PG_RE = re.compile(r'^pg:(role|db)/([a-zA-Z0-9_-]+)$')
+_PG_RE = re.compile(r'^pg:(role|db|schema)/([a-zA-Z0-9_-]+)$')
 _MINIO_RE = re.compile(r'^minio:user/([a-zA-Z0-9_-]+)$')
 _CONSUL_RE = re.compile(r'^consul:token/([a-zA-Z0-9_-]+)$')
 _STACK_RE = re.compile(r'^stack:([a-zA-Z0-9_/-]+):healthy$')
@@ -79,7 +79,7 @@ def parse_ref(ref: str) -> ProvisioningRef:
         )
     raise ValueError(
         f"[ERROR] Malformed provisioning ref {ref!r}: does not match any valid pattern. "
-        f"Examples: vault:secret/db/pass, pg:role/myuser, pg:db/mydb, "
+        f"Examples: vault:secret/db/pass, pg:role/myuser, pg:db/mydb, pg:schema/myschema, "
         f"minio:user/worker, consul:token/myapp, stack:db-core:healthy"
     )
 
@@ -223,12 +223,20 @@ def _probe_pg(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
     except (ValueError, KeyError):
         cname = 'postgres'
 
+    cmd = ['psql', '-U', 'postgres', '-tAc']
     if parsed.subkind == 'role':
+        # pg_roles is a cluster-global catalog — the default 'postgres' db is fine.
         sql = f"SELECT 1 FROM pg_roles WHERE rolname='{parsed.selector}'"
+    elif parsed.subkind == 'schema':
+        # information_schema.schemata is PER-DATABASE, so target the app database
+        # (registry.postgresql.database) rather than the default 'postgres' db.
+        sql = f"SELECT 1 FROM information_schema.schemata WHERE schema_name='{parsed.selector}'"
+        db_name = (config.get('registry', {}) or {}).get('postgresql', {}).get('database')
+        if db_name:
+            cmd = ['psql', '-U', 'postgres', '-d', str(db_name), '-tAc']
     else:  # db
         sql = f"SELECT 1 FROM pg_database WHERE datname='{parsed.selector}'"
-
-    cmd = ['psql', '-U', 'postgres', '-tAc', sql]
+    cmd = cmd + [sql]
 
     if docker_exec_fn is not None:
         rc, stdout = docker_exec_fn(cname, cmd)
@@ -273,8 +281,21 @@ def _probe_minio(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
 
 
 def _probe_consul(ref, parsed, config, repo_root, *, vault_client=None) -> ProbeResult:
-    """Probe a consul:token/<svc> ref via Vault read at consul/acl/tokens/<svc>."""
-    vault_path = f"consul/acl/tokens/{parsed.selector}"
+    """Probe a consul:token/<svc> ref via a Vault read.
+
+    The Vault path is config-driven so deployments that store ACL tokens under a
+    different layout can point ciu at it. Default: ``consul/acl/tokens/{svc}``.
+    Example override (dstdns stores tokens at ``consul/<svc>/token``)::
+
+        [registry.consul]
+        token_vault_path = "consul/{svc}/token"
+    """
+    consul_cfg = (config.get("registry", {}) or {}).get("consul", {}) or {}
+    template = consul_cfg.get("token_vault_path", "consul/acl/tokens/{svc}")
+    try:
+        vault_path = template.format(svc=parsed.selector)
+    except (KeyError, IndexError):
+        vault_path = f"consul/acl/tokens/{parsed.selector}"
     vault_ref_obj = ProvisioningRef(kind='vault', subkind='secret', selector=vault_path)
     return _probe_vault(ref, vault_ref_obj, config, repo_root, vault_client=vault_client)
 
@@ -327,5 +348,10 @@ def _probe_stack(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
         running = state.get('Running', False)
         if running:
             return ProbeResult(ref=ref, satisfied=True, reason=f"Stack '{parsed.selector}' is running (no healthcheck)")
-        return ProbeResult(ref=ref, satisfied=False, reason=f"Stack '{parsed.selector}' is not running")
+        # One-shot stacks (e.g. db-init) exit 0 when they finish successfully —
+        # treat a clean exit as satisfied rather than "not running".
+        exit_code = state.get('ExitCode')
+        if exit_code == 0:
+            return ProbeResult(ref=ref, satisfied=True, reason=f"Stack '{parsed.selector}' completed (one-shot, exited 0)")
+        return ProbeResult(ref=ref, satisfied=False, reason=f"Stack '{parsed.selector}' is not running (exit code {exit_code})")
     return ProbeResult(ref=ref, satisfied=False, reason=f"Stack '{parsed.selector}' health status: {status}")
