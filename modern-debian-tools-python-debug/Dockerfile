@@ -444,6 +444,19 @@ EOF
 RUN set -euo pipefail; \
     chown -R vscode:vscode /home/vscode/.config/mc
 
+# ── In-container devcontainer finalize (postCreateCommand) ──────────────────
+# Baked into the image so any mdt-based repo wires only:
+#   "postCreateCommand": "finalize_container_environment.py"
+# It runs generic, ciu-AGNOSTIC setup (PATH, aliases, vscode settings, tool
+# verification) and brackets it with the consumer's own hooks discovered from
+# its .devcontainer/finalize.{pre,post}.d/*.sh — that is where repo-specific (and
+# any ciu) setup lives, so mdt ships+encourages ciu without ENFORCING it. The
+# symmetric host-side script (initialize_container_environment.py) is NOT baked in
+# — it runs on the host before the container exists, so it ships as a vendorable
+# template under templates/. See DEVCONTAINER-LIFECYCLE.md.
+COPY scripts/finalize_container_environment.py /usr/local/bin/finalize_container_environment.py
+RUN chmod 0755 /usr/local/bin/finalize_container_environment.py
+
 # Canonical user-facing manifest plus internal inventory snapshot.
 RUN set -euo pipefail; \
     canonical_manifest="/home/vscode/mdt-manifest.md"; \

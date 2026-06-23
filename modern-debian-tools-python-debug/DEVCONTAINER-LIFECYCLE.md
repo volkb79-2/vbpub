@@ -9,7 +9,16 @@ their project-specific notes.
 | Hook | Runs | Where | Script |
 |---|---|---|---|
 | `initializeCommand` | **before** the container is created | on the **host** | `initialize_container_environment.py` (the "pre" script) |
-| `postCreateCommand` | **after** the container is created | **inside** the container | `post-create.sh` (the "post" script; see *Planned* below) |
+| `postCreateCommand` | **after** the container is created | **inside** the container | `finalize_container_environment.py` (the "post" script — **baked into the mdt image**) |
+
+> **Why one is vendored and the other is baked in.** `initializeCommand` is the *only* devcontainer
+> hook that runs on the **host**, *before* the container exists — at that moment the mdt image
+> filesystem isn't available, so its script (`initialize_container_environment.py`) **cannot** come
+> from the image; it must be a file in your repo checkout. `postCreateCommand` runs **inside** the
+> container, so its script (`finalize_container_environment.py`) **is** baked into the mdt image and
+> you reference it by name. `devcontainer.json` itself is inherently repo-specific, so it is also
+> vendored. Hence mdt ships two **templates** to copy (`devcontainer.json`,
+> `initialize_container_environment.py`) and one **baked-in** script you just call (finalize).
 
 ### Pre script — `initialize_container_environment.py` (host)
 Runs on the host so every bind-mount **source** exists with sane permissions *before* Docker starts
@@ -19,12 +28,38 @@ sibling `devcontainer.json`, finds every `type=bind` source under `$HOME`, and c
 dir** with the right mode. Secret dirs (`.ssh`/`.gnupg`/`.minisign`) get `0700`; `tmp` gets `1777`;
 everything else `0755`.
 
-### Post script — `post-create.sh` (container)
-Runs inside the new container: verifies the toolchain, optional SSH-agent/alias setup, generates
-`.env.ciu` (`ciu env generate`), and connects to the deployment network.
-**Planned:** promote this to `finalize_container_environment.py` living **in the mdt base image** —
-symmetric to the host-side `initialize_container_environment.py` and reusable by every mdt-based
-devcontainer (generic finalize in mdt + a thin per-repo hook). Tracked as an mdt workstream.
+### Post script — `finalize_container_environment.py` (container, baked into mdt)
+Lives in the mdt image at `/usr/local/bin/finalize_container_environment.py`; a consuming repo wires
+only `"postCreateCommand": "finalize_container_environment.py"`. Symmetric to the host-side
+`initialize_container_environment.py`. stdlib-only, idempotent.
+
+It does the **generic, ciu-AGNOSTIC** setup every mdt devcontainer wants — `~/.local/bin` on PATH,
+convenience shell aliases, `.vscode/settings.json` (global python), and a base-image tool check — and
+**brackets** that with the consumer's own hooks. mdt **never** imports or calls ciu: mdt *ships and
+encourages* ciu, but a repo that doesn't use it still gets a fully working devcontainer.
+
+#### Consumer hook contract
+finalize discovers and runs hooks from your repo's `.devcontainer/` (no need to fork the script):
+
+```
+.devcontainer/finalize.pre.d/*.sh     # run (sorted) BEFORE the generic mdt steps
+<generic mdt steps>
+.devcontainer/finalize.post.d/*.sh    # run (sorted) AFTER  the generic mdt steps
+```
+
+- Single-file forms `finalize.pre.sh` / `finalize.post.sh` are also honoured (run after the `.d` dir).
+- Order hooks with a numeric prefix (`10-…`, `20-…`). Executable hooks run directly; others via `bash`.
+- Each hook inherits the environment plus: `MDT_FINALIZE=1`, `MDT_ENV_TYPE`, `MDT_WORKSPACE_DIR`,
+  `MDT_DEVCONTAINER_DIR`, `MDT_USER`/`MDT_UID`/`MDT_GID`/`MDT_DOCKER_GID`.
+- **Enforcement boundary:** mdt's own steps only *warn* on failure (they never fail the build). A
+  **consumer** hook that exits non-zero is reported and makes finalize's exit non-zero — because that
+  hook is where *you* put *your* critical setup. By default the remaining hooks still run; set
+  `MDT_FINALIZE_STRICT=1` to abort on the first failing hook.
+- Flags: `--no-hooks` (generic only), `--hooks-only` (skip generic), `--devcontainer-dir PATH`.
+
+**This is where ciu (if you use it) goes** — e.g. a repo that deploys with ciu drops
+`.devcontainer/finalize.post.d/10-<repo>-ciu.sh` that exports `REPO_ROOT`, runs `ciu env generate`,
+installs repo deps, etc. mdt provides the bracket; the consumer owns the contents.
 
 ## Grouped-persistence mounts — `~/mdt--mounted-folders/`
 
