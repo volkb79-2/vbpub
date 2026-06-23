@@ -68,6 +68,28 @@ ciu-deploy --clean -y
 without starting anything (**S8.3** step 3) — handy for reviewing the merged
 config.
 
+### Provisioning graph (S13)
+
+The infra stacks declare `provides` and the application stacks declare `requires`
+— typed refs in each stack's **root-key table** (e.g. `[db_core]`), not a
+`[stack]` table. The fixture exercises every ref kind: `vault:secret/…`,
+`pg:role/…`, `pg:db/…`, `pg:schema/…` (4.2), `minio:user/…`, `consul:token/…`
+(4.2 — config-driven Vault path via `[registry.consul] token_vault_path`), and
+`stack:<name>:healthy` (a one-shot init container that has **exited 0** counts as
+satisfied). The graph is self-consistent, so:
+
+```sh
+ciu check                       # static lint of the requires/provides graph (no deploy)
+ciu check --live                # also probe live state (run after the stack is up)
+ciu graph                       # render as Mermaid (default) — pipe into a Markdown doc
+ciu graph --format dot | dot -Tsvg > graph.svg
+ciu graph --format json         # machine-readable {stacks, edges}
+```
+
+On a greenfield `ciu up` the static lint runs once up-front and the live probe
+runs **per-phase** (after each provider phase is up), so no `--no-preflight` is
+needed. See SPEC S13 for the full grammar and probe semantics.
+
 ### Dual shipping (S8.5/S8.6)
 
 `shipped-example/` carries only a hand-written `docker-compose.yml` — the
