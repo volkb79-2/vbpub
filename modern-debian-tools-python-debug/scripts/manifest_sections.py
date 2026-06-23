@@ -30,6 +30,12 @@ CONTAINER_INSPECTION_TOOL_ORDER = [
     "syft",
 ]
 
+SECURITY_DEBUG_TOOL_ORDER = [
+    "hadolint",
+    "grype",
+    "cdebug",
+]
+
 CUSTOM_TOOL_ORDER = [
     "awscli",
     "b2",
@@ -118,7 +124,12 @@ def select_tooling(custom_tooling: Mapping[str, str], names: Sequence[str]) -> d
 
 
 def render_custom_tooling_lines(custom_tooling: Mapping[str, str]) -> list[str]:
-    excluded = set(FIRST_PARTY_WHEEL_ORDER) | set(AI_CLI_TOOL_ORDER) | set(CONTAINER_INSPECTION_TOOL_ORDER)
+    excluded = (
+        set(FIRST_PARTY_WHEEL_ORDER)
+        | set(AI_CLI_TOOL_ORDER)
+        | set(CONTAINER_INSPECTION_TOOL_ORDER)
+        | set(SECURITY_DEBUG_TOOL_ORDER)
+    )
     filtered = {key: value for key, value in custom_tooling.items() if key not in excluded}
     items = ordered_tool_items(filtered, CUSTOM_TOOL_ORDER)
     if not items:
@@ -144,6 +155,16 @@ def render_container_inspection_tool_lines(custom_tooling: Mapping[str, str]) ->
     items = ordered_tool_items(
         select_tooling(custom_tooling, CONTAINER_INSPECTION_TOOL_ORDER),
         CONTAINER_INSPECTION_TOOL_ORDER,
+    )
+    if not items:
+        return ["- unavailable"]
+    return [f"- {name}: {value}" for name, value in items]
+
+
+def render_security_debug_tool_lines(custom_tooling: Mapping[str, str]) -> list[str]:
+    items = ordered_tool_items(
+        select_tooling(custom_tooling, SECURITY_DEBUG_TOOL_ORDER),
+        SECURITY_DEBUG_TOOL_ORDER,
     )
     if not items:
         return ["- unavailable"]
@@ -181,6 +202,14 @@ def render_runtime_probe_sections(
         ]
     )
     lines.extend(render_container_inspection_tool_lines(custom_tooling))
+    lines.extend(
+        [
+            "",
+            "### Security & Debug Tools",
+            "",
+        ]
+    )
+    lines.extend(render_security_debug_tool_lines(custom_tooling))
     lines.extend(
         [
             "",
@@ -261,6 +290,14 @@ def render_installed_manifest(
         ]
     )
     lines.extend(render_container_inspection_tool_lines(custom_tooling))
+    lines.extend(
+        [
+            "",
+            "## Security & Debug Tools",
+            "",
+        ]
+    )
+    lines.extend(render_security_debug_tool_lines(custom_tooling))
     lines.extend(
         [
             "",

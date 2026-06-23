@@ -274,6 +274,35 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     EXPECTED_SYFT_SHA256="$(grep "syft_${SYFT_VER}_linux_${syft_arch}.tar.gz\$" "${DOWNLOADS_DIR}/syft-${SYFT_VER}-checksums.txt" | awk '{print $1}')"; \
     echo "${EXPECTED_SYFT_SHA256}  ${DOWNLOADS_DIR}/syft-${SYFT_VER}.tar.gz" | sha256sum -c -; \
     install_from_tar "${DOWNLOADS_DIR}/syft-${SYFT_VER}.tar.gz" syft /tmp/syft-extract; \
+    # Security & Debug Tools — installed from pre-staged + checksum-verified artifacts. \
+    # hadolint: single static binary (no archive); asset has no version in the name. \
+    # The per-asset .sha256 file contains a single line: "<hex>  hadolint-Linux-x86_64". \
+    # Extract the hash and reform the check against the renamed local path. \
+    require_file "${DOWNLOADS_DIR}/hadolint-${HADOLINT_VER}.sha256"; \
+    require_file "${DOWNLOADS_DIR}/hadolint-${HADOLINT_VER}"; \
+    EXPECTED_HADOLINT_SHA256="$(grep "hadolint-Linux-x86_64" "${DOWNLOADS_DIR}/hadolint-${HADOLINT_VER}.sha256" | awk '{print $1}')"; \
+    echo "${EXPECTED_HADOLINT_SHA256}  ${DOWNLOADS_DIR}/hadolint-${HADOLINT_VER}" | sha256sum -c -; \
+    install -m 755 "${DOWNLOADS_DIR}/hadolint-${HADOLINT_VER}" /usr/local/bin/hadolint; \
+    hadolint --version; \
+    # grype: vulnerability scanner (anchore/grype); tar.gz + checksums file. \
+    # Saved locally with a version-prefixed name; extract hash and reform check line. \
+    grype_arch="$(dpkg --print-architecture)"; \
+    require_file "${DOWNLOADS_DIR}/grype-${GRYPE_VER}-checksums.txt"; \
+    require_file "${DOWNLOADS_DIR}/grype-${GRYPE_VER}.tar.gz"; \
+    EXPECTED_GRYPE_SHA256="$(grep "grype_${GRYPE_VER}_linux_${grype_arch}.tar.gz\$" "${DOWNLOADS_DIR}/grype-${GRYPE_VER}-checksums.txt" | awk '{print $1}')"; \
+    echo "${EXPECTED_GRYPE_SHA256}  ${DOWNLOADS_DIR}/grype-${GRYPE_VER}.tar.gz" | sha256sum -c -; \
+    install_from_tar "${DOWNLOADS_DIR}/grype-${GRYPE_VER}.tar.gz" grype /tmp/grype-extract; \
+    grype version; \
+    # cdebug: container debugging tool (iximiuz/cdebug); tar.gz + checksums.txt. \
+    # Upstream asset names have NO version embedded (cdebug_linux_amd64.tar.gz). \
+    # Saved locally with a version prefix; extract hash and reform check against local name. \
+    cdebug_arch="$(dpkg --print-architecture)"; \
+    require_file "${DOWNLOADS_DIR}/cdebug-${CDEBUG_VER}-checksums.txt"; \
+    require_file "${DOWNLOADS_DIR}/cdebug-${CDEBUG_VER}.tar.gz"; \
+    EXPECTED_CDEBUG_SHA256="$(grep "cdebug_linux_${cdebug_arch}.tar.gz\$" "${DOWNLOADS_DIR}/cdebug-${CDEBUG_VER}-checksums.txt" | awk '{print $1}')"; \
+    echo "${EXPECTED_CDEBUG_SHA256}  ${DOWNLOADS_DIR}/cdebug-${CDEBUG_VER}.tar.gz" | sha256sum -c -; \
+    install_from_tar "${DOWNLOADS_DIR}/cdebug-${CDEBUG_VER}.tar.gz" cdebug /tmp/cdebug-extract; \
+    cdebug version; \
     python3 /tmp/install_ai_cli_tools.py root; \
     rm -rf \
         /tmp/codex-extract \
@@ -292,6 +321,8 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
         /tmp/dtop-extract \
         /tmp/lazydocker-extract \
         /tmp/syft-extract \
+        /tmp/grype-extract \
+        /tmp/cdebug-extract \
         /root/.cache \
         /tmp/awscli \
         /tmp/tool-artifacts-staging
@@ -509,6 +540,21 @@ RUN set -euo pipefail; \
             echo "syft=$(syft --version 2>&1 | head -1)"; \
         else \
             echo "syft=not-installed"; \
+        fi; \
+        if command -v hadolint >/dev/null 2>&1; then \
+            echo "hadolint=$(hadolint --version 2>&1 | head -1)"; \
+        else \
+            echo "hadolint=not-installed"; \
+        fi; \
+        if command -v grype >/dev/null 2>&1; then \
+            echo "grype=$(grype version 2>&1 | head -1)"; \
+        else \
+            echo "grype=not-installed"; \
+        fi; \
+        if command -v cdebug >/dev/null 2>&1; then \
+            echo "cdebug=$(cdebug version 2>&1 | head -1)"; \
+        else \
+            echo "cdebug=not-installed"; \
         fi; \
         echo "awscli=$(aws --version 2>&1)"; \
         echo "b2=${b2_version_output}"; \

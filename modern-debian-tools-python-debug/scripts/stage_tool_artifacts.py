@@ -1095,6 +1095,144 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
         f"glances=={resolved['GLANCES_VER']}\n", encoding="utf-8"
     )
 
+    # hadolint — Dockerfile linter (hadolint/hadolint).
+    # Asset: hadolint-Linux-x86_64 (static binary, no archive) + hadolint-Linux-x86_64.sha256.
+    # The .sha256 file contains a single line: "<hex>  hadolint-Linux-x86_64".
+    # No version number in the asset filename (the release tag is the version anchor).
+    # Arch mapping: x86_64 → Linux-x86_64, aarch64 → Linux-arm64.
+    hadolint_ver = resolved["HADOLINT_VER"]
+    hadolint_bin_name = "hadolint-Linux-x86_64"  # staging always runs on the build host (amd64)
+    hadolint_bin_path = DOWNLOADS_DIR / f"hadolint-{hadolint_ver}"
+    hadolint_sha256_name = "hadolint-Linux-x86_64.sha256"
+    hadolint_sha256_path = DOWNLOADS_DIR / f"hadolint-{hadolint_ver}.sha256"
+    hadolint_base_url = f"https://github.com/hadolint/hadolint/releases/download/v{hadolint_ver}"
+    hadolint_bin_url = f"{hadolint_base_url}/{hadolint_bin_name}"
+    hadolint_sha256_url = f"{hadolint_base_url}/{hadolint_sha256_name}"
+    _download(hadolint_sha256_url, hadolint_sha256_path)
+    hadolint_bin_final_url = _download(hadolint_bin_url, hadolint_bin_path)
+    # The .sha256 file format is "<hex>  hadolint-Linux-x86_64" — extract hash and reform
+    # the check against our locally saved (renamed) path.
+    hadolint_expected_sha = _parse_hashicorp_sha256(hadolint_sha256_path, hadolint_bin_name)
+    hadolint_actual_sha = _sha256(hadolint_bin_path)
+    if hadolint_expected_sha != hadolint_actual_sha:
+        raise StageError(
+            f"hadolint checksum mismatch: expected {hadolint_expected_sha}, "
+            f"got {hadolint_actual_sha}"
+        )
+    _record_artifact(
+        records,
+        tool="hadolint",
+        version=hadolint_ver,
+        source_url=hadolint_bin_url,
+        final_url=hadolint_bin_final_url,
+        path=hadolint_bin_path,
+        kind="binary",
+        verification="sha256 from hadolint-Linux-x86_64.sha256",
+    )
+    _record_artifact(
+        records,
+        tool="hadolint-sha256",
+        version=hadolint_ver,
+        source_url=hadolint_sha256_url,
+        final_url=hadolint_sha256_url,
+        path=hadolint_sha256_path,
+        kind="checksum-file",
+        verification="downloaded",
+    )
+
+    # grype — vulnerability scanner (anchore/grype).
+    # Asset: grype_<ver>_linux_amd64.tar.gz + grype_<ver>_checksums.txt (space-space format).
+    # Arch: dpkg --print-architecture style (amd64 / arm64) matches upstream names directly.
+    grype_ver = resolved["GRYPE_VER"]
+    grype_arch = "amd64"  # staging always runs on the build host (amd64)
+    grype_archive_name = f"grype_{grype_ver}_linux_{grype_arch}.tar.gz"
+    grype_archive_path = DOWNLOADS_DIR / f"grype-{grype_ver}.tar.gz"
+    grype_sums_path = DOWNLOADS_DIR / f"grype-{grype_ver}-checksums.txt"
+    grype_base_url = f"https://github.com/anchore/grype/releases/download/v{grype_ver}"
+    grype_sums_url = f"{grype_base_url}/grype_{grype_ver}_checksums.txt"
+    grype_archive_url = f"{grype_base_url}/{grype_archive_name}"
+    _download(grype_sums_url, grype_sums_path)
+    grype_archive_final_url = _download(grype_archive_url, grype_archive_path)
+    # grype is saved under a renamed local path; extract hash and reform the check line
+    # against the local filename so sha256sum -c doesn't look for the upstream name.
+    grype_expected_sha = _parse_hashicorp_sha256(grype_sums_path, grype_archive_name)
+    grype_actual_sha = _sha256(grype_archive_path)
+    if grype_expected_sha != grype_actual_sha:
+        raise StageError(
+            f"grype checksum mismatch: expected {grype_expected_sha}, "
+            f"got {grype_actual_sha}"
+        )
+    if not _tar_contains_binary(grype_archive_path, "grype"):
+        raise StageError("Downloaded grype archive does not contain grype binary")
+    _record_artifact(
+        records,
+        tool="grype",
+        version=grype_ver,
+        source_url=grype_archive_url,
+        final_url=grype_archive_final_url,
+        path=grype_archive_path,
+        kind="tar.gz",
+        verification="sha256 from grype_<ver>_checksums.txt + archive contains grype",
+    )
+    _record_artifact(
+        records,
+        tool="grype-checksums",
+        version=grype_ver,
+        source_url=grype_sums_url,
+        final_url=grype_sums_url,
+        path=grype_sums_path,
+        kind="checksum-file",
+        verification="downloaded",
+    )
+
+    # cdebug — container debugging tool (iximiuz/cdebug).
+    # Asset: cdebug_linux_amd64.tar.gz + checksums.txt (space-space format, no version in names).
+    # NOTE: cdebug asset filenames have NO version embedded (cdebug_linux_amd64.tar.gz).
+    # The checksums.txt is saved locally with a versioned name to avoid collisions across
+    # builds; the extract-hash-and-reform pattern is used because the local archive path
+    # is also saved with a version prefix while the checksums.txt lists the bare asset name.
+    cdebug_ver = resolved["CDEBUG_VER"]
+    cdebug_arch = "amd64"  # staging always runs on the build host (amd64)
+    cdebug_archive_upstream_name = f"cdebug_linux_{cdebug_arch}.tar.gz"
+    cdebug_archive_path = DOWNLOADS_DIR / f"cdebug-{cdebug_ver}.tar.gz"
+    cdebug_sums_path = DOWNLOADS_DIR / f"cdebug-{cdebug_ver}-checksums.txt"
+    cdebug_base_url = f"https://github.com/iximiuz/cdebug/releases/download/v{cdebug_ver}"
+    cdebug_sums_url = f"{cdebug_base_url}/checksums.txt"
+    cdebug_archive_url = f"{cdebug_base_url}/{cdebug_archive_upstream_name}"
+    _download(cdebug_sums_url, cdebug_sums_path)
+    cdebug_archive_final_url = _download(cdebug_archive_url, cdebug_archive_path)
+    # cdebug is saved under a version-prefixed local path while checksums.txt lists the
+    # bare upstream name; extract hash and reform check line against the local filename.
+    cdebug_expected_sha = _parse_hashicorp_sha256(cdebug_sums_path, cdebug_archive_upstream_name)
+    cdebug_actual_sha = _sha256(cdebug_archive_path)
+    if cdebug_expected_sha != cdebug_actual_sha:
+        raise StageError(
+            f"cdebug checksum mismatch: expected {cdebug_expected_sha}, "
+            f"got {cdebug_actual_sha}"
+        )
+    if not _tar_contains_binary(cdebug_archive_path, "cdebug"):
+        raise StageError("Downloaded cdebug archive does not contain cdebug binary")
+    _record_artifact(
+        records,
+        tool="cdebug",
+        version=cdebug_ver,
+        source_url=cdebug_archive_url,
+        final_url=cdebug_archive_final_url,
+        path=cdebug_archive_path,
+        kind="tar.gz",
+        verification="sha256 from checksums.txt + archive contains cdebug",
+    )
+    _record_artifact(
+        records,
+        tool="cdebug-checksums",
+        version=cdebug_ver,
+        source_url=cdebug_sums_url,
+        final_url=cdebug_sums_url,
+        path=cdebug_sums_path,
+        kind="checksum-file",
+        verification="downloaded",
+    )
+
     aws_requested = resolved["AWSCLI_VER"]
     if aws_requested == "latest":
         aws_url = "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
@@ -1159,6 +1297,9 @@ def _resolve_versions() -> dict[str, str]:
         "GLANCES_VER": _resolve_pypi_version(os.getenv("GLANCES_VERSION"), "glances"),
         "DIVE_VER": _resolve_version(os.getenv("DIVE_VERSION"), "wagoodman/dive"),
         "SYFT_VER": _resolve_version(os.getenv("SYFT_VERSION"), "anchore/syft"),
+        "HADOLINT_VER": _resolve_version(os.getenv("HADOLINT_VERSION"), "hadolint/hadolint"),
+        "GRYPE_VER": _resolve_version(os.getenv("GRYPE_VERSION"), "anchore/grype"),
+        "CDEBUG_VER": _resolve_version(os.getenv("CDEBUG_VERSION"), "iximiuz/cdebug"),
         "B2_VER": _resolve_version(os.getenv("B2_VERSION"), "Backblaze/B2_Command_Line_Tool"),
         "BAT_VER": _resolve_version(os.getenv("BAT_VERSION"), "sharkdp/bat"),
         "FD_VER": _resolve_version(os.getenv("FD_VERSION"), "sharkdp/fd"),
