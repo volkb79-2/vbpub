@@ -157,6 +157,14 @@ dstdns = consumer only (canonical consumer example).
 8. **Multi-registry:** `[targets].registry=["ghcr.io","docker.io"]` → one build pushes both;
    pull each + compare digests.
 
+## Planned follow-ups
+- **awesome-docker listing (post-launch TODO):** once ciu-forge publishes ciu publicly (PyPI wheel +
+  `get.sh` + public docs, per the publish phase), submit ciu to `veggiemonk/awesome-docker` under a
+  Deployment-Frameworks / Tools section. NOT a fit yet (no PyPI install path, coupled to ciu/cmru
+  conventions, category skew) — gate the submission on: PyPI install + public docs + ≥1 external
+  adopter. Suggested entry: "ciu — declarative cross-repo deploy CLI: renders docker-compose stacks
+  from Jinja2 + TOML; verbs env/render/up/down/health/bake/graph/ssh."
+
 ## Risks & non-goals
 - **Refuse (S13):** macOS/Windows signing; FTP/S3 deploy targets. New release hosts only via
   S11 interface; only GitHub in v1 (Gitea/object-store fast-follow).
