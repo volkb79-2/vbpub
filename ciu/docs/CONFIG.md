@@ -29,6 +29,28 @@ Layer 1 feeds Layer 2 via `$VAR` expansion [S3.2]. Layer 3 is **never
 hand-edited**; it is the single file a security reviewer reads to see every
 secret exposure of a stack [S8.1].
 
+### Why the env layer stays — and what could become TOML
+
+`ciu.env` (Layer 1) is **not redundant** with the committed TOML (Layer 2); it is the
+**env-substitution / late-binding** layer, and its irreducible job is **secrets**:
+
+- **Secrets are injected as `${VAR}` at deploy time** — resolved from the process environment
+  (populated by CIU's secrets/Vault materialization) — and are **never rendered as literals** into the
+  compose. E.g. a rendered stack references `${<SVC>_CONSUL_TOKEN}`, `${<SVC>_MINIO_SECRET_KEY}`, etc.
+  Rendering those as literals would write secret values in plaintext to an on-disk (even gitignored)
+  file — unacceptable. So env-substitution is **load-bearing for secrets** and cannot be removed.
+- **Non-secret machine identity** (`REPO_ROOT`, `PHYSICAL_REPO_ROOT`, `HOST_MDT_TMP`, `CONTAINER_UID`,
+  `DOCKER_GID`, `DOCKER_NETWORK_INTERNAL`, …) rides the **same** `${VAR}` mechanism (it sits next to the
+  secrets in the same compose). Its *store format* could in principle be a gitignored TOML instead of
+  `ciu.env`, but that is a reformat, not an elimination — the values are still injected as `${VAR}` at
+  deploy time. Low value; `ciu.env` stays the carrier.
+  - `HOST_MDT_TMP` = host path of the persisted `/tmp` bind mount (autodetected; empty on native host),
+    so sibling containers (e.g. a test-runner) can mount the same `/tmp` for `/tmp`-based worktrees.
+- **Tooling direction (not a config change):** shell exec-scripts migrate to Python (a unified
+  `container-exec.py` + thin per-container bash shims selecting the container by the network-name
+  prefix, for parallel deployments). Python reads TOML directly, so it needs no env *for scripting* —
+  but that does **not** retire the env layer, whose job is secret late-binding, not feeding bash.
+
 ---
 
 ## File Roles and Layering [S3.1–S3.3]
