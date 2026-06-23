@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -39,6 +40,10 @@ Uses: ciu.global.toml + .env.ciu
   SECRETS
     secrets list   [-d PATH]             list materialised secret names
     secrets reset  [--name N] [-y]       delete secret store files
+
+  REMOTE (requires hosts file — see .ciu.hosts.toml)
+    ssh <host> [--admin] [-- cmd...]            remote shell or command (access plane)
+    up  --host <name> [selection flags]         push-deploy: bundle-sync + render-on-target
 """
 
 
@@ -157,6 +162,15 @@ ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]
   --profile NAME     host profile to graph (default: active profile)
   --phases N,M       restrict to the given phase numbers
 """,
+    "ssh": """\
+ciu ssh <host> [--admin] [-- <cmd...>]
+  Open an interactive shell or run a command on a remote host.
+  Host config is read from .ciu.hosts.toml or ~/.ciu/hosts.toml.
+
+  <host>         name of the host in the hosts inventory
+  --admin        use the admin key/user (higher-privilege access)
+  -- <cmd...>    command to run (default: interactive shell)
+""",
 }
 
 
@@ -239,6 +253,28 @@ def main() -> None:
         raise SystemExit(_env_show())
 
     elif verb == "render":
+        if "--host" in rest:
+            import argparse as _ap
+            p = _ap.ArgumentParser(add_help=False)
+            p.add_argument("--host", dest="host", default=None)
+            opts, remaining = p.parse_known_args(rest)
+            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            try:
+                from .deploy import load_global_config
+                config = load_global_config(repo_root)
+            except Exception:
+                config = {}
+            from .hosts import get_host
+            from .transport_ssh import ssh_exec
+            host_cfg = get_host(repo_root, opts.host)
+            remote_cmd_parts = ["ciu render"]
+            remote_cmd_parts.extend(remaining)
+            remote_cmd = " ".join(remote_cmd_parts)
+            # Pass the whole command as ONE argv element: ssh space-joins remote
+            # args into a single string for the remote login shell to re-parse, so
+            # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
+            # shell ssh spawns already interprets the operators natively.
+            raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--render-toml"] + rest))
 
@@ -247,7 +283,39 @@ def main() -> None:
         raise SystemExit(deploy_main(["--list-profiles"] + rest))
 
     elif verb == "up":
-        if "--dir" in rest:
+        if "--host" in rest:
+            # Remote push-deploy path
+            import argparse as _ap
+            p = _ap.ArgumentParser(add_help=False)
+            p.add_argument("--host", dest="host", default=None)
+            p.add_argument("--thin", action="store_true", default=False)
+            opts, remaining = p.parse_known_args(rest)
+            if opts.thin:
+                print("[ERROR] --thin not yet implemented; use render-on-target (omit --thin)", file=sys.stderr)
+                raise SystemExit(1)
+            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            try:
+                from .deploy import load_global_config
+                config = load_global_config(repo_root)
+            except Exception:
+                config = {}
+            from .hosts import get_host
+            from .transport_ssh import ssh_sync, ssh_exec
+            host_cfg = get_host(repo_root, opts.host)
+            bundle_dir = host_cfg.get("bundle_dir", "/opt/ciu/current")
+            rc = ssh_sync(host_cfg, str(repo_root), bundle_dir, config=config, repo_root=repo_root)
+            if rc != 0:
+                raise SystemExit(rc)
+            # Build remote ciu command
+            remote_cmd_parts = [f"cd {bundle_dir} && ciu env generate && ciu render && ciu up"]
+            remote_cmd_parts.extend(remaining)
+            remote_cmd = " ".join(remote_cmd_parts)
+            # Pass the whole command as ONE argv element: ssh space-joins remote
+            # args into a single string for the remote login shell to re-parse, so
+            # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
+            # shell ssh spawns already interprets the operators natively.
+            raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
+        elif "--dir" in rest:
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--dir", dest="dir", default=None)
@@ -261,6 +329,28 @@ def main() -> None:
             raise SystemExit(deploy_main(rest))
 
     elif verb == "down":
+        if "--host" in rest:
+            import argparse as _ap
+            p = _ap.ArgumentParser(add_help=False)
+            p.add_argument("--host", dest="host", default=None)
+            opts, remaining = p.parse_known_args(rest)
+            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            try:
+                from .deploy import load_global_config
+                config = load_global_config(repo_root)
+            except Exception:
+                config = {}
+            from .hosts import get_host
+            from .transport_ssh import ssh_exec
+            host_cfg = get_host(repo_root, opts.host)
+            remote_cmd_parts = ["ciu down"]
+            remote_cmd_parts.extend(remaining)
+            remote_cmd = " ".join(remote_cmd_parts)
+            # Pass the whole command as ONE argv element: ssh space-joins remote
+            # args into a single string for the remote login shell to re-parse, so
+            # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
+            # shell ssh spawns already interprets the operators natively.
+            raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--stop"] + rest))
 
@@ -269,6 +359,28 @@ def main() -> None:
         raise SystemExit(deploy_main(["--clean"] + rest))
 
     elif verb == "health":
+        if "--host" in rest:
+            import argparse as _ap
+            p = _ap.ArgumentParser(add_help=False)
+            p.add_argument("--host", dest="host", default=None)
+            opts, remaining = p.parse_known_args(rest)
+            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            try:
+                from .deploy import load_global_config
+                config = load_global_config(repo_root)
+            except Exception:
+                config = {}
+            from .hosts import get_host
+            from .transport_ssh import ssh_exec
+            host_cfg = get_host(repo_root, opts.host)
+            remote_cmd_parts = ["ciu health"]
+            remote_cmd_parts.extend(remaining)
+            remote_cmd = " ".join(remote_cmd_parts)
+            # Pass the whole command as ONE argv element: ssh space-joins remote
+            # args into a single string for the remote login shell to re-parse, so
+            # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
+            # shell ssh spawns already interprets the operators natively.
+            raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
         from .deploy import main as deploy_main
         if "--preflight" in rest:
             extra = [r for r in rest if r != "--preflight"]
@@ -315,6 +427,44 @@ def main() -> None:
     elif verb == "graph":
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--graph"] + rest))
+
+    elif verb == "ssh":
+        # Parse: ciu ssh <host> [--admin] [-- cmd...]
+        import argparse as _ap
+        from .hosts import get_host
+        from .transport_ssh import ssh_exec
+        p = _ap.ArgumentParser(prog="ciu ssh", add_help=False)
+        p.add_argument("host", nargs="?", default=None)
+        p.add_argument("--admin", action="store_true", default=False)
+        # Split on '--' to separate host/flags from remote command
+        if "--" in rest:
+            sep = rest.index("--")
+            ssh_rest = rest[:sep]
+            cmd_argv = rest[sep + 1:]
+        else:
+            ssh_rest = rest
+            cmd_argv = []
+        opts = p.parse_args(ssh_rest)
+        if not opts.host:
+            print("ciu ssh: missing <host>. Run 'ciu ssh --help'.", file=sys.stderr)
+            raise SystemExit(2)
+        # Resolve repo root from env
+        repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+        # Load config (best effort; transport will use repo_root for vault lazily)
+        try:
+            from .deploy import load_global_config
+            config = load_global_config(repo_root)
+        except Exception:
+            config = {}
+        host_cfg = get_host(repo_root, opts.host, admin=opts.admin)
+        interactive = len(cmd_argv) == 0
+        raise SystemExit(ssh_exec(
+            host_cfg, cmd_argv,
+            config=config,
+            repo_root=repo_root,
+            interactive=interactive,
+            admin=opts.admin,
+        ))
 
     else:
         if verb == "-d" and rest:

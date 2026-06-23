@@ -18,6 +18,9 @@ dependencies = [
 	"tomli_w>=1.0.0",
 ]
 
+[project.optional-dependencies]
+ssh = ["paramiko>=5.0"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
