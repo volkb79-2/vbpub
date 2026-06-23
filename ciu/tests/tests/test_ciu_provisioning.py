@@ -930,3 +930,62 @@ def test_probe_stack_exited_nonzero_is_unsatisfied(monkeypatch):
         repo_root=Path("/tmp"),
     )
     assert result.satisfied is False
+
+
+# ---------------------------------------------------------------------------
+# 4.2: per-phase preflight — lint/probe toggles
+# ---------------------------------------------------------------------------
+
+
+def _profile_for(config):
+    from ciu.deploy_pkg.profiles import Profile
+    return Profile(name=None, phase_keys=None, config=config)
+
+
+def test_preflight_lint_only_does_not_probe():
+    """probe=False must lint the graph but never attempt a live probe (no docker/vault)."""
+    from ciu import deploy
+    config = {"deploy": {"project_name": "p", "environment_tag": "t"}}
+    profile = _profile_for(config)
+    selection = [
+        {"path": "infra/pg", "service": {"path": "infra/pg", "enabled": True}},
+        {"path": "apps/backend", "service": {"path": "apps/backend", "enabled": True}},
+    ]
+    rendered = {
+        "infra/pg": {"pg": {"provides": ["pg:db/mydb"], "requires": []}},
+        "apps/backend": {"backend": {"requires": ["pg:db/mydb"], "provides": []}},
+    }
+    # lint passes (pg:db/mydb is provided); probe=False → no live probing, no raise.
+    deploy.provisioning_preflight(Path("/tmp"), profile, selection, rendered, probe=False)
+
+
+def test_preflight_probe_only_skips_lint(monkeypatch):
+    """lint=False skips the static graph check (used for per-phase probing where a
+    require may be satisfied by an EARLIER phase not in this call's selection)."""
+    from ciu import deploy, provisioning as prov_mod
+    config = {"deploy": {"project_name": "p", "environment_tag": "t"}}
+    profile = _profile_for(config)
+    selection = [{"path": "apps/backend", "service": {"path": "apps/backend", "enabled": True}}]
+    # apps/backend requires pg:db/mydb but no provider in THIS selection — would fail
+    # a lint, but lint=False skips it; probe is mocked satisfied → no raise.
+    rendered = {"apps/backend": {"backend": {"requires": ["pg:db/mydb"], "provides": []}}}
+    monkeypatch.setattr(
+        prov_mod, "probe_ref",
+        lambda ref, config, repo_root, **k: ProbeResult(ref=ref, satisfied=True, reason="ok"),
+    )
+    deploy.provisioning_preflight(Path("/tmp"), profile, selection, rendered, lint=False)
+
+
+def test_preflight_probe_failure_raises(monkeypatch):
+    import pytest
+    from ciu import deploy, provisioning as prov_mod
+    config = {"deploy": {"project_name": "p", "environment_tag": "t"}}
+    profile = _profile_for(config)
+    selection = [{"path": "apps/backend", "service": {"path": "apps/backend", "enabled": True}}]
+    rendered = {"apps/backend": {"backend": {"requires": ["pg:db/mydb"], "provides": []}}}
+    monkeypatch.setattr(
+        prov_mod, "probe_ref",
+        lambda ref, config, repo_root, **k: ProbeResult(ref=ref, satisfied=False, reason="not found"),
+    )
+    with pytest.raises(ValueError, match="unsatisfied requirements"):
+        deploy.provisioning_preflight(Path("/tmp"), profile, selection, rendered, lint=False)

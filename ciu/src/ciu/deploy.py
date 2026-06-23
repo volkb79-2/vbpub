@@ -423,11 +423,20 @@ def provisioning_preflight(
     rendered: dict[str, dict],
     *,
     no_preflight: bool = False,
+    lint: bool = True,
+    probe: bool = True,
 ) -> None:
     """Check requires/provides graph and probe live state for each stack's requires.
 
     Raises ValueError with a precise message on failure.
     Skipped when no_preflight=True (break-glass) or when no stack has requires/provides.
+
+    ``lint`` runs the static graph check (needs the full selection — run ONCE
+    up-front). ``probe`` runs the live state check; run it PER-PHASE by passing
+    that phase's entries as ``selection`` (with ``lint=False``), so a stack's
+    requires are probed only when its phase is about to deploy and the providers
+    in earlier phases are already up. (A once-up-front live probe can never pass on
+    a greenfield ``ciu up`` because the providers deploy later in the same run.)
     """
     if no_preflight:
         info("[INFO] --no-preflight: skipping provisioning preflight")
@@ -459,34 +468,37 @@ def provisioning_preflight(
     if not stacks:
         return  # no stack uses requires/provides — skip entirely
 
-    # Graph lint
-    lint_errors = provisioning_pkg.lint_graph(stacks)
-    if lint_errors:
-        raise ValueError(
-            "[ERROR] Provisioning graph lint failed:\n"
-            + "\n".join(f"  {e}" for e in lint_errors)
-        )
-    info("[INFO] Provisioning graph lint passed")
+    # Graph lint (static; needs the full selection — run once up-front)
+    if lint:
+        lint_errors = provisioning_pkg.lint_graph(stacks)
+        if lint_errors:
+            raise ValueError(
+                "[ERROR] Provisioning graph lint failed:\n"
+                + "\n".join(f"  {e}" for e in lint_errors)
+            )
+        info("[INFO] Provisioning graph lint passed")
 
-    # Live probing: probe each stack's requires
-    config = profile.config
-    all_failed: list[str] = []
-    for entry in selection:
-        rel = entry["path"]
-        if rel not in stacks:
-            continue
-        requires = stacks[rel].get("requires", [])
-        for ref in requires:
-            result = provisioning_pkg.probe_ref(ref, config, repo_root)
-            if not result.satisfied:
-                all_failed.append(f"  stack '{rel}' requires '{ref}': {result.reason}")
+    # Live probing: probe each stack's requires (per-phase when called from the
+    # deploy loop with that phase's entries as `selection`).
+    if probe:
+        config = profile.config
+        all_failed: list[str] = []
+        for entry in selection:
+            rel = entry["path"]
+            if rel not in stacks:
+                continue
+            requires = stacks[rel].get("requires", [])
+            for ref in requires:
+                result = provisioning_pkg.probe_ref(ref, config, repo_root)
+                if not result.satisfied:
+                    all_failed.append(f"  stack '{rel}' requires '{ref}': {result.reason}")
 
-    if all_failed:
-        raise ValueError(
-            "[ERROR] Provisioning preflight failed — unsatisfied requirements:\n"
-            + "\n".join(all_failed)
-        )
-    info("[INFO] Provisioning preflight passed")
+        if all_failed:
+            raise ValueError(
+                "[ERROR] Provisioning preflight failed — unsatisfied requirements:\n"
+                + "\n".join(all_failed)
+            )
+        info("[INFO] Provisioning preflight passed")
 
 
 # ===========================================================================
@@ -618,6 +630,8 @@ def action_deploy(
     ignore_errors: bool,
     health_after_phase: bool,
     update_cert_permission: bool,
+    rendered: Optional[dict[str, dict]] = None,
+    no_preflight: bool = False,
 ) -> int:
     """--deploy: run each phase in numeric order, in-process (S7.3 / S8.3).
 
@@ -661,6 +675,26 @@ def action_deploy(
         info("#" * 60)
         phase_failed = False
         started_in_phase: list[dict] = []
+
+        # Per-phase provisioning preflight: probe THIS phase's requires now that
+        # earlier phases are up (replaces the old once-up-front probe, which could
+        # never pass on a greenfield 'ciu up'). Skipped in dry-run (nothing is
+        # actually running to probe) and under --no-preflight.
+        if rendered is not None and not no_preflight and not dry_run:
+            try:
+                provisioning_preflight(
+                    repo_root, profile, entries, rendered,
+                    no_preflight=False, lint=False, probe=True,
+                )
+            except ValueError as exc:
+                error(str(exc))
+                had_failure = True
+                phase_failed = True
+                for e in entries:
+                    failed.append(e["path"])
+                if not ignore_errors:
+                    stop_remaining = True
+                continue
 
         for entry in entries:
             if phase_failed and not ignore_errors:
@@ -1454,6 +1488,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         provisioning_preflight(
             repo_root, profile, selection, rendered,
             no_preflight=getattr(args, 'no_preflight', False),
+            probe=False,  # static lint up-front; live probing runs per-phase in action_deploy
         )
         registry_preflight(profile.config)
         # Ensure the workspace network exists before compose (devcontainer no-op
@@ -1470,6 +1505,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         provisioning_preflight(
             repo_root, profile, selection, rendered,
             no_preflight=getattr(args, 'no_preflight', False),
+            probe=False,  # static lint up-front; live probing runs per-phase in action_deploy
         )
 
     for action in actions:
@@ -1507,6 +1543,8 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
                 ignore_errors=args.ignore_errors,
                 health_after_phase=health_after_phase,
                 update_cert_permission=args.update_cert_permission,
+                rendered=rendered,
+                no_preflight=getattr(args, 'no_preflight', False),
             )
         else:  # pragma: no cover — build_action_sequence only yields known names
             warn(f"unknown action: {action}")
