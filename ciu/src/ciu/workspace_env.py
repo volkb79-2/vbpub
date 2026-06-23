@@ -315,6 +315,35 @@ def _detect_physical_repo_root(repo_root: Path) -> Path:
     return repo_root.resolve()
 
 
+def _detect_host_mdt_tmp() -> str:
+    """Host path of the persisted /tmp bind mount (mdt devcontainer convention).
+
+    Sibling containers launched on the host Docker daemon (e.g. the test-runner) must bind the SAME
+    host dir the devcontainer mounts at /tmp, so /tmp-based git worktrees are visible to them.
+    Autodetected like PHYSICAL_REPO_ROOT: an explicit env override wins; otherwise inspect THIS
+    container's own /tmp bind-mount source. Empty when /tmp is not a host bind mount (e.g. native host).
+    """
+    explicit = os.environ.get("HOST_MDT_TMP")
+    if explicit:
+        return explicit
+    container = os.environ.get("DEVCONTAINER_NAME") or os.environ.get("HOSTNAME", "")
+    if container:
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", container, "--format",
+                 '{{ range .Mounts }}{{ if eq .Destination "/tmp" }}{{ .Source }}{{ end }}{{ end }}'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            src = result.stdout.strip()
+            if src:
+                return src
+        except FileNotFoundError:
+            pass
+    return ""
+
+
 def _compute_network_name(physical_root: Path) -> Dict[str, str]:
     repo_name = physical_root.name.lower()
     instance_id = hashlib.sha256(str(physical_root).encode("utf-8")).hexdigest()[:6]
@@ -540,6 +569,7 @@ def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Pat
     env_flags = _detect_env_type()
     docker_gid = _detect_docker_gid()
     physical_root = _detect_physical_repo_root(repo_root)
+    host_mdt_tmp = _detect_host_mdt_tmp()
     network_values = _compute_network_name(physical_root)
     public_values = _detect_public_fqdn(repo_root, require_fqdn=False)
 
@@ -605,6 +635,7 @@ def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Pat
         [
             ("REPO_ROOT", str(repo_root), "Repo root path inside the current environment"),
             ("PHYSICAL_REPO_ROOT", str(physical_root), "Host-visible repo root for Docker bind mounts"),
+            ("HOST_MDT_TMP", host_mdt_tmp, "Host path of the persisted /tmp bind mount, so sibling containers (e.g. the test-runner) can bind the same /tmp; empty on native host"),
         ],
     ))
     lines.append("")

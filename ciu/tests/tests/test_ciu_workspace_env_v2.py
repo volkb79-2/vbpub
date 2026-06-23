@@ -381,6 +381,37 @@ class TestGenerateCiuEnvNative:
         # Old retired var must not appear
         assert "CIU_HOST_PROFILE" not in content
 
+    def test_host_mdt_tmp_from_env_override(self, tmp_path, monkeypatch):
+        """HOST_MDT_TMP from the environment is emitted into ciu.env (Repository paths)."""
+        monkeypatch.setenv("ENV_TYPE", "native")
+        monkeypatch.setenv("HOST_MDT_TMP", "/host/home/mdt--mounted-folders/tmp")
+        monkeypatch.delenv("PUBLIC_FQDN", raising=False)
+        monkeypatch.delenv("PUBLIC_IP", raising=False)
+        self._stub_docker(monkeypatch)
+
+        with patch(_URLOPEN, side_effect=urllib.error.URLError("no network")):
+            out = generate_ciu_env(tmp_path)
+
+        content = out.read_text(encoding="utf-8")
+        assert 'export HOST_MDT_TMP="/host/home/mdt--mounted-folders/tmp"' in content
+
+    def test_host_mdt_tmp_empty_when_unavailable(self, tmp_path, monkeypatch):
+        """HOST_MDT_TMP key is always emitted but empty when /tmp is not a host bind mount."""
+        monkeypatch.setenv("ENV_TYPE", "native")
+        monkeypatch.delenv("HOST_MDT_TMP", raising=False)
+        # No container name -> _detect_host_mdt_tmp never shells out to docker -> "".
+        monkeypatch.delenv("DEVCONTAINER_NAME", raising=False)
+        monkeypatch.delenv("HOSTNAME", raising=False)
+        monkeypatch.delenv("PUBLIC_FQDN", raising=False)
+        monkeypatch.delenv("PUBLIC_IP", raising=False)
+        self._stub_docker(monkeypatch)
+
+        with patch(_URLOPEN, side_effect=urllib.error.URLError("no network")):
+            out = generate_ciu_env(tmp_path)
+
+        content = out.read_text(encoding="utf-8")
+        assert 'export HOST_MDT_TMP=""' in content
+
     def test_env_type_comment_lists_native(self, tmp_path, monkeypatch):
         """The comment for ENV_TYPE must list 'native' not 'bare-metal'."""
         monkeypatch.setenv("ENV_TYPE", "native")
