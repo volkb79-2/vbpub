@@ -34,6 +34,18 @@ ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 # ciu compose will inject the deployment-specific names via this env var.
 ENV PWMCP_MCP_ALLOWED_HOSTS="localhost:8931,127.0.0.1:8931"
 
+# Run-as-uid–agnostic cache/home. The image's default USER is 1000:1000 (home
+# /home/ubuntu, writable by 1000), but consumers commonly OVERRIDE `user:` to a
+# hardened uid (e.g. 10001 + cap_drop=ALL). For that uid the base image's home is
+# owned by 1000 mode 0750 → unwritable, and @playwright/mcp — which writes its
+# per-session browser profile under `XDG_CACHE_HOME || os.homedir()/.cache` —
+# fails to launch chromium with EACCES on ~/.cache/ms-playwright-mcp.
+# Pin HOME + the XDG cache base to world-writable /tmp (mode 1777) so the image
+# works under ANY run-as uid without the consumer needing a compose-level override.
+# (Same /tmp-as-writable-runtime pattern already used for supervisord above.)
+ENV HOME=/tmp \
+    XDG_CACHE_HOME=/tmp/.cache
+
 # Install playwright JS package (run-server needs it; base image ships only
 # browser binaries), @playwright/mcp (MCP HTTP/SSE server), and supervisord
 # (PID-1 process manager that reaps children and forwards SIGTERM).
