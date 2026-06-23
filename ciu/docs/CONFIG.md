@@ -56,6 +56,8 @@ generated."
 | `<stack>/.ciu/secrets/<name>` | Gitignored, generated | Materialized secret files, mode `0440` (S4.9) |
 | `<stack>/.ciu/rendered/<svc>/<cfg>` | Gitignored, generated | Rendered configfiles (S5) |
 | `**/.ciu/` | Gitignored | All CIU machine artifacts; never hand-edited [S1.6] |
+| `.ciu.hosts.toml` | **Gitignored, OPTIONAL** | Host inventory for `ciu ssh` / `--host`; never rendered or deleted by CIU (render-safe) [S14.3] |
+| `~/.ciu/hosts.toml` | Per-user, OPTIONAL | User-global host inventory (fallback to repo-local) [S14.3] |
 
 Ready-made ignore rules: copy [`.gitignored.ciu`](../.gitignored.ciu) into your
 project's `.gitignore`. The only compose-shaped file that stays **committed** is
@@ -142,6 +144,19 @@ Cross-stack metadata (PostgreSQL users, Redis ACLs) referenced by hooks and
 templates. Project-specific; no fixed spec ID — keep under `registry.*` to
 avoid the reserved namespace.
 
+Two sub-keys are read by CIU's provisioning probes (S13.2):
+
+```toml
+[registry.postgresql]
+database = "dstdns"        # application database for pg:schema/<name> probes
+
+[registry.consul]
+# Vault path template for consul:token/<svc> probes.
+# Default: consul/acl/tokens/{svc}   (e.g. consul:token/myapp → consul/acl/tokens/myapp)
+# Override if your provisioner stores tokens elsewhere:
+token_vault_path = "consul/{svc}/token"   # → consul/myapp/token
+```
+
 ---
 
 ## Stack Configuration Sections
@@ -150,6 +165,47 @@ avoid the reserved namespace.
 
 Exactly one non-reserved top-level key per stack config. Example root keys:
 `redis_core`, `db_core`, `vault_core`, `app_config`.
+
+#### `requires` and `provides` — provisioning dependencies [S13]
+
+A stack MAY declare typed-reference lists directly inside its root-key table
+(NOT inside a `[stack]` sub-table — that is not read by CIU):
+
+```toml
+[db_core]
+provides = [
+  "pg:db/dstdns",
+  "pg:role/controller",
+  "pg:schema/controller",       # NEW in 4.2 — schema in registry.postgresql.database
+  "minio:user/worker-io",
+  "vault:secret/db/postgres/controller_password",
+  "consul:token/controller",    # Vault path derived from registry.consul.token_vault_path
+]
+
+[authentik]
+requires = [
+  "pg:role/authentik",
+  "pg:schema/authentik",
+  "vault:secret/db/postgres/authentik_password",
+  "stack:db-init:healthy",      # one-shot exited-0 containers count as satisfied
+]
+```
+
+Both lists are **optional**. A stack that declares neither is unaffected.
+CIU runs a static lint (graph completeness, cycle detection) once up-front,
+and live-probes each phase's requirements just before that phase deploys.
+
+**Reference grammar** — valid forms:
+
+| Form | Example |
+|---|---|
+| `vault:secret/<path>` | `vault:secret/db/postgres/myapp_password` |
+| `pg:role/<name>` | `pg:role/myapp` |
+| `pg:db/<name>` | `pg:db/myapp` |
+| `pg:schema/<name>` | `pg:schema/myapp` |
+| `minio:user/<name>` | `minio:user/worker-io` |
+| `consul:token/<svc>` | `consul:token/myapp` |
+| `stack:<name>:healthy` | `stack:db-init:healthy` |
 
 ### `[<root>.env]` — stack-scoped env [S3.6]
 
@@ -249,3 +305,63 @@ Optional inline-table fields on any directive (except `ASK_FILE`):
 
 All numeric values (`CONTAINER_UID`, `DOCKER_GID`, etc.) are validated as
 integers with `is None` / `== ""` checks — `0` is a valid value [S2.5].
+
+---
+
+## Host Inventory File [S14.3]
+
+The SSH host inventory lives in a **render-safe** file that `ciu render` and
+`ciu clean` never generate, template, or delete. It is **gitignored** and holds
+only structural config (no inline key material). SSH key material is either a
+filesystem path or an `ASK_VAULT:` directive — never committed.
+
+**Lookup precedence** (first found wins):
+
+1. `$CIU_HOSTS_FILE` — explicit path override
+2. `<repo>/.ciu.hosts.toml` — repo-local, gitignored
+3. `~/.ciu/hosts.toml` — per-user, machine-global
+
+**TOML table form** — `[deploy.hosts.<name>]` (top-level `[hosts.<name>]` is
+also accepted):
+
+```toml
+[deploy.hosts.core1]
+ssh_host   = "core1.example.com"          # hostname / IP / Tailscale MagicDNS name
+ssh_user   = "deploy"                     # remote user (default: root)
+ssh_port   = 22                           # default 22
+ssh_key    = "ASK_VAULT:ssh/core1/key"   # Vault-resolved key; or a path for bootstrap
+known_host = "ssh-ed25519 AAAA…"         # PINNED host key — required for non-TOFU operation
+bundle_dir = "/opt/dstdns/current"        # remote path for bundle-sync (default /opt/ciu/current)
+
+# Optional higher-privilege subtable for `ciu ssh <host> --admin`
+[deploy.hosts.core1.admin]
+ssh_user = "root"
+ssh_key  = "ASK_VAULT:ssh/core1/admin_key"
+```
+
+**`known_host` format.** For the default port (22) use the bare hostname form
+(`hostname ssh-ed25519 AAAA…`). For non-default ports use the bracketed form:
+`[hostname]:port ssh-ed25519 AAAA…`. CIU constructs the temp known-hosts file
+accordingly so OpenSSH's strict host-key check passes.
+
+**`ssh_key` values:**
+
+| Value | When to use |
+|---|---|
+| `ASK_VAULT:<path>[#field]` | Steady state — key stored in Vault; resolved at connection time, written to a mode-`0600` temp file, cleaned up afterward |
+| `/path/to/key` | Bootstrap only — before Vault is running; file must exist and be mode `0400`-`0600` |
+
+**Security rules [S14.4]:**
+- A connection is **refused** when `known_host` is absent unless `CIU_SSH_INSECURE_TOFU=1`
+  is set. Use TOFU only to discover the key fingerprint on first contact, then pin it.
+- Key material is never logged. Only paths appear in logs.
+
+**Paramiko vs subprocess transport [S14.5]:**
+
+```bash
+pip install ciu[ssh]          # installs paramiko>=5.0
+CIU_SSH_TRANSPORT=paramiko    # opt into the paramiko transport
+# Default: subprocess ssh/rsync (zero Python deps; openssh-client required)
+```
+
+`import ciu` and all non-SSH verbs work with paramiko absent.

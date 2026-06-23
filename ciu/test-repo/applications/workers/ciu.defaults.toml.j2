@@ -10,6 +10,13 @@
 
 [workers]
 stack_name = "workers"
+# 4.2 requires: workers need vault + redis up; uses pg:schema as a new 4.2 kind
+requires = [
+    "stack:infra/vault:healthy",
+    "stack:infra/redis-core:healthy",
+    "pg:schema/public_ext",
+    "minio:user/appworker",
+]
 
 [workers.worker]
 name = "worker"

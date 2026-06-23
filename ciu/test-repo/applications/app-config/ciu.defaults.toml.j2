@@ -10,6 +10,16 @@
 
 [app_config]
 stack_name = "app-config"
+# 4.2 requires: consume everything the data-tier (infra/db-core) and vault provide
+requires = [
+    "stack:infra/vault:healthy",
+    "pg:db/dstdns_demo",
+    "pg:role/appuser",
+    "pg:schema/public_ext",
+    "vault:secret/demo/postgres_password",
+    "minio:user/appworker",
+    "consul:token/app-config",
+]
 
 [app_config.app]
 name = "app-config"

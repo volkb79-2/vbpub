@@ -11,6 +11,11 @@
 
 [vault_core]
 stack_name = "vault-core"
+# 4.2 provides: vault secrets and the stack health signal consumed by later phases
+provides = [
+    "vault:secret/demo/vault_root_token",
+    "stack:infra/vault:healthy",
+]
 
 # --- the Vault server service (S3.6 [<root>.<service>]) ---------------------
 [vault_core.server]

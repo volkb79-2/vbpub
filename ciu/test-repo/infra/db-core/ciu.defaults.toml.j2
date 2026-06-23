@@ -7,6 +7,19 @@
 
 [db_core]
 stack_name = "db-core"
+# 4.2 requires/provides: this stack needs Vault up first, then provisions all the
+# data-tier resources that application stacks consume.
+requires = [
+    "stack:infra/vault:healthy",
+]
+provides = [
+    "pg:role/appuser",
+    "pg:db/dstdns_demo",
+    "pg:schema/public_ext",
+    "vault:secret/demo/postgres_password",
+    "minio:user/appworker",
+    "consul:token/app-config",
+]
 
 [db_core.postgres]
 name = "postgres"

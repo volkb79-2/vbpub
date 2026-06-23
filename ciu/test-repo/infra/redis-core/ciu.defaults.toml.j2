@@ -7,6 +7,13 @@
 
 [redis_core]
 stack_name = "redis-core"
+# 4.2 requires/provides
+requires = [
+    "stack:infra/vault:healthy",
+]
+provides = [
+    "stack:infra/redis-core:healthy",
+]
 
 [redis_core.redis]
 name = "redis"

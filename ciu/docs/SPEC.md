@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Status** | Active |
-| **Version** | 4.0.0 |
-| **Date** | 2026-06-21 |
+| **Version** | 4.2.0 |
+| **Date** | 2026-06-23 |
 | **Supersedes** | docs/CONFIG.md + docs/CIU.md + docs/CIU-DEPLOY.md as normative sources (those become non-normative guides) |
 
 This document is the **single normative contract** for CIU v4. Where any other
@@ -13,9 +13,10 @@ specification wins.
 
 **Package versioning.** The `ciu` wheel is versioned with SemVer derived from git tags
 (`ciu-vX.Y.Z`; see `/docs/VERSIONING.md`). The wheel's **MAJOR tracks this SPEC's MAJOR** —
-a breaking change to this contract bumps both. ciu **MAJOR bumps to `4.0.0`** for this
+a breaking change to this contract bumps both. ciu **MAJOR bumped to `4.0.0`** for the
 breaking release (Seam 4: multi-profile env var rename + repeatable `--profile`),
-superseding the `3.x` line (last tag `ciu-v3.1.0`).
+superseding the `3.x` line (last tag `ciu-v3.1.0`). The current minor is
+**4.2.0** (adds provisioning graph S13 + SSH transport S14).
 Untagged commits build as `X.Y.Z.devN+g<sha>`.
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY**
@@ -717,7 +718,10 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   print that verb's **own** synopsis and options, never the legacy `ciu-deploy`
   argparse surface (which still exposes withdrawn flags such as
   `--deploy`/`--stop`). Help is verb-scoped (CIU-7). Verbs: `env`, `render`,
-  `profiles`, `up`, `down`, `clean`, `health`, `bake`, `dev` (S5a), `secrets`.
+  `profiles`, `up`, `down`, `clean`, `health`, `bake`, `dev` (S5a), `secrets`,
+  `check` (S13), `graph` (S13), `ssh` (S14). The global modifier `--host <name>`
+  (S14) is accepted on `up`, `down`, `health`, and `render`; `--thin` is reserved
+  on `up --host` (not yet implemented, exits 1 with a clear message).
   A sub-subcommand with its own parser (`env generate`) keeps its argparse help.
 
 ## S11 — Validation catalog (static, pre-execution)
@@ -736,6 +740,201 @@ S1.7 gitignore (incl. the auto-created override templates `ciu.toml.j2` /
 Generation parameters (`length`, `charset`), `transform`, additional secret
 providers (`ASK_SOPS`, `ASK_AWS`, ...), per-profile compose-file additions.
 Parsers reject unknown options today (S4.7).
+
+## S13 — Provisioning model (`requires` / `provides`)
+
+Stacks MAY declare dependency relationships declaratively so CIU can validate
+them before deploying. This feature is **opt-in and purely additive**: a stack
+that declares neither `requires` nor `provides` behaves exactly as before.
+
+### S13.1 — Declaration
+
+`requires` and `provides` are typed-reference lists declared **inside the
+stack's root-key table** (e.g. `[db_core]`, `[authentik]`) — NOT inside a
+`[stack]` table (which CIU does not read for this purpose). The deploy and check
+paths read `root_section.get("requires")` / `root_section.get("provides")` where
+`root_section` is the stack's single non-reserved top-level key.
+
+```toml
+# infra/db-core/ciu.defaults.toml.j2
+[db_core]
+provides = [
+  "pg:db/dstdns",
+  "pg:role/controller",
+  "pg:schema/controller",
+  "minio:user/worker-io",
+  "vault:secret/db/postgres/controller_password",
+]
+
+# infra/authentik/ciu.defaults.toml.j2
+[authentik]
+requires = [
+  "pg:role/authentik",
+  "vault:secret/db/postgres/authentik_password",
+  "stack:db-init:healthy",
+]
+```
+
+### S13.2 — Typed-reference grammar
+
+Each entry MUST match one of these forms (validated by `config_model._REF_RE`
+and `provisioning.parse_ref`):
+
+| Ref | Means | Live probe |
+|---|---|---|
+| `vault:secret/<path>` | KV-v2 secret exists at that path | Vault `read` |
+| `pg:role/<name>` | Postgres login role exists | `psql` → `pg_roles` (default `postgres` db) |
+| `pg:db/<name>` | Postgres database exists | `psql` → `pg_database` |
+| `pg:schema/<name>` | Schema exists in the **application** database | `psql -d <registry.postgresql.database>` → `information_schema.schemata` |
+| `minio:user/<name>` | MinIO service account exists | `mc admin user info local <name>` |
+| `consul:token/<svc>` | Consul ACL token exists in Vault | Vault read at `registry.consul.token_vault_path` (default `consul/acl/tokens/{svc}`; override via `[registry.consul] token_vault_path = "…"`) |
+| `stack:<name>:healthy` | Another container is up+healthy | `docker inspect .State` |
+
+**`pg:schema` note.** `information_schema.schemata` is per-database, not
+cluster-global. CIU therefore connects with `psql -d <db>` where `<db>` comes
+from `registry.postgresql.database`. The default-database probe used for
+`pg:role` and `pg:db` (the `postgres` db) would never see application schemas.
+
+**`consul:token` Vault path.** The path is config-driven. Default:
+`consul/acl/tokens/{svc}` (e.g. `consul:token/myapp` → `consul/acl/tokens/myapp`).
+Override in the global config:
+
+```toml
+[registry.consul]
+token_vault_path = "consul/{svc}/token"   # e.g. stores at consul/myapp/token
+```
+
+**`stack:<name>:healthy` one-shot support.** A container without a Docker
+healthcheck is satisfied when it is *running*. A one-shot container (e.g. a
+`db-init` / `controller_ddl` init-container) that has **exited 0** is also
+treated as satisfied — the probe reads `State.ExitCode == 0` as a clean
+completion. Only a non-zero exit code or a container not found is a failure.
+
+### S13.3 — Preflight model (lint-vs-probe split)
+
+Two independent checks run at different times:
+
+1. **Static lint** (`lint=True, probe=False`) — runs **once up-front** for
+   the full selection, before any phase starts. Checks: every `requires` entry
+   is provided by some stack in the selection; no dependency cycle among
+   `stack:<name>:healthy` references. This is a pure config check — no Docker
+   or Vault I/O. Exit 2 on failure.
+
+2. **Live probe** (`lint=False, probe=True`) — runs **per-phase**, immediately
+   before that phase deploys, after all earlier phases are already up. CIU
+   probes only the `requires` of stacks in the current phase. This means on a
+   greenfield `ciu up`, providers from phase 1 are running before phase 2's
+   requirements are probed — no `--no-preflight` needed.
+
+Both checks are skipped under `--dry-run` (nothing is running to probe) and
+under `--no-preflight` (break-glass flag). If the full run is `--no-preflight`,
+both checks are bypassed entirely.
+
+- **S13.4** `ciu check [--profile NAME] [--live]` — validates the graph
+  without deploying. Without `--live`: runs only the static lint. With `--live`:
+  additionally probes live state for each `requires` entry. Exit code: `0`
+  clean · `1` live probe failure · `2` graph lint error. Safe to run in CI
+  against a running stack.
+
+- **S13.5** `ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]`
+  — renders the requires/provides dependency graph to STDOUT (no deploy). Edges
+  go consumer → provider (the stack whose `provides` contains the ref). A
+  requirement that nobody provides is drawn dashed to an `UNPROVIDED` sentinel so
+  gaps are visually obvious. Diagnostics go to the logger (stderr); only the
+  graph itself goes to stdout so it can be piped directly into documentation.
+
+## S14 — Remote SSH transport (`ciu ssh` / `--host`)
+
+CIU provides an **optional SSH transport** for two complementary surfaces:
+an operator/agent **access plane** (`ciu ssh`) and a **push-deploy** mode
+(`ciu up/down/health/render --host`). The transport lives in the `ciu` package
+so every consuming repo gets it identically; each repo supplies only its own
+host inventory. SSH is a **bootstrap and repair** path; the pull-based
+convergence model (SPEC G/H) remains the steady-state loop.
+
+### S14.1 — `ciu ssh <host> [--admin] [-- <cmd...>]`
+
+Open an interactive shell or run a one-shot command on a remote host:
+
+```bash
+ciu ssh core1                          # interactive shell (allocates a PTY)
+ciu ssh core1 -- docker ps             # one-shot; output streamed; exit code propagated
+ciu ssh core1 -- ciu up --dir infra/redis-core
+```
+
+`--admin` merges the `[deploy.hosts.<name>.admin]` subtable (higher-privilege
+key/user) over the base host config before connecting.
+
+### S14.2 — `ciu up --host <name>` (push-deploy, render-on-target)
+
+Push-deploys a stack from the control host to a remote target using a
+**render-on-target** strategy:
+
+1. **Bundle-sync** — `rsync` the repo tree to the host's `bundle_dir`
+   (e.g. `/opt/<project>/current`).
+2. **Remote render + run** — over SSH: `cd <bundle_dir> && ciu env generate && ciu render && ciu up`.
+
+Secrets resolve **on the target**, so no resolved secret value ever transits the
+control host or the wire. The same verb accepts all normal selection flags after
+the host option:
+
+```bash
+ciu up   --host core1 --profile infra
+ciu up   --host core1 --dir infra/db-core
+ciu down --host core1 --profile apps
+ciu health --host core1
+ciu render --host core1
+```
+
+`--thin` is reserved for a future render-on-control/ship-rendered path and is
+**not yet implemented** — it exits 1 with a clear error message.
+
+### S14.3 — Host inventory
+
+Host inventory lives in a **render-safe file** — never touched by `ciu render`
+or `ciu clean`. Lookup precedence (first found wins):
+
+1. `$CIU_HOSTS_FILE` environment variable
+2. `<repo>/.ciu.hosts.toml` (gitignored)
+3. `~/.ciu/hosts.toml` (user-global)
+
+Table form `[deploy.hosts.<name>]` (top-level `[hosts.<name>]` is also
+accepted for the user-global file). Keys:
+
+| Key | Required | Description |
+|---|---|---|
+| `ssh_host` | Yes | Hostname, IP, or Tailscale MagicDNS name |
+| `ssh_user` | No | Remote user (default `root`) |
+| `ssh_port` | No | Port (default `22`) |
+| `ssh_key` | Yes | Filesystem path OR `ASK_VAULT:<path>[#field]` — never committed |
+| `known_host` | Yes* | Pinned host public key (e.g. `ssh-ed25519 AAAA…`) |
+| `bundle_dir` | No | Remote path for bundle-sync (default `/opt/ciu/current`) |
+
+`[deploy.hosts.<name>.admin]` subtable overrides `ssh_user` / `ssh_key` for the
+higher-privilege access plane (`ciu ssh <host> --admin`).
+
+### S14.4 — Security requirements
+
+- **S14.4a** Host-key pinning is **fail-closed**: a connection (including
+  `rsync`) is **refused** when no `known_host` is pinned, unless
+  `CIU_SSH_INSECURE_TOFU=1` is set in the environment. This flag is a
+  documented bootstrap-only escape hatch and MUST NOT be set in automation.
+- **S14.4b** Key material is never logged. CIU logs only key paths (never
+  key content or resolved secrets). Vault-resolved keys are written to a
+  mode-`0600` temp file and deleted in a `finally` block.
+- **S14.4c** For non-default ports, the `known_host` entry MUST use the
+  `[host]:port` form (e.g. `[core1.example.com]:2222 ssh-ed25519 AAAA…`),
+  matching OpenSSH's known-hosts format. CIU constructs this automatically when
+  writing the temp known-hosts file.
+
+### S14.5 — Packaging
+
+paramiko is an **optional dependency**: `pip install ciu[ssh]` (pulls
+`paramiko>=5.0` → `cryptography`). The default transport uses subprocess
+`ssh`/`rsync` (zero added Python dependencies; requires `openssh-client` on
+the host). `import ciu` works with paramiko absent — the subprocess transport
+is the fallback. Set `CIU_SSH_TRANSPORT=paramiko` to force paramiko when it is
+installed.
 
 ---
 
@@ -939,7 +1138,13 @@ hostdir inline options (`uid`/`gid`/`mode`/`seed`) + helper-container
 provisioning (S6.5), `ciu secrets` subcommands, exit-code contract,
 leak scan, native-host parity (S1.9), `--generate-env` as the single
 bootstrap (S2.8), unified `ciu.`-prefixed file naming (`ciu.global.*`,
-`ciu.compose.yml[.j2]`, `ciu.env`, `.ciu/ciu.compose.overlay.yml`), and
+`ciu.compose.yml[.j2]`, `ciu.env`, `.ciu/ciu.compose.overlay.yml`),
 dual shipping — `ciu.compose.yml` alongside an optional committed
-`docker-compose.yml` + `ciu --shipped` / per-service `shipped` (S8.5–S8.6).
+`docker-compose.yml` + `ciu --shipped` / per-service `shipped` (S8.5–S8.6),
+**4.2**: declarative `requires`/`provides` provisioning graph (S13) with
+`pg:schema/<name>` kind, configurable `consul:token` Vault path, one-shot
+`stack:<name>:healthy` support, per-phase live probing, `ciu check` / `ciu
+graph` verbs; and SSH remote transport (S14) — `ciu ssh`, `ciu up/down/health/render
+--host`, render-on-target push-deploy, fail-closed host-key pinning, optional
+`paramiko` extra (`pip install ciu[ssh]`).
 Migration recipes: docs/MIGRATION-V2.md.
