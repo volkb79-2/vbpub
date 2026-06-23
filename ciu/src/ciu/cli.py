@@ -29,6 +29,10 @@ Uses: ciu.global.toml + .env.ciu
     health [--profile NAME]              health gate check
     health --preflight [--strict]        probe images for missing healthcheck tools
 
+  PROVISIONING (requires/provides graph)
+    check [--profile NAME] [--live]      validate the dependency graph (no deploy)
+    graph [--format mermaid|dot|json]    render the dependency graph (no deploy)
+
   DEV-LOOP BUILDS
     bake [targets ...] [--no-cache]      docker buildx bake --load
 
@@ -141,6 +145,16 @@ ciu check [--profile NAME] [--live] [--define-root PATH]
   --profile NAME     host profile to check (default: active profile)
   --live             also probe live state (Vault/Postgres/MinIO/Consul/Docker)
   --define-root PATH override repo root (no parent walking)
+  --phases N,M       restrict to the given phase numbers
+""",
+    "graph": """\
+ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]
+  Render the requires/provides dependency graph to STDOUT (pipe it into docs).
+  Edges go consumer --ref--> provider; a require nobody provides is drawn dashed
+  to an UNPROVIDED sentinel.
+
+  --format FMT       mermaid (default), dot (Graphviz), or json
+  --profile NAME     host profile to graph (default: active profile)
   --phases N,M       restrict to the given phase numbers
 """,
 }
@@ -297,6 +311,10 @@ def main() -> None:
     elif verb == "check":
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--check"] + rest))
+
+    elif verb == "graph":
+        from .deploy import main as deploy_main
+        raise SystemExit(deploy_main(["--graph"] + rest))
 
     else:
         if verb == "-d" and rest:

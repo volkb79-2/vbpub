@@ -159,6 +159,80 @@ def lint_graph(
     return errors
 
 
+def render_graph(stacks: dict[str, dict], fmt: str = "mermaid") -> str:
+    """Render the requires/provides dependency graph for visualisation.
+
+    *stacks* is the same ``{path: {"requires": [...], "provides": [...]}}`` shape
+    used by :func:`lint_graph`. Edges go consumer --ref--> provider (the stack
+    whose ``provides`` contains that ref); a require nobody provides is drawn as a
+    dashed edge to an ``UNPROVIDED`` sentinel so gaps are obvious.
+
+    fmt: ``mermaid`` (default; pastes into Markdown/docs), ``dot`` (Graphviz), or
+    ``json`` (raw nodes+edges for external tooling).
+    """
+    # provider index: ref -> [stack_paths that provide it]
+    providers: dict[str, list[str]] = {}
+    for sp in sorted(stacks):
+        for ref in stacks[sp].get("provides", []):
+            providers.setdefault(ref, []).append(sp)
+
+    # group edges by (consumer, provider|None) -> [refs]; provider None = unprovided
+    grouped: dict[tuple[str, Optional[str]], list[str]] = {}
+    raw_edges: list[tuple[str, Optional[str], str]] = []
+    for sp in sorted(stacks):
+        for ref in stacks[sp].get("requires", []):
+            provs = providers.get(ref) or [None]
+            for p in provs:
+                grouped.setdefault((sp, p), []).append(ref)
+                raw_edges.append((sp, p, ref))
+
+    if fmt == "json":
+        import json
+        return json.dumps(
+            {
+                "stacks": {k: stacks[k] for k in sorted(stacks)},
+                "edges": [
+                    {"from": c, "to": p, "ref": r, "provided": p is not None}
+                    for c, p, r in raw_edges
+                ],
+            },
+            indent=2,
+        )
+
+    nodes = sorted(stacks)
+    nid = {n: f"n{i}" for i, n in enumerate(nodes)}
+    has_unprovided = any(p is None for (_, p) in grouped)
+
+    if fmt == "dot":
+        lines = ["digraph ciu_provisioning {", "  rankdir=LR;", "  node [shape=box];"]
+        for n in nodes:
+            lines.append(f'  "{n}";')
+        if has_unprovided:
+            lines.append('  "UNPROVIDED" [color=red, fontcolor=red, style=dashed];')
+        for (c, p), refs in grouped.items():
+            label = ", ".join(refs)
+            if p is None:
+                lines.append(f'  "{c}" -> "UNPROVIDED" [label="{label}", color=red, style=dashed];')
+            else:
+                lines.append(f'  "{c}" -> "{p}" [label="{label}"];')
+        lines.append("}")
+        return "\n".join(lines)
+
+    # default: mermaid flowchart
+    lines = ["flowchart LR"]
+    for n in nodes:
+        lines.append(f'  {nid[n]}["{n}"]')
+    if has_unprovided:
+        lines.append('  UNPROVIDED["⚠ UNPROVIDED"]')
+    for (c, p), refs in grouped.items():
+        label = "<br/>".join(refs)
+        if p is None:
+            lines.append(f'  {nid[c]} -.->|"{label}"| UNPROVIDED')
+        else:
+            lines.append(f'  {nid[c]} -->|"{label}"| {nid[p]}')
+    return "\n".join(lines)
+
+
 def probe_ref(
     ref: str,
     config: dict,          # merged global config (for vault addr/token)

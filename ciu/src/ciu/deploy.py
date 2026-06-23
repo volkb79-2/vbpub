@@ -988,6 +988,46 @@ def action_check(
     return 0
 
 
+def action_graph(
+    repo_root: Path,
+    profile: profiles_pkg.Profile,
+    selection: list[dict],
+    rendered: dict[str, dict],
+    *,
+    fmt: str = "mermaid",
+) -> int:
+    """--graph: render the requires/provides dependency graph (no deploy).
+
+    Writes Mermaid (default), Graphviz DOT, or JSON to STDOUT (so it can be piped
+    into docs); diagnostics go to the logger (stderr).
+    """
+    from . import provisioning as provisioning_pkg
+
+    stacks: dict[str, dict] = {}
+    for entry in selection:
+        rel = entry["path"]
+        if rel not in rendered:
+            continue
+        stack_cfg = rendered[rel]
+        try:
+            root_key = config_model.validate_stack_shape(stack_cfg)
+        except ValueError:
+            continue
+        root_section = stack_cfg.get(root_key, {})
+        requires = root_section.get("requires", [])
+        provides = root_section.get("provides", [])
+        if not (requires or provides):
+            continue
+        stacks[rel] = {"requires": requires, "provides": provides}
+
+    if not stacks:
+        info("No stacks with requires/provides — nothing to graph")
+        return 0
+
+    print(provisioning_pkg.render_graph(stacks, fmt=fmt))
+    return 0
+
+
 def _matching_containers(config: dict, *, all_states: bool = False) -> list[str]:
     """Return containers whose name matches ``^{project}-{env}-`` (S7.8).
 
@@ -1300,6 +1340,7 @@ def build_action_sequence(argv: list[str]) -> list[str]:
         "--healthcheck": "healthcheck",
         "--preflight": "preflight",
         "--check": "check",
+        "--graph": "graph",
         "--render-toml": "render_toml",
         "--list-phases": "list_phases",
         "--list-profiles": "list_profiles",
@@ -1339,6 +1380,8 @@ Examples:
                          help="Probe healthcheck tool availability in service images (ciu health --preflight)")
     actions.add_argument("--check", action="store_true",
                          help="Validate the requires/provides dependency graph (no deploy)")
+    actions.add_argument("--graph", action="store_true",
+                         help="Render the requires/provides dependency graph (no deploy)")
     actions.add_argument("--render-toml", dest="render_toml", action="store_true",
                          help="Render global + selected stack configs and stop (S8.3 step 3)")
     actions.add_argument("--list-phases", dest="list_phases", action="store_true",
@@ -1371,6 +1414,9 @@ Examples:
                          help="Skip provisioning preflight checks (break-glass)")
     control.add_argument("--live", action="store_true",
                          help="With --check: also probe live state (Vault/Postgres/MinIO/Consul/Docker)")
+    control.add_argument("--format", dest="graph_format", default="mermaid",
+                         choices=["mermaid", "dot", "json"],
+                         help="With --graph: output format (default: mermaid)")
     control.add_argument("--version", action="version", version=f"ciu-deploy {get_cli_version()}")
 
     return parser.parse_args(argv)
@@ -1534,6 +1580,13 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
                 repo_root, profile, selection, rendered,
                 live=getattr(args, 'live', False),
             )
+        elif action == "graph":
+            if rendered is None:
+                rendered = render_selected_stacks(repo_root, profile, selection)
+            ac = action_graph(
+                repo_root, profile, selection, rendered,
+                fmt=getattr(args, 'graph_format', 'mermaid'),
+            )
         elif action == "deploy":
             ac = action_deploy(
                 repo_root,
@@ -1568,6 +1621,7 @@ def _other_actions_requested(args: argparse.Namespace) -> bool:
             args.healthcheck,
             args.preflight,
             args.check,
+            args.graph,
             args.render_toml,
             args.list_phases,
             args.list_profiles,
