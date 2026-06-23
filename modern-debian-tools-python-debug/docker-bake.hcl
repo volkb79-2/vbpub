@@ -181,6 +181,9 @@ variable "BAT_VERSION" {
   default = "latest"
 }
 
+// Tool versions stay explicit even when defaulting to "latest" so the release
+// pipeline can override, record, and reproduce the exact staged artifact set.
+
 // Version pin for Consul; "latest" resolves at staging time for reproducibility control.
 variable "CONSUL_VERSION" {
   default = "latest"
@@ -266,7 +269,8 @@ variable "INSTALL_AIDER" {
   default = "true"
 }
 
-// CIU release tag resolved by the release resolver; used to inject the first-party wheel.
+// CIU release coordinates are explicit because the resolver stages a concrete wheel,
+// records its tag/asset/shasum, and the image metadata needs to point at the exact artifact.
 variable "CIU_WHEEL_TAG" {
   default = ""
 }
@@ -322,52 +326,62 @@ function "vsc_latest_tag" {
   result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:${debian}-py${python}-latest"
 }
 
-// Multi-Python variants: pythons_label is the full label, e.g. "py314-py311"
+// Tag helper: multi-Python labels keep the full encoded interpreter set in one string.
+// Example label: "py314-py311".
 function "vsc_multi_tag" {
   params = [debian, pythons_label]
   result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:${debian}-${pythons_label}-${BUILD_DATE}"
 }
 
+// Floating alias for the same multi-Python matrix entry.
 function "vsc_multi_latest_tag" {
   params = [debian, pythons_label]
   result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:${debian}-${pythons_label}-latest"
 }
 
+// Build helper: package manifest directories are grouped by package family.
 function "package_docs_dir" {
   params = [package_name]
   result = "${PACKAGE_MANIFEST_ROOT}/${package_name}"
 }
 
+// Relative path to the family README inside package-manifests-versioned/.
 function "package_docs_readme_relpath" {
   params = [package_name]
   result = "${package_docs_dir(package_name)}/README.md"
 }
 
+// Relative path to the immutable, versioned release manifest.
 function "package_manifest_relpath" {
   params = [package_name, debian, python]
   result = "${package_docs_dir(package_name)}/${debian}-py${python}-${BUILD_DATE}.md"
 }
 
+// GitHub blob URL for the family README.
 function "package_docs_readme_url" {
   params = [package_name]
   result = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/blob/main/modern-debian-tools-python-debug/${package_docs_readme_relpath(package_name)}"
 }
 
+// Stable landing page path for the family docs.
 function "package_latest_relpath" {
   params = [package_name]
   result = "${package_docs_dir(package_name)}/latest.md"
 }
 
+// Stable landing page URL for the family docs.
 function "package_latest_url" {
   params = [package_name]
   result = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/blob/main/modern-debian-tools-python-debug/${package_latest_relpath(package_name)}"
 }
 
+// GitHub blob URL for a versioned release manifest.
 function "package_manifest_url" {
   params = [package_name, debian, python]
   result = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/blob/main/modern-debian-tools-python-debug/${package_manifest_relpath(package_name, debian, python)}"
 }
 
+// Small metadata helper so OCI descriptions can point readers at the manifest.
 function "description_with_manifest_docs" {
   params = [description, package_name, debian, python]
   result = "${description} Docs: ${package_manifest_url(package_name, debian, python)}"
@@ -623,8 +637,8 @@ target "latest-vsc" {
 //   - modern-debian-tools-python-debug
 //   - modern-debian-tools-python-debug-vsc-devcontainer
 //
-// "all" stays equivalent to today's release set: only the VSC devcontainers.
-// Add "base" or "multi" explicitly when you also want the base package images.
+// "vsc" is the VSC devcontainer family. The publish matrix is group "all" below.
+// It intentionally stays limited to the VSC devcontainer targets.
 group "vsc" {
   targets = ["trixie-py311-vsc", "trixie-py314-vsc"]
 }
@@ -637,14 +651,14 @@ group "multi" {
   targets = ["trixie-py314-py311-vsc", "trixie-py314-py311-py39-vsc"]
 }
 
-// Keep the release set explicit so `docker buildx bake --print all` stays byte-for-byte
-// comparable with main while still documenting the `vsc` and `base` families above.
+// "all" is the publish matrix. `docker buildx bake all` and build-push.py use this.
 group "all" {
   targets = ["trixie-py311-vsc", "trixie-py314-vsc"]
 }
 
+// Exhaustive local superset: release matrix + base images + multi-Python variants.
 group "everything" {
-  targets = ["vsc", "base", "multi"]
+  targets = ["all", "base", "multi"]
 }
 
 group "detection" {

@@ -16,6 +16,11 @@ curl               # HTTP client / artifact downloads
 bind9-dnsutils     # dig / nslookup / host — DNS inspection (e.g. dstdns worker-io)
 fuse3              # userspace filesystem support (backs sshfs)
 gdb                # native / C debugger
+procps             # ps/top/vmstat/free - baseline process and memory diagnostics
+sysstat            # pidstat / iostat / sar / mpstat
+iotop              # per-process I/O and swap-wait visibility
+iproute2           # ss / ip / tc - network and routing inspection
+util-linux         # ionice / findmnt / lsblk
 git                # version control
 git-lfs            # git large file storage
 gnupg              # GPG — verify apt repo keys, sign artifacts

@@ -35,12 +35,12 @@ No description provided.
 - deepcode: `1.2.0`
 - openclaw: `2026.6.9`
 - antigravity: `1.0.10`
-- claude: `2.1.185`
-- codex: `0.141.0`
+- claude: `2.1.186`
+- codex: `0.142.0`
 
 ### Supporting Tool Versions
 
-- awscli: `2.35.9`
+- awscli: `2.35.11`
 - b2: `4.7.1`
 - bat: `0.26.1`
 - consul: `2.0.1`
@@ -54,8 +54,6 @@ No description provided.
 - vault: `2.0.3`
 - yq: `4.53.3`
 
-- GRPCURL_VER: `1.9.3`
-
 Generated from local pre-staging metadata to make release documentation auditable and reproducible.
 
 ## Runtime Version Snapshot (Pre-build Probe)
@@ -63,7 +61,7 @@ Generated from local pre-staging metadata to make release documentation auditabl
 ### First-Party Wheels
 
 - cmru: 1.1.1
-- CIU: 4.1.0
+- CIU: not-installed
 
 ### AI CLI Tools
 
@@ -71,13 +69,21 @@ Generated from local pre-staging metadata to make release documentation auditabl
 - reasonix: 0.53.2
 - deepcode: 1.2.0
 - openclaw: 2026.6.9
-- codex: 0.141.0
-- claude: 2.1.185
+- codex: 0.142.0
+- claude: 2.1.186
 - antigravity: 1.0.10
+
+### Container Inspection Tools
+
+- dtop: 0.7.7
+- lazydocker: 0.25.2
+- glances: 4.5.5
+- dive: 0.13.1
+- syft: 1.45.1
 
 ### Custom Tooling
 
-- awscli: 2.35.9
+- awscli: 2.35.11
 - b2: 4.7.1
 - bat: 0.26.1
 - consul: 2.0.1
@@ -133,29 +139,30 @@ Generated from local pre-staging metadata to make release documentation auditabl
     postgresql-client=17+278
     redis-tools=5:8.0.2-3+deb13u2
 
+## In-Image File
+
+- Devcontainer manifest: `/home/vscode/mdt-manifest.md`
+
 ## Rich Documentation Links
 
 - Family overview: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/README.md
 - This release page: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260622-5.md
 - Source tree: https://github.com/volkb79-2/vbpub/tree/main/modern-debian-tools-python-debug
 
-## In-Image File
-
-- Devcontainer manifest: `/home/vscode/devcontainer-manifest-trixie-py3.14-20260622-5.md`
-
 ## Notes
 
 This repository-hosted page exists because GHCR package descriptions render as flattened plain text.
 The image labels therefore point to GitHub-hosted Markdown for richer, package-specific release notes.
+The same manifest content is installed in-image at `/home/vscode/mdt-manifest.md`.
 
 ## Appendix: Artifact Sources and Digests
 
 Full sha256 digests for all staged artifacts. Use these to verify reproducibility.
 
-- codex 0.141.0 (tar.gz): sha256 `091c8a2e27370c41407fa1cb647fe905bd4fd70e4689c13effee0a2dce1b2b07`; source `https://github.com/openai/codex/releases/download/rust-v0.141.0/codex-package-x86_64-unknown-linux-musl.tar.gz`
-- codex-sha256sums 0.141.0 (checksum-file): sha256 `94062ac8bd49941fae39e6846a4fcb01b8a1ace2c588ccd5e5ffa8fb74013ab5`; source `https://github.com/openai/codex/releases/download/rust-v0.141.0/codex-package_SHA256SUMS`
-- claude 2.1.185 (binary): sha256 `e1246338699f04ee0e627dee3f6d4ed7a0bab48e0514bde69c6dad43bc303952`; source `https://downloads.claude.ai/claude-code-releases/2.1.185/linux-x64/claude`
-- claude-manifest 2.1.185 (manifest): sha256 `3dab78d3d9a713b19648610c6b45466cb9324a1c398e227cea59c38f91a262df`; source `https://downloads.claude.ai/claude-code-releases/2.1.185/manifest.json`
+- codex 0.142.0 (tar.gz): sha256 `dabb77f3f4b11c27a7c370b337c8f85e0aafa1d1559f5393f8a9a3024249e99d`; source `https://github.com/openai/codex/releases/download/rust-v0.142.0/codex-package-x86_64-unknown-linux-musl.tar.gz`
+- codex-sha256sums 0.142.0 (checksum-file): sha256 `a17f8d7598118785bdde82ef423e68d0d0b72862ccf2800a9258f59ee504fd53`; source `https://github.com/openai/codex/releases/download/rust-v0.142.0/codex-package_SHA256SUMS`
+- claude 2.1.186 (binary): sha256 `6a6d5d23486597c93138941c9b68caa0fbcd2dcedbf49e29a9c8d83e3a1cb329`; source `https://downloads.claude.ai/claude-code-releases/2.1.186/linux-x64/claude`
+- claude-manifest 2.1.186 (manifest): sha256 `5f9a7af799262258ad333fae0b7354d039ffc8a01c53f945963156e6e55c4e9c`; source `https://downloads.claude.ai/claude-code-releases/2.1.186/manifest.json`
 - antigravity 1.0.10 (tar.gz): sha256 `6547cf9a37227f26004fa4b805418b1df96f54c57b9723ca7d10864d2610bb0f`; source `https://storage.googleapis.com/antigravity-public/antigravity-cli/1.0.10-6349723456634880/linux-x64/cli_linux_x64.tar.gz`
 - antigravity-manifest 1.0.10 (manifest): sha256 `a330c3aa873a475949921301592f5ee967ea06e946698c40052455b2ac823f5c`; source `https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`
 - b2 4.7.1 (binary): sha256 `0f4720858f137cbbdb434f13edb5ad8bc5e99a0b83ba8b1f7143831dab937eea`; source `https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v4.7.1/b2-linux`
@@ -174,5 +181,5 @@ Full sha256 digests for all staged artifacts. Use these to verify reproducibilit
 - consul-sha256sums 2.0.1 (checksum-file): sha256 `a75b2cf4d621c98c44d4ffdde85b76e951fe988b7751daf60414d038c2072859`; source `https://releases.hashicorp.com/consul/2.0.1/consul_2.0.1_SHA256SUMS`
 - vault 2.0.3 (zip): sha256 `1e0ffb7a82491219c7242da6e05e2d756b05d1097c29799a42228661f229bc2a`; source `https://releases.hashicorp.com/vault/2.0.3/vault_2.0.3_linux_amd64.zip`
 - vault-sha256sums 2.0.3 (checksum-file): sha256 `c361d1f6e5ff1f92f0285680b054a3079898f37c134e7d6ac6f30a8ad7bfc5b3`; source `https://releases.hashicorp.com/vault/2.0.3/vault_2.0.3_SHA256SUMS`
-- awscli 2.35.9 (zip): sha256 `b331d4822a22612915f22f89cfd0e07895c7b6837999fca8fb9f6c2a370a54c0`; source `https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip`
+- awscli 2.35.11 (zip): sha256 `d4bbcb5532c8bf43f9149f1b1e0d09f77f388df088656e349570637c06b76d2d`; source `https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip`
 

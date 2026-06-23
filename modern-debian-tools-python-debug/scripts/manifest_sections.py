@@ -22,6 +22,14 @@ AI_CLI_TOOL_ORDER = [
     "antigravity",
 ]
 
+CONTAINER_INSPECTION_TOOL_ORDER = [
+    "dtop",
+    "lazydocker",
+    "glances",
+    "dive",
+    "syft",
+]
+
 CUSTOM_TOOL_ORDER = [
     "awscli",
     "b2",
@@ -110,7 +118,7 @@ def select_tooling(custom_tooling: Mapping[str, str], names: Sequence[str]) -> d
 
 
 def render_custom_tooling_lines(custom_tooling: Mapping[str, str]) -> list[str]:
-    excluded = set(FIRST_PARTY_WHEEL_ORDER) | set(AI_CLI_TOOL_ORDER)
+    excluded = set(FIRST_PARTY_WHEEL_ORDER) | set(AI_CLI_TOOL_ORDER) | set(CONTAINER_INSPECTION_TOOL_ORDER)
     filtered = {key: value for key, value in custom_tooling.items() if key not in excluded}
     items = ordered_tool_items(filtered, CUSTOM_TOOL_ORDER)
     if not items:
@@ -127,6 +135,16 @@ def render_first_party_wheel_lines(custom_tooling: Mapping[str, str]) -> list[st
 
 def render_ai_cli_tool_lines(custom_tooling: Mapping[str, str]) -> list[str]:
     items = ordered_tool_items(select_tooling(custom_tooling, AI_CLI_TOOL_ORDER), AI_CLI_TOOL_ORDER)
+    if not items:
+        return ["- unavailable"]
+    return [f"- {name}: {value}" for name, value in items]
+
+
+def render_container_inspection_tool_lines(custom_tooling: Mapping[str, str]) -> list[str]:
+    items = ordered_tool_items(
+        select_tooling(custom_tooling, CONTAINER_INSPECTION_TOOL_ORDER),
+        CONTAINER_INSPECTION_TOOL_ORDER,
+    )
     if not items:
         return ["- unavailable"]
     return [f"- {name}: {value}" for name, value in items]
@@ -155,6 +173,14 @@ def render_runtime_probe_sections(
         ]
     )
     lines.extend(render_ai_cli_tool_lines(custom_tooling))
+    lines.extend(
+        [
+            "",
+            "### Container Inspection Tools",
+            "",
+        ]
+    )
+    lines.extend(render_container_inspection_tool_lines(custom_tooling))
     lines.extend(
         [
             "",
@@ -227,6 +253,14 @@ def render_installed_manifest(
         ]
     )
     lines.extend(render_ai_cli_tool_lines(custom_tooling))
+    lines.extend(
+        [
+            "",
+            "## Container Inspection Tools",
+            "",
+        ]
+    )
+    lines.extend(render_container_inspection_tool_lines(custom_tooling))
     lines.extend(
         [
             "",
@@ -316,12 +350,13 @@ def render_unified_manifest(
     1. Release / Pull / Base  (from source or generated)
     2. First-Party Wheels     (live-inspected at image build time)
     3. AI CLI Tools           (live-inspected at image build time)
-    4. Custom Tooling         (live-inspected at image build time)
-    5. Python Packages        (pip freeze inside image)
-    6. System Packages        (dpkg-query inside image)
-    7. Runtime Version Snapshot (pre-build probe from source manifest)
-    8. Rich Documentation Links / Notes (from source manifest)
-    9. Appendix: Artifact Sources and Digests  (moved to end for readability)
+    4. Container Inspection Tools (live-inspected at image build time)
+    5. Custom Tooling         (live-inspected at image build time)
+    6. Python Packages        (pip freeze inside image)
+    7. System Packages        (dpkg-query inside image)
+    8. Runtime Version Snapshot (pre-build probe from source manifest)
+    9. Rich Documentation Links / Notes (from source manifest)
+    10. Appendix: Artifact Sources and Digests  (moved to end for readability)
     """
     tag = f"{debian_version}-py{python_version}-{image_version}"
     src = parse_source_manifest_sections(source_manifest_content) if source_manifest_content else {}

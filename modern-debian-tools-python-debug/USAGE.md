@@ -136,19 +136,23 @@ Counterexample (do NOT do this):
 
 ## Manifest
 
-Each image writes a manifest file at:
+The canonical user-facing manifest lives at:
 
 ```
-/usr/local/share/modern-debian-tools-python-debug/manifest.md
+/home/vscode/mdt-manifest.md
 ```
 
-Installed tooling/program/package inventory is written at:
+That is the same manifest content published on the repo-hosted release page.
+
+`/etc/os-release` includes a custom `IMAGE_MANIFEST=/home/vscode/mdt-manifest.md` entry so tooling can discover the file without a repo-specific path convention.
+
+An internal inventory snapshot is also written at:
 
 ```
 /usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md
 ```
 
-This includes tool versions, pip package list, and selected Debian package versions.
+That snapshot includes tool versions, pip package list, and selected Debian package versions.
 
 ## Persisting Agent State
 

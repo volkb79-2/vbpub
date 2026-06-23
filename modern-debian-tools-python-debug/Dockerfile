@@ -156,6 +156,7 @@ RUN set -euo pipefail; \
 
 # Modern tools installation from local pre-staged artifacts.
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     set -euo pipefail; \
     STAGE_DIR="/tmp/tool-artifacts-staging"; \
     DOWNLOADS_DIR="${STAGE_DIR}/downloads"; \
@@ -230,6 +231,49 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     require_file "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip"; \
     unzip -q "${DOWNLOADS_DIR}/awscli-${AWSCLI_VER}.zip" -d /tmp/awscli; \
     /tmp/awscli/aws/install -i /usr/local/aws -b /usr/local/bin; \
+    # Container inspection tools — installed from pre-staged + checksum-verified artifacts. \
+    # dtop: Rust target triple naming; x86_64 → x86_64-unknown-linux-gnu, arm64 → aarch64-unknown-linux-gnu. \
+    dtop_arch="$(uname -m)"; \
+    case "${dtop_arch}" in \
+        x86_64|amd64)   dtop_triple="x86_64-unknown-linux-gnu" ;; \
+        aarch64|arm64)  dtop_triple="aarch64-unknown-linux-gnu" ;; \
+        *)              echo "[ERROR] Unsupported arch for dtop: ${dtop_arch}" >&2; exit 1 ;; \
+    esac; \
+    require_file "${DOWNLOADS_DIR}/dtop-${DTOP_VER}-sha256.sum"; \
+    require_file "${DOWNLOADS_DIR}/dtop-${DTOP_VER}.tar.gz"; \
+    EXPECTED_DTOP_SHA256="$(grep "\*dtop-${dtop_triple}.tar.gz" "${DOWNLOADS_DIR}/dtop-${DTOP_VER}-sha256.sum" | awk '{print $1}')"; \
+    echo "${EXPECTED_DTOP_SHA256}  ${DOWNLOADS_DIR}/dtop-${DTOP_VER}.tar.gz" | sha256sum -c -; \
+    install_from_tar "${DOWNLOADS_DIR}/dtop-${DTOP_VER}.tar.gz" dtop /tmp/dtop-extract; \
+    # lazydocker: uses uname -m arch naming (x86_64 / arm64 / armv7 / armv6). \
+    lazydocker_arch="$(uname -m)"; \
+    case "${lazydocker_arch}" in \
+        x86_64|amd64)   lazydocker_arch="x86_64" ;; \
+        aarch64|arm64)  lazydocker_arch="arm64" ;; \
+        armv7l|armv7)   lazydocker_arch="armv7" ;; \
+        armv6l|armv6)   lazydocker_arch="armv6" ;; \
+    esac; \
+    require_file "${DOWNLOADS_DIR}/lazydocker-${LAZYDOCKER_VER}-checksums.txt"; \
+    require_file "${DOWNLOADS_DIR}/lazydocker-${LAZYDOCKER_VER}.tar.gz"; \
+    EXPECTED_LAZYDOCKER_SHA256="$(grep "lazydocker_${LAZYDOCKER_VER}_Linux_${lazydocker_arch}.tar.gz\$" "${DOWNLOADS_DIR}/lazydocker-${LAZYDOCKER_VER}-checksums.txt" | awk '{print $1}')"; \
+    echo "${EXPECTED_LAZYDOCKER_SHA256}  ${DOWNLOADS_DIR}/lazydocker-${LAZYDOCKER_VER}.tar.gz" | sha256sum -c -; \
+    install_from_tar "${DOWNLOADS_DIR}/lazydocker-${LAZYDOCKER_VER}.tar.gz" lazydocker /tmp/lazydocker-extract; \
+    # glances (PyPI): installed at build time with pinned version from tool-versions.env. \
+    # NOTE: glances is the single network exception — its transitive dep closure (psutil, \
+    # ujson, etc.) is platform+Python-specific; pre-staging all wheels is impractical. \
+    python3 -m pip install --no-cache-dir "glances==${GLANCES_VER}"; \
+    # dive: uses dpkg architecture naming (amd64 / arm64). \
+    dive_arch="$(dpkg --print-architecture)"; \
+    require_file "${DOWNLOADS_DIR}/dive-${DIVE_VER}-checksums.txt"; \
+    require_file "${DOWNLOADS_DIR}/dive_${DIVE_VER}_linux_${dive_arch}.deb"; \
+    (cd "${DOWNLOADS_DIR}" && grep "dive_${DIVE_VER}_linux_${dive_arch}.deb" "dive-${DIVE_VER}-checksums.txt" | sha256sum -c -); \
+    dpkg -i "${DOWNLOADS_DIR}/dive_${DIVE_VER}_linux_${dive_arch}.deb"; \
+    # syft: pre-staged tar.gz + checksum-verified; replaces insecure get.anchore.io | sh. \
+    syft_arch="$(dpkg --print-architecture)"; \
+    require_file "${DOWNLOADS_DIR}/syft-${SYFT_VER}-checksums.txt"; \
+    require_file "${DOWNLOADS_DIR}/syft-${SYFT_VER}.tar.gz"; \
+    EXPECTED_SYFT_SHA256="$(grep "syft_${SYFT_VER}_linux_${syft_arch}.tar.gz\$" "${DOWNLOADS_DIR}/syft-${SYFT_VER}-checksums.txt" | awk '{print $1}')"; \
+    echo "${EXPECTED_SYFT_SHA256}  ${DOWNLOADS_DIR}/syft-${SYFT_VER}.tar.gz" | sha256sum -c -; \
+    install_from_tar "${DOWNLOADS_DIR}/syft-${SYFT_VER}.tar.gz" syft /tmp/syft-extract; \
     python3 /tmp/install_ai_cli_tools.py root; \
     rm -rf \
         /tmp/codex-extract \
@@ -245,6 +289,9 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
         "/tmp/gh_${GH_VER}_linux_amd64" \
         /tmp/consul-extract \
         /tmp/vault-extract \
+        /tmp/dtop-extract \
+        /tmp/lazydocker-extract \
+        /tmp/syft-extract \
         /root/.cache \
         /tmp/awscli \
         /tmp/tool-artifacts-staging
@@ -366,12 +413,28 @@ EOF
 RUN set -euo pipefail; \
     chown -R vscode:vscode /home/vscode/.config/mc
 
-# Unified devcontainer manifest (release provenance + installed tool inventory).
+# Canonical user-facing manifest plus internal inventory snapshot.
 RUN set -euo pipefail; \
-    unified_manifest="/home/vscode/devcontainer-manifest-${DEBIAN_VERSION}-py${PYTHON_VERSION}-${OCI_VERSION}.md"; \
+    canonical_manifest="/home/vscode/mdt-manifest.md"; \
+    inventory_manifest="/usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md"; \
     source_manifest=""; \
     if [ -n "${PACKAGE_MANIFEST_SOURCE:-}" ] && [ -f "/tmp/${PACKAGE_MANIFEST_SOURCE}" ]; then \
         source_manifest="/tmp/${PACKAGE_MANIFEST_SOURCE}"; \
+    fi; \
+    mkdir -p /usr/local/share/modern-debian-tools-python-debug; \
+    if [ -n "${source_manifest}" ]; then \
+        install -m 0644 "${source_manifest}" "${canonical_manifest}"; \
+    else \
+        { \
+            echo "# Image Manifest"; \
+            echo ""; \
+            echo "Repository-hosted versioned manifest was not available during build."; \
+            echo ""; \
+            echo "- Image version: ${OCI_VERSION}"; \
+            echo "- Debian: ${DEBIAN_VERSION}"; \
+            echo "- Python: ${PYTHON_VERSION}"; \
+            echo "- Canonical manifest: ${canonical_manifest}"; \
+        } > "${canonical_manifest}"; \
     fi; \
     b2_version_output="$(b2 version 2>&1 | head -1 || true)"; \
     if [ -z "${b2_version_output}" ]; then \
@@ -422,6 +485,31 @@ RUN set -euo pipefail; \
         else \
             echo "antigravity=not-installed"; \
         fi; \
+        if command -v dtop >/dev/null 2>&1; then \
+            echo "dtop=$(dtop --version 2>&1 | head -1)"; \
+        else \
+            echo "dtop=not-installed"; \
+        fi; \
+        if command -v lazydocker >/dev/null 2>&1; then \
+            echo "lazydocker=$(lazydocker --version 2>&1 | head -1)"; \
+        else \
+            echo "lazydocker=not-installed"; \
+        fi; \
+        if command -v glances >/dev/null 2>&1; then \
+            echo "glances=$(glances --version 2>&1 | head -1)"; \
+        else \
+            echo "glances=not-installed"; \
+        fi; \
+        if command -v dive >/dev/null 2>&1; then \
+            echo "dive=$(dive --version 2>&1 | head -1)"; \
+        else \
+            echo "dive=not-installed"; \
+        fi; \
+        if command -v syft >/dev/null 2>&1; then \
+            echo "syft=$(syft --version 2>&1 | head -1)"; \
+        else \
+            echo "syft=not-installed"; \
+        fi; \
         echo "awscli=$(aws --version 2>&1)"; \
         echo "b2=${b2_version_output}"; \
         echo "bat=$(bat --version 2>&1 | head -1)"; \
@@ -455,7 +543,7 @@ RUN set -euo pipefail; \
         netcat-openbsd ncdu openssl python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim w3m wget xz-utils nodejs npm skopeo \
         postgresql-client redis-tools > "${system_packages_file}"; \
     python3 /tmp/manifest_sections.py unified \
-        --output "${unified_manifest}" \
+        --output "${inventory_manifest}" \
         --source-manifest "${source_manifest}" \
         --debian-version "${DEBIAN_VERSION}" \
         --python-version "${PYTHON_VERSION}" \
@@ -467,7 +555,8 @@ RUN set -euo pipefail; \
         --system-packages-file "${system_packages_file}"; \
     rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}"; \
     rm -f /tmp/manifest_sections.py; \
-    chown vscode:vscode "${unified_manifest}"; \
-    chmod 644 "${unified_manifest}"
+    chown vscode:vscode "${canonical_manifest}" "${inventory_manifest}"; \
+    chmod 644 "${canonical_manifest}" "${inventory_manifest}"; \
+    printf '\nIMAGE_MANIFEST=%s\nINVENTORY_MANIFEST=%s\n' "${canonical_manifest}" "${inventory_manifest}" >> /etc/os-release
 
 USER vscode

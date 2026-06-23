@@ -901,6 +901,200 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
         verification="downloaded",
     )
 
+    # lazydocker — terminal UI for Docker (jesseduffield/lazydocker).
+    # Asset: lazydocker_<ver>_Linux_<arch>.tar.gz + checksums.txt (space-space BSD format).
+    # Arch mapping mirrors the Dockerfile case statement: x86_64 → x86_64, aarch64 → arm64.
+    lazydocker_ver = resolved["LAZYDOCKER_VER"]
+    lazydocker_arch = "x86_64"  # staging always runs on the build host (amd64)
+    lazydocker_archive_name = f"lazydocker_{lazydocker_ver}_Linux_{lazydocker_arch}.tar.gz"
+    lazydocker_archive_path = DOWNLOADS_DIR / f"lazydocker-{lazydocker_ver}.tar.gz"
+    lazydocker_sums_path = DOWNLOADS_DIR / f"lazydocker-{lazydocker_ver}-checksums.txt"
+    lazydocker_base_url = f"https://github.com/jesseduffield/lazydocker/releases/download/v{lazydocker_ver}"
+    lazydocker_sums_url = f"{lazydocker_base_url}/checksums.txt"
+    lazydocker_archive_url = f"{lazydocker_base_url}/{lazydocker_archive_name}"
+    _download(lazydocker_sums_url, lazydocker_sums_path)
+    lazydocker_archive_final_url = _download(lazydocker_archive_url, lazydocker_archive_path)
+    lazydocker_expected_sha = _parse_hashicorp_sha256(lazydocker_sums_path, lazydocker_archive_name)
+    lazydocker_actual_sha = _sha256(lazydocker_archive_path)
+    if lazydocker_expected_sha != lazydocker_actual_sha:
+        raise StageError(
+            f"lazydocker checksum mismatch: expected {lazydocker_expected_sha}, "
+            f"got {lazydocker_actual_sha}"
+        )
+    if not _tar_contains_binary(lazydocker_archive_path, "lazydocker"):
+        raise StageError("Downloaded lazydocker archive does not contain lazydocker binary")
+    _record_artifact(
+        records,
+        tool="lazydocker",
+        version=lazydocker_ver,
+        source_url=lazydocker_archive_url,
+        final_url=lazydocker_archive_final_url,
+        path=lazydocker_archive_path,
+        kind="tar.gz",
+        verification="sha256 from checksums.txt + archive contains lazydocker",
+    )
+    _record_artifact(
+        records,
+        tool="lazydocker-checksums",
+        version=lazydocker_ver,
+        source_url=lazydocker_sums_url,
+        final_url=lazydocker_sums_url,
+        path=lazydocker_sums_path,
+        kind="checksum-file",
+        verification="downloaded",
+    )
+
+    # dive — Docker image layer explorer (wagoodman/dive).
+    # Asset: dive_<ver>_linux_<arch>.deb + dive_<ver>_checksums.txt (space-space format).
+    # Arch: dpkg --print-architecture style (amd64 / arm64) matches the deb filename directly.
+    dive_ver = resolved["DIVE_VER"]
+    dive_arch = "amd64"  # staging always runs on the build host (amd64)
+    dive_deb_name = f"dive_{dive_ver}_linux_{dive_arch}.deb"
+    dive_deb_path = DOWNLOADS_DIR / dive_deb_name
+    dive_sums_path = DOWNLOADS_DIR / f"dive-{dive_ver}-checksums.txt"
+    dive_base_url = f"https://github.com/wagoodman/dive/releases/download/v{dive_ver}"
+    dive_sums_url = f"{dive_base_url}/dive_{dive_ver}_checksums.txt"
+    dive_deb_url = f"{dive_base_url}/{dive_deb_name}"
+    _download(dive_sums_url, dive_sums_path)
+    dive_deb_final_url = _download(dive_deb_url, dive_deb_path)
+    dive_expected_sha = _parse_hashicorp_sha256(dive_sums_path, dive_deb_name)
+    dive_actual_sha = _sha256(dive_deb_path)
+    if dive_expected_sha != dive_actual_sha:
+        raise StageError(
+            f"dive checksum mismatch: expected {dive_expected_sha}, got {dive_actual_sha}"
+        )
+    _record_artifact(
+        records,
+        tool="dive",
+        version=dive_ver,
+        source_url=dive_deb_url,
+        final_url=dive_deb_final_url,
+        path=dive_deb_path,
+        kind="deb",
+        verification="sha256 from dive_<ver>_checksums.txt + dpkg deb",
+    )
+    _record_artifact(
+        records,
+        tool="dive-checksums",
+        version=dive_ver,
+        source_url=dive_sums_url,
+        final_url=dive_sums_url,
+        path=dive_sums_path,
+        kind="checksum-file",
+        verification="downloaded",
+    )
+
+    # syft — SBOM / software composition analysis (anchore/syft).
+    # Asset: syft_<ver>_linux_<arch>.tar.gz + syft_<ver>_checksums.txt (space-space format).
+    # Replaces the insecure `get.anchore.io | sh` pipe-to-shell installer.
+    syft_ver = resolved["SYFT_VER"]
+    syft_arch = "amd64"  # staging always runs on the build host (amd64)
+    syft_archive_name = f"syft_{syft_ver}_linux_{syft_arch}.tar.gz"
+    syft_archive_path = DOWNLOADS_DIR / f"syft-{syft_ver}.tar.gz"
+    syft_sums_path = DOWNLOADS_DIR / f"syft-{syft_ver}-checksums.txt"
+    syft_base_url = f"https://github.com/anchore/syft/releases/download/v{syft_ver}"
+    syft_sums_url = f"{syft_base_url}/syft_{syft_ver}_checksums.txt"
+    syft_archive_url = f"{syft_base_url}/{syft_archive_name}"
+    _download(syft_sums_url, syft_sums_path)
+    syft_archive_final_url = _download(syft_archive_url, syft_archive_path)
+    syft_expected_sha = _parse_hashicorp_sha256(syft_sums_path, syft_archive_name)
+    syft_actual_sha = _sha256(syft_archive_path)
+    if syft_expected_sha != syft_actual_sha:
+        raise StageError(
+            f"syft checksum mismatch: expected {syft_expected_sha}, got {syft_actual_sha}"
+        )
+    if not _tar_contains_binary(syft_archive_path, "syft"):
+        raise StageError("Downloaded syft archive does not contain syft binary")
+    _record_artifact(
+        records,
+        tool="syft",
+        version=syft_ver,
+        source_url=syft_archive_url,
+        final_url=syft_archive_final_url,
+        path=syft_archive_path,
+        kind="tar.gz",
+        verification="sha256 from syft_<ver>_checksums.txt + archive contains syft",
+    )
+    _record_artifact(
+        records,
+        tool="syft-checksums",
+        version=syft_ver,
+        source_url=syft_sums_url,
+        final_url=syft_sums_url,
+        path=syft_sums_path,
+        kind="checksum-file",
+        verification="downloaded",
+    )
+
+    # dtop — container metrics TUI (amir20/dtop).
+    # Asset: dtop-<rust-triple>.tar.gz + sha256.sum (space-asterisk BSD format, multi-file).
+    # Arch mapping: x86_64 → x86_64-unknown-linux-gnu, aarch64 → aarch64-unknown-linux-gnu.
+    # The sha256.sum file uses the `*filename` convention (leading asterisk); handled by
+    # _parse_hashicorp_sha256 which already strips the `*` prefix.
+    # Replaces the insecure `dtop-installer.sh | sh` pipe-to-shell installer.
+    dtop_ver = resolved["DTOP_VER"]
+    dtop_rust_triple = "x86_64-unknown-linux-gnu"  # staging always runs on the build host (amd64)
+    dtop_archive_name = f"dtop-{dtop_rust_triple}.tar.gz"
+    dtop_archive_path = DOWNLOADS_DIR / f"dtop-{dtop_ver}.tar.gz"
+    dtop_sums_path = DOWNLOADS_DIR / f"dtop-{dtop_ver}-sha256.sum"
+    dtop_base_url = f"https://github.com/amir20/dtop/releases/download/v{dtop_ver}"
+    dtop_sums_url = f"{dtop_base_url}/sha256.sum"
+    dtop_archive_url = f"{dtop_base_url}/{dtop_archive_name}"
+    _download(dtop_sums_url, dtop_sums_path)
+    dtop_archive_final_url = _download(dtop_archive_url, dtop_archive_path)
+    dtop_expected_sha = _parse_hashicorp_sha256(dtop_sums_path, dtop_archive_name)
+    dtop_actual_sha = _sha256(dtop_archive_path)
+    if dtop_expected_sha != dtop_actual_sha:
+        raise StageError(
+            f"dtop checksum mismatch: expected {dtop_expected_sha}, got {dtop_actual_sha}"
+        )
+    if not _tar_contains_binary(dtop_archive_path, "dtop"):
+        raise StageError("Downloaded dtop archive does not contain dtop binary")
+    _record_artifact(
+        records,
+        tool="dtop",
+        version=dtop_ver,
+        source_url=dtop_archive_url,
+        final_url=dtop_archive_final_url,
+        path=dtop_archive_path,
+        kind="tar.gz",
+        verification="sha256 from sha256.sum + archive contains dtop",
+    )
+    _record_artifact(
+        records,
+        tool="dtop-sha256sums",
+        version=dtop_ver,
+        source_url=dtop_sums_url,
+        final_url=dtop_sums_url,
+        path=dtop_sums_path,
+        kind="checksum-file",
+        verification="downloaded",
+    )
+
+    # glances — cross-platform system monitor (PyPI: glances).
+    # NOTE: glances is intentionally NOT pre-staged as a wheel set.
+    # Rationale: glances has a large transitive dependency closure (psutil, ujson, and many
+    # optional extras) whose exact wheel set is Python-version- and platform-specific.
+    # Pre-staging would require resolving and downloading 20+ wheels for the exact target
+    # Python/glibc combination, which the staging script (running on the host) cannot
+    # reliably do without a matching Python environment. The Dockerfile installs glances
+    # via `pip install --no-cache-dir glances==<ver>` at build time with the version pinned
+    # from tool-versions.env; the version is resolved + recorded here for provenance.
+    _record_artifact(
+        records,
+        tool="glances",
+        version=resolved["GLANCES_VER"],
+        source_url=f"https://pypi.org/pypi/glances/{resolved['GLANCES_VER']}/json",
+        final_url=f"https://pypi.org/pypi/glances/{resolved['GLANCES_VER']}/json",
+        path=DOWNLOADS_DIR / f"glances-{resolved['GLANCES_VER']}.pypi-marker",
+        kind="pypi-network",
+        verification="version pinned from PyPI; installed at build time with pip",
+    )
+    # Write a marker file so the metadata path field references a real file.
+    (DOWNLOADS_DIR / f"glances-{resolved['GLANCES_VER']}.pypi-marker").write_text(
+        f"glances=={resolved['GLANCES_VER']}\n", encoding="utf-8"
+    )
+
     aws_requested = resolved["AWSCLI_VER"]
     if aws_requested == "latest":
         aws_url = "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
@@ -960,6 +1154,11 @@ def _resolve_versions() -> dict[str, str]:
         "REASONIX_VER": _resolve_npm_version(os.getenv("REASONIX_VERSION"), "reasonix"),
         "DEEPCODE_VER": _resolve_pypi_version(os.getenv("DEEPCODE_VERSION"), "deepcode-hku"),
         "OPENCLAW_VER": _resolve_npm_version(os.getenv("OPENCLAW_VERSION"), "openclaw"),
+        "DTOP_VER": _resolve_version(os.getenv("DTOP_VERSION"), "amir20/dtop"),
+        "LAZYDOCKER_VER": _resolve_version(os.getenv("LAZYDOCKER_VERSION"), "jesseduffield/lazydocker"),
+        "GLANCES_VER": _resolve_pypi_version(os.getenv("GLANCES_VERSION"), "glances"),
+        "DIVE_VER": _resolve_version(os.getenv("DIVE_VERSION"), "wagoodman/dive"),
+        "SYFT_VER": _resolve_version(os.getenv("SYFT_VERSION"), "anchore/syft"),
         "B2_VER": _resolve_version(os.getenv("B2_VERSION"), "Backblaze/B2_Command_Line_Tool"),
         "BAT_VER": _resolve_version(os.getenv("BAT_VERSION"), "sharkdp/bat"),
         "FD_VER": _resolve_version(os.getenv("FD_VERSION"), "sharkdp/fd"),

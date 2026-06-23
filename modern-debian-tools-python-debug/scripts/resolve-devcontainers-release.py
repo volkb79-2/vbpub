@@ -1055,6 +1055,11 @@ def build_runtime_custom_tooling_map(
             if install_antigravity
             else "not-installed"
         ),
+        "dtop": str(resolved_versions.get("DTOP_VER") or "unknown"),
+        "lazydocker": str(resolved_versions.get("LAZYDOCKER_VER") or "unknown"),
+        "glances": str(resolved_versions.get("GLANCES_VER") or "unknown"),
+        "dive": str(resolved_versions.get("DIVE_VER") or "unknown"),
+        "syft": str(resolved_versions.get("SYFT_VER") or "unknown"),
         "awscli": str(resolved_versions.get("AWSCLI_VER") or "unknown"),
         "b2": str(resolved_versions.get("B2_VER") or "unknown"),
         "bat": str(resolved_versions.get("BAT_VER") or "unknown"),
@@ -1308,12 +1313,10 @@ def render_tool_artifact_lines(tool_metadata: dict | None) -> list[str]:
     if isinstance(resolved_versions, dict):
         ai_lines: list[str] = []
         support_lines: list[str] = []
-        emitted_keys: set[str] = set()
         for display_name, version_key in TOOL_VERSION_DISPLAY_ORDER:
             version_value = str(resolved_versions.get(version_key) or "").strip()
             if not version_value:
                 continue
-            emitted_keys.add(version_key)
             target_lines = ai_lines if display_name in AI_CLI_TOOL_NAMES else support_lines
             target_lines.append(f"- {display_name}: `{version_value}`")
 
@@ -1326,16 +1329,6 @@ def render_tool_artifact_lines(tool_metadata: dict | None) -> list[str]:
             lines.extend(["### Supporting Tool Versions", ""])
             lines.extend(support_lines)
             lines.append("")
-
-        for version_key in sorted(resolved_versions):
-            if version_key in emitted_keys:
-                continue
-            version_value = str(resolved_versions.get(version_key) or "").strip()
-            if not version_value:
-                continue
-            lines.append(f"- {version_key}: `{version_value}`")
-
-        lines.append("")
 
     lines.append(
         "Generated from local pre-staging metadata to make release documentation auditable and reproducible."
@@ -1469,20 +1462,21 @@ def render_manifest(
         lines.extend(runtime_probe_sections)
     lines.extend(
         [
+            "## In-Image File",
+            "",
+            f"- Devcontainer manifest: `/home/vscode/mdt-manifest.md`",
+            "",
             "## Rich Documentation Links",
             "",
             f"- Family overview: {package_readme_url}",
             f"- This release page: {release_manifest_url}",
             f"- Source tree: {source_url}",
             "",
-            "## In-Image File",
-            "",
-            f"- Devcontainer manifest: `/home/vscode/devcontainer-manifest-{tag}.md`",
-            "",
             "## Notes",
             "",
             "This repository-hosted page exists because GHCR package descriptions render as flattened plain text.",
             "The image labels therefore point to GitHub-hosted Markdown for richer, package-specific release notes.",
+            "The same manifest content is installed in-image at `/home/vscode/mdt-manifest.md`.",
             "",
         ]
     )

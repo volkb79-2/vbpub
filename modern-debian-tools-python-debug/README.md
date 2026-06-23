@@ -8,6 +8,8 @@ The purpose is to provide a curated, reproducible Debian + Python environment wi
 
 Rich GHCR-facing package docs live under [package-manifests-versioned](package-manifests-versioned/README.md). The release resolver regenerates those versioned Markdown pages on each build so OCI labels can point to repository-hosted Markdown instead of relying on flattened GHCR description text.
 
+The versioned release pages are copied into the image as `/home/vscode/mdt-manifest.md`, which is the canonical user-facing manifest path. `/etc/os-release` advertises that location via `IMAGE_MANIFEST=/home/vscode/mdt-manifest.md`.
+
 ## Image Families
 
 1. `modern-debian-tools-python-debug`
@@ -31,9 +33,37 @@ Examples:
 - `trixie-py3.14-latest`
 - `latest` (family-wide floating tag)
 
-Enabled build group target list is in [docker-bake.hcl](docker-bake.hcl) under `group "all"`.
+Enabled build group target list is in [docker-bake.hcl](docker-bake.hcl) under `group "all"`; `group "everything"` is the wider local superset.
 
 The docker images use date-based tags (`trixie-py3.14-20260616`, `20260616-2` for same-day rebuilds) plus floating `latest`. 
+
+## Bake Helpers and Build Groups
+
+`docker-bake.hcl` is the source of truth for what gets built.
+
+- `group "all"`: release/publish matrix used by `build-push.py` and by the release-doc generator.
+- `group "everything"`: local exhaustive superset (`all` + `base` + `multi`).
+- `group "detection"`: resolver-only latest-stable probe target.
+- A plain `docker buildx bake` resolves to the default group, which currently points at `everything`.
+
+Helper functions:
+
+- `base_tag` / `base_latest_tag`: base-family immutable and floating tags.
+- `vsc_tag` / `vsc_latest_tag`: single-Python VSC devcontainer tags.
+- `vsc_multi_tag` / `vsc_multi_latest_tag`: multi-Python VSC devcontainer tags.
+- `package_manifest_relpath` / `package_manifest_url`: versioned release-page path and URL.
+- `package_docs_readme_relpath` / `package_docs_readme_url`: family index path and URL.
+- `package_latest_relpath` / `package_latest_url`: stable landing-page path and URL.
+- `description_with_manifest_docs`: OCI description helper that appends the release-page URL.
+
+If you add or remove a Python variant, update the matching target block and its tag/helper docs together. The build matrix is explicit; it is not inferred from filenames.
+
+## Canonical Manifest
+
+The user-facing manifest is copied into the image at `/home/vscode/mdt-manifest.md`.
+`/etc/os-release` gets a custom `IMAGE_MANIFEST=/home/vscode/mdt-manifest.md` entry so scripts can discover it without hardcoding a second path.
+
+The repository-hosted versioned manifest is intended to match that in-image file.
 
 ## Multi-Python Devcontainer Variants
 
@@ -84,6 +114,15 @@ Optional (controlled by `INSTALL_*` build args, all enabled by default):
 - `reasonix`, `openclaw` — npm-based, installed separately from the venv and backed by the image's `nodejs` / `npm`
 - `deepcode` — pip-based (`deepcode-hku`), installed separately from the venv
 - `codex`, `claude-code`, `antigravity` — installed separately from the venv
+
+Container inspection tools are also installed in-image:
+- `dtop` - live per-container CPU, memory, I/O, and network drilldown
+- `lazydocker` - Docker/Compose TUI for lifecycle, logs, exec, and stats
+- `glances` - broader host resource view with Docker awareness
+- `dive` - image-layer inspection
+- `syft` - SBOM generation and image/package inventory analysis
+
+Both image families create the `vscode` user if the base image does not already provide it, so consumer repos can use the same `remoteUser: "vscode"` setting for either family.
 
 ### Lean Venv Packages (Secondary Pythons)
 
@@ -214,9 +253,10 @@ Policy:
 `latest-vsc` uses resolver-exported live values (`DEVCONTAINERS_BASE_DYNAMIC_LATEST`, Python, Debian) so it automatically follows current upstream stable availability.
 
 Target policy:
-- `group "all"` includes both pinned targets and `latest-vsc`.
+- `group "all"` includes the released VSC targets only.
+- `group "everything"` adds `all`, `base`, and `multi` for an exhaustive local build.
 - `group "detection"` keeps a focused entrypoint for resolver-driven validation-only runs.
-- This allows one default build invocation to publish the pinned baseline plus one dynamic-latest candidate.
+- `latest-stable` is the floating alias for the resolver-selected stable devcontainer image.
 
 Example build of the dynamic latest target:
 
@@ -408,6 +448,7 @@ Secondary manifest variants: 10 (https://raw.githubusercontent.com/devcontainers
 
 - Upstream devcontainers images: https://github.com/devcontainers/images
 - Python manifest: https://raw.githubusercontent.com/devcontainers/images/main/src/python/manifest.json
+- Awesome Tools List for Docker ecosystem: https://github.com/veggiemonk/awesome-docker/blob/master/README.md
 
 ### Critical freshness behavior
 
