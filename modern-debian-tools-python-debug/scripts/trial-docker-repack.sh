@@ -1,79 +1,69 @@
 #!/usr/bin/env bash
-# TRIAL SCRIPT — docker-repack size comparison.
-# Source: https://github.com/orf/docker-repack
+# TRIAL SCRIPT — docker-repack size comparison for a LOCAL image.
+# Source: https://github.com/orf/docker-repack   (CLI verified against v0.5.0)
 #
-# PURPOSE: Given a built mdt image tag, repacks it with docker-repack and prints
-# a before/after size comparison. This is a TRIAL — it is NOT wired into the
-# release flow. Evaluate the % reduction before adopting.
+# PURPOSE: measure how much docker-repack shrinks a built image's COMPRESSED
+# (push/pull) size by re-layering + recompressing (zstd). This is a TRIAL — it is
+# NOT wired into the release flow. Evaluate the % reduction before adopting.
 #
-# CRITICAL NOTE: docker-repack produces a NEW image with a different layer hash.
+# WHY skopeo: docker-repack reads a registry ref or an `oci://` layout — it does
+# NOT read the local docker daemon. So we export the local image to an OCI layout
+# with skopeo first (no registry/auth needed), then repack that.
+#
+# CRITICAL NOTE: docker-repack produces a NEW image with different layer hashes.
 # If adopted into the release flow, repack MUST run BEFORE manifest/sha256
-# generation + signing — the repacked image will have a different digest than the
-# one built by `docker buildx bake --load`. Plan accordingly.
+# generation + signing — the repacked image has a different digest than the one
+# built by `docker buildx bake --load`. Plan accordingly.
 #
 # Usage:
-#   ./scripts/trial-docker-repack.sh <source-tag> [<repacked-tag>]
-#
+#   ./scripts/trial-docker-repack.sh <local-image-tag> [target-layer-size]
 # Examples:
-#   ./scripts/trial-docker-repack.sh ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.14-20260623
-#   ./scripts/trial-docker-repack.sh ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.14-20260623 my-repo/mdt:trixie-py3.14-20260623-repacked
+#   ./scripts/trial-docker-repack.sh ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:latest
+#   ./scripts/trial-docker-repack.sh my/image:tag 500MB
 #
-# Prerequisites: docker-repack installed (see https://github.com/orf/docker-repack).
-#   pip install docker-repack   # or: cargo install docker-repack
+# Prerequisites:
+#   - skopeo            (apt-get install -y skopeo)
+#   - docker-repack     (https://github.com/orf/docker-repack/releases — prebuilt binary;
+#                        there is NO pypi package despite older notes. e.g.:
+#                          curl -fsSL -o /tmp/dr.tgz \
+#                            https://github.com/orf/docker-repack/releases/download/v0.5.0/docker-repack-Linux-x86_64.tar.gz
+#                          tar -C /usr/local/bin -xzf /tmp/dr.tgz docker-repack)
 
 set -euo pipefail
 
-SOURCE_TAG="${1:-}"
-REPACKED_TAG="${2:-}"
+SRC_TAG="${1:-}"
+TARGET_SIZE="${2:-500MB}"
 
-if [ -z "${SOURCE_TAG}" ]; then
-    echo "[ERROR] Usage: $0 <source-tag> [<repacked-tag>]" >&2
+if [ -z "${SRC_TAG}" ]; then
+    echo "[ERROR] Usage: $0 <local-image-tag> [target-layer-size]" >&2
     exit 1
 fi
+for bin in skopeo docker-repack; do
+    command -v "$bin" >/dev/null 2>&1 || { echo "[ERROR] '$bin' not found — see prerequisites in this script's header." >&2; exit 1; }
+done
 
-if [ -z "${REPACKED_TAG}" ]; then
-    REPACKED_TAG="${SOURCE_TAG}-repacked"
-fi
+DAEMON_SIZE="$(docker image inspect "${SRC_TAG}" --format '{{.Size}}' 2>/dev/null || true)"
+[ -n "${DAEMON_SIZE}" ] || { echo "[ERROR] Image '${SRC_TAG}' not in the local daemon. Build/pull it first." >&2; exit 1; }
+echo "[INFO] Source image: ${SRC_TAG}"
+echo "[INFO] Daemon (uncompressed) size: $(( DAEMON_SIZE / 1024 / 1024 )) MiB"
 
-# Verify docker-repack is available.
-if ! command -v docker-repack >/dev/null 2>&1; then
-    echo "[ERROR] docker-repack not found. Install it first:" >&2
-    echo "  pip install docker-repack" >&2
-    echo "  # or: cargo install docker-repack" >&2
-    exit 1
-fi
+WORK="$(mktemp -d)"; SRC_OCI="${WORK}/src-oci"; OUT_OCI="${WORK}/repacked"
+trap 'rm -rf "${WORK}"' EXIT
 
-echo "[INFO] Source image:   ${SOURCE_TAG}"
-echo "[INFO] Repacked image: ${REPACKED_TAG}"
+echo "[INFO] [1/2] skopeo export local image -> OCI layout ..."
+skopeo copy --quiet "docker-daemon:${SRC_TAG}" "oci:${SRC_OCI}:latest"
+SRC_B="$(du -sb "${SRC_OCI}" | awk '{print $1}')"
+echo "[INFO]       source OCI (compressed): $(( SRC_B / 1024 / 1024 )) MiB"
+
+echo "[INFO] [2/2] docker-repack (--target-size ${TARGET_SIZE}) ..."
+# NOTE: pass the OCI dir WITHOUT a ':tag' suffix — the tag lives in the layout's index.json.
+docker-repack --target-size "${TARGET_SIZE}" "oci://${SRC_OCI}" "oci://${OUT_OCI}"
+DST_B="$(du -sb "${OUT_OCI}" | awk '{print $1}')"
+echo "[INFO]       repacked OCI (compressed): $(( DST_B / 1024 / 1024 )) MiB"
+
 echo ""
-
-# Before: size of the source image (bytes).
-SIZE_BEFORE="$(docker image inspect "${SOURCE_TAG}" --format '{{.Size}}' 2>/dev/null || true)"
-if [ -z "${SIZE_BEFORE}" ]; then
-    echo "[ERROR] Could not inspect source image '${SOURCE_TAG}'. Is it built locally?" >&2
-    exit 1
-fi
-
-echo "[INFO] Size before repack: ${SIZE_BEFORE} bytes ($(( SIZE_BEFORE / 1024 / 1024 )) MiB)"
-
-# Run docker-repack.
-echo "[INFO] Running docker-repack ..."
-docker-repack "${SOURCE_TAG}" --tag "${REPACKED_TAG}"
-
-# After: size of the repacked image (bytes).
-SIZE_AFTER="$(docker image inspect "${REPACKED_TAG}" --format '{{.Size}}' 2>/dev/null || true)"
-if [ -z "${SIZE_AFTER}" ]; then
-    echo "[ERROR] Could not inspect repacked image '${REPACKED_TAG}'." >&2
-    exit 1
-fi
-
-echo "[INFO] Size after repack:  ${SIZE_AFTER} bytes ($(( SIZE_AFTER / 1024 / 1024 )) MiB)"
-
-# Compute % reduction using awk (avoids bash integer division precision issues).
-REDUCTION="$(awk "BEGIN { printf \"%.1f\", (1 - ${SIZE_AFTER} / ${SIZE_BEFORE}) * 100 }")"
+awk "BEGIN { printf \"[RESULT] %s\\n  compressed: %d MiB -> %d MiB  (reduction %.1f%%)\\n\", \
+  \"${SRC_TAG}\", ${SRC_B}/1024/1024, ${DST_B}/1024/1024, (1 - ${DST_B}/${SRC_B}) * 100 }"
 echo ""
-echo "[RESULT] Before: $(( SIZE_BEFORE / 1024 / 1024 )) MiB  |  After: $(( SIZE_AFTER / 1024 / 1024 )) MiB  |  Reduction: ${REDUCTION}%"
-echo ""
-echo "[NOTE] The repacked image '${REPACKED_TAG}' has a DIFFERENT layer hash than '${SOURCE_TAG}'."
-echo "[NOTE] If docker-repack is adopted into the release flow, it must run BEFORE"
-echo "[NOTE] manifest/sha256 generation and minisign signing, not after."
+echo "[NOTE] The repacked image has DIFFERENT layer hashes than the source. If docker-repack is"
+echo "[NOTE] adopted into the release flow, it must run BEFORE manifest/sha256 + minisign signing."
