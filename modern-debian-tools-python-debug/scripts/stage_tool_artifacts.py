@@ -1080,24 +1080,25 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     # reliably do without a matching Python environment. The Dockerfile installs glances
     # via `pip install --no-cache-dir glances==<ver>` at build time with the version pinned
     # from tool-versions.env; the version is resolved + recorded here for provenance.
+    # Write a marker file so the metadata path field references a real file.
+    glances_marker_path = DOWNLOADS_DIR / f"glances-{resolved['GLANCES_VER']}.pypi-marker"
+    glances_marker_path.write_text(
+        f"glances=={resolved['GLANCES_VER']}\n", encoding="utf-8"
+    )
     _record_artifact(
         records,
         tool="glances",
         version=resolved["GLANCES_VER"],
         source_url=f"https://pypi.org/pypi/glances/{resolved['GLANCES_VER']}/json",
         final_url=f"https://pypi.org/pypi/glances/{resolved['GLANCES_VER']}/json",
-        path=DOWNLOADS_DIR / f"glances-{resolved['GLANCES_VER']}.pypi-marker",
+        path=glances_marker_path,
         kind="pypi-network",
         verification="version pinned from PyPI; installed at build time with pip",
-    )
-    # Write a marker file so the metadata path field references a real file.
-    (DOWNLOADS_DIR / f"glances-{resolved['GLANCES_VER']}.pypi-marker").write_text(
-        f"glances=={resolved['GLANCES_VER']}\n", encoding="utf-8"
     )
 
     # hadolint — Dockerfile linter (hadolint/hadolint).
     # Asset: hadolint-Linux-x86_64 (static binary, no archive) + hadolint-Linux-x86_64.sha256.
-    # The .sha256 file contains a single line: "<hex>  hadolint-Linux-x86_64".
+    # The .sha256 file refers to the asset as "hadolint-linux-x86_64" (lowercase).
     # No version number in the asset filename (the release tag is the version anchor).
     # Arch mapping: x86_64 → Linux-x86_64, aarch64 → Linux-arm64.
     hadolint_ver = resolved["HADOLINT_VER"]
@@ -1112,7 +1113,7 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     hadolint_bin_final_url = _download(hadolint_bin_url, hadolint_bin_path)
     # The .sha256 file format is "<hex>  hadolint-Linux-x86_64" — extract hash and reform
     # the check against our locally saved (renamed) path.
-    hadolint_expected_sha = _parse_hashicorp_sha256(hadolint_sha256_path, hadolint_bin_name)
+    hadolint_expected_sha = _parse_hashicorp_sha256(hadolint_sha256_path, "hadolint-linux-x86_64")
     hadolint_actual_sha = _sha256(hadolint_bin_path)
     if hadolint_expected_sha != hadolint_actual_sha:
         raise StageError(

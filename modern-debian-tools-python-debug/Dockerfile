@@ -280,7 +280,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     # Extract the hash and reform the check against the renamed local path. \
     require_file "${DOWNLOADS_DIR}/hadolint-${HADOLINT_VER}.sha256"; \
     require_file "${DOWNLOADS_DIR}/hadolint-${HADOLINT_VER}"; \
-    EXPECTED_HADOLINT_SHA256="$(grep "hadolint-Linux-x86_64" "${DOWNLOADS_DIR}/hadolint-${HADOLINT_VER}.sha256" | awk '{print $1}')"; \
+    EXPECTED_HADOLINT_SHA256="$(grep "hadolint-linux-x86_64" "${DOWNLOADS_DIR}/hadolint-${HADOLINT_VER}.sha256" | awk '{print $1}')"; \
     echo "${EXPECTED_HADOLINT_SHA256}  ${DOWNLOADS_DIR}/hadolint-${HADOLINT_VER}" | sha256sum -c -; \
     install -m 755 "${DOWNLOADS_DIR}/hadolint-${HADOLINT_VER}" /usr/local/bin/hadolint; \
     hadolint --version; \
