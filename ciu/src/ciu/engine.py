@@ -110,14 +110,20 @@ def check_runtime_dependencies() -> None:
         )
 
     try:
-        result = procutil.run_cmd(["docker", "--version"], timeout=5, check=False)
+        # timeout 30s (not 5s): on slow/contended storage the docker CLI can be
+        # slow to cold-load; a tight timeout produces false "missing dependency"
+        # failures. Set SKIP_DEPENDENCY_CHECK=1 to bypass entirely.
+        result = procutil.run_cmd(["docker", "--version"], timeout=30, check=False)
         if result.returncode != 0:
             missing_deps.append(("docker", "Docker Engine", "https://docs.docker.com/engine/install/"))
     except (FileNotFoundError, subprocess.TimeoutExpired):
         missing_deps.append(("docker", "Docker Engine", "https://docs.docker.com/engine/install/"))
 
     try:
-        result = procutil.run_cmd(["docker", "compose", "version"], timeout=5, check=False)
+        # timeout 30s (not 5s): the compose v2 plugin is a ~60MB binary; on slow
+        # storage a cold load under I/O contention can exceed a tight timeout and
+        # be misreported as missing. SKIP_DEPENDENCY_CHECK=1 bypasses this.
+        result = procutil.run_cmd(["docker", "compose", "version"], timeout=30, check=False)
         if result.returncode != 0:
             missing_deps.append(("docker compose", "Docker Compose v2", "https://docs.docker.com/compose/install/"))
     except (FileNotFoundError, subprocess.TimeoutExpired):
