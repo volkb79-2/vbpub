@@ -91,9 +91,11 @@ def cmd_wheel_build(args: argparse.Namespace) -> None:
         for stale in dist.glob("*.whl"):
             stale.unlink()
     print(f"[INFO] cmru built-in: building wheel in {cwd}")
+    # Run the module from the parent directory so a project-local `build/`
+    # folder does not shadow the `pypa/build` package.
     subprocess.run(
-        [sys.executable, "-m", "build", "--wheel", "--outdir", "dist"],
-        cwd=str(cwd), check=True,
+        [sys.executable, "-m", "build", "--wheel", "--outdir", str(dist), str(cwd)],
+        cwd=str(cwd.parent), check=True,
     )
 
 
