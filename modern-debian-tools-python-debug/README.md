@@ -460,3 +460,27 @@ The default `AIDER_VERSION=main` installs aider-chat from upstream git `main` br
 because the latest PyPI release (0.86.2) pins `Python <3.13`. PR
 [Aider-AI/aider#4899](https://github.com/Aider-AI/aider/pull/4899) added 3.13/3.14 support
 but no release has been cut yet. See `USAGE.md` for details on switching modes.
+
+## Notes
+
+### docker buildx/bake (BuildKit)
+
+docker buildx/bake (BuildKit) defaults to compression=gzip at the gzip library default (~level 6).
+
+Cheaper alternative if you only want the gzip→zstd win without re-layering: build mdt with `docker buildx build --output type=image,compression=zstd,compression-level=14,force-compression=true ....` That re-compresses every layer to zstd-14 in the build itself — no separate repack tool, no slow-disk merge phase.
+
+
+### `docker-repack`
+
+Does optimal --target-size differ per image? Yes.  controls how the deduped content is sliced into layers: smaller target-size = more, smaller layers = better parallel-download/cache granularity but more per-layer compression-dictionary overhead; larger = fewer fat layers = slightly better ratio but coarser caching.
+
+(b) How to count layers, source vs target:
+```bash
+# source (registry, after resolving the amd64 digest):
+skopeo inspect --raw docker://<img> | jq '.layers | length'
+# target OCI layout dir:
+skopeo inspect --raw oci:///tmp/mdt-repacked2 | jq '.layers | length'
+# a local daemon image (diff-layer count):
+docker inspect <img> --format '{{len .RootFS.Layers}}'
+```
+
