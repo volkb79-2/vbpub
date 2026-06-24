@@ -12,6 +12,8 @@ import os
 import tomllib
 from pathlib import Path
 
+from .config_constants import MACHINE_DIR
+
 
 def load_hosts(repo_root: Path) -> dict:
     """Load the host inventory. Returns {} if no hosts file found."""
@@ -21,7 +23,7 @@ def load_hosts(repo_root: Path) -> dict:
     if env_file:
         candidates.append(Path(env_file))
     candidates.append(Path(repo_root) / ".ciu.hosts.toml")
-    candidates.append(Path.home() / ".ciu" / "hosts.toml")
+    candidates.append(Path.home() / MACHINE_DIR / "hosts.toml")
 
     for path in candidates:
         if path.exists():

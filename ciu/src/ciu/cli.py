@@ -9,15 +9,16 @@ import sys
 from pathlib import Path
 
 from .cli_utils import get_cli_version
+from .config_constants import WORKSPACE_ENV
 
 _USAGE = """\
 CIU {ver} — Container Infrastructure Utility (compose · init · up)
-Uses: ciu.global.toml + .env.ciu
+Uses: ciu.global.toml + ciu.env
 
   ENVIRONMENT
-    env                         show .env.ciu key=value pairs (read-only)
+    env                         show ciu.env key=value pairs (read-only)
     env generate [--define-root PATH]
-                                generate or refresh .env.ciu from system state
+                                generate or refresh ciu.env from system state
 
   AUTHORING
     render                      render ciu.global.toml from Jinja2 template
@@ -59,8 +60,8 @@ Uses: ciu.global.toml + .env.ciu
 
 _VERB_HELP: dict[str, str] = {
     "env": """\
-ciu env — show .env.ciu key=value pairs (read-only)
-ciu env generate [--define-root PATH] — (re)generate .env.ciu from system state
+ciu env — show ciu.env key=value pairs (read-only)
+ciu env generate [--define-root PATH] — (re)generate ciu.env from system state
 
   --define-root PATH   override repo root (no parent walking); for `generate`
 """,
@@ -197,10 +198,10 @@ def _wants_verb_help(verb: str, rest: list[str]) -> bool:
 
 
 def _env_show() -> int:
-    """Walk up from cwd to find and print .env.ciu key=value pairs."""
+    """Walk up from cwd to find and print ciu.env key=value pairs."""
     current = Path.cwd()
     while True:
-        candidate = current / ".env.ciu"
+        candidate = current / WORKSPACE_ENV
         if candidate.exists():
             for line in candidate.read_text().splitlines():
                 stripped = line.strip()
@@ -211,7 +212,7 @@ def _env_show() -> int:
         if parent == current:
             break
         current = parent
-    print("[INFO] No .env.ciu found. Run: ciu env generate", file=sys.stderr)
+    print(f"[INFO] No {WORKSPACE_ENV} found. Run: ciu env generate", file=sys.stderr)
     return 1
 
 

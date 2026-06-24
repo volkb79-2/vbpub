@@ -20,6 +20,15 @@ Naming convention (greenfield standard):
 
 Processing order reads straight off the suffix chain: a ``.j2`` suffix marks a
 template (input); stripping it yields the rendered output.
+
+Why constants here, and not in ``ciu.global.toml``?
+    These names are needed to BOOTSTRAP, so they cannot live in runtime config:
+    you cannot read ``ciu.global.toml`` to discover the name of
+    ``ciu.global.toml``, and ``ciu env generate`` must write ``ciu.env`` before
+    any config has been rendered. This module is therefore the single source of
+    truth. "No hardcoding" is satisfied by every module IMPORTING from here
+    instead of repeating a string literal — not by moving bootstrap names into
+    runtime config (which is impossible). A rename stays a one-line change here.
 """
 
 # ============================================================================

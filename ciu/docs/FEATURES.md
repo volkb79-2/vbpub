@@ -52,8 +52,8 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 
 | Verb | Purpose | Key options |
 |---|---|---|
-| `ciu env` | Show `.env.ciu` key=value pairs (read-only) | — |
-| `ciu env generate` | (Re)generate `.env.ciu` from system state | `--define-root PATH` |
+| `ciu env` | Show `ciu.env` key=value pairs (read-only) | — |
+| `ciu env generate` | (Re)generate `ciu.env` from system state | `--define-root PATH` |
 | `ciu render` | Render `ciu.global.toml` + per-stack `ciu.toml` | `--profile NAME`, `--define-root PATH`, `--host NAME` (remote) |
 | `ciu profiles` | List host profiles | — |
 | `ciu up` | Render + materialise secrets + `compose up` | `--profile NAME` \| `--dir PATH`, `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; `--host NAME` push-deploys to a remote host (S14.2); `--thin` reserved/not-yet-implemented |
@@ -87,7 +87,7 @@ The single-stack engine flag form still works but the verbs are preferred:
 ## Common workflows
 
 ```bash
-# First-time machine setup: write .env.ciu (UID/GID, network, paths, FQDN)
+# First-time machine setup: write ciu.env (UID/GID, network, paths, FQDN)
 ciu env generate
 
 # Bring up everything for the active host profile

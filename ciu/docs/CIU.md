@@ -47,7 +47,7 @@ common verbs are:
 
 | Verb | Purpose |
 |---|---|
-| `ciu env [generate]` | show / regenerate `.env.ciu` |
+| `ciu env [generate]` | show / regenerate `ciu.env` |
 | `ciu render` | render global + stack config (TOML only) |
 | `ciu up [--profile N \| --dir PATH]` | render + secrets + `compose up` |
 | `ciu down` | stop containers (volumes preserved) |
