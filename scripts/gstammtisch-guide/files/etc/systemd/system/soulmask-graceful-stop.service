@@ -11,8 +11,9 @@ Requires=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# Allow plenty of time for the DB write on a large world.
-TimeoutStopSec=180
+# Allow plenty of time: Wings stop (≤5s) + RCON calls (~10s) + up to 150s for
+# the DB write + 20s post-timeout SIGINT sleep ≈ 185s worst case.
+TimeoutStopSec=210
 ExecStart=/bin/true
 ExecStop=/usr/local/sbin/soulmask-shutdown.sh
 
