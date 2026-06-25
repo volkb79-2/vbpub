@@ -186,60 +186,114 @@ sudo damon_cli.py timeseries-pid <pid> \
   --sample-us 100000 --aggr-us 2000000 \
   --min-regions 100 --max-regions 2000 \
   --hot-rate 30 --warm-rate 10 --cold-age 5 --idle-age 60
-# 64 snapshots captured before analysis (12s–406s); server started via Wings API
+# 189 snapshots, t=12s–1190s (~20 min); server started via Wings API, no players
 ```
+
+### Classification definitions used
+
+With `sample_us=100 ms` and `aggr_us=2 s` → **20 samples per window**:
+
+| Class | Threshold | Meaning in real terms |
+|---|---|---|
+| **hot** | `access_rate ≥ 30 %` | accessed in **≥ 6 / 20** samples = at least once every **~330 ms** |
+| **warm** | `access_rate ≥ 10 %` | accessed in **≥ 2 / 20** samples = at least once every **~1 s** |
+| **cold** | `access_rate == 0 %` AND `age ≥ 5 s` | zero accesses, idle for 5–60 s |
+| **idle** | `access_rate == 0 %` AND `age ≥ 60 s` | zero accesses, idle for > 60 s |
+
+`access_rate` is per-region: DAMON marks a region "accessed in this sample" if
+**any PTE** within the region had its access bit set since the previous sample.
+Regions adapt in size — frequently-accessed zones get split smaller, quiet zones
+merge larger.
+
+### Why is the hot area so small? (intentional)
+
+Hot (~30 MiB) is the correct answer — not an artefact.  The detail:
+
+- 300–370 hot **regions** in steady state, but each averages ~80 KiB.
+  DAMON's adaptive splitting breaks the hot zone into many tiny pieces.
+- The three biggest hot regions: **5 MiB @ 100 %**, **3 MiB @ 100 %**,
+  **2 MiB @ 95 %** — these are the game server's actual tight-loop structures
+  (network receive buffers, entity-component ticking state, main-thread stack).
+- The remaining ~22 MiB of hot is 300+ sub-100 KiB fragments — scattered
+  allocations the engine touches on every tick.
+- The 5 GiB warm is game **world data** scanned once per tick (~10 Hz server
+  rate), not hammered repeatedly.  Accessing 5 GiB in 100 ms intervals means
+  each region gets hit roughly once or twice per 2 s window → 5–10 % rate →
+  warm, not hot.
+
+Relaxing `--hot-rate` to 15 % would reclassify the 10–30 % tier as hot
+(growing hot to ~1–2 GiB) but does **not change `SOULMASK_MIN`** — only the
+hot+warm total matters for the cgroup floor.  The relaxed threshold is useful
+for visual inspection of which warm regions are "more important" but gives no
+operational benefit until we add a DAMOS `lru_prio` scheme to explicitly pin
+them.
+
+For even finer hot-region resolution, use `--min-regions 500 --max-regions
+10000` (next run) — currently DAMON hits ~680 regions spontaneously; raising
+the ceiling lets it go finer in the warm zone.
 
 ### Startup phases
 
 | Phase | t | hot | warm | cold | idle | CPU% | Note |
 |---|---|---|---|---|---|---|---|
-| Init | 12–31s | 22–43 MiB | 195–467 MiB | 2175–2467 MiB | 0 | 100% | loading engine, 156–340 regions |
+| Init | 12–31s | 22–43 MiB | 195–467 MiB | 2175–2467 MiB | 0 | 100% | engine loading, 156–340 regions |
 | World load burst | 37–125s | 0–25 MiB | 0.7–2.6 GiB | 1.5–9.8 GiB | 0–691 MiB | **100–161%** | RSS grows 1→10 GiB; multi-core streaming |
-| Settling | 131–287s | 0–73 MiB | 5.7–9.0 GiB | 4.3–7.9 GiB | 0.7–2.5 GiB | 80–130% | world resident, warm expanding |
+| Settling | 131–300s | 0–73 MiB | 5.7–9.0 GiB | 4.3–7.9 GiB | 0.7–2.5 GiB | 80–130% | world resident, warm expanding |
 
 CPU peaked at **160 %** — Soulmask uses multiple cores during the initial world
-load, not just the single-core game loop.
+load.  Steady-state game tick is single-threaded (~66 %).
 
-### Steady-state snapshot (t > 287 s, no players)
+### Steady-state (t > 300 s, 142 snapshots, no players)
 
-| Class | Median | Max | Min | Interpretation |
-|---|---|---|---|---|
-| **hot** | **19 MiB** | 22 MiB | 13 MiB | tight game-loop pages (netcode, physics tick) |
-| **warm** | **5.1 GiB** | 6.4 GiB | 4.4 GiB | actively used — must stay in RAM |
-| cold | 6.5 GiB | 7.4 GiB | 5.5 GiB | accessed <10% /2 s or last 5–60 s — safe for zswap |
-| idle | 2.7 GiB | 3.2 GiB | 2.1 GiB | not accessed for >60 s — prime zswap candidates |
-| RSS | 9.7 GiB | — | — | physical RAM (no swap — `memory.min=10G` was holding) |
-| VmSwap | **0** | — | — | no disk swap at all with the previous `memory.min=10G` |
-| CPU% | 67 % | 81 % | 63 % | single-threaded game tick at steady state |
+| Class | Median | p25–p75 | Max |
+|---|---|---|---|
+| **hot** | **30 MiB** | 30–30 MiB | 101 MiB |
+| **warm** | **4.6 GiB** | 4.4–5.0 GiB | 6.3 GiB |
+| cold | 6.0 GiB | 5.6–6.3 GiB | 7.3 GiB |
+| idle | 3.7 GiB | 3.3–4.1 GiB | 4.5 GiB |
+| RSS | 9.70 GiB | — | 9.79 GiB |
+| VmSwap | **0** | — | **0** |
+| CPU% | 66 % | 65–68 % | 78 % |
+| Regions | 522 | 177–679 | 679 |
 
 **Key insight:** the first run's `warm = 12–15 GiB` was an artefact of coarse
-1.5 GiB/region buckets + `warm_rate = 5 %`.  A single page access anywhere in
-a 1.5 GiB region every 2 s made the whole block "warm".  With 100-region
-granularity (~100 MiB buckets) and `warm_rate = 10 %`, the true warm footprint
-is **5.1 GiB** — the rest is cold/idle and compressible.
+1.5 GiB buckets + `warm_rate = 5 %`.  A single page access anywhere in a
+1.5 GiB region once per 2 s qualified the whole block.  With 100-region
+granularity and `warm_rate = 10 %`, the true warm footprint is **4.6 GiB**.
+
+VmSwap = 0 throughout — `memory.min = 10G` (then revised to 7G) prevented
+all swapping on this run.
 
 ### `SOULMASK_MIN` calibrated value
 
 ```
-hot+warm median: 5.1 GiB
-hot+warm max:    6.4 GiB  (settling phase, player joins expected to be similar)
-safety margin:   + 600 MiB (covers save bursts, player joins — not yet measured)
+hot+warm median: 4.63 GiB
+hot+warm max:    6.40 GiB  (settling phase; players expected to raise this ~1 GiB)
+safety margin:   + 600 MiB
 ─────────────────────────
 SOULMASK_MIN = 7G
 ```
 
-Applied 2026-06-26.  Cold (6.5 GiB) + idle (2.7 GiB) = **9.2 GiB** that the
-kernel is now free to compress into zswap or reclaim under pressure, recovering
-that RAM for dev containers.  With `memory.zswap.writeback = 0`, they stay in
-the fast compressed pool and do not hit disk.
+Applied 2026-06-26.  Cold (6.0 GiB) + idle (3.7 GiB) = **9.7 GiB** the kernel
+can compress into zswap under pressure.  With `memory.zswap.writeback = 0`
+these stay in the compressed pool and never hit disk.
 
 ### Remaining unknowns
 
 | Scenario | Expected effect | When to measure |
 |---|---|---|
-| Players online (10–30) | warm may grow 1–2 GiB; hot spikes | during a play session |
-| Save event (`-saving=600`) | brief cold → warm flip, IO burst | capture across a save |
-| Map DLC vs base map | DLC has more assets → larger warm | compare maps |
+| Players online (10–30) | warm +1–2 GiB; hot spikes; save events more frequent | during a play session |
+| Save event (`-saving=600`) | cold → warm flip at 10-min mark; IO burst | capture across a save |
+| Map DLC vs base map | current run was DLC map; base map has fewer assets | compare maps |
+
+### Next measurement recommendations
+
+```bash
+--min-regions 500 --max-regions 10000   # finer: ~20 MiB buckets, see warm sub-structure
+--hot-rate 15 --warm-rate 5             # wider hot tier for visual sub-classification
+--monitoring_intervals_autotune          # kernel auto-tunes sample/aggr during load bursts
+--interval 5 --duration 3600            # capture a full 10-min save cycle
+```
 
 ## 8. DAMON tuning guide — regions, thresholds, auto-tune, zswap push
 
