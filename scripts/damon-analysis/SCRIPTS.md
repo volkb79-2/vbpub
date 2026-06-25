@@ -1,6 +1,6 @@
 # DAMON Analysis Scripts — Usage Reference
 
-> Project: `/root/work/damon-project/`  
+> Project: `scripts/damon-analysis/` (relative to repo root)  
 > Environment: Python venv with damo v3.2.9, Linux 7.0+ with `CONFIG_DAMON_SYSFS=y`  
 > Root required for all commands that start/stop DAMON.
 

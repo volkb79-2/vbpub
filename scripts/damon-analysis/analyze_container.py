@@ -88,18 +88,17 @@ def find_container_cgroup(container_name: str) -> Optional[str]:
     """Find the cgroup path for a container (Docker/Podman)."""
     # Try Docker
     try:
-        result = subprocess.run(
-            ['docker', 'inspect', '--format', '{{.HostConfig.CgroupParent}}',
-             container_name],
+        id_result = subprocess.run(
+            ['docker', 'inspect', '--format', '{{.Id}}', container_name],
             capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            # Docker containers live under /sys/fs/cgroup/<subsystem>/docker/<id>
-            id_result = subprocess.run(
-                ['docker', 'inspect', '--format', '{{.Id}}', container_name],
-                capture_output=True, text=True, timeout=10)
-            if id_result.returncode == 0:
-                cid = id_result.stdout.strip()
-                return f'/docker/{cid}'
+        if id_result.returncode == 0:
+            cid = id_result.stdout.strip()
+            # cgroup v2: containers appear as docker-<cid>.scope under system.slice
+            v2 = f'/system.slice/docker-{cid}.scope'
+            if os.path.isdir(f'/sys/fs/cgroup{v2}'):
+                return v2
+            # cgroup v1 fallback
+            return f'/docker/{cid}'
     except Exception:
         pass
 

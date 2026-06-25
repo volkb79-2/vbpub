@@ -34,6 +34,7 @@ For detailed help on each subcommand:
 """
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -781,6 +782,154 @@ def cmd_monitor_pid(args):
         pass
 
 
+# ── subcommand: timeseries-pid ──────────────────────────────────────
+
+def cmd_timeseries_pid(args):
+    """Capture time-series DAMON snapshots for a single PID."""
+    require_root()
+    check_damon_sysfs()
+
+    pid = args.pid
+    duration = args.duration or 900
+    interval = args.interval or 30.0
+    sample_us = args.sample_us or 500_000
+    aggr_us = args.aggr_us or 5_000_000
+    output_file = args.output_file or str(
+        OUTPUT_DIR / f'ts_pid{pid}_{time.strftime("%Y%m%d_%H%M%S")}.jsonl')
+
+    proc_info = get_process_info(pid)
+    if not proc_info.get('comm'):
+        die(f"PID {pid} not found")
+
+    classifier = Classifier(
+        hot_access_rate_pct=args.hot_rate or 50.0,
+        warm_access_rate_pct=args.warm_rate or 5.0,
+        cold_age_sec=args.cold_age or 30.0,
+        idle_age_sec=args.idle_age or 120.0)
+    formatter = ReportFormatter()
+
+    monitor = Monitor(damo_bin=DAMO_BIN)
+    monitor.configure_vaddr(pid=pid, sample_us=sample_us, aggr_us=aggr_us,
+                            min_regions=args.min_regions,
+                            max_regions=args.max_regions)
+
+    print(f"[*] Time-series: PID {pid} ({proc_info['comm']})", file=sys.stderr)
+    print(f"    duration={duration}s  interval={interval}s  "
+          f"sample={sample_us}µs  aggr={aggr_us}µs", file=sys.stderr)
+    print(f"    output: {output_file}", file=sys.stderr)
+    print(f"[*] Ctrl+C to stop early.\n", file=sys.stderr)
+
+    start_ts = time.time()
+    snapshot_num = 0
+    stopped = False
+
+    def do_stop():
+        nonlocal stopped
+        if not stopped:
+            stopped = True
+            try:
+                monitor.stop()
+            except Exception:
+                pass
+
+    import atexit
+    atexit.register(do_stop)
+    signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
+    signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
+
+    try:
+        monitor.start()
+        warmup = max(aggr_us / 1_000_000 * 2, 5.0)
+        print(f"[*] Warming up ({warmup:.0f}s)...", file=sys.stderr)
+        time.sleep(warmup)
+
+        while time.time() - start_ts < duration:
+            next_tick = time.time() + interval
+            time.sleep(max(0.0, next_tick - time.time()))
+
+            snapshot_num += 1
+            elapsed = time.time() - start_ts
+            regions = monitor.collect()
+            classified = classifier.classify_regions(
+                regions, monitor.sample_us, monitor.aggr_us)
+            summary = classifier.summary(classified)
+            info = get_process_info(pid)
+
+            entry = {
+                'ts_iso': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                'elapsed_sec': round(elapsed, 1),
+                'snapshot': snapshot_num,
+                'pid': pid,
+                'comm': info.get('comm', '?'),
+                'vm_rss_kb': info.get('vm_rss_kb', 0),
+                'sample_us': sample_us,
+                'aggr_us': aggr_us,
+                'summary': {cls: {'bytes': summary[cls]['bytes'],
+                                  'count': summary[cls]['count']}
+                            for cls in ['hot', 'warm', 'cold', 'idle']},
+                'total_bytes': sum(s['bytes'] for s in summary.values()),
+                'regions': [{'start': r['start'], 'end': r['end'],
+                             'size_bytes': r['size_bytes'],
+                             'access_rate_pct': round(r['access_rate_pct'], 2),
+                             'age_sec': round(r['age_sec'], 2),
+                             'temperature': round(r['temperature'], 2),
+                             'class': r['class']}
+                            for r in classified],
+            }
+            with open(output_file, 'a') as fh:
+                fh.write(json.dumps(entry) + '\n')
+
+            hot_mb  = summary['hot']['bytes']  / (1024 * 1024)
+            warm_mb = summary['warm']['bytes'] / (1024 * 1024)
+            cold_mb = summary['cold']['bytes'] / (1024 * 1024)
+            idle_mb = summary['idle']['bytes'] / (1024 * 1024)
+            rss_mb  = info.get('vm_rss_kb', 0) / 1024
+            print(f"  #{snapshot_num:3d}  t={elapsed:6.0f}s  "
+                  f"hot={hot_mb:7.0f}MiB  warm={warm_mb:7.0f}MiB  "
+                  f"cold={cold_mb:7.0f}MiB  idle={idle_mb:7.0f}MiB  "
+                  f"RSS={rss_mb:.0f}MiB  regions={len(regions)}",
+                  file=sys.stderr)
+    finally:
+        do_stop()
+        print(f"\n[*] Saved: {output_file}", file=sys.stderr)
+        print(f"    Visualize: python3 visualize_memory.py --timeseries {output_file}",
+              file=sys.stderr)
+
+
+# ── subcommand: timeseries-container ────────────────────────────────
+
+def cmd_timeseries_container(args):
+    """Capture time-series DAMON snapshots for the largest process in a container."""
+    require_root()
+    check_damon_sysfs()
+
+    from damon_analysis import get_container_pids
+
+    container = args.container
+    pids = get_container_pids(container)
+    if not pids:
+        die(f"No processes found in container '{container}'")
+
+    # Pick the process with the highest RSS (most likely the game server)
+    best_pid, best_rss, best_comm = 0, -1, '?'
+    for p in pids:
+        info = get_process_info(p)
+        rss = info.get('vm_rss_kb', 0)
+        if rss > best_rss:
+            best_rss, best_pid = rss, p
+            best_comm = info.get('comm', '?')
+
+    if best_pid == 0:
+        die(f"Could not determine main process for container '{container}'")
+
+    print(f"[*] Container '{container}': using PID {best_pid} "
+          f"({best_comm}, RSS {best_rss} kB)", file=sys.stderr)
+
+    # Delegate to timeseries-pid logic with the resolved PID
+    args.pid = best_pid
+    cmd_timeseries_pid(args)
+
+
 # ── main entry point ────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -888,6 +1037,44 @@ def build_parser() -> argparse.ArgumentParser:
                            help='Live monitoring dashboard')
     p_mp.add_argument('pid', type=int, help='Target PID')
 
+    # ── timeseries-pid ──
+    p_tspid = sub.add_parser('timeseries-pid',
+                              help='Time-series hot/warm/cold capture for a PID')
+    p_tspid.add_argument('pid', type=int, help='Target PID')
+    p_tspid.add_argument('--duration', type=float,
+                          help='Total capture duration in seconds (default: 900)')
+    p_tspid.add_argument('--interval', type=float,
+                          help='Snapshot interval in seconds (default: 30)')
+    p_tspid.add_argument('--output-file', help='Output JSONL file path')
+    p_tspid.add_argument('--sample-us', type=int,
+                          help='Sampling interval µs (default: 500000)')
+    p_tspid.add_argument('--aggr-us', type=int,
+                          help='Aggregation interval µs (default: 5000000)')
+    p_tspid.add_argument('--hot-rate', type=float, help='Hot threshold %%')
+    p_tspid.add_argument('--warm-rate', type=float, help='Warm threshold %%')
+    p_tspid.add_argument('--cold-age', type=float, help='Cold age threshold (s)')
+    p_tspid.add_argument('--idle-age', type=float, help='Idle age threshold (s)')
+    p_tspid.add_argument('--min-regions', type=int)
+    p_tspid.add_argument('--max-regions', type=int)
+
+    # ── timeseries-container ──
+    p_tscon = sub.add_parser('timeseries-container',
+                              help='Time-series capture for largest process in container')
+    p_tscon.add_argument('container', help='Container name or ID')
+    p_tscon.add_argument('--duration', type=float,
+                          help='Total capture duration in seconds (default: 900)')
+    p_tscon.add_argument('--interval', type=float,
+                          help='Snapshot interval in seconds (default: 30)')
+    p_tscon.add_argument('--output-file', help='Output JSONL file path')
+    p_tscon.add_argument('--sample-us', type=int)
+    p_tscon.add_argument('--aggr-us', type=int)
+    p_tscon.add_argument('--hot-rate', type=float)
+    p_tscon.add_argument('--warm-rate', type=float)
+    p_tscon.add_argument('--cold-age', type=float)
+    p_tscon.add_argument('--idle-age', type=float)
+    p_tscon.add_argument('--min-regions', type=int)
+    p_tscon.add_argument('--max-regions', type=int)
+
     # ── requirements ──
     p_req = sub.add_parser('requirements',
                             help='Check installation prerequisites')
@@ -923,6 +1110,8 @@ def main():
             'auto-reclaim': cmd_auto_reclaim,
             'auto-lru-sort': cmd_auto_lru_sort,
             'monitor-pid': cmd_monitor_pid,
+            'timeseries-pid': cmd_timeseries_pid,
+            'timeseries-container': cmd_timeseries_container,
         }
         func = dispatch[args.command]
         func(args)

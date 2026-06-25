@@ -266,20 +266,34 @@ def main():
             monitor.start()
             time.sleep(first_wait)
 
-            # For the remaining time, periodically collect but keep running
+            # Periodically trigger tried_regions update while monitoring runs
             end_time = time.time() + args.duration - first_wait
-            last_collect = 0
+            last_collect = 0.0
             while time.time() < end_time and running:
                 time.sleep(min(args.interval, end_time - time.time()))
                 if time.time() - last_collect >= args.interval:
-                    monitor.collect()  # update tried regions
+                    monitor.collect()
                     last_collect = time.time()
 
-            # Final collect for result
+            # Final collect
             regions = monitor.collect()
             classified = classifier.classify_regions(
                 regions, monitor.sample_us, monitor.aggr_us)
-            run_analysis(monitor, classifier, formatter, args, metadata)
+
+            # Output (inline — do NOT call run_analysis() which restarts damo)
+            if args.output == 'json':
+                output = formatter.json_report(classified, metadata)
+            elif args.output == 'csv':
+                output = formatter.csv_report(classified)
+            else:
+                output = formatter.human_readable(
+                    classified,
+                    title=f"Process: {metadata['comm']} (PID: {pid})")
+            if args.output_file:
+                with open(args.output_file, 'w') as f:
+                    f.write(output + '\n')
+            else:
+                print(output)
         finally:
             monitor.stop()
 

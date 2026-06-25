@@ -38,6 +38,8 @@ def parse_args():
                    default='all', help='Output format')
     p.add_argument('--output', type=str, help='Output file path (for PNG)')
     p.add_argument('--title', type=str, default='Memory Access Analysis')
+    p.add_argument('--timeseries', action='store_true',
+                   help='Input is JSONL (one snapshot per line) — show time-series')
     return p.parse_args()
 
 
@@ -229,8 +231,124 @@ def generate_png(regions: List[Dict], output_path: str, title: str) -> None:
     print(f"[*] PNG saved to {output_path}", file=sys.stderr)
 
 
+def timeseries_ascii(snapshots: list) -> str:
+    """ASCII time-series chart: one bar row per snapshot."""
+    if not snapshots:
+        return "(no data)"
+
+    bar_width = 30
+    lines = []
+    lines.append("Time-Series Memory Classification")
+    lines.append("=" * 80)
+    lines.append(f"  {'Time':>7}  {'HOT':>8}  {'WARM':>8}  {'COLD':>8}  "
+                 f"{'IDLE':>8}  {'RSS':>7}  bar (hot=█ warm=▓ cold=░ idle=·)")
+    lines.append("-" * 80)
+
+    max_total = max((s.get('total_bytes', 0) or
+                     sum(s['summary'][c]['bytes'] for c in ['hot', 'warm', 'cold', 'idle']))
+                    for s in snapshots) or 1
+
+    for snap in snapshots:
+        elapsed = snap.get('elapsed_sec', 0)
+        m, s_rem = divmod(int(elapsed), 60)
+        t_str = f"{m}:{s_rem:02d}"
+
+        summary = snap.get('summary', {})
+        hot  = summary.get('hot',  {}).get('bytes', 0)
+        warm = summary.get('warm', {}).get('bytes', 0)
+        cold = summary.get('cold', {}).get('bytes', 0)
+        idle = summary.get('idle', {}).get('bytes', 0)
+        rss_mb = snap.get('vm_rss_kb', 0) / 1024
+
+        def seg(n, ch):
+            w = int(n / max_total * bar_width)
+            return ch * w
+
+        bar = seg(hot, '█') + seg(warm, '▓') + seg(cold, '░') + seg(idle, '·')
+        bar = bar[:bar_width].ljust(bar_width)
+
+        lines.append(f"  {t_str:>7}  "
+                     f"{hot/(1024**2):>7.0f}M  "
+                     f"{warm/(1024**2):>7.0f}M  "
+                     f"{cold/(1024**2):>7.0f}M  "
+                     f"{idle/(1024**2):>7.0f}M  "
+                     f"{rss_mb:>6.0f}M  {bar}")
+
+    lines.append("=" * 80)
+    lines.append(f"  {len(snapshots)} snapshots  "
+                 f"span {snapshots[-1].get('elapsed_sec', 0):.0f}s")
+    return '\n'.join(lines)
+
+
+def generate_timeseries_png(snapshots: list, output_path: str, title: str) -> None:
+    """Stacked area chart of hot/warm/cold/idle bytes over time."""
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError:
+        print("ERROR: matplotlib not available. pip install matplotlib",
+              file=sys.stderr)
+        return
+
+    if not snapshots:
+        print("WARNING: No snapshots to plot.", file=sys.stderr)
+        return
+
+    times = [s.get('elapsed_sec', 0) for s in snapshots]
+    hot   = [s['summary'].get('hot',  {}).get('bytes', 0) / (1024**2) for s in snapshots]
+    warm  = [s['summary'].get('warm', {}).get('bytes', 0) / (1024**2) for s in snapshots]
+    cold  = [s['summary'].get('cold', {}).get('bytes', 0) / (1024**2) for s in snapshots]
+    idle  = [s['summary'].get('idle', {}).get('bytes', 0) / (1024**2) for s in snapshots]
+    rss   = [s.get('vm_rss_kb', 0) / 1024 for s in snapshots]
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+    fig.suptitle(title, fontsize=13)
+
+    ax.stackplot(times, hot, warm, cold, idle,
+                 labels=['Hot', 'Warm', 'Cold', 'Idle'],
+                 colors=['#ff4444', '#ffaa00', '#4488ff', '#aaaaaa'],
+                 alpha=0.85)
+    ax.plot(times, rss, 'k--', linewidth=1.5, label='RSS total', alpha=0.6)
+
+    ax.set_xlabel('Elapsed time (s)')
+    ax.set_ylabel('Memory (MiB)')
+    ax.set_title('Hot/Warm/Cold/Idle Memory Over Time')
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150)
+    plt.close()
+    print(f"[*] PNG saved to {output_path}", file=sys.stderr)
+
+
 def main():
     args = parse_args()
+
+    if args.timeseries:
+        # JSONL input: one snapshot per line
+        snapshots = []
+        with open(args.input_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        snapshots.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        if not snapshots:
+            print("ERROR: No snapshots found in JSONL file.", file=sys.stderr)
+            sys.exit(1)
+
+        title = args.title or f"Time-Series: {snapshots[0].get('comm', '?')}"
+        if args.format in ('ascii', 'chart', 'all'):
+            print(timeseries_ascii(snapshots))
+        if args.format in ('png', 'all'):
+            output_path = args.output or args.input_file.replace('.jsonl', '.png')
+            generate_timeseries_png(snapshots, output_path, title)
+        return
 
     # Load data
     with open(args.input_file, 'r') as f:
