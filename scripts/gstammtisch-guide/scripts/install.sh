@@ -24,14 +24,18 @@ echo "== sysctl =="
 sysctl --system >/dev/null
 
 echo "== tmpfiles (THP; KSM if you kept ksm.conf) =="
+# w! entries (THP, KSM) are boot-only — skipped by --create, applied on next boot
+# via systemd-tmpfiles-setup.service (--boot).  Apply sysfs writes directly now too.
 systemd-tmpfiles --create || true
+echo madvise > /sys/kernel/mm/transparent_hugepage/enabled  2>/dev/null || true
+echo madvise > /sys/kernel/mm/transparent_hugepage/defrag   2>/dev/null || true
 
 echo "== systemd: reload + enable units =="
 systemctl daemon-reload
 systemctl enable --now zswap-config.service
 systemctl enable dev-workloads.slice 2>/dev/null || true
 systemctl enable --now gstammtisch-cgroups.service
-systemctl enable soulmask-graceful-stop.service
+systemctl enable --now soulmask-graceful-stop.service
 systemctl enable --now systemd-oomd.service 2>/dev/null || true
 
 echo; echo "== status =="
