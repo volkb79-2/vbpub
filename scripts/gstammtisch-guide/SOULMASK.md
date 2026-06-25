@@ -109,3 +109,206 @@ Wings daemon directly (above) without needing a panel API key.
 | Plain shutdown countdown | `shutdown <seconds>` |
 
 Full list: <https://saraserenity.net/soulmask/remote_console.php>
+
+## 7. DAMON measurement — 2026-06-25 (baseline, no players)
+
+### Run parameters
+
+```bash
+sudo damon_cli.py timeseries-pid <pid> \
+  --duration 900 --interval 30 \
+  --sample-us 100000 --aggr-us 2000000
+# 29 snapshots, t=36s–914s; server started cold, no players connected
+```
+
+### What DAMON actually measures
+
+DAMON monitors **virtual address space** (vaddr ops), not physical pages.
+It walks page-table entries every `sample_us` and marks a region "accessed" if
+any PTE had its access bit set.  A page counts as warm even while it is in swap
+— the next time it faults back in and the access bit is set, DAMON sees it.
+This is why tracked warm memory (12–15 GiB) can greatly exceed RSS (7.7 GiB):
+
+| Metric | Value | What it means |
+|---|---|---|
+| DAMON warm+hot | 13–15 GiB | virtual pages accessed in the last `aggr_us` window |
+| RSS | 7.2–7.7 GiB | physical frames actually in RAM right now |
+| VmSwap | 2.5 GiB | physical frames pushed to zswap / disk swap |
+| Gap (~5 GiB) | = 15 − 7.7 − 2.5 | mmap'd game assets evicted from page cache; faulted on demand |
+
+Soulmask (Unreal Engine) memory-maps large `.pak` / world data files.
+The engine's virtual footprint is 15 GiB but the kernel can only keep ~10 GiB
+resident at once (7.7 GiB RAM + 2.5 GiB swap) on this 16 GiB host.
+DAMON warm ≠ "must be in RAM simultaneously".
+
+### Steady-state snapshot (t > 200 s, typical)
+
+| Class | Bytes | Count | Interpretation |
+|---|---|---|---|
+| hot | 1–2 **MiB** | 1–2 regions | tiny: tight game-loop pages (physics tick, netcode) |
+| warm | 12–15 GiB | 18–20 regions | almost everything; accessed ≥ once per 2 s window |
+| cold | 0–3 GiB | 0–5 regions | cycling with ~10-min save bursts (DB flush) |
+| idle | 0 | 0 | nothing stays unaccessed for >120 s |
+
+Key points:
+- **Essentially no hot, almost all warm.** Unreal Engine's streaming design
+  touches 15 GiB of virtual space broadly rather than hammering a small set.
+- **Cold cycling** correlates with `−saving=600` (10-min save).  During the
+  DB flush, large write buffers are accessed then released → briefly cold.
+- **The 30 s measurement interval is too coarse** to see the save burst clearly
+  (it can fall between two snapshots).  Use `--interval 5` for save profiling.
+
+### `SOULMASK_MIN` decision
+
+DAMON warm 13 GiB exceeds available RAM.  Setting `memory.min = 13G` would
+starve everything else on a 16 GiB host.  The **actual working set** is:
+
+```
+RSS (7.7 G)  +  VmSwap (2.5 G)  =  10.2 G  →  SOULMASK_MIN = 10G
+```
+
+Set and applied 2026-06-25.  Combined with `memory.low = 12G` and
+`memory.zswap.writeback = 0`, the kernel will not write Soulmask's compressed
+pages to disk swap even under pressure.
+
+### Limitations of this run / what to improve
+
+| Issue | Fix |
+|---|---|
+| `--interval 30` misses the save burst | re-run with `--interval 5` |
+| `--min-regions 10` → coarse 1.5 GiB buckets | use `--min-regions 100 --max-regions 2000` |
+| No CPU% or IO/s data | already fixed; new run captures these |
+| No players → steady-state load is lower | repeat with players online |
+| Thresholds: everything lands in "warm" | lower warm threshold or use auto-tune |
+
+See §8 for the tuning rationale and next-run recommendations.
+
+## 8. DAMON tuning guide — regions, thresholds, auto-tune, zswap push
+
+### 8.1 Region count (`--min-regions` / `--max-regions`)
+
+DAMON starts with `min_regions` regions and splits/merges them adaptively.
+With `min_regions=10` on a 15 GiB VAS, each region averages **1.5 GiB** —
+far too coarse to distinguish game subsystems.
+
+```bash
+# Recommended next run
+sudo damon_cli.py timeseries-pid <pid> \
+  --interval 5 --duration 1800 \
+  --sample-us 100000 --aggr-us 2000000 \
+  --min-regions 100 --max-regions 2000     # ← 10× finer, ~150 MiB buckets
+```
+
+Trade-off: more regions → more sysfs reads per collection and slightly more
+DAMON CPU.  On a 8-core host monitoring one game server, 2000 max-regions is
+negligible.
+
+### 8.2 Hot/warm/cold thresholds
+
+Our classifier uses `nr_accesses / (aggr_us / sample_us)`:
+
+| Threshold | Value | Meaning at `aggr=2s, sample=100ms` (max_nr=20) |
+|---|---|---|
+| `--hot-rate 50` | 50% | ≥10 accesses/2 s = 5 Hz — almost nothing qualifies |
+| `--warm-rate 5` | 5% | ≥1 access/2 s — everything qualifies, useless |
+| `--cold-age 30` | 30 s | zero-rate for 30 s |
+| `--idle-age 120` | 120 s | zero-rate for 120 s |
+
+Because Soulmask scans broadly and nearly every 2 s window has at least one
+touch anywhere in a 750 MiB region, everything folds into "warm".
+
+**Better thresholds for Soulmask:**
+
+```bash
+  --hot-rate  30   # ≥6 accesses/2s (30% of max) — the tight loop pages
+  --warm-rate 10   # ≥2 accesses/2s — genuinely active
+  --cold-age   5   # zero for 5 s → cold; catches short-lived allocations
+  --idle-age  60   # zero for 60 s → safe to compress aggressively
+```
+
+This splits the 15 GiB warm blob into meaningful tiers.
+
+### 8.3 Proactive zswap compression via DAMOS `pageout`
+
+DAMON can *act* on regions, not just observe.  The `pageout` action calls
+`madvise(MADV_PAGEOUT)` on matched regions, moving them to swap (zswap first,
+since `zswap.shrinker_enabled=Y` and Soulmask's `zswap.writeback=0`).
+
+Goal: keep hot pages uncompressed in RAM; compress idle pages immediately.
+
+```bash
+# Scheme: pageout pages that are cold for 60s
+damo start <pid> \
+  --monitoring_intervals 100000 2000000 40000000 \
+  --monitoring_nr_regions_range 100 2000 \
+  --damos_action pageout \
+  --damos_access_rate 0% 5% \
+  --damos_sz_region 4096 max \
+  --damos_age 60s max \
+  --damos_max_nr_snapshots 10000
+```
+
+With `memory.zswap.writeback=0` on Soulmask's cgroup, the paged-out data goes
+to zswap (compressed RAM) and **never hits disk**.  This effectively moves idle
+pages from uncompressed RAM to a zstd-compressed pool, giving warm pages more
+room to stay resident.
+
+`lru_deprio` is a softer alternative — it hints to the kernel LRU to
+deprioritise matched pages, letting natural reclaim compress them on pressure
+rather than forcing it immediately.
+
+### 8.4 DAMON auto-tuning (`--monitoring_intervals_autotune`)
+
+damo v3.2.9 + kernel 7.0 support **automatic interval tuning**.  Instead of
+hard-coding `sample_us` and `aggr_us`, DAMON tunes them continuously to
+maintain a target:
+
+```bash
+damo start <pid> \
+  --monitoring_intervals_autotune \   # goal: 4% sz_bp, 5ms–10s range
+  --monitoring_nr_regions_range 100 2000 \
+  ...
+```
+
+What it does:
+- **Goal**: keep the "accessed" fraction of the monitored address space at ~4%
+  of physical memory (the `intervals_goal/` sysfs knob, kernel 6.3+).
+- **Mechanism**: if DAMON sees too much or too little activity, it raises/lowers
+  `aggr_us` (between 5 ms and 10 s).  `sample_us` scales with it.
+- **Effect during startup**: heavy activity → short intervals (fine-grained).
+  Steady state → intervals relax (lower overhead).  Save burst → intervals
+  tighten again automatically.
+
+This replaces the manual `--aggr-us 2000000` guess with a self-calibrating
+value, which matters most when the workload phase changes (startup → play →
+save → idle).
+
+The sysfs path written by autotune:
+```
+/sys/kernel/mm/damon/admin/kdamonds/0/contexts/0/monitoring_attrs/intervals/
+├── sample_us          ← DAMON updates this
+├── aggr_us            ← DAMON updates this
+└── intervals_goal/
+    ├── target_metric  = sz_bp
+    ├── target_value   = 400        (4.00%)
+    └── current_value  ← live reading
+```
+
+**Recommended next measurement command** (combines all improvements):
+
+```bash
+SOULMASK_PID=$(sudo docker top b87c0a5b-2387-4a1c-8863-ff23e6800a1d \
+               | awk '/WSServer/{print $2}' | head -1)
+
+sudo /home/vb/volkb79-2/vbpub/scripts/damon-analysis/venv/bin/python3 \
+  /home/vb/volkb79-2/vbpub/scripts/damon-analysis/damon_cli.py \
+  timeseries-pid $SOULMASK_PID \
+  --duration 1800 --interval 5 \
+  --min-regions 100 --max-regions 2000 \
+  --hot-rate 30 --warm-rate 10 \
+  --cold-age 5 --idle-age 60 \
+  --output-file scripts/damon-analysis/output/soulmask_calibrated.jsonl
+```
+
+Run this with players online and during a save event for the most useful
+profile.
