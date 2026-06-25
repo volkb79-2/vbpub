@@ -40,6 +40,8 @@ def parse_args():
     p.add_argument('--title', type=str, default='Memory Access Analysis')
     p.add_argument('--timeseries', action='store_true',
                    help='Input is JSONL (one snapshot per line) — show time-series')
+    p.add_argument('--export-video', metavar='OUTPUT.mp4',
+                   help='Export time-lapse animation as MP4 (requires matplotlib + ffmpeg)')
     return p.parse_args()
 
 
@@ -324,8 +326,101 @@ def generate_timeseries_png(snapshots: list, output_path: str, title: str) -> No
     print(f"[*] PNG saved to {output_path}", file=sys.stderr)
 
 
+def generate_timeseries_video(snapshots: list, output_path: str, title: str = '') -> None:
+    """Generate time-lapse animation as MP4."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.animation as animation
+    import numpy as np
+
+    if not snapshots:
+        print("No data.", file=sys.stderr)
+        return
+
+    times = [s['elapsed_sec'] for s in snapshots]
+    hot   = [s['summary']['hot']['bytes']  / 2**30 for s in snapshots]
+    warm  = [s['summary']['warm']['bytes'] / 2**30 for s in snapshots]
+    cold  = [s['summary']['cold']['bytes'] / 2**30 for s in snapshots]
+    idle  = [s['summary']['idle']['bytes'] / 2**30 for s in snapshots]
+    rss   = [s.get('vm_rss_kb', 0) / (1024**2) for s in snapshots]
+    cpu   = [s.get('cpu_pct', None) for s in snapshots]
+    has_cpu = any(c is not None for c in cpu)
+
+    nrows = 2 if has_cpu else 1
+    fig, axes = plt.subplots(nrows, 1, figsize=(12, 5 * nrows))
+    fig.patch.set_facecolor('#111827')
+    if nrows == 1:
+        axes = [axes]
+    for ax in axes:
+        ax.set_facecolor('#1f2937')
+        ax.tick_params(colors='#9ca3af')
+        for spine in ax.spines.values():
+            spine.set_color('#374151')
+
+    ax_mem = axes[0]
+    ax_mem.set_title(title or 'Memory Breakdown', color='#f9fafb')
+    ax_mem.set_xlabel('elapsed (s)', color='#9ca3af')
+    ax_mem.set_ylabel('GiB', color='#9ca3af')
+    ax_mem.set_xlim(0, max(times) if times else 1)
+    max_y = max((h + w + c + i) for h, w, c, i in zip(hot, warm, cold, idle)) or 1
+    ax_mem.set_ylim(0, max_y * 1.05)
+
+    if has_cpu:
+        ax_cpu = axes[1]
+        ax_cpu.set_title('CPU %', color='#f9fafb')
+        ax_cpu.set_xlabel('elapsed (s)', color='#9ca3af')
+        ax_cpu.set_ylabel('%', color='#9ca3af')
+        ax_cpu.set_xlim(0, max(times) if times else 1)
+        ax_cpu.set_ylim(0, 105)
+
+    def update(frame):
+        n = frame + 1
+        t_slice = times[:n]
+        ax_mem.clear()
+        ax_mem.set_facecolor('#1f2937')
+        ax_mem.tick_params(colors='#9ca3af')
+        ax_mem.set_xlim(0, max(times))
+        ax_mem.set_ylim(0, max_y * 1.05)
+        ax_mem.set_ylabel('GiB', color='#9ca3af')
+        for vals, color, label in [
+            (idle[:n], '#6b7280', 'idle'),
+            (cold[:n], '#3b82f6', 'cold'),
+            (warm[:n], '#f97316', 'warm'),
+            (hot[:n],  '#ef4444', 'hot'),
+        ]:
+            ax_mem.stackplot(t_slice, vals, colors=[color], labels=[label], baseline='zero')
+        ax_mem.plot(t_slice, rss[:n], color='#22c55e', lw=1.5, linestyle='--', label='RSS')
+        ax_mem.legend(loc='upper left', facecolor='#1f2937', labelcolor='#f9fafb', fontsize=8)
+        ax_mem.text(0.01, 0.97, f't={t_slice[-1]:.0f}s  snap {n}/{len(times)}',
+                    transform=ax_mem.transAxes, color='#f9fafb', va='top', fontsize=9)
+        if has_cpu:
+            ax_cpu.clear()
+            ax_cpu.set_facecolor('#1f2937')
+            ax_cpu.tick_params(colors='#9ca3af')
+            ax_cpu.set_xlim(0, max(times))
+            ax_cpu.set_ylim(0, 105)
+            ax_cpu.set_ylabel('%', color='#9ca3af')
+            cpu_slice = [c if c is not None else 0 for c in cpu[:n]]
+            ax_cpu.plot(t_slice, cpu_slice, color='#06b6d4', lw=1.5)
+            ax_cpu.fill_between(t_slice, cpu_slice, alpha=0.2, color='#06b6d4')
+        return []
+
+    ani = animation.FuncAnimation(fig, update, frames=len(snapshots),
+                                   interval=100, blit=False)
+    writer = animation.FFMpegWriter(fps=10, bitrate=1800)
+    print(f"[*] Writing {output_path} ({len(snapshots)} frames)…", file=sys.stderr)
+    ani.save(output_path, writer=writer, dpi=120)
+    plt.close(fig)
+    print(f"[*] Done: {output_path}", file=sys.stderr)
+
+
 def main():
     args = parse_args()
+
+    if getattr(args, 'export_video', None) and not getattr(args, 'timeseries', False):
+        print("--export-video requires --timeseries", file=sys.stderr)
+        sys.exit(1)
 
     if args.timeseries:
         # JSONL input: one snapshot per line
@@ -348,6 +443,9 @@ def main():
         if args.format in ('png', 'all'):
             output_path = args.output or args.input_file.replace('.jsonl', '.png')
             generate_timeseries_png(snapshots, output_path, title)
+        if args.export_video:
+            generate_timeseries_video(snapshots, args.export_video,
+                                       title=f"Soulmask DAMON time-lapse ({len(snapshots)} snapshots)")
         return
 
     # Load data

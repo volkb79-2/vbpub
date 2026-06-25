@@ -72,6 +72,34 @@ LOG = logging.getLogger('damon_cli')
 
 # ── helpers ─────────────────────────────────────────────────────────
 
+_CLK_TCK = os.sysconf('SC_CLK_TCK')  # typically 100
+
+def _read_cpu_jiffies(pid: int) -> int:
+    """Return utime+stime from /proc/<pid>/stat, 0 on error."""
+    try:
+        fields = open(f'/proc/{pid}/stat').read().split()
+        return int(fields[13]) + int(fields[14])
+    except OSError:
+        return 0
+
+def _read_proc_io(pid: int) -> dict:
+    """Return /proc/<pid>/io as dict, empty on error."""
+    try:
+        return {k: int(v) for k, v in
+                (l.split(': ') for l in open(f'/proc/{pid}/io').read().splitlines() if ': ' in l)}
+    except OSError:
+        return {}
+
+def _read_vm_swap_kb(pid: int) -> int:
+    try:
+        for line in open(f'/proc/{pid}/status'):
+            if line.startswith('VmSwap:'):
+                return int(line.split()[1])
+    except OSError:
+        pass
+    return 0
+
+
 def die(msg: str, code: int = 1):
     """Print error and exit."""
     print(f"ERROR: {msg}", file=sys.stderr)
@@ -791,9 +819,9 @@ def cmd_timeseries_pid(args):
 
     pid = args.pid
     duration = args.duration or 900
-    interval = args.interval or 30.0
+    interval = args.interval or 5.0
     sample_us = args.sample_us or 500_000
-    aggr_us = args.aggr_us or 5_000_000
+    aggr_us = args.aggr_us or 2_000_000
     output_file = args.output_file or str(
         OUTPUT_DIR / f'ts_pid{pid}_{time.strftime("%Y%m%d_%H%M%S")}.jsonl')
 
@@ -843,6 +871,10 @@ def cmd_timeseries_pid(args):
         print(f"[*] Warming up ({warmup:.0f}s)...", file=sys.stderr)
         time.sleep(warmup)
 
+        _prev_jiffies = _read_cpu_jiffies(pid)
+        _prev_io = _read_proc_io(pid)
+        _prev_sample_ts = time.time()
+
         while time.time() - start_ts < duration:
             next_tick = time.time() + interval
             time.sleep(max(0.0, next_tick - time.time()))
@@ -854,6 +886,16 @@ def cmd_timeseries_pid(args):
                 regions, monitor.sample_us, monitor.aggr_us)
             summary = classifier.summary(classified)
             info = get_process_info(pid)
+
+            _now_ts = time.time()
+            _dt = max(_now_ts - _prev_sample_ts, 0.001)
+            _now_j = _read_cpu_jiffies(pid)
+            _now_io = _read_proc_io(pid)
+            cpu_pct = round(max(0.0, (_now_j - _prev_jiffies) / _CLK_TCK / _dt * 100), 1)
+            io_read_bps  = max(0, int((_now_io.get('read_bytes',  0) - _prev_io.get('read_bytes',  0)) / _dt))
+            io_write_bps = max(0, int((_now_io.get('write_bytes', 0) - _prev_io.get('write_bytes', 0)) / _dt))
+            vm_swap_kb   = _read_vm_swap_kb(pid)
+            _prev_jiffies, _prev_io, _prev_sample_ts = _now_j, _now_io, _now_ts
 
             entry = {
                 'ts_iso': time.strftime('%Y-%m-%dT%H:%M:%S'),
@@ -868,6 +910,10 @@ def cmd_timeseries_pid(args):
                                   'count': summary[cls]['count']}
                             for cls in ['hot', 'warm', 'cold', 'idle']},
                 'total_bytes': sum(s['bytes'] for s in summary.values()),
+                'cpu_pct':      cpu_pct,
+                'io_read_bps':  io_read_bps,
+                'io_write_bps': io_write_bps,
+                'vm_swap_kb':   vm_swap_kb,
                 'regions': [{'start': r['start'], 'end': r['end'],
                              'size_bytes': r['size_bytes'],
                              'access_rate_pct': round(r['access_rate_pct'], 2),
@@ -885,9 +931,9 @@ def cmd_timeseries_pid(args):
             idle_mb = summary['idle']['bytes'] / (1024 * 1024)
             rss_mb  = info.get('vm_rss_kb', 0) / 1024
             print(f"  #{snapshot_num:3d}  t={elapsed:6.0f}s  "
-                  f"hot={hot_mb:7.0f}MiB  warm={warm_mb:7.0f}MiB  "
-                  f"cold={cold_mb:7.0f}MiB  idle={idle_mb:7.0f}MiB  "
-                  f"RSS={rss_mb:.0f}MiB  regions={len(regions)}",
+                  f"hot={hot_mb:6.0f}M  warm={warm_mb:6.0f}M  "
+                  f"cold={cold_mb:6.0f}M  idle={idle_mb:6.0f}M  "
+                  f"RSS={rss_mb:.0f}M  CPU={cpu_pct:.1f}%  regions={len(regions)}",
                   file=sys.stderr)
     finally:
         do_stop()
@@ -1044,12 +1090,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_tspid.add_argument('--duration', type=float,
                           help='Total capture duration in seconds (default: 900)')
     p_tspid.add_argument('--interval', type=float,
-                          help='Snapshot interval in seconds (default: 30)')
+                          help='Snapshot interval in seconds (default: 5)')
     p_tspid.add_argument('--output-file', help='Output JSONL file path')
     p_tspid.add_argument('--sample-us', type=int,
                           help='Sampling interval µs (default: 500000)')
     p_tspid.add_argument('--aggr-us', type=int,
-                          help='Aggregation interval µs (default: 5000000)')
+                          help='Aggregation interval µs (default: 2000000)')
     p_tspid.add_argument('--hot-rate', type=float, help='Hot threshold %%')
     p_tspid.add_argument('--warm-rate', type=float, help='Warm threshold %%')
     p_tspid.add_argument('--cold-age', type=float, help='Cold age threshold (s)')
@@ -1064,7 +1110,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_tscon.add_argument('--duration', type=float,
                           help='Total capture duration in seconds (default: 900)')
     p_tscon.add_argument('--interval', type=float,
-                          help='Snapshot interval in seconds (default: 30)')
+                          help='Snapshot interval in seconds (default: 5)')
     p_tscon.add_argument('--output-file', help='Output JSONL file path')
     p_tscon.add_argument('--sample-us', type=int)
     p_tscon.add_argument('--aggr-us', type=int)

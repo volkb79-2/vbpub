@@ -20,6 +20,8 @@ Key facts pulled from the egg:
 
 The process `WSServer-Linux-Shipping` is a **child** of the container entrypoint — it shows in `docker top`/host `ps`, **not** in `docker ps {{.Command}}` (which shows the truncated entrypoint). Every helper here detects the container via `docker top`.
 
+> **Never use `docker start`/`stop` on the Soulmask container directly.** Wings tracks container lifecycle via its own internal state; bypassing it leaves Wings showing `state: offline` even while the process is live — the panel shows 0 CPU/RAM/console, crash detection stops working, and Wings may attempt a conflicting reconciliation on its next tick. Always use the Wings API or the panel (§5 below).
+
 ## 2. Priority & protection
 
 Soulmask must always preempt dev work and be the last thing reclaimed. Layers:
@@ -64,7 +66,38 @@ exec-soulmask-rcon.sh broadcast Reboot in 60s     # multi-word args are forwarde
 
 **If the connection test fails**, the `-d` output localizes it: container detection, empty password env, or — most likely — the **RCON IP whitelist** rejecting the connection. If loopback is rejected, add `127.0.0.1` to Soulmask's RCON allowed-IP list (server config) or whitelist the helper's bridge IP.
 
-## 5. Quick command reference
+## 5. Wings daemon API — scripted start/stop
+
+Wings exposes a local HTTPS API on port 8080.  No extra secrets needed — the
+auth token is already on the host at `/etc/pterodactyl/config.yml` (root-only, mode 600).
+
+```bash
+# Read the token without printing it to the terminal
+WINGS_TOKEN=$(sudo awk '/^token:/{print $2}' /etc/pterodactyl/config.yml)
+SERVER_UUID="b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
+
+# Start / stop / restart / kill
+curl -sk -X POST \
+  -H "Authorization: Bearer $WINGS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"start"}' \
+  https://localhost:8080/api/servers/$SERVER_UUID/power
+
+# Check state ("running" | "offline" | "starting" | "stopping")
+curl -sk \
+  -H "Authorization: Bearer $WINGS_TOKEN" \
+  https://localhost:8080/api/servers/$SERVER_UUID \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['state'], d['utilization'])"
+```
+
+Valid `action` values: `start`, `stop`, `restart`, `kill`.
+
+> `kill` sends SIGKILL immediately — no save. Use `stop` (Wings sends SIGINT → clean save) or prefer RCON `SaveAndExit` for a graceful, timer-controlled shutdown.
+
+The panel URL is `https://tsstammtisch.dchive.de:444`.  Claude Code can reach the
+Wings daemon directly (above) without needing a panel API key.
+
+## 6. Quick command reference
 
 | Purpose | RCON command |
 |---|---|
