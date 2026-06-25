@@ -158,18 +158,11 @@ Key points:
 - **The 30 s measurement interval is too coarse** to see the save burst clearly
   (it can fall between two snapshots).  Use `--interval 5` for save profiling.
 
-### `SOULMASK_MIN` decision
+### `SOULMASK_MIN` decision (run 1, superseded)
 
-DAMON warm 13 GiB exceeds available RAM.  Setting `memory.min = 13G` would
-starve everything else on a 16 GiB host.  The **actual working set** is:
-
-```
-RSS (7.7 G)  +  VmSwap (2.5 G)  =  10.2 G  →  SOULMASK_MIN = 10G
-```
-
-Set and applied 2026-06-25.  Combined with `memory.low = 12G` and
-`memory.zswap.writeback = 0`, the kernel will not write Soulmask's compressed
-pages to disk swap even under pressure.
+DAMON warm 13 GiB exceeded available RAM on this 16 GiB host.  Interim value
+`SOULMASK_MIN = 10G` was set from RSS (7.7 G) + VmSwap (2.5 G).  Superseded
+by the calibrated run below — see §7b.
 
 ### Limitations of this run / what to improve
 
@@ -181,7 +174,72 @@ pages to disk swap even under pressure.
 | No players → steady-state load is lower | repeat with players online |
 | Thresholds: everything lands in "warm" | lower warm threshold or use auto-tune |
 
-See §8 for the tuning rationale and next-run recommendations.
+See §8 for the tuning rationale and §7b for the calibrated result.
+
+## 7b. DAMON measurement — 2026-06-26 (calibrated, no players)
+
+### Run parameters
+
+```bash
+sudo damon_cli.py timeseries-pid <pid> \
+  --duration 1800 --interval 5 \
+  --sample-us 100000 --aggr-us 2000000 \
+  --min-regions 100 --max-regions 2000 \
+  --hot-rate 30 --warm-rate 10 --cold-age 5 --idle-age 60
+# 64 snapshots captured before analysis (12s–406s); server started via Wings API
+```
+
+### Startup phases
+
+| Phase | t | hot | warm | cold | idle | CPU% | Note |
+|---|---|---|---|---|---|---|---|
+| Init | 12–31s | 22–43 MiB | 195–467 MiB | 2175–2467 MiB | 0 | 100% | loading engine, 156–340 regions |
+| World load burst | 37–125s | 0–25 MiB | 0.7–2.6 GiB | 1.5–9.8 GiB | 0–691 MiB | **100–161%** | RSS grows 1→10 GiB; multi-core streaming |
+| Settling | 131–287s | 0–73 MiB | 5.7–9.0 GiB | 4.3–7.9 GiB | 0.7–2.5 GiB | 80–130% | world resident, warm expanding |
+
+CPU peaked at **160 %** — Soulmask uses multiple cores during the initial world
+load, not just the single-core game loop.
+
+### Steady-state snapshot (t > 287 s, no players)
+
+| Class | Median | Max | Min | Interpretation |
+|---|---|---|---|---|
+| **hot** | **19 MiB** | 22 MiB | 13 MiB | tight game-loop pages (netcode, physics tick) |
+| **warm** | **5.1 GiB** | 6.4 GiB | 4.4 GiB | actively used — must stay in RAM |
+| cold | 6.5 GiB | 7.4 GiB | 5.5 GiB | accessed <10% /2 s or last 5–60 s — safe for zswap |
+| idle | 2.7 GiB | 3.2 GiB | 2.1 GiB | not accessed for >60 s — prime zswap candidates |
+| RSS | 9.7 GiB | — | — | physical RAM (no swap — `memory.min=10G` was holding) |
+| VmSwap | **0** | — | — | no disk swap at all with the previous `memory.min=10G` |
+| CPU% | 67 % | 81 % | 63 % | single-threaded game tick at steady state |
+
+**Key insight:** the first run's `warm = 12–15 GiB` was an artefact of coarse
+1.5 GiB/region buckets + `warm_rate = 5 %`.  A single page access anywhere in
+a 1.5 GiB region every 2 s made the whole block "warm".  With 100-region
+granularity (~100 MiB buckets) and `warm_rate = 10 %`, the true warm footprint
+is **5.1 GiB** — the rest is cold/idle and compressible.
+
+### `SOULMASK_MIN` calibrated value
+
+```
+hot+warm median: 5.1 GiB
+hot+warm max:    6.4 GiB  (settling phase, player joins expected to be similar)
+safety margin:   + 600 MiB (covers save bursts, player joins — not yet measured)
+─────────────────────────
+SOULMASK_MIN = 7G
+```
+
+Applied 2026-06-26.  Cold (6.5 GiB) + idle (2.7 GiB) = **9.2 GiB** that the
+kernel is now free to compress into zswap or reclaim under pressure, recovering
+that RAM for dev containers.  With `memory.zswap.writeback = 0`, they stay in
+the fast compressed pool and do not hit disk.
+
+### Remaining unknowns
+
+| Scenario | Expected effect | When to measure |
+|---|---|---|
+| Players online (10–30) | warm may grow 1–2 GiB; hot spikes | during a play session |
+| Save event (`-saving=600`) | brief cold → warm flip, IO burst | capture across a save |
+| Map DLC vs base map | DLC has more assets → larger warm | compare maps |
 
 ## 8. DAMON tuning guide — regions, thresholds, auto-tune, zswap push
 

@@ -12,7 +12,7 @@ set -uo pipefail
 CG=/sys/fs/cgroup
 log(){ echo "[cgroups] $*"; }
 
-SOULMASK_MIN="${SOULMASK_MIN:-10G}"    # measured 2026-06-25: RSS 7.7G + VmSwap 2.5G = 10.2G working set
+SOULMASK_MIN="${SOULMASK_MIN:-7G}"     # calibrated 2026-06-26: hot+warm median 5.1G max 6.4G (100-region run, warm-rate=10%)
 SOULMASK_LOW="${SOULMASK_LOW:-12G}"
 
 # --- dev workloads: allow zswap pages to be written back to disk ---
