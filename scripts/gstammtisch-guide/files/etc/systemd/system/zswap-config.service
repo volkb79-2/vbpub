@@ -1,0 +1,25 @@
+[Unit]
+Description=Configure & enable zswap (zstd) before swap activates
+Documentation=https://docs.kernel.org/admin-guide/mm/zswap.html
+# Run early, before any swap device is turned on, so the FIRST and ONLY pool
+# zswap creates already uses zstd (no transient lzo pool, no cosmetic dmesg line).
+DefaultDependencies=no
+After=systemd-modules-load.service
+Before=swap.target
+ConditionPathExists=/sys/module/zswap/parameters/enabled
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Order matters and oneshot runs ExecStart= lines sequentially:
+# load zstd -> set compressor + pool knobs -> THEN enable.
+ExecStart=/sbin/modprobe zstd
+ExecStart=/bin/sh -c 'echo zstd > /sys/module/zswap/parameters/compressor'
+ExecStart=/bin/sh -c 'echo 30   > /sys/module/zswap/parameters/max_pool_percent'
+ExecStart=/bin/sh -c 'echo 90   > /sys/module/zswap/parameters/accept_threshold_percent'
+ExecStart=/bin/sh -c 'echo Y    > /sys/module/zswap/parameters/shrinker_enabled'
+ExecStart=/bin/sh -c 'echo 1    > /sys/module/zswap/parameters/enabled'
+ExecStartPost=/bin/sh -c 'echo "zswap: compressor=$(cat /sys/module/zswap/parameters/compressor) pool%=$(cat /sys/module/zswap/parameters/max_pool_percent) shrinker=$(cat /sys/module/zswap/parameters/shrinker_enabled) enabled=$(cat /sys/module/zswap/parameters/enabled)"'
+
+[Install]
+WantedBy=sysinit.target

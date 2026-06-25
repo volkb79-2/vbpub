@@ -1,0 +1,20 @@
+[Unit]
+Description=Gracefully save & stop Soulmask before shutdown (RCON SaveAndExit; SIGINT fallback)
+# On shutdown systemd stops units in REVERSE start order. With After=docker and
+# Before=wings, the stop sequence becomes:  wings -> THIS (save+wait) -> docker.
+# That means Wings is down first (won't auto-restart the container), the container
+# is still alive (docker up) while we save it, then docker tears it down.
+After=docker.service
+Before=wings.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Allow plenty of time for the DB write on a large world.
+TimeoutStopSec=180
+ExecStart=/bin/true
+ExecStop=/usr/local/sbin/soulmask-shutdown.sh
+
+[Install]
+WantedBy=multi-user.target

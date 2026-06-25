@@ -1,0 +1,15 @@
+[Unit]
+Description=Apply extra cgroup-v2 knobs (zswap writeback + Soulmask protection)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Soulmask's container cgroup only exists while it's running; this is safe to
+# re-run any time (e.g. after the server (re)starts). Optionally drive it from a
+# .timer or a Pterodactyl post-start hook to re-assert after container recreation.
+ExecStart=/usr/local/sbin/setup-cgroups.sh
+
+[Install]
+WantedBy=multi-user.target
