@@ -8,6 +8,9 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"          # gstammtisch-guide/
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 
 echo "== copying config files from $HERE/files into / =="
+# Remove the minimal sysctl stub deployed by the initial commit; the full
+# documented version (99-gstammtisch-memory.conf) supersedes it.
+rm -f /etc/sysctl.d/99-memory.conf
 cp -av "$HERE/files/etc/."            /etc/
 cp -av "$HERE/files/usr/local/sbin/." /usr/local/sbin/
 chmod +x /usr/local/sbin/setup-cgroups.sh /usr/local/sbin/soulmask-shutdown.sh

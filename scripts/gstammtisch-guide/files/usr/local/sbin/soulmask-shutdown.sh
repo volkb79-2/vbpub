@@ -11,6 +11,16 @@ for c in $(docker ps -q 2>/dev/null); do
 done
 [ -z "$CID" ] && { log "no Soulmask container running"; exit 0; }
 
+# Stop Wings (Docker Compose service) BEFORE saving so it can't auto-restart
+# Soulmask while we wait for the DB write.  Wings has restart=always; without
+# this step it would relaunch the container mid-shutdown, risking a torn save.
+# We match by the Compose service label rather than a hardcoded container name.
+WINGS_CID=$(docker ps -q --filter 'label=com.docker.compose.service=wings' 2>/dev/null | head -n1)
+if [ -n "$WINGS_CID" ]; then
+  log "stopping Wings container ($WINGS_CID) to prevent Soulmask auto-restart..."
+  docker stop --time=5 "$WINGS_CID" 2>/dev/null || true
+fi
+
 log "requesting RCON SaveAndExit 10 ..."
 if [ -x "$RCON" ] && "$RCON" SaveAndExit 10; then
   log "SaveAndExit issued"
