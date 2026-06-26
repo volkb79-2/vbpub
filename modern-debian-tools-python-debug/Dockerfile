@@ -300,7 +300,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     EXPECTED_CDEBUG_SHA256="$(grep "cdebug_linux_${cdebug_arch}.tar.gz\$" "${DOWNLOADS_DIR}/cdebug-${CDEBUG_VER}-checksums.txt" | awk '{print $1}')"; \
     echo "${EXPECTED_CDEBUG_SHA256}  ${DOWNLOADS_DIR}/cdebug-${CDEBUG_VER}.tar.gz" | sha256sum -c -; \
     install_from_tar "${DOWNLOADS_DIR}/cdebug-${CDEBUG_VER}.tar.gz" cdebug /tmp/cdebug-extract; \
-    cdebug version; \
+    cdebug --version; \
     python3 /tmp/install_ai_cli_tools.py root; \
     rm -rf \
         /tmp/codex-extract \
@@ -558,7 +558,7 @@ RUN set -euo pipefail; \
             echo "grype=not-installed"; \
         fi; \
         if command -v cdebug >/dev/null 2>&1; then \
-            echo "cdebug=$(cdebug version 2>&1 | head -1)"; \
+            echo "cdebug=$(cdebug --version 2>&1 | head -1)"; \
         else \
             echo "cdebug=not-installed"; \
         fi; \
