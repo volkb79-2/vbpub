@@ -17,7 +17,7 @@ log(){ echo "[cgroups] $*"; }
 
 SOULMASK_MIN="${SOULMASK_MIN:-4608M}" # calibrated 2026-06-26: demand floor ~4G (2 players, run 5); +0.5G burst buffer (4608M = 4.5G)
 SOULMASK_LOW="${SOULMASK_LOW:-12G}"
-SOULMASK_HIGH="${SOULMASK_HIGH:-7G}"  # calibrated 2026-06-26: 3G headroom above 4G working set; raise for 10+ players
+SOULMASK_HIGH="${SOULMASK_HIGH:-max}" # max = no ceiling in normal operation; set to e.g. 7G only during pressure tests
 
 # --- dev workloads: allow zswap pages to be written back to disk ---
 DEV="$CG/dev-workloads.slice"

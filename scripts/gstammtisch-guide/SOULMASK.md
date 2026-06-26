@@ -699,33 +699,41 @@ address currently in zswap, the kernel decompresses that page and places it in R
 
 | Knob | Value | Rationale |
 |---|---|---|
-| `memory.high` | **7G** | covers natural 4G demand + 3G headroom for bursts and more players |
-| `memory.min` | **4.5G** | measured 4G working set + 500M buffer; protects against external reclaim |
+| `memory.high` | **max** | no artificial ceiling; Soulmask uses exactly what it needs |
+| `memory.min` | **4608M** (4.5G) | measured 4G working set + 0.5G buffer; protects against external reclaim |
 | `memory.zswap.writeback` | **0** | keeps cold pages in fast compressed pool, never evicted to disk |
 | `memory.low` | 12G | best-effort; unchanged from prior calibration |
 
-Update `setup-cgroups.sh` `SOULMASK_MIN=4.5G` once confirmed stable with 10+ players.
-Expect `SOULMASK_MIN` to increase ~0.5–1G per additional 10 players as hot+warm expands.
+**`memory.high` is a pressure-test tool, not a production knob.**  On a host with ample
+RAM, setting a ceiling gives no benefit — it only forces unnecessary zswap compression and
+adds CPU overhead for decompression on every access.  `memory.high` is set only during
+controlled experiments (§7e below) to deliberately induce memory pressure and find the
+minimum viable working set.
+
+Update `setup-cgroups.sh` `SOULMASK_MIN` once confirmed stable with 10+ players.
+Expect the demand floor to grow ~0.5–1G per additional 10 players.
 
 ### Startup constraint rule
 
-**Never apply `memory.high` or `memory.min` during server startup.**
+**Never apply `memory.high` during server startup.**
 
 During cold-disk startup, UE4 needs >4G to load pak files, initialise world state, and
 decompress assets.  Applying a ceiling before initialisation completes either crashes the
 server (2G during cold start → crash within 10 min) or leaves it unresponsive (2G from
 warm-zswap start → 135M RSS, RCON silent).
 
-Correct startup sequence:
+`memory.min` is safe to apply any time (it protects, not restricts), but in normal
+production operation `memory.high=max` means there is nothing to apply anyway.
+
+Correct startup sequence for pressure tests:
 ```
-1. Start server with memory.high=max, memory.min=0  (no constraints)
+1. Start server with memory.high=max  (default; soulmask-cgroup-watcher handles this)
 2. Wait until RCON responds: List_OnlinePlayers succeeds
-3. THEN apply memory.high + memory.min
+3. THEN apply memory.high test ceiling
 ```
 
-The setup-cgroups.sh script already handles this correctly (it is called after Wings start,
-which implies the server is running).  The bug in run 4 was applying constraints via the
-watcher script at container-creation time, before RCON was ready.
+`soulmask-cgroup-watcher.service` enforces this automatically — it detects the container,
+polls until RCON responds, then calls `setup-cgroups.sh` (which defaults to `memory.high=max`).
 
 ### Remaining unknowns
 
@@ -735,6 +743,290 @@ watcher script at container-creation time, before RCON was ready.
 | Large-area exploration | minflt burst as new world chunks load from zswap |
 | Save event under load | CPU spike + possible RCON stall spike (1–2 s) |
 | True production memory.min | Rerun with players, observe demand floor over 30+ min |
+
+## 7e. Planned run 6 — tighten from unconstrained (find minimum viable ceiling)
+
+**Goal:** find the lowest `memory.high` at which gameplay remains acceptable, without the
+cold-start crash risk of run 4.  Start unlimited so the server fully populates its working
+set, then apply descending pressure in small steps until players notice issues or zswap
+shows sustained write activity.
+
+**Why this direction (down) instead of run 5 (up):**
+- Run 5 (constrained start → relax up): safe, but starting point (2–4G) made RCON
+  unreliable, so the experiment started well above the constraint we wanted to test.
+- Run 6 (unconstrained start → tighten down): server starts at full speed, we observe
+  the exact threshold where quality degrades.  Tightening is also gradual (500M steps)
+  so the kernel has time to compress pages incrementally — no reclaim burst.
+
+### Setup
+
+```bash
+# 1. Start server via Wings with no memory.high (default = max)
+WINGS_TOKEN=$(sudo awk '/^token:/{print $2}' /etc/pterodactyl/config.yml)
+curl -sk -X POST -H "Authorization: Bearer $WINGS_TOKEN" \
+  -H "Content-Type: application/json" -d '{"action":"start"}' \
+  https://localhost:8080/api/servers/b87c0a5b-2387-4a1c-8863-ff23e6800a1d/power
+
+# 2. Wait for steady state (RCON responds + RSS stable)
+until sudo /usr/local/sbin/exec-soulmask-rcon.sh List_OnlinePlayers &>/dev/null
+do sleep 10; done && echo "RCON ready"
+
+# 3. Resolve PID and scope
+PID=$(sudo docker top b87c0a5b-2387-4a1c-8863-ff23e6800a1d 2>/dev/null | awk '/WSServer/{print $2}' | head -1)
+SCOPE=$(sudo awk -F: '/^0::/{print $3}' /proc/$PID/cgroup | xargs -I{} echo /sys/fs/cgroup{})
+echo "PID=$PID  SCOPE=$SCOPE"
+
+# 4. Confirm starting state (should be RSS≈9.7G, swap=0, memory.high=max)
+awk '/VmRSS|VmSwap/{printf "%s %dM\n",$1,$2/1024}' /proc/$PID/status
+sudo cat $SCOPE/memory.high
+```
+
+### Start measurements (three parallel terminals)
+
+```bash
+# Terminal A — DAMON snapshots
+DIR=/home/vb/volkb79-2/vbpub/scripts/damon-analysis
+TS=$(date +%Y%m%d_%H%M%S)
+cd $DIR && sudo python3 damon_cli.py timeseries-pid $PID \
+  --interval 10 --max-regions 40 --warm-rate 0.10 --hot-rate 0.01 \
+  --duration 7200 --output-file output/soulmask_run6_${TS}.jsonl
+
+# Terminal B — persistent RCON probe at 200 ms
+PASS=$(sudo docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+       $(docker ps -q | head -1) | sed -n 's/^RCON_PASSWORD=//p')
+sudo nsenter --net=/proc/$PID/ns/net \
+  python3 $DIR/rcon_probe.py \
+  --host 127.0.0.1 --port 19000 --password "$PASS" \
+  --interval 0.2 --pid $PID --cgroup-scope "$SCOPE" \
+  --output $DIR/output/rcon_run6_${TS}.jsonl
+
+# Terminal C — zswap pressure monitor (delta of /proc/vmstat per step)
+watch -n 5 'grep -E "zswp(in|out)|zswap" /proc/vmstat'
+```
+
+### Players log in, let RSS stabilise, then tighten
+
+After players are connected and RSS is stable (observe for 5+ min):
+
+```bash
+# Read initial zswap counters
+grep -E "zswpin|zswpout" /proc/vmstat
+
+# Apply first ceiling just below current RSS (round down to nearest 500M)
+# e.g. if RSS=9.7G, start at 9G
+sudo bash -c "echo 9663676416 > $SCOPE/memory.high"   # 9G
+echo "$(date +%H:%M:%S)  memory.high=$(( $(sudo cat $SCOPE/memory.high) / 1073741824 ))G"
+```
+
+### Tightening steps (500M per step, ~3 min between)
+
+| Step | memory.high | Bytes | Expected RSS | Watch for |
+|---|---|---|---|---|
+| start | max | — | ~9.7G | baseline; zswpout=0 |
+| 1 | 9G | 9663676416 | ~9G | first zswpout activity |
+| 2 | 8.5G | 9126805504 | ~8.5G | zswpout rate |
+| 3 | 8G | 8589934592 | ~8G | minflt rises? |
+| 4 | 7.5G | 8053063680 | ~7.5G | |
+| 5 | 7G | 7516192768 | ~7G | |
+| 6 | 6.5G | 6979321856 | ~6.5G | |
+| 7 | 6G | 6442450944 | ~6G | sched_wait rises? |
+| 8 | 5.5G | 5905580032 | ~5.5G | |
+| 9 | 5G | 5368709120 | ~5G | player reports lag? |
+| 10 | 4.5G | 4831838208 | ~4.5G | RCON RTT spikes? |
+| 11 | 4G | 4294967296 | ~4G | confirmed lag threshold from run 5 |
+
+Step command (no memory.min adjustment needed — we're not setting a floor during test):
+```bash
+sudo bash -c "echo $BYTES > $SCOPE/memory.high"
+echo "$(date +%H:%M:%S)  high=$(( $(sudo cat $SCOPE/memory.high) / 1073741824 ))G  RSS=$(awk '/VmRSS/{print $2}' /proc/$PID/status | awk '{printf "%dM\n",$1/1024}')  zswpout=$(grep zswpout /proc/vmstat | awk '{print $2}')"
+```
+
+### Stop condition
+
+Stop tightening when **any two** of:
+1. `/proc/vmstat zswpout` increases by >1000 pages between 3-min samples (sustained swap-out)
+2. RCON probe shows spikes >200ms or failure rate >5%
+3. Player reports noticeable lag or rubberbanding
+
+Record the step at which this occurs — that is the **minimum viable ceiling**.
+The previous step (500M higher) is the safe production `memory.high` if a ceiling is desired.
+
+### Key metrics per step
+
+```bash
+# Quick snapshot after each step (run once per step, wait 3 min first)
+python3 - <<'EOF'
+import json, statistics, time
+RCON_FILE = "output/rcon_run6_<TS>.jsonl"   # update timestamp
+lines = open(RCON_FILE).readlines()
+cutoff = time.time() - 180   # last 3 min
+rows = [json.loads(l) for l in lines if json.loads(l)['ts'] > cutoff]
+ok = [r for r in rows if r['ok']]
+rtts = [r['rtt_ms'] for r in ok]
+s = sorted(rtts)
+print(f"RCON: {len(ok)}/{len(rows)} OK  p50={statistics.median(rtts):.0f}ms  p95={s[int(len(s)*.95)]:.0f}ms  max={max(rtts):.0f}ms")
+print(f"RSS={ok[-1]['rss_kb']//1024}M  swap={ok[-1]['swap_kb']//1024}M")
+EOF
+```
+
+---
+
+## 9. Manual observation commands
+
+Quick reference for watching Soulmask live without starting a full DAMON run.
+
+### 9.1 Resolve PID and cgroup scope
+
+```bash
+PID=$(sudo docker top b87c0a5b-2387-4a1c-8863-ff23e6800a1d 2>/dev/null \
+      | awk '/WSServer/{print $2}' | head -1)
+SCOPE=$(sudo awk -F: '/^0::/{print $3}' /proc/$PID/cgroup \
+        | xargs -I{} echo /sys/fs/cgroup{})
+echo "PID=$PID"
+echo "SCOPE=$SCOPE"
+```
+
+### 9.2 RSS, swap, and cgroup limits at a glance
+
+```bash
+# Memory footprint
+awk '/VmRSS|VmSwap|VmPeak/{printf "%-10s %dM\n",$1,$2/1024}' /proc/$PID/status
+
+# Active cgroup limits
+for k in memory.high memory.min memory.low memory.zswap.writeback; do
+    v=$(sudo cat $SCOPE/$k 2>/dev/null)
+    # Convert bytes to G for non-"max" values
+    [[ "$v" =~ ^[0-9]+$ ]] && v="$v  ($(( v / 1073741824 ))G)" 
+    echo "  $k = $v"
+done
+```
+
+### 9.3 zswap pool (requires root — debugfs)
+
+```bash
+# Current pool: stored pages and compressed size
+sudo bash -c '
+  SP=$(cat /sys/kernel/debug/zswap/stored_pages)
+  PS=$(cat /sys/kernel/debug/zswap/pool_total_size)
+  UNCOMPRESSED=$(( SP * 4096 ))
+  echo "stored pages:     $SP  ($(( UNCOMPRESSED / 1048576 ))M uncompressed)"
+  echo "pool size:        $(( PS / 1048576 ))M compressed"
+  echo "compression ratio: $(awk "BEGIN{printf \"%.2fx\", $UNCOMPRESSED/$PS}")"
+'
+```
+
+### 9.4 zswap activity — pages moving in/out
+
+```bash
+# Cumulative counters — take two readings and diff
+grep -E "zswpin|zswpout" /proc/vmstat
+
+# Live delta every 10s (Ctrl-C to stop)
+python3 -c "
+import time
+def read():
+    d={}
+    for l in open('/proc/vmstat'):
+        if 'zswp' in l:
+            k,v=l.split(); d[k]=int(v)
+    return d
+prev=read(); time.sleep(10)
+while True:
+    cur=read()
+    now=time.strftime('%H:%M:%S')
+    print(f'{now}  zswpin={cur[\"zswpin\"]-prev[\"zswpin\"]}/10s  zswpout={cur[\"zswpout\"]-prev[\"zswpout\"]}/10s')
+    prev=cur; time.sleep(10)
+"
+```
+
+**Interpretation:**
+- `zswpout > 0` — kernel is compressing pages into zswap (pressure).  Occasional bursts
+  (save events, joins) are normal; sustained high rates indicate the ceiling is too tight.
+- `zswpin > 0` — game is reading pages back from zswap (demand faults).  Some is normal;
+  high rates correlate with minflt spikes and player-perceived lag.
+
+### 9.5 minflt rate (zswap decompression demand)
+
+```bash
+# Single reading: minor page faults/s over 5s
+python3 -c "
+import time
+fields = open('/proc/$PID/stat').read().split()
+f0 = int(fields[9]); t0 = time.time()
+time.sleep(5)
+fields = open('/proc/$PID/stat').read().split()
+f1 = int(fields[9]); dt = time.time() - t0
+print(f'minflt_rate: {int((f1-f0)/dt)}/s  (zswap decompressions per second)')
+print('  < 2000/s = low pressure')
+print('  2000–6000/s = moderate (occasional lag bursts possible)')
+print('  > 6000/s = high pressure (sustained lag)')
+"
+```
+
+### 9.6 RCON quick test and latency
+
+```bash
+# Connectivity check (also shows online players)
+sudo /usr/local/sbin/exec-soulmask-rcon.sh List_OnlinePlayers
+
+# Persistent latency probe (200 ms interval, Ctrl-C to stop, prints JSONL)
+PASS=$(sudo docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+       $(docker ps -q | head -1) | sed -n 's/^RCON_PASSWORD=//p')
+sudo nsenter --net=/proc/$PID/ns/net \
+  python3 /home/vb/volkb79-2/vbpub/scripts/damon-analysis/rcon_probe.py \
+  --host 127.0.0.1 --port 19000 --password "$PASS" \
+  --interval 0.2 --pid $PID --cgroup-scope "$SCOPE" \
+  | python3 -c "
+import json,sys,statistics,collections
+window=collections.deque(maxlen=50)
+for line in sys.stdin:
+    d=json.loads(line); window.append(d)
+    ok=[r for r in window if r['ok']]
+    if ok:
+        rtts=[r['rtt_ms'] for r in ok]
+        print(f\"{d['elapsed']:.0f}s  rtt p50={statistics.median(rtts):.0f}ms max={max(rtts):.0f}ms  RSS={d['rss_kb']//1024}M\", flush=True)
+"
+```
+
+**Interpretation:**
+- p50 < 30ms, max < 200ms: healthy
+- p50 30–100ms: game thread under pressure (zswap decompression competing for CPU)
+- max > 500ms or failures: RCON listener evicted from RAM; serious pressure
+
+### 9.7 Apply / read / clear memory.high
+
+```bash
+# Read current ceiling
+sudo cat $SCOPE/memory.high   # "max" = unlimited; integer bytes otherwise
+
+# Apply a ceiling (e.g. 7G = 7516192768 bytes)
+sudo bash -c "echo 7516192768 > $SCOPE/memory.high"
+
+# Remove ceiling (back to unlimited)
+sudo bash -c "echo max > $SCOPE/memory.high"
+
+# Common byte values:
+#   4G  = 4294967296    5G  = 5368709120    6G  = 6442450944
+#   7G  = 7516192768    8G  = 8589934592    9G  = 9663676416
+#   8.5G = 9126805504   7.5G = 8053063680   6.5G = 6979321856
+#   5.5G = 5905580032   4.5G = 4831838208   4608M = 4831838208
+```
+
+### 9.8 Combined live status (one-liner)
+
+```bash
+# Print a status line every 10s
+while true; do
+    RSS=$(awk '/VmRSS/{print $2}' /proc/$PID/status)
+    SWP=$(awk '/VmSwap/{print $2}' /proc/$PID/status)
+    MH=$(sudo cat $SCOPE/memory.high)
+    [[ "$MH" =~ ^[0-9]+$ ]] && MH_LABEL="$(( MH/1073741824 ))G" || MH_LABEL="max"
+    ZOUT=$(grep zswpout /proc/vmstat | awk '{print $2}')
+    ZIN=$(grep zswpin  /proc/vmstat | awk '{print $2}')
+    echo "$(date +%H:%M:%S)  RSS=$((RSS/1024))M  swap=$((SWP/1024))M  high=$MH_LABEL  zswpout=$ZOUT  zswpin=$ZIN"
+    sleep 10
+done
+```
 
 ---
 
