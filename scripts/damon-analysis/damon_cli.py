@@ -99,6 +99,31 @@ def _read_vm_swap_kb(pid: int) -> int:
         pass
     return 0
 
+def _read_minflt_majflt(pid: int) -> tuple:
+    """Return (minflt, majflt) from /proc/<pid>/stat, (0,0) on error."""
+    try:
+        fields = open(f'/proc/{pid}/stat').read().split()
+        return int(fields[9]), int(fields[11])
+    except OSError:
+        return 0, 0
+
+def _read_ivcsw(pid: int) -> int:
+    """Return nonvoluntary_ctxt_switches/s from /proc/<pid>/status, 0 on error."""
+    try:
+        for line in open(f'/proc/{pid}/status'):
+            if line.startswith('nonvoluntary_ctxt_switches:'):
+                return int(line.split()[1])
+    except OSError:
+        pass
+    return 0
+
+def _read_sched_wait_ns(pid: int) -> int:
+    """Return cumulative runqueue wait time in ns from /proc/<pid>/schedstat field 2."""
+    try:
+        return int(open(f'/proc/{pid}/schedstat').read().split()[1])
+    except OSError:
+        return 0
+
 
 def die(msg: str, code: int = 1):
     """Print error and exit."""
@@ -873,6 +898,9 @@ def cmd_timeseries_pid(args):
 
         _prev_jiffies = _read_cpu_jiffies(pid)
         _prev_io = _read_proc_io(pid)
+        _prev_minflt, _prev_majflt = _read_minflt_majflt(pid)
+        _prev_ivcsw = _read_ivcsw(pid)
+        _prev_sched_wait_ns = _read_sched_wait_ns(pid)
         _prev_sample_ts = time.time()
 
         while time.time() - start_ts < duration:
@@ -891,11 +919,20 @@ def cmd_timeseries_pid(args):
             _dt = max(_now_ts - _prev_sample_ts, 0.001)
             _now_j = _read_cpu_jiffies(pid)
             _now_io = _read_proc_io(pid)
-            cpu_pct = round(max(0.0, (_now_j - _prev_jiffies) / _CLK_TCK / _dt * 100), 1)
+            _now_minflt, _now_majflt = _read_minflt_majflt(pid)
+            _now_ivcsw = _read_ivcsw(pid)
+            _now_sched_wait_ns = _read_sched_wait_ns(pid)
+            cpu_pct      = round(max(0.0, (_now_j - _prev_jiffies) / _CLK_TCK / _dt * 100), 1)
             io_read_bps  = max(0, int((_now_io.get('read_bytes',  0) - _prev_io.get('read_bytes',  0)) / _dt))
             io_write_bps = max(0, int((_now_io.get('write_bytes', 0) - _prev_io.get('write_bytes', 0)) / _dt))
             vm_swap_kb   = _read_vm_swap_kb(pid)
+            minflt_rate  = max(0, int((_now_minflt - _prev_minflt) / _dt))
+            majflt_rate  = max(0, int((_now_majflt - _prev_majflt) / _dt))
+            ivcsw_rate   = max(0, int((_now_ivcsw - _prev_ivcsw) / _dt))
+            sched_wait_ms = round(max(0.0, (_now_sched_wait_ns - _prev_sched_wait_ns) / 1_000_000), 1)
             _prev_jiffies, _prev_io, _prev_sample_ts = _now_j, _now_io, _now_ts
+            _prev_minflt, _prev_majflt = _now_minflt, _now_majflt
+            _prev_ivcsw, _prev_sched_wait_ns = _now_ivcsw, _now_sched_wait_ns
 
             entry = {
                 'ts_iso': time.strftime('%Y-%m-%dT%H:%M:%S'),
@@ -910,10 +947,14 @@ def cmd_timeseries_pid(args):
                                   'count': summary[cls]['count']}
                             for cls in ['hot', 'warm', 'cold', 'idle']},
                 'total_bytes': sum(s['bytes'] for s in summary.values()),
-                'cpu_pct':      cpu_pct,
-                'io_read_bps':  io_read_bps,
-                'io_write_bps': io_write_bps,
-                'vm_swap_kb':   vm_swap_kb,
+                'cpu_pct':       cpu_pct,
+                'io_read_bps':   io_read_bps,
+                'io_write_bps':  io_write_bps,
+                'vm_swap_kb':    vm_swap_kb,
+                'minflt_rate':   minflt_rate,
+                'majflt_rate':   majflt_rate,
+                'ivcsw_rate':    ivcsw_rate,
+                'sched_wait_ms': sched_wait_ms,
                 'regions': [{'start': r['start'], 'end': r['end'],
                              'size_bytes': r['size_bytes'],
                              'access_rate_pct': round(r['access_rate_pct'], 2),

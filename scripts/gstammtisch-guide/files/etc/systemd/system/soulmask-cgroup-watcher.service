@@ -1,0 +1,15 @@
+[Unit]
+Description=Wait for Soulmask RCON ready then apply cgroup knobs
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/soulmask-cgroup-watcher.sh
+Restart=always
+RestartSec=10
+# Allow slow startup (RCON can take several minutes on first cold-disk load)
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

@@ -66,6 +66,43 @@ exec-soulmask-rcon.sh broadcast Reboot in 60s     # multi-word args are forwarde
 
 **If the connection test fails**, the `-d` output localizes it: container detection, empty password env, or — most likely — the **RCON IP whitelist** rejecting the connection. If loopback is rejected, add `127.0.0.1` to Soulmask's RCON allowed-IP list (server config) or whitelist the helper's bridge IP.
 
+### 4b. High-frequency RCON latency probe (`rcon_probe.py`)
+
+`exec-soulmask-rcon.sh` spawns a fresh `nsenter` + Docker container per call.
+The process overhead alone is **~720 ms**, making it useless as a game-thread
+latency probe.  `rcon_probe.py` keeps a **persistent TCP connection** to the
+RCON port and sends a probe command every 200 ms on the same socket.
+
+True game-thread round-trip (measured at RSS ≈ 3.9 G in zswap recovery):
+**7–34 ms** — a 20–100× improvement in absolute accuracy.
+
+```bash
+# Port/password are injected into the container env by Wings.
+PORT=$(sudo docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+       <container-id> | sed -n 's/^RCON_PORT=//p')
+PASS=$(sudo docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+       <container-id> | sed -n 's/^RCON_PASSWORD=//p')
+PID=$(sudo docker top <container-id> | awk '/WSServer/{print $2}' | head -1)
+SCOPE=$(sudo awk -F: '/^0::/{print $3}' /proc/$PID/cgroup \
+        | xargs -I{} echo /sys/fs/cgroup{})
+
+# Run inside the container's network namespace for loopback access
+sudo nsenter --net=/proc/$PID/ns/net \
+  python3 scripts/damon-analysis/rcon_probe.py \
+  --host 127.0.0.1 --port $PORT --password $PASS \
+  --interval 0.2 --pid $PID --cgroup-scope $SCOPE \
+  --output scripts/damon-analysis/output/rcon_<run>.jsonl
+```
+
+Output per probe (JSONL): `ts`, `elapsed`, `rtt_ms`, `ok`, `rss_kb`,
+`swap_kb`, `memory_high_bytes`.
+
+**Corrected interpretation of run 3 latency data:**
+The run 3 "RCON latency" log (720 ms median, 10 s max) reflected almost
+entirely the `nsenter` + `docker run` process-spawn cost, not the game thread.
+The 10-second stalls should be treated as **unmeasured** — the persistent probe
+is required for valid latency data.  Run 4 onward uses `rcon_probe.py`.
+
 ## 5. Wings daemon API — scripted start/stop
 
 Wings exposes a local HTTPS API on port 8080.  No extra secrets needed — the
@@ -294,6 +331,412 @@ these stay in the compressed pool and never hit disk.
 --monitoring_intervals_autotune          # kernel auto-tunes sample/aggr during load bursts
 --interval 5 --duration 3600            # capture a full 10-min save cycle
 ```
+
+## 7c. DAMON measurement — 2026-06-26 (zswap compression experiment, 1 player)
+
+### Run parameters
+
+```
+--hot-rate 15  --warm-rate 5  --cold-age 15  --idle-age 60
+--min-regions 500  --max-regions 10000
+--sample-us 100000  --aggr-us 2000000  --interval 5  --duration 1800
+```
+
+No devcontainer running. Soulmask started fresh via Wings API.
+`zswap.max_pool_percent` raised to 50% before start (pool ceiling 8 GiB).
+`setup-cgroups.sh` was **not** called this run — `memory.min=0`, `memory.zswap.writeback`
+not set initially; `writeback=0` applied manually before the compression experiment.
+
+New metrics captured per snapshot: `minflt_rate`, `majflt_rate`, `ivcsw_rate`,
+`sched_wait_ms` (added to `damon_cli.py` after this run, available from run 4 onward).
+
+### Phases and results
+
+| Phase | t (s) | RSS | zswap VmSwap | CPU | hot | warm |
+|---|---|---|---|---|---|---|
+| Startup | 0–120 | 9.74 G | 0 | 66% | 159 M | 5.9 G |
+| No-player steady | 300–480 | 9.73 G | 0 | 71% | 156 M | 5.7 G |
+| Player joins | 480– | 9.74 G | 0 | 85% | 206 M | 6.7 G |
+| Save event | ~600 | 9.74 G | 0 | 106% peak | — | — |
+| memory.high=7G applied | 901 | 9.74 G→3.5 G | 0→6.1 G | 380% burst | — | — |
+| Compressed steady | 915–1650 | 3.8 G median | 6.0 G | 91% | 207 M | 6.7 G |
+| Restored (memory.high=max) | 1700+ | 0.76 G* | 9.0 G* | 102% | 225 M | 6.9 G |
+
+\* RSS was still refaulting from zswap at end of run — had not yet returned to 9.7 G.
+
+**Total: 279 snapshots over 1803 s.**
+
+### Player join effect
+
+One player joining at t ≈ 474 s produced minimal memory change:
+- CPU: +3% (66% no-player → 85% with player)
+- warm: +1 G (5.7 G → 6.7 G), stable thereafter
+- hot: +50 M median, noisy 90–450 M range
+
+Server was already running full world simulation; adding one player is relatively
+cheap on memory. Hot footprint driven by game loop, not player count.
+
+### Save event (t ≈ 600 s)
+
+- CPU spike: 82% baseline → **106%** peak (world serialisation, ~30 s duration)
+- IO write bytes (`/proc/<pid>/io`): 0 — Unreal Engine uses async buffered writes;
+  actual block-device flush goes through kernel writeback threads, not the game PID.
+- Memory: no significant hot/warm shift during save.
+
+### Compression experiment — key findings
+
+`memory.high=7G` was applied at t = 901 s (with `memory.min=0`, no floor protection).
+The kernel burst-reclaimed far past the 7 G target:
+
+```
+t=901s  RSS=9.74 G   swap=0      CPU=78%
+t=908s  RSS=9.69 G   swap=57 M   CPU=88%    ← reclaim begins
+t=915s  RSS=7.80 G   swap=1.95 G CPU=317%   ← burst
+t=921s  RSS=4.92 G   swap=4.82 G CPU=381%   ← burst peak
+t=927s  RSS=5.23 G   swap=4.47 G CPU=112%   ← settling
+t=933s+  RSS≈3.8 G   swap≈6.0 G  CPU=91%   ← new steady state
+```
+
+The kernel overshot 7 G all the way to **3.8 G RSS** because `memory.min=0` provided
+no floor.  Without a lower bound, kswapd runs in large bursts and does not back off.
+
+**Compressed steady state (2-minute window after settling):**
+
+| Metric | Value |
+|---|---|
+| Physical RSS | 3.8 G (median), 520 M–5.2 G range during settling |
+| zswap VmSwap | 6.0 G |
+| Compression ratio | **2.96×** for warm pages; **3.58×** for cold+idle combined |
+| CPU overhead | +5–6% vs uncompressed (91% vs 85%) |
+| hot tier (DAMON) | 207 M median — unchanged; kernel keeps hot pages resident |
+| warm tier (DAMON) | 6.7 G median — unchanged; pages accessed through zswap on demand |
+
+DAMON warm stayed at 6.7 G even with RSS at 3.8 G: DAMON measures virtual address
+accesses, not physical residency.  Warm pages were decompressed on each access and
+immediately re-eligible for reclaim.
+
+### Effective memory footprint at compressed steady state
+
+```
+Physical RAM:   3.8 G
+zswap pool:     ~2.0 G compressed  (6.0 G uncompressed at 2.96×)
+─────────────────────────
+Effective total:  5.8 G  vs  9.7 G uncompressed  →  40% RAM saving
+```
+
+### zswap compression ratios (Soulmask game data, zstd)
+
+| Pages in zswap | Ratio | Notes |
+|---|---|---|
+| Warm pages only (~6 G) | 2.96× | active game data, higher entropy |
+| Cold + idle added (~9 G total) | 3.58× | older/colder data compresses better |
+| System baseline (no Soulmask) | 3.7× | system pages incl. zeroed |
+
+### RCON latency as server-side proxy
+
+RCON round-trip time (via `exec-soulmask-rcon.sh`) measures game-thread
+responsiveness.  Baseline ~720 ms is high due to `nsenter`/docker-exec overhead,
+not raw game latency — use the **relative delta**, not the absolute value.
+
+| State | RCON median | RCON p95 | RCON max | minflt/s |
+|---|---|---|---|---|
+| Compressed (RSS≈750 M, swap≈9 G) | 726 ms | **10 350 ms** | **10 377 ms** | 3 563 |
+| Restored (memory.high=max) | 712 ms | 781 ms | 1 021 ms | 14 280* |
+
+\* Restore minflt peak 75 047/s = page-fault storm as pages refault from zswap.
+
+The 10-second stall spikes in the compressed state are the rubberbanding the player
+felt.  With 3.8 G RSS, DAMON hot=0 M appeared in 3 consecutive snapshots (~18 s) —
+the reclaim storm temporarily evicted even hot pages, stalling the game thread.
+
+### Caveats and confounds
+
+- `memory.min=0` throughout — the kernel had no floor protection, causing the
+  extreme overshoot.  Run 4 will set `memory.min` equal to the current stage floor.
+- Rubberbanding onset time is uncertain: the player reported rubberbanding, but the
+  compression went from 9.7 G → 3.8 G in a single burst.  We do not know whether
+  3.8 G alone would cause rubberbanding if reached gradually.
+- RCON latency baseline (~720 ms) is dominated by script overhead and cannot be used
+  as an absolute game latency measure.
+- Run 3 captured 279 snapshots but `minflt_rate`/`ivcsw_rate`/`sched_wait_ms` were
+  **not** in the JSONL (added to `damon_cli.py` after the run); only in the side log
+  `latency_20260626_011223.jsonl`.
+
+### What run 4 must fix / changes made
+
+1. `minflt_rate`, `majflt_rate`, `ivcsw_rate`, `sched_wait_ms` added to DAMON JSONL
+   (done in `damon_cli.py`).
+2. `rcon_probe.py` — persistent-connection 200 ms RCON probe, replaces old script-per-call
+   approach.  True baseline RTT: **7–34 ms** (vs 720 ms script overhead).
+3. Apply `memory.zswap.writeback=0` and `memory.min` **immediately after container start**
+   via a watch-and-apply script — not via `setup-cgroups.sh` (which requires Soulmask to
+   already be running).
+4. Use **inverted phase order** (run 4 plan — see below): start the server *under*
+   memory constraint, then relax upward.  Avoids repeated reclaim bursts; going up is
+   always smooth (demand-driven refaults only).
+
+### Run 4 plan — start constrained, relax upward
+
+**Rationale:** relaxing memory.high upward causes zero burst — pages only return to RAM
+when the game actually faults them in (`zswpin`).  The rate of `zswpin` at each 500 M
+relaxation step is the direct answer to "how much does this tier of RAM benefit the game?"
+If `zswpin` drops to near-zero at level X, the game has filled its natural demand; X is
+the production `memory.high` ceiling.
+
+**Setup (before Wings start):**
+```bash
+# Widen zswap pool so the full 9.7 G working set fits compressed at startup
+sudo sh -c 'echo 50 > /sys/module/zswap/parameters/max_pool_percent'
+```
+
+**Constraint watcher — apply immediately after container cgroup is created:**
+```bash
+# Run this in a terminal before Wings start; it fires within 1 s of container creation
+UUID="b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
+until SCOPE=$(find /sys/fs/cgroup/system.slice -name "*${UUID}*" -type d 2>/dev/null \
+              | head -1) && [ -n "$SCOPE" ]; do sleep 0.2; done
+echo "Scope: $SCOPE"
+sudo bash -c "
+  echo 2147483648 > $SCOPE/memory.high   # 2 G hard ceiling
+  echo 1073741824 > $SCOPE/memory.min    # 1 G floor (OOM guard during startup)
+  echo 0          > $SCOPE/memory.zswap.writeback
+"
+echo "Constraints applied"
+```
+
+**Wings start (in another terminal):**
+```bash
+WINGS_TOKEN=$(sudo awk '/^token:/{print $2}' /etc/pterodactyl/config.yml)
+curl -sk -X POST -H "Authorization: Bearer $WINGS_TOKEN" \
+  -H "Content-Type: application/json" -d '{"action":"start"}' \
+  https://localhost:8080/api/servers/b87c0a5b-2387-4a1c-8863-ff23e6800a1d/power
+```
+
+**Wait for RCON** (server ready indicator):
+```bash
+until sudo /usr/local/sbin/exec-soulmask-rcon.sh -d List_OnlinePlayers &>/dev/null
+do sleep 5; done && echo "Server ready"
+```
+
+**Start measurements (three parallel processes):**
+```bash
+# 1. DAMON snapshots
+sudo python3 damon_cli.py timeseries-pid $PID \
+  --duration 3600 --interval 5 \
+  --min-regions 500 --max-regions 10000 \
+  --hot-rate 15 --warm-rate 5 --cold-age 15 --idle-age 60 \
+  --output-file output/soulmask_run4_<ts>.jsonl
+
+# 2. Persistent RCON probe at 200 ms
+sudo nsenter --net=/proc/$PID/ns/net \
+  python3 rcon_probe.py --host 127.0.0.1 --port $PORT --password $PASS \
+  --interval 0.2 --pid $PID --cgroup-scope $SCOPE \
+  --output output/rcon_run4_<ts>.jsonl
+
+# 3. zswap stats every 5 s (inline or from previous zswap collector script)
+```
+
+**Relaxation stages (500 M per step, 3–5 min each):**
+
+| Stage | memory.high | memory.min | Expected RSS | Watch for |
+|---|---|---|---|---|
+| 0 (start) | 2 G | 1 G | ≤ 2 G | Server starts OK; zswap fills |
+| 1 | 2.5 G | 2 G | ~2.5 G | zswpin burst, then quiet |
+| 2 | 3 G | 2.5 G | ~3 G | RSS growth rate |
+| 3 | 3.5 G | 3 G | ~3.5 G | |
+| 4 | 4 G | 3.5 G | ~4 G | |
+| 5 | 4.5 G | 4 G | ~4.5 G | |
+| 6 | 5 G | 4.5 G | ~5 G | zswpin → 0? (natural demand floor) |
+| 7 | 5.5 G | 5 G | ~5.5 G | |
+| 8 | 6 G | 5.5 G | ~6 G | |
+| 9 | max | 6 G | → 9.7 G | Refault storm, RSS recovers |
+
+Step command (applied every 3–5 min by controller script):
+```bash
+# memory.min rises with memory.high — kernel cannot overshoot below new floor
+sudo bash -c "echo $NEW_HIGH > $SCOPE/memory.high; echo $PREV_HIGH > $SCOPE/memory.min"
+```
+
+**Key metrics to watch per stage:**
+- `zswpin` rate (from `/proc/vmstat` delta): demand for this 500 M tier
+- `rtt_ms` from RCON probe: game-thread responsiveness (target < 50 ms)
+- `minflt_rate` from DAMON JSONL: zswap decompression rate
+- `sched_wait_ms` from DAMON JSONL: game thread scheduler stall time
+- Player-reported feel: ping visible in ESC menu
+
+## 7d. DAMON measurement — 2026-06-26 (upward relaxation experiment, 2 players)
+
+### Run parameters
+
+```
+DAMON: --interval 10 --max-regions 40 --warm-rate 0.10 --hot-rate 0.01 --duration 7200
+RCON probe: rcon_probe.py --interval 0.2 (persistent TCP, 200 ms)
+Players: 2 (Lesandrina, Shakes)
+Server started via Wings; pages already in zswap from prior run (warm start, not cold-disk)
+Output: soulmask_run5_20260626_021811.jsonl / rcon_run5_20260626_021947.jsonl
+```
+
+**Goal:** start with memory.high below the natural working set, then relax upward in steps.
+Observe how much RSS grows per step and when minflt_rate (zswap decompression demand) drops
+to baseline — the point where the game's natural working set is fully in RAM.
+
+### Cold-start constraint lesson (run 4, immediately prior)
+
+Before this run, an attempt was made to start the server with `memory.high=2G` from a true
+cold start (pages on disk, not in zswap):
+
+| Attempt | Outcome |
+|---|---|
+| `memory.high=2G` during cold disk load | Server **crashed** ~10 min into startup |
+| `memory.high=4G` mid-startup (raised to rescue) | Server recovered, RCON responded |
+
+**Finding:** 2G is below the minimum needed to complete UE4 initialization from disk.
+The loading sequence allocates large buffers, decompresses pak files, and initialises world
+state — these operations cannot be satisfied through zswap alone during startup.
+
+Post-startup, the same 2G ceiling was re-applied (warm start, pages already in zswap):
+- RSS overshot to **135M** (kernel reclaimed far past the 2G target with `memory.min=0`)
+- RCON did not respond at 135M — game threads were fully evicted to zswap
+
+**Rule:** never apply a tight `memory.high` during cold-disk startup. Apply constraints only
+after the server is fully initialised (RCON responds).
+
+### Relaxation stages
+
+Server started with `memory.high=4G` (first viable post-startup state). Players joined.
+Each stage held until RSS was stable (delta < 150M over 5 consecutive 10s snapshots).
+
+| Stage | memory.high | RSS settled | swap | minflt_rate | RCON p50 | RCON max | Player feel |
+|---|---|---|---|---|---|---|---|
+| Baseline | 4G | ~2.0G | ~7.8G | 3895–4050/s | 17ms | 157ms | hard lags, intermittent |
+| +1G | 5G | ~3.1G | ~6.6G | 3300–10700/s | 18ms | 43ms | better |
+| +1G | 6G | ~4.0G | ~5.9G | 3000–12000/s | 17ms | 59ms | pretty good |
+| +1G | 7G | ~4.0G | ~5.8G | 3000–9900/s | 15ms | 839ms | really fine |
+
+### Key finding — natural demand-driven working set
+
+**RSS did not grow when memory.high was raised from 6G to 7G.**
+
+With `memory.high=7G` and 2 active players, RSS stabilised at **~4.0G** — identical to the
+6G level. The extra 1G of headroom was never used, because the game had no demand for those
+pages during the observed play session.
+
+This is the demand floor: pages only enter RAM through fault (when the game's code actually
+reads or writes a virtual address currently in zswap). The remaining ~5.8G stays in zswap as
+cold world data (unexplored areas, pak assets not currently needed).
+
+```
+memory.high = 7G   ← kernel ceiling (reclaim threshold)
+RSS         = 4.0G ← actual demand (warm pages accessed since startup)
+zswap       = 5.8G ← cold/idle data, accessible but untouched this session
+headroom    = 3.0G ← unused; covers save bursts, new area loads, more players
+```
+
+### Why RSS < memory.high
+
+`memory.high` is a **ceiling**, not a target. The kernel begins reclaiming pages from the
+cgroup only when RSS *exceeds* it — it does not push pages into RAM. Pages enter RAM
+exclusively through **demand faults**: when the game thread accesses a virtual address
+currently in zswap, the CPU raises a minor page fault, the kernel decompresses that page
+from the zswap pool, places it in physical RAM, and resumes the thread.
+
+RSS therefore reflects what the game has actively touched since startup under this
+constraint — not the ceiling's permission. With 2 players in a known area, the game
+touched ~4G of its 9.7G virtual working set. Raising the ceiling beyond 4G does not
+cause pages to refault proactively; only player exploration of new areas or world events
+(saves, AI spawns, NPC pathfinding) would pull additional pages in.
+
+### minflt_rate interpretation
+
+`minflt_rate` from `/proc/<pid>/stat` field 10 counts **minor page faults per second**.
+Each zswap decompression = 1 minor fault.
+
+| State | minflt_rate | Interpretation |
+|---|---|---|
+| 2G ceiling (135M RSS) | 3895/s | nearly all accesses hitting zswap |
+| 4G ceiling (2G RSS) | 3895–4050/s | constant zswap pressure — cause of lags |
+| 6G ceiling (4G RSS) | 3000–12000/s | baseline ~3k/s; bursts when accessing new regions |
+| 7G ceiling (4G RSS) | 3000–9900/s | same baseline; peak demand same but ceiling gives headroom |
+
+The lag-free threshold was not sharply crossed at any single step — the game improved
+gradually from 4G → 7G. The 7G state with baseline minflt ~3000/s represents the
+residual decompression from pages that drift out of the active working set between accesses
+(normal LRU churn), not gameplay-induced stalls.
+
+### RCON RTT at steady state (7G, 2 players)
+
+```
+p50 = 15ms  p95 = 34ms  max = 839ms  failures = 0
+```
+
+The single 839ms spike is consistent with a periodic save event (world serialisation
+briefly delays the game thread). No sustained latency elevation observed.
+
+Note: RCON RTT probes the game's network/command thread, which tends to stay hot in RAM.
+It is a valid indicator of game-thread availability but does not capture world-simulation
+stalls (which affect physics/AI/player interaction). minflt_rate is a better proxy for
+the stall source.
+
+### What memory.min and memory.high actually guarantee
+
+These two knobs are orthogonal:
+
+| Knob | What it does | What it does NOT do |
+|---|---|---|
+| `memory.high` | triggers self-reclaim when RSS exceeds this ceiling | does not push pages into RAM; does not floor RSS |
+| `memory.min` | protects against **external** reclaim — other cgroups (devcontainer, kernel) cannot steal pages below this floor | does not protect against the cgroup's own `memory.high` reclaim; does not pre-populate RAM |
+
+Practical consequence: with `memory.min=4.5G` and `memory.high=7G`, the kernel guarantees
+Soulmask keeps at least 4.5G in RAM even if the devcontainer or another workload is under
+memory pressure.  Since the measured working set is ~4G, 4.5G gives ~500M buffer for save
+bursts and working-set fluctuations — enough to keep pages hot without an RCON stall.
+
+Pages only enter RAM through **demand faults** — when the game thread reads/writes a virtual
+address currently in zswap, the kernel decompresses that page and places it in RAM.
+`memory.min` protects those pages from being stolen back; it does not pro-actively populate RAM.
+
+### Production recommendation (2-player baseline)
+
+| Knob | Value | Rationale |
+|---|---|---|
+| `memory.high` | **7G** | covers natural 4G demand + 3G headroom for bursts and more players |
+| `memory.min` | **4.5G** | measured 4G working set + 500M buffer; protects against external reclaim |
+| `memory.zswap.writeback` | **0** | keeps cold pages in fast compressed pool, never evicted to disk |
+| `memory.low` | 12G | best-effort; unchanged from prior calibration |
+
+Update `setup-cgroups.sh` `SOULMASK_MIN=4.5G` once confirmed stable with 10+ players.
+Expect `SOULMASK_MIN` to increase ~0.5–1G per additional 10 players as hot+warm expands.
+
+### Startup constraint rule
+
+**Never apply `memory.high` or `memory.min` during server startup.**
+
+During cold-disk startup, UE4 needs >4G to load pak files, initialise world state, and
+decompress assets.  Applying a ceiling before initialisation completes either crashes the
+server (2G during cold start → crash within 10 min) or leaves it unresponsive (2G from
+warm-zswap start → 135M RSS, RCON silent).
+
+Correct startup sequence:
+```
+1. Start server with memory.high=max, memory.min=0  (no constraints)
+2. Wait until RCON responds: List_OnlinePlayers succeeds
+3. THEN apply memory.high + memory.min
+```
+
+The setup-cgroups.sh script already handles this correctly (it is called after Wings start,
+which implies the server is running).  The bug in run 4 was applying constraints via the
+watcher script at container-creation time, before RCON was ready.
+
+### Remaining unknowns
+
+| Scenario | Expected effect |
+|---|---|
+| 10+ players online | RSS likely grows 4G → 5–6G; may need memory.high=8G |
+| Large-area exploration | minflt burst as new world chunks load from zswap |
+| Save event under load | CPU spike + possible RCON stall spike (1–2 s) |
+| True production memory.min | Rerun with players, observe demand floor over 30+ min |
+
+---
 
 ## 8. DAMON tuning guide — regions, thresholds, auto-tune, zswap push
 

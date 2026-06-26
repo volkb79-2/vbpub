@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # Apply cgroup-v2 knobs that systemd slice units can't express directly:
 #   - dev-workloads.slice : memory.zswap.writeback=1 (let dev pages drain to disk)
-#   - Soulmask container   : memory.min / memory.low protection, and
+#   - Soulmask container   : memory.min / memory.low / memory.high protection, and
 #                            memory.zswap.writeback=0 (keep its pages in the fast
 #                            compressed pool, never proactively to disk).
 # Idempotent; tolerant if Soulmask isn't running yet.
 #
 # IMPORTANT: set SOULMASK_MIN to Soulmask's MEASURED hot+warm working set (DAMON),
 # not a guess. Too low => the game faults pages back under pressure => stutter.
+#
+# IMPORTANT: never call this during server startup. Apply only after RCON responds.
+# See soulmask-cgroup-watcher.service which enforces this automatically.
 set -uo pipefail
 CG=/sys/fs/cgroup
 log(){ echo "[cgroups] $*"; }
 
-SOULMASK_MIN="${SOULMASK_MIN:-7G}"     # calibrated 2026-06-26: hot+warm median 5.1G max 6.4G (100-region run, warm-rate=10%)
+SOULMASK_MIN="${SOULMASK_MIN:-4608M}" # calibrated 2026-06-26: demand floor ~4G (2 players, run 5); +0.5G burst buffer (4608M = 4.5G)
 SOULMASK_LOW="${SOULMASK_LOW:-12G}"
+SOULMASK_HIGH="${SOULMASK_HIGH:-7G}"  # calibrated 2026-06-26: 3G headroom above 4G working set; raise for 10+ players
 
 # --- dev workloads: allow zswap pages to be written back to disk ---
 DEV="$CG/dev-workloads.slice"
@@ -44,6 +48,7 @@ if [ -z "$SCOPE" ] || [ ! -d "$SCOPE" ]; then
 fi
 
 log "Soulmask cgroup: $SCOPE"
-echo "$SOULMASK_LOW" > "$SCOPE/memory.low"             2>/dev/null && log "memory.low=$SOULMASK_LOW"
-echo "$SOULMASK_MIN" > "$SCOPE/memory.min"             2>/dev/null && log "memory.min=$SOULMASK_MIN"
-echo 0               > "$SCOPE/memory.zswap.writeback" 2>/dev/null && log "memory.zswap.writeback=0 (keep pages in pool)"
+echo "$SOULMASK_HIGH" > "$SCOPE/memory.high"            2>/dev/null && log "memory.high=$SOULMASK_HIGH"
+echo "$SOULMASK_LOW"  > "$SCOPE/memory.low"             2>/dev/null && log "memory.low=$SOULMASK_LOW"
+echo "$SOULMASK_MIN"  > "$SCOPE/memory.min"             2>/dev/null && log "memory.min=$SOULMASK_MIN"
+echo 0                > "$SCOPE/memory.zswap.writeback" 2>/dev/null && log "memory.zswap.writeback=0 (keep pages in pool)"
