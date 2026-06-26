@@ -15,7 +15,7 @@ variable "PLAYWRIGHT_VERSION_PYPI" {
 // npm playwright version — what `npm install playwright` yields.
 // :latest-npm tracks this version.
 variable "PLAYWRIGHT_VERSION_NPM" {
-  default = "1.61.0"
+  default = "1.61.1"
 }
 
 variable "PLAYWRIGHT_DISTRO" {
@@ -24,12 +24,12 @@ variable "PLAYWRIGHT_DISTRO" {
 
 // pwmcp release tag for the PyPI-based build (e.g. 1.60.0-r1).
 variable "PWMCP_VERSION_PYPI" {
-  default = "1.60.0-r3"
+  default = "1.60.0-r4"
 }
 
 // pwmcp release tag for the npm-based build (e.g. 1.61.0-r1).
 variable "PWMCP_VERSION_NPM" {
-  default = "1.61.0-r2"
+  default = "1.61.1-r1"
 }
 
 variable "OCI_SOURCE" {
