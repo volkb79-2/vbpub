@@ -321,7 +321,6 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
         /tmp/syft-extract \
         /tmp/grype-extract \
         /tmp/cdebug-extract \
-        /root/.cache \
         /tmp/awscli \
         /tmp/tool-artifacts-staging
 
