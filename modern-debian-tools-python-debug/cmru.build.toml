@@ -6,7 +6,7 @@ release_config = "../cmru.toml"
 OCI_VENDOR = "Volker Badziong"
 OCI_DESCRIPTION = """Modern Debian Tools + Python Debug image family.
 Includes a curated Debian + Python environment with managed venv and CIU-focused workflow tooling.
-Custom Tooling highlights: aider, agy, awscli, b2, bat, claude, codex, consul, deepcode, fd, fzf, gh, openclaw, psql, reasonix, redis-cli, rga, ripgrep, shellcheck, vault, yq.
+Custom Tooling highlights: aider, agy, awscli, b2, bat, claude, codex, consul, fd, fzf, gh, openclaw, psql, reasonix, redis-cli, rga, ripgrep, shellcheck, vault, yq.
 Midnight Commander defaults to nicedark skin.
 Devcontainer manifest: ~/devcontainer-manifest-<debian>-py<python>-<date>.md
 """
@@ -36,14 +36,12 @@ bake_set_vars = [
   "ANTIGRAVITY_VERSION",
   "AIDER_VERSION",
   "REASONIX_VERSION",
-  "DEEPCODE_VERSION",
   "OPENCLAW_VERSION",
   "INSTALL_CODEX",
   "INSTALL_CLAUDE_CODE",
   "INSTALL_ANTIGRAVITY",
   "INSTALL_AIDER",
   "INSTALL_REASONIX",
-  "INSTALL_DEEPCODE",
   "INSTALL_OPENCLAW",
   "DELTA_VERSION",
   "GH_VERSION",
@@ -100,14 +98,12 @@ bake_set_vars = [
   "ANTIGRAVITY_VERSION",
   "AIDER_VERSION",
   "REASONIX_VERSION",
-  "DEEPCODE_VERSION",
   "OPENCLAW_VERSION",
   "INSTALL_CODEX",
   "INSTALL_CLAUDE_CODE",
   "INSTALL_ANTIGRAVITY",
   "INSTALL_AIDER",
   "INSTALL_REASONIX",
-  "INSTALL_DEEPCODE",
   "INSTALL_OPENCLAW",
   "DELTA_VERSION",
   "GH_VERSION",

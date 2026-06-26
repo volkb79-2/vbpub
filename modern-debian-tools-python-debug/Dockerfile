@@ -50,7 +50,6 @@ ARG INSTALL_CLAUDE_CODE="true"
 ARG INSTALL_ANTIGRAVITY="true"
 ARG INSTALL_AIDER="true"
 ARG INSTALL_REASONIX="true"
-ARG INSTALL_DEEPCODE="true"
 ARG INSTALL_OPENCLAW="true"
 ARG GITHUB_USERNAME
 ARG GITHUB_REPO
@@ -68,7 +67,6 @@ ARG DEVCONTAINERS_RELEASE=""
 ARG DEVCONTAINERS_VERSION=""
 ARG SECONDARY_PYTHON_VERSIONS=""
 ARG REASONIX_VERSION="latest"
-ARG DEEPCODE_VERSION="latest"
 ARG OPENCLAW_VERSION="latest"
 
 ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
@@ -513,11 +511,6 @@ RUN set -euo pipefail; \
             echo "reasonix=$(reasonix --version 2>&1 | head -1 || true)"; \
         else \
             echo "reasonix=not-installed"; \
-        fi; \
-        if command -v deepcode >/dev/null 2>&1; then \
-            echo "deepcode=$(deepcode --version 2>&1 | head -1 || true)"; \
-        else \
-            echo "deepcode=not-installed"; \
         fi; \
         if command -v openclaw >/dev/null 2>&1; then \
             echo "openclaw=$(openclaw --version 2>&1 | head -1 || true)"; \

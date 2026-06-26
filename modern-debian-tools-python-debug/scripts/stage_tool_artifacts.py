@@ -1291,7 +1291,6 @@ def _resolve_versions() -> dict[str, str]:
         "ANTIGRAVITY_VER": (os.getenv("ANTIGRAVITY_VERSION") or "latest").strip() or "latest",
         "AIDER_VER": (os.getenv("AIDER_VERSION") or "latest").strip() or "latest",
         "REASONIX_VER": _resolve_npm_version(os.getenv("REASONIX_VERSION"), "reasonix"),
-        "DEEPCODE_VER": _resolve_pypi_version(os.getenv("DEEPCODE_VERSION"), "deepcode-hku"),
         "OPENCLAW_VER": _resolve_npm_version(os.getenv("OPENCLAW_VERSION"), "openclaw"),
         "DTOP_VER": _resolve_version(os.getenv("DTOP_VERSION"), "amir20/dtop"),
         "LAZYDOCKER_VER": _resolve_version(os.getenv("LAZYDOCKER_VERSION"), "jesseduffield/lazydocker"),

@@ -15,7 +15,6 @@ FIRST_PARTY_WHEEL_ORDER = [
 AI_CLI_TOOL_ORDER = [
     "aider",
     "reasonix",
-    "deepcode",
     "openclaw",
     "codex",
     "claude",

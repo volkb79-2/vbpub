@@ -28,7 +28,6 @@ PACKAGE_DOCS_ROOT = Path(__file__).resolve().parent.parent / "package-manifests-
 TOOL_VERSION_DISPLAY_ORDER = [
     ("aider", "AIDER_VER"),
     ("reasonix", "REASONIX_VER"),
-    ("deepcode", "DEEPCODE_VER"),
     ("openclaw", "OPENCLAW_VER"),
     ("antigravity", "ANTIGRAVITY_VER"),
     ("awscli", "AWSCLI_VER"),
@@ -50,7 +49,6 @@ TOOL_VERSION_DISPLAY_ORDER = [
 AI_CLI_TOOL_NAMES = {
     "aider",
     "reasonix",
-    "deepcode",
     "openclaw",
     "codex",
     "claude",
@@ -1005,7 +1003,6 @@ def build_runtime_custom_tooling_map(
 
     install_aider = install_enabled("INSTALL_AIDER")
     install_reasonix = install_enabled("INSTALL_REASONIX")
-    install_deepcode = install_enabled("INSTALL_DEEPCODE")
     install_openclaw = install_enabled("INSTALL_OPENCLAW")
     install_antigravity = install_enabled("INSTALL_ANTIGRAVITY")
     install_claude = install_enabled("INSTALL_CLAUDE_CODE")
@@ -1038,11 +1035,6 @@ def build_runtime_custom_tooling_map(
         "reasonix": (
             str(resolved_versions.get("REASONIX_VER") or "unknown")
             if install_reasonix
-            else "not-installed"
-        ),
-        "deepcode": (
-            str(resolved_versions.get("DEEPCODE_VER") or "unknown")
-            if install_deepcode
             else "not-installed"
         ),
         "openclaw": (

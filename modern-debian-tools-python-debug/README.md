@@ -112,7 +112,6 @@ annotated for what it's for. It splits into dev/build tooling (`ruff`, `mypy`, `
 Optional (controlled by `INSTALL_*` build args, all enabled by default):
 - `aider-chat` — `INSTALL_AIDER=true`
 - `reasonix`, `openclaw` — npm-based, installed separately from the venv and backed by the image's `nodejs` / `npm`
-- `deepcode` — pip-based (`deepcode-hku`), installed separately from the venv
 - `codex`, `claude-code`, `antigravity` — installed separately from the venv
 
 Container inspection tools are also installed in-image:
@@ -303,7 +302,7 @@ The base section includes:
 ## About `Custom Tooling` vs `System packages`
 
 - `First-Party Wheels` is the wheel inventory view: image-owned releases (`ciu`, `cmru`).
-- `AI CLI Tools` is the agent CLI inventory view: `aider`, `reasonix`, `deepcode`, `openclaw`, `codex`, `claude`, `antigravity`.
+- `AI CLI Tools` is the agent CLI inventory view: `aider`, `reasonix`, `openclaw`, `codex`, `claude`, `antigravity`.
 - `Custom Tooling` is an operational view: tool executables and their runtime `--version` output.
 - `System packages` is a package inventory view: selected apt package names and versions.
 
@@ -375,7 +374,7 @@ CODEX_VERSION=0.34.0 CLAUDE_CODE_VERSION=1.0.27 AIDER_VERSION=0.64.0 ./build-ima
 Disable optional AI tooling across all image variants:
 
 ```bash
-INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_AIDER=false INSTALL_REASONIX=false INSTALL_DEEPCODE=false INSTALL_OPENCLAW=false ./build-images.py
+INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_AIDER=false INSTALL_REASONIX=false INSTALL_OPENCLAW=false ./build-images.py
 ```
 
 Notes:
@@ -396,15 +395,13 @@ The release pipeline mirrors each GHCR package's visibility to the source reposi
 If you want agent state to survive devcontainer rebuilds, keep the workspace mount persistent and
 add the tool-specific home directories below:
 
-- Workspace root for `reasonix.toml`, `deepcode_config.json`, `AGENTS.md`, and any repo-local scratch files
+- Workspace root for `reasonix.toml`, `AGENTS.md`, and any repo-local scratch files
 - `/home/vscode/.config/reasonix`
-- `/home/vscode/.deepcode`
 - `/home/vscode/.openclaw`
 
 The key files and directories are:
 
 - Reasonix user config: `~/.config/reasonix/`
-- DeepCode sessions: `~/.deepcode/sessions/`
 - OpenClaw config: `~/.openclaw/openclaw.json`
 
 ## Using in another repository

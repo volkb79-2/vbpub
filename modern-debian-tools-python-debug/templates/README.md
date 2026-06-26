@@ -1,7 +1,7 @@
 # mdt devcontainer template
 
 The supported way to consume the `modern-debian-tools-python-debug-vsc-devcontainer` image.
-mdt installs the AI-CLI agents (claude, codex, aider, reasonix, openclaw, antigravity, deepcode)
+mdt installs the AI-CLI agents (claude, codex, aider, reasonix, openclaw, antigravity)
 and signing/auth tooling (minisign, gh, gnupg) — this template defines **how their state persists**
 so a "Rebuild Container" never wipes logins, keys, or history.
 

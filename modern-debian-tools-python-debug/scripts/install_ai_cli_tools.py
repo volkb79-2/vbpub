@@ -232,26 +232,6 @@ def install_aider(ctx: InstallerContext) -> None:
     )
 
 
-def install_deepcode(ctx: InstallerContext) -> None:
-    if not is_enabled("INSTALL_DEEPCODE", True):
-        log("INFO", "INSTALL_DEEPCODE=false; skipping DeepCode")
-        return
-
-    version = env_value("DEEPCODE_VER", "DEEPCODE_VERSION", default="latest")
-    spec = "deepcode-hku" if version == "latest" else f"deepcode-hku=={version}"
-    run_command(
-        [
-            str(ctx.venv_python),
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--quiet",
-            spec,
-        ]
-    )
-
-
 def parse_tool_entries(tools_file: Path) -> list[tuple[str, str]]:
     entries: list[tuple[str, str]] = []
     for raw_line in tools_file.read_text(encoding="utf-8").splitlines():
@@ -282,8 +262,6 @@ def install_tool(tool: str, ctx: InstallerContext) -> None:
         install_openclaw()
     elif tool == "aider":
         install_aider(ctx)
-    elif tool == "deepcode":
-        install_deepcode(ctx)
     else:
         log("WARN", f"Unknown AI CLI tool in {ctx.tools_file}: {tool}")
 
