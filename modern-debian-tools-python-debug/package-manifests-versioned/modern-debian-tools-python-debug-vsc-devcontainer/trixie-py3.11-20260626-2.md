@@ -1,0 +1,204 @@
+# Modern Debian Tools + Python Debug VS Code Devcontainer
+
+Versioned package manifest for `modern-debian-tools-python-debug-vsc-devcontainer`.
+
+## Release
+
+- Build date: `20260626-2`
+- Target: `trixie-py311-vsc`
+- Debian: `trixie`
+- Python: `3.11`
+- Immutable image tag: `trixie-py3.11-20260626-2`
+- Floating image tag: `trixie-py3.11-latest`
+
+## Pull
+
+```bash
+docker pull ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.11-20260626-2
+```
+
+## Purpose
+
+No description provided.
+
+## First-Party Wheels
+
+- ciu `4.2.1` — sha256: `9cef2331d414a4fffbe83af22c89f478f16e0d17f350460a18fd88be6144a140`
+- cmru `1.1.2` — sha256: `cf9a9bd956b4f89c3098328fb2c8ef8f7d9b30c5572c500a0af2e506cd274b8d`
+
+## Staged Tool Artifacts
+
+### AI CLI Tools
+
+- aider: `latest`
+- reasonix: `0.53.2`
+- openclaw: `2026.6.10`
+- antigravity: `1.0.12`
+- claude: `2.1.193`
+- codex: `0.142.2`
+
+### Supporting Tool Versions
+
+- awscli: `2.35.11`
+- b2: `4.7.1`
+- bat: `0.26.1`
+- consul: `2.0.1`
+- delta: `0.19.2`
+- fd: `10.4.2`
+- fzf: `0.73.1`
+- gh: `2.95.0`
+- rga: `0.10.10`
+- ripgrep: `15.1.0`
+- shellcheck: `0.11.0`
+- vault: `2.0.3`
+- yq: `4.53.3`
+
+Generated from local pre-staging metadata to make release documentation auditable and reproducible.
+
+## Runtime Version Snapshot (Pre-build Probe)
+
+### First-Party Wheels
+
+- cmru: 1.1.2
+- CIU: 4.2.1
+
+### AI CLI Tools
+
+- aider: latest (resolved at image build time)
+- reasonix: 0.53.2
+- openclaw: 2026.6.10
+- codex: 0.142.2
+- claude: 2.1.193
+- antigravity: 1.0.12
+
+### Container Inspection Tools
+
+- dtop: 0.7.7
+- lazydocker: 0.25.2
+- glances: 4.5.5
+- dive: 0.13.1
+- syft: 1.45.1
+
+### Security & Debug Tools
+
+- hadolint: 2.14.0
+- grype: 0.114.0
+- cdebug: 0.0.19
+
+### Custom Tooling
+
+- awscli: 2.35.11
+- b2: 4.7.1
+- bat: 0.26.1
+- consul: 2.0.1
+- delta: 0.19.2
+- fd: 10.4.2
+- fzf: 0.73.1
+- gh: 2.95.0
+- psql: latest (see apt probe below)
+- redis-cli: latest (see apt probe below)
+- rga: 0.10.10
+- ripgrep: 15.1.0
+- shellcheck: 0.11.0
+- vault: 2.0.3
+- yq: 4.53.3
+
+### System packages
+
+    (candidate versions from apt probe)
+    bash-completion=1:2.16.0-7
+    ca-certificates=20250419
+    curl=8.14.1-2+deb13u3
+    bind9-dnsutils=1:9.20.23-1~deb13u1
+    fuse3=3.17.2-3
+    git=1:2.47.3-0+deb13u1
+    git-lfs=3.6.1-1+deb13u1
+    gnupg=2.4.7-21+deb13u1
+    gzip=1.13-1
+    htop=3.4.1-5
+    httpie=3.2.4-3
+    iputils-ping=3:20240905-3
+    jq=1.7.1-6+deb13u2
+    less=668-1
+    lsb-release=12.1-1
+    lsof=4.99.4+dfsg-2
+    man-db=2.13.1-1
+    mc=3:4.8.33-1+deb13u1
+    netcat-openbsd=1.229-1
+    ncdu=1.22-1
+    openssl=3.5.6-1~deb13u2
+    python3-venv=3.13.5-1
+    psmisc=23.7-2
+    rsync=3.4.1+ds1-5+deb13u3
+    sqlite3=3.46.1-7+deb13u1
+    strace=6.13+ds-1
+    sshfs=3.7.3-1.1+b2
+    tar=1.35+dfsg-3.1
+    tree=2.2.1-1
+    unzip=6.0-29
+    vim=2:9.1.1230-2
+    w3m=0.5.3+git20230121-2.1
+    wget=1.25.0-2
+    xz-utils=5.8.1-1
+    postgresql-client=17+278
+    redis-tools=5:8.0.2-3+deb13u2
+
+## In-Image File
+
+- Devcontainer manifest: `/home/vscode/mdt-manifest.md`
+
+## Rich Documentation Links
+
+- Family overview: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/README.md
+- This release page: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.11-20260626-2.md
+- Source tree: https://github.com/volkb79-2/vbpub/tree/main/modern-debian-tools-python-debug
+
+## Notes
+
+This repository-hosted page exists because GHCR package descriptions render as flattened plain text.
+The image labels therefore point to GitHub-hosted Markdown for richer, package-specific release notes.
+The same manifest content is installed in-image at `/home/vscode/mdt-manifest.md`.
+
+## Appendix: Artifact Sources and Digests
+
+Full sha256 digests for all staged artifacts. Use these to verify reproducibility.
+
+- codex 0.142.2 (tar.gz): sha256 `7628fc1f214610bbef45f883d1d785bcb782d46d56b8fe476aadf2db378683b4`; source `https://github.com/openai/codex/releases/download/rust-v0.142.2/codex-package-x86_64-unknown-linux-musl.tar.gz`
+- codex-sha256sums 0.142.2 (checksum-file): sha256 `c80aa16dae72b293324ca51726749455dfed1d82a20431cc985dab5de653a71e`; source `https://github.com/openai/codex/releases/download/rust-v0.142.2/codex-package_SHA256SUMS`
+- claude 2.1.193 (binary): sha256 `c9f04d929f18bd9a101f3897f27de4e1e0f15ebe8400d4aaf02983d73dd66b1d`; source `https://downloads.claude.ai/claude-code-releases/2.1.193/linux-x64/claude`
+- claude-manifest 2.1.193 (manifest): sha256 `5e23ec6563d4db42a3ca942c7aa286c046191cb40bf298ad5072f29b1cd50028`; source `https://downloads.claude.ai/claude-code-releases/2.1.193/manifest.json`
+- antigravity 1.0.12 (tar.gz): sha256 `7e3075df68ebad58aa1cf42231e9d8b83bf2895b5b058ab1736b0b6383c75008`; source `https://storage.googleapis.com/antigravity-public/antigravity-cli/1.0.12-6156052174077952/linux-x64/cli_linux_x64.tar.gz`
+- antigravity-manifest 1.0.12 (manifest): sha256 `8b23e3aa373abde4176fa28beb59b7bfc759056a2567d2c6b078cad043480e41`; source `https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`
+- b2 4.7.1 (binary): sha256 `0f4720858f137cbbdb434f13edb5ad8bc5e99a0b83ba8b1f7143831dab937eea`; source `https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v4.7.1/b2-linux`
+- b2-hashes 4.7.1 (checksum-file): sha256 `883d61e2ebb4cc922a504b66677f2c32f29c23a1159e3616b6b5f88c2de2e979`; source `https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v4.7.1/b2-linux_hashes.txt`
+- bat 0.26.1 (tar.gz): sha256 `726f04c8f576a7fd18b7634f1bbf2f915c43494c1c0f013baa3287edb0d5a2a3`; source `https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-unknown-linux-gnu.tar.gz`
+- delta 0.19.2 (tar.gz): sha256 `8e695c5f586a8c53d6c3b01be0b4a422ed218bfed2a56191caebe373a1c18ab2`; source `https://github.com/dandavison/delta/releases/download/0.19.2/delta-0.19.2-x86_64-unknown-linux-gnu.tar.gz`
+- fd 10.4.2 (tar.gz): sha256 `def59805cd14b5651b68990855f426ad087f3b96881296d963910431ba3143c8`; source `https://github.com/sharkdp/fd/releases/download/v10.4.2/fd-v10.4.2-x86_64-unknown-linux-gnu.tar.gz`
+- rga 0.10.10 (tar.gz): sha256 `a969c25b182ac84aa672518313b5f741091decf7d93d03a020bcfe517b9ff4e8`; source `https://github.com/phiresky/ripgrep-all/releases/download/v0.10.10/ripgrep_all-v0.10.10-x86_64-unknown-linux-musl.tar.gz`
+- ripgrep 15.1.0 (tar.gz): sha256 `1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599`; source `https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz`
+- shellcheck 0.11.0 (tar.xz): sha256 `8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198`; source `https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz`
+- fzf 0.73.1 (tar.gz): sha256 `f3252c2c366bc1700d3c85781ec8c9695998927ac127870eb049ceea2d540f8a`; source `https://github.com/junegunn/fzf/releases/download/v0.73.1/fzf-0.73.1-linux_amd64.tar.gz`
+- yq 4.53.3 (binary): sha256 `fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4`; source `https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64`
+- gh 2.95.0 (tar.gz): sha256 `25d1e4729e8808c9ed3d613e96ebd3f3e44446f2d368c89d878a71a36ddb3d8c`; source `https://github.com/cli/cli/releases/download/v2.95.0/gh_2.95.0_linux_amd64.tar.gz`
+- grpcurl 1.9.3 (tar.gz): sha256 `a926b62a85787ccf73ef8736b3ae554f1242e39d92bb8767a79d6dd23b11d1d5`; source `https://github.com/fullstorydev/grpcurl/releases/download/v1.9.3/grpcurl_1.9.3_linux_x86_64.tar.gz`
+- consul 2.0.1 (zip): sha256 `f8189736b05e3fe42d27dd83dfbd3a6d7e44b5669b2e51684362e9c1639babe0`; source `https://releases.hashicorp.com/consul/2.0.1/consul_2.0.1_linux_amd64.zip`
+- consul-sha256sums 2.0.1 (checksum-file): sha256 `a75b2cf4d621c98c44d4ffdde85b76e951fe988b7751daf60414d038c2072859`; source `https://releases.hashicorp.com/consul/2.0.1/consul_2.0.1_SHA256SUMS`
+- vault 2.0.3 (zip): sha256 `1e0ffb7a82491219c7242da6e05e2d756b05d1097c29799a42228661f229bc2a`; source `https://releases.hashicorp.com/vault/2.0.3/vault_2.0.3_linux_amd64.zip`
+- vault-sha256sums 2.0.3 (checksum-file): sha256 `c361d1f6e5ff1f92f0285680b054a3079898f37c134e7d6ac6f30a8ad7bfc5b3`; source `https://releases.hashicorp.com/vault/2.0.3/vault_2.0.3_SHA256SUMS`
+- lazydocker 0.25.2 (tar.gz): sha256 `0d9dbfc26068b218e7ed84b104748cadc6e3cf733c0afd35465306fb39b9523c`; source `https://github.com/jesseduffield/lazydocker/releases/download/v0.25.2/lazydocker_0.25.2_Linux_x86_64.tar.gz`
+- lazydocker-checksums 0.25.2 (checksum-file): sha256 `2658d90cbb929662b06210c45eefbdfd32517c906dafd543527b9c06220aa4a4`; source `https://github.com/jesseduffield/lazydocker/releases/download/v0.25.2/checksums.txt`
+- dive 0.13.1 (deb): sha256 `0c20d18f0cc87e6e982a3289712ac3aa9fc364ba973109d1da3a473232640571`; source `https://github.com/wagoodman/dive/releases/download/v0.13.1/dive_0.13.1_linux_amd64.deb`
+- dive-checksums 0.13.1 (checksum-file): sha256 `ca1c0b36de3d9de2c6a8ea0f58ca506d2bfe9afeb78859258187322e9519b3ca`; source `https://github.com/wagoodman/dive/releases/download/v0.13.1/dive_0.13.1_checksums.txt`
+- syft 1.45.1 (tar.gz): sha256 `20c84195e24927f50a3b2269946be51f4c4abc9d2f145fee7388b4199149f716`; source `https://github.com/anchore/syft/releases/download/v1.45.1/syft_1.45.1_linux_amd64.tar.gz`
+- syft-checksums 1.45.1 (checksum-file): sha256 `9e477f098c1843bed38491a986d0ac80e54866c182fe511167c866b0edf1140c`; source `https://github.com/anchore/syft/releases/download/v1.45.1/syft_1.45.1_checksums.txt`
+- dtop 0.7.7 (tar.gz): sha256 `945b940632e926ea55d585dbe02ef6368ec698118ebd535c93a09c4f9b7833fc`; source `https://github.com/amir20/dtop/releases/download/v0.7.7/dtop-x86_64-unknown-linux-gnu.tar.gz`
+- dtop-sha256sums 0.7.7 (checksum-file): sha256 `4e2e03c61f656e57edbcf99da7f374fd002d5c8b5eb55f25bb465ecfa5c64d91`; source `https://github.com/amir20/dtop/releases/download/v0.7.7/sha256.sum`
+- glances 4.5.5 (pypi-network): sha256 `7411c0fc02881fa970a5c1b0af5953ffe211fe553ea2eab012d211e76c5bbc46`; source `https://pypi.org/pypi/glances/4.5.5/json`
+- hadolint 2.14.0 (binary): sha256 `6bf226944684f56c84dd014e8b979d27425c0148f61b3bd99bcc6f39e9dc5a47`; source `https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-x86_64`
+- hadolint-sha256 2.14.0 (checksum-file): sha256 `cbd28eb1be0ea35f28a26764b614e6f720eaf7789666a5b4e976718e1ec3655f`; source `https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-x86_64.sha256`
+- grype 0.114.0 (tar.gz): sha256 `edda0968d8827daab01d32b3cd7de192ae0915005e7bbfcfef9e68e79bc43343`; source `https://github.com/anchore/grype/releases/download/v0.114.0/grype_0.114.0_linux_amd64.tar.gz`
+- grype-checksums 0.114.0 (checksum-file): sha256 `7b25cc228d3cb451860688b1e9f12a7a05d8a3fd8bd9c9cdf47618d9707afb37`; source `https://github.com/anchore/grype/releases/download/v0.114.0/grype_0.114.0_checksums.txt`
+- cdebug 0.0.19 (tar.gz): sha256 `10c2dd283ed690f445ac41d7b4846101abe92d1a61c725d7c6cfe81f86c48024`; source `https://github.com/iximiuz/cdebug/releases/download/v0.0.19/cdebug_linux_amd64.tar.gz`
+- cdebug-checksums 0.0.19 (checksum-file): sha256 `0934e9ae7907ff12c3c39cc3f52e88292cbebe1e0a32f88db9845b877cf817ae`; source `https://github.com/iximiuz/cdebug/releases/download/v0.0.19/checksums.txt`
+- awscli 2.35.11 (zip): sha256 `d4bbcb5532c8bf43f9149f1b1e0d09f77f388df088656e349570637c06b76d2d`; source `https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip`
+
