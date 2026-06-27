@@ -1,0 +1,4 @@
+# Use BFQ for virtio disks — enables cgroup v2 io.bfq.weight for Soulmask I/O priority.
+# BFQ is the only multi-queue scheduler that natively enforces cgroup io.weight;
+# [none] and mq-deadline leave io.weight inert.
+ACTION=="add|change", KERNEL=="vd[a-z]", ATTR{queue/scheduler}="bfq"

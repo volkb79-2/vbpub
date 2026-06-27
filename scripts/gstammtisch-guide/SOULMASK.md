@@ -31,9 +31,107 @@ Soulmask must always preempt dev work and be the last thing reclaimed. Layers:
    - `memory.min` = **measured hot+warm set** (DAMON — see [OBSERVATION.md §8](OBSERVATION.md)); the "RAM never swapped" guarantee.
    - `memory.low` = 12G (best-effort).
    - `memory.zswap.writeback = 0` — its pages stay in the fast compressed pool, never proactively to disk (no fault-back stutter).
+   - `io.weight = 4950`, `io.bfq.weight = 1000` — top I/O priority under BFQ (see §2b).
+   - `cpu.weight = 800` — CPU preemption headroom over default-weight containers.
 3. **dev work is fenced off** in `dev-workloads.slice` (low weight, capped, OOM-first). See [MEMORY-ARCHITECTURE.md §5](MEMORY-ARCHITECTURE.md).
 
 > Set `memory.min` from real measurement and err **high** — a too-low floor lets the game fault pages back during save/join/AI bursts → visible stutter.
+
+## 2b. I/O scheduler & bench isolation
+
+### The problem that existed
+
+`setup-cgroups.sh` set Soulmask `io.weight=4950` but background benchmarks (`docker-repack`, the `dstdns/test-runner` container) were still disrupting the game server despite also having `ionice=idle`. **Both were no-ops.** Root cause: the disk scheduler was `[none]`.
+
+| Setting | Expected effect | Actual effect with `[none]` |
+|---|---|---|
+| cgroup `io.weight` | proportional I/O share | **ignored** — no scheduler to enforce it |
+| `ionice -c idle` | lowest ioprio class | **ignored** — `[none]` passes I/O straight to device queue without reordering |
+| `io.max` (hard cap) | works via blk-throttle | ✓ works regardless of scheduler |
+
+The I/O issue also isn't primarily bandwidth — it's **device utilization from random seeks**. The benchmark's write pattern (3.4 M write IOs vs 674 K read IOs observed cumulatively) causes many small random seeks that saturate the device queue, raising latency for everyone on the disk. Even at low `%util`, queue contention raises `w_await` and `r_await` for Soulmask's periodic saves.
+
+### The fix: BFQ scheduler
+
+BFQ (Budget Fair Queueing) is the **only multi-queue scheduler** that natively enforces cgroup v2 `io.weight`. It also adds seek-awareness: it tracks "think time" per process to distinguish sequential bursts from random access, giving latency-sensitive processes time slices on the disk head.
+
+```bash
+# Load module (already persisted in /etc/modules-load.d/bfq.conf)
+modprobe bfq
+# Activate for vda (already persisted in /etc/udev/rules.d/60-bfq-scheduler.rules)
+echo bfq > /sys/block/vda/queue/scheduler
+# Verify
+cat /sys/block/vda/queue/scheduler   # → none mq-deadline [bfq]
+```
+
+Switching to BFQ immediately activates the existing `io.weight` values AND adds a BFQ-specific knob `io.bfq.weight` (range 1–1000; separate from `io.weight`'s 1–10000 range). Both are set by `setup-cgroups.sh`.
+
+### Live settings (applied by `setup-cgroups.sh` after RCON responds)
+
+| Container | `io.weight` | `io.bfq.weight` | `io.max` | `cpu.weight` |
+|---|---|---|---|---|
+| Soulmask | 4950 | **1000** (BFQ max) | none | **800** |
+| devcontainer (docker-repack) | 1 | **1** (BFQ min) | 300r/1200w IOPS, 80 MB/s | 100 |
+| test-runner | 1 | **1** (BFQ min) | 300r/1200w IOPS, 80 MB/s | 100 |
+
+Effective I/O ratio (BFQ): **1000:1**. Bench gets CPU slices on the disk head only when Soulmask's queue is idle.
+
+The `io.max` hard caps are belt-and-suspenders: they cut the benchmark's 709 r/s burst (observed without caps) down to ≤300 IOPS before it even reaches the BFQ scheduler, ensuring the device queue depth stays clean for Soulmask.
+
+### Verifying live state
+
+```bash
+# Confirm BFQ is active
+cat /sys/block/vda/queue/scheduler   # → [bfq]
+
+# Resolve cgroups
+SOUL_PID=$(docker top b87c0a5b-2387-4a1c-8863-ff23e6800a1d 2>/dev/null | awk '/WSServer/{print $2}' | head -1)
+SOUL_CG=/sys/fs/cgroup$(awk -F: '/^0::/{print $3}' /proc/$SOUL_PID/cgroup)
+
+# Read all I/O and CPU settings at once
+for k in io.weight io.bfq.weight cpu.weight; do
+    echo "$k = $(cat $SOUL_CG/$k 2>/dev/null)"
+done
+cat $SOUL_CG/io.max   # should be empty (no limit on Soulmask itself)
+
+# Watch bench cgroup I/O in real time
+BENCH_CG=$(docker inspect -f '{{.State.Pid}}' dstdns-devcontainer-vb 2>/dev/null \
+  | xargs -I{} awk -F: '/^0::/{print $3}' /proc/{}/cgroup \
+  | xargs -I{} echo /sys/fs/cgroup{})
+cat $BENCH_CG/io.stat   # watch rbytes/wbytes accumulate slowly under throttle
+```
+
+### Why `io.latency` is absent — and what replaces it
+
+`io.latency` would give Soulmask a **hard latency guarantee**: when its I/O latency exceeds a target (e.g. 5 ms), the kernel automatically throttles competing cgroups to restore it. This is stronger than weight-based priority.
+
+It's absent because the Debian 13 kernel explicitly disabled it:
+```
+# CONFIG_BLK_CGROUP_IOLATENCY is not set   ← from /boot/config-$(uname -r)
+```
+
+Debian dropped `io.latency` in favour of `io.cost.qos`, which is compiled in:
+```
+CONFIG_BLK_CGROUP_IOCOST=y
+```
+
+**`io.cost.qos`** (available now at `/sys/fs/cgroup/io.cost.qos`) is the modern replacement. Instead of reacting to exceeded latency, it models the device's capacity as a virtual time budget and distributes tokens proportionally to `io.weight`. With Soulmask at 4950 and bench at 1, Soulmask gets 99.98 % of all tokens. Enabling it is complementary to BFQ:
+
+```bash
+# Enable io.cost model on vda (254:0) — auto-tunes device characteristics
+# rlat/wlat: 5 ms target at 95th percentile (matches our thin-provisioned SSD-backed vda)
+echo "254:0 enable=1 ctrl=auto rpct=95.00 rlat=5000 wpct=95.00 wlat=5000 min=1.00 max=99.00" \
+  > /sys/fs/cgroup/io.cost.qos
+# Verify
+cat /sys/fs/cgroup/io.cost.qos
+```
+
+With BFQ + io.max already in place, `io.cost.qos` is not strictly necessary — but it adds a second enforcement layer and makes the existing io.weight ratio enforceable even at the root cost model level.
+
+**When you'd get native `io.latency`:**
+- Compile a custom kernel with `CONFIG_BLK_CGROUP_IOLATENCY=y`
+- Switch to an Ubuntu LTS or RHEL kernel (both enable it)
+- Once the 6.18 LTS kernel is available via trixie-backports (planned — see [MEMORY-ARCHITECTURE.md §8](MEMORY-ARCHITECTURE.md)), check if Debian re-enables it; if not, `io.cost.qos` achieves the same outcome with less kernel overhead
 
 ## 3. Orderly shutdown on host `reboot` — the problem & fix
 

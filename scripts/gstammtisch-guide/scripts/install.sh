@@ -15,6 +15,15 @@ cp -av "$HERE/files/etc/."            /etc/
 cp -av "$HERE/files/usr/local/sbin/." /usr/local/sbin/
 chmod +x /usr/local/sbin/setup-cgroups.sh /usr/local/sbin/soulmask-shutdown.sh
 
+echo "== BFQ I/O scheduler =="
+# BFQ is required for cgroup io.weight / io.bfq.weight to have any effect.
+# Without it, [none] scheduler ignores all I/O priority settings.
+modprobe bfq && echo "bfq loaded" || echo "WARN: modprobe bfq failed"
+echo bfq > /sys/block/vda/queue/scheduler 2>/dev/null && \
+  echo "vda scheduler → bfq" || echo "WARN: could not set vda scheduler"
+udevadm control --reload-rules && udevadm trigger --action=change \
+  --subsystem-match=block 2>/dev/null && echo "udev rules reloaded" || true
+
 echo "== installing scripts =="
 install -m 0755 "$HERE/scripts/exec-soulmask-rcon.sh" /usr/local/sbin/exec-soulmask-rcon.sh
 install -m 0755 "$HERE/scripts/partition-editor.py"   /usr/local/sbin/partition-editor.py

@@ -95,24 +95,47 @@ iostat -dx 2 vda6 vda7
 
 ---
 
-## 5. Disk class & TRIM — interpreting what the hoster gave you
+## 5. Disk class, TRIM & I/O scheduler
 
 ```bash
 cat /sys/block/vda/queue/rotational
 lsblk -do NAME,ROTA,DISC-GRAN,DISC-MAX /dev/vda
 cat /sys/block/vda/queue/scheduler
 ```
-gstammtisch returned:
+gstammtisch returned (after BFQ switch):
 ```
 rotational = 1
 NAME ROTA DISC-GRAN DISC-MAX
 vda     1      512B       2G
-scheduler = [none] mq-deadline
+scheduler = none mq-deadline [bfq]
 ```
 Interpretation:
 - **`DISC-MAX=2G` (and `DISC-GRAN=512B`) ⇒ TRIM/discard is supported ⇒ thin-provisioned backend** (network/SAN/qcow2/LVM-thin). This is the signal that matters → use `discard=once` on swap (TRIM the area at activation; reclaims backing cheaply). Avoid *continuous* `discard` (per-free latency).
-- **`rotational=1` is almost certainly the hypervisor's default, not truth** — don't tune for a spinning disk. Treat as SSD/thin: keep `vm.page-cluster=0`.
-- **`scheduler [none]`** is correct for a VM (the host does the real scheduling). Leave it.
+- **`rotational=1` is almost certainly the hypervisor's default, not truth** — don't tune for a spinning disk. Treat as SSD/thin: keep `vm.page-cluster=0`. (Confirmed by `r_await ≈ 0.3 ms` observed with `iostat -x` — typical of SSD-backed thin storage, not the 5–15 ms of a real HDD.)
+- **`scheduler [bfq]`** — we switched from the VM default `[none]` to BFQ. Rationale below.
+
+### Why we use BFQ instead of `[none]`
+
+The conventional advice for VMs is "leave `[none]` — the hypervisor handles scheduling." That is correct for raw throughput. It is **wrong** when you need cgroup I/O priorities: `[none]` passes all I/O to the device queue in arrival order; cgroup `io.weight` and `ionice` classes are entirely ignored.
+
+BFQ (Budget Fair Queueing, `CONFIG_BFQ_GROUP_IOSCHED=y`) is the only multi-queue scheduler that enforces cgroup v2 `io.weight` / `io.bfq.weight`. It also exposes the per-cgroup `io.bfq.weight` knob (range 1–1000). On this host, Soulmask holds `io.bfq.weight=1000` and bench containers hold `io.bfq.weight=1` — a 1000:1 ratio that is only meaningful with BFQ active.
+
+The thin-provisioned backing storage (`r_await ≈ 0.3 ms`) means BFQ's scheduler overhead is negligible; the benefit of weight enforcement far outweighs the marginal latency.
+
+```bash
+# Confirm BFQ is active
+cat /sys/block/vda/queue/scheduler   # → none mq-deadline [bfq]
+
+# BFQ is loaded as a module — verify
+lsmod | grep bfq   # → bfq  NNN  0
+
+# Check Soulmask's BFQ weight (only present when BFQ is the active scheduler)
+SOUL_PID=$(docker top b87c0a5b-2387-4a1c-8863-ff23e6800a1d 2>/dev/null | awk '/WSServer/{print $2}' | head -1)
+SOUL_CG=/sys/fs/cgroup$(awk -F: '/^0::/{print $3}' /proc/$SOUL_PID/cgroup)
+cat $SOUL_CG/io.bfq.weight   # → default 1000
+```
+
+The `bfq` module loads at boot via `/etc/modules-load.d/bfq.conf`; the udev rule `/etc/udev/rules.d/60-bfq-scheduler.rules` switches `vda` to BFQ on device enumeration, before `setup-cgroups.sh` runs. See [SOULMASK.md §2b](SOULMASK.md) for full I/O isolation details.
 
 Partition layout & free space (MBR, root on logical `vda5`, free space *inside* the extended partition):
 ```bash

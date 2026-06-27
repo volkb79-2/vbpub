@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
 # Apply cgroup-v2 knobs that systemd slice units can't express directly:
-#   - dev-workloads.slice : memory.zswap.writeback=1 (let dev pages drain to disk)
-#   - Soulmask container   : memory.min / memory.low / memory.high protection, and
-#                            memory.zswap.writeback=0 (keep its pages in the fast
-#                            compressed pool, never proactively to disk).
-# Idempotent; tolerant if Soulmask isn't running yet.
+#   - dev-workloads.slice  : memory.zswap.writeback=1
+#   - Soulmask container   : memory.min/low/high protection, zswap writeback=0,
+#                            io.weight=4950 + io.bfq.weight=1000 (BFQ priority), cpu.weight=800
+#   - bench containers     : io.weight=1, io.bfq.weight=1, io.max hard IOPS/bandwidth cap
+#                            (devcontainer runs docker-repack; test-runner runs benchmarks)
+# Idempotent; tolerant if containers aren't running yet.
 #
-# IMPORTANT: set SOULMASK_MIN to Soulmask's MEASURED hot+warm working set (DAMON),
-# not a guess. Too low => the game faults pages back under pressure => stutter.
-#
-# IMPORTANT: never call this during server startup. Apply only after RCON responds.
+# Requires BFQ scheduler on vda (/etc/modules-load.d/bfq.conf + udev rule).
+# IMPORTANT: never call this during Soulmask startup. Apply only after RCON responds.
 # See soulmask-cgroup-watcher.service which enforces this automatically.
 set -uo pipefail
 CG=/sys/fs/cgroup
 log(){ echo "[cgroups] $*"; }
+
+# Hard I/O cap for bench containers: 80 MB/s, 300 r-IOPS, 1200 w-IOPS.
+# Prevents docker-repack/benchmark bursts from saturating device queue.
+# io.bfq.weight range is 1–1000 (unlike io.weight which is 1–10000).
+BENCH_RBPS="${BENCH_RBPS:-83886080}"
+BENCH_WBPS="${BENCH_WBPS:-83886080}"
+BENCH_RIOPS="${BENCH_RIOPS:-300}"
+BENCH_WIOPS="${BENCH_WIOPS:-1200}"
 
 SOULMASK_MIN="${SOULMASK_MIN:-4608M}" # calibrated 2026-06-26: demand floor ~4G (2 players, run 5); +0.5G burst buffer (4608M = 4.5G)
 SOULMASK_LOW="${SOULMASK_LOW:-12G}"
@@ -52,3 +59,37 @@ echo "$SOULMASK_HIGH" > "$SCOPE/memory.high"            2>/dev/null && log "memo
 echo "$SOULMASK_LOW"  > "$SCOPE/memory.low"             2>/dev/null && log "memory.low=$SOULMASK_LOW"
 echo "$SOULMASK_MIN"  > "$SCOPE/memory.min"             2>/dev/null && log "memory.min=$SOULMASK_MIN"
 echo 0                > "$SCOPE/memory.zswap.writeback" 2>/dev/null && log "memory.zswap.writeback=0 (keep pages in pool)"
+echo "default 4950"   > "$SCOPE/io.weight"              2>/dev/null && log "io.weight=4950"
+echo "default 1000"   > "$SCOPE/io.bfq.weight"          2>/dev/null && log "io.bfq.weight=1000 (BFQ max; range 1-1000)"
+echo 800              > "$SCOPE/cpu.weight"             2>/dev/null && log "cpu.weight=800"
+
+# --- throttle bench containers (devcontainer + test-runner) ---
+# docker-repack runs inside the devcontainer; test-runner is a separate bench container.
+# We identify by image name patterns rather than fixed IDs since those change on restart.
+_apply_bench_limits() {
+  local cid="$1" label="$2"
+  local pid scope
+  pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || true)
+  [ -z "$pid" ] && return
+  scope="$CG$(awk -F: '/^0::/{print $3}' /proc/$pid/cgroup 2>/dev/null)"
+  [ -d "$scope" ] || return
+  echo "default 1" > "$scope/io.weight"     2>/dev/null
+  echo "default 1" > "$scope/io.bfq.weight" 2>/dev/null
+  # Apply io.max on both dm-0 (253:0) and vda (254:0)
+  for dev in 253:0 254:0; do
+    echo "$dev rbps=${BENCH_RBPS} wbps=${BENCH_WBPS} riops=${BENCH_RIOPS} wiops=${BENCH_WIOPS}" \
+      > "$scope/io.max" 2>/dev/null
+  done
+  log "$label ($cid): io.weight=1, io.bfq.weight=1, io.max=${BENCH_RIOPS}r/${BENCH_WIOPS}w IOPS, 80MB/s cap"
+}
+
+for c in $(docker ps -q 2>/dev/null); do
+  img=$(docker inspect -f '{{.Config.Image}}' "$c" 2>/dev/null || true)
+  name=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null | tr -d '/' || true)
+  case "$img" in
+    *test-runner*) _apply_bench_limits "$c" "test-runner" ;;
+  esac
+  case "$name" in
+    *devcontainer*|*dstdns-devcontainer*) _apply_bench_limits "$c" "devcontainer" ;;
+  esac
+done

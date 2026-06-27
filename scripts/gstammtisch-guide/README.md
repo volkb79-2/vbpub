@@ -19,6 +19,8 @@ gstammtisch-guide/
 ├── README.md  MEMORY-ARCHITECTURE.md  OBSERVATION.md  SOULMASK.md
 ├── files/                                   # drop-in config, mirrors target paths
 │   ├── etc/modules-load.d/zstd.conf
+│   ├── etc/modules-load.d/bfq.conf          # load BFQ module at boot
+│   ├── etc/udev/rules.d/60-bfq-scheduler.rules  # switch vda to BFQ on boot
 │   ├── etc/sysctl.d/99-gstammtisch-memory.conf
 │   ├── etc/tmpfiles.d/thp.conf              # THP=madvise
 │   ├── etc/tmpfiles.d/ksm.conf              # KSM (optional)
@@ -29,7 +31,7 @@ gstammtisch-guide/
 │   ├── etc/systemd/oomd.conf.d/gstammtisch.conf
 │   └── usr/local/sbin/setup-cgroups.sh  soulmask-shutdown.sh
 └── scripts/
-    ├── install.sh                # orchestrator (copy files, enable units, sysctl)
+    ├── install.sh                # orchestrator (copy files, enable units, sysctl, BFQ)
     ├── partition-editor.py        # universal MBR partition editor
     ├── exec-soulmask-rcon.sh      # RCON admin helper
     └── swap-health.sh             # one-glance monitoring
@@ -78,7 +80,8 @@ These are runtime confirmations the deliverables assume but couldn't be tested f
 - **zswap + zstd**, configured **post-boot** (built-in init races the zstd module → lzo fallback; GRUB tokens dropped).
 - **swappiness=100** (zswap makes anon reclaim cheap; protect the game with `memory.min`, not swappiness).
 - **2 labeled swap partitions** for `iostat` visibility — *not* for speed (striping is a no-op on one vda); thin-provisioned disk → `discard=once`.
-- **cgroup v2**: Soulmask `memory.min`/`memory.low`/`zswap.writeback=0`; `dev-workloads.slice` capped + `io.max` + systemd-oomd kills dev first.
+- **cgroup v2**: Soulmask `memory.min`/`memory.low`/`zswap.writeback=0`, `io.bfq.weight=1000`, `cpu.weight=800`; bench containers `io.bfq.weight=1` + `io.max` hard IOPS cap; `dev-workloads.slice` + systemd-oomd kills dev first.
+- **BFQ I/O scheduler** on `vda` (not `[none]`): only scheduler that enforces cgroup `io.weight`/`io.bfq.weight` — without it, all I/O priority settings are no-ops. `io.latency` unavailable (`CONFIG_BLK_CGROUP_IOLATENCY` not set in Debian 13); `io.cost.qos` is the available alternative (see SOULMASK.md §2b).
 - **KSM optional** (dev opts containers in via `prctl`; never the game); **THP=madvise**.
 - **fq_codel only** for network; skip speculative QoS.
 - **Kernel 7.0.10** (non-LTS) — fine; plan toward 6.18 LTS via backports later.
