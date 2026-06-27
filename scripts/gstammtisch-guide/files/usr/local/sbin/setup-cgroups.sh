@@ -14,13 +14,22 @@ set -uo pipefail
 CG=/sys/fs/cgroup
 log(){ echo "[cgroups] $*"; }
 
-# Hard I/O cap for bench containers: 80 MB/s, 300 r-IOPS, 1200 w-IOPS.
-# Prevents docker-repack/benchmark bursts from saturating device queue.
+# Hard I/O cap for bench containers: 15 MB/s, 50 r-IOPS, 200 w-IOPS.
 # io.bfq.weight range is 1–1000 (unlike io.weight which is 1–10000).
-BENCH_RBPS="${BENCH_RBPS:-83886080}"
-BENCH_WBPS="${BENCH_WBPS:-83886080}"
-BENCH_RIOPS="${BENCH_RIOPS:-300}"
-BENCH_WIOPS="${BENCH_WIOPS:-1200}"
+#
+# WHY 15 MB/s: at 80 MB/s the bench chews through 10 GB of Soulmask's pak-file
+# page cache every ~2 min.  At 15 MB/s the churn rate is ~11 min — long enough
+# for pak pages to stay warm between player actions.  The dominant effect is not
+# I/O latency but PAGE CACHE THRASHING: Soulmask maps pak/world assets via mmap;
+# when those pages are evicted by bench reads the game thread blocks on a major
+# page fault for each missing page → 3-second "chest open" stalls.
+# BENCH_MEMORY_HIGH limits the bench's total cgroup memory (anon + file cache),
+# forcing the kernel to self-evict bench file cache before it steals from Soulmask.
+BENCH_RBPS="${BENCH_RBPS:-15728640}"
+BENCH_WBPS="${BENCH_WBPS:-15728640}"
+BENCH_RIOPS="${BENCH_RIOPS:-50}"
+BENCH_WIOPS="${BENCH_WIOPS:-200}"
+BENCH_MEMORY_HIGH="${BENCH_MEMORY_HIGH:-1610612736}"  # 1.5G
 
 SOULMASK_MIN="${SOULMASK_MIN:-4608M}" # calibrated 2026-06-26: demand floor ~4G (2 players, run 5); +0.5G burst buffer (4608M = 4.5G)
 SOULMASK_LOW="${SOULMASK_LOW:-12G}"
@@ -80,7 +89,10 @@ _apply_bench_limits() {
     echo "$dev rbps=${BENCH_RBPS} wbps=${BENCH_WBPS} riops=${BENCH_RIOPS} wiops=${BENCH_WIOPS}" \
       > "$scope/io.max" 2>/dev/null
   done
-  log "$label ($cid): io.weight=1, io.bfq.weight=1, io.max=${BENCH_RIOPS}r/${BENCH_WIOPS}w IOPS, 80MB/s cap"
+  # Cap total cgroup memory (anon + file cache) — prevents bench file reads from
+  # evicting Soulmask's pak-file page cache out from under the game thread.
+  echo "${BENCH_MEMORY_HIGH}" > "$scope/memory.high" 2>/dev/null
+  log "$label ($cid): io.weight=1, io.bfq.weight=1, io.max=${BENCH_RIOPS}r/${BENCH_WIOPS}w IOPS 15MB/s, memory.high=1.5G"
 }
 
 for c in $(docker ps -q 2>/dev/null); do
