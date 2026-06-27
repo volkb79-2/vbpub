@@ -304,10 +304,10 @@ sudo systemctl enable --now soulmask-pak-ramdisk.service
 | Hot pak regions (game loop, tight mesh) | ~30–100 MB | RAM (LRU hot) |
 | Warm pak regions (currently explored world) | ~1–2 GB | RAM (LRU warm) |
 | Cold pak regions (unexplored areas) | ~0–1.2 GB | zswap (~350 MB compressed) |
-| Soulmask anon RSS | ~4 GB | RAM (protected by `memory.min=4608M`) |
-| Soulmask cold anon | ~5.7 GB | zswap (~1.9 GB compressed, `writeback=0`) |
+| Soulmask anon RSS (hot set) | ~6 GB (3 players) | RAM (protected by `memory.min=6144M`) |
+| Soulmask cold anon | ~9.4 GB | zswap (~1.8 GB compressed, `writeback=0`, 5.2× ratio) |
 
-Total RAM used by Soulmask ≈ 5–6 GB vs 9.7 GB without ramdisk — because the pak file is now part of the LRU pool and cold sections compress efficiently.
+Total hot RAM: ~6.4 GB (6 GB game + 374 MB pak). Total working set: ~15.4 GB (6 GB RAM + 9.4 GB zswap). The game **self-limits**: with `memory.high=8G` it still only draws ~6 GB — it uses what its actor graph needs, not what's available.
 
 > **Before enabling**: stop the server via Wings, then run the service manually to confirm the bind mount works cleanly, then start the server and confirm RCON responds and players can connect. The only observable difference to players should be: initial world load may be slightly faster (pak is in RAM from the first access); subsequent area transitions are faster (no disk reads for pak pages).
 
@@ -379,11 +379,17 @@ For Soulmask: `memory.min` is the critical one. `memory.high=max` + `memory.max=
 
 ### Calibrating memory.min — finding the sweet spot
 
-**Goal**: hot working set in uncompressed RAM (zero decompression events during normal play), cold/unexplored areas in zswap (rare access, ~2–5µs decompress per page is acceptable).
+**Goal**: hot working set in uncompressed RAM, cold/unexplored areas in zswap. The game self-limits — it will not expand to fill available RAM beyond its actual working set.
 
-**Why zswap still causes stutter**: zstd decompresses a 4KB page in ~2–5 µs. A scene transition needing 1000 pages = 2–5 ms of decompress work. Acceptable for cold areas, unacceptable if the game's hot loop constantly hits zswap.
+**Why zswap still causes stutter**: zstd decompresses a 4KB page in ~2–5 µs. A scene transition needing 1000 pages = 2–5 ms of decompress work, visible as a brief stutter. Tens of thousands of pages/second = perceptible lag.
 
-**Primary metric**: `workingset_refault_anon` from `memory.stat` — the cumulative count of anon pages that were compressed to zswap and then decompressed back into RAM. Rate > 0 during active gameplay = memory.min is too low.
+**Primary metric**: `workingset_refault_anon` delta from `memory.stat` — pages that were compressed to zswap and then decompressed back. This is the direct cost counter for zswap pressure.
+
+**Interpreting refault/s** (observed 2026-06-27, 3 players):
+- **1–100/s** = natural background level at correct memory.min; acceptable (cold-area background accesses, not game-tick-critical)
+- **50–500/s continuously** = memory.min too low; game's hot tier is being squeezed into zswap
+- **10k–40k/s for 30–60s** = area load event (player entering new zone); unavoidable; decays naturally; not a floor problem
+- **Constant baseline > 500/s** = severe pressure; increase memory.min immediately
 
 ```bash
 # Live monitor (5-second samples):
@@ -411,60 +417,63 @@ soulmask-zswap-monitor.sh
 3. Slice persists; pak pages charged to it; independent counters: `memory.current`, `memory.zswap.current`, `workingset_refault_anon` all visible per-slice
 4. Allows tuning pak RAM protection separately from game anon protection
 
-**Calibration procedure** (run while players are active, after ~30–60 min of warmup):
+**Calibration tools** (run while players are active, after ~30–60 min of warmup):
 
 ```bash
-# Terminal 1: live zswap monitor
-soulmask-zswap-monitor.sh
-
-# Terminal 2: DAMON to measure hot/warm/cold region sizes
-# (run DAMON scripts from scripts/damon-analysis/ as in previous session)
+soulmask-zswap-monitor.sh        # Terminal 1: live refault/s, RAM, zswap
+soulmask-mempress.sh             # Terminal 2: apply and step memory.high pressure
 ```
-
-**Interpretation**:
-- `refault/s = 0` during play → current `memory.min` is sufficient; can try lowering it in 512M steps and watching for refaults
-- `refault/s > 0` during specific actions (chest opening, entering new area) → those actions are pulling cold pages back from zswap; raise `memory.min` by ~512M and re-test
-- DAMON "hot tier" size = the ideal `memory.min` target (pages accessed on every game tick never leave RAM)
 
 **Finding the sweet spot with `soulmask-mempress.sh`**:
 
 Use **`memory.high`** (NOT `memory.max`) as the pressure lever:
-- `memory.high` = soft ceiling: forces pages to zswap but never kills the process — worst case is stutter
+- `memory.high` = soft ceiling: forces pages to zswap, never kills the process — worst case is stutter
 - `memory.max` = hard ceiling: one step too far = OOM kill = server crash during play
 
-Procedure (run while players are active, after warmup):
-
 ```bash
-# Terminal 1: live zswap stats (watch refault/s — this is the signal)
-soulmask-zswap-monitor.sh
-
-# Terminal 2: stepping (64M steps, pause at 512M boundaries)
-soulmask-mempress.sh            # check current state
-soulmask-mempress.sh down       # step down 64M
-soulmask-mempress.sh down 4     # or 4×64M = 256M at once if confident
-# script prints a banner at each 512M boundary — pause for player testing
-soulmask-mempress.sh up         # ease 64M if refaults appear or lag reported
-
-# Done: reset the ceiling and make the sweet spot permanent
-soulmask-mempress.sh reset
-echo <sweet_spot_bytes> > $SOUL_CG/memory.min
+soulmask-mempress.sh floor 3G   # set panic floor (allows stepping below original memory.min)
+soulmask-mempress.sh down       # step down 64M at a time
+soulmask-mempress.sh down 4     # or 256M at once when confident
+# script banners at 512M boundaries — pause for player testing
+soulmask-mempress.sh up         # ease 64M if refault rate rises or lag reported
+soulmask-mempress.sh finalize   # lock in sweet spot: memory.high→max, memory.min→ceiling
 sudo sed -i "s/SOULMASK_MIN=.*/SOULMASK_MIN=\"\${SOULMASK_MIN:-<N>M}\"/" \
-  /usr/local/sbin/setup-cgroups.sh
-sudo systemctl restart gstammtisch-cgroups
+  /usr/local/sbin/setup-cgroups.sh && systemctl restart gstammtisch-cgroups
 ```
 
-**Step size**: 64M = ~16K pages compressed per step, burst completes in ~50ms, imperceptible.
-**Decision rule**: `refault/s = 0` → safe to go lower. `refault/s > 0` → too low, ease up 64M.
-**Sweet spot**: lowest 512M boundary where refault/s stayed 0 during active play + 128M buffer.
-**After the test**: `memory.high → max` (removed). `memory.min` set to the discovered sweet spot permanently.
+**Step size**: 64M = ~16K pages per compression burst, ~50ms, imperceptible.
+**Decision**: baseline 1–100/s at rest → floor is correct. Baseline > 500/s continuously → too tight, raise floor.
+**Area load spikes are expected** — 10k–40k/s for 30–60s when a player enters a new zone; this is not a floor problem.
 
-**Baseline from post-restart observation (2026-06-27):**
-- Server freshly restarted, 2 players, DLC map
-- RAM: 8957M in cgroup (game is freshly cold — all hot data in RAM, very little zswap yet)
-- zswap pool: 646M compressed (5.9× ratio — mostly zero-filled UE4 heap pages)
-- refault/s: 0 during idle (expected — everything is in RAM after restart)
-- shmem_pak (root): 374M (only explored areas faulted in; 1.3G not yet accessed)
-- Measure again after 2–4h of active play to see steady-state
+---
+
+### Observed sweet spot (2026-06-27, 3 players, DLC map, ramdisk active)
+
+The test was run live during play by stepping `memory.high` down from 8902M in 64M increments.
+
+| Metric | At 4672M ceiling (too tight) | At natural level (6G, no ceiling) |
+|---|---|---|
+| RAM (memory.current) | 4566–4671M (bouncing against ceiling) | 5970–6060M (stable) |
+| refault/s baseline | 50–500/s constantly | 1–100/s |
+| refault/s on area load | 16k–28k/s for ~60s | 16k–40k/s for ~30–60s |
+| zswap pool (compressed) | 2050–2225M | 1800–1880M |
+| swap_total (uncompressed) | 9173–9566M | 9365–9400M |
+| Player experience | Stuttery; lag spikes during any zone transition | Smooth; brief stutter only on large area loads |
+
+**Key finding**: the game **self-limits at ~6G** regardless of how much memory is available. With `memory.high=8G` it still only draws ~6G — it uses what its actor graph needs, not the full ceiling. Setting `memory.high` above ~6.5G has no effect.
+
+**At 4672M**: the game was 1.3G starved. Every game tick needed pages that had been compressed to zswap → constant 50–500/s background refaults + massive amplification on area loads (double-hit: new pages loading + cold pages refaulting simultaneously).
+
+**Transition event (19:24:36)**: when memory.high was removed, the game grabbed 677M in one burst (refault spike 40k/s for ~10s), then immediately settled to stable at 5712M. Refaults dropped to 25/s within seconds. This confirms the hot set boundary is sharp — the game knows exactly what it needs.
+
+**Area load signature**: swap_total grows by 50–150M during the spike (new zones loading into zswap), then refault/s decays from peak → 1000/s → 100/s → 10/s over ~5 minutes as the new zone's hot pages warm into RAM.
+
+**Recommended `memory.min`**: **6144M (6G)** for 3 players. Scale up as player count grows:
+- 2 players: ~5.5G observed (estimated from DAMON run 5; re-measure)
+- 3 players: **6G** (observed 2026-06-27)
+- 4+ players: re-measure; expect +0.5–1G per additional player
+
+**Post-restart note**: immediately after restart everything is in RAM (no zswap yet), so refault/s=0 is misleading. Wait 30–60 min of active play for steady state before calibrating.
 
 ### Soulmask save & backup mechanism
 
@@ -769,24 +778,27 @@ all swapping on this run.
 
 ### `SOULMASK_MIN` calibrated value
 
+DAMON value (2026-06-26, no players, superseded):
 ```
 hot+warm median: 4.63 GiB
 hot+warm max:    6.40 GiB  (settling phase; players expected to raise this ~1 GiB)
-safety margin:   + 600 MiB
-─────────────────────────
-SOULMASK_MIN = 7G
+SOULMASK_MIN = 7G  ← DAMON estimate (no-player run)
 ```
 
-Applied 2026-06-26.  Cold (6.0 GiB) + idle (3.7 GiB) = **9.7 GiB** the kernel
-can compress into zswap under pressure.  With `memory.zswap.writeback = 0`
-these stay in the compressed pool and never hit disk.
+**Live calibration result (2026-06-27, 3 players, supersedes DAMON):  `SOULMASK_MIN = 6G`**
+
+DAMON predicted the warm set at 4.6 GiB with no players + a safety margin → 7G. The live test (§2d calibration) showed the actual hot set with 3 players is **~6 GiB** — the game self-limits and does not expand beyond its working set even with memory.high=8G. DAMON without players underestimated by ~1.4G due to sparse activity.
+
+Applied 2026-06-27 in `setup-cgroups.sh` (`SOULMASK_MIN=6144M`).
+
+Cold (9.4 GiB) stays in zswap with `writeback=0` — never reaches disk.
 
 ### Remaining unknowns
 
 | Scenario | Expected effect | When to measure |
 |---|---|---|
-| Players online (10–30) | warm +1–2 GiB; hot spikes; save events more frequent | during a play session |
-| Save event (`-saving=600`) | cold → warm flip at 10-min mark; IO burst | capture across a save |
+| Players online (4+) | hot set +0.5–1G per player above 3 | during active session; re-run soulmask-mempress.sh |
+| Save event (`-saving=600`) | cold → warm flip at 10-min mark; brief refault spike | capture across a save boundary |
 | Map DLC vs base map | current run was DLC map; base map has fewer assets | compare maps |
 
 ### Next measurement recommendations

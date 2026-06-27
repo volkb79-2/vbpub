@@ -28,7 +28,7 @@ BENCH_WBPS="${BENCH_WBPS:-31457280}"
 BENCH_RIOPS="${BENCH_RIOPS:-100}"
 BENCH_WIOPS="${BENCH_WIOPS:-400}"
 
-SOULMASK_MIN="${SOULMASK_MIN:-4608M}" # calibrated 2026-06-26: demand floor ~4G (2 players, run 5); +0.5G burst buffer (4608M = 4.5G)
+SOULMASK_MIN="${SOULMASK_MIN:-6144M}" # calibrated 2026-06-27: live test, 3 players; natural hot set = ~6G (game self-limits; won't grow beyond what it needs even with memory.high=8G); scale up with player count
 SOULMASK_LOW="${SOULMASK_LOW:-12G}"
 SOULMASK_HIGH="${SOULMASK_HIGH:-max}" # max = no ceiling in normal operation
 
