@@ -229,9 +229,10 @@ Without this, the ramdisk is lost after the next host reboot and the container w
 
 #### Step 4 — save the game
 ```bash
-exec-soulmask-rcon.sh SaveWorld 1
+exec-soulmask-rcon.sh SaveWorld 0          # serialize actors → in-memory DB
+exec-soulmask-rcon.sh BackupDataBase world # flush in-memory DB → world.db on disk
 ```
-✓ Confirm: output contains `[WORLD IS SAVED TO:] ... succeed`
+✓ Confirm: `BackupDataBase world` output contains `succeed` (or similar acknowledgement)
 
 #### Step 5 — stop the server via Wings panel
 Wings panel → server → power → **Stop**. Wait for "Offline" status.
@@ -367,28 +368,34 @@ Pak and game anon pages are **not separately tracked within the same cgroup** �
 
 ### Soulmask save & backup mechanism
 
-The egg starts the server with two timer-based persistence parameters:
+The egg description and RCON command semantics reveal a **two-stage pipeline**:
 
-| Param | Value | What it does |
-|---|---|---|
-| `-saving=600` | 10 min | Serializes the **live in-memory world state** (all UE4 actors: players, buildings, NPCs, items) to the save database file on disk. CPU-intensive; disk write is async (kernel writeback thread, not the game thread). |
-| `-backup=960` | 16 min | Copies the current save DB to a timestamped backup file. Pure I/O, no game logic. Produces the `archive-*.tar.gz` files you see in `WS/Saved/`. |
+| Stage | Trigger | What it does | RCON equivalent |
+|---|---|---|---|
+| **Save** | `-saving=600` (10 min) | Serializes live UE4 actor graph → **in-memory SQLite DB** (RAM). CPU-intensive; no disk I/O. | `SaveWorld 0` |
+| **Backup** | `-backup=960` (16 min) | Flushes the in-memory DB → **`world.db` on disk**. Pure sequential write, no game logic. | `BackupDataBase world` |
+
+Egg variable descriptions confirm this verbatim:
+- `-saving`: *"Specifies the interval for writing game objects to the database"* (in-memory)
+- `-backup`: *"Specifies the interval for writing the game database to disk"*
+
+`SaveWorld 0` = in-memory DB update only (no disk write).  
+`SaveWorld 1` = confirmed to write to disk immediately (`world.db` path in response). **Unclear whether it also first does the in-memory update** (i.e. acts as `SaveWorld 0` + `BackupDataBase world`) or only flushes whatever is currently in the in-memory DB. Until confirmed, the safe manual sequence for a full pre-maintenance save is:
+```bash
+exec-soulmask-rcon.sh SaveWorld 0        # serialize live actors → in-memory DB
+exec-soulmask-rcon.sh BackupDataBase world  # flush in-memory DB → world.db on disk
+```
 
 **What gets accessed:**
-- **Save (600s)**: reads from Soulmask's anon heap (live game objects, already in RAM) → writes to `WS/Saved/GameData/<mapname>.db` on real disk. **No pak reads** — game code is already loaded.
-- **Backup (960s)**: reads the DB file → writes a timestamped copy. Temporary IO spike, no CPU.
-- The save DB path is on real LVM (`Saved/`), completely separate from the pak ramdisk (`Content/Paks/`). They do not interact.
-
-**Does the save mechanism use an in-memory DB layer?**
-No. `-saving=600` IS the memory-to-disk flush. Between saves, live game state lives only in UE4's actor system (anon RAM). The DB file on disk is the only persistent form.
+- **Save timer (600s)**: reads UE4 actor objects (anon RAM) → writes to in-memory DB. No disk I/O, no pak reads.
+- **Backup timer (960s)**: reads in-memory DB → writes `world.db` to disk. IO spike, no CPU serialization.
+- Both paths are on real LVM (`WS/Saved/`), completely separate from the pak ramdisk (`Content/Paks/`). They do not interact.
 
 **Do saves warm the LRU / prevent zswap eviction?**
-Partially. The save traverses the actor graph (anon pages in RAM/zswap). Pages that are in zswap when the save touches them get decompressed back into RAM, resetting their LRU clock. BUT: Soulmask almost certainly does delta saves — only actors that were dirtied since the last save are serialized. Cold zswap'd objects from unexplored areas won't be touched. So saves warm the recently-active working set (which is already warm anyway), not the cold regions.
-
-The practical answer: if `memory.zswap.writeback=0` is set on Soulmask (our current config), no pages can reach disk regardless. Saves are irrelevant to the write-back concern. If you later enable `writeback=1` for Soulmask (to allow cold pages to trickle to disk swap over days of uptime), then save frequency matters more — but the right tool is keeping `memory.min` above the hot working set, not saving more often.
+The `-saving` timer accesses the UE4 actor graph (anon pages). Pages that are zswap'd get decompressed back into RAM when touched, resetting their LRU clock. But Soulmask almost certainly does delta saves — only recently dirtied actors are serialized. Cold regions stay cold. In any case, with `memory.zswap.writeback=0` on Soulmask, no pages reach disk regardless of save frequency. The right lever for protecting the working set is `memory.min` height, not save cadence.
 
 **Should saves be more frequent?**
-The 10-minute interval means at most 10 minutes of player progress lost on crash. For 2 players, reasonable. Shortening it adds more frequent CPU spikes. If crash-safety matters more: `exec-soulmask-rcon.sh SaveWorld 1` in a cron saves on demand without touching the interval. (`SaveWorld 1` is confirmed to trigger an immediate synchronous save; saraserenity.net docs to the contrary are wrong.)
+At most 16 minutes of data loss on crash (last disk flush). For 2 players, 600s/960s is fine. Shortening adds CPU serialization spikes more often. On demand: `SaveWorld 0` then `BackupDataBase world` (or just `SaveWorld 1` if confirmed to do both).
 
 ## 3. Orderly shutdown on host `reboot` — the problem & fix
 
@@ -408,7 +415,9 @@ Runs **any** RCON command against the running container and prints the reply, wi
 docker pull itzg/rcon-cli                         # once (pre-pull so shutdown never needs the registry)
 exec-soulmask-rcon.sh -d                          # debug: detection + port/pass status + connection test
 exec-soulmask-rcon.sh List_OnlinePlayers          # (alias: lp) — read-only, used as the pre-flight test
-exec-soulmask-rcon.sh SaveWorld 1                 # immediate save, no exit — confirmed working (saraserenity.net says otherwise; ignore)
+exec-soulmask-rcon.sh SaveWorld 0                 # serialize actors → in-memory DB only (no disk write)
+exec-soulmask-rcon.sh BackupDataBase world        # flush in-memory DB → world.db on disk
+exec-soulmask-rcon.sh SaveWorld 1                 # writes to disk immediately (confirmed); whether it also updates in-memory DB first is unconfirmed — use 0+BackupDataBase to be safe
 exec-soulmask-rcon.sh SaveAndExit 15              # save + 15s shutdown countdown  (cancel: StopCloseServer)
 exec-soulmask-rcon.sh broadcast Reboot in 60s     # multi-word args are forwarded intact
 ```
@@ -494,7 +503,9 @@ Wings daemon directly (above) without needing a panel API key.
 | Purpose | RCON command |
 |---|---|
 | List players | `List_OnlinePlayers` (alias `lp`) |
-| Save only (no exit) | `SaveWorld 1` — immediate, confirmed working; `0` may be async/queued |
+| In-memory DB update (no disk) | `SaveWorld 0` — what the `-saving` timer does |
+| Flush in-memory DB to disk | `BackupDataBase world` — what the `-backup` timer does |
+| Disk write shortcut (unconfirmed if it also updates in-memory first) | `SaveWorld 1` |
 | Save + shutdown countdown | `SaveAndExit <seconds>` |
 | Cancel a pending shutdown | `StopCloseServer` |
 | Broadcast a message | `broadcast <text>` |
