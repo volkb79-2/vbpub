@@ -193,8 +193,99 @@ sudo soulmask-pak-ramdisk-toggle.sh
 
 After toggling: stop the server from the Wings panel → wait for clean exit → start it again. The script will remind you.
 
+### Live activation (container restart only — no host reboot needed)
+
+Wings recreates the Soulmask container on each start (`docker rm` + `docker create` + `docker start`). Docker binds the volume with `MS_BIND|MS_REC` (recursive), so any host-side submount already in place on `$VOL_BASE/WS/Content/Paks/` is automatically visible inside the new container. This means **only a server stop+start via Wings is needed**, not a host reboot.
+
+**Estimated downtime: ~2 minutes** (1.7G pak copy ~5–10 s, server startup ~60–90 s).
+
+#### Step 1 — dry-run (verify path discovery, no changes)
+```bash
+sudo /usr/local/sbin/soulmask-pak-ramdisk-setup.sh --dry-run
+```
+✓ Confirm: shows correct `$PAK_DIR` (the real volume path, not a tmpfs)
+
+#### Step 2 — set up ramdisk while server is running
+```bash
+sudo soulmask-pak-ramdisk-toggle.sh on
+```
+This copies ~1.7G from disk to tmpfs and bind-mounts it over `$PAK_DIR`. The running server is not affected — it still reads paks from its current mmap. RAM usage rises by ~1.7G during the copy (tmpfs pages).
+
+✓ Confirm:
+```bash
+sudo soulmask-pak-ramdisk-toggle.sh status
+# → ACTIVE — ramdisk is mounted
+findmnt $(cat /run/soulmask-pak-ramdisk.state | cut -d= -f2 | tr -d "'")
+# → SOURCE: tmpfs, FSTYPE: tmpfs
+```
+
+#### Step 3 — enable the service (persist across host reboots)
+```bash
+sudo systemctl enable soulmask-pak-ramdisk.service
+```
+Without this, the ramdisk is lost after the next host reboot and the container would start with disk-backed paks again.
+
+✓ Confirm: `systemctl is-enabled soulmask-pak-ramdisk.service` → `enabled`
+
+#### Step 4 — save the game
+```bash
+exec-soulmask-rcon.sh SaveWorld 1
+```
+✓ Confirm: output contains `[WORLD IS SAVED TO:] ... succeed`
+
+#### Step 5 — stop the server via Wings panel
+Wings panel → server → power → **Stop**. Wait for "Offline" status.
+
+✓ Confirm:
+```bash
+docker ps | grep -v soulmask   # Soulmask container no longer listed
+findmnt $(cat /run/soulmask-pak-ramdisk.state | cut -d= -f2 | tr -d "'")
+# → still shows tmpfs (host-side mounts survive container stop)
+```
+
+#### Step 6 — start the server via Wings panel
+Wings panel → server → power → **Start**. Wait for "Running" status.
+
+#### Step 7 — verify new container sees tmpfs
+```bash
+CID=$(for c in $(docker ps -q); do
+  docker top "$c" 2>/dev/null | grep -q WSServer && echo "$c"; done | head -1)
+docker exec "$CID" findmnt /home/container/WS/Content/Paks
+```
+✓ Confirm: `FSTYPE` column shows `tmpfs`
+
+If it shows `ext4` (or any non-tmpfs): the ramdisk was NOT picked up by the new container. Do not proceed — see troubleshooting below.
+
+#### Step 8 — wait for RCON, verify cgroup shmem
+```bash
+exec-soulmask-rcon.sh List_OnlinePlayers     # wait until RCON responds (~60–90 s)
+
+SOUL_CG=/sys/fs/cgroup$(docker inspect -f '{{.State.Pid}}' "$CID" \
+  | xargs -I{} awk -F: '/^0::/{print $3}' /proc/{}/cgroup)
+grep '^shmem ' "$SOUL_CG/memory.stat"
+```
+✓ Confirm: `shmem` value is > 0 (pak pages are in RAM as tmpfs-backed shmem, not file cache)
+
+#### Troubleshooting: container sees ext4 instead of tmpfs
+
+This means Docker created the container before seeing the ramdisk mount. Causes:
+- Wings started the container before `soulmask-pak-ramdisk-setup.sh` finished the bind
+- The bind mount was not recursive (unusual Docker config)
+
+Fix:
+```bash
+# Tear down, stop server again, re-run setup, start server
+sudo soulmask-pak-ramdisk-toggle.sh off
+# (stop server via Wings)
+sudo soulmask-pak-ramdisk-toggle.sh on
+# Verify with findmnt BEFORE starting from Wings
+findmnt $(cat /run/soulmask-pak-ramdisk.state | cut -d= -f2 | tr -d "'")
+# (start server via Wings)
+```
+
 ### Enable at boot (permanent)
 
+Once activated via the live procedure above, the service is already enabled. On a fresh host install:
 ```bash
 # Dry-run first to verify volume discovery:
 sudo /usr/local/sbin/soulmask-pak-ramdisk-setup.sh --dry-run
@@ -202,10 +293,7 @@ sudo /usr/local/sbin/soulmask-pak-ramdisk-setup.sh --dry-run
 # Enable permanently (runs Before=docker.service on every boot):
 sudo systemctl enable --now soulmask-pak-ramdisk.service
 
-# Verify what the container sees (pak should be tmpfs-backed):
-CID=$(docker ps -q --filter ancestor=ghcr.io/ptero-eggs/steamcmd:debian | head -1)
-docker exec $CID ls -lh /home/container/WS/Content/Paks/
-findmnt $(sudo soulmask-pak-ramdisk-toggle.sh status 2>&1 | awk '/bind:/{print $NF}')
+# Then do a Wings stop+start — same steps 4–8 above
 ```
 
 ### Memory accounting after ramdisk
@@ -300,7 +388,7 @@ Partially. The save traverses the actor graph (anon pages in RAM/zswap). Pages t
 The practical answer: if `memory.zswap.writeback=0` is set on Soulmask (our current config), no pages can reach disk regardless. Saves are irrelevant to the write-back concern. If you later enable `writeback=1` for Soulmask (to allow cold pages to trickle to disk swap over days of uptime), then save frequency matters more — but the right tool is keeping `memory.min` above the hot working set, not saving more often.
 
 **Should saves be more frequent?**
-The 10-minute interval means at most 10 minutes of player progress lost on crash. For 2 players, reasonable. Shortening it adds more frequent CPU spikes. If crash-safety matters more: `exec-soulmask-rcon.sh SaveWorld 0` in a cron saves on demand without touching the interval.
+The 10-minute interval means at most 10 minutes of player progress lost on crash. For 2 players, reasonable. Shortening it adds more frequent CPU spikes. If crash-safety matters more: `exec-soulmask-rcon.sh SaveWorld 1` in a cron saves on demand without touching the interval. (`SaveWorld 1` is confirmed to trigger an immediate synchronous save; saraserenity.net docs to the contrary are wrong.)
 
 ## 3. Orderly shutdown on host `reboot` — the problem & fix
 
@@ -320,7 +408,7 @@ Runs **any** RCON command against the running container and prints the reply, wi
 docker pull itzg/rcon-cli                         # once (pre-pull so shutdown never needs the registry)
 exec-soulmask-rcon.sh -d                          # debug: detection + port/pass status + connection test
 exec-soulmask-rcon.sh List_OnlinePlayers          # (alias: lp) — read-only, used as the pre-flight test
-exec-soulmask-rcon.sh SaveWorld 0                 # save WITHOUT exiting (good for a cron save)
+exec-soulmask-rcon.sh SaveWorld 1                 # immediate save, no exit — confirmed working (saraserenity.net says otherwise; ignore)
 exec-soulmask-rcon.sh SaveAndExit 15              # save + 15s shutdown countdown  (cancel: StopCloseServer)
 exec-soulmask-rcon.sh broadcast Reboot in 60s     # multi-word args are forwarded intact
 ```
@@ -406,7 +494,7 @@ Wings daemon directly (above) without needing a panel API key.
 | Purpose | RCON command |
 |---|---|
 | List players | `List_OnlinePlayers` (alias `lp`) |
-| Save only (no exit) | `SaveWorld 0` |
+| Save only (no exit) | `SaveWorld 1` — immediate, confirmed working; `0` may be async/queued |
 | Save + shutdown countdown | `SaveAndExit <seconds>` |
 | Cancel a pending shutdown | `StopCloseServer` |
 | Broadcast a message | `broadcast <text>` |
