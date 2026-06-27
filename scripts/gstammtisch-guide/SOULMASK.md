@@ -133,6 +133,61 @@ With BFQ + io.max already in place, `io.cost.qos` is not strictly necessary — 
 - Switch to an Ubuntu LTS or RHEL kernel (both enable it)
 - Once the 6.18 LTS kernel is available via trixie-backports (planned — see [MEMORY-ARCHITECTURE.md §8](MEMORY-ARCHITECTURE.md)), check if Debian re-enables it; if not, `io.cost.qos` achieves the same outcome with less kernel overhead
 
+## 2c. Pak file ramdisk — eliminating major page faults entirely
+
+### Why file cache is the weak link
+
+`memory.min` protects Soulmask's *anonymous* pages (heap, stack, engine allocations). Pak files are **clean file-backed pages** — the kernel can free them at any time (they can be re-read from disk) and does not route them through zswap. `memory.zswap.writeback=0` has no effect on them. Under pressure, they simply vanish from the page cache silently.
+
+When a pak page is missing and the game thread accesses it:
+- **Current (disk-backed)**: major page fault → disk read → 1–10 ms per page → sequential stalls when many pages are gone → 3-second "chest open" hang
+- **With ramdisk**: minor page fault → zswap decompress → ~1–10 µs → effectively zero stall
+
+The conversion is simple: **store the pak file on tmpfs**. tmpfs pages are anonymous (swap-backed). They go through zswap, are covered by `memory.min`, and cannot be evicted by benchmark file I/O.
+
+### gstammtisch specifics
+
+The game has one pak file: `WS-LinuxServer.pak` at **~1.7 GB**.
+- Available RAM at steady state: ~6.8 GB → fits entirely in RAM with 5 GB to spare.
+- If the game grows or RAM shrinks: cold pak sections compress at ~3.6× in zswap → 1.7 GB uncompressed → ~470 MB compressed. Never hits disk (`memory.zswap.writeback=0`).
+- Startup cost: one sequential read of 1.7 GB from disk to populate the tmpfs (≈ 5–10 s on this SSD-backed VM). Every subsequent access is RAM-speed.
+
+### Implementation
+
+A systemd service (`soulmask-pak-ramdisk.service`) creates a tmpfs, copies the pak, and bind-mounts it over the on-disk Paks directory before Docker starts. The container sees identical paths — no Wings/Pterodactyl changes needed.
+
+```bash
+# Manual dry-run (verify paths before enabling the service):
+sudo /usr/local/sbin/soulmask-pak-ramdisk-setup.sh --dry-run
+# Apply once to test:
+sudo /usr/local/sbin/soulmask-pak-ramdisk-setup.sh
+# Check what the container sees:
+docker exec f776d567ad03 ls -lh /home/container/WS/Content/Paks/
+# Confirm the pak is on tmpfs (should show "tmpfs" not "ext4"):
+findmnt /var/lib/pterodactyl/volumes/b87c0a5b-2387-4a1c-8863-ff23e6800a1d/WS/Content/Paks
+```
+
+Enable permanently:
+```bash
+sudo systemctl enable --now soulmask-pak-ramdisk.service
+```
+
+The service runs `Before=docker.service`, so Wings always sees the ramdisk-backed paks.
+
+### Memory accounting after ramdisk
+
+| Layer | Size | Where |
+|---|---|---|
+| Hot pak regions (game loop, tight mesh) | ~30–100 MB | RAM (LRU hot) |
+| Warm pak regions (currently explored world) | ~1–2 GB | RAM (LRU warm) |
+| Cold pak regions (unexplored areas) | ~0–1.2 GB | zswap (~350 MB compressed) |
+| Soulmask anon RSS | ~4 GB | RAM (protected by `memory.min=4608M`) |
+| Soulmask cold anon | ~5.7 GB | zswap (~1.9 GB compressed, `writeback=0`) |
+
+Total RAM used by Soulmask ≈ 5–6 GB vs 9.7 GB without ramdisk — because the pak file is now part of the LRU pool and cold sections compress efficiently.
+
+> **Before enabling**: stop the server via Wings, then run the service manually to confirm the bind mount works cleanly, then start the server and confirm RCON responds and players can connect. The only observable difference to players should be: initial world load may be slightly faster (pak is in RAM from the first access); subsequent area transitions are faster (no disk reads for pak pages).
+
 ## 3. Orderly shutdown on host `reboot` — the problem & fix
 
 **Problem.** Stopping from the panel works (Wings sends `^C`/SIGINT → game saves). But a host `reboot` **bypasses Wings**: systemd stops `docker.service`, Docker kills the container with its default **SIGTERM + ~10 s**, then SIGKILL. Soulmask saves on **SIGINT, not SIGTERM** — wrong signal, too little time → **no save**. ("Connection severs immediately" = Wings/UI going down at the same moment.)

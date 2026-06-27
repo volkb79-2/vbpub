@@ -1,0 +1,20 @@
+[Unit]
+Description=Soulmask pak file ramdisk (tmpfs over Paks directory)
+Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK.md
+# Must run before Docker so the container mounts the tmpfs-backed Paks directory.
+Before=docker.service
+After=local-fs.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/soulmask-pak-ramdisk-setup.sh
+# On stop/reboot: unmount bind and tmpfs in reverse order.
+ExecStop=/bin/sh -c 'umount /var/lib/pterodactyl/volumes/b87c0a5b-2387-4a1c-8863-ff23e6800a1d/WS/Content/Paks 2>/dev/null || true; umount /mnt/soulmask-paks 2>/dev/null || true'
+TimeoutStartSec=120   # allow up to 2 min for large-pak copy on slow cold disk
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

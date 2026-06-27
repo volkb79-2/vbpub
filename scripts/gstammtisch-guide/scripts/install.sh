@@ -47,6 +47,13 @@ systemctl enable --now gstammtisch-cgroups.service
 systemctl enable --now soulmask-graceful-stop.service
 systemctl enable --now systemd-oomd.service 2>/dev/null || true
 
+echo ""
+echo "== pak ramdisk (opt-in — see SOULMASK.md §2c) =="
+echo "   To eliminate pak page-fault stalls, enable the pak ramdisk:"
+echo "     sudo /usr/local/sbin/soulmask-pak-ramdisk-setup.sh --dry-run   # preview"
+echo "     sudo systemctl enable --now soulmask-pak-ramdisk.service"
+echo "   (stop the server first; verify with: findmnt .../WS/Content/Paks)"
+
 echo; echo "== status =="
 echo "zswap compressor: $(cat /sys/module/zswap/parameters/compressor 2>/dev/null) (want: zstd)"
 swapon --show 2>/dev/null || echo "(no swap yet — create partitions, step 1 below)"
