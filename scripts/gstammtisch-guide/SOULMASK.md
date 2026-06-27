@@ -366,6 +366,78 @@ After `soulmask-pak-ramdisk.service` is enabled, pak tmpfs pages accessed by the
 
 Pak and game anon pages are **not separately tracked within the same cgroup** — they both contribute to `memory.zswap.current`. To see roughly how much of zswap is pak: `(memory.swap.current - pre_ramdisk_baseline) / compression_ratio`.
 
+### memory.high vs memory.max, memory.min vs memory.low
+
+| Knob | Type | Exceeded = | Effect |
+|---|---|---|---|
+| `memory.max` | hard ceiling | OOM kill | Processes inside the cgroup are killed immediately |
+| `memory.high` | soft ceiling | throttle + reclaim | Kernel throttles allocs and reclaims aggressively — process survives but may appear frozen. **This is what killed VSCode** when memory.high=1.5G was set on the devcontainer. |
+| `memory.min` | hard floor | guaranteed | Kernel will NEVER take memory below this from the cgroup, regardless of global pressure |
+| `memory.low` | soft floor | best-effort | Kernel tries to honour it but will dip below under severe system-wide pressure |
+
+For Soulmask: `memory.min` is the critical one. `memory.high=max` + `memory.max=max` = no ceiling. `memory.low=12G` is a best-effort hint that rarely triggers (the game never reaches 12G uncompressed in RAM).
+
+### Calibrating memory.min — finding the sweet spot
+
+**Goal**: hot working set in uncompressed RAM (zero decompression events during normal play), cold/unexplored areas in zswap (rare access, ~2–5µs decompress per page is acceptable).
+
+**Why zswap still causes stutter**: zstd decompresses a 4KB page in ~2–5 µs. A scene transition needing 1000 pages = 2–5 ms of decompress work. Acceptable for cold areas, unacceptable if the game's hot loop constantly hits zswap.
+
+**Primary metric**: `workingset_refault_anon` from `memory.stat` — the cumulative count of anon pages that were compressed to zswap and then decompressed back into RAM. Rate > 0 during active gameplay = memory.min is too low.
+
+```bash
+# Live monitor (5-second samples):
+soulmask-zswap-monitor.sh
+
+# Columns:
+#   RAM(M)      — Soulmask cgroup in uncompressed RAM
+#   zswap_pool  — compressed bytes in zswap pool (Soulmask's share)
+#   swap_total  — uncompressed equivalent in zswap (incl. zero-filled pages)
+#   refault/s   — workingset_refault_anon delta ← PRIMARY INDICATOR
+#   majfault/s  — pgmajfault delta (includes refaults)
+#   shmem_pak   — pak tmpfs pages in RAM (charged to root cgroup, not Soulmask)
+#   ratio       — swap_total / zswap_pool (compression ratio; zero-pages inflate this)
+```
+
+**Pak pages and the root cgroup**: with the ramdisk active, pak tmpfs pages are charged to the **root cgroup** (because `soulmask-pak-ramdisk-setup.sh` ran as root). Soulmask's cgroup `shmem = 0`; pak pages appear as `shmem` in `/sys/fs/cgroup/memory.stat` (the root). This means:
+- `memory.min` on Soulmask's cgroup does NOT protect pak pages
+- Pak pages CAN be pushed to zswap if root cgroup is under pressure (however, root cgroup is never normally under pressure on this host — the game dominates memory)
+- Pak page zswap decompress latency = same ~2–5µs (still 1000× better than disk)
+- 374M of 1.7G pak is faulted in after a fresh start; remaining 1.3G loaded on demand as areas are explored
+
+**Calibration procedure** (run while players are active, after ~30–60 min of warmup):
+
+```bash
+# Terminal 1: live zswap monitor
+soulmask-zswap-monitor.sh
+
+# Terminal 2: DAMON to measure hot/warm/cold region sizes
+# (run DAMON scripts from scripts/damon-analysis/ as in previous session)
+```
+
+**Interpretation**:
+- `refault/s = 0` during play → current `memory.min` is sufficient; can try lowering it in 512M steps and watching for refaults
+- `refault/s > 0` during specific actions (chest opening, entering new area) → those actions are pulling cold pages back from zswap; raise `memory.min` by ~512M and re-test
+- DAMON "hot tier" size = the ideal `memory.min` target (pages accessed on every game tick never leave RAM)
+
+**Lowering memory.min live** (no restart needed):
+```bash
+# Example: try 4096M instead of 4608M
+echo 4096M > $SOUL_CG/memory.min
+# Watch refault/s in soulmask-zswap-monitor.sh — if it jumps during play, go back up:
+echo 4608M > $SOUL_CG/memory.min
+# Update setup-cgroups.sh once the right value is found:
+sudo sed -i 's/SOULMASK_MIN=.*/SOULMASK_MIN="${SOULMASK_MIN:-4096M}"/' /usr/local/sbin/setup-cgroups.sh
+```
+
+**Baseline from post-restart observation (2026-06-27):**
+- Server freshly restarted, 2 players, DLC map
+- RAM: 8957M in cgroup (game is freshly cold — all hot data in RAM, very little zswap yet)
+- zswap pool: 646M compressed (5.9× ratio — mostly zero-filled UE4 heap pages)
+- refault/s: 0 during idle (expected — everything is in RAM after restart)
+- shmem_pak (root): 374M (only explored areas faulted in; 1.3G not yet accessed)
+- Measure again after 2–4h of active play to see steady-state
+
 ### Soulmask save & backup mechanism
 
 The egg description and RCON command semantics reveal a **two-stage pipeline**:

@@ -32,6 +32,7 @@ gstammtisch-guide/
 │   ├── etc/systemd/oomd.conf.d/gstammtisch.conf
 │   └── usr/local/sbin/setup-cgroups.sh  soulmask-shutdown.sh
 │                         soulmask-pak-ramdisk-setup.sh  soulmask-pak-ramdisk-toggle.sh
+│                         soulmask-zswap-monitor.sh
 └── scripts/
     ├── install.sh                # orchestrator (copy files, enable units, sysctl, BFQ)
     ├── partition-editor.py        # universal MBR partition editor
