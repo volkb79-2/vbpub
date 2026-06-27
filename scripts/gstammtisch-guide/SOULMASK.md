@@ -71,12 +71,14 @@ Switching to BFQ immediately activates the existing `io.weight` values AND adds 
 | Container | `io.weight` | `io.bfq.weight` | `io.max` | `cpu.weight` |
 |---|---|---|---|---|
 | Soulmask | 4950 | **1000** (BFQ max) | none | **800** |
-| devcontainer (docker-repack) | 1 | **1** (BFQ min) | 300r/1200w IOPS, 80 MB/s | 100 |
-| test-runner | 1 | **1** (BFQ min) | 300r/1200w IOPS, 80 MB/s | 100 |
+| devcontainer (docker-repack) | 1 | **1** (BFQ min) | 100r/400w IOPS, 30 MB/s | 100 |
+| test-runner | 1 | **1** (BFQ min) | 100r/400w IOPS, 30 MB/s | 100 |
 
 Effective I/O ratio (BFQ): **1000:1**. Bench gets CPU slices on the disk head only when Soulmask's queue is idle.
 
-The `io.max` hard caps are belt-and-suspenders: they cut the benchmark's 709 r/s burst (observed without caps) down to ≤300 IOPS before it even reaches the BFQ scheduler, ensuring the device queue depth stays clean for Soulmask.
+No `memory.high` on bench containers — the devcontainer is also the VSCode workspace, and capping its total cgroup memory kills the IDE. BFQ priority + `io.max` is the right lever without side-effects.
+
+The `io.max` hard caps are belt-and-suspenders: they cut the benchmark's 709 r/s burst (observed without caps) to ≤100 IOPS before it even reaches the BFQ scheduler, ensuring the device queue depth stays clean for Soulmask's periodic DB saves.
 
 ### Verifying live state
 
@@ -187,6 +189,81 @@ The service runs `Before=docker.service`, so Wings always sees the ramdisk-backe
 Total RAM used by Soulmask ≈ 5–6 GB vs 9.7 GB without ramdisk — because the pak file is now part of the LRU pool and cold sections compress efficiently.
 
 > **Before enabling**: stop the server via Wings, then run the service manually to confirm the bind mount works cleanly, then start the server and confirm RCON responds and players can connect. The only observable difference to players should be: initial world load may be slightly faster (pak is in RAM from the first access); subsequent area transitions are faster (no disk reads for pak pages).
+
+## 2d. Monitoring — zswap accounting & periodic saves
+
+### Per-cgroup zswap usage
+
+Soulmask's cgroup exposes three key files:
+
+- `memory.current` — bytes in RAM (anon + file cache, **not** swap)
+- `memory.swap.current` — bytes in swap, uncompressed equivalent (zswap + disk swap)
+- `memory.zswap.current` — bytes in zswap pool, **compressed** (the actual pool storage used)
+
+With `writeback=0`, no pages hit disk; `memory.swap.current` ≈ total in zswap (uncompressed). The ratio `memory.swap.current / memory.zswap.current` is the effective compression ratio.
+
+```bash
+SOUL_CG=/sys/fs/cgroup$(docker inspect -f '{{.State.Pid}}' \
+  $(docker ps -q --filter ancestor=ghcr.io/ptero-eggs/steamcmd:debian | head -1) \
+  | xargs -I{} awk -F: '/^0::/{print $3}' /proc/{}/cgroup)
+
+echo "=== Soulmask memory ==="
+RAM=$(cat $SOUL_CG/memory.current)
+SWAP=$(cat $SOUL_CG/memory.swap.current)
+ZSWAP=$(cat $SOUL_CG/memory.zswap.current)
+awk "BEGIN{printf \"  in RAM:        %4dM\n  in swap total: %4dM (uncompressed)\n  in zswap pool: %4dM (compressed, %.1fx ratio)\n  disk swap:     %4dM (want 0 with writeback=0)\n\",
+  $RAM/1048576, $SWAP/1048576, $ZSWAP/1048576, $SWAP/$ZSWAP, ($SWAP-$ZSWAP)/1048576}"
+
+echo ""
+echo "=== memory.stat breakdown ==="
+grep -E '^(anon |file |shmem |file_mapped ) ' $SOUL_CG/memory.stat \
+  | awk '{printf "  %-15s %dM\n",$1,$2/1048576}'
+echo "  (shmem=0 before ramdisk; shmem>0 = pak pages in RAM after ramdisk)"
+
+echo ""
+echo "=== Global zswap pool ==="
+PAGES=$(sudo cat /sys/kernel/debug/zswap/stored_pages)
+POOL=$(sudo cat /sys/kernel/debug/zswap/pool_total_size)
+awk "BEGIN{printf \"  stored:     %4dM uncompressed (%d pages)\n  pool size:  %4dM compressed (%.1fx ratio)\n  max_pool:   30%% of RAM\n\",
+  $PAGES*4/1024, $PAGES, $POOL/1048576, $PAGES*4096/$POOL}"
+```
+
+**Baseline values (2026-06-27, 2 players online):**
+- RAM: 6022M | swap (uncompressed): 9363M | zswap (compressed): 1804M → **5.19× compression**
+- `anon=3983M, file=198M, shmem=0M` — no ramdisk yet
+- Global pool: 6.7G uncompressed → 2.2G compressed at 3.04× (Soulmask dominates the pool)
+
+The 5.19× ratio vs 3.04× global is explained by zswap's same-filled page optimization: UE4 pre-allocates heap pools that are mostly zero-filled — those are stored as single entries (no pool space), inflating the apparent ratio.
+
+### Tracking the pak ramdisk separately
+
+After `soulmask-pak-ramdisk.service` is enabled, pak tmpfs pages accessed by the container are charged to its cgroup as `shmem` pages (subset of `file` in `memory.stat`):
+
+- **Pak pages in RAM**: `grep '^shmem ' $SOUL_CG/memory.stat` — goes from 0 to ≤1700M
+- **Pak pages in zswap**: shows up as additional `memory.swap.current` vs pre-ramdisk baseline
+- **Pak pages on disk**: 0 always (pak files are read-only; disk copy stays at `$PAK_DIR/` as the source for the tmpfs copy, never directly accessed by the game)
+
+Pak and game anon pages are **not separately tracked within the same cgroup** — they both contribute to `memory.zswap.current`. To see roughly how much of zswap is pak: `(memory.swap.current - pre_ramdisk_baseline) / compression_ratio`.
+
+### Soulmask save & backup mechanism
+
+The egg starts the server with two timer-based persistence parameters:
+
+| Param | Value | What it does |
+|---|---|---|
+| `-saving=600` | 10 min | Serializes the **live in-memory world state** (all UE4 actors: players, buildings, NPCs, items) to the save database file on disk. CPU-intensive; disk write is async (kernel writeback thread, not the game thread). |
+| `-backup=960` | 16 min | Copies the current save DB to a timestamped backup file. Pure I/O, no game logic. Produces the `archive-*.tar.gz` files you see in `WS/Saved/`. |
+
+**What gets accessed:**
+- **Save (600s)**: reads from Soulmask's anon heap (live game objects, already in RAM) → writes to `WS/Saved/GameData/<mapname>.db` on real disk. **No pak reads** — game code is already loaded.
+- **Backup (960s)**: reads the DB file → writes a timestamped copy. Temporary IO spike, no CPU.
+- The save DB path is on real LVM (`Saved/`), completely separate from the pak ramdisk (`Content/Paks/`). They do not interact.
+
+**Does the save mechanism use an in-memory DB layer?**
+No. `-saving=600` IS the memory-to-disk flush. Between saves, live game state lives only in UE4's actor system (anon RAM). The DB file on disk is the only persistent form.
+
+**Should saves be more frequent?**
+The 10-minute interval means at most 10 minutes of player progress lost on crash. For the current 2-player load, this is reasonable. Downsides of shortening it: more frequent CPU serialization spikes (~106% for ~30s each); more frequent write IO bursts. The ramdisk doesn't help with this (saves go to real disk regardless). If crash-safety matters more: `exec-soulmask-rcon.sh SaveWorld 0` can be put in a cron to save on demand without the overhead of a full interval change.
 
 ## 3. Orderly shutdown on host `reboot` — the problem & fix
 

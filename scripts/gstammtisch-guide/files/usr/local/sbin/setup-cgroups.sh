@@ -14,27 +14,19 @@ set -uo pipefail
 CG=/sys/fs/cgroup
 log(){ echo "[cgroups] $*"; }
 
-# Hard I/O cap for bench containers: 15 MB/s, 50 r-IOPS, 200 w-IOPS.
+# I/O cap for bench containers: 30 MB/s, 100 r-IOPS, 400 w-IOPS.
 # io.bfq.weight range is 1–1000 (unlike io.weight which is 1–10000).
 #
-# WHY 30 MB/s / 100 RIOPS: the dominant effect is PAGE CACHE THRASHING.
-# Soulmask mmap's pak/world assets; those are CLEAN FILE CACHE — evicted by
-# simply freeing (no zswap). Bench reads fill the page cache, evicting pak pages;
-# the next game access becomes a major fault requiring a real disk read → stalls.
-#
-# Two-layer defence:
-#   1. io.max bandwidth cap — limits the rate of page cache churn
-#   2. BENCH_MEMORY_HIGH — caps the bench cgroup's total memory (anon + file cache)
-#      so the kernel self-evicts bench file cache before stealing Soulmask's pak pages
-#
-# Long-term fix: store pak files on a tmpfs ramdisk. tmpfs pages are anon (swap-backed),
-# so they go through zswap (not freed), memory.min protects them, and bench file I/O
-# can't evict them. Page fault on cold pak data = zswap decompress (~1µs) not disk read.
+# With the pak ramdisk active (soulmask-pak-ramdisk.service), pak pages are
+# tmpfs-backed anon — they go through zswap, not page cache, so bench file I/O
+# cannot evict them. The io.max cap here limits benchmark impact on Soulmask's
+# periodic DB saves (which DO go through the real disk via writeback threads).
+# No memory.high on bench: the devcontainer is also VSCode — capping total
+# cgroup memory kills the IDE. BFQ io.weight + io.max is the right lever.
 BENCH_RBPS="${BENCH_RBPS:-31457280}"
 BENCH_WBPS="${BENCH_WBPS:-31457280}"
 BENCH_RIOPS="${BENCH_RIOPS:-100}"
 BENCH_WIOPS="${BENCH_WIOPS:-400}"
-BENCH_MEMORY_HIGH="${BENCH_MEMORY_HIGH:-1610612736}"  # 1.5G
 
 SOULMASK_MIN="${SOULMASK_MIN:-4608M}" # calibrated 2026-06-26: demand floor ~4G (2 players, run 5); +0.5G burst buffer (4608M = 4.5G)
 SOULMASK_LOW="${SOULMASK_LOW:-12G}"
@@ -89,15 +81,11 @@ _apply_bench_limits() {
   [ -d "$scope" ] || return
   echo "default 1" > "$scope/io.weight"     2>/dev/null
   echo "default 1" > "$scope/io.bfq.weight" 2>/dev/null
-  # Apply io.max on both dm-0 (253:0) and vda (254:0)
   for dev in 253:0 254:0; do
     echo "$dev rbps=${BENCH_RBPS} wbps=${BENCH_WBPS} riops=${BENCH_RIOPS} wiops=${BENCH_WIOPS}" \
       > "$scope/io.max" 2>/dev/null
   done
-  # Cap total cgroup memory (anon + file cache) — prevents bench file reads from
-  # evicting Soulmask's pak-file page cache out from under the game thread.
-  echo "${BENCH_MEMORY_HIGH}" > "$scope/memory.high" 2>/dev/null
-  log "$label ($cid): io.weight=1, io.bfq.weight=1, io.max=${BENCH_RIOPS}r/${BENCH_WIOPS}w IOPS 15MB/s, memory.high=1.5G"
+  log "$label ($cid): io.weight=1, io.bfq.weight=1, io.max=${BENCH_RIOPS}r/${BENCH_WIOPS}w IOPS 30MB/s"
 }
 
 for c in $(docker ps -q 2>/dev/null); do
