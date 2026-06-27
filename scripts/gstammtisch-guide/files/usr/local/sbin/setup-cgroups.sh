@@ -30,7 +30,19 @@ BENCH_WIOPS="${BENCH_WIOPS:-400}"
 
 SOULMASK_MIN="${SOULMASK_MIN:-4608M}" # calibrated 2026-06-26: demand floor ~4G (2 players, run 5); +0.5G burst buffer (4608M = 4.5G)
 SOULMASK_LOW="${SOULMASK_LOW:-12G}"
-SOULMASK_HIGH="${SOULMASK_HIGH:-max}" # max = no ceiling in normal operation; set to e.g. 7G only during pressure tests
+SOULMASK_HIGH="${SOULMASK_HIGH:-max}" # max = no ceiling in normal operation
+
+# Discover block device major:minor for the pterodactyl volume directory.
+# io.max needs the actual block device, not the filesystem.
+# Prefers the pterodactyl path; falls back through docker data dir to root.
+_io_dev() {
+  local dev
+  for path in /var/lib/pterodactyl/volumes /var/lib/docker /; do
+    dev=$(findmnt -no MAJ:MIN --target "$path" 2>/dev/null) && echo "$dev" && return
+  done
+}
+IO_DEV=$(_io_dev)
+[ -n "$IO_DEV" ] && log "discovered io device: $IO_DEV" || log "WARN: could not discover block device for io.max"
 
 # --- dev workloads: allow zswap pages to be written back to disk ---
 DEV="$CG/dev-workloads.slice"
@@ -81,10 +93,10 @@ _apply_bench_limits() {
   [ -d "$scope" ] || return
   echo "default 1" > "$scope/io.weight"     2>/dev/null
   echo "default 1" > "$scope/io.bfq.weight" 2>/dev/null
-  for dev in 253:0 254:0; do
-    echo "$dev rbps=${BENCH_RBPS} wbps=${BENCH_WBPS} riops=${BENCH_RIOPS} wiops=${BENCH_WIOPS}" \
+  if [ -n "$IO_DEV" ]; then
+    echo "$IO_DEV rbps=${BENCH_RBPS} wbps=${BENCH_WBPS} riops=${BENCH_RIOPS} wiops=${BENCH_WIOPS}" \
       > "$scope/io.max" 2>/dev/null
-  done
+  fi
   log "$label ($cid): io.weight=1, io.bfq.weight=1, io.max=${BENCH_RIOPS}r/${BENCH_WIOPS}w IOPS 30MB/s"
 }
 

@@ -154,27 +154,59 @@ The game has one pak file: `WS-LinuxServer.pak` at **~1.7 GB**.
 - If the game grows or RAM shrinks: cold pak sections compress at ~3.6× in zswap → 1.7 GB uncompressed → ~470 MB compressed. Never hits disk (`memory.zswap.writeback=0`).
 - Startup cost: one sequential read of 1.7 GB from disk to populate the tmpfs (≈ 5–10 s on this SSD-backed VM). Every subsequent access is RAM-speed.
 
-### Implementation
+### Why hot-activation is impossible
 
-A systemd service (`soulmask-pak-ramdisk.service`) creates a tmpfs, copies the pak, and bind-mounts it over the on-disk Paks directory before Docker starts. The container sees identical paths — no Wings/Pterodactyl changes needed.
+The game mmap's the pak file at startup. That mmap is bound to the original disk inode — no filesystem change after the process starts can redirect it. Even if we mount a tmpfs over the Paks directory while the server is running (and even `nsenter` into the container's mount namespace to do so), the game thread still reads pak pages from the old inode.
+
+**The change always requires a container restart.** What we CAN do on the fly is prepare the ramdisk while the server is running; the new mapping takes effect on the next container start.
+
+### Volume path discovery — portability
+
+The setup script does NOT hard-code the Pterodactyl volume UUID. It discovers the pak directory at runtime using the first match from:
+
+1. `SOULMASK_PAK_DIR` env var (explicit override)
+2. `/etc/soulmask-ramdisk.conf` containing `SOULMASK_PAK_DIR=` or `SOULMASK_VOLUME_UUID=`
+3. `/run/soulmask-pak-ramdisk.state` — path saved from a prior successful run
+4. Filesystem scan: `find /var/lib/pterodactyl/volumes -xdev -name 'WS-LinuxServer.pak'`  
+   (`-xdev` stops at mount boundaries, so a live tmpfs overlay on the Paks directory doesn't confuse the scan)
+
+On a fresh deployment where the UUID is unknown, the scan finds it automatically. If you want to pin it explicitly:
+```bash
+echo "SOULMASK_VOLUME_UUID=b87c0a5b-2387-4a1c-8863-ff23e6800a1d" > /etc/soulmask-ramdisk.conf
+```
+
+### Toggle (on-the-fly, requires server restart to take effect)
 
 ```bash
-# Manual dry-run (verify paths before enabling the service):
+# See current state
+sudo soulmask-pak-ramdisk-toggle.sh status
+
+# Activate ramdisk (copies pak now; takes effect on next Wings stop+start)
+sudo soulmask-pak-ramdisk-toggle.sh on
+
+# Deactivate (unmounts now; takes effect on next Wings stop+start)
+sudo soulmask-pak-ramdisk-toggle.sh off
+
+# Toggle current state
+sudo soulmask-pak-ramdisk-toggle.sh
+```
+
+After toggling: stop the server from the Wings panel → wait for clean exit → start it again. The script will remind you.
+
+### Enable at boot (permanent)
+
+```bash
+# Dry-run first to verify volume discovery:
 sudo /usr/local/sbin/soulmask-pak-ramdisk-setup.sh --dry-run
-# Apply once to test:
-sudo /usr/local/sbin/soulmask-pak-ramdisk-setup.sh
-# Check what the container sees:
-docker exec f776d567ad03 ls -lh /home/container/WS/Content/Paks/
-# Confirm the pak is on tmpfs (should show "tmpfs" not "ext4"):
-findmnt /var/lib/pterodactyl/volumes/b87c0a5b-2387-4a1c-8863-ff23e6800a1d/WS/Content/Paks
-```
 
-Enable permanently:
-```bash
+# Enable permanently (runs Before=docker.service on every boot):
 sudo systemctl enable --now soulmask-pak-ramdisk.service
-```
 
-The service runs `Before=docker.service`, so Wings always sees the ramdisk-backed paks.
+# Verify what the container sees (pak should be tmpfs-backed):
+CID=$(docker ps -q --filter ancestor=ghcr.io/ptero-eggs/steamcmd:debian | head -1)
+docker exec $CID ls -lh /home/container/WS/Content/Paks/
+findmnt $(sudo soulmask-pak-ramdisk-toggle.sh status 2>&1 | awk '/bind:/{print $NF}')
+```
 
 ### Memory accounting after ramdisk
 
@@ -262,8 +294,13 @@ The egg starts the server with two timer-based persistence parameters:
 **Does the save mechanism use an in-memory DB layer?**
 No. `-saving=600` IS the memory-to-disk flush. Between saves, live game state lives only in UE4's actor system (anon RAM). The DB file on disk is the only persistent form.
 
+**Do saves warm the LRU / prevent zswap eviction?**
+Partially. The save traverses the actor graph (anon pages in RAM/zswap). Pages that are in zswap when the save touches them get decompressed back into RAM, resetting their LRU clock. BUT: Soulmask almost certainly does delta saves — only actors that were dirtied since the last save are serialized. Cold zswap'd objects from unexplored areas won't be touched. So saves warm the recently-active working set (which is already warm anyway), not the cold regions.
+
+The practical answer: if `memory.zswap.writeback=0` is set on Soulmask (our current config), no pages can reach disk regardless. Saves are irrelevant to the write-back concern. If you later enable `writeback=1` for Soulmask (to allow cold pages to trickle to disk swap over days of uptime), then save frequency matters more — but the right tool is keeping `memory.min` above the hot working set, not saving more often.
+
 **Should saves be more frequent?**
-The 10-minute interval means at most 10 minutes of player progress lost on crash. For the current 2-player load, this is reasonable. Downsides of shortening it: more frequent CPU serialization spikes (~106% for ~30s each); more frequent write IO bursts. The ramdisk doesn't help with this (saves go to real disk regardless). If crash-safety matters more: `exec-soulmask-rcon.sh SaveWorld 0` can be put in a cron to save on demand without the overhead of a full interval change.
+The 10-minute interval means at most 10 minutes of player progress lost on crash. For 2 players, reasonable. Shortening it adds more frequent CPU spikes. If crash-safety matters more: `exec-soulmask-rcon.sh SaveWorld 0` in a cron saves on demand without touching the interval.
 
 ## 3. Orderly shutdown on host `reboot` — the problem & fix
 

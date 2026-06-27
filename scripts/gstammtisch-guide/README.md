@@ -30,7 +30,8 @@ gstammtisch-guide/
 │   ├── etc/systemd/system/soulmask-graceful-stop.service
 │   ├── etc/systemd/system/soulmask-pak-ramdisk.service  # pak tmpfs (opt-in, §2c)
 │   ├── etc/systemd/oomd.conf.d/gstammtisch.conf
-│   └── usr/local/sbin/setup-cgroups.sh  soulmask-shutdown.sh  soulmask-pak-ramdisk-setup.sh
+│   └── usr/local/sbin/setup-cgroups.sh  soulmask-shutdown.sh
+│                         soulmask-pak-ramdisk-setup.sh  soulmask-pak-ramdisk-toggle.sh
 └── scripts/
     ├── install.sh                # orchestrator (copy files, enable units, sysctl, BFQ)
     ├── partition-editor.py        # universal MBR partition editor

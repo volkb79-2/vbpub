@@ -13,7 +13,8 @@ echo "== copying config files from $HERE/files into / =="
 rm -f /etc/sysctl.d/99-memory.conf
 cp -av "$HERE/files/etc/."            /etc/
 cp -av "$HERE/files/usr/local/sbin/." /usr/local/sbin/
-chmod +x /usr/local/sbin/setup-cgroups.sh /usr/local/sbin/soulmask-shutdown.sh
+chmod +x /usr/local/sbin/setup-cgroups.sh /usr/local/sbin/soulmask-shutdown.sh \
+         /usr/local/sbin/soulmask-pak-ramdisk-setup.sh /usr/local/sbin/soulmask-pak-ramdisk-toggle.sh
 
 echo "== BFQ I/O scheduler =="
 # BFQ is required for cgroup io.weight / io.bfq.weight to have any effect.
