@@ -405,6 +405,12 @@ soulmask-zswap-monitor.sh
 - Pak page zswap decompress latency = same ~2–5µs (still 1000× better than disk)
 - 374M of 1.7G pak is faulted in after a fresh start; remaining 1.3G loaded on demand as areas are explored
 
+**Future improvement — dedicated `soulmask-paks.slice`**: to get independent memory.min and monitoring on pak pages, the `cp` must run inside a persistent cgroup (pages stay charged to their birth cgroup until freed; they re-parent only when the cgroup itself is destroyed). Plan:
+1. Create `/etc/systemd/system/soulmask-paks.slice` with `memory.min=1800M`, `memory.zswap.writeback=0`
+2. In setup script, run copy inside it: `systemd-run --scope --slice=soulmask-paks.slice -- cp -v ...`
+3. Slice persists; pak pages charged to it; independent counters: `memory.current`, `memory.zswap.current`, `workingset_refault_anon` all visible per-slice
+4. Allows tuning pak RAM protection separately from game anon protection
+
 **Calibration procedure** (run while players are active, after ~30–60 min of warmup):
 
 ```bash
@@ -420,15 +426,37 @@ soulmask-zswap-monitor.sh
 - `refault/s > 0` during specific actions (chest opening, entering new area) → those actions are pulling cold pages back from zswap; raise `memory.min` by ~512M and re-test
 - DAMON "hot tier" size = the ideal `memory.min` target (pages accessed on every game tick never leave RAM)
 
-**Lowering memory.min live** (no restart needed):
+**Finding the sweet spot with `soulmask-mempress.sh`**:
+
+Use **`memory.high`** (NOT `memory.max`) as the pressure lever:
+- `memory.high` = soft ceiling: forces pages to zswap but never kills the process — worst case is stutter
+- `memory.max` = hard ceiling: one step too far = OOM kill = server crash during play
+
+Procedure (run while players are active, after warmup):
+
 ```bash
-# Example: try 4096M instead of 4608M
-echo 4096M > $SOUL_CG/memory.min
-# Watch refault/s in soulmask-zswap-monitor.sh — if it jumps during play, go back up:
-echo 4608M > $SOUL_CG/memory.min
-# Update setup-cgroups.sh once the right value is found:
-sudo sed -i 's/SOULMASK_MIN=.*/SOULMASK_MIN="${SOULMASK_MIN:-4096M}"/' /usr/local/sbin/setup-cgroups.sh
+# Terminal 1: live zswap stats (watch refault/s — this is the signal)
+soulmask-zswap-monitor.sh
+
+# Terminal 2: stepping (64M steps, pause at 512M boundaries)
+soulmask-mempress.sh            # check current state
+soulmask-mempress.sh down       # step down 64M
+soulmask-mempress.sh down 4     # or 4×64M = 256M at once if confident
+# script prints a banner at each 512M boundary — pause for player testing
+soulmask-mempress.sh up         # ease 64M if refaults appear or lag reported
+
+# Done: reset the ceiling and make the sweet spot permanent
+soulmask-mempress.sh reset
+echo <sweet_spot_bytes> > $SOUL_CG/memory.min
+sudo sed -i "s/SOULMASK_MIN=.*/SOULMASK_MIN=\"\${SOULMASK_MIN:-<N>M}\"/" \
+  /usr/local/sbin/setup-cgroups.sh
+sudo systemctl restart gstammtisch-cgroups
 ```
+
+**Step size**: 64M = ~16K pages compressed per step, burst completes in ~50ms, imperceptible.
+**Decision rule**: `refault/s = 0` → safe to go lower. `refault/s > 0` → too low, ease up 64M.
+**Sweet spot**: lowest 512M boundary where refault/s stayed 0 during active play + 128M buffer.
+**After the test**: `memory.high → max` (removed). `memory.min` set to the discovered sweet spot permanently.
 
 **Baseline from post-restart observation (2026-06-27):**
 - Server freshly restarted, 2 players, DLC map
