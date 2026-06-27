@@ -55,14 +55,12 @@ INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_
 | Value | Behavior | Use case |
 |-------|----------|----------|
 | `main` (default) | `pip install` from git `@main` branch | Python 3.13/3.14 support (PR #4899 merged but not yet released) |
-| `latest` | `pip install aider-chat` (latest PyPI release) | Stable release, Python < 3.13 only |
+| `latest` | Resolve the current PyPI release during staging, then install that exact version | Stable release tracking with a concrete manifest version |
 | `<version>` e.g. `0.86.2` | `pip install aider-chat==<version>` | Pinned reproducible builds |
 
-**Background**: The latest PyPI release `aider-chat 0.86.2` (Feb 2026) declares `Requires: Python <3.13, >=3.10`.
-PR [Aider-AI/aider#4899](https://github.com/Aider-AI/aider/pull/4899) added Python 3.13 and 3.14 support to `main`
-(Mar 9, 2026) but no new release was cut. The default `AIDER_VERSION=main` works around this by installing
-from the upstream `main` branch directly. Switch back to `latest` or a pinned version once a PyPI release
-with 3.14 support is available.
+**Background**: The default `AIDER_VERSION=main` still exists for the Python 3.13/3.14 support case while the
+upstream release cadence catches up. If you use `latest`, staging resolves the current PyPI release version
+up front so the manifest records a concrete version instead of a symbolic placeholder.
 
 `ANTIGRAVITY_VERSION` currently uses upstream latest-manifest resolution during artifact staging.
 
@@ -139,12 +137,14 @@ Counterexample (do NOT do this):
 The canonical user-facing manifest lives at:
 
 ```
-/home/vscode/mdt-manifest.md
+/usr/local/share/modern-debian-tools-python-debug/manifest.md
 ```
 
 That is the same manifest content published on the repo-hosted release page.
 
-`/etc/os-release` includes a custom `IMAGE_MANIFEST=/home/vscode/mdt-manifest.md` entry so tooling can discover the file without a repo-specific path convention.
+`/home/vscode/mdt-manifest.md` is kept as a compatibility symlink.
+
+`/etc/os-release` includes a custom `IMAGE_MANIFEST=/usr/local/share/modern-debian-tools-python-debug/manifest.md` entry so tooling can discover the file without a repo-specific path convention.
 
 An internal inventory snapshot is also written at:
 
@@ -158,8 +158,9 @@ That snapshot includes tool versions, pip package list, and selected Debian pack
 
 To keep tool state across rebuilds, persist the workspace mount plus these home directories:
 
-- `/home/vscode/.config/reasonix` for Reasonix user config
+- `/home/vscode/.reasonix` for Reasonix user config and session state
 - `/home/vscode/.openclaw` for OpenClaw config and gateway state
+- `/home/vscode/.config/modern-debian-tools-python-debug` for the central `ai.env`, `aliases.sh`, and their examples
 
 Relevant workspace files that should stay on the host mount:
 

@@ -55,6 +55,11 @@
     "source=${localEnv:HOME}/mdt--mounted-folders/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached,readonly",
     "source=${localEnv:HOME}/mdt--mounted-folders/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
+    // Reasonix stores user state and local auth files here.
+    "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix,target=/home/vscode/.reasonix,type=bind,consistency=cached",
+    // OpenClaw stores user state and local auth files here.
+    "source=${localEnv:HOME}/mdt--mounted-folders/.openclaw,target=/home/vscode/.openclaw,type=bind,consistency=cached",
+    // Central customization root for ai.env, README, and examples.
     "source=${localEnv:HOME}/mdt--mounted-folders/.config,target=/home/vscode/.config,type=bind,consistency=cached",
     // minisign signing key (release/bundle signing — see cmru SPEC B / KI-01); GPG keys
     "source=${localEnv:HOME}/mdt--mounted-folders/.minisign,target=/home/vscode/.minisign,type=bind,consistency=cached",

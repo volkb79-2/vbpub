@@ -10,7 +10,7 @@ container or silently create the path as **root** — after which the in-contain
 Layout (grouped persistence):
 - Devcontainer-persisted state is grouped under `~/mdt--mounted-folders/` so a rebuild never
   wipes it and one `ls -la ~/mdt--mounted-folders/` shows the whole set. These are REAL dirs
-  (NOT symlinks): `.ssh .claude .codex .config .minisign .gnupg` (+ `tmp`).
+  (NOT symlinks): `.ssh .claude .codex .reasonix .openclaw .config .minisign .gnupg` (+ `tmp`).
 - `tmp` is the host-backed persisted `/tmp`: a REAL dir at mode 1777, so `/tmp` worktrees survive
   rebuilds and are visible to the sibling test-runner container (which bind-mounts the same host path).
 - EXCEPTION: the host's NATIVE `~/.ssh` is also bind-mounted (readonly) at `/home/vscode/.ssh-host`,
@@ -23,9 +23,9 @@ sibling `devcontainer.json`, finds every `type=bind` mount whose source is under
 (`.ssh`/`.gnupg`/`.minisign`) get 0700; `tmp` gets 1777; everything else 0755.
 
 NOTE on data migration: this script only ENSURES the source dirs EXIST — it does NOT copy your
-existing `~/.claude` / `~/.gnupg` / `~/.minisign` / `~/.codex` / `~/.config` state into the grouped
-parent. If you want that state to carry over, migrate it ONCE on the host before the first rebuild,
-e.g.:  for d in .claude .codex .config .minisign .gnupg; do cp -a ~/$d/. ~/mdt--mounted-folders/$d/; done
+existing `~/.claude` / `~/.gnupg` / `~/.minisign` / `~/.codex` / `~/.reasonix` / `~/.openclaw`
+/ `~/.config` state into the grouped parent. If you want that state to carry over, migrate it ONCE
+on the host before the first rebuild, e.g.:  for d in .claude .codex .reasonix .openclaw .config .minisign .gnupg; do cp -a ~/$d/. ~/mdt--mounted-folders/$d/; done
 (the grouped `.ssh` is independent of the readonly native `.ssh-host` mount).
 """
 from __future__ import annotations
@@ -44,7 +44,7 @@ TMP_MODE = 0o1777  # persisted host-backed /tmp: sticky + world-writable, like a
 PARENT_NAME = "mdt--mounted-folders"
 
 # Canonical set under the parent — used only if devcontainer.json can't be read.
-FALLBACK = [".ssh", ".claude", ".codex", ".config", ".minisign", ".gnupg"]
+FALLBACK = [".ssh", ".claude", ".codex", ".reasonix", ".openclaw", ".config", ".minisign", ".gnupg"]
 
 HOME = Path(os.path.expanduser("~"))
 # Matches the devcontainer mount string: "source=...,target=...,type=bind[,...]"

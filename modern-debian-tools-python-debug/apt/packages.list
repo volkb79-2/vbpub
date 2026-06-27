@@ -26,7 +26,6 @@ git-lfs            # git large file storage
 gnupg              # GPG — verify apt repo keys, sign artifacts
 minisign           # Ed25519 detached signing — cmru SPEC B manifest sign/verify
 gzip               # gzip (de)compression
-htop               # interactive process viewer
 httpie             # human-friendly HTTP client (`http`/`https`) for poking REST APIs
 iputils-ping       # ping reachability checks
 jq                 # JSON query/format — parse API and CLI output
@@ -35,6 +34,7 @@ lsb-release        # distro codename (used to add the pgdg/redis apt repos)
 lsof               # list open files/sockets — connection inspection
 man-db             # man pages
 mc                 # Midnight Commander — terminal file manager
+nano               # terminal editor with syntax highlighting support via ~/.nanorc
 netcat-openbsd     # nc — TCP/UDP port probing (works on bookworm + trixie)
 ncdu               # interactive disk-usage explorer
 openssl            # TLS toolkit — inspect certs / debug handshakes
@@ -51,6 +51,4 @@ vim                # terminal editor
 w3m                # terminal web browser — render STATIC HTML readably; JS-rendered → drive pwmcp
 wget               # downloader (alternative to curl)
 xz-utils           # xz (de)compression (e.g. the shellcheck tarball)
-nodejs             # runtime for npm-based AI CLI tools (reasonix, openclaw)
-npm                # package manager for reasonix/openclaw installs
 skopeo             # inspect / copy OCI images without a Docker daemon

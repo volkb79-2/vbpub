@@ -6,9 +6,9 @@ release_config = "../cmru.toml"
 OCI_VENDOR = "Volker Badziong"
 OCI_DESCRIPTION = """Modern Debian Tools + Python Debug image family.
 Includes a curated Debian + Python environment with managed venv and CIU-focused workflow tooling.
-Custom Tooling highlights: aider, agy, awscli, b2, bat, claude, codex, consul, fd, fzf, gh, openclaw, psql, reasonix, redis-cli, rga, ripgrep, shellcheck, vault, yq.
-Midnight Commander defaults to nicedark skin.
-Devcontainer manifest: ~/devcontainer-manifest-<debian>-py<python>-<date>.md
+Custom Tooling highlights: aider, agy, awscli, b2, bat, claude, codex, consul, fd, fzf, gh, htop, openclaw, psql, reasonix, redis-cli, rga, ripgrep, shellcheck, vault, yq.
+Midnight Commander defaults are shipped from the repo-backed customization root.
+Devcontainer manifest: /usr/local/share/modern-debian-tools-python-debug/manifest.md
 """
 OCI_DESCRIPTION_BASE = """Modern Debian Tools + Python Debug base image.
 Plain Python-on-Debian runtime with curated CLI tooling, managed venv helpers, and release manifests for repeatable CI and local automation.

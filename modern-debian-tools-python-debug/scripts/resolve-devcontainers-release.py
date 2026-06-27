@@ -18,7 +18,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from manifest_sections import netcat_package_for_debian, render_runtime_probe_sections
+from manifest_sections import (
+    AI_CLI_TOOL_NAMES,
+    netcat_package_for_debian,
+    read_apt_package_names,
+    render_runtime_probe_sections,
+)
 from stage_tool_artifacts import stage_tool_artifacts
 
 
@@ -40,58 +45,15 @@ TOOL_VERSION_DISPLAY_ORDER = [
     ("fd", "FD_VER"),
     ("fzf", "FZF_VER"),
     ("gh", "GH_VER"),
+    ("htop", "HTOP_VER"),
     ("rga", "RGA_VER"),
     ("ripgrep", "RIPGREP_VER"),
     ("shellcheck", "SHELLCHECK_VER"),
     ("vault", "VAULT_VER"),
     ("yq", "YQ_VER"),
 ]
-AI_CLI_TOOL_NAMES = {
-    "aider",
-    "reasonix",
-    "openclaw",
-    "codex",
-    "claude",
-    "antigravity",
-}
 CIU_VERSION_FROM_WHEEL_RE = re.compile(r"^ciu-(?P<version>.+)-py[0-9].*\.whl$")
-SYSTEM_PACKAGE_NAMES = [
-    "bash-completion",
-    "ca-certificates",
-    "curl",
-    "bind9-dnsutils",
-    "fuse3",
-    "git",
-    "git-lfs",
-    "gnupg",
-    "gzip",
-    "htop",
-    "httpie",
-    "iputils-ping",
-    "jq",
-    "less",
-    "lsb-release",
-    "lsof",
-    "man-db",
-    "mc",
-    "ncdu",
-    "openssl",
-    "python3-venv",
-    "psmisc",
-    "rsync",
-    "sqlite3",
-    "strace",
-    "sshfs",
-    "tar",
-    "tree",
-    "unzip",
-    "vim",
-    "w3m",
-    "wget",
-    "xz-utils",
-    "postgresql-client",
-    "redis-tools",
-]
+SYSTEM_PACKAGE_EXTRAS = ["postgresql-client", "redis-tools"]
 
 
 def get_image_label(image: str, label: str) -> str:
@@ -949,9 +911,10 @@ def resolve_first_party_wheels(
 
 def probe_system_package_candidates(debian: str, python: str) -> list[str]:
     image = f"python:{python}-{debian}"
-    netcat_pkg = netcat_package_for_debian(debian)
-    packages = [*SYSTEM_PACKAGE_NAMES]
-    packages.insert(18, netcat_pkg)
+    packages = read_apt_package_names()
+    for package_name in (netcat_package_for_debian(debian), *SYSTEM_PACKAGE_EXTRAS):
+        if package_name not in packages:
+            packages.append(package_name)
     package_list_expr = " ".join(packages)
 
     probe_script = (
@@ -1012,11 +975,7 @@ def build_runtime_custom_tooling_map(
         resolved_versions.get("AIDER_VER") or (os.getenv("AIDER_VERSION") or "latest")
     ).strip() or "latest"
     if install_aider:
-        aider_display = (
-            "latest (resolved at image build time)"
-            if aider_requested == "latest"
-            else aider_requested
-        )
+        aider_display = str(resolved_versions.get("AIDER_VER") or aider_requested).strip()
     else:
         aider_display = "not-installed"
 
@@ -1073,6 +1032,7 @@ def build_runtime_custom_tooling_map(
         "fd": str(resolved_versions.get("FD_VER") or "unknown"),
         "fzf": str(resolved_versions.get("FZF_VER") or "unknown"),
         "gh": str(resolved_versions.get("GH_VER") or "unknown"),
+        "htop": str(resolved_versions.get("HTOP_VER") or "unknown"),
         "rga": str(resolved_versions.get("RGA_VER") or "unknown"),
         "ripgrep": str(resolved_versions.get("RIPGREP_VER") or "unknown"),
         "shellcheck": str(resolved_versions.get("SHELLCHECK_VER") or "unknown"),
@@ -1080,14 +1040,6 @@ def build_runtime_custom_tooling_map(
         "yq": str(resolved_versions.get("YQ_VER") or "unknown"),
     }
 
-    psql_version = (os.getenv("POSTGRESQL_CLIENT_VERSION") or "latest").strip() or "latest"
-    redis_tools_version = (os.getenv("REDIS_TOOLS_VERSION") or "latest").strip() or "latest"
-    tooling["psql"] = psql_version if psql_version != "latest" else "latest (see apt probe below)"
-    tooling["redis-cli"] = (
-        redis_tools_version
-        if redis_tools_version != "latest"
-        else "latest (see apt probe below)"
-    )
     return tooling
 
 
@@ -1308,7 +1260,9 @@ def render_tool_artifact_lines(tool_metadata: dict | None) -> list[str]:
     if isinstance(resolved_versions, dict):
         ai_lines: list[str] = []
         support_lines: list[str] = []
-        for display_name, version_key in TOOL_VERSION_DISPLAY_ORDER:
+        for display_name, version_key in sorted(
+            TOOL_VERSION_DISPLAY_ORDER, key=lambda item: item[0].lower()
+        ):
             version_value = str(resolved_versions.get(version_key) or "").strip()
             if not version_value:
                 continue
@@ -1317,12 +1271,12 @@ def render_tool_artifact_lines(tool_metadata: dict | None) -> list[str]:
 
         if ai_lines:
             lines.extend(["### AI CLI Tools", ""])
-            lines.extend(ai_lines)
+            lines.extend(sorted(ai_lines, key=lambda item: item.lower()))
             lines.append("")
 
         if support_lines:
             lines.extend(["### Supporting Tool Versions", ""])
-            lines.extend(support_lines)
+            lines.extend(sorted(support_lines, key=lambda item: item.lower()))
             lines.append("")
 
     lines.append(
@@ -1391,7 +1345,7 @@ def render_first_party_wheels_section(
     if not wheels:
         return []
     lines = ["## First-Party Wheels", ""]
-    for w in wheels:
+    for w in sorted(wheels, key=lambda item: str(item.get("name") or "").lower()):
         lines.append(
             f"- {w['name']} `{w['version']}` — sha256: `{w['sha256']}`"
         )
@@ -1459,7 +1413,7 @@ def render_manifest(
         [
             "## In-Image File",
             "",
-            f"- Devcontainer manifest: `/home/vscode/mdt-manifest.md`",
+            f"- Devcontainer manifest: `/usr/local/share/modern-debian-tools-python-debug/manifest.md`",
             "",
             "## Rich Documentation Links",
             "",
@@ -1471,7 +1425,7 @@ def render_manifest(
             "",
             "This repository-hosted page exists because GHCR package descriptions render as flattened plain text.",
             "The image labels therefore point to GitHub-hosted Markdown for richer, package-specific release notes.",
-            "The same manifest content is installed in-image at `/home/vscode/mdt-manifest.md`.",
+            "The same manifest content is installed in-image at `/usr/local/share/modern-debian-tools-python-debug/manifest.md`.",
             "",
         ]
     )

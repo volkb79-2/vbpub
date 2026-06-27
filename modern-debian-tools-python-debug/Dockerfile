@@ -51,6 +51,7 @@ ARG INSTALL_ANTIGRAVITY="true"
 ARG INSTALL_AIDER="true"
 ARG INSTALL_REASONIX="true"
 ARG INSTALL_OPENCLAW="true"
+ARG NODE_MAJOR="24"
 ARG GITHUB_USERNAME
 ARG GITHUB_REPO
 ARG CIU_WHEEL_TAG
@@ -97,6 +98,7 @@ COPY pip/wheels.list /tmp/pip/wheels.list
 COPY pip/wheels/ /tmp/pip/wheels/
 COPY requirements/toolkit.txt /tmp/requirements/toolkit.txt
 COPY package-manifests-versioned /tmp/package-manifests-versioned
+COPY customization /tmp/customization
 COPY scripts/manifest_sections.py /tmp/manifest_sections.py
 COPY ai-cli-tools.list /tmp/ai-cli-tools.list
 COPY scripts/install_ai_cli_tools.py /tmp/install_ai_cli_tools.py
@@ -126,6 +128,46 @@ RUN set -euo pipefail; \
     update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; \
     echo "user_allow_other" >> /etc/fuse.conf; \
     rm -rf /var/lib/apt/lists/*
+
+# Upstream Node.js runtime for npm-based AI tooling.
+RUN set -euo pipefail; \
+    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -; \
+    apt-get install -y --no-install-recommends nodejs; \
+    node --version; \
+    npm --version; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -euo pipefail; \
+    share_dir="/usr/local/share/modern-debian-tools-python-debug"; \
+    user_customization_dir="/home/vscode/.config/modern-debian-tools-python-debug"; \
+    install -d -m 0755 "${share_dir}" "${user_customization_dir}" /home/vscode/.config/mc /home/vscode/.config/nano /home/vscode/.config/htop; \
+    install -m 0755 /tmp/customization/profile.sh "${share_dir}/profile.sh"; \
+    install -m 0755 /tmp/customization/lesspipe.sh "${share_dir}/lesspipe.sh"; \
+    install -m 0644 /tmp/customization/README.md "${share_dir}/README.md"; \
+    install -m 0644 /tmp/customization/aliases.sh "${share_dir}/aliases.sh"; \
+    install -m 0644 /tmp/customization/aliases.sh.example "${share_dir}/aliases.sh.example"; \
+    install -m 0644 /tmp/customization/ai.env.example "${share_dir}/ai.env.example"; \
+    install -m 0644 /tmp/customization/shell.env "${share_dir}/shell.env"; \
+    install -m 0644 /tmp/customization/htoprc "${share_dir}/htoprc"; \
+    install -m 0644 /tmp/customization/mc.ini "${share_dir}/mc.ini"; \
+    install -m 0644 /tmp/customization/nanorc "${share_dir}/nanorc"; \
+    cp -f /tmp/customization/README.md "${user_customization_dir}/README.md"; \
+    cp -f /tmp/customization/aliases.sh "${user_customization_dir}/aliases.sh"; \
+    cp -f /tmp/customization/aliases.sh.example "${user_customization_dir}/aliases.sh.example"; \
+    cp -f /tmp/customization/ai.env.example "${user_customization_dir}/ai.env.example"; \
+    cp -f /tmp/customization/shell.env "${user_customization_dir}/shell.env"; \
+    cp -f /tmp/customization/htoprc "${user_customization_dir}/htoprc"; \
+    cp -f /tmp/customization/mc.ini "${user_customization_dir}/mc.ini"; \
+    cp -f /tmp/customization/nanorc "${user_customization_dir}/nanorc"; \
+    install -m 0755 /tmp/customization/lesspipe.sh "${user_customization_dir}/lesspipe.sh"; \
+    ln -sfn "${user_customization_dir}/nanorc" /home/vscode/.nanorc; \
+    ln -sfn "${user_customization_dir}/nanorc" /home/vscode/.config/nano/nanorc; \
+    ln -sfn "${user_customization_dir}/htoprc" /home/vscode/.config/htop/htoprc; \
+    ln -sfn "${user_customization_dir}/mc.ini" /home/vscode/.config/mc/ini; \
+    chown -R vscode:vscode "${user_customization_dir}" /home/vscode/.config/mc /home/vscode/.config/nano /home/vscode/.config/htop; \
+    install -d -m 0755 /etc/profile.d; \
+    printf '%s\n' '#!/bin/sh' '# shellcheck source=/dev/null' '. /usr/local/share/modern-debian-tools-python-debug/profile.sh' > /etc/profile.d/50-modern-debian-tools.sh; \
+    chmod 0644 /etc/profile.d/50-modern-debian-tools.sh
 
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
@@ -188,6 +230,27 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
         fi; \
         install -m 755 "${bin_path}" "/usr/local/bin/${bin_name}"; \
     }; \
+    build_htop_from_source() { \
+        local tarball="$1"; \
+        local workdir="/tmp/htop-build"; \
+        local build_deps=(autoconf automake build-essential gettext libtool pkg-config libncurses-dev); \
+        apt-get update; \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${build_deps[@]}"; \
+        rm -rf "${workdir}"; \
+        mkdir -p "${workdir}"; \
+        tar -xzf "${tarball}" -C "${workdir}" --strip-components=1; \
+        cd "${workdir}"; \
+        if [ -x ./autogen.sh ]; then \
+            ./autogen.sh; \
+        fi; \
+        ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var; \
+        make -j"$(nproc)"; \
+        make install; \
+        cd /; \
+        rm -rf "${workdir}"; \
+        DEBIAN_FRONTEND=noninteractive apt-get purge -y --auto-remove "${build_deps[@]}"; \
+        rm -rf /var/lib/apt/lists/*; \
+    }; \
     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux"; \
     require_file "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt"; \
     EXPECTED_B2_SHA256="$(grep '^sha256' "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt" | awk '{print $2}')"; \
@@ -203,6 +266,8 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     install_from_tar "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz" fd /tmp/fd-extract; \
     install_from_tar "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz" rga /tmp/rga-extract; \
     install_from_tar "${DOWNLOADS_DIR}/ripgrep-${RIPGREP_VER}.tar.gz" rg /tmp/ripgrep-extract; \
+    require_file "${DOWNLOADS_DIR}/htop-${HTOP_VER}.tar.gz"; \
+    build_htop_from_source "${DOWNLOADS_DIR}/htop-${HTOP_VER}.tar.gz"; \
     require_file "${DOWNLOADS_DIR}/shellcheck-${SHELLCHECK_VER}.tar.xz"; \
     tar -xf "${DOWNLOADS_DIR}/shellcheck-${SHELLCHECK_VER}.tar.xz" -C /tmp; \
     install -m 755 "/tmp/shellcheck-v${SHELLCHECK_VER}/shellcheck" /usr/local/bin/shellcheck; \
@@ -430,17 +495,6 @@ fi
 EOF
 USER root
 
-# Midnight Commander defaults for better readability in terminal sessions.
-RUN set -euo pipefail; \
-    install -d -m 0755 /home/vscode/.config/mc; \
-    cat > /home/vscode/.config/mc/ini << 'EOF'
-[Midnight-Commander]
-skin=nicedark
-EOF
-
-RUN set -euo pipefail; \
-    chown -R vscode:vscode /home/vscode/.config/mc
-
 # ── In-container devcontainer finalize (postCreateCommand) ──────────────────
 # Baked into the image so any mdt-based repo wires only:
 #   "postCreateCommand": "finalize_container_environment.py"
@@ -456,13 +510,15 @@ RUN chmod 0755 /usr/local/bin/finalize_container_environment.py
 
 # Canonical user-facing manifest plus internal inventory snapshot.
 RUN set -euo pipefail; \
-    canonical_manifest="/home/vscode/mdt-manifest.md"; \
+    manifest_dir="/usr/local/share/modern-debian-tools-python-debug"; \
+    canonical_manifest="${manifest_dir}/manifest.md"; \
+    user_manifest="/home/vscode/mdt-manifest.md"; \
     inventory_manifest="/usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md"; \
     source_manifest=""; \
     if [ -n "${PACKAGE_MANIFEST_SOURCE:-}" ] && [ -f "/tmp/${PACKAGE_MANIFEST_SOURCE}" ]; then \
         source_manifest="/tmp/${PACKAGE_MANIFEST_SOURCE}"; \
     fi; \
-    mkdir -p /usr/local/share/modern-debian-tools-python-debug; \
+    mkdir -p "${manifest_dir}"; \
     if [ -n "${source_manifest}" ]; then \
         install -m 0644 "${source_manifest}" "${canonical_manifest}"; \
     else \
@@ -477,6 +533,7 @@ RUN set -euo pipefail; \
             echo "- Canonical manifest: ${canonical_manifest}"; \
         } > "${canonical_manifest}"; \
     fi; \
+    ln -sfn "${canonical_manifest}" "${user_manifest}"; \
     b2_version_output="$(b2 version 2>&1 | head -1 || true)"; \
     if [ -z "${b2_version_output}" ]; then \
         b2_version_output="$(b2 --version 2>&1 | head -1 || true)"; \
@@ -579,6 +636,9 @@ RUN set -euo pipefail; \
         echo "fd=$(fd --version 2>&1 | head -1)"; \
         echo "fzf=$(fzf --version 2>&1)"; \
         echo "gh=$(gh --version 2>&1 | head -1)"; \
+        echo "htop=$(htop --version 2>&1 | head -1)"; \
+        echo "node=$(node --version 2>&1 | head -1)"; \
+        echo "npm=$(npm --version 2>&1 | head -1)"; \
         echo "grpcurl=$(grpcurl --version 2>&1 | head -1)"; \
         echo "psql=$(psql --version 2>&1)"; \
         echo "redis-cli=$(redis-cli --version 2>&1)"; \
@@ -590,8 +650,8 @@ RUN set -euo pipefail; \
     } > "${custom_tooling_file}"; \
     /home/vscode/.venv/bin/pip list --format=freeze > "${python_packages_file}"; \
     dpkg-query -W -f='${Package}=${Version}\n' \
-        bash-completion ca-certificates locales curl bind9-dnsutils fuse3 gdb git git-lfs gnupg gzip htop httpie iputils-ping jq less lsb-release lsof man-db mc \
-        netcat-openbsd ncdu openssl python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim w3m wget xz-utils nodejs npm skopeo \
+        bash-completion ca-certificates locales curl bind9-dnsutils fuse3 gdb git git-lfs gnupg gzip httpie iputils-ping jq less lsb-release lsof man-db mc nano \
+        netcat-openbsd ncdu openssl python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim w3m wget xz-utils skopeo \
         postgresql-client redis-tools > "${system_packages_file}"; \
     python3 /tmp/manifest_sections.py unified \
         --output "${inventory_manifest}" \
@@ -606,7 +666,7 @@ RUN set -euo pipefail; \
         --system-packages-file "${system_packages_file}"; \
     rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}"; \
     rm -f /tmp/manifest_sections.py; \
-    chown vscode:vscode "${canonical_manifest}" "${inventory_manifest}"; \
+    chown vscode:vscode "${canonical_manifest}" "${inventory_manifest}" "${user_manifest}"; \
     chmod 644 "${canonical_manifest}" "${inventory_manifest}"; \
     printf '\nIMAGE_MANIFEST=%s\nINVENTORY_MANIFEST=%s\n' "${canonical_manifest}" "${inventory_manifest}" >> /etc/os-release
 

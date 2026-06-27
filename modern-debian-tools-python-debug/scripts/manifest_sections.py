@@ -7,52 +7,19 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 
-FIRST_PARTY_WHEEL_ORDER = [
-    "cmru",
-    "CIU",
-]
+PACKAGE_LIST_FILE = Path(__file__).resolve().parent.parent / "apt" / "packages.list"
 
-AI_CLI_TOOL_ORDER = [
-    "aider",
-    "reasonix",
-    "openclaw",
-    "codex",
-    "claude",
-    "antigravity",
-]
-
-CONTAINER_INSPECTION_TOOL_ORDER = [
-    "dtop",
-    "lazydocker",
-    "glances",
-    "dive",
-    "syft",
-]
-
-SECURITY_DEBUG_TOOL_ORDER = [
-    "hadolint",
-    "grype",
-    "cdebug",
-]
-
-CUSTOM_TOOL_ORDER = [
-    "awscli",
-    "b2",
-    "bat",
-    "consul",
-    "delta",
-    "fd",
-    "fzf",
-    "gh",
-    "grpcurl",
-    "psql",
-    "redis-cli",
-    "rga",
-    "ripgrep",
-    "shellcheck",
-    "vault",
-    "yq",
-]
+FIRST_PARTY_WHEEL_NAMES = ("CIU", "cmru")
+AI_CLI_TOOL_NAMES = ("aider", "antigravity", "claude", "codex", "openclaw", "reasonix")
+CONTAINER_INSPECTION_TOOL_NAMES = ("dive", "dtop", "glances", "lazydocker", "syft")
+SECURITY_DEBUG_TOOL_NAMES = ("cdebug", "grype", "hadolint")
+CUSTOM_TOOL_EXCLUSIONS = (
+    FIRST_PARTY_WHEEL_NAMES
+    + AI_CLI_TOOL_NAMES
+    + CONTAINER_INSPECTION_TOOL_NAMES
+    + SECURITY_DEBUG_TOOL_NAMES
+    + ("psql", "redis-cli")
+)
 
 
 def netcat_package_for_debian(debian_version: str) -> str:
@@ -87,87 +54,83 @@ def read_list_file(path: Path) -> list[str]:
     return [line.rstrip("\n") for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def ordered_tool_items(
-    tooling: Mapping[str, str],
-    order: Sequence[str],
-) -> list[tuple[str, str]]:
-    items: list[tuple[str, str]] = []
+def read_apt_package_names(path: Path = PACKAGE_LIST_FILE) -> list[str]:
+    if not path.exists():
+        return []
+    names: list[str] = []
     seen: set[str] = set()
-
-    for key in order:
-        value = str(tooling.get(key) or "").strip()
-        if not value:
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.partition("#")[0].strip()
+        if not line or line in seen:
             continue
-        items.append((key, value))
-        seen.add(key)
+        names.append(line)
+        seen.add(line)
+    return names
 
-    for key in sorted(tooling):
+
+def _sorted_tool_items(tooling: Mapping[str, str]) -> list[tuple[str, str]]:
+    return [
+        (name, value.strip())
+        for name, value in sorted(tooling.items(), key=lambda item: item[0].lower())
+        if str(value).strip()
+    ]
+
+
+def render_named_lines(
+    tooling: Mapping[str, str],
+    *,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] = (),
+    unavailable_text: str = "- unavailable",
+) -> list[str]:
+    excluded = set(exclude)
+    included = set(include) if include is not None else None
+    filtered = {
+        key: value
+        for key, value in tooling.items()
+        if key not in excluded and (included is None or key in included)
+    }
+    items = _sorted_tool_items(filtered)
+    if not items:
+        return [unavailable_text]
+    return [f"- {name}: `{value}`" for name, value in items]
+
+
+def render_system_package_lines(system_packages: Sequence[str]) -> list[str]:
+    parsed: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw_item in system_packages:
+        item = str(raw_item).strip()
+        if not item:
+            continue
+        name, sep, value = item.partition("=")
+        if sep:
+            label = name.strip()
+            version = value.strip()
+            if not label or not version:
+                continue
+            key = label.lower()
+            if key in seen:
+                continue
+            parsed.append((label, version))
+            seen.add(key)
+            continue
+        key = item.lower()
         if key in seen:
             continue
-        value = str(tooling.get(key) or "").strip()
-        if not value:
-            continue
-        items.append((key, value))
+        parsed.append((item, ""))
+        seen.add(key)
 
-    return items
-
-
-def select_tooling(custom_tooling: Mapping[str, str], names: Sequence[str]) -> dict[str, str]:
-    selected: dict[str, str] = {}
-    for key in names:
-        value = str(custom_tooling.get(key) or "").strip()
-        if not value:
-            continue
-        selected[key] = value
-    return selected
-
-
-def render_custom_tooling_lines(custom_tooling: Mapping[str, str]) -> list[str]:
-    excluded = (
-        set(FIRST_PARTY_WHEEL_ORDER)
-        | set(AI_CLI_TOOL_ORDER)
-        | set(CONTAINER_INSPECTION_TOOL_ORDER)
-        | set(SECURITY_DEBUG_TOOL_ORDER)
-    )
-    filtered = {key: value for key, value in custom_tooling.items() if key not in excluded}
-    items = ordered_tool_items(filtered, CUSTOM_TOOL_ORDER)
+    items = sorted(parsed, key=lambda item: item[0].lower())
     if not items:
         return ["- unavailable"]
-    return [f"- {name}: {value}" for name, value in items]
-
-
-def render_first_party_wheel_lines(custom_tooling: Mapping[str, str]) -> list[str]:
-    items = ordered_tool_items(select_tooling(custom_tooling, FIRST_PARTY_WHEEL_ORDER), FIRST_PARTY_WHEEL_ORDER)
-    if not items:
-        return ["- unavailable"]
-    return [f"- {name}: {value}" for name, value in items]
-
-
-def render_ai_cli_tool_lines(custom_tooling: Mapping[str, str]) -> list[str]:
-    items = ordered_tool_items(select_tooling(custom_tooling, AI_CLI_TOOL_ORDER), AI_CLI_TOOL_ORDER)
-    if not items:
-        return ["- unavailable"]
-    return [f"- {name}: {value}" for name, value in items]
-
-
-def render_container_inspection_tool_lines(custom_tooling: Mapping[str, str]) -> list[str]:
-    items = ordered_tool_items(
-        select_tooling(custom_tooling, CONTAINER_INSPECTION_TOOL_ORDER),
-        CONTAINER_INSPECTION_TOOL_ORDER,
-    )
-    if not items:
-        return ["- unavailable"]
-    return [f"- {name}: {value}" for name, value in items]
-
-
-def render_security_debug_tool_lines(custom_tooling: Mapping[str, str]) -> list[str]:
-    items = ordered_tool_items(
-        select_tooling(custom_tooling, SECURITY_DEBUG_TOOL_ORDER),
-        SECURITY_DEBUG_TOOL_ORDER,
-    )
-    if not items:
-        return ["- unavailable"]
-    return [f"- {name}: {value}" for name, value in items]
+    rendered: list[str] = []
+    for name, version in items:
+        if version:
+            rendered.append(f"- {name}: `{version}`")
+        else:
+            rendered.append(f"- {name}")
+    return rendered
 
 
 def render_runtime_probe_sections(
@@ -178,48 +141,30 @@ def render_runtime_probe_sections(
         "## Runtime Version Snapshot (Pre-build Probe)",
         "",
     ]
+    sections: list[tuple[str, list[str]]] = [
+        ("First-Party Wheels", render_named_lines(custom_tooling, include=FIRST_PARTY_WHEEL_NAMES)),
+        ("AI CLI Tools", render_named_lines(custom_tooling, include=AI_CLI_TOOL_NAMES)),
+        (
+            "Container Inspection Tools",
+            render_named_lines(custom_tooling, include=CONTAINER_INSPECTION_TOOL_NAMES),
+        ),
+        ("Security & Debug Tools", render_named_lines(custom_tooling, include=SECURITY_DEBUG_TOOL_NAMES)),
+        (
+            "Custom Tooling",
+            render_named_lines(
+                custom_tooling,
+                exclude=CUSTOM_TOOL_EXCLUSIONS,
+            ),
+        ),
+    ]
+
+    for title, section_lines in sections:
+        lines.extend([f"### {title}", ""])
+        lines.extend(section_lines)
+        lines.append("")
+
     lines.extend(
         [
-            "### First-Party Wheels",
-            "",
-        ]
-    )
-    lines.extend(render_first_party_wheel_lines(custom_tooling))
-    lines.extend(
-        [
-            "",
-            "### AI CLI Tools",
-            "",
-        ]
-    )
-    lines.extend(render_ai_cli_tool_lines(custom_tooling))
-    lines.extend(
-        [
-            "",
-            "### Container Inspection Tools",
-            "",
-        ]
-    )
-    lines.extend(render_container_inspection_tool_lines(custom_tooling))
-    lines.extend(
-        [
-            "",
-            "### Security & Debug Tools",
-            "",
-        ]
-    )
-    lines.extend(render_security_debug_tool_lines(custom_tooling))
-    lines.extend(
-        [
-            "",
-            "### Custom Tooling",
-            "",
-        ]
-    )
-    lines.extend(render_custom_tooling_lines(custom_tooling))
-    lines.extend(
-        [
-            "",
             "### System packages",
             "",
             "    (candidate versions from apt probe)",
@@ -227,7 +172,7 @@ def render_runtime_probe_sections(
     )
 
     if system_packages:
-        lines.extend([f"    {item}" for item in system_packages])
+        lines.extend(render_system_package_lines(system_packages))
     else:
         lines.append("    probe-unavailable")
 
@@ -272,7 +217,7 @@ def render_installed_manifest(
             "",
         ]
     )
-    lines.extend(render_first_party_wheel_lines(custom_tooling))
+    lines.extend(render_named_lines(custom_tooling, include=FIRST_PARTY_WHEEL_NAMES))
     lines.extend(
         [
             "",
@@ -280,7 +225,12 @@ def render_installed_manifest(
             "",
         ]
     )
-    lines.extend(render_ai_cli_tool_lines(custom_tooling))
+    lines.extend(
+        render_named_lines(
+            custom_tooling,
+            include=AI_CLI_TOOL_NAMES,
+        )
+    )
     lines.extend(
         [
             "",
@@ -288,7 +238,7 @@ def render_installed_manifest(
             "",
         ]
     )
-    lines.extend(render_container_inspection_tool_lines(custom_tooling))
+    lines.extend(render_named_lines(custom_tooling, include=CONTAINER_INSPECTION_TOOL_NAMES))
     lines.extend(
         [
             "",
@@ -296,7 +246,7 @@ def render_installed_manifest(
             "",
         ]
     )
-    lines.extend(render_security_debug_tool_lines(custom_tooling))
+    lines.extend(render_named_lines(custom_tooling, include=SECURITY_DEBUG_TOOL_NAMES))
     lines.extend(
         [
             "",
@@ -304,7 +254,12 @@ def render_installed_manifest(
             "",
         ]
     )
-    lines.extend(render_custom_tooling_lines(custom_tooling))
+    lines.extend(
+        render_named_lines(
+            custom_tooling,
+            exclude=CUSTOM_TOOL_EXCLUSIONS,
+        )
+    )
 
     lines.extend(
         [
@@ -328,7 +283,7 @@ def render_installed_manifest(
         ]
     )
     if system_packages:
-        lines.extend([f"    {item}" for item in system_packages])
+        lines.extend(render_system_package_lines(system_packages))
     else:
         lines.append("    unavailable")
 
@@ -428,7 +383,12 @@ def render_unified_manifest(
     ])
 
     lines.extend(["## Custom Tooling", ""])
-    lines.extend(render_custom_tooling_lines(custom_tooling))
+    lines.extend(
+        render_named_lines(
+            custom_tooling,
+            exclude=CUSTOM_TOOL_EXCLUSIONS,
+        )
+    )
     lines.append("")
 
     # First-Party Wheels — carry through from the repo-hosted source manifest.
@@ -449,7 +409,7 @@ def render_unified_manifest(
 
     lines.extend(["## System Packages", "", "    (installed via apt)"])
     if system_packages:
-        lines.extend([f"    {item}" for item in system_packages])
+        lines.extend(render_system_package_lines(system_packages))
     else:
         lines.append("    unavailable")
     lines.append("")

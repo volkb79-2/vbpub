@@ -8,7 +8,7 @@ The purpose is to provide a curated, reproducible Debian + Python environment wi
 
 Rich GHCR-facing package docs live under [package-manifests-versioned](package-manifests-versioned/README.md). The release resolver regenerates those versioned Markdown pages on each build so OCI labels can point to repository-hosted Markdown instead of relying on flattened GHCR description text.
 
-The versioned release pages are copied into the image as `/home/vscode/mdt-manifest.md`, which is the canonical user-facing manifest path. `/etc/os-release` advertises that location via `IMAGE_MANIFEST=/home/vscode/mdt-manifest.md`.
+The versioned release pages are copied into the image as `/usr/local/share/modern-debian-tools-python-debug/manifest.md`, which is the canonical manifest path. `/home/vscode/mdt-manifest.md` is kept as a compatibility symlink, and `/etc/os-release` advertises the shared-root location via `IMAGE_MANIFEST=/usr/local/share/modern-debian-tools-python-debug/manifest.md`.
 
 ## Image Families
 
@@ -60,8 +60,8 @@ If you add or remove a Python variant, update the matching target block and its 
 
 ## Canonical Manifest
 
-The user-facing manifest is copied into the image at `/home/vscode/mdt-manifest.md`.
-`/etc/os-release` gets a custom `IMAGE_MANIFEST=/home/vscode/mdt-manifest.md` entry so scripts can discover it without hardcoding a second path.
+The user-facing manifest is copied into the image at `/usr/local/share/modern-debian-tools-python-debug/manifest.md`.
+`/home/vscode/mdt-manifest.md` is kept as a compatibility symlink, and `/etc/os-release` gets a custom `IMAGE_MANIFEST=/usr/local/share/modern-debian-tools-python-debug/manifest.md` entry so scripts can discover it without hardcoding a second path.
 
 The repository-hosted versioned manifest is intended to match that in-image file.
 
@@ -111,8 +111,11 @@ annotated for what it's for. It splits into dev/build tooling (`ruff`, `mypy`, `
 
 Optional (controlled by `INSTALL_*` build args, all enabled by default):
 - `aider-chat` — `INSTALL_AIDER=true`
-- `reasonix`, `openclaw` — npm-based, installed separately from the venv and backed by the image's `nodejs` / `npm`
+- `reasonix`, `openclaw` — npm-based, installed separately from the venv and backed by the image's upstream Node 24 toolchain
 - `codex`, `claude-code`, `antigravity` — installed separately from the venv
+
+Node 24 is sourced from NodeSource because Debian 13 still ships Node 20, and Reasonix/OpenClaw
+need a newer runtime.
 
 Container inspection tools are also installed in-image:
 - `dtop` - live per-container CPU, memory, I/O, and network drilldown
@@ -120,8 +123,22 @@ Container inspection tools are also installed in-image:
 - `glances` - broader host resource view with Docker awareness
 - `dive` - image-layer inspection
 - `syft` - SBOM generation and image/package inventory analysis
+- `htop` - GitHub-sourced build with a shipped default config
+
+For zswap specifically, recent `htop` builds can surface compressed-memory/zswap counters, and the
+shipped `zswap-status` shell helper prints the kernel counters directly when they are exposed under
+sysfs or debugfs.
 
 Both image families create the `vscode` user if the base image does not already provide it, so consumer repos can use the same `remoteUser: "vscode"` setting for either family.
+
+## Customization Roots
+
+The image keeps one visible home for shipped behavior and one visible home for user overrides:
+
+- `/usr/local/share/modern-debian-tools-python-debug/` for shipped profile files, alias templates, and manifest support files
+- `/home/vscode/.config/modern-debian-tools-python-debug/` for user-editable bootstrap state, including the central `ai.env`, `aliases.sh`, `shell.env`, `htoprc`, `mc.ini`, `nanorc`, and `lesspipe.sh`
+
+The shell bootstrap sources the user files once at session start. That means `ai.env` becomes the single source of truth for tools such as Aider, Claude Code, Codex, Reasonix, and OpenClaw, while tool-specific auth files that need a local path but should not duplicate secrets are symlinked back to that central file.
 
 ### Lean Venv Packages (Secondary Pythons)
 
@@ -303,17 +320,17 @@ The base section includes:
 
 - `First-Party Wheels` is the wheel inventory view: image-owned releases (`ciu`, `cmru`).
 - `AI CLI Tools` is the agent CLI inventory view: `aider`, `reasonix`, `openclaw`, `codex`, `claude`, `antigravity`.
-- `Custom Tooling` is an operational view: tool executables and their runtime `--version` output.
-- `System packages` is a package inventory view: selected apt package names and versions.
+- `Custom Tooling` is an operational view: release-managed tool executables and their runtime `--version` output.
+- `System packages` is a Debian package inventory view: apt package names and versions.
 
 This means one component can appear in both sections without being duplicated.
 The manifest now splits first-party wheels and AI CLI tools into their own sections so the
 release inventory reads the same way as the image build pipeline.
 
 Example:
-- `psql` in `Custom Tooling` is the executable version output.
+- `aider` in `Custom Tooling` is the resolved release version from `aider --version`.
 - `postgresql-client=...` in `System packages` is the Debian package that provides `psql`.
-- It is not installed twice.
+- `psql` stays out of `Custom Tooling` so Debian-shipped packages are grouped together.
 
 ## `python -m pip install` vs `pipx`
 
@@ -379,7 +396,7 @@ INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_
 
 Notes:
 - `ANTIGRAVITY_VERSION` currently follows upstream `latest` manifest resolution during staging.
-- `AIDER_VERSION=latest` resolves at image build time via pip.
+- `AIDER_VERSION=latest` resolves to the current PyPI release version during staging.
 
 ## GHCR Credentials
 
@@ -393,16 +410,28 @@ The release pipeline mirrors each GHCR package's visibility to the source reposi
 ## Persisting AI Tool State
 
 If you want agent state to survive devcontainer rebuilds, keep the workspace mount persistent and
-add the tool-specific home directories below:
+let the shipped mount layout persist the tool homes below:
 
 - Workspace root for `reasonix.toml`, `AGENTS.md`, and any repo-local scratch files
-- `/home/vscode/.config/reasonix`
+- `/home/vscode/.claude`
+- `/home/vscode/.codex`
+- `/home/vscode/.reasonix`
 - `/home/vscode/.openclaw`
+- `/home/vscode/.config/modern-debian-tools-python-debug`
+- `/home/vscode/.config/modern-debian-tools-python-debug/aliases.sh`
 
-The key files and directories are:
+The central key file is:
 
-- Reasonix user config: `~/.config/reasonix/`
-- OpenClaw config: `~/.openclaw/openclaw.json`
+- `~/.config/modern-debian-tools-python-debug/ai.env`
+
+Supported key names:
+
+- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
+- `OPENROUTER_API_KEY`
+- `DEEPSEEK_API_KEY`
+
+Reasonix and OpenClaw also read their tool-local `.env` paths, but those are symlinked back to the same central file so the key values live in one place only.
 
 ## Using in another repository
 
@@ -453,10 +482,10 @@ Secondary manifest variants: 10 (https://raw.githubusercontent.com/devcontainers
 
 ### AIDER_VERSION workaround (Python 3.13/3.14)
 
-The default `AIDER_VERSION=main` installs aider-chat from upstream git `main` branch
-because the latest PyPI release (0.86.2) pins `Python <3.13`. PR
-[Aider-AI/aider#4899](https://github.com/Aider-AI/aider/pull/4899) added 3.13/3.14 support
-but no release has been cut yet. See `USAGE.md` for details on switching modes.
+The default `AIDER_VERSION=main` installs aider-chat from upstream git `main` branch.
+`AIDER_VERSION=latest` now resolves to the current PyPI release version during staging,
+which keeps the manifest concrete while still letting you opt into the branch build when
+you need it. See `USAGE.md` for details on switching modes.
 
 ## Notes
 
@@ -480,4 +509,3 @@ skopeo inspect --raw oci:///tmp/mdt-repacked2 | jq '.layers | length'
 # a local daemon image (diff-layer count):
 docker inspect <img> --format '{{len .RootFS.Layers}}'
 ```
-

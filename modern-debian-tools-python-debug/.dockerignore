@@ -11,10 +11,12 @@
 !build
 !build/tool-artifacts-staging
 !build/tool-artifacts-staging/**
+!customization
+!customization/**
 !package-manifests-versioned/**
 !package-manifests-versioned
 !scripts/
 !scripts/manifest_sections.py
 !scripts/install_ai_cli_tools.py
+!scripts/finalize_container_environment.py
 !ai-cli-tools.list
-

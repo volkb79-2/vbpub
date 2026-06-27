@@ -1,0 +1,6 @@
+# Ship the system syntax set plus a few sane defaults.
+include /etc/nanorc
+set historylog
+set linenumbers
+set tabstospaces
+set softwrap

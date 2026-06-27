@@ -499,6 +499,27 @@ def _stage_tarball_tool(
     )
 
 
+def _stage_source_tarball(
+    *,
+    tool: str,
+    version: str,
+    destination: Path,
+    urls: list[str],
+    records: list[StagedArtifact],
+) -> None:
+    source_url, final_url = _download_first_available(destination, urls)
+    _record_artifact(
+        records,
+        tool=tool,
+        version=version,
+        source_url=source_url,
+        final_url=final_url,
+        path=destination,
+        kind="source-tarball",
+        verification="GitHub source archive for build-time compilation",
+    )
+
+
 def _stage_zip_tool(
     *,
     tool: str,
@@ -812,6 +833,17 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
         ],
         expected_binary="gh",
         archive_kind="tar.gz",
+        records=records,
+    )
+
+    _stage_source_tarball(
+        tool="htop",
+        version=resolved["HTOP_VER"],
+        destination=DOWNLOADS_DIR / f"htop-{resolved['HTOP_VER']}.tar.gz",
+        urls=[
+            f"https://github.com/htop-dev/htop/archive/refs/tags/{resolved['HTOP_VER']}.tar.gz",
+            f"https://github.com/htop-dev/htop/archive/refs/tags/v{resolved['HTOP_VER']}.tar.gz",
+        ],
         records=records,
     )
 
@@ -1285,11 +1317,17 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
 
 
 def _resolve_versions() -> dict[str, str]:
+    aider_requested = (os.getenv("AIDER_VERSION") or "latest").strip() or "latest"
+    if aider_requested == "main":
+        aider_version = "main"
+    else:
+        aider_version = _resolve_pypi_version(aider_requested, "aider-chat")
+
     resolved = {
         "CODEX_VER": _resolve_codex_version(os.getenv("CODEX_VERSION")),
         "CLAUDE_CODE_VER": _resolve_claude_code_version(os.getenv("CLAUDE_CODE_VERSION")),
         "ANTIGRAVITY_VER": (os.getenv("ANTIGRAVITY_VERSION") or "latest").strip() or "latest",
-        "AIDER_VER": (os.getenv("AIDER_VERSION") or "latest").strip() or "latest",
+        "AIDER_VER": aider_version,
         "REASONIX_VER": _resolve_npm_version(os.getenv("REASONIX_VERSION"), "reasonix"),
         "OPENCLAW_VER": _resolve_npm_version(os.getenv("OPENCLAW_VERSION"), "openclaw"),
         "DTOP_VER": _resolve_version(os.getenv("DTOP_VERSION"), "amir20/dtop"),
@@ -1306,6 +1344,7 @@ def _resolve_versions() -> dict[str, str]:
         "RIPGREP_VER": _resolve_version(os.getenv("RIPGREP_VERSION"), "BurntSushi/ripgrep"),
         "SHELLCHECK_VER": _resolve_version(os.getenv("SHELLCHECK_VERSION"), "koalaman/shellcheck"),
         "FZF_VER": _resolve_version(os.getenv("FZF_VERSION"), "junegunn/fzf"),
+        "HTOP_VER": _resolve_version(os.getenv("HTOP_VERSION"), "htop-dev/htop"),
         "YQ_VER": _resolve_version(os.getenv("YQ_VERSION"), "mikefarah/yq"),
         "CONSUL_VER": _resolve_version(os.getenv("CONSUL_VERSION"), "hashicorp/consul"),
         "DELTA_VER": _resolve_version(os.getenv("DELTA_VERSION"), "dandavison/delta"),

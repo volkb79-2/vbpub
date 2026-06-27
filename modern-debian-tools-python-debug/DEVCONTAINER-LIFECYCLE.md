@@ -69,9 +69,16 @@ Devcontainer-persisted state is grouped under a single host parent so a rebuild 
 | Source (host) | Target (container) | Notes |
 |---|---|---|
 | `~/mdt--mounted-folders/.ssh` | `/home/vscode/.ssh` (ro) | container-persisted ssh state |
-| `~/mdt--mounted-folders/.claude` `.codex` `.config` `.minisign` `.gnupg` | matching `/home/vscode/*` | agent/tool state; secret dirs `0700` |
+| `~/mdt--mounted-folders/.claude` `.codex` `.reasonix` `.openclaw` `.config` `.minisign` `.gnupg` | matching `/home/vscode/*` | agent/tool state; secret dirs `0700` |
 | `~/mdt--mounted-folders/tmp` | `/tmp` | **persisted, host-backed `/tmp`** (`1777`) |
 | `~/.ssh` (host, native) | `/home/vscode/.ssh-host` (ro) | **dual-use exception**: the host's NATIVE keys, so the same keys work natively AND in the devcontainer |
+
+The user-editable central API key file is `~/.config/modern-debian-tools-python-debug/ai.env`.
+Shell startup sources it once; Reasonix/OpenClaw/Codex also get tool-local `.env` symlinks back to
+the same file so the values live in one place only. The same customization root also carries
+`aliases.sh`, which is sourced on login and is the user-editable place for shell shortcuts and
+AI-tool "yolo" aliases, plus `shell.env`, `htoprc`, `mc.ini`, and `nanorc` for shipped shell and
+TUI defaults.
 
 **Why a persisted host-backed `/tmp`:** `/tmp` git worktrees then survive rebuilds AND are visible to
 **sibling containers** (e.g. the `test-runner`) that bind the same host dir — so `/tmp`-based worktrees
@@ -88,7 +95,7 @@ containers read it from there. No hardcoded host path, no raw `containerEnv` var
    the native `~/.ssh → .ssh-host` readonly mount), and add `~/mdt--mounted-folders/tmp → /tmp`.
 2. **Migrate once on the host** (the bootstrap only creates EMPTY dirs — existing state isn't copied):
    ```
-   for d in .claude .codex .config .minisign .gnupg; do
+   for d in .claude .codex .reasonix .openclaw .config .minisign .gnupg; do
      [ -d ~/"$d" ] && cp -a ~/"$d"/. ~/mdt--mounted-folders/"$d"/ 2>/dev/null || true
    done
    ```

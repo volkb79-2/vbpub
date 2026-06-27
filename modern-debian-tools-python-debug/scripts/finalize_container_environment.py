@@ -65,6 +65,26 @@ from pathlib import Path
 
 # ── tiny logging (no color when not a tty) ──────────────────────────────────
 _TTY = sys.stdout.isatty()
+SHARED_PROFILE = Path("/usr/local/share/modern-debian-tools-python-debug/profile.sh")
+SHARED_CUSTOMIZATION_ROOT = SHARED_PROFILE.parent
+CUSTOMIZATION_ROOT = Path(os.path.expanduser("~/.config/modern-debian-tools-python-debug"))
+CUSTOMIZATION_README = CUSTOMIZATION_ROOT / "README.md"
+CUSTOMIZATION_ENV = CUSTOMIZATION_ROOT / "ai.env"
+CUSTOMIZATION_ENV_EXAMPLE = CUSTOMIZATION_ROOT / "ai.env.example"
+CUSTOMIZATION_ALIASES = CUSTOMIZATION_ROOT / "aliases.sh"
+CUSTOMIZATION_ALIASES_EXAMPLE = CUSTOMIZATION_ROOT / "aliases.sh.example"
+CUSTOMIZATION_SHELL_ENV = CUSTOMIZATION_ROOT / "shell.env"
+CUSTOMIZATION_HTOPRC = CUSTOMIZATION_ROOT / "htoprc"
+CUSTOMIZATION_MC_INI = CUSTOMIZATION_ROOT / "mc.ini"
+CUSTOMIZATION_NANORC = CUSTOMIZATION_ROOT / "nanorc"
+CUSTOMIZATION_LESSPIPE = CUSTOMIZATION_ROOT / "lesspipe.sh"
+
+# Tool-local env files that should resolve back to the central ai.env.
+TOOL_ENV_LINKS = {
+    Path(os.path.expanduser("~/.codex/.env")),
+    Path(os.path.expanduser("~/.openclaw/.env")),
+    Path(os.path.expanduser("~/.reasonix/.env")),
+}
 
 
 def _c(code: str, msg: str) -> str:
@@ -143,31 +163,88 @@ def _bashrc_block(marker: str, body: str) -> None:
         warn(f"could not update ~/.bashrc ({marker}): {e}")
 
 
-def setup_path() -> None:
-    user_bin = Path(os.path.expanduser("~/.local/bin"))
+def _ensure_text_file(destination: Path, content: str) -> None:
     try:
-        user_bin.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
-    _bashrc_block("path", 'export PATH="$HOME/.local/bin:$PATH"')
-    ok("~/.local/bin on PATH")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            return
+        destination.write_text(content, encoding="utf-8")
+    except OSError as e:
+        warn(f"could not seed {destination}: {e}")
 
 
-def setup_aliases() -> None:
-    # Generic, non-invasive convenience aliases. Deliberately ciu-free.
+def _ensure_copy(source: Path, destination: Path) -> None:
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            return
+        shutil.copy2(source, destination)
+    except OSError as e:
+        warn(f"could not copy {source} -> {destination}: {e}")
+
+
+def _ensure_symlink(source: Path, target: Path) -> None:
+    try:
+        source.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_symlink() or source.exists():
+            try:
+                if source.resolve() == target.resolve():
+                    return
+            except OSError:
+                pass
+            if source.is_dir() and not source.is_symlink():
+                return
+            warn(f"leaving existing path in place instead of linking {source} -> {target}")
+            return
+        source.symlink_to(target)
+    except OSError as e:
+        warn(f"could not link {source} -> {target}: {e}")
+
+
+def setup_shell_bootstrap() -> None:
     _bashrc_block(
-        "aliases",
-        """
-if command -v batcat >/dev/null 2>&1; then alias bat='batcat --paging=never'; fi
-alias ll='ls -l'
-alias la='ls -la'
-alias gs='git status -sb'
-alias gl='git log --oneline --decorate -n 20'
-alias gd='git diff'
-alias dps='docker ps --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"'
+        "mdt-profile",
+        f"""
+if [ -r {SHARED_PROFILE} ]; then
+    # shellcheck source=/dev/null
+    source {SHARED_PROFILE}
+fi
 """,
     )
-    ok("shell aliases configured")
+    ok("shell bootstrap configured")
+
+
+def setup_customization_root() -> None:
+    for name, destination in {
+        "README.md": CUSTOMIZATION_README,
+        "ai.env.example": CUSTOMIZATION_ENV_EXAMPLE,
+        "aliases.sh": CUSTOMIZATION_ALIASES,
+        "aliases.sh.example": CUSTOMIZATION_ALIASES_EXAMPLE,
+        "shell.env": CUSTOMIZATION_SHELL_ENV,
+        "htoprc": CUSTOMIZATION_HTOPRC,
+        "mc.ini": CUSTOMIZATION_MC_INI,
+        "nanorc": CUSTOMIZATION_NANORC,
+        "lesspipe.sh": CUSTOMIZATION_LESSPIPE,
+    }.items():
+        _ensure_copy(SHARED_CUSTOMIZATION_ROOT / name, destination)
+
+
+def setup_tool_env_links() -> None:
+    for link in TOOL_ENV_LINKS:
+        _ensure_symlink(link, CUSTOMIZATION_ENV)
+
+
+def setup_editor_links() -> None:
+    _ensure_symlink(Path(os.path.expanduser("~/.nanorc")), CUSTOMIZATION_NANORC)
+    _ensure_symlink(
+        Path(os.path.expanduser("~/.config/nano/nanorc")),
+        CUSTOMIZATION_NANORC,
+    )
+    _ensure_symlink(
+        Path(os.path.expanduser("~/.config/htop/htoprc")),
+        CUSTOMIZATION_HTOPRC,
+    )
+    _ensure_symlink(Path(os.path.expanduser("~/.config/mc/ini")), CUSTOMIZATION_MC_INI)
 
 
 def setup_vscode_settings(env_type: str) -> None:
@@ -206,8 +283,10 @@ def verify_base_tools() -> None:
 
 def run_generic_steps(envd: dict) -> None:
     info("generic mdt steps…")
-    setup_path()
-    setup_aliases()
+    setup_shell_bootstrap()
+    setup_customization_root()
+    setup_tool_env_links()
+    setup_editor_links()
     setup_vscode_settings(envd["env_type"])
     verify_base_tools()
 

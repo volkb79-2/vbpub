@@ -19,10 +19,16 @@ Persisted via host bind mounts (login once, keys + history survive rebuilds):
 |---|---|
 | `~/.claude` (+ `~/.claude.json`) | Claude Code config / auth / projects / memory |
 | `~/.codex` | Codex CLI auth + history |
+| `~/.reasonix` | Reasonix config / `.env` / session state |
+| `~/.openclaw` | OpenClaw config / `.env` / session state |
 | `~/.config` | `gh` auth + tool configs |
 | `~/.minisign` | Ed25519 signing key (cmru SPEC B / KI-01) |
 | `~/.gnupg` | GPG keys |
 | `~/.ssh` → `~/.ssh-host` (ro) | git over SSH |
+
+User-editable shell/API bootstrap state lives under `~/.config/modern-debian-tools-python-debug/`.
+That directory holds `ai.env` for central API keys, `aliases.sh` for local shell shortcuts, and
+`shell.env`/`htoprc`/`mc.ini`/`nanorc` for shipped defaults the user can adjust later.
 
 **Intentionally ephemeral:** `~/.cache`, `~/.npm` — rebuildable, not worth persisting.
 
