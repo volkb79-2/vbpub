@@ -488,6 +488,33 @@ The test was run live during play by stepping `memory.high` down from 8902M in 6
 
 **Post-restart note**: immediately after restart everything is in RAM (no zswap yet), so refault/s=0 is misleading. Wait 30–60 min of active play for steady state before calibrating.
 
+### Planned test — refaults(available RAM) curve + ramdisk floor
+
+**Goal**: map how refault rate varies with uncompressed RAM at different floor values. We have two data points from 2026-06-27:
+
+| Available RAM | refault/s baseline | Player experience |
+|---|---|---|
+| ~4.6G (ceiling) | 50–500/s continuous | Stutter, visible lag on area loads |
+| ~6G (natural) | 1–100/s | Smooth; brief stutter only on large area loads |
+
+The **shape between 3G and 6G is unknown**. It could be a gradual ramp, a cliff at some threshold, or a knee. Finding the knee tells us the efficient operating point.
+
+**Planned test conditions** (removes save-induced interference):
+- Ramdisk active (pak fast: warm pak = zswap decompress at 3µs, not disk)
+- `SAVE_TIME=0` (disable `-saving` periodic saves) and `BACKUP_TIME=0` (disable `-backup`) — eliminates the 10-min actor-graph warming cycle that refaults pages
+- Run `soulmask-startup-cgroup.sh` to prime zswap cleanly
+- Then `soulmask-mempress.sh floor 1G` and step down from 6G to 3G in 256M steps, pausing 15 min at each level for steady-state measurement
+
+**Hypothesis**: with pak on ramdisk (warm access ≤ 3µs), the game core may sustain 0–30 refault/s at much less than 6G, because pak pages no longer contribute to game cgroup pressure and warm pak access is near-zero-cost. The functional floor is probably the actor-graph minimum, not the pak-inclusive total.
+
+**What to record at each step**:
+```bash
+soulmask-zswap-monitor.sh 10   # 10s samples; record refault/s baseline, spikes
+# also note: player reports of lag (chest opens, area transitions)
+```
+
+**Expected findings**: a curve where 0–30/s is achievable at 4–4.5G (the actor graph core), with rapid degradation below ~4G. If confirmed, `memory.min=4G` with ramdisk gives near-ideal experience with 2G less guaranteed RAM than the current 6G (freeing zswap capacity for Docker builds).
+
 ### Startup cgroup lifecycle (`soulmask-startup-cgroup.sh`)
 
 The game's memory needs change dramatically between startup and steady state. A single static `memory.min` is a compromise. The 3-phase lifecycle handles this properly:
@@ -559,6 +586,81 @@ The `-saving` timer accesses the UE4 actor graph (anon pages). Pages that are zs
 
 **Should saves be more frequent?**
 At most 16 minutes of data loss on crash (last disk flush). For 2 players, 600s/960s is fine. Shortening adds CPU serialization spikes more often. On demand: `SaveWorld 0` then `BackupDataBase world` (or just `SaveWorld 1` if confirmed to do both).
+
+## 2e. Cgroup observability — tools
+
+### Standard tools (no custom install needed)
+
+**`systemd-cgtop`** — best built-in cgroup-focused view:
+```bash
+systemd-cgtop         # live hierarchy: CPU%, MEM, disk IO per cgroup/slice
+systemd-cgtop -m      # sort by memory
+systemd-cgtop -d 2    # 2s delay
+```
+Shows cgroup tree with CPU%, memory.current, disk I/O. Does NOT show zswap, refaults, or memory.min/high values.
+
+**`systemd-cgls`** — cgroup tree snapshot:
+```bash
+systemd-cgls          # full hierarchy
+systemd-cgls /system.slice/docker-*.scope   # specific container
+```
+
+**`htop`** — per-process view with cgroup column:
+```
+Press F2 (Setup) → Columns → Available Columns → CGROUP
+Add CGROUP column to the display.
+Then: / → filter by cgroup path substring (e.g. "bd342cc" for the Soulmask container)
+Useful for: seeing which cgroup each process is in; sorting by memory/CPU within cgroup
+Not useful for: zswap stats, memory.min values — those live in /sys/fs/cgroup, not /proc
+```
+
+**`htop` cgroup filter via PSI** — F2 → Display → show CPU/IO/MEM pressure meters at top.
+
+**Limitation of standard tools**: none of them show `workingset_refault_anon`, `memory.zswap.current`, `memory.min`, or `memory.high`. These only come from `/sys/fs/cgroup/*/memory.stat`.
+
+### Our custom scripts
+
+| Script | What it shows |
+|---|---|
+| `soulmask-zswap-monitor.sh [N]` | Per-5s: RAM, zswap pool (compressed), swap total (uncompressed), refault/s, majfault/s, pak shmem, compression ratio |
+| `soulmask-mempress.sh status` | Current memory.high, memory.min, zswap pool, refault cumulative |
+| `soulmask-mempress.sh down/up/floor/finalize` | Live memory.high calibration |
+| `soulmask-startup-cgroup.sh` | 3-phase startup lifecycle with live logging |
+
+### Raw one-liners (quick checks)
+
+```bash
+CG=/sys/fs/cgroup/system.slice/docker-<containerid>.scope
+
+# Memory
+echo "RAM:   $(( $(cat $CG/memory.current)       / 1048576 ))M"
+echo "zswap: $(( $(cat $CG/memory.zswap.current) / 1048576 ))M compressed"
+echo "swap:  $(( $(cat $CG/memory.swap.current)  / 1048576 ))M uncompressed"
+echo "min:   $(( $(cat $CG/memory.min)            / 1048576 ))M"
+echo "high:  $(cat $CG/memory.high)"
+
+# Key memory.stat fields
+grep -E '^(anon|file|shmem|workingset_refault_anon|pgmajfault|zswap) ' $CG/memory.stat
+
+# soulmask-paks.slice (pak-specific)
+PAK=/sys/fs/cgroup/soulmask-paks.slice
+echo "pak RAM:   $(( $(cat $PAK/memory.current)/1048576 ))M"
+echo "pak zswap: $(( $(cat $PAK/memory.zswap.current)/1048576 ))M compressed"
+grep workingset_refault_anon $PAK/memory.stat
+
+# IO (BFQ weights active?)
+cat /sys/fs/cgroup/system.slice/docker-*.scope/io.bfq.weight 2>/dev/null
+
+# System-wide zswap pool
+cat /sys/kernel/debug/zswap/pool_pages       # pages currently compressed
+cat /sys/kernel/debug/zswap/stored_pages     # same
+awk '/SwapTotal|SwapFree|SwapCached/{print}' /proc/meminfo
+```
+
+### No-install htop alternative: `btop`
+`btop` (install: `apt install btop`) has a cleaner default layout — shows process tree, per-CPU, per-NIC, per-disk with less key-chord overhead than htop. Still no cgroup zswap columns. For cgroup-level visibility, `systemd-cgtop` + `soulmask-zswap-monitor.sh` in a tmux split is the practical answer.
+
+**The fundamental gap**: no standard tool shows per-cgroup `workingset_refault_anon` rate. Our `soulmask-zswap-monitor.sh` fills this gap specifically for Soulmask. A general solution would require a BPF-based tool (bpftrace) or a custom Prometheus exporter reading `/sys/fs/cgroup/*/memory.stat`.
 
 ## 3. Orderly shutdown on host `reboot` — the problem & fix
 

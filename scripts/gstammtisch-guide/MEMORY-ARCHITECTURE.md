@@ -51,6 +51,27 @@ Both compress swapped pages in RAM. The difference is what happens when the pool
 
 For gstammtisch — one process holding lots of cold pages, sharing the box with bursty dev work — zswap's tiering is exactly right. Your intuition ("compression beats slow disk swap") holds *because zswap keeps the right pages compressed*; zram would give fast access to the wrong ones.
 
+**zswap decompression is fast but not free — it causes stutter at scale:**
+
+| Page location | Latency per page | 1 000 pages simultaneously | Player experience |
+|---|---|---|---|
+| Uncompressed RAM | ~50–100 ns | ~0.1 ms | Imperceptible |
+| zswap (zstd) | ~2–5 µs | 2–5 ms | Brief stutter on rapid access burst |
+| Swap disk (SSD) | ~100 µs–1 ms | 100 ms–1 s | Noticeable pause |
+| Swap disk (HDD) | ~1–10 ms | 1–10 s | "Chest open" stall |
+
+The swap-*in* fault is **synchronous**: the game thread blocks until the page is back. Disk-backed swap-in is the dominant cause of game stalls; zswap-backed swap-in is 100–2000× faster but still has a cost when many pages are needed at once (area loads, chest contents). `workingset_refault_anon` is the counter that measures exactly this cost.
+
+**Observed refault rate thresholds (Soulmask, 3 players, 2026-06-27):**
+
+| `refault/s` | State | Action |
+|---|---|---|
+| 0–30 | Excellent: essentially no zswap pressure | Floor may be lowereable |
+| 30–100 | Good: natural steady-state background | No action needed |
+| 100–500 (continuous) | Tight: hot tier partially in zswap | Raise `memory.min` |
+| 500+ (continuous) | Bad: constant game-loop refaults, visible stutter | Raise `memory.min` immediately |
+| 5k–40k for < 60s | Normal: area load event (player entering new zone) | Expected, unavoidable |
+
 **Same-value / zero pages:** zswap special-cases "same-filled" pages (every word identical — the all-zero page being the common case from `calloc`/fresh container heaps). It stores just the fill value in the entry metadata — **no compression, ~no pool memory** — and reconstructs on fault-in. This is automatic and on by default (kernel 7.0 no longer exposes a `same_filled` knob; it's built in). It is *not* cross-page dedup; for that see **KSM** (§6).
 
 ---
@@ -117,6 +138,58 @@ The goal: **Soulmask always preempts dev work and is the last thing reclaimed; d
 - `cpu.weight` / `io.weight` — proportional under contention only; idle CPU/IO is always available to dev.
 
 **Why swap-IN latency drives these choices:** swap-*out* is async/background; swap-*in* is a synchronous page fault that blocks the process. So protecting the game = keeping its pages where fault-in is fastest (RAM pool, via `memory.zswap.writeback=0` + a correctly-sized `memory.min`).
+
+### 5.0 cgroup v2 knob reference
+
+**Memory knobs** — applied per-cgroup:
+
+| Knob | Direction | Breach effect | Notes |
+|---|---|---|---|
+| `memory.min` | floor ↑ | Hard guarantee: kernel OOMs others before going below | Never violated even under OOM; set from measurement |
+| `memory.low` | soft floor ↑ | Best-effort: cgroup reclaimed last, not immune | Exceeded under severe pressure; good for "prefer to keep" |
+| `memory.high` | soft ceiling ↓ | Throttles allocs + aggressive reclaim; process survives | Useful for test pressure; never use on production game |
+| `memory.max` | hard ceiling ↓ | OOM kill inside the cgroup | One step too far = crash; don't use for live calibration |
+| `memory.zswap.writeback` | 0 / 1 | 0 = pages stay in zswap pool forever (never to disk) | 0 on game (fast faults); 1 on dev/pak (cold drains to disk) |
+
+**gstammtisch deployed values:**
+
+| Cgroup | `memory.min` | `memory.low` | `memory.high` | `memory.zswap.writeback` |
+|---|---|---|---|---|
+| Soulmask game | 6144M (3 players) | 12G | max | 0 |
+| soulmask-paks.slice | 150M (to calibrate) | — | — | 1 |
+| dev-workloads.slice | 0 | — | 8G | 1 |
+
+**IO knobs** (BFQ scheduler required — without BFQ, `io.weight` / `io.bfq.weight` are no-ops):
+
+| Knob | Range | Effect |
+|---|---|---|
+| `io.bfq.weight` | 1–1000 | BFQ proportional share (supersedes `io.weight` on BFQ) |
+| `io.weight` | 1–10000 | Proportional share for other schedulers |
+| `io.max` | `MAJ:MIN rbps=N wbps=N riops=N wiops=N` | Hard rate cap; `max` = unlimited |
+
+| Cgroup | `io.bfq.weight` | `io.max riops` | `io.max wiops` | `io.max rbps/wbps` |
+|---|---|---|---|---|
+| Soulmask | 1000 | max | max | max |
+| bench containers | 1 | 100 | 400 | 30 MB/s |
+
+**CPU knob:**
+
+| Cgroup | `cpu.weight` | Effect |
+|---|---|---|
+| Soulmask | 800 | ~8× more CPU than a default-weight (100) process when contended |
+| bench containers | 100 (default) | No advantage when contended |
+
+**Cgroup counters to watch (from `memory.stat`):**
+
+| Counter | What it measures |
+|---|---|
+| `workingset_refault_anon` | Pages evicted to zswap that were subsequently needed back ← primary pressure indicator |
+| `pgmajfault` | Major page faults (disk reads or zswap decompresses) |
+| `anon` | Anonymous pages in uncompressed RAM (game heap, stack) |
+| `file` | File-backed pages in RAM (ordinary page cache) |
+| `shmem` | Shared memory / tmpfs in RAM (pak ramdisk pages, in the correct cgroup) |
+| `zswap` | Bytes in zswap pool (compressed) |
+| `zswapped` | Cumulative bytes ever written to zswap |
 
 ### 5.1 Applying it (files)
 - [`dev-workloads.slice`](files/etc/systemd/system/dev-workloads.slice) — standard knobs via systemd (memory, cpu/io weight, IO bandwidth cap, oomd).
