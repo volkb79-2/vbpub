@@ -139,19 +139,21 @@ With BFQ + io.max already in place, `io.cost.qos` is not strictly necessary — 
 
 ### Why file cache is the weak link
 
-`memory.min` protects Soulmask's *anonymous* pages (heap, stack, engine allocations). Pak files are **clean file-backed pages** — the kernel can free them at any time (they can be re-read from disk) and does not route them through zswap. `memory.zswap.writeback=0` has no effect on them. Under pressure, they simply vanish from the page cache silently.
+`memory.min` protects Soulmask's *anonymous* pages (heap, stack, engine allocations). Pak files as **clean file-backed pages** are in a different category: the kernel can free them at any time (they can be re-read from disk) without going through zswap. `memory.zswap.writeback=0` on Soulmask's cgroup has no effect on them. Under pressure, they simply vanish from the page cache silently — no zswap, straight gone.
+
+**This silent eviction is the problem on a busy dev host with Docker builds competing for RAM.** The kernel has no obligation to warn the game; the page just isn't there anymore.
 
 When a pak page is missing and the game thread accesses it:
-- **Current (disk-backed)**: major page fault → disk read → 1–10 ms per page → sequential stalls when many pages are gone → 3-second "chest open" hang
-- **With ramdisk**: minor page fault → zswap decompress → ~1–10 µs → effectively zero stall
+- **File cache (no ramdisk)**: major page fault → disk read → 1–10 ms per page → sequential stalls when many pages are gone → 3-second "chest open" hang
+- **With ramdisk (tmpfs/shmem)**: the page CANNOT be silently freed — it must go through zswap first. Worst case: zswap decompress → ~3 µs. Kernel builds compete for RAM → pak pages go to zswap → game accesses warm pak → decompress at 3 µs not 10 ms
 
-The conversion is simple: **store the pak file on tmpfs**. tmpfs pages are anonymous (swap-backed). They go through zswap, are covered by `memory.min`, and cannot be evicted by benchmark file I/O.
+The conversion: **store the pak file on tmpfs**. tmpfs pages are shmem (swap-backed). The kernel cannot silently evict them — they must compress to zswap first. This is the guarantee that eliminates the chest stall, not `memory.min` on Soulmask's cgroup.
 
 ### gstammtisch specifics
 
 The game has one pak file: `WS-LinuxServer.pak` at **~1.7 GB**.
 - Available RAM at steady state: ~6.8 GB → fits entirely in RAM with 5 GB to spare.
-- If the game grows or RAM shrinks: cold pak sections compress at ~3.6× in zswap → 1.7 GB uncompressed → ~470 MB compressed. Never hits disk (`memory.zswap.writeback=0`).
+- Cold pak sections compress in zswap. With `writeback=yes` on `soulmask-paks.slice`, very cold pak CAN write through to swap disk — this is intentional on a busy host (frees zswap for game anon and Docker builds). Warm pak (recently accessed) stays in zswap (~3µs decompress). Hot pak (game loop) stays in RAM.
 - Startup cost: one sequential read of 1.7 GB from disk to populate the tmpfs (≈ 5–10 s on this SSD-backed VM). Every subsequent access is RAM-speed.
 
 ### Why hot-activation is impossible
@@ -405,17 +407,28 @@ soulmask-zswap-monitor.sh
 #   ratio       — swap_total / zswap_pool (compression ratio; zero-pages inflate this)
 ```
 
-**Pak pages and the root cgroup**: with the ramdisk active, pak tmpfs pages are charged to the **root cgroup** (because `soulmask-pak-ramdisk-setup.sh` ran as root). Soulmask's cgroup `shmem = 0`; pak pages appear as `shmem` in `/sys/fs/cgroup/memory.stat` (the root). This means:
-- `memory.min` on Soulmask's cgroup does NOT protect pak pages
-- Pak pages CAN be pushed to zswap if root cgroup is under pressure (however, root cgroup is never normally under pressure on this host — the game dominates memory)
-- Pak page zswap decompress latency = same ~2–5µs (still 1000× better than disk)
-- 374M of 1.7G pak is faulted in after a fresh start; remaining 1.3G loaded on demand as areas are explored
+**`soulmask-paks.slice`** — pak pages now charged here (not root cgroup):
+`soulmask-pak-ramdisk.service` has `Slice=soulmask-paks.slice`. The service process (which calls `cp`) runs inside the slice; pages it creates in tmpfs are charged to the slice. Since the slice persists while the service has `RemainAfterExit=yes`, pages stay charged to it until the service is stopped (umount + cleanup).
 
-**Future improvement — dedicated `soulmask-paks.slice`**: to get independent memory.min and monitoring on pak pages, the `cp` must run inside a persistent cgroup (pages stay charged to their birth cgroup until freed; they re-parent only when the cgroup itself is destroyed). Plan:
-1. Create `/etc/systemd/system/soulmask-paks.slice` with `memory.min=1800M`, `memory.zswap.writeback=0`
-2. In setup script, run copy inside it: `systemd-run --scope --slice=soulmask-paks.slice -- cp -v ...`
-3. Slice persists; pak pages charged to it; independent counters: `memory.current`, `memory.zswap.current`, `workingset_refault_anon` all visible per-slice
-4. Allows tuning pak RAM protection separately from game anon protection
+| Setting | Value | Reason |
+|---|---|---|
+| `MemoryMin` | 150M (start) | Only hot pak loop regions need guaranteed uncompressed RAM; calibrate up from 150M |
+| `MemoryZSwapWriteback` | yes | Cold pak → zswap → swap disk; frees zswap for game anon + Docker builds on this busy dev host |
+
+Three tiers for pak pages:
+- **Hot** (frequently accessed by game loop): stays in RAM, protected by `memory.min=150M`
+- **Warm** (recently accessed, LRU warm): in zswap → ~3µs decompress on access
+- **Cold** (not accessed in a long time): written through to swap disk (`writeback=yes`) — frees zswap; access = disk read (~10ms), same as before the ramdisk. The ramdisk benefit only applies to warm pages.
+
+Independent monitoring:
+```bash
+cat /sys/fs/cgroup/soulmask-paks.slice/memory.current      # pak in RAM
+cat /sys/fs/cgroup/soulmask-paks.slice/memory.zswap.current # pak compressed in zswap
+cat /sys/fs/cgroup/soulmask-paks.slice/memory.swap.current  # pak uncompressed equivalent
+grep workingset_refault_anon /sys/fs/cgroup/soulmask-paks.slice/memory.stat  # pak refault rate
+```
+
+Observed (2026-06-27): 374M in RAM, 0M in zswap. The 1.3G not yet accessed has no pages (lazy allocation) — zero RAM/zswap cost until a player enters that zone. Pages appear on first access and are charged to soulmask-paks.slice at that point.
 
 **Calibration tools** (run while players are active, after ~30–60 min of warmup):
 
@@ -474,6 +487,47 @@ The test was run live during play by stepping `memory.high` down from 8902M in 6
 - 4+ players: re-measure; expect +0.5–1G per additional player
 
 **Post-restart note**: immediately after restart everything is in RAM (no zswap yet), so refault/s=0 is misleading. Wait 30–60 min of active play for steady state before calibrating.
+
+### Startup cgroup lifecycle (`soulmask-startup-cgroup.sh`)
+
+The game's memory needs change dramatically between startup and steady state. A single static `memory.min` is a compromise. The 3-phase lifecycle handles this properly:
+
+| Phase | Trigger | memory.min | memory.high | Purpose |
+|---|---|---|---|---|
+| 1 — Startup | Container appears | 9G | max | Game loads world + assets without zswap pressure; slow startup otherwise |
+| 2 — Squeeze | RCON ready | 3G (panic) | 9G → 5G in 100M/0.5s steps | Primes zswap with cold data; gradual steps avoid compression burst |
+| 3 — Steady | After settle | 6G | max | Natural hot set guaranteed; cold data free to drift to zswap/disk |
+
+**Why not just set memory.min=6G from the start?** During startup the game loads many pages that become cold later. With memory.min=6G during startup and a busy host, those pages can drift to zswap while the game is still loading → constant refault pressure during load → slow startup. Starting at 9G gives the startup a quiet zone.
+
+**Why squeeze to 5G first, then relax to 6G?** The squeeze forces the cold data that accumulated during startup into zswap (priming). Releasing the ceiling lets the game pull its true hot set (6G) back from zswap via a short natural burst (~10–30s of elevated refaults), then it settles cleanly.
+
+**Why 100M steps at 0.5s?** Each 100M step = ~25K pages compressed in ~50ms — one compression burst, usually imperceptible to players. A sudden 4G step would create a visible spike. 40 steps × 0.5s = 20 seconds total squeeze time.
+
+**Run it**:
+```bash
+# After each Wings start/restart of the Soulmask container:
+soulmask-startup-cgroup.sh
+
+# The script:
+#   1. Waits for the Soulmask container cgroup to appear
+#   2. Sets memory.min=9G immediately (Phase 1)
+#   3. Polls RCON until server ready (max 10 min), logging progress
+#   4. Steps memory.high 9G → 5G (Phase 2, ~20s)
+#   5. Waits 30s settling time
+#   6. Sets memory.high=max, memory.min=6G (Phase 3)
+```
+
+**Wings integration**: Wings runs containers via Docker with root rights. Pterodactyl doesn't natively support post-start host-level hooks. Options:
+- Run `soulmask-startup-cgroup.sh` manually via SSH after each Wings power cycle
+- Add a Docker event listener (future): `docker events --filter event=start` + container name filter
+- A systemd service with `--filter=name=soulmask` watching docker events could trigger the script automatically
+
+**Overrides** (env vars):
+```bash
+SOULMASK_STARTUP_MIN=9G   SOULMASK_SQUEEZE_TARGET=5G   SOULMASK_STEADY_MIN=6G
+SOULMASK_SQUEEZE_STEP=100  SOULMASK_SQUEEZE_DELAY=0.5   SOULMASK_SETTLE_TIME=30
+```
 
 ### Soulmask save & backup mechanism
 

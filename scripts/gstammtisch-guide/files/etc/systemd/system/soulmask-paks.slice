@@ -1,0 +1,18 @@
+[Unit]
+Description=Soulmask pak ramdisk cgroup slice
+Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK.md
+
+[Slice]
+# Pak tmpfs pages charged here (cp runs inside this slice via soulmask-pak-ramdisk.service).
+# Independent memory accounting from Soulmask's game cgroup.
+
+# Very small guaranteed floor — only the truly hot pak regions need uncompressed RAM.
+# Start at 150M and calibrate up. Hot pak (frequently accessed game-loop regions)
+# stays in RAM; warm pak compresses to zswap; cold pak writes through to swap disk.
+MemoryMin=150M
+
+# writeback=yes (default): cold pak pages that have been in zswap and not accessed
+# can writeback to swap disk, freeing zswap pool for Soulmask's game anon and
+# other services on a busy dev host running 20+ containers + Docker image builds.
+# This is correct behaviour: cold pak → disk. Warm pak → zswap. Hot pak → RAM.
+MemoryZSwapWriteback=yes

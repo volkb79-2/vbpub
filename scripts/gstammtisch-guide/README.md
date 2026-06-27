@@ -29,10 +29,12 @@ gstammtisch-guide/
 │   ├── etc/systemd/system/gstammtisch-cgroups.service # extra cgroup knobs
 │   ├── etc/systemd/system/soulmask-graceful-stop.service
 │   ├── etc/systemd/system/soulmask-pak-ramdisk.service  # pak tmpfs (opt-in, §2c)
+│   ├── etc/systemd/system/soulmask-paks.slice           # pak cgroup: writeback=yes, memory.min=150M
 │   ├── etc/systemd/oomd.conf.d/gstammtisch.conf
 │   └── usr/local/sbin/setup-cgroups.sh  soulmask-shutdown.sh
 │                         soulmask-pak-ramdisk-setup.sh  soulmask-pak-ramdisk-toggle.sh
 │                         soulmask-zswap-monitor.sh  soulmask-mempress.sh
+│                         soulmask-startup-cgroup.sh
 └── scripts/
     ├── install.sh                # orchestrator (copy files, enable units, sysctl, BFQ)
     ├── partition-editor.py        # universal MBR partition editor

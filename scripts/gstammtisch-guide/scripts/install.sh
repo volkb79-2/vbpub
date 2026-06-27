@@ -15,7 +15,8 @@ cp -av "$HERE/files/etc/."            /etc/
 cp -av "$HERE/files/usr/local/sbin/." /usr/local/sbin/
 chmod +x /usr/local/sbin/setup-cgroups.sh /usr/local/sbin/soulmask-shutdown.sh \
          /usr/local/sbin/soulmask-pak-ramdisk-setup.sh /usr/local/sbin/soulmask-pak-ramdisk-toggle.sh \
-         /usr/local/sbin/soulmask-zswap-monitor.sh /usr/local/sbin/soulmask-mempress.sh
+         /usr/local/sbin/soulmask-zswap-monitor.sh /usr/local/sbin/soulmask-mempress.sh \
+         /usr/local/sbin/soulmask-startup-cgroup.sh
 
 echo "== BFQ I/O scheduler =="
 # BFQ is required for cgroup io.weight / io.bfq.weight to have any effect.
@@ -45,6 +46,7 @@ echo "== systemd: reload + enable units =="
 systemctl daemon-reload
 systemctl enable --now zswap-config.service
 systemctl enable dev-workloads.slice 2>/dev/null || true
+systemctl enable soulmask-paks.slice 2>/dev/null || true   # pak ramdisk cgroup slice
 systemctl enable --now gstammtisch-cgroups.service
 systemctl enable --now soulmask-graceful-stop.service
 systemctl enable --now systemd-oomd.service 2>/dev/null || true

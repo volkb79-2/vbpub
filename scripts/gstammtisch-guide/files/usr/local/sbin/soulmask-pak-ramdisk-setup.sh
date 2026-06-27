@@ -2,10 +2,18 @@
 # Populate a tmpfs with Soulmask's pak file and bind-mount it over the on-disk
 # Paks directory before Docker/Wings starts. The container sees identical paths.
 #
-# Why: pak files are clean file cache — evicted silently under memory pressure,
-# causing major page faults (disk reads, 1–10 ms each) → 3-second game stalls.
-# On tmpfs they become anonymous pages: covered by memory.min, routed through
-# zswap, never freed by benchmark I/O. Worst-case fault = zswap decompress (~1µs).
+# Why: pak files as *file cache* are silently freed under memory pressure — they
+# are "clean" (re-readable from disk), so the kernel just drops them without going
+# through zswap. Next access = disk read (1–10 ms). On tmpfs they become *shmem*
+# (anonymous-backed): the kernel CANNOT silently free them; they must go through
+# zswap first. Warm pak pages stay in zswap instead of being freed to nowhere.
+# Worst-case = zswap decompress (~3µs) vs disk re-read (~10 ms).
+# On a busy dev host with Docker builds competing for RAM, this guarantee is what
+# prevents 3-second game stalls: the kernel cannot evict warm pak pages silently.
+#
+# Note: pages charged to root cgroup (cp ran as root). memory.min on Soulmask's
+# cgroup does NOT protect pak pages. Use soulmask-paks.slice for independent
+# control (writeback=1, low memory.min — see SOULMASK.md §2c).
 #
 # Invoked by soulmask-pak-ramdisk.service (Before=docker.service).
 # Safe to run again: idempotent if tmpfs is already mounted.

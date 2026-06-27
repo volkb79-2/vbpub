@@ -7,6 +7,9 @@ After=local-fs.target
 DefaultDependencies=no
 
 [Service]
+# Run inside soulmask-paks.slice so pak tmpfs pages are charged to that slice,
+# not the root cgroup. Gives independent memory.min + writeback control for pak.
+Slice=soulmask-paks.slice
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/soulmask-pak-ramdisk-setup.sh
