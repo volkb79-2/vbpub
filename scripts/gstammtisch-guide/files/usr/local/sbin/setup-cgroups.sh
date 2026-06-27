@@ -17,18 +17,23 @@ log(){ echo "[cgroups] $*"; }
 # Hard I/O cap for bench containers: 15 MB/s, 50 r-IOPS, 200 w-IOPS.
 # io.bfq.weight range is 1–1000 (unlike io.weight which is 1–10000).
 #
-# WHY 15 MB/s: at 80 MB/s the bench chews through 10 GB of Soulmask's pak-file
-# page cache every ~2 min.  At 15 MB/s the churn rate is ~11 min — long enough
-# for pak pages to stay warm between player actions.  The dominant effect is not
-# I/O latency but PAGE CACHE THRASHING: Soulmask maps pak/world assets via mmap;
-# when those pages are evicted by bench reads the game thread blocks on a major
-# page fault for each missing page → 3-second "chest open" stalls.
-# BENCH_MEMORY_HIGH limits the bench's total cgroup memory (anon + file cache),
-# forcing the kernel to self-evict bench file cache before it steals from Soulmask.
-BENCH_RBPS="${BENCH_RBPS:-15728640}"
-BENCH_WBPS="${BENCH_WBPS:-15728640}"
-BENCH_RIOPS="${BENCH_RIOPS:-50}"
-BENCH_WIOPS="${BENCH_WIOPS:-200}"
+# WHY 30 MB/s / 100 RIOPS: the dominant effect is PAGE CACHE THRASHING.
+# Soulmask mmap's pak/world assets; those are CLEAN FILE CACHE — evicted by
+# simply freeing (no zswap). Bench reads fill the page cache, evicting pak pages;
+# the next game access becomes a major fault requiring a real disk read → stalls.
+#
+# Two-layer defence:
+#   1. io.max bandwidth cap — limits the rate of page cache churn
+#   2. BENCH_MEMORY_HIGH — caps the bench cgroup's total memory (anon + file cache)
+#      so the kernel self-evicts bench file cache before stealing Soulmask's pak pages
+#
+# Long-term fix: store pak files on a tmpfs ramdisk. tmpfs pages are anon (swap-backed),
+# so they go through zswap (not freed), memory.min protects them, and bench file I/O
+# can't evict them. Page fault on cold pak data = zswap decompress (~1µs) not disk read.
+BENCH_RBPS="${BENCH_RBPS:-31457280}"
+BENCH_WBPS="${BENCH_WBPS:-31457280}"
+BENCH_RIOPS="${BENCH_RIOPS:-100}"
+BENCH_WIOPS="${BENCH_WIOPS:-400}"
 BENCH_MEMORY_HIGH="${BENCH_MEMORY_HIGH:-1610612736}"  # 1.5G
 
 SOULMASK_MIN="${SOULMASK_MIN:-4608M}" # calibrated 2026-06-26: demand floor ~4G (2 players, run 5); +0.5G burst buffer (4608M = 4.5G)
