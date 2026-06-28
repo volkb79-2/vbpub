@@ -12,6 +12,7 @@ host and current (June 2026) kernel facts.
 | [MEMORY-ARCHITECTURE.md](MEMORY-ARCHITECTURE.md) | The synthesis: guide comparison + verdicts, zswap/zstd, sysctl, **cgroup v2 reasoning**, KSM/THP, kernel facts |
 | [OBSERVATION.md](OBSERVATION.md) | Environment observation & interpretation (`/sys/module/zswap`, `/sys/kernel/debug/zswap`, disk class/TRIM, PSI, cgroup, KSM, DAMON) |
 | [SOULMASK.md](SOULMASK.md) | Game-server specifics: protection, orderly shutdown, RCON |
+| [CGROUP-MONITORING.md](CGROUP-MONITORING.md) | Every cgroup v2 metric explained through live Soulmask data: memory.stat field-by-field, zswap math, swapcached/compression-ratio traps, PSI, CPU/IO, pak-slice decomposition, monitor column guide |
 
 ## File manifest
 ```
