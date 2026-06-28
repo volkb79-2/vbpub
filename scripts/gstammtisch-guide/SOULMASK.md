@@ -377,7 +377,7 @@ Pak and game anon pages are **not separately tracked within the same cgroup** �
 | `memory.min` | hard floor | guaranteed | Kernel will NEVER take memory below this from the cgroup, regardless of global pressure |
 | `memory.low` | soft floor | best-effort | Kernel tries to honour it but will dip below under severe system-wide pressure |
 
-For Soulmask: `memory.min` is the critical one. `memory.high=max` + `memory.max=max` = no ceiling. `memory.low=12G` is a best-effort hint that rarely triggers (the game never reaches 12G uncompressed in RAM).
+For Soulmask in production: **min=5G, high=6G** — the game operates in a 1G RAM band. Under Docker-build pressure, the kernel can reclaim from the game down to the 5G floor; at rest it uses ~5.8–6G. `memory.low=12G` is a best-effort global hint that rarely triggers (the game never reaches 12G). `memory.max=max` stays off to avoid OOM kills.
 
 ### Calibrating memory.min — finding the sweet spot
 
@@ -437,22 +437,29 @@ soulmask-zswap-monitor.sh        # Terminal 1: live refault/s, RAM, zswap
 soulmask-mempress.sh             # Terminal 2: apply and step memory.high pressure
 ```
 
-**Finding the sweet spot with `soulmask-mempress.sh`**:
+**`soulmask-mempress.sh` — command reference**:
+
+```bash
+# Production config (set operating band):
+soulmask-mempress.sh apply 5G 6G   # min=5G floor, high=6G ceiling — print persist commands
+soulmask-mempress.sh min 5G        # floor only
+soulmask-mempress.sh high 6G       # ceiling only
+soulmask-mempress.sh status        # show all knobs + zswap stats
+soulmask-mempress.sh reset         # high→max (remove ceiling; floor unchanged)
+
+# Calibration (find sweet spot):
+soulmask-mempress.sh min 3G        # set panic floor below test range
+soulmask-mempress.sh down          # step ceiling down 64M; banners at 512M marks
+soulmask-mempress.sh down 4        # or 256M at once when confident
+soulmask-mempress.sh up            # ease 64M if refault spikes or lag reported
+soulmask-mempress.sh finalize      # lock: memory.min→current ceiling, high→max
+```
 
 Use **`memory.high`** (NOT `memory.max`) as the pressure lever:
 - `memory.high` = soft ceiling: forces pages to zswap, never kills the process — worst case is stutter
 - `memory.max` = hard ceiling: one step too far = OOM kill = server crash during play
 
-```bash
-soulmask-mempress.sh floor 3G   # set panic floor (allows stepping below original memory.min)
-soulmask-mempress.sh down       # step down 64M at a time
-soulmask-mempress.sh down 4     # or 256M at once when confident
-# script banners at 512M boundaries — pause for player testing
-soulmask-mempress.sh up         # ease 64M if refault rate rises or lag reported
-soulmask-mempress.sh finalize   # lock in sweet spot: memory.high→max, memory.min→ceiling
-sudo sed -i "s/SOULMASK_MIN=.*/SOULMASK_MIN=\"\${SOULMASK_MIN:-<N>M}\"/" \
-  /usr/local/sbin/setup-cgroups.sh && systemctl restart gstammtisch-cgroups
-```
+The `apply` and `finalize` commands print ready-to-paste `sed` + `systemctl restart` commands for persisting the values in `setup-cgroups.sh`.
 
 **Step size**: 64M = ~16K pages per compression burst, ~50ms, imperceptible.
 **Decision**: baseline 1–100/s at rest → floor is correct. Baseline > 500/s continuously → too tight, raise floor.
@@ -481,10 +488,11 @@ The test was run live during play by stepping `memory.high` down from 8902M in 6
 
 **Area load signature**: swap_total grows by 50–150M during the spike (new zones loading into zswap), then refault/s decays from peak → 1000/s → 100/s → 10/s over ~5 minutes as the new zone's hot pages warm into RAM.
 
-**Recommended `memory.min`**: **6144M (6G)** for 3 players. Scale up as player count grows:
-- 2 players: ~5.5G observed (estimated from DAMON run 5; re-measure)
-- 3 players: **6G** (observed 2026-06-27)
-- 4+ players: re-measure; expect +0.5–1G per additional player
+**Production operating band**: **min=5G, high=6G** (deployed 2026-06-28, 2 players). The 1G band between floor and ceiling lets the game self-adjust while bounding its RAM footprint under Docker-build pressure.
+- Floor (memory.min=5G): kernel guarantees at least 5G stays uncompressed regardless of host load
+- Ceiling (memory.high=6G): game throttled above 6G — area-load spikes peak at ~6G so this is snug but workable
+- 3 players: expect similar band; re-verify with soulmask-zswap-monitor.sh (hot set may need min=5.5G)
+- 4+ players: re-measure; expect +0.5–1G per additional player; adjust with `soulmask-mempress.sh apply`
 
 **Post-restart note**: immediately after restart everything is in RAM (no zswap yet), so refault/s=0 is misleading. Wait 30–60 min of active play for steady state before calibrating.
 
@@ -523,11 +531,11 @@ The game's memory needs change dramatically between startup and steady state. A 
 |---|---|---|---|---|
 | 1 — Startup | Container appears | 9G | max | Game loads world + assets without zswap pressure; slow startup otherwise |
 | 2 — Squeeze | RCON ready | 3G (panic) | 9G → 5G in 100M/0.5s steps | Primes zswap with cold data; gradual steps avoid compression burst |
-| 3 — Steady | After settle | 6G | max | Natural hot set guaranteed; cold data free to drift to zswap/disk |
+| 3 — Steady | After settle | 5G | 6G | Production band: 5G floor + 6G ceiling (set by `setup-cgroups.sh` via watcher) |
 
 **Why not just set memory.min=6G from the start?** During startup the game loads many pages that become cold later. With memory.min=6G during startup and a busy host, those pages can drift to zswap while the game is still loading → constant refault pressure during load → slow startup. Starting at 9G gives the startup a quiet zone.
 
-**Why squeeze to 5G first, then relax to 6G?** The squeeze forces the cold data that accumulated during startup into zswap (priming). Releasing the ceiling lets the game pull its true hot set (6G) back from zswap via a short natural burst (~10–30s of elevated refaults), then it settles cleanly.
+**Why squeeze to 5G first, then apply the 5G/6G production band?** The squeeze forces the cold data that accumulated during startup into zswap (priming). The ceiling at 6G then bounds the game's footprint for steady-state multi-tenant operation. The game reclaims to its ~5.8G hot set naturally within the band.
 
 **Why 100M steps at 0.5s?** Each 100M step = ~25K pages compressed in ~50ms — one compression burst, usually imperceptible to players. A sudden 4G step would create a visible spike. 40 steps × 0.5s = 20 seconds total squeeze time.
 
@@ -623,8 +631,9 @@ Not useful for: zswap stats, memory.min values — those live in /sys/fs/cgroup,
 | Script | What it shows |
 |---|---|
 | `soulmask-zswap-monitor.sh [N]` | Per-5s: RAM, zswap pool (compressed), swap total (uncompressed), refault/s, majfault/s, pak shmem, compression ratio |
-| `soulmask-mempress.sh status` | Current memory.high, memory.min, zswap pool, refault cumulative |
-| `soulmask-mempress.sh down/up/floor/finalize` | Live memory.high calibration |
+| `soulmask-mempress.sh status` | All knobs (min/high/low), zswap pool, refault cumulative |
+| `soulmask-mempress.sh apply 5G 6G` | Set production band (min=5G, high=6G) + print persist commands |
+| `soulmask-mempress.sh min/high/down/up/finalize/reset` | Calibration — see §2d |
 | `soulmask-startup-cgroup.sh` | 3-phase startup lifecycle with live logging |
 
 ### Raw one-liners (quick checks)

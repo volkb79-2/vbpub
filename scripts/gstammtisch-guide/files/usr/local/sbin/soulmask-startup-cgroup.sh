@@ -13,10 +13,11 @@
 #   zswap with the game's cold data without causing a visible lag spike.
 #   Panic floor is set to 3G during the squeeze so memory.min < memory.high.
 #
-# Phase 3 — Steady state (memory.high=max, memory.min=6G):
-#   Release the ceiling. The game reclaims its hot set from zswap (~10s burst,
-#   then settles). Set memory.min=6G (calibrated 2026-06-27, 3 players) so the
-#   kernel never pushes the hot set below 6G regardless of other tenant pressure.
+# Phase 3 — Steady state (memory.high=6G, memory.min=5G):
+#   Production band: 5G floor + 6G ceiling. The game reclaims its hot set from
+#   zswap (short burst, then settles within the band). setup-cgroups.sh (via the
+#   cgroup watcher) also applies these values after RCON — startup-cgroup.sh is
+#   the fast path for a clean controlled priming; the watcher is the fallback.
 #
 # Call this once after each Wings start/restart of the Soulmask container.
 # Can be run as a systemd service or manually after a Wings power cycle.
@@ -38,7 +39,8 @@ SQUEEZE_FLOOR="${SOULMASK_SQUEEZE_FLOOR:-3G}"
 SQUEEZE_STEP_MB="${SOULMASK_SQUEEZE_STEP:-100}"
 SQUEEZE_DELAY="${SOULMASK_SQUEEZE_DELAY:-0.5}"
 SETTLE_TIME="${SOULMASK_SETTLE_TIME:-30}"
-STEADY_MIN="${SOULMASK_STEADY_MIN:-6G}"
+STEADY_MIN="${SOULMASK_STEADY_MIN:-5G}"
+STEADY_HIGH="${SOULMASK_STEADY_HIGH:-6G}"
 RCON_TIMEOUT="${SOULMASK_RCON_TIMEOUT:-600}"
 RCON_POLL=10
 
@@ -133,14 +135,15 @@ fi
 
 # ─── Phase 3: steady state ────────────────────────────────────────────────────
 STEADY_BYTES=$(_parse_bytes "$STEADY_MIN")
-log "Phase 3: memory.high → max  memory.min → $STEADY_MIN"
-echo max > "$CG/memory.high"
-echo "$STEADY_BYTES" > "$CG/memory.min"
+STEADY_HIGH_BYTES=$(_parse_bytes "$STEADY_HIGH")
+log "Phase 3: memory.min → $STEADY_MIN  memory.high → $STEADY_HIGH  (production band)"
+echo "$STEADY_BYTES"      > "$CG/memory.min"
+echo "$STEADY_HIGH_BYTES" > "$CG/memory.high"
 
 sleep 5  # brief pause for page reclaim to begin before logging
 log "lifecycle complete:"
-log "  memory.min = $STEADY_MIN (hot set guaranteed in uncompressed RAM)"
-log "  memory.high = max (no artificial ceiling)"
+log "  memory.min = $STEADY_MIN (floor: guaranteed uncompressed RAM)"
+log "  memory.high = $STEADY_HIGH (ceiling: production band cap)"
 log "  RAM now: $(( $(cat "$CG/memory.current")/1048576 ))M"
 log "  zswap: $(( $(cat "$CG/memory.swap.current")/1048576 ))M uncompressed / $(( $(cat "$CG/memory.zswap.current")/1048576 ))M compressed"
 log "  monitor: soulmask-zswap-monitor.sh"

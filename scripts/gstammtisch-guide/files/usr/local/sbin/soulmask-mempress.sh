@@ -1,29 +1,44 @@
 #!/usr/bin/env bash
-# Gradually lower memory.high on the Soulmask cgroup to force pages into zswap.
-# Used for finding the memory.min sweet spot: the lowest RAM level where
-# refault/s stays near-zero during active gameplay.
+# Cgroup memory knob manager for the Soulmask container.
 #
-# Usage:
-#   soulmask-mempress.sh                    # show current state
-#   soulmask-mempress.sh down [N]           # step down N×64M (default 1)
-#   soulmask-mempress.sh up [N]             # step up N×64M
-#   soulmask-mempress.sh set <value>        # set memory.high absolute (e.g. 6000M)
-#   soulmask-mempress.sh floor <value>      # set panic floor (memory.min) for deeper testing
-#   soulmask-mempress.sh reset              # memory.high → max (floor unchanged)
-#   soulmask-mempress.sh finalize           # memory.high → max, memory.min → current sweet spot
+# Two modes:
 #
-# Workflow:
-#   1. soulmask-mempress.sh floor 3G        # set panic floor (allows testing below 4608M)
-#   2. soulmask-mempress.sh down            # step 64M at a time; pause at 512M boundaries
+#   Production config — set the steady-state operating band:
+#     soulmask-mempress.sh apply 5G 6G      # min=5G floor, high=6G ceiling
+#     soulmask-mempress.sh min 5G           # floor only
+#     soulmask-mempress.sh high 6G          # ceiling only
+#
+#   Calibration — find the hot-set sweet spot:
+#     soulmask-mempress.sh min 3G           # lower floor below test range
+#     soulmask-mempress.sh down [N]         # step ceiling down N×64M; pause at 512M marks
+#     soulmask-mempress.sh up [N]           # step ceiling up N×64M
+#     soulmask-mempress.sh finalize         # lock sweet spot: min→current high, high→max
+#
+#   Other:
+#     soulmask-mempress.sh status           # show all knobs + cumulative refault
+#     soulmask-mempress.sh reset            # high→max (remove ceiling; min unchanged)
+#
+# Backward-compat aliases: 'set' = 'high', 'floor' = 'min'
+#
+# Production workflow (new host or after re-calibration):
+#   soulmask-mempress.sh apply 5G 6G
+#   # then persist:
+#   sed -i 's/SOULMASK_MIN=.*/SOULMASK_MIN="${SOULMASK_MIN:-5G}"/' /usr/local/sbin/setup-cgroups.sh
+#   sed -i 's/SOULMASK_HIGH=.*/SOULMASK_HIGH="${SOULMASK_HIGH:-6G}"/' /usr/local/sbin/setup-cgroups.sh
+#   systemctl restart gstammtisch-cgroups
+#
+# Calibration workflow:
+#   1. soulmask-mempress.sh min 3G          # set panic floor below test range
+#   2. soulmask-mempress.sh down            # step 64M; pause at 512M marks
 #   3. Watch refault/s in soulmask-zswap-monitor.sh
-#   4. When refault/s is low and stable → soulmask-mempress.sh finalize
-#   5. Update SOULMASK_MIN in /usr/local/sbin/setup-cgroups.sh
+#   4. Sweet spot found → soulmask-mempress.sh finalize
+#   5. Persist with the sed commands printed by finalize
+
 set -euo pipefail
 
-STEP=$((64 * 1048576))   # 64M in bytes
+STEP=$((64 * 1048576))   # 64M per calibration step
 
 _parse_bytes() {
-  # Accept: "4096M" "4G" or raw bytes
   local v="$1"
   case "$v" in
     *G) echo $(( ${v%G} * 1073741824 )) ;;
@@ -45,46 +60,128 @@ _cg() {
 CG=$(_cg) || { echo "Soulmask not running"; exit 1; }
 [ -d "$CG" ] || { echo "cgroup not found: $CG"; exit 1; }
 
+_mb() { echo $(( $1 / 1048576 )); }
+
 _show() {
-  local cur high min zpool swap refault
+  local cur high min low zpool zswap_uncomp refault
   cur=$(cat "$CG/memory.current")
   high=$(cat "$CG/memory.high")
   min=$(cat "$CG/memory.min")
+  low=$(cat "$CG/memory.low")
   refault=$(grep '^workingset_refault_anon' "$CG/memory.stat" | awk '{print $2}')
   zpool=$(cat "$CG/memory.zswap.current")
-  swap=$(cat "$CG/memory.swap.current")
+  zswap_uncomp=$(cat "$CG/memory.swap.current")
 
-  printf "memory.current: %dM\n" $(( cur / 1048576 ))
+  echo ""
+  printf "  RAM now:        %dM\n" $(_mb "$cur")
   if [ "$high" = "max" ]; then
-    printf "memory.high:    max (no pressure applied)\n"
+    printf "  memory.high:    max  (no ceiling)\n"
   else
-    printf "memory.high:    %dM  ← active pressure ceiling\n" $(( high / 1048576 ))
-    printf "  headroom:     %dM above floor\n" $(( (high - min) / 1048576 ))
+    printf "  memory.high:    %dM  ← soft ceiling  [headroom: %dM]\n" \
+      $(_mb "$high") $(( ($high - $cur) / 1048576 ))
   fi
-  printf "memory.min:     %dM  (floor / panic stop)\n" $(( min / 1048576 ))
-  printf "zswap pool:     %dM compressed / %dM uncompressed\n" \
-    $(( zpool / 1048576 )) $(( swap / 1048576 ))
-  printf "refault_anon:   %s (cumulative)\n" "$refault"
+  printf "  memory.min:     %dM  (guaranteed uncompressed floor)\n" $(_mb "$min")
+  printf "  memory.low:     %dM  (soft global-pressure hint)\n" $(_mb "$low")
+  printf "  zswap:          %dM compressed / %dM uncompressed equiv\n" \
+    $(_mb "$zpool") $(_mb "$zswap_uncomp")
+  printf "  refault_anon:   %s cumulative  (run soulmask-zswap-monitor.sh for rate)\n" "$refault"
+  echo ""
 }
 
 _boundary_check() {
   local val="$1"
   if [ $(( val % (512 * 1048576) )) -eq 0 ]; then
+    echo "*** 512M BOUNDARY — pause for player feedback ***"
+    echo "    refault/s < 30 and stable → 'down' to go lower"
+    echo "    refault/s > 100 or players report lag → 'finalize' here"
+    echo "    soulmask-zswap-monitor.sh to watch live"
     echo ""
-    echo "*** 512M BOUNDARY — pause for player testing ***"
-    echo "    Watch: soulmask-zswap-monitor.sh"
-    echo "    refault/s ≈ 0 and stable → step lower"
-    echo "    refault/s > 0 or lag reported → this is the sweet spot"
-    echo "    soulmask-mempress.sh finalize   (when done)"
   fi
 }
 
 CMD="${1:-status}"
 
 case "$CMD" in
+  # ── status ────────────────────────────────────────────────────────────────
   status|"")
     _show ;;
 
+  # ── min / floor  (set memory.min = guaranteed floor) ─────────────────────
+  min|floor)
+    val="${2:?usage: soulmask-mempress.sh min <value>   e.g. 5G or 5120M}"
+    bytes=$(_parse_bytes "$val")
+    cur_min=$(cat "$CG/memory.min")
+    cur_high=$(cat "$CG/memory.high")
+
+    # Guard: min must not exceed ceiling when ceiling is active
+    if [ "$cur_high" != "max" ] && [ "$bytes" -ge "$cur_high" ]; then
+      printf "STOP: %s (%dM) ≥ ceiling (%dM). Raise the ceiling first:\n" \
+        "$val" $(_mb "$bytes") $(_mb "$cur_high")
+      echo "  soulmask-mempress.sh high <higher_value>"
+      echo "  soulmask-mempress.sh apply <min> <high>"
+      exit 1
+    fi
+
+    dir="raised"; [ "$bytes" -lt "$cur_min" ] && dir="lowered"
+    printf "memory.min: %dM → %dM  (floor %s)\n" $(_mb "$cur_min") $(_mb "$bytes") "$dir"
+    echo "$bytes" > "$CG/memory.min"
+    sleep 1
+    _show ;;
+
+  # ── high / set  (set memory.high = soft ceiling) ─────────────────────────
+  high|set)
+    val="${2:?usage: soulmask-mempress.sh high <value>   e.g. 6G or 6144M}"
+    bytes=$(_parse_bytes "$val")
+    min=$(cat "$CG/memory.min")
+
+    if [ "$bytes" -le "$min" ]; then
+      printf "STOP: %s (%dM) ≤ floor (%dM). Lower the floor first:\n" \
+        "$val" $(_mb "$bytes") $(_mb "$min")
+      echo "  soulmask-mempress.sh min <lower_value>"
+      echo "  soulmask-mempress.sh apply <min> <high>"
+      exit 1
+    fi
+
+    cur_high=$(cat "$CG/memory.high")
+    [ "$cur_high" = "max" ] && cur_high_str="max" || cur_high_str="$(_mb "$cur_high")M"
+    printf "memory.high: %s → %dM\n" "$cur_high_str" $(_mb "$bytes")
+    echo "$bytes" > "$CG/memory.high"
+    sleep 1
+    _show
+    _boundary_check "$bytes" ;;
+
+  # ── apply <min> <high>  (set both at once) ───────────────────────────────
+  apply)
+    min_val="${2:?usage: soulmask-mempress.sh apply <min> <high>   e.g. apply 5G 6G}"
+    high_val="${3:?usage: soulmask-mempress.sh apply <min> <high>   e.g. apply 5G 6G}"
+    min_bytes=$(_parse_bytes "$min_val")
+    high_bytes=$(_parse_bytes "$high_val")
+
+    if [ "$min_bytes" -ge "$high_bytes" ]; then
+      printf "STOP: min (%dM) must be < high (%dM)\n" $(_mb "$min_bytes") $(_mb "$high_bytes")
+      exit 1
+    fi
+
+    # Write min first — then high (avoids transient min > high conflict)
+    printf "memory.min:  → %dM\n" $(_mb "$min_bytes")
+    printf "memory.high: → %dM\n" $(_mb "$high_bytes")
+    echo "$min_bytes"  > "$CG/memory.min"
+    echo "$high_bytes" > "$CG/memory.high"
+    sleep 1
+    _show
+
+    # Print persist commands
+    min_g=$(( min_bytes / 1073741824 )); rem=$(( min_bytes % 1073741824 ))
+    [ "$rem" -eq 0 ] && min_str="${min_g}G" || min_str="$(_mb "$min_bytes")M"
+    high_g=$(( high_bytes / 1073741824 )); rem=$(( high_bytes % 1073741824 ))
+    [ "$rem" -eq 0 ] && high_str="${high_g}G" || high_str="$(_mb "$high_bytes")M"
+
+    echo "To persist across restarts:"
+    echo "  sed -i 's/SOULMASK_MIN=.*/SOULMASK_MIN=\"\${SOULMASK_MIN:-${min_str}}\"/' /usr/local/sbin/setup-cgroups.sh"
+    echo "  sed -i 's/SOULMASK_HIGH=.*/SOULMASK_HIGH=\"\${SOULMASK_HIGH:-${high_str}}\"/' /usr/local/sbin/setup-cgroups.sh"
+    echo "  systemctl restart gstammtisch-cgroups" ;;
+
+  # ── down / up  (calibration stepping) ────────────────────────────────────
   down)
     N="${2:-1}"
     cur_high=$(cat "$CG/memory.high")
@@ -93,13 +190,12 @@ case "$CMD" in
     new=$(( aligned - N * STEP ))
     min=$(cat "$CG/memory.min")
     if [ "$new" -le "$min" ]; then
-      echo "STOP: would hit floor (memory.min = $((min/1048576))M)."
-      echo "  To test below $((min/1048576))M, lower the panic floor first:"
-      echo "    soulmask-mempress.sh floor <lower_value>   e.g. floor 3G"
-      echo "  Choose a value well below your expected sweet spot."
+      printf "STOP: would hit floor (%dM).\n" $(_mb "$min")
+      printf "  To test below %dM, lower the floor first:\n" $(_mb "$min")
+      echo "  soulmask-mempress.sh min <lower_value>   e.g. min 3G"
       exit 1
     fi
-    echo "memory.high: $((cur_high/1048576))M → $((new/1048576))M  (−$((N*64))M)"
+    printf "memory.high: %dM → %dM  (−%dM)\n" $(_mb "$cur_high") $(_mb "$new") $(( N * 64 ))
     echo "$new" > "$CG/memory.high"
     sleep 1
     _show
@@ -108,91 +204,59 @@ case "$CMD" in
   up)
     N="${2:-1}"
     cur_high=$(cat "$CG/memory.high")
-    [ "$cur_high" = "max" ] && { echo "already at max"; _show; exit 0; }
+    [ "$cur_high" = "max" ] && { echo "already at max — use 'high <val>' to set a ceiling"; _show; exit 0; }
     new=$(( cur_high + N * STEP ))
-    echo "memory.high: $((cur_high/1048576))M → $((new/1048576))M  (+$((N*64))M)"
+    printf "memory.high: %dM → %dM  (+%dM)\n" $(_mb "$cur_high") $(_mb "$new") $(( N * 64 ))
     echo "$new" > "$CG/memory.high"
     sleep 1
     _show ;;
 
-  set)
-    val="${2:?usage: soulmask-mempress.sh set <value>   e.g. 6000M or 6G}"
-    bytes=$(_parse_bytes "$val")
-    min=$(cat "$CG/memory.min")
-    if [ "$bytes" -le "$min" ]; then
-      echo "STOP: $val ($((bytes/1048576))M) ≤ floor ($((min/1048576))M). Lower the floor first:"
-      echo "  soulmask-mempress.sh floor <lower_value>"
-      exit 1
-    fi
-    echo "memory.high → $val"
-    echo "$bytes" > "$CG/memory.high"
-    sleep 1
-    _show
-    _boundary_check "$bytes" ;;
-
-  floor)
-    # Set memory.min to a lower panic floor to allow deeper memory.high testing.
-    # The floor is a safety net only — the kernel won't push Soulmask below it
-    # even under extreme global pressure.
-    val="${2:?usage: soulmask-mempress.sh floor <value>   e.g. 3G or 3072M}"
-    bytes=$(_parse_bytes "$val")
-    cur_min=$(cat "$CG/memory.min")
-    cur_high=$(cat "$CG/memory.high")
-
-    if [ "$bytes" -ge "$cur_min" ]; then
-      echo "INFO: $val is not lower than current floor ($((cur_min/1048576))M) — no change needed."
-      exit 0
-    fi
-
-    echo "WARNING: lowering memory.min reduces the kernel's RAM guarantee for Soulmask."
-    echo "  This is intentional during sweet-spot testing."
-    echo "  After testing, 'finalize' will set memory.min to the found sweet spot."
-    echo ""
-    echo "memory.min: $((cur_min/1048576))M → $((bytes/1048576))M  (panic floor lowered)"
-    echo "$bytes" > "$CG/memory.min"
-
-    # If memory.high is now at or below the new floor (shouldn't happen, but guard):
-    if [ "$cur_high" != "max" ] && [ "$cur_high" -le "$bytes" ]; then
-      echo "Adjusting memory.high above new floor..."
-      echo $(( bytes + STEP )) > "$CG/memory.high"
-    fi
-    sleep 1
-    _show ;;
-
+  # ── reset  (remove ceiling) ───────────────────────────────────────────────
   reset)
     cur_high=$(cat "$CG/memory.high")
-    [ "$cur_high" = "max" ] && { echo "already at max"; _show; exit 0; }
-    echo "memory.high: $((cur_high/1048576))M → max  (pressure removed, floor unchanged)"
+    [ "$cur_high" = "max" ] && { echo "already at max — no ceiling active"; _show; exit 0; }
+    printf "memory.high: %dM → max  (ceiling removed; floor unchanged)\n" $(_mb "$cur_high")
     echo max > "$CG/memory.high"
-    echo ""
-    echo "Floor (memory.min) is still $(( $(cat "$CG/memory.min") / 1048576 ))M."
-    echo "Run 'finalize' to lock in the sweet spot, or 'floor' to restore the original floor." ;;
+    echo "  Floor (memory.min) still at $(( $(cat "$CG/memory.min") / 1048576 ))M."
+    echo "  Use 'apply <min> <high>' to restore a production ceiling." ;;
 
+  # ── finalize  (lock calibration sweet spot) ──────────────────────────────
   finalize)
-    # Lock in the found sweet spot:
-    #   memory.high → max (no more artificial ceiling)
-    #   memory.min  → current memory.high (the sweet spot we found)
     cur_high=$(cat "$CG/memory.high")
     if [ "$cur_high" = "max" ]; then
       echo "memory.high is already max — nothing to finalize."
-      echo "Set memory.min manually: echo <bytes> > $CG/memory.min"
+      echo "Use 'apply <min> <high>' to set the production band directly."
       exit 1
     fi
-    sweet=$((cur_high / 1048576))
-    echo "Sweet spot: ${sweet}M"
-    echo "  memory.high: ${sweet}M → max"
-    echo "  memory.min:  $(($(cat "$CG/memory.min") / 1048576))M → ${sweet}M"
+    sweet=$(_mb "$cur_high")
+    old_min=$(_mb "$(cat "$CG/memory.min")")
+    printf "Sweet spot: %dM\n" "$sweet"
+    printf "  memory.min:  %dM → %dM\n" "$old_min" "$sweet"
+    printf "  memory.high: %dM → max\n" "$sweet"
     echo "$cur_high" > "$CG/memory.min"
     echo max > "$CG/memory.high"
-    echo ""
-    echo "To persist across restarts, update setup-cgroups.sh:"
-    echo "  sed -i 's/SOULMASK_MIN=.*/SOULMASK_MIN=\"\${SOULMASK_MIN:-${sweet}M}\"/' \\"
-    echo "    /usr/local/sbin/setup-cgroups.sh"
-    echo "  systemctl restart gstammtisch-cgroups"
     sleep 1
-    _show ;;
+    _show
+    echo "To persist across restarts:"
+    echo "  sed -i 's/SOULMASK_MIN=.*/SOULMASK_MIN=\"\${SOULMASK_MIN:-${sweet}M}\"/' /usr/local/sbin/setup-cgroups.sh"
+    echo "  # If you also want a production ceiling (recommended: sweet + 1G):"
+    echo "  sed -i 's/SOULMASK_HIGH=.*/SOULMASK_HIGH=\"\${SOULMASK_HIGH:-$(( sweet + 1024 ))M}\"/' /usr/local/sbin/setup-cgroups.sh"
+    echo "  systemctl restart gstammtisch-cgroups" ;;
 
   *)
-    echo "Usage: $(basename "$0") [status|down [N]|up [N]|set <val>|floor <val>|reset|finalize]"
+    cat <<'USAGE'
+Usage: soulmask-mempress.sh <command> [args]
+
+  status                 show all knobs and zswap stats
+  min <val>              set memory.min (floor)   e.g. min 5G
+  high <val>             set memory.high (ceiling) e.g. high 6G
+  apply <min> <high>     set both at once          e.g. apply 5G 6G
+  down [N]               step ceiling down N×64M (calibration)
+  up [N]                 step ceiling up N×64M
+  reset                  remove ceiling (high → max)
+  finalize               lock calibration sweet spot
+
+Aliases: 'set' = 'high', 'floor' = 'min'
+USAGE
     exit 1 ;;
 esac

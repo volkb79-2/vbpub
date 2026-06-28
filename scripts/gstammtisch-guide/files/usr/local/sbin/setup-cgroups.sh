@@ -28,9 +28,9 @@ BENCH_WBPS="${BENCH_WBPS:-31457280}"
 BENCH_RIOPS="${BENCH_RIOPS:-100}"
 BENCH_WIOPS="${BENCH_WIOPS:-400}"
 
-SOULMASK_MIN="${SOULMASK_MIN:-6144M}" # calibrated 2026-06-27: live test, 3 players; natural hot set = ~6G (game self-limits; won't grow beyond what it needs even with memory.high=8G); scale up with player count
+SOULMASK_MIN="${SOULMASK_MIN:-5G}"    # calibrated 2026-06-27: 3-player hot set ~6G; 5G floor allows brief zswap under multi-tenant pressure
 SOULMASK_LOW="${SOULMASK_LOW:-12G}"
-SOULMASK_HIGH="${SOULMASK_HIGH:-max}" # max = no ceiling in normal operation
+SOULMASK_HIGH="${SOULMASK_HIGH:-6G}"  # 6G ceiling keeps soulmask from consuming ramdisk under Docker build pressure; area-load spikes peak ~6G so ceiling is tight but not harmful
 
 # Discover block device major:minor for the pterodactyl volume directory.
 # io.max needs the actual block device, not the filesystem.
@@ -73,13 +73,23 @@ if [ -z "$SCOPE" ] || [ ! -d "$SCOPE" ]; then
 fi
 
 log "Soulmask cgroup: $SCOPE"
-echo "$SOULMASK_HIGH" > "$SCOPE/memory.high"            2>/dev/null && log "memory.high=$SOULMASK_HIGH"
-echo "$SOULMASK_LOW"  > "$SCOPE/memory.low"             2>/dev/null && log "memory.low=$SOULMASK_LOW"
-echo "$SOULMASK_MIN"  > "$SCOPE/memory.min"             2>/dev/null && log "memory.min=$SOULMASK_MIN"
-echo 0                > "$SCOPE/memory.zswap.writeback" 2>/dev/null && log "memory.zswap.writeback=0 (keep pages in pool)"
-echo "default 4950"   > "$SCOPE/io.weight"              2>/dev/null && log "io.weight=4950"
-echo "default 1000"   > "$SCOPE/io.bfq.weight"          2>/dev/null && log "io.bfq.weight=1000 (BFQ max; range 1-1000)"
-echo 800              > "$SCOPE/cpu.weight"             2>/dev/null && log "cpu.weight=800"
+_cg_write() {
+  local file="$1" val="$2" label="$3"
+  if echo "$val" > "$file" 2>/tmp/cg-write-err; then
+    log "  $label = $val"
+  else
+    log "  WARN: $label write failed: $(cat /tmp/cg-write-err)"
+  fi
+}
+_cg_write "$SCOPE/memory.high"            "$SOULMASK_HIGH" "memory.high"
+_cg_write "$SCOPE/memory.low"             "$SOULMASK_LOW"  "memory.low"
+_cg_write "$SCOPE/memory.min"             "$SOULMASK_MIN"  "memory.min"
+_cg_write "$SCOPE/memory.zswap.writeback" "0"              "memory.zswap.writeback"
+_cg_write "$SCOPE/io.weight"              "default 4950"   "io.weight"
+_cg_write "$SCOPE/io.bfq.weight"          "default 1000"   "io.bfq.weight"
+_cg_write "$SCOPE/cpu.weight"             "800"            "cpu.weight"
+# Verify what was actually written (detects if Wings overrode our values)
+log "  verify: min=$(cat "$SCOPE/memory.min" | awk '{printf "%dM",$1/1048576}') high=$(cat "$SCOPE/memory.high" | awk 'BEGIN{m=1073741824} $0=="max"{print "max";exit} {printf "%dG",$1/m}')"
 
 # --- throttle bench containers (devcontainer + test-runner) ---
 # docker-repack runs inside the devcontainer; test-runner is a separate bench container.
