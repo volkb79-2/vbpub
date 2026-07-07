@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -56,6 +57,8 @@ TOOL_VERSION_DISPLAY_ORDER = [
 ]
 CIU_VERSION_FROM_WHEEL_RE = re.compile(r"^ciu-(?P<version>.+)-py[0-9].*\.whl$")
 SYSTEM_PACKAGE_EXTRAS = ["postgresql-client", "redis-tools"]
+TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504}
+DEFAULT_RETRIES = 3
 
 
 def get_image_label(image: str, label: str) -> str:
@@ -77,6 +80,45 @@ def get_image_label(image: str, label: str) -> str:
     return result.stdout.strip()
 
 
+def _urlopen_with_retry(
+    req: urllib.request.Request,
+    *,
+    timeout: int,
+    label: str,
+) -> object:
+    """Open a URL with a small transient retry budget."""
+    last_exc: Exception | None = None
+    for attempt in range(1, DEFAULT_RETRIES + 1):
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if exc.code in TRANSIENT_HTTP_CODES and attempt < DEFAULT_RETRIES:
+                delay = min(2 ** (attempt - 1), 5)
+                print(
+                    f"[WARN] Transient HTTP {exc.code} for {label}; retrying in {delay}s "
+                    f"({attempt}/{DEFAULT_RETRIES})",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                continue
+            raise
+        except urllib.error.URLError as exc:
+            last_exc = exc
+            if attempt < DEFAULT_RETRIES:
+                delay = min(2 ** (attempt - 1), 5)
+                print(
+                    f"[WARN] Network error for {label}: {exc.reason}; retrying in {delay}s "
+                    f"({attempt}/{DEFAULT_RETRIES})",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                continue
+            raise
+    assert last_exc is not None
+    raise last_exc
+
+
 def pull_fresh(image: str) -> None:
     """Pull image fresh from registry.
     
@@ -93,7 +135,8 @@ def pull_fresh(image: str) -> None:
 
 def fetch_registry_tags() -> set[str]:
     """Fetch available devcontainers/python tags from MCR."""
-    with urllib.request.urlopen(REGISTRY_URL, timeout=20) as response:
+    req = urllib.request.Request(REGISTRY_URL, method="GET")
+    with _urlopen_with_retry(req, timeout=20, label="MCR registry tags") as response:
         payload = json.loads(response.read().decode("utf-8"))
 
     tags = payload.get("tags")
@@ -413,7 +456,7 @@ def github_api_headers() -> dict[str, str]:
 def github_api_json(url: str) -> dict:
     req = urllib.request.Request(url, headers=github_api_headers(), method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=20) as response:
+        with _urlopen_with_retry(req, timeout=20, label=f"GitHub API {url}") as response:
             payload = json.loads(response.read().decode("utf-8"))
             if isinstance(payload, dict):
                 return payload
@@ -427,7 +470,7 @@ def github_release_tag_exists(owner: str, repo: str, tag: str) -> bool:
     url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"
     req = urllib.request.Request(url, headers=github_api_headers(), method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=20):
+        with _urlopen_with_retry(req, timeout=20, label=f"GitHub release tag {tag}") as _:
             return True
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -459,7 +502,7 @@ def derive_ciu_version_from_asset_name(asset_name: str) -> str:
 def fetch_url_bytes(url: str, *, timeout: int = 20) -> bytes:
     """Fetch raw bytes from a URL (no auth headers)."""
     req = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as response:
+    with _urlopen_with_retry(req, timeout=timeout, label=url) as response:
         return response.read()
 
 
@@ -522,7 +565,7 @@ def github_api_list(url: str) -> list:
     """Fetch a JSON array from a GitHub API endpoint."""
     req = urllib.request.Request(url, headers=github_api_headers(), method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=20) as response:
+        with _urlopen_with_retry(req, timeout=20, label=f"GitHub API {url}") as response:
             payload = json.loads(response.read().decode("utf-8"))
             if isinstance(payload, list):
                 return payload

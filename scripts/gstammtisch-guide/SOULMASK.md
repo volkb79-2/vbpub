@@ -71,14 +71,14 @@ Switching to BFQ immediately activates the existing `io.weight` values AND adds 
 | Container | `io.weight` | `io.bfq.weight` | `io.max` | `cpu.weight` |
 |---|---|---|---|---|
 | Soulmask | 4950 | **1000** (BFQ max) | none | **800** |
-| devcontainer (docker-repack) | 1 | **1** (BFQ min) | 100r/400w IOPS, 30 MB/s | 100 |
-| test-runner | 1 | **1** (BFQ min) | 100r/400w IOPS, 30 MB/s | 100 |
+| devcontainer (docker-repack) | 1 | **1** (BFQ min) | 80% of baseline RIOPS_MAX | 100 |
+| test-runner | 1 | **1** (BFQ min) | 2/3 of baseline RIOPS_MAX, 30 MB/s | 100 |
 
 Effective I/O ratio (BFQ): **1000:1**. Bench gets CPU slices on the disk head only when Soulmask's queue is idle.
 
-No `memory.high` on bench containers — the devcontainer is also the VSCode workspace, and capping its total cgroup memory kills the IDE. BFQ priority + `io.max` is the right lever without side-effects.
+No `memory.high` on bench containers — the devcontainer is also the VSCode workspace, and capping its total cgroup memory kills the IDE. BFQ priority stays on the devcontainer; its `io.max` cap is set to 80% of the measured baseline so release work remains responsive. Test-runner and buildkit stay at 2/3 of baseline.
 
-The `io.max` hard caps are belt-and-suspenders: they cut the benchmark's 709 r/s burst (observed without caps) to ≤100 IOPS before it even reaches the BFQ scheduler, ensuring the device queue depth stays clean for Soulmask's periodic DB saves.
+The `io.max` hard caps are belt-and-suspenders on test-runner/buildkit: they cut the benchmark's 709 r/s burst (observed without caps) to a lower ceiling before it even reaches the BFQ scheduler, ensuring the device queue depth stays clean for Soulmask's periodic DB saves.
 
 ### Verifying live state
 

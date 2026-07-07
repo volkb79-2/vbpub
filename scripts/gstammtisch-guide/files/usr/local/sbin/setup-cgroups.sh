@@ -11,8 +11,11 @@
 #   - pak slice            : memory.zswap.max=0 (pak is zstd-incompressible, 1.006× — zswap
 #                            wastes CPU+RAM on it; cold pak goes straight to disk)
 #   - dev-workloads.slice  : memory.zswap.writeback=1 (cold dev pages may page to disk)
-#   - bench containers     : io.weight=1, io.bfq.weight=1, io.max hard IOPS/bandwidth cap
-#                            (devcontainer runs docker-repack; test-runner; buildx_buildkit_*)
+#   - bench containers     : test-runner/buildx_buildkit_* get io.weight=1,
+#                            io.bfq.weight=1, io.max hard IOPS/bandwidth cap
+#                            at 2/3 of the measured baseline RIOPS_MAX
+#   - devcontainer         : io.weight=1, io.bfq.weight=1, io.max at 80% of
+#                            the measured baseline RIOPS_MAX
 # Idempotent; tolerant if containers aren't running yet.
 #
 # N-instance (2026-07-07): iterates EVERY running Soulmask (WSServer) container,
@@ -66,6 +69,8 @@ BENCH_WBPS="${BENCH_WBPS:-31457280}"
 # need to test r-iops on system and use maybe 2/3
 BENCH_RIOPS_ENV="${BENCH_RIOPS:-}"      # remember if caller set it explicitly
 BENCH_RIOPS="${BENCH_RIOPS:-200}"
+DEVCONTAINER_RIOPS_ENV="${DEVCONTAINER_RIOPS:-}"
+DEVCONTAINER_RIOPS="${DEVCONTAINER_RIOPS:-$BENCH_RIOPS}"
 BENCH_WIOPS="${BENCH_WIOPS:-400}"
 
 # If a measured disk baseline exists (io-baseline.sh, fio randread), derive the bench
@@ -76,7 +81,10 @@ if [ -z "$BENCH_RIOPS_ENV" ] && [ -f "$IO_BASELINE" ]; then
   . "$IO_BASELINE" 2>/dev/null || true
   if [ -n "${RIOPS_MAX:-}" ]; then
     BENCH_RIOPS=$(( RIOPS_MAX * 2 / 3 ))
-    log "io-baseline: RIOPS_MAX=${RIOPS_MAX} → BENCH_RIOPS=${BENCH_RIOPS}"
+    if [ -z "$DEVCONTAINER_RIOPS_ENV" ]; then
+      DEVCONTAINER_RIOPS=$(( RIOPS_MAX * 4 / 5 ))
+    fi
+    log "io-baseline: RIOPS_MAX=${RIOPS_MAX} → BENCH_RIOPS=${BENCH_RIOPS} devcontainer=${DEVCONTAINER_RIOPS}"
   fi
 fi
 
@@ -248,13 +256,13 @@ systemctl set-property soulmask.slice MemoryMin="$SOULMASK_SLICE_MIN" 2>/dev/nul
   && log "soulmask.slice MemoryMin=$SOULMASK_SLICE_MIN (protection chain for pak floor)" \
   || log "WARN: set-property soulmask.slice MemoryMin failed"
 
-# --- throttle bench containers (devcontainer + test-runner + buildkit) ---
-# docker-repack runs inside the devcontainer; test-runner is a separate bench
-# container; buildx_buildkit_* runs all buildx bake / cmru builds.
-# (writeback stays at the default 1 — cold bench pages may page to disk.)
+# --- throttle bench containers (test-runner + buildkit); devcontainer gets a softer cap ---
+# test-runner is a separate bench container; buildx_buildkit_* runs all buildx bake / cmru builds.
+# The devcontainer itself still gets BFQ/IO weight 1, with a slightly higher
+# io.max ceiling (80% of baseline) so release/build work stays responsive.
 # We identify by image name patterns rather than fixed IDs since those change on restart.
 _apply_bench_limits() {
-  local cid="$1" label="$2"
+  local cid="$1" label="$2" mode="${3:-capped}" riops_limit="${4:-$BENCH_RIOPS}" tmp_io_max
   local pid scope unit
   pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || true)
   [ -z "$pid" ] && return
@@ -268,15 +276,15 @@ _apply_bench_limits() {
   # set-property so a daemon-reload re-applies instead of wiping (see game section)
   if [ -n "$IO_DEV_PATH" ] && systemctl set-property --runtime "$unit" IOWeight=1 \
        "IOReadBandwidthMax=$IO_DEV_PATH $BENCH_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $BENCH_WBPS" \
-       "IOReadIOPSMax=$IO_DEV_PATH $BENCH_RIOPS" "IOWriteIOPSMax=$IO_DEV_PATH $BENCH_WIOPS" 2>/dev/null; then
-    log "$label ($cid): set-property io.weight=1, io.max=${BENCH_RIOPS}r/${BENCH_WIOPS}w IOPS $((BENCH_RBPS/1048576))MB/s"
+       "IOReadIOPSMax=$IO_DEV_PATH $riops_limit" "IOWriteIOPSMax=$IO_DEV_PATH $BENCH_WIOPS" 2>/dev/null; then
+    log "$label ($cid): set-property io.weight=1, io.max=${riops_limit}r/${BENCH_WIOPS}w IOPS $((BENCH_RBPS/1048576))MB/s"
   else
     echo "default 1" > "$scope/io.weight"     2>/dev/null
     if [ -n "$IO_DEV" ]; then
-      echo "$IO_DEV rbps=${BENCH_RBPS} wbps=${BENCH_WBPS} riops=${BENCH_RIOPS} wiops=${BENCH_WIOPS}" \
+      echo "$IO_DEV rbps=${BENCH_RBPS} wbps=${BENCH_WBPS} riops=${riops_limit} wiops=${BENCH_WIOPS}" \
         > "$scope/io.max" 2>/dev/null
     fi
-    log "$label ($cid): raw-write io.weight=1, io.max=${BENCH_RIOPS}r/${BENCH_WIOPS}w IOPS (will NOT survive daemon-reload)"
+    log "$label ($cid): raw-write io.weight=1, io.max=${riops_limit}r/${BENCH_WIOPS}w IOPS (will NOT survive daemon-reload)"
   fi
   echo "default 1" > "$scope/io.bfq.weight" 2>/dev/null   # no systemd property; survives reload
 }
@@ -288,7 +296,7 @@ for c in $(docker ps -q 2>/dev/null); do
     *test-runner*) _apply_bench_limits "$c" "test-runner" ;;
   esac
   case "$name" in
-    *devcontainer*|*dstdns-devcontainer*) _apply_bench_limits "$c" "devcontainer" ;;
+    *devcontainer*|*dstdns-devcontainer*) _apply_bench_limits "$c" "devcontainer" "capped" "$DEVCONTAINER_RIOPS" ;;
     buildx_buildkit_*)                    _apply_bench_limits "$c" "buildkit" ;;
   esac
 done

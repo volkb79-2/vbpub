@@ -161,6 +161,37 @@ def _download(url: str, destination: Path, *, headers: dict[str, str] | None = N
     raise StageError(f"Download failed for {url}: {last_exc}")
 
 
+def _urlopen_with_retry(
+    req: urllib.request.Request,
+    *,
+    timeout: int,
+    label: str,
+) -> object:
+    """Open a URL with the same transient retry policy as downloads."""
+    last_exc: Exception | None = None
+    for attempt in range(1, DEFAULT_RETRIES + 1):
+        try:
+            return urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if exc.code in TRANSIENT_HTTP_CODES and attempt < DEFAULT_RETRIES:
+                delay = min(2 ** (attempt - 1), 5)
+                _log(f"Transient HTTP {exc.code} for {label}; retrying in {delay}s ({attempt}/{DEFAULT_RETRIES})")
+                time.sleep(delay)
+                continue
+            raise StageError(f"{label} failed: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            last_exc = exc
+            if attempt < DEFAULT_RETRIES:
+                delay = min(2 ** (attempt - 1), 5)
+                _log(f"Network error for {label}: {exc.reason}; retrying in {delay}s ({attempt}/{DEFAULT_RETRIES})")
+                time.sleep(delay)
+                continue
+            raise StageError(f"{label} network error: {exc.reason}") from exc
+
+    raise StageError(f"{label} failed: {last_exc}")
+
+
 def _download_first_available(destination: Path, urls: Iterable[str]) -> tuple[str, str]:
     errors: list[str] = []
     for url in urls:
@@ -202,7 +233,7 @@ def _resolve_latest_release(repo: str) -> str:
     latest_url = f"https://github.com/{repo}/releases/latest"
     try:
         req = urllib.request.Request(latest_url, headers=_request_headers(), method="GET")
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with _urlopen_with_retry(req, timeout=30, label=f"{repo} latest release lookup") as response:
             redirect_target = response.geturl()
         path = urllib.parse.urlparse(redirect_target).path
         candidate = Path(path).name.strip().removeprefix("v")
