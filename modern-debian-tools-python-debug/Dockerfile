@@ -145,8 +145,11 @@ RUN set -euo pipefail; \
 RUN set -euo pipefail; \
     STAGE_DIR="/tmp/tool-artifacts-staging"; \
     DOWNLOADS_DIR="${STAGE_DIR}/downloads"; \
-    : "${NVIM_VER:?Missing NVIM_VER build arg}"; \
-    : "${NVCHAD_VER:?Missing NVCHAD_VER build arg}"; \
+    if [ -f "${STAGE_DIR}/tool-versions.env" ]; then \
+        set -a; . "${STAGE_DIR}/tool-versions.env"; set +a; \
+    fi; \
+    : "${NVIM_VER:?Missing NVIM_VER build arg or staged tool version}"; \
+    : "${NVCHAD_VER:?Missing NVCHAD_VER build arg or staged tool version}"; \
     nvim_archive="${DOWNLOADS_DIR}/nvim-${NVIM_VER}.tar.gz"; \
     nvchad_archive="${DOWNLOADS_DIR}/nvchad-${NVCHAD_VER}.tar.gz"; \
     if [ ! -f "${nvim_archive}" ]; then \
