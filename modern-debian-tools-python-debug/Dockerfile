@@ -141,6 +141,8 @@ RUN set -euo pipefail; \
     npm --version; \
     rm -rf /var/lib/apt/lists/*
 
+COPY build/tool-artifacts-staging /tmp/tool-artifacts-staging
+
 # Neovim and NvChad are shipped from upstream GitHub releases/tags.
 RUN set -euo pipefail; \
     STAGE_DIR="/tmp/tool-artifacts-staging"; \
@@ -243,8 +245,6 @@ RUN set -euo pipefail; \
 
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
-
-COPY build/tool-artifacts-staging /tmp/tool-artifacts-staging
 
 # If PACKAGE_MANIFEST_SOURCE was provided but not present in the build context,
 # try downloading it from the documented blob URL (OCI_DOCUMENTATION).
