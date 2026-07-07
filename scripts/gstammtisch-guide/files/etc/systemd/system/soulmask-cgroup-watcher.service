@@ -1,5 +1,6 @@
 [Unit]
-Description=Wait for Soulmask RCON ready then apply cgroup knobs
+Description=Reconcile loop: apply cgroup knobs to every ready Soulmask instance (game-log readiness, not RCON)
+Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK.md
 After=docker.service
 Wants=docker.service
 

@@ -13,6 +13,8 @@ host and current (June 2026) kernel facts.
 | [OBSERVATION.md](OBSERVATION.md) | Environment observation & interpretation (`/sys/module/zswap`, `/sys/kernel/debug/zswap`, disk class/TRIM, PSI, cgroup, KSM, DAMON) |
 | [SOULMASK.md](SOULMASK.md) | Game-server specifics: protection, orderly shutdown, RCON |
 | [CGROUP-MONITORING.md](CGROUP-MONITORING.md) | Every cgroup v2 metric explained through live Soulmask data: memory.stat field-by-field, zswap math, swapcached/compression-ratio traps, PSI, CPU/IO, pak-slice decomposition, monitor column guide |
+| [MEASUREMENTS.md](MEASUREMENTS.md) | Manual measurement procedures: refault-source split (zswap vs disk), pak hot set (vmtouch), login-latency gate for writeback, file-cache hotness + swappiness validation, io-baseline (fio), KSM estimate |
+| [plan-host-resource-governance.md](plan-host-resource-governance.md) | Living plan: tiered slices, decisions log (§9), measurement plan (§10) |
 
 ## File manifest
 ```
@@ -25,15 +27,18 @@ gstammtisch-guide/
 │   ├── etc/sysctl.d/99-gstammtisch-memory.conf
 │   ├── etc/tmpfiles.d/thp.conf              # THP=madvise
 │   ├── etc/tmpfiles.d/ksm.conf              # KSM (optional)
+│   ├── etc/gstammtisch/instance-defaults.env      # per-instance defaults (N-instance, see SOULMASK.md §9b)
+│   ├── etc/gstammtisch/instances.d/*.env(.example) # per-instance overrides (one file per server UUID)
 │   ├── etc/systemd/system/zswap-config.service        # zstd post-boot fix
 │   ├── etc/systemd/system/dev-workloads.slice         # dev limits + oomd
 │   ├── etc/systemd/system/gstammtisch-cgroups.service # extra cgroup knobs
 │   ├── etc/systemd/system/soulmask-graceful-stop.service
-│   ├── etc/systemd/system/soulmask-pak-ramdisk.service  # pak tmpfs (opt-in, §2c)
+│   ├── etc/systemd/system/soulmask-pak-ramdisk.service  # shared pak tmpfs (opt-in per instance, §2c/§9b)
 │   ├── etc/systemd/system/soulmask-paks.slice           # pak cgroup: writeback=yes, memory.min=150M
 │   ├── etc/systemd/oomd.conf.d/gstammtisch.conf
-│   └── usr/local/sbin/setup-cgroups.sh  soulmask-shutdown.sh
+│   └── usr/local/sbin/setup-cgroups.sh  soulmask-shutdown.sh  soulmask-instance-lib.sh
 │                         soulmask-pak-ramdisk-setup.sh  soulmask-pak-ramdisk-toggle.sh
+│                         soulmask-pak-ramdisk-teardown.sh
 │                         soulmask-zswap-monitor.sh  soulmask-mempress.sh
 │                         soulmask-pak-mempress.sh  soulmask-startup-cgroup.sh
 └── scripts/
@@ -42,6 +47,10 @@ gstammtisch-guide/
     ├── exec-soulmask-rcon.sh      # RCON admin helper
     └── swap-health.sh             # one-glance monitoring
 ```
+
+N-instance operations (config layout, watcher/shutdown/pak-ramdisk behavior
+across several running Soulmask servers, how to add instance #2): see
+[SOULMASK.md §9b "Multi-instance operations"](SOULMASK.md#9b-multi-instance-operations-implementation-2026-07-07).
 
 ## Runbook (on the host, as root)
 

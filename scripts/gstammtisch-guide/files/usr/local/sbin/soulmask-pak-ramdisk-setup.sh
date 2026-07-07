@@ -1,106 +1,166 @@
 #!/usr/bin/env bash
-# Populate a tmpfs with Soulmask's pak file and bind-mount it over the on-disk
-# Paks directory before Docker/Wings starts. The container sees identical paths.
+# Populate a SHARED tmpfs with Soulmask's pak file and bind-mount it into
+# EVERY configured instance's Paks directory that opts in via PAK_RAMDISK=1
+# (/etc/gstammtisch/instances.d/<uuid>.env). One tmpfs, one pak copy,
+# bind-mounted N times: the pak file is byte-identical across instances —
+# every Soulmask instance on this host runs the same Linux dedicated-server
+# depot (appid 3017300, depot 3017301, no separate DLC depot; verified —
+# SOULMASK.md §9). The container sees identical paths either way.
 #
-# Why: pak files as *file cache* are silently freed under memory pressure — they
-# are "clean" (re-readable from disk), so the kernel just drops them without going
-# through zswap. Next access = disk read (1–10 ms). On tmpfs they become *shmem*
-# (anonymous-backed): the kernel CANNOT silently free them; they must go through
-# zswap first. Warm pak pages stay in zswap instead of being freed to nowhere.
-# Worst-case = zswap decompress (~3µs) vs disk re-read (~10 ms).
-# On a busy dev host with Docker builds competing for RAM, this guarantee is what
-# prevents 3-second game stalls: the kernel cannot evict warm pak pages silently.
+# Why a ramdisk at all: pak files as *file cache* are silently freed under
+# memory pressure — they are "clean" (re-readable from disk), so the kernel
+# just drops them without going through zswap. Next access = disk read
+# (1–10 ms). On tmpfs they become *shmem* (anonymous-backed): the kernel
+# CANNOT silently free them; they must go through zswap first. Warm pak
+# pages stay in zswap instead of being freed to nowhere. Worst-case = zswap
+# decompress (~3µs) vs disk re-read (~10 ms).
+# On a busy dev host with Docker builds competing for RAM, this guarantee is
+# what prevents multi-second game stalls: the kernel cannot evict warm pak
+# pages silently.
 #
-# Note: pages charged to root cgroup (cp ran as root). memory.min on Soulmask's
-# cgroup does NOT protect pak pages. Use soulmask-paks.slice for independent
-# control (writeback=1, low memory.min — see SOULMASK.md §2c).
+# Note: pages charged to root cgroup (cp ran as root). memory.min on a
+# Soulmask instance's own cgroup does NOT protect pak pages. Use
+# soulmask-paks.slice for independent control (writeback=yes, low
+# memory.min — see SOULMASK.md §2c).
 #
-# Invoked by soulmask-pak-ramdisk.service (Before=docker.service).
-# Safe to run again: idempotent if tmpfs is already mounted.
+# Invoked by soulmask-pak-ramdisk.service (Before=docker.service) — runs
+# BEFORE Docker/Wings starts, so container volume dirs may not exist yet for
+# instances that haven't been installed once. Those are skipped with a log
+# line and picked up on a later run once Wings has created them.
 #
-# Volume discovery order (first match wins):
-#   1. SOULMASK_PAK_DIR env var
-#   2. /etc/soulmask-ramdisk.conf  (SOULMASK_PAK_DIR= or SOULMASK_VOLUME_UUID=)
-#   3. /run/soulmask-pak-ramdisk.state  (saved from a prior run)
-#   4. filesystem scan: find WS-LinuxServer.pak under /var/lib/pterodactyl/volumes
-#      (uses -xdev to skip tmpfs overlays so a live ramdisk doesn't confuse the scan)
+# N-instance target discovery (2026-07-07): enumerates
+# /etc/gstammtisch/instances.d/*.env (NOT `docker ps` / a single
+# SOULMASK_PAK_DIR / /etc/soulmask-ramdisk.conf as before — this runs before
+# docker.service so no container exists to inspect yet, and multiple targets
+# need tracking). PAK_RAMDISK=1 in an instance's override file opts its
+# <volume>/WS/Content/Paks directory in.
+#
+# Safe to run again: idempotent — already-mounted binds and an
+# already-mounted tmpfs are left alone; only missing ones are added.
 set -euo pipefail
 
+# shellcheck source=/usr/local/sbin/soulmask-instance-lib.sh
+LIB="${LIB:-/usr/local/sbin/soulmask-instance-lib.sh}"
+if [ -f "$LIB" ]; then
+  . "$LIB"
+else
+  echo "[pak-ramdisk] FATAL: $LIB not found (expected alongside this script)"; exit 1
+fi
+
 RAMDISK="/mnt/soulmask-paks"
-TMPFS_SIZE="${SOULMASK_RAMDISK_SIZE:-3G}"   # headroom above current 1.7G pak; raise for updates
+TMPFS_SIZE="${SOULMASK_RAMDISK_SIZE:-3G}"   # headroom above current ~1.7G pak; raise for game updates
 STATE_FILE="/run/soulmask-pak-ramdisk.state"
+INSTANCES_DIR="${GSTAMMTISCH_ETC:-/etc/gstammtisch}/instances.d"
 
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 log() { echo "[pak-ramdisk] $*"; }
 run() { if [ $DRY_RUN -eq 1 ]; then echo "  DRY-RUN: $*"; else "$@"; fi; }
 
-# --- discover PAK_DIR ---
-_discover_pak_dir() {
-  # 1. Explicit env
-  if [ -n "${SOULMASK_PAK_DIR:-}" ]; then
-    echo "$SOULMASK_PAK_DIR"; return 0
-  fi
-  # 2. Config file
-  if [ -f /etc/soulmask-ramdisk.conf ]; then
-    # shellcheck disable=SC1091
-    . /etc/soulmask-ramdisk.conf
-    if [ -n "${SOULMASK_PAK_DIR:-}" ]; then
-      echo "$SOULMASK_PAK_DIR"; return 0
-    fi
-    if [ -n "${SOULMASK_VOLUME_UUID:-}" ]; then
-      echo "/var/lib/pterodactyl/volumes/${SOULMASK_VOLUME_UUID}/WS/Content/Paks"; return 0
-    fi
-  fi
-  # 3. State file from a previous successful setup
-  if [ -f "$STATE_FILE" ]; then
-    # shellcheck disable=SC1090
-    . "$STATE_FILE"
-    if [ -n "${PAK_DIR:-}" ] && [ -d "$PAK_DIR" ]; then
-      echo "$PAK_DIR"; return 0
-    fi
-  fi
-  # 4. Filesystem scan: -xdev stops at mount boundaries so a live tmpfs overlay
-  #    on PAK_DIR doesn't shadow the real on-disk path we're trying to find.
-  local hit
-  hit=$(find /var/lib/pterodactyl/volumes -xdev -maxdepth 7 \
-    -name 'WS-LinuxServer.pak' -print -quit 2>/dev/null || true)
-  if [ -n "$hit" ]; then
-    dirname "$hit"; return 0
-  fi
-  return 1
+_parse_bytes() {
+  local v="$1"
+  case "$v" in
+    *G) echo $(( ${v%G} * 1073741824 )) ;;
+    *M) echo $(( ${v%M} * 1048576 )) ;;
+    *)  echo "$v" ;;
+  esac
 }
 
-PAK_DIR=$(_discover_pak_dir) || {
-  log "ERROR: cannot locate WS-LinuxServer.pak."
-  log "  Set SOULMASK_PAK_DIR or SOULMASK_VOLUME_UUID in /etc/soulmask-ramdisk.conf."
-  log "  Example: echo 'SOULMASK_VOLUME_UUID=<uuid>' > /etc/soulmask-ramdisk.conf"
-  exit 1
-}
-log "pak directory: $PAK_DIR"
+# --- collect opted-in instances -------------------------------------------
+declare -a TARGETS=()
+shopt -s nullglob
+for f in "$INSTANCES_DIR"/*.env; do
+  uuid=$(basename "$f" .env)
+  soulmask_load_instance_env "$uuid"
+  [ "$PAK_RAMDISK" = "1" ] || continue
+  pak_dir="/var/lib/pterodactyl/volumes/${uuid}/WS/Content/Paks"
+  if [ ! -d "$pak_dir" ]; then
+    log "instance $uuid: PAK_RAMDISK=1 but volume not found yet ($pak_dir) — skipping (will retry next run)"
+    continue
+  fi
+  TARGETS+=("$pak_dir")
+  log "instance $uuid: pak bind target $pak_dir"
+done
+shopt -u nullglob
 
-# Already fully mounted — nothing to do
-if mountpoint -q "$RAMDISK" 2>/dev/null && mountpoint -q "$PAK_DIR" 2>/dev/null; then
-  log "ramdisk already active at $RAMDISK → $PAK_DIR — nothing to do"
+if [ "${#TARGETS[@]}" -eq 0 ]; then
+  log "no instance opts into PAK_RAMDISK=1 (or none of their volumes exist yet) — nothing to do"
   exit 0
 fi
 
-log "creating tmpfs ($TMPFS_SIZE) at $RAMDISK"
-run mkdir -p "$RAMDISK"
-run mount -t tmpfs -o "size=${TMPFS_SIZE}" tmpfs "$RAMDISK"
+# --- pick a source pak copy: first target that already has a .pak file ----
+SRC_DIR=""
+for t in "${TARGETS[@]}"; do
+  if find "$t" -maxdepth 1 -name '*.pak' -print -quit 2>/dev/null | grep -q .; then
+    SRC_DIR="$t"
+    break
+  fi
+done
+if [ -z "$SRC_DIR" ]; then
+  log "ERROR: none of the opted-in target directories contain a .pak file yet."
+  log "  ${TARGETS[*]}"
+  exit 1
+fi
+log "source pak copy: $SRC_DIR"
 
-log "copying pak files from $PAK_DIR → $RAMDISK"
-# Copy all UE4 asset package types: .pak, .sig (signature), .utoc/.ucas (IO store, UE5+)
-run bash -c "find '$PAK_DIR' -maxdepth 1 \( -name '*.pak' -o -name '*.sig' -o -name '*.utoc' -o -name '*.ucas' \) \
-  -exec cp -v {} '$RAMDISK/' \;"
+# --- size check: pak payload vs tmpfs size ---------------------------------
+mapfile -t PAK_FILES < <(find "$SRC_DIR" -maxdepth 1 \( -name '*.pak' -o -name '*.sig' -o -name '*.utoc' -o -name '*.ucas' \) 2>/dev/null)
+PAK_BYTES=0
+if [ "${#PAK_FILES[@]}" -gt 0 ]; then
+  PAK_BYTES=$(du -cb "${PAK_FILES[@]}" 2>/dev/null | tail -n1 | awk '{print $1}') || true
+fi
+PAK_BYTES="${PAK_BYTES:-0}"
+TMPFS_BYTES=$(_parse_bytes "$TMPFS_SIZE")
+if [ "$PAK_BYTES" -gt 0 ] && [ "$TMPFS_BYTES" -gt 0 ] && [ "$PAK_BYTES" -ge "$TMPFS_BYTES" ]; then
+  log "ERROR: pak payload ($(( PAK_BYTES/1048576 ))M) >= tmpfs size ($(( TMPFS_BYTES/1048576 ))M)."
+  log "  Raise SOULMASK_RAMDISK_SIZE (env) before retrying."
+  exit 1
+fi
+log "pak payload: $(( PAK_BYTES/1048576 ))M ; tmpfs size: $TMPFS_SIZE (headroom: $(( (TMPFS_BYTES-PAK_BYTES)/1048576 ))M)"
 
-log "bind mounting $RAMDISK → $PAK_DIR"
-run mount --bind "$RAMDISK" "$PAK_DIR"
+# --- tmpfs -------------------------------------------------------------------
+if ! mountpoint -q "$RAMDISK" 2>/dev/null; then
+  log "creating tmpfs ($TMPFS_SIZE) at $RAMDISK"
+  run mkdir -p "$RAMDISK"
+  run mount -t tmpfs -o "size=${TMPFS_SIZE}" tmpfs "$RAMDISK"
+
+  log "copying pak files from $SRC_DIR → $RAMDISK"
+  # Copy all UE4 asset package types: .pak, .sig (signature), .utoc/.ucas (IO store, UE5+)
+  run bash -c "find '$SRC_DIR' -maxdepth 1 \( -name '*.pak' -o -name '*.sig' -o -name '*.utoc' -o -name '*.ucas' \) \
+    -exec cp -v {} '$RAMDISK/' \;"
+  # Preserve the container user's ownership (cp as root produces root:root,
+  # which blocks in-container steam updates writing through the bind).
+  PAK_OWNER=$(stat -c '%u:%g' "$SRC_DIR" 2>/dev/null || echo "")
+  [ -n "$PAK_OWNER" ] && run chown -R "$PAK_OWNER" "$RAMDISK"
+else
+  log "tmpfs already mounted at $RAMDISK — reusing existing pak copy"
+fi
+
+# --- bind-mount into every target that isn't already bound ------------------
+BOUND=()
+for t in "${TARGETS[@]}"; do
+  if mountpoint -q "$t" 2>/dev/null; then
+    log "already bind-mounted: $t"
+  else
+    log "bind mounting $RAMDISK → $t"
+    run mount --bind "$RAMDISK" "$t"
+  fi
+  BOUND+=("$t")
+done
 
 if [ $DRY_RUN -eq 0 ]; then
-  # Persist discovered path so teardown and toggle can find it without a running container
-  echo "PAK_DIR='$PAK_DIR'" > "$STATE_FILE"
-  log "done — pak files are now tmpfs-backed (anon pages, zswap-eligible, memory.min protected)"
-  log "verify: findmnt '$PAK_DIR'"
-  findmnt "$PAK_DIR" || true
+  # Persist so teardown (ExecStop) and the toggle script can find every bind
+  # target without a running container. TARGET= lines double as both
+  # grep-able (any shell) and dot-sourceable (bash: last one wins, which is
+  # why consumers grep instead of sourcing this file wholesale).
+  {
+    echo "# soulmask-pak-ramdisk state (generated $(date -Is)) — do not edit"
+    echo "RAMDISK=$RAMDISK"
+    echo "TMPFS_SIZE=$TMPFS_SIZE"
+    for t in "${BOUND[@]}"; do echo "TARGET=$t"; done
+  } > "$STATE_FILE"
+  log "done — ${#BOUND[@]} instance(s) now served from tmpfs-backed pak (anon pages, zswap-eligible, memory.min protected)"
+  for t in "${BOUND[@]}"; do
+    log "verify: $(findmnt "$t" 2>/dev/null | tail -n1 || echo "$t (findmnt failed)")"
+  done
 fi

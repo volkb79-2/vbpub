@@ -15,7 +15,7 @@ RemainAfterExit=yes
 # load zstd -> set compressor + pool knobs -> THEN enable.
 ExecStart=/sbin/modprobe zstd
 ExecStart=/bin/sh -c 'echo zstd > /sys/module/zswap/parameters/compressor'
-ExecStart=/bin/sh -c 'echo 30   > /sys/module/zswap/parameters/max_pool_percent'
+ExecStart=/bin/sh -c 'echo 40   > /sys/module/zswap/parameters/max_pool_percent'
 ExecStart=/bin/sh -c 'echo 90   > /sys/module/zswap/parameters/accept_threshold_percent'
 ExecStart=/bin/sh -c 'echo Y    > /sys/module/zswap/parameters/shrinker_enabled'
 ExecStart=/bin/sh -c 'echo 1    > /sys/module/zswap/parameters/enabled'

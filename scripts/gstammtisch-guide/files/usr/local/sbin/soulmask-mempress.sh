@@ -3,8 +3,15 @@
 #
 # Operates on either the GAME cgroup (default) or the PAK slice.
 #
+# N-instance (2026-07-07): when SLICE=game and more than one Soulmask
+# instance is running, pick one with -c <uuid-or-prefix> (matches against
+# the docker container name, which IS the Pterodactyl server UUID). With
+# exactly one instance running, -c is optional. -c is ignored for
+# --slice pak (the pak tmpfs/slice is shared across all instances — see
+# SOULMASK.md "Multi-instance operations").
+#
 # Usage:
-#   soulmask-mempress.sh [--slice game|pak] <command> [args]
+#   soulmask-mempress.sh [--slice game|pak] [-c <uuid-or-prefix>] <command> [args]
 #   soulmask-pak-mempress.sh <command> [args]      # wrapper — pak slice
 #
 # Commands:
@@ -35,31 +42,47 @@
 
 set -euo pipefail
 
+# shellcheck source=/usr/local/sbin/soulmask-instance-lib.sh
+LIB="${LIB:-/usr/local/sbin/soulmask-instance-lib.sh}"
+if [ -f "$LIB" ]; then
+  . "$LIB"
+else
+  echo "FATAL: $LIB not found (expected alongside this script)"; exit 1
+fi
+
 STEP=$(( 25 * 1048576 ))   # 25M per calibration step
 STEP_DELAY=0.25            # seconds between steps (smooth compression bursts)
 
-# ── slice selection ───────────────────────────────────────────────────────────
+# ── slice + instance selection ────────────────────────────────────────────────
 PAK_CG="/sys/fs/cgroup/soulmask.slice/soulmask-paks.slice"
 
 SLICE="game"
 [[ "$(basename "$0")" == *pak* ]] && SLICE="pak"
-if [ "${1:-}" = "--slice" ]; then
-  SLICE="$2"; shift 2
-fi
+SEL=""
+while :; do
+  case "${1:-}" in
+    --slice) SLICE="$2"; shift 2 ;;
+    -c)      SEL="$2"; shift 2 ;;
+    *)       break ;;
+  esac
+done
 case "$SLICE" in game|pak) ;; *) echo "Unknown slice: $SLICE (use 'game' or 'pak')"; exit 1 ;; esac
+
+# Resolve the target instance BEFORE defining _cg(), not inside it: a
+# `CG=$(_cg)` call runs _cg in a subshell, so any variable it set there
+# (e.g. the selected cid) would not survive back into this shell.
+SELECTED_CID=""
+if [ "$SLICE" = "game" ]; then
+  SELECTED_CID=$(soulmask_select_instance "$SEL") || { echo "Cgroup not found (slice: $SLICE)"; exit 1; }
+  echo "[mempress] instance: $(soulmask_uuid_of "$SELECTED_CID") ($SELECTED_CID)" >&2
+fi
 
 _cg() {
   if [ "$SLICE" = "pak" ]; then
     echo "$PAK_CG"
     return
   fi
-  local pid cid
-  for cid in $(docker ps -q 2>/dev/null); do
-    docker top "$cid" 2>/dev/null | grep -q WSServer || continue
-    pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null)
-    echo "/sys/fs/cgroup$(awk -F: '/^0::/{print $3}' /proc/$pid/cgroup 2>/dev/null)"
-    return
-  done
+  soulmask_cgroup_of "$SELECTED_CID"
 }
 
 CG=$(_cg) || { echo "Cgroup not found (slice: $SLICE)"; exit 1; }
@@ -169,10 +192,12 @@ case "$CMD" in
     _fmt() { local b="$1" g=$(( $1 / 1073741824 ))
       [ $(( g * 1073741824 )) -eq "$b" ] && echo "${g}G" || echo "$(_mb "$b")M"; }
     if [ "$SLICE" = "game" ]; then
-      echo "To persist across restarts:"
-      echo "  sed -i 's/SOULMASK_MIN=.*/SOULMASK_MIN=\"\${SOULMASK_MIN:-$(_fmt "$min_bytes")}\"/' /usr/local/sbin/setup-cgroups.sh"
-      echo "  sed -i 's/SOULMASK_HIGH=.*/SOULMASK_HIGH=\"\${SOULMASK_HIGH:-$(_fmt "$high_bytes")}\"/' /usr/local/sbin/setup-cgroups.sh"
-      echo "  systemctl restart gstammtisch-cgroups"
+      uuid=$(soulmask_uuid_of "$SELECTED_CID")
+      echo "To persist across restarts (instance $uuid):"
+      echo "  edit /etc/gstammtisch/instances.d/${uuid}.env :"
+      echo "    SOULMASK_MIN=$(_fmt "$min_bytes")"
+      echo "    SOULMASK_HIGH=$(_fmt "$high_bytes")"
+      echo "  systemctl restart gstammtisch-cgroups   # or wait for soulmask-cgroup-watcher to re-apply"
     fi ;;
 
   down)
@@ -244,14 +269,16 @@ case "$CMD" in
       echo "  Update MemoryMin= in /etc/systemd/system/soulmask-paks.slice to ${sweet}M"
       echo "  systemctl daemon-reload && systemctl restart soulmask-paks.slice"
     else
-      echo "  sed -i 's/SOULMASK_MIN=.*/SOULMASK_MIN=\"\${SOULMASK_MIN:-${sweet}M}\"/' /usr/local/sbin/setup-cgroups.sh"
-      echo "  # Also set a ceiling: SOULMASK_HIGH ~$(( sweet + 1024 ))M"
+      uuid=$(soulmask_uuid_of "$SELECTED_CID")
+      echo "  edit /etc/gstammtisch/instances.d/${uuid}.env :"
+      echo "    SOULMASK_MIN=${sweet}M"
+      echo "    # Also set a ceiling: SOULMASK_HIGH ~$(( sweet + 1024 ))M"
       echo "  systemctl restart gstammtisch-cgroups"
     fi ;;
 
   *)
     cat <<USAGE
-Usage: soulmask-mempress.sh [--slice game|pak] <command> [args]
+Usage: soulmask-mempress.sh [--slice game|pak] [-c <uuid-or-prefix>] <command> [args]
 
   status                 show all knobs and zswap stats
   min <val>              set memory.min (floor)        e.g. min 5G
@@ -264,6 +291,9 @@ Usage: soulmask-mempress.sh [--slice game|pak] <command> [args]
 
 Aliases: 'set' = 'high', 'floor' = 'min'
 Pak slice shortcut:  soulmask-pak-mempress.sh <command> [args]
+
+-c <uuid-or-prefix>: select which Soulmask instance (--slice game only).
+  Required if more than one instance is running; auto-selected if only one.
 USAGE
     exit 1 ;;
 esac

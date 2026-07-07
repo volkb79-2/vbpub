@@ -7,12 +7,17 @@ Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK
 # Independent memory accounting from Soulmask's game cgroup.
 
 # Very small guaranteed floor — only the truly hot pak regions need uncompressed RAM.
-# Start at 150M and calibrate up. Hot pak (frequently accessed game-loop regions)
-# stays in RAM; warm pak compresses to zswap; cold pak writes through to swap disk.
+# Start at 150M and calibrate up from a vmtouch measurement (MEASUREMENTS.md M2;
+# observed 2026-07-07 under moderate pressure: 738M resident of 1.67G).
+# NOTE: this floor is only effective if the parent soulmask.slice also carries
+# MemoryMin >= this value — asserted by setup-cgroups.sh (plan §1.5 Finding A).
 MemoryMin=150M
 
-# writeback=yes (default): cold pak pages that have been in zswap and not accessed
-# can writeback to swap disk, freeing zswap pool for Soulmask's game anon and
-# other services on a busy dev host running 20+ containers + Docker image builds.
-# This is correct behaviour: cold pak → disk. Warm pak → zswap. Hot pak → RAM.
+# Pak data is zstd-INCOMPRESSIBLE (measured 1.006× — paks are pre-compressed).
+# Storing pak pages in zswap burns CPU and frees no RAM, so bypass zswap entirely:
+# cold pak → disk swap directly. Hot pak → RAM (floor above + access frequency).
+MemoryZSwapMax=0
+
+# Moot while MemoryZSwapMax=0 (nothing enters zswap), kept for clarity: if the
+# bypass is ever lifted, cold pak in zswap may still drain to disk.
 MemoryZSwapWriteback=yes

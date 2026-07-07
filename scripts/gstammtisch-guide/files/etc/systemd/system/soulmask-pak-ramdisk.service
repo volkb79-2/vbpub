@@ -1,7 +1,7 @@
 [Unit]
-Description=Soulmask pak file ramdisk (tmpfs over Paks directory)
+Description=Soulmask pak file ramdisk (shared tmpfs, bind-mounted into every PAK_RAMDISK=1 instance)
 Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK.md
-# Must run before Docker so the container mounts the tmpfs-backed Paks directory.
+# Must run before Docker so containers mount the tmpfs-backed Paks directory.
 Before=docker.service
 After=local-fs.target
 DefaultDependencies=no
@@ -12,17 +12,19 @@ DefaultDependencies=no
 Slice=soulmask-paks.slice
 Type=oneshot
 RemainAfterExit=yes
+# N-instance (2026-07-07): enumerates /etc/gstammtisch/instances.d/*.env for
+# PAK_RAMDISK=1 instances and bind-mounts the ONE shared tmpfs into each of
+# their volumes — see SOULMASK.md "Multi-instance operations".
 ExecStart=/usr/local/sbin/soulmask-pak-ramdisk-setup.sh
-# Teardown: read PAK_DIR from state file written by the setup script.
-# Unmount in reverse order: bind first, then the backing tmpfs.
-ExecStop=/bin/sh -c '\
-  STATE=/run/soulmask-pak-ramdisk.state; \
-  PAK_DIR=""; \
-  [ -f "$STATE" ] && . "$STATE"; \
-  [ -n "$PAK_DIR" ] && umount "$PAK_DIR" 2>/dev/null || true; \
-  umount /mnt/soulmask-paks 2>/dev/null || true; \
-  rm -f "$STATE"'
-TimeoutStartSec=120   # allow up to 2 min for large-pak copy on slow cold disk
+# Teardown: unmount every bind target recorded in the setup script's state
+# file, then the shared tmpfs itself. A dedicated script now (not inline
+# /bin/sh -c) because the state file lists a variable number of targets.
+ExecStop=/usr/local/sbin/soulmask-pak-ramdisk-teardown.sh
+# Allow up to 2 min for large-pak copy on slow cold disk.
+# (Pre-existing bug fixed in passing: a trailing inline comment on the same
+# line as TimeoutStartSec= is not valid systemd unit syntax and was silently
+# ignored — `systemd-analyze verify` flags it.)
+TimeoutStartSec=120
 StandardOutput=journal
 StandardError=journal
 

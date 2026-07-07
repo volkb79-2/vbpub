@@ -377,7 +377,7 @@ Pak and game anon pages are **not separately tracked within the same cgroup** �
 | `memory.min` | hard floor | guaranteed | Kernel will NEVER take memory below this from the cgroup, regardless of global pressure |
 | `memory.low` | soft floor | best-effort | Kernel tries to honour it but will dip below under severe system-wide pressure |
 
-For Soulmask in production: **min=5G, high=6G** — the game operates in a 1G RAM band. Under Docker-build pressure, the kernel can reclaim from the game down to the 5G floor; at rest it uses ~5.8–6G. `memory.low=12G` is a best-effort global hint that rarely triggers (the game never reaches 12G). `memory.max=max` stays off to avoid OOM kills.
+For Soulmask in production: **min=6G, high=7G** (2026-07-07; 6G/8G interim on 07-06, 5G/6G before — see §2d). At rest the game uses ~5.8–6.4G; login and area-load transients briefly need more, and the ceiling must give them headroom instead of throttling (the old 6G ceiling caused failed player logins that only succeeded after retries). 7G keeps 1G of transient headroom while the ceiling still pre-compresses the cold tail during calm periods; if login issues reappear, go back to 8G. `memory.low=12G` is a best-effort global hint that rarely triggers (the game never reaches 12G). `memory.max=max` stays off to avoid OOM kills.
 
 ### Calibrating memory.min — finding the sweet spot
 
@@ -441,9 +441,9 @@ soulmask-mempress.sh             # Terminal 2: apply and step memory.high pressu
 
 ```bash
 # Production config (set operating band):
-soulmask-mempress.sh apply 5G 6G   # min=5G floor, high=6G ceiling — print persist commands
-soulmask-mempress.sh min 5G        # floor only
-soulmask-mempress.sh high 6G       # ceiling only
+soulmask-mempress.sh apply 6G 7G   # min=6G floor, high=7G ceiling — print persist commands
+soulmask-mempress.sh min 6G        # floor only
+soulmask-mempress.sh high 7G       # ceiling only
 soulmask-mempress.sh status        # show all knobs + zswap stats
 soulmask-mempress.sh reset         # high→max (remove ceiling; floor unchanged)
 
@@ -488,11 +488,22 @@ The test was run live during play by stepping `memory.high` down from 8902M in 6
 
 **Area load signature**: swap_total grows by 50–150M during the spike (new zones loading into zswap), then refault/s decays from peak → 1000/s → 100/s → 10/s over ~5 minutes as the new zone's hot pages warm into RAM.
 
-**Production operating band**: **min=5G, high=6G** (deployed 2026-06-28, 2 players). The 1G band between floor and ceiling lets the game self-adjust while bounding its RAM footprint under Docker-build pressure.
-- Floor (memory.min=5G): kernel guarantees at least 5G stays uncompressed regardless of host load
-- Ceiling (memory.high=6G): game throttled above 6G — area-load spikes peak at ~6G so this is snug but workable
-- 3 players: expect similar band; re-verify with soulmask-zswap-monitor.sh (hot set may need min=5.5G)
+**Production operating band**: **min=6G, high=7G** (2026-07-07; 6G/8G interim on 07-06; supersedes the 5G/6G band deployed 2026-06-28).
+- Floor (memory.min=6G): kernel guarantees at least 6G stays uncompressed regardless of host load. The 5G floor proved too low: under pressure, player **logins failed** and only succeeded after several retries (login loads the player's region → refault storm from cold pages; with a 5G floor too much of that set was compressed/paged out). NOTE: the floor is only effective if `system.slice` also carries `MemoryMin` (protection chain — setup-cgroups.sh asserts it).
+- Ceiling (memory.high=7G): the game self-limits at ~6G steady RSS, but login/area-load *transients* exceed 6G. The old 6G ceiling put the game into throttle+direct-reclaim exactly during logins. 7G = 1G transient headroom while the ceiling still pre-compresses the cold tail in calm periods; **if login failures reappear at 7G, go back to 8G** (the 07-06 interim value, known good).
 - 4+ players: re-measure; expect +0.5–1G per additional player; adjust with `soulmask-mempress.sh apply`
+- Caveat to the earlier "high above 6.5G has no effect" finding (§2d): that held for steady-state RSS. It does NOT hold for transients — logins need the headroom.
+
+**Health/readiness signals (2026-07-07)**: RCON responsiveness is **not** a
+server-health or readiness signal — the RCON thread stays hot (its pages stay
+resident) while the game thread can be swap-stalled or still loading; it also
+answers long before startup completes. Use instead:
+- **Readiness**: the game-log line `logSoulmaskSession: [SERVER_LIST] registe
+  server soulmask session succeed.` (sic — the game misspells it) — this is
+  what `soulmask-cgroup-watcher.sh` and `soulmask-startup-cgroup.sh` key on.
+- **Health during play**: `exec-soulmask-rcon.sh ServerFPS` (frame rate
+  reflects actual game-thread progress), plus monitor `rf_d/s` (disk
+  refaults) and cgroup PSI.
 
 **Post-restart note**: immediately after restart everything is in RAM (no zswap yet), so refault/s=0 is misleading. Wait 30–60 min of active play for steady state before calibrating.
 
@@ -530,12 +541,12 @@ The game's memory needs change dramatically between startup and steady state. A 
 | Phase | Trigger | memory.min | memory.high | Purpose |
 |---|---|---|---|---|
 | 1 — Startup | Container appears | 9G | max | Game loads world + assets without zswap pressure; slow startup otherwise |
-| 2 — Squeeze | RCON ready | 3G (panic) | 9G → 5G in 100M/0.5s steps | Primes zswap with cold data; gradual steps avoid compression burst |
-| 3 — Steady | After settle | 5G | 6G | Production band: 5G floor + 6G ceiling (set by `setup-cgroups.sh` via watcher) |
+| 2 — Squeeze | Server registered (game log) | 3G (panic) | 9G → 6G in 100M/0.5s steps | Primes zswap with cold data; gradual steps avoid compression burst |
+| 3 — Steady | After settle | 6G | 7G | Production band: 6G floor + 7G ceiling (set by `setup-cgroups.sh` via watcher) |
 
 **Why not just set memory.min=6G from the start?** During startup the game loads many pages that become cold later. With memory.min=6G during startup and a busy host, those pages can drift to zswap while the game is still loading → constant refault pressure during load → slow startup. Starting at 9G gives the startup a quiet zone.
 
-**Why squeeze to 5G first, then apply the 5G/6G production band?** The squeeze forces the cold data that accumulated during startup into zswap (priming). The ceiling at 6G then bounds the game's footprint for steady-state multi-tenant operation. The game reclaims to its ~5.8G hot set naturally within the band.
+**Why squeeze to 6G first, then apply the 6G/7G production band?** The squeeze forces the cold data that accumulated during startup into zswap (priming). The 7G ceiling then bounds the game's footprint for steady-state multi-tenant operation while leaving login/area-load transients headroom. The game reclaims to its ~6G hot set naturally within the band.
 
 **Why 100M steps at 0.5s?** Each 100M step = ~25K pages compressed in ~50ms — one compression burst, usually imperceptible to players. A sudden 4G step would create a visible spike. 40 steps × 0.5s = 20 seconds total squeeze time.
 
@@ -547,10 +558,10 @@ soulmask-startup-cgroup.sh
 # The script:
 #   1. Waits for the Soulmask container cgroup to appear
 #   2. Sets memory.min=9G immediately (Phase 1)
-#   3. Polls RCON until server ready (max 10 min), logging progress
-#   4. Steps memory.high 9G → 5G (Phase 2, ~20s)
+#   3. Waits for the server-list registration line in the game log (max 10 min)
+#   4. Steps memory.high 9G → 6G (Phase 2, ~15s)
 #   5. Waits 30s settling time
-#   6. Sets memory.high=max, memory.min=6G (Phase 3)
+#   6. Sets memory.high=7G, memory.min=6G (Phase 3)
 ```
 
 **Wings integration**: Wings runs containers via Docker with root rights. Pterodactyl doesn't natively support post-start host-level hooks. Options:
@@ -560,7 +571,7 @@ soulmask-startup-cgroup.sh
 
 **Overrides** (env vars):
 ```bash
-SOULMASK_STARTUP_MIN=9G   SOULMASK_SQUEEZE_TARGET=5G   SOULMASK_STEADY_MIN=6G
+SOULMASK_STARTUP_MIN=9G   SOULMASK_SQUEEZE_TARGET=6G   SOULMASK_STEADY_MIN=6G   SOULMASK_STEADY_HIGH=7G
 SOULMASK_SQUEEZE_STEP=100  SOULMASK_SQUEEZE_DELAY=0.5   SOULMASK_SETTLE_TIME=30
 ```
 
@@ -632,7 +643,7 @@ Not useful for: zswap stats, memory.min values — those live in /sys/fs/cgroup,
 |---|---|
 | `soulmask-zswap-monitor.sh [N]` | Per-5s: RAM, zswap pool (compressed), swap total (uncompressed), refault/s, majfault/s, pak shmem, compression ratio |
 | `soulmask-mempress.sh status` | All knobs (min/high/low), zswap pool, refault cumulative |
-| `soulmask-mempress.sh apply 5G 6G` | Set production band (min=5G, high=6G) + print persist commands |
+| `soulmask-mempress.sh apply 6G 7G` | Set production band (min=6G, high=7G) + print persist commands |
 | `soulmask-mempress.sh min/high/down/up/finalize/reset` | Calibration — see §2d |
 | `soulmask-startup-cgroup.sh` | 3-phase startup lifecycle with live logging |
 
@@ -1802,3 +1813,259 @@ sudo /home/vb/volkb79-2/vbpub/scripts/damon-analysis/venv/bin/python3 \
 
 Run this with players online and during a save event for the most useful
 profile.
+
+---
+
+## §9 Second instance (base map) + cluster — research summary (2026-07-06)
+
+Goal: run a second Soulmask server on this host with the classic map
+(`Level01_Main`) next to the existing DLC-map server (`DLC_Level01_Main`,
+container `b87c0a5b…`), with players able to move characters between them.
+Sources: saraserenity.net dedicated_server_guide / server_cluster_guide /
+release_faq (fetched 2026-07-06), api.steamcmd.net depot info, live host
+inspection.
+
+### Key facts
+
+- **One map per server process** — a single instance cannot serve both maps.
+  Two linked servers ("cluster") is the designed solution; the cluster guide's
+  own example is exactly this pairing (base-map main + DLC-map client).
+- **The pak is identical for both maps.** Linux dedicated server = appid
+  **3017300** with exactly ONE content depot (3017301, ~1.94 GiB installed);
+  there is **no separate DLC depot**. Verified locally: the running DLC server
+  and the old stopped base-map volume both contain a single
+  `WS-LinuxServer.pak` (~1.79 GB, differs only by build version). The launch
+  map argument is the only difference. → **full pak-ramdisk sharing between
+  the two instances is possible** (one tmpfs copy, bind-mounted into both
+  volumes' `WS/Content/Paks`).
+- **A second server already exists in the panel**: volume
+  `31e20408-2a4e-42be-b97d-877275fc2b96` ("Soulmask Server", stopped, files
+  from May 12, old egg variant that hardcodes `WS Level01_Main`). Its
+  allocations (8777 game / 27015 query / 18888 echo) **collide with the DLC
+  server** — it must get new allocations (e.g. 8778/27016/18889) and a
+  `steamcmd` update before reuse. Its old egg lacks the RCON vars; consider
+  reinstalling it on the current egg.
+- Clients joining the DLC-map server need the Shifting Sands DLC on their
+  account; the base-map server is joinable by everyone (hosting-provider docs;
+  not dev-confirmed).
+
+### Cluster wiring (character transfer)
+
+| Param | Main server (base map, suggested) | Client server (DLC map) |
+|---|---|---|
+| Level arg | `Level01_Main` | `DLC_Level01_Main` |
+| `-serverid=` | `1` | `2` |
+| Role param | `-mainserverport=20000` (TCP; **never expose publicly** — any server that reaches it can join the cluster) | `-clientserverconnect=<main-ip>:20000` |
+| `-PORT` / `-QueryPort` / `-EchoPort` | e.g. 8778 / 27016 / 18889 | 8777 / 27015 / 18888 (current) |
+| `-PSW` | identical on both (seamless transfer) | identical |
+
+- **`-serverid` is permanent** — player accounts are keyed to it (0 if unset);
+  changing it later loses accounts. Decide before opening the second server.
+- Enable outbound transfer per server: admin panel "Cross-server Mode" or
+  `"KaiQiKuaFu": 1` in `WS/Saved/GameplaySettings/GameXishu.json`.
+- Players transfer at the mysterious-island portal terminal, and only with a
+  non-initial tribesman (initial character is re-summoned at a bonfire on the
+  destination server).
+- Main server manages `WS/Saved/Accounts/account.db`; **main must start first
+  and stop last** (clients don't accept players while main is down). NOTE:
+  this interacts with `soulmask-graceful-stop.service` — shutdown ordering
+  must stop the DLC client server before the base-map main.
+- **Existing save becomes a cluster member**: standalone servers keep accounts
+  inside `world.db`; the cluster main needs them migrated to `account.db` via
+  the `CopyRoles` tool — **Windows-only**, run it on a PC against a copy of
+  `world.db` and copy the resulting `account.db` back. The server keeping the
+  existing world must keep its exact server name.
+- Which is main? The existing DLC server has the players/world → making IT
+  the main avoids... but the cluster guide's example uses the base map as
+  main. Either works; what matters: the main holds account.db and must be
+  up for the other to accept logins. Choosing the *new* base-map server as
+  main means the established DLC world depends on the new instance's uptime —
+  prefer making the **existing DLC server the main** (`-serverid` stays, add
+  `-mainserverport`), and the new base-map server the client.
+- Egg gap: the ptero-eggs steamcmd startup template has no cluster vars — add
+  `-serverid=… -mainserverport=…` / `-clientserverconnect=…` to each server's
+  Startup Command in the panel.
+- Wrinkle under Pterodactyl: the client must reach the main's
+  `mainserverport`. Options: extra panel allocation for it (then firewall it
+  to the docker subnet/localhost only), or the wings network's container IP
+  (not stable across recreation). Needs a decision at implementation time.
+
+### Resource reality check (16 GB host)
+
+Second instance ≈ 6 GiB RSS idle (measured on this host), 13–14 GB virtual
+demand after long uptime with players — of which the hot set is ~6 GiB. Two
+instances = two hot sets (~12 GiB) on 16 GiB RAM: **does not fit alongside dev
+workloads without the cold tails living in zswap/disk**. Governance
+implications (floors per instance, shared pak ramdisk, writeback policy) are
+tracked in `plan-host-resource-governance.md` §1.5/§9. CPU is fine (~0.7
+core/instance idle, 8 cores).
+
+## §9b Multi-instance operations (implementation, 2026-07-07)
+
+All host governance scripts under `files/usr/local/sbin/` were rewritten to
+support **N running Soulmask instances** instead of hardcoding "first
+WSServer container found wins". This section is the operational reference;
+§9 above is the research/planning background it implements.
+
+### Config layout
+
+```
+/etc/gstammtisch/
+├── instance-defaults.env          # applies to every instance unless overridden
+└── instances.d/
+    ├── b87c0a5b-2387-4a1c-8863-ff23e6800a1d.env       # DLC server (running) — ROLE=main, PAK_RAMDISK=1
+    └── 31e20408-2a4e-42be-b97d-877275fc2b96.env.example  # base-map server (stopped) — sample, ROLE=client
+```
+
+- **The docker container name IS the instance identifier** — Wings names
+  every Soulmask container after its Pterodactyl server UUID
+  (`docker inspect -f '{{.Name}}' <cid>` → `/<uuid>`; verified live,
+  2026-07-07). No separate mapping table is needed.
+- `instance-defaults.env` sets `SOULMASK_MIN`/`SOULMASK_LOW`/`SOULMASK_HIGH`/
+  `SOULMASK_WRITEBACK`, `ROLE` (`standalone`|`main`|`client`), and
+  `PAK_RAMDISK` (`0`|`1`) for every instance.
+- `instances.d/<uuid>.env` overrides any of those keys for one specific
+  instance. An instance with no file here just uses the defaults.
+- Shared helper library: `soulmask-instance-lib.sh` (sourced, not executed)
+  — container/UUID/cgroup discovery, `soulmask_load_instance_env()` (loads
+  defaults + override, always resetting first so values can't leak between
+  instances in a `for`-loop), RCON port/password lookup, and `-c
+  <uuid-or-prefix>` selection for single-instance-scoped tools.
+- **Ambient environment overrides are gone** for the per-instance knobs
+  (`setup-cgroups.sh` no longer honours e.g. `SOULMASK_MIN=8G
+  setup-cgroups.sh` from the single-instance days) — a single ambient value
+  can't mean "the" instance's floor once there can be several. Edit
+  `instances.d/<uuid>.env` (or `instance-defaults.env` for a host-wide
+  change) instead. `SYSTEM_SLICE_MIN` / `SOULMASK_SLICE_MIN` (host-wide
+  ancestor floors, not per-instance) still honour ambient env overrides.
+
+### `setup-cgroups.sh` — applies to every running instance
+
+Iterates every running `WSServer-Linux-Shipping` container, resolves each
+one's UUID and cgroup scope, loads its config, and applies the same
+`set-property --runtime` knobs the single-instance version applied (memory
+min/low/high, zswap writeback, io/cpu weight) — per instance. Still
+idempotent and tolerant of zero instances running.
+
+`system.slice`'s `MemoryMin` (the ancestor floor that makes every instance's
+`memory.min` effective — plan §1.5 Finding A) is now **dynamic**: the sum of
+every currently-applied instance's `SOULMASK_MIN` + 1G headroom for host
+daemons (sshd/dockerd/wings). With the one running instance today (6G) that
+computes to 7G — the same value the single-instance script hardcoded.
+`SYSTEM_SLICE_MIN` in the environment still overrides the computed value
+unconditionally. `soulmask.slice`'s `MemoryMin` (the pak floor's ancestor) is
+unrelated to instance count and unchanged.
+
+### `soulmask-cgroup-watcher.service` — reconcile loop, not "wait once"
+
+The single-instance watcher waited once for readiness, applied knobs once,
+then waited for that one container to exit and looped. The N-instance
+version is a **reconcile loop**: every 15s it lists running instances and,
+for each one not yet marked done in `/run/soulmask-cgroup-watcher/<cid>/`,
+checks its game log for the `[SERVER_LIST] registe server ... succeed.`
+readiness line (or the 900s apply-anyway timeout, tracked per cid via a
+`first_seen` file). Any instance(s) that just became ready trigger one
+`setup-cgroups.sh` run and get marked `done`. A cid that disappears from
+`docker ps` has its state directory removed, so a Wings-recreated container
+(new cid) starts its readiness wait from scratch.
+
+**Per-instance gating**: each watcher apply pass exports
+`SOULMASK_APPLY_CIDS` (the instances ready now + those already applied
+earlier), and `setup-cgroups.sh` restricts its per-instance game knobs to
+exactly that list. A still-cold-loading sibling instance is therefore NOT
+given the production floor/ceiling until its own registration line (or the
+900s timeout) arrives — early `memory.high` on a loading server can crash
+or deadlock it. Manual `setup-cgroups.sh` runs (no `SOULMASK_APPLY_CIDS` in
+the environment) apply to all running instances, unchanged.
+
+### `soulmask-shutdown.sh` — stop ordering (cluster rule)
+
+`soulmask-graceful-stop.service`'s `ExecStop` now stops **every** running
+instance, in this order:
+
+1. `ROLE=client` and `ROLE=standalone` instances (either order among themselves)
+2. `ROLE=main` instance(s) last
+
+This matches §9's cluster rule: the main instance owns `account.db` and must
+stay reachable for client instances to accept logins while things are
+shutting down. Each instance's own RCON port/password is read straight from
+its container env (`docker inspect`), replicating
+`exec-soulmask-rcon.sh`'s `env_of()` minimally rather than calling that
+script (whose interactive connection pre-flight isn't wanted mid-shutdown).
+
+Because the stop sequence is per-instance and sequential,
+`soulmask-graceful-stop.service`'s `TimeoutStopSec` was raised from 210s to
+600s (worst case ≈ Wings stop once + per instance: RCON attempt + up to 150s
+DB-write wait + 20s SIGINT-fallback sleep ≈ 170s each; sized for ~3
+instances). Extend further if the cluster grows past that.
+
+### Shared pak ramdisk
+
+Every Soulmask instance on this host runs the same Linux dedicated-server
+depot (appid 3017300, depot 3017301 — no separate DLC depot; verified, §9),
+so the pak file is byte-identical across instances. `soulmask-pak-ramdisk.service`
+now maintains **one** shared tmpfs at `/mnt/soulmask-paks` holding **one**
+pak copy, bind-mounted into every instance whose `instances.d/<uuid>.env`
+sets `PAK_RAMDISK=1`:
+
+- Target discovery reads `/etc/gstammtisch/instances.d/*.env` directly
+  (**not** `docker ps`/the old `SOULMASK_PAK_DIR`/`SOULMASK_VOLUME_UUID`/
+  `/etc/soulmask-ramdisk.conf` chain) — the service runs `Before=docker.service`,
+  so no container exists yet to inspect. Each opted-in instance's pak
+  directory is the convention path
+  `/var/lib/pterodactyl/volumes/<uuid>/WS/Content/Paks`.
+- An opted-in instance whose volume doesn't exist yet (not installed by
+  Wings yet) is skipped with a log line and retried on the next run.
+- The source copy for the tmpfs is taken from the first opted-in target that
+  already has a `.pak` file; a size check aborts before mounting if the pak
+  payload doesn't fit in the configured tmpfs size (`SOULMASK_RAMDISK_SIZE`,
+  default 3G).
+- The state file (`/run/soulmask-pak-ramdisk.state`) now lists every bind
+  target (`TARGET=<dir>` lines, one per instance) instead of a single
+  `PAK_DIR=`. `soulmask-pak-ramdisk-teardown.sh` (new; replaces the unit's
+  old inline `/bin/sh -c` `ExecStop=`) unmounts every listed bind, then the
+  shared tmpfs. `soulmask-pak-ramdisk-toggle.sh`'s status output was updated
+  to read the new format.
+- Toggling remains host-wide (one tmpfs for all opted-in instances) — each
+  affected instance still needs its own clean Wings stop+start for the
+  ramdisk to take effect for it (the game mmaps pak files at startup).
+
+### Single-instance-scoped tools: `-c <uuid-or-prefix>`
+
+`soulmask-startup-cgroup.sh`, `soulmask-mempress.sh` (and its
+`soulmask-pak-mempress.sh` wrapper, though `-c` is meaningless there — the
+pak slice is shared, not per-instance) now accept `-c <uuid-or-prefix>` to
+pick which running instance they operate on:
+
+```bash
+soulmask-startup-cgroup.sh -c b87c0a5b
+soulmask-mempress.sh -c b87c0a5b status
+soulmask-mempress.sh -c b87c0a5b apply 6G 7G
+```
+
+With exactly one instance running, `-c` is optional (auto-selected). With
+several running, omitting `-c` lists the candidates (UUID + container ID)
+and exits — the same message `soulmask-shutdown.sh`'s internals would print
+if asked to disambiguate. `soulmask-mempress.sh apply`/`finalize`'s
+"persist across restarts" hints now point at the selected instance's
+`instances.d/<uuid>.env` instead of `sed`-ing `setup-cgroups.sh` (whose
+per-instance defaults moved out to `instance-defaults.env`).
+
+### How to add instance #2 (base-map server, §9)
+
+1. Complete the panel-side prerequisites from §9 (new allocations,
+   steamcmd update, cluster wiring: `-serverid=`, `-mainserverport=`/
+   `-clientserverconnect=` on the Startup Command).
+2. `cp files/etc/gstammtisch/instances.d/31e20408-2a4e-42be-b97d-877275fc2b96.env.example \
+      /etc/gstammtisch/instances.d/31e20408-2a4e-42be-b97d-877275fc2b96.env`
+   and uncomment `ROLE=client` (and `PAK_RAMDISK=1` if sharing the tmpfs).
+3. Start the instance via Wings. `soulmask-cgroup-watcher.service` picks it
+   up automatically on its next reconcile pass (≤15s after its game-log
+   readiness line, or after the 900s apply-anyway timeout) — no manual step
+   needed. If `PAK_RAMDISK=1`, re-run
+   `soulmask-pak-ramdisk-setup.sh` (or restart `soulmask-pak-ramdisk.service`)
+   once the instance's volume exists so its Paks directory gets bind-mounted,
+   then do one clean Wings stop+start for the bind to take effect.
+4. Verify: `setup-cgroups.sh`'s log shows both instances and the recomputed
+   `system.slice MemoryMin`; `soulmask-shutdown.sh` (or a real host reboot)
+   stops the client before the main.

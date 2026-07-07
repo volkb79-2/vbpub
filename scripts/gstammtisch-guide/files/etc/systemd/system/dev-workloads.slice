@@ -24,8 +24,8 @@ ManagedOOMMemoryPressure=kill
 ManagedOOMMemoryPressureLimit=60%
 ManagedOOMSwap=kill
 
-# NOTE: memory.zswap.writeback=1 for this slice (allow eviction of dev pages to
-# disk) is applied by setup-cgroups.sh — systemd has no property for it.
+# NOTE: memory.zswap.writeback=1 for this slice (cold dev pages may page to disk;
+# decided 2026-07-07) is applied by setup-cgroups.sh.
 # Launch dev containers into this slice:
 #   docker run --cgroup-parent=dev-workloads.slice --label workload=dev ...
 # or in compose:  cgroup_parent: dev-workloads.slice

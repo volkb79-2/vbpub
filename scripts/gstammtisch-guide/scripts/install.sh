@@ -7,16 +7,41 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"          # gstammtisch-guide/
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 
+echo "== host package prerequisites =="
+# systemd-oomd: ManagedOOM* slice settings are silent no-ops without it (separate
+# package on Debian trixie). vmtouch: pak hot-set measurement. fio: io-baseline.sh.
+# jdupes: hardlink-dedupe of duplicate game installs across instance volumes.
+apt-get install -y --no-install-recommends systemd-oomd vmtouch fio jdupes \
+  || echo "WARN: prerequisite install failed — install systemd-oomd vmtouch fio jdupes manually"
+
 echo "== copying config files from $HERE/files into / =="
 # Remove the minimal sysctl stub deployed by the initial commit; the full
 # documented version (99-gstammtisch-memory.conf) supersedes it.
 rm -f /etc/sysctl.d/99-memory.conf
-cp -av "$HERE/files/etc/."            /etc/
-cp -av "$HERE/files/usr/local/sbin/." /usr/local/sbin/
+# NOTE: this copies etc/docker/daemon.json too (live-restore + log rotation) —
+# host-specific installer, overwrites any existing daemon.json.
+# cp -r WITHOUT -a/--preserve: -a copies the repo checkout's user ownership and
+# group-writable modes onto the TARGET DIRECTORIES themselves (observed
+# 2026-07-07: /etc became vb:vb 775). Plain -r as root creates root-owned
+# files with umask modes, which is what system config must be.
+cp -rv "$HERE/files/etc/."            /etc/
+cp -rv "$HERE/files/usr/local/sbin/." /usr/local/sbin/
 chmod +x /usr/local/sbin/setup-cgroups.sh /usr/local/sbin/soulmask-shutdown.sh \
          /usr/local/sbin/soulmask-pak-ramdisk-setup.sh /usr/local/sbin/soulmask-pak-ramdisk-toggle.sh \
-         /usr/local/sbin/soulmask-zswap-monitor.sh /usr/local/sbin/soulmask-mempress.sh \
-         /usr/local/sbin/soulmask-startup-cgroup.sh /usr/local/sbin/soulmask-pak-mempress.sh
+         /usr/local/sbin/soulmask-pak-ramdisk-teardown.sh \
+         /usr/local/sbin/soulmask-zswap-monitor.sh /usr/local/sbin/soulmask-zswap-monitor.py \
+         /usr/local/sbin/soulmask-mempress.sh \
+         /usr/local/sbin/soulmask-startup-cgroup.sh /usr/local/sbin/soulmask-pak-mempress.sh \
+         /usr/local/sbin/soulmask-cgroup-watcher.sh /usr/local/sbin/io-baseline.sh
+# soulmask-instance-lib.sh is sourced only (not directly executed) — no +x needed.
+# /etc/gstammtisch/instance-defaults.env + instances.d/*.env came in via the
+# etc/ copy above — see SOULMASK.md "Multi-instance operations".
+
+echo "== docker daemon config =="
+# SIGHUP reload applies live-restore without restarting containers; log-opts
+# only affect containers created afterwards.
+systemctl reload docker 2>/dev/null && echo "docker reloaded (live-restore active)" \
+  || echo "WARN: docker reload failed — run 'systemctl reload docker' manually"
 
 echo "== BFQ I/O scheduler =="
 # BFQ is required for cgroup io.weight / io.bfq.weight to have any effect.
@@ -48,6 +73,7 @@ systemctl enable --now zswap-config.service
 systemctl enable dev-workloads.slice 2>/dev/null || true
 systemctl enable soulmask-paks.slice 2>/dev/null || true   # pak ramdisk cgroup slice
 systemctl enable --now gstammtisch-cgroups.service
+systemctl enable --now soulmask-cgroup-watcher.service
 systemctl enable --now soulmask-graceful-stop.service
 systemctl enable --now systemd-oomd.service 2>/dev/null || true
 
@@ -71,10 +97,13 @@ cat <<'NEXT'
   2) GRUB: ensure GRUB_CMDLINE_LINUX has NO zswap.* tokens (handled post-boot now);
      optionally add `preempt=full` for lower game-tick latency. update-grub if changed.
   3) Measure Soulmask hot set with DAMON, set SOULMASK_MIN in
-     /usr/local/sbin/setup-cgroups.sh, then: systemctl restart gstammtisch-cgroups
+     /etc/gstammtisch/instances.d/<server-uuid>.env (or instance-defaults.env
+     for every instance), then: systemctl restart gstammtisch-cgroups
   4) Pterodactyl panel: set Soulmask memory/CPU/IO limits.
      Launch dev containers with:  --cgroup-parent=dev-workloads.slice --label workload=dev
   5) Pre-pull the RCON image:  docker pull itzg/rcon-cli
      Verify RCON:               exec-soulmask-rcon.sh -d List_OnlinePlayers
   6) Watch health:              swap-health watch
+  7) Measure the disk IOPS ceiling ONCE while the game is stopped:
+       io-baseline.sh          (caches RIOPS_MAX; setup-cgroups.sh derives bench caps)
 NEXT

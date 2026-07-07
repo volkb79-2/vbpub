@@ -1,19 +1,23 @@
 [Unit]
-Description=Gracefully save & stop Soulmask before shutdown (RCON SaveAndExit; SIGINT fallback)
+Description=Gracefully save & stop every Soulmask instance before shutdown (RCON SaveAndExit; SIGINT fallback; client(s) before main)
 # On shutdown systemd stops units in REVERSE start order.  With After=docker the
-# stop sequence is:  THIS (Wings stop + save+wait) -> docker.
+# stop sequence is:  THIS (Wings stop + save+wait, per instance) -> docker.
 # Wings runs as a Docker Compose container (no wings.service systemd unit), so
 # soulmask-shutdown.sh stops it first to prevent Wings from auto-restarting
-# Soulmask while we wait for the save to complete.
+# any Soulmask instance while we wait for the save(s) to complete.
 After=docker.service
 Requires=docker.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# Allow plenty of time: Wings stop (≤5s) + RCON calls (~10s) + up to 150s for
-# the DB write + 20s post-timeout SIGINT sleep ≈ 185s worst case.
-TimeoutStopSec=210
+# N-instance (2026-07-07): soulmask-shutdown.sh stops instances sequentially
+# (ROLE=client/standalone first, ROLE=main last — SOULMASK.md §9 cluster
+# rule), so the worst case scales with instance count: Wings stop (≤5s, once)
+# + per instance (RCON call + up to 150s DB-write wait + 20s post-timeout
+# SIGINT sleep ≈ 170s). Sized for up to ~3 instances (5 + 3×170 ≈ 515s);
+# bump further if the cluster grows beyond that.
+TimeoutStopSec=600
 ExecStart=/bin/true
 ExecStop=/usr/local/sbin/soulmask-shutdown.sh
 

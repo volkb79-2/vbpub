@@ -6,15 +6,17 @@
 #   Without a high floor, early-loaded pages get pushed to zswap while loading
 #   is still in progress → constant refault pressure → slow startup.
 #
-# Phase 2 — Squeeze (step memory.high 9G → 5G, 100M per 0.5s):
-#   After RCON confirms the server is ready for players, gradually lower
+# Phase 2 — Squeeze (step memory.high 9G → 6G, 100M per 0.5s):
+#   After the game log shows Steam server-list registration ("[SERVER_LIST]
+#   registe server ... succeed." — the real ready signal; RCON responds long
+#   before the server is actually ready), gradually lower
 #   memory.high in small steps. Each step compresses ~25K pages to zswap,
 #   completing in ~50ms — imperceptible vs a single 4G burst. This primes
 #   zswap with the game's cold data without causing a visible lag spike.
 #   Panic floor is set to 3G during the squeeze so memory.min < memory.high.
 #
-# Phase 3 — Steady state (memory.high=6G, memory.min=5G):
-#   Production band: 5G floor + 6G ceiling. The game reclaims its hot set from
+# Phase 3 — Steady state (memory.high=7G, memory.min=6G):
+#   Production band: 6G floor + 7G ceiling. The game reclaims its hot set from
 #   zswap (short burst, then settles within the band). setup-cgroups.sh (via the
 #   cgroup watcher) also applies these values after RCON — startup-cgroup.sh is
 #   the fast path for a clean controlled priming; the watcher is the fallback.
@@ -22,27 +24,47 @@
 # Call this once after each Wings start/restart of the Soulmask container.
 # Can be run as a systemd service or manually after a Wings power cycle.
 #
+# N-instance (2026-07-07): pass -c <uuid-or-prefix> to select which running
+# Soulmask instance this lifecycle applies to (matches the docker container
+# name, which IS the Pterodactyl server UUID). With exactly one instance
+# running, -c is optional — it's auto-selected. With several, -c is
+# required (the script lists candidates and exits if omitted).
+#   soulmask-startup-cgroup.sh -c b87c0a5b
+#
 # Environment overrides:
 #   SOULMASK_STARTUP_MIN    default 9G
-#   SOULMASK_SQUEEZE_TARGET default 5G
+#   SOULMASK_SQUEEZE_TARGET default 6G
 #   SOULMASK_SQUEEZE_FLOOR  default 3G   (panic floor during squeeze)
 #   SOULMASK_SQUEEZE_STEP   default 100  (MB per step)
 #   SOULMASK_SQUEEZE_DELAY  default 0.5  (seconds between steps)
 #   SOULMASK_SETTLE_TIME    default 30   (seconds to wait after squeeze before Phase 3)
 #   SOULMASK_STEADY_MIN     default 6G
-#   SOULMASK_RCON_TIMEOUT   default 600  (max seconds to wait for RCON ready)
+#   SOULMASK_STEADY_HIGH    default 7G
+#   SOULMASK_READY_TIMEOUT  default 600  (max seconds to wait for server-ready log line)
 set -euo pipefail
 
+# shellcheck source=/usr/local/sbin/soulmask-instance-lib.sh
+LIB="${LIB:-/usr/local/sbin/soulmask-instance-lib.sh}"
+if [ -f "$LIB" ]; then
+  . "$LIB"
+else
+  echo "FATAL: $LIB not found (expected alongside this script)"; exit 1
+fi
+
+SEL=""
+if [ "${1:-}" = "-c" ]; then SEL="${2:-}"; shift 2; fi
+
 STARTUP_MIN="${SOULMASK_STARTUP_MIN:-9G}"
-SQUEEZE_TARGET="${SOULMASK_SQUEEZE_TARGET:-5G}"
+SQUEEZE_TARGET="${SOULMASK_SQUEEZE_TARGET:-6G}"
 SQUEEZE_FLOOR="${SOULMASK_SQUEEZE_FLOOR:-3G}"
 SQUEEZE_STEP_MB="${SOULMASK_SQUEEZE_STEP:-100}"
 SQUEEZE_DELAY="${SOULMASK_SQUEEZE_DELAY:-0.5}"
 SETTLE_TIME="${SOULMASK_SETTLE_TIME:-30}"
-STEADY_MIN="${SOULMASK_STEADY_MIN:-5G}"
-STEADY_HIGH="${SOULMASK_STEADY_HIGH:-6G}"
-RCON_TIMEOUT="${SOULMASK_RCON_TIMEOUT:-600}"
-RCON_POLL=10
+STEADY_MIN="${SOULMASK_STEADY_MIN:-6G}"
+STEADY_HIGH="${SOULMASK_STEADY_HIGH:-7G}"
+READY_TIMEOUT="${SOULMASK_READY_TIMEOUT:-${SOULMASK_RCON_TIMEOUT:-600}}"
+READY_POLL=10
+READY_RE='SERVER_LIST.*registe server.*succeed'
 
 log() { echo "[startup-cgroup $(date +%H:%M:%S)] $*"; }
 
@@ -55,25 +77,27 @@ _parse_bytes() {
   esac
 }
 
-_cg() {
-  local pid cid
-  for cid in $(docker ps -q 2>/dev/null); do
-    docker top "$cid" 2>/dev/null | grep -q WSServer || continue
-    pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null)
-    echo "/sys/fs/cgroup$(awk -F: '/^0::/{print $3}' /proc/$pid/cgroup 2>/dev/null)"
-    return
-  done
+_find_game() {
+  local cid
+  cid=$(soulmask_select_instance "$SEL" 2>/tmp/soulmask-startup-select-err) || return 1
+  GAME_CID="$cid"
+  CG=$(soulmask_cgroup_of "$cid") || return 1
+  return 0
 }
 
 # --- wait for Soulmask container ---
 log "waiting for Soulmask container (max 5 min)..."
-CG=""
+CG=""; GAME_CID=""
 for _ in $(seq 1 60); do
-  CG=$(_cg 2>/dev/null) && [ -d "$CG" ] && break
+  _find_game && [ -d "$CG" ] && break
   CG=""; sleep 5
 done
-[ -d "${CG:-}" ] || { log "ERROR: Soulmask container not found after 5 min"; exit 1; }
-log "cgroup: $CG"
+if [ ! -d "${CG:-}" ]; then
+  log "ERROR: could not resolve a Soulmask instance after 5 min"
+  cat /tmp/soulmask-startup-select-err >&2 2>/dev/null || true
+  exit 1
+fi
+log "cgroup: $CG (container $GAME_CID, instance $(soulmask_uuid_of "$GAME_CID"))"
 
 # ─── Phase 1: startup floor ───────────────────────────────────────────────────
 STARTUP_BYTES=$(_parse_bytes "$STARTUP_MIN")
@@ -82,21 +106,22 @@ echo "$STARTUP_BYTES" > "$CG/memory.min"
 echo max > "$CG/memory.high"
 log "  game loading — $(( $(cat "$CG/memory.current") / 1048576 ))M in RAM"
 
-# ─── wait for RCON ready ──────────────────────────────────────────────────────
-log "waiting for RCON (max ${RCON_TIMEOUT}s)..."
+# ─── wait for server-ready (Steam server-list registration in game log) ──────
+# RCON responding is NOT a readiness signal — the RCON thread answers long before
+# the world is loaded (and stays responsive even when the game thread stalls).
+log "waiting for server-list registration in game log (max ${READY_TIMEOUT}s)..."
 waited=0
 while true; do
-  # exec-soulmask-rcon.sh with no args = connection test only, exits 0 on success
-  if exec-soulmask-rcon.sh > /dev/null 2>&1; then
-    log "RCON ready — server accepting connections"
+  if docker logs "$GAME_CID" 2>&1 | grep -qm1 "$READY_RE"; then
+    log "server registered on server list — ready for players"
     break
   fi
-  if [ "$waited" -ge "$RCON_TIMEOUT" ]; then
-    log "WARN: RCON not ready after ${RCON_TIMEOUT}s — proceeding anyway"
+  if [ "$waited" -ge "$READY_TIMEOUT" ]; then
+    log "WARN: no registration line after ${READY_TIMEOUT}s — proceeding anyway"
     break
   fi
-  sleep "$RCON_POLL"
-  waited=$(( waited + RCON_POLL ))
+  sleep "$READY_POLL"
+  waited=$(( waited + READY_POLL ))
   cur=$(( $(cat "$CG/memory.current") / 1048576 ))
   log "  ${waited}s: ${cur}M in RAM, still loading..."
 done

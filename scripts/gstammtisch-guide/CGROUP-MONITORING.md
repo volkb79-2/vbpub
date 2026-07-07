@@ -12,11 +12,11 @@ Host: Debian 13, kernel 7.0.10, 15.6G RAM, zswap+zstd, two 35G swap partitions.
 | Want to know | Formula | Example |
 |---|---|---|
 | True compression ratio | `zswapped / zswap` (from memory.stat) | 5742 / 1806 = **3.18×** |
-| Pages actually on disk (per cgroup) | `memory.swap.current − zswapped` (from memory.stat) | 9518 − 5742 = 3776M (game: 0 because writeback=0) |
+| Pages actually on disk (per cgroup) | `memory.swap.current − zswapped − swapcached` (from memory.stat) | game: 9518 − 5742 − 3730 = 0M (writeback=0) |
 | Total unique anon footprint | `anon + zswapped` | 3872 + 5742 = **9614M** |
 | Uncompressed zswap content | `zswapped` (memory.stat) | **5742M** |
 | Compressed zswap size | `zswap` (memory.stat) = `memory.zswap.current` | **1806M** |
-| System-wide pages on disk | `/proc/swaps Used − stored_pages × 4 KiB` | 9517 − 5742 = **3775M** |
+| System-wide pages on disk | `/proc/swaps Used − stored_pages × 4 KiB − SwapCached` | 9517 − 5742 − 3632 ≈ **0M** (all in zswap/swapcached, see §12.7) |
 | Is writeback=0 enforced? | `zswpwb == 0 && pswpout == 0` | Game: both 0, confirmed |
 | Zswap pressure rate | `workingset_refault_anon` delta per second | 1/s = healthy |
 
@@ -99,13 +99,23 @@ Physical RAM: 15,600M total
                                     ┌────────────────────┐
                                     │  SWAP DISK         │
                                     │  /dev/vda6+vda7    │
-                                    │  3,775M on disk    │
-                                    │  (dev containers)  │
+                                    │  ~0M on disk       │
+                                    │  (all in zswap!)   │
                                     └────────────────────┘
 
  Game cgroup: writeback=0 → arrow from zswap to disk is CUT.
               zswpwb=0 and pswpout=0 confirm this never happened.
+              System-wide: written_back_pages=0 and /proc/vmstat pswpout=0
+              confirm NOTHING is on disk — all swap is zswap in RAM.
+              (See §12.7 for the full cross-check methodology.)
 ```
+
+> **Note on the diagram above:** earlier versions of this guide claimed ~3,775M
+> was "on disk (dev containers)". That was a measurement error: the formula
+> `/proc/swaps Used − stored_pages×4K` does not subtract `SwapCached` — pages
+> that are in RAM but still hold a swap slot (see §1.4). The corrected formula
+> is `/proc/swaps Used − stored_pages×4K − SwapCached`, which yields ≈0M.
+> See §9 and §12.7 for details.
 
 ### 1.4 Swapcached: the double-entry trap
 
@@ -277,9 +287,11 @@ All byte values are in bytes. All page counts are pages (4,096 bytes each).
 
 **`anon = 4,059,840,512` (3,872M)**
 Anonymous pages in physical RAM right now. Anonymous means "not backed by a file":
-heap allocations (malloc), stack frames, private `mmap(MAP_ANONYMOUS)`, and shmem
-(tmpfs-backed, treated as anon for LRU purposes). Does NOT include pages in zswap —
-those are gone from RAM.
+heap allocations (malloc), stack frames, private `mmap(MAP_ANONYMOUS)`. Does NOT
+include pages in zswap — those are gone from RAM. Does NOT include shmem — shmem
+is accounted under `file` (see below), though it sits on the anon *LRU list* for
+reclaim purposes (see §8 for the pak slice where this distinction is visible:
+`anon=0, file=1,788M, shmem=1,708M`).
 
 **`file = 214,147,072` (204M)**
 File-backed pages in physical RAM: shared libraries mapped read-only, read-ahead data
@@ -828,6 +840,12 @@ inactive_file = 1,709M   = source file cache     ← evicted FIRST
 active_file   =     2M   = recently read files
 ```
 
+> **Accounting note:** the pak shmem pages are counted under `file` (not `anon`)
+> in `memory.stat`: `anon=0, file=1,788M, shmem=1,708M`. But shmem pages sit on
+> the **anon LRU list** (hence `active_anon = 1,708M`), because they cannot be
+> silently dropped like regular file pages — they must go through the swap/zswap
+> path. This is why `active_anon` shows 1,708M even though `anon = 0`.
+
 Under memory pressure, the kernel will:
 1. Drop `inactive_file` (source cache) — free, silent, no swap needed
 2. Eventually compress `active_anon` (shmem ramdisk) — must go to zswap first
@@ -918,18 +936,30 @@ In zswap (compressed in RAM):
   stored_pages = 1,470,020 pages × 4,096 bytes = 6,021,201,920 bytes = 5,742M
   compressed to pool_total_size = 2,437,136,384 bytes = 2,325M
 
-On disk (written through):
-  9,517M − 5,742M = 3,775M on disk
-  ← from dev containers with memory.zswap.writeback=1
+SwapCached (in RAM, still hold swap slot):
+  ≈ 3,632M  (from /proc/meminfo SwapCached)
+  These pages were decompressed back to RAM on refault, but their swap
+  slot was kept lazily. They are IN RAM, NOT on disk.
+
+On disk (actually written to swap partition):
+  9,517M − 5,742M − 3,632M = ~143M  (rounding noise; effectively 0)
+  Confirmed by: written_back_pages=0 (zswap debug)
+               pswpout=0 (/proc/vmstat, system-wide)
 
 Game cgroup contribution to disk: 0M
-  Confirmed by: zswpwb=0, pswpout=0
+  Confirmed by: zswpwb=0, pswpout=0 (in game's memory.stat)
 ```
+
+> **Correction note:** Earlier versions of this guide used the formula
+> `/proc/swaps Used − stored_pages×4K = 3,775M` and labelled it "on disk".
+> That was wrong — it omitted `SwapCached` (pages in RAM with lazy swap
+> slots). The correct formula subtracts `SwapCached` too, yielding ~0M.
+> See §12.7 for the full cross-check methodology.
 
 ```
                            ┌─ SWAP ADDRESS SPACE: 9,517M used of 69G ─────────┐
                            │                                                    │
-                           │  ┌─ In zswap pool (RAM) ──────────────────────┐  │
+                           │  ┌─ In zswap pool (compressed in RAM) ─────────┐  │
                            │  │  5,742M uncompressed → 2,325M compressed   │  │
                            │  │  ┌─ Game cgroup ─────────────────────────┐ │  │
                            │  │  │  5,742M → 1,806M  (3.18×)            │ │  │
@@ -937,9 +967,15 @@ Game cgroup contribution to disk: 0M
                            │  │  Other cgroups: ~0M → 519M remnant        │  │
                            │  └────────────────────────────────────────────┘  │
                            │                                                    │
-                           │  ┌─ On disk (written through) ─────────────────┐  │
-                           │  │  3,775M                                     │  │
-                           │  │  Dev containers (writeback=1) — game=0M    │  │
+                           │  ┌─ SwapCached (in RAM, lazy swap slot) ───────┐  │
+                           │  │  ~3,632M                                    │  │
+                           │  │  Pages decompressed back to RAM but slot   │  │
+                           │  │  not yet freed — NOT on disk               │  │
+                           │  └────────────────────────────────────────────┘  │
+                           │                                                    │
+                           │  ┌─ On disk (actually written to partition) ───┐  │
+                           │  │  ~0M                                        │  │
+                           │  │  written_back_pages=0, pswpout=0 confirm   │  │
                            │  └────────────────────────────────────────────┘  │
                            └────────────────────────────────────────────────────┘
 ```
@@ -952,10 +988,10 @@ Read from `/sys/kernel/debug/zswap/`:
 |---|---|---|
 | `stored_pages` | 1,470,020 | Pages currently in zswap pool |
 | `pool_total_size` | 2,437,136,384 (2,325M) | Compressed pool size in RAM |
-| `written_back_pages` | (non-zero) | Pages flushed from zswap to disk — dev containers |
-| `reject_compress_poor` | (non-zero) | Pages too incompressible; sent to disk directly |
-| `reject_alloc_fail` | (from listing) | Pool allocation failures |
-| `stored_incompressible_pages` | (from listing) | Pages stored despite poor compression |
+| `written_back_pages` | 0 | Pages flushed from zswap to disk — zero confirms nothing on disk |
+| `reject_compress_poor` | 0 | Pages too incompressible; would be sent to disk directly |
+| `reject_alloc_fail` | 0 | Pool allocation failures |
+| `stored_incompressible_pages` | 0 | Pages stored despite poor compression |
 
 `reject_compress_poor`: when zstd cannot achieve better than a threshold ratio (default:
 pages that would expand), the page is rejected from zswap and goes directly to disk. A
@@ -966,71 +1002,159 @@ zswap entirely.
 
 ## §10 — Reading the monitor output correctly
 
-### Monitor line anatomy
+> As of 2026-07-07 the monitor is `soulmask-zswap-monitor.py` (stdlib python3;
+> `soulmask-zswap-monitor.sh` is now a 2-line exec wrapper for CLI compat). It
+> replaces the old `rflt/s` + `mflt/s` pair with a genuine split of refault
+> sources — see "Why `rf_z/s` and `rf_d/s` replace `rflt/s`/`mflt/s`" below —
+> adds the file-refault stream `rf_f/s` (swappiness validation, MEASUREMENTS.md
+> M5) and a `file` column (`--wide` table / always in `--json`), and fixes the
+> `disk_sw` SwapCached bug called out in the old warning box here (now
+> subtracted correctly by default). Multi-instance hosts: `-c/--container
+> <uuid-prefix|id-prefix|name-substring>` selects which WSServer container to
+> monitor; without it the first is used and a notice lists the others (`--json`
+> always carries the selected container id + name). Run
+> `soulmask-zswap-monitor.py --help` for the full column guide — including a
+> mapping of these per-cgroup columns onto htop's per-process M_VIRT/RES/SHR/
+> CODE/DATA view; this section mirrors it with a live captured example.
+
+### Why `rf_z/s` and `rf_d/s` replace `rflt/s` / `mflt/s`
+
+Per-cgroup `memory.stat` has two counters that look like they should tell you
+whether the game is stalling on RAM-speed zswap decompression or on
+millisecond-scale real disk I/O, but neither does on its own:
+
+- `workingset_refault_anon` counts **all** anon refaults — pages faulted back
+  in whether they came from the zswap compressed pool (µs) or the real swap
+  device (ms). It does not distinguish.
+- `pgmajfault` counts **all** major faults — the same anon refaults above
+  *plus* file-backed major faults. It is neither anon-only nor zswap-only.
+
+Because `memory.zswap.writeback` mostly keeps cold pages in zswap, both
+counters used to move in lockstep — which is exactly why operators watching
+the old script kept seeing `rflt/s == mflt/s` and could not tell which path
+was active. `memory.stat` also exposes `zswpin` (pages actually decompressed
+FROM zswap), which lets the monitor split the aggregate:
 
 ```
-time     | RAM    z_pool  out     rflt/s    mflt/s    | p_RAM  p_z    p_out  p_rf/s | disk_sw
-04:02:04 | 5873M  1824M   9527M   1/s       1/s       | 3423M  0M     0M     0/s    | 3724M
+rf_z/s (zswap refault rate) = Δzswpin / Δt                                    (~µs/page   — healthy)
+rf_d/s (disk refault rate)  = max(0, Δworkingset_refault_anon − Δzswpin) / Δt  (~ms/page   — THIS predicts lag)
+```
+
+The same split is applied to the pak slice as `p_rfz/s` / `p_rfd/s`.
+
+A third refault stream is shown separately: `rf_f/s` = Δ`workingset_refault_file`/Δt
+— FILE-cache refaults. Every file refault is a real disk read (there is no
+zswap for file pages), so a sustained rate means the kernel is dropping
+needed file pages — often the game binary's own executable code. This is the
+swappiness-validation signal from MEASUREMENTS.md M5: `rf_f/s ≈ 0` with
+modest `rf_z/s` and `rf_d/s ≈ 0` confirms `swappiness=100` is the right
+trade on this host.
+
+### Monitor line anatomy
+
+Live capture, `sudo soulmask-zswap-monitor.py 2`, 2026-07-07 (3 players):
+
+```
+time     | RAM    anon   z_pool  z_eq    rf_z/s   rf_d/s   rf_f/s   | p_RAM  p_z    p_disk  p_rfz/s  p_rfd/s  | disk_sw
+04:10:59 | 5800M  3756M  1831M   5810M   0/s      0/s      0/s      | 928M   786M   778M    0/s      0/s      | 1003M
+```
+
+With `--wide` a `file` column is inserted after `anon` (same capture, `--wide`):
+
+```
+time     | RAM    anon   file   z_pool  z_eq    rf_z/s   rf_d/s   rf_f/s   | p_RAM  p_z    p_disk  p_rfz/s  p_rfd/s  | disk_sw
+04:11:07 | 5806M  3763M  183M   1831M   5810M   0/s      0/s      0/s      | 928M   786M   778M    0/s      0/s      | 1003M
 ```
 
 Column by column:
 
 | Column | Source | Value | Meaning |
 |---|---|---|---|
-| `RAM` | `memory.current` | 5,873M | All pages in physical RAM (anon + file + kernel incl. zswap pool) |
-| `z_pool` | `memory.zswap.current` | 1,824M | Compressed bytes in zswap (denominator for true compression ratio) |
-| `out` | `memory.swap.current` | 9,527M | Pages with swap slots = zswapped(5,742M) + swapcached(3,730M). **NOT "on disk"** |
-| `rflt/s` | `workingset_refault_anon` delta | 1/s | Decompress events per second — PRIMARY pressure indicator |
-| `mflt/s` | `pgmajfault` delta | 1/s | Major faults per second (≈ rflt/s confirms no disk I/O) |
-| `p_RAM` | pak `memory.current` | 3,423M | Pak pages in RAM (1,708M safe shmem + 1,711M evictable file cache) |
-| `p_z` | pak `memory.zswap.current` | 0M | Pak compressed in zswap (0 = pak fully in RAM) |
-| `p_out` | pak `memory.swap.current` | 0M | Pak with swap slots (0 = nothing evicted from pak) |
-| `p_rf/s` | pak `workingset_refault_anon` delta | 0/s | Pak decompress events (0 = zero pak eviction) |
-| `disk_sw` | `/proc/swaps Used − stored_pages×4K` | 3,724M | System-wide pages on disk (dev containers; game=0M) |
+| `RAM` | `memory.current` | 5,800M | All pages in physical RAM (anon + file + kernel incl. the zswap pool itself) |
+| `anon` | `memory.stat` `anon` | 3,756M | Resident anonymous RAM only — excludes the zswap pool |
+| `file` (`--wide` table only; always in `--json` as `file_bytes`) | `memory.stat` `file` | 183M | Page cache charged to the cgroup: binary/library text, mmap'd data files, tmpfs/shmem. Evicting these is "free" for the kernel but re-reading always costs a real disk read — watch `rf_f/s` |
+| `z_pool` | `memory.zswap.current` | 1,831M | Compressed bytes in zswap (denominator for true compression ratio) |
+| `z_eq` | `memory.stat` `zswapped` | 5,810M | Uncompressed-equivalent size of cold-in-zswap pages. True ratio = `z_eq / z_pool` = 5,810/1,831 ≈ 3.17×. **Not** `memory.swap.current` (that also counts swapcached pages still resident in RAM) |
+| `rf_z/s` | `Δzswpin / Δt` | 0/s | Zswap refaults/s — RAM-speed decompress events. Normal, expected |
+| `rf_d/s` | `Δ(workingset_refault_anon − zswpin) / Δt` | 0/s | Disk refaults/s — anon pages faulted in from the **real** swap device. Sustained >0 is the column that predicts in-game lag |
+| `rf_f/s` | `Δworkingset_refault_file / Δt` | 0/s | File-cache refaults/s — every one is a disk read (no zswap for file pages). Sustained >0 = kernel dropping needed file pages (game code!). Swappiness-validation signal, MEASUREMENTS.md M5 |
+| `p_RAM` | pak `memory.current` | 928M | Pak pages resident in RAM (ramdisk shmem + evictable source file cache) |
+| `p_z` | pak `memory.zswap.current` | 786M | Pak bytes compressed in zswap |
+| `p_disk` | pak `memory.swap.current − memory.stat zswapped − memory.stat swapcached` | 778M | Pak pages actually on the real disk, clamped ≥0 |
+| `p_rfz/s` | `Δzswpin / Δt` (pak) | 0/s | Pak zswap refaults/s |
+| `p_rfd/s` | `Δ(workingset_refault_anon − zswpin) / Δt` (pak) | 0/s | Pak disk refaults/s |
+| `disk_sw` | `/proc/swaps Used − /proc/meminfo SwapCached − zswap stored_pages×4096` (root/debugfs) | 1,003M | System-wide pages **actually on real disk** (every cgroup, not just Soulmask), clamped ≥0. Correctly subtracts SwapCached by default (see warning box below for the historical bug this fixes). Suffixed `*` when the zswap debugfs term could not be read (non-root, or debugfs unmounted) — the value is then an overestimate |
 
 ### Common misreadings
 
-**`out` is not the process size.** `out = 9,527M` looks like "Soulmask is using 9.5G".
-It is not. It is the uncompressed size of pages with swap slots = zswapped + swapcached.
-The total unique anon footprint is `anon + zswapped = 3,872 + 5,742 = 9,614M`.
+**`RAM` includes the compressed pool.** When `RAM = 5,800M`, that includes
+1,831M of compressed data inside the kernel. The "live process" RAM is closer
+to `anon + file = 3,756 + 183 = 3,939M`; the rest is kernel overhead and
+zswap.
 
-**`out / z_pool` is not the compression ratio.** `9,527 / 1,824 = 5.22×` is wrong.
-The true ratio is `zswapped / zswap = 5,742 / 1,806 = 3.18×` (from memory.stat).
+**These are per-CGROUP numbers, not htop's per-process numbers.** htop's
+M_VIRT/RES/SHR/CODE/DATA come from `/proc/<pid>/status` for one process; our
+columns aggregate all processes in the container plus kernel memory and
+tmpfs/page cache charged to the cgroup. `RAM` is typically *larger* than the
+sum of the processes' RES (RES never counts kernel structures or the zswap
+pool); `anon` ≈ the DATA-ish heap/stack portion of RES; `file` overlaps
+htop's CODE/SHR plus non-mapped charged page cache. Nothing in htop, `free`,
+`vmstat`, or `docker stats` exposes `z_pool`/`z_eq`/`zswpin` or the
+zswap-vs-disk refault split — per-cgroup `memory.stat` is the only source.
+Full mapping: `soulmask-zswap-monitor.py --help`.
 
-**`RAM` includes the compressed pool.** When `RAM = 5,873M`, that includes 1,806M of
-compressed data inside the kernel. The "live process" RAM is closer to `anon + file =
-3,872 + 204 = 4,076M`. The rest is kernel overhead and zswap.
+**`z_eq / z_pool` is the true compression ratio — `memory.swap.current` is
+not the numerator.** `memory.swap.current` also counts swapcached pages
+still resident in RAM, which inflates any ratio computed from it. Always use
+`memory.stat zswapped` (the `z_eq` column) as the numerator.
 
-**`p_RAM = 3,423M` is not all ramdisk.** It is 1,708M of actual ramdisk (shmem) plus
-1,711M of source pak file cache (silently evictable). The ramdisk is only 1,708M
-currently resident.
+**`p_RAM` is not all ramdisk.** It mixes actual ramdisk (shmem) with source
+pak file cache (silently evictable, not protected by `memory.min`). A `p_RAM`
+number by itself does not tell you how much is truly pinned.
 
-**`disk_sw` is system-wide.** When `disk_sw = 3,724M`, that does NOT mean the game
-has 3,724M on disk. The game has 0M on disk (`zswpwb=0`, `pswpout=0`). The 3,724M
-is from dev containers with `writeback=1`.
+**`rf_z/s` moving while `rf_d/s` stays 0 is healthy**, not a problem — it is
+compression traffic at RAM speed. Only sustained `rf_d/s > 0` indicates real
+disk I/O in the game's anon path.
+
+> **Historical bug (fixed 2026-07-07):** the previous bash monitor's
+> `_disk_sw_mb` computed `/proc/swaps Used − stored_pages×4K` **without**
+> subtracting SwapCached, which could show `disk_sw` several GB higher than
+> the true on-disk amount (SwapCached pages are in RAM with a lazy swap slot,
+> not on disk). `soulmask-zswap-monitor.py` subtracts `/proc/meminfo
+> SwapCached` by default; see §12.7 for the full cross-check methodology.
 
 ### What values are suspicious
 
 | Signal | Observation | What it means |
 |---|---|---|
-| `rflt/s > 500` sustained | Steady background refault | memory.min too low; hot set being pushed to zswap |
-| `rflt/s > 5000` for >60s | Extended area-load spike | Floor may be too low or new zone is very large; watch if it decays |
-| `mflt/s >> rflt/s` | Major faults exceed refaults | Disk reads in game cgroup — check pswpin in memory.stat |
-| `out` growing without bound | memory.swap.current rising | Game's cold set growing (new zones) or swapcached growing (normal churn) |
+| `rf_d/s > 0` sustained | Disk refaults in the game cgroup | Real disk I/O on the anon path — the direct lag-predicting signal; check `memory.zswap.writeback` and zswap pool headroom |
+| `rf_z/s > 500` sustained | Steady background zswap refault | memory.min too low; hot set being pushed to zswap (still RAM-speed, but watch for `rf_d/s` following it) |
+| `rf_z/s > 5000` for >60s | Extended area-load spike | Floor may be too low or new zone is very large; watch if it decays |
+| `rf_f/s > 0` sustained | File-cache refaults | Kernel dropping needed file pages (game binary code!) — every one is a disk read. Cache too small for the working set; cap anon hogs rather than lowering swappiness (MEASUREMENTS.md M5) |
+| `z_eq` growing without bound | Cold-in-zswap set rising | Game's cold set growing (new zones) or eviction pressure increasing |
 | `z_pool` approaching RAM budget | Compressed pool very large | zswap under pressure; may start writing through to disk |
-| `p_z > 0` | Pak pages in zswap | Pak is being evicted — Docker build pressure hit the pak slice |
-| `p_out > 0 && p_z = 0` | Pak has swap slots, no zswap | Pak went directly to disk (zswap pool full at eviction time) |
-| `disk_sw` growing fast | Dev containers filling disk swap | Docker build under memory pressure; zswap saturated |
+| `p_z > 0` | Pak pages in zswap | Pak is being evicted — memory pressure hit the pak slice |
+| `p_disk > 0` | Pak pages on real disk | zswap was full or writeback was on when these pak pages were evicted |
+| `p_rfd/s > 0` | Pak disk refaults | Pak reads hitting the real device — check pak `memory.min` |
+| `disk_sw` growing fast | Something bypassing zswap | Dev containers or other cgroups under memory pressure; zswap saturated |
 | `memory.events.high` growing fast | Game hitting ceiling often | memory.high too tight for current player count |
 | `pgscan_direct >> pgscan_kswapd` | All reclaim is synchronous | Normal when memory.high is active; causes game thread stalls |
+| band note printed (stderr) mid-run | memory.min/high/writeback changed | The monitor re-reads these every sample and flags live changes made by `setup-cgroups.sh` / the cgroup watcher |
 
 ### Normal operation baseline (3 players, steady state)
 
 ```
-rflt/s:  0–30       healthy; hot set comfortably in RAM
+rf_z/s:  0–30       healthy; hot set comfortably in RAM
          30–100     acceptable; light background activity
          100–500    sustained → raise memory.min
          5k–40k     area load event → normal, watch for decay within 5 min
+
+rf_d/s:  0           healthy — no anon pages hitting the real disk
+         > 0 sustained → the direct in-game-lag signal; investigate immediately
+
+rf_f/s:  0           healthy — file cache big enough, code pages staying resident
+         > 0 sustained → kernel evicting needed file pages; every refault is a
+                         disk read (see MEASUREMENTS.md M5 before touching swappiness)
 
 memory.events.high:  growing < 10/s → ceiling has headroom
                      growing > 100/s → ceiling too tight
@@ -1039,6 +1163,388 @@ PSI some avg10:  0.00–0.10%   → no stall
                  0.10–1.00%   → mild stall
                  > 1.00%      → players noticing latency
 
-p_z:  0M   → pak fully in RAM (ideal)
-p_z > 0M   → pak being evicted; adjust pak memory.min upward
+p_z:     0M   → pak fully in RAM (ideal)
+         > 0M → pak being evicted; adjust pak memory.min upward
+p_disk:  0M   → no pak pages on real disk (ideal)
+         > 0M → zswap was full/writeback engaged at eviction time; watch p_rfd/s
 ```
+
+---
+
+## §11 — Other cgroup controllers and files
+
+The game cgroup directory exposes controllers beyond memory, CPU, and IO.
+This section documents every remaining file visible in the cgroup directory,
+with live values from the running Soulmask container.
+
+### 11.1 hugetlb — hugepage controller
+
+```
+hugetlb.1GB.current  = 0
+hugetlb.1GB.max      = max
+hugetlb.1GB.events   = max 0
+hugetlb.2MB.current  = 0
+hugetlb.2MB.max      = max
+hugetlb.2MB.events   = max 0
+```
+
+Hugepages (`hugetlb`) are a separate memory pool from the regular page allocator.
+`hugetlb.{1GB,2MB}.current` counts bytes of hugepage memory charged to this cgroup
+for each supported size. `.max` is the limit (here `max` = unlimited). `.events` reports
+`max` (limit breach count) and `oom` events.
+
+All zero here because the game uses anonymous memory backed by regular 4KB pages.
+Transparent huge pages (`anon_thp`, `file_thp` in memory.stat) are a different mechanism —
+they are collapsed by the kernel from regular pages, not pre-allocated from the hugepage
+pool. If an application explicitly `mmap`s hugepages (e.g., a database using `MAP_HUGETLB`),
+the charge would appear here, not in `memory.current`'s `anon` counter.
+
+The `rsvd` variants (`hugetlb.1GB.rsvd.current`, `.rsvd.max`) track *reserved* hugepages —
+guarantees made by `mmap(MAP_HUGETLB)` ahead of actual fault. Also zero.
+
+The `numa_stat` variants (`hugetlb.1GB.numa_stat`, `hugetlb.2MB.numa_stat`) provide per-NUMA-node
+hugepage accounting. All zero on this single-NUMA VM.
+
+### 11.2 pids — process count limiter
+
+```
+pids.current = 34
+pids.max     = 512
+pids.peak    = 35
+pids.events  = (empty — no limit breach events)
+```
+
+`pids.current` counts the number of processes in this cgroup's process list (`cgroup.procs`).
+34 is typical for a Soulmask container: the main `WSServer-Linux-Shipping` process plus its
+threads (Linux counts threads as pids in this controller).
+
+`pids.max = 512` is a safety cap. If the game ever spawned > 512 processes, new `fork()` calls
+would fail with `-EAGAIN` instead of succeeding. This prevents a fork-bomb or runaway process
+creation from consuming all host PIDs.
+
+`pids.peak` records the historical maximum (35) — the game has never come close to the limit.
+
+### 11.3 misc — miscellaneous cgroup controller
+
+```
+misc.current = (empty)
+misc.max     = (empty)
+misc.peak    = (empty)
+misc.events  = (empty)
+```
+
+The `misc` controller tracks resources that don't fit the page-based memory model: primarily
+**GPU device memory** (VRAM) for AI/ML accelerators, and other device-private allocations.
+It is empty here because this host has no GPU or accelerator hardware.
+
+If a GPU were present (e.g., an NVIDIA device with the misc cgroup driver), `misc.current`
+would show VRAM bytes charged to this cgroup, and `misc.max` would cap it. The `misc.peak`
+file records the historical maximum — analogous to `memory.peak` but for device memory.
+
+### 11.4 rdma — RDMA resource controller
+
+```
+rdma.current = (empty)
+rdma.max     = (empty)
+```
+
+Tracks RDMA (Remote Direct Memory Access) resources: HCA handles, PDs, MRs, QPs, CQs.
+Empty because this host has no RDMA-capable hardware (no InfiniBand or RoCE NICs).
+
+### 11.5 memory.numa_stat — per-NUMA-node breakdown
+
+```
+anon            N0=4,259,344,384
+file            N0=185,643,008
+shmem           N0=4,096
+...
+active_anon     N0=4,266,680,32
+inactive_anon  N0=0
+```
+
+`memory.numa_stat` decomposes every `memory.stat` field by NUMA node. On this single-NUMA
+VM, all values are under `N0` and mirror `memory.stat` exactly. On a multi-socket host, this
+file is essential for diagnosing memory imbalance: if most of the game's anon is on `N1` but
+the CPU is on `N0`, every memory access pays a cross-NUMA penalty (~2× latency).
+
+The fields mirror `memory.stat` (anon, file, shmem, kernel_stack, pagetables, slab, workingset_*,
+pgscan/steal, etc.) but tagged with their node ID. When NUMA balancing is active, additional
+counters in `memory.stat` (`numa_pages_migrated`, `numa_hint_faults`, `numa_pte_updates`) track
+migration activity — all zero here.
+
+### 11.6 memory.peak and memory.swap.peak — historical maximums
+
+```
+memory.peak       = 11,545,309,184 = 11,000M
+memory.swap.peak  = 10,119,725,056 = 9,640M
+```
+
+`memory.peak` is the highest value `memory.current` has reached since the cgroup was created.
+11G is far above the current 6,060M — this was during the calibration squeeze tests when
+`memory.high` was temporarily raised to 8G and the game loaded multiple zones before being
+squeezed back.
+
+`memory.swap.peak` is the highest `memory.swap.current` — 9,640M vs current 9,537M. The swap
+footprint has been relatively stable; the peak is only ~1% above current.
+
+These are useful for capacity planning: `memory.peak` tells you how much RAM the game *can*
+consume if you let it. If you set `memory.max` (hard limit), it must be above `memory.peak` or
+the game will OOM during its next spike.
+
+### 11.7 memory.oom.group — OOM group kill toggle
+
+```
+memory.oom.group = 0
+```
+
+When `memory.oom.group = 1`, an OOM event in this cgroup kills **all** processes in the cgroup
+(including children), not just the single largest process. This is useful for containers where
+all processes are part of one logical service — killing only one leaves the rest in a broken state.
+
+Soulmask has `oom.group = 0` (disabled) because `memory.max = max` (no hard limit, so no OOM
+ever fires). If `memory.max` were set, enabling `oom.group = 1` would ensure a clean container
+restart rather than a half-dead game.
+
+### 11.8 sec_pagetables — secondary page tables
+
+```
+sec_pagetables = 0
+```
+
+`sec_pagetables` tracks memory used for secondary page tables — the shadow page tables used by
+KVM for virtual machine guests (EPT/NPT on Intel/AMD). Zero here because Soulmask is a
+container, not a KVM guest. If this host were running VMs (e.g., via libvirt), each VM's
+EPT page tables would be charged to the VM's cgroup here.
+
+This field was added in kernel 6.x alongside the growth of KVM-based cloud workloads.
+
+### 11.9 cgroup-core files
+
+```
+cgroup.controllers = cpuset cpu io memory hugetlb pids rdma misc
+cgroup.subtree_control = (enabled controllers for children)
+cgroup.procs    = (list of PIDs in this cgroup)
+cgroup.threads  = (list of thread IDs)
+cgroup.events   = populated:1 frozen:0
+cgroup.stat     = nr_descendants 0 nr_dying_descendants 0
+cgroup.type     = domain
+```
+
+`cgroup.controllers` lists all controllers available in this cgroup. `cgroup.subtree_control`
+controls which controllers are enabled for *children* cgroups (this is a leaf cgroup — a Docker
+container scope — so it has no children).
+
+`cgroup.events` reports `populated` (1 = has live processes) and `frozen` (1 = cgroup is frozen
+via `cgroup.freeze`). `cgroup.stat` counts descendant cgroups (0 here — leaf).
+
+`cgroup.procs` vs `cgroup.threads`: `cgroup.procs` lists process-group leaders; `cgroup.threads`
+lists individual threads. In a threaded cgroup (where `cgroup.type = threaded`), threads can be
+assigned independently of processes. This cgroup is `domain` type — processes and their threads
+move together.
+
+`cgroup.pressure` and `cgroup.pressure.local` expose PSI for the cgroup subtree, complementing
+the per-controller `memory.pressure`, `cpu.pressure`, `io.pressure` files.
+
+---
+
+## §12 — System-wide sources for memory and zswap behaviour
+
+Cgroup files tell you what a *single container* is doing. To understand the whole system's
+memory and zswap behaviour — especially when multiple cgroups compete — you need several
+other locations. This section is the complete inventory of places to read.
+
+### 12.1 /sys/module/zswap/parameters/ — zswap configuration
+
+```
+enabled                   = Y
+compressor                = zstd
+max_pool_percent          = 30
+accept_threshold_percent  = 90
+shrinker_enabled          = Y
+```
+
+These are the zswap module's boot/runtime parameters. They are the **master configuration** for
+the entire zswap subsystem — not per-cgroup.
+
+| Parameter | Meaning |
+|---|---|
+| `enabled` | Whether zswap is active. `Y` = pages going to swap are intercepted and compressed. |
+| `compressor` | The compression algorithm. `zstd` gives the best ratio (3.18× here). Alternatives: `lzo`, `lz4`, `deflate` (zlib). |
+| `max_pool_percent` | Maximum pool size as a percentage of RAM. At 30% of 16G = 4.8G. If the compressed pool reaches this, `pool_limit_hit` increments and pages are rejected to disk. |
+| `accept_threshold_percent` | Compression acceptance threshold. Pages whose compressed result is larger than `threshold%` of the original page size are rejected (`reject_compress_poor`). At 90%, a 4KB page that compresses to >3.6KB is rejected and goes to disk. |
+| `shrinker_enabled` | When `Y`, the zswap shrinker can write back pages to disk under memory pressure (if `memory.zswap.writeback=1` for the cgroup). When `N`, zswap pages stay in RAM until explicitly freed. |
+
+These can be changed at runtime: `echo zstd | sudo tee /sys/module/zswap/parameters/compressor`
+(change takes effect for new pages; existing pages stay in the old format).
+
+### 12.2 /sys/kernel/debug/zswap/ — zswap runtime statistics
+
+**Requires root** (debugfs is root-only). On this host, debugfs is mounted at
+`/sys/kernel/debug` but `/sys/kernel/debug/zswap/` is permission-denied for non-root.
+
+```
+stored_pages                = 1,439,576
+pool_total_size             = 1,922,043,904  (1,832M)
+written_back_pages          = 0
+reject_compress_poor        = 0
+reject_compress_fail        = 51,611
+reject_alloc_fail           = 0
+reject_kmemcache_fail       = 0
+reject_reclaim_fail         = 0
+decompress_fail             = 0
+pool_limit_hit              = 0
+stored_incompressible_pages = 0
+```
+
+These are **system-wide** counters across all cgroups. Each one:
+
+| Counter | Value | Meaning |
+|---|---|---|
+| `stored_pages` | 1,439,576 | Pages currently in the zswap pool. ×4KB = 5,622M uncompressed content. This is the system-wide equivalent of `zswapped` in memory.stat. |
+| `pool_total_size` | 1,922,043,904 (1,832M) | Total compressed pool size in RAM. This is the system-wide equivalent of `memory.zswap.current`. Ratio: 5,622/1,832 = 3.07× (system-wide compression ratio — slightly below the game's 3.18× because other cgroups have less compressible data). |
+| `written_back_pages` | 0 | Pages flushed from zswap to the disk swap partition. **Zero confirms nothing has ever been written through to disk.** This is the system-wide truth that the game's `zswpwb=0` reflects. |
+| `reject_compress_poor` | 0 | Pages rejected because compression didn't meet `accept_threshold_percent`. These go directly to disk swap. Zero here — all pages compressed acceptably. |
+| `reject_compress_fail` | 51,611 | Pages where the compressor itself failed (e.g., memory allocation during compression). These go to disk. 51K is small — ~0.003% of total pages. |
+| `reject_alloc_fail` | 0 | Pool memory allocation failure. The pool couldn't grow. Zero — pool never hit `max_pool_percent`. |
+| `reject_kmemcache_fail` | 0 | Kernel slab cache allocation failure during zswap operation. Zero. |
+| `reject_reclaim_fail` | 0 | Reclaim failure — could not free space in the pool. Zero. |
+| `decompress_fail` | 0 | Decompression failure (corruption or memory error). Zero. |
+| `pool_limit_hit` | 0 | Pool reached `max_pool_percent`. Zero — pool (1,832M) is well under the 4.8G limit. |
+| `stored_incompressible_pages` | 0 | Pages stored despite failing compression (fallback). Zero. |
+
+**Key diagnostic**: if `pool_limit_hit > 0` or `reject_alloc_fail > 0`, the zswap pool is too
+small — either raise `max_pool_percent` or reduce the swap workload. If `reject_compress_poor > 0`,
+some pages are too random/encrypted to compress and bypass zswap entirely.
+
+### 12.3 /proc/vmstat — system-wide page reclaim and swap counters
+
+`/proc/vmstat` is the system-wide counterpart of `memory.stat`. Key fields for zswap/swap analysis:
+
+```
+# Workingset (system-wide)
+workingset_refault_anon  = 4,619,943     ← matches game cgroup (~4.6M): game dominates
+workingset_refault_file  = 415,404
+workingset_activate_anon = 1,306,362
+
+# Swap
+pswpin  = 0        ← system-wide: ZERO pages read from disk swap
+pswpout = 0        ← system-wide: ZERO pages written to disk swap
+```
+
+**`pswpout = 0` system-wide is the strongest confirmation that nothing is on disk.** If any
+cgroup had written to disk swap, this would be non-zero. Combined with `written_back_pages = 0`
+from zswap debug, this is conclusive: all swap activity is zswap (compressed in RAM), not disk.
+
+Other useful `/proc/vmstat` fields:
+
+```
+nr_anon_pages   = 1,776,926    ← ~6.9G anon in RAM (system-wide, all cgroups)
+nr_file_pages   = 2,337,256    ← ~9.1G file cache (system-wide)
+nr_shmem        = 439,450      ← ~1.7G shmem (≈ pak ramdisk)
+nr_swapcached   = 990,946      ← ~3.9G swapcached (system-wide, in RAM)
+
+# kswapd (background reclaim daemon)
+pgscan_kswapd   = 465,529      ← system-wide kswapd scanned pages
+pgsteal_kswapd  = 464,924      ← system-wide kswapd reclaimed pages
+```
+
+Note that `pgscan_kswapd > 0` system-wide but `pgscan_kswapd = 0` in the game cgroup: background
+reclaim is happening (for other cgroups and the root cgroup), but the game cgroup's reclaim is
+100% synchronous direct reclaim (as documented in §4.C).
+
+### 12.4 /proc/pressure/{memory,cpu,io} — system-wide PSI
+
+The game cgroup has its own PSI files (`memory.pressure`, `cpu.pressure`, `io.pressure`).
+System-wide PSI lives in `/proc/pressure/`:
+
+```
+/proc/pressure/memory:
+  some avg10=0.00 avg60=0.00 avg300=0.00 total=57,052,906
+  full avg10=0.00 avg60=0.00 avg300=0.00 total=57,007,655
+
+/proc/pressure/cpu:
+  some avg10=0.20 avg60=0.20 avg300=0.27 total=508,374,088
+  full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+
+/proc/pressure/io:
+  some avg10=0.00 avg60=0.05 avg300=0.13 total=34,148,663
+  full avg10=0.00 avg60=0.05 avg300=0.13 total=23,167,662
+```
+
+The system-wide memory PSI `total` (57s) is slightly below the game cgroup's `total` (77s)
+because the cgroup includes calibration squeeze tests that were more aggressive than normal
+system pressure. In normal operation they should track closely — the game is the primary
+memory consumer.
+
+The IO PSI shows mild background activity (`avg60=0.05%`) — this is Docker/dev workload doing
+small I/O, not the game (`io.stat` shows the game's IO is startup-only).
+
+### 12.5 /proc/sys/vm/ — kernel memory reclaim tunables
+
+```
+swappiness               = 100
+watermark_scale_factor   = 50
+```
+
+**`swappiness = 100`** is unusual — the default is 60. At 100, the kernel treats anonymous and
+file-backed pages equally for reclaim decisions, and is more willing to swap anonymous pages
+to zswap. This is intentional for this zswap-centric architecture: with zswap (compression in
+RAM) as the swap backend, swapping anon pages is cheap (~2-5µs decompress), so a high swappiness
+encourages the kernel to keep file cache (which requires disk I/O to reclaim) and compress cold
+anon pages instead.
+
+**`watermark_scale_factor = 50`** (default) controls how aggressively kswapd wakes up. The
+factor multiplies the base watermark to determine the high/low/free watermarks. At 50, kswapd
+wakes when free memory drops to ~1.5% of RAM below the high watermark. Higher values make kswapd
+more proactive (earlier background reclaim) at the cost of more CPU spent on reclaim.
+
+Other relevant tunables in `/proc/sys/vm/` (not modified on this host):
+- `min_free_kbytes` — minimum free memory reserve (kernel keeps at least this much free)
+- `vfs_cache_pressure` — tendency to reclaim dentry/inode cache vs page cache (default 100)
+- `dirty_ratio` / `dirty_background_ratio` — when sync writeback of dirty pages kicks in
+- `overcommit_memory` / `overcommit_ratio` — virtual memory overcommit policy
+
+### 12.6 /proc/meminfo — the system-wide summary
+
+The guide's §9 covers the key fields. Two additional fields worth noting:
+
+```
+SwapTotal = 72,348,664 KiB = 69.9G
+SwapFree  = 62,581,660 KiB = 60.5G
+```
+
+The swap partitions total 69.9G (two ~35G partitions on vda6+vda7). Used = 9.5G, free = 60.5G.
+The large swap space is the safety valve: if zswap ever hits `max_pool_percent` (4.8G) or
+`reject_compress_poor` climbs, the excess flows to disk. With 60G of disk swap headroom, the
+system can absorb even a catastrophic zswap failure without OOM.
+
+### 12.7 Cross-referencing cgroup vs system-wide data
+
+The definitive way to verify "is anything on disk?":
+
+```
+1. /proc/vmstat: pswpout = 0          → no direct-to-disk writes anywhere
+2. /sys/kernel/debug/zswap/written_back_pages = 0  → no zswap→disk writebacks
+3. /sys/kernel/debug/zswap/stored_pages × 4K ≈ /proc/meminfo Zswapped  → all swap is in zswap
+4. /proc/meminfo SwapCached > 0       → pages in RAM with lazy swap slots (not on disk)
+5. Sum of all cgroup pswpout = 0       → no cgroup wrote to disk
+```
+
+If all five agree (as they do now), **nothing is on disk swap**. If any disagrees, you have a
+cgroup bypassing zswap or a zswap writeback event.
+
+The cgroup-local confirmation: the game cgroup has `zswpwb = 0` and `pswpout = 0` (§4.E), which
+means the game specifically never touched disk. The system-wide checks above confirm that
+*nothing else* touched disk either — so the `disk_sw` monitor column should read ~0M in normal
+operation, not 3,700M.
+
+### 12.8 /sys/fs/cgroup/ root cgroup
+
+The root cgroup (`/sys/fs/cgroup/`) aggregates all cgroups. Its `memory.stat` and `memory.current`
+represent the entire system's memory usage minus whatever is not cgroup-accountable (some kernel
+structures). Reading the root cgroup's memory files is equivalent to `/proc/meminfo` but in
+cgroup format, useful for cross-checking.
+
+For example, the root cgroup's `anon` should approximately equal `/proc/meminfo`'s `AnonPages`,
+and root `shmem` should equal `Shmem`. Divergence indicates timing or accounting differences
+between the two subsystems.

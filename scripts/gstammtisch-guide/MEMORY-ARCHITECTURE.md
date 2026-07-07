@@ -117,13 +117,13 @@ The goal: **Soulmask always preempts dev work and is the last thing reclaimed; d
 ├── (Soulmask docker scope)        ← PROTECTED
 │     memory.min  = <DAMON hot+warm>   hard floor; kernel OOMs others before dipping below
 │     memory.low  = 12G                best-effort protection; last to be reclaimed
-│     memory.zswap.writeback = 0       keep its pages in the FAST pool, never proactively to disk
+│     memory.zswap.writeback = 1       cold tail may drain to disk (2026-07-07; zswap LRU = coldest first)
 │     (cpu.weight high via panel / default 100)
 ├── system.slice/                  ← apt, certbot, sshd, wings… default weights, short-lived
 └── dev-workloads.slice/           ← LOW priority, OOM-first
       memory.high = 8G                 throttle reclaim inside the slice
       memory.max  = 14G                hard cap; OOM fires INSIDE this slice only
-      memory.zswap.writeback = 1       dev pages may drain to disk (absorb the pressure)
+      memory.zswap.writeback = 1       cold dev pages may drain to disk (2026-07-07)
       cpu.weight = 50 / io.weight = 50  Soulmask (100) gets 2:1 under contention
       IO{Read,Write}BandwidthMax=/dev/vda 200M   builds can't saturate the disk
       ManagedOOMMemoryPressure=kill    systemd-oomd kills worst dev offender first
@@ -134,10 +134,10 @@ The goal: **Soulmask always preempts dev work and is the last thing reclaimed; d
 - `memory.low` (**best-effort**) — abundant memory → game keeps up to 12 G; under pressure the kernel reclaims unprotected cgroups first; the game is reclaimed *last*, never immune.
 - `memory.high` (**throttle**) — dev slice over 8 G → allocations throttle + reclaim *within the slice*; slows the offender without killing.
 - `memory.max` (**hard cap → OOM**) — dev slice hits 14 G → OOM kills the largest process *inside dev.slice*; the game is never considered.
-- `memory.zswap.writeback` — `0` on Soulmask: its compressed pages stay in the pool (fault-back in µs, never a disk-ms stutter); `1` on dev: dev pages absorb the disk overflow. This asymmetry is the single most game-friendly setting here.
+- `memory.zswap.writeback` — `1` everywhere since 2026-07-07: zswap's LRU means only the coldest-of-cold pages drain to disk, freeing pool RAM. The game observably carries a ~4G genuinely-cold tail. Gate: if login latency regresses, set the game back to `0` (`SOULMASK_WRITEBACK=0`, see MEASUREMENTS.md M4). The pak slice goes further: `memory.zswap.max=0` (pak is zstd-incompressible, 1.006× — zswap would waste CPU+RAM on it; cold pak goes straight to disk).
 - `cpu.weight` / `io.weight` — proportional under contention only; idle CPU/IO is always available to dev.
 
-**Why swap-IN latency drives these choices:** swap-*out* is async/background; swap-*in* is a synchronous page fault that blocks the process. So protecting the game = keeping its pages where fault-in is fastest (RAM pool, via `memory.zswap.writeback=0` + a correctly-sized `memory.min`).
+**Why swap-IN latency drives these choices:** swap-*out* is async/background; swap-*in* is a synchronous page fault that blocks the process. So protecting the game = keeping its *hot* pages where fault-in is fastest: uncompressed RAM via a correctly-sized (and chain-effective) `memory.min`, warm pages in zswap (µs faults), and only the genuinely-cold tail on disk. The monitor's `rf_d/s` column (disk refaults) is the alarm that cold-tail paging is touching pages that aren't actually cold.
 
 ### 5.0 cgroup v2 knob reference
 
@@ -149,15 +149,19 @@ The goal: **Soulmask always preempts dev work and is the last thing reclaimed; d
 | `memory.low` | soft floor ↑ | Best-effort: cgroup reclaimed last, not immune | Exceeded under severe pressure; good for "prefer to keep" |
 | `memory.high` | soft ceiling ↓ | Throttles allocs + aggressive reclaim; process survives | Useful for test pressure; never use on production game |
 | `memory.max` | hard ceiling ↓ | OOM kill inside the cgroup | One step too far = crash; don't use for live calibration |
-| `memory.zswap.writeback` | 0 / 1 | 0 = pages stay in zswap pool forever (never to disk) | 0 on game (fast faults); 1 on dev/pak (cold drains to disk) |
+| `memory.zswap.writeback` | 0 / 1 | 0 = pages stay in zswap pool forever (never to disk) | 1 everywhere since 2026-07-07 (cold tail → disk); revert game to 0 if logins regress (MEASUREMENTS.md M4) |
 
 **gstammtisch deployed values:**
 
 | Cgroup | `memory.min` | `memory.low` | `memory.high` | `memory.zswap.writeback` |
 |---|---|---|---|---|
-| Soulmask game | 6144M (3 players) | 12G | max | 0 |
-| soulmask-paks.slice | 150M (to calibrate) | — | — | 1 |
+| Soulmask game | 6G (3 players; 5G caused login failures) | 12G | 7G (1G login/area-load transient headroom; 8G if logins regress) | 1 (since 2026-07-07) |
+| soulmask-paks.slice | 150M (calibrate via MEASUREMENTS.md M2) | — | — | zswap bypassed entirely (`memory.zswap.max=0` — pak incompressible) |
 | dev-workloads.slice | 0 | — | 8G | 1 |
+| system.slice (ancestor) | 7G (protection chain for the game floor) | — | — | — |
+| soulmask.slice (ancestor) | 1G (protection chain for the pak floor) | — | — | — |
+
+> ⚠ **Protection chain (found 2026-07-06):** `memory.min`/`memory.low` are *hierarchical* — a cgroup's effective protection is capped by every ancestor's value. The game scope lives under `system.slice` and the pak slice under `soulmask.slice`; without `MemoryMin` on those ancestors both floors are **ineffective** against global reclaim. Since 2026-07-07 `setup-cgroups.sh` asserts the ancestor floors (table above) via `systemctl set-property`. Do NOT set `system.slice` below the game floor — the parent value silently CAPS the child's effective protection.
 
 **IO knobs** (BFQ scheduler required — without BFQ, `io.weight` / `io.bfq.weight` are no-ops):
 
@@ -166,6 +170,29 @@ The goal: **Soulmask always preempts dev work and is the last thing reclaimed; d
 | `io.bfq.weight` | 1–1000 | BFQ proportional share (supersedes `io.weight` on BFQ) |
 | `io.weight` | 1–10000 | Proportional share for other schedulers |
 | `io.max` | `MAJ:MIN rbps=N wbps=N riops=N wiops=N` | Hard rate cap; `max` = unlimited |
+
+### 5.0b Who owns which knob — slice units vs `set-property` vs raw writes
+
+Slices and raw cgroup writes are not competing mechanisms: **systemd is the
+single writer of the cgroup-v2 tree**, and any attribute it manages it will
+re-write from its own records on every `systemctl daemon-reload` (which any
+apt package that ships units triggers). Raw `echo`-writes into managed
+attributes are therefore silently reverted — proven live 2026-07-07 when
+`apt install systemd-oomd` wiped the game band an hour after the watcher had
+applied and verified it (plan §1.5 Finding D). The ownership rule:
+
+| Mechanism | Use for | Persistence |
+|---|---|---|
+| Slice/scope **unit file** (`[Slice]` properties) | Everything systemd has a property for, on *persistent* units: MemoryMin/Low/High/Max, MemoryZSwapMax (v253+), MemoryZSwapWriteback (v255+), CPUWeight, IOWeight, IO*Max, ManagedOOM* | survives reboot + reload |
+| `systemctl set-property` (persistent) | Same properties on existing units without editing files (writes a drop-in under `/etc/systemd/system.control/`) — used for the ancestor floors (system.slice / soulmask.slice MemoryMin) | survives reboot + reload |
+| `systemctl set-property --runtime` | Same properties on **transient docker scopes** (`docker-<id>.scope`) — the only reload-safe way to set knobs on a container systemd created for docker | survives reload; dies with the scope (fine — the watcher re-applies per container start) |
+| Raw write to `/sys/fs/cgroup/...` | ONLY attributes systemd has no property for: `io.bfq.weight`, `memory.reclaim` (one-shot trigger). These are unmanaged, so reloads leave them alone | survives reload; dies with cgroup |
+
+Why not raw-writes only ("one mechanism")? Nothing would survive a reboot or
+even a package install, and you'd be fighting the tree's owner. Why not
+slices only? systemd simply has no property for `io.bfq.weight`, and docker
+scopes can't be given unit *files* (they're transient). The hybrid above is
+the minimal consistent scheme; `setup-cgroups.sh` implements exactly this.
 
 | Cgroup | `io.bfq.weight` | `io.max riops` | `io.max wiops` | `io.max rbps/wbps` |
 |---|---|---|---|---|
@@ -193,7 +220,7 @@ The goal: **Soulmask always preempts dev work and is the last thing reclaimed; d
 
 ### 5.1 Applying it (files)
 - [`dev-workloads.slice`](files/etc/systemd/system/dev-workloads.slice) — standard knobs via systemd (memory, cpu/io weight, IO bandwidth cap, oomd).
-- [`setup-cgroups.sh`](files/usr/local/sbin/setup-cgroups.sh) (run by [`gstammtisch-cgroups.service`](files/etc/systemd/system/gstammtisch-cgroups.service)) — applies the knobs systemd can't: `memory.zswap.writeback` on the dev slice, and locates the Soulmask container's scope to set `memory.min/low` + `memory.zswap.writeback=0`. Re-runnable after the server restarts.
+- [`setup-cgroups.sh`](files/usr/local/sbin/setup-cgroups.sh) (run by [`gstammtisch-cgroups.service`](files/etc/systemd/system/gstammtisch-cgroups.service)) — applies the knobs systemd can't: ancestor `MemoryMin` floors (protection chain), `memory.zswap.writeback` on the dev slice, pak-slice zswap bypass, and locates the Soulmask container's scope to set `memory.min/low/high` + writeback. Re-runnable after the server restarts.
 
 ### 5.2 Pterodactyl / Wings integration (be realistic)
 Wings creates the Soulmask container under Docker's default cgroup parent, and recreates it on updates — moving its cgroup is fragile. Use **defense in depth**:
