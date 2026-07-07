@@ -22,10 +22,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from ciu import governance as governance_mod
 from ciu.workspace_env import (
     REQUIRED_KEYS_CORE,
     WorkspaceEnvError,
     _detect_env_type,
+    _detect_governance_read_iops,
     _detect_public_fqdn,
     generate_ciu_env,
     validate_required_certs,
@@ -426,3 +428,97 @@ class TestGenerateCiuEnvNative:
         # The comment line should mention 'native' not 'bare-metal'
         assert "native" in content
         assert "bare-metal" not in content
+
+
+# ---------------------------------------------------------------------------
+# S15.6 — CIU_GOV_READ_IOPS (ciu env generate integration)
+# ---------------------------------------------------------------------------
+
+class TestDetectGovernanceReadIops:
+    """S15.6 — _detect_governance_read_iops and its wiring into generate_ciu_env."""
+
+    def test_preset_env_value_wins_s2_7(self, monkeypatch):
+        monkeypatch.setenv("CIU_GOV_READ_IOPS", "777")
+        value, note = _detect_governance_read_iops()
+        assert value == "777"
+        assert "explicit" in note
+
+    def _hermetic_baseline_search(self, monkeypatch, tmp_path):
+        """Pin every S15.4 search candidate into tmp so the host state is irrelevant."""
+        monkeypatch.delenv(governance_mod.BASELINE_PATH_ENV_VAR, raising=False)
+        monkeypatch.setattr(
+            governance_mod, "DEFAULT_BASELINE_PATH", tmp_path / "default-baseline.env"
+        )
+        monkeypatch.setattr(
+            governance_mod, "LEGACY_BASELINE_PATH", tmp_path / "legacy-baseline.env"
+        )
+
+    def test_derives_from_baseline_when_unset(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("CIU_GOV_READ_IOPS", raising=False)
+        self._hermetic_baseline_search(monkeypatch, tmp_path)
+        governance_mod.DEFAULT_BASELINE_PATH.write_text(
+            "RIOPS_MAX=900\n", encoding="utf-8"
+        )
+        value, note = _detect_governance_read_iops()
+        assert value == "600"
+        assert "baseline" in note
+
+    def test_derives_from_env_override_path_s15_4(self, monkeypatch, tmp_path):
+        """S15.4 step (b): CIU_GOV_BASELINE_PATH points derivation at a custom file."""
+        monkeypatch.delenv("CIU_GOV_READ_IOPS", raising=False)
+        self._hermetic_baseline_search(monkeypatch, tmp_path)
+        custom = tmp_path / "custom-baseline.env"
+        custom.write_text("RIOPS_MAX=300\n", encoding="utf-8")
+        monkeypatch.setenv(governance_mod.BASELINE_PATH_ENV_VAR, str(custom))
+        value, note = _detect_governance_read_iops()
+        assert value == "200"  # 300 * 2 // 3
+        assert "RIOPS_MAX=300" in note
+
+    def test_falls_back_when_unset_and_no_baseline(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("CIU_GOV_READ_IOPS", raising=False)
+        self._hermetic_baseline_search(monkeypatch, tmp_path)
+        value, note = _detect_governance_read_iops()
+        assert value == str(governance_mod.FALLBACK_READ_IOPS)
+        assert "fallback" in note
+
+
+class TestGenerateCiuEnvGovernance:
+    """generate_ciu_env emits CIU_GOV_READ_IOPS (S15.6)."""
+
+    def _stub_docker(self, monkeypatch):
+        monkeypatch.setattr("ciu.workspace_env._detect_docker_gid", lambda: "1000")
+        monkeypatch.setattr("ciu.workspace_env._detect_physical_repo_root", lambda repo_root: repo_root)
+
+    def test_ciu_gov_read_iops_present_in_generated_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ENV_TYPE", "native")
+        monkeypatch.setenv("CIU_GOV_READ_IOPS", "321")
+        monkeypatch.delenv("PUBLIC_FQDN", raising=False)
+        monkeypatch.delenv("PUBLIC_IP", raising=False)
+        self._stub_docker(monkeypatch)
+
+        with patch(_URLOPEN, side_effect=urllib.error.URLError("no network")):
+            out = generate_ciu_env(tmp_path)
+
+        content = out.read_text(encoding="utf-8")
+        assert 'export CIU_GOV_READ_IOPS="321"' in content
+
+    def test_ciu_gov_read_iops_derived_when_unset(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ENV_TYPE", "native")
+        monkeypatch.delenv("CIU_GOV_READ_IOPS", raising=False)
+        monkeypatch.delenv("PUBLIC_FQDN", raising=False)
+        monkeypatch.delenv("PUBLIC_IP", raising=False)
+        self._stub_docker(monkeypatch)
+        # No S15.4 candidate exists -> fallback value emitted.
+        monkeypatch.delenv(governance_mod.BASELINE_PATH_ENV_VAR, raising=False)
+        monkeypatch.setattr(
+            governance_mod, "DEFAULT_BASELINE_PATH", tmp_path / "no-such-baseline.env"
+        )
+        monkeypatch.setattr(
+            governance_mod, "LEGACY_BASELINE_PATH", tmp_path / "no-such-legacy.env"
+        )
+
+        with patch(_URLOPEN, side_effect=urllib.error.URLError("no network")):
+            out = generate_ciu_env(tmp_path)
+
+        content = out.read_text(encoding="utf-8")
+        assert f'export CIU_GOV_READ_IOPS="{governance_mod.FALLBACK_READ_IOPS}"' in content

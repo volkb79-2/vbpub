@@ -33,3 +33,15 @@ data = ""
 # root_token the vault stack persisted to its [state] in phase 1.
 [redis_core.secrets]
 redis_password = "GEN_TO_VAULT:{{ vault.paths.redis_password }}"
+
+# S15 worked example: stack-wide resource governance, opt-in and off by
+# default (GOVERNANCE_DEFAULTS.enabled = false everywhere else). redis-core
+# turns it on with mostly code defaults; only write_iops is overridden here
+# to show a stack overriding a single governance key without repeating the
+# rest. The overlay generator injects cgroup_parent/mem_limit/
+# mem_reservation/blkio_config into the rendered `redis` service — none of
+# those four keys are set in ciu.compose.yml.j2 above, so nothing here is
+# skipped by the S15.3 author-override precedence.
+[redis_core.governance]
+enabled = true
+write_iops = 300

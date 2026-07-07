@@ -167,7 +167,7 @@ class TestPerVerbHelp:
         # Every dispatchable verb (except the bare top-level) is covered.
         expected = {
             "env", "render", "profiles", "up", "down", "clean",
-            "health", "bake", "dev", "secrets",
+            "health", "bake", "dev", "secrets", "iops-baseline",
         }
         assert expected <= set(cli._VERB_HELP)
 
@@ -180,3 +180,54 @@ class TestPerVerbHelp:
     def test_health_help_lists_preflight(self, capsys, monkeypatch):
         out = self._help_out(capsys, monkeypatch, ["health", "--help"])
         assert "--preflight" in out and "--strict" in out
+
+    def test_iops_baseline_help_shows_own_options(self, capsys, monkeypatch):
+        out = self._help_out(capsys, monkeypatch, ["iops-baseline", "--help"])
+        assert "ciu iops-baseline" in out
+        assert "--path" in out and "--runtime" in out and "--force" in out
+        assert "saturating" in out.lower()
+        assert "--deploy" not in out
+
+
+class TestIopsBaselineVerb:
+    """S15.9 — `ciu iops-baseline` dispatch and argument validation."""
+
+    def _run(self, monkeypatch, argv: list[str]) -> int:
+        monkeypatch.setattr(sys, "argv", ["ciu", *argv])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        return exc.value.code
+
+    def test_dispatch_forwards_path_runtime_force(self, monkeypatch):
+        calls = {}
+
+        def fake_run(output_path, *, runtime_s, force):
+            calls["args"] = (output_path, runtime_s, force)
+            return 0
+
+        import ciu.governance as gov
+        monkeypatch.setattr(gov, "run_iops_baseline", fake_run)
+        code = self._run(
+            monkeypatch,
+            ["iops-baseline", "--path", "/tmp/x.env", "--runtime", "5", "--force"],
+        )
+        assert code == 0
+        assert calls["args"] == (Path("/tmp/x.env"), 5, True)
+
+    def test_defaults(self, monkeypatch):
+        calls = {}
+
+        def fake_run(output_path, *, runtime_s, force):
+            calls["args"] = (output_path, runtime_s, force)
+            return 0
+
+        import ciu.governance as gov
+        monkeypatch.setattr(gov, "run_iops_baseline", fake_run)
+        code = self._run(monkeypatch, ["iops-baseline"])
+        assert code == 0
+        assert calls["args"] == (None, 10, False)
+
+    def test_nonpositive_runtime_exits_2(self, monkeypatch, capsys):
+        code = self._run(monkeypatch, ["iops-baseline", "--runtime", "0"])
+        assert code == 2
+        assert "positive" in capsys.readouterr().err

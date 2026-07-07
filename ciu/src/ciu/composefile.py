@@ -12,13 +12,19 @@ Normative contract: docs/SPEC.md
   S4.23  ``--print-context``/logs render secrets as ``<secret:<name>>``
   S5     configfile mounts: render ``[<root>.<svc>.configfile.<name>]`` templates
          with ``secret('<name>')`` as the only path to a secret value
-  S8.1   overlay omitted only when no secrets and no configfiles
+  S8.1   overlay omitted only when no secrets, no configfiles, and no
+         governance injections
   S8.2   compose process env = base/os.environ + PWD + COMPOSE_PROFILES +
          expose_env secrets — nothing else
   S1.3/S1.4  bind sources handed to the daemon are physical paths
+  S15    stack-wide resource governance ([<root>.governance]): overlay
+         injects cgroup_parent/mem_limit/mem_reservation/blkio_config into
+         every enumerated service, author-set keys winning (S15.3)
 
 This module is standalone: it does NOT import from engine.py or deploy.py.
-PyYAML is an existing dependency.
+PyYAML is an existing dependency. ``governance.py`` is a sibling standalone
+module (pure logic, no CIU imports) this module delegates governance
+resolution/injection-computation to.
 
 The consumed "materialized" interface (produced by the P4 materialize packet)
 is ``dict[name, obj]`` where each *obj* exposes:
@@ -39,7 +45,7 @@ render_compose(template_path, guarded_config) -> str
 leak_scan(rendered_text, materialized) -> None
 validate_consumption(compose_yaml_text, declared, *, configfile_mounts=(), hook_consumed=()) -> list[str]
 render_configfiles(stack_dir, root_key, config, secret_value_fn) -> list[ConfigFileMount]
-generate_overlay(stack_dir, materialized, configfile_mounts, *, repo_root, physical_root, compose_yaml_text) -> Path | None
+generate_overlay(stack_dir, materialized, configfile_mounts, *, repo_root, physical_root, compose_yaml_text, governance) -> Path | None
 compose_process_env(specs, materialized, *, base, compose_profiles) -> dict
 compose_file_args(stack_dir, overlay_path) -> list[str]
 """
@@ -55,6 +61,7 @@ from typing import Any, Iterable, Mapping
 
 import yaml
 
+from . import governance as governance_mod
 from .config_constants import (
     CIU_COMPOSE_OUTPUT,
     MACHINE_DIR,
@@ -589,17 +596,30 @@ def render_configfiles(
 _INSTANCE_SERVICE_RE_TEMPLATE = r"^{base}-([1-9][0-9]*)$"
 
 
-def _compose_service_names(compose_yaml_text: str | None) -> set[str]:
-    """Return service keys from a rendered compose document, if available."""
+def _compose_service_blocks(compose_yaml_text: str | None) -> dict[str, Mapping[str, Any]]:
+    """Return ``{service_name: rendered_block}`` from a rendered compose document.
+
+    Empty dict when *compose_yaml_text* is falsy/unparseable/service-less.
+    Used both to enumerate service names (configfile fan-out, S5.3) and to
+    read each service's author-set keys (governance precedence, S15.3).
+    """
     if not compose_yaml_text:
-        return set()
+        return {}
     doc = yaml.safe_load(compose_yaml_text)
     if not isinstance(doc, Mapping):
-        return set()
+        return {}
     services = doc.get("services")
     if not isinstance(services, Mapping):
-        return set()
-    return {str(name) for name in services}
+        return {}
+    return {
+        str(name): (block if isinstance(block, Mapping) else {})
+        for name, block in services.items()
+    }
+
+
+def _compose_service_names(compose_yaml_text: str | None) -> set[str]:
+    """Return service keys from a rendered compose document, if available."""
+    return set(_compose_service_blocks(compose_yaml_text))
 
 
 def _configfile_mount_services(base_service: str, compose_services: set[str]) -> list[str]:
@@ -652,8 +672,9 @@ def generate_overlay(
     repo_root: Path | None = None,
     physical_root: Path | None = None,
     compose_yaml_text: str | None = None,
+    governance: Mapping[str, Any] | None = None,
 ) -> Path | None:
-    """Write ``<stack>/.ciu/ciu.compose.overlay.yml`` (the overlay); S4.17/S8.1.
+    """Write ``<stack>/.ciu/ciu.compose.overlay.yml`` (the overlay); S4.17/S8.1/S15.
 
     Builds::
 
@@ -664,18 +685,51 @@ def generate_overlay(
           <service-or-expanded-instance>:
             volumes:
               - "<physical rendered path>:<target>:ro"     # per configfile mount
+            cgroup_parent: ...                             # governance (S15), when enabled
+            mem_limit: ...
+            mem_reservation: ...
+            blkio_config: {device_read_iops: [...], device_write_iops: [...]}
 
     All bind sources are physical paths (S1.3/S1.4) via :func:`to_physical_path`.
     The overlay NEVER contains secret values — only paths.
 
-    Returns the overlay path, or ``None`` when there are no secrets **and** no
-    configfiles (S8.1 — the overlay is omitted in that case).
+    *governance* is the stack's already-merged ``[<root>.governance]`` table
+    (``None`` when the stack declares no such table at all — the common case,
+    fully backward compatible: no computation, no log line). When present, it
+    is resolved against :data:`governance.GOVERNANCE_DEFAULTS` (S15.2); when
+    ``enabled`` is true, every service enumerated in *compose_yaml_text*
+    (except ``exempt_services``) gets ``cgroup_parent``/``mem_limit``/
+    ``mem_reservation``/``blkio_config`` injected — but only for keys the
+    stack author did NOT already set on that service in the rendered base
+    compose (S15.3 precedence). One summary line is always logged when
+    *governance* is not ``None`` (S15.7).
+
+    Returns the overlay path, or ``None`` when there are no secrets, no
+    configfiles, **and** no governance injections (S8.1/S15 — the overlay is
+    omitted only when there is nothing at all to wire).
 
     *repo_root* / *physical_root* are forwarded to :func:`to_physical_path`;
     when ``None`` they are read from the environment there.
     """
     configfile_mounts = list(configfile_mounts)
-    if not materialized and not configfile_mounts:
+    compose_service_blocks = _compose_service_blocks(compose_yaml_text)
+    compose_services = set(compose_service_blocks)
+
+    governance_injections: dict[str, dict[str, Any]] = {}
+    if governance is not None:
+        gov_cfg = governance_mod.resolve_config(governance)
+        if gov_cfg["enabled"]:
+            governance_injections, gov_notes = governance_mod.build_injections(
+                compose_service_blocks, gov_cfg
+            )
+            print("[GOVERNANCE] enabled — " + "; ".join(gov_notes), flush=True)
+        else:
+            print(
+                "[GOVERNANCE] disabled ([<root>.governance].enabled is false)",
+                flush=True,
+            )
+
+    if not materialized and not configfile_mounts and not governance_injections:
         return None
 
     stack_dir = Path(stack_dir)
@@ -690,9 +744,9 @@ def generate_overlay(
             secrets_block[name] = {"file": str(phys)}
         overlay["secrets"] = secrets_block
 
+    services: dict[str, Any] = {}
+
     if configfile_mounts:
-        services: dict[str, Any] = {}
-        compose_services = _compose_service_names(compose_yaml_text)
         for mount in configfile_mounts:
             phys = to_physical_path(
                 Path(mount.rendered_path),
@@ -710,6 +764,13 @@ def generate_overlay(
             for service_name in _configfile_mount_services(mount.service, compose_services):
                 svc = services.setdefault(service_name, {})
                 svc.setdefault("volumes", []).append(volume_entry)
+
+    if governance_injections:
+        for service_name, frag in governance_injections.items():
+            svc = services.setdefault(service_name, {})
+            svc.update(frag)
+
+    if services:
         overlay["services"] = services
 
     overlay_path = stack_dir / MACHINE_DIR / OVERLAY_NAME

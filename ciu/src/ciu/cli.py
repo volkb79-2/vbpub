@@ -19,6 +19,8 @@ Uses: ciu.global.toml + ciu.env
     env                         show ciu.env key=value pairs (read-only)
     env generate [--define-root PATH]
                                 generate or refresh ciu.env from system state
+    iops-baseline [--path P] [--runtime N] [--force]
+                                measure disk randread IOPS (fio) → io-baseline.env (S15.9)
 
   AUTHORING
     render                      render ciu.global.toml from Jinja2 template
@@ -64,6 +66,21 @@ ciu env — show ciu.env key=value pairs (read-only)
 ciu env generate [--define-root PATH] — (re)generate ciu.env from system state
 
   --define-root PATH   override repo root (no parent walking); for `generate`
+""",
+    "iops-baseline": """\
+ciu iops-baseline [--path PATH] [--runtime N] [--force]
+  Measure this host's disk randread IOPS ceiling with fio and write a
+  shell-style baseline file (RIOPS_MAX=<n>, RIOPS_ENGINE=<engine>) that
+  governance read_iops derivation consumes (S15.4/S15.9). Explicit opt-in
+  only — CIU never runs this automatically. WARNING: generates ~10s of
+  saturating read I/O; avoid running while latency-sensitive workloads are
+  active. Uses fio's libaio engine (psync fallback is flagged: queue-depth-1
+  latency, not the ceiling). Requires fio; without it the command prints a
+  notice and exits 0 (derivation then uses the fallback 200).
+
+  --path PATH     output file (default: /var/lib/ciu/io-baseline.env)
+  --runtime N     fio measurement seconds (default: 10)
+  --force         re-measure even when the existing result is < 30 days old
 """,
     "render": """\
 ciu render [--profile NAME] [--define-root PATH]
@@ -228,6 +245,21 @@ def _env_generate(rest: list[str]) -> int:
     return action_generate_env(opts.define_root, Path.cwd())
 
 
+def _iops_baseline(rest: list[str]) -> int:
+    """Handle `ciu iops-baseline [--path P] [--runtime N] [--force]` (S15.9)."""
+    import argparse as _ap
+    from .governance import run_iops_baseline
+    p = _ap.ArgumentParser(prog="ciu iops-baseline", add_help=False)
+    p.add_argument("--path", dest="path", type=Path, default=None, metavar="PATH")
+    p.add_argument("--runtime", dest="runtime", type=int, default=10, metavar="N")
+    p.add_argument("--force", action="store_true", default=False)
+    opts = p.parse_args(rest)
+    if opts.runtime < 1:
+        print("ciu iops-baseline: --runtime must be a positive integer.", file=sys.stderr)
+        return 2
+    return run_iops_baseline(opts.path, runtime_s=opts.runtime, force=opts.force)
+
+
 def main() -> None:
     raw = sys.argv[1:]
 
@@ -252,6 +284,9 @@ def main() -> None:
         if rest and rest[0] == "generate":
             raise SystemExit(_env_generate(rest[1:]))
         raise SystemExit(_env_show())
+
+    elif verb == "iops-baseline":
+        raise SystemExit(_iops_baseline(rest))
 
     elif verb == "render":
         if "--host" in rest:

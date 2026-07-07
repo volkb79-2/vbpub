@@ -1173,12 +1173,14 @@ def main_execution(
         for name in unconsumed:
             print(f"[WARN] declared secret '{name}' is consumed by no channel (S4.20)", flush=True)
 
-        # ---- Step 15: overlay (S4.17/S8.1) ----
+        # ---- Step 15: overlay (S4.17/S8.1/S15) ----
         print("[STEP 15/17] Generating overlay...", flush=True)
+        governance_config = merged.get(root_key, {}).get("governance")
         overlay_path = composefile.generate_overlay(
             working_dir, materialized, configfile_mounts,
             repo_root=repo_root, physical_root=None,
             compose_yaml_text=rendered_compose,
+            governance=governance_config,
         )
         # S4.22 completeness: scan the overlay for secret leaks too.
         if overlay_path is not None and overlay_path.exists():

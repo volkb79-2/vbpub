@@ -32,6 +32,7 @@ from ciu.composefile import (  # noqa: E402
     render_configfiles,
     validate_consumption,
 )
+from ciu import governance as governance_mod  # noqa: E402
 from ciu.config_model import render_jinja2_text  # noqa: E402
 from ciu.secrets.directives import SecretSpec, discover  # noqa: E402
 
@@ -620,6 +621,293 @@ services:
         )
         doc = yaml.safe_load(path.read_text())
         assert doc["secrets"]["pw"]["file"] == str(physical / "s" / ".ciu" / "secrets" / "pw")
+
+
+# ---------------------------------------------------------------------------
+# S15 — generate_overlay: stack-wide resource governance
+# ---------------------------------------------------------------------------
+
+class TestGenerateOverlayGovernance:
+    """S15 — the ``governance=`` keyword of :func:`generate_overlay`.
+
+    Device autodetection (``governance_mod.detect_device``) is monkeypatched
+    in every enabled-path test so these stay hermetic (no real ``findmnt``
+    dependency) — S15.5's autodetect logic itself is unit-tested directly in
+    ``test_ciu_governance.py``.
+    """
+
+    def _stack(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        monkeypatch.setenv("REPO_ROOT", str(repo))
+        monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(repo))  # native identity
+        stack = repo / "infra" / "redis-core"
+        stack.mkdir(parents=True)
+        return stack
+
+    def test_no_governance_table_is_silent_and_unchanged_s15_7(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """governance=None (no [<root>.governance] table at all): no log, no-op."""
+        stack = self._stack(tmp_path, monkeypatch)
+        compose_yaml = "services:\n  redis:\n    image: redis\n"
+        path = generate_overlay(stack, {}, [], compose_yaml_text=compose_yaml, governance=None)
+        assert path is None
+        assert "GOVERNANCE" not in capsys.readouterr().out
+
+    def test_disabled_is_no_op_but_logs_one_line_s15_7(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """Declared but enabled=false: overlay stays None, one 'disabled' line logged."""
+        stack = self._stack(tmp_path, monkeypatch)
+        compose_yaml = "services:\n  redis:\n    image: redis\n"
+        path = generate_overlay(
+            stack, {}, [], compose_yaml_text=compose_yaml, governance={"enabled": False}
+        )
+        assert path is None
+        out = capsys.readouterr().out
+        assert "[GOVERNANCE] disabled" in out
+
+    def test_disabled_overlay_identical_to_governance_omitted_s15(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With secrets present, enabled=false must not change the overlay at all."""
+        stack = self._stack(tmp_path, monkeypatch)
+        sf = stack / ".ciu" / "secrets" / "pw"
+        sf.parent.mkdir(parents=True)
+        sf.write_text("v", encoding="utf-8")
+        mats = {"pw": _mat("pw", "v", sf)}
+        compose_yaml = "services:\n  redis:\n    image: redis\n"
+
+        path_omitted = generate_overlay(stack, mats, [], compose_yaml_text=compose_yaml)
+        text_omitted = path_omitted.read_text()
+
+        path_disabled = generate_overlay(
+            stack, mats, [], compose_yaml_text=compose_yaml,
+            governance={"enabled": False},
+        )
+        assert path_disabled.read_text() == text_omitted
+
+    def test_injection_happy_path_s15_1_s15_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """Enabled with no secrets/configfiles: overlay is generated purely for governance."""
+        import yaml
+
+        stack = self._stack(tmp_path, monkeypatch)
+        monkeypatch.setattr(governance_mod, "detect_device", lambda: "/dev/vda")
+        compose_yaml = "services:\n  redis:\n    image: redis\n"
+
+        path = generate_overlay(
+            stack, {}, [], compose_yaml_text=compose_yaml,
+            governance={"enabled": True, "read_iops": 100, "write_iops": 400},
+        )
+        assert path is not None
+        doc = yaml.safe_load(path.read_text())
+        assert "secrets" not in doc
+        redis = doc["services"]["redis"]
+        assert redis["cgroup_parent"] == "besteffort.slice"
+        assert redis["mem_limit"] == "1g"
+        assert redis["mem_reservation"] == "256m"
+        assert redis["blkio_config"] == {
+            "device_read_iops": [{"path": "/dev/vda", "rate": 100}],
+            "device_write_iops": [{"path": "/dev/vda", "rate": 400}],
+        }
+        assert "[GOVERNANCE] enabled" in capsys.readouterr().out
+
+    def test_author_override_key_is_not_repeated_others_still_injected_s15_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Author already set mem_limit on the service: overlay leaves it alone."""
+        import yaml
+
+        stack = self._stack(tmp_path, monkeypatch)
+        monkeypatch.setattr(governance_mod, "detect_device", lambda: "/dev/vda")
+        compose_yaml = (
+            "services:\n"
+            "  redis:\n"
+            "    image: redis\n"
+            "    mem_limit: 4g\n"
+        )
+        path = generate_overlay(
+            stack, {}, [], compose_yaml_text=compose_yaml,
+            governance={"enabled": True},
+        )
+        doc = yaml.safe_load(path.read_text())
+        redis = doc["services"]["redis"]
+        # mem_limit is the author's to keep — the overlay does not carry it at all.
+        assert "mem_limit" not in redis
+        assert redis["cgroup_parent"] == "besteffort.slice"
+        assert redis["mem_reservation"] == "256m"
+        assert "blkio_config" in redis
+
+    def test_author_sets_all_four_keys_service_absent_from_overlay_s15_3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stack = self._stack(tmp_path, monkeypatch)
+        monkeypatch.setattr(governance_mod, "detect_device", lambda: "/dev/vda")
+        compose_yaml = (
+            "services:\n"
+            "  redis:\n"
+            "    image: redis\n"
+            "    cgroup_parent: custom.slice\n"
+            "    mem_limit: 4g\n"
+            "    mem_reservation: 1g\n"
+            "    blkio_config:\n"
+            "      weight: 500\n"
+        )
+        path = generate_overlay(
+            stack, {}, [], compose_yaml_text=compose_yaml,
+            governance={"enabled": True},
+        )
+        # Nothing at all to wire -> overlay omitted entirely (S8.1/S15).
+        assert path is None
+
+    def test_exempt_service_receives_no_keys_s15_1(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import yaml
+
+        stack = self._stack(tmp_path, monkeypatch)
+        monkeypatch.setattr(governance_mod, "detect_device", lambda: "/dev/vda")
+        compose_yaml = (
+            "services:\n"
+            "  redis:\n    image: redis\n"
+            "  sidecar:\n    image: busybox\n"
+        )
+        path = generate_overlay(
+            stack, {}, [], compose_yaml_text=compose_yaml,
+            governance={"enabled": True, "exempt_services": ["sidecar"]},
+        )
+        doc = yaml.safe_load(path.read_text())
+        assert "redis" in doc["services"]
+        assert "sidecar" not in doc["services"]
+
+    def test_governance_and_configfile_share_the_same_service_block(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Governance keys land alongside a configfile mount's volumes, not replacing them."""
+        import yaml
+
+        stack = self._stack(tmp_path, monkeypatch)
+        monkeypatch.setattr(governance_mod, "detect_device", lambda: "/dev/vda")
+        rendered = stack / ".ciu" / "rendered" / "redis" / "main"
+        rendered.parent.mkdir(parents=True)
+        rendered.write_text("cfg", encoding="utf-8")
+        mount = ConfigFileMount(
+            service="redis", name="main", rendered_path=rendered,
+            target="/etc/redis/redis.conf",
+        )
+        compose_yaml = "services:\n  redis:\n    image: redis\n"
+        path = generate_overlay(
+            stack, {}, [mount], compose_yaml_text=compose_yaml,
+            governance={"enabled": True},
+        )
+        doc = yaml.safe_load(path.read_text())
+        redis = doc["services"]["redis"]
+        assert "volumes" in redis
+        assert redis["cgroup_parent"] == "besteffort.slice"
+
+    def test_no_device_skips_blkio_config_only_s15_5(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import yaml
+
+        stack = self._stack(tmp_path, monkeypatch)
+        monkeypatch.setattr(governance_mod, "detect_device", lambda: "")  # autodetect fails
+        compose_yaml = "services:\n  redis:\n    image: redis\n"
+        path = generate_overlay(
+            stack, {}, [], compose_yaml_text=compose_yaml,
+            governance={"enabled": True},
+        )
+        doc = yaml.safe_load(path.read_text())
+        redis = doc["services"]["redis"]
+        assert "blkio_config" not in redis
+        assert redis["cgroup_parent"] == "besteffort.slice"
+
+    def test_read_iops_derivation_from_baseline_flows_through_overlay_s15_4(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """S15.4 end-to-end: read_iops=0 (default) derives 2/3 of the baseline RIOPS_MAX."""
+        import yaml
+
+        stack = self._stack(tmp_path, monkeypatch)
+        monkeypatch.setattr(governance_mod, "detect_device", lambda: "/dev/vda")
+        # Hermetic S15.4 search order: only the neutral default candidate
+        # exists, pointed at a tmp file (env override cleared, legacy absent).
+        baseline = tmp_path / "io-baseline.env"
+        baseline.write_text("RIOPS_MAX=900\n", encoding="utf-8")
+        monkeypatch.delenv(governance_mod.BASELINE_PATH_ENV_VAR, raising=False)
+        monkeypatch.setattr(governance_mod, "DEFAULT_BASELINE_PATH", baseline)
+        monkeypatch.setattr(
+            governance_mod, "LEGACY_BASELINE_PATH", tmp_path / "legacy-missing.env"
+        )
+        compose_yaml = "services:\n  redis:\n    image: redis\n"
+        path = generate_overlay(
+            stack, {}, [], compose_yaml_text=compose_yaml,
+            governance={"enabled": True},  # read_iops omitted -> defaults to 0 -> derive
+        )
+        doc = yaml.safe_load(path.read_text())
+        rate = doc["services"]["redis"]["blkio_config"]["device_read_iops"][0]["rate"]
+        assert rate == 600  # 900 * 2 // 3
+
+    def test_read_iops_no_baseline_falls_back_s15_4(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        import yaml
+
+        stack = self._stack(tmp_path, monkeypatch)
+        monkeypatch.setattr(governance_mod, "detect_device", lambda: "/dev/vda")
+        # No candidate in the S15.4 search order exists.
+        monkeypatch.delenv(governance_mod.BASELINE_PATH_ENV_VAR, raising=False)
+        monkeypatch.setattr(
+            governance_mod, "DEFAULT_BASELINE_PATH", tmp_path / "default-missing.env"
+        )
+        monkeypatch.setattr(
+            governance_mod, "LEGACY_BASELINE_PATH", tmp_path / "legacy-missing.env"
+        )
+        compose_yaml = "services:\n  redis:\n    image: redis\n"
+        path = generate_overlay(
+            stack, {}, [], compose_yaml_text=compose_yaml,
+            governance={"enabled": True},
+        )
+        doc = yaml.safe_load(path.read_text())
+        rate = doc["services"]["redis"]["blkio_config"]["device_read_iops"][0]["rate"]
+        assert rate == governance_mod.FALLBACK_READ_IOPS
+        assert "fallback" in capsys.readouterr().out
+
+    def test_multi_service_stack_injects_every_enumerated_service(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import yaml
+
+        stack = self._stack(tmp_path, monkeypatch)
+        monkeypatch.setattr(governance_mod, "detect_device", lambda: "/dev/vda")
+        compose_yaml = (
+            "services:\n"
+            "  api:\n    image: api\n"
+            "  worker-1:\n    image: w\n"
+            "  worker-2:\n    image: w\n"
+        )
+        path = generate_overlay(
+            stack, {}, [], compose_yaml_text=compose_yaml,
+            governance={"enabled": True},
+        )
+        doc = yaml.safe_load(path.read_text())
+        assert sorted(doc["services"]) == ["api", "worker-1", "worker-2"]
+        for svc in doc["services"].values():
+            assert svc["cgroup_parent"] == "besteffort.slice"
+
+    def test_invalid_enabled_type_raises_s15_2(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stack = self._stack(tmp_path, monkeypatch)
+        compose_yaml = "services:\n  redis:\n    image: redis\n"
+        with pytest.raises(ValueError, match=r"\[S15\.2\]"):
+            generate_overlay(
+                stack, {}, [], compose_yaml_text=compose_yaml,
+                governance={"enabled": "yes"},
+            )
 
 
 # ---------------------------------------------------------------------------

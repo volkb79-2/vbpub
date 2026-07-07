@@ -719,7 +719,8 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   argparse surface (which still exposes withdrawn flags such as
   `--deploy`/`--stop`). Help is verb-scoped (CIU-7). Verbs: `env`, `render`,
   `profiles`, `up`, `down`, `clean`, `health`, `bake`, `dev` (S5a), `secrets`,
-  `check` (S13), `graph` (S13), `ssh` (S14). The global modifier `--host <name>`
+  `check` (S13), `graph` (S13), `ssh` (S14), `iops-baseline` (S15.9).
+  The global modifier `--host <name>`
   (S14) is accepted on `up`, `down`, `health`, and `render`; `--thin` is reserved
   on `up --host` (not yet implemented, exits 1 with a clear message).
   A sub-subcommand with its own parser (`env generate`) keeps its argparse help.
@@ -733,7 +734,9 @@ S5.4 unknown `secret()` name · S6.1 hostdir value shape · S7.1 phase
 naming · S7.2 enabled flags + `shipped` bool (S8.6) ·
 S7.5 `[deploy.groups]` rejection · S7.6 vault ordering · S2.2/S2.3 env keys ·
 S1.7 gitignore (incl. the auto-created override templates `ciu.toml.j2` /
-`ciu.global.toml.j2`). Each failure reports the spec ID it enforces.
+`ciu.global.toml.j2`) · S15.2 governance shape (`enabled` bool,
+`exempt_services` list-of-strings). Each failure reports the spec ID it
+enforces.
 
 ## S12 — Extension points (reserved, not implemented)
 
@@ -935,6 +938,204 @@ paramiko is an **optional dependency**: `pip install ciu[ssh]` (pulls
 the host). `import ciu` works with paramiko absent — the subprocess transport
 is the fallback. Set `CIU_SSH_TRANSPORT=paramiko` to force paramiko when it is
 installed.
+
+## S15 — Stack-wide resource governance (cgroups)
+
+A stack MAY declare `[<root>.governance]` (stack-scoped per S3.6, like
+`[<root>.secrets]`/`[<root>.hooks]` — **not** a top-level `[governance]`,
+which S3.5 would reject as a second non-reserved top-level key) to opt every
+service of the stack into host-level cgroup placement and resource ceilings,
+without the stack author hand-writing `cgroup_parent`/`mem_limit`/
+`blkio_config` on each service. This is **opt-in and purely additive**: a
+stack that declares no `governance` table behaves exactly as before — CIU
+does not even parse/log anything for it (S15.7).
+
+### S15.1 — Declaration
+
+```toml
+[<root>.governance]
+enabled = false                 # opt-in; default false
+cgroup_parent = "besteffort.slice"
+mem_limit = "1g"                # default per service
+mem_reservation = "256m"
+read_iops = 0                   # 0 = derive (S15.4); explicit nonzero value wins
+write_iops = 400
+device = ""                     # "" = autodetect (S15.5); explicit value wins
+baseline_path = ""              # "" = S15.4 search order; explicit path wins
+exempt_services = []            # service names to skip entirely
+```
+
+### S15.2 — Defaults and merge
+
+Unlike the rest of CIU's config (free-form TOML, no key-level schema), the
+`governance` table has code-level defaults (`ciu.governance.GOVERNANCE_DEFAULTS`)
+because it drives generated compose keys, not pass-through template values.
+The stack's declared table is shallow-merged over the defaults above — a
+stack sets only the keys it wants to change from the defaults table; any key
+it omits falls through. There is no further nesting: all eight keys are
+scalars or a flat list. Two shape checks abort (exit 2) regardless of the
+no-schema rule, because they gate a boolean branch and an iteration
+respectively: `enabled` MUST be a boolean (a truthy/falsy string like
+`"false"` would silently misbehave) and `exempt_services` MUST be a list of
+strings.
+
+### S15.3 — Injection and author-key precedence
+
+When `enabled = true`, the overlay generator (`composefile.generate_overlay`)
+injects into **every service enumerated in the rendered base compose file**
+(`_compose_service_blocks`, the same enumeration S5.3 configfile fan-out
+uses), except services named in `exempt_services` (skipped entirely — no
+keys injected):
+
+| Injected key | Source |
+|---|---|
+| `cgroup_parent` | `governance.cgroup_parent` |
+| `mem_limit` | `governance.mem_limit` |
+| `mem_reservation` | `governance.mem_reservation` |
+| `blkio_config` | `{device_read_iops: [{path, rate: read_iops}], device_write_iops: [{path, rate: write_iops}]}` — omitted entirely when no device resolves (S15.5) |
+
+**Precedence: the stack author's rendered compose always wins.** For each
+service, the overlay generator parses that service's block in the
+already-rendered `ciu.compose.yml` text (`compose_yaml_text`, already
+available to `generate_overlay` — S8.1's rationale for a separate overlay
+applies identically here: this is machine-derived wiring, not a template
+mutation) and skips any of the four keys above **already present on that
+service**. Precedence is per **top-level compose key**, not a deep merge of
+`blkio_config`'s sub-fields — an author who sets `blkio_config` at all (even
+partially) fully owns that key for that service; governance will not merge
+into it. A service with every one of the four keys already author-set
+receives no governance fragment at all (and does not count toward
+`services_injected` in the S15.7 log line).
+
+This mirrors S4.17/S8.1's separate-overlay rationale: the rendered
+`ciu.compose.yml` remains byte-exact stack-author output; all governance
+wiring — like secret/configfile wiring — lives only in the generated overlay.
+
+### S15.4 — `read_iops` derivation
+
+`read_iops = 0` (the default) means "derive": CIU reads a shell-style
+io-baseline file (`RIOPS_MAX=<int>`, written by `ciu iops-baseline` — S15.9 —
+or by an external host measurement) and computes `RIOPS_MAX * 2 / 3`
+(integer division) — matching the gstammtisch host's `setup-cgroups.sh`
+bench-cap formula, so container and non-CIU bench workloads apply the same
+fraction of measured disk capacity.
+
+**Baseline file resolution order** (CIU ships as a wheel to arbitrary hosts,
+so the location must not couple to any single host's tooling; the **first
+existing file wins**):
+
+1. governance table key `baseline_path` (when non-empty)
+2. env `CIU_GOV_BASELINE_PATH` (when set)
+3. `/var/lib/ciu/io-baseline.env` (neutral default; `ciu iops-baseline`
+   writes here)
+4. `/var/lib/gstammtisch/io-baseline.env` (legacy fallback — kept so hosts
+   provisioned by the gstammtisch cgroup tooling work unchanged)
+
+A configured but non-existent path (steps 1–2) falls through to the next
+candidate — resolution is by existence, not by declaration. If no candidate
+exists, or the resolved file has no `RIOPS_MAX` line, CIU falls back to
+`200` and logs a notice as part of the S15.7 summary line (never a silent
+fallback; the no-file note lists the searched paths). Any nonzero
+`read_iops` in the stack config is explicit and always wins over derivation.
+
+### S15.5 — `device` autodetection
+
+`device = ""` (the default) means autodetect: CIU runs
+`findmnt -no SOURCE --target /var/lib/docker` and resolves a partition
+source to its parent disk (`/dev/vda1` → `/dev/vda`, `/dev/nvme0n1p1` →
+`/dev/nvme0n1`; LVM/mapper sources and already-whole-disk paths pass through
+unchanged) — `blkio_config` device paths cgroup-v2 `io.max` accounting on
+this host applies at the whole-disk level, not per-partition. An explicit
+`device` value in the stack config always wins over autodetection. If
+autodetection fails for any reason (`findmnt` missing, non-Linux, non-zero
+exit, unparseable/non-`/dev` output), `blkio_config` is skipped entirely for
+every service **this run** (cgroup_parent/mem_limit/mem_reservation are still
+injected) and the S15.7 summary line names the failure.
+
+### S15.6 — `ciu env generate` integration
+
+`ciu env generate` (`workspace_env.generate_ciu_env`) additionally derives
+`CIU_GOV_READ_IOPS` (via the same S15.4 formula, always in "derive" mode —
+`ciu.env` is the machine-identity layer, S2.7, with no per-stack `read_iops`
+override reachable there) and writes it into `ciu.env` for shell/template
+consumption. This is a convenience export only: the overlay generator
+(S15.3/S15.4) reads the baseline file and `findmnt` directly and does **not**
+depend on `ciu.env` carrying this value — governance still works correctly
+on a stack run without a preceding `ciu env generate`/regen. A pre-set
+`CIU_GOV_READ_IOPS` in the environment always wins (S2.7).
+
+### S15.7 — Logging
+
+Exactly one summary line is logged per `generate_overlay` call **when the
+stack declares a `governance` table at all** (present-but-`enabled = false`
+still logs one "disabled" line; a stack with no `governance` table logs
+nothing and pays no computation cost — S15 is fully zero-footprint for the
+overwhelming majority of stacks that never opt in). When enabled, the line
+names every resolved value (`cgroup_parent`, `mem_limit`, `mem_reservation`,
+resolved `read_iops` + its source, `write_iops`, resolved `device` + its
+source or failure reason, and the count of services injected vs. exempted).
+
+### S15.8 — Rationale: `cgroup_parent` requires a pre-existing systemd slice
+
+`cgroup_parent` only *places* a container's cgroup under the named systemd
+slice; it does not itself create or configure that slice. With the systemd
+cgroup driver (this host: Debian 13, docker 29, cgroup v2), a named slice
+that has **no** corresponding static unit file (e.g.
+`/etc/systemd/system/besteffort.slice`) is **implicitly, transiently
+created by systemd on first reference** — with no resource limits of its
+own (no `MemoryMax`, `IOWeight`, `CPUWeight`, etc.). In that case
+`cgroup_parent = "besteffort.slice"` still groups the stack's containers
+together under that name, but the host-level ceiling the operator intended
+(defined in a real slice unit, provisioned out-of-band — see the sibling
+`gstammtisch-guide` cgroup tooling for a worked example of authoring such
+units) silently does not apply: the containers run **unconfined** at the
+slice level even though the compose file "looks" governed. This is a
+degradation, not a failure — CIU has no way to detect a missing systemd unit
+from inside a container-facing overlay generator, so operators MUST ensure
+`cgroup_parent`'s target slice is a real, provisioned systemd unit before
+relying on it for enforcement; `mem_limit`/`mem_reservation`/`blkio_config`
+are per-container (not slice-dependent) and always apply regardless.
+
+### S15.9 — `ciu iops-baseline` (self-contained measurement)
+
+`ciu iops-baseline [--path PATH] [--runtime N] [--force]` measures the
+disk's randread IOPS ceiling with fio and writes the S15.4 baseline file —
+so a wheel-installed CIU can produce its own baseline with no external
+script. It is **explicit opt-in only**: CIU MUST NOT run it automatically
+(not from `ciu env generate`, not from the overlay generator). Default
+output is the neutral S15.4 location `/var/lib/ciu/io-baseline.env`
+(`--path` overrides); the file carries `RIOPS_MAX=<int>` plus
+`RIOPS_ENGINE=<engine>` (so a psync-derived number is identifiable later),
+written atomically (tmp + `os.replace`).
+
+Behavioral requirements (each learned from a live incident or a fio
+footgun):
+
+1. **fio absent** (`shutil.which("fio")` is `None`): print a clear notice
+   ("fio not installed — skipped; derivation will use fallback 200") and
+   exit **0** without writing anything.
+2. **Engine**: use `--ioengine=libaio` (checked via `fio --enghelp`). When
+   libaio is unavailable, fall back to `psync` **with a warning** that the
+   result is queue-depth-1 latency, not the device's ceiling — fio's default
+   psync engine silently caps iodepth at 1.
+3. **JSON parsing**: fio runs with `--output=<tmpfile> --output-format=json`
+   and the result is parsed **from the first `{`** in that file — fio
+   prepends human `note: ...` lines even into the output file, which breaks
+   a naive `json.load` (hit live on the origin host).
+4. **fio arguments**: `--name=riops-baseline --size=1G --rw=randread
+   --bs=4k --direct=1 --iodepth=32 --numjobs=1 --time_based --runtime=<N>`
+   (default runtime 10 s). The scratch test file lives alongside the output
+   path (or `/var/tmp` when that directory is not writable) and is ALWAYS
+   deleted afterward, success or failure.
+5. **Freshness**: an existing result younger than 30 days is kept (notice +
+   exit 0) unless `--force`.
+6. **Impact warning**: the command prints that it generates ~`runtime`
+   seconds of saturating read I/O before running — do not run it while
+   latency-sensitive workloads are active.
+
+Exit codes (S10.3): `0` success or benign no-op (fio absent, fresh result
+kept) · `1` measurement/write failure (fio non-zero, unparseable JSON,
+unwritable output) · `2` invalid arguments.
 
 ---
 
@@ -1146,5 +1347,9 @@ dual shipping — `ciu.compose.yml` alongside an optional committed
 `stack:<name>:healthy` support, per-phase live probing, `ciu check` / `ciu
 graph` verbs; and SSH remote transport (S14) — `ciu ssh`, `ciu up/down/health/render
 --host`, render-on-target push-deploy, fail-closed host-key pinning, optional
-`paramiko` extra (`pip install ciu[ssh]`).
+`paramiko` extra (`pip install ciu[ssh]`); and stack-wide resource governance
+(S15) — opt-in `[<root>.governance]` injects `cgroup_parent`/`mem_limit`/
+`mem_reservation`/`blkio_config` into every enumerated service via the
+overlay (author-set keys always win), with baseline-derived `read_iops` and
+autodetected blkio `device`, zero-footprint for stacks that don't opt in.
 Migration recipes: docs/MIGRATION-V2.md.

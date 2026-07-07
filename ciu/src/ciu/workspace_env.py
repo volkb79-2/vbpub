@@ -23,6 +23,7 @@ from typing import Dict, Iterable, Optional
 
 import re
 
+from . import governance as governance_mod
 from .config_constants import (
     GLOBAL_CONFIG_DEFAULTS,
     GLOBAL_CONFIG_RENDERED,
@@ -290,6 +291,30 @@ def _detect_docker_gid() -> str:
         return str(grp.getgrnam("docker").gr_gid)
     except KeyError:
         raise WorkspaceEnvError("DOCKER_GID not found. Ensure docker group exists or set DOCKER_GID.")
+
+
+def _detect_governance_read_iops() -> tuple[str, str]:
+    """S15.6 — derive ``CIU_GOV_READ_IOPS`` for the ``ciu env generate`` phase.
+
+    A pre-set environment value always wins (S2.7 — every ciu.env key is
+    autodetected, but an already-set value is never overridden). Otherwise
+    delegates to :func:`ciu.governance.derive_read_iops` with ``configured=0``
+    (always "derive" here — ciu.env is the machine-identity layer, S2.7; the
+    per-stack ``read_iops``/``baseline_path`` overrides are handled directly
+    by the overlay generator, which re-derives independently so governance
+    still works without an env regen). Derivation follows the S15.4 baseline
+    search order: env ``CIU_GOV_BASELINE_PATH`` →
+    ``/var/lib/ciu/io-baseline.env`` → the legacy
+    ``/var/lib/gstammtisch/io-baseline.env``; first existing file wins.
+
+    Returns ``(value_str, source_note)`` — the note is folded into the emitted
+    comment so ``ciu.env`` documents where the number came from.
+    """
+    preset = os.environ.get("CIU_GOV_READ_IOPS")
+    if preset is not None and preset != "":
+        return preset, "explicit (pre-set in environment)"
+    value, note = governance_mod.derive_read_iops(0)
+    return str(value), note
 
 
 def _detect_physical_repo_root(repo_root: Path) -> Path:
@@ -584,6 +609,8 @@ def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Pat
     python_exec = os.environ.get("PYTHON_EXECUTABLE", sys.executable)
     pip_exec = os.environ.get("PIP_EXECUTABLE") or shutil.which("pip") or ""
 
+    gov_read_iops, gov_read_iops_note = _detect_governance_read_iops()
+
     def _emit_section(title: str, entries: list[tuple[str, str, str]]) -> list[str]:
         block: list[str] = [f"# {title}"]
         for key, value, comment in entries:
@@ -664,6 +691,21 @@ def generate_ciu_env(repo_root: Path, output_path: Optional[Path] = None) -> Pat
     # Seam 4: CIU_SERVICES_PROFILE placeholder — ordered profile list for this host
     lines.append("# Service profiles (Seam 4 / S7.5)")
     lines.append('# export CIU_SERVICES_PROFILE="core,db,worker-io"  # ordered profile list for this host')
+    lines.append("")
+
+    # S15.6: stack-wide resource governance — the overlay generator re-derives
+    # this independently from the baseline file (works without an env regen);
+    # this copy is a convenience for shell/template consumption.
+    lines.extend(_emit_section(
+        "Resource governance (S15)",
+        [
+            (
+                "CIU_GOV_READ_IOPS",
+                gov_read_iops,
+                f"Derived read-IOPS governance cap ({gov_read_iops_note})",
+            ),
+        ],
+    ))
     lines.append("")
 
     lines.extend(_emit_section(
