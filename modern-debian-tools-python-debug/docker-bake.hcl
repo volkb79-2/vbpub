@@ -249,6 +249,16 @@ variable "AIDER_VERSION" {
   default = "main"
 }
 
+// Version pin for Neovim; "latest" resolves at staging time for reproducibility control.
+variable "NVIM_VER" {
+  default = ""
+}
+
+// Version pin for NvChad; "latest" resolves at staging time for reproducibility control.
+variable "NVCHAD_VER" {
+  default = ""
+}
+
 // Boolean toggle for whether Codex is installed into the image.
 variable "INSTALL_CODEX" {
   default = "true"
