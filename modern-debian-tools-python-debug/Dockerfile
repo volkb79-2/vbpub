@@ -203,7 +203,6 @@ RUN set -euo pipefail; \
             "php${PHP_VERSION}-zip" \
             "php${PHP_VERSION}-gd" \
             "php${PHP_VERSION}-intl" \
-            "php${PHP_VERSION}-opcache" \
             "php${PHP_VERSION}-xdebug" \
             composer; \
         php --version; \
@@ -293,7 +292,6 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
             "php${PHP_VERSION}-zip" \
             "php${PHP_VERSION}-gd" \
             "php${PHP_VERSION}-intl" \
-            "php${PHP_VERSION}-opcache" \
             "php${PHP_VERSION}-xdebug" \
         ); \
     fi; \

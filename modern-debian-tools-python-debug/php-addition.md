@@ -5,7 +5,7 @@ What I would add before working on it:
 
   - php8.5-cli
   - php8.5-fpm or php-cgi
-  - PHP extensions: php8.5-mbstring, php8.5-xml, php8.5-curl, php8.5-zip, php8.5-gd, php8.5-intl, php8.5-opcache
+  - PHP extensions: php8.5-mbstring, php8.5-xml, php8.5-curl, php8.5-zip, php8.5-gd, php8.5-intl
   - php8.5-xdebug for local debugging
   - composer
   - Static analysis and refactor tools: phpstan, rector, php-cs-fixer or phpcs, phpunit
@@ -27,6 +27,5 @@ What I would add before working on it:
 - php8.5-curl
 - php8.5-gd
 - php8.5-zip
-- php8.5-opcache
 - php8.5-xdebug
 - composer
