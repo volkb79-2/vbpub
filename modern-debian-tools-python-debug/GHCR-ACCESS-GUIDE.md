@@ -60,6 +60,15 @@ ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.1
 }
 ```
 
+### Local auth file fallback:
+Some release helpers call `skopeo` directly and may run in a shell that cannot read the
+current user's Docker config. In that case, point `REGISTRY_AUTH_FILE` at a workspace-local
+auth file such as `./.ghcr-auth.json`. Treat it as disposable runtime state:
+
+- do not commit it
+- do not check it into the project
+- do not fold the token itself into `cmru`
+
 ### How to authenticate:
 
 **Option 1: Using Personal Access Token (PAT) - Recommended**

@@ -251,6 +251,7 @@ scripts/*.key
 
 # cmru release toolchain (no legacy remains: .release-vars/build-push.toml retired)
 cmru.secret.toml
+.ghcr-auth.json
 cmru.vars
 cmru/build/
 

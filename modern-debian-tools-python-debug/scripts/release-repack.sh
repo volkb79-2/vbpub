@@ -67,7 +67,8 @@ for target in "${TARGETS[@]}"; do
 
     for DEST_TAG in "${TAGS[@]}"; do
         echo "[INFO]     push ${DEST_TAG}"
-        run_low_priority skopeo copy --quiet "oci:${DST_OCI}:source" "docker://${DEST_TAG}"
+        # docker-repack writes an OCI layout without preserving the original tag;
+        # the layout itself contains the single repacked manifest.
+        run_low_priority skopeo copy --quiet "oci:${DST_OCI}" "docker://${DEST_TAG}"
     done
 done
-

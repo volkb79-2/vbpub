@@ -425,6 +425,11 @@ Use PAT with package scopes (classic token):
 Configured via environment (for example `.env` loaded by your release tooling).
 The release pipeline mirrors each GHCR package's visibility to the source repository after push, so new releases should not need a manual package-settings toggle.
 
+Some release steps call `skopeo` directly instead of `docker push`. For those, set
+`REGISTRY_AUTH_FILE` to a workspace-local auth file such as `./.ghcr-auth.json` if the
+current shell cannot reuse `~/.docker/config.json`. Keep that file untracked; it is only a
+local runtime fallback, not a project artifact.
+
 ## Persisting AI Tool State
 
 If you want agent state to survive devcontainer rebuilds, keep the workspace mount persistent and

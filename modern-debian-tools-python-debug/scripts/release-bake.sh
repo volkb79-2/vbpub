@@ -13,6 +13,10 @@ set -euo pipefail
 ACTION="${1:-}"
 FLOW="${RELEASE_IMAGE_FLOW:-load}"
 
+ts() {
+    date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
 run_low_priority() {
     if command -v ionice >/dev/null 2>&1; then
         ionice -c3 nice -n 19 "$@"
@@ -36,8 +40,12 @@ case "${FLOW}" in
         ;;
     repack)
         if [ "${ACTION}" = "build" ]; then
+            echo "[INFO] [${FLOW}] buildx bake start $(ts)"
             run_low_priority docker buildx bake -f docker-bake.hcl all --load
+            echo "[INFO] [${FLOW}] buildx bake end $(ts)"
+            echo "[INFO] [${FLOW}] repack start $(ts)"
             run_low_priority bash scripts/release-repack.sh
+            echo "[INFO] [${FLOW}] repack end $(ts)"
         else
             echo "[INFO] RELEASE_IMAGE_FLOW=repack: build step already repacks and pushes the images; skipping push bake."
         fi
