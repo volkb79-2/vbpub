@@ -5,6 +5,7 @@ Usage:
   ./build-push.py --build        # Resolve env, build images, save state
   ./build-push.py --push         # Load saved state, push images (skips resolver)
   ./build-push.py --rebuild      # Build then push sequentially
+                                 # (RELEASE_IMAGE_FLOW=repack keeps the push step as a no-op)
 """
 from __future__ import annotations
 
@@ -59,6 +60,20 @@ def _read_bake_default(var_name: str) -> str | None:
     pattern = re.compile(
         rf'variable\s+"{re.escape(var_name)}"\s*\{{[^}}]*?default\s*=\s*"([^"]+)"',
         re.DOTALL,
+    )
+    match = pattern.search(content)
+    return match.group(1).strip() if match else None
+
+
+def _read_cmru_env_default(var_name: str) -> str | None:
+    """Read a default from cmru.build.toml [env]."""
+    build_path = ROOT / "cmru.build.toml"
+    if not build_path.exists():
+        return None
+    content = build_path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        rf'^\s*{re.escape(var_name)}\s*=\s*"([^"]+)"\s*$',
+        re.MULTILINE,
     )
     match = pattern.search(content)
     return match.group(1).strip() if match else None
@@ -284,6 +299,15 @@ def do_build(ignore_new_releases: bool) -> None:
 
     ensure_devcontainers_base_from_bake_defaults()
     load_cmru_credentials()
+    release_image_flow = (
+        os.getenv("RELEASE_IMAGE_FLOW")
+        or _read_cmru_env_default("RELEASE_IMAGE_FLOW")
+        or "load"
+    ).strip().lower()
+    if release_image_flow not in {"load", "push", "repack"}:
+        raise SystemExit(
+            f"[ERROR] RELEASE_IMAGE_FLOW must be 'load', 'push', or 'repack', got: {release_image_flow!r}"
+        )
 
     # Compute BUILD_DATE first (resolver depends on it)
     base_date = os.getenv("BUILD_DATE") or datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -307,13 +331,16 @@ def do_build(ignore_new_releases: bool) -> None:
 
     # Include BUILD_DATE in saved state
     env_vars["BUILD_DATE"] = build_date
+    env_vars["RELEASE_IMAGE_FLOW"] = release_image_flow
     save_build_env(env_vars)
 
     # Ensure manifests directory
     ensure_manifests_dir()
 
     # Run build
-    sys.stderr.write("[INFO] Step 3/3: Running docker buildx bake --load ...\n")
+    sys.stderr.write(
+        f"[INFO] Step 3/3: Running release bake flow (RELEASE_IMAGE_FLOW={release_image_flow}) ...\n"
+    )
     config_path = ROOT / "cmru.build.toml"
     try:
         run_step(config_path, "build-images", None)
@@ -338,7 +365,10 @@ def do_push() -> None:
     env_vars = load_build_env()
     apply_env_to_os(env_vars)
 
-    sys.stderr.write("[INFO] Step 2/3: Running docker buildx bake --push ...\n")
+    release_image_flow = (env_vars.get("RELEASE_IMAGE_FLOW") or "load").strip().lower()
+    sys.stderr.write(
+        f"[INFO] Step 2/3: Running release push flow (RELEASE_IMAGE_FLOW={release_image_flow}) ...\n"
+    )
     config_path = ROOT / "cmru.build.toml"
     try:
         run_step(config_path, "push-images", None)
@@ -351,7 +381,7 @@ def do_push() -> None:
         name.strip()
         for name in (
             env_vars.get("GHCR_PACKAGE_NAMES")
-            or "modern-debian-tools-python-debug,modern-debian-tools-python-debug-vsc-devcontainer"
+            or "modern-debian-tools-python-debug,modern-debian-tools-python-debug-vsc-devcontainer,modern-debian-tools-python-debug-php85,modern-debian-tools-python-debug-php85-vsc-devcontainer"
         ).split(",")
         if name.strip()
     ]

@@ -520,6 +520,45 @@ def _stage_source_tarball(
     )
 
 
+def _stage_neovim(version: str, records: list[StagedArtifact]) -> None:
+    archive_name = "nvim-linux-x86_64.tar.gz"
+    base_url = f"https://github.com/neovim/neovim/releases/download/v{version}"
+    archive_url = f"{base_url}/{archive_name}"
+    archive_path = DOWNLOADS_DIR / f"nvim-{version}.tar.gz"
+
+    archive_final_url = _download(archive_url, archive_path)
+    if not _tar_contains_binary(archive_path, "nvim"):
+        raise StageError("Downloaded Neovim archive does not contain nvim binary")
+
+    _record_artifact(
+        records,
+        tool="nvim",
+        version=version,
+        source_url=archive_url,
+        final_url=archive_final_url,
+        path=archive_path,
+        kind="tar.gz",
+        verification="archive contains nvim",
+    )
+
+
+def _stage_nvchad(version: str, records: list[StagedArtifact]) -> None:
+    archive_name = f"v{version}.tar.gz"
+    archive_path = DOWNLOADS_DIR / f"nvchad-{version}.tar.gz"
+    urls = [
+        f"https://github.com/NvChad/NvChad/archive/refs/tags/{archive_name}",
+        f"https://github.com/NvChad/NvChad/archive/refs/tags/{version}.tar.gz",
+    ]
+
+    _stage_source_tarball(
+        tool="nvchad",
+        version=version,
+        destination=archive_path,
+        urls=urls,
+        records=records,
+    )
+
+
 def _stage_zip_tool(
     *,
     tool: str,
@@ -835,6 +874,9 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
         archive_kind="tar.gz",
         records=records,
     )
+
+    _stage_neovim(resolved["NVIM_VER"], records)
+    _stage_nvchad(resolved["NVCHAD_VER"], records)
 
     _stage_source_tarball(
         tool="htop",
@@ -1349,6 +1391,8 @@ def _resolve_versions() -> dict[str, str]:
         "CONSUL_VER": _resolve_version(os.getenv("CONSUL_VERSION"), "hashicorp/consul"),
         "DELTA_VER": _resolve_version(os.getenv("DELTA_VERSION"), "dandavison/delta"),
         "GH_VER": _resolve_version(os.getenv("GH_VERSION"), "cli/cli"),
+        "NVIM_VER": _resolve_version(os.getenv("NVIM_VERSION"), "neovim/neovim"),
+        "NVCHAD_VER": _resolve_version(os.getenv("NVCHAD_VERSION"), "NvChad/NvChad"),
         "GRPCURL_VER": _resolve_version(os.getenv("GRPCURL_VERSION"), "fullstorydev/grpcurl"),
         "RGA_VER": _resolve_version(os.getenv("RGA_VERSION"), "phiresky/ripgrep-all"),
         "VAULT_VER": _resolve_version(os.getenv("VAULT_VERSION"), "hashicorp/vault"),

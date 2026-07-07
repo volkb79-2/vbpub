@@ -88,6 +88,18 @@ their AI instruction files.
 Everything below the base is built and managed by the project's own deployment tooling. The
 devcontainer *consumes*; it does not *contain*.
 
+### Host resource governance is the host's job, not the image's
+
+The same layering applies one level further out: **cgroup/slice placement is a host and launcher
+concern, never image content.** `--cgroup-parent` (and its compose/orchestrator equivalents) is
+fixed at container *create* time by whatever creates the container — this image has no way to
+express or enforce it from inside. mdt's devcontainer template ships a `--cgroup-parent` runArg as a
+convenience for hosts that opt into systemd-slice governance, with safe no-op behavior everywhere
+else (see [DEVCONTAINER-LIFECYCLE.md](../DEVCONTAINER-LIFECYCLE.md) § "Host resource governance
+(cgroups/slices)" for the full mechanism — create-time-only placement, the host-side slice
+prerequisite, graceful degradation, and how to introspect effective limits from inside the
+container).
+
 ## Applications of the doctrine
 
 ### Browsers live in a service, never in the image — *security*

@@ -15,11 +15,35 @@ do
     fi
 done
 
+# Cgroup governance banner — shows the EFFECTIVE limits this container is running
+# under (host-controlled, cgroup v2), so you can see at a glance whether you're on
+# a governed host. Placement itself is invisible/immutable from in here
+# (cgroupns=private), but /sys/fs/cgroup maps straight onto this container's own
+# leaf cgroup, so reading it needs no host path traversal. Silently prints nothing
+# per line whose file is unreadable or empty (ungoverned host, or knob unset).
+# See "Host resource governance (cgroups/slices)" in DEVCONTAINER-LIFECYCLE.md.
+mdt_cgroup_banner_line() {
+    # $1 = file under /sys/fs/cgroup, $2 = label to print
+    _mdt_cg_file="/sys/fs/cgroup/$1"
+    [ -r "$_mdt_cg_file" ] || return 0
+    _mdt_cg_val=$(cat "$_mdt_cg_file" 2>/dev/null)
+    [ -n "$_mdt_cg_val" ] || return 0
+    printf '  cgroup %-11s %s\n' "$2:" "$_mdt_cg_val"
+}
+
+mdt_cgroup_banner() {
+    mdt_cgroup_banner_line memory.max  memory.max
+    mdt_cgroup_banner_line memory.high memory.high
+    mdt_cgroup_banner_line cpu.weight  cpu.weight
+    mdt_cgroup_banner_line io.max      io.max
+}
+
 case "$-" in
     *i*)
         if [ -r "$HOME/.config/modern-debian-tools-python-debug/aliases.sh" ]; then
             # shellcheck source=/dev/null
             . "$HOME/.config/modern-debian-tools-python-debug/aliases.sh"
         fi
+        mdt_cgroup_banner
         ;;
 esac

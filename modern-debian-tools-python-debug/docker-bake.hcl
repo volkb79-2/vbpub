@@ -326,6 +326,26 @@ function "vsc_latest_tag" {
   result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:${debian}-py${python}-latest"
 }
 
+function "php_tag" {
+  params = [debian, python]
+  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-php85:${debian}-py${python}-${BUILD_DATE}"
+}
+
+function "php_latest_tag" {
+  params = [debian, python]
+  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-php85:${debian}-py${python}-latest"
+}
+
+function "php_vsc_tag" {
+  params = [debian, python]
+  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-php85-vsc-devcontainer:${debian}-py${python}-${BUILD_DATE}"
+}
+
+function "php_vsc_latest_tag" {
+  params = [debian, python]
+  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-php85-vsc-devcontainer:${debian}-py${python}-latest"
+}
+
 // Tag helper: multi-Python labels keep the full encoded interpreter set in one string.
 // Example label: "py314-py311".
 function "vsc_multi_tag" {
@@ -407,6 +427,8 @@ target "base" {
     CLAUDE_CODE_VERSION = "${CLAUDE_CODE_VERSION}"
     ANTIGRAVITY_VERSION = "${ANTIGRAVITY_VERSION}"
     AIDER_VERSION = "${AIDER_VERSION}"
+    NVIM_VER = "${NVIM_VER}"
+    NVCHAD_VER = "${NVCHAD_VER}"
     INSTALL_CODEX = "${INSTALL_CODEX}"
     INSTALL_CLAUDE_CODE = "${INSTALL_CLAUDE_CODE}"
     INSTALL_ANTIGRAVITY = "${INSTALL_ANTIGRAVITY}"
@@ -570,6 +592,40 @@ target "trixie-py314-vsc" {
   tags = [vsc_tag("trixie", "3.14"), vsc_latest_tag("trixie", "3.14"), "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:latest"]
 }
 
+target "trixie-py314-php85" {
+  inherits = ["base"]
+  args = {
+    BASE_IMAGE = "python:3.14-trixie"
+    PYTHON_VERSION = "3.14"
+    DEBIAN_VERSION = "trixie"
+    PHP_VERSION = "8.5"
+    INSTALL_PHP = "true"
+    OCI_DESCRIPTION = description_with_manifest_docs("Modern Debian Tools + Python Debug + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and the common PHP extensions needed for web debugging.", "modern-debian-tools-python-debug-php85", "trixie", "3.14")
+    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-php85", "trixie", "3.14")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug-php85")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-php85", "trixie", "3.14")
+  }
+  tags = [php_tag("trixie", "3.14"), php_latest_tag("trixie", "3.14")]
+}
+
+target "trixie-py314-php85-vsc" {
+  inherits = ["base"]
+  args = {
+    BASE_IMAGE = "${DEVCONTAINERS_BASE_PINNED}"
+    PYTHON_VERSION = "3.14"
+    DEBIAN_VERSION = "trixie"
+    PHP_VERSION = "8.5"
+    INSTALL_PHP = "true"
+    OCI_DESCRIPTION = description_with_manifest_docs("Modern Debian Tools + Python Debug + PHP 8.5 VS Code devcontainer image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and the common PHP extensions needed for web debugging.", "modern-debian-tools-python-debug-php85-vsc-devcontainer", "trixie", "3.14")
+    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-php85-vsc-devcontainer", "trixie", "3.14")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug-php85-vsc-devcontainer")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-php85-vsc-devcontainer", "trixie", "3.14")
+    DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
+    DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
+  }
+  tags = [php_vsc_tag("trixie", "3.14"), php_vsc_latest_tag("trixie", "3.14")]
+}
+
 
 # Multi-Python devcontainers: primary Python (full toolkit) + secondary Pythons (lean venvs).
 # Secondary venvs at /home/vscode/.venv-py{nodot}; switch via VS Code "Python: Select Interpreter".
@@ -633,14 +689,20 @@ target "latest-vsc" {
 // === Build groups ==========================================================
 // Run a group with: docker buildx bake -f docker-bake.hcl <group> --push
 //
-// Two image families are published to GHCR:
+// Four image families are published to GHCR:
 //   - modern-debian-tools-python-debug
 //   - modern-debian-tools-python-debug-vsc-devcontainer
+//   - modern-debian-tools-python-debug-php85
+//   - modern-debian-tools-python-debug-php85-vsc-devcontainer
 //
-// "vsc" is the VSC devcontainer family. The publish matrix is group "all" below.
-// It intentionally stays limited to the VSC devcontainer targets.
+// "vsc" is the VSC devcontainer family. "php" is the PHP 8.5 flavor family.
+// The publish matrix is group "all" below.
 group "vsc" {
   targets = ["trixie-py311-vsc", "trixie-py314-vsc"]
+}
+
+group "php" {
+  targets = ["trixie-py314-php85", "trixie-py314-php85-vsc"]
 }
 
 group "base" {
@@ -653,12 +715,12 @@ group "multi" {
 
 // "all" is the publish matrix. `docker buildx bake all` and build-push.py use this.
 group "all" {
-  targets = ["trixie-py311-vsc", "trixie-py314-vsc"]
+  targets = ["trixie-py311-vsc", "trixie-py314-vsc", "trixie-py314-php85", "trixie-py314-php85-vsc"]
 }
 
-// Exhaustive local superset: release matrix + base images + multi-Python variants.
+// Exhaustive local superset: release matrix + base images + multi-Python variants + PHP flavor.
 group "everything" {
-  targets = ["all", "base", "multi"]
+  targets = ["all", "base", "multi", "php"]
 }
 
 group "detection" {

@@ -85,7 +85,21 @@
     "--cap-add", "SYS_ADMIN",
     "--device", "/dev/fuse",
     "--security-opt", "apparmor=unconfined",
-    "--security-opt", "seccomp=unconfined"
+    "--security-opt", "seccomp=unconfined",
+
+    // Host resource governance (cgroup v2 / systemd slices) — OPTIONAL, safe everywhere.
+    // Cgroup placement is CREATE-TIME ONLY (this flag), so it must be set here, not
+    // applied later. HOST PREREQUISITE: the host must define a
+    // `/etc/systemd/system/interactive.slice` unit with your intended limits
+    // (MemoryHigh/MemoryMax/CPUWeight/...). GRACEFUL DEGRADATION: if that unit is
+    // missing, systemd transparently creates a transient, UNLIMITED slice of the
+    // same name — the container still starts normally with no special limits, so
+    // shipping this runArg is safe for consumers on hosts that never opt into
+    // governance. The container cannot see or change its own slice from inside
+    // (cgroupns=private), but it CAN read its effective limits under
+    // /sys/fs/cgroup (memory.max, memory.high, cpu.weight, io.max). See
+    // "Host resource governance (cgroups/slices)" in DEVCONTAINER-LIFECYCLE.md.
+    "--cgroup-parent=interactive.slice"
   ],
 
   "customizations": {

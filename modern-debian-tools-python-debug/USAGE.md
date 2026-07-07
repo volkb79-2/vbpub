@@ -12,6 +12,52 @@ This runs the environment resolver (MCR check, tool version resolution, artifact
 staging), saves the resolved state to `.build-env.json`, then runs
 `docker buildx bake all --load`.
 
+`RELEASE_IMAGE_FLOW` controls the release path:
+- `repack` is the default release mode. It builds with `--load`, repacks at
+  `REPACK_TARGET_SIZE` (default `2GB`), and then pushes the repacked OCI layout.
+- `load` keeps the daemon-first split for local-only validation.
+- `push` pushes the unrepacked BuildKit output directly.
+
+The release config toggle is `RELEASE_IMAGE_FLOW`; `REPACK_TARGET_SIZE`
+controls the slice size used by the repack flow.
+
+### Builder governance (`BUILDX_BUILDER`)
+
+Release builds should run through a resource-confined, **named** buildx builder rather than
+whatever builder happens to be the current default. Neither `scripts/release-bake.sh` nor
+`build-push.py` nor `docker-bake.hcl` hardcode a builder or pass `--builder` — `docker buildx bake`
+picks up the `BUILDX_BUILDER` environment variable natively, so selecting a confined builder is
+purely a matter of exporting it before invoking `./build-push.py --build` / `--push` / `--rebuild`
+(or a raw `docker buildx bake` call):
+
+```bash
+export BUILDX_BUILDER=governed
+./build-push.py --build
+```
+
+Canonical one-time builder creation (resource-confined, `docker-container` driver):
+
+```bash
+docker buildx create --name governed --driver docker-container \
+    --driver-opt memory=4g --driver-opt cpu-shares=512
+```
+
+Caveats:
+
+- The `cgroup-parent` driver-opt is **silently ignored** when the Docker daemon uses the systemd
+  cgroup driver (the common case on modern distros) — true slice placement of a buildx builder is
+  not possible that way. The `memory` / `cpu-shares` (and `cpu-quota`, `cpuset-cpus`) driver-opts
+  above ARE honored unconditionally and apply real limits regardless of cgroup driver.
+- I/O caps (e.g. read/write IOPS) are not expressible via buildx driver-opts at all; if you need
+  them, apply them host-side against the running `buildx_buildkit_<name>_*` container's cgroup
+  (the same mechanism host operators use for any other container — see
+  [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) § "Host resource governance
+  (cgroups/slices)" for the underlying primitives).
+- Plain `docker build` (the default `docker` driver, no builder object) runs **inside the Docker
+  daemon's own cgroup** and bypasses all of the above confinement entirely. Always use the named
+  builder (`BUILDX_BUILDER=governed`, or whatever you called it) for anything beyond a quick local
+  smoke build.
+
 ### Build counter
 
 If you run multiple builds on the same day, `BUILD_DATE` automatically appends a
@@ -23,6 +69,8 @@ Environment configuration:
 
 Optional overrides (environment variables):
 - `REGISTRY`, `GITHUB_USERNAME`, `BUILD_DATE`, `BACKPORTS_URI`, `CIU_INSTALL_REQUIRED`
+- `RELEASE_IMAGE_FLOW` (`repack` is the default, `load` keeps the current daemon-first split, `push` pushes during build)
+- `REPACK_TARGET_SIZE` (`2GB` by default for the repack flow)
 - `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `ANTIGRAVITY_VERSION`, `AIDER_VERSION`
 - `REASONIX_VERSION`, `OPENCLAW_VERSION`
 - `INSTALL_CODEX`, `INSTALL_CLAUDE_CODE`, `INSTALL_ANTIGRAVITY`, `INSTALL_AIDER`
@@ -88,6 +136,11 @@ Docker's build cache is checked during push: if the build context and Dockerfile
 haven't changed, cached layers are reused and only the image manifest is pushed.
 If the context changed (e.g. fresh tool downloads, counter increment), layers
 are rebuilt before pushing.
+
+When `RELEASE_IMAGE_FLOW=repack`, the push step becomes a no-op because the
+repack happens during the build phase. `docker-repack` changes digests, so the
+release flow must always push the repacked OCI layout, not the unrepacked
+BuildKit output.
 
 Ensure you are logged in to the registry (e.g., `docker login ghcr.io`) and that
 `GITHUB_USERNAME` matches your org/user. If `GITHUB_PUSH_PAT` and

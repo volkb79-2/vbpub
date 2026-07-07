@@ -1,8 +1,10 @@
 # Modern Debian Python Debug Images
 
-This project builds and publishes two related image families:
+This project builds and publishes four related image families:
 - `modern-debian-tools-python-debug`
 - `modern-debian-tools-python-debug-vsc-devcontainer`
+- `modern-debian-tools-python-debug-php85`
+- `modern-debian-tools-python-debug-php85-vsc-devcontainer`
 
 The purpose is to provide a curated, reproducible Debian + Python environment with modern CLI tooling for local development, CI, and VS Code devcontainers.
 
@@ -20,16 +22,25 @@ The versioned release pages are copied into the image as `/usr/local/share/moder
 	- Base: `mcr.microsoft.com/devcontainers/python:${PYTHON_VERSION}-${DEBIAN_VERSION}`
 	- Use when you want Microsoft devcontainer behavior plus custom tooling.
 
+3. `modern-debian-tools-python-debug-php85`
+	- Base: `python:${PYTHON_VERSION}-${DEBIAN_VERSION}`
+	- Adds PHP 8.5, Composer, Xdebug, and the common web-debugging extensions.
+
+4. `modern-debian-tools-python-debug-php85-vsc-devcontainer`
+	- Base: `mcr.microsoft.com/devcontainers/python:${PYTHON_VERSION}-${DEBIAN_VERSION}`
+	- Same PHP 8.5 stack as the base flavor, but with Microsoft devcontainer behavior.
+
 ## Tagging and Variants
 
 Tag format:
 
 ```text
-<debian>-py<python>-<YYYYMMDD>
+<debian>-py<python>[-php85]-<YYYYMMDD>
 ```
 
 Examples:
 - `trixie-py3.14-20260511`
+- `trixie-py3.14-php85-20260630`
 - `trixie-py3.14-latest`
 - `latest` (family-wide floating tag)
 
@@ -45,11 +56,14 @@ The docker images use date-based tags (`trixie-py3.14-20260616`, `20260616-2` fo
 - `group "everything"`: local exhaustive superset (`all` + `base` + `multi`).
 - `group "detection"`: resolver-only latest-stable probe target.
 - A plain `docker buildx bake` resolves to the default group, which currently points at `everything`.
+- Release builds should run through a resource-confined, named builder via `BUILDX_BUILDER` — see [USAGE.md](USAGE.md) § "Builder governance (`BUILDX_BUILDER`)".
 
 Helper functions:
 
 - `base_tag` / `base_latest_tag`: base-family immutable and floating tags.
 - `vsc_tag` / `vsc_latest_tag`: single-Python VSC devcontainer tags.
+- `php_tag` / `php_latest_tag`: PHP 8.5 base-image tags.
+- `php_vsc_tag` / `php_vsc_latest_tag`: PHP 8.5 VSC devcontainer tags.
 - `vsc_multi_tag` / `vsc_multi_latest_tag`: multi-Python VSC devcontainer tags.
 - `package_manifest_relpath` / `package_manifest_url`: versioned release-page path and URL.
 - `package_docs_readme_relpath` / `package_docs_readme_url`: family index path and URL.
@@ -124,6 +138,10 @@ Container inspection tools are also installed in-image:
 - `dive` - image-layer inspection
 - `syft` - SBOM generation and image/package inventory analysis
 - `htop` - GitHub-sourced build with a shipped default config
+
+Neovim is also shipped as `nvim`, with the NvChad `v2.5` starter config staged
+into `/home/vscode/.config/nvim`. The shell defaults prefer `nvim` as the
+editor when it is present.
 
 For zswap specifically, recent `htop` builds can surface compressed-memory/zswap counters, and the
 shipped `zswap-status` shell helper prints the kernel counters directly when they are exposed under
@@ -493,12 +511,59 @@ you need it. See `USAGE.md` for details on switching modes.
 
 docker buildx/bake (BuildKit) defaults to compression=gzip at the gzip library default (~level 6).
 
-Cheaper alternative if you only want the gzip→zstd win without re-layering: build mdt with `docker buildx build --output type=image,compression=zstd,compression-level=14,force-compression=true ....` That re-compresses every layer to zstd-14 in the build itself — no separate repack tool, no slow-disk merge phase.
+Cheaper alternative if you only want the gzip→zstd win without re-layering: build mdt with `docker buildx build --output type=image,compression=zstd,compression-level=14,force-compression=true ....` That re-compresses every layer to zstd-14 in the build itself, with the same layer topology.
 
+### Compression benchmark
+
+Measured on `ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-20260627-2`.
+
+Baseline gzip export from the local daemon to OCI:
+
+- compressed size: `2,776,489,762` bytes
+- layer count: `48`
+
+BuildKit-style zstd-only export of the same image structure:
+
+- compressed size: `2,308,920,317` bytes
+- layer count: `48`
+- reduction vs gzip baseline: `16.8%`
+
+`docker-repack` on the same image with `--target-size 500MB`:
+
+- compressed size: `1,946,927,625` bytes
+- layer count: `6`
+- reduction vs gzip baseline: `29.9%`
+- additional win vs zstd-only export: `15.7%`
+
+`docker-repack` sweep of larger target sizes on the same image:
+
+| target size | compressed size | layer count |
+| --- | ---: | ---: |
+| `50MB` | `1,883 MiB` | `36` |
+| `100MB` | `1,872 MiB` | `22` |
+| `200MB` | `1,868 MiB` | `12` |
+| `500MB` | `1,857 MiB` | `6` |
+| `1GB` | `1,857 MiB` | `4` |
+| `2GB` | `1,857 MiB` | `3` |
+| `4GB` | `1,856 MiB` | `2` |
+
+Interpretation:
+
+- `docker-repack` is the bigger compression win because it deduplicates and re-slices layers.
+- `zstd` is the lower-risk optimization if you want to keep the same layer topology.
+- The repack result changes layer hashes and image digest, so the release path pushes the repacked OCI layout instead of the unrepacked BuildKit output.
+- The benchmark now covers `50MB`, `100MB`, `200MB`, `500MB`, `1GB`, `2GB`, and `4GB`; the larger slices mostly trade layer count for essentially the same compressed size on this image.
+- For this image, `2GB` is the balanced release target: it gets the repacked image down to 3 layers with no size penalty versus `1GB`, while `4GB` only saves another MiB and collapses the topology to 2 layers.
 
 ### `docker-repack`
 
-Does optimal --target-size differ per image? Yes.  controls how the deduped content is sliced into layers: smaller target-size = more, smaller layers = better parallel-download/cache granularity but more per-layer compression-dictionary overhead; larger = fewer fat layers = slightly better ratio but coarser caching.
+`docker-repack` controls how the deduped content is sliced into layers: smaller `--target-size` means more, smaller layers with better parallel-download/cache granularity but more per-layer compression-dictionary overhead; larger means fewer fat layers with slightly better ratio but coarser caching.
+
+For this image family, the benchmark script is:
+
+`scripts/benchmark-docker-repack.sh`
+
+It is intentionally benchmark-only. The release flow uses the same repack logic via `RELEASE_IMAGE_FLOW=repack` and `REPACK_TARGET_SIZE=2GB`.
 
 (b) How to count layers, source vs target:
 ```bash

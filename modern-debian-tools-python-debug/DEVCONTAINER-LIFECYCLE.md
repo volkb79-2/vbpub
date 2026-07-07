@@ -89,6 +89,75 @@ can't see it — `.worktrees/` under the repo bind mount was the prior workaroun
 (it inspects the devcontainer's own `/tmp` bind-mount source) and written to `.env.ciu`; sibling
 containers read it from there. No hardcoded host path, no raw `containerEnv` var.
 
+## Host resource governance (cgroups/slices)
+
+On hosts that tier resources via systemd slices (cgroup v2) — for example a shared host that also
+runs a production workload alongside devcontainers and best-effort test/build containers — this
+devcontainer should land in its own tier instead of the host's default (usually unlimited) cgroup.
+`templates/devcontainer.json` ships a `--cgroup-parent=interactive.slice` runArg for this; this
+section explains the mechanism so you can reason about safety on hosts that do **not** opt in.
+See also [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) for how this fits the doctrine's
+layering (host/orchestration concern, not image content).
+
+### Cgroup placement is CREATE-TIME only
+
+Docker's `--cgroup-parent` (and the compose/Kubernetes equivalents) is fixed at container **create**
+time. There is no supported way to move a running container into a different slice afterwards —
+placement can only be declared where the container is created (`runArgs` here, `cgroup_parent:` in
+compose, a Wings/panel setting, etc.), never applied post-hoc by a script running inside or beside
+the container.
+
+### Host prerequisite: the slice unit must actually exist
+
+`--cgroup-parent=interactive.slice` only produces a governed container if the host has installed a
+systemd slice unit at `/etc/systemd/system/interactive.slice` with real limits, e.g.:
+
+```ini
+# /etc/systemd/system/interactive.slice — illustrative values, tune to your host
+[Unit]
+Description=Interactive devcontainers — responsive, bounded, below any production tier
+Before=slices.target
+
+[Slice]
+MemoryHigh=5G
+MemoryMax=7G
+CPUWeight=200
+```
+
+After installing or editing the unit: `systemctl daemon-reload` (no restart required — systemd
+activates the slice on demand the first time something references it).
+
+**Graceful degradation if the unit is missing:** systemd does not fail the container start when the
+named slice has no unit file — it transparently creates a **transient, unlimited** slice with the
+same name on the fly. The container starts exactly as it would with no `--cgroup-parent` at all.
+This is why shipping `--cgroup-parent=interactive.slice` in the shared template is safe for every
+consumer, including those on hosts that never define the slice: at worst it is a no-op.
+
+### What the container can (and can't) see about its own placement
+
+Containers run with `cgroupns=private` by default, so **a process inside the container cannot see or
+change which slice it landed in** — there is no file that names the parent slice, and nothing inside
+can move the container to a different one. What the container *can* do is read its own **effective**
+resource limits, because the private cgroup namespace maps `/sys/fs/cgroup` directly onto the
+container's own leaf cgroup (no host path traversal needed):
+
+```bash
+cat /sys/fs/cgroup/memory.max     # hard memory ceiling, or "max" if unbounded
+cat /sys/fs/cgroup/memory.high    # soft throttle threshold, or "max" if unset
+cat /sys/fs/cgroup/cpu.weight     # proportional CPU share (systemd default: 100)
+cat /sys/fs/cgroup/io.max         # per-device IOPS/bandwidth caps; empty if none set
+```
+
+The devcontainer's login shell prints a compact one-line summary of these automatically on every
+interactive login — see the cgroup banner in `customization/profile.sh`. This is display-only: it
+lets you see at a glance whether you're on a governed host, it cannot change placement.
+
+### BuildKit/buildx builders are governed separately
+
+The above covers the devcontainer *itself*. Release builds run through `docker buildx bake` /
+`scripts/release-bake.sh`, which use their own BuildKit builder container(s) — see "Builder
+governance (`BUILDX_BUILDER`)" in [USAGE.md](USAGE.md) for how those are confined.
+
 ## Adopting the consolidation in a consuming repo
 
 1. Point the `mounts` in `devcontainer.json` at `${localEnv:HOME}/mdt--mounted-folders/<name>` (+ keep

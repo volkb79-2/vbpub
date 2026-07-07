@@ -46,6 +46,8 @@ TOOL_VERSION_DISPLAY_ORDER = [
     ("fzf", "FZF_VER"),
     ("gh", "GH_VER"),
     ("htop", "HTOP_VER"),
+    ("nvim", "NVIM_VER"),
+    ("nvchad", "NVCHAD_VER"),
     ("rga", "RGA_VER"),
     ("ripgrep", "RIPGREP_VER"),
     ("shellcheck", "SHELLCHECK_VER"),
@@ -774,6 +776,7 @@ def resolve_first_party_wheels(
 
     token = (os.getenv("GITHUB_PUSH_PAT") or os.getenv("GITHUB_TOKEN") or "").strip()
     gh = GitHubReleases(owner=owner, repo=repo, token=token)
+    gh_public = GitHubReleases(owner=owner, repo=repo, token="")
 
     WHEELS_CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -784,11 +787,27 @@ def resolve_first_party_wheels(
         try:
             info = gh.resolve_latest(name)
         except Exception as exc:  # noqa: BLE001
-            print(
-                f"[WARN] Failed to resolve latest release for wheel '{name}': {exc} — skipping",
-                file=sys.stderr,
-            )
-            continue
+            exc_text = str(exc)
+            if token and ("401" in exc_text or "Bad credentials" in exc_text or "Unauthorized" in exc_text):
+                print(
+                    "[WARN] GitHub API auth failed while resolving first-party wheels; "
+                    "retrying without token for public release access.",
+                    file=sys.stderr,
+                )
+                try:
+                    info = gh_public.resolve_latest(name)
+                except Exception as retry_exc:  # noqa: BLE001
+                    print(
+                        f"[WARN] Failed to resolve latest release for wheel '{name}': {retry_exc} — skipping",
+                        file=sys.stderr,
+                    )
+                    continue
+            else:
+                print(
+                    f"[WARN] Failed to resolve latest release for wheel '{name}': {exc} — skipping",
+                    file=sys.stderr,
+                )
+                continue
 
         if info is None:
             print(
@@ -1033,6 +1052,8 @@ def build_runtime_custom_tooling_map(
         "fzf": str(resolved_versions.get("FZF_VER") or "unknown"),
         "gh": str(resolved_versions.get("GH_VER") or "unknown"),
         "htop": str(resolved_versions.get("HTOP_VER") or "unknown"),
+        "nvim": str(resolved_versions.get("NVIM_VER") or "unknown"),
+        "nvchad": str(resolved_versions.get("NVCHAD_VER") or "unknown"),
         "rga": str(resolved_versions.get("RGA_VER") or "unknown"),
         "ripgrep": str(resolved_versions.get("RIPGREP_VER") or "unknown"),
         "shellcheck": str(resolved_versions.get("SHELLCHECK_VER") or "unknown"),
@@ -1106,6 +1127,12 @@ _FAMILY_TITLES = {
     "modern-debian-tools-python-debug-vsc-devcontainer": (
         "Modern Debian Tools + Python Debug VS Code Devcontainer"
     ),
+    "modern-debian-tools-python-debug-php85": (
+        "Modern Debian Tools + Python Debug + PHP 8.5"
+    ),
+    "modern-debian-tools-python-debug-php85-vsc-devcontainer": (
+        "Modern Debian Tools + Python Debug + PHP 8.5 VS Code Devcontainer"
+    ),
 }
 
 
@@ -1123,6 +1150,12 @@ def _package_name_from_target(name: str, spec: dict) -> str:
     if len(parts) >= 2 and parts[0] == "package-manifests-versioned" and parts[1]:
         return parts[1]
     tags = spec.get("tags") or []
+    is_php85 = any("-php85-vsc-devcontainer" in str(tag) for tag in tags) or name.endswith("-php85-vsc")
+    if is_php85:
+        return "modern-debian-tools-python-debug-php85-vsc-devcontainer"
+    is_php85_base = any("-php85" in str(tag) for tag in tags) or name.endswith("-php85")
+    if is_php85_base:
+        return "modern-debian-tools-python-debug-php85"
     is_vsc = any("-vsc-devcontainer" in str(tag) for tag in tags) or name.endswith("-vsc")
     return (
         "modern-debian-tools-python-debug-vsc-devcontainer"

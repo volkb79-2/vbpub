@@ -51,6 +51,10 @@ ARG INSTALL_ANTIGRAVITY="true"
 ARG INSTALL_AIDER="true"
 ARG INSTALL_REASONIX="true"
 ARG INSTALL_OPENCLAW="true"
+ARG INSTALL_PHP="false"
+ARG PHP_VERSION="8.5"
+ARG NVIM_VER=""
+ARG NVCHAD_VER=""
 ARG NODE_MAJOR="24"
 ARG GITHUB_USERNAME
 ARG GITHUB_REPO
@@ -137,6 +141,71 @@ RUN set -euo pipefail; \
     npm --version; \
     rm -rf /var/lib/apt/lists/*
 
+# Neovim and NvChad are shipped from upstream GitHub releases/tags.
+RUN set -euo pipefail; \
+    STAGE_DIR="/tmp/tool-artifacts-staging"; \
+    DOWNLOADS_DIR="${STAGE_DIR}/downloads"; \
+    : "${NVIM_VER:?Missing NVIM_VER build arg}"; \
+    : "${NVCHAD_VER:?Missing NVCHAD_VER build arg}"; \
+    nvim_archive="${DOWNLOADS_DIR}/nvim-${NVIM_VER}.tar.gz"; \
+    nvchad_archive="${DOWNLOADS_DIR}/nvchad-${NVCHAD_VER}.tar.gz"; \
+    if [ ! -f "${nvim_archive}" ]; then \
+        echo "[ERROR] Missing staged Neovim archive: ${nvim_archive}" >&2; \
+        exit 1; \
+    fi; \
+    if [ ! -f "${nvchad_archive}" ]; then \
+        echo "[ERROR] Missing staged NvChad archive: ${nvchad_archive}" >&2; \
+        exit 1; \
+    fi; \
+    rm -rf /opt/nvim-linux-x86_64 /home/vscode/.config/nvim; \
+    tar -C /opt -xzf "${nvim_archive}"; \
+    nvim_root="$(find /opt -maxdepth 1 -type d -name 'nvim-linux-x86_64' | head -1)"; \
+    if [ -z "${nvim_root}" ] || [ ! -x "${nvim_root}/bin/nvim" ]; then \
+        echo "[ERROR] Failed to unpack Neovim from ${nvim_archive}" >&2; \
+        exit 1; \
+    fi; \
+    ln -sfn "${nvim_root}/bin/nvim" /usr/local/bin/nvim; \
+    mkdir -p /tmp/nvchad-extract; \
+    tar -C /tmp/nvchad-extract -xzf "${nvchad_archive}"; \
+    nvchad_root="$(find /tmp/nvchad-extract -mindepth 1 -maxdepth 1 -type d | head -1)"; \
+    if [ -z "${nvchad_root}" ] || [ ! -f "${nvchad_root}/init.lua" ]; then \
+        echo "[ERROR] Failed to unpack NvChad from ${nvchad_archive}" >&2; \
+        exit 1; \
+    fi; \
+    install -d -m 0755 /home/vscode/.config/nvim; \
+    cp -a "${nvchad_root}/." /home/vscode/.config/nvim/; \
+    rm -rf /tmp/nvchad-extract; \
+    nvim --version | head -1; \
+    chown -R vscode:vscode /home/vscode/.config/nvim
+
+# PHP 8.5 runtime for the php85 flavor. Debian trixie ships PHP 8.4, so the
+# 8.5 packages come from packages.sury.org.
+RUN set -euo pipefail; \
+    if [ "${INSTALL_PHP}" != "true" ]; then \
+        echo "[INFO] PHP flavor disabled — skipping PHP runtime install."; \
+    else \
+        install -d -m 0755 /etc/apt/keyrings; \
+        curl -fsSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /etc/apt/keyrings/sury-php.gpg; \
+        chmod a+r /etc/apt/keyrings/sury-php.gpg; \
+        echo "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/php/ $(. /etc/os-release && echo \"${VERSION_CODENAME}\") main" > /etc/apt/sources.list.d/sury-php.list; \
+        apt-get update; \
+        apt-get install -y --no-install-recommends \
+            "php${PHP_VERSION}-cli" \
+            "php${PHP_VERSION}-fpm" \
+            "php${PHP_VERSION}-mbstring" \
+            "php${PHP_VERSION}-xml" \
+            "php${PHP_VERSION}-curl" \
+            "php${PHP_VERSION}-zip" \
+            "php${PHP_VERSION}-gd" \
+            "php${PHP_VERSION}-intl" \
+            "php${PHP_VERSION}-opcache" \
+            "php${PHP_VERSION}-xdebug" \
+            composer; \
+        php --version; \
+        composer --version; \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
 RUN set -euo pipefail; \
     share_dir="/usr/local/share/modern-debian-tools-python-debug"; \
     user_customization_dir="/home/vscode/.config/modern-debian-tools-python-debug"; \
@@ -209,6 +278,22 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
         exit 1; \
     fi; \
     set -a; . "${STAGE_DIR}/tool-versions.env"; set +a; \
+    php_system_packages=(); \
+    if [ "${INSTALL_PHP}" = "true" ]; then \
+        php_system_packages=( \
+            "composer" \
+            "php${PHP_VERSION}-cli" \
+            "php${PHP_VERSION}-fpm" \
+            "php${PHP_VERSION}-mbstring" \
+            "php${PHP_VERSION}-xml" \
+            "php${PHP_VERSION}-curl" \
+            "php${PHP_VERSION}-zip" \
+            "php${PHP_VERSION}-gd" \
+            "php${PHP_VERSION}-intl" \
+            "php${PHP_VERSION}-opcache" \
+            "php${PHP_VERSION}-xdebug" \
+        ); \
+    fi; \
     require_file() { \
         local path="$1"; \
         if [ ! -f "${path}" ]; then \
@@ -636,7 +721,9 @@ RUN set -euo pipefail; \
         echo "fd=$(fd --version 2>&1 | head -1)"; \
         echo "fzf=$(fzf --version 2>&1)"; \
         echo "gh=$(gh --version 2>&1 | head -1)"; \
+        echo "nvim=$(nvim --version 2>&1 | head -1 | awk '{print $2}' | sed 's/^v//')"; \
         echo "htop=$(htop --version 2>&1 | head -1)"; \
+        echo "nvchad=${NVCHAD_VER}"; \
         echo "node=$(node --version 2>&1 | head -1)"; \
         echo "npm=$(npm --version 2>&1 | head -1)"; \
         echo "grpcurl=$(grpcurl --version 2>&1 | head -1)"; \
@@ -652,7 +739,7 @@ RUN set -euo pipefail; \
     dpkg-query -W -f='${Package}=${Version}\n' \
         bash-completion ca-certificates locales curl bind9-dnsutils fuse3 gdb git git-lfs gnupg gzip httpie iputils-ping jq less lsb-release lsof man-db mc nano \
         netcat-openbsd ncdu openssl python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim w3m wget xz-utils skopeo \
-        postgresql-client redis-tools > "${system_packages_file}"; \
+        postgresql-client redis-tools "${php_system_packages[@]}" > "${system_packages_file}"; \
     python3 /tmp/manifest_sections.py unified \
         --output "${inventory_manifest}" \
         --source-manifest "${source_manifest}" \
