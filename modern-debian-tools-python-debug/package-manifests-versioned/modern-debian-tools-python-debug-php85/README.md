@@ -6,7 +6,7 @@ Stable current-docs link: https://github.com/volkb79-2/vbpub/blob/main/modern-de
 
 ## Current Release Pages
 
-- `trixie-py314-php85`: [trixie-py3.14-20260707-4](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-php85/trixie-py3.14-20260707-4.md)
+- `trixie-py314-php85`: [trixie-py3.14-20260707-5](https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-php85/trixie-py3.14-20260707-5.md)
 
 ## Why These Pages Exist
 

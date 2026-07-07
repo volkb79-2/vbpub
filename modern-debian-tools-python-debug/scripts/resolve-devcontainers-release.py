@@ -1800,6 +1800,8 @@ def main() -> int:
     # release and CIU_WHEEL_SHA256 to verify the download.  Both were absent before v2.0.0.
     print(f"CIU_WHEEL_URL={ciu_wheel_url}")
     print(f"CIU_WHEEL_SHA256={ciu_wheel_sha256}")
+    print(f"NVIM_VER={tool_metadata.get('resolved_versions', {}).get('NVIM_VER', '') if isinstance(tool_metadata, dict) else ''}")
+    print(f"NVCHAD_VER={tool_metadata.get('resolved_versions', {}).get('NVCHAD_VER', '') if isinstance(tool_metadata, dict) else ''}")
 
     # Export first-party wheel results (from pip/wheels.list) for bake/downstream use.
     # One var per resolved wheel: FIRST_PARTY_WHEEL_<NAME>_VERSION and _SHA256.
