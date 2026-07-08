@@ -11,6 +11,35 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class ThresholdBand:
+    warn: float
+    crit: float
+
+    def normalize(self, value: float | int | None) -> float:
+        if value is None:
+            return 0.0
+        sample = float(value)
+        if sample <= 0:
+            return 0.0
+        warn = max(0.0, self.warn)
+        crit = max(warn, self.crit)
+        if crit == 0:
+            return 1.0
+        if warn == 0:
+            return min(sample / crit, 1.0)
+        if crit == warn:
+            return 1.0 if sample >= warn else min(sample / warn, 1.0)
+        if sample <= warn:
+            return min((sample / warn) * 0.5, 0.5)
+        return min(0.5 + (((sample - warn) / (crit - warn)) * 0.5), 1.0)
+
+
+@dataclass(frozen=True)
+class DiagnosticsConfig:
+    score_weights: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_SCORE_WEIGHTS))
+
+
+@dataclass(frozen=True)
 class HistoryConfig:
     full_resolution_seconds: int = 14_400
     downsample_interval_seconds: int = 60
@@ -57,6 +86,7 @@ class GroopConfig:
     colors: dict[str, Any] = field(default_factory=dict)
     columns: dict[str, Any] = field(default_factory=dict)
     hotkeys: dict[str, Any] = field(default_factory=dict)
+    diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     history: HistoryConfig = field(default_factory=HistoryConfig)
     record: RecordConfig = field(default_factory=RecordConfig)
     net: NetConfig = field(default_factory=NetConfig)
@@ -74,6 +104,9 @@ class GroopConfig:
             "colors": self.colors,
             "columns": self.columns,
             "hotkeys": self.hotkeys,
+            "diagnostics": {
+                "score_weights": dict(self.diagnostics.score_weights),
+            },
             "history": {
                 "full_resolution_seconds": self.history.full_resolution_seconds,
                 "downsample_interval_seconds": self.history.downsample_interval_seconds,
@@ -92,6 +125,24 @@ class GroopConfig:
     def digest(self) -> str:
         payload = json.dumps(self.to_primitive(), sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def threshold_band(self, key: str, *, tier: str | None = None, warn: float, crit: float) -> ThresholdBand:
+        default_band = ThresholdBand(warn=warn, crit=crit)
+        sections: list[object] = []
+        if tier:
+            sections.append(self.thresholds.get(tier))
+        sections.append(self.thresholds.get("default"))
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            raw = section.get(key)
+            if not isinstance(raw, dict):
+                continue
+            return ThresholdBand(
+                warn=_coerce_float(raw.get("warn"), default_band.warn),
+                crit=_coerce_float(raw.get("crit"), default_band.crit),
+            )
+        return default_band
 
 
 def _default_path() -> Path:
@@ -131,6 +182,44 @@ def _parse_port_list(values: object) -> tuple[int, ...]:
     return tuple(sorted(ports))
 
 
+def _coerce_float(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _load_score_weights(thresholds: object) -> dict[str, float]:
+    defaults = dict(_DEFAULT_SCORE_WEIGHTS)
+    if not isinstance(thresholds, dict):
+        return defaults
+    pressure_score = thresholds.get("pressure_score")
+    if not isinstance(pressure_score, dict):
+        return defaults
+    raw_weights = pressure_score.get("weights")
+    if not isinstance(raw_weights, dict):
+        return defaults
+    out = dict(defaults)
+    for key, value in raw_weights.items():
+        out[str(key)] = _coerce_float(value, out.get(str(key), 0.0))
+    return out
+
+
+_DEFAULT_SCORE_WEIGHTS = {
+    "psi_mem_full_avg10": 24.0,
+    "psi_mem_some_avg10": 10.0,
+    "psi_io_full_avg10": 16.0,
+    "psi_io_some_avg10": 6.0,
+    "psi_cpu_some_avg10": 4.0,
+    "rf_d_per_s": 20.0,
+    "rf_f_per_s": 10.0,
+    "mem_events_high_per_s": 6.0,
+    "mem_events_oom_kill_per_s": 4.0,
+    "io_cap_saturation_pct": 0.0,
+    "network_loss_pct": 0.0,
+}
+
+
 def load(path: Path | None = None) -> GroopConfig:
     data: dict[str, Any] = {}
     try:
@@ -143,6 +232,7 @@ def load(path: Path | None = None) -> GroopConfig:
     history_data = data.get("history", {})
     record_data = data.get("record", {})
     net_data = data.get("net", {})
+    thresholds = dict(data.get("thresholds", {}) or {})
     tiers = {
         str(name): [str(prefix) for prefix in prefixes]
         for name, prefixes in tiers_data.items()
@@ -159,10 +249,11 @@ def load(path: Path | None = None) -> GroopConfig:
         default_column_profile=str(general.get("default_column_profile", "auto")),
         tiers=tiers,
         protected_services=tuple(str(v) for v in tiers_data.get("protected_services", ())),
-        thresholds=data.get("thresholds", {}),
+        thresholds=thresholds,
         colors=dict(data.get("colors", {}) or {}),
         columns=dict(data.get("columns", {}) or {}),
         hotkeys=dict(data.get("hotkeys", {}) or {}),
+        diagnostics=DiagnosticsConfig(score_weights=_load_score_weights(thresholds)),
         history=HistoryConfig(
             full_resolution_seconds=int(history_data.get("full_resolution_seconds", 14_400)),
             downsample_interval_seconds=int(history_data.get("downsample_interval_seconds", 60)),
