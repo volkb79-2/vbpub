@@ -82,10 +82,14 @@ derive from it. A metric absent from the registry MUST NOT appear in a frame.
 ```python
 @dataclass
 class MetricValue:
-    v: float | int | None      # None = unavailable (NEVER emit fake 0)
-    src: str                   # "exact"|"derived"|"netns"|"host"|"unavail_perm"|"unavail_kernel"
+    v: float | int | None      # None = non-numeric state; NEVER emit fake 0
+    src: str                   # "exact"|"derived"|"netns"|"host"|"unlimited"|"unavail_perm"|"unavail_kernel"
     raw: int | None = None     # counters: raw cumulative, for reset detection
 ```
+
+`src="unlimited"` means the kernel reported a known infinity state such as
+`memory.max=max`, `memory.high=max`, `pids.max=max`, or `cpu.max=max`. It is not
+an unavailable value; render it distinctly from `unavail_*`.
 
 `Finding` (diagnostic output; P1 defines the shape, P6 fills it):
 
