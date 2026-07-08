@@ -1,0 +1,33 @@
+[Unit]
+Description=Best-effort test stack — bounded, OOM-first, yields to prod+interactive
+Before=slices.target
+
+[Slice]
+# --- Memory ---
+# Soft limit first; hard cap keeps a leak here from poisoning the host.
+MemoryHigh=4G
+# Hard host-safety cap: a leak here can never poison the host.
+MemoryMax=6G
+# Leak-stopper: with 69G of swap, a leaking container would otherwise poison
+# swap/zswap long before MemoryMax fires.
+MemorySwapMax=12G
+
+# --- CPU / IO weight ---
+CPUWeight=20
+IOWeight=10
+
+# --- Disk IO caps ---
+IOReadBandwidthMax=/dev/vda 31M
+IOWriteBandwidthMax=/dev/vda 31M
+IOReadIOPSMax=/dev/vda 100
+IOWriteIOPSMax=/dev/vda 400
+
+# --- systemd-oomd: kill inside this slice under pressure ---
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=60%
+ManagedOOMSwap=kill
+
+# NOTE: memory.zswap.writeback=1 is the kernel default, so cold best-effort
+# pages may still be written back to disk.
+# Containers join via compose `cgroup_parent: besteffort.slice`
+# (ciu governance injects it).

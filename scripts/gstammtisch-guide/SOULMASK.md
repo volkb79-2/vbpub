@@ -71,12 +71,12 @@ Switching to BFQ immediately activates the existing `io.weight` values AND adds 
 | Container | `io.weight` | `io.bfq.weight` | `io.max` | `cpu.weight` |
 |---|---|---|---|---|
 | Soulmask | 4950 | **1000** (BFQ max) | none | **800** |
-| devcontainer (docker-repack) | 1 | **1** (BFQ min) | 80% of baseline RIOPS_MAX | 100 |
-| test-runner | 1 | **1** (BFQ min) | 2/3 of baseline RIOPS_MAX, 30 MB/s | 100 |
+| devcontainer (docker-repack) | 1 | **1** (BFQ min) | 80% of measured r/w IOPS + r/w bandwidth | 100 |
+| test-runner / buildkit | 1 | **1** (BFQ min) | 80% of measured r/w IOPS + r/w bandwidth | 100 |
 
 Effective I/O ratio (BFQ): **1000:1**. Bench gets CPU slices on the disk head only when Soulmask's queue is idle.
 
-No `memory.high` on bench containers — the devcontainer is also the VSCode workspace, and capping its total cgroup memory kills the IDE. BFQ priority stays on the devcontainer; its `io.max` cap is set to 80% of the measured baseline so release work remains responsive. Test-runner and buildkit stay at 2/3 of baseline.
+No `memory.high` on bench containers — the devcontainer is also the VSCode workspace, and capping its total cgroup memory kills the IDE. Policy since 2026-07-08: ONE cap formula for all capped citizens — `IO_CAP_PCT` (default 80%) of every measured ceiling from `io-baseline.py` (r-IOPS, w-IOPS, read MB/s, write MB/s). This replaced the 2/3-riops formula (its 60k cap was inert) and the fixed 31 MB/s bandwidth cap (which was the actual limiter). Protection now leans on the weight ratios; the 20% headroom keeps the device off saturation. M6 validates.
 
 The `io.max` hard caps are belt-and-suspenders on test-runner/buildkit: they cut the benchmark's 709 r/s burst (observed without caps) to a lower ceiling before it even reaches the BFQ scheduler, ensuring the device queue depth stays clean for Soulmask's periodic DB saves.
 
@@ -2069,3 +2069,41 @@ per-instance defaults moved out to `instance-defaults.env`).
 4. Verify: `setup-cgroups.sh`'s log shows both instances and the recomputed
    `system.slice MemoryMin`; `soulmask-shutdown.sh` (or a real host reboot)
    stops the client before the main.
+
+### Deduplicating the two installs — disk AND page cache (jdupes / image-layer options)
+
+Each Pterodactyl server has its own full install copy under
+`/var/lib/pterodactyl/volumes/<uuid>/` (bind-mounted into the container — these
+are plain host files, NOT overlayfs layers). Two copies = two inodes per file,
+and the page cache is **per-inode**: even identical binaries are cached twice.
+
+**Option A (recommended): `jdupes -L` hardlinking.** Hardlinked files share one
+inode → one page-cache copy + disk saved. Procedure:
+1. Both instances updated to the SAME build, then both STOPPED (files quiescent).
+2. Dedupe only the read-only install content — NEVER `WS/Saved` (per-instance
+   DBs/config; a write through a hardlink modifies the shared inode = cross-
+   instance corruption):
+   ```bash
+   jdupes -L -r \
+     /var/lib/pterodactyl/volumes/<uuidA>/WS/Content \
+     /var/lib/pterodactyl/volumes/<uuidB>/WS/Content
+   jdupes -L -r .../<uuidA>/WS/Binaries .../<uuidB>/WS/Binaries
+   jdupes -L -r .../<uuidA>/Engine     .../<uuidB>/Engine
+   ```
+3. Start both. Updates are safe: steamcmd writes temp-file + rename → the
+   updated server gets a NEW inode, the link simply breaks (divergence, no
+   corruption). After the NEXT time both are updated+stopped, re-run jdupes.
+Expected savings: ~2–4 G disk (per-volume install ≈6 G incl. steamcmd); page
+cache: the shared binary/engine text (~200–400 M resident once, not twice).
+The pak file itself matters only on disk here — reads go to the shared tmpfs.
+Package `jdupes` is an install.sh prerequisite. Risk: only mis-scoping (Saved)
+— the command lists above deliberately never touch it.
+
+**Option B (assessed, not recommended now): bake the install into a docker
+image** both containers use; volumes only for `WS/Saved`. Overlayfs lowerdir
+pages ARE shared across containers (same inode) — the inode/page-cache win is
+automatic and total. But it fights Wings' management model: the egg install
+pipeline, steam updates, and the panel file manager all expect server files in
+the per-server volume; every game patch would mean image rebuild+push and
+container recreation instead of a steamcmd run. Revisit only if we ever leave
+the ptero-eggs update flow.

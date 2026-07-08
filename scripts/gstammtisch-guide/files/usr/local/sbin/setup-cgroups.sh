@@ -12,10 +12,10 @@
 #                            wastes CPU+RAM on it; cold pak goes straight to disk)
 #   - dev-workloads.slice  : memory.zswap.writeback=1 (cold dev pages may page to disk)
 #   - bench containers     : test-runner/buildx_buildkit_* get io.weight=1,
-#                            io.bfq.weight=1, io.max hard IOPS/bandwidth cap
-#                            at 2/3 of the measured baseline RIOPS_MAX
-#   - devcontainer         : io.weight=1, io.bfq.weight=1, io.max at 80% of
-#                            the measured baseline RIOPS_MAX
+#                            io.bfq.weight=1, io.max hard caps at IO_CAP_PCT
+#                            (default 80%) of the measured r/w IOPS AND r/w
+#                            bandwidth ceilings (io-baseline.py)
+#   - devcontainer         : io.weight=1, io.bfq.weight=1, same 80% io.max caps
 # Idempotent; tolerant if containers aren't running yet.
 #
 # N-instance (2026-07-07): iterates EVERY running Soulmask (WSServer) container,
@@ -53,7 +53,15 @@ _parse_bytes() {
   esac
 }
 
-# I/O cap for bench containers: 30 MB/s, 100 r-IOPS, 400 w-IOPS.
+# I/O caps for bench/buildkit/devcontainer containers.
+# Policy (2026-07-08): IO_CAP_PCT (default 80%) of the MEASURED device ceilings —
+# r-IOPS, w-IOPS, read bandwidth, write bandwidth (io-baseline.py →
+# /var/lib/gstammtisch/io-baseline.env). Replaces the old 2/3-riops formula
+# (60k riops — effectively inert) and the fixed 31 MB/s bandwidth cap (the
+# actual bench limiter). The game keeps device priority via io.weight
+# 4950-vs-1 + BFQ weight 1000-vs-1; the 20% headroom keeps the device off full
+# saturation so Soulmask's periodic DB saves never queue behind a build storm.
+# MEASUREMENTS.md M6 (build storm) validates this policy.
 # io.bfq.weight range is 1–1000 (unlike io.weight which is 1–10000).
 #
 # With the pak ramdisk active (soulmask-pak-ramdisk.service), pak pages are
@@ -62,30 +70,32 @@ _parse_bytes() {
 # periodic DB saves (which DO go through the real disk via writeback threads).
 # No memory.high on bench: the devcontainer is also VSCode — capping total
 # cgroup memory kills the IDE. BFQ io.weight + io.max is the right lever.
+IO_CAP_PCT="${IO_CAP_PCT:-80}"
+# Remember which caps the caller set explicitly — env always beats the baseline.
+BENCH_RBPS_ENV="${BENCH_RBPS:-}"
+BENCH_WBPS_ENV="${BENCH_WBPS:-}"
+BENCH_RIOPS_ENV="${BENCH_RIOPS:-}"
+BENCH_WIOPS_ENV="${BENCH_WIOPS:-}"
+DEVCONTAINER_RIOPS_ENV="${DEVCONTAINER_RIOPS:-}"
+# Conservative static fallbacks for a host with NO measured baseline yet
+# (read iops saturation lags the game even when it's CPU-bound — stay tight
+# until io-baseline.py has been run).
 BENCH_RBPS="${BENCH_RBPS:-31457280}"
 BENCH_WBPS="${BENCH_WBPS:-31457280}"
-# read iops has high impact on even only-cpu bound processes like soulmask.
-# a saturated disk cause by other processes will cause lags ingame as a side effect!
-# need to test r-iops on system and use maybe 2/3
-BENCH_RIOPS_ENV="${BENCH_RIOPS:-}"      # remember if caller set it explicitly
 BENCH_RIOPS="${BENCH_RIOPS:-200}"
-DEVCONTAINER_RIOPS_ENV="${DEVCONTAINER_RIOPS:-}"
-DEVCONTAINER_RIOPS="${DEVCONTAINER_RIOPS:-$BENCH_RIOPS}"
 BENCH_WIOPS="${BENCH_WIOPS:-400}"
+DEVCONTAINER_RIOPS="${DEVCONTAINER_RIOPS:-$BENCH_RIOPS}"
 
-# If a measured disk baseline exists (io-baseline.sh, fio randread), derive the bench
-# read cap as 2/3 of the measured max — an explicit BENCH_RIOPS env still wins.
 IO_BASELINE=/var/lib/gstammtisch/io-baseline.env
-if [ -z "$BENCH_RIOPS_ENV" ] && [ -f "$IO_BASELINE" ]; then
-  RIOPS_MAX=""
+if [ -f "$IO_BASELINE" ]; then
+  RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS=""
   . "$IO_BASELINE" 2>/dev/null || true
-  if [ -n "${RIOPS_MAX:-}" ]; then
-    BENCH_RIOPS=$(( RIOPS_MAX * 2 / 3 ))
-    if [ -z "$DEVCONTAINER_RIOPS_ENV" ]; then
-      DEVCONTAINER_RIOPS=$(( RIOPS_MAX * 4 / 5 ))
-    fi
-    log "io-baseline: RIOPS_MAX=${RIOPS_MAX} → BENCH_RIOPS=${BENCH_RIOPS} devcontainer=${DEVCONTAINER_RIOPS}"
-  fi
+  [ -z "$BENCH_RIOPS_ENV" ] && [ -n "${RIOPS_MAX:-}" ] && BENCH_RIOPS=$(( RIOPS_MAX * IO_CAP_PCT / 100 ))
+  [ -z "$DEVCONTAINER_RIOPS_ENV" ] && [ -n "${RIOPS_MAX:-}" ] && DEVCONTAINER_RIOPS=$(( RIOPS_MAX * IO_CAP_PCT / 100 ))
+  [ -z "$BENCH_WIOPS_ENV" ] && [ -n "${WIOPS_MAX:-}" ] && BENCH_WIOPS=$(( WIOPS_MAX * IO_CAP_PCT / 100 ))
+  [ -z "$BENCH_RBPS_ENV" ]  && [ -n "${RBW_MAX_BPS:-}" ] && BENCH_RBPS=$(( RBW_MAX_BPS * IO_CAP_PCT / 100 ))
+  [ -z "$BENCH_WBPS_ENV" ]  && [ -n "${WBW_MAX_BPS:-}" ] && BENCH_WBPS=$(( WBW_MAX_BPS * IO_CAP_PCT / 100 ))
+  log "io-baseline (${IO_CAP_PCT}% caps): riops=${BENCH_RIOPS} wiops=${BENCH_WIOPS} rbw=$((BENCH_RBPS/1048576))MB/s wbw=$((BENCH_WBPS/1048576))MB/s devcontainer_riops=${DEVCONTAINER_RIOPS}"
 fi
 
 # --- ancestor protection floors (plan §1.5 Finding A) ---
@@ -215,9 +225,10 @@ for CID in "${SOULMASK_CIDS[@]:-}"; do
     # observed) may page to disk; zswap LRU writes back only coldest-of-cold.
     # Revert lever: SOULMASK_WRITEBACK=0 in this instance's env (MEASUREMENTS.md M4 is the gate).
     log "  [$UUID] WARN: set-property failed ($(cat /tmp/cg-write-err)) — raw-write fallback (will NOT survive daemon-reload)"
-    _cg_write "$SCOPE/memory.high"            "$SOULMASK_HIGH" "memory.high"
-    _cg_write "$SCOPE/memory.low"             "$SOULMASK_LOW"  "memory.low"
-    _cg_write "$SCOPE/memory.min"             "$SOULMASK_MIN"  "memory.min"
+    # raw cgroup files take BYTES or "max", not "7G" (opus review F2)
+    _cg_write "$SCOPE/memory.high"            "$(_parse_bytes "$SOULMASK_HIGH")" "memory.high"
+    _cg_write "$SCOPE/memory.low"             "$(_parse_bytes "$SOULMASK_LOW")"  "memory.low"
+    _cg_write "$SCOPE/memory.min"             "$(_parse_bytes "$SOULMASK_MIN")"  "memory.min"
     _cg_write "$SCOPE/memory.zswap.writeback" "${SOULMASK_WRITEBACK:-1}" "memory.zswap.writeback"
     _cg_write "$SCOPE/io.weight"              "default 4950"   "io.weight"
     _cg_write "$SCOPE/cpu.weight"             "800"            "cpu.weight"

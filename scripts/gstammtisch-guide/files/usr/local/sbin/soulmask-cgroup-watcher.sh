@@ -62,10 +62,12 @@ while true; do
         if [ "$still_running" -eq 0 ]; then
             log "instance $cid vanished — dropping state (restart re-triggers its readiness wait)"
             rm -rf "$dir"
+            VANISHED=1
         fi
     done
 
     # ── track first-seen + collect cids that just became ready ──────────────
+    VANISHED="${VANISHED:-0}"
     READY_NOW=()
     now=$(date +%s)
     for cid in "${RUNNING_CIDS[@]:-}"; do
@@ -82,7 +84,10 @@ while true; do
         first_seen=$(cat "$cdir/first_seen" 2>/dev/null || echo "$now")
         elapsed=$(( now - first_seen ))
 
-        if docker logs "$cid" 2>&1 | grep -qm1 "$READY_RE"; then
+        # grep -c, NOT -q/-m1: early-exit grep closes the pipe while docker logs
+        # is still writing -> SIGPIPE -> pipeline rc=141 under pipefail -> a MATCHED
+        # line reads as "not ready" whenever >~64KB of log follows it (opus review F1).
+        if docker logs "$cid" 2>&1 | grep -c -- "$READY_RE" >/dev/null; then
             log "instance $cid registered on server list (${elapsed}s after detection)"
             READY_NOW+=("$cid")
         elif [ "$elapsed" -ge "$MAX_READY_WAIT" ]; then
@@ -100,11 +105,29 @@ while true; do
             [ -n "$cid" ] && [ -f "$STATE_DIR/$cid/done" ] && APPLY+=("$cid")
         done
         log "applying cgroup knobs to ready/applied instances: ${APPLY[*]}"
-        SOULMASK_APPLY_CIDS="${APPLY[*]}" /usr/local/sbin/setup-cgroups.sh
-        for cid in "${READY_NOW[@]}"; do
-            touch "$STATE_DIR/$cid/done"
-        done
+        if SOULMASK_APPLY_CIDS="${APPLY[*]}" /usr/local/sbin/setup-cgroups.sh; then
+            for cid in "${READY_NOW[@]}"; do
+                touch "$STATE_DIR/$cid/done"
+            done
+        else
+            log "WARN: setup-cgroups.sh failed — not marking done; will retry next pass (opus F3)"
+        fi
     fi
+
+    # ── instance vanished with nothing newly ready: recompute the dynamic
+    # system.slice floor so a stopped instance's share doesn't linger (opus F4).
+    # Restrict to still-done cids; "__none__" keeps the gate closed for
+    # still-loading siblings when no applied instance remains.
+    if [ "${VANISHED:-0}" -eq 1 ] && [ "${#READY_NOW[@]}" -eq 0 ]; then
+        APPLY=()
+        for cid in "${RUNNING_CIDS[@]:-}"; do
+            [ -n "$cid" ] && [ -f "$STATE_DIR/$cid/done" ] && APPLY+=("$cid")
+        done
+        log "recomputing floors after instance stop (apply set: ${APPLY[*]:-<none>})"
+        SOULMASK_APPLY_CIDS="${APPLY[*]:-__none__}" /usr/local/sbin/setup-cgroups.sh \
+            || log "WARN: floor-recompute pass failed"
+    fi
+    VANISHED=0
 
     sleep "$POLL"
 done

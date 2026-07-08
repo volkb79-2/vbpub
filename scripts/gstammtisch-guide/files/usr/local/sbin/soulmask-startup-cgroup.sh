@@ -112,7 +112,9 @@ log "  game loading — $(( $(cat "$CG/memory.current") / 1048576 ))M in RAM"
 log "waiting for server-list registration in game log (max ${READY_TIMEOUT}s)..."
 waited=0
 while true; do
-  if docker logs "$GAME_CID" 2>&1 | grep -qm1 "$READY_RE"; then
+  # grep -c not -q/-m1: early-exit grep + pipefail misreads a matched line as
+  # "not ready" when >~64KB of log follows it (opus review F1).
+  if docker logs "$GAME_CID" 2>&1 | grep -c -- "$READY_RE" >/dev/null; then
     log "server registered on server list — ready for players"
     break
   fi
