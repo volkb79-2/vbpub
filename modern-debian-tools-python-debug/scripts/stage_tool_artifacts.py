@@ -1403,6 +1403,7 @@ def _resolve_versions() -> dict[str, str]:
         "AIDER_VER": aider_version,
         "REASONIX_VER": _resolve_npm_version(os.getenv("REASONIX_VERSION"), "reasonix"),
         "OPENCLAW_VER": _resolve_npm_version(os.getenv("OPENCLAW_VERSION"), "openclaw"),
+        "COPILOT_VER": _resolve_npm_version(os.getenv("COPILOT_VERSION"), "@github/copilot"),
         "DTOP_VER": _resolve_version(os.getenv("DTOP_VERSION"), "amir20/dtop"),
         "LAZYDOCKER_VER": _resolve_version(os.getenv("LAZYDOCKER_VERSION"), "jesseduffield/lazydocker"),
         "GLANCES_VER": _resolve_pypi_version(os.getenv("GLANCES_VERSION"), "glances"),

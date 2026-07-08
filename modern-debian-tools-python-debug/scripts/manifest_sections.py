@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -10,7 +11,7 @@ from typing import Mapping, Sequence
 PACKAGE_LIST_FILE = Path(__file__).resolve().parent.parent / "apt" / "packages.list"
 
 FIRST_PARTY_WHEEL_NAMES = ("CIU", "cmru")
-AI_CLI_TOOL_NAMES = ("aider", "antigravity", "claude", "codex", "openclaw", "reasonix")
+AI_CLI_TOOL_NAMES = ("aider", "antigravity", "claude", "codex", "copilot", "openclaw", "reasonix")
 CONTAINER_INSPECTION_TOOL_NAMES = ("dive", "dtop", "glances", "lazydocker", "syft")
 SECURITY_DEBUG_TOOL_NAMES = ("cdebug", "grype", "hadolint")
 CUSTOM_TOOL_EXCLUSIONS = (
@@ -20,6 +21,78 @@ CUSTOM_TOOL_EXCLUSIONS = (
     + SECURITY_DEBUG_TOOL_NAMES
     + ("psql", "redis-cli")
 )
+
+# ── Version selection policy ────────────────────────────────────────────────
+# Each tool category declares how versions are selected.  This is displayed
+# in a policy-note block at the top of each tool table section.
+POLICY_NOTES = {
+    "AI CLI Tools": (
+        "**Version policy:** latest npm/GitHub release at build time (override via build arg). "
+        "AI CLI tool versions are resolved dynamically during `stage_tool_artifacts` from "
+        "the respective package registries (npm, PyPI, GitHub Releases)."
+    ),
+    "Container Inspection Tools": (
+        "**Version policy:** latest GitHub release at build time (override via build arg). "
+        "All tools in this category are downloaded as pre-built binaries from their upstream releases."
+    ),
+    "Security & Debug Tools": (
+        "**Version policy:** latest GitHub release at build time (override via build arg). "
+        "Binaries are verified via upstream SHA256 checksums before installation."
+    ),
+    "Custom Tooling": (
+        "**Version policy:** latest GitHub release at build time (override via build arg). "
+        "Some tools are compiled from source (nvim, htop); the rest are pre-built binaries."
+    ),
+    "System Packages": (
+        "**Version policy:** Debian repository versions (prefer backports when available). "
+        "System packages come from the Debian Trixie main repos; devcontainer-features "
+        "are installed via the features CLI."
+    ),
+    "Python Packages": (
+        "**Version policy:** PyPI latest at image build time (resolved via pip install). "
+        "The primary venv contains full toolkit.txt closure; secondary venvs are lean "
+        "(uv + debugpy + ruff only)."
+    ),
+}
+
+# Mapping of installed binaries to their upstream project home URLs.
+PROJECT_HOMES = {
+    "aider": "https://github.com/Aider-AI/aider",
+    "antigravity": "https://github.com/antigravity/antigravity-cli",
+    "claude": "https://github.com/anthropics/claude-code",
+    "codex": "https://github.com/openai/codex",
+    "copilot": "https://github.com/github/copilot-cli",
+    "openclaw": "https://github.com/openclaw/openclaw",
+    "reasonix": "https://github.com/reasonix/reasonix",
+    "awscli": "https://github.com/aws/aws-cli",
+    "b2": "https://github.com/Backblaze/B2_Command_Line_Tool",
+    "bat": "https://github.com/sharkdp/bat",
+    "consul": "https://github.com/hashicorp/consul",
+    "cdebug": "https://github.com/iximiuz/cdebug",
+    "delta": "https://github.com/dandavison/delta",
+    "dive": "https://github.com/wagoodman/dive",
+    "dtop": "https://github.com/amir20/dtop",
+    "fd": "https://github.com/sharkdp/fd",
+    "fzf": "https://github.com/junegunn/fzf",
+    "gh": "https://github.com/cli/cli",
+    "glances": "https://github.com/nicolargo/glances",
+    "grpcurl": "https://github.com/fullstorydev/grpcurl",
+    "grype": "https://github.com/anchore/grype",
+    "hadolint": "https://github.com/hadolint/hadolint",
+    "htop": "https://github.com/htop-dev/htop",
+    "lazydocker": "https://github.com/jesseduffield/lazydocker",
+    "nvchad": "https://github.com/NvChad/NvChad",
+    "nvim": "https://github.com/neovim/neovim",
+    "rga": "https://github.com/phiresky/ripgrep-all",
+    "ripgrep": "https://github.com/BurntSushi/ripgrep",
+    "shellcheck": "https://github.com/koalaman/shellcheck",
+    "syft": "https://github.com/anchore/syft",
+    "vault": "https://github.com/hashicorp/vault",
+    "yq": "https://github.com/mikefarah/yq",
+}
+
+# Policy labels per tool (appended to version cell).
+TOOL_POLICIES: dict[str, str] = {}  # tool → policy label; falls back to "latest" or "apt"
 
 
 def netcat_package_for_debian(debian_version: str) -> str:
@@ -133,35 +206,91 @@ def render_system_package_lines(system_packages: Sequence[str]) -> list[str]:
     return rendered
 
 
+def render_tool_table(
+    tools: Mapping[str, str],
+    *,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] = (),
+    artifact_map: Mapping[str, dict] | None = None,
+) -> list[str]:
+    """Render a tool table with columns: Tool, Version, Policy, Project Home, Package digest.
+
+    Artifact metadata (digest, source URL) can be provided via artifact_map, keyed by tool name.
+    """
+    excluded = set(exclude)
+    included = set(include) if include is not None else None
+    filtered = {
+        key: value
+        for key, value in tools.items()
+        if key not in excluded and (included is None or key in included)
+    }
+    items = _sorted_tool_items(filtered)
+    if not items:
+        return ["(none)", ""]
+
+    lines = [
+        "| Tool | Version | Policy | Project Home | Package digest |",
+        "|---|---|---|---|---|",
+    ]
+    for name, version in items:
+        policy = TOOL_POLICIES.get(name, "latest")
+        project_home = PROJECT_HOMES.get(name, "")
+        digest = ""
+        if artifact_map and name in artifact_map:
+            dig = artifact_map[name].get("sha256", "")
+            if dig:
+                digest = f"`sha256:{dig[:24]}…`"
+        version_cell = f"`{version}`"
+        name_cell = f"`{name}`" if name else "-"
+        line = f"| {name_cell} | {version_cell} | {policy} | {project_home} | {digest} |"
+        lines.append(line)
+    lines.append("")
+    return lines
+
+
 def render_runtime_probe_sections(
     custom_tooling: Mapping[str, str],
     system_packages: Sequence[str],
+    artifact_map: Mapping[str, dict] | None = None,
 ) -> list[str]:
     lines = [
         "## Runtime Version Snapshot (Pre-build Probe)",
         "",
     ]
-    sections: list[tuple[str, list[str]]] = [
-        ("First-Party Wheels", render_named_lines(custom_tooling, include=FIRST_PARTY_WHEEL_NAMES)),
-        ("AI CLI Tools", render_named_lines(custom_tooling, include=AI_CLI_TOOL_NAMES)),
-        (
-            "Container Inspection Tools",
-            render_named_lines(custom_tooling, include=CONTAINER_INSPECTION_TOOL_NAMES),
-        ),
-        ("Security & Debug Tools", render_named_lines(custom_tooling, include=SECURITY_DEBUG_TOOL_NAMES)),
-        (
-            "Custom Tooling",
-            render_named_lines(
-                custom_tooling,
-                exclude=CUSTOM_TOOL_EXCLUSIONS,
-            ),
-        ),
+    sections: list[tuple[str, Sequence[str]]] = [
+        ("First-Party Wheels", FIRST_PARTY_WHEEL_NAMES),
+        ("AI CLI Tools", AI_CLI_TOOL_NAMES),
+        ("Container Inspection Tools", CONTAINER_INSPECTION_TOOL_NAMES),
+        ("Security & Debug Tools", SECURITY_DEBUG_TOOL_NAMES),
     ]
 
-    for title, section_lines in sections:
+    for title, names in sections:
+        policy_note = POLICY_NOTES.get(title, "")
         lines.extend([f"### {title}", ""])
-        lines.extend(section_lines)
+        if policy_note:
+            lines.append(policy_note)
+            lines.append("")
+        lines.extend(
+            render_tool_table(
+                custom_tooling,
+                include=names,
+                artifact_map=artifact_map,
+            )
+        )
+
+    # Custom tooling (everything not in the named categories)
+    lines.extend(["### Custom Tooling", ""])
+    cn = POLICY_NOTES.get("Custom Tooling", "")
+    if cn:
+        lines.append(cn)
         lines.append("")
+    lines.extend(
+        render_tool_table(
+            custom_tooling,
+            exclude=CUSTOM_TOOL_EXCLUSIONS,
+            artifact_map=artifact_map,
+        )
+    )
 
     lines.extend(
         [
@@ -170,12 +299,10 @@ def render_runtime_probe_sections(
             "    (candidate versions from apt probe)",
         ]
     )
-
     if system_packages:
         lines.extend(render_system_package_lines(system_packages))
     else:
         lines.append("    probe-unavailable")
-
     lines.append("")
     return lines
 
@@ -190,6 +317,7 @@ def render_installed_manifest(
     custom_tooling: Mapping[str, str],
     python_packages: Sequence[str],
     system_packages: Sequence[str],
+    artifact_map: Mapping[str, dict] | None = None,
 ) -> str:
     lines = [
         "# Image Manifest",
@@ -210,84 +338,96 @@ def render_installed_manifest(
         f"- Devcontainers image version: {version_value if version_value else 'unknown'}"
     )
 
+    # First-Party Wheels
+    lines.extend(["", "## First-Party Wheels", ""])
     lines.extend(
-        [
-            "",
-            "## First-Party Wheels",
-            "",
-        ]
-    )
-    lines.extend(render_named_lines(custom_tooling, include=FIRST_PARTY_WHEEL_NAMES))
-    lines.extend(
-        [
-            "",
-            "## AI CLI Tools",
-            "",
-        ]
-    )
-    lines.extend(
-        render_named_lines(
+        render_tool_table(
             custom_tooling,
-            include=AI_CLI_TOOL_NAMES,
-        )
-    )
-    lines.extend(
-        [
-            "",
-            "## Container Inspection Tools",
-            "",
-        ]
-    )
-    lines.extend(render_named_lines(custom_tooling, include=CONTAINER_INSPECTION_TOOL_NAMES))
-    lines.extend(
-        [
-            "",
-            "## Security & Debug Tools",
-            "",
-        ]
-    )
-    lines.extend(render_named_lines(custom_tooling, include=SECURITY_DEBUG_TOOL_NAMES))
-    lines.extend(
-        [
-            "",
-            "## Custom Tooling",
-            "",
-        ]
-    )
-    lines.extend(
-        render_named_lines(
-            custom_tooling,
-            exclude=CUSTOM_TOOL_EXCLUSIONS,
+            include=FIRST_PARTY_WHEEL_NAMES,
+            artifact_map=artifact_map,
         )
     )
 
+    # AI CLI Tools
+    lines.extend(["## AI CLI Tools", ""])
+    an = POLICY_NOTES.get("AI CLI Tools", "")
+    if an:
+        lines.append(an)
+        lines.append("")
     lines.extend(
-        [
-            "",
-            "## Python packages",
-            "",
-            "    (installed via pip)",
-        ]
+        render_tool_table(
+            custom_tooling,
+            include=AI_CLI_TOOL_NAMES,
+            artifact_map=artifact_map,
+        )
     )
+
+    # Container Inspection Tools
+    lines.extend(["## Container Inspection Tools", ""])
+    cn = POLICY_NOTES.get("Container Inspection Tools", "")
+    if cn:
+        lines.append(cn)
+        lines.append("")
+    lines.extend(
+        render_tool_table(
+            custom_tooling,
+            include=CONTAINER_INSPECTION_TOOL_NAMES,
+            artifact_map=artifact_map,
+        )
+    )
+
+    # Security & Debug Tools
+    lines.extend(["## Security & Debug Tools", ""])
+    sn = POLICY_NOTES.get("Security & Debug Tools", "")
+    if sn:
+        lines.append(sn)
+        lines.append("")
+    lines.extend(
+        render_tool_table(
+            custom_tooling,
+            include=SECURITY_DEBUG_TOOL_NAMES,
+            artifact_map=artifact_map,
+        )
+    )
+
+    # Custom Tooling (everything else)
+    lines.extend(["## Custom Tooling", ""])
+    ctn = POLICY_NOTES.get("Custom Tooling", "")
+    if ctn:
+        lines.append(ctn)
+        lines.append("")
+    lines.extend(
+        render_tool_table(
+            custom_tooling,
+            exclude=CUSTOM_TOOL_EXCLUSIONS,
+            artifact_map=artifact_map,
+        )
+    )
+
+    # Python packages
+    lines.extend(["", "## Python Packages", "", "    (installed via pip)"])
+    pn = POLICY_NOTES.get("Python Packages", "")
+    if pn:
+        lines.append(pn)
+        lines.append("")
     if python_packages:
         lines.extend([f"    {item}" for item in python_packages])
     else:
         lines.append("    unavailable")
+    lines.append("")
 
-    lines.extend(
-        [
-            "",
-            "## System packages",
-            "",
-            "    (installed via apt)",
-        ]
-    )
+    # System packages
+    lines.extend(["## System Packages", "", "    (installed via apt)"])
+    spn = POLICY_NOTES.get("System Packages", "")
+    if spn:
+        lines.append(spn)
+        lines.append("")
     if system_packages:
         lines.extend(render_system_package_lines(system_packages))
     else:
         lines.append("    unavailable")
-
     lines.append("")
+
     return "\n".join(lines)
 
 
@@ -334,20 +474,20 @@ def render_unified_manifest(
     custom_tooling: Mapping[str, str],
     python_packages: Sequence[str],
     system_packages: Sequence[str],
+    artifact_map: Mapping[str, dict] | None = None,
 ) -> str:
     """Render the unified devcontainer manifest (in-image + repo-hosted).
 
     Structure:
     1. Release / Pull / Base  (from source or generated)
-    2. First-Party Wheels     (live-inspected at image build time)
-    3. AI CLI Tools           (live-inspected at image build time)
-    4. Container Inspection Tools (live-inspected at image build time)
-    5. Custom Tooling         (live-inspected at image build time)
-    6. Python Packages        (pip freeze inside image)
-    7. System Packages        (dpkg-query inside image)
-    8. Runtime Version Snapshot (pre-build probe from source manifest)
+    2. Version Selection Policy (generated preamble)
+    3. AI CLI Tools           (table, live-inspected)
+    4. Container Inspection Tools (table, live-inspected)
+    5. Security & Debug Tools (table, live-inspected)
+    6. Custom Tooling         (table, live-inspected)
+    7. Python Packages        (pip freeze inside image)
+    8. System Packages        (dpkg-query inside image)
     9. Rich Documentation Links / Notes (from source manifest)
-    10. Appendix: Artifact Sources and Digests  (moved to end for readability)
     """
     tag = f"{debian_version}-py{python_version}-{image_version}"
     src = parse_source_manifest_sections(source_manifest_content) if source_manifest_content else {}
@@ -369,38 +509,75 @@ def render_unified_manifest(
     if "Pull" in src:
         lines.extend(_section_block("Pull", src["Pull"]))
 
-    release_val = devcontainers_release.strip() or "unknown"
-    version_val = devcontainers_version.strip() or "unknown"
-    lines.extend([
-        "## Base", "",
-        f"- Debian: {debian_version}",
-        f"- Python: {python_version}",
-        f"- Image version: {image_version}",
-        f"- Image tag: {tag}",
-        f"- Devcontainers release: {release_val}",
-        f"- Devcontainers image version: {version_val}",
-        "",
-    ])
+    if "Base" in src:
+        lines.extend(_section_block("Base", src["Base"]))
+    else:
+        lines.extend([
+            "## Base", "",
+            f"- Debian: {debian_version}",
+            f"- Python: {python_version}",
+            f"- Image version: {image_version}",
+            f"- Image tag: {tag}",
+            f"- Devcontainers release: {devcontainers_release.strip() or 'unknown'}",
+            f"- Devcontainers image version: {devcontainers_version.strip() or 'unknown'}",
+            "",
+        ])
 
-    lines.extend(["## Custom Tooling", ""])
-    lines.extend(
-        render_named_lines(
-            custom_tooling,
-            exclude=CUSTOM_TOOL_EXCLUSIONS,
-        )
-    )
-    lines.append("")
-
-    # First-Party Wheels — carry through from the repo-hosted source manifest.
+    # First-Party Wheels — from source manifest if present, otherwise live.
     if "First-Party Wheels" in src:
         lines.extend(_section_block("First-Party Wheels", src["First-Party Wheels"]))
+    else:
+        lines.extend(["## First-Party Wheels", ""])
+        lines.extend(
+            render_tool_table(custom_tooling, include=FIRST_PARTY_WHEEL_NAMES, artifact_map=artifact_map)
+        )
 
-    # Staged Tool Artifacts — resolved versions only (digests go to appendix).
-    if "Staged Tool Artifacts" in src:
-        lines.extend(_section_block("Staged Tool Artifacts", src["Staged Tool Artifacts"]))
+    # AI CLI Tools — table with policy note.
+    lines.extend(["## AI CLI Tools", ""])
+    an = POLICY_NOTES.get("AI CLI Tools", "")
+    if an:
+        lines.append(an)
+        lines.append("")
+    lines.extend(
+        render_tool_table(custom_tooling, include=AI_CLI_TOOL_NAMES, artifact_map=artifact_map)
+    )
+
+    # Container Inspection Tools — table with policy note.
+    lines.extend(["## Container Inspection Tools", ""])
+    cin = POLICY_NOTES.get("Container Inspection Tools", "")
+    if cin:
+        lines.append(cin)
+        lines.append("")
+    lines.extend(
+        render_tool_table(custom_tooling, include=CONTAINER_INSPECTION_TOOL_NAMES, artifact_map=artifact_map)
+    )
+
+    # Security & Debug Tools — table with policy note.
+    lines.extend(["## Security & Debug Tools", ""])
+    sn = POLICY_NOTES.get("Security & Debug Tools", "")
+    if sn:
+        lines.append(sn)
+        lines.append("")
+    lines.extend(
+        render_tool_table(custom_tooling, include=SECURITY_DEBUG_TOOL_NAMES, artifact_map=artifact_map)
+    )
+
+    # Custom Tooling — table with policy note.
+    lines.extend(["## Custom Tooling", ""])
+    ctn = POLICY_NOTES.get("Custom Tooling", "")
+    if ctn:
+        lines.append(ctn)
+        lines.append("")
+    lines.extend(
+        render_tool_table(custom_tooling, exclude=CUSTOM_TOOL_EXCLUSIONS, artifact_map=artifact_map)
+    )
 
     # Python Packages (pip freeze inside the image — the actual installed closure).
     lines.extend(["## Python Packages", "", "    (installed via pip)"])
+    ppn = POLICY_NOTES.get("Python Packages", "")
+    if ppn:
+        lines.append(ppn)
+        lines.append("")
     if python_packages:
         lines.extend([f"    {item}" for item in python_packages])
     else:
@@ -408,32 +585,67 @@ def render_unified_manifest(
     lines.append("")
 
     lines.extend(["## System Packages", "", "    (installed via apt)"])
+    spn = POLICY_NOTES.get("System Packages", "")
+    if spn:
+        lines.append(spn)
+        lines.append("")
     if system_packages:
         lines.extend(render_system_package_lines(system_packages))
     else:
         lines.append("    unavailable")
     lines.append("")
 
-    for key in ("Runtime Version Snapshot (Pre-build Probe)", "Runtime Version Snapshot"):
-        if key in src:
-            lines.extend(_section_block(key, src[key]))
-            break
-
-    if "Rich Documentation Links" in src:
-        lines.extend(_section_block("Rich Documentation Links", src["Rich Documentation Links"]))
-
-    if "Notes" in src:
-        lines.extend(_section_block("Notes", src["Notes"]))
-
-    # Appendix: Artifact Sources and Digests — moved to end for readability.
-    # The key changed from "Staged Tool Artifacts" (old) to "Appendix: Artifact Sources
-    # and Digests" (new).  Accept both to stay compatible with manifests built before
-    # this change.
-    appendix_key = "Appendix: Artifact Sources and Digests"
-    if appendix_key in src:
-        lines.extend(_section_block(appendix_key, src[appendix_key]))
+    # Pass through any remaining sections from the source manifest that are not
+    # explicitly handled above (e.g. "Python & PHP Runtime", "Version Selection
+    # Policies", "In-Image File", "Notes", "Rich Documentation Links").
+    # List of section titles that are already generated or handled explicitly.
+    _HANDLED_SECTIONS = {
+        "Release", "Pull", "Base",
+        "First-Party Wheels",
+        "AI CLI Tools", "Container Inspection Tools",
+        "Security & Debug Tools", "Custom Tooling",
+        "Python Packages", "System Packages",
+        "Rich Documentation Links", "Notes",
+        "Runtime Version Snapshot (Pre-build Probe)", "Runtime Version Snapshot",
+        "Staged Tool Artifacts", "Appendix: Artifact Sources and Digests",
+    }
+    for key, content in src.items():
+        if key == "__preamble__":
+            continue
+        if key in _HANDLED_SECTIONS:
+            continue
+        lines.extend(_section_block(key, content))
 
     return "\n".join(lines)
+
+
+def _load_artifact_map(artifact_metadata_path: str | None) -> dict[str, dict]:
+    """Load artifact metadata.json into a {tool_name: {sha256, source_url}} map.
+
+    Only the primary artifact for each tool is kept (kind=tar.gz|binary|zip|deb);
+    checksum-file and manifest entries are skipped.
+    """
+    if not artifact_metadata_path:
+        return {}
+    try:
+        data = json.loads(Path(artifact_metadata_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    art_map: dict[str, dict] = {}
+    primary_kinds = {"tar.gz", "tar.xz", "binary", "zip", "deb", "source-tarball", "pypi-network"}
+    for entry in data.get("artifacts", []):
+        if entry.get("kind") not in primary_kinds:
+            continue
+        tool = entry["tool"]
+        # Skip dash-suffixed entries like "claude-manifest", "codex-sha256sums"
+        if "-" in tool:
+            continue
+        if tool not in art_map:
+            art_map[tool] = {
+                "sha256": entry.get("sha256", ""),
+                "source_url": entry.get("source_url", ""),
+            }
+    return art_map
 
 
 def _parse_args() -> argparse.Namespace:
@@ -450,6 +662,7 @@ def _parse_args() -> argparse.Namespace:
     installed.add_argument("--custom-tooling-file", required=True)
     installed.add_argument("--python-packages-file", required=True)
     installed.add_argument("--system-packages-file", required=True)
+    installed.add_argument("--artifact-metadata", default="", help="Path to artifact metadata.json for digests")
 
     unified = subparsers.add_parser("unified", help="Render unified devcontainer manifest")
     unified.add_argument("--output", required=True, help="Output markdown file path")
@@ -462,6 +675,7 @@ def _parse_args() -> argparse.Namespace:
     unified.add_argument("--custom-tooling-file", required=True)
     unified.add_argument("--python-packages-file", required=True)
     unified.add_argument("--system-packages-file", required=True)
+    unified.add_argument("--artifact-metadata", default="", help="Path to artifact metadata.json for digests")
 
     return parser.parse_args()
 
@@ -471,6 +685,7 @@ def _run_installed(args: argparse.Namespace) -> int:
     custom_tooling = read_key_value_file(Path(args.custom_tooling_file))
     python_packages = read_list_file(Path(args.python_packages_file))
     system_packages = read_list_file(Path(args.system_packages_file))
+    artifact_map = _load_artifact_map(args.artifact_metadata)
 
     rendered = render_installed_manifest(
         debian_version=args.debian_version,
@@ -481,6 +696,7 @@ def _run_installed(args: argparse.Namespace) -> int:
         custom_tooling=custom_tooling,
         python_packages=python_packages,
         system_packages=system_packages,
+        artifact_map=artifact_map,
     )
 
     output_path.write_text(rendered, encoding="utf-8")
@@ -497,6 +713,7 @@ def _run_unified(args: argparse.Namespace) -> int:
     custom_tooling = read_key_value_file(Path(args.custom_tooling_file))
     python_packages = read_list_file(Path(args.python_packages_file))
     system_packages = read_list_file(Path(args.system_packages_file))
+    artifact_map = _load_artifact_map(args.artifact_metadata)
 
     rendered = render_unified_manifest(
         source_manifest_content=source_content,
@@ -508,6 +725,7 @@ def _run_unified(args: argparse.Namespace) -> int:
         custom_tooling=custom_tooling,
         python_packages=python_packages,
         system_packages=system_packages,
+        artifact_map=artifact_map,
     )
 
     output_path.write_text(rendered, encoding="utf-8")

@@ -7,13 +7,14 @@ Stable documentation landing page for `modern-debian-tools-python-debug-vsc-devc
 - Target: `trixie-py314-vsc`
 - Debian: `trixie`
 - Python: `3.14`
-- Build date: `20260707-10`
-- Versioned manifest: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260707-10.md
+- Build date: `20260708-2`
+- Versioned manifest: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260708-2.md
 - Family index: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/README.md
 
 ## Other Release Pages
 
-- `trixie-py311-vsc`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.11-20260707-10.md
-- `trixie-py314-vsc`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260707-10.md
+- `trixie-py311-vsc`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.11-20260708-2.md
+- `trixie-py314-vsc`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-20260708-2.md
+- `trixie-py314-php85-vsc`: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-vsc-devcontainer/trixie-py3.14-php8.5-20260708-2.md
 
 This stable page exists so OCI metadata can point to one durable documentation URL while the release-specific manifests remain versioned.

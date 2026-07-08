@@ -206,6 +206,16 @@ def install_openclaw() -> None:
     run_command(["npm", "install", "-g", f"openclaw@{version}"])
 
 
+def install_copilot() -> None:
+    if not is_enabled("INSTALL_COPILOT", True):
+        log("INFO", "INSTALL_COPILOT=false; skipping GitHub Copilot CLI")
+        return
+
+    version = env_value("COPILOT_VER", "COPILOT_VERSION", default="latest")
+    require_command("npm", "npm is required to install GitHub Copilot CLI")
+    run_command(["npm", "install", "-g", f"@github/copilot@{version}"])
+
+
 def install_aider(ctx: InstallerContext) -> None:
     if not is_enabled("INSTALL_AIDER", True):
         log("INFO", "INSTALL_AIDER=false; skipping Aider")
@@ -260,6 +270,8 @@ def install_tool(tool: str, ctx: InstallerContext) -> None:
         install_reasonix()
     elif tool == "openclaw":
         install_openclaw()
+    elif tool == "copilot":
+        install_copilot()
     elif tool == "aider":
         install_aider(ctx)
     else:

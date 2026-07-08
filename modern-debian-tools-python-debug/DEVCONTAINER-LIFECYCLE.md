@@ -70,6 +70,8 @@ Devcontainer-persisted state is grouped under a single host parent so a rebuild 
 |---|---|---|
 | `~/mdt--mounted-folders/.ssh` | `/home/vscode/.ssh` (ro) | container-persisted ssh state |
 | `~/mdt--mounted-folders/.claude` `.codex` `.reasonix` `.openclaw` `.config` `.minisign` `.gnupg` | matching `/home/vscode/*` | agent/tool state; secret dirs `0700` |
+| `~/mdt--mounted-folders/.claude.json` | `/home/vscode/.claude.json` | Claude Code auth/page-state (file-level mount) |
+| `~/mdt--mounted-folders/.reasonix.toml` | `/home/vscode/.reasonix.toml` | Reasonix global config (file-level mount) |
 | `~/mdt--mounted-folders/tmp` | `/tmp` | **persisted, host-backed `/tmp`** (`1777`) |
 | `~/.ssh` (host, native) | `/home/vscode/.ssh-host` (ro) | **dual-use exception**: the host's NATIVE keys, so the same keys work natively AND in the devcontainer |
 

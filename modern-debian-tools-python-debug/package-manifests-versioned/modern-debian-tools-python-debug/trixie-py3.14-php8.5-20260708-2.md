@@ -1,20 +1,20 @@
-# Modern Debian Tools + Python Debug + PHP 8.5
+# Modern Debian Tools + Python Debug
 
-Versioned package manifest for `modern-debian-tools-python-debug-php85`.
+Versioned package manifest for `modern-debian-tools-python-debug`.
 
 ## Release
 
-- Build date: `20260707-3`
+- Build date: `20260708-2`
 - Target: `trixie-py314-php85`
 - Debian: `trixie`
 - Python: `3.14`
-- Immutable image tag: `trixie-py3.14-20260707-3`
-- Floating image tag: `trixie-py3.14-latest`
+- Immutable image tag: `trixie-py3.14-php8.5-20260708-2`
+- Floating image tag: `trixie-py3.14-php8.5-latest`
 
 ## Pull
 
 ```bash
-docker pull ghcr.io/volkb79-2/modern-debian-tools-python-debug-php85:trixie-py3.14-20260707-3
+docker pull ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.14-php8.5-20260708-2
 ```
 
 ## Purpose
@@ -31,15 +31,15 @@ No description provided.
 ### AI CLI Tools
 
 - aider: `0.86.2`
-- antigravity: `1.0.16`
-- claude: `2.1.202`
-- codex: `0.142.5`
+- antigravity: `1.1.0`
+- claude: `2.1.204`
+- codex: `0.143.0`
 - openclaw: `2026.6.11`
-- reasonix: `1.17.6`
+- reasonix: `1.17.7`
 
 ### Supporting Tool Versions
 
-- awscli: `2.35.16`
+- awscli: `2.35.17`
 - b2: `4.7.1`
 - bat: `0.26.1`
 - consul: `2.0.1`
@@ -68,11 +68,11 @@ Generated from local pre-staging metadata to make release documentation auditabl
 ### AI CLI Tools
 
 - aider: `0.86.2`
-- antigravity: `1.0.16`
-- claude: `2.1.202`
-- codex: `0.142.5`
+- antigravity: `1.1.0`
+- claude: `2.1.204`
+- codex: `0.143.0`
 - openclaw: `2026.6.11`
-- reasonix: `1.17.6`
+- reasonix: `1.17.7`
 
 ### Container Inspection Tools
 
@@ -90,7 +90,7 @@ Generated from local pre-staging metadata to make release documentation auditabl
 
 ### Custom Tooling
 
-- awscli: `2.35.16`
+- awscli: `2.35.17`
 - b2: `4.7.1`
 - bat: `0.26.1`
 - consul: `2.0.1`
@@ -162,8 +162,8 @@ Generated from local pre-staging metadata to make release documentation auditabl
 
 ## Rich Documentation Links
 
-- Family overview: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-php85/README.md
-- This release page: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug-php85/trixie-py3.14-20260707-3.md
+- Family overview: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/README.md
+- This release page: https://github.com/volkb79-2/vbpub/blob/main/modern-debian-tools-python-debug/package-manifests-versioned/modern-debian-tools-python-debug/trixie-py3.14-php8.5-20260708-2.md
 - Source tree: https://github.com/volkb79-2/vbpub/tree/main/modern-debian-tools-python-debug
 
 ## Notes
@@ -176,12 +176,12 @@ The same manifest content is installed in-image at `/usr/local/share/modern-debi
 
 Full sha256 digests for all staged artifacts. Use these to verify reproducibility.
 
-- codex 0.142.5 (tar.gz): sha256 `14ab953574506cb30d8c773e5a3458fd0a2d1aad58062f0a98ea6a159889b80e`; source `https://github.com/openai/codex/releases/download/rust-v0.142.5/codex-package-x86_64-unknown-linux-musl.tar.gz`
-- codex-sha256sums 0.142.5 (checksum-file): sha256 `a0f5206932d7e5a8a154bc9f6a60c71961cb97d179edb8002b7b6e23d7c96dff`; source `https://github.com/openai/codex/releases/download/rust-v0.142.5/codex-package_SHA256SUMS`
-- claude 2.1.202 (binary): sha256 `71590202249892db3805ecd5b867f831f04b8129eaabd3f9a5bd4ba16b52c839`; source `https://downloads.claude.ai/claude-code-releases/2.1.202/linux-x64/claude`
-- claude-manifest 2.1.202 (manifest): sha256 `8b20ce84e4076486d46f774d190fde25696647f1d0f8645eaa3568f602a1c4d9`; source `https://downloads.claude.ai/claude-code-releases/2.1.202/manifest.json`
-- antigravity 1.0.16 (tar.gz): sha256 `8ffc887002920b1b4ab42f6213f50a21aa7bb4ee14caa0ed563129a2ce39135d`; source `https://storage.googleapis.com/antigravity-public/antigravity-cli/1.0.16-4893150192467968/linux-x64/cli_linux_x64.tar.gz`
-- antigravity-manifest 1.0.16 (manifest): sha256 `34795cde598b0eb369ff10132c39aca6ec8b6b68e25287d04236fd6c3951a33f`; source `https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`
+- codex 0.143.0 (tar.gz): sha256 `bc5e36dbb2caeb34b48dbfbab92e7593a4fa3b47dc0a39b9f30403e2c18e25bd`; source `https://github.com/openai/codex/releases/download/rust-v0.143.0/codex-package-x86_64-unknown-linux-musl.tar.gz`
+- codex-sha256sums 0.143.0 (checksum-file): sha256 `6e2065f8c982264d9aab49cf357104fac9df7f3512b888426b3bd57e239f9462`; source `https://github.com/openai/codex/releases/download/rust-v0.143.0/codex-package_SHA256SUMS`
+- claude 2.1.204 (binary): sha256 `c8ee1ea69154533c691a68f46abb645196fe7339d26e6fc204cc7f08220139d3`; source `https://downloads.claude.ai/claude-code-releases/2.1.204/linux-x64/claude`
+- claude-manifest 2.1.204 (manifest): sha256 `565ff2a8b5fc739d2026bfcb2b854842be16e9b7b50eeb16f8a53aa04fae4635`; source `https://downloads.claude.ai/claude-code-releases/2.1.204/manifest.json`
+- antigravity 1.1.0 (tar.gz): sha256 `7ee512440af5ed0c819065cd7cc14eec90699214df4be32280ac346f0100577e`; source `https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.0-4523441756438528/linux-x64/cli_linux_x64.tar.gz`
+- antigravity-manifest 1.1.0 (manifest): sha256 `e7fa5f00d7a82ab4f897f8c39ca659f1d224269b5e519c233ff6728e13e49af3`; source `https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json`
 - b2 4.7.1 (binary): sha256 `0f4720858f137cbbdb434f13edb5ad8bc5e99a0b83ba8b1f7143831dab937eea`; source `https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v4.7.1/b2-linux`
 - b2-hashes 4.7.1 (checksum-file): sha256 `883d61e2ebb4cc922a504b66677f2c32f29c23a1159e3616b6b5f88c2de2e979`; source `https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v4.7.1/b2-linux_hashes.txt`
 - bat 0.26.1 (tar.gz): sha256 `726f04c8f576a7fd18b7634f1bbf2f915c43494c1c0f013baa3287edb0d5a2a3`; source `https://github.com/sharkdp/bat/releases/download/v0.26.1/bat-v0.26.1-x86_64-unknown-linux-gnu.tar.gz`
@@ -216,5 +216,5 @@ Full sha256 digests for all staged artifacts. Use these to verify reproducibilit
 - grype-checksums 0.115.0 (checksum-file): sha256 `dce654b6f5185d6e4e31cbdd966056562808c0d82b0acc233e9af03e1d4de2b8`; source `https://github.com/anchore/grype/releases/download/v0.115.0/grype_0.115.0_checksums.txt`
 - cdebug 0.0.19 (tar.gz): sha256 `10c2dd283ed690f445ac41d7b4846101abe92d1a61c725d7c6cfe81f86c48024`; source `https://github.com/iximiuz/cdebug/releases/download/v0.0.19/cdebug_linux_amd64.tar.gz`
 - cdebug-checksums 0.0.19 (checksum-file): sha256 `0934e9ae7907ff12c3c39cc3f52e88292cbebe1e0a32f88db9845b877cf817ae`; source `https://github.com/iximiuz/cdebug/releases/download/v0.0.19/checksums.txt`
-- awscli 2.35.16 (zip): sha256 `b5af85763d6d33b8f05c5e7488c0b1ed85f87a5a584b67ce583fe560bfeea086`; source `https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip`
+- awscli 2.35.17 (zip): sha256 `ba326932b8ca7fef7b6e37b9475be702327a9d5aef157f07300d8d34993902c3`; source `https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip`
 

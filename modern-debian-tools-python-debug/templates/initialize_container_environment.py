@@ -45,6 +45,8 @@ PARENT_NAME = "mdt--mounted-folders"
 
 # Canonical set under the parent — used only if devcontainer.json can't be read.
 FALLBACK = [".ssh", ".claude", ".codex", ".reasonix", ".openclaw", ".config", ".minisign", ".gnupg"]
+# File-level state mounts (not inside a subdirectory) — parent dir auto-created.
+FALLBACK_FILES = [".claude.json", ".reasonix.toml"]
 
 HOME = Path(os.path.expanduser("~"))
 # Matches the devcontainer mount string: "source=...,target=...,type=bind[,...]"
@@ -65,7 +67,12 @@ def host_bind_sources(dc_path: Path) -> list:
 
 
 def to_home_dir(source: str):
-    """Resolve a mount source to a host $HOME-relative DIRECTORY path, or None to skip."""
+    """Resolve a mount source to a host $HOME-relative path, or None to skip.
+
+    Returns a (path, is_file) tuple for file-level mounts, or just path for directories.
+    File-level mounts (e.g. .claude.json, .reasonix.toml) are supported: the host
+    parent directory is created so Docker can bind-mount the individual file.
+    """
     s = source.replace("${localEnv:HOME}", str(HOME))
     if s.startswith("~"):
         s = str(HOME) + s[1:]
@@ -74,8 +81,10 @@ def to_home_dir(source: str):
         p.relative_to(HOME)
     except ValueError:
         return None  # not under HOME (docker.sock, /etc/letsencrypt, workspace repos)
-    if p.suffix:
-        return None  # has a file extension (e.g. .conf.yml, .sock) -> a file mount, not a state dir
+    # Accept known state-file extensions.  Reject other suffixes (sockets, config
+    # templates, etc.) and any path with multiple suffix components (.tar.gz, .conf.yml).
+    if p.suffix and p.suffix not in (".json", ".toml", ".yaml", ".yml"):
+        return None
     return p
 
 
@@ -86,29 +95,38 @@ def _mode_for(p: Path) -> int:
 
 
 def ensure(p: Path) -> None:
-    """Create a $HOME bind-source DIR (real dir) with the right mode. Idempotent, best-effort."""
+    """Create a $HOME bind-source dir or ensure parent dir for file mounts.
+
+    - For directories (no suffix): mkdir -p with the right mode.
+    - For files (e.g. .claude.json): ensure the PARENT directory exists; Docker
+      creates the file itself on first mount.  Idempotent, best-effort.
+    """
+    is_file = bool(p.suffix and p.suffix in (".json", ".toml", ".yaml", ".yml"))
+    target = p.parent if is_file else p
     mode = _mode_for(p)
     is_tmp = mode == TMP_MODE
     try:
-        if p.exists():
+        if target.exists():
             # Re-assert 1777 on tmp every run (worktree tooling + other users rely on it); leave
             # other dirs' modes alone so we never fight perms the user set deliberately.
             if is_tmp:
                 try:
-                    os.chmod(p, mode)
+                    os.chmod(target, mode)
                 except OSError:
                     pass
-            print(f"[mdt-bootstrap] exists  {p}")
+            label = "file (parent)" if is_file else "dir"
+            print(f"[mdt-bootstrap] exists  {target} ({label})")
             return
-        p.mkdir(parents=True, exist_ok=True)
+        target.mkdir(parents=True, exist_ok=True)
         try:
-            os.chmod(p, mode)
+            os.chmod(target, mode)
         except OSError:
             pass
-        print(f"[mdt-bootstrap] created {p} (mode {oct(mode)})")
+        label = "file (parent)" if is_file else "dir"
+        print(f"[mdt-bootstrap] created {target} (mode {oct(mode)}) ({label})")
     except OSError as exc:
         # Best-effort: warn but never block container start.
-        print(f"[mdt-bootstrap] WARN could not create {p}: {exc}", file=sys.stderr)
+        print(f"[mdt-bootstrap] WARN could not create {target}: {exc}", file=sys.stderr)
 
 
 def main() -> int:
@@ -117,7 +135,7 @@ def main() -> int:
     if not dirs:
         print("[mdt-bootstrap] no parseable $HOME bind mounts; using fallback set", file=sys.stderr)
         parent = HOME / PARENT_NAME
-        dirs = [HOME / ".ssh"] + [parent / name for name in FALLBACK] + [parent / "tmp"]
+        dirs = [HOME / ".ssh"] + [parent / name for name in FALLBACK] + [parent / "tmp"] + [parent / name for name in FALLBACK_FILES]
     seen = set()
     for p in dirs:
         if p in seen:

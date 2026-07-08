@@ -51,6 +51,7 @@ ARG INSTALL_ANTIGRAVITY="true"
 ARG INSTALL_AIDER="true"
 ARG INSTALL_REASONIX="true"
 ARG INSTALL_OPENCLAW="true"
+ARG INSTALL_COPILOT="true"
 ARG INSTALL_PHP="false"
 ARG PHP_VERSION="8.5"
 ARG NVIM_VER=""
@@ -73,6 +74,7 @@ ARG DEVCONTAINERS_VERSION=""
 ARG SECONDARY_PYTHON_VERSIONS=""
 ARG REASONIX_VERSION="latest"
 ARG OPENCLAW_VERSION="latest"
+ARG COPILOT_VERSION="latest"
 
 ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
 ENV BACKPORTS_URI="${BACKPORTS_URI}"
@@ -594,6 +596,11 @@ USER root
 COPY scripts/finalize_container_environment.py /usr/local/bin/finalize_container_environment.py
 RUN chmod 0755 /usr/local/bin/finalize_container_environment.py
 
+# Copy staged-artifact metadata for manifest generation (digests, source URLs).
+# Note: this is a separate COPY because build/tool-artifacts-staging/ is cleaned
+# up in an earlier RUN layer.
+COPY build/tool-artifacts-staging/metadata.json /tmp/tool-artifacts-metadata.json
+
 # Canonical user-facing manifest plus internal inventory snapshot.
 RUN set -euo pipefail; \
     manifest_dir="/usr/local/share/modern-debian-tools-python-debug"; \
@@ -658,6 +665,11 @@ RUN set -euo pipefail; \
             echo "openclaw=$(openclaw --version 2>&1 | head -1 || true)"; \
         else \
             echo "openclaw=not-installed"; \
+        fi; \
+        if command -v copilot >/dev/null 2>&1; then \
+            echo "copilot=$(copilot --version 2>&1 | head -1 || true)"; \
+        else \
+            echo "copilot=not-installed"; \
         fi; \
         if command -v agy >/dev/null 2>&1; then \
             echo "antigravity=$(agy --version 2>&1 | head -1)"; \
@@ -751,8 +763,9 @@ RUN set -euo pipefail; \
         --devcontainers-version "${DEVCONTAINERS_VERSION}" \
         --custom-tooling-file "${custom_tooling_file}" \
         --python-packages-file "${python_packages_file}" \
-        --system-packages-file "${system_packages_file}"; \
-    rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}"; \
+        --system-packages-file "${system_packages_file}" \
+        --artifact-metadata "/tmp/tool-artifacts-metadata.json"; \
+    rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}" "/tmp/tool-artifacts-metadata.json"; \
     rm -f /tmp/manifest_sections.py; \
     chown vscode:vscode "${canonical_manifest}" "${inventory_manifest}" "${user_manifest}"; \
     chmod 644 "${canonical_manifest}" "${inventory_manifest}"; \

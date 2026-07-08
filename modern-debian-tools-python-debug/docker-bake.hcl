@@ -758,7 +758,8 @@ group "multi" {
 
 // "all" is the publish matrix. `docker buildx bake all` and build-push.py use this.
 group "all" {
-  targets = ["trixie-py311-vsc", "trixie-py314-vsc", "trixie-py314-php85", "trixie-py314-php85-vsc"]
+  //targets = ["trixie-py311-vsc", "trixie-py314-vsc", "trixie-py314-php85", "trixie-py314-php85-vsc"]
+  targets = [ "trixie-py314-php85", "trixie-py314-php85-vsc"]
 }
 
 // Exhaustive local superset: release matrix + base images + multi-Python variants + PHP flavor.
