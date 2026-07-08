@@ -4,9 +4,11 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 from groop.collect.collector import Collector
+from groop.config import load
 from groop.model import frame_to_jsonable
 from groop.record.replay import ReplayDriver, format_frame_summary
 from groop.record.writer import RecordWriter
@@ -22,12 +24,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--json", action="store_true", help="emit JSON for --once")
     parser.add_argument("--pretty-json", action="store_true", help="pretty-print JSON output")
     parser.add_argument("--cgroup-root", type=Path, default=None, help="cgroup v2 root for live or fixture collection")
+    parser.add_argument("--ui-smoke", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
 def _print_frame_json(frame, pretty: bool) -> None:
     payload = frame_to_jsonable(frame)
     print(json.dumps(payload, indent=2 if pretty else None, separators=None if pretty else (",", ":"), sort_keys=True))
+
+
+def _replay_frame_source(driver: ReplayDriver, *, speed: float, step: bool) -> Iterator:
+    for replay_frame in driver.play(speed=speed, step=step):
+        yield replay_frame.frame
+
+
+def _run_ui(frame_source, *, cgroup_root: Path | None, smoke: bool) -> int:
+    try:
+        from groop.ui.app import run_ui
+    except ModuleNotFoundError as exc:
+        if exc.name and exc.name.startswith("textual"):
+            if smoke:
+                print("textual is required for --ui-smoke", file=sys.stderr)
+                return 2
+            return -1
+        raise
+    result = run_ui(frame_source, config=load(), cgroup_root=cgroup_root, smoke=smoke)
+    if isinstance(result, str):
+        print(result)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,6 +61,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.replay is not None:
         driver = ReplayDriver.from_path(args.replay)
+        ui_code = _run_ui(_replay_frame_source(driver, speed=args.speed, step=args.step), cgroup_root=args.cgroup_root, smoke=args.ui_smoke)
+        if ui_code == 0:
+            return 0
         for replay_frame in driver.play(speed=args.speed, step=args.step):
             print(format_frame_summary(replay_frame))
         return 0
@@ -59,12 +86,27 @@ def main(argv: list[str] | None = None) -> int:
                     time.sleep(max(0.0, collector.config.interval - elapsed))
         except KeyboardInterrupt:
             return 0
+    if not args.once and not args.json:
+        collector = Collector(cgroup_root=args.cgroup_root)
+        ui_code = _run_ui(_live_frames(collector), cgroup_root=args.cgroup_root, smoke=args.ui_smoke)
+        if ui_code == 0:
+            return 0
+        print("textual is not installed; use --once --json or install UI dependencies", file=sys.stderr)
+        return 2
     if not args.once or not args.json:
         print("groop implements --once --json for live collection and --replay for frame playback", file=sys.stderr)
         return 2
     frame = Collector(cgroup_root=args.cgroup_root).collect_once()
     _print_frame_json(frame, args.pretty_json)
     return 0
+
+
+def _live_frames(collector: Collector):
+    while True:
+        started = time.monotonic()
+        yield collector.collect_once()
+        elapsed = time.monotonic() - started
+        time.sleep(max(0.0, collector.config.interval - elapsed))
 
 
 if __name__ == "__main__":

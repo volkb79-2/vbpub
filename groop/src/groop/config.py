@@ -49,9 +49,14 @@ class NetConfig:
 class GroopConfig:
     interval: float = 5.0
     cgroup_root: Path = Path("/sys/fs/cgroup")
+    default_view: str = "tree"
+    default_column_profile: str = "auto"
     tiers: dict[str, list[str]] = field(default_factory=dict)
     protected_services: tuple[str, ...] = ()
     thresholds: dict[str, Any] = field(default_factory=dict)
+    colors: dict[str, Any] = field(default_factory=dict)
+    columns: dict[str, Any] = field(default_factory=dict)
+    hotkeys: dict[str, Any] = field(default_factory=dict)
     history: HistoryConfig = field(default_factory=HistoryConfig)
     record: RecordConfig = field(default_factory=RecordConfig)
     net: NetConfig = field(default_factory=NetConfig)
@@ -61,9 +66,14 @@ class GroopConfig:
             "general": {
                 "interval": self.interval,
                 "cgroup_root": str(self.cgroup_root),
+                "default_view": self.default_view,
+                "default_column_profile": self.default_column_profile,
             },
             "tiers": {**dict(self.tiers), "protected_services": list(self.protected_services)},
             "thresholds": self.thresholds,
+            "colors": self.colors,
+            "columns": self.columns,
+            "hotkeys": self.hotkeys,
             "history": {
                 "full_resolution_seconds": self.history.full_resolution_seconds,
                 "downsample_interval_seconds": self.history.downsample_interval_seconds,
@@ -145,9 +155,14 @@ def load(path: Path | None = None) -> GroopConfig:
     return GroopConfig(
         interval=float(general.get("interval", 5.0)),
         cgroup_root=Path(general.get("cgroup_root", "/sys/fs/cgroup")),
+        default_view=str(general.get("default_view", "tree")),
+        default_column_profile=str(general.get("default_column_profile", "auto")),
         tiers=tiers,
         protected_services=tuple(str(v) for v in tiers_data.get("protected_services", ())),
         thresholds=data.get("thresholds", {}),
+        colors=dict(data.get("colors", {}) or {}),
+        columns=dict(data.get("columns", {}) or {}),
+        hotkeys=dict(data.get("hotkeys", {}) or {}),
         history=HistoryConfig(
             full_resolution_seconds=int(history_data.get("full_resolution_seconds", 14_400)),
             downsample_interval_seconds=int(history_data.get("downsample_interval_seconds", 60)),
