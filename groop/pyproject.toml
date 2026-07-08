@@ -9,6 +9,9 @@ description = "Host pressure inspector and cgroup forensics collector"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+zstandard = ["zstandard>=0.22"]
+
 [project.scripts]
 groop = "groop.cli:main"
 
