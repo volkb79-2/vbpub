@@ -108,6 +108,9 @@ v1.
 - DAMON hot/warm/cold columns.
 - DAMON detail panel.
 - Optional controlled `vaddr` session behind root and explicit confirmation.
+- Manual `paddr` host session (root + confirmation, §3.6d): system-wide
+  hot/warm/cold heat bar in the banner + a host-memory status page; never
+  auto-started in this cut.
 
 Only cheap passive DAMON detection may appear in v1. The active-control material
 from §3.6 belongs to v1.5 unless explicitly marked otherwise.
@@ -119,7 +122,8 @@ blind spots behind explicit privilege boundaries.
 - Privileged daemon or root helper owning BPF/DAMON/root state.
 - Docker admin actions.
 - File/content browser behind explicit `--inspect-files`.
-- `paddr` DAMON auto-start/manual host mode.
+- `paddr` DAMON auto-start (`[damon] paddr_enabled` persistent kdamond; the
+  MANUAL paddr host session is v1.5, §3.6d).
 - GPU (§3.11) and ZFS (§3.12) plugins.
 - Web UI stays v3 (§4.6).
 
@@ -928,8 +932,8 @@ DAMON snapshots captured while control-stage-active are recorded into the
 recording that included a DAMON session shows the same hot/warm/cold columns
 during scrub as it did live.
 
-**(d) paddr — whole-system mode (v2 diagnostic/auto-start candidate, assessed:
-useful, feeds the banner).**
+**(d) paddr — whole-system mode (v1.5 as a MANUAL host diagnostic — package
+P11; persistent auto-start stays v2. Assessed: useful, feeds the banner).**
 `vaddr` (used exclusively in (c) above) overstates badly for whole-host
 hot/cold classification — `DAMON-GUIDE.md` §12.1's own numbers (85–95% of
 reported bytes are unmapped virtual-address gaps) make it unusable as a
@@ -1483,7 +1487,7 @@ selected entity's Docker/systemd metadata.
 | Docker metadata | `docker ps`, `docker inspect` (`-f '{{.State.Pid}}'`, `.Config.Image`, `.Name`, `.Config.Labels`, `.State.Status`) | JOIN key = cgroup path via `/proc/<pid>/cgroup` `0::` line |
 | DAMON sysfs tree | `/sys/kernel/mm/damon/admin/kdamonds/{nr_kdamonds,N/state,N/pid,N/contexts/.../targets/.../pid_target,N/contexts/.../schemes/.../tried_regions/}` | full tree diagram in `DAMON-GUIDE.md` §5.1; reused verbatim |
 | DAMON conflict detection | `/sys/module/damon_stat/parameters/enabled` | disable/restore only in v1.5 controlled stage (§3.6c) |
-| DAMON whole-system paddr split | same sysfs tree as above, `operations = paddr`, no `pid_target` | v2; §3.6d; feeds banner only, no per-entity attribution |
+| DAMON whole-system paddr split | same sysfs tree as above, `operations = paddr`, no `pid_target` | v1.5 manual (P11) / v2 auto-start; §3.6d; feeds banner only, no per-entity attribution |
 | `gpu_util%`, `gpu_mem`, `gpu_procs` (v2 optional plugin) | NVML via `pynvml`: `nvmlDeviceGetUtilizationRates`, `nvmlDeviceGetMemoryInfo`, `nvmlDeviceGetComputeRunningProcesses`/`...GraphicsRunningProcesses` | §3.11; PID→cgroup JOIN reuses the DAMON technique above; `[gpu] enabled="auto"` |
 | ZFS ARC/L2ARC hit rate (v2 optional, host-dependent) | `/proc/spl/kstat/zfs/arcstats` (`hits/misses/c/c_max/size`, `l2_hits/l2_misses/l2_size`) | §3.12; system-wide banner line only, never per-entity — ARC has no per-cgroup partition |
 | ZFS pool I/O (v2 optional, host-dependent) | `zpool iostat -Hp <pool> <interval> 2`, or `/proc/spl/kstat/zfs/<pool>/io` if present | §3.12; per-pool banner line, `[zfs] enabled="auto"` |

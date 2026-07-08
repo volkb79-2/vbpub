@@ -23,6 +23,7 @@ Stack: Python; Textual allowed ONLY under `src/groop/ui/` (spec §6.1, §6.4).
 | P8 | DAMON passive (detection, columns, panel) | v1.5 | P1, P5 | `handoff/P8-damon-passive.md` |
 | P9 | DAMON controlled vaddr session | v1.5 | P8 | `handoff/P9-damon-control.md` |
 | P10 | Incident snapshots | v1.5 | P2, P5 | `handoff/P10-incident-snapshots.md` |
+| P11 | DAMON paddr host mode (banner heat bar + status page) | v1.5 | P8, P9 | `handoff/P11-damon-paddr.md` |
 
 ## Start order
 
@@ -36,8 +37,8 @@ Stack: Python; Textual allowed ONLY under `src/groop/ui/` (spec §6.1, §6.4).
    via P5/P7).
 4. **P7 last for v1** — after P2–P6 are merged. Runs the spec §9 acceptance
    criteria.
-5. **v1.5: P8 → P9** (strictly ordered); **P10** any time after P2+P5 —
-   parallel to P8 is fine.
+5. **v1.5: P8 → P9 → P11** (strictly ordered — P11 reuses P9's controlled-
+   session machinery); **P10** any time after P2+P5 — parallel to P8 is fine.
 
 ## Workflow protocol (every package agent MUST follow this)
 
