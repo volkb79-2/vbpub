@@ -121,6 +121,7 @@ class EntityFrame:
     metrics: dict[str, MetricValue]
     findings: list[Finding] = field(default_factory=list)  # filled by diag (P6)
     governance: dict[str, object] | None = None             # filled by drift (P4)
+    network: dict[str, object] | None = None                # filled by net providers (P3)
 ```
 
 Rate/reset contract (P1): the Collector keeps the previous raw counters per

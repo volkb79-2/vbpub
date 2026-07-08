@@ -89,6 +89,7 @@ class Collector:
             if frame is None:
                 continue
             frame.metrics.update(self._network_rates(key, sample, interval_s))
+            frame.network = self._network_metadata(sample)
 
     def _network_rates(self, key: EntityKey, sample: NetSample, interval_s: float) -> dict[str, MetricValue]:
         src = self._network_metric_source(sample)
@@ -104,6 +105,15 @@ class Collector:
         if sample.source_label == "net:NS" or sample.unavailable_reason is not None:
             return "netns"
         return "derived"
+
+    def _network_metadata(self, sample: NetSample) -> dict[str, object]:
+        return {
+            "source_label": sample.source_label,
+            "confidence": sample.confidence,
+            "aggregation": sample.aggregation,
+            "unavailable_reason": sample.unavailable_reason,
+            "proto": sample.proto,
+        }
 
     def _derived_rates(self, key: EntityKey, sample: CgroupSample, interval_s: float) -> dict[str, MetricValue]:
         raw = sample.raw_counters

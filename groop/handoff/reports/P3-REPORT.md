@@ -32,23 +32,16 @@
 - `[net.classes]` is parsed and queryable from config, but not attached to
   `NetSample` or frame metrics. The current frozen contracts do not provide a
   field for observe-only network-class metadata.
-- Frame-level metric serialization still cannot represent the full
-  `net:HOST` / `net:N/A` / confidence / aggregation tuple. The collector maps
-  these into the existing `MetricValue.src` space (`host` / `netns`) and keeps
-  the richer detail on the provider side.
+- Controller review added `EntityFrame.network` metadata so recordings/replay
+  retain `net:HOST` / `net:NS` / `net:N/A`, confidence, aggregation, reason, and
+  protocol detail alongside the numeric `MetricValue` rates.
 - Branch aggregation is intentionally conservative when a branch cgroup has its
   own direct processes. I only aggregate pure child-derived branches because the
   current frame model has no explicit place to document mixed direct+child proof.
 
 ## Proposed Contract Changes
 
-1. Add optional per-metric metadata for provider-backed fields, or an
-   entity-level `network` metadata block, so frames can carry:
-   - `source_label` (`net:BPF` / `net:NS` / `net:HOST` / `net:N/A`)
-   - `confidence`
-   - `aggregation`
-   - `unavailable_reason`
-2. Add an optional observe-only metadata slot to `NetSample` for future traffic
+1. Add an optional observe-only metadata slot to `NetSample` for future traffic
    class explanations sourced from `[net.classes]`.
 
 ## Validation Evidence
