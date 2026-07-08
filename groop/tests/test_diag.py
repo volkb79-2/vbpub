@@ -179,6 +179,37 @@ def test_breakdown_contributions_sum_to_pressure() -> None:
     assert sum(int(item["contribution"]) for item in contributions) == entity_frame.metrics["pressure"].v
 
 
+def test_breakdown_contributions_sum_to_pressure_when_score_is_capped() -> None:
+    frame = _frame(
+        {
+            "psi_mem_full_avg10": MetricValue(10.0, "exact"),
+            "psi_mem_some_avg10": MetricValue(50.0, "exact"),
+            "psi_io_full_avg10": MetricValue(10.0, "exact"),
+            "psi_io_some_avg10": MetricValue(50.0, "exact"),
+            "psi_cpu_some_avg10": MetricValue(50.0, "exact"),
+            "rf_d_per_s": MetricValue(200.0, "derived"),
+            "rf_f_per_s": MetricValue(100.0, "derived"),
+            "mem_events_high_per_s": MetricValue(10.0, "derived"),
+            "mem_events_oom_kill_per_s": MetricValue(10.0, "derived"),
+        }
+    )
+    annotate(frame, CONFIG)
+    entity_frame = frame.entities["svc.scope"]
+    contributions = pressure_breakdown(entity_frame, CONFIG)
+    assert entity_frame.metrics["pressure"].v == 100
+    assert sum(int(item["contribution"]) for item in contributions) == 100
+
+
+def test_equal_warn_crit_threshold_reaches_full_weight_at_threshold() -> None:
+    frame = _frame({"mem_events_oom_kill_per_s": MetricValue(1.0, "derived")})
+    annotate(frame, CONFIG)
+    contributions = {
+        str(item["key"]): int(item["contribution"])
+        for item in pressure_breakdown(frame.entities["svc.scope"], CONFIG)
+    }
+    assert contributions["mem_events_oom_kill_per_s"] == 4
+
+
 def test_cli_once_json_includes_pressure_and_findings() -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(fixture_root().parents[1] / "src")

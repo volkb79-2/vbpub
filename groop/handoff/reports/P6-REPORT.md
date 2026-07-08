@@ -15,6 +15,9 @@
   - `io_max_capped`
 - Updated the drill-down to show a pressure contribution breakdown without changing the frozen frame contract.
 - Regenerated `groop/tests/fixtures/frames/gstammtisch-once.jsonl` with diagnostics included.
+- Controller review follow-up fixed capped-score breakdown rounding so summed
+  contributions always match the rendered 0-100 pressure score, and equal
+  warn/crit thresholds now reach full contribution at the threshold.
 
 ## Deviations / Gaps
 
@@ -32,7 +35,7 @@
 ## Validation
 
 1. `PYTHONPATH=/tmp/groop-pytest:/tmp/vbpub-groop-p6-diagnostics/groop/src python3 -m pytest groop/tests -q`
-   - Tail: `49 passed in 3.50s`
+   - Tail: `51 passed in 3.88s`
 
 2. `PYTHONPATH=/tmp/vbpub-groop-p6-diagnostics/groop/src python3 -m py_compile $(find groop/src/groop -name '*.py' | sort)`
    - Tail: no output, exit 0

@@ -158,6 +158,11 @@ def score_entity(entity_frame: EntityFrame, config: GroopConfig) -> ScoreBreakdo
                 "thresholds": None if band is None else {"warn": band.warn, "crit": band.crit},
             }
         )
+    raw_sum = max(0.0, sum(float(item["contribution_raw"]) for item in raw_items))
+    if raw_sum > 100.0:
+        scale = 100.0 / raw_sum
+        for item in raw_items:
+            item["contribution_raw"] = float(item["contribution_raw"]) * scale
     total_raw = min(100.0, max(0.0, sum(float(item["contribution_raw"]) for item in raw_items)))
     score = int(round(total_raw))
     contributions = _rounded_contributions(raw_items, score)

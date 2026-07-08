@@ -27,10 +27,10 @@ class ThresholdBand:
             return 1.0
         if warn == 0:
             return min(sample / crit, 1.0)
+        if crit == warn:
+            return 1.0 if sample >= warn else min(sample / warn, 1.0)
         if sample <= warn:
             return min((sample / warn) * 0.5, 0.5)
-        if crit == warn:
-            return 1.0
         return min(0.5 + (((sample - warn) / (crit - warn)) * 0.5), 1.0)
 
 
