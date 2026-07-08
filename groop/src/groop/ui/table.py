@@ -9,7 +9,7 @@ from groop.config import GroopConfig
 from groop.model import Entity, EntityFrame, Frame, MetricValue
 from groop.registry import REGISTRY
 
-PROFILE_ORDER = ("auto", "triage", "memory", "network", "governance", "damon", "wide")
+PROFILE_ORDER = ("auto", "triage", "memory", "network", "governance", "damon", "wide", "minimal")
 SORT_ORDER = ("pressure", "ram", "cpu_pct", "name")
 
 _WIDTH_TIERS = (
@@ -26,6 +26,7 @@ _PROFILE_COLUMNS = {
     "network": ("name", "net_rx_bps", "net_tx_bps", "net_source", "pids_current", "sock"),
     "governance": ("name", "mem_min", "mem_low", "mem_high", "mem_max", "cpu_weight", "governance_origin", "governance_drift", "pids_current"),
     "damon": ("name", "hot_pct", "warm_pct", "cold_pct", "idle_pct"),
+    "minimal": ("name", "ram", "rf_d_per_s", "psi_mem_full_avg10", "cpu_pct"),
 }
 
 _LABELS = {
@@ -105,7 +106,7 @@ def render_container_table(
 
 
 def resolve_columns(config: GroopConfig, *, width: int, profile: str) -> tuple[str, ...]:
-    profile = profile if profile in PROFILE_ORDER else config.default_column_profile
+    profile = normalize_profile_name(config, profile)
     if profile == "auto":
         active: list[str] = []
         for minimum, names in _WIDTH_TIERS:
@@ -121,6 +122,25 @@ def resolve_columns(config: GroopConfig, *, width: int, profile: str) -> tuple[s
     if configured is not None:
         return tuple(_dedupe(name for name in configured if _column_supported(name)))
     return tuple(_dedupe(name for name in _PROFILE_COLUMNS.get(profile, _PROFILE_COLUMNS["triage"]) if _column_supported(name)))
+
+
+def available_profiles(config: GroopConfig) -> tuple[str, ...]:
+    ordered = list(PROFILE_ORDER)
+    for name in ((config.columns or {}).get("profiles", {}) or {}):
+        if name not in ordered:
+            ordered.append(name)
+    return tuple(ordered)
+
+
+def normalize_profile_name(config: GroopConfig, profile: str | None) -> str:
+    requested = profile or config.default_column_profile
+    available = set(available_profiles(config))
+    if requested in available:
+        return requested
+    fallback = config.default_column_profile
+    if fallback in available:
+        return fallback
+    return "auto"
 
 
 def header_label(column_name: str) -> str:

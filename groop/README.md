@@ -9,6 +9,19 @@ Release cut (spec §0.1): **v0** collector proof → **v1** read-only TUI →
 **v1.5** DAMON → **v2** BPF/daemon/actions. This directory carries v1 + v1.5.
 Stack: Python; Textual allowed ONLY under `src/groop/ui/` (spec §6.1, §6.4).
 
+## Quickstart
+
+```bash
+pip install -e groop/
+groop --once --json
+groop
+groop --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --step
+```
+
+Use `--config PATH` to point at an alternate TOML config, `--profile NAME` to
+override the active UI column profile for one run, and `--record FILE` to record
+the live TUI stream to JSONL while you inspect it.
+
 ## Work packages
 
 | Pkg | Title | Cut | Depends on | Handoff doc |
