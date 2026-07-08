@@ -1,21 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import itertools
-import queue
 import threading
-import time
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from rich.console import Group
-from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Input, Static
 
-from groop.collect.collector import Collector
 from groop.config import GroopConfig, load
 from groop.model import Frame
 from groop.record.ring import HistoryRing
@@ -24,7 +19,7 @@ from groop.registry import REGISTRY
 from .banner import render_banner
 from .drill import DrillDownScreen
 from .keys import BINDINGS, key_help
-from .table import PROFILE_ORDER, SORT_ORDER, RenderedRows, render_container_table
+from .table import SORT_ORDER, RenderedRows, available_profiles, normalize_profile_name, render_container_table
 from .tree import render_tree_table
 
 
@@ -86,6 +81,7 @@ class GroopApp(App[None]):
         cgroup_root: Path | None = None,
         proc_root: Path = Path("/proc"),
         ring: HistoryRing | None = None,
+        profile: str | None = None,
     ) -> None:
         super().__init__()
         self.config = config or load()
@@ -96,7 +92,8 @@ class GroopApp(App[None]):
         self.current_frame: Frame | None = None
         self.frames_received = 0
         self.view_mode = self.config.default_view if self.config.default_view in {"tree", "container"} else "tree"
-        self.profile_name = self.config.default_column_profile if self.config.default_column_profile in PROFILE_ORDER else "auto"
+        self.profile_name = normalize_profile_name(self.config, profile)
+        self.profile_order = available_profiles(self.config)
         self.sort_by = SORT_ORDER[0]
         self.filter_text = ""
         self.banner_collapsed = False
@@ -167,8 +164,8 @@ class GroopApp(App[None]):
         self._refresh_view()
 
     def action_cycle_profile(self) -> None:
-        index = PROFILE_ORDER.index(self.profile_name) if self.profile_name in PROFILE_ORDER else 0
-        self.profile_name = PROFILE_ORDER[(index + 1) % len(PROFILE_ORDER)]
+        index = self.profile_order.index(self.profile_name) if self.profile_name in self.profile_order else 0
+        self.profile_name = self.profile_order[(index + 1) % len(self.profile_order)]
         self._refresh_view()
 
     def action_cycle_sort(self) -> None:
@@ -227,25 +224,6 @@ class GroopApp(App[None]):
             self.pop_screen()
 
 
-def live_frames(collector: Collector) -> Iterator[Frame]:
-    while True:
-        started = time.monotonic()
-        yield collector.collect_once()
-        elapsed = time.monotonic() - started
-        time.sleep(max(0.0, collector.config.interval - elapsed))
-
-
-def replay_frames(frames: Iterable[Frame], *, interval_s: float | None = None, speed: float = 1.0, step: bool = False) -> Iterator[Frame]:
-    previous_ts: float | None = None
-    for frame in frames:
-        if previous_ts is not None and not step:
-            delay = max(0.0, ((frame.ts - previous_ts) if interval_s is None else interval_s) / max(speed, 0.001))
-            if delay:
-                time.sleep(delay)
-        previous_ts = frame.ts
-        yield frame
-
-
 def run_ui(
     frame_source: Iterable[Frame] | Iterator[Frame],
     *,
@@ -253,10 +231,11 @@ def run_ui(
     cgroup_root: Path | None = None,
     proc_root: Path = Path("/proc"),
     smoke: bool = False,
+    profile: str | None = None,
 ) -> str | int:
     if smoke:
-        return asyncio.run(_run_ui_smoke(frame_source, config=config, cgroup_root=cgroup_root, proc_root=proc_root))
-    app = GroopApp(frame_source, config=config, cgroup_root=cgroup_root, proc_root=proc_root)
+        return asyncio.run(_run_ui_smoke(frame_source, config=config, cgroup_root=cgroup_root, proc_root=proc_root, profile=profile))
+    app = GroopApp(frame_source, config=config, cgroup_root=cgroup_root, proc_root=proc_root, profile=profile)
     app.run()
     return 0
 
@@ -267,8 +246,9 @@ async def _run_ui_smoke(
     config: GroopConfig | None,
     cgroup_root: Path | None,
     proc_root: Path,
+    profile: str | None,
 ) -> str:
-    app = GroopApp(frame_source, config=config, cgroup_root=cgroup_root, proc_root=proc_root)
+    app = GroopApp(frame_source, config=config, cgroup_root=cgroup_root, proc_root=proc_root, profile=profile)
     async with app.run_test(size=(140, 40)) as pilot:
         for _ in range(20):
             await pilot.pause()
