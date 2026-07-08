@@ -45,14 +45,14 @@ def render_banner(frame: Frame, config: GroopConfig, *, collapsed: bool = False)
 
 
 def _host_verdict(frame: Frame, config: GroopConfig) -> str:
-    psi_full_warn, psi_full_crit = _threshold_pair(config, "psi_full_avg10", warn=1.0, crit=2.0)
-    psi_some_warn, psi_some_crit = _threshold_pair(config, "psi_some_avg10", warn=5.0, crit=15.0)
+    psi_full = config.threshold_band("psi_full_avg10", warn=1.0, crit=2.0)
+    psi_some = config.threshold_band("psi_some_avg10", warn=5.0, crit=15.0)
     watched = (
-        ("host_psi_mem_full_avg10", psi_full_warn, psi_full_crit),
-        ("host_psi_io_full_avg10", psi_full_warn, psi_full_crit),
-        ("host_psi_mem_some_avg10", psi_some_warn, psi_some_crit),
-        ("host_psi_io_some_avg10", psi_some_warn, psi_some_crit),
-        ("host_psi_cpu_some_avg10", psi_some_warn, psi_some_crit),
+        ("host_psi_mem_full_avg10", psi_full.warn, psi_full.crit),
+        ("host_psi_io_full_avg10", psi_full.warn, psi_full.crit),
+        ("host_psi_mem_some_avg10", psi_some.warn, psi_some.crit),
+        ("host_psi_io_some_avg10", psi_some.warn, psi_some.crit),
+        ("host_psi_cpu_some_avg10", psi_some.warn, psi_some.crit),
     )
     verdict = "OK"
     for name, warn, crit in watched:
@@ -65,19 +65,6 @@ def _host_verdict(frame: Frame, config: GroopConfig) -> str:
         if sample >= warn:
             verdict = "WARN"
     return verdict
-
-
-def _threshold_pair(config: GroopConfig, key: str, *, warn: float, crit: float) -> tuple[float, float]:
-    raw = config.thresholds.get("default", {}).get(key, {})
-    try:
-        warn_value = float(raw.get("warn", warn))
-    except (TypeError, ValueError, AttributeError):
-        warn_value = warn
-    try:
-        crit_value = float(raw.get("crit", crit))
-    except (TypeError, ValueError, AttributeError):
-        crit_value = crit
-    return warn_value, crit_value
 
 
 def _top_pressure_lines(frame: Frame) -> list[str]:

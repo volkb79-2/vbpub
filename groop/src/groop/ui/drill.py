@@ -9,6 +9,8 @@ from textual.screen import Screen
 from textual.widgets import Static
 
 from groop.collect.procs import list_processes
+from groop.config import GroopConfig
+from groop.diag import pressure_breakdown
 from groop.model import EntityFrame, Frame
 from groop.record.ring import HistoryRing
 from groop.registry import REGISTRY
@@ -25,6 +27,7 @@ class DrillDownScreen(Screen[None]):
         frame: Frame,
         entity_key: str,
         *,
+        config: GroopConfig,
         ring: HistoryRing,
         cgroup_root: Path,
         proc_root: Path,
@@ -32,6 +35,7 @@ class DrillDownScreen(Screen[None]):
         super().__init__()
         self.frame = frame
         self.entity_key = entity_key
+        self.config = config
         self.ring = ring
         self.cgroup_root = cgroup_root
         self.proc_root = proc_root
@@ -40,13 +44,22 @@ class DrillDownScreen(Screen[None]):
         yield VerticalScroll(Static(id="drill-body"))
 
     def on_mount(self) -> None:
-        self.query_one("#drill-body", Static).update(render_drill_text(self.frame, self.entity_key, ring=self.ring, cgroup_root=self.cgroup_root, proc_root=self.proc_root))
+        self.query_one("#drill-body", Static).update(
+            render_drill_text(
+                self.frame,
+                self.entity_key,
+                config=self.config,
+                ring=self.ring,
+                cgroup_root=self.cgroup_root,
+                proc_root=self.proc_root,
+            )
+        )
 
     def action_close(self) -> None:
         self.dismiss(None)
 
 
-def render_drill_text(frame: Frame, entity_key: str, *, ring: HistoryRing, cgroup_root: Path, proc_root: Path) -> str:
+def render_drill_text(frame: Frame, entity_key: str, *, config: GroopConfig, ring: HistoryRing, cgroup_root: Path, proc_root: Path) -> str:
     entity_frame = frame.entities[entity_key]
     entity = entity_frame.entity
     lines = [
@@ -68,6 +81,8 @@ def render_drill_text(frame: Frame, entity_key: str, *, ring: HistoryRing, cgrou
     lines.append("")
     lines.extend(_network_block(entity_frame))
     lines.append("")
+    lines.extend(_pressure_block(entity_frame, config))
+    lines.append("")
     lines.extend(_history_block(entity_key, ring))
     lines.append("")
     lines.extend(_findings_block(entity_frame))
@@ -79,7 +94,7 @@ def render_drill_text(frame: Frame, entity_key: str, *, ring: HistoryRing, cgrou
 def _metric_groups(entity_frame: EntityFrame) -> dict[str, list[str]]:
     groups: dict[str, list[str]] = defaultdict(list)
     for name in sorted(entity_frame.metrics):
-        if name.startswith(("ram", "anon", "file", "shmem", "z_", "swap_", "rf_", "mem_", "headroom_", "effective_memory_min")):
+        if name.startswith(("ram", "anon", "file", "shmem", "sock", "z_", "swap_", "rf_", "mem_", "headroom_", "effective_memory_min")):
             groups["memory"].append(name)
         elif name.startswith(("cpu", "psi_cpu")):
             groups["cpu"].append(name)
@@ -131,6 +146,20 @@ def _network_block(entity_frame: EntityFrame) -> list[str]:
     return lines
 
 
+def _pressure_block(entity_frame: EntityFrame, config) -> list[str]:
+    lines = ["PRESSURE BREAKDOWN"]
+    for item in pressure_breakdown(entity_frame, config):
+        thresholds = item["thresholds"]
+        threshold_text = ""
+        if isinstance(thresholds, dict):
+            threshold_text = f" warn={thresholds['warn']} crit={thresholds['crit']}"
+        lines.append(
+            f"  {str(item['label']):<22} +{int(item['contribution']):>2} "
+            f"value={item['value']} [{item['src']}/{item['confidence']}]{threshold_text}"
+        )
+    return lines
+
+
 def _history_block(entity_key: str, ring: HistoryRing) -> list[str]:
     tracked = ("rf_d_per_s", "cpu_pct", "ram")
     lines = ["HISTORY"]
@@ -144,10 +173,11 @@ def _history_block(entity_key: str, ring: HistoryRing) -> list[str]:
 
 def _findings_block(entity_frame: EntityFrame) -> list[str]:
     if not entity_frame.findings:
-        return ["FINDINGS", "  none yet (P6 diagnostics pending)"]
+        return ["FINDINGS", "  none"]
     lines = ["FINDINGS"]
     for finding in entity_frame.findings:
-        lines.append(f"  [{finding.severity}] {finding.message}")
+        remedy = f" | remedy: {finding.remedy}" if finding.remedy else ""
+        lines.append(f"  [{finding.severity}] {finding.message}{remedy}")
     return lines
 
 

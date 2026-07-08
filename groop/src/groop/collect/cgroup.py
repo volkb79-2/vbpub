@@ -137,6 +137,27 @@ def read_io_weight(path: Path) -> tuple[int | None, MetricSource]:
     return None, "unavail_kernel"
 
 
+def read_io_max_capped(path: Path) -> tuple[int | None, MetricSource]:
+    result = read_text(path)
+    if result.value is None:
+        return None, result.src
+    capped = 0
+    for line in str(result.value).splitlines():
+        parts = line.split()
+        for part in parts[1:]:
+            _key, _, raw = part.partition("=")
+            if raw and raw != "max":
+                try:
+                    int(raw)
+                except ValueError:
+                    continue
+                capped = 1
+                break
+        if capped:
+            break
+    return capped, "exact"
+
+
 def read_cpu_max(path: Path) -> tuple[int | None, int | None, MetricSource]:
     result = read_text(path)
     if result.value is None:
@@ -223,7 +244,7 @@ def collect_cgroup(root: Path, key: EntityKey, entity: Entity) -> CgroupSample:
     io_stat, io_stat_src = read_io_stat(path / "io.stat")
 
     sample.metrics["ram"] = _metric_from_int(path / "memory.current")
-    for metric, stat_name in (("anon", "anon"), ("file", "file"), ("shmem", "shmem"), ("z_eq", "zswapped")):
+    for metric, stat_name in (("anon", "anon"), ("file", "file"), ("shmem", "shmem"), ("sock", "sock"), ("z_eq", "zswapped")):
         sample.metrics[metric] = _stat_metric(stats, stat_src, stat_name)
     sample.metrics["z_pool"] = _metric_from_int(path / "memory.zswap.current")
     swap_current, swap_src = read_int(path / "memory.swap.current")
@@ -250,6 +271,8 @@ def collect_cgroup(root: Path, key: EntityKey, entity: Entity) -> CgroupSample:
     sample.metrics["cpu_weight"] = _metric_from_int(path / "cpu.weight")
     io_weight, io_weight_src = read_io_weight(path / "io.weight")
     sample.metrics["io_weight"] = MetricValue(io_weight, io_weight_src)
+    io_max_capped, io_max_src = read_io_max_capped(path / "io.max")
+    sample.metrics["io_max_capped"] = MetricValue(io_max_capped, io_max_src)
     quota, period, cpu_max_src = read_cpu_max(path / "cpu.max")
     sample.metrics["cpu_quota_us"] = MetricValue(quota, cpu_max_src)
     sample.metrics["cpu_period_us"] = MetricValue(period, "exact" if period is not None else cpu_max_src)
@@ -279,6 +302,6 @@ def collect_cgroup(root: Path, key: EntityKey, entity: Entity) -> CgroupSample:
     if io_stat_src == "exact":
         for raw_name in ("rbytes", "wbytes", "rios", "wios", "dbytes"):
             sample.raw_counters[f"io.stat:{raw_name}"] = _sum_io(io_stat, raw_name)
-    for name in ("net_rx_bps", "net_tx_bps", "pressure"):
+    for name in ("net_rx_bps", "net_tx_bps", "net_rx_pps", "net_tx_pps", "pressure"):
         sample.metrics[name] = MetricValue(None, "unavail_kernel")
     return sample

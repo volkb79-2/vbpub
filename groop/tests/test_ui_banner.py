@@ -12,7 +12,7 @@ def test_banner_snapshot_renders_golden_fixture_summary() -> None:
     assert snapshot.lines[0] == "HOST OK"
     assert snapshot.lines[1].startswith("LOAD 0.10/0.20/0.30 | MEM 7.8KiB avail / 15.6KiB total")
     assert snapshot.lines[4] == "TOP PRESSURE"
-    assert snapshot.lines[5] == "n/a"
+    assert snapshot.lines[5].startswith("1 /")
 
 
 def test_banner_counts_unavailable_permissions_and_shows_notice() -> None:

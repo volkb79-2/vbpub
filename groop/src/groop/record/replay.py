@@ -4,6 +4,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from groop.config import GroopConfig, load
+from groop.diag import annotate as annotate_frame_diagnostics
 from groop.model import Frame
 from groop.record.reader import iter_frames
 
@@ -24,8 +26,17 @@ class ReplayDriver:
         self._index = 0
 
     @classmethod
-    def from_path(cls, path: Path) -> ReplayDriver:
-        return cls(list(iter_frames(path)))
+    def from_path(cls, path: Path, *, config: GroopConfig | None = None) -> ReplayDriver:
+        replay_config = config or load()
+        frames = list(iter_frames(path))
+        for frame in frames:
+            annotate_frame_diagnostics(
+                frame,
+                replay_config,
+                preserve_existing_findings=True,
+                preserve_existing_pressure=True,
+            )
+        return cls(frames)
 
     @property
     def frames(self) -> tuple[Frame, ...]:

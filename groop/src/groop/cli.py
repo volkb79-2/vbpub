@@ -56,11 +56,12 @@ def _run_ui(frame_source, *, cgroup_root: Path | None, smoke: bool) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    config = load()
     if args.record is not None and args.replay is not None:
         print("choose either --record or --replay", file=sys.stderr)
         return 2
     if args.replay is not None:
-        driver = ReplayDriver.from_path(args.replay)
+        driver = ReplayDriver.from_path(args.replay, config=config)
         ui_code = _run_ui(_replay_frame_source(driver, speed=args.speed, step=args.step), cgroup_root=args.cgroup_root, smoke=args.ui_smoke)
         if ui_code == 0:
             return 0
@@ -71,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.json and not args.once:
             print("--json is supported with --record only when --once is also set", file=sys.stderr)
             return 2
-        collector = Collector(cgroup_root=args.cgroup_root)
+        collector = Collector(cgroup_root=args.cgroup_root, config=config)
         try:
             with RecordWriter(args.record, config=collector.config) as writer:
                 while True:
@@ -87,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             return 0
     if not args.once and not args.json:
-        collector = Collector(cgroup_root=args.cgroup_root)
+        collector = Collector(cgroup_root=args.cgroup_root, config=config)
         ui_code = _run_ui(_live_frames(collector), cgroup_root=args.cgroup_root, smoke=args.ui_smoke)
         if ui_code == 0:
             return 0
@@ -96,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.once or not args.json:
         print("groop implements --once --json for live collection and --replay for frame playback", file=sys.stderr)
         return 2
-    frame = Collector(cgroup_root=args.cgroup_root).collect_once()
+    frame = Collector(cgroup_root=args.cgroup_root, config=config).collect_once()
     _print_frame_json(frame, args.pretty_json)
     return 0
 

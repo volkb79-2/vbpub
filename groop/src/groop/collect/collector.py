@@ -8,6 +8,7 @@ from groop.collect.cgroup import CgroupSample, collect_cgroup, walk_entities
 from groop.collect.dockerjoin import DockerInspect, enrich_entities
 from groop.collect.host import collect_host
 from groop.config import GroopConfig, load
+from groop.diag import annotate as annotate_frame_diagnostics
 from groop.drift.origin import SystemctlShowRunner, annotate_frame_governance
 from groop.model import Entity, EntityFrame, EntityKey, Frame, MetricSource, MetricValue
 from groop.providers.base import NetSample, Provider, sample_rank
@@ -54,7 +55,8 @@ class Collector:
         self._apply_network_metrics(frames, entities, interval_s)
         self._prev_ts = ts
         frame = Frame(schema_version=1, ts=ts, interval_s=interval_s, host=self.host_collector(), entities=frames)
-        return annotate_frame_governance(frame, self.systemctl_show_runner)
+        annotate_frame_governance(frame, self.systemctl_show_runner)
+        return annotate_frame_diagnostics(frame, self.config)
 
     def _apply_config(self, entities: dict[EntityKey, Entity]) -> None:
         for entity in entities.values():
@@ -101,6 +103,8 @@ class Collector:
         return {
             "net_rx_bps": self._rate_metric(key, f"{counter_prefix}:rx_bytes", sample.rx_bytes, interval_s, src=src),
             "net_tx_bps": self._rate_metric(key, f"{counter_prefix}:tx_bytes", sample.tx_bytes, interval_s, src=src),
+            "net_rx_pps": self._rate_metric(key, f"{counter_prefix}:rx_pkts", sample.rx_pkts, interval_s, src=src),
+            "net_tx_pps": self._rate_metric(key, f"{counter_prefix}:tx_pkts", sample.tx_pkts, interval_s, src=src),
         }
 
     def _network_metric_source(self, sample: NetSample) -> MetricSource:

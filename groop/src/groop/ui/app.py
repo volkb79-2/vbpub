@@ -203,6 +203,7 @@ class GroopApp(App[None]):
             DrillDownScreen(
                 self.current_frame,
                 self.selected_key,
+                config=self.config,
                 ring=self.ring,
                 cgroup_root=self.cgroup_root,
                 proc_root=self.proc_root,
