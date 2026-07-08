@@ -26,6 +26,7 @@
   - `[history]` parsing for retention/grace
   - `[record]` parsing for flush/fsync
   - config digest helper for recording headers
+- Added the `zstandard` optional dependency extra in `pyproject.toml`.
 - Extended `src/groop/cli.py`:
   - `--replay FILE`, `--speed N`, `--step`
   - minimal `--record FILE` live writer path

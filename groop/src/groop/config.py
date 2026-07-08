@@ -50,8 +50,7 @@ class GroopConfig:
                 "interval": self.interval,
                 "cgroup_root": str(self.cgroup_root),
             },
-            "tiers": dict(self.tiers),
-            "protected_services": list(self.protected_services),
+            "tiers": {**dict(self.tiers), "protected_services": list(self.protected_services)},
             "thresholds": self.thresholds,
             "history": {
                 "full_resolution_seconds": self.history.full_resolution_seconds,
