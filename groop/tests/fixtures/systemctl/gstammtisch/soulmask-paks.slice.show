@@ -1,0 +1,10 @@
+FragmentPath=/etc/systemd/system/soulmask-paks.slice
+DropInPaths=/etc/systemd/system/soulmask-paks.slice.d/50-memory.conf
+ControlGroup=/soulmask.slice/soulmask-paks.slice
+Transient=no
+MemoryMin=536870912
+MemoryLow=1073741824
+MemoryHigh=[not set]
+MemoryMax=[not set]
+CPUWeight=100
+IOWeight=100

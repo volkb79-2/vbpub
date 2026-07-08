@@ -1,0 +1,10 @@
+FragmentPath=/usr/lib/systemd/system/system.slice
+DropInPaths=
+ControlGroup=/system.slice
+Transient=no
+MemoryMin=[not set]
+MemoryLow=[not set]
+MemoryHigh=[not set]
+MemoryMax=[not set]
+CPUWeight=[not set]
+IOWeight=[not set]

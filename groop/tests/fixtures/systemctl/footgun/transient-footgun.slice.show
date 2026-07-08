@@ -1,0 +1,10 @@
+FragmentPath=
+DropInPaths=
+ControlGroup=/transient-footgun.slice
+Transient=yes
+MemoryMin=[not set]
+MemoryLow=[not set]
+MemoryHigh=[not set]
+MemoryMax=[not set]
+CPUWeight=[not set]
+IOWeight=[not set]

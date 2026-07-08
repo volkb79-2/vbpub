@@ -1,0 +1,10 @@
+FragmentPath=
+DropInPaths=/run/systemd/system.control/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope.d/50-Memory.conf /run/systemd/system.control/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope.d/50-Weights.conf
+ControlGroup=/system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope
+Transient=yes
+MemoryMin=1073741824
+MemoryLow=2147483648
+MemoryHigh=3221225472
+MemoryMax=4294967296
+CPUWeight=200
+IOWeight=100
