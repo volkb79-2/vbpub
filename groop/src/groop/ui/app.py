@@ -273,7 +273,7 @@ def _render_glossary() -> str:
             "STATIC CONCEPTS",
             "  origin: unit file vs. runtime drop-in vs. unmanaged raw write.",
             "  network source labels: net:BPF exact, net:NS approximation, net:HOST host truth, net:N/A unavailable.",
-            "  DAMON hot/warm/cold: reserved for v1.5 when DAMON data is present.",
+            "  DAMON hot/warm/cold: passive snapshots from tried_regions, shown only when a readable session covers the entity.",
         )
     )
     return "\n".join(lines)

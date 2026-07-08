@@ -8,6 +8,7 @@ from groop.collect.cgroup import CgroupSample, collect_cgroup, walk_entities
 from groop.collect.dockerjoin import DockerInspect, enrich_entities
 from groop.collect.host import collect_host
 from groop.config import GroopConfig, load
+from groop.damon import DEFAULT_DAMON_ROOT, annotate_frame_damon
 from groop.diag import annotate as annotate_frame_diagnostics
 from groop.drift.origin import SystemctlShowRunner, annotate_frame_governance
 from groop.model import Entity, EntityFrame, EntityKey, Frame, MetricSource, MetricValue
@@ -25,6 +26,8 @@ class Collector:
         host_collector: Callable[[], dict[str, MetricValue]] | None = None,
         now: Callable[[], float] | None = None,
         network_providers: tuple[Provider, ...] | None = None,
+        proc_root: Path = Path("/proc"),
+        damon_root: Path = DEFAULT_DAMON_ROOT,
         systemctl_show_runner: SystemctlShowRunner | None = None,
     ) -> None:
         self.config = config or load()
@@ -32,10 +35,12 @@ class Collector:
         self.docker_inspect = docker_inspect
         self.host_collector = host_collector or collect_host
         self.now = now or time.time
+        self.proc_root = proc_root
+        self.damon_root = damon_root
         self.systemctl_show_runner = systemctl_show_runner
         self.network_providers = network_providers if network_providers is not None else (
-            NetnsProvider(self.cgroup_root),
-            NetHostProvider(),
+            NetnsProvider(self.cgroup_root, proc_root=self.proc_root),
+            NetHostProvider(proc_root=self.proc_root),
         )
         self._prev_ts: float | None = None
         self._prev_counters: dict[tuple[EntityKey, str], int] = {}
@@ -55,6 +60,14 @@ class Collector:
         self._apply_network_metrics(frames, entities, interval_s)
         self._prev_ts = ts
         frame = Frame(schema_version=1, ts=ts, interval_s=interval_s, host=self.host_collector(), entities=frames)
+        annotate_frame_damon(
+            frame,
+            damon_root=self.damon_root,
+            proc_root=self.proc_root,
+            cgroup_root=self.cgroup_root,
+            config=self.config.damon,
+            now=ts,
+        )
         annotate_frame_governance(frame, self.systemctl_show_runner)
         return annotate_frame_diagnostics(frame, self.config)
 

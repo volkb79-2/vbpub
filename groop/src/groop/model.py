@@ -52,6 +52,7 @@ class EntityFrame:
     findings: list[Finding] = field(default_factory=list)
     governance: dict[str, object] | None = None
     network: dict[str, object] | None = None
+    damon: dict[str, object] | None = None
 
 
 @dataclass
@@ -159,6 +160,8 @@ def entity_frame_to_jsonable(frame: EntityFrame) -> dict[str, Any]:
         out["governance"] = frame.governance
     if frame.network is not None:
         out["network"] = frame.network
+    if frame.damon is not None:
+        out["damon"] = frame.damon
     return out
 
 
@@ -169,6 +172,7 @@ def entity_frame_from_jsonable(value: Any) -> EntityFrame:
         findings=[finding_from_jsonable(v) for v in value.get("findings", ())],
         governance=value.get("governance"),
         network=value.get("network"),
+        damon=value.get("damon"),
     )
 
 
