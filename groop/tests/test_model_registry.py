@@ -23,11 +23,15 @@ def test_frame_round_trip_uses_compact_metric_values() -> None:
                 Entity("x.slice", "slice", ""),
                 {
                     "ram": MetricValue(123, "exact", raw=123),
+                    "damon_hot_pct": MetricValue(12.5, "exact"),
+                    "damon_sample_age_s": MetricValue(3.0, "exact"),
+                    "damon_mode": MetricValue(1, "exact"),
                     "effective_memory_min": MetricValue(64, "derived"),
                     "governance_origin": MetricValue(2, "derived"),
                     "governance_drift": MetricValue(0, "derived"),
                 },
                 governance={"summary": {"origin": "systemd_unit", "drift": False, "severity": "none"}},
+                damon={"sessions": [{"mode": "vaddr", "target_pids": [1001]}]},
             )
         },
     )
@@ -35,6 +39,7 @@ def test_frame_round_trip_uses_compact_metric_values() -> None:
     assert jsonable["host"]["host_load1"] == [0.1, "host"]
     assert jsonable["entities"]["x.slice"]["metrics"]["ram"] == [123, "exact", 123]
     assert jsonable["entities"]["x.slice"]["governance"]["summary"]["origin"] == "systemd_unit"
+    assert jsonable["entities"]["x.slice"]["damon"]["sessions"][0]["mode"] == "vaddr"
     assert frame_from_jsonable(jsonable) == frame
 
 

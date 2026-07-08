@@ -67,6 +67,8 @@ def make_collector(root: Path, times: list[float], *, proc_root: Path | None = N
         host_stub,
         lambda: times.pop(0),
         providers,
+        proc_root=proc_root,
+        damon_root=fixture_root() / "damonfs" / "no-root" / "kdamonds",
         systemctl_show_runner=systemctl_fixture_runner("gstammtisch"),
     )
 
@@ -84,6 +86,7 @@ def test_collects_gstammtisch_fixture_and_validates_metrics() -> None:
     assert game.metrics["io_weight"].v == 100
     assert game.metrics["governance_origin"].v == 3
     assert game.metrics["governance_drift"].v == 0
+    assert game.metrics["damon_hot_bytes"].src == "unavail_kernel"
 
 
 def test_second_sample_computes_rates_and_counter_reset_degrades(tmp_path: Path) -> None:

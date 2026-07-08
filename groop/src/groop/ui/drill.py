@@ -77,6 +77,8 @@ def render_drill_text(frame: Frame, entity_key: str, *, config: GroopConfig, rin
             lines.append(f"  {name:<24} {_format_metric(metric)} [{metric.src if metric is not None else 'n/a'}]{'' if spec is None else f' {spec.unit}'}")
         lines.append("")
 
+    lines.extend(_damon_block(entity_frame))
+    lines.append("")
     lines.extend(_governance_block(entity_frame))
     lines.append("")
     lines.extend(_network_block(entity_frame))
@@ -94,7 +96,9 @@ def render_drill_text(frame: Frame, entity_key: str, *, config: GroopConfig, rin
 def _metric_groups(entity_frame: EntityFrame) -> dict[str, list[str]]:
     groups: dict[str, list[str]] = defaultdict(list)
     for name in sorted(entity_frame.metrics):
-        if name.startswith(("ram", "anon", "file", "shmem", "sock", "z_", "swap_", "rf_", "mem_", "headroom_", "effective_memory_min")):
+        if name.startswith(("damon_",)):
+            groups["damon"].append(name)
+        elif name.startswith(("ram", "anon", "file", "shmem", "sock", "z_", "swap_", "rf_", "mem_", "headroom_", "effective_memory_min")):
             groups["memory"].append(name)
         elif name.startswith(("cpu", "psi_cpu")):
             groups["cpu"].append(name)
@@ -107,6 +111,62 @@ def _metric_groups(entity_frame: EntityFrame) -> dict[str, list[str]]:
         else:
             groups["other"].append(name)
     return dict(groups)
+
+
+def _damon_block(entity_frame: EntityFrame) -> list[str]:
+    metadata = entity_frame.damon or {}
+    sessions = metadata.get("sessions")
+    host_sessions = metadata.get("host_sessions")
+    mode_metric = entity_frame.metrics.get("damon_mode")
+    lines = ["DAMON"]
+    if not sessions and not host_sessions:
+        lines.append(f"  state: unavailable [{mode_metric.src if mode_metric is not None else 'unavail_kernel'}]")
+        return lines
+    if isinstance(sessions, list) and sessions:
+        summary = metadata.get("summary", {})
+        total_bytes = int((summary.get("total_bytes") if isinstance(summary, dict) else 0) or 0)
+        lines.append(f"  summary: total={_fmt_bytes(total_bytes)} hot={_format_metric(entity_frame.metrics.get('damon_hot_pct'))} warm={_format_metric(entity_frame.metrics.get('damon_warm_pct'))} cold={_format_metric(entity_frame.metrics.get('damon_cold_pct'))} idle={_format_metric(entity_frame.metrics.get('damon_idle_pct'))}")
+        for session in sessions:
+            lines.extend(_session_lines(session, prefix="  "))
+    if isinstance(host_sessions, list) and host_sessions:
+        lines.append("  host sessions:")
+        for session in host_sessions:
+            lines.extend(_session_lines(session, prefix="    "))
+    return lines
+
+
+def _session_lines(session: object, *, prefix: str) -> list[str]:
+    if not isinstance(session, dict):
+        return [f"{prefix}session: unavailable"]
+    mode = session.get("mode", "-")
+    kdamond_idx = session.get("kdamond_idx", "-")
+    context_idx = session.get("context_idx", "-")
+    scheme_idx = session.get("scheme_idx", "-")
+    state = session.get("state", "-")
+    target_pids = session.get("target_pids") or []
+    covered_pid_count = session.get("covered_pid_count")
+    entity_pid_count = session.get("entity_pid_count")
+    sample_age_s = session.get("sample_age_s")
+    class_bytes = session.get("class_bytes") or {}
+    class_pct = session.get("class_pct") or {}
+    lines = [
+        f"{prefix}mode={mode} kdamond={kdamond_idx} ctx={context_idx} scheme={scheme_idx} state={state}",
+        f"{prefix}target_pids: {', '.join(str(pid) for pid in target_pids) if target_pids else '-'}",
+        f"{prefix}intervals: sample_us={session.get('sample_us')} aggr_us={session.get('aggr_us')} update_us={session.get('update_us')} schemes={session.get('scheme_count')}",
+        f"{prefix}coverage: {_coverage_text(covered_pid_count, entity_pid_count)} | sample_age={_format_seconds(sample_age_s)}",
+        f"{prefix}hot={_fmt_bytes(int(class_bytes.get('hot', 0) or 0))} ({_format_pct(class_pct.get('hot'))}) {_bar(class_pct.get('hot'))}",
+        f"{prefix}warm={_fmt_bytes(int(class_bytes.get('warm', 0) or 0))} ({_format_pct(class_pct.get('warm'))}) {_bar(class_pct.get('warm'))}",
+        f"{prefix}cold={_fmt_bytes(int(class_bytes.get('cold', 0) or 0))} ({_format_pct(class_pct.get('cold'))}) {_bar(class_pct.get('cold'))}",
+        f"{prefix}idle={_fmt_bytes(int(class_bytes.get('idle', 0) or 0))} ({_format_pct(class_pct.get('idle'))}) {_bar(class_pct.get('idle'))}",
+    ]
+    regions = session.get("regions")
+    if isinstance(regions, list) and regions:
+        histogram = defaultdict(int)
+        for region in regions:
+            if isinstance(region, dict):
+                histogram[str(region.get("class") or "other")] += 1
+        lines.append(f"{prefix}regions: " + " ".join(f"{name}={histogram.get(name, 0)}" for name in ("hot", "warm", "cold", "idle")))
+    return lines
 
 
 def _governance_block(entity_frame: EntityFrame) -> list[str]:
@@ -198,6 +258,8 @@ def _process_block(cgroup_root: Path, entity_key: str, proc_root: Path) -> list[
 def _format_metric(metric) -> str:
     if metric is None or metric.v is None:
         return "-"
+    if isinstance(metric.v, float):
+        return f"{metric.v:.1f}"
     return str(metric.v)
 
 
@@ -221,3 +283,43 @@ def _sparkline(values: list[float | None]) -> str:
         index = int(round((value - lo) / (hi - lo) * (len(blocks) - 1)))
         chars.append(blocks[max(0, min(len(blocks) - 1, index))])
     return "".join(chars)
+
+
+def _coverage_text(covered: object, total: object) -> str:
+    if isinstance(covered, int) and isinstance(total, int):
+        return f"session covers {covered}/{total} pids of this entity"
+    if isinstance(covered, int):
+        return f"covered_pids={covered}"
+    return "unattributed"
+
+
+def _fmt_bytes(value: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    scaled = float(value)
+    unit = units[0]
+    for unit in units:
+        if abs(scaled) < 1024.0 or unit == units[-1]:
+            break
+        scaled /= 1024.0
+    if unit == "B":
+        return f"{int(scaled)}{unit}"
+    return f"{scaled:.1f}{unit}"
+
+
+def _format_pct(value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    return f"{float(value):.1f}%"
+
+
+def _format_seconds(value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    return f"{float(value):.1f}s"
+
+
+def _bar(value: object, width: int = 12) -> str:
+    if not isinstance(value, (int, float)):
+        return "-" * width
+    filled = max(0, min(width, int(round(float(value) / 100.0 * width))))
+    return "#" * filled + "." * (width - filled)

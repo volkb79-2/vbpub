@@ -75,6 +75,14 @@ class NetConfig:
 
 
 @dataclass(frozen=True)
+class DamonConfig:
+    hot_rate: float = 50.0
+    warm_rate: float = 5.0
+    cold_age: float = 30.0
+    idle_age: float = 120.0
+
+
+@dataclass(frozen=True)
 class GroopConfig:
     interval: float = 5.0
     cgroup_root: Path = Path("/sys/fs/cgroup")
@@ -90,6 +98,7 @@ class GroopConfig:
     history: HistoryConfig = field(default_factory=HistoryConfig)
     record: RecordConfig = field(default_factory=RecordConfig)
     net: NetConfig = field(default_factory=NetConfig)
+    damon: DamonConfig = field(default_factory=DamonConfig)
 
     def to_primitive(self) -> dict[str, Any]:
         return {
@@ -119,6 +128,12 @@ class GroopConfig:
             },
             "net": {
                 "classes": {name: list(ports) for name, ports in self.net.classes.items()},
+            },
+            "damon": {
+                "hot_rate": self.damon.hot_rate,
+                "warm_rate": self.damon.warm_rate,
+                "cold_age": self.damon.cold_age,
+                "idle_age": self.damon.idle_age,
             },
         }
 
@@ -232,6 +247,7 @@ def load(path: Path | None = None) -> GroopConfig:
     history_data = data.get("history", {})
     record_data = data.get("record", {})
     net_data = data.get("net", {})
+    damon_data = data.get("damon", {})
     thresholds = dict(data.get("thresholds", {}) or {})
     tiers = {
         str(name): [str(prefix) for prefix in prefixes]
@@ -265,4 +281,10 @@ def load(path: Path | None = None) -> GroopConfig:
             fsync=bool(record_data.get("fsync", False)),
         ),
         net=NetConfig(classes=net_classes),
+        damon=DamonConfig(
+            hot_rate=_coerce_float(damon_data.get("hot_rate"), 50.0),
+            warm_rate=_coerce_float(damon_data.get("warm_rate"), 5.0),
+            cold_age=_coerce_float(damon_data.get("cold_age"), 30.0),
+            idle_age=_coerce_float(damon_data.get("idle_age"), 120.0),
+        ),
     )

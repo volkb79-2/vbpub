@@ -33,7 +33,7 @@ DEFAULT_HISTORY_METRICS: Final[tuple[str, ...]] = (
     "net_rx_bps",
     "pids_current",
     "headroom_max_pct",
-    "hot_pct",
+    "damon_hot_pct",
 )
 
 _NAN = float("nan")

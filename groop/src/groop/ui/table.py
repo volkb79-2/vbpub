@@ -25,7 +25,7 @@ _PROFILE_COLUMNS = {
     "memory": ("name", "ram", "anon", "file", "shmem", "z_pool", "z_eq", "ratio", "swap_disk", "rf_z_per_s", "rf_d_per_s", "rf_f_per_s", "pgscan_per_s", "pgsteal_per_s"),
     "network": ("name", "net_rx_bps", "net_tx_bps", "net_source", "pids_current", "sock"),
     "governance": ("name", "mem_min", "mem_low", "mem_high", "mem_max", "cpu_weight", "governance_origin", "governance_drift", "pids_current"),
-    "damon": ("name", "hot_pct", "warm_pct", "cold_pct", "idle_pct"),
+    "damon": ("name", "damon_mode", "damon_hot_pct", "damon_warm_pct", "damon_cold_pct", "damon_idle_pct", "damon_sample_age_s"),
     "minimal": ("name", "ram", "rf_d_per_s", "psi_mem_full_avg10", "cpu_pct"),
 }
 
@@ -68,10 +68,16 @@ _LABELS = {
     "pgscan_per_s": "PGSCAN",
     "pgsteal_per_s": "PGSTEAL",
     "sock": "SOCK",
-    "hot_pct": "HOT%",
-    "warm_pct": "WARM%",
-    "cold_pct": "COLD%",
-    "idle_pct": "IDLE%",
+    "damon_mode": "DAMON",
+    "damon_hot_bytes": "HOT_B",
+    "damon_warm_bytes": "WARM_B",
+    "damon_cold_bytes": "COLD_B",
+    "damon_idle_bytes": "IDLE_B",
+    "damon_hot_pct": "HOT%",
+    "damon_warm_pct": "WARM%",
+    "damon_cold_pct": "COLD%",
+    "damon_idle_pct": "IDLE%",
+    "damon_sample_age_s": "AGE_S",
 }
 
 
@@ -185,6 +191,8 @@ def format_metric_value(column_name: str, entity_frame: EntityFrame) -> Text:
         if summary.get("drift") is False and severity == "none":
             return Text("none")
         return Text(severity)
+    if column_name == "damon_mode":
+        return Text(_metric_code(entity_frame.metrics.get(column_name), _DAMON_MODE))
     metric = entity_frame.metrics.get(column_name)
     return _format_metric(metric, REGISTRY.get(column_name))
 
@@ -232,7 +240,7 @@ def _sort_rows(entity_frames: list[EntityFrame], sort_by: str) -> list[EntityFra
 def _make_table(columns: tuple[str, ...], *, title: str) -> Table:
     table = Table(title=title, box=None, expand=True, show_lines=False, pad_edge=False)
     for column_name in columns:
-        justify = "left" if column_name in {"name", "tier", "net_source", "governance_origin", "governance_drift"} else "right"
+        justify = "left" if column_name in {"name", "tier", "net_source", "governance_origin", "governance_drift", "damon_mode"} else "right"
         no_wrap = column_name != "name"
         table.add_column(header_label(column_name), justify=justify, no_wrap=no_wrap, overflow="fold")
     return table
@@ -266,6 +274,8 @@ def _format_metric(metric: MetricValue | None, spec) -> Text:
         return Text(f"{float(value):.1f}/s")
     if spec.unit == "ratio":
         return Text(f"{float(value):.1f}x")
+    if metric is not None and spec.name == "damon_sample_age_s":
+        return Text(f"{float(value):.1f}s")
     if spec.unit == "us":
         return Text(str(int(value)))
     if isinstance(value, float):
@@ -285,7 +295,7 @@ def _profile_from_config(config: GroopConfig, profile: str) -> tuple[str, ...] |
 
 
 def _column_supported(name: str) -> bool:
-    return name in _LABELS and (name in REGISTRY or name in {"name", "tier", "net_source", "governance_origin", "governance_drift"} or name in {"hot_pct", "warm_pct", "cold_pct", "idle_pct", "sock"})
+    return name in _LABELS and (name in REGISTRY or name in {"name", "tier", "net_source", "governance_origin", "governance_drift"} or name == "sock")
 
 
 def _dedupe(names) -> list[str]:
@@ -323,6 +333,11 @@ _GOVERNANCE_DRIFT = {
     0: "none",
     1: "warn",
     2: "red",
+}
+
+_DAMON_MODE = {
+    1: "vaddr",
+    2: "paddr",
 }
 
 
