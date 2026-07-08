@@ -1,126 +1,171 @@
-# Wings `CgroupParent` / systemd-slice support — feasibility study + patch sketch
+# Proposal: cgroup-parent / systemd-slice support in Wings
 
-Status: proposal, not deployed. Nothing on this host was modified while writing this —
-all code changes below were written and **compiled + vetted + smoke-tested** against a
-scratch clone of `pterodactyl/wings` at tag `v1.13.1` (matches the version running here:
-confirmed via `docker exec ... wings version` → `wings v1.13.1`). The live wings
-container, `/etc/pterodactyl/config.yml`, and the running Soulmask container were only
-read, never written.
+Audience: Pterodactyl / Pelican maintainers and node operators. This document
+proposes first-class support for placing Wings-created containers under named
+systemd slices (`HostConfig.CgroupParent`), as a staged path from a one-key node
+config option up to panel-managed per-server resource guarantees.
+
+Provenance: developed against `pterodactyl/wings` tag `v1.13.1`. The v1 patch in §2
+and the runtime portion of the v2 sketch in §3 were applied to a clean clone and
+**compiled, vetted and smoke-tested** (`go build ./...`, `go vet`, binary runs)
+against the exact dependency versions pinned in `go.mod` (`github.com/docker/docker
+v28.3.3+incompatible`, Go 1.24). The upstreamable v2 shape now also requires the
+installer/helper/guard amendments called out in §3b. Claims are marked verified vs.
+inferred throughout; Appendix B lists the method. A real-world deployment
+(single-node 16 GB game host) is used as a worked example, confined to Appendix A.
+
+Revision note: 2026-07-08: folded external review — installer coverage (v2),
+namespace/allowlist guard (v2), missing-slice runbook checks, v2.5 reconciliation
+semantics, env-visibility clarification, effort/options assessment.
 
 ---
 
-## 0. Motivation — what this actually solves
+## 0. Motivation — resource guarantees are a product feature, not host tuning
 
-cgroup-v2 memory protection (`memory.min` / `memory.low`) is **hierarchical**: a
-cgroup's *effective* floor is capped by the value of **every ancestor** on the path to
-the root. A 6 GB `memory.min` on the game's `docker-<id>.scope` is worth exactly zero
-against global reclaim if its parent `system.slice` has `memory.min=0` — which is the
-default, and the live state on this host. This is not theoretical here:
+Pterodactyl and Pelican host **arbitrary workloads** (any egg, any game, any
+runtime), very often **multi-tenant**: hosting providers selling individual game
+servers to customers, sharing nodes among many tenants, and deliberately
+oversubscribing memory because most servers idle most of the time. In that setting,
+two things are product-level features, not per-host tuning:
 
-- **`plan-host-resource-governance.md` §1.5 Finding A** (verified live): the game
-  scope's `memory.min=6G` and the pak slice's `MemoryMin=150M` currently protect
-  **nothing** against global reclaim, because `system.slice/memory.min=0` and
-  `soulmask.slice/memory.min=0` sit above them. The observed stability comes entirely
-  from `memory.high` demand-shaping, not from the floors.
-- **`plan-host-resource-governance.md` §1.5 Finding D** (proven live 2026-07-07): raw
-  writes to a Docker scope's cgroup files (`echo … > memory.min`) are **silently wiped
-  by any `systemctl daemon-reload`** — systemd re-applies its recorded properties to
-  every transient scope, and any apt package that ships a unit triggers a reload. The
-  reload-safe mechanism is `systemctl set-property` (systemd then owns and re-applies
-  the values), i.e. the durable home for protection values is **systemd-managed units
-  (slices), not post-hoc file writes**.
+- **Limits** — a noisy tenant must not degrade the others. The panel already sells
+  these: per-server memory / CPU / IO settings that Wings maps to Docker resource
+  limits (`memory.max`, CPU quota, IO weight).
+- **Guarantees** — "the 8 GB server you pay for actually gets its 8 GB, even when
+  the node is busy." The panel **cannot** sell these today, because nothing in the
+  Wings → Docker pipeline can express a protection floor.
 
-Because the floor math is hierarchical, the only way to give the game a real floor
-today is to inflate `system.slice`-wide `MemoryMin` — which drags sshd, dockerd,
-wings, and every other host service into the protected budget (a blunt instrument,
-and it erodes the prod/interactive/best-effort tiering the governance plan is built
-on). What Wings `CgroupParent` support buys:
+### The technical gap, precisely
 
-1. **Per-server floors become real.** Game container under `soulmask.slice` (or a
-   per-server slice, §5) → the slice's `MemoryMin=5-6G` is on the ancestor path and
-   actually protects the game against global reclaim.
-2. **Tiering works.** Game workloads get their own top-level slice, ranked against
-   `interactive.slice` (devcontainer) and `besteffort.slice` (test stack, builds) by
-   CPU/IO weight and bounded by slice-level ceilings — instead of everything blending
-   into `system.slice`.
-3. **Game-host governance decouples from host services.** `system.slice` goes back to
-   containing only actual system services; its protection can be sized for
-   sshd/dockerd alone instead of "sshd/dockerd + an 8 GB game".
+On cgroup v2, guarantees are `memory.min` / `memory.low` — reclaim-protection
+floors. Two hard facts make them unreachable for Wings servers today:
 
-Wings v1.13.1 cannot express any of this: it never sets
-`HostConfig.CgroupParent`, so every game container lands in `system.slice` (verified
-live: the running Soulmask container's cgroup is
-`system.slice/docker-<id>.scope`). Hence this proposal.
+1. **Docker's API cannot express a floor.** Verified against the complete
+   `container.Resources` struct in `moby/moby v28.3.3`
+   (`api/types/container/hostconfig.go`): it offers `Memory` (→ `memory.max`),
+   `MemoryReservation` ("soft limit", mapped by runc to `memory.low` on cgroup v2),
+   swap, CPU, blkio, pids — and **no `memory.min` field of any kind, and no zswap
+   knobs**. Wings already sends `MemoryReservation`, which is as far as the Docker
+   API goes.
+2. **Protection is hierarchical, and the hierarchy is broken by default.** A
+   cgroup's *effective* floor is capped by **every ancestor** on the path to the
+   root. Wings sets no `CgroupParent`, so with the systemd cgroup driver every
+   server container lands directly in `system.slice` — which has `memory.min=0` /
+   `memory.low=0` by default. Even the `memory.low` that Wings *does* send via
+   `MemoryReservation` is therefore **arithmetically zeroed** by its parent: a 6 GB
+   floor under `system.slice(min=0)` protects nothing against global reclaim. This
+   is not theory — it was verified live on a production node (Appendix A,
+   Finding A).
+
+The consequence for the product: under memory pressure (the normal operating state
+of an oversubscribed multi-tenant node), the kernel reclaims from whichever server
+is cheapest to reclaim from — not from the tenant causing the pressure. Paying
+customers get latency spikes caused by their neighbors, and operators have no
+supported knob to prevent it.
+
+### What `CgroupParent` support unlocks
+
+Placing Wings containers under named, resource-configured systemd slices makes the
+ancestor chain an asset instead of a bug:
+
+- **Per-server QoS**: each server (or tier of servers) under a slice whose
+  `MemoryMin` / `MemoryLow` / `MemoryHigh` / `CPUWeight` / `IOWeight` the operator
+  (or eventually the panel) controls — real floors, real ceilings, real weights.
+- **Tenant isolation**: a runaway server exhausts its own slice, not the node.
+  Premium tiers can be given floors; best-effort tiers can be capped.
+- **Node stability under oversubscription**: the Wings workload as a whole can be
+  bounded by one parent slice, so game load can never starve sshd / dockerd /
+  Wings itself — and vice versa, host services no longer share a protection domain
+  with tenant workloads.
+- **Observability for free**: cgroup v2 PSI (`memory.pressure`, `cpu.pressure`,
+  `io.pressure`) and accounting per slice — per-server and per-tier — with no
+  process tracking.
+
+There is an additional durability argument for putting these values on *slices*
+specifically, rather than having anything write them to the container's cgroup
+directly: raw writes to a Docker scope's cgroup files are **silently wiped by any
+`systemctl daemon-reload`** (systemd re-applies its recorded properties to every
+transient unit; any apt/yum package that ships a unit triggers a reload). This
+failure mode was proven live on a production node (Appendix A, Finding D).
+Slice-held values are systemd-owned and get *re-applied*, not wiped, on reload.
+
+> **Worked example.** A single-node 16 GB host running one large game server plus
+> dev/test workloads hit exactly this wall: floors configured on the container's
+> cgroup were live-verified ineffective (ancestor `memory.min=0`) and separately
+> wiped by a daemon-reload. Appendix A walks through the full case, including
+> before/after cgroup paths and the deployment runbook for a patched Wings.
 
 ---
 
 ## 1. TL;DR
 
-- Wings v1.13.1 genuinely has no `CgroupParent` support anywhere in its Docker
-  container-creation code. Confirmed by source read, not just grep: `environment/docker/container.go`
-  `Create()` and `server/install.go` `Execute()` both build a `container.HostConfig{}`
-  with no `CgroupParent`/`Resources.CgroupParent` field set.
-- Root cause of the live problem: on **this host right now**, the running Soulmask
-  container's cgroup is `system.slice/docker-<id>.scope` (verified via
-  `/proc/<pid>/cgroup`), and `soulmask.slice` itself is a **transient** slice with
-  `MemoryMin=0`, `FragmentPath=` (empty — no unit file loaded), confirmed via
-  `systemctl show soulmask.slice`. See §0.
-- A minimal patch (~65 lines across 4 files) adds a node-level `docker.cgroup_parent`
-  config key and plumbs it into both container-creation call sites. It **compiles,
-  vets cleanly, and runs** (`go build ./...`, `go vet`, and a standalone binary that
-  prints its version) against the exact dependency versions pinned in `go.mod`
-  (`github.com/docker/docker v28.3.3+incompatible`, Go 1.24). See §2 for the diff.
-- A second, small increment (~25 lines, one file) adds a per-server override via a
-  reserved environment variable (`WINGS_CGROUP_PARENT`) that **requires no Panel code
-  changes at all** — Panel already ships a generic admin-only egg-variable mechanism
-  (`user_viewable`/`user_editable` flags) that Wings already forwards verbatim into
-  the container's `Env`. See §3b.
-- Staged adoption path (§4): **v1** node-level config key (this patch, now), **v2**
-  per-server reserved egg variable (small increment, no Panel changes), **v3**
-  Panel/egg schema + Wings-managed per-server slices via the systemd D-Bus API — the
-  long-term, multi-host-operator-friendly, upstreamable vision. Slices stay
-  sysadmin-managed in v1/v2; v3 would let Wings own a constrained `wings-*.slice`
-  namespace (§4c, §5).
-- Why slices at all, instead of pushing all cgroup config through the egg → Docker
-  API? Because Docker's API **cannot express `memory.min`** (verified against the
-  full moby v28.3.3 `Resources` struct), raw post-create cgroup writes are wiped by
-  `daemon-reload` (Finding D), and the hierarchical floor math requires host-side
-  ancestor budgets regardless. Egg-level config and host slices are complements, not
-  alternatives. See §6.
-- Recommended path: **local fork now** (prod needs this today), **submit upstream to
-  `pelican-dev/wings`** in parallel (more receptive to exactly this class of
-  node-config-additive PR — see §7), and keep the local patch rebased on `pelican-dev`
-  once merged.
+- Wings v1.13.1 has no `CgroupParent` support anywhere. Confirmed by source read:
+  `environment/docker/container.go` `Create()` and `server/install.go` `Execute()`
+  both build `container.HostConfig{}` without it; `config/config_docker.go` has no
+  cgroup-related key (`grep -i cgroup` across the module: zero hits).
+- **v1 (this proposal's core patch, ~65 lines, 4 files, compiled + vetted):** a new
+  node-level `docker.cgroup_parent` config key applied to all server and installer
+  containers, validated at startup (`.slice` suffix). §2.
+- **v2 (same PR or follow-up only with the guardrails in §3):** per-server
+  placement via a reserved, admin-only egg/server variable `WINGS_CGROUP_PARENT` —
+  no panel CODE changes needed, but panel data must still be updated (egg
+  reimport/update, variable creation, and per-server overrides for existing
+  servers). The variable is transport only: `user_viewable=false` /
+  `user_editable=false` hides it from the tenant panel UI/API, not from the running
+  process. §3.
+- **v2.5 (design, wings-only):** an "advanced egg" carries a full per-server cgroup
+  spec in structured admin-only variables; Wings creates a **transient per-server
+  slice via the systemd D-Bus API** (`StartTransientUnit` / `SetUnitProperties` —
+  the daemon-reload-safe channel) and places the container in it. Full
+  floors/ceilings/weights per server with **no panel CODE changes**; requires the
+  host systemd/D-Bus socket in the Wings container. §4.3.
+- **v3 (vision):** proper panel/egg schema for slice properties + Wings-managed
+  slices — the multi-node operator story with first-class UI. §4.4.
+- Transport constraint that shapes v2/v2.5 (verified against panel source): Wings
+  never sees raw eggs — the panel sends a **hard-coded whitelist** of per-server
+  fields (`ServerConfigurationStructureService`, comment: "DO NOT MODIFY THIS
+  FUNCTION"), and Wings wholesale-replaces its local server config from the panel
+  on every sync/start. Arbitrary new egg JSON fields do not reach the node, and
+  node-local config edits do not survive. **Egg variables are the one
+  admin-extensible channel that does reach Wings**, resolved into the container env
+  map that `Create()` already reads. §4.2.
+- Why slices at all, instead of pushing everything through the Docker API: no
+  `memory.min` in the API, raw cgroup writes wiped on daemon-reload, and the
+  hierarchical floor math requires ancestor budgets regardless. Egg-level values
+  and host-side structure are complements, not alternatives. §6.
+- Landing strategy: `pelican-dev/wings` is currently the more receptive target for
+  v1 first, with v2 in the same PR only if the §3 guardrails are included;
+  submitting to `pterodactyl/wings` in parallel costs nothing. §7.
 
 ---
 
-## 2. Option 1 — global node-level `docker.cgroup_parent`
+## 2. v1 — node-level `docker.cgroup_parent` (compiled patch)
 
 ### Design
 
-Add one new key to `/etc/pterodactyl/config.yml`:
+One new key in the node's `config.yml`:
 
 ```yaml
 docker:
-  cgroup_parent: soulmask.slice
+  cgroup_parent: wings.slice
 ```
 
-- Empty (default) → unchanged behavior, Docker's normal placement (`system.slice`
-  under the systemd cgroup driver, since Wings never sets a network/cgroup namespace
-  otherwise).
+- Empty (default) → behavior unchanged: Docker's normal placement, i.e.
+  `system.slice` under the systemd cgroup driver.
 - Non-empty → every server container **and every installer container** created from
-  that point forward get `HostConfig.CgroupParent` set to this value.
+  then on gets `HostConfig.CgroupParent` set to this value.
 - Validated at Wings startup (`cmd/root.go` `initConfig()`, right after
-  `config.FromFile`): must be non-empty-or-whitespace-free and end in `.slice`. Wings
-  does **not** call into Docker's `Info()` API to check the daemon's actual cgroup
-  driver (see "not implemented" note below) — an invalid value simply causes Wings to
-  refuse to start with a clear error, same pattern as other `log2.Fatalf` config
-  errors already in that function.
-- **Does not retroactively move existing containers.** `environment/docker/container.go`
-  `Create()` returns early if `ContainerInspect` finds the container already exists —
-  confirmed by reading the function. A currently-running server must have its
-  container removed (not just restarted) for a newly-set `cgroup_parent` to take
-  effect; see §8 for the exact operational sequence.
+  `config.FromFile`): no whitespace/control characters, must end in `.slice`
+  (systemd driver naming convention). For this node-owner config key, suffix-only
+  validation is intentionally sufficient. Invalid value → Wings refuses to start with a
+  clear error, matching the existing `log2.Fatalf` config-error pattern in that
+  function. Wings does **not** query Docker's `Info()` for the daemon's cgroup
+  driver (see "not implemented" below).
+- **Existing containers are not moved.** `Create()` returns early when
+  `ContainerInspect` finds the container already exists (confirmed by source read);
+  a running server picks up a changed `cgroup_parent` only after its container is
+  removed and re-created. Operationally a brief, planned stop/start per server
+  (worked example: Appendix A, deployment step 5).
 
 ### Verified source pointers (v1.13.1)
 
@@ -128,11 +173,11 @@ docker:
 |---|---|
 | `environment/docker/container.go:227-260` | `Create()` builds `HostConfig{PortBindings, Mounts, Tmpfs, Resources, DNS, LogConfig, SecurityOpt, ReadonlyRootfs, CapDrop, NetworkMode, UsernsMode}` — no `CgroupParent`. |
 | `server/install.go:428-451` | `Execute()` (installer container) builds a second, separate `HostConfig{}` — also no `CgroupParent`. |
-| `config/config_docker.go:49-98` | `DockerConfiguration` struct — no cgroup-related field of any kind (`grep -i cgroup` across the whole module returns zero hits before this patch). |
-| `environment/settings.go:105-137` | `Limits.AsContainerResources()` builds the *embedded* `container.Resources` (Memory, Swap, CPU, block-IO weight, pids) that `HostConfig` embeds anonymously. `CgroupParent` is a sibling field on that same embedded `Resources` struct (confirmed against `moby/moby v28.3.3` `api/types/container/hostconfig.go`), so it can be set either via the `Resources` literal or, more simply, via field promotion on the constructed `*container.HostConfig` (`hostConf.CgroupParent = "..."`) — both are valid Go. |
-| `cmd/root.go:395-414` | `initConfig()` — loads config, `log2.Fatalf`s on error. Natural home for a startup-time validation call. |
+| `config/config_docker.go:49-98` | `DockerConfiguration` struct — no cgroup-related field of any kind. |
+| `environment/settings.go:105-137` | `Limits.AsContainerResources()` builds the *embedded* `container.Resources` (Memory, Swap, CPU, block-IO weight, pids) that `HostConfig` embeds anonymously. `CgroupParent` is a sibling field on that same embedded `Resources` struct (confirmed against `moby/moby v28.3.3`), so it can be set via field promotion on the constructed `*container.HostConfig` (`hostConf.CgroupParent = "..."`). |
+| `cmd/root.go:395-414` | `initConfig()` — loads config, `log2.Fatalf`s on error. Natural home for startup-time validation. |
 
-### Patch (compiled + vetted against v1.13.1; see Appendix)
+### Patch (exact diff that compiled + vetted; comments/examples would be lightly genericized for the actual PR)
 
 ```diff
 diff --git a/cmd/root.go b/cmd/root.go
@@ -182,7 +227,8 @@ index 95501e7..5ae0896 100644
 +	//   - The named slice unit must already be installed under
 +	//     /etc/systemd/system and loaded (systemctl daemon-reload). If it is
 +	//     not, systemd will silently create a transient slice with none of
-+	//     the intended resource limits applied, instead of failing loudly.
++	//     the intended resource limits applied, instead of failing loudly:
++	//     the cgroup path can look correct while the guarantees are absent.
 +	//   - Existing containers are NOT moved when this value changes; it only
 +	//     affects containers created after Wings picks up the new config.
 +	CgroupParent string `default:"" json:"cgroup_parent" yaml:"cgroup_parent"`
@@ -264,67 +310,81 @@ index 0d31d50..5275add 100644
 ### Not implemented (flagged, deliberately out of scope for this patch)
 
 - No call to Docker's `client.Info(ctx)` to check `CgroupDriver`/`CgroupVersion`
-  (confirmed present as fields on `moby/moby`'s `system.Info` struct) and warn if the
-  daemon isn't using `systemd`. Cheap to add later; skipped here to keep the patch
-  minimal and avoid an extra API round-trip on every config load.
-- No re-validation against the live cgroupfs (`/sys/fs/cgroup/<parent>`) — by design;
-  Docker/systemd already do this at container-create time, and duplicating it in
-  Wings adds coupling for no real safety gain (see §8's transient-slice caveat).
+  (both confirmed present on `moby/moby`'s `system.Info` struct) and warn when the
+  daemon isn't using the systemd driver. Cheap to add in review if maintainers want
+  it; skipped to keep the patch minimal.
+- No re-validation against the live cgroupfs — by design; Docker/systemd already
+  fail container creation on a genuinely invalid parent, and the transient-slice
+  degradation case (named slice not installed → limit-less transient slice) is a
+  documentation/ops concern, not something Wings can reliably detect without a
+  systemd dependency. The operational footgun is a false-positive rollout: the
+  cgroup path looks right while the intended `MemoryMin`/`MemoryLow`/`MemoryHigh`
+  guarantees are absent.
+- Possible non-blocking upstream enhancement: when Docker reports the systemd
+  cgroup driver and a target slice appears to have no configured properties after
+  a smoke-created container, Wings could warn without refusing startup. The v1 PR
+  should not require that systemd probe.
 
 ---
 
-## 3. Option 2 — per-server override
+## 3. v2 — per-server placement via a reserved variable
 
 ### How per-server data reaches Wings today (verified)
 
-- Panel → Wings sync: `remote.ServerConfigurationResponse{Settings, ProcessConfiguration}`
-  (`remote/types.go`), where `Settings` is a `json.RawMessage` unmarshaled into
-  `server.Configuration` (`server/configuration.go:24-62`). That struct already carries
-  `Labels map[string]string` (a generic passthrough that becomes Docker container
-  labels — precedent for "generic panel→Wings passthrough field") and
-  `Build environment.Limits` (memory/cpu/swap/io-weight — no cgroup field today).
-- Egg/server environment variables: `Configuration.EnvVars environment.Variables`
-  (map) is merged with Wings-computed vars (`TZ`, `STARTUP`, `SERVER_MEMORY`,
-  `SERVER_IP`, `SERVER_PORT`) in `server.Server.GetEnvironmentVariables()`
-  (`server/server.go:151-174`) and becomes the container's `Env` in
-  `Configuration.EnvironmentVariables()`.
-- Confirmed **Wings already has full access to the resolved env-var list before
-  building `HostConfig`**: `Create()` in `container.go` reads
-  `evs := e.Configuration.EnvironmentVariables()` and even rewrites one value in
-  place (`SERVER_IP=127.0.0.1` → real interface IP) *before* `hostConf` is
-  constructed. So reading a reserved variable at that same point is a natural,
-  already-precedented extension point.
-- Confirmed (via Panel source, `app/Models/EggVariable.php` on `pterodactyl/panel`
-  `develop`) that egg variables already carry `user_viewable`/`user_editable`
-  booleans and a fixed `RESERVED_ENV_NAMES` list
-  (`SERVER_MEMORY,SERVER_IP,SERVER_PORT,ENV,HOME,USER,STARTUP,SERVER_UUID,UUID`) that
-  egg authors cannot reuse. `WINGS_CGROUP_PARENT` is not on that list, so **an admin
-  can define this variable on an egg (or per-server override) today, with
-  `user_viewable=false`/`user_editable=false`, with zero Panel code changes.** Those
-  flags are enforced only by the Panel's own client-facing UI/API — Wings receives
-  the fully-resolved `environment` map regardless and applies no extra access
-  control of its own (this is already true for every other env var Wings consumes).
+- Panel → Wings sync: `remote.ServerConfigurationResponse{Settings,
+  ProcessConfiguration}` (`remote/types.go`); `Settings` is a `json.RawMessage`
+  unmarshaled into `server.Configuration` (`server/configuration.go:24-62`), which
+  already carries `Labels map[string]string` (generic passthrough → Docker labels —
+  precedent for panel→Wings passthrough) and `Build environment.Limits` (no cgroup
+  field today).
+- Egg/server variables: `Configuration.EnvVars` is merged with Wings-computed vars
+  (`TZ`, `STARTUP`, `SERVER_MEMORY`, `SERVER_IP`, `SERVER_PORT`) in
+  `Server.GetEnvironmentVariables()` (`server/server.go:151-174`) and becomes the
+  container `Env`.
+- **Wings already reads the resolved env list before building `HostConfig`**:
+  `Create()` loads `evs := e.Configuration.EnvironmentVariables()` and rewrites one
+  value in place (`SERVER_IP=127.0.0.1` → interface IP) *before* `hostConf` is
+  constructed. A reserved variable is a natural, precedented extension point.
+- Panel side (verified from panel source, single-file reads): egg variables carry
+  `user_viewable` / `user_editable` flags and a `RESERVED_ENV_NAMES` list
+  (`SERVER_MEMORY,SERVER_IP,SERVER_PORT,ENV,HOME,USER,STARTUP,SERVER_UUID,UUID` —
+  `app/Models/EggVariable.php`). `WINGS_CGROUP_PARENT` is not reserved, so an admin
+  can define it today — admin-only — with no panel CODE changes. Note the flags are
+  enforced by the panel's client-facing UI/API only; Wings receives the resolved map
+  regardless (true of every env var Wings consumes today). This is not a secrecy
+  boundary: the running game process can read its own environment, so
+  `WINGS_CGROUP_PARENT` may carry only non-secret placement/profile metadata.
 
-### (a) Wings-side config.yml map (UUID → slice)
+### (a) Wings-side config.yml map (UUID → slice) — considered, not recommended
 
-Add e.g. `docker.server_cgroup_parents: {<uuid>: <slice>}` to config.yml, looked up
-by server UUID in `Create()`.
-- Code size: trivial (a `map[string]string` field + one lookup).
-- Upgrade survivability: good — purely local config, survives Wings upgrades exactly
-  like `cgroup_parent` would (as long as the upstream patch, or local fork, is
-  present).
-- Downside: **duplicates panel state on the node** — the sysadmin has to remember to
-  update this file whenever a server is added, renamed, or migrated to another node.
-  For a single-tenant / small-fleet host like this one that's a minor nuisance, not a
-  blocker, but it doesn't scale and isn't something upstream would want as the
-  canonical mechanism.
-- Verdict: **fine as a stopgap on this host if the reserved-variable approach (b)
-  turns out to be undesirable for some reason**, but (b) is strictly better here
-  (single source of truth stays the Panel, no file to keep in sync).
+`docker.server_cgroup_parents: {<uuid>: <slice>}`: trivial code, but duplicates
+panel state on the node (must be maintained on server create/move/delete). Fine as
+a stopgap on a single node; not canonical, unlikely to be what upstream wants.
 
-### (b) Reserved egg/server variable `WINGS_CGROUP_PARENT` — recommended
+### (b) Reserved variable `WINGS_CGROUP_PARENT` — recommended
 
-Layered on top of the Option 1 patch, ~25 lines, one file:
+Layered on top of the v1 patch. The runtime-only hunk below was compiled during
+the first pass, but the upstreamable v2 patch **must** factor the resolution into a
+small shared helper used by both `environment/docker/container.go` and
+`server/install.go`; otherwise installer containers still use only the node
+default and the "per-server placement" claim is overstated.
+
+Required shape:
+
+- Start with `docker.cgroup_parent` as the node default.
+- Resolve `WINGS_CGROUP_PARENT` from the already-resolved server environment in a
+  helper shared by the runtime create path and the installer create path.
+- For v2 only, do not rely on `.slice` suffix validation alone. Require one of:
+  `docker.allowed_cgroup_parents` as an explicit allowlist;
+  `docker.cgroup_parent` as a required root with child-of-root validation; or a
+  hard `wings.slice` / `wings-*.slice` namespace. The namespace guard from §4.5 is
+  therefore a v2 requirement, not only a v2.5/v3 rule.
+- If an override is invalid, fail closed for that override: fall back to the node
+  default and log the server UUID, attempted value, and selected parent.
+- Add table-driven validation tests covering empty, default, valid override, and
+  invalid override.
+
+Runtime hunk from the compiled first pass:
 
 ```diff
 diff --git a/environment/docker/container.go b/environment/docker/container.go
@@ -346,18 +406,17 @@ index 512d1a3..991c3f7 100644
  		}
 +
 +		// Allow a per-server cgroup parent override via a reserved egg/server
-+		// variable. This MUST only ever be set by an admin -- create the egg
-+		// variable with user_viewable=false and user_editable=false on the
-+		// Panel, since Wings applies no further access control here and will
-+		// happily honor whatever the Panel sends down as this server's
-+		// environment.
++		// variable. The upstreamable version must route this through a shared
++		// resolver used by both runtime and installer container creation, and
++		// must enforce an allowlist/root/namespace guard for panel-supplied
++		// values rather than accepting any ".slice" name.
 +		if val, ok := strings.CutPrefix(v, "WINGS_CGROUP_PARENT="); ok && val != "" {
 +			cgroupParent = val
 +		}
 +	}
 +	if cgroupParent != "" && cgroupParent != cfg.Docker.CgroupParent {
 +		if err := config.ValidateCgroupParentValue(cgroupParent); err != nil {
-+			e.log().WithField("error", err).Warn("environment/docker: ignoring invalid WINGS_CGROUP_PARENT override, falling back to node default")
++			e.log().WithField("error", err).WithField("server_uuid", e.Id).WithField("attempted_value", cgroupParent).WithField("selected_parent", cfg.Docker.CgroupParent).Warn("environment/docker: ignoring invalid WINGS_CGROUP_PARENT override, falling back to node default")
 +			cgroupParent = cfg.Docker.CgroupParent
 +		}
  	}
@@ -381,136 +440,240 @@ index 512d1a3..991c3f7 100644
  	if _, err := e.client.ContainerCreate(ctx, conf, hostConf, nil, nil, e.Id); err != nil {
 ```
 
-- Code size: smallest of all per-server options.
-- Upgrade survivability: as good as Option 1 (same fork/rebase story) — plus it needs
-  **zero Panel changes**, so it survives Panel upgrades trivially too.
-- Upstream acceptability: plausible as a companion to Option 1 in the same PR — it's
-  a natural extension of an existing pattern (Wings already special-cases one env var,
-  `SERVER_IP`, in exactly this loop).
-- **Security note (important):** the variable must be admin-only
-  (`user_viewable=false`, `user_editable=false`) on the egg/server. If it were
-  user-editable, any server owner could move their own container into an arbitrary
-  slice — worst case is escaping a resource-constrained tier into an
-  unconstrained/transient one (a noisy-neighbor / DoS risk against other tenants on
-  the same host), not a container-breakout, but still not something to expose to
-  non-admins. This patch does not and cannot enforce that on the Wings side; it's a
-  Panel-configuration responsibility, same as any other admin-only egg variable
-  today.
+Required installer wiring for the claim to hold:
+
+```diff
+diff --git a/server/install.go b/server/install.go
+@@
+-	if cfg.Docker.CgroupParent != "" {
+-		hostConf.CgroupParent = cfg.Docker.CgroupParent
+-	}
++	cgroupParent := config.ResolveServerCgroupParent(
++		ip.Server.UUID(),
++		ip.Server.GetEnvironmentVariables(),
++		cfg.Docker,
++	)
++	if cgroupParent != "" {
++		hostConf.CgroupParent = cgroupParent
++	}
+```
+
+The helper name and exact server UUID accessor are illustrative; the requirement is
+the shared resolver and identical validation/logging behavior at both create sites.
+
+- Smallest per-server option; no panel CODE changes; survives panel upgrades
+  trivially. It still requires operational panel-data work: updating/reimporting
+  eggs, adding the admin-only variable, and setting per-server overrides for
+  existing servers that need non-default placement.
+- Natural companion to v1 in the same PR (mirrors the existing `SERVER_IP`
+  special-case in the same loop).
+- **Existing Docker scopes are not moved.** As with v1, a placement change through
+  `WINGS_CGROUP_PARENT` only affects containers created after the new value is
+  resolved; already-existing server or installer containers must be recreated.
+- **Multi-tenant security note:** the variable must be admin-only in the panel
+  (`user_viewable=false`, `user_editable=false`), but those flags only hide it from
+  the tenant UI/API. They do not hide it from the running process, and they are not
+  an authorization boundary for Wings. The v2 resolver must enforce the operator's
+  allowlist/root/namespace itself. A tenant or compromised panel payload must not
+  be able to place a server under arbitrary host slices such as `system.slice` or
+  an unconstrained custom slice.
 
 ### Comparison
 
 | | Code size | Upgrade survivability | Upstream acceptability | Verdict |
 |---|---|---|---|---|
-| 1. Global `docker.cgroup_parent` | ~65 lines / 4 files | High (config-only addition, same shape as existing keys) | High — matches recent merged PRs on both forks (see §7) | **Do this** |
-| 2a. Wings-side UUID→slice map | ~15 lines | High | Low (duplicates Panel state, not canonical) | Stopgap only |
-| 2b. Reserved env var `WINGS_CGROUP_PARENT` | ~25 lines / 1 file | High, no Panel dependency | High (mirrors existing `SERVER_IP` special-case) | **Do this too** |
-| 2c. Proper Panel field | Medium (Panel migration + UI + Wings) | Highest (canonical) | Uncertain, needs Panel maintainers | Defer — subsumed by §4 v3 |
-
-*(2c in brief, assessed from a single-file read of the Panel's `EggVariable` model,
-no full Panel clone: a new column on `servers` mirroring how `Container.Image`
-already flows into Wings' `Configuration`, plus migration + admin form + API
-transformer. Effort medium; only worth it as part of the fuller v3 design in §4.)*
+| v1 global `docker.cgroup_parent` | ~65 lines / 4 files | High (config-only addition) | High — matches recent merged-PR patterns (see §7) | **Propose** |
+| v2a UUID→slice map in config.yml | ~15 lines | High | Low (duplicates panel state) | Stopgap only |
+| v2b reserved `WINGS_CGROUP_PARENT` | ~25 lines for runtime-only sketch; upstreamable patch also needs shared resolver, installer wiring, and guard tests | High, no panel CODE dependency; requires panel-data update | High if constrained (mirrors `SERVER_IP` precedent without trusting arbitrary slice names) | **Propose after/with v1 only with guardrails** |
+| Panel-native field | Medium (migration + UI + Wings) | Highest (canonical) | Needs panel maintainers | Fold into §4.4 (v3) |
 
 ---
 
-## 4. Option 3 — Panel-managed slices, reconsidered
+## 4. Wings-managed slices — from "no panel CODE changes" (v2.5) to panel-native (v3)
 
-The first draft of this document rejected "Panel UI manages slices on the host"
-outright. The operator counter-argument is fair and worth taking seriously: **an
-admin running many Wings nodes does not want to hand-install slice unit files on
-every node.** They want to install Wings, point it at the Panel, and manage
-everything — including resource tiering — through the Panel UI and eggs. For a fleet
-operator, "slices are sysadmin-managed IaC" translates to "every node is a snowflake
-until you build config-management tooling the Panel was supposed to make
-unnecessary."
+### 4.1 The operator problem
 
-So: what would Wings-managed slices actually take, and what does it cost?
+v1/v2 assume a sysadmin installs slice unit files on each node. That is fine for a
+single node and correct as IaC — but **an operator running many Wings nodes does
+not want to hand-configure slice units per node**. They install Wings, point it at
+the panel, and expect to manage everything — including resource tiers and
+guarantees — through the panel UI and eggs. This section covers what it takes for
+Wings to *create and own* the slices itself, in two flavors: a light one that needs
+no panel CODE changes at all (v2.5), and the panel-native end state (v3).
 
-### (a) Mechanism 1 — transient slices via the systemd D-Bus API (preferred)
+### 4.2 What config channel actually reaches the node (verified — this shapes everything)
 
-Wings creates each slice itself at boot / server-creation time by calling systemd's
-manager API (`StartTransientUnit` — the same call `systemd-run` and dockerd's systemd
-cgroup driver use), e.g. via `github.com/coreos/go-systemd/v22/dbus`:
+Three facts, all verified against wings v1.13.1 and current panel source:
 
-- `StartTransientUnit("wings-b87c0a5b.slice", "replace", props)` with properties
-  (`MemoryMin`, `MemoryLow`, `MemoryHigh`, `MemoryMax`, `CPUWeight`, `IOWeight`, …)
-  supplied from Panel-provided per-server/per-egg config.
-- Later changes: `SetUnitProperties(runtime=true, …)` — the programmatic equivalent of
-  `systemctl set-property`, which is exactly the **Finding D-safe** mechanism: systemd
-  records the values and *re-applies* them on every daemon-reload instead of wiping
-  them.
-- Lifecycle fits Wings naturally: Wings already syncs all servers from the Panel at
-  boot (before starting any container), so it can (re)create the transient slices
-  then; delete the slice (`StopUnit`) when a server is deleted. Transient units don't
-  survive reboot — but Wings restarting after boot recreates them before it starts
-  any game container, so the window where a slice is missing is exactly the window
-  where nothing runs in it.
+1. **Wings never fetches raw eggs.** It pulls *processed per-server configuration*
+   from the panel's remote API (`remote/servers.go`: `GetServers` at boot,
+   `GetServerConfiguration` on sync). What the panel sends is built by
+   `app/Services/Servers/ServerConfigurationStructureService.php` — a
+   **hard-coded whitelist** (`uuid`, `meta`, `suspended`, `environment`,
+   `invocation`, `skip_egg_scripts`, `build{memory_limit,swap,io_weight,cpu_limit,
+   threads,disk_space,oom_disabled}`, `container{image}`, `allocations`, `mounts`,
+   `egg{id,file_denylist}`), carrying the comment *"DO NOT MODIFY THIS FUNCTION"*.
+   An arbitrary new field added to an egg's JSON simply never appears in this
+   payload; and even if it did, Wings' `json.Unmarshal` into `server.Configuration`
+   silently drops unknown fields (standard Go behavior — inferred from language
+   semantics, not separately tested).
+2. **Node-local modification is not a thing.** There is no egg file on the node to
+   edit, and per-server config is not durable node state: `Server.Sync()`
+   (`server/server.go:186`) re-fetches from the panel and **wholesale-replaces** the
+   in-memory configuration (`SyncWithConfiguration`: `s.cfg = c`), then re-derives
+   the env list (`server/update.go:46`:
+   `SetEnvironmentVariables(s.GetEnvironmentVariables())`). `Sync()` runs at Wings
+   boot (`cmd/root.go:264`), **before every server start**
+   (`server/power.go:173`, `onBeforeStart`), on reinstall (`server/install.go:89`),
+   and on panel-triggered sync endpoints (`router/router_server.go`). Any node-local
+   mutation of server config is overwritten at the latest on next start. **Config
+   must travel panel → Wings through supported fields.**
+3. **Egg variables are the one admin-extensible channel that survives the whole
+   path.** They are part of the egg import/export JSON format
+   (`app/Services/Eggs/Sharing/EggExporterService.php` exports a `variables` array
+   with `env_variable`, `default_value`, `user_viewable`, `user_editable`, `rules`),
+   per-server overridable in the existing admin UI, resolved by
+   `app/Services/Servers/EnvironmentService.php` (`server_value ?? default_value`)
+   into the `environment` map of the whitelisted payload, and land in Wings'
+   `Configuration.EnvVars` → the env slice available in `Create()` **before**
+   `HostConfig` is built. Install-time and runtime containers can draw from the same
+   source: the installer sets `Env: ip.Server.GetEnvironmentVariables()`
+   (`server/install.go:419`) — the very function that also feeds the runtime
+   environment — so a `WINGS_CG_*` variable is visible at both create sites. The
+   v2 implementation still has to call the same resolver from both create paths;
+   sharing the env source alone is not sufficient.
 
-### (b) Mechanism 2 — writing unit files + `daemon-reload`
+Conclusion: **structured, admin-only egg variables are the viable
+no-panel-code transport** for per-server cgroup config. Nothing else is. Arbitrary
+top-level egg JSON may round-trip through import/export files, but it does not
+reach Wings through the panel payload; `variables` is the only no-panel-code
+transport.
 
-Wings writes `/etc/systemd/system/wings-<uuid>.slice` files and triggers
-`daemon-reload`. Persistent across reboots without Wings' involvement, but strictly
-worse in practice: Wings needs write access to the host's `/etc`, has to own
-file lifecycle/cleanup (orphaned unit files after server deletion or node
-migration), and every change triggers a host-global daemon-reload. Note the irony:
-daemon-reload is precisely the event Finding D identified as destructive to
-non-systemd-owned cgroup state — Wings *causing* frequent reloads would increase the
-blast radius for anything else on the host that still raw-writes cgroup attributes.
-Mechanism 1 is cleaner on every axis except reboot persistence, which its lifecycle
-already covers.
+### 4.3 v2.5 — "advanced egg": full cgroup spec via egg variables, Wings-created transient slices
 
-### (c) The honest security assessment
+The light flavor: circumvent panel schema work entirely. An egg (importable JSON,
+shareable like any egg) defines admin-only variables carrying the full per-server
+cgroup spec — either one blob:
 
-Wings runs **in a container** on this host (docker-compose, talking to the host's
-`docker.sock`). To call the systemd manager API it would need the host's D-Bus
-socket (`/run/dbus/system_bus_socket`) or systemd private socket
-(`/run/systemd/private`) bind-mounted into the container — and the systemd manager
-API is **root-equivalent** (`StartTransientUnit` can start arbitrary units, i.e.
-arbitrary code as host root).
+```
+WINGS_CGROUP_JSON = {"slice":"wings-<short-uuid>.slice","memory_min":"6G","memory_low":"12G","memory_high":"8G","cpu_weight":800,"io_weight":100}
+```
 
-The honest framing, though, is that this does **not add a new privilege class**:
-Wings already mounts `/var/run/docker.sock`, which is itself root-equivalent on the
-host (anyone holding it can run a privileged container with `/` bind-mounted). What
-it *does* do:
+or discrete keys (`WINGS_CG_SLICE`, `WINGS_CG_MEMORY_MIN`, `WINGS_CG_MEMORY_LOW`,
+`WINGS_CG_MEMORY_HIGH`, `WINGS_CG_CPU_WEIGHT`, `WINGS_CG_IO_WEIGHT`, …). At
+container-create time, and through reconciliation independent of container create,
+Wings:
 
-- widens the amount of Wings code wielding root-equivalent power (bigger audit
-  surface, more places for a bug to live);
-- turns a Panel compromise into direct host-resource-topology manipulation (though a
-  Panel compromise already implies arbitrary-container execution via Wings, so the
-  delta is modest);
-- creates a new class of *non-malicious* failure: a Panel/egg misconfiguration could
-  modify slices that govern non-Wings workloads.
+1. parses and validates the spec (name must match the `wings-*.slice` namespace,
+   §4.5; values clamped);
+2. creates or updates a **transient slice** via systemd D-Bus
+   (`StartTransientUnit("wings-<uuid>.slice", …)` / `SetUnitProperties(runtime=true,
+   …)` — e.g. `github.com/coreos/go-systemd/v22/dbus`);
+3. sets `HostConfig.CgroupParent` to that slice (the v1/v2 plumbing, unchanged);
+4. reconciles slice existence and properties at Wings boot after panel sync,
+   before each server start, after server sync/update, and optionally on a periodic
+   loop if D-Bus access is enabled;
+5. removes the slice (`StopUnit`) when the server is deleted.
 
-The key mitigation — and it should be a hard rule in any upstream design — is a
-**namespace constraint**: Wings may only ever create/modify slices matching
-`wings.slice` / `wings-*.slice` (enforced by the same kind of check as
-`ValidateCgroupParentValue`), never arbitrary unit names. That confines both bugs
-and abuse to the Wings-owned subtree (§5). Rootless-mode deployments are excluded by
-construction (no host systemd access) and must degrade gracefully to v1/v2 behavior.
+Honest assessment:
 
-### (d) Panel-side work for v3
+- **Capability: complete for slice properties, not for moving existing scopes.**
+  Everything v3 can do at the resource level — real per-server `memory.min` floors,
+  `memory.high`/`max` ceilings, CPU/IO weights — is reload-safe when represented as
+  systemd-owned transient-unit properties (the Finding D-safe channel; Appendix A).
+  Slice existence and properties must be reconciled at the lifecycle points above.
+  Existing Docker scopes are never moved by v2.5; if placement changes, the
+  container must be recreated. Docker live-restore and host-restart edge cases need
+  explicit behavior before this becomes an implementation plan.
+- **Prerequisites: the same host-systemd access as v3.** The Wings container needs
+  the host D-Bus socket (`/run/dbus/system_bus_socket`) or systemd private socket
+  mounted — see the security discussion in §4.5c, which applies unchanged.
+  Rootless deployments are excluded and must degrade to v1/v2 behavior.
+- **Multi-tenant abuse surface: floors are zero-sum.** A tenant who can raise their
+  own `memory.min` takes protection away from everyone else. Therefore: (i) the
+  variables **must** be `user_viewable=false` / `user_editable=false` — a tenant
+  must never be able to edit their own floor; (ii) Wings should additionally
+  enforce a node-side budget (e.g. a `docker.cgroup_budget` key: refuse or clamp
+  when Σ requested floors exceeds it), because defense-in-depth against panel
+  misconfiguration is cheap here and the failure mode (oversold guarantees) is
+  silent otherwise.
+- **Inelegance, stated plainly:** this is a stringly-typed side-channel. The spec
+  rides in env vars, so it also appears inside the container's environment. A
+  tenant can always read their own resource spec from the running process; therefore
+  these variables may contain only non-secret placement/profile metadata. There is
+  no panel-side validation or UI affordance beyond "an admin typed JSON into a
+  variable." That is the price of no panel CODE changes, and the reason v2.5 is a
+  bridge, not the end state.
+- **Position in the staged path:** between v2 and v3 — all of v3's runtime
+  machinery (D-Bus, transient slices, namespace guard, budget check) with none of
+  its panel work. If v2.5's Wings-side code is written cleanly, v3 is "swap the
+  transport from env vars to a schema field" — the investment is not throwaway.
+
+### 4.4 v3 — panel-native slice properties
 
 - Egg schema: per-egg default slice-property block (`memory_min`, `memory_low`,
-  `memory_high`, `cpu_weight`, `io_weight`, possibly `zswap_writeback` — the latter
-  is systemd-version-gated and needs feature detection); per-server admin override.
-- Delivery: extend the existing `ServerConfigurationResponse.Settings` blob → a new
-  struct next to `Build environment.Limits` in `server/configuration.go` (same
-  plumbing shape as existing fields; the Wings side is the easy part).
-- Admin UI + validation + migration on the Panel; a Panel release to ship it. This is
-  the long pole, and the reason v3 is a vision, not this quarter's patch.
+  `memory_high`, `cpu_weight`, `io_weight`; possibly zswap knobs, which are
+  systemd-version-gated and need feature detection); per-server admin override with
+  real validation and UI.
+- Delivery: extend the whitelisted payload (`ServerConfigurationStructureService`)
+  with one new block → a new struct next to `Build environment.Limits` in
+  `server/configuration.go`. The Wings side is the easy part; the panel migration,
+  admin UI, API transformers, and a release cycle are the long pole.
+- Same Wings runtime machinery as v2.5.
 
-### (e) Staged path (the actual recommendation)
+### 4.5 Mechanisms and security (applies to v2.5 and v3)
+
+**(a) Transient slices via systemd D-Bus — preferred.** `StartTransientUnit` is the
+same call `systemd-run` and dockerd's systemd cgroup driver use. Properties are
+systemd-owned: daemon-reload *re-applies* them (this is precisely the mechanism
+that survives the Finding D failure mode — Appendix A). Transient units don't
+survive reboot, so Wings must reconcile slice existence and properties after boot
+and panel sync, before each server start, after server sync/update, and optionally
+periodically. This reconciles the slice, not already-running Docker scopes: any
+placement change still requires container recreation. Docker live-restore and host
+restart behavior must be specified explicitly because containers may outlive the
+Wings process that would otherwise recreate transient units before start.
+
+**(b) Writing unit files + `daemon-reload` — worse on every axis that matters.**
+Persistent across reboots, but Wings would need write access to the host's `/etc`,
+must own unit-file lifecycle/cleanup (orphans after server deletion/migration), and
+every change triggers a host-global daemon-reload — the very event Finding D
+identified as destructive to any remaining non-systemd-owned cgroup state on the
+host. Mechanism (a)'s lifecycle already covers reboot; prefer it.
+
+**(c) Security, honestly.** The systemd manager API is **root-equivalent**
+(`StartTransientUnit` can start arbitrary units = arbitrary code as host root), and
+Wings (commonly run as a container) would need the host D-Bus/systemd socket
+mounted. The honest framing: this does **not add a new privilege class** — Wings
+deployments already mount `/var/run/docker.sock`, which is itself root-equivalent
+(mount `/` into a privileged container). What it does do:
+
+- widens the amount of Wings code wielding root-equivalent power (audit surface);
+- turns a panel compromise into direct host-resource-topology manipulation (though
+  a panel compromise already implies arbitrary-container execution via Wings — the
+  delta is modest);
+- adds a *non-malicious* failure class: panel/egg misconfiguration touching slices
+  that govern non-Wings workloads.
+
+The key mitigation, which should be a **hard rule** in any upstream design: Wings
+may only ever create/modify/delete slices matching `wings.slice` / `wings-*.slice`
+(enforced by the same kind of validation as `ValidateCgroupParentValue`), never
+arbitrary unit names. That confines bugs and abuse to the Wings-owned subtree (§5).
+For v2 per-server overrides, the same idea appears earlier as an allowlist,
+root-child validation under `docker.cgroup_parent`, or this hard namespace guard.
+
+### 4.6 Staged path
 
 | Stage | What | Panel changes | Host prep per node | Status |
 |---|---|---|---|---|
-| **v1** | `docker.cgroup_parent` in config.yml — all containers under one admin-named slice | none | install slice unit(s) once (IaC) | **patch compiled, §2 — deploy now** |
-| **v2** | `WINGS_CGROUP_PARENT` reserved egg/server variable — per-server placement | none (admin-only egg variable, existing mechanism) | install per-server slice units (or accept transient) | **patch compiled, §3b — same PR** |
-| **v3** | Panel/egg slice-property schema + Wings creates/owns transient `wings-*.slice` units via systemd D-Bus, applies properties via `SetUnitProperties` (Finding D-safe) | egg schema + admin UI + API | none — that is the point: zero per-node hand-config | **design sketch only (§4, §5); upstreamable long-term vision — propose as an RFC issue alongside the v1/v2 PR** |
+| **v1** | `docker.cgroup_parent` in config.yml — all new server and installer containers under one named slice | none | install slice unit(s) once | **first minimal PR — §2** |
+| **v2** | `WINGS_CGROUP_PARENT` reserved egg/server variable — per-server placement | no panel CODE changes; requires egg variable/update and per-server overrides for existing servers | install per-server slice units or maintain allowed namespace | **same PR or follow-up only with shared runtime/installer resolver + namespace/allowlist — §3b** |
+| **v2.5** | Full cgroup spec in admin-only egg variables; Wings creates/reconciles transient `wings-*.slice` units via D-Bus and applies properties (reload-safe) | no panel CODE changes; requires egg variable/update and admin data management | mount host D-Bus socket into Wings; no unit files | **RFC material, not an initial PR — §4.3** |
+| **v3** | Panel/egg slice-property schema + UI; same Wings machinery as v2.5 with a proper transport | egg schema + admin UI + API + migration | none | **long-term end state / RFC material — §4.4** |
 
-v1/v2 keep slices 100% sysadmin-managed and are what this host deploys. v3 is the
-multi-host answer, and framing the v1/v2 PR as "step one of this staged path" makes
-the small patch *more* attractive upstream, not less — it's additive, opt-in, and
-doesn't paint the project into a corner.
+Each stage is additive and opt-in; none paints the project into a corner, and
+v2.5's runtime code is v3's runtime code. At every stage, existing Docker scopes
+are never moved in place; placement changes require container recreation.
 
 ---
 
@@ -529,81 +692,81 @@ alone, a child of `wings.slice` (and `wings-b87c0a5b-paks.slice` would nest unde
 │   └── docker-<wings-mgmt-id>.scope         MemoryMin sized for services alone (small).
 │
 ├── wings.slice                           ← EVERYTHING Wings creates. ONE knob for the
-│   │                                        whole game-hosting tier:
+│   │                                        whole hosting tier:
 │   │                                        MemoryMin ≥ Σ child floors   (protection budget)
 │   │                                        MemoryHigh/Max = tier ceiling (optional)
 │   │                                        CPUWeight/IOWeight vs other tiers
-│   ├── wings-b87c0a5b.slice              ← per-server slice (short server UUID)
+│   ├── wings-b87c0a5b.slice              ← per-server slice (short server UUID);
+│   │   │                                    example values from the Appendix A case study:
 │   │   │                                    MemoryMin=6G MemoryLow=12G MemoryHigh=8G
-│   │   ├── docker-<id>.scope             ← the Soulmask container
-│   │   └── wings-b87c0a5b-paks.slice     ← optional: per-server pak slice, auto-nests
-│   │                                        MemoryMin=<hot pak set>, MemoryZSwapMax=0
-│   └── wings-<uuid2>.slice               ← next game server: own floor/ceiling
+│   │   ├── docker-<id>.scope             ← server A's game container
+│   │   └── wings-b87c0a5b-paks.slice     ← optional per-server data-cache slice, auto-nests
+│   │                                        MemoryMin=<hot set>, MemoryZSwapMax=0
+│   └── wings-<uuid2>.slice               ← next server: own floor/ceiling
 │       └── docker-<id>.scope
 │
-├── interactive.slice                     ← devcontainer + AI agents (plan §3.3)
-└── besteffort.slice                      ← dstdns test stack, builds (plan §3.3)
+├── interactive.slice                     ← other host tiers (example: dev workloads)
+└── besteffort.slice                      ← e.g. CI/test stacks, builds
 ```
 
 Where the protection-chain values go (the §0 math, made concrete):
 
 - **`wings.slice` MemoryMin ≥ sum of all child floors** (per-server `MemoryMin` +
-  per-server pak floors). A top-level slice's `memory.min` is directly effective
-  against global reclaim — there is no ancestor above it to cap it. If the parent
-  budget is smaller than the sum of child claims, children compete proportionally for
-  the shortfall — keep the invariant explicit and monitored.
+  any nested cache-slice floors). A top-level slice's `memory.min` is directly
+  effective against global reclaim — there is no ancestor above it to cap it. If
+  the parent budget is smaller than the sum of child claims, children compete
+  proportionally for the shortfall — keep the invariant explicit and monitored
+  (and, in v2.5/v3, Wings-enforced via the budget check, §4.3).
 - **Per-server floors/ceilings live on `wings-<uuid>.slice`**, not on the Docker
   scope. This is the quiet superpower of the design: slice values are
-  **systemd-owned** (unit file or `set-property`), so they are *re-applied* on every
-  daemon-reload — Finding D becomes a non-issue for exactly the values that matter
-  most. Today's watcher writes to the transient `docker-<id>.scope` and is one
-  `apt install` away from being wiped.
+  **systemd-owned** (unit file, `set-property`, or transient-unit properties), so
+  they are *re-applied* on every daemon-reload — the Finding D failure mode
+  (Appendix A) becomes a non-issue for exactly the values that matter most. Any
+  scheme that writes to the transient `docker-<id>.scope` instead is one
+  `apt install` away from being silently wiped.
 - `memory.zswap.writeback=0` semantics at the slice level (does disabling it on the
   per-server slice cover the scope beneath, i.e. is the check hierarchical?) —
-  **unverified**; test on this host before relying on it, otherwise keep that one
-  knob applied per-scope via `set-property`, as `setup-cgroups.sh` does now.
+  **unverified**; test before relying on it, otherwise apply that one knob
+  per-scope via `set-property`.
 - **PSI/accounting fall out for free**: `/sys/fs/cgroup/wings.slice/memory.pressure`
   = whole-tier pressure; `wings.slice/wings-<uuid>.slice/memory.pressure` =
-  per-server pressure — exactly the per-tier/per-workload split
-  `CGROUP-MONITORING.md` builds its monitoring around, with no scope-PID chasing.
+  per-server pressure — a clean per-tenant observability story with no scope-PID
+  chasing.
 
 How the stages map onto this tree: **v1** puts every server directly under
 `wings.slice` (tier bound + one shared floor; per-server floors not yet
-expressible — on this single-game host that is already the full win). **v2** adds
-`WINGS_CGROUP_PARENT=wings-b87c0a5b.slice` per server, with the sysadmin
-pre-installing the child slice units (dash-naming auto-nests them). **v3** has Wings
-create the child slices itself. On *this* host, the existing `soulmask.slice`
-(+ nested `soulmask-paks.slice`) already plays the role of the per-server slice —
-with exactly one game server, `cgroup_parent: soulmask.slice` and the `wings.slice`
-design are equivalent; adopt the `wings-*` naming when a second server or the
-upstream PR makes the rename worth it.
+expressible — already the full win on a single-server node). **v2** adds
+`WINGS_CGROUP_PARENT=wings-<uuid>.slice` per server, with the sysadmin
+pre-installing the child slice units (dash-naming auto-nests them). **v2.5/v3**
+have Wings create the child slices itself. A worked single-server instance of this
+tree, with live values, is in Appendix A.
 
 ---
 
 ## 6. Alternatives analysis — why host slices at all?
 
 The obvious counter-question: *"why not put the full cgroup config in the egg (or
-per-server via the Panel UI) and have Wings apply it at container start — no slices,
-no host-side config at all?"* Three facts close this off:
+per-server via the panel UI) and have Wings apply it at container start — no
+slices, no host-side structure at all?"* Three facts close this off:
 
-1. **Docker's API cannot express a protection floor.** Verified against the complete
-   `container.Resources` struct in `moby/moby v28.3.3`
-   (`api/types/container/hostconfig.go`): it offers `Memory` (→ `memory.max`),
-   `MemoryReservation` ("memory soft limit" — mapped to `memory.low` on cgroup v2 by
-   runc), `MemorySwap`, `MemorySwappiness`, CPU shares/quota/sets, `Blkio*`
-   weights/throttles, `PidsLimit`, ulimits, devices — and **no `memory.min` field of
-   any kind, and no zswap knobs**. So an egg → Docker HostConfig pipeline, no matter
-   how rich the egg schema, physically cannot build a `memory.min` floor or set
-   `memory.zswap.*`. (Wings already sends `MemoryReservation` today — `memory.low`
-   at best, and see point 3 for why even that is currently moot.)
-2. **Wings raw-writing cgroup files after container start is a trap.** The
-   alternative "Wings echoes values into `/sys/fs/cgroup/.../docker-<id>.scope/*`
-   post-create" was **disproven live on this host on 2026-07-07**
-   (`plan-host-resource-governance.md` §1.5 Finding D): any `systemctl daemon-reload`
-   — triggered by any apt package that ships a unit — silently resets every
-   raw-written attribute on the transient scope back to Docker defaults. The
-   reload-safe channel is `systemctl set-property` / D-Bus `SetUnitProperties`, i.e.
-   going through systemd — which requires the same host-systemd access as §4's v3
+1. **Docker's API cannot express a protection floor.** Verified against the
+   complete `container.Resources` struct in `moby/moby v28.3.3`
+   (`api/types/container/hostconfig.go`): `Memory` (→ `memory.max`),
+   `MemoryReservation` ("memory soft limit" — mapped to `memory.low` on cgroup v2
+   by runc), `MemorySwap`, `MemorySwappiness`, CPU shares/quota/sets, `Blkio*`
+   weights/throttles, `PidsLimit`, ulimits, devices — and **no `memory.min` field
+   of any kind, and no zswap knobs**. An egg → Docker HostConfig pipeline, no
+   matter how rich the egg schema, physically cannot build a `memory.min` floor.
+   (Wings already sends `MemoryReservation` today — `memory.low` at best, and see
+   point 3 for why even that is currently moot.)
+2. **Writing cgroup files directly after container start is a trap.** The
+   alternative "Wings echoes values into
+   `/sys/fs/cgroup/.../docker-<id>.scope/*` post-create" was **disproven on a live
+   production node** (Appendix A, Finding D): any `systemctl daemon-reload` —
+   triggered by any package that ships a unit — silently resets every raw-written
+   attribute on the transient scope back to Docker defaults. The reload-safe
+   channel is `systemctl set-property` / D-Bus `SetUnitProperties`, i.e. going
+   through systemd — which requires the same host-systemd access as §4's v2.5/v3
    while delivering less (per-scope values still vanish with the container; slice
    values persist across container recreates).
 3. **The hierarchical math is decisive regardless of mechanism.** Even a *perfect*
@@ -613,8 +776,8 @@ no host-side config at all?"* Three facts close this off:
    live, not theory. Some host-level ancestor configuration is therefore
    **mathematically unavoidable** for protection floors: somebody has to put a
    protection budget on the ancestor slice. Per-egg config can carry the
-   *per-server* values; the *tier/ancestor* budget must live host-side — either as
-   sysadmin IaC (v1/v2) or as a Wings-managed `wings.slice` subtree (v3).
+   *per-server* values; the *tier/ancestor* budget must live host-side — installed
+   by a sysadmin (v1/v2) or owned by Wings in a constrained namespace (v2.5/v3).
 
 **Conclusion: egg-level cgroup config and host slices are complements, not
 alternatives.** The egg is the right home for per-server *values* (floor sizes,
@@ -623,237 +786,298 @@ tier separation, reload-safe ownership) can live.
 
 ---
 
-## 7. Upstream PR strategy
+## 7. Landing strategy — where to submit
 
 Checked both projects' recent PR/issue activity via the GitHub API (public,
 unauthenticated) on 2026-07-07:
 
-**`pterodactyl/wings`** (upstream, default branch `develop`):
+**`pterodactyl/wings`** (default branch `develop`):
 - Not archived, 1019 stars, pushed 2026-06-29, 51 open issues — actively maintained.
-- Zero existing PRs or issues mention "cgroup parent" / slice support
+- Zero existing PRs or issues mention cgroup-parent/slice support
   (`search/issues?q=repo:pterodactyl/wings+cgroup` → 1 hit, an unrelated dependency
   bump).
-- But recent merged work shows real appetite for cgroup v2 nuance: PR #324, **"Only
-  set the container block IO weight when the host supports io.weight"** (merged
-  2026-05-30), fixes exactly the kind of cgroup-v2-vs-v1 edge case this proposal also
-  touches — and it's already reflected in the `blkioWeightSupported()` helper in
-  `environment/settings.go` that this study read. Good signal, but this is the only
+- Recent merged work shows real appetite for cgroup-v2 nuance: PR #324, "Only set
+  the container block IO weight when the host supports io.weight" (merged
+  2026-05-30) — the same class of fix, already visible as the
+  `blkioWeightSupported()` helper in `environment/settings.go`. But it is the only
   cgroup-adjacent PR in the repo's history.
-- No `CONTRIBUTING.md` found in the repo or a `.github` org-level one.
+- No `CONTRIBUTING.md` in the repo or a `.github` org repo.
 
-**`pelican-dev/wings`** (independent hard fork of Pterodactyl panel+wings, not a
-GitHub "fork" flag — fully detached):
-- Not archived, 296 stars, pushed 2026-07-04 (3 days before this study) — **more
-  recent activity than upstream**, and a visibly faster merge cadence for small,
-  additive, node-config features: merged in the last ~3 weeks alone: "Add disk quota
-  support", "Add quiet config option", **"feat: add support for container network
-  mode"** (closed, not merged, but only because the *author* redirected it to a
-  standalone side-image rather than any maintainer pushback —
-  `engels74/wings-vpn`), "add conditional support for ioweight" (their version of the
-  same `blkioWeightSupported()`-style fix). This is a near-exact precedent: a new,
-  additive `DockerConfiguration`/`HostConfig` knob, reviewed (they run
-  `coderabbitai` automated review) and merged quickly.
-- This is the more receptive target for a `cgroup_parent` PR. It is also the more
-  plausible home for the §4 v3 vision — Pelican controls both panel and wings under
-  one org, so a cross-cutting egg-schema + wings feature has one review pipeline
-  instead of two.
+**`pelican-dev/wings`** (independent hard fork of the Pterodactyl stack):
+- Not archived, 296 stars, pushed 2026-07-04 — **more recent activity than
+  upstream**, and a visibly faster merge cadence for small, additive node-config
+  features. Merged in the last ~3 weeks alone: "Add disk quota support", "Add quiet
+  config option", "add conditional support for ioweight"; plus "feat: add support
+  for container network mode" (closed only because the author moved it to a
+  side-image, not from maintainer pushback). A new, additive
+  `DockerConfiguration`/`HostConfig` knob with automated review (coderabbit) and
+  quick merges is a near-exact precedent for v1.
+- Pelican also controls panel *and* wings under one org — the natural home for the
+  v3 vision, since a cross-cutting egg-schema + wings feature has one review
+  pipeline instead of two.
 
-**Recommendation:**
-1. Build and run the local fork now (§8) — prod needs it immediately, independent of
-   any upstream outcome.
-2. Submit the Option 1 + Option 2b patch (§4's v1+v2) to `pelican-dev/wings` first;
-   cross-post/PR the same to `pterodactyl/wings` in parallel (low cost, no reason not
-   to try both). Frame it explicitly as stage one of the §4 staged path, and open a
-   companion RFC issue sketching v3 (`wings.slice` hierarchy + D-Bus-managed
-   per-server slices, §5) so reviewers see the small patch as a step on a coherent
-   road, not a one-off knob.
-3. If/when either merges, rebase the local image onto that tag instead of maintaining
-   a bespoke diff indefinitely.
+**Recommended sequence:**
+1. Operators who need this today: run a patched build (a complete single-node
+   deployment runbook, including rollback and risk assessment, is in Appendix A).
+2. Submit v1 (§2) to `pelican-dev/wings` first; cross-submit to
+   `pterodactyl/wings` in parallel (low cost). Add v2 (§3b) in the same PR only if
+   it includes the shared runtime/installer resolver and namespace/allowlist guard;
+   otherwise keep v2 as the immediate follow-up. Frame the PR explicitly as stage
+   one of §4.6's staged path, and open a companion RFC issue sketching v2.5/v3
+   (`wings.slice` hierarchy §5, D-Bus-managed per-server slices §4.3) so reviewers
+   see a small additive knob on a coherent road, not a one-off.
+3. Once merged anywhere, rebase local builds onto that tag.
 
 ---
 
-## 8. Local deployment path
+## 8. Options and effort assessment (external review, 2026-07-08)
 
-### Build (on this host, using the existing Docker daemon — no registry needed)
+Effort ranges assume an engineer already familiar with Wings, the panel data flow,
+systemd cgroup v2, and the case-study host. Upstream estimates include review
+iteration, tests, documentation, and compatibility discussion.
+
+| Option | Description | Main components | Local effort | Upstream effort | Assessment |
+|---|---|---|---:|---:|---|
+| A | Keep current watcher/scope mutation model | host scripts, `systemctl set-property`, instance env files | 0.5-1 day for maintenance | Not suitable | Useful fallback only; it keeps compensating for bad placement instead of fixing it. |
+| B | v1 global `docker.cgroup_parent` | Wings config struct, validation, runtime `HostConfig`, installer `HostConfig`, real systemd slice unit, deployment runbook | 1-2 days including smoke test | 3-7 days | **Do first.** Small, understandable, and directly fixes ancestor placement for the current host. |
+| C | v1 + v2 `WINGS_CGROUP_PARENT` to pre-created slices | Option B plus shared resolver, installer support, allowlist/root/namespace validation, egg/server variable, per-server slice units | 2-4 days plus panel-data updates | 1-2 weeks | **Do next.** Good for multiple servers or per-tier placement without panel CODE changes, but only with the v2 guardrails in §3b. |
+| D | Egg variables as admin-only placement/profile transport | `WINGS_CGROUP_PARENT`, optional profile metadata, egg reimport/update, per-server overrides | 1-2 days after v2 | Part of Option C | Good after v2 if limited to non-secret placement metadata. Do not put UUID-specific defaults in a generic egg. |
+| E | Egg variables with full cgroup spec; Wings creates transient slices via systemd D-Bus | parser, validation, budget accounting, D-Bus client, systemd socket mount, namespace guard, cleanup/reconcile loop | 1.5-3 weeks | 3-6 weeks | Defer. Powerful, but security and lifecycle complexity make it poor initial PR material. |
+| F | Panel-native cgroup schema | panel migrations/models, egg export/import, admin UI, API payload, Wings structs, D-Bus slice manager, tests/docs | 6-10 weeks | major feature cycle | Correct long-term product design and the clean end state. Too large for the immediate placement fix. |
+| G | Docker daemon-wide `--cgroup-parent` / daemon config | Docker daemon config only | 0.5 day | N/A | Reject. Too broad: affects unrelated Docker workloads and does not solve per-server placement. |
+| H | Direct raw writes to Docker scope cgroup files | Wings or scripts writing `/sys/fs/cgroup/.../docker-*.scope/*` | 1-3 days | Not recommended | Reject. It conflicts with systemd ownership and has already failed under daemon-reload on this host. |
+
+Recommendation: implement Option B first. Add Option C next, either in the same PR
+only if the shared runtime/installer resolver and namespace/allowlist guard are
+present, or as a follow-up PR. Use egg variables as admin-only transport (Option D)
+only after v2 exists. Defer D-Bus transient slices (Option E) to RFC work, and
+treat panel-native schema (Option F) as the product end state. Do not pursue
+Options G or H.
+
+---
+
+## 9. If upstream acceptance is unlikely
+
+If upstream PR acceptance stalls, favor a patch shape that survives rebases over a
+feature-complete local fork:
+
+**minimal Wings patch + standard egg variables + host-side reconciler.**
+
+Concrete boundary:
+
+- Egg variables are a **transport** for non-secret placement/profile metadata,
+  e.g. `WINGS_CGROUP_PARENT=soulmask.slice` or
+  `WINGS_CGROUP_PROFILE=soulmask-prod`.
+- Wings only reads the resolved environment metadata and places the Docker scope
+  under the selected slice via `HostConfig.CgroupParent`.
+- The host-side reconciler owns resource properties, budgets, zswap or
+  systemd-version edge cases, and reconciliation after daemon reloads/restarts,
+  container restarts, and server syncs.
+- Panel-native schema remains the clean future design if a real fork or upstream
+  feature is accepted later.
+
+This keeps the Wings delta small: no panel patch, no non-standard egg top-level
+schema, stable PTDL_v2 import/export, and Docker container creation as the only
+Wings touch point. The reconciler can evolve faster than a Wings fork while Wings
+continues to do the one placement action Docker already supports.
+
+Do not rely on arbitrary top-level egg JSON such as:
+
+```json
+{
+  "cgroups": {
+    "memory_min": "6G"
+  }
+}
+```
+
+That field may round-trip through an exported JSON file, but it will not reach
+Wings through the current panel-to-Wings server configuration payload without
+panel CODE changes. Use `variables` for no-panel-code transport.
+
+---
+
+## Appendix A — Case study: single-node 16 GB game host
+
+> **Clearly-marked worked example.** Everything in this appendix is specific to one
+> production node (a 16 GB host running one large game server — Soulmask — plus dev
+> containers and a test stack, governed by the companion documents
+> `plan-host-resource-governance.md`, `MEMORY-ARCHITECTURE.md` and
+> `CGROUP-MONITORING.md` in this repository). It exists to ground the abstract
+> claims in §0/§6 with live-verified data and to provide a concrete deployment
+> runbook for a patched Wings.
+
+### A.1 Live findings that motivated this proposal
+
+- **Current placement (verified):** the running game container's cgroup is
+  `system.slice/docker-<id>.scope` (read from `/proc/<pid>/cgroup`); the intended
+  parent `soulmask.slice` exists only as a **transient** slice with `MemoryMin=0`
+  and no unit file (`systemctl show soulmask.slice` → `FragmentPath=` empty).
+  This is the false-positive rollout mode to avoid: a path can mention the intended
+  slice while the actual resource guarantees are absent.
+- **Finding A** (`plan-host-resource-governance.md` §1.5, verified live): the game
+  scope's `memory.min=6G` and a nested pak-cache slice's `MemoryMin=150M` protect
+  **nothing** against global reclaim, because `system.slice/memory.min=0` and
+  `soulmask.slice/memory.min=0` sit above them. Observed stability comes entirely
+  from `memory.high` demand-shaping. The only workaround available without Wings
+  changes — `systemctl set-property system.slice MemoryMin=7G` — drags sshd,
+  dockerd and Wings into the game's protection budget: the blunt instrument §0
+  describes.
+- **Finding D** (`plan-host-resource-governance.md` §1.5, proven live 2026-07-07):
+  a watcher applied and verified cgroup knobs on the game scope by raw file writes
+  at 23:16; `apt install systemd-oomd` triggered a daemon-reload at ~00:12; by
+  01:00 the scope was back to `min=0/low=0/high=max/writeback=1/cpu.weight=100`.
+  Values must be systemd-owned (`set-property` / unit files / transient-unit
+  properties) to survive. This is the empirical basis for §4.5/§5/§6's insistence
+  on systemd-owned slice values.
+- With `cgroup_parent: soulmask.slice` (v1) plus the already-designed
+  `soulmask.slice` unit (`MemoryMin=5G`, `MemoryLow=12G`, nested pak slice —
+  governance plan §3.3), the floors become arithmetically effective, and the
+  `system.slice`-wide `MemoryMin` hack can be narrowed or dropped. On this
+  single-server node, `soulmask.slice` plays the role of §5's per-server slice;
+  the `wings-*` naming becomes worth adopting when a second server or an upstream
+  merge arrives.
+
+### A.2 Deployment runbook (patched Wings, docker-compose node)
+
+Node specifics: wings v1.13.1 runs as a docker-compose service
+(`/root/ptero-wings/docker-compose.yml`, image `ghcr.io/pterodactyl/wings:latest`)
+against the host `docker.sock`; dockerd uses the systemd cgroup driver (cgroup v2).
+
+**Build** (on the node, no registry needed):
 
 ```bash
-# 1. Get the source, apply the patch (as a local branch/commit, never push to prod paths)
 git clone --branch v1.13.1 https://github.com/pterodactyl/wings.git /path/to/build/wings
 cd /path/to/build/wings
-git apply /path/to/option1+2b.patch   # or cherry-pick the commits
+git apply /path/to/v1.patch      # §2; add guarded §3b only when the shared resolver is present
 
-# 2. Build with the repo's own Dockerfile (verified: golang:1.24.11-alpine builder ->
-#    gcr.io/distroless/static:latest runtime, CGO_ENABLED=0, ldflags inject Version)
+# Repo's own Dockerfile (verified: golang:1.24.11-alpine builder ->
+# gcr.io/distroless/static:latest runtime, CGO_ENABLED=0, ldflags inject Version)
 docker build \
-  --build-arg VERSION=1.13.1-gstammtisch-cgroupparent.1 \
+  --build-arg VERSION=1.13.1-cgroupparent.1 \
   -t wings-local:1.13.1-cgroupparent.1 \
   .
 ```
-Building directly on the host (same Docker daemon that will run the container) avoids
-any push/pull step — the image lands straight in the local image store that
-`docker compose` will resolve against.
 
-### Deploy
+**Deploy:**
 
-1. Edit `/root/ptero-wings/docker-compose.yml`: change
-   `image: ghcr.io/pterodactyl/wings:latest` → `image: wings-local:1.13.1-cgroupparent.1`.
-   Use a plain local tag (no registry-looking prefix) deliberately: a future
-   `docker compose pull` will then **fail loudly** ("no such image" / "repository does
-   not exist") instead of silently reverting to the stock upstream image — this is a
-   feature, not a bug, given there's no watchtower/cron auto-update on this host
-   (verified: no crontab, no systemd timer, no watchtower container).
-2. Add to `/etc/pterodactyl/config.yml` under `docker:`:
+1. In `/root/ptero-wings/docker-compose.yml`, change `image:` to
+   `wings-local:1.13.1-cgroupparent.1`. A plain local tag (no registry-shaped
+   prefix) is deliberate: a stray `docker compose pull` **fails loudly** instead of
+   silently reverting to the stock upstream image. (Verified: no watchtower, no
+   cron, no systemd timer auto-updates wings on this node — updates are 100%
+   manual.)
+2. Add to `/etc/pterodactyl/config.yml`:
    ```yaml
    docker:
      cgroup_parent: soulmask.slice
    ```
-3. **Install and load the `soulmask.slice` unit file first.** Verified on this host
-   right now: `soulmask.slice` is currently a **transient** slice — `systemctl show
-   soulmask.slice` reports `FragmentPath=` (empty, no unit file) and `MemoryMin=0`.
-   `plan-host-resource-governance.md` §3.3 already specifies the intended unit
-   (`MemoryMin=5G`, `MemoryLow=12G`, etc.) but it has not been installed under
-   `/etc/systemd/system/` yet (only `dev-workloads.slice` and `soulmask-paks.slice`
-   exist on disk today). Install it and `systemctl daemon-reload` **before** flipping
-   `cgroup_parent` on, or the game container will land in the same limit-less
-   transient slice it's already in today — no regression, but no benefit either.
-4. Recreate the Wings management container:
-   `cd /root/ptero-wings && docker compose up -d --force-recreate`. This only touches
-   the Wings process itself, not the running game container.
-5. **The running Soulmask container will NOT move on its own.** Confirmed by source:
-   `Create()` returns early (`ContainerInspect` succeeds → no-op) whenever the
-   container already exists, and no code path recreates the main server container on
-   image/config change (`Reinstall()` only re-runs the *installer* container, never
-   touches the main one). To apply the new `cgroup_parent` to the existing server:
-   stop it from the Panel, then remove the container object on the host
-   (`docker rm <server-uuid>` — the bind-mounted server data directory is untouched),
-   then start it from the Panel again. This is a **planned, brief outage window**, not
-   a side effect to be surprised by.
+3. **Install and load the slice unit first.** `soulmask.slice` is currently
+   transient with no limits (A.1); install the unit file from the governance plan
+   §3.3 under `/etc/systemd/system/` and `systemctl daemon-reload` **before**
+   flipping `cgroup_parent`, or the container lands in the same limit-less
+   transient slice as today (no regression, but no benefit).
+4. **Mandatory pre-check before pointing Wings at the slice:**
+   ```bash
+   systemctl show soulmask.slice -p FragmentPath -p MemoryMin -p MemoryLow -p MemoryHigh
+   ```
+   `FragmentPath` must point at the intended unit file and the memory properties
+   must match the rollout plan. Then smoke-test Docker's placement path directly:
+   create a throwaway container with `--cgroup-parent=soulmask.slice`, verify both
+   `/proc/<pid>/cgroup` and the effective files under `/sys/fs/cgroup/soulmask.slice`
+   (`memory.min`, `memory.low`, `memory.high`), and remove the throwaway container.
+5. `cd /root/ptero-wings && docker compose up -d --force-recreate` — touches only
+   the Wings process, not the running game container.
+6. **The running game container will NOT move on its own** (§2: `Create()` no-ops
+   on an existing container; `Reinstall()` only re-runs the installer container).
+   Planned brief outage: stop the server from the panel → `docker rm <server-uuid>`
+   (bind-mounted server data is untouched) → start from the panel.
 
-### Rollback
+**Rollback:** revert steps 1-2, `docker compose up -d --force-recreate`. The stock
+image never sets `CgroupParent`, and an already-recreated game container keeps its
+last placement — no second outage needed for rollback.
 
-- Revert step 1 (`image:` back to `ghcr.io/pterodactyl/wings:latest`) and step 2
-  (remove/blank `cgroup_parent`), `docker compose up -d --force-recreate`. Since the
-  stock image never sets `CgroupParent`, any already-recreated game container simply
-  keeps whatever cgroup it was last placed in — no forced second outage is required
-  for rollback (only for *adopting* the new placement, per step 5).
-- Keep the previous `wings-local:*` image tag (or the stock `ghcr.io/pterodactyl/wings:latest`
-  one already cached locally) untouched as an instant fallback; don't `docker rmi` it
-  until the new build has run clean for a while.
+**Risk assessment:**
 
-### Risk assessment
-
-- **Auto-update risk: low.** Verified no watchtower container, no root crontab, no
-  systemd timer touching wings on this host — updates are 100% manual
-  (`docker compose pull && up -d`, or Pterodactyl's official one-line install script
-  re-run). The main residual risk is a future *person* re-running the official
-  install script, which would overwrite `docker-compose.yml`'s `image:` line back to
-  upstream `latest`. Mitigate by leaving a comment in the compose file and noting it
-  in this repo's runbook docs.
-- **Config compatibility on next official Wings upgrade: low-medium.** The patch adds
-  one optional key with a zero-value default (`""`), so an unpatched future official
-  image would just silently ignore `docker.cgroup_parent` in the YAML (unknown keys
-  are not rejected by the `yaml.v2` unmarshal used in `config.FromFile`) — you'd lose
-  the feature, not break startup. The real risk is purely "forgot this is a custom
-  build" bit-rot; keeping the diff small and rebasing periodically against new
-  upstream tags is the main defense.
-- **Build/runtime risk: verified low.** The full patch was built with `go build ./...`
-  and `go vet` against the pinned `go.mod` (`github.com/docker/docker
-  v28.3.3+incompatible`, Go 1.24.5 toolchain fetched for this study) with **zero
-  errors or vet warnings in the changed files** (two pre-existing, unrelated vet
-  warnings exist elsewhere in `server/resources.go` / `server/server.go` /
-  `server/filesystem/filesystem_test.go` — not touched by this patch). The resulting
-  binary runs (`wings version` → `wings vdevelop`). `ValidateCgroupParentValue` was
-  additionally exercised standalone against `"", "soulmask.slice", "soulmask",
-  "custom.slice/soulmask.slice", " soulmask.slice", "soulmask.slice ", "system.slice"`
-  and produced the expected accept/reject result for every case.
-- **Not verified (flagged):** no live container was actually created with
-  `CgroupParent` set against a real dockerd in this study — the runtime effect (does
-  `docker-<id>.scope` really land under `soulmask.slice` when the systemd driver is
-  in use) rests on the documented Docker/moby behavior of `HostConfig.CgroupParent`
-  plus this host's own existing manual precedent (`dev-workloads.slice`'s doc comment:
-  `docker run --cgroup-parent=dev-workloads.slice ...`), not on an end-to-end test
-  performed here. Recommend a smoke test (spin up a throwaway container with
-  `--cgroup-parent=soulmask.slice --label test=cgroup-parent-poc` via plain `docker
-  run`, confirm its `/proc/<pid>/cgroup`) before rolling the patched Wings into
-  production — this exercises the exact Docker/systemd mechanics without touching
-  Wings at all.
+- *Auto-update risk: low* — no auto-update mechanism exists on this node (verified,
+  above). Residual risk is a human re-running the official install script (which
+  rewrites the compose file); mitigated with a comment in the compose file + this
+  runbook.
+- *Config compat on future official upgrade: low-medium* — the added key has a
+  zero-value default and unknown YAML keys are ignored by wings' `yaml.v2`
+  unmarshal, so a stock image silently drops the feature rather than failing to
+  start. Main real risk is "forgot this is a custom build" bit-rot; keep the diff
+  small and rebase on upstream tags.
+- *Build/runtime risk: verified low* — full patch built with `go build ./...` and
+  `go vet` against the pinned deps: zero errors, zero new vet warnings (two
+  pre-existing unrelated vet warnings elsewhere in the repo, untouched). The binary
+  runs. `ValidateCgroupParentValue` exercised standalone against 7 representative
+  inputs with expected accept/reject on each.
+- *Not verified (flagged):* no container was actually created with `CgroupParent`
+  set during this study — the runtime effect rests on documented Docker/moby
+  behavior plus this node's manual precedent
+  (`docker run --cgroup-parent=dev-workloads.slice …` in the repo's slice-unit
+  docs). The mandatory pre-check/smoke test above must verify both the cgroup path
+  and the effective resource files before production rollout; path-only verification
+  is not enough.
 
 ---
 
-## 9. Benefit summary for the governance design
-
-- **Fixes the protection-chain gap directly** (§0, Finding A). Today (verified): the
-  live game container sits at `system.slice/docker-<id>.scope`; `soulmask.slice` is
-  transient with `MemoryMin=0`. The only current workaround
-  (`plan-host-resource-governance.md` finding 14) is `systemctl set-property
-  system.slice MemoryMin=7G`, which protects the *entire* system slice (sshd, dockerd,
-  Wings, and every other system service) — a much blunter instrument than protecting
-  just the game's own slice. With `cgroup_parent: soulmask.slice`, the existing
-  `soulmask.slice` unit design in §3.3 of that plan (`MemoryMin=5G`, `MemoryLow=12G`,
-  nested `soulmask-paks.slice`) becomes directly enforceable against the actual game
-  cgroup, and the `system.slice`-wide `MemoryMin` hack can be narrowed or dropped.
-- **Makes the floors reload-proof** (Finding D). Values on a slice are systemd-owned
-  and re-applied on every daemon-reload; the current watcher's raw scope writes are
-  not. Moving protection from the scope to the slice removes the single most
-  surprising failure mode found during this governance work.
-- **Per-egg / per-server slice reference becomes possible** without any Panel change
-  (§3b): different eggs/servers on the same node can reference different
-  admin-defined slices purely through an admin-only reserved variable — and the
-  `wings.slice` / `wings-<uuid>.slice` hierarchy (§5) gives each server its own
-  floor, ceiling, and PSI accounting under one tier-wide knob.
-- **"Panel UI manages slices on host"** — no longer rejected outright; reframed as
-  the **v3 stage** of the staged path (§4): legitimate for multi-node operators,
-  technically feasible via systemd's D-Bus transient-unit API with a hard
-  `wings-*.slice` namespace constraint, but out of scope short-term (Panel schema +
-  release cycle + security review). For v1/v2 — everything this host deploys —
-  slices remain 100% sysadmin-managed, version-controlled IaC
-  (`files/etc/systemd/system/*.slice` + `setup-cgroups.sh`), exactly as
-  `plan-host-resource-governance.md` finding 13 concluded: install once, reference
-  forever, degrade gracefully to a transient slice if the reference is missing.
-
----
-
-## Appendix — verification method
+## Appendix B — verification method
 
 - Cloned `https://github.com/pterodactyl/wings` at tag `v1.13.1` into scratch space
-  (not this repo, not the host's `/root/ptero-wings`).
-- Read (not grepped-and-assumed) every file this proposal touches or cites:
+  (not this repository, not the node's `/root/ptero-wings`).
+- Read (not grepped-and-assumed) every wings file this proposal cites:
   `environment/docker/container.go`, `server/install.go`, `config/config_docker.go`,
   `environment/settings.go`, `environment/config.go`, `server/configuration.go`,
-  `server/server.go`, `server/manager.go`, `remote/types.go`, `cmd/root.go`,
-  `config/config.go`, `Dockerfile`, `Makefile`.
-- Downloaded a Go 1.24.5 toolchain into scratch space (no `go` was preinstalled) and
-  ran `go build ./...`, `go vet ./config/... ./cmd/... ./environment/... ./server/...`,
-  and a direct `go build -o /tmp/... wings.go` + `wings version` against the fully
-  patched tree — all clean (pre-existing, unrelated vet warnings noted above; none in
-  changed files).
+  `server/server.go` (incl. `Sync`/`SyncWithConfiguration`), `server/update.go`,
+  `server/manager.go`, `server/power.go` (Sync call sites), `remote/types.go`,
+  `remote/servers.go`, `cmd/root.go`, `config/config.go`, `Dockerfile`, `Makefile`.
+- Downloaded a Go 1.24.5 toolchain into scratch space and ran `go build ./...`,
+  `go vet ./config/... ./cmd/... ./environment/... ./server/...`, and a direct
+  `go build -o … wings.go` + `wings version` against the fully patched tree — all
+  clean (pre-existing, unrelated vet warnings noted in A.2; none in changed files).
 - Compiled and ran `ValidateCgroupParentValue` standalone against 7 representative
-  inputs to confirm accept/reject behavior matches intent.
-- Fetched `moby/moby` tag `v28.3.3` (matches `go.mod`'s pinned
-  `github.com/docker/docker v28.3.3+incompatible`) `api/types/container/hostconfig.go`
-  to confirm `CgroupParent` and `Resources` field shapes — including reading the
-  **complete** `Resources` struct to confirm the §6 claim that it contains no
-  `memory.min` equivalent and no zswap fields — and `api/types/system/info.go` to
-  confirm `CgroupDriver`/`CgroupVersion` exist on `client.Info()` for the
-  "not implemented" note in §2.
-- Fetched `pterodactyl/panel`'s `app/Models/EggVariable.php` (single file, not a full
-  clone) to confirm `user_viewable`/`user_editable`/`RESERVED_ENV_NAMES` exist and that
-  `WINGS_CGROUP_PARENT` isn't reserved.
+  inputs to confirm accept/reject behavior.
+- Fetched `moby/moby` tag `v28.3.3` (matching `go.mod`'s pin)
+  `api/types/container/hostconfig.go` — including the **complete** `Resources`
+  struct, to confirm §0/§6's claim of no `memory.min` and no zswap fields — and
+  `api/types/system/info.go` (for `CgroupDriver`/`CgroupVersion` on `Info()`).
+- Fetched from `pterodactyl/panel` `develop` (single files, no full clone):
+  `app/Models/EggVariable.php` (`user_viewable`/`user_editable`,
+  `RESERVED_ENV_NAMES`, `WINGS_CGROUP_PARENT` not reserved),
+  `app/Services/Servers/ServerConfigurationStructureService.php` (hard-coded
+  whitelist payload, "DO NOT MODIFY THIS FUNCTION"),
+  `app/Services/Servers/EnvironmentService.php` (egg variables →
+  `environment` map, `server_value ?? default_value`, panel-key precedence),
+  `app/Services/Eggs/Sharing/EggExporterService.php` (`variables` array in the egg
+  import/export JSON format).
+- Verified in wings source that the resolved env map is available at **both**
+  container-create sites: runtime `Create()`
+  (`environment/docker/container.go:157`, before `HostConfig` construction) and
+  installer `Execute()` (`server/install.go:419`,
+  `Env: ip.Server.GetEnvironmentVariables()`). This proves the variable is
+  available to both paths, not that the first-pass v2 runtime hunk already wired the
+  installer; the required shared resolver is specified in §3b. Also verified:
+  `Sync()` wholesale-replaces server config from the panel (`s.cfg = c`) and is
+  called at boot, before every start, on reinstall, and from panel-triggered
+  endpoints (call sites listed in §4.2).
+- Inferred, not separately tested: Go's `json.Unmarshal` dropping unknown JSON
+  fields (language-standard behavior); runc's `MemoryReservation` → `memory.low`
+  mapping on cgroup v2 (documented Docker/runc behavior).
 - Queried the public GitHub API (unauthenticated) for PR/issue history and repo
-  metadata on both `pterodactyl/wings` and `pelican-dev/wings`.
-- Findings A and D are cited from `plan-host-resource-governance.md` §1.5 (operator's
-  live verification on this host, 2026-07-06/07), re-read in full for this revision —
-  not re-derived independently here.
-- §4's D-Bus mechanism description (`StartTransientUnit` / `SetUnitProperties`,
-  `go-systemd/v22/dbus`) is from prior knowledge of systemd's API and was **not**
-  prototyped in this study — flagged as design sketch, not compiled code. Likewise
-  the §5 note on `memory.zswap.writeback` hierarchy semantics is explicitly
-  unverified.
-- Read-only checks on **this** host: `docker exec ... wings version` (confirmed
-  v1.13.1), `cat /etc/pterodactyl/config.yml` (docker section only, secrets excluded,
-  confirmed it matches the struct read from source), `sudo cat
-  /root/ptero-wings/docker-compose.yml`, `systemctl list-units --type=slice`,
-  `systemctl show soulmask.slice`, `/proc/<pid>/cgroup` for the running game
-  container's PID, presence/absence of crontab/systemd-timer/watchtower for
-  auto-updates. No file on the host was written; no container was created, removed,
-  or restarted.
+  metadata on `pterodactyl/wings` and `pelican-dev/wings` (§7 figures, 2026-07-07).
+- Findings A and D are cited from `plan-host-resource-governance.md` §1.5 (the case
+  study node's live verification, 2026-07-06/07), re-read in full for this
+  revision — not re-derived here.
+- The D-Bus mechanism description in §4.3/§4.5 (`StartTransientUnit` /
+  `SetUnitProperties`, `go-systemd/v22/dbus`) is from prior knowledge of systemd's
+  API and was **not** prototyped — design sketch, not compiled code. Likewise the
+  §5 note on `memory.zswap.writeback` hierarchy semantics is explicitly unverified.
+- Read-only checks on the case-study node: `docker exec … wings version`
+  (v1.13.1), the `docker:` section of `/etc/pterodactyl/config.yml` (matches the
+  source-read struct), `/root/ptero-wings/docker-compose.yml`,
+  `systemctl list-units --type=slice`, `systemctl show soulmask.slice`,
+  `/proc/<pid>/cgroup` of the running game container, absence of any wings
+  auto-update mechanism. No file on the node was written; no container was
+  created, removed, or restarted.
