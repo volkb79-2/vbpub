@@ -15,13 +15,16 @@ daemon socket group, and BPF pin directory all use `groop` unless a later spec
 revision explicitly changes them.
 
 Companion docs in this repo (read for the mechanism reasoning this spec assumes):
-`CGROUP-MONITORING.md` (every cgroup-v2 metric explained against live data),
-`MEASUREMENTS.md` (SLOs and measurement procedures this tool's thresholds encode),
-`MEMORY-ARCHITECTURE.md` (zswap/sysctl/cgroup reasoning, §5.0b knob-ownership rule),
-`plan-host-resource-governance.md` (tiering policy, Findings A–D), and
-`files/usr/local/sbin/soulmask-zswap-monitor.py` (the single-purpose predecessor this
-tool generalizes — read it before writing the collector; several formulas below are
-lifted verbatim from it).
+`../scripts/gstammtisch-guide/CGROUP-MONITORING.md` (every cgroup-v2 metric
+explained against live data), `../scripts/gstammtisch-guide/MEASUREMENTS.md`
+(SLOs and measurement procedures this tool's thresholds encode),
+`../scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md` (zswap/sysctl/cgroup
+reasoning, §5.0b knob-ownership rule),
+`../scripts/gstammtisch-guide/plan-host-resource-governance.md` (tiering policy,
+Findings A–D), and
+`../scripts/gstammtisch-guide/files/usr/local/sbin/soulmask-zswap-monitor.py`
+(the single-purpose predecessor this tool generalizes — read it before writing
+the collector; several formulas below are lifted verbatim from it).
 
 ---
 

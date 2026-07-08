@@ -8,9 +8,12 @@ Local context checked while reviewing:
 - BPF prerequisites are present locally: `CONFIG_BPF=y`, `CONFIG_BPF_SYSCALL=y`,
   `CONFIG_CGROUP_BPF=y`, `CONFIG_BPF_JIT=y`, `CONFIG_DEBUG_INFO_BTF=y`, and
   bpffs mounted at `/sys/fs/bpf`.
-- The review also sampled `CGROUP-MONITORING.md`, `MEASUREMENTS.md`,
-  `MEMORY-ARCHITECTURE.md`, `OBSERVATION.md`, `plan-host-resource-governance.md`,
-  and `files/usr/local/sbin/soulmask-zswap-monitor.py`.
+- The review also sampled `../scripts/gstammtisch-guide/CGROUP-MONITORING.md`,
+  `../scripts/gstammtisch-guide/MEASUREMENTS.md`,
+  `../scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md`,
+  `../scripts/gstammtisch-guide/OBSERVATION.md`,
+  `../scripts/gstammtisch-guide/plan-host-resource-governance.md`, and
+  `../scripts/gstammtisch-guide/files/usr/local/sbin/soulmask-zswap-monitor.py`.
 
 ## Executive judgement
 

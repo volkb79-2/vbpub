@@ -1,9 +1,9 @@
 # groop — host pressure inspector and cgroup forensics TUI
 
 Implementation home for the tool specified in
-`scripts/gstammtisch-guide/TUI-SPEC.md` (the **spec**; §-references in all
-handoff docs point there). Read `CONTRACTS.md` before writing any code — it
-defines the interfaces every package codes against.
+`TUI-SPEC.md` (the **spec**; §-references in all handoff docs point there).
+Read `CONTRACTS.md` before writing any code — it defines the interfaces every
+package codes against.
 
 Release cut (spec §0.1): **v0** collector proof → **v1** read-only TUI →
 **v1.5** DAMON → **v2** BPF/daemon/actions. This directory carries v1 + v1.5.
@@ -44,8 +44,9 @@ Stack: Python; Textual allowed ONLY under `src/groop/ui/` (spec §6.1, §6.4).
 
 - **Worktree + branch**: work in a dedicated git worktree on a feature branch
   named `feat/groop-<pkg>-<slug>`, e.g.
-  `git worktree add ../wt-groop-p1 -b feat/groop-p1-collector` (Claude Code
-  agents: EnterWorktree). Never commit to `main`.
+  `git worktree add -b feat/groop-p1-collector /tmp/vbpub-groop-p1-collector main`.
+  The worktree MUST be outside this main checkout, under `/tmp`, and MUST branch
+  from local `main`. Never commit package work directly to `main`.
 - **Scope**: touch only `groop/**`. No edits to other vbpub areas, no host
   changes, no root, no docker mutations. The collector reads live
   `/sys/fs/cgroup` only in ad-hoc manual testing; automated tests use
@@ -56,12 +57,20 @@ Stack: Python; Textual allowed ONLY under `src/groop/ui/` (spec §6.1, §6.4).
 - **Quality gates before handover**: `python3 -m pytest groop/tests -q` green;
   `python3 -m py_compile` clean on all new files; `groop --once --json`
   (or the package's own entry point) demonstrably runs.
+- **Engineering bar**: keep package code modern, typed where it clarifies
+  contracts, and DRY. Shared behavior belongs in `src/groop/` helpers, not in
+  copied package-local parsers or serializers. Tests should cover behavior and
+  edge cases, not just import smoke.
 - **Handover**: finish with (a) focused commits on the feature branch, the
   last one summarizing the package; (b) a report file
   `groop/handoff/reports/<PKG>-REPORT.md` containing: what was built, deviations
   from the handoff doc, proposed contract changes (if any), test evidence
   (command + output tail), known gaps/open items; (c) your final message =
   that report, so review + merge can proceed without archaeology.
+- **Controller review**: the session controller reviews the branch diff,
+  validates the report, runs the relevant gates from a clean checkout, fixes or
+  sends back issues, then merges to `main` with a focused merge/commit. Later
+  packages branch only after their declared dependencies are merged.
 
 ## Reference deployment
 

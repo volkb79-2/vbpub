@@ -15,12 +15,14 @@ numeric arrays), §3.8 (record & replay), §7 ([history] config keys).
 
 ## Scope — in
 
-1. `record/writer.py`: header line + frame-per-line JSONL per CONTRACTS §5;
-   append-safe; flush policy configurable; optional `.zst` streaming output if
+1. `record/writer.py`: header line + frame-per-line JSONL per CONTRACTS §5,
+   using `model.frame_to_jsonable()`; append-safe; flush policy configurable;
+   optional `.zst` streaming output if
    `zstandard` is importable — MUST degrade to plain JSONL without it (stdlib-
    only remains true by default; zstd is an optional extra in pyproject).
-2. `record/reader.py`: iterate `Frame`s from plain or `.zst` files; validate
-   schema_version; tolerate truncated final line (crash-time recording).
+2. `record/reader.py`: iterate `Frame`s from plain or `.zst` files using
+   `model.frame_from_jsonable()`; validate schema_version; tolerate truncated
+   final line (crash-time recording).
 3. `record/ring.py`: per-(entity, metric) fixed-capacity numeric ring using
    `array('f')`; capacity from config (retention/interval); handles entity
    birth/death (new entities join late, dead entities age out after

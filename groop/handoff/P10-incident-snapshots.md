@@ -17,8 +17,9 @@ privacy-reduced mode config flag that drops cmdlines and env-derived fields).
 ## Scope — in
 
 1. `snapshot/bundle.py`: `create(entity_key, ring, frame, config) -> Path`
-   writing `groop-incident-<ts>-<entity-slug>.tar.zst` (plain .tar without
-   zstandard) under `[snapshots].dir` (default $XDG_STATE_HOME/groop/incidents):
+   writing `groop-incident-<ts>-<entity-slug>.tar.zst` when `zstandard` is
+   importable, otherwise `groop-incident-<ts>-<entity-slug>.tar`, under
+   `[snapshots].dir` (default $XDG_STATE_HOME/groop/incidents):
    - `frames.jsonl`: current frame + previous N (config, default 60) from the
      ring, serialized via P2's writer (header included);
    - `entity/cgroup/`: raw copies of the selected entity's cgroup files

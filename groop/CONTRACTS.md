@@ -1,6 +1,6 @@
 # groop CONTRACTS — shared interfaces (frozen; changes need maintainer sign-off)
 
-Spec: `scripts/gstammtisch-guide/TUI-SPEC.md`. These contracts implement spec
+Spec: `TUI-SPEC.md`. These contracts implement spec
 §3.2 (metric registry), §6.1 (layering), §6.2/§6.3 (permissions/degradation),
 §3.8 (record/replay), and the network provider interface from §3.2/Appendix B.
 
@@ -12,7 +12,7 @@ groop/
   src/groop/
     __init__.py             # __version__
     registry.py             # MetricSpec + REGISTRY (P1)
-    model.py                # EntityKey, Entity, MetricValue, Frame (P1)
+    model.py                # EntityKey, Entity, MetricValue, Finding, Frame (P1)
     cli.py                  # arg parsing; --once --json must work WITHOUT textual installed
     collect/                # P1 — stdlib only, no textual import anywhere below ui/
       cgroup.py             #   tree walk, cgroup file readers
@@ -87,6 +87,19 @@ class MetricValue:
     raw: int | None = None     # counters: raw cumulative, for reset detection
 ```
 
+`Finding` (diagnostic output; P1 defines the shape, P6 fills it):
+
+```python
+@dataclass
+class Finding:
+    rule_id: str
+    severity: str              # "info" | "warn" | "red"
+    message: str
+    remedy: str | None = None
+    source_metrics: tuple[str, ...] = ()
+    confidence: str = "exact"  # "exact" | "estimated" | "n/a"
+```
+
 `Frame` (one sample of the whole host):
 
 ```python
@@ -103,12 +116,19 @@ class EntityFrame:
     entity: Entity             # embedded (recordings must be self-contained)
     metrics: dict[str, MetricValue]
     findings: list[Finding] = field(default_factory=list)  # filled by diag (P6)
+    governance: dict[str, object] | None = None             # filled by drift (P4)
 ```
 
 Rate/reset contract (P1): the Collector keeps the previous raw counters per
 (EntityKey, metric). Rates are `(raw_now - raw_prev)/interval_s`. On counter
 regression (cgroup recreated, cid reuse, kernel reset) emit `v=None` for that
 interval and reseed — never a negative or absurd rate.
+
+Serialization contract (P1 owns, every package reuses): `model.py` provides
+`frame_to_jsonable()`, `frame_from_jsonable()`, and `validate_frame_metrics()`.
+No package may hand-roll a second frame serializer. `MetricValue` serializes in
+the compact form from §5 everywhere (`[v, src]` or `[v, src, raw]`) so
+`--once --json`, recordings, replays, fixtures, and tests share one schema.
 
 ## 5. JSONL recording format (P2) — spec §3.8
 
@@ -118,6 +138,8 @@ interval and reseed — never a negative or absurd rate.
   `MetricValue` serializes as `[v, src]` or `[v, src, raw]` (compact form).
 - Reader yields `Frame` objects; replay MUST route through the same model
   objects the live collector produces (UI cannot tell live from replay).
+- P2 MUST call the serialization helpers from `model.py`; it owns file framing
+  and compression, not an alternate frame schema.
 - Ring buffer (`ring.py`): fixed-capacity per-(entity,metric) numeric arrays
   (`array`/`memoryview`, NOT lists of Python floats), default profile 4h @ 5s
   (spec §3.5 budget: 20–40 MB).
