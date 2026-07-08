@@ -8,7 +8,10 @@ from groop.collect.cgroup import CgroupSample, collect_cgroup, walk_entities
 from groop.collect.dockerjoin import DockerInspect, enrich_entities
 from groop.collect.host import collect_host
 from groop.config import GroopConfig, load
-from groop.model import Entity, EntityFrame, EntityKey, Frame, MetricValue
+from groop.model import Entity, EntityFrame, EntityKey, Frame, MetricSource, MetricValue
+from groop.providers.base import NetSample, Provider, sample_rank
+from groop.providers.net_host import NetHostProvider
+from groop.providers.net_netns import NetnsProvider
 
 
 class Collector:
@@ -19,12 +22,17 @@ class Collector:
         docker_inspect: DockerInspect | None = None,
         host_collector: Callable[[], dict[str, MetricValue]] | None = None,
         now: Callable[[], float] | None = None,
+        network_providers: tuple[Provider, ...] | None = None,
     ) -> None:
         self.config = config or load()
         self.cgroup_root = cgroup_root or self.config.cgroup_root
         self.docker_inspect = docker_inspect
         self.host_collector = host_collector or collect_host
         self.now = now or time.time
+        self.network_providers = network_providers if network_providers is not None else (
+            NetnsProvider(self.cgroup_root),
+            NetHostProvider(),
+        )
         self._prev_ts: float | None = None
         self._prev_counters: dict[tuple[EntityKey, str], int] = {}
 
@@ -40,6 +48,7 @@ class Collector:
             metrics = dict(sample.metrics)
             metrics.update(self._derived_rates(key, sample, interval_s))
             frames[key] = EntityFrame(entity=sample.entity, metrics=metrics)
+        self._apply_network_metrics(frames, entities, interval_s)
         self._prev_ts = ts
         return Frame(schema_version=1, ts=ts, interval_s=interval_s, host=self.host_collector(), entities=frames)
 
@@ -67,6 +76,34 @@ class Collector:
         if delta is None or interval_s <= 0:
             return MetricValue(None, src, raw_now)
         return MetricValue(delta / interval_s, src, raw_now)
+
+    def _apply_network_metrics(self, frames: dict[EntityKey, EntityFrame], entities: dict[EntityKey, Entity], interval_s: float) -> None:
+        samples: dict[EntityKey, NetSample] = {}
+        for provider in self.network_providers:
+            for key, sample in provider.collect(entities).items():
+                current = samples.get(key)
+                if current is None or sample_rank(sample) > sample_rank(current):
+                    samples[key] = sample
+        for key, sample in samples.items():
+            frame = frames.get(key)
+            if frame is None:
+                continue
+            frame.metrics.update(self._network_rates(key, sample, interval_s))
+
+    def _network_rates(self, key: EntityKey, sample: NetSample, interval_s: float) -> dict[str, MetricValue]:
+        src = self._network_metric_source(sample)
+        counter_prefix = f"network:{sample.source_label}:{sample.aggregation}"
+        return {
+            "net_rx_bps": self._rate_metric(key, f"{counter_prefix}:rx_bytes", sample.rx_bytes, interval_s, src=src),
+            "net_tx_bps": self._rate_metric(key, f"{counter_prefix}:tx_bytes", sample.tx_bytes, interval_s, src=src),
+        }
+
+    def _network_metric_source(self, sample: NetSample) -> MetricSource:
+        if sample.source_label == "net:HOST" or sample.unavailable_reason == "host netns":
+            return "host"
+        if sample.source_label == "net:NS" or sample.unavailable_reason is not None:
+            return "netns"
+        return "derived"
 
     def _derived_rates(self, key: EntityKey, sample: CgroupSample, interval_s: float) -> dict[str, MetricValue]:
         raw = sample.raw_counters
