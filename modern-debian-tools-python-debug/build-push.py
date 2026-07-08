@@ -377,11 +377,13 @@ def do_push() -> None:
         raise SystemExit(exc.returncode) from None
 
     sys.stderr.write("[INFO] Step 3/3: Syncing GHCR package visibility ...\n")
+    # PHP 8.5 is a TAG variant of the base families now, not a separate package name —
+    # only two GHCR package families are ever published (see docker-bake.hcl "all" group).
     package_names = [
         name.strip()
         for name in (
             env_vars.get("GHCR_PACKAGE_NAMES")
-            or "modern-debian-tools-python-debug,modern-debian-tools-python-debug-vsc-devcontainer,modern-debian-tools-python-debug-php85,modern-debian-tools-python-debug-php85-vsc-devcontainer"
+            or "modern-debian-tools-python-debug,modern-debian-tools-python-debug-vsc-devcontainer"
         ).split(",")
         if name.strip()
     ]

@@ -336,24 +336,29 @@ function "vsc_latest_tag" {
   result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:${debian}-py${python}-latest"
 }
 
-function "php_tag" {
-  params = [debian, python]
-  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-php85:${debian}-py${python}-${BUILD_DATE}"
+// Variant-aware tags: a flavor like PHP 8.5 is a TAG dimension of the base package
+// families, not a separate package name/family. `variant` is inserted between the
+// py<python> segment and the date/latest segment, e.g. "trixie-py3.14-php8.5-20260707-10"
+// and "trixie-py3.14-php8.5-latest". Use these instead of base_tag/vsc_tag whenever a
+// target layers an optional flavor on top of the base or vsc-devcontainer image.
+function "base_tag_variant" {
+  params = [debian, python, variant]
+  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug:${debian}-py${python}-${variant}-${BUILD_DATE}"
 }
 
-function "php_latest_tag" {
-  params = [debian, python]
-  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-php85:${debian}-py${python}-latest"
+function "base_latest_tag_variant" {
+  params = [debian, python, variant]
+  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug:${debian}-py${python}-${variant}-latest"
 }
 
-function "php_vsc_tag" {
-  params = [debian, python]
-  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-php85-vsc-devcontainer:${debian}-py${python}-${BUILD_DATE}"
+function "vsc_tag_variant" {
+  params = [debian, python, variant]
+  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:${debian}-py${python}-${variant}-${BUILD_DATE}"
 }
 
-function "php_vsc_latest_tag" {
-  params = [debian, python]
-  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-php85-vsc-devcontainer:${debian}-py${python}-latest"
+function "vsc_latest_tag_variant" {
+  params = [debian, python, variant]
+  result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:${debian}-py${python}-${variant}-latest"
 }
 
 // Tag helper: multi-Python labels keep the full encoded interpreter set in one string.
@@ -415,6 +420,26 @@ function "package_manifest_url" {
 function "description_with_manifest_docs" {
   params = [description, package_name, debian, python]
   result = "${description} Docs: ${package_manifest_url(package_name, debian, python)}"
+}
+
+// Variant-aware manifest path: appends the tag variant (e.g. "php8.5") to the filename so
+// a flavor build sharing (debian, python) with the plain build never collides on disk —
+// both now live in the same package family directory.
+function "package_manifest_relpath_variant" {
+  params = [package_name, debian, python, variant]
+  result = "${package_docs_dir(package_name)}/${debian}-py${python}-${variant}-${BUILD_DATE}.md"
+}
+
+// GitHub blob URL for a versioned, variant-flavored release manifest.
+function "package_manifest_url_variant" {
+  params = [package_name, debian, python, variant]
+  result = "https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/blob/main/modern-debian-tools-python-debug/${package_manifest_relpath_variant(package_name, debian, python, variant)}"
+}
+
+// Variant-aware counterpart of description_with_manifest_docs.
+function "description_with_manifest_docs_variant" {
+  params = [description, package_name, debian, python, variant]
+  result = "${description} Docs: ${package_manifest_url_variant(package_name, debian, python, variant)}"
 }
 
 // Shared argument bag only: each concrete target still builds the whole Dockerfile
@@ -602,6 +627,10 @@ target "trixie-py314-vsc" {
   tags = [vsc_tag("trixie", "3.14"), vsc_latest_tag("trixie", "3.14"), "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug-vsc-devcontainer:latest"]
 }
 
+// PHP 8.5 flavor of the BASE package family. The variant lives in the TAG
+// ("trixie-py3.14-php8.5-<date>" / "-php8.5-latest"), not in the package name —
+// this publishes to the same `modern-debian-tools-python-debug` GHCR package as
+// trixie-py314, distinguished only by the "-php8.5-" tag segment.
 target "trixie-py314-php85" {
   inherits = ["base"]
   args = {
@@ -610,14 +639,17 @@ target "trixie-py314-php85" {
     DEBIAN_VERSION = "trixie"
     PHP_VERSION = "8.5"
     INSTALL_PHP = "true"
-    OCI_DESCRIPTION = description_with_manifest_docs("Modern Debian Tools + Python Debug + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and the common PHP extensions needed for web debugging.", "modern-debian-tools-python-debug-php85", "trixie", "3.14")
-    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-php85", "trixie", "3.14")
-    OCI_URL = package_latest_url("modern-debian-tools-python-debug-php85")
-    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-php85", "trixie", "3.14")
+    OCI_DESCRIPTION = description_with_manifest_docs_variant("Modern Debian Tools + Python Debug + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and the common PHP extensions needed for web debugging.", "modern-debian-tools-python-debug", "trixie", "3.14", "php8.5")
+    OCI_DOCUMENTATION = package_manifest_url_variant("modern-debian-tools-python-debug", "trixie", "3.14", "php8.5")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath_variant("modern-debian-tools-python-debug", "trixie", "3.14", "php8.5")
   }
-  tags = [php_tag("trixie", "3.14"), php_latest_tag("trixie", "3.14")]
+  tags = [base_tag_variant("trixie", "3.14", "php8.5"), base_latest_tag_variant("trixie", "3.14", "php8.5")]
 }
 
+// PHP 8.5 flavor of the VSC-DEVCONTAINER package family — same variant-in-tag
+// treatment as trixie-py314-php85 above, published to
+// `modern-debian-tools-python-debug-vsc-devcontainer`.
 target "trixie-py314-php85-vsc" {
   inherits = ["base"]
   args = {
@@ -626,14 +658,14 @@ target "trixie-py314-php85-vsc" {
     DEBIAN_VERSION = "trixie"
     PHP_VERSION = "8.5"
     INSTALL_PHP = "true"
-    OCI_DESCRIPTION = description_with_manifest_docs("Modern Debian Tools + Python Debug + PHP 8.5 VS Code devcontainer image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and the common PHP extensions needed for web debugging.", "modern-debian-tools-python-debug-php85-vsc-devcontainer", "trixie", "3.14")
-    OCI_DOCUMENTATION = package_manifest_url("modern-debian-tools-python-debug-php85-vsc-devcontainer", "trixie", "3.14")
-    OCI_URL = package_latest_url("modern-debian-tools-python-debug-php85-vsc-devcontainer")
-    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("modern-debian-tools-python-debug-php85-vsc-devcontainer", "trixie", "3.14")
+    OCI_DESCRIPTION = description_with_manifest_docs_variant("Modern Debian Tools + Python Debug + PHP 8.5 VS Code devcontainer image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and the common PHP extensions needed for web debugging.", "modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14", "php8.5")
+    OCI_DOCUMENTATION = package_manifest_url_variant("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14", "php8.5")
+    OCI_URL = package_latest_url("modern-debian-tools-python-debug-vsc-devcontainer")
+    PACKAGE_MANIFEST_SOURCE = package_manifest_relpath_variant("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14", "php8.5")
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
   }
-  tags = [php_vsc_tag("trixie", "3.14"), php_vsc_latest_tag("trixie", "3.14")]
+  tags = [vsc_tag_variant("trixie", "3.14", "php8.5"), vsc_latest_tag_variant("trixie", "3.14", "php8.5")]
 }
 
 
@@ -699,13 +731,14 @@ target "latest-vsc" {
 // === Build groups ==========================================================
 // Run a group with: docker buildx bake -f docker-bake.hcl <group> --push
 //
-// Four image families are published to GHCR:
+// Two image families are published to GHCR:
 //   - modern-debian-tools-python-debug
 //   - modern-debian-tools-python-debug-vsc-devcontainer
-//   - modern-debian-tools-python-debug-php85
-//   - modern-debian-tools-python-debug-php85-vsc-devcontainer
 //
-// "vsc" is the VSC devcontainer family. "php" is the PHP 8.5 flavor family.
+// "vsc" is the VSC devcontainer family. "php" is the PHP 8.5 FLAVOR, not a
+// separate family — its targets publish into the two families above with
+// "-php8.5-" in the tag (see base_tag_variant/vsc_tag_variant). Do not add a
+// third/fourth package name for a flavor; add a tag-variant target instead.
 // The publish matrix is group "all" below.
 group "vsc" {
   targets = ["trixie-py311-vsc", "trixie-py314-vsc"]

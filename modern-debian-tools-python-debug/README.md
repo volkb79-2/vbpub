@@ -1,10 +1,14 @@
 # Modern Debian Python Debug Images
 
-This project builds and publishes four related image families:
+This project builds and publishes two GHCR package families:
 - `modern-debian-tools-python-debug`
 - `modern-debian-tools-python-debug-vsc-devcontainer`
-- `modern-debian-tools-python-debug-php85`
-- `modern-debian-tools-python-debug-php85-vsc-devcontainer`
+
+The PHP 8.5 flavor is **not** a third/fourth package family — it is a TAG variant layered
+on top of either family above (e.g. `trixie-py3.14-php8.5-20260707-10`). See "PHP 8.5
+Flavor (Tag Variant)" below. (Before 2026-07-07 it published to two extra package
+families, `-php85` and `-php85-vsc-devcontainer`; see "Migration Note" for what to do
+with those now-retired GHCR packages.)
 
 The purpose is to provide a curated, reproducible Debian + Python environment with modern CLI tooling for local development, CI, and VS Code devcontainers.
 
@@ -22,25 +26,28 @@ The versioned release pages are copied into the image as `/usr/local/share/moder
 	- Base: `mcr.microsoft.com/devcontainers/python:${PYTHON_VERSION}-${DEBIAN_VERSION}`
 	- Use when you want Microsoft devcontainer behavior plus custom tooling.
 
-3. `modern-debian-tools-python-debug-php85`
-	- Base: `python:${PYTHON_VERSION}-${DEBIAN_VERSION}`
-	- Adds PHP 8.5, Composer, Xdebug, and the common web-debugging extensions.
+### PHP 8.5 Flavor (Tag Variant)
 
-4. `modern-debian-tools-python-debug-php85-vsc-devcontainer`
-	- Base: `mcr.microsoft.com/devcontainers/python:${PYTHON_VERSION}-${DEBIAN_VERSION}`
-	- Same PHP 8.5 stack as the base flavor, but with Microsoft devcontainer behavior.
+PHP 8.5 (CLI/FPM, Composer, Xdebug, and the common web-debugging extensions) is available
+as a **tag variant** of either family above — it is built by the `trixie-py314-php85` /
+`trixie-py314-php85-vsc` bake targets, but publishes into the same two package names,
+distinguished only by a `-php8.5-` segment in the tag:
+
+- `ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.14-php8.5-<YYYYMMDD>` (+ `-latest`)
+- `ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-<YYYYMMDD>` (+ `-latest`)
 
 ## Tagging and Variants
 
 Tag format:
 
 ```text
-<debian>-py<python>[-php85]-<YYYYMMDD>
+<debian>-py<python>[-<flavor>]-<YYYYMMDD>
 ```
 
 Examples:
 - `trixie-py3.14-20260511`
-- `trixie-py3.14-php85-20260630`
+- `trixie-py3.14-php8.5-20260707-10` (PHP 8.5 flavor)
+- `trixie-py3.14-php8.5-latest`
 - `trixie-py3.14-latest`
 - `latest` (family-wide floating tag)
 
@@ -62,15 +69,53 @@ Helper functions:
 
 - `base_tag` / `base_latest_tag`: base-family immutable and floating tags.
 - `vsc_tag` / `vsc_latest_tag`: single-Python VSC devcontainer tags.
-- `php_tag` / `php_latest_tag`: PHP 8.5 base-image tags.
-- `php_vsc_tag` / `php_vsc_latest_tag`: PHP 8.5 VSC devcontainer tags.
+- `base_tag_variant` / `base_latest_tag_variant`: base-family tags with a flavor segment (e.g. PHP 8.5) inserted before the date/`latest` segment.
+- `vsc_tag_variant` / `vsc_latest_tag_variant`: VSC devcontainer tags with the same flavor-segment treatment.
 - `vsc_multi_tag` / `vsc_multi_latest_tag`: multi-Python VSC devcontainer tags.
 - `package_manifest_relpath` / `package_manifest_url`: versioned release-page path and URL.
+- `package_manifest_relpath_variant` / `package_manifest_url_variant`: same, for flavor (variant-tagged) builds — keeps the manifest filename collision-free with the plain build sharing the same (debian, python).
 - `package_docs_readme_relpath` / `package_docs_readme_url`: family index path and URL.
 - `package_latest_relpath` / `package_latest_url`: stable landing-page path and URL.
-- `description_with_manifest_docs`: OCI description helper that appends the release-page URL.
+- `description_with_manifest_docs` / `description_with_manifest_docs_variant`: OCI description helpers that append the release-page URL.
 
 If you add or remove a Python variant, update the matching target block and its tag/helper docs together. The build matrix is explicit; it is not inferred from filenames.
+
+## Migration Note: PHP 8.5 Package-Family Retirement (2026-07-07)
+
+Before 2026-07-07, the PHP 8.5 flavor published to two GHCR packages of its own:
+
+- `modern-debian-tools-python-debug-php85`
+- `modern-debian-tools-python-debug-php85-vsc-devcontainer`
+
+As of the `docker-bake.hcl` restructuring in this commit, PHP 8.5 is a **tag** variant of
+the two base families instead (`-php8.5-` inserted into the tag — see "PHP 8.5 Flavor
+(Tag Variant)" above). No new images will be pushed to the two `-php85*` package names
+going forward.
+
+What to do about the two retired packages:
+
+- **Recommended**: deprecate or delete `modern-debian-tools-python-debug-php85` and
+  `modern-debian-tools-python-debug-php85-vsc-devcontainer` from the GitHub Packages UI
+  (`https://github.com/users/volkb79-2/packages/container/<name>/settings` → Danger Zone).
+  They are dead weight once the next PHP release lands under the base families.
+- Do **not** delete the historical Markdown manifests under
+  `package-manifests-versioned/modern-debian-tools-python-debug-php85/` and
+  `.../modern-debian-tools-python-debug-php85-vsc-devcontainer/` — already-published
+  image OCI labels (`org.opencontainers.image.documentation`, etc.) point at those exact
+  paths and would 404 if the files moved or were deleted. They are left in place,
+  unmodified, as a frozen historical record. New PHP 8.5 manifests are written under
+  `package-manifests-versioned/modern-debian-tools-python-debug/` and
+  `.../modern-debian-tools-python-debug-vsc-devcontainer/` with `-php8.5-` in the
+  filename (e.g. `trixie-py3.14-php8.5-20260707-10.md`), never colliding with the
+  plain (non-flavor) manifest for the same Debian/Python pair.
+- This also happens to make moot a related observation: **new GHCR packages default to
+  private** (see [GHCR-ACCESS-GUIDE.md](GHCR-ACCESS-GUIDE.md) § "When is public/private
+  decided?"), which is almost certainly why only some of the (formerly four) package
+  families were visible/public at any given time — each new family needs its own
+  visibility sync. Collapsing back down to two package families removes two of the
+  moving parts that visibility sync had to keep track of; no *new* package family will
+  ever be created by a future flavor addition as long as it follows the tag-variant
+  pattern documented above instead of inventing another package name.
 
 ## Canonical Manifest
 

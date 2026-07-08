@@ -1147,12 +1147,29 @@ def repo_blob_url(username: str, repo: str, relative_path: str) -> str:
     )
 
 
-def image_reference(username: str, package_name: str, debian: str, python: str, build_date: str) -> str:
-    return f"ghcr.io/{username}/{package_name}:{debian}-py{python}-{build_date}"
+def build_tag(debian: str, python: str, build_date: str, variant: str = "") -> str:
+    """Render the immutable tag, inserting an optional variant (e.g. "php8.5") as a TAG
+    dimension between the py<python> segment and the date segment. This is the same
+    scheme docker-bake.hcl's base_tag_variant/vsc_tag_variant functions use, so a flavor
+    build never gets a separate package name — only an extra tag segment.
+    """
+    variant_part = f"-{variant}" if variant else ""
+    return f"{debian}-py{python}{variant_part}-{build_date}"
 
 
-def manifest_relpath(package_name: str, debian: str, python: str, build_date: str) -> str:
-    return f"package-manifests-versioned/{package_name}/{debian}-py{python}-{build_date}.md"
+def build_latest_tag(debian: str, python: str, variant: str = "") -> str:
+    variant_part = f"-{variant}" if variant else ""
+    return f"{debian}-py{python}{variant_part}-latest"
+
+
+def image_reference(
+    username: str, package_name: str, debian: str, python: str, build_date: str, variant: str = ""
+) -> str:
+    return f"ghcr.io/{username}/{package_name}:{build_tag(debian, python, build_date, variant)}"
+
+
+def manifest_relpath(package_name: str, debian: str, python: str, build_date: str, variant: str = "") -> str:
+    return f"package-manifests-versioned/{package_name}/{build_tag(debian, python, build_date, variant)}.md"
 
 
 def family_readme_relpath(package_name: str) -> str:
@@ -1170,13 +1187,31 @@ _FAMILY_TITLES = {
     "modern-debian-tools-python-debug-vsc-devcontainer": (
         "Modern Debian Tools + Python Debug VS Code Devcontainer"
     ),
-    "modern-debian-tools-python-debug-php85": (
-        "Modern Debian Tools + Python Debug + PHP 8.5"
-    ),
-    "modern-debian-tools-python-debug-php85-vsc-devcontainer": (
-        "Modern Debian Tools + Python Debug + PHP 8.5 VS Code Devcontainer"
-    ),
 }
+
+# Historical package names retired 2026-07-07: the PHP 8.5 flavor used to publish under
+# its own GHCR package families ("...-php85" / "...-php85-vsc-devcontainer"). It now
+# publishes into the base families above with "-php8.5-" as a TAG segment instead (see
+# _tag_variant_from_args and docker-bake.hcl's base_tag_variant/vsc_tag_variant). The old
+# package-manifests-versioned/*-php85*/ directories are left in place, unmodified, as a
+# frozen historical record — already-published images still have OCI labels pointing at
+# those exact paths. See php-addition.md / README.md "PHP 8.5 flavor" section for the
+# migration note.
+
+
+def _tag_variant_from_args(args: dict) -> str:
+    """Derive the tag-variant segment (e.g. "php8.5") from a bake target's args.
+
+    A flavor is expressed as a TAG dimension, not a package name, so this is the single
+    place that decides whether/what variant segment a target's tags and manifest path
+    carry. Currently the only flavor is PHP; add further ``elif`` branches here (not new
+    package names) if another flavor is introduced.
+    """
+    if str(args.get("INSTALL_PHP", "")).strip().lower() == "true":
+        php_version = str(args.get("PHP_VERSION") or "").strip()
+        if php_version:
+            return f"php{php_version}"
+    return ""
 
 
 def _package_name_from_target(name: str, spec: dict) -> str:
@@ -1186,6 +1221,11 @@ def _package_name_from_target(name: str, spec: dict) -> str:
     (``package-manifests-versioned/<package_name>/...``) so the manifest filename
     and the built image can never disagree. Falls back to the image refs / target
     name suffix for the (vsc vs base) distinction.
+
+    Flavors (currently: PHP 8.5) are NOT a package-name dimension — see
+    ``_tag_variant_from_args``. A target named e.g. ``trixie-py314-php85-vsc`` still
+    resolves to the plain ``modern-debian-tools-python-debug-vsc-devcontainer`` package
+    name here; its flavor only shows up in the tag/manifest-filename variant segment.
     """
     args = spec.get("args") or {}
     manifest_source = args.get("PACKAGE_MANIFEST_SOURCE") or ""
@@ -1193,12 +1233,6 @@ def _package_name_from_target(name: str, spec: dict) -> str:
     if len(parts) >= 2 and parts[0] == "package-manifests-versioned" and parts[1]:
         return parts[1]
     tags = spec.get("tags") or []
-    is_php85 = any("-php85-vsc-devcontainer" in str(tag) for tag in tags) or name.endswith("-php85-vsc")
-    if is_php85:
-        return "modern-debian-tools-python-debug-php85-vsc-devcontainer"
-    is_php85_base = any("-php85" in str(tag) for tag in tags) or name.endswith("-php85")
-    if is_php85_base:
-        return "modern-debian-tools-python-debug-php85"
     is_vsc = any("-vsc-devcontainer" in str(tag) for tag in tags) or name.endswith("-vsc")
     return (
         "modern-debian-tools-python-debug-vsc-devcontainer"
@@ -1241,7 +1275,7 @@ def built_target_entries() -> list[dict[str, str]]:
     targets = bake.get("target") or {}
 
     entries: list[dict[str, str]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     for name in target_names:
         spec = targets.get(name) or {}
         args = spec.get("args") or {}
@@ -1254,7 +1288,11 @@ def built_target_entries() -> list[dict[str, str]]:
             )
             continue
         package_name = _package_name_from_target(name, spec)
-        key = (package_name, debian, python)
+        variant = _tag_variant_from_args(args)
+        # variant is part of the identity key: a flavor build (e.g. php8.5) shares
+        # (package_name, debian, python) with the plain build and must NOT collapse
+        # into it the way same-primary multi-Python targets intentionally do.
+        key = (package_name, debian, python, variant)
         if key in seen:
             continue
         seen.add(key)
@@ -1266,6 +1304,7 @@ def built_target_entries() -> list[dict[str, str]]:
                 "target": name,
                 "debian": debian,
                 "python": python,
+                "variant": variant,
             }
         )
 
@@ -1402,14 +1441,20 @@ def choose_latest_entry(
     latest_python: str | None,
     latest_debian: str | None,
 ) -> dict[str, str]:
-    family_kind = entries[0]["family_kind"]
+    # Flavor builds (variant != "", e.g. php8.5) are specialized add-ons, not the family's
+    # main recommended release — never let one become the "latest.md" pointer as long as
+    # a plain (variant == "") entry exists in the same family.
+    plain_entries = [entry for entry in entries if not entry.get("variant")]
+    candidates = plain_entries or entries
+
+    family_kind = candidates[0]["family_kind"]
     if family_kind == "vsc" and latest_python and latest_debian:
-        for entry in entries:
+        for entry in candidates:
             if entry["python"] == latest_python and entry["debian"] == latest_debian:
                 return entry
 
     return sorted(
-        entries,
+        candidates,
         key=lambda item: (to_version_tuple(item["python"]), item["debian"], item["target"]),
     )[-1]
 
@@ -1444,16 +1489,17 @@ def render_manifest(
     family_title = entry["family_title"]
     debian = entry["debian"]
     python = entry["python"]
-    tag = f"{debian}-py{python}-{build_date}"
+    variant = entry.get("variant", "")
+    tag = build_tag(debian, python, build_date, variant)
     package_readme_url = repo_blob_url(username, repo, family_readme_relpath(package_name))
     release_manifest_url = repo_blob_url(
         username,
         repo,
-        manifest_relpath(package_name, debian, python, build_date),
+        manifest_relpath(package_name, debian, python, build_date, variant),
     )
     source_url = f"https://github.com/{username}/{repo}/tree/main/modern-debian-tools-python-debug"
-    image_ref = image_reference(username, package_name, debian, python, build_date)
-    latest_tag = f"{debian}-py{python}-latest"
+    image_ref = image_reference(username, package_name, debian, python, build_date, variant)
+    latest_tag = build_latest_tag(debian, python, variant)
 
     lines = [
         f"# {family_title}",
@@ -1531,10 +1577,14 @@ def render_family_readme(
         "",
     ]
 
-    for entry in sorted(entries, key=lambda item: (item["debian"], item["python"], item["target"])):
-        relpath = manifest_relpath(package_name, entry["debian"], entry["python"], build_date)
+    for entry in sorted(
+        entries, key=lambda item: (item["debian"], item["python"], item.get("variant", ""), item["target"])
+    ):
+        variant = entry.get("variant", "")
+        relpath = manifest_relpath(package_name, entry["debian"], entry["python"], build_date, variant)
         url = repo_blob_url(username, repo, relpath)
-        lines.append(f"- `{entry['target']}`: [{entry['debian']}-py{entry['python']}-{build_date}]({url})")
+        tag = build_tag(entry["debian"], entry["python"], build_date, variant)
+        lines.append(f"- `{entry['target']}`: [{tag}]({url})")
 
     lines.extend(
         [
@@ -1566,6 +1616,7 @@ def render_family_latest(
         latest_entry["debian"],
         latest_entry["python"],
         build_date,
+        latest_entry.get("variant", ""),
     )
     latest_manifest_url = repo_blob_url(username, repo, latest_manifest_relpath)
     family_readme_url = repo_blob_url(username, repo, family_readme_relpath(package_name))
@@ -1588,8 +1639,12 @@ def render_family_latest(
         "",
     ]
 
-    for entry in sorted(entries, key=lambda item: (item["debian"], item["python"], item["target"])):
-        relpath = manifest_relpath(package_name, entry["debian"], entry["python"], build_date)
+    for entry in sorted(
+        entries, key=lambda item: (item["debian"], item["python"], item.get("variant", ""), item["target"])
+    ):
+        relpath = manifest_relpath(
+            package_name, entry["debian"], entry["python"], build_date, entry.get("variant", "")
+        )
         url = repo_blob_url(username, repo, relpath)
         lines.append(f"- `{entry['target']}`: {url}")
 
@@ -1691,7 +1746,8 @@ def write_package_docs(
         )
         for entry in package_entries:
             description = description_vsc if entry["family_kind"] == "vsc" else description_base
-            (package_dir / f"{entry['debian']}-py{entry['python']}-{build_date}.md").write_text(
+            manifest_filename = build_tag(entry["debian"], entry["python"], build_date, entry.get("variant", ""))
+            (package_dir / f"{manifest_filename}.md").write_text(
                 render_manifest(
                     entry,
                     username=username,
