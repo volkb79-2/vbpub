@@ -41,7 +41,7 @@ jobs:
         working-directory: pwmcp
         run: |
           set -a
-          source .release-vars
+          source cmru.vars
           set +a
           echo "PLAYWRIGHT_VERSION=${PLAYWRIGHT_VERSION}" >> $GITHUB_OUTPUT
           echo "PLAYWRIGHT_DISTRO=${PLAYWRIGHT_DISTRO}" >> $GITHUB_OUTPUT
@@ -78,7 +78,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # .release-vars is generated each run and gitignored — do not commit it.
+          # cmru.vars is generated each run and gitignored — do not commit it.
           git add pwmcp/ciu.defaults.toml.j2 pwmcp/docker-bake.hcl
           # Only commit if there are staged changes (version actually bumped)
           git diff --cached --quiet || \

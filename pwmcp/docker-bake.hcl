@@ -9,7 +9,7 @@ variable "NAMESPACE" {
 // PyPI playwright version — what `pip install playwright` yields.
 // :latest tracks this version (canonical consumer alias).
 variable "PLAYWRIGHT_VERSION_PYPI" {
-  default = "1.60.0"
+  default = "1.61.0"
 }
 
 // npm playwright version — what `npm install playwright` yields.
@@ -24,7 +24,7 @@ variable "PLAYWRIGHT_DISTRO" {
 
 // pwmcp release tag for the PyPI-based build (e.g. 1.60.0-r1).
 variable "PWMCP_VERSION_PYPI" {
-  default = "1.60.0-r4"
+  default = "1.61.0-r2"
 }
 
 // pwmcp release tag for the npm-based build (e.g. 1.61.0-r1).
