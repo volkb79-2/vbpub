@@ -226,11 +226,11 @@ def _row_cells(columns: tuple[str, ...], entity_frame: EntityFrame, *, selected:
 
 
 def _format_metric(metric: MetricValue | None, spec) -> Text:
+    if metric is not None and metric.src == "unlimited":
+        return Text("max", style="yellow")
     if metric is None or metric.v is None:
         style = "dim" if metric is None or metric.src in {"unavail_perm", "unavail_kernel"} else ""
         return Text("-", style=style)
-    if metric.src == "unlimited":
-        return Text("max", style="yellow")
     value = metric.v
     if spec is None:
         return Text(str(value))
