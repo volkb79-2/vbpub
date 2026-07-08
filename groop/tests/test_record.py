@@ -7,7 +7,7 @@ import sys
 from array import array
 from pathlib import Path
 
-from conftest import fixture_root
+from conftest import fixture_frame, fixture_root
 from groop.model import Entity, EntityFrame, Frame, MetricValue, frame_from_jsonable
 from groop.record.reader import RecordReader
 from groop.record.ring import DEFAULT_HISTORY_METRICS, HistoryRing
@@ -15,9 +15,7 @@ from groop.record.writer import RecordWriter
 
 
 def _fixture_frame() -> Frame:
-    payload = json.loads((fixture_root() / "frames" / "gstammtisch-once.jsonl").read_text())
-    payload.pop("type", None)
-    return frame_from_jsonable(payload)
+    return fixture_frame()
 
 
 def _entity_frame(key: str, value: float) -> EntityFrame:
@@ -110,7 +108,7 @@ def test_history_ring_storage_budget_uses_numeric_arrays() -> None:
 
 def test_replay_cli_smoke_uses_golden_fixture() -> None:
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(fixture_root().parents[1] / "src")
+    env["PYTHONPATH"] = f"/tmp/groop-pytest:{fixture_root().parents[1] / 'src'}"
     proc = subprocess.run(
         [
             sys.executable,
@@ -119,6 +117,7 @@ def test_replay_cli_smoke_uses_golden_fixture() -> None:
             "--replay",
             str(fixture_root() / "frames" / "gstammtisch-once.jsonl"),
             "--step",
+            "--ui-smoke",
         ],
         check=True,
         cwd=fixture_root().parents[1],
@@ -126,7 +125,7 @@ def test_replay_cli_smoke_uses_golden_fixture() -> None:
         text=True,
         stdout=subprocess.PIPE,
     )
-    assert proc.stdout.strip() == "frame 1/1 ts=100.000 interval=5.000 entities=8 host_metrics=20"
+    assert proc.stdout.strip() == "ui smoke ok frames=1 view=tree profile=auto"
 
 
 def test_record_cli_once_writes_header_and_frame(tmp_path: Path) -> None:

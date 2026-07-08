@@ -13,6 +13,16 @@ def fixture_root() -> Path:
     return ROOT / "tests" / "fixtures"
 
 
+def fixture_frame():
+    import json
+
+    from groop.model import frame_from_jsonable
+
+    payload = json.loads((fixture_root() / "frames" / "gstammtisch-once.jsonl").read_text())
+    payload.pop("type", None)
+    return frame_from_jsonable(payload)
+
+
 def systemctl_fixture_runner(name: str):
     from groop.drift.origin import ShowResult
 
