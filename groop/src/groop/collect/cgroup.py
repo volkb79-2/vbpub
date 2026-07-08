@@ -115,6 +115,28 @@ def read_io_stat(path: Path) -> tuple[dict[str, dict[str, int]], MetricSource]:
     return devices, "exact"
 
 
+def read_io_weight(path: Path) -> tuple[int | None, MetricSource]:
+    result = read_text(path)
+    if result.value is None:
+        return None, result.src
+    for line in str(result.value).splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == "default" and len(parts) >= 2:
+            try:
+                return int(parts[1]), "exact"
+            except ValueError:
+                continue
+        for part in parts:
+            if part.startswith("default="):
+                try:
+                    return int(part.partition("=")[2]), "exact"
+                except ValueError:
+                    continue
+    return None, "unavail_kernel"
+
+
 def read_cpu_max(path: Path) -> tuple[int | None, int | None, MetricSource]:
     result = read_text(path)
     if result.value is None:
@@ -226,6 +248,8 @@ def collect_cgroup(root: Path, key: EntityKey, entity: Entity) -> CgroupSample:
             sample.metrics[metric] = MetricValue(None, "derived")
 
     sample.metrics["cpu_weight"] = _metric_from_int(path / "cpu.weight")
+    io_weight, io_weight_src = read_io_weight(path / "io.weight")
+    sample.metrics["io_weight"] = MetricValue(io_weight, io_weight_src)
     quota, period, cpu_max_src = read_cpu_max(path / "cpu.max")
     sample.metrics["cpu_quota_us"] = MetricValue(quota, cpu_max_src)
     sample.metrics["cpu_period_us"] = MetricValue(period, "exact" if period is not None else cpu_max_src)

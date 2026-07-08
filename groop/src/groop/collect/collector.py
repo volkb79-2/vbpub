@@ -8,6 +8,7 @@ from groop.collect.cgroup import CgroupSample, collect_cgroup, walk_entities
 from groop.collect.dockerjoin import DockerInspect, enrich_entities
 from groop.collect.host import collect_host
 from groop.config import GroopConfig, load
+from groop.drift.origin import SystemctlShowRunner, annotate_frame_governance
 from groop.model import Entity, EntityFrame, EntityKey, Frame, MetricSource, MetricValue
 from groop.providers.base import NetSample, Provider, sample_rank
 from groop.providers.net_host import NetHostProvider
@@ -23,12 +24,14 @@ class Collector:
         host_collector: Callable[[], dict[str, MetricValue]] | None = None,
         now: Callable[[], float] | None = None,
         network_providers: tuple[Provider, ...] | None = None,
+        systemctl_show_runner: SystemctlShowRunner | None = None,
     ) -> None:
         self.config = config or load()
         self.cgroup_root = cgroup_root or self.config.cgroup_root
         self.docker_inspect = docker_inspect
         self.host_collector = host_collector or collect_host
         self.now = now or time.time
+        self.systemctl_show_runner = systemctl_show_runner
         self.network_providers = network_providers if network_providers is not None else (
             NetnsProvider(self.cgroup_root),
             NetHostProvider(),
@@ -50,7 +53,8 @@ class Collector:
             frames[key] = EntityFrame(entity=sample.entity, metrics=metrics)
         self._apply_network_metrics(frames, entities, interval_s)
         self._prev_ts = ts
-        return Frame(schema_version=1, ts=ts, interval_s=interval_s, host=self.host_collector(), entities=frames)
+        frame = Frame(schema_version=1, ts=ts, interval_s=interval_s, host=self.host_collector(), entities=frames)
+        return annotate_frame_governance(frame, self.systemctl_show_runner)
 
     def _apply_config(self, entities: dict[EntityKey, Entity]) -> None:
         for entity in entities.values():

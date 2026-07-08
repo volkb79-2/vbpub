@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import fixture_root
+from conftest import fixture_root, systemctl_fixture_runner
 from groop.collect.collector import Collector
 from groop.collect.cgroup import read_text
 from groop.config import GroopConfig
@@ -67,6 +67,7 @@ def make_collector(root: Path, times: list[float], *, proc_root: Path | None = N
         host_stub,
         lambda: times.pop(0),
         providers,
+        systemctl_show_runner=systemctl_fixture_runner("gstammtisch"),
     )
 
 
@@ -80,6 +81,9 @@ def test_collects_gstammtisch_fixture_and_validates_metrics() -> None:
     assert game.metrics["ratio"].v == 2.0
     assert game.metrics["swap_disk"].v == 38000000
     assert game.metrics["rf_z_per_s"].v is None
+    assert game.metrics["io_weight"].v == 100
+    assert game.metrics["governance_origin"].v == 3
+    assert game.metrics["governance_drift"].v == 0
 
 
 def test_second_sample_computes_rates_and_counter_reset_degrades(tmp_path: Path) -> None:

@@ -13,10 +13,28 @@ def test_registry_names_are_canonical() -> None:
 
 
 def test_frame_round_trip_uses_compact_metric_values() -> None:
-    frame = Frame(1, 10.0, 5.0, {"host_load1": MetricValue(0.1, "host")}, {"x.slice": EntityFrame(Entity("x.slice", "slice", ""), {"ram": MetricValue(123, "exact", raw=123)})})
+    frame = Frame(
+        1,
+        10.0,
+        5.0,
+        {"host_load1": MetricValue(0.1, "host")},
+        {
+            "x.slice": EntityFrame(
+                Entity("x.slice", "slice", ""),
+                {
+                    "ram": MetricValue(123, "exact", raw=123),
+                    "effective_memory_min": MetricValue(64, "derived"),
+                    "governance_origin": MetricValue(2, "derived"),
+                    "governance_drift": MetricValue(0, "derived"),
+                },
+                governance={"summary": {"origin": "systemd_unit", "drift": False, "severity": "none"}},
+            )
+        },
+    )
     jsonable = frame_to_jsonable(frame)
     assert jsonable["host"]["host_load1"] == [0.1, "host"]
     assert jsonable["entities"]["x.slice"]["metrics"]["ram"] == [123, "exact", 123]
+    assert jsonable["entities"]["x.slice"]["governance"]["summary"]["origin"] == "systemd_unit"
     assert frame_from_jsonable(jsonable) == frame
 
 
