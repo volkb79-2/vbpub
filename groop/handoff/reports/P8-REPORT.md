@@ -49,6 +49,8 @@ rg -n "write_text|\\.write\\(|open\\([^)]*,\\s*['\\\"][^'\\\"]*[wa+][^'\\\"]*['\
 ## Contract note
 
 - Implemented an additive serialized `EntityFrame.damon` metadata block in `groop.model` so replayed frames can render the DAMON drill-down panel. Existing frame fields and metric serialization remain unchanged.
+- Controller review documented this additive block in `groop/CONTRACTS.md` and
+  added round-trip serialization coverage.
 
 ## Validation
 

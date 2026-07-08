@@ -122,7 +122,14 @@ class EntityFrame:
     findings: list[Finding] = field(default_factory=list)  # filled by diag (P6)
     governance: dict[str, object] | None = None             # filled by drift (P4)
     network: dict[str, object] | None = None                # filled by net providers (P3)
+    damon: dict[str, object] | None = None                  # filled by passive/control DAMON (P8+)
 ```
+
+`EntityFrame.damon` is optional metadata for replayable DAMON drill-downs. P8
+uses it for passive session summaries (`sessions`, `host_sessions`, target PID
+coverage, region class histograms, sample age, kdamond/context identifiers).
+Numeric table/sort/chart surfaces still use registry-backed `damon_*`
+`MetricValue`s in `metrics`; consumers must tolerate absent `damon` metadata.
 
 Rate/reset contract (P1): the Collector keeps the previous raw counters per
 (EntityKey, metric). Rates are `(raw_now - raw_prev)/interval_s`. On counter
