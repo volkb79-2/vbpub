@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 EntityKey = str
 EntityKind = Literal["root", "slice", "scope", "service", "other"]
-MetricSource = Literal["exact", "derived", "netns", "host", "unavail_perm", "unavail_kernel"]
+MetricSource = Literal["exact", "derived", "netns", "host", "unlimited", "unavail_perm", "unavail_kernel"]
 
 
 @dataclass

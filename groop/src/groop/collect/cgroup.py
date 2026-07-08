@@ -55,7 +55,7 @@ def read_limit(path: Path) -> tuple[int | None, MetricSource]:
         return None, result.src
     text = str(result.value).strip()
     if text == "max":
-        return None, "exact"
+        return None, "unlimited"
     value = parse_int_text(text)
     return (value, "exact") if value is not None else (None, "unavail_kernel")
 
@@ -122,9 +122,12 @@ def read_cpu_max(path: Path) -> tuple[int | None, int | None, MetricSource]:
     parts = str(result.value).split()
     if len(parts) != 2:
         return None, None, "unavail_kernel"
-    quota = None if parts[0] == "max" else parse_int_text(parts[0])
+    unlimited = parts[0] == "max"
+    quota = None if unlimited else parse_int_text(parts[0])
     period = parse_int_text(parts[1])
-    return quota, period, "exact" if period is not None else "unavail_kernel"
+    if period is None:
+        return None, None, "unavail_kernel"
+    return quota, period, "unlimited" if unlimited else "exact"
 
 
 def entity_kind(key: EntityKey) -> str:
@@ -214,12 +217,18 @@ def collect_cgroup(root: Path, key: EntityKey, entity: Entity) -> CgroupSample:
     ram = sample.metrics["ram"].v
     for metric, limit_metric in (("headroom_high_pct", "mem_high"), ("headroom_max_pct", "mem_max")):
         limit = sample.metrics[limit_metric].v
-        sample.metrics[metric] = MetricValue((ram / limit) * 100.0, "derived") if isinstance(ram, int) and isinstance(limit, int) and limit > 0 else MetricValue(None, "derived")
+        limit_src = sample.metrics[limit_metric].src
+        if isinstance(ram, int) and isinstance(limit, int) and limit > 0:
+            sample.metrics[metric] = MetricValue((ram / limit) * 100.0, "derived")
+        elif limit_src == "unlimited":
+            sample.metrics[metric] = MetricValue(None, "unlimited")
+        else:
+            sample.metrics[metric] = MetricValue(None, "derived")
 
     sample.metrics["cpu_weight"] = _metric_from_int(path / "cpu.weight")
     quota, period, cpu_max_src = read_cpu_max(path / "cpu.max")
     sample.metrics["cpu_quota_us"] = MetricValue(quota, cpu_max_src)
-    sample.metrics["cpu_period_us"] = MetricValue(period, cpu_max_src)
+    sample.metrics["cpu_period_us"] = MetricValue(period, "exact" if period is not None else cpu_max_src)
     sample.metrics["pids_current"] = _metric_from_int(path / "pids.current")
     sample.metrics["pids_max"] = _metric_from_limit(path / "pids.max")
     procs = read_text(path / "cgroup.procs")

@@ -23,12 +23,12 @@
 
 - P1 emits P1-owned placeholders for `net_rx_bps`, `net_tx_bps`, and `pressure` as unavailable. P3/P6 are expected to populate those domains.
 - The fixture intentionally keeps several parent/best-effort rows sparse to exercise missing-data degradation; complete realistic data is present for root, the game Docker scope, and the pak slice.
-- Unlimited cgroup limits (`max`) serialize as `MetricValue(None, "exact")`. This keeps numeric metric typing intact but should be clarified in the contract because `None` is otherwise documented as unavailable.
+- Unlimited cgroup limits (`max`) serialize as `MetricValue(None, "unlimited")` after controller review, so downstream UI/replay can distinguish known infinity from unavailable data.
 - `pytest` was not installed in the system Python. For validation only, pytest was installed into `/tmp/groop-pytest` and invoked through `PYTHONPATH`; no repository or system package files were modified.
 
 ## Proposed Contract Changes
 
-- Clarify representation of cgroup unlimited values such as `memory.max=max`, `memory.high=max`, `pids.max=max`, and `cpu.max=max`. Current P1 uses `v=None, src="exact"` to mean "known unlimited", which is distinct from unavailable by source but not distinct by value.
+- Implemented during controller review: `MetricSource` now includes `unlimited` for cgroup infinity states such as `memory.max=max`, `memory.high=max`, `pids.max=max`, and `cpu.max=max`.
 
 ## Test Evidence
 
