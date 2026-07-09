@@ -128,11 +128,14 @@ Handoff: `handoff/P28-io-cap-saturation.md`.
 
 ### P29 - Inspect-Files Safety Skeleton
 
-Status: planned. P29 should establish the explicit, disabled-by-default
-read-only file/log inspection planning contract for v2 without content reads,
-tailing, subprocess execution, or daemon integration.
+Status: done. P29 adds a disabled-by-default, read-only file/log inspection
+planning module (`groop inspect-files plan`) with explicit --inspect-files
+and --admin gating, three allowlisted plan kinds (docker-json-log,
+systemd-journal, cgroup-files), deterministic JSON/text rendering, path/argv
+safety validation, and structural no-subprocess/no-file-read guarantees.
 
 Handoff: `handoff/P29-inspect-files-safety-skeleton.md`.
+Report: `handoff/reports/P29-REPORT.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 

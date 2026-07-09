@@ -16,7 +16,7 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 80-85% | medium | Core daily triage works. Remaining gaps are release evidence, UI polish, richer host banner/device surfaces, and some acceptance criteria. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 35-40% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode, daemon deployment preflight/templates, preview-only admin action planning, the BPF measurement/design gate, and the BPF provider read side exist; live BPF attach/snapshot writing, executable admin actions, file inspection, GPU/ZFS plugins are not implemented. |
+| v2 daemon/BPF/admin actions | 40-45% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode, daemon deployment preflight/templates, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, and the inspect-files safety skeleton exist; live BPF attach/snapshot writing, executable admin actions, GPU/ZFS plugins are not implemented. |
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -61,6 +61,9 @@ core workflows, not yet production-certified.**
   `rf_d_per_s` in configured profiles, with backend-aware display labels (`SWAP_DEV`,
   `RF_DEV/S`) and diagnostic wording that avoids overclaiming physical disk
   on zram/mixed hosts.
+- Disabled-by-default, read-only file/log inspection planning module
+  (`groop/src/groop/inspect_files/`) with explicit --inspect-files and --admin
+  gating and deterministic JSON/text plans via `groop inspect-files plan`.
 
 ## Partially Implemented
 
@@ -103,7 +106,6 @@ core workflows, not yet production-certified.**
 - Live BPF ownership lifecycle (daemon/helper attach, pin, detach).
 - Executable Docker/systemd admin actions: update/start/stop/restart/kill.
 - `systemctl set-property` governance actions.
-- File/log/content browser behind `--inspect-files`.
 - Web UI.
 - GPU and ZFS optional plugins.
 - CIU stack grouping/actions.
@@ -130,12 +132,12 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P27 - Swap/refault aliases):
+Most recent full-suite validation (P29 - Inspect-files safety skeleton):
 
 ```bash
 python3 -m pytest groop/tests -q
-# 201 passed in 29.44s after the P27 merge
+# 243 passed in 30.27s after the P29 implementation
 ```
 
-Also validated: Python compile over P27 files.
-P27 separately validated alias resolution, backend-aware labels, diagnostic wording changes.
+Also validated: Python compile over P29 changed files.
+P29 separately validated gating, JSON/text rendering, path/argv safety, no-execution/no-read guarantees.
