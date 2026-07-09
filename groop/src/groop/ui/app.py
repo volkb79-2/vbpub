@@ -206,6 +206,7 @@ class GroopApp(App[None]):
             "sort_by": self.sort_by,
             "filter_text": self.filter_text,
             "selected_key": self.selected_key,
+            "ring": self.ring,
         }
         if self.view_mode == "container":
             return render_container_table(frame, self.config, **kwargs)

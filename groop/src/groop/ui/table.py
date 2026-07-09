@@ -7,8 +7,10 @@ from rich.text import Text
 
 from groop.config import GroopConfig
 from groop.model import Entity, EntityFrame, Frame, MetricValue
+from groop.record.ring import HistoryRing
 from groop.registry import REGISTRY
 from groop.ui.aliases import resolve_column
+from groop.ui.sparkline import sparkline_from_history
 
 PROFILE_ORDER = ("auto", "triage", "memory", "network", "governance", "damon", "wide", "minimal")
 SORT_ORDER = ("pressure", "ram", "cpu_pct", "name")
@@ -17,7 +19,7 @@ _WIDTH_TIERS = (
     (80, ("name", "ram", "rf_d_per_s", "psi_mem_full_avg10", "cpu_pct")),
     (100, ("anon", "z_pool", "z_eq", "ratio", "rf_z_per_s", "rf_f_per_s")),
     (120, ("swap_disk", "io_cap_saturation_pct", "headroom_max_pct", "tier", "pids_current")),
-    (160, ("io_r_bps", "io_w_bps", "net_rx_bps", "net_tx_bps", "net_source")),
+    (160, ("io_r_bps", "io_w_bps", "net_rx_bps", "net_tx_bps", "net_source", "cpu_trend")),
     (200, ("file", "psi_io_some_avg10", "psi_cpu_some_avg10", "mem_high", "mem_max")),
 )
 
@@ -50,6 +52,7 @@ _LABELS = {
     "rf_dev": "RF_DEV/S",
     "rf_d": "RF_DEV/S",
     "cpu_pct": "CPU%",
+    "cpu_trend": "CPU_TREND",
     "cpu_weight": "CPU.W",
     "psi_mem_full_avg10": "PSI_MEM",
     "psi_io_some_avg10": "PSI_IO",
@@ -110,6 +113,7 @@ def render_container_table(
     sort_by: str,
     filter_text: str,
     selected_key: str | None,
+    ring: HistoryRing | None = None,
 ) -> RenderedRows:
     layout = resolve_profile(config, width=width, profile=profile)
     entity_frames = _visible_entities(frame, container_only=True, filter_text=filter_text)
@@ -118,7 +122,7 @@ def render_container_table(
     row_keys: list[str] = []
     for entity_frame in ordered:
         row_keys.append(entity_frame.entity.key)
-        table.add_row(*_row_cells(layout.columns, entity_frame, selected=entity_frame.entity.key == selected_key))
+        table.add_row(*_row_cells(layout.columns, entity_frame, selected=entity_frame.entity.key == selected_key, ring=ring))
     if not row_keys:
         table.add_row("no container rows", *[""] * (max(0, len(layout.columns) - 1)))
     return RenderedRows(table=table, row_keys=tuple(row_keys), title=table.title or "")
@@ -195,11 +199,13 @@ def display_name(entity: Entity) -> str:
     return entity.key.rsplit("/", 1)[-1]
 
 
-def format_metric_value(column_name: str, entity_frame: EntityFrame) -> Text:
+def format_metric_value(column_name: str, entity_frame: EntityFrame, *, ring: HistoryRing | None = None) -> Text:
     if column_name == "name":
         return Text(display_name(entity_frame.entity))
     if column_name == "tier":
         return Text(entity_frame.entity.tier or "-")
+    if column_name == "cpu_trend":
+        return _format_cpu_trend(entity_frame.entity.key, ring)
     if column_name == "net_source":
         network = entity_frame.network or {}
         label = str(network.get("source_label") or "net:N/A")
@@ -231,6 +237,12 @@ def metric_sort_value(column_name: str, entity_frame: EntityFrame) -> tuple[int,
     if column_name == "net_source":
         source = (entity_frame.network or {}).get("source_label")
         return (0, str(source or ""))
+    if column_name == "cpu_trend":
+        # Sort by current cpu_pct value
+        metric = entity_frame.metrics.get("cpu_pct")
+        if metric is None or metric.v is None:
+            return (1, 0.0)
+        return (0, float(metric.v))
     canonical = resolve_column(column_name)
     metric = entity_frame.metrics.get(canonical)
     if metric is None or metric.v is None:
@@ -267,14 +279,14 @@ def _sort_rows(entity_frames: list[EntityFrame], sort_by: str) -> list[EntityFra
 def _make_table(columns: tuple[str, ...], *, title: str) -> Table:
     table = Table(title=title, box=None, expand=True, show_lines=False, pad_edge=False)
     for column_name in columns:
-        justify = "left" if column_name in {"name", "tier", "net_source", "governance_origin", "governance_drift", "damon_mode"} else "right"
+        justify = "left" if column_name in {"name", "tier", "net_source", "governance_origin", "governance_drift", "damon_mode", "cpu_trend"} else "right"
         no_wrap = column_name != "name"
         table.add_column(header_label(column_name), justify=justify, no_wrap=no_wrap, overflow="fold")
     return table
 
 
-def _row_cells(columns: tuple[str, ...], entity_frame: EntityFrame, *, selected: bool) -> list[Text]:
-    cells = [format_metric_value(column_name, entity_frame) for column_name in columns]
+def _row_cells(columns: tuple[str, ...], entity_frame: EntityFrame, *, selected: bool, ring: HistoryRing | None = None) -> list[Text]:
+    cells = [format_metric_value(column_name, entity_frame, ring=ring) for column_name in columns]
     if not cells:
         return cells
     name_cell = cells[0]
@@ -323,7 +335,7 @@ def _profile_from_config(config: GroopConfig, profile: str) -> tuple[str, ...] |
 
 def _column_supported(name: str) -> bool:
     canonical = resolve_column(name)
-    supported_virtual = {"name", "tier", "net_source", "governance_origin", "governance_drift", "sock"}
+    supported_virtual = {"name", "tier", "net_source", "governance_origin", "governance_drift", "sock", "cpu_trend"}
     return (name in _LABELS or canonical in _LABELS) and (
         canonical in REGISTRY or canonical in supported_virtual
     )
@@ -386,3 +398,14 @@ def _metric_code(metric: MetricValue | None, table: dict[int, str]) -> str:
         return table[int(metric.v)]
     except (KeyError, TypeError, ValueError):
         return str(metric.v)
+
+
+def _format_cpu_trend(entity_key: str, ring: HistoryRing | None) -> Text:
+    """Render a CPU trend sparkline for *entity_key* using ring history."""
+    if ring is None or not ring.has_series(entity_key, "cpu_pct"):
+        return Text("-", style="dim")
+    history = ring.last(entity_key, "cpu_pct", 16)
+    trend = sparkline_from_history(history, width=6)
+    if not trend:
+        return Text("-", style="dim")
+    return Text(trend)

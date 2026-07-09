@@ -4,6 +4,7 @@ from rich.table import Table
 
 from groop.config import GroopConfig
 from groop.model import EntityFrame, Frame
+from groop.record.ring import HistoryRing
 
 from .table import RenderedRows, _make_table, display_name, format_metric_value, metric_sort_value, resolve_profile
 
@@ -18,6 +19,7 @@ def render_tree_table(
     filter_text: str,
     selected_key: str | None,
     collapsed_keys: set[str],
+    ring: HistoryRing | None = None,
 ) -> RenderedRows:
     layout = resolve_profile(config, width=width, profile=profile)
     title = f"TREE | profile={layout.name}"
@@ -28,7 +30,7 @@ def render_tree_table(
     rows = _ordered_rows(frame, sort_by=sort_by, filter_text=filter_text, collapsed_keys=collapsed_keys)
     for depth, entity_frame, collapsed in rows:
         row_keys.append(entity_frame.entity.key)
-        cells = [format_metric_value(column_name, entity_frame) for column_name in layout.columns]
+        cells = [format_metric_value(column_name, entity_frame, ring=ring) for column_name in layout.columns]
         if cells:
             prefix = _tree_prefix(frame, entity_frame, depth, collapsed=collapsed)
             cells[0] = prefix + cells[0]
