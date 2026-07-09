@@ -6,7 +6,7 @@ from pathlib import Path
 
 from groop.collect.cgroup import CgroupSample, collect_cgroup, walk_entities
 from groop.collect.dockerjoin import DockerInspect, enrich_entities
-from groop.collect.host import collect_host
+from groop.collect.host import collect_host, collect_host_meta
 from groop.config import GroopConfig, load
 from groop.damon import DEFAULT_DAMON_ROOT, annotate_frame_damon
 from groop.diag import annotate as annotate_frame_diagnostics
@@ -27,6 +27,7 @@ class Collector:
         now: Callable[[], float] | None = None,
         network_providers: tuple[Provider, ...] | None = None,
         proc_root: Path = Path("/proc"),
+        sys_root: Path = Path("/sys"),
         damon_root: Path = DEFAULT_DAMON_ROOT,
         damon_state_dir: Path | None = None,
         systemctl_show_runner: SystemctlShowRunner | None = None,
@@ -37,6 +38,7 @@ class Collector:
         self.host_collector = host_collector or collect_host
         self.now = now or time.time
         self.proc_root = proc_root
+        self.sys_root = sys_root
         self.damon_root = damon_root
         self.damon_state_dir = damon_state_dir
         self.systemctl_show_runner = systemctl_show_runner
@@ -61,7 +63,14 @@ class Collector:
             frames[key] = EntityFrame(entity=sample.entity, metrics=metrics)
         self._apply_network_metrics(frames, entities, interval_s)
         self._prev_ts = ts
-        frame = Frame(schema_version=1, ts=ts, interval_s=interval_s, host=self.host_collector(), entities=frames)
+        frame = Frame(
+            schema_version=1,
+            ts=ts,
+            interval_s=interval_s,
+            host=self.host_collector(),
+            entities=frames,
+            host_meta=collect_host_meta(sys_root=self.sys_root),
+        )
         annotate_frame_damon(
             frame,
             damon_root=self.damon_root,
