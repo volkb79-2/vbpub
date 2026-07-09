@@ -8,7 +8,7 @@ import sys
 import threading
 from pathlib import Path
 
-from conftest import fixture_root
+from conftest import fixture_frame, fixture_root
 from groop.daemon import FrameBroker, serve_unix_socket
 from groop.daemon.deploy import preflight_daemon_deployment, preflight_report_to_jsonable, render_preflight_text
 
@@ -18,7 +18,7 @@ def _current_group_name() -> str:
 
 
 def _start_socket(socket_path: Path):
-    server = serve_unix_socket(socket_path, FrameBroker([]))
+    server = serve_unix_socket(socket_path, FrameBroker([fixture_frame()]))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
@@ -317,3 +317,107 @@ def test_install_plan_does_not_mutate_host(monkeypatch) -> None:
     j = json.dumps(install_plan_to_jsonable(plan), sort_keys=True)
     payload = json.loads(j)
     assert payload["plan"] == "install"
+
+
+# ── Daemon current (P30) tests ────────────────────────────────────────────
+
+
+def test_daemon_current_returns_canonical_json(tmp_path: Path) -> None:
+    """groop daemon current --socket TMP returns canonical frame JSON."""
+    socket_path = tmp_path / "groop.sock"
+    server = _start_socket(socket_path)
+    from groop.model import frame_to_jsonable
+
+    try:
+        import io
+        from groop.cli import _main_daemon
+
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            code = _main_daemon(["current", "--socket", str(socket_path)])
+        finally:
+            output = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+        assert code == 0, f"expected 0, got {code}"
+        payload = json.loads(output)
+        assert "schema_version" in payload
+        assert "ts" in payload
+        assert "host" in payload
+        assert "entities" in payload
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_daemon_current_pretty_json(tmp_path: Path) -> None:
+    """groop daemon current --pretty-json produces indented JSON."""
+    socket_path = tmp_path / "groop.sock"
+    server = _start_socket(socket_path)
+
+    try:
+        import io
+        from groop.cli import _main_daemon
+
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            code = _main_daemon(["current", "--socket", str(socket_path), "--pretty-json"])
+        finally:
+            output = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+        assert code == 0
+        # Pretty JSON should contain newlines and indentation
+        assert "\n" in output
+        assert "  " in output
+        payload = json.loads(output)
+        assert "schema_version" in payload
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_daemon_current_missing_socket_returns_nonzero(tmp_path: Path) -> None:
+    """groop daemon current against a missing socket returns non-zero and
+    does not fall back to live collection."""
+    import io
+    from groop.cli import _main_daemon
+
+    missing = tmp_path / "nonexistent.sock"
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    sys.stdout = io.StringIO()
+    sys.stderr = io.StringIO()
+    code = None
+    try:
+        code = _main_daemon(["current", "--socket", str(missing)])
+    finally:
+        stdout_val = sys.stdout.getvalue()
+        stderr_val = sys.stderr.getvalue()
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+    assert code is not None
+    assert code == 2, f"expected 2, got {code}"
+    assert "cannot connect" in stderr_val.lower() or "no such" in stderr_val.lower()
+    assert stdout_val == ""  # No live collection fallback
+
+
+def test_daemon_current_parse_args(tmp_path: Path) -> None:
+    """groop daemon current parses correctly with default socket."""
+    from groop.cli import parse_daemon_args
+    from groop.daemon.deploy import DEFAULT_DAEMON_SOCKET
+
+    args = parse_daemon_args(["current"])
+    assert args.command == "current"
+    assert args.socket == DEFAULT_DAEMON_SOCKET
+    assert args.pretty_json is False
+
+
+def test_daemon_current_parse_args_custom_socket(tmp_path: Path) -> None:
+    """groop daemon current --socket /custom.sock parses correctly."""
+    from groop.cli import parse_daemon_args
+
+    args = parse_daemon_args(["current", "--socket", "/tmp/custom.sock", "--pretty-json"])
+    assert args.command == "current"
+    assert args.socket == Path("/tmp/custom.sock")
+    assert args.pretty_json is True

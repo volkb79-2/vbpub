@@ -141,12 +141,14 @@ Report: `handoff/reports/P29-REPORT.md`.
 
 ### P30 - Daemon Default Client UX
 
-Status: planned. P30 should make the existing root-daemon/non-root-client path
-less cumbersome by allowing default-socket attach and adding a read-only
-`groop daemon current` one-frame command. It must not add install execution,
-systemd mutation, protocol changes, or daemon-side privilege changes.
+Status: done. P30 makes `--attach` use the packaged default socket
+(`/run/groop/groop.sock`) when no explicit path is given, and adds
+`groop daemon current --socket PATH [--pretty-json]` as a read-only one-frame
+retrieval command. No install execution, systemd mutation, protocol changes,
+or daemon-side privilege changes.
 
 Handoff: `handoff/P30-daemon-default-client.md`.
+Report: `handoff/reports/P30-REPORT.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 
