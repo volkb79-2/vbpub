@@ -128,7 +128,7 @@ Most recent full-suite validation (P26 - Snapshot progress UI):
 
 ```bash
 python3 -m pytest groop/tests -q
-# 181 passed in 28.78s
+# 181 passed in 28.52s after the P26 merge
 ```
 
 Also validated: Python compile over P26 files.

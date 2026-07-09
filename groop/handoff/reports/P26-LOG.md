@@ -47,6 +47,18 @@ steps so another controller can continue after a session limit.
 
 - Action: Committed feature branch.
 - Result: Branch ready for review.
+
+- Action: Controller reviewed, patched, merged P26 into `main`, and reran validation from the main checkout.
+- Commands: `git merge --no-ff feat/groop-p26-snapshot-progress-ui -m "Merge groop P26 snapshot progress UI"`,
+  `PYTHONPATH=groop/src .worktrees/-groop-p26-snapshot-progress-ui/.venv-p26/bin/python -m pytest groop/tests/test_ui_app.py -k "snapshot" -q`,
+  `find groop/src -name '*.py' -print0 | xargs -0 .worktrees/-groop-p26-snapshot-progress-ui/.venv-p26/bin/python -m py_compile`,
+  `PYTHONPATH=groop/src .worktrees/-groop-p26-snapshot-progress-ui/.venv-p26/bin/python -m pytest groop/tests -q`.
+- Files changed: `groop/tests/test_ui_app.py`, `groop/docs/ROADMAP.md`,
+  `groop/docs/STATUS.md`, `groop/handoff/reports/P26-LOG.md`,
+  `groop/handoff/reports/P26-REPORT.md`.
+- Result: P26 merged and validated on `main`: focused snapshot tests
+  `6 passed, 17 deselected in 1.85s`; full suite `181 passed in 28.52s`;
+  compile check clean.
 ```
 
 ## Decisions
@@ -80,6 +92,9 @@ steps so another controller can continue after a session limit.
 # 181 passed in 28.78s
 find groop/src -name '*.py' -print0 | xargs -0 .venv-p26/bin/python -m py_compile
 # (no output)
+
+PYTHONPATH=groop/src .worktrees/-groop-p26-snapshot-progress-ui/.venv-p26/bin/python -m pytest groop/tests -q
+# 181 passed in 28.52s after merge to main
 ```
 
 ## Handoff Checklist

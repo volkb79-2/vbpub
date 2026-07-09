@@ -59,9 +59,19 @@
 .venv-p26/bin/python -m pytest groop/tests -q
 # 181 passed in 28.78s
 
+# Main checkout after controller merge
+PYTHONPATH=groop/src .worktrees/-groop-p26-snapshot-progress-ui/.venv-p26/bin/python -m pytest groop/tests -q
+# 181 passed in 28.52s
+
 # Compile check
 find groop/src -name '*.py' -print0 | xargs -0 .venv-p26/bin/python -m py_compile
 # (no output)
+```
+
+P26 merged to `main` with:
+
+```bash
+git merge --no-ff feat/groop-p26-snapshot-progress-ui -m "Merge groop P26 snapshot progress UI"
 ```
 
 ## Known gaps / open items
