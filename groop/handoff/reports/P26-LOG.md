@@ -15,7 +15,7 @@ steps so another controller can continue after a session limit.
 ## Timeline
 
 ```text
-2026-07-01
+2026-07-09
 - Action: Created worktree + feature branch from main.
 - Commands: git worktree add -b feat/groop-p26-snapshot-progress-ui .worktrees/-groop-p26-snapshot-progress-ui main
 - Files changed: (worktree created)

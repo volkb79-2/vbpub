@@ -94,6 +94,9 @@ through the status line without changing bundle contents. Focused tests cover
 the progress flag, duplicate-start guard, success path reporting, and handled
 exception failure reporting.
 
+Handoff: `handoff/P26-snapshot-progress-ui.md`.
+Report: `handoff/reports/P26-REPORT.md`.
+
 ### P19 — ZRAM And Swap-Backend Awareness
 
 Status: done with a per-device drill-down gap. P19 detects active

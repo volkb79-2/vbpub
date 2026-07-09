@@ -18,8 +18,8 @@
     `collect_docker_inspect`, and `create_snapshot` functions.
 
 - **`tests/test_ui_app.py`** — Added 4 focused tests:
-  - `test_pilot_snapshot_running_status_appears_immediately` — verifies the flag is managed
-    and bundle is written with a slow injected provider.
+  - `test_pilot_snapshot_running_status_appears_immediately` — verifies the status line is
+    updated before a slow injected provider can complete, and the bundle is written.
   - `test_pilot_snapshot_duplicate_keypress_guard` — verifies a second `x` while
     `_snapshot_in_progress` is True shows `"snapshot already running"`.
   - `test_pilot_snapshot_success_reports_path` — verifies the status bar shows the saved
@@ -39,11 +39,10 @@
   vary by version. Instead, a simple `bool` flag (`_snapshot_in_progress`) plus
   `run_worker(thread=True)` + `call_from_thread` provides the same guard without depending
   on a specific Worker API version.
-- The `running_status_appears_immediately` test checks the flag and bundle existence rather
-  than timing-dependent status text. Textual's `Pilot.press()` internally processes all
-  pending callbacks including thread-worker completion, making synchronous text assertions
-  unreliable. The flag, however, is set synchronously inside the action handler before
-  `run_worker` returns.
+- The `running_status_appears_immediately` test invokes the action directly instead of using
+  `Pilot.press()`, because `Pilot.press()` may process worker callbacks before returning.
+  This keeps the immediate status assertion deterministic while still exercising the same
+  action method and worker path.
 
 ## Proposed contract changes
 
@@ -67,11 +66,9 @@ find groop/src -name '*.py' -print0 | xargs -0 .venv-p26/bin/python -m py_compil
 
 ## Known gaps / open items
 
-- The worker runs in a thread via `run_worker(thread=True)`. In Textual's test mode, the
-  `Pilot.press()`/`_wait_for_screen()` callbacks process thread completion before returning,
-  so timing-dependent status assertions are not feasible in unit tests. The guard logic and
-  flag behavior are tested directly; the visual status-line update is verified by the success
-  and failure tests.
+- The worker runs in a thread via `run_worker(thread=True)`. In Textual's test mode,
+  `Pilot.press()` can process thread completion before returning, so the immediate status
+  assertion calls `action_create_snapshot()` directly after mounting the app.
 - No new modal screen was added — the handoff explicitly scoped this out if a status-line
   worker was simpler, which it was.
 - All snapshot contents and P15 enrichment behavior are unchanged.

@@ -345,7 +345,7 @@ def test_pilot_snapshot_hotkey_collects_fresh_systemd_and_docker_metadata(tmp_pa
             return ShowResult(stdout=f"Unit={unit}\nMemoryHigh=123\n", returncode=0)
 
         def docker_inspect(container_id: str):
-            return [{"Id": container_id, "Name": "/demo", "Image": "image:latest", "Config": {"Env": ["SECRET=[redacted]"], "Labels": {"secret": "y"}, "User": "1000"}}]
+            return [{"Id": container_id, "Name": "/demo", "Image": "image:latest", "Config": {"Env": ["SECRET=x"], "Labels": {"secret": "y"}, "User": "1000"}}]
 
         app = GroopApp(
             iter([fixture_frame()]),
@@ -377,7 +377,6 @@ def test_pilot_snapshot_hotkey_collects_fresh_systemd_and_docker_metadata(tmp_pa
 
 
 def test_pilot_snapshot_running_status_appears_immediately(tmp_path: Path) -> None:
-    """Verify the snapshot progress flag is managed and bundle is written."""
     async def run() -> None:
         import time as _time
 
@@ -394,14 +393,16 @@ def test_pilot_snapshot_running_status_appears_immediately(tmp_path: Path) -> No
         )
         async with app.run_test(size=(140, 40)) as pilot:
             await _wait_for_frame(app)(pilot)
-            # action_create_snapshot sets _snapshot_in_progress synchronously
-            # before the worker is launched in a thread.
-            await pilot.press("x")
-            # Wait for the worker to complete
+            app.selected_key = GAME_KEY
+            app._refresh_view()
+            app.action_create_snapshot()
+            assert "snapshot running:" in _status_text(app)
+            assert GAME_KEY in _status_text(app)
             for _ in range(30):
                 await pilot.pause()
                 if app._snapshot_in_progress is False:
                     break
+            assert app._snapshot_in_progress is False
 
     asyncio.run(run())
     assert len(list(tmp_path.glob("groop-incident-*"))) == 1
