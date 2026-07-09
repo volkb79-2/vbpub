@@ -75,6 +75,19 @@
 - Files changed: `groop/src/groop/actions/audit.py`, `groop/src/groop/actions/preview.py`, `groop/tests/test_actions.py`, `groop/handoff/reports/P21-LOG.md`.
 - Result: Review polish validated successfully.
 - Follow-up: Commit and merge.
+
+2026-07-09 CEST (post-merge validation)
+- Action: Merged P21 into `main` and reran validation from the main checkout.
+- Commands:
+  - `git merge --no-ff feat/groop-p21-admin-action-gating -m "Merge groop P21 admin action gating"`
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests/test_actions.py -q` -> 30 passed in 0.23s
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m py_compile ...` -> clean
+  - `PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli action preview --kind docker-restart --target c1 --admin --json` -> valid JSON preview
+  - same command without `--admin` -> exit 2 with disabled message
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q` -> 138 passed in 25.37s
+- Files changed: `groop/docs/STATUS.md`, `groop/handoff/reports/P21-LOG.md`, `groop/handoff/reports/P21-REPORT.md`.
+- Result: P21 merged and validated on `main`.
+- Follow-up: Commit post-merge evidence.
 ```
 
 ## Decisions

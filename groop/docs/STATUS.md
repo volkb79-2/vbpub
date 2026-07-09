@@ -120,7 +120,7 @@ Most recent full-suite validation (P21 — admin action gating skeleton):
 
 ```bash
 /tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
-# 138 passed in 26.11s
+# 138 passed in 25.37s after the P21 merge
 ```
 
 Also validated: Python compile over P21 files,

@@ -46,7 +46,8 @@ PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli \
 # exit 2, "admin mode is not enabled"
 
 /tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
-# 138 passed in 24.96s in final controller validation
+# 138 passed in 24.96s in final branch controller validation
+# 138 passed in 25.37s after merge to main
 ```
 
 ## Known Gaps
