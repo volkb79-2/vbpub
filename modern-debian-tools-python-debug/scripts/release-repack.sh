@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Repack and push the locally loaded release images.
 #
+# NOTE: When run via the new cmru oci-image handler (cmru.toml
+# [project.xxx.oci] repack=true), docker-repack handles both OCI layout
+# creation and push directly — skopeo is no longer needed for the
+# cmru-driven path. This script remains for backward compatibility and
+# manual/local use outside cmru.
+#
 # Prerequisites:
 #   - jq
 #   - skopeo

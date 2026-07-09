@@ -81,18 +81,14 @@ CMRU_RELEASE_NOTES = "## cmru wheel\nBuild, publish, and release orchestration f
 prefix    = "modern-debian-tools-python-debug-v"   # kept for resolve/cleanup symmetry; unused for tagging
 artifacts = ["oci-image"]
 cwd       = "modern-debian-tools-python-debug"
+[project.modern-debian-tools-python-debug.oci]
+repack = true
+repack_target_size = "2GB"
+repack_compression = 9
 [project.modern-debian-tools-python-debug.version]
 strategy = "none"          # OCI images aren't git-tagged
 [project.modern-debian-tools-python-debug.release]
 commit_generated = ["package-manifests-versioned"]   # project-relative; committed after build
-[project.modern-debian-tools-python-debug.steps.build]
-commands = [
-  { label = "modern-debian-tools-python-debug: build images", argv = ["python3", "build-push.py", "--build"], cwd = "modern-debian-tools-python-debug" },
-]
-[project.modern-debian-tools-python-debug.steps.push]
-commands = [
-  { label = "modern-debian-tools-python-debug: push images", argv = ["python3", "build-push.py", "--push"], cwd = "modern-debian-tools-python-debug" },
-]
 
 # ─── pwmcp — OCI image + stack bundle ─────────────────────────────────────────
 # pwmcp's version is playwright-driven (pwmcp-v<playwright>-r<N>), computed by
