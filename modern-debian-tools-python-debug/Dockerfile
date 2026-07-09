@@ -135,6 +135,25 @@ RUN set -euo pipefail; \
     echo "user_allow_other" >> /etc/fuse.conf; \
     rm -rf /var/lib/apt/lists/*
 
+# Skopeo: try to get the latest version from Debian testing.
+# The trixie release ships skopeo 1.18.x; testing has 1.22.x.
+# We add testing as a temporary source with pin-priority 501 for skopeo ONLY,
+# so no other packages are affected.  If this fails (e.g. testing repo
+# unavailable, dependency conflict), we keep the trixie version silently.
+RUN set -euo pipefail; \
+    echo "deb http://deb.debian.org/debian testing main" > /etc/apt/sources.list.d/testing.sources; \
+    printf 'Package: skopeo\nPin: release a=testing\nPin-Priority: 501\n' > /etc/apt/preferences.d/skopeo-testing; \
+    apt-get update; \
+    if apt-get install --dry-run -y skopeo 2>/dev/null | grep -q "^Inst skopeo "; then \
+        apt-get install -y --no-install-recommends skopeo && \
+        echo "[INFO] skopeo installed from Debian testing: $(skopeo --version)"; \
+    else \
+        echo "[INFO] skopeo from testing not available — keeping trixie version"; \
+    fi; \
+    rm -f /etc/apt/sources.list.d/testing.sources /etc/apt/preferences.d/skopeo-testing; \
+    rm -rf /var/lib/apt/lists/*; \
+    skopeo --version || echo "[WARN] skopeo not installed"
+
 # Upstream Node.js runtime for npm-based AI tooling.
 RUN set -euo pipefail; \
     curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -; \

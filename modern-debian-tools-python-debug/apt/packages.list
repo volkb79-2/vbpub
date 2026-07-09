@@ -51,4 +51,4 @@ vim                # terminal editor
 w3m                # terminal web browser — render STATIC HTML readably; JS-rendered → drive pwmcp
 wget               # downloader (alternative to curl)
 xz-utils           # xz (de)compression (e.g. the shellcheck tarball)
-skopeo             # inspect / copy OCI images without a Docker daemon
+skopeo             # inspect / copy OCI images without a Docker daemon (base install from trixie; upgraded from Debian testing in a separate RUN layer)

@@ -46,7 +46,8 @@ POLICY_NOTES = {
     "System Packages": (
         "**Version policy:** Debian repository versions (prefer backports when available). "
         "System packages come from the Debian Trixie main repos; devcontainer-features "
-        "are installed via the features CLI."
+        "are installed via the features CLI.  Exception: `skopeo` is pulled from "
+        "Debian testing (pin-priority 501) for a newer version than trixie provides."
     ),
     "Python Packages": (
         "**Version policy:** PyPI latest at image build time (resolved via pip install). "
@@ -86,6 +87,7 @@ PROJECT_HOMES = {
     "rga": "https://github.com/phiresky/ripgrep-all",
     "ripgrep": "https://github.com/BurntSushi/ripgrep",
     "shellcheck": "https://github.com/koalaman/shellcheck",
+    "skopeo": "https://github.com/containers/skopeo",
     "syft": "https://github.com/anchore/syft",
     "vault": "https://github.com/hashicorp/vault",
     "yq": "https://github.com/mikefarah/yq",
