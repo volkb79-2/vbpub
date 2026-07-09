@@ -6,17 +6,16 @@ claims without updating this file.
 
 ## Current Evidence
 
-Most recent merged package validation after P33:
+Most recent merged package validation after P34/P35:
 
 ```bash
 PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
-# 303 passed in 37.10s
+# 336 passed in 41.41s
 ```
 
-Also passed after P33 review: focused P32 daemon status/client/deploy/attach
-tests (`46 passed in 16.18s`), P33 acceptance/collector/record tests
-(`34 passed in 10.04s`), `py_compile` over merged P32/P33 changed files, and
-the P33 rootless smoke command below.
+Also passed after P34/P35 review: focused P34/P35 collector/banner/ZRAM/
+acceptance tests (`64 passed in 5.42s`), `py_compile` over merged P34/P35
+changed files, and the P35 rootless steady command below.
 
 P12 package evidence remains: sdist/wheel build, fresh wheel install, and
 `groop --version` (`groop 0.1.0`).
@@ -101,12 +100,17 @@ Example output showing the measurement fields:
 P35 fixture evidence:
 
 - Command:
-  - `PYTHONPATH=groop/src python3 -m groop.acceptance steady --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch --samples 2 --interval-s 0 --json`
+  - `PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m groop.acceptance steady --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch --samples 2 --interval-s 0 --json`
 - Result:
   - exit `0`, `ok: true`
   - samples: `2/2`
   - entity counts: `min=8, max=8, last=8`
-  - wall, user, sys, RSS, avg_sample_wall_s, cpu_pct all present
+  - wall: `0.5187s`
+  - user CPU: `0.0537s`
+  - sys CPU: `0.0103s`
+  - avg sample wall: `0.2593s`
+  - CPU: `12.34%` of one core
+  - max RSS: `99616 KB`
 
 ## v1 Acceptance Measurements
 

@@ -33,7 +33,7 @@ python -m groop.acceptance steady [--cgroup-root PATH] [--samples N]
 
 ### Tests: `groop/tests/test_acceptance.py`
 
-11 new tests (7 unit + 4 subprocess) covering:
+13 steady tests (8 unit + 5 subprocess) covering:
 - JSON/text fixture steady with `--samples 2 --interval-s 0`
 - CPU threshold failure (exit 1)
 - RSS threshold failure (exit 1)
@@ -42,7 +42,7 @@ python -m groop.acceptance steady [--cgroup-root PATH] [--samples N]
 - Pretty JSON parseable and deterministically sorted
 - Invalid samples/interval/threshold values (exit 2)
 - Subprocess steady JSON/pretty-json/threshold/invalid-args
-- All 13 existing smoke tests still pass (24 total)
+- All 13 existing smoke tests still pass (26 total)
 
 ### Documentation updated
 
@@ -65,11 +65,11 @@ None. P35 is additive and package-private. No shared interfaces were touched.
 
 ## Test Evidence
 
-### Acceptance tests (24 total: 13 smoke + 11 steady)
+### Acceptance tests (26 total: 13 smoke + 13 steady)
 
 ```bash
-PYTHONPATH=groop/src /home/vb/volkb79-2/vbpub/.venv/bin/python -m pytest groop/tests/test_acceptance.py -v
-# 24 passed in 4.49s
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_acceptance.py -q
+# 26 passed in 4.54s
 ```
 
 ### Full non-UI suite (agent environment)
@@ -100,6 +100,26 @@ PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile \
 
 PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
 # 316 passed in 38.85s
+```
+
+### Post-merge validation with P34 on main
+
+```bash
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest \
+  groop/tests/test_collector.py::test_golden_jsonl_frame_matches_fixture \
+  groop/tests/test_host_device.py \
+  groop/tests/test_ui_banner.py \
+  groop/tests/test_p23_zram_drilldown.py \
+  groop/tests/test_acceptance.py -q
+# 64 passed in 5.42s
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 336 passed in 41.41s
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m groop.acceptance steady \
+  --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch \
+  --samples 2 --interval-s 0 --json
+# exit 0; ok=true; samples_completed=2; wall_s=0.5187; cpu_pct=12.34; rss_kb=99616
 ```
 
 ## Known Gaps / Open Items

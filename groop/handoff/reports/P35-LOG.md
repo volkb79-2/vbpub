@@ -60,6 +60,15 @@ Append newest entries at the bottom.
 - Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile groop/src/groop/acceptance.py groop/tests/test_acceptance.py -> clean
 - Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q -> 316 passed in 38.85s
 - Follow-up: Commit controller review patch and merge
+
+2026-07-10 CEST (post-merge with P34)
+- Action: Validated P35 on main after P34 host-device banner merge
+- Files changed: groop/README.md, groop/docs/ROADMAP.md, groop/docs/STATUS.md, groop/MEASUREMENTS.md, groop/handoff/reports/P35-REPORT.md, groop/handoff/reports/P35-LOG.md
+- Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_collector.py::test_golden_jsonl_frame_matches_fixture groop/tests/test_host_device.py groop/tests/test_ui_banner.py groop/tests/test_p23_zram_drilldown.py groop/tests/test_acceptance.py -q -> 64 passed in 5.42s
+- Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile groop/src/groop/collect/host.py groop/src/groop/collect/collector.py groop/src/groop/ui/banner.py groop/src/groop/acceptance.py groop/tests/test_collector.py groop/tests/test_host_device.py groop/tests/test_ui_banner.py groop/tests/test_p23_zram_drilldown.py groop/tests/test_acceptance.py -> clean
+- Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q -> 336 passed in 41.41s
+- Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m groop.acceptance steady --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch --samples 2 --interval-s 0 --json -> exit 0, ok true, samples 2/2
+- Follow-up: Start P36/P37 from updated main
 ```
 
 ## Decisions
@@ -77,9 +86,13 @@ Append newest entries at the bottom.
 ## Validation
 
 ```bash
-# Acceptance tests (all 24: 13 smoke + 11 steady)
+# Initial agent acceptance tests (24 at that point: 13 smoke + 11 steady)
 PYTHONPATH=groop/src /home/vb/volkb79-2/vbpub/.venv/bin/python -m pytest groop/tests/test_acceptance.py -v
 # 24 passed in 4.49s
+
+# Controller acceptance tests after hardening (26: 13 smoke + 13 steady)
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_acceptance.py -q
+# 26 passed in 4.54s
 
 # py_compile
 PYTHONPATH=groop/src python3 -m py_compile groop/src/groop/acceptance.py groop/tests/test_acceptance.py

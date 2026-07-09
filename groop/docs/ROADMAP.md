@@ -60,14 +60,15 @@ After P34/P35, the roadmap is mostly in three buckets:
 
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
-| v1/v1.5 release confidence and UI polish | 3-4 | P35 steady evidence, P36 CPU sparklines, live TUI/DAMON evidence capture, final release docs. |
+| v1/v1.5 release confidence and UI polish | 2-3 | P36 CPU sparklines, live TUI/DAMON evidence capture, final release docs. |
 | v2 privileged daemon/BPF/admin/file work | 5-7 | BPF daemon lifecycle, paddr daemon ownership, install execution/service hardening, executable admin actions, inspect-files content mode, systemd property governance. |
 | Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
 
-Pragmatic estimate to implement the current roadmap end-to-end: **11-15 more
-small packages after P34/P35**, depending on how far "fully completed" includes
-optional plugins and web UI. A shippable v1/v1.5 release candidate should need
-about **3-5 more packages** plus live-host acceptance evidence.
+Pragmatic estimate from the current state: a shippable v1/v1.5 release
+candidate should need about **2-3 more packages** plus live-host acceptance
+evidence. Implementing the broader roadmap end-to-end still looks like **10-14
+small packages**, depending on whether "fully completed" includes optional
+plugins and web UI.
 
 ## Near Term
 
@@ -205,20 +206,24 @@ Report: `handoff/reports/P33-REPORT.md`.
 
 ### P34 - Host Device Banner
 
-Status: planned. P34 should add host-level per-device network and block-device
-rate summaries to the system banner using `Frame.host_meta`, without claiming
-per-cgroup attribution.
+Status: done. P34 adds host-level per-device network and block-device rate
+summaries to the system banner using `Frame.host_meta`, without claiming
+per-cgroup attribution. It intentionally keeps block/network fixture data
+deterministic and excludes `loop*`, `ram*`, `zram*`, `veth*`, bridge, docker,
+and loopback devices from the banner summary.
 
 Handoff: `handoff/P34-host-device-banner.md`.
+Report: `handoff/reports/P34-REPORT.md`.
 
 ### P35 - Acceptance Steady Harness
 
-Status: planned. P35 should extend the P33 acceptance module with a rootless
+Status: done. P35 extends the P33 acceptance module with a rootless
 multi-sample collector loop that records wall/CPU/RSS evidence and optional
 threshold checks. This is collector steady-state evidence, not a replacement for
 the final live Textual TUI measurement.
 
 Handoff: `handoff/P35-acceptance-steady-harness.md`.
+Report: `handoff/reports/P35-REPORT.md`.
 
 ### P36 - CPU Sparkline Surface
 
