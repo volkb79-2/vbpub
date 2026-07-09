@@ -18,8 +18,13 @@ from groop.daemon.client import DaemonClientError, current_frame
 from groop.daemon.deploy import (
     DEFAULT_DAEMON_GROUP,
     DEFAULT_DAEMON_SOCKET,
+    DEFAULT_SERVICE_DEST,
+    DEFAULT_TMPFILES_DEST,
+    build_install_plan,
+    install_plan_to_jsonable,
     preflight_daemon_deployment,
     preflight_report_to_jsonable,
+    render_install_plan_text,
     render_preflight_text,
 )
 from groop.daemon import FrameBroker, serve_unix_socket
@@ -97,6 +102,32 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
         help="expected daemon socket group",
     )
     preflight.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    install_plan = subparsers.add_parser("install-plan", help="show a safe install plan for the packaged daemon templates")
+    install_plan.add_argument(
+        "--socket",
+        type=Path,
+        default=DEFAULT_DAEMON_SOCKET,
+        help="daemon socket path for the planned deployment",
+    )
+    install_plan.add_argument(
+        "--group",
+        type=str,
+        default=DEFAULT_DAEMON_GROUP,
+        help="expected daemon socket group",
+    )
+    install_plan.add_argument(
+        "--service-dest",
+        type=Path,
+        default=DEFAULT_SERVICE_DEST,
+        help="destination path for the systemd service unit",
+    )
+    install_plan.add_argument(
+        "--tmpfiles-dest",
+        type=Path,
+        default=DEFAULT_TMPFILES_DEST,
+        help="destination path for the tmpfiles configuration",
+    )
+    install_plan.add_argument("--json", action="store_true", help="emit JSON instead of text")
     return parser.parse_args(argv)
 
 
@@ -454,6 +485,22 @@ def _main_daemon(argv: list[str]) -> int:
         else:
             print(render_preflight_text(report))
         return 0 if report.usable else 1
+    if args.command == "install-plan":
+        try:
+            plan = build_install_plan(
+                socket_path=args.socket,
+                group_name=args.group,
+                service_dest=args.service_dest,
+                tmpfiles_dest=args.tmpfiles_dest,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(install_plan_to_jsonable(plan), sort_keys=True))
+        else:
+            print(render_install_plan_text(plan))
+        return 0
     print("unknown daemon command", file=sys.stderr)
     return 2
 
