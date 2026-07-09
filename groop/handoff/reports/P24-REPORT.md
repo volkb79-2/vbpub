@@ -49,8 +49,19 @@ $ PYTHONPATH=groop/src:groop/tests /tmp/vbpub-groop-p17-venv/bin/python -m pytes
 34 passed in 14.54s
 
 $ PYTHONPATH=groop/src:groop/tests /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-170 passed in 28.03s
+170 passed in 26.70s after merge
 ```
+
+## Merge evidence
+
+P24 merged to `main` with:
+
+```bash
+git merge --no-ff feat/groop-p24-replay-jump -m "Merge groop P24 replay jump controls"
+```
+
+Post-merge validation from the main checkout: py_compile clean and full suite
+`170 passed in 26.70s`.
 
 9 new tests:
 - `test_replay_seek_timestamp_exact_and_clamped` — exact match, at-or-after, before-first, beyond-last, boundary.

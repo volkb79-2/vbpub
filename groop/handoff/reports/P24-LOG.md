@@ -49,6 +49,10 @@ steps so another controller can continue after a session limit.
 - Commands: py_compile changed files; focused replay/UI pytest; full pytest.
 - Files changed: groop/src/groop/ui/app.py, groop/tests/test_ui_app.py, groop/docs/STATUS.md, report/log.
 - Result: Non-finite jump values now report an error instead of risking callback failure; 9 new tests total; full suite passed with 170 tests.
+
+- Action: Controller merged P24 into `main` and reran validation from the main checkout.
+- Commands: `git merge --no-ff feat/groop-p24-replay-jump -m "Merge groop P24 replay jump controls"`, py_compile, full pytest.
+- Result: Merge succeeded; full suite passed with 170 tests in 26.70s.
 ```
 
 ## Decisions
@@ -79,7 +83,7 @@ PYTHONPATH=groop/src:groop/tests /tmp/vbpub-groop-p17-venv/bin/python -m pytest 
 # 34 passed in 14.54s
 
 PYTHONPATH=groop/src:groop/tests /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-# 170 passed in 28.03s
+# 170 passed in 26.70s after merge
 ```
 
 ## Handoff Checklist

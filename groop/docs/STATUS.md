@@ -124,7 +124,7 @@ Most recent full-suite validation (P24 - Replay timestamp jump):
 
 ```bash
 /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-# 170 passed in 28.03s before the P24 merge
+# 170 passed in 26.70s after the P24 merge
 ```
 
 Also validated: Python compile over P24 files and focused replay/UI tests.
