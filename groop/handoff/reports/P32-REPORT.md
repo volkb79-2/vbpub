@@ -80,6 +80,9 @@ PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile \
   groop/src/groop/cli.py \
   groop/tests/test_daemon_status.py
 # clean, exit 0
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 290 passed in 34.63s
 ```
 
 ## Known Gaps
