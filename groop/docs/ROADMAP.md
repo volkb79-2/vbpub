@@ -128,8 +128,15 @@ operator wants on top of the read-only socket boundary.
 
 ## Later
 
-- v2 admin action gating skeleton: disabled-by-default hotkeys, `--admin`,
-  exact-command preview, audit logging.
+### P21 — Admin Action Gating Skeleton
+
+Goal: add disabled-by-default, preview-only admin action planning with explicit
+`--admin`, exact argv previews, and audit logging, without executing
+Docker/systemd commands.
+
+Handoff: `handoff/P21-admin-action-gating-skeleton.md`.
+
+- Real Docker/systemd action execution.
 - `systemctl set-property` governance edits.
 - Docker/CIU action integration.
 - File/log/content inspection behind explicit `--inspect-files`.
