@@ -24,6 +24,20 @@ PYTHON = sys.executable
 SMOKE_ARGS = [str(PYTHON), "-m", "groop.acceptance", "smoke"]
 ENV = {**{k: v for k, v in os.environ.items()}, "PYTHONPATH": str(SRC)}
 
+STEADY_ARGS = [str(PYTHON), "-m", "groop.acceptance", "steady"]
+
+
+def _run_steady(*extra_args: str, **kwargs) -> subprocess.CompletedProcess:
+    """Run the steady harness as a subprocess and return the result."""
+    cmd = [*STEADY_ARGS, *extra_args]
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        env=ENV,
+        **kwargs,
+    )
+
 
 def _run_smoke(*extra_args: str, **kwargs) -> subprocess.CompletedProcess:
     """Run the smoke harness as a subprocess and return the result."""
@@ -226,3 +240,193 @@ def test_subprocess_missing_command_shows_usage() -> None:
         capture_output=True, text=True, env=ENV,
     )
     assert cp.returncode == 2
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for run_steady()
+# ---------------------------------------------------------------------------
+
+
+def test_run_steady_json_small_samples() -> None:
+    """Steady JSON with fixture root and --samples 2 --interval-s 0 produces ok=true."""
+    from groop.acceptance import run_steady
+
+    result = run_steady(
+        cgroup_root=FIXTURE_CGROUP,
+        samples=2,
+        interval_s=0,
+    )
+    assert result.ok is True
+    assert result.version == "0.1.0"
+    assert result.samples_requested == 2
+    assert result.samples_completed == 2
+    assert result.threshold_errors == []
+
+    for key in ("wall_s", "user_s", "sys_s", "rss_kb", "avg_sample_wall_s", "cpu_pct"):
+        assert key in result.measurements, f"Missing measurement: {key}"
+    ec = result.entity_counts
+    assert ec.get("min", -1) >= 7
+    assert ec.get("max", -1) >= 7
+    assert ec.get("last", -1) >= 7
+
+
+def test_run_steady_text_output() -> None:
+    """Steady text output contains expected markers."""
+    from groop.acceptance import format_steady_text, run_steady
+
+    result = run_steady(cgroup_root=FIXTURE_CGROUP, samples=2, interval_s=0)
+    text = format_steady_text(result)
+    assert "groop acceptance steady" in text
+    assert "ALL CHECKS PASSED" in text
+    assert "samples completed" in text
+    assert "Entity count:" in text
+    assert "wall:" in text
+    assert "cpu%:" in text
+    assert "RSS:" in text
+
+
+def test_run_steady_cpu_threshold_failure() -> None:
+    """CPU threshold failure returns ok=false with threshold_errors."""
+    from groop.acceptance import run_steady
+
+    result = run_steady(cgroup_root=FIXTURE_CGROUP, samples=2, interval_s=0, max_cpu_pct=0.0001)
+    assert result.ok is False
+    assert len(result.threshold_errors) >= 1
+    assert "CPU percent" in result.threshold_errors[0]
+
+
+def test_run_steady_rss_threshold_failure() -> None:
+    """RSS threshold failure returns ok=false with threshold_errors."""
+    from groop.acceptance import run_steady
+
+    result = run_steady(cgroup_root=FIXTURE_CGROUP, samples=2, interval_s=0, max_rss_kb=1)
+    assert result.ok is False
+    assert len(result.threshold_errors) >= 1
+    assert "RSS" in result.threshold_errors[0]
+
+
+def test_run_steady_collection_failure_is_not_success() -> None:
+    """Collection failures are reported and make the steady run fail."""
+    from groop.acceptance import run_steady
+
+    def _failing_collect(_root: Path | None):
+        raise RuntimeError("fixture boom")
+
+    result = run_steady(cgroup_root=FIXTURE_CGROUP, samples=2, interval_s=0, _collect=_failing_collect)
+    assert result.ok is False
+    assert result.samples_completed == 0
+    assert len(result.collection_errors) == 2
+    assert "fixture boom" in result.collection_errors[0]
+
+
+def test_run_steady_injectable_sleep() -> None:
+    """Injected sleep/perf_counter make the test fast and deterministic."""
+    from groop.acceptance import run_steady
+
+    _times = [100.0, 100.1, 100.2, 100.3, 100.4, 100.5]
+
+    def _fake_sleep(_secs: float) -> None:
+        pass
+
+    def _fake_perf_counter() -> float:
+        return _times.pop(0)
+
+    result = run_steady(
+        cgroup_root=FIXTURE_CGROUP, samples=2, interval_s=999,
+        _sleep=_fake_sleep, _perf_counter=_fake_perf_counter,
+    )
+    assert result.ok is True
+    assert result.samples_completed == 2
+
+
+def test_steady_pretty_json_parseable() -> None:
+    """Pretty JSON from steady is parseable and deterministically sorted."""
+    from groop.acceptance import format_steady_json, run_steady
+
+    result = run_steady(cgroup_root=FIXTURE_CGROUP, samples=2, interval_s=0)
+    json_str = format_steady_json(result, pretty=True)
+    obj = json.loads(json_str)
+    assert obj["ok"] is True
+    assert "samples_requested" in obj
+    assert "samples_completed" in obj
+    assert "measurements" in obj
+    assert "entity_counts" in obj
+    assert json_str.startswith("{\n  \"collection_errors\"")
+
+
+# ---------------------------------------------------------------------------
+# Subprocess tests for steady
+# ---------------------------------------------------------------------------
+
+
+def test_subprocess_steady_json() -> None:
+    """``python -m groop.acceptance steady --json`` on fixture root exit 0."""
+    cp = _run_steady(
+        "--cgroup-root", str(FIXTURE_CGROUP),
+        "--samples", "2", "--interval-s", "0",
+        "--json",
+    )
+    assert cp.returncode == 0, f"stderr={cp.stderr}"
+    obj = json.loads(cp.stdout)
+    assert obj["ok"] is True
+    assert obj["samples_completed"] == 2
+
+
+def test_subprocess_steady_cpu_threshold() -> None:
+    """CPU threshold failure via subprocess exits 1."""
+    cp = _run_steady(
+        "--cgroup-root", str(FIXTURE_CGROUP),
+        "--samples", "2", "--interval-s", "0",
+        "--max-cpu-pct", "0.0001",
+    )
+    assert cp.returncode == 1
+    assert "exceeds threshold" in cp.stdout
+
+
+def test_subprocess_steady_invalid_samples() -> None:
+    """Invalid --samples value exits 2."""
+    cp = _run_steady(
+        "--cgroup-root", str(FIXTURE_CGROUP),
+        "--samples", "-1", "--interval-s", "0",
+    )
+    assert cp.returncode == 2
+
+
+def test_subprocess_steady_invalid_interval() -> None:
+    """Negative --interval-s exits 2."""
+    cp = _run_steady(
+        "--cgroup-root", str(FIXTURE_CGROUP),
+        "--samples", "2", "--interval-s", "-0.1",
+    )
+    assert cp.returncode == 2
+
+
+def test_subprocess_steady_invalid_thresholds() -> None:
+    """Invalid threshold values exit 2."""
+    cp = _run_steady(
+        "--cgroup-root", str(FIXTURE_CGROUP),
+        "--samples", "2", "--interval-s", "0",
+        "--max-cpu-pct", "-1",
+    )
+    assert cp.returncode == 2
+
+    cp = _run_steady(
+        "--cgroup-root", str(FIXTURE_CGROUP),
+        "--samples", "2", "--interval-s", "0",
+        "--max-rss-kb", "0",
+    )
+    assert cp.returncode == 2
+
+
+def test_subprocess_steady_pretty_json() -> None:
+    """``--pretty-json`` with steady produces parseable indented JSON."""
+    cp = _run_steady(
+        "--cgroup-root", str(FIXTURE_CGROUP),
+        "--samples", "2", "--interval-s", "0",
+        "--pretty-json",
+    )
+    assert cp.returncode == 0
+    obj = json.loads(cp.stdout)
+    assert obj["ok"] is True
+    assert "\n" in cp.stdout
+    assert cp.stdout.startswith("{\n  \"collection_errors\"")

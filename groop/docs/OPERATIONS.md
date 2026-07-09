@@ -58,6 +58,14 @@ PYTHONPATH=groop/src python3 -m groop.acceptance smoke \
   --pretty-json
 ```
 
+Run a steady-state collector loop (release confidence, rootless):
+
+```bash
+PYTHONPATH=groop/src python3 -m groop.acceptance steady \
+  --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch \
+  --samples 5 --interval-s 0 --pretty-json
+```
+
 Inspect an incident snapshot:
 
 ```bash
