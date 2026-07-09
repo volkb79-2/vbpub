@@ -187,6 +187,112 @@ def cmd_tarball_validate(args: argparse.Namespace) -> None:
               f"&& sha256sum -c {info['asset']}.sha256")
 
 
+# ─── OCI image profile ───────────────────────────────────────────────────────
+
+def _check_prerequisites(repack: bool) -> None:
+    """Check that required CLI tools are available. Exit 3 (PREREQ_MISSING) if not."""
+    import shutil
+    from cmru import exit_codes
+
+    if shutil.which("docker") is None:
+        print("[ERROR] docker is required but not found in PATH", file=sys.stderr)
+        raise SystemExit(exit_codes.PREREQ_MISSING)
+
+    # docker buildx is a docker CLI plugin; verify it responds.
+    try:
+        subprocess.run(
+            ["docker", "buildx", "version"],
+            capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("[ERROR] docker buildx is required but not available", file=sys.stderr)
+        raise SystemExit(exit_codes.PREREQ_MISSING)
+
+    if repack:
+        if shutil.which("docker-repack") is None:
+            print(
+                "[ERROR] docker-repack is required (repack enabled) but not found in PATH",
+                file=sys.stderr,
+            )
+            raise SystemExit(exit_codes.PREREQ_MISSING)
+
+
+def _docker_login() -> None:
+    """Login to the container registry using GITHUB_USERNAME / GITHUB_PUSH_PAT / REGISTRY env."""
+    registry = os.getenv("REGISTRY") or "ghcr.io"
+    username = _require_env("GITHUB_USERNAME")
+    token = _require_env("GITHUB_PUSH_PAT")
+    print(f"[INFO] Logging into {registry} as {username}")
+    subprocess.run(
+        ["docker", "login", registry, "-u", username, "--password-stdin"],
+        input=f"{token}\n",
+        text=True,
+        check=True,
+    )
+
+
+def cmd_oci_image_build(args: argparse.Namespace) -> None:
+    """Build an OCI image using docker buildx bake, with optional repack."""
+    cwd = Path(args.cwd).resolve()
+    bake_file = args.bake_file
+    target = args.target
+    repack = args.repack
+
+    print(f"[INFO] cmru built-in: building OCI image in {cwd}")
+    print(f"[INFO]   bake_file={bake_file}  target={target}  repack={repack}")
+
+    _check_prerequisites(repack)
+    _docker_login()
+
+    if repack:
+        # Step a: produce OCI layout directly
+        oci_src = "/tmp/oci-src"
+        subprocess.run(
+            ["docker", "buildx", "bake", "-f", bake_file, target,
+             "--set", "*.output=type=oci,dest=" + oci_src],
+            cwd=str(cwd), check=True,
+        )
+        # Step b: repack the OCI layout
+        oci_dst = "/tmp/oci-dst"
+        repack_cmd = ["docker-repack", "--target-size", args.repack_target_size]
+        if args.repack_compression is not None:
+            repack_cmd.extend(["--compression", str(args.repack_compression)])
+        repack_cmd.extend(["oci://" + oci_src, "oci://" + oci_dst])
+        subprocess.run(repack_cmd, cwd=str(cwd), check=True)
+        # Step c: push from OCI layout
+        subprocess.run(
+            ["docker", "buildx", "build", "--push", f"oci://{oci_dst}"],
+            cwd=str(cwd), check=True,
+        )
+    else:
+        subprocess.run(
+            ["docker", "buildx", "bake", "-f", bake_file, target, "--load"],
+            cwd=str(cwd), check=True,
+        )
+
+    print("[INFO] OCI image build complete")
+
+
+def cmd_oci_image_push(args: argparse.Namespace) -> None:
+    """Push an OCI image. With repack the build step already pushed; without repack,
+    run ``docker buildx bake --push``."""
+    cwd = Path(args.cwd).resolve()
+    bake_file = args.bake_file
+    target = args.target
+
+    if args.repack:
+        print("[INFO] cmru built-in: OCI image push skipped (already pushed by repack build)")
+        return
+
+    print(f"[INFO] cmru built-in: pushing OCI image in {cwd}")
+    _docker_login()
+    subprocess.run(
+        ["docker", "buildx", "bake", "-f", bake_file, target, "--push"],
+        cwd=str(cwd), check=True,
+    )
+    print("[INFO] OCI image push complete")
+
+
 def main(argv: list | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="cmru.handlers",
@@ -236,6 +342,28 @@ def main(argv: list | None = None) -> None:
     p_tval.add_argument("--env-file", dest="env_file",
                         help="optional .env to seed GITHUB_* when run standalone (env wins)")
     p_tval.set_defaults(func=cmd_tarball_validate)
+
+    # ── oci-image subcommands ──────────────────────────────────────────────
+    p_ocib = sub.add_parser("oci-image-build",
+                            help="build OCI image with docker buildx bake (optional repack)")
+    p_ocib.add_argument("--cwd", required=True, help="project directory (holds bake file)")
+    p_ocib.add_argument("--bake-file", required=True, help="path to bake HCL file")
+    p_ocib.add_argument("--target", required=True, help="bake target name")
+    p_ocib.add_argument("--repack", action="store_true", help="enable OCI repack")
+    p_ocib.add_argument("--repack-target-size", default="100MB",
+                        help="target size per layer for repack (default: 100MB)")
+    p_ocib.add_argument("--repack-compression", type=int, default=None,
+                        help="compression level 1-22 for repack (default: auto)")
+    p_ocib.set_defaults(func=cmd_oci_image_build)
+
+    p_ocip = sub.add_parser("oci-image-push",
+                            help="push OCI image to registry")
+    p_ocip.add_argument("--cwd", required=True, help="project directory (holds bake file)")
+    p_ocip.add_argument("--bake-file", required=True, help="path to bake HCL file")
+    p_ocip.add_argument("--target", required=True, help="bake target name")
+    p_ocip.add_argument("--repack", action="store_true",
+                        help="repack mode (push already done in build step)")
+    p_ocip.set_defaults(func=cmd_oci_image_push)
 
     args = parser.parse_args(argv)
     args.func(args)

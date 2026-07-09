@@ -45,6 +45,16 @@ class VersionSpec:
 
 
 @dataclass(frozen=True)
+class OCIConfig:
+    """OCI build configuration (``[project.<name>.oci]`` section)."""
+    bake_file: str                     # path to docker-bake.hcl (relative to project cwd)
+    target: str                        # bake target name
+    repack: bool = False               # enable docker-repack after build
+    repack_target_size: str = "100MB"  # target size per layer (e.g. "100MB", "1GB")
+    repack_compression: int | None = None  # compression level 1-22 (None = auto)
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     name: str
     env: Mapping[str, str]
@@ -61,6 +71,7 @@ class ProjectConfig:
     artifacts: tuple = ()           # e.g. ("wheel",) | ("oci-image",) | ("oci-image","bundle")
     mint_tag: bool = True           # does cmru mint+push <prefix><semver> at HEAD?
     commit_generated: tuple = ()    # project-relative paths cmru commits after build
+    oci: Optional[OCIConfig] = None  # OCI build settings (from [project.<name>.oci])
 
 
 @dataclass(frozen=True)
@@ -376,8 +387,9 @@ def _resolve_release_profile(
 # A project that declares such a profile may OMIT the matching [steps.<step>] — cmru
 # synthesizes a step that runs the built-in handler. Any explicit step overrides it.
 _PROFILE_BUILTIN_STEPS = {
-    "wheel":   ("build", "push", "validate"),
-    "tarball": ("push", "validate"),          # build stays project-owned
+    "wheel":     ("build", "push", "validate"),
+    "tarball":   ("push", "validate"),          # build stays project-owned
+    "oci-image": ("build", "push"),
 }
 # Absolute path so the step works whether cmru is pip-installed or run from a checkout
 # (a bare `-m cmru.handlers` would fail in a subprocess that didn't inherit sys.path).
@@ -434,6 +446,28 @@ def _builtin_step_command(
                 argv = base + ["tarball-validate", "--prefix", bare]
             return Command(
                 label=f"{project.name}: tarball {step_name} (cmru built-in)",
+                argv=argv, cwd=cwd_abs,
+            )
+        elif artifact == "oci-image":
+            oci_cfg = getattr(project, "oci", None)
+            bake_file = oci_cfg.bake_file if oci_cfg else "docker-bake.hcl"
+            target = oci_cfg.target if oci_cfg else project.name
+            repack = oci_cfg.repack if oci_cfg else False
+            if step_name == "build":
+                argv = base + ["oci-image-build", "--cwd", str(cwd_abs),
+                               "--bake-file", bake_file, "--target", target]
+                if repack:
+                    argv.append("--repack")
+                    argv.extend(["--repack-target-size", oci_cfg.repack_target_size])
+                    if oci_cfg.repack_compression is not None:
+                        argv.extend(["--repack-compression", str(oci_cfg.repack_compression)])
+            else:  # push
+                argv = base + ["oci-image-push", "--cwd", str(cwd_abs),
+                               "--bake-file", bake_file, "--target", target]
+                if repack:
+                    argv.append("--repack")
+            return Command(
+                label=f"{project.name}: oci-image {step_name} (cmru built-in)",
                 argv=argv, cwd=cwd_abs,
             )
     return None
@@ -519,12 +553,43 @@ def load_config(
         # Change-detection watches the project cwd plus any extra version.paths (S12.3).
         extra_paths = list(version_spec.paths) if (version_spec and version_spec.paths) else []
         watch_paths = [proj_cwd or name] + extra_paths
+        # Parse optional [project.<name>.oci] section
+        oci_cfg: Optional[OCIConfig] = None
+        oci_raw = project.get("oci")
+        if oci_raw is not None:
+            if not isinstance(oci_raw, dict):
+                raise ValueError(f"project.{name}.oci must be a table")
+            bake_file = str(oci_raw.get("bake_file") or "docker-bake.hcl")
+            target = str(oci_raw.get("target") or name)
+            repack = bool(oci_raw.get("repack", False))
+            repack_target_size = str(oci_raw.get("repack_target_size") or "100MB")
+            repack_compression_raw = oci_raw.get("repack_compression")
+            repack_compression: int | None = None
+            if repack_compression_raw is not None:
+                try:
+                    repack_compression = int(repack_compression_raw)
+                except (ValueError, TypeError):
+                    raise ValueError(
+                        f"project.{name}.oci.repack_compression must be an integer"
+                    )
+                if repack_compression < 1 or repack_compression > 22:
+                    raise ValueError(
+                        f"project.{name}.oci.repack_compression must be between 1 and 22"
+                    )
+            oci_cfg = OCIConfig(
+                bake_file=bake_file, target=target,
+                repack=repack,
+                repack_target_size=repack_target_size,
+                repack_compression=repack_compression,
+            )
+
         projects[name] = ProjectConfig(
             name=name, env=project_env, steps=steps,
             prefix=proj_prefix, scm_dist=proj_scm_dist,
             cwd=proj_cwd, artifact=proj_artifact,
             version=version_spec, paths=watch_paths,
             artifacts=artifacts, mint_tag=mint_tag, commit_generated=commit_generated,
+            oci=oci_cfg,
         )
 
     # orchestration: sensible defaults so a minimal cmru.toml still works.
@@ -1377,15 +1442,22 @@ def _run_registry_project(repo_root: Path, configs: Mapping[str, "ProjectConfig"
 
     cmru stays generic here: it only commits the paths the project declared in
     ``[project.X.release].commit_generated`` and runs the project's own build/push steps.
+    Uses built-in ``oci-image`` handlers when no explicit ``[steps.*]`` are defined.
     """
     resolve_versions_from_git(repo_root, dict(configs))
     log_dir = repo_root / "logs"
     project = configs[name]
     cwd = getattr(project, "cwd", None) or name
 
-    if "build" in project.steps:
-        log_info(f"{name}: running step 'build'")
-        run_project_step(project, "build", repo_root, log_dir)
+    for step in ("build", "push"):
+        if step in project.steps:
+            log_info(f"{name}: running step '{step}'")
+            run_project_step(project, step, repo_root, log_dir)
+        elif _builtin_step_command(project, step, repo_root) is not None:
+            log_info(f"{name}: running step '{step}' (cmru built-in)")
+            run_project_step(project, step, repo_root, log_dir)
+        else:
+            log_info(f"{name}: no '{step}' step — skipping")
 
     # Commit the project-declared generated paths (e.g. package-manifests-versioned),
     # resolved relative to the project cwd. Skip cleanly if the build produced no diff.
@@ -1403,10 +1475,6 @@ def _run_registry_project(repo_root: Path, configs: Mapping[str, "ProjectConfig"
                     log_warn(f"{name}: push of manifest commit failed; commit it manually.")
         else:
             log_info(f"{name}: no manifest changes to commit")
-
-    if "push" in project.steps:
-        log_info(f"{name}: running step 'push'")
-        run_project_step(project, "push", repo_root, log_dir)
 
 
 def main(argv: Optional[List[str]] = None) -> None:
