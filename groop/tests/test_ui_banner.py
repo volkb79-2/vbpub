@@ -227,3 +227,52 @@ def test_frame_round_trip_preserves_net_and_block_devices() -> None:
     assert restored.host_meta is not None
     assert restored.host_meta["net_devices"] == frame.host_meta["net_devices"]
     assert restored.host_meta["block_devices"] == frame.host_meta["block_devices"]
+
+
+def test_banner_shows_loss_annotation_when_drops_nonzero() -> None:
+    """Loss/error annotation appears in NET line when rates are non-zero."""
+    frame = _make_base_frame()
+    frame.host_meta = {
+        "net_devices": [
+            {"name": "eth0", "rx_bps": 1000.0, "tx_bps": 500.0, "rx_pps": 10.0, "tx_pps": 5.0,
+             "rx_drops_s": 2.5, "tx_drops_s": 1.0, "rx_errors_s": 0.5, "tx_errors_s": 0.0, "src": "host"},
+        ],
+    }
+    snapshot = render_banner(frame, GroopConfig())
+    line = next(l for l in snapshot.lines if l.startswith("NET"))
+    assert "LOSS" in line
+    assert "rx_drop" in line
+    assert "tx_drop" in line
+    assert "rx_err" in line
+    assert "tx_err" not in line  # rate is 0.0, should be omitted
+    assert "2.50" in line or "2.5" in line
+    assert "eth0" in line
+
+
+def test_banner_shows_no_loss_annotation_when_all_zero() -> None:
+    """No LOSS annotation when all drop/error rates are zero."""
+    frame = _make_base_frame()
+    frame.host_meta = {
+        "net_devices": [
+            {"name": "eth0", "rx_bps": 1000.0, "tx_bps": 500.0, "rx_pps": 10.0, "tx_pps": 5.0,
+             "rx_drops_s": 0.0, "tx_drops_s": 0.0, "rx_errors_s": 0.0, "tx_errors_s": 0.0, "src": "host"},
+        ],
+    }
+    snapshot = render_banner(frame, GroopConfig())
+    line = next(l for l in snapshot.lines if l.startswith("NET"))
+    assert "LOSS" not in line
+
+
+def test_banner_loss_annotation_omits_none_values() -> None:
+    """None drop/error rates (first sample collecting) produce no LOSS annotation."""
+    frame = _make_base_frame()
+    frame.host_meta = {
+        "net_devices": [
+            {"name": "eth0", "rx_bps": None, "tx_bps": None, "rx_pps": None, "tx_pps": None,
+             "rx_drops_s": None, "tx_drops_s": None, "rx_errors_s": None, "tx_errors_s": None, "src": "host"},
+        ],
+    }
+    snapshot = render_banner(frame, GroopConfig())
+    line = next(l for l in snapshot.lines if l.startswith("NET"))
+    assert "LOSS" not in line
+    assert "collecting" in line

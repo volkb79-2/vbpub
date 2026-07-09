@@ -30,6 +30,10 @@ def test_net_dev_counters_parses_fixture(tmp_path: Path) -> None:
     assert devices[0]["tx_bytes"] == 9876543
     assert devices[0]["rx_packets"] == 9876
     assert devices[0]["tx_packets"] == 12345
+    assert devices[0]["rx_errors"] == 0
+    assert devices[0]["rx_drop"] == 0
+    assert devices[0]["tx_errors"] == 0
+    assert devices[0]["tx_drop"] == 0
     assert devices[0]["src"] == "host"
 
 
@@ -77,6 +81,10 @@ def test_net_dev_counters_shows_non_excluded_interface(tmp_path: Path) -> None:
     names = {d["name"] for d in devices}
     assert "eth0" in names
     assert "enp0s3" in names
+    assert devices[0]["rx_errors"] == 0
+    assert devices[0]["rx_drop"] == 0
+    assert devices[0]["tx_errors"] == 0
+    assert devices[0]["tx_drop"] == 0
 
 
 def test_block_dev_counters_parses_fixture(tmp_path: Path) -> None:
@@ -193,7 +201,7 @@ def test_apply_host_device_rates_first_sample_none() -> None:
 
     host_meta: dict[str, object] = {
         "net_device_counters": [
-            {"name": "eth0", "rx_bytes": 1000, "tx_bytes": 500, "rx_packets": 10, "tx_packets": 5, "src": "host"},
+            {"name": "eth0", "rx_bytes": 1000, "tx_bytes": 500, "rx_packets": 10, "tx_packets": 5, "rx_errors": 0, "rx_drop": 0, "tx_errors": 0, "tx_drop": 0, "src": "host"},
         ],
         "block_device_counters": [
             {"name": "nvme0n1", "rd_ios": 100, "rd_sectors": 800, "wr_ios": 50, "wr_sectors": 400, "src": "host"},
@@ -224,7 +232,7 @@ def test_apply_host_device_rates_second_sample_computes_rates() -> None:
     c = Collector()
     c._prev_device_counters = {
         "net_device_counters": [
-            {"name": "eth0", "rx_bytes": 1000, "tx_bytes": 500, "rx_packets": 10, "tx_packets": 5, "src": "host"},
+            {"name": "eth0", "rx_bytes": 1000, "tx_bytes": 500, "rx_packets": 10, "tx_packets": 5, "rx_errors": 0, "rx_drop": 0, "tx_errors": 0, "tx_drop": 0, "src": "host"},
         ],
         "block_device_counters": [
             {"name": "nvme0n1", "rd_ios": 100, "rd_sectors": 800, "wr_ios": 50, "wr_sectors": 400, "src": "host"},
@@ -233,7 +241,7 @@ def test_apply_host_device_rates_second_sample_computes_rates() -> None:
 
     host_meta: dict[str, object] = {
         "net_device_counters": [
-            {"name": "eth0", "rx_bytes": 2000, "tx_bytes": 1000, "rx_packets": 20, "tx_packets": 10, "src": "host"},
+            {"name": "eth0", "rx_bytes": 2000, "tx_bytes": 1000, "rx_packets": 20, "tx_packets": 10, "rx_errors": 0, "rx_drop": 0, "tx_errors": 0, "tx_drop": 0, "src": "host"},
         ],
         "block_device_counters": [
             {"name": "nvme0n1", "rd_ios": 150, "rd_sectors": 1600, "wr_ios": 75, "wr_sectors": 800, "src": "host"},
@@ -262,7 +270,7 @@ def test_apply_host_device_rates_counter_reset_handled() -> None:
     c = Collector()
     c._prev_device_counters = {
         "net_device_counters": [
-            {"name": "eth0", "rx_bytes": 5000, "tx_bytes": 2000, "rx_packets": 100, "tx_packets": 50, "src": "host"},
+            {"name": "eth0", "rx_bytes": 5000, "tx_bytes": 2000, "rx_packets": 100, "tx_packets": 50, "rx_errors": 0, "rx_drop": 0, "tx_errors": 0, "tx_drop": 0, "src": "host"},
         ],
         "block_device_counters": [
             {"name": "nvme0n1", "rd_ios": 500, "rd_sectors": 4000, "wr_ios": 200, "wr_sectors": 2000, "src": "host"},
@@ -271,7 +279,7 @@ def test_apply_host_device_rates_counter_reset_handled() -> None:
 
     host_meta: dict[str, object] = {
         "net_device_counters": [
-            {"name": "eth0", "rx_bytes": 100, "tx_bytes": 50, "rx_packets": 5, "tx_packets": 2, "src": "host"},
+            {"name": "eth0", "rx_bytes": 100, "tx_bytes": 50, "rx_packets": 5, "tx_packets": 2, "rx_errors": 0, "rx_drop": 0, "tx_errors": 0, "tx_drop": 0, "src": "host"},
         ],
         "block_device_counters": [
             {"name": "nvme0n1", "rd_ios": 10, "rd_sectors": 100, "wr_ios": 5, "wr_sectors": 50, "src": "host"},
@@ -294,7 +302,7 @@ def test_apply_host_device_rates_new_device_none() -> None:
     c = Collector()
     c._prev_device_counters = {
         "net_device_counters": [
-            {"name": "eth0", "rx_bytes": 1000, "tx_bytes": 500, "rx_packets": 10, "tx_packets": 5, "src": "host"},
+            {"name": "eth0", "rx_bytes": 1000, "tx_bytes": 500, "rx_packets": 10, "tx_packets": 5, "rx_errors": 0, "rx_drop": 0, "tx_errors": 0, "tx_drop": 0, "src": "host"},
         ],
         "block_device_counters": [
             {"name": "nvme0n1", "rd_ios": 100, "rd_sectors": 800, "wr_ios": 50, "wr_sectors": 400, "src": "host"},
@@ -303,7 +311,7 @@ def test_apply_host_device_rates_new_device_none() -> None:
 
     host_meta: dict[str, object] = {
         "net_device_counters": [
-            {"name": "eth1", "rx_bytes": 100, "tx_bytes": 50, "rx_packets": 5, "tx_packets": 2, "src": "host"},
+            {"name": "eth1", "rx_bytes": 100, "tx_bytes": 50, "rx_packets": 5, "tx_packets": 2, "rx_errors": 0, "rx_drop": 0, "tx_errors": 0, "tx_drop": 0, "src": "host"},
         ],
         "block_device_counters": [
             {"name": "sda", "rd_ios": 10, "rd_sectors": 100, "wr_ios": 5, "wr_sectors": 50, "src": "host"},
@@ -316,3 +324,90 @@ def test_apply_host_device_rates_new_device_none() -> None:
     assert net[0]["name"] == "eth1"
     assert net[0]["rx_bps"] is None
     assert net[0]["tx_bps"] is None
+    assert net[0]["rx_errors_s"] is None
+    assert net[0]["rx_drops_s"] is None
+    assert net[0]["tx_errors_s"] is None
+    assert net[0]["tx_drops_s"] is None
+
+
+def test_net_dev_counters_includes_drops_and_errors(tmp_path: Path) -> None:
+    """Non-zero rx_drop, rx_errors, tx_drop, tx_errors are parsed."""
+    proc = tmp_path / "proc"
+    net = proc / "net"
+    net.mkdir(parents=True)
+    (net / "dev").write_text(
+        "Inter-|   Receive                                                |  Transmit\n"
+        " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n"
+        "  eth0: 1000000   10000    5   12    0     0          0         0  2000000   20000    3    8    0     0       0          0\n"
+    )
+
+    devices = _net_dev_counters(proc)
+
+    assert len(devices) == 1
+    assert devices[0]["name"] == "eth0"
+    assert devices[0]["rx_drop"] == 12
+    assert devices[0]["rx_errors"] == 5
+    assert devices[0]["tx_drop"] == 8
+    assert devices[0]["tx_errors"] == 3
+    assert devices[0]["rx_bytes"] == 1000000
+    assert devices[0]["tx_bytes"] == 2000000
+
+
+def test_apply_host_device_rates_computes_drop_error_rates() -> None:
+    """Second sample computes drop and error rates correctly."""
+    from groop.collect.collector import Collector
+
+    c = Collector()
+    c._prev_device_counters = {
+        "net_device_counters": [
+            {"name": "eth0", "rx_bytes": 1000, "tx_bytes": 500, "rx_packets": 10, "tx_packets": 5,
+             "rx_errors": 5, "rx_drop": 12, "tx_errors": 3, "tx_drop": 8, "src": "host"},
+        ],
+    }
+
+    host_meta: dict[str, object] = {
+        "net_device_counters": [
+            {"name": "eth0", "rx_bytes": 2000, "tx_bytes": 1000, "rx_packets": 20, "tx_packets": 10,
+             "rx_errors": 15, "rx_drop": 24, "tx_errors": 6, "tx_drop": 12, "src": "host"},
+        ],
+    }
+
+    c._apply_host_device_rates(host_meta, 5.0)
+
+    net = host_meta["net_devices"]
+    assert net[0]["rx_errors_s"] == 2.0    # (15-5)/5
+    assert net[0]["rx_drops_s"] == 2.4     # (24-12)/5
+    assert net[0]["tx_errors_s"] == 0.6    # (6-3)/5
+    assert net[0]["tx_drops_s"] == 0.8     # (12-8)/5
+    assert net[0]["rx_bps"] == 200.0
+    assert net[0]["tx_bps"] == 100.0
+
+
+def test_apply_host_device_rates_drop_error_reset_handled() -> None:
+    """Counter regression for drops/errors produces zero rate (not negative)."""
+    from groop.collect.collector import Collector
+
+    c = Collector()
+    c._prev_device_counters = {
+        "net_device_counters": [
+            {"name": "eth0", "rx_bytes": 5000, "tx_bytes": 2000, "rx_packets": 100, "tx_packets": 50,
+             "rx_errors": 50, "rx_drop": 100, "tx_errors": 30, "tx_drop": 80, "src": "host"},
+        ],
+    }
+
+    host_meta: dict[str, object] = {
+        "net_device_counters": [
+            {"name": "eth0", "rx_bytes": 100, "tx_bytes": 50, "rx_packets": 5, "tx_packets": 2,
+             "rx_errors": 5, "rx_drop": 10, "tx_errors": 3, "tx_drop": 8, "src": "host"},
+        ],
+    }
+
+    c._apply_host_device_rates(host_meta, 5.0)
+
+    net = host_meta["net_devices"]
+    assert net[0]["rx_errors_s"] == 0.0
+    assert net[0]["rx_drops_s"] == 0.0
+    assert net[0]["tx_errors_s"] == 0.0
+    assert net[0]["tx_drops_s"] == 0.0
+    assert net[0]["rx_bps"] == 0.0
+    assert net[0]["tx_bps"] == 0.0

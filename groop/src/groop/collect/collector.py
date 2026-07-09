@@ -237,6 +237,10 @@ class Collector:
                     "tx_bps": None,
                     "rx_pps": None,
                     "tx_pps": None,
+                    "rx_errors_s": None,
+                    "rx_drops_s": None,
+                    "tx_errors_s": None,
+                    "tx_drops_s": None,
                     "src": d["src"],
                 }
                 for d in net_raw
@@ -249,18 +253,26 @@ class Collector:
                 name = str(d["name"])
                 pd = prev_map.get(name)
                 if pd is None or interval_s <= 0:
-                    net_rates.append({"name": name, "rx_bps": None, "tx_bps": None, "rx_pps": None, "tx_pps": None, "src": "host"})
+                    net_rates.append({"name": name, "rx_bps": None, "tx_bps": None, "rx_pps": None, "tx_pps": None, "rx_errors_s": None, "rx_drops_s": None, "tx_errors_s": None, "tx_drops_s": None, "src": "host"})
                 else:
                     rx_b_delta = int(d["rx_bytes"]) - int(pd["rx_bytes"])
                     tx_b_delta = int(d["tx_bytes"]) - int(pd["tx_bytes"])
                     rx_p_delta = int(d["rx_packets"]) - int(pd["rx_packets"])
                     tx_p_delta = int(d["tx_packets"]) - int(pd["tx_packets"])
+                    rx_e_delta = int(d["rx_errors"]) - int(pd["rx_errors"])
+                    rx_d_delta = int(d["rx_drop"]) - int(pd["rx_drop"])
+                    tx_e_delta = int(d["tx_errors"]) - int(pd["tx_errors"])
+                    tx_d_delta = int(d["tx_drop"]) - int(pd["tx_drop"])
                     net_rates.append({
                         "name": name,
                         "rx_bps": max(0.0, rx_b_delta / interval_s),
                         "tx_bps": max(0.0, tx_b_delta / interval_s),
                         "rx_pps": max(0.0, rx_p_delta / interval_s),
                         "tx_pps": max(0.0, tx_p_delta / interval_s),
+                        "rx_errors_s": max(0.0, rx_e_delta / interval_s),
+                        "rx_drops_s": max(0.0, rx_d_delta / interval_s),
+                        "tx_errors_s": max(0.0, tx_e_delta / interval_s),
+                        "tx_drops_s": max(0.0, tx_d_delta / interval_s),
                         "src": "host",
                     })
             del prev_map

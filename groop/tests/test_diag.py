@@ -258,3 +258,78 @@ def test_replay_keeps_existing_findings_but_fills_pressure(tmp_path: Path) -> No
     entity_frame = replay.current.entities["svc.scope"]
     assert [finding.rule_id for finding in entity_frame.findings] == ["already_present"]
     assert entity_frame.metrics["pressure"].v and entity_frame.metrics["pressure"].v > 0
+
+
+def test_annotate_adds_host_network_loss_finding() -> None:
+    """host_meta with non-zero drop/error rates produces host_network_loss finding on root entity."""
+    root_entity = Entity(key="", kind="root", parent=None)
+    root_ef = EntityFrame(entity=root_entity, metrics={})
+
+    host_metrics: dict[str, MetricValue] = {
+        "host_load1": MetricValue(0.1, "host"),
+        "host_load5": MetricValue(0.2, "host"),
+        "host_load15": MetricValue(0.3, "host"),
+    }
+
+    frame = Frame(
+        1, 100.0, 5.0,
+        host=host_metrics,
+        entities={"": root_ef},
+        host_meta={
+            "net_devices": [
+                {"name": "eth0", "rx_bps": 1000.0, "tx_bps": 500.0, "rx_pps": 10.0, "tx_pps": 5.0,
+                 "rx_drops_s": 5.0, "tx_drops_s": 2.0, "rx_errors_s": 1.0, "tx_errors_s": 0.0, "src": "host"},
+            ],
+        },
+    )
+
+    annotate(frame, CONFIG)
+
+    assert len(root_ef.findings) >= 1
+    host_finding = next((f for f in root_ef.findings if f.rule_id == "host_network_loss"), None)
+    assert host_finding is not None
+    assert host_finding.severity == "warn"
+    assert "eth0" in host_finding.message
+    assert "per-cgroup attribution requires BPF" in host_finding.message
+    assert "rx drops" in host_finding.message
+    assert host_finding.remedy is not None
+    assert host_finding.confidence == "exact"
+
+
+def test_annotate_no_host_network_loss_when_zero() -> None:
+    """No host_network_loss finding when all drop/error rates are zero."""
+    root_entity = Entity(key="", kind="root", parent=None)
+    root_ef = EntityFrame(entity=root_entity, metrics={})
+
+    host_metrics: dict[str, MetricValue] = {
+        "host_load1": MetricValue(0.1, "host"),
+        "host_load5": MetricValue(0.2, "host"),
+        "host_load15": MetricValue(0.3, "host"),
+    }
+
+    frame = Frame(
+        1, 100.0, 5.0,
+        host=host_metrics,
+        entities={"": root_ef},
+        host_meta={
+            "net_devices": [
+                {"name": "eth0", "rx_bps": 1000.0, "tx_bps": 500.0, "rx_pps": 10.0, "tx_pps": 5.0,
+                 "rx_drops_s": 0.0, "tx_drops_s": 0.0, "rx_errors_s": 0.0, "tx_errors_s": 0.0, "src": "host"},
+            ],
+        },
+    )
+
+    annotate(frame, CONFIG)
+
+    host_finding = next((f for f in root_ef.findings if f.rule_id == "host_network_loss"), None)
+    assert host_finding is None
+
+
+def test_annotate_no_host_network_loss_when_no_meta() -> None:
+    """No host_network_loss finding when host_meta is absent."""
+    root_entity = Entity(key="", kind="root", parent=None)
+    root_ef = EntityFrame(entity=root_entity, metrics={})
+    frame = Frame(1, 100.0, 5.0, {}, {"": root_ef})
+    annotate(frame, CONFIG)
+    host_finding = next((f for f in root_ef.findings if f.rule_id == "host_network_loss"), None)
+    assert host_finding is None
