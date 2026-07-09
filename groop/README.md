@@ -90,6 +90,8 @@ Useful feature hotkeys in the TUI:
 | P31 | Done | Daemon client error guidance | v1.5/v2 daemon usability | Add actionable preflight/install-plan guidance to attach/current daemon client failures. Handoff: `handoff/P31-daemon-client-error-guidance.md`. Report: `handoff/reports/P31-REPORT.md`. |
 | P32 | Done | Daemon status command | v1.5/v2 daemon usability | Add read-only `groop daemon status` combining deployment preflight and current-frame protocol checks. Handoff: `handoff/P32-daemon-status-command.md`. Report: `handoff/reports/P32-REPORT.md`. |
 | P33 | Done | Release smoke harness | v1/v1.5 release confidence | Add rootless `python -m groop.acceptance smoke` for deterministic safe-path evidence. Handoff: `handoff/P33-release-smoke-harness.md`. Report: `handoff/reports/P33-REPORT.md`. |
+| P34 | Planned | Host device banner | v1 polish | Add host-level per-device network and block-device rate summaries to the system banner via `host_meta`. Handoff: `handoff/P34-host-device-banner.md`. |
+| P35 | Planned | Acceptance steady harness | v1/v1.5 release confidence | Add rootless multi-sample collector CPU/RSS evidence command under `python -m groop.acceptance steady`. Handoff: `handoff/P35-acceptance-steady-harness.md`. |
 
 ## Completed Package Order
 

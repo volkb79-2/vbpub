@@ -48,6 +48,8 @@ flowchart TD
     P30 --> P31[P31 Daemon client error guidance]
     P31 --> P32[P32 Daemon status command]
     P12 --> P33[P33 Release smoke harness]
+    P33 --> P35[P35 Acceptance steady harness]
+    P13 --> P34[P34 Host device banner]
 ```
 
 ## Near Term
@@ -183,6 +185,23 @@ output.
 
 Handoff: `handoff/P33-release-smoke-harness.md`.
 Report: `handoff/reports/P33-REPORT.md`.
+
+### P34 - Host Device Banner
+
+Status: planned. P34 should add host-level per-device network and block-device
+rate summaries to the system banner using `Frame.host_meta`, without claiming
+per-cgroup attribution.
+
+Handoff: `handoff/P34-host-device-banner.md`.
+
+### P35 - Acceptance Steady Harness
+
+Status: planned. P35 should extend the P33 acceptance module with a rootless
+multi-sample collector loop that records wall/CPU/RSS evidence and optional
+threshold checks. This is collector steady-state evidence, not a replacement for
+the final live Textual TUI measurement.
+
+Handoff: `handoff/P35-acceptance-steady-harness.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 
