@@ -55,6 +55,44 @@ Inspect an incident snapshot:
 groop snapshot inspect /path/to/groop-incident-*.tar
 ```
 
+Check daemon deployment and protocol status (non-root, read-only):
+
+```bash
+groop daemon status                              # default socket and group
+groop daemon status --json                       # JSON output
+groop daemon status --pretty-json                # indented JSON
+groop daemon status --socket /custom/path.sock --group mygroup
+```
+
+Retrieve one canonical frame from the daemon socket:
+
+```bash
+groop daemon current                             # default socket
+groop daemon current --socket /custom/path.sock --pretty-json
+```
+
+Attach to a running daemon (interactive TUI or one-shot):
+
+```bash
+groop --attach                                   # default socket, interactive UI
+groop --attach --once --json                     # default socket, one frame
+groop --attach /run/groop/groop.sock             # explicit socket
+```
+
+Run the daemon deployment preflight check:
+
+```bash
+groop daemon preflight                           # default socket
+groop daemon preflight --socket /custom/path.sock --json
+```
+
+View the safe install plan for the packaged daemon templates:
+
+```bash
+groop daemon install-plan                        # text plan
+groop daemon install-plan --json                 # JSON plan
+```
+
 Snapshots are written to `[snapshots].dir` when configured, otherwise
 `$XDG_STATE_HOME/groop/incidents` or `~/.local/state/groop/incidents`.
 They include bounded frame history, selected cgroup files, provider status,

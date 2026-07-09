@@ -9,6 +9,11 @@ from groop.daemon.client import (
     current_frame_stream,
     stream_frames,
 )
+from groop.daemon.status import (
+    DaemonStatusReport,
+    ProtocolStatus,
+    build_daemon_status,
+)
 
 __all__ = [
     "DaemonClient",
@@ -16,7 +21,10 @@ __all__ = [
     "DaemonConnectError",
     "DaemonProtocolError",
     "DaemonResponseError",
+    "DaemonStatusReport",
     "FrameBroker",
+    "ProtocolStatus",
+    "build_daemon_status",
     "current_frame",
     "current_frame_stream",
     "serve_unix_socket",
