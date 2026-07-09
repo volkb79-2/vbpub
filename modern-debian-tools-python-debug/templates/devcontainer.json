@@ -56,10 +56,10 @@
     // Host letsencrypt certs (readonly). Consider security implications.
     // "source=/etc/letsencrypt,target=/etc/letsencrypt,type=bind,consistency=cached,readonly",
 
-    // ── Host ssh keys (readonly, dual-use: native keys + in-container) ─────────
+    // ── Host ssh keys (readonly, dual-use: native keys + in-container), owned by host ─────────
     "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh-host,type=bind,consistency=cached,readonly",
 
-    // ── PERSISTENT STATE (~/mdt--mounted-folders/) — survives rebuilds ────────
+    // ── PERSISTENT STATE (~/mdt--mounted-folders/) — survives rebuilds, owned by container ────────
     // Directory mounts (alphabetical by subdir name)
     "source=${localEnv:HOME}/mdt--mounted-folders/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
@@ -68,7 +68,7 @@
     "source=${localEnv:HOME}/mdt--mounted-folders/.minisign,target=/home/vscode/.minisign,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.openclaw,target=/home/vscode/.openclaw,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix,target=/home/vscode/.reasonix,type=bind,consistency=cached",
-    "source=${localEnv:HOME}/mdt--mounted-folders/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached,readonly",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached",
     // File-level state mounts (not inside a subdirectory)
     "source=${localEnv:HOME}/mdt--mounted-folders/.claude.json,target=/home/vscode/.claude.json,type=bind,consistency=cached",
     // "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix.toml,target=/home/vscode/.reasonix.toml,type=bind,consistency=cached",
