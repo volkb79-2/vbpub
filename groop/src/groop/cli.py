@@ -15,6 +15,13 @@ from groop.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, 
 from groop.damon.passive import DEFAULT_DAMON_ROOT
 from groop.damon.paddr import paddr_confirmation_text, plan_start_paddr_session, start_planned_paddr_session
 from groop.daemon.client import DaemonClientError, current_frame
+from groop.daemon.deploy import (
+    DEFAULT_DAEMON_GROUP,
+    DEFAULT_DAEMON_SOCKET,
+    preflight_daemon_deployment,
+    preflight_report_to_jsonable,
+    render_preflight_text,
+)
 from groop.daemon import FrameBroker, serve_unix_socket
 from groop.model import frame_to_jsonable
 from groop.record.live import live_frame_stream
@@ -76,6 +83,20 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
     serve.add_argument("--config", type=Path, default=None, help="load config from PATH instead of the default XDG location")
     serve.add_argument("--cgroup-root", type=Path, default=None, help="cgroup v2 root for live or fixture collection")
     serve.add_argument("--history-size", type=int, default=120, help="bounded in-memory frame history")
+    preflight = subparsers.add_parser("preflight", help="check daemon deployment readiness")
+    preflight.add_argument(
+        "--socket",
+        type=Path,
+        default=DEFAULT_DAEMON_SOCKET,
+        help="daemon socket path to inspect",
+    )
+    preflight.add_argument(
+        "--group",
+        type=str,
+        default=DEFAULT_DAEMON_GROUP,
+        help="expected daemon socket group",
+    )
+    preflight.add_argument("--json", action="store_true", help="emit JSON instead of text")
     return parser.parse_args(argv)
 
 
@@ -356,6 +377,17 @@ def _main_daemon(argv: list[str]) -> int:
             return 0
         finally:
             server.server_close()
+    if args.command == "preflight":
+        try:
+            report = preflight_daemon_deployment(args.socket, group_name=args.group)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(preflight_report_to_jsonable(report), sort_keys=True))
+        else:
+            print(render_preflight_text(report))
+        return 0 if report.usable else 1
     print("unknown daemon command", file=sys.stderr)
     return 2
 

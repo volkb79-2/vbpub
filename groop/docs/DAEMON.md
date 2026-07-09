@@ -55,6 +55,28 @@ Current slice limitations:
 - The daemon protocol remains read-only; there is still no file-read, command,
   Docker/systemd mutation, or DAMON mutation verb.
 
+## Deployment Checklist
+
+The packaged operator templates live under `src/groop/assets/systemd/`:
+
+- `groop.service` starts `groop daemon serve --socket /run/groop/groop.sock`
+  as a root daemon with a group-readable socket.
+- `groop.tmpfiles` creates `/run/groop` with `0750 root:groop`.
+
+Before enabling the service:
+
+1. Create the `groop` group.
+2. Add the approved non-root users who should attach to the daemon socket.
+3. Install the service and tmpfiles templates.
+4. Start the daemon.
+5. Run `groop daemon preflight --socket /run/groop/groop.sock` from the client
+   account to confirm that the runtime directory, socket permissions, and
+   group membership are usable.
+
+The preflight command is read-only. It inspects the socket path, parent
+directory, group membership, and local connectability without mutating host
+state or invoking systemd.
+
 ## Threat Model
 
 The daemon may run with privileges so it can read root-only kernel/debugfs/DAMON
