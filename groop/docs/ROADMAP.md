@@ -44,6 +44,7 @@ flowchart TD
     P19 --> P27[P27 Swap/refault terminology aliases]
     P6 --> P28[P28 I/O cap saturation]
     P21 --> P29[P29 Inspect-files safety skeleton]
+    P20 --> P30[P30 Daemon default client UX]
 ```
 
 ## Near Term
@@ -137,6 +138,15 @@ safety validation, and structural no-subprocess/no-file-read guarantees.
 
 Handoff: `handoff/P29-inspect-files-safety-skeleton.md`.
 Report: `handoff/reports/P29-REPORT.md`.
+
+### P30 - Daemon Default Client UX
+
+Status: planned. P30 should make the existing root-daemon/non-root-client path
+less cumbersome by allowing default-socket attach and adding a read-only
+`groop daemon current` one-frame command. It must not add install execution,
+systemd mutation, protocol changes, or daemon-side privilege changes.
+
+Handoff: `handoff/P30-daemon-default-client.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 

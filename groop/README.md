@@ -86,6 +86,7 @@ Useful feature hotkeys in the TUI:
 | P27 | Done | Swap/refault terminology aliases | v1.5 polish | Preserve canonical `swap_disk`/`rf_d_per_s` metrics while adding backend-aware aliases and labels. Handoff: `handoff/P27-swap-refault-aliases.md`. Report: `handoff/reports/P27-REPORT.md`. |
 | P28 | Done | I/O cap saturation metric | v1 diagnostics polish | Populate dormant `io_cap_saturation_pct` from `io.max` and I/O rate counters. Handoff: `handoff/P28-io-cap-saturation.md`. Report: `handoff/reports/P28-REPORT.md`. |
 | P29 | Done | Inspect-files safety skeleton | v2 foundation | Add disabled-by-default, read-only file/log inspection planning module and CLI plan command. No content reads, no subprocess execution, no host mutation. Handoff: `handoff/P29-inspect-files-safety-skeleton.md`. Report: `handoff/reports/P29-REPORT.md`. |
+| P30 | Planned | Daemon default client UX | v1.5/v2 daemon usability | Make default-socket daemon attach and one-frame daemon reads easier for non-root clients without adding privileged behavior. Handoff: `handoff/P30-daemon-default-client.md`. |
 
 ## Completed Package Order
 
