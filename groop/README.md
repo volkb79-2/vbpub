@@ -83,7 +83,7 @@ Useful feature hotkeys in the TUI:
 | P24 | Done | Replay timestamp jump controls | v1 polish | Add replay first/last and frame/timestamp jump controls. Handoff: `handoff/P24-replay-timestamp-jump.md`. Report: `handoff/reports/P24-REPORT.md`. |
 | P25 | Done | Daemon deployment install plan | v1.5/v2 foundation | Render safe operator install steps for the packaged daemon service/tmpfiles templates. Handoff: `handoff/P25-daemon-install-plan.md`. Report: `handoff/reports/P25-REPORT.md`. |
 | P26 | Done | Snapshot progress UI | v1.5 polish | Make TUI snapshot creation visibly running, guarded against duplicate starts, and statused on success/failure. Handoff: `handoff/P26-snapshot-progress-ui.md`. Report: `handoff/reports/P26-REPORT.md`. |
-| P27 | Planned | Swap/refault terminology aliases | v1.5 polish | Preserve canonical `swap_disk`/`rf_d_per_s` metrics while adding backend-aware aliases and labels. Handoff: `handoff/P27-swap-refault-aliases.md`. |
+| P27 | Done | Swap/refault terminology aliases | v1.5 polish | Preserve canonical `swap_disk`/`rf_d_per_s` metrics while adding backend-aware aliases and labels. Handoff: `handoff/P27-swap-refault-aliases.md`. Report: `handoff/reports/P27-REPORT.md`. |
 
 ## Completed Package Order
 

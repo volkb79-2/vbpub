@@ -56,6 +56,11 @@ core workflows, not yet production-certified.**
   gated by explicit `--admin` and optional JSONL audit logging.
 - Safe BPF network accounting gate (`groop bpf gate`) and v2 BPF design doc;
   the gate is no-op and never loads or pins BPF state.
+- Swap/refault terminology aliases layer (`groop/ui/aliases.py`) resolving
+  `swap_dev` -> `swap_disk` and `rf_dev_per_s`/`rf_dev`/`rf_d` ->
+  `rf_d_per_s` in configured profiles, with backend-aware display labels (`SWAP_DEV`,
+  `RF_DEV/S`) and diagnostic wording that avoids overclaiming physical disk
+  on zram/mixed hosts.
 
 ## Partially Implemented
 
@@ -64,7 +69,8 @@ core workflows, not yet production-certified.**
   §3.0 are not complete.
 - **Compressed swap:** zswap host/cgroup metrics, host ZRAM totals,
   `/proc/swaps` backend classification, mixed-backend banner wording, and
-  per-device ZRAM drill-down are implemented. See
+  per-device ZRAM drill-down are implemented. Backend-aware aliases and
+  diagnostic wording landed in P27. See
   `docs/COMPRESSED-SWAP.md`.
 - **Tree view:** full tree rendering and expand/collapse state exist.
 - **Replay UI:** replay feeds the same UI with mode/status, pause/resume,
@@ -124,12 +130,12 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P26 - Snapshot progress UI):
+Most recent full-suite validation (P27 - Swap/refault aliases):
 
 ```bash
 python3 -m pytest groop/tests -q
-# 181 passed in 28.52s after the P26 merge
+# 201 passed in 28.91s before merge
 ```
 
-Also validated: Python compile over P26 files.
-P26 separately validated snapshot progress, duplicate-start guard, and failure reporting.
+Also validated: Python compile over P27 files.
+P27 separately validated alias resolution, backend-aware labels, diagnostic wording changes.

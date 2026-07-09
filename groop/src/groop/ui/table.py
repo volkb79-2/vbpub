@@ -8,6 +8,7 @@ from rich.text import Text
 from groop.config import GroopConfig
 from groop.model import Entity, EntityFrame, Frame, MetricValue
 from groop.registry import REGISTRY
+from groop.ui.aliases import resolve_column
 
 PROFILE_ORDER = ("auto", "triage", "memory", "network", "governance", "damon", "wide", "minimal")
 SORT_ORDER = ("pressure", "ram", "cpu_pct", "name")
@@ -40,10 +41,14 @@ _LABELS = {
     "z_pool": "Z_POOL",
     "z_eq": "Z_EQ",
     "ratio": "RATIO",
-    "swap_disk": "SWAP",
+    "swap_disk": "SWAP_DEV",
     "rf_z_per_s": "RF_Z/S",
-    "rf_d_per_s": "RF_D/S",
+    "rf_d_per_s": "RF_DEV/S",
     "rf_f_per_s": "RF_F/S",
+    "swap_dev": "SWAP_DEV",
+    "rf_dev_per_s": "RF_DEV/S",
+    "rf_dev": "RF_DEV/S",
+    "rf_d": "RF_DEV/S",
     "cpu_pct": "CPU%",
     "cpu_weight": "CPU.W",
     "psi_mem_full_avg10": "PSI_MEM",
@@ -168,8 +173,9 @@ def normalize_profile_name(config: GroopConfig, profile: str | None) -> str:
 
 
 def header_label(column_name: str) -> str:
-    label = _LABELS.get(column_name, column_name.upper())
-    spec = REGISTRY.get(column_name)
+    canonical = resolve_column(column_name)
+    label = _LABELS.get(column_name, _LABELS.get(canonical, column_name.upper()))
+    spec = REGISTRY.get(canonical)
     if spec is None:
         return label
     suffix = {
@@ -211,8 +217,9 @@ def format_metric_value(column_name: str, entity_frame: EntityFrame) -> Text:
         return Text(severity)
     if column_name == "damon_mode":
         return Text(_metric_code(entity_frame.metrics.get(column_name), _DAMON_MODE))
-    metric = entity_frame.metrics.get(column_name)
-    return _format_metric(metric, REGISTRY.get(column_name))
+    canonical = resolve_column(column_name)
+    metric = entity_frame.metrics.get(canonical)
+    return _format_metric(metric, REGISTRY.get(canonical))
 
 
 def metric_sort_value(column_name: str, entity_frame: EntityFrame) -> tuple[int, float | str]:
@@ -223,7 +230,8 @@ def metric_sort_value(column_name: str, entity_frame: EntityFrame) -> tuple[int,
     if column_name == "net_source":
         source = (entity_frame.network or {}).get("source_label")
         return (0, str(source or ""))
-    metric = entity_frame.metrics.get(column_name)
+    canonical = resolve_column(column_name)
+    metric = entity_frame.metrics.get(canonical)
     if metric is None or metric.v is None:
         return (1, 0.0)
     if isinstance(metric.v, (int, float)):
@@ -313,16 +321,21 @@ def _profile_from_config(config: GroopConfig, profile: str) -> tuple[str, ...] |
 
 
 def _column_supported(name: str) -> bool:
-    return name in _LABELS and (name in REGISTRY or name in {"name", "tier", "net_source", "governance_origin", "governance_drift"} or name == "sock")
+    canonical = resolve_column(name)
+    supported_virtual = {"name", "tier", "net_source", "governance_origin", "governance_drift", "sock"}
+    return (name in _LABELS or canonical in _LABELS) and (
+        canonical in REGISTRY or canonical in supported_virtual
+    )
 
 
 def _dedupe(names) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for name in names:
-        if name not in seen and _column_supported(name):
-            seen.add(name)
-            out.append(name)
+        canonical = resolve_column(name)
+        if canonical not in seen and (_column_supported(name) or _column_supported(canonical)):
+            seen.add(canonical)
+            out.append(canonical)
     return out
 
 
