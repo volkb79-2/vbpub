@@ -124,7 +124,7 @@ Most recent full-suite validation (P23 - ZRAM per-device drill-down):
 
 ```bash
 /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-# 161 passed in 25.93s before the P23 merge
+# 161 passed in 24.83s after the P23 merge
 ```
 
 Also validated: Python compile over P23 files and `groop --once --json`

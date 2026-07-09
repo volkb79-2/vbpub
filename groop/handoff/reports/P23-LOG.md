@@ -76,6 +76,11 @@ Append newest entries at the bottom.
 - Commands: focused pytest, full pytest, py_compile, compact `groop --once --json` smoke.
 - Files changed: `CONTRACTS.md`, `collect/collector.py`, `ui/hostmem.py`, `tests/test_p23_zram_drilldown.py`, `docs/STATUS.md`, report/log.
 - Result: Documented `Frame.host_meta`, made default host collection honor injected `sys_root`, hardened replay metadata rendering, added review tests, and validated 161 passing tests.
+
+2026-07-09 19:45 UTC
+- Action: Controller merged P23 into `main` and reran validation from the main checkout.
+- Commands: `git merge --no-ff feat/groop-p23-zram-device-drilldown -m "Merge groop P23 zram device drilldown"`, py_compile, full pytest, compact fixture JSON smoke.
+- Result: Merge succeeded; `groop/tests` passed with 161 tests; fixture smoke reported schema 1, `host_meta=["zram_devices"]`, 0 zram devices, and 8 entities.
 ```
 
 ## Decisions
@@ -99,7 +104,7 @@ None.
 ```bash
 # Full test suite
 /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-# 161 passed in 25.93s
+# 161 passed in 24.83s after merge
 
 # Python compile
 python3 -m py_compile groop/src/groop/model.py

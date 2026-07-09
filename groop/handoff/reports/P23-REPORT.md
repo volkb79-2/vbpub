@@ -91,7 +91,7 @@ cleanly, and `Frame.host` remains strictly registry-backed.
 
 ```bash
 $ /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-161 passed in 25.93s
+161 passed in 24.83s after merge
 
 $ python3 -m py_compile groop/src/groop/model.py groop/src/groop/collect/host.py groop/src/groop/collect/collector.py groop/src/groop/ui/hostmem.py groop/tests/test_p23_zram_drilldown.py
 # clean
@@ -99,6 +99,18 @@ $ python3 -m py_compile groop/src/groop/model.py groop/src/groop/collect/host.py
 $ PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m groop.cli --once --json --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch
 # schema 1; host_meta keys ["zram_devices"]; zram_devices 0; entities 8
 ```
+
+## Merge evidence
+
+P23 merged to `main` with:
+
+```bash
+git merge --no-ff feat/groop-p23-zram-device-drilldown -m "Merge groop P23 zram device drilldown"
+```
+
+Post-merge validation from the main checkout: py_compile clean, full suite
+`161 passed in 24.83s`, and fixture JSON smoke reported schema 1 with
+`host_meta["zram_devices"]`.
 
 ## Known gaps / open items
 
