@@ -84,7 +84,7 @@ cmru manages N independent projects, each with its own semver line, all sharing 
 | Type | Description | Source |
 |---|---|---|
 | `wheel` | Python distribution wheel (`.whl`) | `python -m build` |
-| `oci` | Container image | Docker buildx bake |
+| `oci` | Container image | Docker buildx bake (or built-in handler, see S14) |
 | `tarball` | Archive (`.tar.xz`, `.tar.gz`) | `tar` + custom build |
 | `bundle` | Deterministic release bundle (`.tar.xz`) + `manifest.json` + `manifest.json.minisig` | project allowlist + cmru bundler |
 
@@ -133,12 +133,16 @@ union). Presets:
 `oci` is an alias for `oci-image`. Example — pwmcp emits both:
 `artifacts = ["oci-image", "bundle"]`.
 
+For `oci-image`, cmru provides a built-in handler (S14) that manages `build` and `push`
+steps — projects MAY omit `[steps.*]` and rely on the handler instead of delegated scripts.
+
 **S-REL.3 — cmru is the orchestrator; the project owns the *how*.** cmru only performs the
 **generic** git/host side-effects it can do for any project — mint+push `<prefix><semver>`,
 commit declared generated paths, push the commit. The artifact-specific work (build the
 wheel/image/bundle, create the GitHub Release + upload assets, push to ghcr, write
-`latest.json`) is performed by the **project's own `build`/`push` step commands**. cmru
-never hardcodes a project's file paths.
+`latest.json`) is performed by the **project's own `build`/`push` step commands** (or, for
+`oci-image`, by cmru's built-in handler — see S14). cmru never hardcodes a project's file
+paths.
 
 **S-REL.4 — Overrides & guards** (`[project.X.release]`): `git_tag = false/true` overrides
 the profile's tag capability; `commit_generated = ["<project-relative path>", …]` lists
@@ -229,6 +233,12 @@ sign      = false                 # cosign sign
 sbom      = false                 # syft + grype
 changelog = false                 # git-cliff
 nfpm      = false                 # nfpm deb/rpm
+
+# OCI image handler config (see S14):
+#[project.<name>.oci]
+#repack              = false
+#repack_target_size  = "2GB"
+#repack_compression  = 9
 ```
 
 **S2.3** Unknown keys MUST be rejected (fail-fast). All required fields MUST be present or the config is invalid.
@@ -568,6 +578,100 @@ class ReleaseHost:
 **S12.7** `cmru release` MUST refuse to run on a dirty working tree.
 
 **S12.8** Commit/tag ordering: for `file` strategy — write VERSION, stage, commit, then tag. For `scm`/`counter` — tag HEAD directly. In all cases: tag first, then build, then publish.
+
+---
+
+## S14 — OCI Image Handler (Built-in)
+
+Design a built-in handler for the `oci-image` artifact profile. Currently, OCI projects use
+delegated custom scripts (build-push.py, release-repack.sh). The new handler makes this a
+first-class cmru capability.
+
+### S14.1 — Handler Profile
+
+When a project declares `artifacts = ["oci-image"]`, cmru's built-in handler takes over the
+`build` and `push` steps — no explicit `[steps.*]` needed. The handler is registered in
+`handlers.py` as `cmd_oci_image_build()` and `cmd_oci_image_push()`.
+
+### S14.2 — Build Flow (no repack)
+
+1. Resolve token → `docker login ghcr.io` (reuses `runner.py`'s existing `_docker_login()`).
+2. Run `docker buildx bake -f docker-bake.hcl <target> --load` (or to OCI layout output directly).
+3. No skopeo needed — the image is in the Docker daemon (or exported to OCI layout).
+
+### S14.3 — Build Flow (with optional repack)
+
+1. Same docker login as S14.2.
+2. Run `docker buildx bake -f docker-bake.hcl <target> --set "*.output=type=oci,dest=..."` to produce an OCI layout directly, **bypassing the Docker daemon entirely**. This eliminates the need for the first `skopeo copy` call (the docker-daemon → OCI bridge).
+3. If `[project.X.oci].repack = true`, run `docker-repack` on the OCI layout:
+   ```
+   docker-repack --target-size <size> --compression-level <level> oci://<src> oci://<dst>
+   ```
+4. docker-repack produces a new OCI layout. Push it: `docker-repack` supports `--push` which pushes all tags directly, respecting Docker's credential store (no separate .ghcr-auth.json needed). If docker-repack doesn't support `--push`, fall back to:
+   - `docker buildx build --push` from OCI layout, or
+   - Copy the OCI layout into Docker daemon and `docker push` each tag.
+
+### S14.4 — Auth Flow (no more .ghcr-auth.json)
+
+The current fragmented auth (cmru token → `docker login` for Docker, separate `REGISTRY_AUTH_FILE` for skopeo) is unified:
+
+1. cmru resolves the GitHub token (S2.4 order: env → cmru.secret.toml → cmru.toml).
+2. `runner.py`'s `_docker_login()` runs `docker login ghcr.io -u <owner> --password-stdin` with the token.
+3. Docker credential store holds the auth. Both `docker buildx bake --push` and `docker-repack` (if used) read Docker credentials natively — no `.ghcr-auth.json` required.
+4. The `.ghcr-auth.json` file and `REGISTRY_AUTH_FILE` references are deprecated.
+
+### S14.5 — Preflight Prerequisites
+
+Before the build step runs, the handler MUST validate:
+
+| Tool | Condition | Error |
+|---|---|---|
+| `docker` | on PATH | exit 3, "docker not found" |
+| `docker buildx` | `docker buildx version` succeeds | exit 3, "buildx not available" |
+| `docker-repack` | on PATH (only if `repack = true`) | exit 3, "docker-repack not found (required by repack config)" |
+| GitHub token | resolved (S2.4) | exit 3 (V10) |
+
+These checks happen in `runner.py` or a new `prerequisites` step.
+
+### S14.6 — TOML Config Schema
+
+Add these optional keys under `[project.<name>.oci]`:
+
+```toml
+[project.<name>.oci]
+repack              = false       # enable docker-repack layer optimization
+repack_target_size  = "2GB"       # --target-size for docker-repack
+repack_compression  = 9           # zstd compression level (1-22)
+```
+
+When `repack` is true, the build step runs the repack flow (S14.3); otherwise the simple bake flow (S14.2).
+
+### S14.7 — Tagging and Push
+
+The handler manages OCI tags:
+
+- Immutable tag: `<debian>-py<python>-<image_version>` (from build args, not git).
+- Floating tag: `<debian>-py<python>-latest`.
+- Tags are pushed to each registry in `[targets].registry`.
+- The handler also pushes the `commit_generated` paths (manifest files) after build.
+
+### S14.8 — Validation Rules
+
+Add to the validation catalog (S10):
+
+| ID | Rule | Exit |
+|---|---|---|
+| V18 | `[project.<name>.oci].repack_target_size` must be a valid size string (e.g. "2GB", "500MB") when `repack = true` | 2 |
+| V19 | `[project.<name>.oci].repack_compression` must be 1-22 when `repack = true` | 2 |
+| V20 | No legacy `.ghcr-auth.json` or `REGISTRY_AUTH_FILE` references in new projects | 2 |
+
+### S14.9 — Migration Path
+
+Existing projects can opt in incrementally:
+
+1. Keep their existing `[steps.build]` and `[steps.push]` commands as-is.
+2. Add `[project.<name>.oci]` config and remove `[steps.*]` to use the built-in handler.
+3. The `.ghcr-auth.json` file and skopeo remain available for manual use but are no longer required by the cmru release path.
 
 ---
 
