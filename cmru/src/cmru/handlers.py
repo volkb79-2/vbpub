@@ -259,11 +259,7 @@ def cmd_oci_image_build(args: argparse.Namespace) -> None:
             repack_cmd.extend(["--compression", str(args.repack_compression)])
         repack_cmd.extend(["oci://" + oci_src, "oci://" + oci_dst])
         subprocess.run(repack_cmd, cwd=str(cwd), check=True)
-        # Step c: push from OCI layout
-        subprocess.run(
-            ["docker", "buildx", "build", "--push", f"oci://{oci_dst}"],
-            cwd=str(cwd), check=True,
-        )
+        # Step c: push happens in the separate push step (cmd_oci_image_push).
     else:
         subprocess.run(
             ["docker", "buildx", "bake", "-f", bake_file, target, "--load"],
@@ -274,22 +270,28 @@ def cmd_oci_image_build(args: argparse.Namespace) -> None:
 
 
 def cmd_oci_image_push(args: argparse.Namespace) -> None:
-    """Push an OCI image. With repack the build step already pushed; without repack,
-    run ``docker buildx bake --push``."""
+    """Push an OCI image. Uses the OCI layout from the build step (repack mode)
+    or runs ``docker buildx bake --push`` (non-repack mode)."""
     cwd = Path(args.cwd).resolve()
     bake_file = args.bake_file
     target = args.target
 
-    if args.repack:
-        print("[INFO] cmru built-in: OCI image push skipped (already pushed by repack build)")
-        return
-
     print(f"[INFO] cmru built-in: pushing OCI image in {cwd}")
     _docker_login()
-    subprocess.run(
-        ["docker", "buildx", "bake", "-f", bake_file, target, "--push"],
-        cwd=str(cwd), check=True,
-    )
+
+    oci_dst = Path("/tmp/oci-dst")
+    if args.repack and oci_dst.is_dir():
+        # Repack mode: push the OCI layout produced by the build step.
+        subprocess.run(
+            ["docker", "buildx", "build", "--push", f"oci://{oci_dst}"],
+            cwd=str(cwd), check=True,
+        )
+    else:
+        # Non-repack mode: bake and push directly.
+        subprocess.run(
+            ["docker", "buildx", "bake", "-f", bake_file, target, "--push"],
+            cwd=str(cwd), check=True,
+        )
     print("[INFO] OCI image push complete")
 
 
@@ -350,8 +352,8 @@ def main(argv: list | None = None) -> None:
     p_ocib.add_argument("--bake-file", required=True, help="path to bake HCL file")
     p_ocib.add_argument("--target", required=True, help="bake target name")
     p_ocib.add_argument("--repack", action="store_true", help="enable OCI repack")
-    p_ocib.add_argument("--repack-target-size", default="100MB",
-                        help="target size per layer for repack (default: 100MB)")
+    p_ocib.add_argument("--repack-target-size", default="2GB",
+                        help="target size per layer for repack (default: 2GB)")
     p_ocib.add_argument("--repack-compression", type=int, default=None,
                         help="compression level 1-22 for repack (default: auto)")
     p_ocib.set_defaults(func=cmd_oci_image_build)

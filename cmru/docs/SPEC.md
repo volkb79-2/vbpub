@@ -607,9 +607,7 @@ When a project declares `artifacts = ["oci-image"]`, cmru's built-in handler tak
    ```
    docker-repack --target-size <size> --compression-level <level> oci://<src> oci://<dst>
    ```
-4. docker-repack produces a new OCI layout. Push it: `docker-repack` supports `--push` which pushes all tags directly, respecting Docker's credential store (no separate .ghcr-auth.json needed). If docker-repack doesn't support `--push`, fall back to:
-   - `docker buildx build --push` from OCI layout, or
-   - Copy the OCI layout into Docker daemon and `docker push` each tag.
+4. docker-repack produces a new OCI layout at a well-known path (`/tmp/oci-dst`). **Push does NOT happen here** — it is performed by the separate `push` step (S14.7), which reads the OCI layout and pushes it to the registry. This separation keeps the build step focused on artifact production only.
 
 ### S14.4 — Auth Flow (no more .ghcr-auth.json)
 
@@ -646,14 +644,22 @@ repack_compression  = 9           # zstd compression level (1-22)
 
 When `repack` is true, the build step runs the repack flow (S14.3); otherwise the simple bake flow (S14.2).
 
-### S14.7 — Tagging and Push
+### S14.7 — Push Step (separate from build)
 
-The handler manages OCI tags:
+Push is a **separate step** from build, executed by `cmd_oci_image_push()`:
 
+- **Non-repack mode**: runs `docker buildx bake -f <bake_file> <target> --push` — the standard bake push.
+- **Repack mode**: reads the OCI layout produced by the build step at `/tmp/oci-dst` and pushes it via:
+  ```
+  docker buildx build --push oci:///tmp/oci-dst
+  ```
+  This pushes all tags (immutable + floating) defined in the bake config to each registry in `[targets].registry`. The Docker credential store is used for auth (no `.ghcr-auth.json` needed).
+
+Tags pushed:
 - Immutable tag: `<debian>-py<python>-<image_version>` (from build args, not git).
 - Floating tag: `<debian>-py<python>-latest`.
 - Tags are pushed to each registry in `[targets].registry`.
-- The handler also pushes the `commit_generated` paths (manifest files) after build.
+- The handler also commits the `commit_generated` paths (manifest files) after build.
 
 ### S14.8 — Validation Rules
 

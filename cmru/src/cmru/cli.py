@@ -50,7 +50,7 @@ class OCIConfig:
     bake_file: str                     # path to docker-bake.hcl (relative to project cwd)
     target: str                        # bake target name
     repack: bool = False               # enable docker-repack after build
-    repack_target_size: str = "100MB"  # target size per layer (e.g. "100MB", "1GB")
+    repack_target_size: str = "2GB"    # target size per layer (e.g. "100MB", "2GB")
     repack_compression: int | None = None  # compression level 1-22 (None = auto)
 
 
@@ -562,7 +562,7 @@ def load_config(
             bake_file = str(oci_raw.get("bake_file") or "docker-bake.hcl")
             target = str(oci_raw.get("target") or name)
             repack = bool(oci_raw.get("repack", False))
-            repack_target_size = str(oci_raw.get("repack_target_size") or "100MB")
+            repack_target_size = str(oci_raw.get("repack_target_size") or "2GB")
             repack_compression_raw = oci_raw.get("repack_compression")
             repack_compression: int | None = None
             if repack_compression_raw is not None:
