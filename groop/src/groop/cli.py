@@ -174,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_daemon(raw_argv[1:])
     if raw_argv[:1] == ["bpf"]:
         return _main_bpf(raw_argv[1:])
+    if raw_argv[:1] == ["action"]:
+        return _main_action(raw_argv[1:])
     args = parse_args(raw_argv)
     config = load(args.config)
     if args.record is not None and args.replay is not None:
@@ -347,6 +349,70 @@ def _main_snapshot(argv: list[str]) -> int:
             return 1
         return 0
     print("unknown snapshot command", file=sys.stderr)
+    return 2
+
+
+def parse_action_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="groop action")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    preview = subparsers.add_parser("preview", help="preview an admin action without executing it")
+    preview.add_argument("--kind", type=str, required=True, help="action kind, e.g. docker-restart, systemd-stop")
+    preview.add_argument("--target", type=str, required=True, help="action target, e.g. container name or systemd unit")
+    preview.add_argument("--admin", action="store_true", help="enable admin preview mode")
+    preview.add_argument("--json", action="store_true", help="emit JSON preview instead of text")
+    preview.add_argument("--audit-log", type=Path, default=None, help="path to append-only JSONL audit log")
+    return parser.parse_args(argv)
+
+
+def _main_action(argv: list[str]) -> int:
+    from groop.actions.audit import AuditLog
+    from groop.actions.preview import ActionPlan, DisabledPlan, build_admin_preview
+
+    args = parse_action_args(argv)
+    if args.command == "preview":
+        try:
+            result = build_admin_preview(args.kind, args.target, admin=args.admin)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+
+        if isinstance(result, DisabledPlan):
+            print(result.message, file=sys.stderr)
+            return 2
+        if not isinstance(result, ActionPlan):
+            print("unexpected action preview result", file=sys.stderr)
+            return 2
+
+        argv_list = list(result.argv)
+        if args.audit_log is not None:
+            AuditLog(args.audit_log).record(
+                kind=result.kind.value,
+                target=result.target,
+                argv=result.argv,
+                admin=args.admin,
+            )
+
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "argv": argv_list,
+                        "description": result.description,
+                        "kind": result.kind.value,
+                        "mode": result.mode,
+                        "target": result.target,
+                    },
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(f"Action: {result.kind.value}")
+            print(f"Target: {result.target}")
+            print(f"Command argv: {argv_list}")
+            print(f"Description: {result.description}")
+            print("Mode: preview only; no command was executed")
+        return 0
+    print("unknown action command", file=sys.stderr)
     return 2
 
 

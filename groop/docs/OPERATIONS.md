@@ -96,7 +96,7 @@ sudo groop damon paddr start --confirm START
 | `x` | Save incident snapshot for selected entity. |
 | `m` | Host-memory / paddr DAMON status. |
 | `b` | Collapse/expand banner. |
-| `k` | Reserved v2 admin action; current builds report that `--admin` mode is not implemented. |
+| `k` | Reserved v2 admin action; current builds report that executable admin actions are not implemented. |
 | `F1`, `?` | Metric glossary/help. |
 | `q` | Quit. |
 
@@ -112,9 +112,13 @@ sudo groop damon paddr start --confirm START
   the same groop-owned marker logic as the CLI.
 - Incident snapshots write only under the configured snapshot directory or the
   XDG state fallback. They do not collect arbitrary file/log content.
-- File/log/content browsing and Docker/systemd admin actions are not implemented.
+- File/log/content browsing and executable Docker/systemd admin actions are not implemented.
 - Pressing a reserved v2 admin key in the TUI reports that the action is
   unavailable in the current build instead of failing silently.
+- `groop action preview --kind docker-restart --target NAME --admin --json`
+  prints an exact argv preview and never executes it. Omit `--admin` to verify
+  that the preview is denied. Use `--audit-log PATH` to append an explicit
+  preview-only JSONL record.
 
 ## Compressed Swap Interpretation
 

@@ -16,7 +16,7 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 80-85% | medium | Core daily triage works. Remaining gaps are release evidence, UI polish, richer host banner/device surfaces, and some acceptance criteria. |
 | v1.5 DAMON/snapshots/backend awareness | 85-90% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 25-30% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode, daemon deployment preflight/templates, and the BPF measurement/design gate exist; exact BPF provider, admin actions, file inspection, GPU/ZFS plugins are not implemented. |
+| v2 daemon/BPF/admin actions | 30-35% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode, daemon deployment preflight/templates, preview-only admin action planning, and the BPF measurement/design gate exist; exact BPF provider, executable admin actions, file inspection, GPU/ZFS plugins are not implemented. |
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -49,6 +49,8 @@ core workflows, not yet production-certified.**
   --json`, and UI smoke coverage.
 - Daemon deployment preflight plus packaged systemd/tmpfiles templates for a
   root-owned, group-readable socket deployment.
+- Preview-only admin action planning for allowlisted Docker/systemd actions,
+  gated by explicit `--admin` and optional JSONL audit logging.
 - Safe BPF network accounting gate (`groop bpf gate`) and v2 BPF design doc;
   the gate is no-op and never loads or pins BPF state.
 
@@ -84,7 +86,7 @@ core workflows, not yet production-certified.**
 - Production daemon installation automation and service hardening beyond the
   packaged operator templates.
 - Exact BPF per-cgroup network provider and live BPF ownership lifecycle.
-- Docker/systemd admin actions: update/start/stop/restart/kill.
+- Executable Docker/systemd admin actions: update/start/stop/restart/kill.
 - `systemctl set-property` governance actions.
 - File/log/content browser behind `--inspect-files`.
 - Web UI.
@@ -108,20 +110,20 @@ core workflows, not yet production-certified.**
 | 9. Network labels | Covered by provider tests. |
 | 10. Record/replay fidelity | Model equality covered; byte-for-byte rendered table acceptance still needed. |
 | 11. Packaging | P12 built sdist/wheel and verified fresh wheel install; pipx-specific install still optional evidence. |
-| 12. v2 gating | Mostly out of scope; reserved-action UX still should be explicit. |
+| 12. v2 gating | Explicit admin-preview gating landed in P21: `groop action preview` with `--admin` required, no-execution guarantee, audit logging, and TUI reserved-key disabled messaging in P13. |
 | 13. Unprivileged smoke | Basic non-root smoke was run in P7; formal repeat should be recorded. |
 | 14. Measurement gates | `MEASUREMENTS.md` records the P17 safe BPF gate and blocker; DAMON overhead and privileged live-BPF overhead gates are not recorded. |
 
 ## Current Quality Gate
 
-Most recent package validation from P17:
+Most recent full-suite validation (P21 — admin action gating skeleton):
 
 ```bash
-/tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-# 98 passed in 15.38s
+/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
+# 138 passed in 26.11s
 ```
 
-Also validated: Python compile over changed P17 files and
-`groop bpf gate --proc-root groop/tests/fixtures/procfs/network --json`.
-P16 separately validated `--once --json` and replay UI smoke. P12 separately
-validated build, wheel install, and `groop --version`.
+Also validated: Python compile over P21 files,
+`groop action preview` with `--admin` returns valid JSON preview (exit 0),
+same command without `--admin` returns disabled message (exit 2).
+P17/P20/P22 separately validated their respective features.
