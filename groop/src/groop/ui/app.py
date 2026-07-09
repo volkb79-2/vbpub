@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections import deque
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from groop.config import GroopConfig, load
 from groop.model import Frame
 from groop.record.ring import HistoryRing
 from groop.registry import REGISTRY
+from groop.snapshot import create as create_snapshot
 
 from .banner import render_banner
 from .drill import DrillDownScreen
@@ -100,6 +102,7 @@ class GroopApp(App[None]):
         self.selected_key: str | None = None
         self._visible_row_keys: tuple[str, ...] = ()
         self._worker_done = threading.Event()
+        self._recent_frames: deque[Frame] = deque(maxlen=max(1, self.config.snapshots.frames))
 
     def compose(self) -> ComposeResult:
         yield Static(id="banner")
@@ -121,6 +124,7 @@ class GroopApp(App[None]):
         self.current_frame = frame
         self.frames_received += 1
         self.ring.append_frame(frame)
+        self._recent_frames.append(frame)
         if self.selected_key not in frame.entities:
             self.selected_key = None
         self._refresh_view()
@@ -207,6 +211,27 @@ class GroopApp(App[None]):
             )
         )
 
+    def action_create_snapshot(self) -> None:
+        if self.current_frame is None or self.selected_key is None or self.selected_key not in self.current_frame.entities:
+            return
+        previous_frames = list(self._recent_frames)
+        if previous_frames and previous_frames[-1] is self.current_frame:
+            previous_frames = previous_frames[:-1]
+        try:
+            path = create_snapshot(
+                self.selected_key,
+                self.ring,
+                self.current_frame,
+                self.config,
+                cgroup_root=self.cgroup_root,
+                previous_frames=previous_frames,
+                providers_status=_providers_status(self.current_frame, self.selected_key),
+            )
+        except OSError as exc:
+            self._refresh_status(f"snapshot failed: {exc}")
+            return
+        self._refresh_status(f"snapshot saved: {path}")
+
     def action_open_filter(self) -> None:
         self.push_screen(FilterScreen(self.filter_text), self._on_filter_applied)
 
@@ -277,3 +302,13 @@ def _render_glossary() -> str:
         )
     )
     return "\n".join(lines)
+
+
+def _providers_status(frame: Frame, entity_key: str) -> dict[str, object]:
+    entity_frame = frame.entities.get(entity_key)
+    if entity_frame is None:
+        return {}
+    return {
+        "network": entity_frame.network or {},
+        "damon": entity_frame.damon or {},
+    }
