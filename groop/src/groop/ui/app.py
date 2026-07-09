@@ -148,6 +148,10 @@ class GroopApp(App[None]):
         self._recent_frames: deque[Frame] = deque(maxlen=max(1, self.config.snapshots.frames))
         self._snapshot_systemctl_show = snapshot_systemctl_show
         self._snapshot_docker_inspect = snapshot_docker_inspect
+        self._snapshot_in_progress: bool = False
+        self._snapshot_entity_key: str | None = None
+        self._snapshot_frame: Frame | None = None
+        self._snapshot_previous_frames: list[Frame] = []
 
     def compose(self) -> ComposeResult:
         yield Static(id="banner")
@@ -376,21 +380,42 @@ class GroopApp(App[None]):
     def action_create_snapshot(self) -> None:
         if self.current_frame is None or self.selected_key is None or self.selected_key not in self.current_frame.entities:
             return
+        if self._snapshot_in_progress:
+            self._refresh_status("snapshot already running")
+            return
+        self._snapshot_entity_key = self.selected_key
+        self._snapshot_frame = self.current_frame
         previous_frames = list(self._recent_frames)
-        if previous_frames and previous_frames[-1] is self.current_frame:
+        if previous_frames and previous_frames[-1] is self._snapshot_frame:
             previous_frames = previous_frames[:-1]
+        self._snapshot_previous_frames = previous_frames
+        self._snapshot_in_progress = True
+        self._refresh_status(f"snapshot running: {self._snapshot_entity_key}")
+        self.run_worker(self._run_snapshot_worker, thread=True)
+
+    def _run_snapshot_worker(self) -> None:
+        entity_key = self._snapshot_entity_key or ""
+        frame = self._snapshot_frame
+        if frame is None:
+            self.call_from_thread(self._on_snapshot_failed, RuntimeError("no frame captured"))
+            return
+        previous_frames = self._snapshot_previous_frames
         try:
-            systemctl_show, systemctl_status = collect_systemctl_show(self.selected_key, runner=self._snapshot_systemctl_show)
-            docker_inspect, docker_status = collect_docker_inspect(self.selected_key, docker_inspect=self._snapshot_docker_inspect)
-            providers_status = _providers_status(self.current_frame, self.selected_key)
+            systemctl_show, systemctl_status = collect_systemctl_show(
+                entity_key, runner=self._snapshot_systemctl_show
+            )
+            docker_inspect, docker_status = collect_docker_inspect(
+                entity_key, docker_inspect=self._snapshot_docker_inspect
+            )
+            providers_status = _providers_status(frame, entity_key)
             providers_status["snapshot"] = {
                 "systemctl": systemctl_status,
                 "docker": docker_status,
             }
             path = create_snapshot(
-                self.selected_key,
+                entity_key,
                 self.ring,
-                self.current_frame,
+                frame,
                 self.config,
                 cgroup_root=self.cgroup_root,
                 previous_frames=previous_frames,
@@ -398,10 +423,17 @@ class GroopApp(App[None]):
                 systemctl_show=systemctl_show,
                 docker_inspect=docker_inspect,
             )
+            self.call_from_thread(self._on_snapshot_done, path)
         except (OSError, RuntimeError, ValueError) as exc:
-            self._refresh_status(f"snapshot failed: {exc}")
-            return
+            self.call_from_thread(self._on_snapshot_failed, exc)
+
+    def _on_snapshot_done(self, path: Path) -> None:
+        self._snapshot_in_progress = False
         self._refresh_status(f"snapshot saved: {path}")
+
+    def _on_snapshot_failed(self, exc: Exception) -> None:
+        self._snapshot_in_progress = False
+        self._refresh_status(f"snapshot failed: {exc}")
 
     def action_open_host_memory(self) -> None:
         if self.current_frame is None:

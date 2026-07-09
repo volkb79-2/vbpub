@@ -82,20 +82,20 @@ conservative/read-only.
 
 ### P15 — Snapshot Enrichment
 
-Status: done with a progress-UI gap. P15 added fresh systemctl/docker metadata
-collection, richer inspect output, hash failure reporting, redaction tests, and
-operations docs.
-
-Remaining polish: a nonblocking progress screen for slow providers can be carved
-later if snapshot latency becomes visible in real use.
+Status: done. P15 added fresh systemctl/docker metadata collection, richer
+inspect output, hash failure reporting, redaction tests, and operations docs.
+The snapshot progress gap was closed by P26.
 
 ### P26 - Snapshot Progress UI
 
-Status: planned. P26 should make TUI snapshot creation visibly running, guard
-against duplicate concurrent snapshot writes, and report success/failure through
-the status line without changing bundle contents.
+Status: done. P26 makes TUI snapshot creation visibly running (immediate status
+update), guarded against duplicate concurrent starts, and reports success/failure
+through the status line without changing bundle contents. Focused tests cover
+the progress flag, duplicate-start guard, success path reporting, and handled
+exception failure reporting.
 
 Handoff: `handoff/P26-snapshot-progress-ui.md`.
+Report: `handoff/reports/P26-REPORT.md`.
 
 ### P19 — ZRAM And Swap-Backend Awareness
 

@@ -78,7 +78,8 @@ core workflows, not yet production-certified.**
   fixture-tested. Live-root acceptance still needs a deliberate test host.
 - **Snapshots:** snapshot bundles include bounded frame history, cgroup files,
   provider status, fresh systemctl/docker metadata where available, redaction,
-  CLI inspect, and hash verification. A progress UI remains future polish.
+  CLI inspect, hash verification, and a nonblocking progress/status UI with
+  duplicate-start guard (P26).
 - **Acceptance evidence:** P12 records tests, packaging, fixture JSON, replay
   smoke, wheel install, version, and bounded once/json CPU/RSS. P17 records the
   safe BPF gate and current live-BPF blocker. P18 records the fixture-tested BPF
@@ -123,12 +124,12 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P25 - Daemon install plan):
+Most recent full-suite validation (P26 - Snapshot progress UI):
 
 ```bash
 python3 -m pytest groop/tests -q
-# 177 passed in 27.01s after the P25 merge
+# 181 passed in 28.78s
 ```
 
-Also validated: Python compile over P25 files.
-P25 separately validated its install-plan helper, CLI, and no-host-mutation safety.
+Also validated: Python compile over P26 files.
+P26 separately validated snapshot progress, duplicate-start guard, and failure reporting.
