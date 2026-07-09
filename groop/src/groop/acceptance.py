@@ -1,4 +1,4 @@
-"""groop acceptance smoke harness — rootless release-confidence checks.
+"""groop acceptance smoke harness for rootless release-confidence checks.
 
 Usage:
     python -m groop.acceptance smoke [--cgroup-root PATH] [--replay PATH] [--json] [--pretty-json]
@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# No Textual import — this module must work without the UI dependency tree.
+# No Textual import: this module must work without the UI dependency tree.
 
 
 __all__ = [
@@ -72,7 +72,7 @@ class SmokeResult:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m groop.acceptance",
-        description="groop acceptance smoke harness — rootless release-confidence checks.",
+        description="groop acceptance smoke harness for rootless release-confidence checks.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -169,16 +169,15 @@ def run_smoke(
 ) -> SmokeResult:
     """Execute all smoke checks and return a SmokeResult.
 
-    This function does NOT parse args — it is testable directly.
+    This function does NOT parse args; it is testable directly.
     """
     from groop import __version__
 
     checks: list[Check] = []
 
-    # --- wall-clock timing ---
+    # --- Wall-clock timing ---
     t0 = time.perf_counter()
     ru0 = resource.getrusage(resource.RUSAGE_SELF)
-    rss0_kb = ru0.ru_maxrss
 
     # --- Collect ---
     frame_dict: dict[str, Any] | None = None
@@ -246,7 +245,7 @@ def run_smoke(
 
     # --- Replay summary ---
     replay_ok: bool = True
-    replay_msg: str = "No replay path provided — skipped"
+    replay_msg: str = "No replay path provided; skipped"
     replay_details: dict[str, Any] = {}
     if replay_path is not None:
         if replay_path.exists():
@@ -329,11 +328,17 @@ def format_json(result: SmokeResult, *, pretty: bool = False) -> str:
     }
     if result.frame_summary is not None:
         obj["frame_summary"] = result.frame_summary
-    return json.dumps(obj, indent=indent, ensure_ascii=False, default=str)
+    return json.dumps(
+        obj,
+        indent=indent,
+        separators=None if pretty else (",", ":"),
+        sort_keys=True,
+        default=str,
+    )
 
 
-_OK_SYMBOL = "✓"
-_FAIL_SYMBOL = "✗"
+_OK_SYMBOL = "OK"
+_FAIL_SYMBOL = "FAIL"
 
 
 def format_text(result: SmokeResult) -> str:
@@ -344,7 +349,7 @@ def format_text(result: SmokeResult) -> str:
     lines.append("")
     for check in result.checks:
         symbol = _OK_SYMBOL if check.ok else _FAIL_SYMBOL
-        lines.append(f"  {symbol}  {check.name}: {check.message}")
+        lines.append(f"  [{symbol}] {check.name}: {check.message}")
     lines.append("")
     lines.append("  Measurements:")
     m = result.measurements

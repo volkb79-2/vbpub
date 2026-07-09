@@ -17,40 +17,49 @@ steps so another controller can continue after a session limit.
 Append newest entries at the bottom.
 
 ```text
-2026-07-22 UTC
+2026-07-10 UTC
 - Action: Created branch and worktree from local main
 - Commands: git worktree add -b feat/groop-p33-release-smoke .worktrees/-groop-p33-release-smoke main
 - Files changed: N/A
 - Result: Branch created at base commit 885f1c6
 - Follow-up: Implement acceptance module
 
-2026-07-22 UTC (continued)
+2026-07-10 UTC (continued)
 - Action: Created groop/src/groop/acceptance.py smoke harness module
 - Commands: write_file, py_compile, PYTHONPATH=groop/src python3 -m groop.acceptance smoke --cgroup-root ... --json
 - Files changed: groop/src/groop/acceptance.py
 - Result: Module compiles; smoke run on fixture: 8 entities, 572 metrics, all checks pass, exit 0
 - Follow-up: Create tests
 
-2026-07-22 UTC (continued)
+2026-07-10 UTC (continued)
 - Action: Created groop/tests/test_acceptance.py with 13 tests
 - Commands: installed pytest in .venv, ran PYTHONPATH=groop/src python3 -m pytest groop/tests/test_acceptance.py -v
 - Files changed: groop/tests/test_acceptance.py
 - Result: 13/13 passed, 1.80s
 - Follow-up: Update documentation
 
-2026-07-22 UTC (continued)
+2026-07-10 UTC (continued)
 - Action: Updated MEASUREMENTS.md and OPERATIONS.md
 - Commands: edit_file on both files
 - Files changed: groop/MEASUREMENTS.md, groop/docs/OPERATIONS.md
 - Result: MEASUREMENTS.md has P33 smoke section; OPERATIONS.md has release-smoke command example
 - Follow-up: Run full test suite, finalize report
 
-2026-07-22 UTC (continued)
+2026-07-10 UTC (continued)
 - Action: Ran focused acceptance tests and py_compile
 - Commands: python3 -m py_compile groop/src/groop/acceptance.py groop/tests/test_acceptance.py
 - Files changed: N/A
 - Result: Both files compile cleanly. 13/13 acceptance tests pass.
 - Follow-up: Run full groop tests, write P33-REPORT.md, commit
+
+2026-07-10 UTC (controller review)
+- Action: Tightened acceptance output before merge
+- Files changed: groop/src/groop/acceptance.py, groop/tests/test_acceptance.py, groop/MEASUREMENTS.md, groop/handoff/reports/P33-LOG.md, groop/handoff/reports/P33-REPORT.md
+- Result: Replaced non-ASCII output markers with ASCII markers, made JSON output deterministic with sorted compact keys, removed stale date/environment claims, and added tests for sorted pretty JSON
+- Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_acceptance.py groop/tests/test_collector.py groop/tests/test_record.py -q -> 34 passed in 10.04s
+- Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile groop/src/groop/acceptance.py groop/tests/test_acceptance.py -> clean
+- Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q -> 292 passed in 33.03s
+- Follow-up: Commit controller review patch and merge
 ```
 
 ## Decisions

@@ -31,7 +31,7 @@ Bounded once/json CPU/RSS smoke:
 
 ### P33 acceptance smoke harness
 
-The preferred rootless smoke evidence path (P33) — runs all safe-path checks
+The preferred rootless smoke evidence path (P33) runs all safe-path checks
 in one command using standard-library resource measurements:
 
 ```bash
@@ -48,10 +48,10 @@ PYTHONPATH=groop/src python3 -m groop.acceptance smoke --json
 Example fixture evidence after P33 implementation:
 
 ```text
-  ✓  collect: Collected 1 frame with 8 entities (schema v1)
-  ✓  serialize: frame_to_jsonable + frame_from_jsonable round-trip passed
-  ✓  source_labels: Metric source distribution (572 total): ...
-  ✓  replay: Replay loaded: 1 frame(s), first ts=100.000, last ts=100.000
+  [OK] collect: Collected 1 frame with 8 entities (schema v1)
+  [OK] serialize: frame_to_jsonable + frame_from_jsonable round-trip passed
+  [OK] source_labels: Metric source distribution (572 total): ...
+  [OK] replay: Replay loaded: 1 frame(s), first ts=100.000, last ts=100.000
   wall:   0.18s    user:   0.05s     sys:   0.01s     RSS:  23400 KB
   ALL CHECKS PASSED  (exit code 0)
 ```

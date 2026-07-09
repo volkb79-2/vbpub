@@ -1,6 +1,6 @@
 """Tests for groop acceptance smoke harness (P33).
 
-Each test invokes ``python -m groop.acceptance``` as a subprocess to verify
+Each test invokes ``python -m groop.acceptance`` as a subprocess to verify
 the module-level entry point.  Direct unit tests of ``run_smoke()`` cover
 the core logic without subprocess overhead.
 """
@@ -13,9 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
-from conftest import fixture_root, ROOT, SRC
+from conftest import fixture_root, SRC
 
 # Paths used in multiple tests
 FIXTURE_CGROUP = fixture_root() / "cgroupfs" / "gstammtisch"
@@ -119,20 +117,23 @@ def test_no_textual_import() -> None:
     collection.  A subprocess-level check is in
     ``test_subprocess_no_textual_import``.
     """
-    import groop.acceptance as mod
-
-    # Verify that groop.ui (the only textual user) was not transitively imported
     import sys as _sys
-    assert "groop.ui" not in _sys.modules, "acceptance should not import groop.ui"
+
+    before = set(_sys.modules)
+    import groop.acceptance  # noqa: F401
+    after = set(_sys.modules)
+    new_ui_modules = {name for name in after - before if name == "groop.ui" or name.startswith("groop.ui.")}
+    assert not new_ui_modules, f"acceptance import added UI modules: {sorted(new_ui_modules)}"
 
 
 def test_json_output_parseable() -> None:
-    """Pretty JSON output from run_smoke is parseable and contains expected keys."""
+    """Pretty JSON output is parseable, indented, and deterministically sorted."""
     from groop.acceptance import format_json, run_smoke
 
     result = run_smoke(cgroup_root=FIXTURE_CGROUP)
     json_str = format_json(result, pretty=True)
     obj = json.loads(json_str)
+    assert json_str.startswith("{\n  \"checks\"")
     assert obj["ok"] is True
     assert "version" in obj
     assert "python" in obj
@@ -151,7 +152,7 @@ def test_json_output_parseable() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Subprocess tests — verify the ``python -m groop.acceptance`` entry point
+# Subprocess tests verify the ``python -m groop.acceptance`` entry point
 # ---------------------------------------------------------------------------
 
 
@@ -203,6 +204,7 @@ def test_subprocess_pretty_json_parseable() -> None:
     assert cp.returncode == 0
     obj = json.loads(cp.stdout)
     assert obj["ok"] is True
+    assert cp.stdout.startswith("{\n  \"checks\"")
     # Pretty JSON should have newlines (indented)
     assert "\n" in cp.stdout
 

@@ -1,4 +1,4 @@
-# P33 — Release Smoke Harness
+# P33 - Release Smoke Harness
 
 ## What Was Built
 
@@ -11,15 +11,15 @@ python -m groop.acceptance smoke [--cgroup-root PATH] [--replay PATH] [--json] [
 
 ### Module: `groop/src/groop/acceptance.py`
 
-- **`run_smoke()`** — core logic: collects one frame via `Collector()`, runs
+- **`run_smoke()`** - core logic: collects one frame via `Collector()`, runs
   `frame_to_jsonable`/`frame_from_jsonable` round-trip, counts metric source
   labels, optionally loads a recording via `ReplayDriver.from_path()`.
-- **Measurements** — wall time, user CPU, sys CPU, max RSS via
+- **Measurements** - wall time, user CPU, sys CPU, max RSS via
   `time.perf_counter()` + `resource.getrusage(RUSAGE_SELF)`.
-- **Output** — deterministic JSON or concise text; exit code 0 (all pass),
+- **Output** - deterministic JSON or concise text; exit code 0 (all pass),
   1 (check failures), 2 (usage error).
-- **No Textual import** — uses only stdlib + groop packages below `ui/`.
-- **No subprocess execution** — reads cgroup files and /proc only; writes
+- **No Textual import** - uses only stdlib + groop packages below `ui/`.
+- **No subprocess execution** - reads cgroup files and /proc only; writes
   nothing but stdout/stderr.
 
 ### Checks performed
@@ -44,9 +44,9 @@ python -m groop.acceptance smoke [--cgroup-root PATH] [--replay PATH] [--json] [
 
 ### Documentation updated
 
-- `groop/MEASUREMENTS.md` — added P33 smoke harness as the preferred rootless
+- `groop/MEASUREMENTS.md` - added P33 smoke harness as the preferred rootless
   evidence path, with example commands and output.
-- `groop/docs/OPERATIONS.md` — added release-smoke command example.
+- `groop/docs/OPERATIONS.md` - added release-smoke command example.
 
 ## Deviations from the Handoff
 
@@ -54,7 +54,7 @@ None. The handoff was followed exactly.
 
 - Single-file `groop/src/groop/acceptance.py` with `if __name__ == "__main__"`
   entry point, as specified.
-- No changes to `cli.py` — harness is independent.
+- No changes to `cli.py` - harness is independent.
 - No Textual import, no subprocess execution, no host mutation.
 
 ## Proposed Contract Changes
@@ -70,7 +70,7 @@ PYTHONPATH=groop/src /home/vb/volkb79-2/vbpub/.venv/bin/python -m pytest groop/t
 # 13 passed in 1.80s
 ```
 
-### Full non-UI suite (includes P33 tests)
+### Full non-UI suite (agent environment)
 
 ```bash
 PYTHONPATH=groop/src /home/vb/volkb79-2/vbpub/.venv/bin/python -m pytest groop/tests/ -q \
@@ -83,6 +83,24 @@ PYTHONPATH=groop/src /home/vb/volkb79-2/vbpub/.venv/bin/python -m pytest groop/t
 ```bash
 PYTHONPATH=groop/src python3 -m py_compile groop/src/groop/acceptance.py groop/tests/test_acceptance.py
 # exit=0
+```
+
+### Controller review validation
+
+```bash
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest \
+  groop/tests/test_acceptance.py \
+  groop/tests/test_collector.py \
+  groop/tests/test_record.py -q
+# 34 passed in 10.04s
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile \
+  groop/src/groop/acceptance.py \
+  groop/tests/test_acceptance.py
+# clean, exit 0
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 292 passed in 33.03s
 ```
 
 ### Live smoke with fixture
@@ -108,5 +126,6 @@ PYTHONPATH=groop/src python3 -m groop.acceptance smoke \
   `/proc/meminfo`, etc. This is acceptable: the smoke is for release
   confidence on a real host, and tests only need a fixture cgroup root to be
   deterministic.
-- UI tests (`test_ui_app.py`) have 16 pre-existing failures from a newer
-  Textual version (removed `.renderable` attribute). These are unrelated to P33.
+- The agent environment had a local Textual API mismatch for UI tests. The
+  controller reran the full suite in the project review environment and it
+  passed.
