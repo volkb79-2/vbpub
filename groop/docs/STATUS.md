@@ -91,8 +91,8 @@ core workflows, not yet production-certified.**
 
 ## Not Implemented
 
-- Production daemon installation automation and service hardening beyond the
-  packaged operator templates.
+- Production daemon installation execution and service hardening beyond the
+  packaged operator templates plus safe P25 install plan.
 - Live BPF ownership lifecycle (daemon/helper attach, pin, detach).
 - Executable Docker/systemd admin actions: update/start/stop/restart/kill.
 - `systemctl set-property` governance actions.

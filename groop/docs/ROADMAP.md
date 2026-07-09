@@ -94,8 +94,8 @@ Status: done with a per-device drill-down gap. P19 detects active
 zswap/zram/disk/mixed backends, adds host-level ZRAM metrics, corrects banner
 wording, and documents the per-cgroup attribution boundary.
 
-Remaining polish: render per-device ZRAM details and consider compatibility
-aliases for the legacy `swap_disk`/`rf_d` names.
+Remaining polish: consider compatibility aliases for the legacy `swap_disk` and
+`rf_d` names.
 
 ### P23 - ZRAM Per-Device Drill-Down
 
@@ -115,8 +115,8 @@ Status: done as a spike. P16 added a read-only Unix-socket JSON-lines broker,
 current/stream protocol, bounded in-memory history, socket tests, and daemon
 threat-model docs.
 
-Remaining work: production service/unit packaging, authorization hardening on a
-real host, and `groop --attach` client mode.
+Remaining work: authorization hardening on a real host and any production
+packaging beyond the packaged templates plus P25 install plan.
 
 ### P17 — BPF Measurement Gate
 
@@ -144,8 +144,8 @@ group-readable socket.
 
 Handoff: `handoff/P22-daemon-deployment-preflight.md`.
 
-Remaining work: production installation automation and any extra hardening the
-operator wants on top of the read-only socket boundary.
+Remaining work: any extra host-specific hardening the operator wants on top of
+the read-only socket boundary and P25 install plan.
 
 ### P25 - Daemon Deployment Install Plan
 
