@@ -67,6 +67,9 @@ core workflows, not yet production-certified.**
 - Default-socket daemon attach (`--attach` with no path defaults to
   `/run/groop/groop.sock`) and `groop daemon current --socket PATH
   [--pretty-json]` one-frame read-only daemon command.
+- Daemon client error guidance with actionable next steps: preflight/install-plan
+  for default socket failures, preflight --socket for custom socket failures,
+  and compatible-daemon/log guidance for protocol/response errors.
 
 ## Partially Implemented
 
@@ -135,15 +138,15 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P30 - Daemon default client UX):
+Most recent full-suite validation (P31 - Daemon client error guidance):
 
 ```bash
-PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
-# 270 passed in 31.09s after merging P30
+/tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests -q
+# 279 passed in 31.67s after controller review
 ```
 
-Also validated: Python compile over P30 changed files.
-P30 focused tests passed: `23 passed in 11.14s` on main after merge.
-P30 separately validated default-socket attach argparse and behavior, groop
-daemon current JSON output, missing-socket error, and backward compatibility
-with explicit --attach paths.
+Also validated: Python compile over P31 changed files.
+P31 focused daemon-client tests passed: `35 passed in 12.07s` after controller
+review. P31 separately validated error-guidance formatting for default-socket,
+custom-socket, and protocol/response errors across both CLI attach and daemon
+current paths.

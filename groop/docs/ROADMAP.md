@@ -153,12 +153,14 @@ Report: `handoff/reports/P30-REPORT.md`.
 
 ### P31 - Daemon Client Error Guidance
 
-Status: planned. P31 should keep daemon client errors read-only and exit-code
-compatible while adding actionable next steps: preflight for the relevant
-socket, install-plan for the packaged default path, and compatible-daemon/log
-guidance for protocol errors.
+Status: done. P31 adds a shared `_format_daemon_error()` helper that preserves
+original error text and adds actionable next steps: preflight/install-plan for
+the default socket, preflight --socket for custom sockets, and compatible-daemon
+guidance for protocol/response errors. Both `--attach` and `daemon current` use
+the same helper.
 
 Handoff: `handoff/P31-daemon-client-error-guidance.md`.
+Report: `handoff/reports/P31-REPORT.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 

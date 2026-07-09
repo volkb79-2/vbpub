@@ -14,7 +14,7 @@ from groop.config import load
 from groop.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, stop_owned_sessions
 from groop.damon.passive import DEFAULT_DAMON_ROOT
 from groop.damon.paddr import paddr_confirmation_text, plan_start_paddr_session, start_planned_paddr_session
-from groop.daemon.client import DaemonClientError, current_frame
+from groop.daemon.client import DaemonClientError, DaemonConnectError, DaemonProtocolError, DaemonResponseError, current_frame
 from groop.daemon.deploy import (
     DEFAULT_DAEMON_GROUP,
     DEFAULT_DAEMON_SOCKET,
@@ -174,6 +174,28 @@ def _print_frame_json(frame, pretty: bool) -> None:
     print(json.dumps(payload, indent=2 if pretty else None, separators=None if pretty else (",", ":"), sort_keys=True))
 
 
+def _format_daemon_error(exc: DaemonClientError, socket_path: Path) -> str:
+    """Format a daemon client error with actionable guidance.
+
+    Preserves the original exception text and adds concise next-step
+    commands based on whether the socket is the default or custom,
+    and on the error type.
+    """
+    lines = [str(exc)]
+    if isinstance(exc, DaemonConnectError):
+        lines.append("")
+        if socket_path == DEFAULT_DAEMON_SOCKET:
+            lines.append("Try: groop daemon preflight")
+            lines.append("If the daemon is not installed: groop daemon install-plan")
+        else:
+            lines.append(f"Try: groop daemon preflight --socket {socket_path}")
+    elif isinstance(exc, (DaemonProtocolError, DaemonResponseError)):
+        lines.append("")
+        lines.append("Check that the process at the socket is a compatible groop daemon")
+        lines.append("and review the daemon logs for errors.")
+    return "\n".join(lines)
+
+
 def _attach_frame_source(socket_path: Path, *, poll_interval_s: float) -> Iterator:
     interval_s = max(0.1, poll_interval_s)
     while True:
@@ -279,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
             print("textual is not installed; use --once --json or install UI dependencies", file=sys.stderr)
             return 2
         except DaemonClientError as exc:
-            print(str(exc), file=sys.stderr)
+            print(_format_daemon_error(exc, args.attach), file=sys.stderr)
             return 2
         except KeyboardInterrupt:
             return 0
@@ -572,7 +594,7 @@ def _main_daemon(argv: list[str]) -> int:
         try:
             frame = DaemonClient(args.socket).current_frame()
         except DaemonClientError as exc:
-            print(str(exc), file=sys.stderr)
+            print(_format_daemon_error(exc, args.socket), file=sys.stderr)
             return 2
         _print_frame_json(frame, args.pretty_json)
         return 0
