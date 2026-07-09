@@ -36,6 +36,7 @@ flowchart TD
     P17 --> P18[P18 BPF provider implementation]
     P16 --> P20[P20 daemon attach mode]
     P20 --> P22[P22 daemon deployment preflight]
+    P22 --> P25[P25 daemon install plan]
     P13 --> P21[P21 v2 action gating skeleton]
     P19 --> P23[P23 ZRAM per-device drill-down]
     P13 --> P24[P24 Replay timestamp jump controls]
@@ -145,6 +146,14 @@ Handoff: `handoff/P22-daemon-deployment-preflight.md`.
 
 Remaining work: production installation automation and any extra hardening the
 operator wants on top of the read-only socket boundary.
+
+### P25 - Daemon Deployment Install Plan
+
+Status: planned. P25 should render a safe, non-mutating install plan for the
+packaged systemd and tmpfiles templates so operators can deploy the root daemon
+deliberately and then verify it with P22 preflight.
+
+Handoff: `handoff/P25-daemon-install-plan.md`.
 
 ## Later
 
