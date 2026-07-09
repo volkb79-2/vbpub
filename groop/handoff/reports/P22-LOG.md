@@ -100,3 +100,13 @@ PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli daemon pr
 - [x] Tests/compile/smoke recorded.
 - [x] Known gaps documented.
 - [x] Feature branch committed.
+
+## Controller Merge
+
+2026-07-09 15:25 CEST
+- Action: Controller reviewed, amended, merged P22 into `main`, and recorded
+  post-merge validation.
+- Commands: `git merge --no-ff feat/groop-p22-daemon-deployment`, focused
+  preflight tests, full groop suite, `py_compile`, missing-socket preflight JSON
+  smoke, wheel package-data check.
+- Result: Merge commit `d535b1e`; post-merge full suite passed with 108 tests.

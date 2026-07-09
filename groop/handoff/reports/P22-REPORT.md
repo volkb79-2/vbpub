@@ -70,3 +70,14 @@ PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli daemon pr
   remediation.
 - The daemon socket boundary remains the only authorization layer in this
   slice; there is no extra auth or policy engine yet.
+
+## Controller Merge Review
+
+- Feature commit reviewed and amended: `3d88a7c`.
+- Merge commit: `d535b1e`.
+- Post-merge validation from `main`:
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests/test_daemon_deploy.py -q` -> `4 passed in 1.34s`
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q` -> `108 passed in 24.82s`
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m py_compile groop/src/groop/daemon/deploy.py groop/src/groop/cli.py groop/tests/test_daemon_deploy.py` -> passed
+  - `PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli daemon preflight --socket /tmp/nonexistent-groop-preflight-main.sock --json` -> exit `1`, `ok=False`, `socket_present=False`
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m pip wheel ./groop -w /tmp/groop-p22-main-dist --no-deps` -> wheel contains both systemd assets
