@@ -46,6 +46,8 @@ flowchart TD
     P21 --> P29[P29 Inspect-files safety skeleton]
     P20 --> P30[P30 Daemon default client UX]
     P30 --> P31[P31 Daemon client error guidance]
+    P31 --> P32[P32 Daemon status command]
+    P12 --> P33[P33 Release smoke harness]
 ```
 
 ## Near Term
@@ -161,6 +163,24 @@ the same helper.
 
 Handoff: `handoff/P31-daemon-client-error-guidance.md`.
 Report: `handoff/reports/P31-REPORT.md`.
+
+### P32 - Daemon Status Command
+
+Status: planned. P32 should add a read-only `groop daemon status` command that
+combines P22 preflight checks with a P30/P31 current-frame protocol check, so
+non-root users can tell whether the default daemon deployment is usable without
+falling back to live collection.
+
+Handoff: `handoff/P32-daemon-status-command.md`.
+
+### P33 - Release Smoke Harness
+
+Status: planned. P33 should add a rootless `python -m groop.acceptance smoke`
+module for repeatable safe-path release evidence: one-frame collection,
+serialization, optional replay summary, wall/CPU/RSS measurement, and
+paste-friendly JSON/text output.
+
+Handoff: `handoff/P33-release-smoke-harness.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 
