@@ -20,6 +20,7 @@ from groop.record.replay import ReplayDriver
 from groop.record.ring import HistoryRing
 from groop.registry import REGISTRY
 from groop.snapshot import create as create_snapshot
+from groop.snapshot.enrich import DockerSnapshotInspect, SystemctlSnapshotRunner, collect_docker_inspect, collect_systemctl_show
 
 from .banner import render_banner
 from .drill import DrillDownScreen
@@ -94,6 +95,8 @@ class GroopApp(App[None]):
         replay_driver: ReplayDriver | None = None,
         replay_step: bool = False,
         replay_speed: float = 1.0,
+        snapshot_systemctl_show: SystemctlSnapshotRunner | None = None,
+        snapshot_docker_inspect: DockerSnapshotInspect | None = None,
     ) -> None:
         super().__init__()
         self.config = config or load()
@@ -122,6 +125,8 @@ class GroopApp(App[None]):
         self._collapsed_tree_keys: set[str] = set()
         self._worker_done = threading.Event()
         self._recent_frames: deque[Frame] = deque(maxlen=max(1, self.config.snapshots.frames))
+        self._snapshot_systemctl_show = snapshot_systemctl_show
+        self._snapshot_docker_inspect = snapshot_docker_inspect
 
     def compose(self) -> ComposeResult:
         yield Static(id="banner")
@@ -299,6 +304,13 @@ class GroopApp(App[None]):
         if previous_frames and previous_frames[-1] is self.current_frame:
             previous_frames = previous_frames[:-1]
         try:
+            systemctl_show, systemctl_status = collect_systemctl_show(self.selected_key, runner=self._snapshot_systemctl_show)
+            docker_inspect, docker_status = collect_docker_inspect(self.selected_key, docker_inspect=self._snapshot_docker_inspect)
+            providers_status = _providers_status(self.current_frame, self.selected_key)
+            providers_status["snapshot"] = {
+                "systemctl": systemctl_status,
+                "docker": docker_status,
+            }
             path = create_snapshot(
                 self.selected_key,
                 self.ring,
@@ -306,9 +318,11 @@ class GroopApp(App[None]):
                 self.config,
                 cgroup_root=self.cgroup_root,
                 previous_frames=previous_frames,
-                providers_status=_providers_status(self.current_frame, self.selected_key),
+                providers_status=providers_status,
+                systemctl_show=systemctl_show,
+                docker_inspect=docker_inspect,
             )
-        except OSError as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             self._refresh_status(f"snapshot failed: {exc}")
             return
         self._refresh_status(f"snapshot saved: {path}")

@@ -55,6 +55,14 @@ Inspect an incident snapshot:
 groop snapshot inspect /path/to/groop-incident-*.tar
 ```
 
+Snapshots are written to `[snapshots].dir` when configured, otherwise
+`$XDG_STATE_HOME/groop/incidents` or `~/.local/state/groop/incidents`.
+They include bounded frame history, selected cgroup files, provider status,
+fresh `systemctl show` output when the selected row maps to a systemd unit, and
+a redacted Docker inspect summary when the selected row is Docker-backed.
+Set `[snapshots] redact = true` to remove Docker environment variables and
+labels from the bundle.
+
 Stop groop-owned DAMON sessions:
 
 ```bash
@@ -103,7 +111,7 @@ sudo groop damon paddr start --confirm START
   `START`. Foreign DAMON sessions remain read-only; the TUI cleanup path calls
   the same groop-owned marker logic as the CLI.
 - Incident snapshots write only under the configured snapshot directory or the
-  XDG state fallback.
+  XDG state fallback. They do not collect arbitrary file/log content.
 - File/log/content browsing and Docker/systemd admin actions are not implemented.
 - Pressing a reserved v2 admin key in the TUI reports that the action is
   unavailable in the current build instead of failing silently.

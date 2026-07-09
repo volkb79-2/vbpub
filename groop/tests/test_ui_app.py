@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 from textual.widgets import Static
@@ -9,8 +10,10 @@ from textual.widgets import Input
 from conftest import fixture_frame, fixture_root
 from groop.config import GroopConfig, SnapshotConfig
 from groop.damon.control import APPROVAL_TEXT
+from groop.drift.origin import ShowResult
 from groop.model import Frame
 from groop.record.replay import ReplayDriver
+from groop.snapshot.bundle import _extract_archive
 from groop.ui.app import GroopApp
 from groop.ui.damon_control import DamonConfirmScreen
 from groop.ui.drill import DrillDownScreen
@@ -184,6 +187,43 @@ def test_pilot_snapshot_hotkey_writes_bundle(tmp_path: Path) -> None:
         assert len(list(tmp_path.glob("groop-incident-*"))) == 1
 
     asyncio.run(run())
+
+
+def test_pilot_snapshot_hotkey_collects_fresh_systemd_and_docker_metadata(tmp_path: Path) -> None:
+    async def run() -> None:
+        def systemctl_show(unit: str, _properties: tuple[str, ...]) -> ShowResult:
+            return ShowResult(stdout=f"Unit={unit}\nMemoryHigh=123\n", returncode=0)
+
+        def docker_inspect(container_id: str):
+            return [{"Id": container_id, "Name": "/demo", "Image": "image:latest", "Config": {"Env": ["SECRET=x"], "Labels": {"secret": "y"}, "User": "1000"}}]
+
+        app = GroopApp(
+            iter([fixture_frame()]),
+            config=GroopConfig(snapshots=SnapshotConfig(dir=tmp_path, redact=True)),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            snapshot_systemctl_show=systemctl_show,
+            snapshot_docker_inspect=docker_inspect,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            app.selected_key = GAME_KEY
+            app._refresh_view()
+            await pilot.press("x")
+            await pilot.pause()
+
+    asyncio.run(run())
+    bundles = list(tmp_path.glob("groop-incident-*"))
+    assert len(bundles) == 1
+    root = tmp_path / "bundle"
+    root.mkdir()
+    _extract_archive(bundles[0], root)
+    assert (root / "entity" / "systemctl-show.txt").read_text() == "Unit=docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope\nMemoryHigh=123\n"
+    docker = json.loads((root / "entity" / "docker-inspect.json").read_text())
+    assert docker["Config"] == {"User": "1000"}
+    providers = json.loads((root / "providers-status.json").read_text())
+    assert providers["snapshot"]["systemctl"]["status"] == "ok"
+    assert providers["snapshot"]["docker"]["status"] == "ok"
 
 
 def test_pilot_host_memory_screen_open_and_close() -> None:
