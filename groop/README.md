@@ -79,7 +79,7 @@ Useful feature hotkeys in the TUI:
 | P20 | Done | Daemon attach mode for non-root clients | v1.5/v2 foundation | Consume P16 daemon frames via `groop --attach SOCKET`; `--once --json` and UI smoke are supported. Report: `handoff/reports/P20-REPORT.md`. |
 | P21 | Done | v2 admin action gating skeleton | v2 foundation | Preview/audit-only admin action safety skeleton; no command execution. Report: `handoff/reports/P21-REPORT.md`. |
 | P22 | Done | Daemon deployment preflight and service templates | v1.5/v2 foundation | Safe preflight and packaged operator templates for root daemon plus group-readable socket. Handoff: `handoff/P22-daemon-deployment-preflight.md`. Report: `handoff/reports/P22-REPORT.md`. |
-| P23 | Planned | ZRAM per-device drill-down | v1.5 polish | Preserve and render per-device ZRAM detail without per-cgroup attribution claims. Handoff: `handoff/P23-zram-device-drilldown.md`. |
+| P23 | Done | ZRAM per-device drill-down | v1.5 polish | Structured host_meta metadata, host-memory rendering, serialization round-trip, docs/tests. Report: `handoff/reports/P23-REPORT.md`. |
 
 ## Completed Package Order
 

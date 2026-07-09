@@ -62,6 +62,7 @@ class Frame:
     interval_s: float
     host: dict[str, MetricValue]
     entities: dict[EntityKey, EntityFrame]
+    host_meta: dict[str, object] | None = None
 
 
 def metric_to_jsonable(value: MetricValue) -> list[float | int | str | None]:
@@ -178,22 +179,29 @@ def entity_frame_from_jsonable(value: Any) -> EntityFrame:
 
 def frame_to_jsonable(frame: Frame) -> dict[str, Any]:
     validate_frame_metrics(frame)
-    return {
+    out: dict[str, Any] = {
         "schema_version": frame.schema_version,
         "ts": frame.ts,
         "interval_s": frame.interval_s,
         "host": {k: metric_to_jsonable(v) for k, v in sorted(frame.host.items())},
         "entities": {k: entity_frame_to_jsonable(v) for k, v in sorted(frame.entities.items())},
     }
+    if frame.host_meta is not None:
+        out["host_meta"] = frame.host_meta
+    return out
 
 
 def frame_from_jsonable(value: Any) -> Frame:
+    host_meta = value.get("host_meta")
+    if host_meta is not None and not isinstance(host_meta, dict):
+        raise ValueError(f"invalid host_meta: {host_meta!r}")
     frame = Frame(
         schema_version=int(value["schema_version"]),
         ts=float(value["ts"]),
         interval_s=float(value["interval_s"]),
         host={k: metric_from_jsonable(v) for k, v in value["host"].items()},
         entities={k: entity_frame_from_jsonable(v) for k, v in value["entities"].items()},
+        host_meta=host_meta,
     )
     validate_frame_metrics(frame)
     return frame

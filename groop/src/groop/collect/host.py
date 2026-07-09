@@ -234,3 +234,48 @@ def collect_host(proc_root: Path = Path("/proc"), sys_root: Path = Path("/sys"))
     host.update(_swap_backend_metrics(proc_root, host["host_zswap_enabled"], host["host_zswap_stored"]))
     host.update(_zram_metrics(sys_root))
     return host
+
+
+def _zram_device_details(sys_root: Path) -> list[dict[str, object]]:
+    """Collect per-device zram details for host_meta."""
+    devices: list[dict[str, object]] = []
+    for device in sorted((sys_root / "block").glob("zram*")):
+        if not device.is_dir():
+            continue
+        name = device.name
+        mm = _parse_stat_line(device / "mm_stat")
+        io = _parse_stat_line(device / "io_stat")
+        bd = _parse_stat_line(device / "bd_stat")
+        orig = _stat_value(mm, 0)
+        compr = _stat_value(mm, 1)
+        mem_used = _stat_value(mm, 2)
+        mem_limit = _stat_value(mm, 3)
+        mem_used_max = _stat_value(mm, 4)
+        same_pages = _stat_value(mm, 5)
+        huge_pages = _stat_value(mm, 7)
+        failed_reads = _stat_value(io, 0)
+        failed_writes = _stat_value(io, 1)
+        writeback_bytes = _stat_value(bd, 0) * PAGE
+        ratio = orig / compr if compr > 0 else None
+        efficiency = compr / mem_used if mem_used > 0 else None
+        devices.append({
+            "name": name,
+            "orig_bytes": orig,
+            "compr_bytes": compr,
+            "mem_used_bytes": mem_used,
+            "mem_limit_bytes": mem_limit,
+            "mem_used_max_bytes": mem_used_max,
+            "same_pages": same_pages,
+            "huge_pages": huge_pages,
+            "failed_reads": failed_reads,
+            "failed_writes": failed_writes,
+            "writeback_bytes": writeback_bytes,
+            "ratio": ratio,
+            "efficiency": efficiency,
+        })
+    return devices
+
+
+def collect_host_meta(sys_root: Path = Path("/sys")) -> dict[str, object]:
+    """Collect host-level non-metric metadata for the Frame."""
+    return {"zram_devices": _zram_device_details(sys_root)}

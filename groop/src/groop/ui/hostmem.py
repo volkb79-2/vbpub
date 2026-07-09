@@ -116,19 +116,22 @@ def render_host_memory_text(frame: Frame, *, config: GroopConfig, damon_root: Pa
     if not sessions:
         lines.append("  no paddr session detected")
         lines.append(f"  start requires root and typed confirmation: {APPROVAL_TEXT}")
-        return "\n".join(lines)
+        lines.append("")
+    else:
+        lines.append(
+            f"  hot={_fmt_bytes_metric(frame.host.get('host_damon_hot_bytes'))} "
+            f"warm={_fmt_bytes_metric(frame.host.get('host_damon_warm_bytes'))} "
+            f"cold={_fmt_bytes_metric(frame.host.get('host_damon_cold_bytes'))} "
+            f"idle={_fmt_bytes_metric(frame.host.get('host_damon_idle_bytes'))} "
+            f"age={_fmt_metric(frame.host.get('host_damon_sample_age_s'))}s"
+        )
+        lines.append("")
+        lines.append("SESSIONS")
+        for session in sessions:
+            lines.extend(_session_lines(session))
+        lines.append("")
 
-    lines.append(
-        f"  hot={_fmt_bytes_metric(frame.host.get('host_damon_hot_bytes'))} "
-        f"warm={_fmt_bytes_metric(frame.host.get('host_damon_warm_bytes'))} "
-        f"cold={_fmt_bytes_metric(frame.host.get('host_damon_cold_bytes'))} "
-        f"idle={_fmt_bytes_metric(frame.host.get('host_damon_idle_bytes'))} "
-        f"age={_fmt_metric(frame.host.get('host_damon_sample_age_s'))}s"
-    )
-    lines.append("")
-    lines.append("SESSIONS")
-    for session in sessions:
-        lines.extend(_session_lines(session))
+    lines.extend(_zram_device_lines(frame))
     return "\n".join(lines)
 
 
@@ -172,6 +175,66 @@ def _session_lines(session: dict[str, object]) -> list[str]:
     else:
         lines.append("  stop: read-only foreign session")
     return lines
+
+
+def _zram_device_lines(frame: Frame) -> list[str]:
+    """Render per-device zram details from frame.host_meta."""
+    devices = _get_zram_devices(frame)
+    lines = ["ZRAM DEVICES"]
+    if not devices:
+        lines.append("  (no zram devices)")
+        lines.append("  note: per-cgroup zram compression/cost attribution is unavailable in the kernel.")
+        return lines
+
+    lines.append(
+        "  {:<12} {:>10} {:>10} {:>10} {:>6} {:>5} {:>5} {:>10}".format(
+            "device", "orig", "compr", "mem_used", "ratio", "rd_er", "wr_er", "wb"
+        )
+    )
+    for dev in devices:
+        name = str(dev.get("name", "?"))
+        orig = _fmt_bytes(_metadata_int(dev, "orig_bytes"))
+        compr = _fmt_bytes(_metadata_int(dev, "compr_bytes"))
+        mem_used = _fmt_bytes(_metadata_int(dev, "mem_used_bytes"))
+        ratio_str = _fmt_ratio_value(dev.get("ratio"))
+        failed_reads = _metadata_int(dev, "failed_reads")
+        failed_writes = _metadata_int(dev, "failed_writes")
+        wb = _fmt_bytes(_metadata_int(dev, "writeback_bytes"))
+        lines.append(
+            "  {:<12} {:>10} {:>10} {:>10} {:>6} {:>5} {:>5} {:>10}".format(
+                name, orig, compr, mem_used, ratio_str, failed_reads, failed_writes, wb
+            )
+        )
+    lines.append("  note: per-cgroup zram compression/cost attribution is unavailable in the kernel.")
+    return lines
+
+
+def _get_zram_devices(frame: Frame) -> list[dict[str, object]]:
+    """Safely extract zram_devices list from frame.host_meta."""
+    meta = frame.host_meta
+    if not isinstance(meta, dict):
+        return []
+    devices = meta.get("zram_devices")
+    if not isinstance(devices, list):
+        return []
+    return [d for d in devices if isinstance(d, dict)]
+
+
+def _metadata_int(data: dict[str, object], key: str) -> int:
+    value = data.get(key, 0)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return 0
+
+
+def _fmt_ratio_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "-"
+    if isinstance(value, (int, float)):
+        return f"{value:.1f}"
+    return "-"
 
 
 def _bar(value: int, total: int, *, width: int = 24) -> str:
