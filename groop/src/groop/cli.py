@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from groop import __version__
+from groop.bpf_gate import report_to_jsonable, render_report, run_bpf_gate
 from groop.collect.collector import Collector
 from groop.config import load
 from groop.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, stop_owned_sessions
@@ -75,6 +76,16 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def parse_bpf_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="groop bpf")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    gate = subparsers.add_parser("gate", help="run the safe BPF measurement gate")
+    gate.add_argument("--proc-root", type=Path, default=Path("/proc"), help="procfs root for the safe baseline probe")
+    gate.add_argument("--pin-root", type=Path, default=Path("/sys/fs/bpf/groop"), help="expected groop BPF pin root")
+    gate.add_argument("--json", action="store_true", help="emit JSON")
+    return parser.parse_args(argv)
+
+
 def _print_frame_json(frame, pretty: bool) -> None:
     payload = frame_to_jsonable(frame)
     print(json.dumps(payload, indent=2 if pretty else None, separators=None if pretty else (",", ":"), sort_keys=True))
@@ -128,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_snapshot(raw_argv[1:])
     if raw_argv[:1] == ["daemon"]:
         return _main_daemon(raw_argv[1:])
+    if raw_argv[:1] == ["bpf"]:
+        return _main_bpf(raw_argv[1:])
     args = parse_args(raw_argv)
     config = load(args.config)
     if args.record is not None and args.replay is not None:
@@ -257,6 +270,19 @@ def _main_snapshot(argv: list[str]) -> int:
             return 1
         return 0
     print("unknown snapshot command", file=sys.stderr)
+    return 2
+
+
+def _main_bpf(argv: list[str]) -> int:
+    args = parse_bpf_args(argv)
+    if args.command == "gate":
+        report = run_bpf_gate(proc_root=args.proc_root, pin_root=args.pin_root)
+        if args.json:
+            print(json.dumps(report_to_jsonable(report), sort_keys=True))
+        else:
+            print(render_report(report))
+        return 0
+    print("unknown bpf command", file=sys.stderr)
     return 2
 
 

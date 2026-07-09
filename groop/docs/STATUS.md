@@ -7,7 +7,7 @@ going; this file says what is true in the code today.
 ## Summary
 
 Current state: **v0 complete, v1 mostly implemented, v1.5 mostly implemented,
-v2 not started beyond architectural seams.**
+v2 started as daemon/BPF foundation work.**
 
 Approximate status:
 
@@ -16,7 +16,7 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 80-85% | medium | Core daily triage works. Remaining gaps are release evidence, UI polish, richer host banner/device surfaces, and some acceptance criteria. |
 | v1.5 DAMON/snapshots/backend awareness | 85-90% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 10-15% | low | Provider abstractions, safety patterns, and a read-only Unix-socket daemon spike exist; attach mode, BPF, admin actions, file inspection, GPU/ZFS plugins are not implemented. |
+| v2 daemon/BPF/admin actions | 15-20% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, and the BPF measurement/design gate exist; attach mode, exact BPF provider, admin actions, file inspection, GPU/ZFS plugins are not implemented. |
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -45,6 +45,8 @@ core workflows, not yet production-certified.**
   status, manifest hashes, redaction, and `groop snapshot inspect`.
 - Read-only Unix-socket daemon broker spike with current/stream protocol and
   socket tests.
+- Safe BPF network accounting gate (`groop bpf gate`) and v2 BPF design doc;
+  the gate is no-op and never loads or pins BPF state.
 
 ## Partially Implemented
 
@@ -69,14 +71,14 @@ core workflows, not yet production-certified.**
   provider status, fresh systemctl/docker metadata where available, redaction,
   CLI inspect, and hash verification. A progress UI remains future polish.
 - **Acceptance evidence:** P12 records tests, packaging, fixture JSON, replay
-  smoke, wheel install, version, and bounded once/json CPU/RSS. `MEASUREMENTS.md`
-  still needs a full 5-minute live perf/RSS run, DAMON, and future BPF
-  measurements.
+  smoke, wheel install, version, and bounded once/json CPU/RSS. P17 records the
+  safe BPF gate and current live-BPF blocker. `MEASUREMENTS.md` still needs a
+  full 5-minute live perf/RSS run, DAMON, and privileged BPF measurements.
 
 ## Not Implemented
 
 - Production daemon packaging and `groop --attach`.
-- Exact BPF per-cgroup network provider and BPF ownership lifecycle.
+- Exact BPF per-cgroup network provider and live BPF ownership lifecycle.
 - Docker/systemd admin actions: update/start/stop/restart/kill.
 - `systemctl set-property` governance actions.
 - File/log/content browser behind `--inspect-files`.
@@ -103,16 +105,18 @@ core workflows, not yet production-certified.**
 | 11. Packaging | P12 built sdist/wheel and verified fresh wheel install; pipx-specific install still optional evidence. |
 | 12. v2 gating | Mostly out of scope; reserved-action UX still should be explicit. |
 | 13. Unprivileged smoke | Basic non-root smoke was run in P7; formal repeat should be recorded. |
-| 14. Measurement gates | `MEASUREMENTS.md` created, but BPF/DAMON overhead gates are not recorded. |
+| 14. Measurement gates | `MEASUREMENTS.md` records the P17 safe BPF gate and blocker; DAMON overhead and privileged live-BPF overhead gates are not recorded. |
 
 ## Current Quality Gate
 
-Most recent package validation from P16:
+Most recent package validation from P17:
 
 ```bash
-/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
-# 96 passed in 15.30s
+/tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
+# 98 passed in 15.38s
 ```
 
-Also validated: Python compile over `src/groop`, `--once --json`, replay UI
-smoke. P12 separately validated build, wheel install, and `groop --version`.
+Also validated: Python compile over changed P17 files and
+`groop bpf gate --proc-root groop/tests/fixtures/procfs/network --json`.
+P16 separately validated `--once --json` and replay UI smoke. P12 separately
+validated build, wheel install, and `groop --version`.
