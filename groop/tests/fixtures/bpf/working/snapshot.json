@@ -1,0 +1,33 @@
+{
+  "comment": "Fixture BPF map snapshot for gstammtisch-like hierarchy. Represents pinned BPF cgroup_skb counters from a daemon.",
+  "maps": {
+    "groop_cgroup_skb": [
+      {"cgroup_id": 10001, "direction": "ingress", "family": "ipv4", "proto": "tcp", "bytes": 90000, "packets": 600},
+      {"cgroup_id": 10001, "direction": "ingress", "family": "ipv4", "proto": "udp", "bytes": 5000, "packets": 40},
+      {"cgroup_id": 10001, "direction": "ingress", "family": "ipv6", "proto": "tcp", "bytes": 1000, "packets": 5},
+      {"cgroup_id": 10001, "direction": "egress", "family": "ipv4", "proto": "tcp", "bytes": 150000, "packets": 500},
+      {"cgroup_id": 10001, "direction": "egress", "family": "ipv4", "proto": "udp", "bytes": 2000, "packets": 15},
+      {"cgroup_id": 10001, "direction": "egress", "family": "ipv6", "proto": "tcp", "bytes": 500, "packets": 3},
+      {"cgroup_id": 10002, "direction": "ingress", "family": "ipv4", "proto": "tcp", "bytes": 15000, "packets": 100},
+      {"cgroup_id": 10002, "direction": "ingress", "family": "ipv4", "proto": "udp", "bytes": 3000, "packets": 20},
+      {"cgroup_id": 10002, "direction": "egress", "family": "ipv4", "proto": "tcp", "bytes": 25000, "packets": 150},
+      {"cgroup_id": 10002, "direction": "egress", "family": "ipv4", "proto": "udp", "bytes": 1000, "packets": 10},
+      {"cgroup_id": 10010, "direction": "ingress", "family": "ipv4", "proto": "tcp", "bytes": 4000, "packets": 30},
+      {"cgroup_id": 10010, "direction": "egress", "family": "ipv4", "proto": "tcp", "bytes": 6000, "packets": 40},
+      {"cgroup_id": 10020, "direction": "ingress", "family": "ipv4", "proto": "tcp", "bytes": 2000, "packets": 15},
+      {"cgroup_id": 10020, "direction": "egress", "family": "ipv4", "proto": "tcp", "bytes": 3000, "packets": 20}
+    ]
+  },
+  "cgroup_map": {
+    "10001": "system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope",
+    "10002": "soulmask.slice/soulmask-paks.slice/soulmask-0.scope",
+    "10010": "system.slice/systemd-journald.service",
+    "10020": "system.slice/sshd.service"
+  },
+  "pinned_at": "2026-07-10T00:00:00Z",
+  "daemon_info": {
+    "groop_bpf_version": "0.1.0-p18",
+    "map_sizes": {"groop_cgroup_skb": 4096},
+    "load_duration_s": 0.025
+  }
+}

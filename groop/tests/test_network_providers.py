@@ -5,8 +5,10 @@ from pathlib import Path
 from conftest import fixture_root
 from groop.collect.cgroup import walk_entities
 from groop.config import load
+from groop.providers.net_bpf import BpfProvider
 from groop.providers.net_host import NetHostProvider
 from groop.providers.net_netns import NetnsProvider
+from groop.model import Entity
 
 QDISC_OUTPUT = """
 qdisc fq_codel 0: dev eth0 root refcnt 2 limit 10240p flows 1024 quantum 1514 target 5.0ms interval 100.0ms memory_limit 32Mb ecn drop_batch 64
@@ -105,3 +107,178 @@ def test_load_parses_observe_only_net_classes(tmp_path: Path) -> None:
     config = load(config_path)
     assert config.net.classes["interactive_admin"] == (22, 443, 8000, 8001, 8002)
     assert config.net.classify_port(6881) == "background"
+
+
+# ---------------------------------------------------------------------------
+# P18 — BPF provider
+# ---------------------------------------------------------------------------
+
+
+def test_bpf_provider_reads_snapshot_and_returns_net_bpf_samples() -> None:
+    """Basic BPF snapshot parsing: mapped entities get net:BPF samples."""
+    bpf_root = fixture_root() / "bpf" / "working"
+    provider = BpfProvider(bpf_root)
+    entities = {
+        "system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope": Entity(
+            key="system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope",
+            kind="scope",
+            parent="system.slice",
+        ),
+        "soulmask.slice/soulmask-paks.slice/soulmask-0.scope": Entity(
+            key="soulmask.slice/soulmask-paks.slice/soulmask-0.scope",
+            kind="scope",
+            parent="soulmask.slice/soulmask-paks.slice",
+        ),
+    }
+    samples = provider.collect(entities)
+    assert len(samples) == 2
+
+    game = samples["system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope"]
+    assert game.source_label == "net:BPF"
+    assert game.confidence == "exact"
+    assert game.aggregation == "exact"
+    assert game.unavailable_reason is None
+    assert game.rx_bytes == 96000  # 90000 (tcp4) + 5000 (udp4) + 1000 (tcp6)
+    assert game.tx_bytes == 152500  # 150000 (tcp4) + 2000 (udp4) + 500 (tcp6)
+    assert game.rx_pkts == 645  # 600 (tcp4) + 40 (udp4) + 5 (tcp6)
+    assert game.tx_pkts == 518  # 500 (tcp4) + 15 (udp4) + 3 (tcp6)
+    assert game.proto is not None
+
+    other = samples["soulmask.slice/soulmask-paks.slice/soulmask-0.scope"]
+    assert other.source_label == "net:BPF"
+    assert other.rx_bytes == 18000
+    assert other.tx_bytes == 26000
+    assert other.rx_pkts == 120
+    assert other.tx_pkts == 160
+
+
+def test_bpf_provider_entity_without_bpf_mapping_returns_unavailable() -> None:
+    """Entities not in the cgroup_map get net:N/A with explanation."""
+    bpf_root = fixture_root() / "bpf" / "working"
+    provider = BpfProvider(bpf_root)
+    entities = {
+        "soulmask.slice/soulmask-paks.slice": Entity(
+            key="soulmask.slice/soulmask-paks.slice",
+            kind="slice",
+            parent="soulmask.slice",
+        ),
+        "system.slice": Entity(key="system.slice", kind="slice", parent=""),
+    }
+    samples = provider.collect(entities)
+    assert len(samples) == 2
+    for key, sample in samples.items():
+        assert sample.source_label == "net:N/A", f"{key} should be net:N/A"
+        assert sample.unavailable_reason == "no BPF counter mapping for this entity", key
+
+
+def test_bpf_provider_missing_root_returns_unavailable() -> None:
+    """No bpf_root configured => empty result with status reason."""
+    provider = BpfProvider(bpf_root=None)
+    samples = provider.collect({"": Entity(key="", kind="root", parent=None)})
+    assert samples == {}
+    status = provider.status()
+    assert status["loaded"] is False
+    assert status["attached"] is False
+    assert any("no BPF root configured" in e for e in status["errors"])
+
+
+def test_bpf_provider_nonexistent_snapshot_returns_unavailable() -> None:
+    """Bpf root with no snapshot.json => empty result."""
+    bpf_root = fixture_root() / "bpf" / "unavailable"
+    provider = BpfProvider(bpf_root)
+    samples = provider.collect({"": Entity(key="", kind="root", parent=None)})
+    assert samples == {}
+    status = provider.status()
+    assert status["loaded"] is False
+    assert any("no BPF snapshot" in e for e in status["errors"])
+
+
+def test_bpf_provider_corrupt_json_returns_unavailable() -> None:
+    """Corrupt snapshot JSON => error in status, empty collect."""
+    bpf_root = fixture_root() / "bpf" / "corrupt"
+    provider = BpfProvider(bpf_root)
+    samples = provider.collect({"": Entity(key="", kind="root", parent=None)})
+    assert samples == {}
+    status = provider.status()
+    assert status["loaded"] is False
+    assert any("JSON parse error" in e for e in status["errors"])
+
+
+def test_bpf_provider_status_returns_snapshot_metadata() -> None:
+    """Successful collect populates status with entity counts."""
+    bpf_root = fixture_root() / "bpf" / "working"
+    provider = BpfProvider(bpf_root)
+    entities = {
+        "system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope": Entity(
+            key="system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope",
+            kind="scope",
+            parent="system.slice",
+        ),
+    }
+    provider.collect(entities)
+    status = provider.status()
+    assert status["loaded"] is True
+    assert status["attached"] is True
+    assert status["last_read"] is not None
+    assert status["entities_seen"] == 1
+    assert status["entities_with_bpf"] == 1
+
+
+def test_bpf_provider_ranking_in_collector() -> None:
+    """BPF provider outranks host/netns when all three are present."""
+    from groop.collect.collector import Collector
+    from groop.config import GroopConfig
+
+    bpf_root = fixture_root() / "bpf" / "working"
+    cgroup_root = fixture_root() / "cgroupfs" / "gstammtisch"
+    proc_root = fixture_root() / "procfs" / "network"
+    host_ns_id = (proc_root / "ns" / "host").stat().st_ino
+
+    def host_stub() -> dict:
+        from groop.model import MetricValue
+        return {
+            "host_mem_total": MetricValue(16000, "host"),
+            "host_mem_available": MetricValue(8000, "host"),
+            "host_swap_total": MetricValue(4000, "host"),
+            "host_swap_free": MetricValue(2000, "host"),
+            "host_swapcached": MetricValue(100, "host"),
+            "host_zswap_pool": MetricValue(50, "host"),
+            "host_zswap_stored": MetricValue(100, "host"),
+            "host_zswap_ratio": MetricValue(2.0, "host"),
+            "host_disk_swap": MetricValue(0, "host"),
+            "host_load1": MetricValue(0.1, "host"),
+            "host_load5": MetricValue(0.2, "host"),
+            "host_load15": MetricValue(0.3, "host"),
+            "host_uptime_s": MetricValue(1000, "host"),
+            "host_psi_mem_some_avg10": MetricValue(0.0, "host"),
+            "host_psi_mem_full_avg10": MetricValue(0.0, "host"),
+            "host_psi_io_some_avg10": MetricValue(0.0, "host"),
+            "host_psi_io_full_avg10": MetricValue(0.0, "host"),
+            "host_psi_cpu_some_avg10": MetricValue(0.0, "host"),
+            "host_zswap_enabled": MetricValue(1, "host"),
+            "host_zswap_max_pool_percent": MetricValue(20, "host"),
+        }
+
+    providers = (
+        BpfProvider(bpf_root),
+        NetnsProvider(cgroup_root, proc_root=proc_root, host_netns_id=host_ns_id),
+        NetHostProvider(proc_root=proc_root, command_runner=lambda _: ""),
+    )
+    collector = Collector(
+        cgroup_root,
+        GroopConfig(interval=5.0),
+        lambda _cid: None,
+        host_stub,
+        lambda: 100.0,
+        providers,
+        proc_root=proc_root,
+        damon_root=fixture_root() / "damonfs" / "no-root" / "kdamonds",
+    )
+    frame = collector.collect_once()
+    game_key = "system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope"
+    game = frame.entities[game_key].metrics
+    # BPF ranks highest => the entity with BPF mapping gets net_bpf metrics
+    # (source label encoded in the metric value src)
+    net_meta = frame.entities[game_key].network
+    assert net_meta is not None
+    assert net_meta["source_label"] == "net:BPF"

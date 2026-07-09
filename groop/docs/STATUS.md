@@ -78,14 +78,19 @@ core workflows, not yet production-certified.**
   CLI inspect, and hash verification. A progress UI remains future polish.
 - **Acceptance evidence:** P12 records tests, packaging, fixture JSON, replay
   smoke, wheel install, version, and bounded once/json CPU/RSS. P17 records the
-  safe BPF gate and current live-BPF blocker. `MEASUREMENTS.md` still needs a
+  safe BPF gate and current live-BPF blocker. P18 records the fixture-tested BPF
+  provider implementation. `MEASUREMENTS.md` still needs a
   full 5-minute live perf/RSS run, DAMON, and privileged BPF measurements.
+- **BPF network provider:** P18 implements the userspace BPF provider reading
+  pinned-map JSON snapshots with cgroup-id→entity-key mapping, fallback, and
+  fixture tests. The live BPF ownership lifecycle (daemon attach/pin/detach) and
+  kernel BPF program compilation are still daemon work and not implemented.
 
 ## Not Implemented
 
 - Production daemon installation automation and service hardening beyond the
   packaged operator templates.
-- Exact BPF per-cgroup network provider and live BPF ownership lifecycle.
+- Live BPF ownership lifecycle (daemon/helper attach, pin, detach).
 - Executable Docker/systemd admin actions: update/start/stop/restart/kill.
 - `systemctl set-property` governance actions.
 - File/log/content browser behind `--inspect-files`.
