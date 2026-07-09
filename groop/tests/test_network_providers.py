@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from conftest import fixture_root
@@ -110,7 +111,7 @@ def test_load_parses_observe_only_net_classes(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# P18 — BPF provider
+# P18 - BPF provider
 # ---------------------------------------------------------------------------
 
 
@@ -218,10 +219,41 @@ def test_bpf_provider_status_returns_snapshot_metadata() -> None:
     provider.collect(entities)
     status = provider.status()
     assert status["loaded"] is True
-    assert status["attached"] is True
+    assert status["attached"] is False
     assert status["last_read"] is not None
     assert status["entities_seen"] == 1
     assert status["entities_with_bpf"] == 1
+    assert status["snapshot_path"].endswith("snapshot.json")
+
+
+def test_bpf_provider_ignores_malformed_entries(tmp_path: Path) -> None:
+    """Malformed BPF map rows do not crash or inflate counters."""
+    bpf_root = tmp_path / "bpf"
+    bpf_root.mkdir()
+    (bpf_root / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "maps": {
+                    "groop_cgroup_skb": [
+                        {"cgroup_id": 42, "direction": "ingress", "bytes": 100, "packets": 4},
+                        {"cgroup_id": 42, "direction": "egress", "bytes": "bad", "packets": True},
+                        {"cgroup_id": 42, "direction": "sideways", "bytes": 999, "packets": 999},
+                        {"cgroup_id": "42", "direction": "ingress", "bytes": 999, "packets": 999},
+                    ],
+                },
+                "cgroup_map": {"42": "alpha.scope"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = BpfProvider(bpf_root)
+    samples = provider.collect({"alpha.scope": Entity(key="alpha.scope", kind="scope", parent="")})
+    sample = samples["alpha.scope"]
+    assert sample.source_label == "net:BPF"
+    assert sample.rx_bytes == 100
+    assert sample.rx_pkts == 4
+    assert sample.tx_bytes == 0
+    assert sample.tx_pkts == 0
 
 
 def test_bpf_provider_ranking_in_collector() -> None:
@@ -282,3 +314,11 @@ def test_bpf_provider_ranking_in_collector() -> None:
     net_meta = frame.entities[game_key].network
     assert net_meta is not None
     assert net_meta["source_label"] == "net:BPF"
+    assert game["net_rx_bps"].src == "bpf"
+    assert game["net_tx_bps"].src == "bpf"
+
+
+def test_bpf_provider_is_publicly_exported() -> None:
+    from groop.providers import BpfProvider as ExportedBpfProvider
+
+    assert ExportedBpfProvider is BpfProvider

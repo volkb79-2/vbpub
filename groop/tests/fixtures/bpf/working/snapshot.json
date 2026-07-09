@@ -24,7 +24,7 @@
     "10010": "system.slice/systemd-journald.service",
     "10020": "system.slice/sshd.service"
   },
-  "pinned_at": "2026-07-10T00:00:00Z",
+  "pinned_at": "2026-07-09T00:00:00Z",
   "daemon_info": {
     "groop_bpf_version": "0.1.0-p18",
     "map_sizes": {"groop_cgroup_skb": 4096},

@@ -17,19 +17,19 @@ class BpfProvider:
     Reads pinned BPF map snapshots (JSON) from *bpf_root/snapshot.json*.
     Each snapshot contains:
 
-    - ``maps["groop_cgroup_skb"]`` — list of entries with
+    - ``maps["groop_cgroup_skb"]`` - list of entries with
       ``cgroup_id``, ``direction`` ("ingress"|"egress"), ``family``, ``proto``,
       ``bytes``, ``packets``.
-    - ``cgroup_map`` — ``{str(cgroup_id): entity_key}`` built by the
+    - ``cgroup_map`` - ``{str(cgroup_id): entity_key}`` built by the
       daemon/helper that walks the cgroup tree.
 
     The provider maps numeric cgroup ids back to entity keys entirely in
     userspace, emitting ``NetSample`` with ``source_label="net:BPF"`` and
     ``confidence="exact"``.
 
-    When no snapshot is available (root missing, file absent, parse error) the
-    provider returns ``unavailable_sample`` for every entity and populates
-    ``status()`` with the reason.
+    When no snapshot is available (root missing, file absent, parse error), the
+    provider returns no samples so lower-ranked providers can fill the frame and
+    populates ``status()`` with the reason.
     """
 
     name = "net_bpf"
@@ -46,7 +46,7 @@ class BpfProvider:
     def collect(self, entities: dict[EntityKey, Entity]) -> dict[EntityKey, NetSample]:
         self._status = {
             "loaded": True,
-            "attached": True,
+            "attached": False,
             "last_read": time.time(),
             "errors": [],
         }
@@ -64,13 +64,17 @@ class BpfProvider:
 
         maps = snapshot.get("maps", {})
         cgroup_map = snapshot.get("cgroup_map", {})
+        if not isinstance(maps, dict) or not isinstance(cgroup_map, dict):
+            return self._all_unavailable(f"invalid BPF snapshot shape at {snapshot_path}")
 
         # Build entity_key -> list[cgroup_id] from cgroup_map
         entity_to_cgroup: dict[str, list[int]] = {}
         for cid_str, ekey in cgroup_map.items():
+            if not isinstance(ekey, str):
+                continue
             try:
                 cid = int(cid_str)
-            except ValueError:
+            except (TypeError, ValueError):
                 continue
             entity_to_cgroup.setdefault(ekey, []).append(cid)
 
@@ -102,6 +106,7 @@ class BpfProvider:
         self._status["entities_with_bpf"] = sum(
             1 for s in result.values() if s.source_label == "net:BPF"
         )
+        self._status["snapshot_path"] = str(snapshot_path)
         return result
 
     def status(self) -> dict:
@@ -119,7 +124,7 @@ class BpfProvider:
 
     def _load_snapshot(self, path: Path) -> dict[str, Any] | None:
         try:
-            raw = path.read_text()
+            raw = path.read_text(encoding="utf-8")
         except OSError as exc:
             self._status["errors"].append(f"read error: {exc}")
             return None
@@ -130,9 +135,9 @@ class BpfProvider:
             return None
 
     @staticmethod
-    def _parse_entries(maps: dict[str, list[dict]]) -> list[dict]:
+    def _parse_entries(maps: dict[object, object]) -> list[dict[object, object]]:
         """Flatten all named maps into a single list of entries."""
-        entries: list[dict] = []
+        entries: list[dict[object, object]] = []
         for map_name, map_entries in maps.items():
             if not isinstance(map_entries, list):
                 continue
@@ -166,8 +171,8 @@ class BpfProvider:
             direction = str(entry.get("direction", ""))
             family = str(entry.get("family", "other"))
             proto = str(entry.get("proto", "other"))
-            bytes_val = entry.get("bytes", 0) or 0
-            pkts_val = entry.get("packets", 0) or 0
+            bytes_val = _int_or_none(entry.get("bytes", 0)) or 0
+            pkts_val = _int_or_none(entry.get("packets", 0)) or 0
 
             if direction == "ingress":
                 rx_bytes += bytes_val
@@ -176,9 +181,7 @@ class BpfProvider:
                 tx_bytes += bytes_val
                 tx_pkts += pkts_val
             else:
-                # Treat as egress if unknown direction (conservative)
-                tx_bytes += bytes_val
-                tx_pkts += pkts_val
+                continue
 
             proto_map.setdefault(family, {})
             proto_map[family].setdefault(proto, 0)
@@ -198,3 +201,11 @@ class BpfProvider:
             aggregation="exact",
             unavailable_reason=None,
         )
+
+
+def _int_or_none(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None

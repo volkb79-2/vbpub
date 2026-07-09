@@ -1,12 +1,12 @@
-# P18 REPORT — Exact BPF Network Provider
+# P18 REPORT - Exact BPF Network Provider Read Side
 
 **Branch:** `feat/groop-p18-bpf-provider`
 **Base:** `6a9ebab` (docs(groop): record P21 merge evidence)
-**Date:** 2026-07-10
+**Date:** 2026-07-09
 
 ## What was built
 
-### `groop/src/groop/providers/net_bpf.py` — `BpfProvider`
+### `groop/src/groop/providers/net_bpf.py` - `BpfProvider`
 
 A new network provider implementing the `Provider` protocol from
 `CONTRACTS.md`. Key characteristics:
@@ -19,7 +19,7 @@ A new network provider implementing the `Provider` protocol from
 2. **Map format.** The snapshot contains:
    - `maps["groop_cgroup_skb"]`: list of entries with `cgroup_id` (int),
      `direction` ("ingress"/"egress"), `family`, `proto`, `bytes`, `packets`.
-   - `cgroup_map`: `{str(cgroup_id): entity_key}` — the userspace cgroup-id
+   - `cgroup_map`: `{str(cgroup_id): entity_key}` - the userspace cgroup-id
      to entity path mapping, built by the daemon/helper that walks the cgroup
      tree.
 
@@ -31,34 +31,39 @@ A new network provider implementing the `Provider` protocol from
    - Builds a `proto` dictionary with per-family, per-protocol breakdown.
 
 4. **`NetSample` output.** Emits `source_label="net:BPF"`,
-   `confidence="exact"`, `aggregation="exact"`.
+   `confidence="exact"`, `aggregation="exact"`, and collector rates use
+   `MetricValue.src="bpf"`.
 
 5. **Fallback and status.** When no snapshot is available (root `None`, file
-   missing, JSON parse error), returns `unavailable_sample` with descriptive
-   `unavailable_reason` and populates `status()` with the error. Status
-   includes `loaded`, `attached`, `last_read`, `errors`, `entities_seen`, and
-   `entities_with_bpf`.
+   missing, JSON parse error), returns no samples so lower-ranked providers can
+   fill the frame and populates `status()` with the error. Per-entity unmapped
+   rows return `net:N/A` samples with descriptive `unavailable_reason`. Status
+   includes `loaded`, `attached`, `last_read`, `errors`, `entities_seen`,
+   `entities_with_bpf`, and `snapshot_path`. The read-side provider reports
+   `attached=false`; live BPF attach status belongs to the future daemon writer.
 
-### Tests — 7 new test functions
+### Tests - 9 BPF-specific test functions
 
 All in `groop/tests/test_network_providers.py`:
 
 | Test | What it covers |
 |------|----------------|
 | `test_bpf_provider_reads_snapshot_and_returns_net_bpf_samples` | Snapshot parse + aggregation for two mapped entities; checks rx/tx bytes and packets, source_label |
-| `test_bpf_provider_entity_without_bpf_mapping_returns_unavailable` | Entity not in cgroup_map → net:N/A with reason |
-| `test_bpf_provider_missing_root_returns_unavailable` | `bpf_root=None` → empty collect + status error |
-| `test_bpf_provider_nonexistent_snapshot_returns_unavailable` | Root dir with no `snapshot.json` → empty collect + status error |
-| `test_bpf_provider_corrupt_json_returns_unavailable` | Invalid JSON → empty collect + status error |
+| `test_bpf_provider_entity_without_bpf_mapping_returns_unavailable` | Entity not in cgroup_map returns net:N/A with reason |
+| `test_bpf_provider_missing_root_returns_unavailable` | `bpf_root=None` returns empty collect plus status error |
+| `test_bpf_provider_nonexistent_snapshot_returns_unavailable` | Root dir with no `snapshot.json` returns empty collect plus status error |
+| `test_bpf_provider_corrupt_json_returns_unavailable` | Invalid JSON returns empty collect plus status error |
 | `test_bpf_provider_status_returns_snapshot_metadata` | Successful collect populates status with entity counts |
+| `test_bpf_provider_ignores_malformed_entries` | Bad map rows do not crash or inflate counters |
 | `test_bpf_provider_ranking_in_collector` | Full collector integration with all three providers (BPF, netns, host); BPF outranks and source_label is `net:BPF` |
+| `test_bpf_provider_is_publicly_exported` | `groop.providers.BpfProvider` public export works |
 
 ### Fixtures
 
-- `groop/tests/fixtures/bpf/working/snapshot.json` — valid BPF snapshot with 14
+- `groop/tests/fixtures/bpf/working/snapshot.json` - valid BPF snapshot with 14
   map entries across 4 cgroup IDs
-- `groop/tests/fixtures/bpf/corrupt/snapshot.json` — deliberately malformed JSON
-- `groop/tests/fixtures/bpf/unavailable/` — empty directory (no snapshot file)
+- `groop/tests/fixtures/bpf/corrupt/snapshot.json` - deliberately malformed JSON
+- `groop/tests/fixtures/bpf/unavailable/` - empty directory (no snapshot file)
 
 ## Deviations from the handoff doc
 
@@ -76,39 +81,37 @@ All in `groop/tests/test_network_providers.py`:
   design doc's key/value shape. A future daemon would write these snapshots from
   actual pinned BPF maps.
 
-## Contract changes proposed
+## Contract changes
 
-**None.** The existing `NetSample.source_label` already includes `"net:BPF"`,
-and `sample_rank` already ranks `"net:BPF"` highest (3). No changes to
-`CONTRACTS.md` were needed. The registry metric specs for `net_rx_bps`,
-`net_tx_bps`, `net_rx_pps`, `net_tx_pps` already reference
-`"provider:network-host"` and `"provider:network-netns"` as sources; BPF would
-logically be a third source but the metric names and frame shape are identical
-— the source label difference is encoded in the `MetricValue.src` field via
-`_network_metric_source()` in the collector, which currently maps `net:BPF` to
-`"derived"`. This is acceptable because the `network` metadata block carries
-`source_label="net:BPF"` for consumers that need the distinction.
+No frame-shape change. The existing `NetSample.source_label` already includes
+`"net:BPF"`, and `sample_rank` already ranks `"net:BPF"` highest (3).
+Controller review added the additive `MetricSource` value `"bpf"` plus
+`provider:network-bpf` registry source references so BPF-backed rates are not
+mislabelled as generic derived metrics.
 
 ## Test evidence
 
 ```bash
-# Full suite (145 passed)
-/tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-........................................................................ [ 49%]
-........................................................................ [ 99%]
-.                                                                        [100%]
-145 passed in 25.89s
+# Full suite
+PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
+........................................................................ [ 48%]
+........................................................................ [ 97%]
+...                                                                      [100%]
+147 passed in 25.14s
 
-# Focused BPF tests (7/7 green)
-/tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests/test_network_providers.py \
-  -k "bpf" -v --no-header
+# Focused network provider tests
+PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m pytest \
+  groop/tests/test_network_providers.py -q
+15 passed in 0.16s
 # test_bpf_provider_reads_snapshot_and_returns_net_bpf_samples PASSED
 # test_bpf_provider_entity_without_bpf_mapping_returns_unavailable PASSED
 # test_bpf_provider_missing_root_returns_unavailable PASSED
 # test_bpf_provider_nonexistent_snapshot_returns_unavailable PASSED
 # test_bpf_provider_corrupt_json_returns_unavailable PASSED
 # test_bpf_provider_status_returns_snapshot_metadata PASSED
+# test_bpf_provider_ignores_malformed_entries PASSED
 # test_bpf_provider_ranking_in_collector PASSED
+# test_bpf_provider_is_publicly_exported PASSED
 ```
 
 ## Quality gates
@@ -117,24 +120,27 @@ logically be a third source but the metric names and frame shape are identical
 
 ```bash
 cd /home/vb/volkb79-2/vbpub/.worktrees/-groop-p18-bpf-provider
-python3 -m py_compile groop/src/groop/providers/net_bpf.py
+/tmp/vbpub-groop-p17-venv/bin/python -m py_compile \
+  groop/src/groop/providers/net_bpf.py groop/src/groop/providers/__init__.py \
+  groop/src/groop/collect/collector.py groop/src/groop/model.py \
+  groop/src/groop/registry.py groop/tests/test_network_providers.py
 # (exit 0, no output)
 ```
 
 ### `groop --once --json` smoke using fixture root
 
 ```bash
-/tmp/vbpub-groop-p17-venv/bin/python -m groop \
+PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m groop.cli \
   --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch \
-  --once --json > /dev/null
-# (exit 0, valid JSON produced without errors)
+  --once --json
+# schema=1 entities=8 host=36
 ```
 
 ### Full test suite
 
 ```bash
-/tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-# 145 passed in 25.89s
+PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
+# 147 passed in 25.14s
 ```
 
 ## Known gaps
@@ -149,13 +155,13 @@ python3 -m py_compile groop/src/groop/providers/net_bpf.py
    implemented.
 
 3. **No `cgroup_skb` BPF program source.** The BPF C source and compiled
-   objects do not exist in the repo. This is intentional — P18 is the
+   objects do not exist in the repo. This is intentional: P18 is the
    provider reading side only.
 
 4. **UI/help does not surface BPF status.** The `EntityFrame.network` block
    carries `source_label="net:BPF"` which the TUI could display, but there is
    no dedicated UI element for BPF provider status. This matches the existing
-   pattern — host/netns provider status is also not surfaced in the TUI
+   pattern: host/netns provider status is also not surfaced in the TUI
    beyond the drill-down network metadata.
 
 ## Files changed
@@ -164,7 +170,11 @@ python3 -m py_compile groop/src/groop/providers/net_bpf.py
 M groop/README.md                           (P18 row Done)
 M groop/MEASUREMENTS.md                     (P18 evidence section)
 M groop/docs/STATUS.md                      (BPF provider: Partially Implemented)
-M groop/tests/test_network_providers.py      (7 BPF tests + imports)
+M groop/src/groop/collect/collector.py       (BPF metric source label)
+M groop/src/groop/model.py                   (additive bpf MetricSource)
+M groop/src/groop/providers/__init__.py      (BpfProvider export)
+M groop/src/groop/registry.py                (provider:network-bpf references)
+M groop/tests/test_network_providers.py      (9 BPF tests + imports)
 A groop/src/groop/providers/net_bpf.py       (BpfProvider class, ~200 lines)
 A groop/tests/fixtures/bpf/working/snapshot.json
 A groop/tests/fixtures/bpf/corrupt/snapshot.json
