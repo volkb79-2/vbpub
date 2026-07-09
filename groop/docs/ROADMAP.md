@@ -98,10 +98,7 @@ real host, and `groop --attach` client mode.
 
 ### P17 — BPF Measurement Gate
 
-Goal: create the benchmark harness and measurement evidence required before any
-BPF provider can be enabled by default.
-
-This should update `MEASUREMENTS.md` with baseline and BPF-loaded traffic tests.
+Status: done. The safe unprivileged measurement helper and design doc landed, and `MEASUREMENTS.md` now records the live-BPF blocker on this host.
 
 ### P18 — BPF Network Provider
 

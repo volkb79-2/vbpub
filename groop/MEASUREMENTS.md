@@ -152,6 +152,22 @@ Record:
 - Drop/error counters:
 - Result:
 
+P17 safe-run evidence (2026-07-09):
+
+- Helper:
+  - `/tmp/vbpub-groop-p17-venv/bin/groop bpf gate --proc-root groop/tests/fixtures/procfs/network --json`
+- Result:
+  - safe no-op
+  - blocked live BPF load: `bpftool` missing, uid 1003 not root, `/sys/fs/bpf/groop` not writable
+  - baseline: rx 15100 B / tx 27100 B / rx_pkts 151 / tx_pkts 191
+  - no BPF maps were loaded or pinned
+- Pin path: `/sys/fs/bpf/groop/`
+- Commands:
+  - `id -u`
+  - `command -v bpftool`
+  - `mount | grep " /sys/fs/bpf "`
+  - `/tmp/vbpub-groop-p17-venv/bin/groop bpf gate --proc-root groop/tests/fixtures/procfs/network --json`
+
 ## Release Signoff Template
 
 - Release/tag:

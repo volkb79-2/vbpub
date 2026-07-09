@@ -15,6 +15,7 @@ flowchart LR
     Systemd[systemctl show] --> Drift
     NetHost[host network provider] --> Collector
     Netns[netns provider] --> Collector
+    BpfGate[BPF gate CLI] --> NetHost
     Damon[DAMON sysfs] --> DamonPassive
 
     Collector --> Frame[Frame model]
@@ -44,6 +45,7 @@ flowchart LR
 | `record/` | live stream, JSONL reader/writer, replay, and history ring. |
 | `snapshot/` | incident bundle creation and inspection. |
 | `daemon/` | Read-only Unix-socket frame broker spike. |
+| `bpf_gate.py` | Safe no-op BPF preflight and baseline measurement helper. |
 | `ui/` | Textual app, banner, table/tree, drill-down, host-memory status, keys. |
 
 ## Layering Rules
@@ -71,6 +73,7 @@ stateDiagram-v2
     [*] --> ReplayTUI: --replay FILE
     [*] --> DamonCLI: damon stop/paddr start
     [*] --> SnapshotCLI: snapshot inspect FILE
+    [*] --> BpfGateCLI: bpf gate
 
     LiveTUI --> FrameLoop
     RecordLive --> FrameLoop
@@ -104,7 +107,9 @@ root-owned runtime directory such as `/run/groop/groop.sock` with a dedicated
 receive only the daemon-approved frame stream.
 
 A future attached client should see the same stream shape as standalone live
-mode, with the transport changing from in-process iterator to Unix socket.
+mode, with the transport changing from in-process iterator to Unix socket. The
+BPF design target is documented in `BPF-NETWORK-ACCOUNTING.md`; BPF programs and
+maps should be owned by the daemon/helper, not by transient TUI processes.
 
 ```mermaid
 flowchart LR

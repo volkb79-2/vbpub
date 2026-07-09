@@ -21,6 +21,8 @@ Stack: Python; Textual allowed ONLY under `src/groop/ui/` (spec §6.1, §6.4).
 - `docs/OPERATIONS.md` — runbook for using groop safely today.
 - `docs/COMPRESSED-SWAP.md` — zswap/zram/disk/mixed backend policy and metric
   semantics.
+- `docs/BPF-NETWORK-ACCOUNTING.md` — v2 exact network accounting design and
+  measurement-gate constraints.
 - `MEASUREMENTS.md` — acceptance and overhead evidence ledger. BPF defaults,
   DAMON default increases, and release claims should be blocked on this file.
 - `handoff/*.md` — implementation briefs. Completed packages also have
@@ -72,7 +74,7 @@ Useful feature hotkeys in the TUI:
 | P15 | Done with progress gap | Incident snapshot enrichment and UX | v1.5 | Fresh systemctl/docker metadata, richer inspect output, redaction/docs/tests; progress UI remains future polish. Report: `handoff/reports/P15-REPORT.md`. |
 | P19 | Done with drill-down gap | ZRAM and swap-backend awareness | v1.5 | Host backend classification, ZRAM metrics, banner/docs/tests landed; per-device drill-down remains future polish. Report: `handoff/reports/P19-REPORT.md`. |
 | P16 | Done as spike | Daemon read broker for non-root full reads | v1.5/v2 foundation | Read-only Unix-socket JSONL broker, tests, and daemon docs landed; attach mode/package unit remain future work. Report: `handoff/reports/P16-REPORT.md`. |
-| P17 | Proposed | BPF provider measurement gate and design | v2 foundation | Benchmarks and design before implementation/defaults. Handoff: `handoff/P17-bpf-provider-measurement-gate.md`. |
+| P17 | Done | BPF provider measurement gate and design | v2 foundation | Safe unprivileged gate plus design doc; no default behavior change. Report: `handoff/reports/P17-REPORT.md`. |
 | P18 | Proposed | Exact BPF network provider | v2 | Implement `net:BPF` after P16/P17 evidence. Handoff: `handoff/P18-bpf-provider-implementation.md`. |
 
 ## Completed Package Order
