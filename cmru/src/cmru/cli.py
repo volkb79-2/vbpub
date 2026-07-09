@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -51,7 +52,7 @@ class OCIConfig:
     target: str                        # bake target name
     repack: bool = False               # enable docker-repack after build
     repack_target_size: str = "2GB"    # target size per layer (e.g. "100MB", "2GB")
-    repack_compression: int | None = None  # compression level 1-22 (None = auto)
+    repack_compression: int = 9       # zstd compression level (1-22)
 
 
 @dataclass(frozen=True)
@@ -564,7 +565,6 @@ def load_config(
             repack = bool(oci_raw.get("repack", False))
             repack_target_size = str(oci_raw.get("repack_target_size") or "2GB")
             repack_compression_raw = oci_raw.get("repack_compression")
-            repack_compression: int | None = None
             if repack_compression_raw is not None:
                 try:
                     repack_compression = int(repack_compression_raw)
@@ -576,6 +576,19 @@ def load_config(
                     raise ValueError(
                         f"project.{name}.oci.repack_compression must be between 1 and 22"
                     )
+            else:
+                repack_compression = 9  # default
+            # V18: validate repack_target_size format (accepts e.g. 500MB, 2GB, 1.5GB)
+            raw_size = str(oci_raw.get("repack_target_size", "")).strip()
+            if raw_size:
+                if not re.fullmatch(r"\d+(\.\d+)?\s*[KMGTP]?B?", raw_size, re.IGNORECASE):
+                    raise ValueError(
+                        f"project.{name}.oci.repack_target_size must be a valid size "
+                        f"string (e.g. '2GB', '500MB'), got {raw_size!r}"
+                    )
+                repack_target_size = raw_size
+            else:
+                repack_target_size = "2GB"
             oci_cfg = OCIConfig(
                 bake_file=bake_file, target=target,
                 repack=repack,

@@ -639,7 +639,7 @@ Add these optional keys under `[project.<name>.oci]`:
 [project.<name>.oci]
 repack              = false       # enable docker-repack layer optimization
 repack_target_size  = "2GB"       # --target-size for docker-repack
-repack_compression  = 9           # zstd compression level (1-22)
+repack_compression  = 9           # zstd compression level (1-22, default 9)
 ```
 
 When `repack` is true, the build step runs the repack flow (S14.3); otherwise the simple bake flow (S14.2).

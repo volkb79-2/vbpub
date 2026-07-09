@@ -354,8 +354,8 @@ def main(argv: list | None = None) -> None:
     p_ocib.add_argument("--repack", action="store_true", help="enable OCI repack")
     p_ocib.add_argument("--repack-target-size", default="2GB",
                         help="target size per layer for repack (default: 2GB)")
-    p_ocib.add_argument("--repack-compression", type=int, default=None,
-                        help="compression level 1-22 for repack (default: auto)")
+    p_ocib.add_argument("--repack-compression", type=int, default=9,
+                        help="compression level 1-22 for repack (default: 9)")
     p_ocib.set_defaults(func=cmd_oci_image_build)
 
     p_ocip = sub.add_parser("oci-image-push",
