@@ -1,4 +1,4 @@
-"""Daemon status report — combines deployment preflight with protocol check.
+"""Daemon status report combining deployment preflight with protocol checks.
 
 This module provides a read-only DaemonStatusReport that operators can use
 to answer "is the daemon deployment usable from this account, and is it
@@ -7,8 +7,7 @@ speaking the expected groop frame protocol?"
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from groop.daemon.client import (
@@ -25,7 +24,6 @@ from groop.daemon.deploy import (
     preflight_daemon_deployment,
     preflight_report_to_jsonable,
 )
-from groop.model import Frame, frame_to_jsonable
 
 
 @dataclass(frozen=True)

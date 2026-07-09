@@ -11,7 +11,7 @@
 ## Timeline
 
 ```text
-2026-07-09 UTC
+2026-07-10 UTC
 - Action: Created git worktree, set up venv, verified 279 tests pass on main
 - Action: Created groop/src/groop/daemon/status.py with:
   - DaemonStatusReport dataclass (ok, socket, group, preflight, protocol)
@@ -41,6 +41,13 @@
   - groop/README.md: P32 row to Done
 - Action: Wrote log and report
 - Action: Committed feature branch
+
+2026-07-10 UTC (controller review)
+- Action: Tightened status implementation and tests before merge
+- Files changed: groop/src/groop/daemon/status.py, groop/src/groop/cli.py, groop/tests/test_daemon_status.py
+- Result: Removed unused imports, made compact JSON deterministic, replaced a synthetic protocol test with a real malformed-daemon socket, added a no-mutation helper test, and made default-socket guidance testing independent from host /run state
+- Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_daemon_status.py groop/tests/test_daemon_client.py groop/tests/test_daemon_deploy.py groop/tests/test_attach_cli.py -q -> 46 passed in 15.70s
+- Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile groop/src/groop/daemon/status.py groop/src/groop/daemon/__init__.py groop/src/groop/cli.py groop/tests/test_daemon_status.py -> clean
 ```
 
 ## Decisions

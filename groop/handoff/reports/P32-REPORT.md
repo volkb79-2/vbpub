@@ -65,6 +65,21 @@ assert 'groop daemon status' in text
 assert 'DEGRADED' in text
 print('Status text output: OK')
 "
+
+# Controller review validation
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest \
+  groop/tests/test_daemon_status.py \
+  groop/tests/test_daemon_client.py \
+  groop/tests/test_daemon_deploy.py \
+  groop/tests/test_attach_cli.py -q
+# 46 passed in 15.70s
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile \
+  groop/src/groop/daemon/status.py \
+  groop/src/groop/daemon/__init__.py \
+  groop/src/groop/cli.py \
+  groop/tests/test_daemon_status.py
+# clean, exit 0
 ```
 
 ## Known Gaps

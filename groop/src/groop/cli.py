@@ -622,7 +622,14 @@ def _main_daemon(argv: list[str]) -> int:
             print(str(exc), file=sys.stderr)
             return 2
         if args.json or args.pretty_json:
-            print(json.dumps(report.to_jsonable(), indent=2 if args.pretty_json else None, sort_keys=True))
+            print(
+                json.dumps(
+                    report.to_jsonable(),
+                    indent=2 if args.pretty_json else None,
+                    separators=None if args.pretty_json else (",", ":"),
+                    sort_keys=True,
+                )
+            )
         else:
             print(report.to_text())
         return 0 if report.ok else 1
