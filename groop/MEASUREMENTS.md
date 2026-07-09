@@ -69,6 +69,45 @@ Controller fixture evidence after P33 merge:
   - sys CPU: `0.0145s`
   - max RSS: `89256 KB`
 
+### P35 acceptance steady harness
+
+The preferred rootless collector steady-state evidence path (P35) extends the
+P33 module with a repeatable multi-sample loop that measures CPU/RSS over time:
+
+```bash
+# Fixture-based (fast, deterministic):
+PYTHONPATH=groop/src python3 -m groop.acceptance steady \
+  --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch \
+  --samples 5 --interval-s 0 --pretty-json
+
+# Live host (--samples 60 --interval-s 5.0 default):
+PYTHONPATH=groop/src python3 -m groop.acceptance steady --json
+```
+
+Example output showing the measurement fields:
+
+```text
+  Collection: 5/5 samples completed
+  Entity count: min=8, max=8, last=8
+  wall:      X.XXXXs
+  user:      X.XXXXs
+   sys:      X.XXXXs
+   RSS:      XXXXX KB
+  avg sample: X.XXXXs
+  cpu%:      XX.XX%  (of one core)
+  ALL CHECKS PASSED  (exit code 0)
+```
+
+P35 fixture evidence:
+
+- Command:
+  - `PYTHONPATH=groop/src python3 -m groop.acceptance steady --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch --samples 2 --interval-s 0 --json`
+- Result:
+  - exit `0`, `ok: true`
+  - samples: `2/2`
+  - entity counts: `min=8, max=8, last=8`
+  - wall, user, sys, RSS, avg_sample_wall_s, cpu_pct all present
+
 ## v1 Acceptance Measurements
 
 ### CPU Steady State

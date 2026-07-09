@@ -2,6 +2,8 @@
 
 Usage:
     python -m groop.acceptance smoke [--cgroup-root PATH] [--replay PATH] [--json] [--pretty-json]
+    python -m groop.acceptance steady [--cgroup-root PATH] [--samples N] [--interval-s SECONDS]
+                         [--max-cpu-pct FLOAT] [--max-rss-kb INT] [--json] [--pretty-json]
 
 Exit codes:
     0  All requested checks pass.
@@ -28,9 +30,12 @@ from typing import Any
 __all__ = [
     "Check",
     "SmokeResult",
+    "SteadySample",
+    "SteadyResult",
     "build_parser",
     "run_smoke",
-    "smoke_main",
+    "run_steady",
+    "acceptance_main",
     "format_text",
     "format_json",
 ]
@@ -43,7 +48,7 @@ __all__ = [
 
 @dataclass
 class Check:
-    """One named smoke check result."""
+    """One named check result."""
 
     name: str
     ok: bool
@@ -62,6 +67,30 @@ class SmokeResult:
     checks: list[Check]
     measurements: dict[str, float]
     frame_summary: dict[str, Any] | None = None
+
+
+@dataclass
+class SteadySample:
+    """Result of one sample in a steady-state run."""
+
+    index: int
+    wall_s: float
+    entity_count: int
+
+
+@dataclass
+class SteadyResult:
+    """Top-level result from a steady-state collector run."""
+
+    ok: bool
+    version: str
+    python: str
+    platform: str
+    samples_requested: int
+    samples_completed: int
+    measurements: dict[str, float]
+    entity_counts: dict[str, int]
+    threshold_errors: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +126,50 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output structured JSON instead of human-readable text.",
     )
     smoke.add_argument(
+        "--pretty-json",
+        action="store_true",
+        default=False,
+        help="Output indented JSON instead of compact JSON.",
+    )
+
+    steady = sub.add_parser("steady", help="Run steady-state collector loop for release confidence.")
+    steady.add_argument(
+        "--cgroup-root",
+        type=Path,
+        default=None,
+        help="Alternate cgroup root (default: /sys/fs/cgroup). Use a fixture path for testing.",
+    )
+    steady.add_argument(
+        "--samples",
+        type=int,
+        default=60,
+        help="Number of frames to collect (default: 60).",
+    )
+    steady.add_argument(
+        "--interval-s",
+        type=float,
+        default=5.0,
+        help="Seconds between samples (default: 5.0).",
+    )
+    steady.add_argument(
+        "--max-cpu-pct",
+        type=float,
+        default=None,
+        help="Fail if measured CPU percent exceeds this threshold.",
+    )
+    steady.add_argument(
+        "--max-rss-kb",
+        type=int,
+        default=None,
+        help="Fail if measured max RSS (KB) exceeds this threshold.",
+    )
+    steady.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Output structured JSON instead of human-readable text.",
+    )
+    steady.add_argument(
         "--pretty-json",
         action="store_true",
         default=False,
@@ -307,8 +380,191 @@ def run_smoke(
 
 
 # ---------------------------------------------------------------------------
+# Core steady logic
+# ---------------------------------------------------------------------------
+
+
+def run_steady(
+    cgroup_root: Path | None = None,
+    samples: int = 60,
+    interval_s: float = 5.0,
+    max_cpu_pct: float | None = None,
+    max_rss_kb: int | None = None,
+    _sleep: Any = time.sleep,
+    _perf_counter: Any = time.perf_counter,
+) -> SteadyResult:
+    """Run a steady-state collector loop and return a SteadyResult.
+
+    Parameters
+    ----------
+    cgroup_root : Path or None
+        Alternate cgroup root for testing.
+    samples : int
+        Number of frames to collect.
+    interval_s : float
+        Seconds to sleep between samples.
+    max_cpu_pct : float or None
+        Optional CPU percent threshold.
+    max_rss_kb : int or None
+        Optional RSS threshold (KB).
+    _sleep : callable, optional
+        Sleep function (injectable for tests).  Default ``time.sleep``.
+    _perf_counter : callable, optional
+        High-resolution timer (injectable for tests). Default ``time.perf_counter``.
+    """
+    from groop import __version__
+
+    threshold_errors: list[str] = []
+    sample_records: list[SteadySample] = []
+    t0 = _perf_counter()
+    ru0 = resource.getrusage(resource.RUSAGE_SELF)
+
+    for i in range(samples):
+        sample_t0 = _perf_counter()
+        try:
+            frame_dict = _collect_frame(cgroup_root)
+            entity_count = len(frame_dict.get("entities", {}))
+        except Exception:
+            entity_count = 0
+        sample_wall = _perf_counter() - sample_t0
+        sample_records.append(SteadySample(index=i, wall_s=sample_wall, entity_count=entity_count))
+
+        if i < samples - 1 and interval_s > 0:
+            _sleep(interval_s)
+
+    t1 = _perf_counter()
+    ru1 = resource.getrusage(resource.RUSAGE_SELF)
+
+    wall_s = t1 - t0
+    user_s = ru1.ru_utime - ru0.ru_utime
+    sys_s = ru1.ru_stime - ru0.ru_stime
+    rss_kb = float(ru1.ru_maxrss)
+
+    cpu_pct = 0.0
+    if wall_s > 0:
+        cpu_pct = ((user_s + sys_s) / wall_s) * 100.0
+
+    avg_sample_wall = (
+        sum(s.wall_s for s in sample_records) / len(sample_records) if sample_records else 0.0
+    )
+
+    entity_counts_all = [s.entity_count for s in sample_records]
+    ec_min = min(entity_counts_all) if entity_counts_all else 0
+    ec_max = max(entity_counts_all) if entity_counts_all else 0
+    ec_last = entity_counts_all[-1] if entity_counts_all else 0
+
+    samples_completed = len(sample_records)
+
+    measurements: dict[str, float] = {
+        "wall_s": round(wall_s, 4),
+        "user_s": round(user_s, 4),
+        "sys_s": round(sys_s, 4),
+        "rss_kb": rss_kb,
+        "avg_sample_wall_s": round(avg_sample_wall, 4),
+        "cpu_pct": round(cpu_pct, 2),
+    }
+
+    entity_counts: dict[str, int] = {
+        "min": ec_min,
+        "max": ec_max,
+        "last": ec_last,
+    }
+
+    collection_ok = samples_completed == samples
+
+    cpu_ok = True
+    if max_cpu_pct is not None and cpu_pct > max_cpu_pct:
+        threshold_errors.append(
+            f"CPU percent {cpu_pct:.2f}% exceeds threshold {max_cpu_pct:.2f}%"
+        )
+        cpu_ok = False
+
+    rss_ok = True
+    if max_rss_kb is not None and rss_kb > max_rss_kb:
+        threshold_errors.append(
+            f"RSS {rss_kb:.0f} KB exceeds threshold {max_rss_kb} KB"
+        )
+        rss_ok = False
+
+    overall_ok = collection_ok and cpu_ok and rss_ok
+
+    return SteadyResult(
+        ok=overall_ok,
+        version=__version__,
+        python=sys.version,
+        platform=platform.platform(),
+        samples_requested=samples,
+        samples_completed=samples_completed,
+        measurements=measurements,
+        entity_counts=entity_counts,
+        threshold_errors=threshold_errors,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Output formatting
 # ---------------------------------------------------------------------------
+
+
+def _steady_to_jsonable(result: SteadyResult) -> dict[str, Any]:
+    return {
+        "ok": result.ok,
+        "version": result.version,
+        "python": result.python,
+        "platform": result.platform,
+        "samples_requested": result.samples_requested,
+        "samples_completed": result.samples_completed,
+        "measurements": result.measurements,
+        "entity_counts": result.entity_counts,
+        "threshold_errors": result.threshold_errors,
+    }
+
+
+def format_steady_json(result: SteadyResult, *, pretty: bool = False) -> str:
+    """Serialize a steady result as deterministic JSON."""
+    indent = 2 if pretty else None
+    obj = _steady_to_jsonable(result)
+    return json.dumps(
+        obj,
+        indent=indent,
+        separators=None if pretty else (",", ":"),
+        sort_keys=True,
+        default=str,
+    )
+
+
+def format_steady_text(result: SteadyResult) -> str:
+    """Format steady result as concise human-readable text."""
+    lines: list[str] = []
+    lines.append(f"groop acceptance steady  v{result.version}")
+    lines.append(f"python: {result.python.split()[0]}  platform: {result.platform}")
+    lines.append("")
+    lines.append(f"  Collection: {result.samples_completed}/{result.samples_requested} samples completed")
+    ec = result.entity_counts
+    lines.append(f"  Entity count: min={ec.get('min', '?')}, max={ec.get('max', '?')}, last={ec.get('last', '?')}")
+    lines.append("")
+    lines.append("  Measurements:")
+    m = result.measurements
+    lines.append(f"    wall:      {m.get('wall_s', '?'):>8.4f}s")
+    lines.append(f"    user:      {m.get('user_s', '?'):>8.4f}s")
+    lines.append(f"     sys:      {m.get('sys_s', '?'):>8.4f}s")
+    lines.append(f"     RSS:      {m.get('rss_kb', '?'):>8.0f} KB")
+    lines.append(f"    avg sample: {m.get('avg_sample_wall_s', '?'):>8.4f}s")
+    lines.append(f"    cpu%:      {m.get('cpu_pct', '?'):>8.2f}%  (of one core)")
+
+    if result.threshold_errors:
+        lines.append("")
+        lines.append("  Threshold failures:")
+        for err in result.threshold_errors:
+            lines.append(f"    [FAIL] {err}")
+
+    lines.append("")
+    lines.append("  This is collector steady-state evidence, not full TUI steady-state acceptance.")
+
+    verdict = "ALL CHECKS PASSED" if result.ok else "SOME CHECKS FAILED"
+    lines.append("")
+    lines.append(f"  {verdict}  (exit code {'0' if result.ok else '1'})")
+    return "\n".join(lines)
 
 
 def _check_to_dict(c: Check) -> dict[str, Any]:
@@ -375,43 +631,53 @@ def format_text(result: SmokeResult) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 
-def smoke_main(argv: list[str] | None = None) -> int:
-    """Parse args, run smoke, print output, return exit code.
-
-    This is the entry point used by ``python -m groop.acceptance``.
-    """
+def acceptance_main(argv: list[str] | None = None) -> int:
+    """Parse args, dispatch to smoke or steady, print output, return exit code."""
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.command != "smoke":
+    if args.command == "smoke":
+        result = run_smoke(cgroup_root=args.cgroup_root, replay_path=args.replay)
+        if args.json or args.pretty_json:
+            output = format_json(result, pretty=args.pretty_json)
+        else:
+            output = format_text(result)
+    elif args.command == "steady":
+        if args.samples <= 0:
+            print("error: --samples must be positive", file=sys.stderr)
+            return 2
+        if args.interval_s < 0:
+            print("error: --interval-s must be non-negative", file=sys.stderr)
+            return 2
+        result = run_steady(
+            cgroup_root=args.cgroup_root,
+            samples=args.samples,
+            interval_s=args.interval_s,
+            max_cpu_pct=args.max_cpu_pct,
+            max_rss_kb=args.max_rss_kb,
+        )
+        if args.json or args.pretty_json:
+            output = format_steady_json(result, pretty=args.pretty_json)
+        else:
+            output = format_steady_text(result)
+    else:
         print(f"Unknown command: {args.command}", file=sys.stderr)
         return 2
-
-    result = run_smoke(cgroup_root=args.cgroup_root, replay_path=args.replay)
-
-    if args.json or args.pretty_json:
-        output = format_json(result, pretty=args.pretty_json)
-    else:
-        output = format_text(result)
 
     print(output)
 
     if result.ok:
         return 0
-    else:
-        # Determine if failures are usage-related (exit 2) or check failures (exit 1)
-        # For now, any check failure = exit 1
-        return 1
+    return 1
 
 
 def main() -> None:
     """Convenience entry point.  Called via ``python -m groop.acceptance``."""
-    sys.exit(smoke_main())
+    sys.exit(acceptance_main())
 
 
 if __name__ == "__main__":
