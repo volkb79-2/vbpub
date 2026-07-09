@@ -50,7 +50,24 @@ flowchart TD
     P12 --> P33[P33 Release smoke harness]
     P33 --> P35[P35 Acceptance steady harness]
     P13 --> P34[P34 Host device banner]
+    P13 --> P36[P36 CPU sparkline surface]
+    P34 --> P37[P37 Network loss diagnostics]
 ```
+
+## Remaining Estimate
+
+After P34/P35, the roadmap is mostly in three buckets:
+
+| Bucket | Estimated packages | Notes |
+|---|---:|---|
+| v1/v1.5 release confidence and UI polish | 3-4 | P35 steady evidence, P36 CPU sparklines, live TUI/DAMON evidence capture, final release docs. |
+| v2 privileged daemon/BPF/admin/file work | 5-7 | BPF daemon lifecycle, paddr daemon ownership, install execution/service hardening, executable admin actions, inspect-files content mode, systemd property governance. |
+| Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
+
+Pragmatic estimate to implement the current roadmap end-to-end: **11-15 more
+small packages after P34/P35**, depending on how far "fully completed" includes
+optional plugins and web UI. A shippable v1/v1.5 release candidate should need
+about **3-5 more packages** plus live-host acceptance evidence.
 
 ## Near Term
 
@@ -202,6 +219,22 @@ threshold checks. This is collector steady-state evidence, not a replacement for
 the final live Textual TUI measurement.
 
 Handoff: `handoff/P35-acceptance-steady-harness.md`.
+
+### P36 - CPU Sparkline Surface
+
+Status: planned. P36 should add stable ASCII CPU trend sparklines using existing
+UI history data, improving the quick trend-read promised by the spec without
+changing collector/model contracts.
+
+Handoff: `handoff/P36-cpu-sparkline-surface.md`.
+
+### P37 - Network Loss Diagnostics
+
+Status: planned. P37 should add host/interface-scoped drop/error diagnostics
+from kernel counters while keeping exact per-cgroup attribution reserved for v2
+BPF/daemon work.
+
+Handoff: `handoff/P37-network-loss-diagnostics.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 

@@ -92,6 +92,8 @@ Useful feature hotkeys in the TUI:
 | P33 | Done | Release smoke harness | v1/v1.5 release confidence | Add rootless `python -m groop.acceptance smoke` for deterministic safe-path evidence. Handoff: `handoff/P33-release-smoke-harness.md`. Report: `handoff/reports/P33-REPORT.md`. |
 | P34 | Planned | Host device banner | v1 polish | Add host-level per-device network and block-device rate summaries to the system banner via `host_meta`. Handoff: `handoff/P34-host-device-banner.md`. |
 | P35 | Planned | Acceptance steady harness | v1/v1.5 release confidence | Add rootless multi-sample collector CPU/RSS evidence command under `python -m groop.acceptance steady`. Handoff: `handoff/P35-acceptance-steady-harness.md`. |
+| P36 | Planned | CPU sparkline surface | v1 polish | Add stable ASCII CPU trend sparklines from existing UI history. Handoff: `handoff/P36-cpu-sparkline-surface.md`. |
+| P37 | Planned | Network loss diagnostics | v1/v2 bridge | Add host/interface-scoped network drop/error diagnostics while preserving the BPF attribution boundary. Handoff: `handoff/P37-network-loss-diagnostics.md`. |
 
 ## Completed Package Order
 
