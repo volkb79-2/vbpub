@@ -48,6 +48,24 @@ class FilterScreen(Screen[str | None]):
         self.dismiss(None)
 
 
+class JumpScreen(Screen[str | None]):
+    def __init__(self) -> None:
+        super().__init__()
+        self.value = ""
+
+    def compose(self) -> ComposeResult:
+        yield VerticalScroll(Input(value=self.value, placeholder="frame number or epoch timestamp (e.g. 42 or 1720000000.25)", id="jump-input"))
+
+    def on_mount(self) -> None:
+        self.query_one("#jump-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
+
+    def key_escape(self) -> None:
+        self.dismiss(None)
+
+
 class GlossaryScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         yield VerticalScroll(Static(id="glossary-body"))
@@ -263,6 +281,54 @@ class GroopApp(App[None]):
         self._cancel_replay_timer()
         self._apply_frame(self._replay_driver.step(1))
 
+    def action_replay_first(self) -> None:
+        if self._replay_driver is None:
+            self._refresh_status("replay jump is only available in --replay mode")
+            return
+        self._replay_paused = True
+        self._cancel_replay_timer()
+        self._apply_frame(self._replay_driver.seek(0))
+
+    def action_replay_last(self) -> None:
+        if self._replay_driver is None:
+            self._refresh_status("replay jump is only available in --replay mode")
+            return
+        self._replay_paused = True
+        self._cancel_replay_timer()
+        self._apply_frame(self._replay_driver.seek(self._replay_driver.total - 1))
+
+    def action_replay_jump_prompt(self) -> None:
+        if self._replay_driver is None:
+            self._refresh_status("replay jump is only available in --replay mode")
+            return
+        self.push_screen(JumpScreen(), self._on_jump_applied)
+
+    def _on_jump_applied(self, value: str | None) -> None:
+        if self._replay_driver is None or value is None:
+            return
+        stripped = value.strip()
+        if not stripped:
+            return
+        try:
+            parsed = float(stripped)
+        except ValueError:
+            self._refresh_status(f"invalid jump input: '{stripped}' — use a frame number or epoch timestamp")
+            return
+        if '.' not in stripped:
+            frame_num = int(parsed)
+            if 1 <= frame_num <= self._replay_driver.total:
+                self._replay_paused = True
+                self._cancel_replay_timer()
+                self._apply_frame(self._replay_driver.seek(frame_num - 1))
+                return
+            self._refresh_status(
+                f"invalid frame number: {frame_num} — must be between 1 and {self._replay_driver.total}"
+            )
+            return
+        self._replay_paused = True
+        self._cancel_replay_timer()
+        self._apply_frame(self._replay_driver.seek_timestamp(parsed))
+
     def action_replay_speed_up(self) -> None:
         self._set_replay_speed(1)
 
@@ -416,7 +482,7 @@ class GroopApp(App[None]):
         return (
             f"mode=REPLAY {state} speed={self._replay_speed:g}x frame={self._replay_driver.index + 1}/{self._replay_driver.total} "
             f"view={self.view_mode} profile={self.profile_name} sort={self.sort_by} rows={rows} "
-            f"filter={self.filter_text or '-'} ts={frame.ts:.3f} controls=space ,/. +/-"
+            f"filter={self.filter_text or '-'} ts={frame.ts:.3f} controls=space ,/. +/- home/end j"
         )
 
 

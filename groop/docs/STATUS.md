@@ -65,8 +65,8 @@ core workflows, not yet production-certified.**
   `docs/COMPRESSED-SWAP.md`.
 - **Tree view:** full tree rendering and expand/collapse state exist.
 - **Replay UI:** replay feeds the same UI with mode/status, pause/resume,
-  stepping, speed controls, and smoke testing. Timestamp jump remains a future
-  improvement.
+  stepping, speed controls, first/last jump, frame/timestamp jump prompt,
+  and smoke testing. Timestamp jump controls landed in P24.
 - **Custom profiles:** named profile lists work and unsupported configured
   columns are surfaced as ignored metadata.
 - **Diagnostics inputs:** pressure score works, but true `io_cap_saturation_pct`
@@ -120,12 +120,12 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P23 - ZRAM per-device drill-down):
+Most recent full-suite validation (P24 - Replay timestamp jump):
 
 ```bash
-/tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-# 161 passed in 24.83s after the P23 merge
+/tmp/groop-pytest/bin/pytest groop/tests -q
+# 169 passed in 26.94s after the P24 merge
 ```
 
-Also validated: Python compile over P23 files and `groop --once --json`
-fixture smoke. P17/P20/P21/P22 separately validated their respective features.
+Also validated: Python compile over P24 files and `groop --once --json`
+fixture smoke. P24 separately validated its replay jump features.
