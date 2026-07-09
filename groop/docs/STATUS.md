@@ -15,7 +15,7 @@ Approximate status:
 |---|---:|---:|---|
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 80-85% | medium | Core daily triage works. Remaining gaps are release evidence, UI polish, richer host banner/device surfaces, and some acceptance criteria. |
-| v1.5 DAMON/snapshots/backend awareness | 75-85% | medium | Passive/control APIs, CLI paths, and TUI typed-confirmation modals exist with fixture tests. Real-root acceptance and ZRAM/swap-backend awareness are still missing. |
+| v1.5 DAMON/snapshots/backend awareness | 85-90% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
 | v2 daemon/BPF/admin actions | 5-10% | low | Provider abstractions and safety patterns exist; daemon, BPF, admin actions, file inspection, GPU/ZFS plugins are not implemented. |
 
 These percentages are engineering estimates, not release tags. The strongest
@@ -49,9 +49,10 @@ core workflows, not yet production-certified.**
 - **System banner:** host verdict, pressure summary, and paddr heat exist.
   Per-device disk/network banner lines and CPU breakdown sparklines from spec
   §3.0 are not complete.
-- **Compressed swap:** zswap host/cgroup metrics exist. ZRAM detection,
-  per-device ZRAM host metrics, `/proc/swaps` backend classification, and
-  mixed-backend wording are not implemented. See `docs/COMPRESSED-SWAP.md`.
+- **Compressed swap:** zswap host/cgroup metrics, host ZRAM totals,
+  `/proc/swaps` backend classification, and mixed-backend banner wording exist.
+  Per-device ZRAM drill-down is not yet rendered. See
+  `docs/COMPRESSED-SWAP.md`.
 - **Tree view:** full tree rendering and expand/collapse state exist.
 - **Replay UI:** replay feeds the same UI with mode/status, pause/resume,
   stepping, speed controls, and smoke testing. Timestamp jump remains a future
@@ -81,7 +82,7 @@ core workflows, not yet production-certified.**
 - GPU and ZFS optional plugins.
 - CIU stack grouping/actions.
 - paddr auto-start / persistent daemon-owned paddr mode.
-- ZRAM/swap-backend-aware banner, registry metrics, fixtures, and tests.
+- Per-device ZRAM drill-down.
 
 ## Acceptance Status
 
@@ -104,11 +105,11 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent package validation from P15:
+Most recent package validation from P19:
 
 ```bash
 /tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
-# 89 passed in 14.57s
+# 93 passed in 14.16s
 ```
 
 Also validated: Python compile over `src/groop`, `--once --json`, replay UI

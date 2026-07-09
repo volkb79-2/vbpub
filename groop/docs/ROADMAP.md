@@ -78,12 +78,12 @@ later if snapshot latency becomes visible in real use.
 
 ### P19 — ZRAM And Swap-Backend Awareness
 
-Goal: detect active zswap/zram/disk swap backends, add host-level zram metrics,
-and make table/banner/drill-down wording correct on zram-only and mixed hosts.
+Status: done with a per-device drill-down gap. P19 detects active
+zswap/zram/disk/mixed backends, adds host-level ZRAM metrics, corrects banner
+wording, and documents the per-cgroup attribution boundary.
 
-Why now: this is a v1.5 usability fix. It prevents the UI from calling zram
-pressure "disk swap" and gives operators an immediate view of what swap backend
-is active before they interpret refault and swap-device columns.
+Remaining polish: render per-device ZRAM details and consider compatibility
+aliases for the legacy `swap_disk`/`rf_d` names.
 
 ## Medium Term
 
