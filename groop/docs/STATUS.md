@@ -49,6 +49,9 @@ core workflows, not yet production-certified.**
   --json`, and UI smoke coverage.
 - Daemon deployment preflight plus packaged systemd/tmpfiles templates for a
   root-owned, group-readable socket deployment.
+- `groop daemon install-plan` command that renders a safe, non-mutating install
+  plan for the packaged systemd and tmpfiles templates, with deterministic JSON
+  and human-readable text output.
 - Preview-only admin action planning for allowlisted Docker/systemd actions,
   gated by explicit `--admin` and optional JSONL audit logging.
 - Safe BPF network accounting gate (`groop bpf gate`) and v2 BPF design doc;
@@ -120,12 +123,12 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P24 - Replay timestamp jump):
+Most recent full-suite validation (P25 - Daemon install plan):
 
 ```bash
-/tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-# 170 passed in 26.70s after the P24 merge
+python3 -m pytest groop/tests -q
+# 177 passed in 27.93s before the P25 merge
 ```
 
-Also validated: Python compile over P24 files and focused replay/UI tests.
-P24 separately validated its replay jump features.
+Also validated: Python compile over P25 files.
+P25 separately validated its install-plan helper, CLI, and no-host-mutation safety.

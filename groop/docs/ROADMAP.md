@@ -149,11 +149,12 @@ operator wants on top of the read-only socket boundary.
 
 ### P25 - Daemon Deployment Install Plan
 
-Status: planned. P25 should render a safe, non-mutating install plan for the
+Status: done. P25 renders a safe, non-mutating install plan for the
 packaged systemd and tmpfiles templates so operators can deploy the root daemon
 deliberately and then verify it with P22 preflight.
 
 Handoff: `handoff/P25-daemon-install-plan.md`.
+Report: `handoff/reports/P25-REPORT.md`.
 
 ## Later
 

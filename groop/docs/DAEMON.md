@@ -57,6 +57,13 @@ Current slice limitations:
 
 ## Deployment Checklist
 
+Before deploying, run `groop daemon install-plan` to see the ordered
+operator steps, exact commands, and destination paths for the packaged
+templates. The plan is read-only — it describes what to do without
+changing any host state.
+
+After reviewing the plan, proceed with the checklist below.
+
 The packaged operator templates live under `src/groop/assets/systemd/`:
 
 - `groop.service` starts `groop daemon serve --socket /run/groop/groop.sock`

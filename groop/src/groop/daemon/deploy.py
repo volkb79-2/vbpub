@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.resources as resources
 import grp
 import json
 import os
@@ -11,6 +12,10 @@ from pathlib import Path
 
 DEFAULT_DAEMON_SOCKET = Path("/run/groop/groop.sock")
 DEFAULT_DAEMON_GROUP = "groop"
+DEFAULT_SERVICE_DEST = Path("/etc/systemd/system/groop.service")
+DEFAULT_TMPFILES_DEST = Path("/etc/tmpfiles.d/groop.conf")
+SERVICE_ASSET = "assets/systemd/groop.service"
+TMPFILES_ASSET = "assets/systemd/groop.tmpfiles"
 
 
 @dataclass(frozen=True)
@@ -337,3 +342,227 @@ def _group_list_label(gids: tuple[int, ...]) -> str:
 
 def render_preflight_json(report: DaemonPreflightReport) -> str:
     return json.dumps(preflight_report_to_jsonable(report), sort_keys=True)
+
+
+# ── Install Plan (P25) ────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class InstallPlanStep:
+    """A single step in the daemon deployment install plan.
+
+    The step describes what an operator should do; it is never executed by
+    the install-plan command itself.
+    """
+
+    order: int
+    description: str
+    command: str | None = None
+    warning: str | None = None
+
+
+@dataclass(frozen=True)
+class DaemonInstallPlan:
+    """Non-mutating install plan for the packaged daemon deployment templates."""
+
+    socket_path: Path
+    group_name: str
+    service_dest: Path
+    tmpfiles_dest: Path
+    service_asset: str
+    tmpfiles_asset: str
+    service_content: str
+    tmpfiles_content: str
+    steps: tuple[InstallPlanStep, ...]
+    warnings: tuple[str, ...]
+
+
+def _read_asset(asset_path: str) -> str:
+    """Read a packaged asset file using importlib.resources."""
+    pkg = resources.files("groop")
+    return (pkg / asset_path).read_text()
+
+
+def build_install_plan(
+    *,
+    socket_path: Path | str = DEFAULT_DAEMON_SOCKET,
+    group_name: str = DEFAULT_DAEMON_GROUP,
+    service_dest: Path | str = DEFAULT_SERVICE_DEST,
+    tmpfiles_dest: Path | str = DEFAULT_TMPFILES_DEST,
+) -> DaemonInstallPlan:
+    """Build a non-mutating install plan for the packaged daemon templates.
+
+    The plan describes ordered operator steps, referencing the packaged
+    systemd service and tmpfiles templates.  No host state is inspected or
+    modified.
+    """
+    socket_path = Path(socket_path)
+    service_dest = Path(service_dest)
+    tmpfiles_dest = Path(tmpfiles_dest)
+
+    service_content = _render_service_content(
+        _read_asset(SERVICE_ASSET),
+        socket_path=socket_path,
+        group_name=group_name,
+    )
+    tmpfiles_content = _render_tmpfiles_content(
+        _read_asset(TMPFILES_ASSET),
+        runtime_dir=socket_path.parent,
+        group_name=group_name,
+    )
+
+    steps = (
+        InstallPlanStep(
+            order=1,
+            description=f"Create the system group {group_name!r} for daemon socket access",
+            command=f"groupadd --system {group_name}",
+            warning=(
+                f"If the group {group_name!r} already exists, skip this step."
+            ),
+        ),
+        InstallPlanStep(
+            order=2,
+            description=(
+                "Add each approved non-root user to the daemon group so they "
+                "can attach to the socket"
+            ),
+            command=f"usermod -aG {group_name} <username>",
+            warning=(
+                "Repeat for every user who should read daemon telemetry. "
+                "Users must log out and back in for the group change to take effect."
+            ),
+        ),
+        InstallPlanStep(
+            order=3,
+            description=(
+                f"Install the tmpfiles configuration to {tmpfiles_dest} "
+                f"(ensures {socket_path.parent} is created with 0750 root:{group_name})"
+            ),
+            command=_install_heredoc_command(tmpfiles_content, tmpfiles_dest),
+            warning="Review the rendered tmpfiles content before copying.",
+        ),
+        InstallPlanStep(
+            order=4,
+            description=(
+                f"Install the systemd service unit to {service_dest}"
+            ),
+            command=_install_heredoc_command(service_content, service_dest),
+            warning="Review the rendered service unit before enabling; verify ExecStart and socket path.",
+        ),
+        InstallPlanStep(
+            order=5,
+            description="Reload systemd so it picks up the new service unit",
+            command="systemctl daemon-reload",
+        ),
+        InstallPlanStep(
+            order=6,
+            description="Enable and start the groop daemon service",
+            command="systemctl enable --now groop.service",
+            warning=(
+                "The daemon runs as root and binds the group-readable socket. "
+                "Verify with: groop daemon preflight"
+            ),
+        ),
+        InstallPlanStep(
+            order=7,
+            description=(
+                "Verify the deployment with the read-only preflight command "
+                "from a non-root client account"
+            ),
+            command=f"groop daemon preflight --socket {socket_path}",
+            warning=(
+                "Run this from a non-root user in the daemon group to confirm "
+                "the socket is reachable."
+            ),
+        ),
+    )
+
+    warnings = (
+        "This is a PLAN, not an installer. No host state has been modified.",
+        f"The daemon socket at {socket_path} will be group-readable by {group_name!r}.",
+        "Template files are rendered from the packaged groop assets; verify paths before copying.",
+    )
+
+    return DaemonInstallPlan(
+        socket_path=socket_path,
+        group_name=group_name,
+        service_dest=service_dest,
+        tmpfiles_dest=tmpfiles_dest,
+        service_asset=SERVICE_ASSET,
+        tmpfiles_asset=TMPFILES_ASSET,
+        service_content=service_content,
+        tmpfiles_content=tmpfiles_content,
+        steps=steps,
+        warnings=warnings,
+    )
+
+
+def install_plan_to_jsonable(plan: DaemonInstallPlan) -> dict[str, object]:
+    """Convert an install plan to a JSON-serializable dict (deterministic)."""
+    return {
+        "group": plan.group_name,
+        "plan": "install",
+        "service_asset": plan.service_asset,
+        "service_content": plan.service_content,
+        "service_dest": str(plan.service_dest),
+        "socket_path": str(plan.socket_path),
+        "steps": [
+            {
+                "command": step.command,
+                "description": step.description,
+                "order": step.order,
+                "warning": step.warning,
+            }
+            for step in plan.steps
+        ],
+        "tmpfiles_asset": plan.tmpfiles_asset,
+        "tmpfiles_content": plan.tmpfiles_content,
+        "tmpfiles_dest": str(plan.tmpfiles_dest),
+        "warnings": list(plan.warnings),
+    }
+
+
+def _render_service_content(template: str, *, socket_path: Path, group_name: str) -> str:
+    rendered = template.replace("Group=groop", f"Group={group_name}")
+    rendered = rendered.replace("--socket /run/groop/groop.sock", f"--socket {socket_path}")
+    rendered = rendered.replace("the groop group", f"the {group_name} group")
+    return rendered
+
+
+def _render_tmpfiles_content(template: str, *, runtime_dir: Path, group_name: str) -> str:
+    rendered = template.replace("the groop group", f"the {group_name} group")
+    rendered = rendered.replace("d /run/groop 0750 root groop -", f"d {runtime_dir} 0750 root {group_name} -")
+    return rendered
+
+
+def _install_heredoc_command(content: str, dest: Path) -> str:
+    body = content.rstrip("\n")
+    return f"install -m 0644 -o root -g root /dev/stdin {dest} <<'EOF'\n{body}\nEOF"
+
+
+def render_install_plan_text(plan: DaemonInstallPlan) -> str:
+    """Render a human-readable install plan (copy/pasteable steps)."""
+    lines = [
+        "groop daemon install plan",
+        "=" * 60,
+        f"socket path : {plan.socket_path}",
+        f"daemon group : {plan.group_name}",
+        f"service unit : {plan.service_dest}",
+        f"tmpfiles conf: {plan.tmpfiles_dest}",
+        "",
+        "--- plan steps (read-only; no host mutation) ---",
+        "",
+    ]
+    for step in plan.steps:
+        lines.append(f"Step {step.order}: {step.description}")
+        if step.command:
+            lines.append(f"  command: {step.command}")
+        if step.warning:
+            lines.append(f"  note: {step.warning}")
+        lines.append("")
+    lines.append("--- warnings ---")
+    for w in plan.warnings:
+        lines.append(f"  ! {w}")
+    lines.append("")
+    lines.append("This is a PLAN only. No files were written and no system state was changed.")
+    return "\n".join(lines)

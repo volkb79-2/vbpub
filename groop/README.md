@@ -81,7 +81,7 @@ Useful feature hotkeys in the TUI:
 | P22 | Done | Daemon deployment preflight and service templates | v1.5/v2 foundation | Safe preflight and packaged operator templates for root daemon plus group-readable socket. Handoff: `handoff/P22-daemon-deployment-preflight.md`. Report: `handoff/reports/P22-REPORT.md`. |
 | P23 | Done | ZRAM per-device drill-down | v1.5 polish | Structured host_meta metadata, host-memory rendering, serialization round-trip, docs/tests. Report: `handoff/reports/P23-REPORT.md`. |
 | P24 | Done | Replay timestamp jump controls | v1 polish | Add replay first/last and frame/timestamp jump controls. Handoff: `handoff/P24-replay-timestamp-jump.md`. Report: `handoff/reports/P24-REPORT.md`. |
-| P25 | Planned | Daemon deployment install plan | v1.5/v2 foundation | Render safe operator install steps for the packaged daemon service/tmpfiles templates. Handoff: `handoff/P25-daemon-install-plan.md`. |
+| P25 | Done | Daemon deployment install plan | v1.5/v2 foundation | Render safe operator install steps for the packaged daemon service/tmpfiles templates. Handoff: `handoff/P25-daemon-install-plan.md`. Report: `handoff/reports/P25-REPORT.md`. |
 
 ## Completed Package Order
 
