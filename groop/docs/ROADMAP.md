@@ -98,7 +98,8 @@ real host, and `groop --attach` client mode.
 
 ### P17 — BPF Measurement Gate
 
-Status: done. The safe unprivileged measurement helper and design doc landed, and `MEASUREMENTS.md` now records the live-BPF blocker on this host.
+Status: done. The safe unprivileged measurement helper and design doc landed,
+and `MEASUREMENTS.md` now records the live-BPF blocker on this host.
 
 ### P18 — BPF Network Provider
 
@@ -109,6 +110,8 @@ interface, owned by daemon/helper state rather than by the TUI.
 
 Goal: `groop --attach <socket>` consumes daemon frames/history while preserving
 the same UI model as standalone live mode.
+
+Handoff: `handoff/P20-daemon-attach-mode.md`.
 
 ## Later
 
