@@ -16,7 +16,7 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 80-85% | medium | Core daily triage works. Remaining gaps are release evidence, UI polish, richer host banner/device surfaces, and some acceptance criteria. |
 | v1.5 DAMON/snapshots/backend awareness | 85-90% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 20-25% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode, and the BPF measurement/design gate exist; exact BPF provider, admin actions, file inspection, GPU/ZFS plugins are not implemented. |
+| v2 daemon/BPF/admin actions | 25-30% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode, daemon deployment preflight/templates, and the BPF measurement/design gate exist; exact BPF provider, admin actions, file inspection, GPU/ZFS plugins are not implemented. |
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -47,6 +47,8 @@ core workflows, not yet production-certified.**
   socket tests.
 - `groop --attach SOCKET` client mode with current-frame polling, `--once
   --json`, and UI smoke coverage.
+- Daemon deployment preflight plus packaged systemd/tmpfiles templates for a
+  root-owned, group-readable socket deployment.
 - Safe BPF network accounting gate (`groop bpf gate`) and v2 BPF design doc;
   the gate is no-op and never loads or pins BPF state.
 
@@ -79,7 +81,8 @@ core workflows, not yet production-certified.**
 
 ## Not Implemented
 
-- Production daemon packaging and daemon service installation.
+- Production daemon installation automation and service hardening beyond the
+  packaged operator templates.
 - Exact BPF per-cgroup network provider and live BPF ownership lifecycle.
 - Docker/systemd admin actions: update/start/stop/restart/kill.
 - `systemctl set-property` governance actions.

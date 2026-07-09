@@ -117,11 +117,14 @@ Handoff: `handoff/P20-daemon-attach-mode.md`.
 
 ### P22 — Daemon Deployment Preflight
 
-Goal: add a safe `groop daemon preflight` check and packaged systemd/tmpfiles
-templates so non-root attach can be deployed deliberately without test-time host
-mutation.
+Status: done. `groop daemon preflight`, packaged systemd/tmpfiles templates,
+and the deployment checklist landed for deliberate root-daemon setup with a
+group-readable socket.
 
 Handoff: `handoff/P22-daemon-deployment-preflight.md`.
+
+Remaining work: production installation automation and any extra hardening the
+operator wants on top of the read-only socket boundary.
 
 ## Later
 
