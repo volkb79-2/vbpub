@@ -10,11 +10,18 @@ from textual.widgets import Static
 
 from groop.collect.procs import list_processes
 from groop.config import GroopConfig
-from groop.damon.control import APPROVAL_TEXT
+from groop.damon.control import (
+    confirmation_text,
+    plan_start_session,
+    start_planned_session,
+    stop_owned_sessions,
+)
 from groop.diag import pressure_breakdown
 from groop.model import EntityFrame, Frame
 from groop.record.ring import HistoryRing
 from groop.registry import REGISTRY
+
+from .damon_control import DamonConfirmScreen
 
 
 class DrillDownScreen(Screen[None]):
@@ -22,6 +29,7 @@ class DrillDownScreen(Screen[None]):
         Binding("escape", "close", "Back"),
         Binding("q", "close", "Back", show=False),
         Binding("d", "show_damon_control", "DAMON", show=False),
+        Binding("s", "stop_groop_damon", "Stop DAMON", show=False),
     )
 
     def __init__(
@@ -33,6 +41,9 @@ class DrillDownScreen(Screen[None]):
         ring: HistoryRing,
         cgroup_root: Path,
         proc_root: Path,
+        damon_root: Path,
+        damon_state_dir: Path | None,
+        damon_require_root: bool = True,
     ) -> None:
         super().__init__()
         self.frame = frame
@@ -41,6 +52,9 @@ class DrillDownScreen(Screen[None]):
         self.ring = ring
         self.cgroup_root = cgroup_root
         self.proc_root = proc_root
+        self.damon_root = damon_root
+        self.damon_state_dir = damon_state_dir
+        self.damon_require_root = damon_require_root
         self._control_notice = ""
 
     def compose(self):
@@ -66,11 +80,56 @@ class DrillDownScreen(Screen[None]):
         self.dismiss(None)
 
     def action_show_damon_control(self) -> None:
-        self._control_notice = (
-            "\n\nDAMON CONTROL\n"
-            f"  start/stop is root-only and requires typing {APPROVAL_TEXT} after reviewing the planned sysfs writes.\n"
-            "  existing sessions keep running after the viewer exits; cleanup is available with groop damon stop --all-mine.\n"
+        try:
+            plan = plan_start_session(
+                self.entity_key,
+                cgroup_root=self.cgroup_root,
+                damon_root=self.damon_root,
+                state_dir=self.damon_state_dir,
+                config=self.config.damon,
+                require_root=self.damon_require_root,
+            )
+        except Exception as exc:
+            self._control_notice = f"\n\nDAMON CONTROL\n  start unavailable: {exc}\n"
+            self._refresh_body()
+            return
+
+        def apply_confirmed(value: str) -> str:
+            session = start_planned_session(
+                plan,
+                confirmed_text=value,
+                require_root=self.damon_require_root,
+            )
+            return f"DAMON vaddr started on kdamond {session.kdamond_idx} for {self.entity_key or '/'}"
+
+        self.app.push_screen(
+            DamonConfirmScreen(
+                title="DAMON VADDR CONTROL",
+                plan_text=confirmation_text(plan),
+                apply_confirmed=apply_confirmed,
+            ),
+            self._on_control_result,
         )
+
+    def action_stop_groop_damon(self) -> None:
+        try:
+            stopped = stop_owned_sessions(
+                damon_root=self.damon_root,
+                state_dir=self.damon_state_dir,
+                all_mine=True,
+                require_root=self.damon_require_root,
+            )
+        except Exception as exc:
+            self._control_notice = f"\n\nDAMON CONTROL\n  stop unavailable: {exc}\n"
+        else:
+            self._control_notice = f"\n\nDAMON CONTROL\n  stopped {stopped} groop-owned DAMON session(s)\n"
+        self._refresh_body()
+
+    def _on_control_result(self, result: str | None) -> None:
+        if result is None:
+            self._control_notice = "\n\nDAMON CONTROL\n  start cancelled\n"
+        else:
+            self._control_notice = f"\n\nDAMON CONTROL\n  {result}\n"
         self._refresh_body()
 
 

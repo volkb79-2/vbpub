@@ -88,6 +88,7 @@ class GroopApp(App[None]):
         proc_root: Path = Path("/proc"),
         damon_root: Path = DEFAULT_DAMON_ROOT,
         damon_state_dir: Path | None = None,
+        damon_require_root: bool = True,
         ring: HistoryRing | None = None,
         profile: str | None = None,
         replay_driver: ReplayDriver | None = None,
@@ -100,6 +101,7 @@ class GroopApp(App[None]):
         self.proc_root = proc_root
         self.damon_root = damon_root
         self.damon_state_dir = damon_state_dir
+        self.damon_require_root = damon_require_root
         self.ring = ring or HistoryRing.from_config(self.config)
         self._frame_source = iter(frame_source)
         self._replay_driver = replay_driver
@@ -284,6 +286,9 @@ class GroopApp(App[None]):
                 ring=self.ring,
                 cgroup_root=self.cgroup_root,
                 proc_root=self.proc_root,
+                damon_root=self.damon_root,
+                damon_state_dir=self.damon_state_dir,
+                damon_require_root=self.damon_require_root,
             )
         )
 
@@ -317,6 +322,7 @@ class GroopApp(App[None]):
                 config=self.config,
                 damon_root=self.damon_root,
                 state_dir=self.damon_state_dir,
+                require_root=self.damon_require_root,
             )
         )
 

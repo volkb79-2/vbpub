@@ -89,6 +89,20 @@ Record:
 
 Required before raising DAMON defaults or enabling persistent paddr.
 
+Current P14 status: fixture-safe TUI modal/control tests exist, but live-root
+acceptance was not run in this development session. Host sysfs mutation must be
+performed deliberately on a selected test machine.
+
+Fixture evidence:
+
+- TUI vaddr modal requires exact `START` and starts only through
+  `start_planned_session`.
+- TUI paddr modal requires exact `START`, starts only through
+  `start_planned_paddr_session`, and reports duplicate groop-owned paddr
+  sessions.
+- TUI stop surface calls `stop_owned_sessions(all_mine=True)` and leaves foreign
+  kdamond slots untouched.
+
 Measurement plan:
 
 1. Baseline game/server session without groop-controlled DAMON.
@@ -104,6 +118,13 @@ Record for each:
 - CPU/RSS overhead:
 - Collection interval:
 - Observed latency/stutter:
+- Evidence:
+  - vaddr start command/UI path:
+  - vaddr observed hot/warm/cold columns:
+  - paddr start command/UI path:
+  - paddr banner heat after two aggregation windows:
+  - stop command/UI path:
+  - foreign sessions untouched:
 - Result:
 
 ## BPF Gate

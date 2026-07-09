@@ -4,14 +4,19 @@ import asyncio
 from pathlib import Path
 
 from textual.widgets import Static
+from textual.widgets import Input
 
 from conftest import fixture_frame, fixture_root
 from groop.config import GroopConfig, SnapshotConfig
+from groop.damon.control import APPROVAL_TEXT
 from groop.model import Frame
 from groop.record.replay import ReplayDriver
 from groop.ui.app import GroopApp
+from groop.ui.damon_control import DamonConfirmScreen
 from groop.ui.drill import DrillDownScreen
 from groop.ui.hostmem import HostMemoryScreen
+
+GAME_KEY = "system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope"
 
 
 def _make_app() -> GroopApp:
@@ -54,6 +59,17 @@ def _wait_for_frame(app: GroopApp):
 
 def _status_text(app: GroopApp) -> str:
     return str(app.query_one("#status", Static).renderable)
+
+
+def _damon_root(tmp_path: Path, *, slots: tuple[str, ...] = ("off", "off")) -> Path:
+    root = tmp_path / "kdamonds"
+    root.mkdir(parents=True)
+    (root / "nr_kdamonds").write_text(f"{len(slots)}\n")
+    for idx, state in enumerate(slots):
+        slot = root / str(idx)
+        slot.mkdir()
+        (slot / "state").write_text(f"{state}\n")
+    return root
 
 
 def test_pilot_toggle_view_and_profile_cycle() -> None:
@@ -181,5 +197,118 @@ def test_pilot_host_memory_screen_open_and_close() -> None:
             await pilot.press("escape")
             await pilot.pause()
             assert not isinstance(app.screen, HostMemoryScreen)
+
+    asyncio.run(run())
+
+
+def test_pilot_damon_vaddr_modal_requires_confirmation_and_starts_fixture_session(tmp_path: Path) -> None:
+    async def run() -> None:
+        damon_root = _damon_root(tmp_path)
+        state_dir = tmp_path / "state"
+        app = GroopApp(
+            iter([fixture_frame()]),
+            config=GroopConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            damon_root=damon_root,
+            damon_state_dir=state_dir,
+            damon_require_root=False,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            app.selected_key = GAME_KEY
+            app._refresh_view()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DrillDownScreen)
+            await pilot.press("d")
+            await pilot.pause()
+            assert isinstance(app.screen, DamonConfirmScreen)
+            input_widget = app.screen.query_one("#damon-confirm-input", Input)
+            input_widget.value = "NO"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DamonConfirmScreen)
+            assert "typed confirmation" in str(app.screen.query_one("#damon-confirm-body", Static).renderable)
+            input_widget = app.screen.query_one("#damon-confirm-input", Input)
+            input_widget.value = APPROVAL_TEXT
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DrillDownScreen)
+
+        assert (damon_root / "0" / "contexts" / "0" / "operations").read_text().strip() == "vaddr"
+        assert (state_dir / "damon" / "kdamond-0.json").exists()
+
+    asyncio.run(run())
+
+
+def test_pilot_damon_paddr_modal_starts_and_duplicate_is_reported(tmp_path: Path) -> None:
+    async def run() -> None:
+        damon_root = _damon_root(tmp_path)
+        state_dir = tmp_path / "state"
+        app = GroopApp(
+            iter([fixture_frame()]),
+            config=GroopConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            damon_root=damon_root,
+            damon_state_dir=state_dir,
+            damon_require_root=False,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("m")
+            await pilot.pause()
+            assert isinstance(app.screen, HostMemoryScreen)
+            await pilot.press("p")
+            await pilot.pause()
+            assert isinstance(app.screen, DamonConfirmScreen)
+            app.screen.query_one("#damon-confirm-input", Input).value = APPROVAL_TEXT
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, HostMemoryScreen)
+            await pilot.press("p")
+            await pilot.pause()
+            assert isinstance(app.screen, HostMemoryScreen)
+            assert "paddr DAMON session already exists" in str(app.screen.query_one("#hostmem-body", Static).renderable)
+
+        assert (damon_root / "0" / "contexts" / "0" / "operations").read_text().strip() == "paddr"
+        assert (state_dir / "damon" / "kdamond-0.json").exists()
+
+    asyncio.run(run())
+
+
+def test_pilot_damon_stop_surface_stops_only_groop_owned_sessions(tmp_path: Path) -> None:
+    async def run() -> None:
+        damon_root = _damon_root(tmp_path, slots=("on", "off"))
+        state_dir = tmp_path / "state"
+        app = GroopApp(
+            iter([fixture_frame()]),
+            config=GroopConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            damon_root=damon_root,
+            damon_state_dir=state_dir,
+            damon_require_root=False,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            app.selected_key = GAME_KEY
+            app._refresh_view()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("d")
+            await pilot.pause()
+            app.screen.query_one("#damon-confirm-input", Input).value = APPROVAL_TEXT
+            await pilot.press("enter")
+            await pilot.pause()
+            assert (state_dir / "damon" / "kdamond-1.json").exists()
+            await pilot.press("s")
+            await pilot.pause()
+            assert isinstance(app.screen, DrillDownScreen)
+
+        assert (damon_root / "0" / "state").read_text().strip() == "on"
+        assert (damon_root / "1" / "state").read_text().strip() == "off"
+        assert not (state_dir / "damon" / "kdamond-1.json").exists()
 
     asyncio.run(run())
