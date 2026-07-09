@@ -21,6 +21,7 @@ import resource
 import sys
 import time
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -35,9 +36,12 @@ __all__ = [
     "build_parser",
     "run_smoke",
     "run_steady",
+    "smoke_main",
     "acceptance_main",
     "format_text",
     "format_json",
+    "format_steady_text",
+    "format_steady_json",
 ]
 
 
@@ -90,6 +94,7 @@ class SteadyResult:
     samples_completed: int
     measurements: dict[str, float]
     entity_counts: dict[str, int]
+    collection_errors: list[str]
     threshold_errors: list[str]
 
 
@@ -390,8 +395,9 @@ def run_steady(
     interval_s: float = 5.0,
     max_cpu_pct: float | None = None,
     max_rss_kb: int | None = None,
-    _sleep: Any = time.sleep,
-    _perf_counter: Any = time.perf_counter,
+    _sleep: Callable[[float], None] = time.sleep,
+    _perf_counter: Callable[[], float] = time.perf_counter,
+    _collect: Callable[[Path | None], dict[str, Any]] = _collect_frame,
 ) -> SteadyResult:
     """Run a steady-state collector loop and return a SteadyResult.
 
@@ -415,6 +421,7 @@ def run_steady(
     from groop import __version__
 
     threshold_errors: list[str] = []
+    collection_errors: list[str] = []
     sample_records: list[SteadySample] = []
     t0 = _perf_counter()
     ru0 = resource.getrusage(resource.RUSAGE_SELF)
@@ -422,10 +429,11 @@ def run_steady(
     for i in range(samples):
         sample_t0 = _perf_counter()
         try:
-            frame_dict = _collect_frame(cgroup_root)
+            frame_dict = _collect(cgroup_root)
             entity_count = len(frame_dict.get("entities", {}))
-        except Exception:
+        except Exception as exc:
             entity_count = 0
+            collection_errors.append(f"sample {i + 1}: {exc}")
         sample_wall = _perf_counter() - sample_t0
         sample_records.append(SteadySample(index=i, wall_s=sample_wall, entity_count=entity_count))
 
@@ -448,12 +456,12 @@ def run_steady(
         sum(s.wall_s for s in sample_records) / len(sample_records) if sample_records else 0.0
     )
 
-    entity_counts_all = [s.entity_count for s in sample_records]
+    entity_counts_all = [s.entity_count for s in sample_records if s.entity_count > 0]
     ec_min = min(entity_counts_all) if entity_counts_all else 0
     ec_max = max(entity_counts_all) if entity_counts_all else 0
     ec_last = entity_counts_all[-1] if entity_counts_all else 0
 
-    samples_completed = len(sample_records)
+    samples_completed = len(sample_records) - len(collection_errors)
 
     measurements: dict[str, float] = {
         "wall_s": round(wall_s, 4),
@@ -470,7 +478,7 @@ def run_steady(
         "last": ec_last,
     }
 
-    collection_ok = samples_completed == samples
+    collection_ok = samples_completed == samples and not collection_errors
 
     cpu_ok = True
     if max_cpu_pct is not None and cpu_pct > max_cpu_pct:
@@ -497,6 +505,7 @@ def run_steady(
         samples_completed=samples_completed,
         measurements=measurements,
         entity_counts=entity_counts,
+        collection_errors=collection_errors,
         threshold_errors=threshold_errors,
     )
 
@@ -516,6 +525,7 @@ def _steady_to_jsonable(result: SteadyResult) -> dict[str, Any]:
         "samples_completed": result.samples_completed,
         "measurements": result.measurements,
         "entity_counts": result.entity_counts,
+        "collection_errors": result.collection_errors,
         "threshold_errors": result.threshold_errors,
     }
 
@@ -551,6 +561,12 @@ def format_steady_text(result: SteadyResult) -> str:
     lines.append(f"     RSS:      {m.get('rss_kb', '?'):>8.0f} KB")
     lines.append(f"    avg sample: {m.get('avg_sample_wall_s', '?'):>8.4f}s")
     lines.append(f"    cpu%:      {m.get('cpu_pct', '?'):>8.2f}%  (of one core)")
+
+    if result.collection_errors:
+        lines.append("")
+        lines.append("  Collection failures:")
+        for err in result.collection_errors:
+            lines.append(f"    [FAIL] {err}")
 
     if result.threshold_errors:
         lines.append("")
@@ -653,6 +669,12 @@ def acceptance_main(argv: list[str] | None = None) -> int:
         if args.interval_s < 0:
             print("error: --interval-s must be non-negative", file=sys.stderr)
             return 2
+        if args.max_cpu_pct is not None and args.max_cpu_pct < 0:
+            print("error: --max-cpu-pct must be non-negative", file=sys.stderr)
+            return 2
+        if args.max_rss_kb is not None and args.max_rss_kb <= 0:
+            print("error: --max-rss-kb must be positive", file=sys.stderr)
+            return 2
         result = run_steady(
             cgroup_root=args.cgroup_root,
             samples=args.samples,
@@ -673,6 +695,11 @@ def acceptance_main(argv: list[str] | None = None) -> int:
     if result.ok:
         return 0
     return 1
+
+
+def smoke_main(argv: list[str] | None = None) -> int:
+    """Backward-compatible entry point for older callers."""
+    return acceptance_main(argv)
 
 
 def main() -> None:

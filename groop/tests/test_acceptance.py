@@ -305,6 +305,20 @@ def test_run_steady_rss_threshold_failure() -> None:
     assert "RSS" in result.threshold_errors[0]
 
 
+def test_run_steady_collection_failure_is_not_success() -> None:
+    """Collection failures are reported and make the steady run fail."""
+    from groop.acceptance import run_steady
+
+    def _failing_collect(_root: Path | None):
+        raise RuntimeError("fixture boom")
+
+    result = run_steady(cgroup_root=FIXTURE_CGROUP, samples=2, interval_s=0, _collect=_failing_collect)
+    assert result.ok is False
+    assert result.samples_completed == 0
+    assert len(result.collection_errors) == 2
+    assert "fixture boom" in result.collection_errors[0]
+
+
 def test_run_steady_injectable_sleep() -> None:
     """Injected sleep/perf_counter make the test fast and deterministic."""
     from groop.acceptance import run_steady
@@ -337,7 +351,7 @@ def test_steady_pretty_json_parseable() -> None:
     assert "samples_completed" in obj
     assert "measurements" in obj
     assert "entity_counts" in obj
-    assert json_str.startswith("{\n  \"entity_counts\"")
+    assert json_str.startswith("{\n  \"collection_errors\"")
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +401,23 @@ def test_subprocess_steady_invalid_interval() -> None:
     assert cp.returncode == 2
 
 
+def test_subprocess_steady_invalid_thresholds() -> None:
+    """Invalid threshold values exit 2."""
+    cp = _run_steady(
+        "--cgroup-root", str(FIXTURE_CGROUP),
+        "--samples", "2", "--interval-s", "0",
+        "--max-cpu-pct", "-1",
+    )
+    assert cp.returncode == 2
+
+    cp = _run_steady(
+        "--cgroup-root", str(FIXTURE_CGROUP),
+        "--samples", "2", "--interval-s", "0",
+        "--max-rss-kb", "0",
+    )
+    assert cp.returncode == 2
+
+
 def test_subprocess_steady_pretty_json() -> None:
     """``--pretty-json`` with steady produces parseable indented JSON."""
     cp = _run_steady(
@@ -398,4 +429,4 @@ def test_subprocess_steady_pretty_json() -> None:
     obj = json.loads(cp.stdout)
     assert obj["ok"] is True
     assert "\n" in cp.stdout
-    assert cp.stdout.startswith("{\n  \"entity_counts\"")
+    assert cp.stdout.startswith("{\n  \"collection_errors\"")

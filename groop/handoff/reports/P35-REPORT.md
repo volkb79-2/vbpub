@@ -1,9 +1,9 @@
-# P35 — Acceptance Steady Harness
+# P35 - Acceptance Steady Harness
 
 ## What Was Built
 
 Extended the P33 `groop.acceptance` module with a `steady` subcommand that
-runs a repeatable collector loop — rootless, no Textual, no subprocesses —
+runs a repeatable collector loop: rootless, no Textual, no subprocesses,
 to produce CPU/RSS evidence for `TUI-SPEC.md` §9 items 1 and 2.
 
 ```bash
@@ -14,21 +14,22 @@ python -m groop.acceptance steady [--cgroup-root PATH] [--samples N]
 
 ### Changes to `groop/src/groop/acceptance.py`
 
-- **`SteadySample`** dataclass — per-sample record (index, wall_s, entity_count)
-- **`SteadyResult`** dataclass — ok, version, python, platform, samples
+- **`SteadySample`** dataclass: per-sample record (index, wall_s, entity_count)
+- **`SteadyResult`** dataclass: ok, version, python, platform, samples
   requested/completed, measurements (wall_s, user_s, sys_s, rss_kb,
-  avg_sample_wall_s, cpu_pct), entity_counts (min/max/last), threshold_errors
-- **`run_steady()`** — core loop: collects `samples` frames with `interval_s`
+  avg_sample_wall_s, cpu_pct), entity_counts (min/max/last), collection_errors,
+  threshold_errors
+- **`run_steady()`**: core loop: collects `samples` frames with `interval_s`
   between them; accepts injectable `_sleep` and `_perf_counter` for deterministic
   testing; measures wall/user/sys/RSS via `resource.getrusage(RUSAGE_SELF)`;
   computes CPU percent; applies optional `--max-cpu-pct` and `--max-rss-kb`
   thresholds
-- **`format_steady_text()`** / **`format_steady_json()`** — output formatters
+- **`format_steady_text()`** / **`format_steady_json()`**: output formatters
   with deterministic JSON (sorted keys, compact) and concise text
-- **`acceptance_main()`** — unified entry point dispatching to `smoke` or
+- **`acceptance_main()`**: unified entry point dispatching to `smoke` or
   `steady` via `build_parser()`; validates args (samples>0, interval>=0);
   exit 0/1/2
-- **`steady` subcommand** in `build_parser()` — all CLI args with defaults
+- **`steady` subcommand** in `build_parser()`: all CLI args with defaults
 
 ### Tests: `groop/tests/test_acceptance.py`
 
@@ -36,17 +37,18 @@ python -m groop.acceptance steady [--cgroup-root PATH] [--samples N]
 - JSON/text fixture steady with `--samples 2 --interval-s 0`
 - CPU threshold failure (exit 1)
 - RSS threshold failure (exit 1)
+- Collection failure reporting (exit 1)
 - Injectable sleep/perf_counter for deterministic testing
 - Pretty JSON parseable and deterministically sorted
-- Invalid samples/interval values (exit 2)
+- Invalid samples/interval/threshold values (exit 2)
 - Subprocess steady JSON/pretty-json/threshold/invalid-args
 - All 13 existing smoke tests still pass (24 total)
 
 ### Documentation updated
 
-- `groop/MEASUREMENTS.md` — added P35 steady section as the preferred
+- `groop/MEASUREMENTS.md` - added P35 steady section as the preferred
   rootless collector evidence path before live TUI acceptance
-- `groop/docs/OPERATIONS.md` — added steady command example
+- `groop/docs/OPERATIONS.md` - added steady command example
 
 ## Deviations from the Handoff
 
@@ -70,7 +72,7 @@ PYTHONPATH=groop/src /home/vb/volkb79-2/vbpub/.venv/bin/python -m pytest groop/t
 # 24 passed in 4.49s
 ```
 
-### Full non-UI suite (includes P35 tests)
+### Full non-UI suite (agent environment)
 
 ```bash
 PYTHONPATH=groop/src /home/vb/volkb79-2/vbpub/.venv/bin/python -m pytest groop/tests -q \
@@ -85,6 +87,21 @@ PYTHONPATH=groop/src python3 -m py_compile groop/src/groop/acceptance.py groop/t
 # exit=0
 ```
 
+### Controller review validation
+
+```bash
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_acceptance.py -q
+# 26 passed in 4.54s
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile \
+  groop/src/groop/acceptance.py \
+  groop/tests/test_acceptance.py
+# clean, exit 0
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 316 passed in 38.85s
+```
+
 ## Known Gaps / Open Items
 
 - The harness collects host metrics from real `/proc` (same design choice as
@@ -92,5 +109,5 @@ PYTHONPATH=groop/src python3 -m py_compile groop/src/groop/acceptance.py groop/t
   but still read the local host's `/proc/stat`, `/proc/meminfo`, etc.
   This is acceptable: steady-state evidence is intended for a real host, and
   fixture runs are primarily for regression/determinism.
-- UI tests (`test_ui_app.py`) have 16 pre-existing failures from a newer
-  Textual version (removed `.renderable` attribute). Same as P33; unrelated.
+- The agent environment used a non-UI subset. The controller reruns focused and
+  full-suite validation in the project review environment before merge.
