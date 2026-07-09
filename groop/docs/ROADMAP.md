@@ -42,6 +42,7 @@ flowchart TD
     P13 --> P24[P24 Replay timestamp jump controls]
     P15 --> P26[P26 Snapshot progress UI]
     P19 --> P27[P27 Swap/refault terminology aliases]
+    P6 --> P28[P28 I/O cap saturation]
 ```
 
 ## Near Term
@@ -115,6 +116,14 @@ backend-aware labels/diagnostic wording.
 
 Handoff: `handoff/P27-swap-refault-aliases.md`.
 Report: `handoff/reports/P27-REPORT.md`.
+
+### P28 - I/O Cap Saturation
+
+Status: planned. P28 should populate the existing diagnostics input
+`io_cap_saturation_pct` from `io.max` and I/O rate counters, leaving
+network-loss attribution as the remaining diagnostics input gap.
+
+Handoff: `handoff/P28-io-cap-saturation.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 
