@@ -42,11 +42,17 @@
 PYTHONPATH=groop/src /tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py -q
 # 23 passed in 11.11s after controller review
 
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py -q
+# 23 passed in 11.14s on main after merge
+
 /tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests -q
 # 271 passed in 32.34s
 
 PYTHONPATH=groop/src /tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests -q
 # 270 passed in 32.21s after controller review
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 270 passed in 31.09s on main after merge
 
 /tmp/vbpub-groop-p30-venv/bin/python -m py_compile \
   groop/src/groop/cli.py \
@@ -56,6 +62,9 @@ PYTHONPATH=groop/src /tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests 
 
 PYTHONPATH=groop/src /tmp/vbpub-groop-p30-venv/bin/python -m py_compile groop/src/groop/cli.py groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py
 # clean, exit 0 after controller review
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile groop/src/groop/cli.py groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py
+# clean, exit 0 on main after merge
 
 PYTHONPATH=groop/src /tmp/vbpub-groop-p30-venv/bin/python -c "
 from groop.cli import parse_args
@@ -110,3 +119,9 @@ print('groop daemon current: OK')
 ## Contract-Change Proposals
 
 None. P30 is entirely additive and changes no shared interfaces.
+
+## Controller Merge Review
+
+- Feature branch merged to main with `git merge --no-ff feat/groop-p30-daemon-default-client`.
+- Merge commit: `fb899f6 Merge groop P30 daemon default client UX`.
+- Main validation is recorded above.

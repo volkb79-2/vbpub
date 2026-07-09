@@ -138,12 +138,12 @@ core workflows, not yet production-certified.**
 Most recent full-suite validation (P30 - Daemon default client UX):
 
 ```bash
-/tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests -q
-# 270 passed in 32.21s after controller review
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 270 passed in 31.09s after merging P30
 ```
 
 Also validated: Python compile over P30 changed files.
-P30 focused tests passed: `23 passed in 11.11s` after controller review.
+P30 focused tests passed: `23 passed in 11.14s` on main after merge.
 P30 separately validated default-socket attach argparse and behavior, groop
 daemon current JSON output, missing-socket error, and backward compatibility
 with explicit --attach paths.
