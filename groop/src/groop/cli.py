@@ -141,6 +141,18 @@ def parse_bpf_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def parse_inspect_files_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="groop inspect-files")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    plan = subparsers.add_parser("plan", help="plan a read-only file/log inspection (no content reads)")
+    plan.add_argument("--kind", type=str, required=True, help="inspection kind: docker-json-log, systemd-journal, cgroup-files")
+    plan.add_argument("--target", type=str, required=True, help="inspection target: container id/name, systemd unit, or cgroup path")
+    plan.add_argument("--inspect-files", action="store_true", help="enable file inspection planning mode")
+    plan.add_argument("--admin", action="store_true", help="enable admin mode for inspection planning")
+    plan.add_argument("--json", action="store_true", help="emit JSON plan instead of text")
+    return parser.parse_args(argv)
+
+
 def _print_frame_json(frame, pretty: bool) -> None:
     payload = frame_to_jsonable(frame)
     print(json.dumps(payload, indent=2 if pretty else None, separators=None if pretty else (",", ":"), sort_keys=True))
@@ -207,6 +219,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_bpf(raw_argv[1:])
     if raw_argv[:1] == ["action"]:
         return _main_action(raw_argv[1:])
+    if raw_argv[:1] == ["inspect-files"]:
+        return _main_inspect_files(raw_argv[1:])
     args = parse_args(raw_argv)
     config = load(args.config)
     if args.record is not None and args.replay is not None:
@@ -444,6 +458,41 @@ def _main_action(argv: list[str]) -> int:
             print("Mode: preview only; no command was executed")
         return 0
     print("unknown action command", file=sys.stderr)
+    return 2
+
+
+def _main_inspect_files(argv: list[str]) -> int:
+    from groop.inspect_files.plan import (
+        DisabledInspector,
+        InspectFilesPlan,
+        build_gated_inspect_plan,
+    )
+
+    args = parse_inspect_files_args(argv)
+    if args.command == "plan":
+        try:
+            result = build_gated_inspect_plan(
+                args.kind, args.target,
+                inspect_files=args.inspect_files,
+                admin=args.admin,
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+
+        if isinstance(result, DisabledInspector):
+            print(result.message, file=sys.stderr)
+            return 2
+        if not isinstance(result, InspectFilesPlan):
+            print("unexpected inspection plan result", file=sys.stderr)
+            return 2
+
+        if args.json:
+            print(json.dumps(result.to_jsonable(), sort_keys=True))
+        else:
+            print(result.to_text())
+        return 0
+    print("unknown inspect-files command", file=sys.stderr)
     return 2
 
 
