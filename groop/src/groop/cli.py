@@ -9,6 +9,8 @@ from pathlib import Path
 from groop import __version__
 from groop.collect.collector import Collector
 from groop.config import load
+from groop.damon.control import DamonControlError, RootRequired, stop_owned_sessions
+from groop.damon.passive import DEFAULT_DAMON_ROOT
 from groop.model import frame_to_jsonable
 from groop.record.live import live_frame_stream
 from groop.record.replay import ReplayDriver, format_frame_summary
@@ -29,6 +31,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--profile", type=str, default=None, help="override the active UI column profile for this run")
     parser.add_argument("--cgroup-root", type=Path, default=None, help="cgroup v2 root for live or fixture collection")
     parser.add_argument("--ui-smoke", action="store_true", help=argparse.SUPPRESS)
+    return parser.parse_args(argv)
+
+
+def parse_damon_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="groop damon")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    stop_parser = subparsers.add_parser("stop", help="stop groop-owned DAMON sessions")
+    stop_parser.add_argument("--all-mine", action="store_true", help="stop every groop-owned DAMON session")
+    stop_parser.add_argument("--damon-root", type=Path, default=DEFAULT_DAMON_ROOT, help="DAMON kdamonds sysfs root")
+    stop_parser.add_argument("--state-dir", type=Path, default=None, help="groop state dir containing DAMON ownership markers")
+    stop_parser.add_argument("--allow-non-root-fixture", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -59,7 +72,10 @@ def _run_ui(frame_source, *, config, cgroup_root: Path | None, smoke: bool, prof
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv[:1] == ["damon"]:
+        return _main_damon(raw_argv[1:])
+    args = parse_args(raw_argv)
     config = load(args.config)
     if args.record is not None and args.replay is not None:
         print("choose either --record or --replay", file=sys.stderr)
@@ -123,6 +139,31 @@ def main(argv: list[str] | None = None) -> int:
     frame = Collector(cgroup_root=args.cgroup_root, config=config).collect_once()
     _print_frame_json(frame, args.pretty_json)
     return 0
+
+
+def _main_damon(argv: list[str]) -> int:
+    args = parse_damon_args(argv)
+    if args.command == "stop":
+        if not args.all_mine:
+            print("groop damon stop requires --all-mine", file=sys.stderr)
+            return 2
+        try:
+            stopped = stop_owned_sessions(
+                damon_root=args.damon_root,
+                state_dir=args.state_dir,
+                all_mine=True,
+                require_root=not args.allow_non_root_fixture,
+            )
+        except RootRequired as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        except DamonControlError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"stopped {stopped} groop-owned DAMON session(s)")
+        return 0
+    print("unknown damon command", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

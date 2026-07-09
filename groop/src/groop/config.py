@@ -80,6 +80,10 @@ class DamonConfig:
     warm_rate: float = 5.0
     cold_age: float = 30.0
     idle_age: float = 120.0
+    vaddr_sample_us: int = 100_000
+    vaddr_aggr_us: int = 2_000_000
+    vaddr_update_us: int = 1_000_000
+    max_concurrent_targets: int = 4
 
 
 @dataclass(frozen=True)
@@ -134,6 +138,10 @@ class GroopConfig:
                 "warm_rate": self.damon.warm_rate,
                 "cold_age": self.damon.cold_age,
                 "idle_age": self.damon.idle_age,
+                "vaddr_sample_us": self.damon.vaddr_sample_us,
+                "vaddr_aggr_us": self.damon.vaddr_aggr_us,
+                "vaddr_update_us": self.damon.vaddr_update_us,
+                "max_concurrent_targets": self.damon.max_concurrent_targets,
             },
         }
 
@@ -286,5 +294,9 @@ def load(path: Path | None = None) -> GroopConfig:
             warm_rate=_coerce_float(damon_data.get("warm_rate"), 5.0),
             cold_age=_coerce_float(damon_data.get("cold_age"), 30.0),
             idle_age=_coerce_float(damon_data.get("idle_age"), 120.0),
+            vaddr_sample_us=max(1, int(_coerce_float(damon_data.get("vaddr_sample_us"), 100_000))),
+            vaddr_aggr_us=max(1, int(_coerce_float(damon_data.get("vaddr_aggr_us"), 2_000_000))),
+            vaddr_update_us=max(1, int(_coerce_float(damon_data.get("vaddr_update_us"), 1_000_000))),
+            max_concurrent_targets=max(1, int(_coerce_float(damon_data.get("max_concurrent_targets"), 4))),
         ),
     )

@@ -10,6 +10,7 @@ from textual.widgets import Static
 
 from groop.collect.procs import list_processes
 from groop.config import GroopConfig
+from groop.damon.control import APPROVAL_TEXT
 from groop.diag import pressure_breakdown
 from groop.model import EntityFrame, Frame
 from groop.record.ring import HistoryRing
@@ -20,6 +21,7 @@ class DrillDownScreen(Screen[None]):
     BINDINGS = (
         Binding("escape", "close", "Back"),
         Binding("q", "close", "Back", show=False),
+        Binding("d", "show_damon_control", "DAMON", show=False),
     )
 
     def __init__(
@@ -39,11 +41,15 @@ class DrillDownScreen(Screen[None]):
         self.ring = ring
         self.cgroup_root = cgroup_root
         self.proc_root = proc_root
+        self._control_notice = ""
 
     def compose(self):
         yield VerticalScroll(Static(id="drill-body"))
 
     def on_mount(self) -> None:
+        self._refresh_body()
+
+    def _refresh_body(self) -> None:
         self.query_one("#drill-body", Static).update(
             render_drill_text(
                 self.frame,
@@ -53,10 +59,19 @@ class DrillDownScreen(Screen[None]):
                 cgroup_root=self.cgroup_root,
                 proc_root=self.proc_root,
             )
+            + self._control_notice
         )
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+    def action_show_damon_control(self) -> None:
+        self._control_notice = (
+            "\n\nDAMON CONTROL\n"
+            f"  start/stop is root-only and requires typing {APPROVAL_TEXT} after reviewing the planned sysfs writes.\n"
+            "  existing sessions keep running after the viewer exits; cleanup is available with groop damon stop --all-mine.\n"
+        )
+        self._refresh_body()
 
 
 def render_drill_text(frame: Frame, entity_key: str, *, config: GroopConfig, ring: HistoryRing, cgroup_root: Path, proc_root: Path) -> str:
