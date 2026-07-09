@@ -159,6 +159,156 @@ def test_pilot_replay_status_and_step_controls() -> None:
     asyncio.run(run())
 
 
+def test_pilot_replay_first_and_last_jump() -> None:
+    async def run() -> None:
+        app = _replay_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            assert "frame=1/2" in _status_text(app)
+            # Jump to last
+            await pilot.press("end")
+            await pilot.pause()
+            assert "frame=2/2" in _status_text(app)
+            assert "paused" in _status_text(app)
+            # Jump back to first
+            await pilot.press("home")
+            await pilot.pause()
+            assert "frame=1/2" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_pilot_replay_jump_prompt_with_frame_number() -> None:
+    async def run() -> None:
+        app = _replay_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            assert "frame=1/2" in _status_text(app)
+            # Open jump prompt
+            await pilot.press("j")
+            await pilot.pause()
+            from groop.ui.app import JumpScreen
+            assert isinstance(app.screen, JumpScreen)
+            # Enter frame number 2
+            input_widget = app.screen.query_one("#jump-input", Input)
+            input_widget.value = "2"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert "frame=2/2" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_pilot_replay_jump_prompt_invalid_input_preserves_current_frame() -> None:
+    async def run() -> None:
+        app = _replay_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            assert "frame=1/2" in _status_text(app)
+            # Open jump prompt
+            await pilot.press("j")
+            await pilot.pause()
+            from groop.ui.app import JumpScreen
+            assert isinstance(app.screen, JumpScreen)
+            # Enter invalid input
+            input_widget = app.screen.query_one("#jump-input", Input)
+            input_widget.value = "not-a-number"
+            await pilot.press("enter")
+            await pilot.pause()
+            # Frame unchanged, status shows error
+            assert app._replay_driver.index == 0
+            assert "invalid jump input" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_pilot_replay_jump_prompt_rejects_nonfinite_input() -> None:
+    async def run() -> None:
+        app = _replay_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("j")
+            await pilot.pause()
+            input_widget = app.screen.query_one("#jump-input", Input)
+            input_widget.value = "nan"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app._replay_driver.index == 0
+            assert "finite frame number or epoch timestamp" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_pilot_replay_jump_out_of_range_frame_number() -> None:
+    async def run() -> None:
+        app = _replay_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            assert "frame=1/2" in _status_text(app)
+            await pilot.press("j")
+            await pilot.pause()
+            input_widget = app.screen.query_one("#jump-input", Input)
+            input_widget.value = "99"
+            await pilot.press("enter")
+            await pilot.pause()
+            # Frame unchanged
+            assert app._replay_driver.index == 0
+            assert "invalid frame number" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_pilot_replay_jump_prompt_with_timestamp() -> None:
+    async def run() -> None:
+        base = fixture_frame()
+        later = Frame(
+            schema_version=base.schema_version,
+            ts=base.ts + base.interval_s,
+            interval_s=base.interval_s,
+            host=base.host,
+            entities=base.entities,
+        )
+        app = GroopApp(
+            (),
+            config=GroopConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            replay_driver=ReplayDriver([base, later]),
+            replay_step=True,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            assert "frame=1/2" in _status_text(app)
+            await pilot.press("j")
+            await pilot.pause()
+            input_widget = app.screen.query_one("#jump-input", Input)
+            input_widget.value = str(later.ts)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert "frame=2/2" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_pilot_replay_jump_in_non_replay_mode_shows_unavailable_message() -> None:
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            # home/end/j all show unavailable in live mode
+            await pilot.press("home")
+            await pilot.pause()
+            assert "only available in --replay mode" in _status_text(app)
+            await pilot.press("end")
+            await pilot.pause()
+            assert "only available in --replay mode" in _status_text(app)
+            await pilot.press("j")
+            await pilot.pause()
+            assert "only available in --replay mode" in _status_text(app)
+
+    asyncio.run(run())
+
+
 def test_pilot_reserved_v2_action_reports_disabled_message() -> None:
     async def run() -> None:
         app = _make_app()

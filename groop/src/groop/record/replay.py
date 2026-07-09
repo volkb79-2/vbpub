@@ -58,6 +58,15 @@ class ReplayDriver:
         self._index = min(max(0, index), len(self._frames) - 1)
         return self.current
 
+    def seek_timestamp(self, ts: float) -> Frame:
+        """Seek to the first frame whose ts >= ts; clamp to first/last."""
+        for index, frame in enumerate(self._frames):
+            if frame.ts >= ts:
+                self._index = index
+                return self.current
+        self._index = len(self._frames) - 1
+        return self.current
+
     def step(self, delta: int) -> Frame:
         return self.seek(self._index + delta)
 

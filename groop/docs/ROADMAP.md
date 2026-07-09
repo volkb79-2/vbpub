@@ -57,15 +57,16 @@ Status: done. Tree expand/collapse, replay controls/status, reserved v2 action
 messaging, profile warning polish, operations docs, and focused Textual tests
 landed in P13.
 
-Remaining UX work: timestamp jump replay controls and deeper key/profile
-customization can be carved later if needed.
+Remaining UX work: deeper key/profile customization can be carved later if needed.
 
 ### P24 - Replay Timestamp Jump Controls
 
-Status: planned. P24 should add replay first/last and frame/timestamp jump
-controls while preserving the existing pause/step/speed model.
+Status: done. P24 adds replay first/last (`home`/`end`) and frame/timestamp jump
+prompt (`j`) controls, `ReplayDriver.seek_timestamp()`, compact status/help
+lines, and focused tests. The existing pause/step/speed model is preserved.
 
 Handoff: `handoff/P24-replay-timestamp-jump.md`.
+Report: `handoff/reports/P24-REPORT.md`.
 
 ### P14 — DAMON Control Modal And Live-Root Acceptance
 

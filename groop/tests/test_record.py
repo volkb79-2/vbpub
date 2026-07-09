@@ -175,6 +175,44 @@ def test_history_ring_storage_budget_uses_numeric_arrays() -> None:
     assert estimated_bytes < 50 * 1024 * 1024
 
 
+def test_replay_seek_timestamp_exact_and_clamped() -> None:
+    f1 = Frame(1, 100.0, 5.0, {}, {"a": _entity_frame("a", 1.0)})
+    f2 = Frame(1, 105.0, 5.0, {}, {"a": _entity_frame("a", 2.0)})
+    f3 = Frame(1, 110.0, 5.0, {}, {"a": _entity_frame("a", 3.0)})
+    d = ReplayDriver([f1, f2, f3])
+
+    # Exact match
+    frame = d.seek_timestamp(100.0)
+    assert d.index == 0 and frame.ts == 100.0
+
+    # At-or-after between frames
+    frame = d.seek_timestamp(102.0)
+    assert d.index == 1 and frame.ts == 105.0
+
+    # Beyond last clamps to last
+    frame = d.seek_timestamp(200.0)
+    assert d.index == 2 and frame.ts == 110.0
+
+    # Before first clamps to first
+    frame = d.seek_timestamp(0.0)
+    assert d.index == 0 and frame.ts == 100.0
+
+    # Exact boundary match
+    frame = d.seek_timestamp(110.0)
+    assert d.index == 2 and frame.ts == 110.0
+
+
+def test_replay_seek_timestamp_single_frame() -> None:
+    f1 = Frame(1, 100.0, 5.0, {}, {"a": _entity_frame("a", 1.0)})
+    d = ReplayDriver([f1])
+    d.seek_timestamp(0.0)
+    assert d.index == 0
+    d.seek_timestamp(100.0)
+    assert d.index == 0
+    d.seek_timestamp(200.0)
+    assert d.index == 0
+
+
 def test_replay_cli_smoke_uses_golden_fixture() -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = f"/tmp/groop-pytest:{fixture_root().parents[1] / 'src'}"
