@@ -15,6 +15,7 @@ from groop.model import frame_to_jsonable
 from groop.record.live import live_frame_stream
 from groop.record.replay import ReplayDriver, format_frame_summary
 from groop.record.writer import RecordWriter
+from groop.snapshot import inspect_bundle
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -42,6 +43,14 @@ def parse_damon_args(argv: list[str]) -> argparse.Namespace:
     stop_parser.add_argument("--damon-root", type=Path, default=DEFAULT_DAMON_ROOT, help="DAMON kdamonds sysfs root")
     stop_parser.add_argument("--state-dir", type=Path, default=None, help="groop state dir containing DAMON ownership markers")
     stop_parser.add_argument("--allow-non-root-fixture", action="store_true", help=argparse.SUPPRESS)
+    return parser.parse_args(argv)
+
+
+def parse_snapshot_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="groop snapshot")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    inspect_parser = subparsers.add_parser("inspect", help="inspect a groop incident snapshot bundle")
+    inspect_parser.add_argument("file", type=Path, help="snapshot .tar or .tar.zst bundle")
     return parser.parse_args(argv)
 
 
@@ -75,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if raw_argv[:1] == ["damon"]:
         return _main_damon(raw_argv[1:])
+    if raw_argv[:1] == ["snapshot"]:
+        return _main_snapshot(raw_argv[1:])
     args = parse_args(raw_argv)
     config = load(args.config)
     if args.record is not None and args.replay is not None:
@@ -163,6 +174,19 @@ def _main_damon(argv: list[str]) -> int:
         print(f"stopped {stopped} groop-owned DAMON session(s)")
         return 0
     print("unknown damon command", file=sys.stderr)
+    return 2
+
+
+def _main_snapshot(argv: list[str]) -> int:
+    args = parse_snapshot_args(argv)
+    if args.command == "inspect":
+        try:
+            print(inspect_bundle(args.file))
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        return 0
+    print("unknown snapshot command", file=sys.stderr)
     return 2
 
 

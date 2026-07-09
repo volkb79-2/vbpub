@@ -64,6 +64,13 @@ class RecordConfig:
 
 
 @dataclass(frozen=True)
+class SnapshotConfig:
+    dir: Path | None = None
+    frames: int = 60
+    redact: bool = False
+
+
+@dataclass(frozen=True)
 class NetConfig:
     classes: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
@@ -101,6 +108,7 @@ class GroopConfig:
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     history: HistoryConfig = field(default_factory=HistoryConfig)
     record: RecordConfig = field(default_factory=RecordConfig)
+    snapshots: SnapshotConfig = field(default_factory=SnapshotConfig)
     net: NetConfig = field(default_factory=NetConfig)
     damon: DamonConfig = field(default_factory=DamonConfig)
 
@@ -129,6 +137,11 @@ class GroopConfig:
             "record": {
                 "flush_every_frames": self.record.flush_every_frames,
                 "fsync": self.record.fsync,
+            },
+            "snapshots": {
+                "dir": None if self.snapshots.dir is None else str(self.snapshots.dir),
+                "frames": self.snapshots.frames,
+                "redact": self.snapshots.redact,
             },
             "net": {
                 "classes": {name: list(ports) for name, ports in self.net.classes.items()},
@@ -254,6 +267,7 @@ def load(path: Path | None = None) -> GroopConfig:
     tiers_data = data.get("tiers", {})
     history_data = data.get("history", {})
     record_data = data.get("record", {})
+    snapshot_data = data.get("snapshots", {})
     net_data = data.get("net", {})
     damon_data = data.get("damon", {})
     thresholds = dict(data.get("thresholds", {}) or {})
@@ -287,6 +301,11 @@ def load(path: Path | None = None) -> GroopConfig:
         record=RecordConfig(
             flush_every_frames=max(1, int(record_data.get("flush_every_frames", 1))),
             fsync=bool(record_data.get("fsync", False)),
+        ),
+        snapshots=SnapshotConfig(
+            dir=Path(snapshot_data["dir"]) if isinstance(snapshot_data.get("dir"), str) else None,
+            frames=max(1, int(snapshot_data.get("frames", 60))),
+            redact=bool(snapshot_data.get("redact", False)),
         ),
         net=NetConfig(classes=net_classes),
         damon=DamonConfig(
