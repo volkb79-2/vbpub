@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from groop.config import GroopConfig
 from groop.model import Entity, EntityFrame, MetricValue
-from groop.ui.table import format_metric_value, resolve_columns
+from groop.ui.table import format_metric_value, resolve_columns, resolve_profile
 
 
 def test_format_metric_value_shows_unlimited_limits_as_max() -> None:
@@ -24,3 +24,12 @@ def test_damon_profile_uses_registry_backed_columns() -> None:
         "damon_idle_pct",
         "damon_sample_age_s",
     )
+
+
+def test_custom_profile_reports_unsupported_columns_gracefully() -> None:
+    config = GroopConfig(columns={"profiles": {"forensics": {"list": ["name", "ram", "bogus_metric", "cpu_pct"]}}})
+
+    layout = resolve_profile(config, width=140, profile="forensics")
+
+    assert layout.columns == ("name", "ram", "cpu_pct")
+    assert layout.ignored_columns == ("bogus_metric",)

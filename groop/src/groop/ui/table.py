@@ -88,6 +88,13 @@ class RenderedRows:
     title: str
 
 
+@dataclass(frozen=True)
+class ProfileLayout:
+    name: str
+    columns: tuple[str, ...]
+    ignored_columns: tuple[str, ...] = ()
+
+
 def render_container_table(
     frame: Frame,
     config: GroopConfig,
@@ -98,36 +105,47 @@ def render_container_table(
     filter_text: str,
     selected_key: str | None,
 ) -> RenderedRows:
-    columns = resolve_columns(config, width=width, profile=profile)
+    layout = resolve_profile(config, width=width, profile=profile)
     entity_frames = _visible_entities(frame, container_only=True, filter_text=filter_text)
     ordered = _sort_rows(entity_frames, sort_by)
-    table = _make_table(columns, title=f"CONTAINERS | profile={profile} | sort={sort_by or 'name'}")
+    table = _make_table(layout.columns, title=f"CONTAINERS | profile={layout.name}{_profile_title_suffix(layout)} | sort={sort_by or 'name'}")
     row_keys: list[str] = []
     for entity_frame in ordered:
         row_keys.append(entity_frame.entity.key)
-        table.add_row(*_row_cells(columns, entity_frame, selected=entity_frame.entity.key == selected_key))
+        table.add_row(*_row_cells(layout.columns, entity_frame, selected=entity_frame.entity.key == selected_key))
     if not row_keys:
-        table.add_row("no container rows", *[""] * (max(0, len(columns) - 1)))
+        table.add_row("no container rows", *[""] * (max(0, len(layout.columns) - 1)))
     return RenderedRows(table=table, row_keys=tuple(row_keys), title=table.title or "")
 
 
 def resolve_columns(config: GroopConfig, *, width: int, profile: str) -> tuple[str, ...]:
+    return resolve_profile(config, width=width, profile=profile).columns
+
+
+def resolve_profile(config: GroopConfig, *, width: int, profile: str) -> ProfileLayout:
     profile = normalize_profile_name(config, profile)
     if profile == "auto":
         active: list[str] = []
         for minimum, names in _WIDTH_TIERS:
             if width >= minimum:
                 active.extend(names)
-        return tuple(_dedupe(("name", *active)))
+        return ProfileLayout(name=profile, columns=tuple(_dedupe(("name", *active))))
     if profile == "wide":
         all_columns: list[str] = ["name"]
         for _, names in _WIDTH_TIERS:
             all_columns.extend(names)
-        return tuple(_dedupe(all_columns))
+        return ProfileLayout(name=profile, columns=tuple(_dedupe(all_columns)))
     configured = _profile_from_config(config, profile)
     if configured is not None:
-        return tuple(_dedupe(name for name in configured if _column_supported(name)))
-    return tuple(_dedupe(name for name in _PROFILE_COLUMNS.get(profile, _PROFILE_COLUMNS["triage"]) if _column_supported(name)))
+        return ProfileLayout(
+            name=profile,
+            columns=tuple(_dedupe(name for name in configured if _column_supported(name))),
+            ignored_columns=tuple(name for name in configured if not _column_supported(name)),
+        )
+    return ProfileLayout(
+        name=profile,
+        columns=tuple(_dedupe(name for name in _PROFILE_COLUMNS.get(profile, _PROFILE_COLUMNS["triage"]) if _column_supported(name))),
+    )
 
 
 def available_profiles(config: GroopConfig) -> tuple[str, ...]:
@@ -308,6 +326,12 @@ def _dedupe(names) -> list[str]:
     return out
 
 
+def _profile_title_suffix(layout: ProfileLayout) -> str:
+    if not layout.ignored_columns:
+        return ""
+    return f" ignored={','.join(layout.ignored_columns)}"
+
+
 def _fmt_bytes(value: float) -> str:
     units = ("B", "KiB", "MiB", "GiB", "TiB")
     scaled = value
@@ -341,7 +365,10 @@ _DAMON_MODE = {
 }
 
 
-def _metric_code(metric: MetricValue | None, mapping: dict[int, str]) -> str:
+def _metric_code(metric: MetricValue | None, table: dict[int, str]) -> str:
     if metric is None or metric.v is None:
         return "-"
-    return mapping.get(int(metric.v), str(metric.v))
+    try:
+        return table[int(metric.v)]
+    except (KeyError, TypeError, ValueError):
+        return str(metric.v)

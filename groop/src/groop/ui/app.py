@@ -10,11 +10,13 @@ from rich.console import Group
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.screen import Screen
+from textual.timer import Timer
 from textual.widgets import Input, Static
 
 from groop.config import GroopConfig, load
 from groop.damon.passive import DEFAULT_DAMON_ROOT
 from groop.model import Frame
+from groop.record.replay import ReplayDriver
 from groop.record.ring import HistoryRing
 from groop.registry import REGISTRY
 from groop.snapshot import create as create_snapshot
@@ -88,6 +90,9 @@ class GroopApp(App[None]):
         damon_state_dir: Path | None = None,
         ring: HistoryRing | None = None,
         profile: str | None = None,
+        replay_driver: ReplayDriver | None = None,
+        replay_step: bool = False,
+        replay_speed: float = 1.0,
     ) -> None:
         super().__init__()
         self.config = config or load()
@@ -97,6 +102,11 @@ class GroopApp(App[None]):
         self.damon_state_dir = damon_state_dir
         self.ring = ring or HistoryRing.from_config(self.config)
         self._frame_source = iter(frame_source)
+        self._replay_driver = replay_driver
+        self._replay_paused = replay_driver is not None and replay_step
+        self._replay_speed = replay_speed if replay_speed > 0 else 1.0
+        self._replay_speed_levels = (1.0, 2.0, 4.0, 8.0)
+        self._replay_timer: Timer | None = None
         self.current_frame: Frame | None = None
         self.frames_received = 0
         self.view_mode = self.config.default_view if self.config.default_view in {"tree", "container"} else "tree"
@@ -107,6 +117,7 @@ class GroopApp(App[None]):
         self.banner_collapsed = False
         self.selected_key: str | None = None
         self._visible_row_keys: tuple[str, ...] = ()
+        self._collapsed_tree_keys: set[str] = set()
         self._worker_done = threading.Event()
         self._recent_frames: deque[Frame] = deque(maxlen=max(1, self.config.snapshots.frames))
 
@@ -116,8 +127,13 @@ class GroopApp(App[None]):
         yield Static(id="status")
 
     def on_mount(self) -> None:
+        if self._replay_driver is not None:
+            self._apply_frame(self._replay_driver.current)
+            if not self._replay_paused:
+                self._schedule_replay_tick()
+            return
         self.run_worker(self._consume_frames, thread=True, exclusive=True)
-        self._refresh_status("waiting for frames")
+        self._refresh_status("mode=LIVE waiting for frames")
 
     def _consume_frames(self) -> None:
         try:
@@ -149,10 +165,7 @@ class GroopApp(App[None]):
             rendered = self._render_rows(frame, width=width)
             self._visible_row_keys = rendered.row_keys
         self.query_one("#body", Static).update(Group(rendered.table))
-        self._refresh_status(
-            f"view={self.view_mode} profile={self.profile_name} sort={self.sort_by} "
-            f"rows={len(self._visible_row_keys)} filter={self.filter_text or '-'} frames={self.frames_received}"
-        )
+        self._refresh_status(self._status_text())
 
     def _render_rows(self, frame: Frame, *, width: int) -> RenderedRows:
         kwargs = {
@@ -164,7 +177,7 @@ class GroopApp(App[None]):
         }
         if self.view_mode == "container":
             return render_container_table(frame, self.config, **kwargs)
-        return render_tree_table(frame, self.config, **kwargs)
+        return render_tree_table(frame, self.config, collapsed_keys=self._collapsed_tree_keys, **kwargs)
 
     def _refresh_status(self, text: str) -> None:
         self.query_one("#status", Static).update(text)
@@ -192,6 +205,63 @@ class GroopApp(App[None]):
 
     def action_select_next(self) -> None:
         self._move_selection(1)
+
+    def action_collapse_tree(self) -> None:
+        if self.view_mode != "tree" or self.current_frame is None or self.selected_key is None:
+            return
+        children = self._child_keys(self.selected_key)
+        if children and self.selected_key not in self._collapsed_tree_keys:
+            self._collapsed_tree_keys.add(self.selected_key)
+            self._refresh_view()
+            return
+        parent = self.current_frame.entities.get(self.selected_key).entity.parent if self.selected_key in self.current_frame.entities else None
+        if parent is not None and parent in self.current_frame.entities:
+            self.selected_key = parent
+            self._refresh_view()
+
+    def action_expand_tree(self) -> None:
+        if self.view_mode != "tree" or self.selected_key is None:
+            return
+        if self.selected_key in self._collapsed_tree_keys:
+            self._collapsed_tree_keys.remove(self.selected_key)
+            self._refresh_view()
+
+    def action_toggle_replay_pause(self) -> None:
+        if self._replay_driver is None:
+            self._refresh_status("replay controls are only available in --replay mode")
+            return
+        self._replay_paused = not self._replay_paused
+        if self._replay_paused:
+            self._cancel_replay_timer()
+            self._refresh_view()
+            return
+        self._schedule_replay_tick()
+        self._refresh_view()
+
+    def action_replay_step_back(self) -> None:
+        if self._replay_driver is None:
+            self._refresh_status("replay step is only available in --replay mode")
+            return
+        self._replay_paused = True
+        self._cancel_replay_timer()
+        self._apply_frame(self._replay_driver.step(-1))
+
+    def action_replay_step_forward(self) -> None:
+        if self._replay_driver is None:
+            self._refresh_status("replay step is only available in --replay mode")
+            return
+        self._replay_paused = True
+        self._cancel_replay_timer()
+        self._apply_frame(self._replay_driver.step(1))
+
+    def action_replay_speed_up(self) -> None:
+        self._set_replay_speed(1)
+
+    def action_replay_speed_down(self) -> None:
+        self._set_replay_speed(-1)
+
+    def action_reserved_v2_action(self) -> None:
+        self._refresh_status("v2 admin actions are not available in this build; requires future --admin mode")
 
     def _move_selection(self, delta: int) -> None:
         if not self._visible_row_keys:
@@ -266,6 +336,67 @@ class GroopApp(App[None]):
         if len(self.screen_stack) > 1:
             self.pop_screen()
 
+    def _child_keys(self, entity_key: str) -> tuple[str, ...]:
+        if self.current_frame is None:
+            return ()
+        return tuple(key for key, entity_frame in self.current_frame.entities.items() if entity_frame.entity.parent == entity_key)
+
+    def _cancel_replay_timer(self) -> None:
+        if self._replay_timer is not None:
+            self._replay_timer.stop()
+            self._replay_timer = None
+
+    def _schedule_replay_tick(self) -> None:
+        if self._replay_driver is None or self._replay_paused:
+            return
+        if self._replay_driver.index >= self._replay_driver.total - 1:
+            self._replay_paused = True
+            self._refresh_view()
+            return
+        self._cancel_replay_timer()
+        current = self._replay_driver.current
+        upcoming = self._replay_driver.frames[self._replay_driver.index + 1]
+        delay_s = max(0.0, (upcoming.ts - current.ts) / self._replay_speed)
+        self._replay_timer = self.set_timer(delay_s, self._advance_replay)
+
+    def _advance_replay(self) -> None:
+        self._replay_timer = None
+        if self._replay_driver is None or self._replay_paused:
+            return
+        self._apply_frame(self._replay_driver.step(1))
+        self._schedule_replay_tick()
+
+    def _set_replay_speed(self, delta: int) -> None:
+        if self._replay_driver is None:
+            self._refresh_status("replay speed is only available in --replay mode")
+            return
+        speed = min(self._replay_speed_levels, key=lambda candidate: abs(candidate - self._replay_speed))
+        index = self._replay_speed_levels.index(speed)
+        next_index = min(max(0, index + delta), len(self._replay_speed_levels) - 1)
+        self._replay_speed = self._replay_speed_levels[next_index]
+        if not self._replay_paused:
+            self._schedule_replay_tick()
+        self._refresh_view()
+
+    def _status_text(self) -> str:
+        frame = self.current_frame
+        rows = len(self._visible_row_keys)
+        if self._replay_driver is None:
+            if frame is None:
+                return "mode=LIVE waiting for frames"
+            return (
+                f"mode=LIVE view={self.view_mode} profile={self.profile_name} sort={self.sort_by} "
+                f"rows={rows} filter={self.filter_text or '-'} frames={self.frames_received} ts={frame.ts:.3f}"
+            )
+        if frame is None:
+            return "mode=REPLAY waiting for frames"
+        state = "paused" if self._replay_paused else "playing"
+        return (
+            f"mode=REPLAY {state} speed={self._replay_speed:g}x frame={self._replay_driver.index + 1}/{self._replay_driver.total} "
+            f"view={self.view_mode} profile={self.profile_name} sort={self.sort_by} rows={rows} "
+            f"filter={self.filter_text or '-'} ts={frame.ts:.3f} controls=space ,/. +/-"
+        )
+
 
 def run_ui(
     frame_source: Iterable[Frame] | Iterator[Frame],
@@ -275,10 +406,33 @@ def run_ui(
     proc_root: Path = Path("/proc"),
     smoke: bool = False,
     profile: str | None = None,
+    replay_driver: ReplayDriver | None = None,
+    replay_step: bool = False,
+    replay_speed: float = 1.0,
 ) -> str | int:
     if smoke:
-        return asyncio.run(_run_ui_smoke(frame_source, config=config, cgroup_root=cgroup_root, proc_root=proc_root, profile=profile))
-    app = GroopApp(frame_source, config=config, cgroup_root=cgroup_root, proc_root=proc_root, profile=profile)
+        return asyncio.run(
+            _run_ui_smoke(
+                frame_source,
+                config=config,
+                cgroup_root=cgroup_root,
+                proc_root=proc_root,
+                profile=profile,
+                replay_driver=replay_driver,
+                replay_step=replay_step,
+                replay_speed=replay_speed,
+            )
+        )
+    app = GroopApp(
+        frame_source,
+        config=config,
+        cgroup_root=cgroup_root,
+        proc_root=proc_root,
+        profile=profile,
+        replay_driver=replay_driver,
+        replay_step=replay_step,
+        replay_speed=replay_speed,
+    )
     app.run()
     return 0
 
@@ -290,8 +444,20 @@ async def _run_ui_smoke(
     cgroup_root: Path | None,
     proc_root: Path,
     profile: str | None,
+    replay_driver: ReplayDriver | None,
+    replay_step: bool,
+    replay_speed: float,
 ) -> str:
-    app = GroopApp(frame_source, config=config, cgroup_root=cgroup_root, proc_root=proc_root, profile=profile)
+    app = GroopApp(
+        frame_source,
+        config=config,
+        cgroup_root=cgroup_root,
+        proc_root=proc_root,
+        profile=profile,
+        replay_driver=replay_driver,
+        replay_step=replay_step,
+        replay_speed=replay_speed,
+    )
     async with app.run_test(size=(140, 40)) as pilot:
         for _ in range(20):
             await pilot.pause()
