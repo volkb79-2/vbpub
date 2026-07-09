@@ -80,6 +80,19 @@ python3 -m pytest groop/tests -q
 
 /tmp/p25-venv/bin/python -m pytest groop/tests -q
 # 201 passed in 28.91s
+
+# Main checkout after controller merge
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_aliases.py groop/tests/test_ui_table.py groop/tests/test_diag.py -q
+# 39 passed in 0.44s
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 201 passed in 29.44s
+```
+
+P27 merged to `main` with:
+
+```bash
+git merge --no-ff feat/groop-p27-swap-refault-aliases -m "Merge groop P27 swap refault aliases"
 ```
 
 ## Known Gaps

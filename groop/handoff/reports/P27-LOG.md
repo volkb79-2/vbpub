@@ -69,6 +69,17 @@
 - Result: Added the required legacy `rf_d` alias, normalized configured alias
   columns to canonical `ProfileLayout.columns`, removed an unused typo helper,
   fixed report/log evidence, and reran focused plus full validation.
+
+- Action: Controller merged P27 into `main` and reran validation from the main checkout.
+- Commands: `git merge --no-ff feat/groop-p27-swap-refault-aliases -m "Merge groop P27 swap refault aliases"`,
+  `PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_aliases.py groop/tests/test_ui_table.py groop/tests/test_diag.py -q`,
+  `PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile groop/src/groop/ui/aliases.py groop/src/groop/ui/table.py groop/src/groop/diag/score.py groop/src/groop/diag/rules.py groop/tests/test_aliases.py`,
+  `PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q`.
+- Files changed: groop/docs/STATUS.md, groop/handoff/reports/P27-LOG.md,
+  groop/handoff/reports/P27-REPORT.md.
+- Result: P27 merged and validated on `main`: focused alias/table/diag tests
+  `39 passed in 0.44s`; full suite `201 passed in 29.44s`; compile check
+  clean.
 ```
 
 ## Decisions
@@ -104,6 +115,9 @@ python3 -m pytest groop/tests -q
 
 /tmp/p25-venv/bin/python -m pytest groop/tests -q
 # 201 passed in 28.91s after controller review
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 201 passed in 29.44s after merge to main
 ```
 
 ## Handoff Checklist

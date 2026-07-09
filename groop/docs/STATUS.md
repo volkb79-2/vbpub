@@ -134,7 +134,7 @@ Most recent full-suite validation (P27 - Swap/refault aliases):
 
 ```bash
 python3 -m pytest groop/tests -q
-# 201 passed in 28.91s before merge
+# 201 passed in 29.44s after the P27 merge
 ```
 
 Also validated: Python compile over P27 files.
