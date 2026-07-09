@@ -9,8 +9,9 @@ from pathlib import Path
 from groop import __version__
 from groop.collect.collector import Collector
 from groop.config import load
-from groop.damon.control import DamonControlError, RootRequired, stop_owned_sessions
+from groop.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, stop_owned_sessions
 from groop.damon.passive import DEFAULT_DAMON_ROOT
+from groop.damon.paddr import paddr_confirmation_text, plan_start_paddr_session, start_planned_paddr_session
 from groop.model import frame_to_jsonable
 from groop.record.live import live_frame_stream
 from groop.record.replay import ReplayDriver, format_frame_summary
@@ -43,6 +44,14 @@ def parse_damon_args(argv: list[str]) -> argparse.Namespace:
     stop_parser.add_argument("--damon-root", type=Path, default=DEFAULT_DAMON_ROOT, help="DAMON kdamonds sysfs root")
     stop_parser.add_argument("--state-dir", type=Path, default=None, help="groop state dir containing DAMON ownership markers")
     stop_parser.add_argument("--allow-non-root-fixture", action="store_true", help=argparse.SUPPRESS)
+    paddr_parser = subparsers.add_parser("paddr", help="manage host paddr DAMON sessions")
+    paddr_subparsers = paddr_parser.add_subparsers(dest="paddr_command", required=True)
+    paddr_start = paddr_subparsers.add_parser("start", help="start a groop-owned host paddr session")
+    paddr_start.add_argument("--damon-root", type=Path, default=DEFAULT_DAMON_ROOT, help="DAMON kdamonds sysfs root")
+    paddr_start.add_argument("--state-dir", type=Path, default=None, help="groop state dir containing DAMON ownership markers")
+    paddr_start.add_argument("--config", type=Path, default=None, help="load config from PATH instead of the default XDG location")
+    paddr_start.add_argument("--confirm", type=str, default=None, help=f"type {APPROVAL_TEXT} to apply sysfs writes")
+    paddr_start.add_argument("--allow-non-root-fixture", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -172,6 +181,31 @@ def _main_damon(argv: list[str]) -> int:
             print(str(exc), file=sys.stderr)
             return 1
         print(f"stopped {stopped} groop-owned DAMON session(s)")
+        return 0
+    if args.command == "paddr" and args.paddr_command == "start":
+        config = load(args.config)
+        try:
+            plan = plan_start_paddr_session(
+                damon_root=args.damon_root,
+                state_dir=args.state_dir,
+                config=config.damon,
+                require_root=not args.allow_non_root_fixture,
+            )
+            if args.confirm is None:
+                print(paddr_confirmation_text(plan))
+                return 2
+            session = start_planned_paddr_session(
+                plan,
+                confirmed_text=args.confirm,
+                require_root=not args.allow_non_root_fixture,
+            )
+        except RootRequired as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        except DamonControlError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"started groop-owned paddr DAMON session on kdamond {session.kdamond_idx}")
         return 0
     print("unknown damon command", file=sys.stderr)
     return 2

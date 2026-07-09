@@ -28,6 +28,7 @@ class Collector:
         network_providers: tuple[Provider, ...] | None = None,
         proc_root: Path = Path("/proc"),
         damon_root: Path = DEFAULT_DAMON_ROOT,
+        damon_state_dir: Path | None = None,
         systemctl_show_runner: SystemctlShowRunner | None = None,
     ) -> None:
         self.config = config or load()
@@ -37,6 +38,7 @@ class Collector:
         self.now = now or time.time
         self.proc_root = proc_root
         self.damon_root = damon_root
+        self.damon_state_dir = damon_state_dir
         self.systemctl_show_runner = systemctl_show_runner
         self.network_providers = network_providers if network_providers is not None else (
             NetnsProvider(self.cgroup_root, proc_root=self.proc_root),
@@ -67,6 +69,7 @@ class Collector:
             cgroup_root=self.cgroup_root,
             config=self.config.damon,
             now=ts,
+            state_dir=self.damon_state_dir,
         )
         annotate_frame_governance(frame, self.systemctl_show_runner)
         return annotate_frame_diagnostics(frame, self.config)

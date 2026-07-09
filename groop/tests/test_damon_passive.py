@@ -92,13 +92,23 @@ def test_passive_no_root_degrades_without_fabricating_values(tmp_path: Path) -> 
 def test_passive_paddr_stays_host_metadata_only(tmp_path: Path) -> None:
     damon_root = tmp_path / "kdamonds"
     shutil.copytree(fixture_root() / "damonfs" / "passive-paddr" / "kdamonds", damon_root)
+    for path in (damon_root / "0" / "contexts" / "0" / "schemes" / "0" / "tried_regions").rglob("*"):
+        if path.is_file():
+            os.utime(path, (90.0, 90.0))
     frame = _collector(damon_root=damon_root, now=100.0).collect_once()
     game = frame.entities[GAME_KEY]
     root = frame.entities[""]
     assert game.metrics["damon_hot_bytes"].v is None
     assert game.metrics["damon_hot_bytes"].src == "unavail_kernel"
+    assert frame.host["host_damon_warm_bytes"] == MetricValue(4096, "exact")
+    assert frame.host["host_damon_idle_bytes"] == MetricValue(8192, "exact")
+    assert frame.host["host_damon_warm_pct"].v == pytest.approx(33.3333, rel=1e-4)
+    assert frame.host["host_damon_idle_pct"].v == pytest.approx(66.6667, rel=1e-4)
+    assert frame.host["host_damon_sample_age_s"] == MetricValue(10.0, "exact")
+    assert frame.host["host_damon_mode"] == MetricValue(2, "exact")
     assert root.damon is not None
     assert root.damon["host_sessions"][0]["mode"] == "paddr"
+    assert root.damon["host_sessions"][0]["owner"] == "foreign"
 
 
 def test_render_drill_text_includes_damon_panel(tmp_path: Path) -> None:

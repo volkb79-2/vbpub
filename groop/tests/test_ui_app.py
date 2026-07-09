@@ -7,6 +7,7 @@ from conftest import fixture_frame, fixture_root
 from groop.config import GroopConfig, SnapshotConfig
 from groop.ui.app import GroopApp
 from groop.ui.drill import DrillDownScreen
+from groop.ui.hostmem import HostMemoryScreen
 
 
 def _make_app() -> GroopApp:
@@ -75,5 +76,20 @@ def test_pilot_snapshot_hotkey_writes_bundle(tmp_path: Path) -> None:
             await pilot.pause()
 
         assert len(list(tmp_path.glob("groop-incident-*"))) == 1
+
+    asyncio.run(run())
+
+
+def test_pilot_host_memory_screen_open_and_close() -> None:
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("m")
+            await pilot.pause()
+            assert isinstance(app.screen, HostMemoryScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, HostMemoryScreen)
 
     asyncio.run(run())

@@ -37,8 +37,11 @@ def render_banner(frame: Frame, config: GroopConfig, *, collapsed: bool = False)
             f"ZSWAP {_fmt_bytes_metric(frame.host.get('host_zswap_pool'))} pool / {_fmt_bytes_metric(frame.host.get('host_zswap_stored'))} stored"
             f" / {_fmt_ratio_metric(frame.host.get('host_zswap_ratio'))} / disk swap {_fmt_bytes_metric(frame.host.get('host_disk_swap'))}"
         ),
-        "TOP PRESSURE",
     ]
+    heat_line = _host_damon_heat_line(frame)
+    if heat_line is not None:
+        lines.append(heat_line)
+    lines.append("TOP PRESSURE")
     pressure_lines = _top_pressure_lines(frame)
     lines.extend(pressure_lines if pressure_lines else ["n/a"])
     return BannerSnapshot(verdict=verdict, lines=tuple(lines), unprivileged_count=notice_count)
@@ -86,6 +89,61 @@ def _top_pressure_lines(frame: Frame) -> list[str]:
             f"ram {_fmt_bytes_metric(metrics.get('ram'))}"
         )
     return lines
+
+
+def _host_damon_heat_line(frame: Frame) -> str | None:
+    if frame.host.get("host_damon_mode") is None or frame.host.get("host_damon_hot_bytes") is None:
+        return None
+    bytes_by_class = {
+        "hot": frame.host.get("host_damon_hot_bytes"),
+        "warm": frame.host.get("host_damon_warm_bytes"),
+        "cold": frame.host.get("host_damon_cold_bytes"),
+        "idle": frame.host.get("host_damon_idle_bytes"),
+    }
+    if any(metric is None or metric.v is None for metric in bytes_by_class.values()):
+        return None
+    pct_by_class = {
+        "hot": frame.host.get("host_damon_hot_pct"),
+        "warm": frame.host.get("host_damon_warm_pct"),
+        "cold": frame.host.get("host_damon_cold_pct"),
+        "idle": frame.host.get("host_damon_idle_pct"),
+    }
+    owners = _host_damon_owners(frame)
+    owner_text = ",".join(owners) if owners else "unknown"
+    return (
+        f"DRAM HEAT {_heat_bar(pct_by_class)} "
+        f"hot {_fmt_bytes_metric(bytes_by_class['hot'])}/{_fmt_metric(pct_by_class['hot'], digits=1)}% "
+        f"warm {_fmt_bytes_metric(bytes_by_class['warm'])}/{_fmt_metric(pct_by_class['warm'], digits=1)}% "
+        f"cold {_fmt_bytes_metric(bytes_by_class['cold'])}/{_fmt_metric(pct_by_class['cold'], digits=1)}% "
+        f"idle {_fmt_bytes_metric(bytes_by_class['idle'])}/{_fmt_metric(pct_by_class['idle'], digits=1)}% "
+        f"age {_fmt_metric(frame.host.get('host_damon_sample_age_s'), digits=1)}s owner {owner_text}"
+    )
+
+
+def _heat_bar(pct_by_class: dict[str, MetricValue | None], *, width: int = 20) -> str:
+    chars = {"hot": "H", "warm": "W", "cold": "C", "idle": "I"}
+    remaining = width
+    parts: list[str] = []
+    for name in ("hot", "warm", "cold", "idle"):
+        metric = pct_by_class.get(name)
+        pct = float(metric.v) if metric is not None and metric.v is not None else 0.0
+        count = min(remaining, int(round((pct / 100.0) * width)))
+        parts.append(chars[name] * count)
+        remaining -= count
+    if remaining > 0:
+        parts.append("." * remaining)
+    return "[" + "".join(parts)[:width].ljust(width, ".") + "]"
+
+
+def _host_damon_owners(frame: Frame) -> tuple[str, ...]:
+    root = frame.entities.get("")
+    if root is None or not isinstance(root.damon, dict):
+        return ()
+    sessions = root.damon.get("host_sessions")
+    if not isinstance(sessions, list):
+        return ()
+    owners = {str(session.get("owner")) for session in sessions if isinstance(session, dict) and session.get("mode") == "paddr" and session.get("owner")}
+    return tuple(sorted(owners))
 
 
 def _display_name(entity_frame: EntityFrame) -> str:

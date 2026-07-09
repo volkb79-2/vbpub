@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -76,6 +78,7 @@ def annotate_frame_damon(
     cgroup_root: Path,
     config: DamonConfig,
     now: float,
+    state_dir: Path | None = None,
 ) -> Frame:
     unavailable_src = _root_unavailable_src(damon_root)
     for entity_frame in frame.entities.values():
@@ -96,6 +99,7 @@ def annotate_frame_damon(
             )
             if session is None:
                 continue
+            session["owner"] = _session_owner(state_dir or _default_state_dir(), _numeric_name(kdamond_dir), damon_root)
             mode = str(session["mode"])
             if mode == "paddr":
                 root_host_sessions.append(session)
@@ -111,12 +115,14 @@ def annotate_frame_damon(
             continue
         _apply_entity_sessions(entity_frame, sessions)
 
-    if root_host_sessions and "" in frame.entities:
-        root_frame = frame.entities[""]
-        root_frame.damon = {
-            **(root_frame.damon or {}),
-            "host_sessions": root_host_sessions,
-        }
+    if root_host_sessions:
+        _apply_host_paddr_sessions(frame, root_host_sessions)
+        if "" in frame.entities:
+            root_frame = frame.entities[""]
+            root_frame.damon = {
+                **(root_frame.damon or {}),
+                "host_sessions": root_host_sessions,
+            }
 
     return frame
 
@@ -154,6 +160,29 @@ def _apply_entity_sessions(entity_frame: EntityFrame, sessions: list[dict[str, o
             "class_bytes": totals,
         },
     }
+
+
+def _apply_host_paddr_sessions(frame: Frame, sessions: list[dict[str, object]]) -> None:
+    totals = {name: 0 for name in _CLASS_NAMES}
+    total_bytes = 0
+    sample_ages: list[float] = []
+    for session in sessions:
+        class_bytes = session.get("class_bytes")
+        if isinstance(class_bytes, dict):
+            for name in _CLASS_NAMES:
+                value = int(class_bytes.get(name, 0) or 0)
+                totals[name] += value
+                total_bytes += value
+        sample_age = session.get("sample_age_s")
+        if isinstance(sample_age, (int, float)):
+            sample_ages.append(float(sample_age))
+
+    for name in _CLASS_NAMES:
+        frame.host[f"host_damon_{name}_bytes"] = MetricValue(totals[name], "exact")
+        pct = (totals[name] / total_bytes * 100.0) if total_bytes > 0 else 0.0
+        frame.host[f"host_damon_{name}_pct"] = MetricValue(pct, "exact")
+    frame.host["host_damon_sample_age_s"] = MetricValue(max(sample_ages) if sample_ages else None, "exact" if sample_ages else "unavail_kernel")
+    frame.host["host_damon_mode"] = MetricValue(_MODE_CODES["paddr"], "exact")
 
 
 def _read_context_session(
@@ -390,3 +419,22 @@ def _root_unavailable_src(damon_root: Path) -> MetricSource:
         if nr_kdamonds.value is None and nr_kdamonds.src == "unavail_perm":
             return "unavail_perm"
     return "unavail_kernel"
+
+
+def _default_state_dir() -> Path:
+    base = os.environ.get("XDG_STATE_HOME")
+    return (Path(base) if base else Path.home() / ".local" / "state") / "groop"
+
+
+def _session_owner(state_dir: Path, kdamond_idx: int | None, damon_root: Path) -> str:
+    if kdamond_idx is None:
+        return "foreign"
+    marker = state_dir / "damon" / f"kdamond-{kdamond_idx}.json"
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "foreign"
+    if payload.get("owner") != "groop":
+        return "foreign"
+    marker_root = Path(str(payload.get("damon_root", "")))
+    return "groop" if marker_root == damon_root else "foreign"
