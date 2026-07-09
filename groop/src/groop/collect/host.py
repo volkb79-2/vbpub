@@ -6,6 +6,18 @@ from groop.collect.cgroup import read_int, read_pressure, read_text
 from groop.model import MetricValue
 
 KIB = 1024
+PAGE = 4096
+
+SWAP_BACKEND_CODES = {
+    "none": 0,
+    "zswap_only": 1,
+    "zram_only": 2,
+    "disk_only": 3,
+    "zswap_zram": 4,
+    "zswap_disk": 5,
+    "mixed": 6,
+    "unknown": 7,
+}
 
 
 def _meminfo(proc_root: Path) -> dict[str, int]:
@@ -82,20 +94,119 @@ def _debugfs_zswap(sys_root: Path, meminfo: dict[str, int]) -> tuple[MetricValue
     return pool_metric, stored_metric
 
 
-def _disk_swap(proc_root: Path, meminfo: dict[str, int], zswap_stored: MetricValue) -> MetricValue:
+def _swap_devices(proc_root: Path) -> tuple[list[dict[str, int | str | bool]], str]:
     result = read_text(proc_root / "swaps")
     if result.value is None:
-        return MetricValue(None, result.src)
-    used = 0
+        return [], result.src
+    devices: list[dict[str, int | str | bool]] = []
     for line in str(result.value).splitlines()[1:]:
         parts = line.split()
         if len(parts) >= 4:
             try:
-                used += int(parts[3]) * KIB
+                used = int(parts[3]) * KIB
+                size = int(parts[2]) * KIB
             except ValueError:
-                pass
+                continue
+            name = parts[0]
+            devices.append({"name": name, "size": size, "used": used, "zram": Path(name).name.startswith("zram")})
+    return devices, "host"
+
+
+def _disk_swap(proc_root: Path, meminfo: dict[str, int], zswap_stored: MetricValue) -> MetricValue:
+    devices, src = _swap_devices(proc_root)
+    if src != "host":
+        return MetricValue(None, src)
+    used = sum(int(device["used"]) for device in devices if not bool(device["zram"]))
     zswap_bytes = zswap_stored.v if isinstance(zswap_stored.v, int) else 0
     return MetricValue(max(0, used - meminfo.get("SwapCached", 0) - zswap_bytes), "host")
+
+
+def _swap_backend_metrics(proc_root: Path, zswap_enabled: MetricValue, zswap_stored: MetricValue) -> dict[str, MetricValue]:
+    devices, src = _swap_devices(proc_root)
+    if src != "host":
+        return {
+            "host_swap_backend": MetricValue(SWAP_BACKEND_CODES["unknown"], src),
+            "host_zram_swap_devices": MetricValue(None, src),
+            "host_disk_swap_devices": MetricValue(None, src),
+        }
+    zram_count = sum(1 for device in devices if bool(device["zram"]))
+    disk_count = sum(1 for device in devices if not bool(device["zram"]))
+    zswap_active = zswap_enabled.v == 1 or (isinstance(zswap_stored.v, int) and zswap_stored.v > 0)
+    if zram_count and disk_count:
+        state = "mixed"
+    elif zram_count:
+        state = "zswap_zram" if zswap_active else "zram_only"
+    elif disk_count:
+        state = "zswap_disk" if zswap_active else "disk_only"
+    elif zswap_active:
+        state = "zswap_only"
+    else:
+        state = "none"
+    return {
+        "host_swap_backend": MetricValue(SWAP_BACKEND_CODES[state], "host"),
+        "host_zram_swap_devices": MetricValue(zram_count, "host"),
+        "host_disk_swap_devices": MetricValue(disk_count, "host"),
+    }
+
+
+def _zram_metrics(sys_root: Path) -> dict[str, MetricValue]:
+    totals = {
+        "host_zram_orig_bytes": 0,
+        "host_zram_compr_bytes": 0,
+        "host_zram_mem_used_bytes": 0,
+        "host_zram_mem_limit_bytes": 0,
+        "host_zram_mem_used_max_bytes": 0,
+        "host_zram_same_pages": 0,
+        "host_zram_huge_pages": 0,
+        "host_zram_failed_reads": 0,
+        "host_zram_failed_writes": 0,
+        "host_zram_writeback_bytes": 0,
+    }
+    count = 0
+    for device in sorted((sys_root / "block").glob("zram*")):
+        if not device.is_dir():
+            continue
+        count += 1
+        mm = _parse_stat_line(device / "mm_stat")
+        io = _parse_stat_line(device / "io_stat")
+        bd = _parse_stat_line(device / "bd_stat")
+        for name, index in (
+            ("host_zram_orig_bytes", 0),
+            ("host_zram_compr_bytes", 1),
+            ("host_zram_mem_used_bytes", 2),
+            ("host_zram_mem_limit_bytes", 3),
+            ("host_zram_mem_used_max_bytes", 4),
+            ("host_zram_same_pages", 5),
+            ("host_zram_huge_pages", 7),
+        ):
+            totals[name] += _stat_value(mm, index)
+        totals["host_zram_failed_reads"] += _stat_value(io, 0)
+        totals["host_zram_failed_writes"] += _stat_value(io, 1)
+        totals["host_zram_writeback_bytes"] += _stat_value(bd, 0) * PAGE
+    out = {name: MetricValue(value, "host") for name, value in totals.items()}
+    out["host_zram_device_count"] = MetricValue(count, "host")
+    compr = totals["host_zram_compr_bytes"]
+    mem_used = totals["host_zram_mem_used_bytes"]
+    out["host_zram_ratio"] = MetricValue(totals["host_zram_orig_bytes"] / compr, "host") if compr > 0 else MetricValue(None, "host")
+    out["host_zram_efficiency"] = MetricValue(compr / mem_used, "host") if mem_used > 0 else MetricValue(None, "host")
+    return out
+
+
+def _parse_stat_line(path: Path) -> tuple[int, ...]:
+    result = read_text(path)
+    if result.value is None:
+        return ()
+    out: list[int] = []
+    for part in str(result.value).split():
+        try:
+            out.append(int(part))
+        except ValueError:
+            out.append(0)
+    return tuple(out)
+
+
+def _stat_value(values: tuple[int, ...], index: int) -> int:
+    return values[index] if index < len(values) else 0
 
 
 def collect_host(proc_root: Path = Path("/proc"), sys_root: Path = Path("/sys")) -> dict[str, MetricValue]:
@@ -120,4 +231,6 @@ def collect_host(proc_root: Path = Path("/proc"), sys_root: Path = Path("/sys"))
     pool, stored = host["host_zswap_pool"].v, host["host_zswap_stored"].v
     host["host_zswap_ratio"] = MetricValue(stored / pool, "host") if isinstance(pool, int) and isinstance(stored, int) and pool > 0 else MetricValue(None, "host")
     host["host_disk_swap"] = _disk_swap(proc_root, meminfo, host["host_zswap_stored"])
+    host.update(_swap_backend_metrics(proc_root, host["host_zswap_enabled"], host["host_zswap_stored"]))
+    host.update(_zram_metrics(sys_root))
     return host
