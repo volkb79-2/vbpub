@@ -52,11 +52,12 @@ core workflows, not yet production-certified.**
 - **Compressed swap:** zswap host/cgroup metrics exist. ZRAM detection,
   per-device ZRAM host metrics, `/proc/swaps` backend classification, and
   mixed-backend wording are not implemented. See `docs/COMPRESSED-SWAP.md`.
-- **Tree view:** full tree rendering exists; expand/collapse state does not.
-- **Replay UI:** replay feeds the same UI and supports smoke testing, but
-  transport controls and visible replay state are minimal.
-- **Custom profiles:** named profile lists work; richer width-tier/user override
-  behavior needs product hardening.
+- **Tree view:** full tree rendering and expand/collapse state exist.
+- **Replay UI:** replay feeds the same UI with mode/status, pause/resume,
+  stepping, speed controls, and smoke testing. Timestamp jump remains a future
+  improvement.
+- **Custom profiles:** named profile lists work and unsupported configured
+  columns are surfaced as ignored metadata.
 - **Diagnostics inputs:** pressure score works, but true `io_cap_saturation_pct`
   and attributable network loss/retransmit inputs are absent.
 - **DAMON controls:** underlying APIs and CLI are tested; Textual typed-confirm
@@ -102,12 +103,12 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent package validation from P12:
+Most recent package validation from P13:
 
 ```bash
-python -m pytest groop/tests -q
-# 79 passed in 11.28s
+/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
+# 84 passed in 12.03s
 ```
 
 Also validated: Python compile over `src/groop`, `--once --json`, replay UI
-smoke, build, wheel install, and `groop --version`.
+smoke. P12 separately validated build, wheel install, and `groop --version`.

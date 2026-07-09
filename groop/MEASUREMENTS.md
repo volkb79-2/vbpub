@@ -6,17 +6,20 @@ claims without updating this file.
 
 ## Current Evidence
 
-Most recent release-hardening validation after P12:
+Most recent merged package validation after P13:
 
 ```bash
-# isolated venv, from feat/groop-p12-release-hardening
-python -m pytest groop/tests -q
-# 79 passed in 11.28s
+# isolated venv, from feat/groop-p13-ui-navigation
+/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
+# 84 passed in 12.03s
 ```
 
-Also passed: `py_compile`, `--once --json` over the gstammtisch fixture,
-replay UI smoke (`ui smoke ok frames=1 view=tree profile=auto`), sdist/wheel
-build, fresh wheel install, and `groop --version` (`groop 0.1.0`).
+Also passed after P13 review: `py_compile`, `--once --json` over the
+gstammtisch fixture, and replay UI smoke
+(`ui smoke ok frames=1 view=tree profile=auto`).
+
+P12 package evidence remains: sdist/wheel build, fresh wheel install, and
+`groop --version` (`groop 0.1.0`).
 
 Bounded once/json CPU/RSS smoke:
 

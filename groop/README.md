@@ -67,7 +67,7 @@ Useful feature hotkeys in the TUI:
 | P10 | Done with enrichment gaps | Incident snapshots | v1.5 | Bundles, manifest, CLI inspect, TUI hotkey; live systemctl/docker enrichment can improve snapshots. Report: `handoff/reports/P10-REPORT.md`. |
 | P11 | Core done, UI modal pending | DAMON paddr host heat | v1.5 | Host heat metrics/banner/status and CLI/API start exist; full modal and live-root acceptance remain open. Report: `handoff/reports/P11-REPORT.md`. |
 | P12 | Done | Release hardening, acceptance evidence, packaging | v1/v1.5 | Tests, compile, fixture JSON, replay smoke, build, wheel install, and version checks recorded. Report: `handoff/reports/P12-REPORT.md`. |
-| P13 | Proposed | UI navigation, replay controls, reserved action UX | v1 | Tree collapse, replay status/controls, disabled v2 action clarity. Handoff: `handoff/P13-ui-navigation-replay-polish.md`. |
+| P13 | Done | UI navigation, replay controls, reserved action UX | v1 | Tree collapse/expand, replay status/controls, disabled v2 action messaging, profile warnings. Report: `handoff/reports/P13-REPORT.md`. |
 | P14 | Proposed | DAMON control modal and live-root acceptance | v1.5 | Full typed-confirmation modal and root acceptance evidence. Handoff: `handoff/P14-damon-modal-live-acceptance.md`. |
 | P15 | Proposed | Incident snapshot enrichment and UX | v1.5 | Fresh systemctl/docker metadata, progress, redaction polish. Handoff: `handoff/P15-snapshot-enrichment.md`. |
 | P19 | Proposed | ZRAM and swap-backend awareness | v1.5 | Detect active zswap/zram/disk backends, add host ZRAM metrics/banner, clarify formulas. Handoff: `handoff/P19-zram-swap-backend-awareness.md`. |

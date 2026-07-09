@@ -50,10 +50,12 @@ acceptance, and any future BPF gate measurements.
 
 ### P13 — UI Navigation And Replay Polish
 
-Goal: tree expand/collapse, replay controls/status, reserved v2 action messaging,
-and more complete profile/key behavior.
+Status: done. Tree expand/collapse, replay controls/status, reserved v2 action
+messaging, profile warning polish, operations docs, and focused Textual tests
+landed in P13.
 
-Why next: this improves daily usability without touching privileged surfaces.
+Remaining UX work: timestamp jump replay controls and deeper key/profile
+customization can be carved later if needed.
 
 ### P14 — DAMON Control Modal And Live-Root Acceptance
 
