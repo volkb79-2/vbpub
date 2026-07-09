@@ -43,6 +43,14 @@ class ReplayDriver:
         return tuple(self._frames)
 
     @property
+    def index(self) -> int:
+        return self._index
+
+    @property
+    def total(self) -> int:
+        return len(self._frames)
+
+    @property
     def current(self) -> Frame:
         return self._frames[self._index]
 

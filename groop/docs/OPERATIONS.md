@@ -72,14 +72,20 @@ sudo groop damon paddr start --confirm START
 | Key | Action |
 |---|---|
 | `F5`, `t` | Toggle tree/container view. |
-| `p` | Cycle column profile. |
+| `Tab`, `p` | Cycle column profile. |
 | `F6`, `s` | Cycle sort. |
 | `/` | Filter rows. |
+| `Left`, `h` | Collapse selected tree branch or move to parent. |
+| `Right`, `l` | Expand selected tree branch. |
 | `Up`, `Down` | Move selection. |
 | `Enter` | Entity drill-down. |
+| `Space` | Play/pause replay while in `--replay`. |
+| `,`, `.` | Step replay backward/forward one frame. |
+| `+`, `-` | Change replay speed while in `--replay`. |
 | `x` | Save incident snapshot for selected entity. |
 | `m` | Host-memory / paddr DAMON status. |
 | `b` | Collapse/expand banner. |
+| `k` | Reserved v2 admin action; current builds report that `--admin` mode is not implemented. |
 | `F1`, `?` | Metric glossary/help. |
 | `q` | Quit. |
 
@@ -93,6 +99,8 @@ sudo groop damon paddr start --confirm START
 - Incident snapshots write only under the configured snapshot directory or the
   XDG state fallback.
 - File/log/content browsing and Docker/systemd admin actions are not implemented.
+- Pressing a reserved v2 admin key in the TUI reports that the action is
+  unavailable in the current build instead of failing silently.
 
 ## Compressed Swap Interpretation
 

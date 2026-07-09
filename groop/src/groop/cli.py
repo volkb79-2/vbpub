@@ -73,7 +73,17 @@ def _replay_frame_source(driver: ReplayDriver, *, speed: float, step: bool) -> I
         yield replay_frame.frame
 
 
-def _run_ui(frame_source, *, config, cgroup_root: Path | None, smoke: bool, profile: str | None) -> int:
+def _run_ui(
+    frame_source,
+    *,
+    config,
+    cgroup_root: Path | None,
+    smoke: bool,
+    profile: str | None,
+    replay_driver: ReplayDriver | None = None,
+    replay_step: bool = False,
+    replay_speed: float = 1.0,
+) -> int:
     try:
         from groop.ui.app import run_ui
     except ModuleNotFoundError as exc:
@@ -83,7 +93,16 @@ def _run_ui(frame_source, *, config, cgroup_root: Path | None, smoke: bool, prof
                 return 2
             return -1
         raise
-    result = run_ui(frame_source, config=config, cgroup_root=cgroup_root, smoke=smoke, profile=profile)
+    result = run_ui(
+        frame_source,
+        config=config,
+        cgroup_root=cgroup_root,
+        smoke=smoke,
+        profile=profile,
+        replay_driver=replay_driver,
+        replay_step=replay_step,
+        replay_speed=replay_speed,
+    )
     if isinstance(result, str):
         print(result)
     return 0
@@ -103,11 +122,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.replay is not None:
         driver = ReplayDriver.from_path(args.replay, config=config)
         ui_code = _run_ui(
-            _replay_frame_source(driver, speed=args.speed, step=args.step),
+            (),
             config=config,
             cgroup_root=args.cgroup_root,
             smoke=args.ui_smoke,
             profile=args.profile,
+            replay_driver=driver,
+            replay_step=args.step,
+            replay_speed=args.speed,
         )
         if ui_code == 0:
             return 0
