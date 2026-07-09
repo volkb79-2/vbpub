@@ -10,8 +10,9 @@
 - Wired the helper into both `DaemonClientError` catch blocks:
   - `main()` attach path
   - `_main_daemon()` current path
-- **Tests (8 new)**:
-  - 5 attach error-guidance tests (default socket, custom socket, protocol, response, CLI integration)
+- **Tests (9 new after controller review)**:
+  - 6 attach error-guidance tests (default socket, custom socket, protocol,
+    response, custom-socket CLI integration, bare default-socket CLI integration)
   - 3 daemon current error-guidance tests (default socket, custom socket, CLI integration)
 - **Docs updated**: `README.md` (P31 → Done), `ROADMAP.md` (P31 → done), `STATUS.md` (added P31 items, updated Quality Gate), `DAEMON.md` (troubleshooting section with examples)
 
@@ -31,14 +32,23 @@ None. Implementation follows the handoff design exactly.
 /tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py -v
 # 31 passed in 10.56s
 
+PYTHONPATH=groop/src /tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py groop/tests/test_daemon_client.py -q
+# 35 passed in 12.07s after controller review
+
 /tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests -q
 # 278 passed in 30.90s
+
+PYTHONPATH=groop/src /tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests -q
+# 279 passed in 31.67s after controller review
 
 /tmp/vbpub-groop-p31-venv/bin/python -m py_compile \
   groop/src/groop/cli.py \
   groop/tests/test_attach_cli.py \
   groop/tests/test_daemon_deploy.py
 # clean, exit 0
+
+PYTHONPATH=groop/src /tmp/vbpub-groop-p31-venv/bin/python -m py_compile groop/src/groop/cli.py groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py
+# clean, exit 0 after controller review
 
 # Format helper smoke tests:
 PYTHONPATH=groop/src /tmp/vbpub-groop-p31-venv/bin/python -c "

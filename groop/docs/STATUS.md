@@ -142,9 +142,11 @@ Most recent full-suite validation (P31 - Daemon client error guidance):
 
 ```bash
 /tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests -q
-# 278 passed in 30.90s after P31 implementation
+# 279 passed in 31.67s after controller review
 ```
 
 Also validated: Python compile over P31 changed files.
-P31 separately validated error-guidance formatting for default-socket, custom-socket,
-and protocol/response errors across both CLI attach and daemon current paths.
+P31 focused daemon-client tests passed: `35 passed in 12.07s` after controller
+review. P31 separately validated error-guidance formatting for default-socket,
+custom-socket, and protocol/response errors across both CLI attach and daemon
+current paths.

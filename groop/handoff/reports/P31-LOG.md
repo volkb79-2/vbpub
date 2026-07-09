@@ -37,6 +37,12 @@
   - test_daemon_deploy.py: 3 tests (default socket, custom socket, CLI integration)
 - Result: 31 focused tests pass (23 existing + 8 new)
 
+- Action: Controller review added a CLI-level bare default-socket attach
+  failure test and removed an accidental unused import.
+- Files changed: groop/tests/test_attach_cli.py
+- Result: Missing default socket via `groop --attach --once --json` now has
+  direct CLI coverage for preflight/install-plan guidance and no live fallback.
+
 - Action: Ran full suite
 - Result: 278 passed (270 original + 8 new)
 
@@ -73,14 +79,23 @@
 /tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py -v
 # 31 passed in 10.56s
 
+PYTHONPATH=groop/src /tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py groop/tests/test_daemon_client.py -q
+# 35 passed in 12.07s after controller review
+
 /tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests -q
 # 278 passed in 30.90s
+
+PYTHONPATH=groop/src /tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests -q
+# 279 passed in 31.67s after controller review
 
 /tmp/vbpub-groop-p31-venv/bin/python -m py_compile \
   groop/src/groop/cli.py \
   groop/tests/test_attach_cli.py \
   groop/tests/test_daemon_deploy.py
 # clean, exit 0
+
+PYTHONPATH=groop/src /tmp/vbpub-groop-p31-venv/bin/python -m py_compile groop/src/groop/cli.py groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py
+# clean, exit 0 after controller review
 ```
 
 ## Handoff Checklist

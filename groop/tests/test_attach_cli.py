@@ -278,7 +278,6 @@ def test_response_error_guidance(tmp_path: Path) -> None:
 def test_attach_missing_socket_returns_guidance_via_cli(tmp_path: Path) -> None:
     """CLI --attach against a missing socket prints original error + guidance
     and exits 2 without live-collection fallback."""
-    from groop.cli import _main_inspect_files as _  # noqa: F811
     import groop.cli as cli_mod
 
     missing = tmp_path / "nonexistent.sock"
@@ -290,3 +289,21 @@ def test_attach_missing_socket_returns_guidance_via_cli(tmp_path: Path) -> None:
     assert "cannot connect" in err.getvalue().lower() or "no such" in err.getvalue().lower()
     assert "Try: groop daemon preflight --socket" in err.getvalue()
     assert output.getvalue() == ""  # No live fallback
+
+
+def test_attach_default_missing_socket_guidance_via_cli(tmp_path: Path, monkeypatch) -> None:
+    """Bare --attach default-socket failure suggests default preflight and install-plan."""
+    import groop.cli as cli_mod
+
+    missing_default = tmp_path / "missing-default.sock"
+    monkeypatch.setattr(cli_mod, "DEFAULT_DAEMON_SOCKET", missing_default)
+    output = StringIO()
+    err = StringIO()
+    with redirect_stdout(output), redirect_stderr(err):
+        code = cli_mod.main(["--attach", "--once", "--json"])
+    stderr = err.getvalue()
+    assert code == 2
+    assert f"cannot connect to {missing_default}" in stderr
+    assert "Try: groop daemon preflight" in stderr
+    assert "groop daemon install-plan" in stderr
+    assert output.getvalue() == ""
