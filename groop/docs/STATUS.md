@@ -141,12 +141,12 @@ core workflows, not yet production-certified.**
 Most recent full-suite validation (P31 - Daemon client error guidance):
 
 ```bash
-/tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests -q
-# 279 passed in 31.67s after controller review
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 279 passed in 30.96s after merging P31
 ```
 
 Also validated: Python compile over P31 changed files.
-P31 focused daemon-client tests passed: `35 passed in 12.07s` after controller
-review. P31 separately validated error-guidance formatting for default-socket,
+P31 focused daemon-client tests passed: `35 passed in 12.06s` on main after
+merge. P31 separately validated error-guidance formatting for default-socket,
 custom-socket, and protocol/response errors across both CLI attach and daemon
 current paths.

@@ -35,11 +35,17 @@ None. Implementation follows the handoff design exactly.
 PYTHONPATH=groop/src /tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py groop/tests/test_daemon_client.py -q
 # 35 passed in 12.07s after controller review
 
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py groop/tests/test_daemon_client.py -q
+# 35 passed in 12.06s on main after merge
+
 /tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests -q
 # 278 passed in 30.90s
 
 PYTHONPATH=groop/src /tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests -q
 # 279 passed in 31.67s after controller review
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 279 passed in 30.96s on main after merge
 
 /tmp/vbpub-groop-p31-venv/bin/python -m py_compile \
   groop/src/groop/cli.py \
@@ -49,6 +55,9 @@ PYTHONPATH=groop/src /tmp/vbpub-groop-p31-venv/bin/python -m pytest groop/tests 
 
 PYTHONPATH=groop/src /tmp/vbpub-groop-p31-venv/bin/python -m py_compile groop/src/groop/cli.py groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py
 # clean, exit 0 after controller review
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile groop/src/groop/cli.py groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py
+# clean, exit 0 on main after merge
 
 # Format helper smoke tests:
 PYTHONPATH=groop/src /tmp/vbpub-groop-p31-venv/bin/python -c "
@@ -94,3 +103,9 @@ print('All format smoke tests passed')
 ## Contract-Change Proposals
 
 None. P31 is entirely additive and changes no shared interfaces.
+
+## Controller Merge Review
+
+- Feature branch merged to main with `git merge --no-ff feat/groop-p31-daemon-client-errors`.
+- Merge commit: `01bdb7a Merge groop P31 daemon client error guidance`.
+- Main validation is recorded above.
