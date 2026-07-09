@@ -245,6 +245,11 @@ scripts/*.key
 *.key
 
 
+# `worktrees` subfolder to provide space for separate worktrees
+# experimenting with feature branches — these are not tracked by git, but are
+# writeable and visible to the agents and test-runner 
+.worktrees/
+
 # Claude Code local config
 .claude/
 /claude/
