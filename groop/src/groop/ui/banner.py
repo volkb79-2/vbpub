@@ -33,10 +33,7 @@ def render_banner(frame: Frame, config: GroopConfig, *, collapsed: bool = False)
             f" | io full {_fmt_metric(frame.host.get('host_psi_io_full_avg10'), digits=1)} some {_fmt_metric(frame.host.get('host_psi_io_some_avg10'), digits=1)}"
             f" | cpu some {_fmt_metric(frame.host.get('host_psi_cpu_some_avg10'), digits=1)}"
         ),
-        (
-            f"ZSWAP {_fmt_bytes_metric(frame.host.get('host_zswap_pool'))} pool / {_fmt_bytes_metric(frame.host.get('host_zswap_stored'))} stored"
-            f" / {_fmt_ratio_metric(frame.host.get('host_zswap_ratio'))} / disk swap {_fmt_bytes_metric(frame.host.get('host_disk_swap'))}"
-        ),
+        _swap_backend_line(frame),
     ]
     heat_line = _host_damon_heat_line(frame)
     if heat_line is not None:
@@ -144,6 +141,38 @@ def _host_damon_owners(frame: Frame) -> tuple[str, ...]:
         return ()
     owners = {str(session.get("owner")) for session in sessions if isinstance(session, dict) and session.get("mode") == "paddr" and session.get("owner")}
     return tuple(sorted(owners))
+
+
+def _swap_backend_line(frame: Frame) -> str:
+    zram_devices = frame.host.get("host_zram_swap_devices")
+    disk_devices = frame.host.get("host_disk_swap_devices")
+    return (
+        f"SWAP backend {_swap_backend_label(frame.host.get('host_swap_backend'))} "
+        f"zswap {_fmt_bytes_metric(frame.host.get('host_zswap_pool'))}/{_fmt_bytes_metric(frame.host.get('host_zswap_stored'))}"
+        f" {_fmt_ratio_metric(frame.host.get('host_zswap_ratio'))} "
+        f"zram {_fmt_bytes_metric(frame.host.get('host_zram_orig_bytes'))}/{_fmt_bytes_metric(frame.host.get('host_zram_mem_used_bytes'))}"
+        f" {_fmt_ratio_metric(frame.host.get('host_zram_ratio'))} devs {_fmt_metric(zram_devices, digits=0)} "
+        f"disk {_fmt_bytes_metric(frame.host.get('host_disk_swap'))} devs {_fmt_metric(disk_devices, digits=0)}"
+    )
+
+
+def _swap_backend_label(metric: MetricValue | None) -> str:
+    labels = {
+        0: "none",
+        1: "zswap",
+        2: "zram",
+        3: "disk",
+        4: "zswap+zram",
+        5: "zswap+disk",
+        6: "mixed",
+        7: "?",
+    }
+    if metric is None or metric.v is None:
+        return "?"
+    try:
+        return labels[int(metric.v)]
+    except (TypeError, ValueError, KeyError):
+        return "?"
 
 
 def _display_name(entity_frame: EntityFrame) -> str:

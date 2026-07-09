@@ -118,10 +118,11 @@ sudo groop damon paddr start --confirm START
 
 ## Compressed Swap Interpretation
 
-Current builds expose zswap metrics and a legacy `swap_disk` estimate. On hosts
-that use zram, that estimate can represent logical swap stored on zram rather
-than physical disk IO. See `docs/COMPRESSED-SWAP.md` for the v1.5 backend-aware
-policy that will make this explicit in the banner and drill-down.
+Current builds expose zswap metrics, host-level zram metrics, and active
+swap-backend classification. The per-cgroup `swap_disk` name is still a legacy
+compatibility label: on zram-only hosts it represents logical non-zswap swap
+usage, not physical disk IO; on mixed hosts the kernel does not expose
+per-cgroup backend attribution. See `docs/COMPRESSED-SWAP.md`.
 
 ## Configuration
 

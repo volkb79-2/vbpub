@@ -56,6 +56,18 @@ should collect:
 The first implementation may aggregate devices into host totals and expose
 per-device detail in drill-down later.
 
+Implemented v1.5 host metrics use these frame names:
+
+- `host_swap_backend` with codes: `0 none`, `1 zswap_only`, `2 zram_only`,
+  `3 disk_only`, `4 zswap_zram`, `5 zswap_disk`, `6 mixed`, `7 unknown`.
+- `host_zram_swap_devices` and `host_disk_swap_devices` for active swap devices
+  from `/proc/swaps`.
+- `host_zram_device_count` for visible `/sys/block/zram*` devices.
+- The `host_zram_*` byte/count/ratio metrics listed above, aggregated across
+  visible zram block devices.
+- `host_disk_swap` remains the compatibility metric name but is now non-zram
+  disk-device usage, not zram-backed swap usage.
+
 ## Per-Cgroup Semantics
 
 Cgroup v2 exposes total cgroup swap usage as `memory.swap.current`. It also
