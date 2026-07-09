@@ -142,7 +142,7 @@ RUN set -euo pipefail; \
 # so no other packages are affected.  If this fails (e.g. testing repo
 # unavailable, dependency conflict), we keep the trixie version silently.
 RUN set -euo pipefail; \
-    echo "deb http://deb.debian.org/debian testing main" > /etc/apt/sources.list.d/testing.sources; \
+    echo "deb http://deb.debian.org/debian testing main" > /etc/apt/sources.list.d/testing.list; \
     printf 'Package: skopeo\nPin: release a=testing\nPin-Priority: 501\n' > /etc/apt/preferences.d/skopeo-testing; \
     apt-get update; \
     if apt-get install --dry-run -y skopeo 2>/dev/null | grep -q "^Inst skopeo "; then \
@@ -151,7 +151,7 @@ RUN set -euo pipefail; \
     else \
         echo "[INFO] skopeo from testing not available — keeping trixie version"; \
     fi; \
-    rm -f /etc/apt/sources.list.d/testing.sources /etc/apt/preferences.d/skopeo-testing; \
+    rm -f /etc/apt/sources.list.d/testing.list /etc/apt/preferences.d/skopeo-testing; \
     rm -rf /var/lib/apt/lists/*; \
     skopeo --version || echo "[WARN] skopeo not installed"
 
