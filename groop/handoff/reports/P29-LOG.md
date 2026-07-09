@@ -11,7 +11,7 @@
 ## Timeline
 
 ```text
-2026-07-07 UTC
+2026-07-09 UTC
 - Action: Created git worktree on branch feat/groop-p29-inspect-files-safety from main
 - Commands: git worktree add -b feat/groop-p29-inspect-files-safety .worktrees/-groop-p29-inspect-files-safety main
 - Result: Worktree ready at ec0ebe0
@@ -51,6 +51,15 @@
 - Action: Wrote log and report
 
 - Action: Committed feature branch
+
+- Action: Controller review patched lexical path handling before merge
+- Files changed: groop/src/groop/inspect_files/catalog.py,
+  groop/tests/test_inspect_files.py, groop/docs/INSPECT-FILES.md,
+  groop/handoff/reports/P29-LOG.md, groop/handoff/reports/P29-REPORT.md
+- Result: Replaced `Path.resolve(strict=False)` with lexical normalization,
+  fixed absolute `/sys/fs/cgroup/...` target handling, rejected cgroup `..`
+  traversal, rejected unsafe Docker target characters, and added focused
+  regressions.
 ```
 
 ## Decisions
@@ -67,9 +76,11 @@
   Reason: Cgroup files are plain text reads, not commands — command_previews would be misleading
   Impact: Commands list is empty for this kind, consistent with the no-execution contract
 
-- Decision: Path safety uses lexical normalisation via Path.resolve(strict=False) without I/O
-  Reason: resolve(strict=False) normalises .. segments without touching the filesystem
-  Impact: Path previews are always absolute after normalisation, but never trigger I/O
+- Decision: Path safety uses lexical normalisation without `Path.resolve()`
+  Reason: `Path.resolve(strict=False)` can inspect existing path prefixes and
+  follow symlinks; the safety contract requires path previews only
+  Impact: Path previews are deterministic and do not depend on host filesystem
+  state.
 
 ## Blockers
 
@@ -80,6 +91,9 @@
 ```bash
 /tmp/vbpub-groop-p29-venv/bin/python -m pytest groop/tests/test_inspect_files.py -v
 # 42 passed in 0.35s
+
+PYTHONPATH=groop/src /tmp/vbpub-groop-p29-venv/bin/python -m pytest groop/tests/test_inspect_files.py -q
+# 44 passed in 0.33s after controller review
 
 /tmp/vbpub-groop-p29-venv/bin/python -m pytest groop/tests -q
 # 243 passed in 30.27s

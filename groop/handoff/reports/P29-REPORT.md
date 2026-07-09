@@ -15,8 +15,8 @@
   - With both flags: deterministic JSON or text plan output — no content reads,
     no subprocess execution, no host mutation.
 - Added focused tests:
-  - **42 tests** in `groop/tests/test_inspect_files.py` covering gating (5),
-    disabled-via-CLI (5), plan rendering (8), path/argv safety (11),
+  - **44 tests** in `groop/tests/test_inspect_files.py` covering gating (5),
+    disabled-via-CLI (5), plan rendering (8), path/argv safety (13),
     no-execution/no-read structural checks (5), catalog completeness (2),
     CLI integration (6).
 - Updated `README.md` (P29 row → Done), `docs/STATUS.md` (moved from Not Implemented
@@ -47,6 +47,9 @@
 ```bash
 /tmp/vbpub-groop-p29-venv/bin/python -m pytest groop/tests/test_inspect_files.py -v
 # 42 passed in 0.35s
+
+PYTHONPATH=groop/src /tmp/vbpub-groop-p29-venv/bin/python -m pytest groop/tests/test_inspect_files.py -q
+# 44 passed in 0.33s after controller review
 
 /tmp/vbpub-groop-p29-venv/bin/python -m pytest groop/tests -q
 # 243 passed in 30.27s
@@ -81,9 +84,9 @@ PYTHONPATH=groop/src /tmp/vbpub-groop-p29-venv/bin/python -m groop.cli \
 - No Docker/systemd subprocess calls.
 - No `--audit-log` equivalent for inspection plans (could be added in a
   future package if audit log integration is needed).
-- Path resolution uses `Path.resolve(strict=False)` which is mostly lexical
-  but does resolve symlinks for existing path prefixes — the actual path
-  previews may differ on systems with symlinked `/var/lib/docker` or `/sys/fs/cgroup`.
+- The planner intentionally avoids `Path.resolve()`. Path previews are lexical
+  and do not confirm whether the referenced file exists or whether an existing
+  prefix is a symlink.
 
 ## Contract-Change Proposals
 

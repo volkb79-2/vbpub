@@ -50,8 +50,7 @@ def _check_no_subprocess_in_modules() -> None:
 
 
 def _check_no_file_read_in_modules() -> None:
-    """Verify the inspect_files package never uses open(), Path.read_text(),
-    Path.read_bytes(), or os.open."""
+    """Verify the inspect_files package never uses file reads or resolving calls."""
     for mod_name in ("groop.inspect_files.catalog", "groop.inspect_files.__init__", "groop.inspect_files.plan"):
         spec = importlib.util.find_spec(mod_name)
         assert spec is not None, f"{mod_name} not found"
@@ -66,6 +65,8 @@ def _check_no_file_read_in_modules() -> None:
                 if isinstance(node.func, ast.Attribute):
                     if node.func.attr in ("read_text", "read_bytes", "open"):
                         pytest.fail(f"{mod_name} calls Path.{node.func.attr}(): {ast.dump(node)}")
+                    if node.func.attr == "resolve":
+                        pytest.fail(f"{mod_name} calls Path.resolve(): {ast.dump(node)}")
             # Check for os.open
             if isinstance(node, ast.Attribute):
                 if node.attr == "open" and isinstance(node.value, ast.Name) and node.value.id == "os":
@@ -250,6 +251,10 @@ class TestPathSafety:
         with pytest.raises(ValueError):
             build_inspect_plan("docker-json-log", "")
 
+    def test_docker_target_rejects_shell_metacharacters(self) -> None:
+        with pytest.raises(ValueError, match="unsafe"):
+            build_inspect_plan("docker-json-log", "container;rm")
+
     def test_systemd_target_rejects_absolute_path(self) -> None:
         with pytest.raises(ValueError, match="must be a unit name, not a path"):
             build_inspect_plan("systemd-journal", "/etc/shadow")
@@ -262,6 +267,10 @@ class TestPathSafety:
         with pytest.raises(ValueError, match="must be under /sys/fs/cgroup"):
             build_inspect_plan("cgroup-files", "/etc/passwd")
 
+    def test_cgroup_target_rejects_traversal(self) -> None:
+        with pytest.raises(ValueError, match="unsafe path segments"):
+            build_inspect_plan("cgroup-files", "system.slice/../etc")
+
     def test_cgroup_target_rejects_empty(self) -> None:
         with pytest.raises(ValueError, match="must not be empty"):
             build_inspect_plan("cgroup-files", "")
@@ -269,6 +278,7 @@ class TestPathSafety:
     def test_cgroup_target_accepts_sysfs_path(self) -> None:
         plan = build_inspect_plan("cgroup-files", "/sys/fs/cgroup/system.slice/ssh.service")
         assert isinstance(plan, InspectFilesPlan)
+        assert all(str(path).startswith("/sys/fs/cgroup/system.slice/ssh.service/") for path in plan.path_previews)
 
     def test_docker_non_hex_name_accepted(self) -> None:
         # Docker targets don't need to be hex; names like "my-container" are valid

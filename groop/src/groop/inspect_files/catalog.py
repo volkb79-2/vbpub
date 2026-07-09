@@ -5,8 +5,7 @@ No file content reads, no subprocess, no host mutation. Every kind is an enum
 member so unknown kinds are rejected at import time rather than at runtime.
 
 Path safety rules:
-- Path previews are normalised with Path.resolve() semantics (but without
-  touching the filesystem — just lexical abspath expansion).
+- Path previews are normalised lexically without touching the filesystem.
 - Absolute path targets supplied directly by users are rejected unless they are
   derived from the allowlisted kind (e.g. cgroup-files paths are always
   relative to a cgroup root, not arbitrary absolute paths).
@@ -16,6 +15,7 @@ Path safety rules:
 from __future__ import annotations
 
 import enum
+import posixpath
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -37,6 +37,8 @@ class InspectFilesKind(str, enum.Enum):
 
 # Pattern: a Docker container id is 64 hex chars (full) or leading unique prefix.
 _DOCKER_ID_PATTERN = re.compile(r"^[a-f0-9]{6,64}$")
+# Docker names are not paths and should stay shell-token boring.
+_DOCKER_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
 # Systemd unit name pattern: alphanumeric, dots, dashes, underscores, @.
 _SYSTEMD_UNIT_PATTERN = re.compile(r"^[a-zA-Z0-9@._-]+$")
 # Cgroup path segment pattern: safe characters only.
@@ -47,10 +49,10 @@ def _path_preview_normalise(p: Path) -> Path:
     """Lexically normalise a path preview without touching the filesystem.
 
     - Expands ~ via Path.home().
-    - Calls resolve(strict=False) to normalise '..' segments without I/O.
+    - Collapses repeated separators and '..' segments lexically.
     """
     expanded = p.expanduser()
-    return expanded.resolve(strict=False)
+    return Path(posixpath.normpath(str(expanded)))
 
 
 def _docker_json_log(target: str) -> tuple[list[Path], list[list[str]]]:
@@ -101,9 +103,9 @@ def _cgroup_files(target: str) -> tuple[list[Path], list[list[str]]]:
     Target is a cgroup path (e.g. 'system.slice/ssh.service').
     Returns preview paths under a cgroup v2 root, no content reads.
     """
-    _validate_cgroup_target(target)
+    relative_target = _normalise_cgroup_target(target)
     cgroup_root = Path("/sys/fs/cgroup")
-    resolved_target = _path_preview_normalise(cgroup_root / target.lstrip("/"))
+    resolved_target = _path_preview_normalise(cgroup_root / relative_target)
     # Allowlisted set of cgroup filenames relevant to groop snapshots.
     cgroup_files = [
         "memory.current",
@@ -147,6 +149,9 @@ def _validate_docker_target(target: str) -> None:
     if not _DOCKER_ID_PATTERN.match(target) and "/" in target:
         msg = f"docker target contains unsafe path characters: {target!r}"
         raise ValueError(msg)
+    if not _DOCKER_ID_PATTERN.match(target) and not _DOCKER_NAME_PATTERN.match(target):
+        msg = f"docker target contains unsafe characters: {target!r}"
+        raise ValueError(msg)
 
 
 def _validate_systemd_target(target: str) -> None:
@@ -161,18 +166,33 @@ def _validate_systemd_target(target: str) -> None:
 
 def _validate_cgroup_target(target: str) -> None:
     """Reject cgroup targets that are unsafe."""
+    _normalise_cgroup_target(target)
+
+
+def _normalise_cgroup_target(target: str) -> str:
+    """Return a safe path relative to /sys/fs/cgroup, or raise ValueError."""
     if not target:
         msg = "cgroup target must not be empty"
         raise ValueError(msg)
-    # Allow absolute paths that start with /sys/fs/cgroup/ (system-managed).
-    if target.startswith("/"):
-        if not target.startswith("/sys/fs/cgroup/") and not target.startswith("sys/fs/cgroup/"):
-            msg = f"cgroup target path must be under /sys/fs/cgroup/: {target!r}"
-            raise ValueError(msg)
-    # Check path characters.
-    if not _CGROUP_PATH_PATTERN.match(target):
+    if target.startswith("/sys/fs/cgroup/"):
+        relative = target.removeprefix("/sys/fs/cgroup/")
+    elif target.startswith("sys/fs/cgroup/"):
+        relative = target.removeprefix("sys/fs/cgroup/")
+    elif target.startswith("/"):
+        msg = f"cgroup target path must be under /sys/fs/cgroup/: {target!r}"
+        raise ValueError(msg)
+    else:
+        relative = target
+    if not relative:
+        msg = "cgroup target must not be empty"
+        raise ValueError(msg)
+    if not _CGROUP_PATH_PATTERN.match(relative):
         msg = f"cgroup target contains unsafe characters: {target!r}"
         raise ValueError(msg)
+    if any(part in {"", ".", ".."} for part in relative.split("/")):
+        msg = f"cgroup target contains unsafe path segments: {target!r}"
+        raise ValueError(msg)
+    return relative
 
 
 # ---------------------------------------------------------------------------

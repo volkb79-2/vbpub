@@ -26,8 +26,9 @@ groop inspect-files plan --kind docker-json-log --target my-container --inspect-
 
 The planning module builds path previews **lexically only** — it never calls
 `open()`, `Path.read_text()`, `Path.read_bytes()`, or `os.open()`. Path objects
-are constructed from string concatenation and normalised with
-`Path.resolve(strict=False)`, which handles `..` segments without I/O.
+are constructed from allowlisted roots and targets, then normalized with string
+path normalization. The planner does not call `Path.resolve()`, so symlinks are
+not followed and existing path prefixes are not inspected.
 
 ### No Subprocess Execution
 
@@ -48,7 +49,8 @@ No system state is changed.
 - Systemd unit targets are validated against unsafe character patterns.
 - Cgroup path targets are restricted to paths under `/sys/fs/cgroup/`.
 - Symlinks are never followed.
-- Path previews are normalised with `expanduser()` and `resolve(strict=False)`.
+- Path previews are normalised with `expanduser()` and lexical path
+  normalization.
 
 ## Plan Kinds
 
