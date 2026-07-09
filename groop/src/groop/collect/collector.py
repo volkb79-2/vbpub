@@ -185,4 +185,31 @@ class Collector:
             ("pids_events_max_per_s", "pids.events:max"),
         ):
             out[metric] = self._rate_metric(key, raw_name, raw.get(raw_name), interval_s)
+
+        # io_cap_saturation_pct: compare each I/O rate to its finite io.max cap
+        # and take the highest ratio; clamp at 0, allow overshoot above 100.
+        io_sat: float | None = None
+        for rate_name, cap_field in (
+            ("io_r_bps", "io.max:rbps"),
+            ("io_w_bps", "io.max:wbps"),
+            ("io_r_iops", "io.max:riops"),
+            ("io_w_iops", "io.max:wiops"),
+        ):
+            rate = out.get(rate_name)
+            cap = raw.get(cap_field)
+            if rate is not None and rate.v is not None and isinstance(cap, int) and cap > 0:
+                ratio = float(rate.v) / float(cap)
+                if io_sat is None or ratio > io_sat:
+                    io_sat = ratio
+        if io_sat is not None:
+            out["io_cap_saturation_pct"] = MetricValue(max(0.0, io_sat * 100.0), "derived")
+        else:
+            io_max_readable = raw.get("io.max:_available") == 1
+            any_cap = any(raw.get(f) is not None for f in ("io.max:rbps", "io.max:wbps", "io.max:riops", "io.max:wiops"))
+            if any_cap:
+                out["io_cap_saturation_pct"] = MetricValue(None, "derived")
+            elif io_max_readable:
+                out["io_cap_saturation_pct"] = MetricValue(None, "unlimited")
+            else:
+                out["io_cap_saturation_pct"] = MetricValue(None, "unavail_kernel")
         return out

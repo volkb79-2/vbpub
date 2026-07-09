@@ -158,6 +158,37 @@ def read_io_max_capped(path: Path) -> tuple[int | None, MetricSource]:
     return capped, "exact"
 
 
+_IO_MAX_FIELDS = ("rbps", "wbps", "riops", "wiops")
+
+
+def read_io_max_caps(path: Path) -> tuple[dict[str, int | None], MetricSource]:
+    """Parse io.max per-device finite caps for rbps, wbps, riops, wiops.
+
+    Returns a dict mapping field names to the sum across all devices.
+    Fields without finite caps (``max`` or missing) map to ``None``.
+    """
+    result = read_text(path)
+    if result.value is None:
+        return {}, result.src
+    sums: dict[str, int | None] = {f: None for f in _IO_MAX_FIELDS}
+    for line in str(result.value).splitlines():
+        parts = line.split()
+        for part in parts[1:]:
+            key, _, raw = part.partition("=")
+            if key not in _IO_MAX_FIELDS:
+                continue
+            if not raw or raw == "max":
+                continue
+            try:
+                value = int(raw)
+            except ValueError:
+                continue
+            if value is not None:
+                s = sums.get(key)
+                sums[key] = value if s is None else s + value
+    return sums, "exact"
+
+
 def read_cpu_max(path: Path) -> tuple[int | None, int | None, MetricSource]:
     result = read_text(path)
     if result.value is None:
@@ -273,6 +304,12 @@ def collect_cgroup(root: Path, key: EntityKey, entity: Entity) -> CgroupSample:
     sample.metrics["io_weight"] = MetricValue(io_weight, io_weight_src)
     io_max_capped, io_max_src = read_io_max_capped(path / "io.max")
     sample.metrics["io_max_capped"] = MetricValue(io_max_capped, io_max_src)
+    io_caps, io_caps_src = read_io_max_caps(path / "io.max")
+    if io_caps_src == "exact":
+        sample.raw_counters["io.max:_available"] = 1
+        for field, cap in io_caps.items():
+            if cap is not None:
+                sample.raw_counters[f"io.max:{field}"] = cap
     quota, period, cpu_max_src = read_cpu_max(path / "cpu.max")
     sample.metrics["cpu_quota_us"] = MetricValue(quota, cpu_max_src)
     sample.metrics["cpu_period_us"] = MetricValue(period, "exact" if period is not None else cpu_max_src)

@@ -120,7 +120,7 @@ Report: `handoff/reports/P27-REPORT.md`.
 
 ### P28 - I/O Cap Saturation
 
-Status: planned. P28 should populate the existing diagnostics input
+Status: done. P28 populates the existing diagnostics input
 `io_cap_saturation_pct` from `io.max` and I/O rate counters, leaving
 network-loss attribution as the remaining diagnostics input gap.
 

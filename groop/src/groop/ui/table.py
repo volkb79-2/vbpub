@@ -16,7 +16,7 @@ SORT_ORDER = ("pressure", "ram", "cpu_pct", "name")
 _WIDTH_TIERS = (
     (80, ("name", "ram", "rf_d_per_s", "psi_mem_full_avg10", "cpu_pct")),
     (100, ("anon", "z_pool", "z_eq", "ratio", "rf_z_per_s", "rf_f_per_s")),
-    (120, ("swap_disk", "headroom_max_pct", "tier", "pids_current")),
+    (120, ("swap_disk", "io_cap_saturation_pct", "headroom_max_pct", "tier", "pids_current")),
     (160, ("io_r_bps", "io_w_bps", "net_rx_bps", "net_tx_bps", "net_source")),
     (200, ("file", "psi_io_some_avg10", "psi_cpu_some_avg10", "mem_high", "mem_max")),
 )
@@ -57,6 +57,7 @@ _LABELS = {
     "io_r_bps": "IO_R",
     "io_w_bps": "IO_W",
     "io_max_capped": "IO_CAP",
+    "io_cap_saturation_pct": "IO_CAP%",
     "net_rx_bps": "NET_RX",
     "net_tx_bps": "NET_TX",
     "net_rx_pps": "RX_PPS",
