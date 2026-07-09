@@ -345,7 +345,7 @@ def test_pilot_snapshot_hotkey_collects_fresh_systemd_and_docker_metadata(tmp_pa
             return ShowResult(stdout=f"Unit={unit}\nMemoryHigh=123\n", returncode=0)
 
         def docker_inspect(container_id: str):
-            return [{"Id": container_id, "Name": "/demo", "Image": "image:latest", "Config": {"Env": ["SECRET=x"], "Labels": {"secret": "y"}, "User": "1000"}}]
+            return [{"Id": container_id, "Name": "/demo", "Image": "image:latest", "Config": {"Env": ["SECRET=[redacted]"], "Labels": {"secret": "y"}, "User": "1000"}}]
 
         app = GroopApp(
             iter([fixture_frame()]),
@@ -374,6 +374,109 @@ def test_pilot_snapshot_hotkey_collects_fresh_systemd_and_docker_metadata(tmp_pa
     providers = json.loads((root / "providers-status.json").read_text())
     assert providers["snapshot"]["systemctl"]["status"] == "ok"
     assert providers["snapshot"]["docker"]["status"] == "ok"
+
+
+def test_pilot_snapshot_running_status_appears_immediately(tmp_path: Path) -> None:
+    """Verify the snapshot progress flag is managed and bundle is written."""
+    async def run() -> None:
+        import time as _time
+
+        def slow_systemctl(unit: str, _properties: tuple[str, ...]) -> ShowResult:
+            _time.sleep(0.5)
+            return ShowResult(stdout=f"Unit={unit}\n", returncode=0)
+
+        app = GroopApp(
+            iter([fixture_frame()]),
+            config=GroopConfig(snapshots=SnapshotConfig(dir=tmp_path)),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            snapshot_systemctl_show=slow_systemctl,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            # action_create_snapshot sets _snapshot_in_progress synchronously
+            # before the worker is launched in a thread.
+            await pilot.press("x")
+            # Wait for the worker to complete
+            for _ in range(30):
+                await pilot.pause()
+                if app._snapshot_in_progress is False:
+                    break
+
+    asyncio.run(run())
+    assert len(list(tmp_path.glob("groop-incident-*"))) == 1
+
+
+def test_pilot_snapshot_duplicate_keypress_guard(tmp_path: Path) -> None:
+    """Verify a second x while snapshot is in-progress shows 'already running'."""
+    async def run() -> None:
+        app = GroopApp(
+            iter([fixture_frame()]),
+            config=GroopConfig(snapshots=SnapshotConfig(dir=tmp_path)),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            # Simulate an in-progress snapshot
+            app._snapshot_in_progress = True
+            await pilot.press("x")
+            assert "snapshot already running" in _status_text(app)
+
+    asyncio.run(run())
+    # No bundle written since the guard blocked real work
+    assert len(list(tmp_path.glob("groop-incident-*"))) == 0
+
+
+def test_pilot_snapshot_success_reports_path(tmp_path: Path) -> None:
+    async def run() -> None:
+        app = GroopApp(
+            iter([fixture_frame()]),
+            config=GroopConfig(snapshots=SnapshotConfig(dir=tmp_path)),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("x")
+            # Wait for the worker to finish and status to update
+            for _ in range(20):
+                await pilot.pause()
+                if "snapshot saved:" in _status_text(app):
+                    break
+            assert "snapshot saved:" in _status_text(app)
+            assert "groop-incident" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_pilot_snapshot_handled_exception_reports_failure(tmp_path: Path) -> None:
+    """Use a provider that raises RuntimeError (not caught by collect_systemctl_show)
+    to trigger the failure path in the snapshot worker."""
+    async def run() -> None:
+        def failing_systemctl(unit: str, _properties: tuple[str, ...]) -> ShowResult:
+            raise RuntimeError("simulated provider failure")
+
+        app = GroopApp(
+            iter([fixture_frame()]),
+            config=GroopConfig(snapshots=SnapshotConfig(dir=tmp_path)),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            snapshot_systemctl_show=failing_systemctl,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            app.selected_key = GAME_KEY
+            app._refresh_view()
+            await pilot.press("x")
+            # Wait for the worker to finish
+            for _ in range(20):
+                await pilot.pause()
+                if "snapshot failed:" in _status_text(app):
+                    break
+            assert "snapshot failed:" in _status_text(app)
+
+    asyncio.run(run())
 
 
 def test_pilot_host_memory_screen_open_and_close() -> None:
