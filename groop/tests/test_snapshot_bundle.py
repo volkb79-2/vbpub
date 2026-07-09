@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 from conftest import fixture_frame, fixture_root
@@ -59,6 +60,10 @@ def test_create_snapshot_bundle_contains_bounded_frames_and_manifest(tmp_path: P
     summary = inspect_bundle(bundle)
     assert "status: ok" in summary
     assert "frames: 3" in summary
+    assert "privacy_redacted: False" in summary
+    assert "notable_files:" in summary
+    assert "entity/systemctl-show.txt" in summary
+    assert "hash_failures: -" in summary
 
 
 def test_snapshot_redacts_docker_environment_and_labels(tmp_path: Path) -> None:
@@ -125,3 +130,19 @@ def test_snapshot_inspect_cli(tmp_path: Path) -> None:
     )
     assert "status: ok" in proc.stdout
     assert "frames: 1" in proc.stdout
+
+
+def test_snapshot_inspect_reports_hash_failures(tmp_path: Path) -> None:
+    config = GroopConfig(snapshots=SnapshotConfig(dir=tmp_path))
+    bundle = create("", HistoryRing.from_config(config), fixture_frame(), config, cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch")
+    root = _extract(bundle, tmp_path)
+    (root / "entity" / "systemctl-show.txt").write_text("corrupted\n")
+    corrupt = tmp_path / "corrupt.tar"
+    with tarfile.open(corrupt, "w") as tar:
+        for path in sorted(root.rglob("*")):
+            tar.add(path, arcname=path.relative_to(root).as_posix())
+
+    summary = inspect_bundle(corrupt)
+
+    assert "status: hash-mismatch:1" in summary
+    assert "hash_failures: entity/systemctl-show.txt" in summary

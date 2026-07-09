@@ -79,6 +79,8 @@ def inspect_bundle(path: Path) -> str:
                 f"frames: {_frame_count(root / 'frames.jsonl')}",
                 f"files: {len(manifest.get('files', []))}",
                 f"privacy_redacted: {manifest.get('privacy_redacted')}",
+                f"notable_files: {', '.join(_notable_files(manifest)) or '-'}",
+                f"hash_failures: {', '.join(mismatches) if mismatches else '-'}",
             )
         )
 
@@ -187,6 +189,24 @@ def _hash_mismatches(root: Path, manifest: dict[str, object]) -> list[str]:
         if not path.is_file() or _sha256(path) != item.get("sha256"):
             mismatches.append(rel)
     return mismatches
+
+
+def _notable_files(manifest: dict[str, object]) -> list[str]:
+    wanted = {
+        "frames.jsonl",
+        "manifest.json",
+        "providers-status.json",
+        "entity/systemctl-show.txt",
+        "entity/docker-inspect.json",
+    }
+    out = []
+    for item in manifest.get("files", []):
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path"))
+        if path in wanted or path.startswith("entity/cgroup/"):
+            out.append(path)
+    return sorted(out)
 
 
 def _redact_docker(payload: dict[str, object], *, redact: bool) -> dict[str, object]:
