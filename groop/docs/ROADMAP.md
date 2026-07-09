@@ -40,6 +40,7 @@ flowchart TD
     P13 --> P21[P21 v2 action gating skeleton]
     P19 --> P23[P23 ZRAM per-device drill-down]
     P13 --> P24[P24 Replay timestamp jump controls]
+    P15 --> P26[P26 Snapshot progress UI]
 ```
 
 ## Near Term
@@ -87,6 +88,14 @@ operations docs.
 
 Remaining polish: a nonblocking progress screen for slow providers can be carved
 later if snapshot latency becomes visible in real use.
+
+### P26 - Snapshot Progress UI
+
+Status: planned. P26 should make TUI snapshot creation visibly running, guard
+against duplicate concurrent snapshot writes, and report success/failure through
+the status line without changing bundle contents.
+
+Handoff: `handoff/P26-snapshot-progress-ui.md`.
 
 ### P19 — ZRAM And Swap-Backend Awareness
 
