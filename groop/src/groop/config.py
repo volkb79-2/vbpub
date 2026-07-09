@@ -90,6 +90,9 @@ class DamonConfig:
     vaddr_sample_us: int = 100_000
     vaddr_aggr_us: int = 2_000_000
     vaddr_update_us: int = 1_000_000
+    paddr_sample_us: int = 400_000
+    paddr_aggr_us: int = 8_000_000
+    paddr_update_us: int = 1_000_000
     max_concurrent_targets: int = 4
 
 
@@ -154,6 +157,9 @@ class GroopConfig:
                 "vaddr_sample_us": self.damon.vaddr_sample_us,
                 "vaddr_aggr_us": self.damon.vaddr_aggr_us,
                 "vaddr_update_us": self.damon.vaddr_update_us,
+                "paddr_sample_us": self.damon.paddr_sample_us,
+                "paddr_aggr_us": self.damon.paddr_aggr_us,
+                "paddr_update_us": self.damon.paddr_update_us,
                 "max_concurrent_targets": self.damon.max_concurrent_targets,
             },
         }
@@ -316,6 +322,9 @@ def load(path: Path | None = None) -> GroopConfig:
             vaddr_sample_us=max(1, int(_coerce_float(damon_data.get("vaddr_sample_us"), 100_000))),
             vaddr_aggr_us=max(1, int(_coerce_float(damon_data.get("vaddr_aggr_us"), 2_000_000))),
             vaddr_update_us=max(1, int(_coerce_float(damon_data.get("vaddr_update_us"), 1_000_000))),
+            paddr_sample_us=max(1, int(_coerce_float(damon_data.get("paddr_sample_us"), 400_000))),
+            paddr_aggr_us=max(1, int(_coerce_float(damon_data.get("paddr_aggr_us"), 8_000_000))),
+            paddr_update_us=max(1, int(_coerce_float(damon_data.get("paddr_update_us"), 1_000_000))),
             max_concurrent_targets=max(1, int(_coerce_float(damon_data.get("max_concurrent_targets"), 4))),
         ),
     )

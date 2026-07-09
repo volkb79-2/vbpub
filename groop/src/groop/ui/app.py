@@ -13,6 +13,7 @@ from textual.screen import Screen
 from textual.widgets import Input, Static
 
 from groop.config import GroopConfig, load
+from groop.damon.passive import DEFAULT_DAMON_ROOT
 from groop.model import Frame
 from groop.record.ring import HistoryRing
 from groop.registry import REGISTRY
@@ -20,6 +21,7 @@ from groop.snapshot import create as create_snapshot
 
 from .banner import render_banner
 from .drill import DrillDownScreen
+from .hostmem import HostMemoryScreen
 from .keys import BINDINGS, key_help
 from .table import SORT_ORDER, RenderedRows, available_profiles, normalize_profile_name, render_container_table
 from .tree import render_tree_table
@@ -82,6 +84,8 @@ class GroopApp(App[None]):
         config: GroopConfig | None = None,
         cgroup_root: Path | None = None,
         proc_root: Path = Path("/proc"),
+        damon_root: Path = DEFAULT_DAMON_ROOT,
+        damon_state_dir: Path | None = None,
         ring: HistoryRing | None = None,
         profile: str | None = None,
     ) -> None:
@@ -89,6 +93,8 @@ class GroopApp(App[None]):
         self.config = config or load()
         self.cgroup_root = cgroup_root or self.config.cgroup_root
         self.proc_root = proc_root
+        self.damon_root = damon_root
+        self.damon_state_dir = damon_state_dir
         self.ring = ring or HistoryRing.from_config(self.config)
         self._frame_source = iter(frame_source)
         self.current_frame: Frame | None = None
@@ -232,6 +238,18 @@ class GroopApp(App[None]):
             return
         self._refresh_status(f"snapshot saved: {path}")
 
+    def action_open_host_memory(self) -> None:
+        if self.current_frame is None:
+            return
+        self.push_screen(
+            HostMemoryScreen(
+                self.current_frame,
+                config=self.config,
+                damon_root=self.damon_root,
+                state_dir=self.damon_state_dir,
+            )
+        )
+
     def action_open_filter(self) -> None:
         self.push_screen(FilterScreen(self.filter_text), self._on_filter_applied)
 
@@ -298,7 +316,8 @@ def _render_glossary() -> str:
             "STATIC CONCEPTS",
             "  origin: unit file vs. runtime drop-in vs. unmanaged raw write.",
             "  network source labels: net:BPF exact, net:NS approximation, net:HOST host truth, net:N/A unavailable.",
-            "  DAMON hot/warm/cold: passive snapshots from tried_regions, shown only when a readable session covers the entity.",
+            "  DAMON vaddr hot/warm/cold: entity-attributed tried_regions, shown only when a readable session covers the entity.",
+            "  DAMON paddr heat: host-wide physical DRAM heat; it is never attributed to individual cgroups.",
         )
     )
     return "\n".join(lines)

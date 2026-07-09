@@ -327,6 +327,7 @@ def _audit(state_dir: Path, action: str, payload: dict[str, object], *, now: Cal
         "ts": now(),
         "user": user or os.environ.get("USER") or "",
         "action": action,
+        "mode": payload.get("mode", "vaddr"),
         "entity_key": payload.get("entity_key"),
         "kdamond_idx": payload.get("kdamond_idx"),
         "pids": payload.get("pids", []),
