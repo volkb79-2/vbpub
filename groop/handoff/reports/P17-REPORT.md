@@ -51,3 +51,14 @@ PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli bpf gate 
 - Live BPF attach/detach validation still needs a privileged host with `bpftool` and a writable bpffs pin root.
 - P18 still needs the exact BPF provider implementation.
 - The safe gate intentionally does not create or clean up any BPF objects, because it is only the evidence gate.
+
+## Controller Merge Review
+
+- Feature commit reviewed and amended: `16060be`.
+- Merge commit: `cf718d1`.
+- Post-merge validation from `main`:
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests/test_bpf_gate.py -q` -> `2 passed in 0.07s`
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q` -> `98 passed in 15.40s`
+  - `PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli bpf gate --proc-root groop/tests/fixtures/procfs/network --json` -> safe no-op JSON
+  - `PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli --once --json --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch` -> `schema_version=1 entities=8 host_metrics=36`
+  - `PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --step --ui-smoke` -> `ui smoke ok frames=1 view=tree profile=auto`

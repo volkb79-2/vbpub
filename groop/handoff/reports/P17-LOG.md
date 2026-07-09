@@ -104,3 +104,13 @@ PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli bpf gate 
 - [x] Tests/compile/smoke recorded.
 - [x] Known gaps documented.
 - [x] Feature branch committed.
+
+## Controller Merge
+
+2026-07-09 13:55 CEST
+- Action: Controller merged P17 into `main` after review and recorded
+  post-merge validation.
+- Commands: `git merge --no-ff feat/groop-p17-bpf-measurements`, focused BPF
+  tests, full groop suite, `py_compile`, BPF gate JSON smoke, once/json fixture
+  smoke, replay UI smoke.
+- Result: Merge commit `cf718d1`; post-merge full suite passed with 98 tests.
