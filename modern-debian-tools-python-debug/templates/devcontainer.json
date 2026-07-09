@@ -14,12 +14,26 @@
 //
 //   cp <vbpub>/modern-debian-tools-python-debug/templates/{devcontainer.json,initialize_container_environment.py} .devcontainer/
 //   # then "Dev Containers: Rebuild Container"
+//
+// Entries are ordered by lifecycle phase:
+//   1. identity → 2. host bootstrap → 3. image → 4. features → 5. container metadata
+//   → 6. mounts → 7. env → 8. Docker runtime args → 9. in-container init → 10. IDE config
 {
+  // ─── 1. Identity ──────────────────────────────────────────────────────────────
   "name": "${localWorkspaceFolderBasename}-devcontainer-${localEnv:USER}",
 
-  // Pin a concrete tag in real use (e.g. :trixie-py3.14-<date>) rather than :latest.
+  // ─── 2. Host bootstrap (PRE-container) ─────────────────────────────────────────
+  // Runs ON THE HOST before the container is created, so every $HOME bind-mount
+  // source below exists with correct perms (else Docker creates them as root and
+  // the vscode user can't write its own state). Derives the dir list from the
+  // mounts below, so the two stay in sync. Vendored into your repo (see header).
+  "initializeCommand": "python3 .devcontainer/initialize_container_environment.py",
+
+  // ─── 3. Container image ────────────────────────────────────────────────────────
+  // Pin a concrete tag (e.g. :trixie-py3.14-<date>) rather than :latest.
   "image": "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:latest",
 
+  // ─── 4. Container features ─────────────────────────────────────────────────────
   "features": {
     "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
       "moby": false,
@@ -27,99 +41,81 @@
     }
   },
 
+  // ─── 5. Container metadata ─────────────────────────────────────────────────────
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "remoteUser": "vscode",
 
-  // HOST bootstrap — runs BEFORE the container is created, so every $HOME bind-mount
-  // source below exists with correct perms (else Docker creates them as root and the
-  // vscode user can't write its own state). It DERIVES the dir list from the mounts
-  // below, so the two stay in sync. This file is vendored into your repo (see header).
-  "initializeCommand": "python3 .devcontainer/initialize_container_environment.py",
-
-  // IN-CONTAINER finalize — baked into the mdt image (NOT vendored). Runs generic,
-  // ciu-agnostic setup, then your consumer hooks from .devcontainer/finalize.{pre,post}.d/*.sh.
-  // Put repo-specific (and any ciu) setup in a post hook, e.g.:
-  //   .devcontainer/finalize.post.d/10-myrepo.sh   →  exports REPO_ROOT, runs `ciu env generate`, installs deps
-  // mdt's own steps are best-effort; a non-zero exit from YOUR hook fails the build.
-  "postCreateCommand": "finalize_container_environment.py",
-
-  // Grouped persistence — every persist-worthy dir lives under ~/mdt--mounted-folders/
-  // on the host (real dirs, created by initialize_container_environment.py). A rebuild
-  // never wipes them, and one `ls ~/mdt--mounted-folders/` shows the whole set.
+  // ─── 6. Mounts ─────────────────────────────────────────────────────────────────
+  // Grouped persistence — every persist-worthy dir lives under
+  // ~/mdt--mounted-folders/ on the host (real dirs, created by
+  // initialize_container_environment.py). A rebuild never wipes them, and one
+  // `ls ~/mdt--mounted-folders/` shows the whole set.
   "mounts": [
-    // --- Docker / host integration / for container management ---
+    // ── Docker / host integration ──────────────────────────────────────────────
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
+    // Host letsencrypt certs (readonly). Consider security implications.
+    // "source=/etc/letsencrypt,target=/etc/letsencrypt,type=bind,consistency=cached,readonly",
 
-    // --- access host's letsencrypt certificates (readonly), consider security implications ---
-    //"source=/etc/letsencrypt,target=/etc/letsencrypt,type=bind,consistency=cached,readonly",
-
-    // --- Host's NATIVE ssh keys, read-only (dual-use: same keys natively + in-container) ---
+    // ── Host ssh keys (readonly, dual-use: native keys + in-container) ─────────
     "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh-host,type=bind,consistency=cached,readonly",
 
-    // --- STATE PERSISTENCE (survives rebuilds) — all under ~/mdt--mounted-folders/ on the host ---
-    
-    // --- Persistent AGENT / TOOL STATE (survives rebuilds): login once, keys/history kept ---
-    // Directory mounts: each tool's subdirectory is persisted under ~/mdt--mounted-folders/<name>.
-    "source=${localEnv:HOME}/mdt--mounted-folders/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached,readonly",
+    // ── PERSISTENT STATE (~/mdt--mounted-folders/) — survives rebuilds ────────
+    // Directory mounts (alphabetical by subdir name)
     "source=${localEnv:HOME}/mdt--mounted-folders/.claude,target=/home/vscode/.claude,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
-    // Reasonix stores user state and local auth files here.
-    "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix,target=/home/vscode/.reasonix,type=bind,consistency=cached",
-    // OpenClaw stores user state and local auth files here.
-    "source=${localEnv:HOME}/mdt--mounted-folders/.openclaw,target=/home/vscode/.openclaw,type=bind,consistency=cached",
-    // Central customization root for ai.env, README, and examples.
     "source=${localEnv:HOME}/mdt--mounted-folders/.config,target=/home/vscode/.config,type=bind,consistency=cached",
-    // minisign signing key (release/bundle signing — see cmru SPEC B / KI-01); GPG keys
-    "source=${localEnv:HOME}/mdt--mounted-folders/.minisign,target=/home/vscode/.minisign,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.gnupg,target=/home/vscode/.gnupg,type=bind,consistency=cached",
-
-    // --- FILE-LEVEL STATE MOUNTS (single files at home root, not inside a subdirectory) ---
-    // ~/.claude.json is Claude Code's auth/page-state file (NOT inside ~/.claude/).
-    // Persist it so login tokens survive rebuilds alongside the ~/.claude/ dir mount above.
+    "source=${localEnv:HOME}/mdt--mounted-folders/.minisign,target=/home/vscode/.minisign,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.openclaw,target=/home/vscode/.openclaw,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix,target=/home/vscode/.reasonix,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached,readonly",
+    // File-level state mounts (not inside a subdirectory)
     "source=${localEnv:HOME}/mdt--mounted-folders/.claude.json,target=/home/vscode/.claude.json,type=bind,consistency=cached",
-    // ~/.reasonix.toml: Reasonix global config (not inside ~/.reasonix/). If present,
-    // provides project-agnostic settings (MCP servers, rule defaults) across all repos.
-    "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix.toml,target=/home/vscode/.reasonix.toml,type=bind,consistency=cached",
-    // Persisted, host-backed /tmp (mode 1777): /tmp worktrees survive rebuilds AND are
-    // visible to sibling containers that bind the same host path (e.g. a test-runner).
-    "source=${localEnv:HOME}/mdt--mounted-folders/tmp,target=/tmp,type=bind,consistency=cached"
-    // NOTE: caches (~/.cache, ~/.npm) are intentionally NOT persisted — they rebuild cheaply.
+    // "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix.toml,target=/home/vscode/.reasonix.toml,type=bind,consistency=cached",
 
-    // --- sibling-repo workspace mounts in a multi-root workspace, e.g.:
-    //"source=${localWorkspaceFolder}/../vbpub,target=/workspaces/vbpub,type=bind,consistency=cached"
+    // ── Persisted host-backed /tmp (mode 1777) ─────────────────────────────────
+    "source=${localEnv:HOME}/mdt--mounted-folders/tmp,target=/tmp,type=bind,consistency=cached"
+    // NOTE: caches (~/.cache, ~/.npm) are intentionally NOT persisted.
+
+    // ── Sibling-repo workspace mounts (multi-root workspace) ───────────────────
+    // "source=${localWorkspaceFolder}/../vbpub,target=/workspaces/vbpub,type=bind,consistency=cached"
   ],
 
+  // ─── 7. Container environment ──────────────────────────────────────────────────
   "containerEnv": {
     "DOCKER_HOST": "unix:///var/run/docker.sock"
   },
 
+  // ─── 8. Docker runtime arguments ──────────────────────────────────────────────
   "runArgs": [
     "--hostname", "${localWorkspaceFolderBasename}-devcontainer-${localEnv:USER}",
     "--name", "${localWorkspaceFolderBasename}-devcontainer-${localEnv:USER}",
     // DOCKER_GID must be exported in the host shell before launch (see repo docs).
     "--group-add", "${localEnv:DOCKER_GID}",
-    // sshfs / mount(2) inside the container
+    // sshfs / mount(2) inside container
     "--cap-add", "SYS_ADMIN",
     "--device", "/dev/fuse",
-    // needed related to Docker-in-Docker and security for sshfs
     "--security-opt", "apparmor=unconfined",
     "--security-opt", "seccomp=unconfined",
 
-    // Host resource governance (cgroup v2 / systemd slices) — OPTIONAL, safe everywhere.
-    // Cgroup placement is CREATE-TIME ONLY (this flag), so it must be set here, not
-    // applied later. HOST PREREQUISITE: the host must define a
-    // `/etc/systemd/system/interactive.slice` unit with your intended limits
-    // (MemoryHigh/MemoryMax/CPUWeight/...). GRACEFUL DEGRADATION: if that unit is
-    // missing, systemd transparently creates a transient, UNLIMITED slice of the
-    // same name — the container still starts normally with no special limits, so
-    // shipping this runArg is safe for consumers on hosts that never opt into
-    // governance. The container cannot see or change its own slice from inside
-    // (cgroupns=private), but it CAN read its effective limits under
-    // /sys/fs/cgroup (memory.max, memory.high, cpu.weight, io.max). See
-    // "Host resource governance (cgroups/slices)" in DEVCONTAINER-LIFECYCLE.md.
+    // Host resource governance (cgroup v2) — OPTIONAL, safe everywhere.
+    // Cgroup placement is CREATE-TIME ONLY, so it must be set here.
+    // HOST PREREQUISITE: /etc/systemd/system/interactive.slice unit with desired
+    // limits (MemoryHigh/MemoryMax/CPUWeight/...).
+    // GRACEFUL DEGRADATION: if that unit is missing, systemd creates a transient
+    // UNLIMITED slice — the container still starts normally.
     "--cgroup-parent=interactive.slice"
   ],
 
+  // ─── 9. In-container initialization (POST-create) ─────────────────────────────
+  // Baked into the mdt image (NOT vendored). Runs generic ciu-agnostic setup,
+  // then discovers + runs consumer hooks from .devcontainer/finalize.{pre,post}.d/*.sh.
+  // Put repo-specific (and any ciu) setup in a post hook, e.g.:
+  //   .devcontainer/finalize.post.d/10-myrepo.sh
+  // mdt's own steps are best-effort; a non-zero exit from YOUR hook fails the build.
+  "postCreateCommand": "finalize_container_environment.py",
+
+  // ─── 10. IDE customizations (VS Code) ─────────────────────────────────────────
   "customizations": {
     "vscode": {
       "settings": {
