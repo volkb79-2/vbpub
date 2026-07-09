@@ -49,6 +49,15 @@ Use a fixture cgroup root:
 groop --once --json --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch
 ```
 
+Run a release smoke (rootless safe-path evidence):
+
+```bash
+PYTHONPATH=groop/src python3 -m groop.acceptance smoke \
+  --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch \
+  --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl \
+  --pretty-json
+```
+
 Inspect an incident snapshot:
 
 ```bash
