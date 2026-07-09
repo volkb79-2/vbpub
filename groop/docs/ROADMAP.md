@@ -38,6 +38,7 @@ flowchart TD
     P20 --> P22[P22 daemon deployment preflight]
     P13 --> P21[P21 v2 action gating skeleton]
     P19 --> P23[P23 ZRAM per-device drill-down]
+    P13 --> P24[P24 Replay timestamp jump controls]
 ```
 
 ## Near Term
@@ -58,6 +59,13 @@ landed in P13.
 
 Remaining UX work: timestamp jump replay controls and deeper key/profile
 customization can be carved later if needed.
+
+### P24 - Replay Timestamp Jump Controls
+
+Status: planned. P24 should add replay first/last and frame/timestamp jump
+controls while preserving the existing pause/step/speed model.
+
+Handoff: `handoff/P24-replay-timestamp-jump.md`.
 
 ### P14 — DAMON Control Modal And Live-Root Acceptance
 
