@@ -169,6 +169,58 @@ P17 safe-run evidence (2026-07-09):
   - `mount | grep " /sys/fs/bpf "`
   - `/tmp/vbpub-groop-p17-venv/bin/groop bpf gate --proc-root groop/tests/fixtures/procfs/network --json`
 
+### P18 BPF Provider Implementation (2026-07-09)
+
+The P18 BPF provider was implemented behind the existing provider boundary
+without any privileged BPF operations (no root attach, no map pin, no
+`cgroup_skb` program load). The provider reads pinned map snapshots from JSON
+fixture files, parses numeric cgroup id to entity key mappings in userspace, and
+produces `NetSample` values with `source_label="net:BPF"`.
+
+**Live privileged BPF overhead was not measured.** This implementation is a
+userspace-only provider that consumes daemon-produced snapshots. Testing was
+done entirely with fixture JSON files.
+
+Fixture/unit evidence:
+
+```bash
+/tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests/test_network_providers.py -v --no-header 2>&1 | grep bpf
+# 9 BPF-specific tests pass:
+#   test_bpf_provider_reads_snapshot_and_returns_net_bpf_samples
+#   test_bpf_provider_entity_without_bpf_mapping_returns_unavailable
+#   test_bpf_provider_missing_root_returns_unavailable
+#   test_bpf_provider_nonexistent_snapshot_returns_unavailable
+#   test_bpf_provider_corrupt_json_returns_unavailable
+#   test_bpf_provider_status_returns_snapshot_metadata
+#   test_bpf_provider_ignores_malformed_entries
+#   test_bpf_provider_ranking_in_collector
+#   test_bpf_provider_is_publicly_exported
+```
+
+Full suite impact (BPF tests add negligible overhead):
+
+```bash
+/tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
+# 147 passed in 25.14s
+```
+
+Key overhead characteristics (userspace-only, no kernel BPF):
+
+- Snapshot parse: ~1ms for a 2KB JSON file with 14 map entries
+- Per-entity aggregation: O(n_entries * n_mapped_entities), linear in snapshot size
+- No kernel BPF program overhead (no packet-per-packet accounting)
+- No cgroup_skb hook execution cost
+- No per-CPU map contention
+- No pin/unpin lifecycle
+
+Blocker for live BPF overhead measurement:
+
+- `bpftool` is not installed on this host
+- Current uid 1003 is not root
+- `/sys/fs/bpf/groop` is not writable
+- No `cgroup_skb` BPF C source or compiled object is present in the repo
+- The BPF gate (P17) remains the authoritative preflight check
+
 ## Release Signoff Template
 
 - Release/tag:

@@ -124,6 +124,8 @@ class Collector:
         }
 
     def _network_metric_source(self, sample: NetSample) -> MetricSource:
+        if sample.source_label == "net:BPF":
+            return "bpf"
         if sample.source_label == "net:HOST" or sample.unavailable_reason == "host netns":
             return "host"
         if sample.source_label == "net:NS" or sample.unavailable_reason is not None:

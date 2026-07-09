@@ -16,7 +16,7 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 80-85% | medium | Core daily triage works. Remaining gaps are release evidence, UI polish, richer host banner/device surfaces, and some acceptance criteria. |
 | v1.5 DAMON/snapshots/backend awareness | 85-90% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 30-35% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode, daemon deployment preflight/templates, preview-only admin action planning, and the BPF measurement/design gate exist; exact BPF provider, executable admin actions, file inspection, GPU/ZFS plugins are not implemented. |
+| v2 daemon/BPF/admin actions | 35-40% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode, daemon deployment preflight/templates, preview-only admin action planning, the BPF measurement/design gate, and the BPF provider read side exist; live BPF attach/snapshot writing, executable admin actions, file inspection, GPU/ZFS plugins are not implemented. |
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -78,14 +78,19 @@ core workflows, not yet production-certified.**
   CLI inspect, and hash verification. A progress UI remains future polish.
 - **Acceptance evidence:** P12 records tests, packaging, fixture JSON, replay
   smoke, wheel install, version, and bounded once/json CPU/RSS. P17 records the
-  safe BPF gate and current live-BPF blocker. `MEASUREMENTS.md` still needs a
+  safe BPF gate and current live-BPF blocker. P18 records the fixture-tested BPF
+  provider implementation. `MEASUREMENTS.md` still needs a
   full 5-minute live perf/RSS run, DAMON, and privileged BPF measurements.
+- **BPF network provider:** P18 implements the userspace BPF provider reading
+  pinned-map JSON snapshots with cgroup-id-to-entity-key mapping, fallback, and
+  fixture tests. The live BPF ownership lifecycle (daemon attach/pin/detach) and
+  kernel BPF program compilation are still daemon work and not implemented.
 
 ## Not Implemented
 
 - Production daemon installation automation and service hardening beyond the
   packaged operator templates.
-- Exact BPF per-cgroup network provider and live BPF ownership lifecycle.
+- Live BPF ownership lifecycle (daemon/helper attach, pin, detach).
 - Executable Docker/systemd admin actions: update/start/stop/restart/kill.
 - `systemctl set-property` governance actions.
 - File/log/content browser behind `--inspect-files`.
@@ -116,14 +121,12 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P21 — admin action gating skeleton):
+Most recent full-suite validation (P18 - BPF provider read side):
 
 ```bash
-/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
-# 138 passed in 25.37s after the P21 merge
+/tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
+# 147 passed in 25.14s on the P18 branch
 ```
 
-Also validated: Python compile over P21 files,
-`groop action preview` with `--admin` returns valid JSON preview (exit 0),
-same command without `--admin` returns disabled message (exit 2).
-P17/P20/P22 separately validated their respective features.
+Also validated: Python compile over P18 files and `groop --once --json` fixture
+smoke. P17/P20/P21/P22 separately validated their respective features.
