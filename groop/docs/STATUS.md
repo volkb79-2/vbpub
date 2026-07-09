@@ -16,7 +16,7 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 80-85% | medium | Core daily triage works. Remaining gaps are release evidence, UI polish, richer host banner/device surfaces, and some acceptance criteria. |
 | v1.5 DAMON/snapshots/backend awareness | 85-90% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 5-10% | low | Provider abstractions and safety patterns exist; daemon, BPF, admin actions, file inspection, GPU/ZFS plugins are not implemented. |
+| v2 daemon/BPF/admin actions | 10-15% | low | Provider abstractions, safety patterns, and a read-only Unix-socket daemon spike exist; attach mode, BPF, admin actions, file inspection, GPU/ZFS plugins are not implemented. |
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -43,6 +43,8 @@ core workflows, not yet production-certified.**
   confirmation, ownership markers, and audit logs.
 - Incident snapshots with bounded frame capture, raw cgroup copies, provider
   status, manifest hashes, redaction, and `groop snapshot inspect`.
+- Read-only Unix-socket daemon broker spike with current/stream protocol and
+  socket tests.
 
 ## Partially Implemented
 
@@ -73,7 +75,7 @@ core workflows, not yet production-certified.**
 
 ## Not Implemented
 
-- Privileged daemon/read broker and `groop --attach`.
+- Production daemon packaging and `groop --attach`.
 - Exact BPF per-cgroup network provider and BPF ownership lifecycle.
 - Docker/systemd admin actions: update/start/stop/restart/kill.
 - `systemctl set-property` governance actions.
@@ -105,11 +107,11 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent package validation from P19:
+Most recent package validation from P16:
 
 ```bash
 /tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
-# 93 passed in 14.16s
+# 96 passed in 15.30s
 ```
 
 Also validated: Python compile over `src/groop`, `--once --json`, replay UI

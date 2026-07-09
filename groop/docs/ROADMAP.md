@@ -89,12 +89,12 @@ aliases for the legacy `swap_disk`/`rf_d` names.
 
 ### P16 — Daemon Read Broker For Non-Root Full Reads
 
-Goal: specify and prototype a local Unix-socket daemon that owns collection,
-history, root-only reads, and future BPF/DAMON state so non-root users can see
-daemon-approved full read-only data without running the TUI as root.
+Status: done as a spike. P16 added a read-only Unix-socket JSON-lines broker,
+current/stream protocol, bounded in-memory history, socket tests, and daemon
+threat-model docs.
 
-Output should include an API sketch, threat model, service unit draft, and one
-read-only proof path.
+Remaining work: production service/unit packaging, authorization hardening on a
+real host, and `groop --attach` client mode.
 
 ### P17 — BPF Measurement Gate
 

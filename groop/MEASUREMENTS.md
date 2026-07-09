@@ -6,18 +6,17 @@ claims without updating this file.
 
 ## Current Evidence
 
-Most recent merged package validation after P19:
+Most recent merged package validation after P16:
 
 ```bash
 # isolated venv reused from P13/P14 review
 /tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
-# 93 passed in 14.16s
+# 96 passed in 15.30s
 ```
 
-Also passed after P19 review: `py_compile`, `--once --json` over the
-gstammtisch fixture (`schema_version=1 entities=8 host_metrics=36
-backend=[5, 'host']`), and replay UI smoke (`ui smoke ok frames=1 view=tree
-profile=auto`).
+Also passed after P16 review: `py_compile`, `--once --json` over the
+gstammtisch fixture (`schema_version=1 entities=8 host_metrics=36`), and replay
+UI smoke (`ui smoke ok frames=1 view=tree profile=auto`).
 
 P12 package evidence remains: sdist/wheel build, fresh wheel install, and
 `groop --version` (`groop 0.1.0`).
