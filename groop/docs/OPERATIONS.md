@@ -79,6 +79,9 @@ sudo groop damon paddr start --confirm START
 | `Right`, `l` | Expand selected tree branch. |
 | `Up`, `Down` | Move selection. |
 | `Enter` | Entity drill-down. |
+| `d` | From entity drill-down: open DAMON vaddr typed-confirmation start modal. |
+| `p` | From host-memory screen: open DAMON paddr typed-confirmation start modal. |
+| `s` | From DAMON drill/host-memory screens: stop groop-owned DAMON sessions only. |
 | `Space` | Play/pause replay while in `--replay`. |
 | `,`, `.` | Step replay backward/forward one frame. |
 | `+`, `-` | Change replay speed while in `--replay`. |
@@ -96,6 +99,9 @@ sudo groop damon paddr start --confirm START
 - DAMON control writes are the only current mutating feature. They require root,
   typed `START`, groop ownership markers, and audit logs.
 - `groop damon stop --all-mine` only stops sessions with groop markers.
+- TUI DAMON start modals show the planned sysfs writes and require exact
+  `START`. Foreign DAMON sessions remain read-only; the TUI cleanup path calls
+  the same groop-owned marker logic as the CLI.
 - Incident snapshots write only under the configured snapshot directory or the
   XDG state fallback.
 - File/log/content browsing and Docker/systemd admin actions are not implemented.

@@ -9,8 +9,11 @@ from textual.widgets import Static
 
 from groop.config import GroopConfig
 from groop.damon.control import APPROVAL_TEXT
-from groop.damon.paddr import paddr_confirmation_text, plan_start_paddr_session
+from groop.damon.control import stop_owned_sessions
+from groop.damon.paddr import paddr_confirmation_text, plan_start_paddr_session, start_planned_paddr_session
 from groop.model import Frame
+
+from .damon_control import DamonConfirmScreen
 
 
 class HostMemoryScreen(Screen[None]):
@@ -18,6 +21,7 @@ class HostMemoryScreen(Screen[None]):
         Binding("escape", "close", "Back"),
         Binding("q", "close", "Back", show=False),
         Binding("p", "show_paddr_start", "paddr", show=False),
+        Binding("s", "stop_groop_damon", "Stop DAMON", show=False),
     )
 
     def __init__(
@@ -27,12 +31,14 @@ class HostMemoryScreen(Screen[None]):
         config: GroopConfig,
         damon_root: Path,
         state_dir: Path | None,
+        require_root: bool = True,
     ) -> None:
         super().__init__()
         self.frame = frame
         self.config = config
         self.damon_root = damon_root
         self.state_dir = state_dir
+        self.require_root = require_root
         self._notice = ""
 
     def compose(self):
@@ -56,11 +62,41 @@ class HostMemoryScreen(Screen[None]):
                 damon_root=self.damon_root,
                 state_dir=self.state_dir,
                 config=self.config.damon,
+                require_root=self.require_root,
             )
         except Exception as exc:
             self._notice = f"\n\nPADDR CONTROL\n  start unavailable: {exc}\n"
+            self._refresh()
+            return
         else:
-            self._notice = "\n\nPADDR CONTROL\n" + "\n".join(f"  {line}" for line in paddr_confirmation_text(plan).splitlines()) + "\n"
+            self.app.push_screen(
+                DamonConfirmScreen(
+                    title="DAMON PADDR CONTROL",
+                    plan_text=paddr_confirmation_text(plan),
+                    apply_confirmed=lambda value: _start_paddr_result(plan, value, require_root=self.require_root),
+                ),
+                self._on_control_result,
+            )
+
+    def action_stop_groop_damon(self) -> None:
+        try:
+            stopped = stop_owned_sessions(
+                damon_root=self.damon_root,
+                state_dir=self.state_dir,
+                all_mine=True,
+                require_root=self.require_root,
+            )
+        except Exception as exc:
+            self._notice = f"\n\nPADDR CONTROL\n  stop unavailable: {exc}\n"
+        else:
+            self._notice = f"\n\nPADDR CONTROL\n  stopped {stopped} groop-owned DAMON session(s)\n"
+        self._refresh()
+
+    def _on_control_result(self, result: str | None) -> None:
+        if result is None:
+            self._notice = "\n\nPADDR CONTROL\n  start cancelled\n"
+        else:
+            self._notice = f"\n\nPADDR CONTROL\n  {result}\n"
         self._refresh()
 
 
@@ -94,6 +130,11 @@ def render_host_memory_text(frame: Frame, *, config: GroopConfig, damon_root: Pa
     for session in sessions:
         lines.extend(_session_lines(session))
     return "\n".join(lines)
+
+
+def _start_paddr_result(plan, value: str, *, require_root: bool) -> str:
+    session = start_planned_paddr_session(plan, confirmed_text=value, require_root=require_root)
+    return f"DAMON paddr host session started on kdamond {session.kdamond_idx}"
 
 
 def _paddr_sessions(frame: Frame) -> list[dict[str, object]]:
