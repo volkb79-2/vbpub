@@ -76,7 +76,7 @@ Useful feature hotkeys in the TUI:
 | P16 | Done as spike | Daemon read broker for non-root full reads | v1.5/v2 foundation | Read-only Unix-socket JSONL broker, tests, and daemon docs landed; attach mode/package unit remain future work. Report: `handoff/reports/P16-REPORT.md`. |
 | P17 | Done | BPF provider measurement gate and design | v2 foundation | Safe unprivileged gate plus design doc; no default behavior change. Report: `handoff/reports/P17-REPORT.md`. |
 | P18 | Proposed | Exact BPF network provider | v2 | Implement `net:BPF` after P16/P17 evidence. Handoff: `handoff/P18-bpf-provider-implementation.md`. |
-| P20 | Proposed | Daemon attach mode for non-root clients | v1.5/v2 foundation | Consume P16 daemon frames via `groop --attach SOCKET`. Handoff: `handoff/P20-daemon-attach-mode.md`. |
+| P20 | Done | Daemon attach mode for non-root clients | v1.5/v2 foundation | Consume P16 daemon frames via `groop --attach SOCKET`; `--once --json` and UI smoke are supported. Report: `handoff/reports/P20-REPORT.md`. |
 
 ## Completed Package Order
 

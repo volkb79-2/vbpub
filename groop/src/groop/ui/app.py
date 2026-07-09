@@ -92,6 +92,7 @@ class GroopApp(App[None]):
         damon_require_root: bool = True,
         ring: HistoryRing | None = None,
         profile: str | None = None,
+        source_label: str = "LIVE",
         replay_driver: ReplayDriver | None = None,
         replay_step: bool = False,
         replay_speed: float = 1.0,
@@ -107,6 +108,7 @@ class GroopApp(App[None]):
         self.damon_require_root = damon_require_root
         self.ring = ring or HistoryRing.from_config(self.config)
         self._frame_source = iter(frame_source)
+        self._source_label = source_label
         self._replay_driver = replay_driver
         self._replay_paused = replay_driver is not None and replay_step
         self._replay_speed = replay_speed if replay_speed > 0 else 1.0
@@ -140,7 +142,7 @@ class GroopApp(App[None]):
                 self._schedule_replay_tick()
             return
         self.run_worker(self._consume_frames, thread=True, exclusive=True)
-        self._refresh_status("mode=LIVE waiting for frames")
+        self._refresh_status(f"mode={self._source_label} waiting for frames")
 
     def _consume_frames(self) -> None:
         try:
@@ -403,9 +405,9 @@ class GroopApp(App[None]):
         rows = len(self._visible_row_keys)
         if self._replay_driver is None:
             if frame is None:
-                return "mode=LIVE waiting for frames"
+                return f"mode={self._source_label} waiting for frames"
             return (
-                f"mode=LIVE view={self.view_mode} profile={self.profile_name} sort={self.sort_by} "
+                f"mode={self._source_label} view={self.view_mode} profile={self.profile_name} sort={self.sort_by} "
                 f"rows={rows} filter={self.filter_text or '-'} frames={self.frames_received} ts={frame.ts:.3f}"
             )
         if frame is None:
@@ -429,6 +431,7 @@ def run_ui(
     replay_driver: ReplayDriver | None = None,
     replay_step: bool = False,
     replay_speed: float = 1.0,
+    source_label: str = "LIVE",
 ) -> str | int:
     if smoke:
         return asyncio.run(
@@ -438,6 +441,7 @@ def run_ui(
                 cgroup_root=cgroup_root,
                 proc_root=proc_root,
                 profile=profile,
+                source_label=source_label,
                 replay_driver=replay_driver,
                 replay_step=replay_step,
                 replay_speed=replay_speed,
@@ -449,6 +453,7 @@ def run_ui(
         cgroup_root=cgroup_root,
         proc_root=proc_root,
         profile=profile,
+        source_label=source_label,
         replay_driver=replay_driver,
         replay_step=replay_step,
         replay_speed=replay_speed,
@@ -464,6 +469,7 @@ async def _run_ui_smoke(
     cgroup_root: Path | None,
     proc_root: Path,
     profile: str | None,
+    source_label: str,
     replay_driver: ReplayDriver | None,
     replay_step: bool,
     replay_speed: float,
@@ -474,6 +480,7 @@ async def _run_ui_smoke(
         cgroup_root=cgroup_root,
         proc_root=proc_root,
         profile=profile,
+        source_label=source_label,
         replay_driver=replay_driver,
         replay_step=replay_step,
         replay_speed=replay_speed,
