@@ -6,8 +6,25 @@ Read `CONTRACTS.md` before writing any code — it defines the interfaces every
 package codes against.
 
 Release cut (spec §0.1): **v0** collector proof → **v1** read-only TUI →
-**v1.5** DAMON → **v2** BPF/daemon/actions. This directory carries v1 + v1.5.
+**v1.5** DAMON → **v2** BPF/daemon/actions. This directory now carries the
+implemented v0/v1/v1.5 package slices; v2 remains roadmap work.
 Stack: Python; Textual allowed ONLY under `src/groop/ui/` (spec §6.1, §6.4).
+
+## Canonical documents
+
+- `TUI-SPEC.md` — product intent and release-cut source of truth.
+- `CONTRACTS.md` — frozen developer contracts for model, registry, providers,
+  config, recording, and degradation behavior.
+- `docs/STATUS.md` — current implementation state versus the spec.
+- `docs/ROADMAP.md` — suggested next product slices and sequencing.
+- `docs/ARCHITECTURE.md` — current dataflow and module map.
+- `docs/OPERATIONS.md` — runbook for using groop safely today.
+- `docs/COMPRESSED-SWAP.md` — zswap/zram/disk/mixed backend policy and metric
+  semantics.
+- `MEASUREMENTS.md` — acceptance and overhead evidence ledger. BPF defaults,
+  DAMON default increases, and release claims should be blocked on this file.
+- `handoff/*.md` — implementation briefs. Completed packages also have
+  `handoff/reports/*-REPORT.md`.
 
 ## Quickstart
 
@@ -16,42 +33,53 @@ pip install -e groop/
 groop --once --json
 groop
 groop --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --step
+groop snapshot inspect /path/to/groop-incident-*.tar
 ```
 
 Use `--config PATH` to point at an alternate TOML config, `--profile NAME` to
 override the active UI column profile for one run, and `--record FILE` to record
 the live TUI stream to JSONL while you inspect it.
 
+Useful feature hotkeys in the TUI:
+
+- `F5` / `t` toggles tree vs. container view.
+- `p` cycles column profiles.
+- `F6` / `s` cycles sort.
+- `/` filters rows.
+- `Enter` opens entity drill-down.
+- `x` writes an incident snapshot for the selected row.
+- `m` opens host-memory / paddr DAMON status.
+- `F1` / `?` opens generated registry help.
+
 ## Work packages
 
-| Pkg | Title | Cut | Depends on | Handoff doc |
-|-----|-------|-----|------------|-------------|
-| P1 | Collector core + metric registry (`--once --json`) | v0 | — | `handoff/P1-collector-core.md` |
-| P2 | Record / replay / history ring | v1 | P1 | `handoff/P2-record-replay.md` |
-| P3 | Network providers (host truth + netns) | v1 | P1 | `handoff/P3-network-providers.md` |
-| P4 | Origin / drift detection | v1 | P1 | `handoff/P4-origin-drift.md` |
-| P5 | Textual UI shell (banner, table/tree, drill-down) | v1 | P1 | `handoff/P5-ui-shell.md` |
-| P6 | Diagnostics engine (pressure score + rules) | v1 | P1; UI panel needs P5 | `handoff/P6-diagnostics.md` |
-| P7 | v1 integration + acceptance + packaging | v1 | P2–P6 | `handoff/P7-integration.md` |
-| P8 | DAMON passive (detection, columns, panel) | v1.5 | P1, P5 | `handoff/P8-damon-passive.md` |
-| P9 | DAMON controlled vaddr session | v1.5 | P8 | `handoff/P9-damon-control.md` |
-| P10 | Incident snapshots | v1.5 | P2, P5 | `handoff/P10-incident-snapshots.md` |
-| P11 | DAMON paddr host mode (banner heat bar + status page) | v1.5 | P8, P9 | `handoff/P11-damon-paddr.md` |
+| Pkg | Status | Title | Cut | Notes |
+|-----|--------|-------|-----|-------|
+| P1 | Done | Collector core + metric registry (`--once --json`) | v0 | Established model/registry/cgroup collector and fixture frame. Report: `handoff/reports/P1-REPORT.md`. |
+| P2 | Done | Record / replay / history ring | v1 | Headered JSONL, optional zstd, compact numeric ring. Report: `handoff/reports/P2-REPORT.md`. |
+| P3 | Done | Network providers (host truth + netns) | v1 | Provider abstraction is in place; BPF remains v2. Report: `handoff/reports/P3-REPORT.md`. |
+| P4 | Done | Origin / drift detection | v1 | Finds raw-write/systemd drift and effective memory.min. Report: `handoff/reports/P4-REPORT.md`. |
+| P5 | Done with UX gaps | Textual UI shell | v1 | Table/tree/drill/help exist; tree expand/collapse and richer replay controls remain future UX work. Report: `handoff/reports/P5-REPORT.md`. |
+| P6 | Done with input gaps | Diagnostics engine | v1 | Pressure score/rules exist; true IO saturation and attributable network loss await richer providers. Report: `handoff/reports/P6-REPORT.md`. |
+| P7 | Integrated, not release-certified | v1 integration + packaging | v1 | Full suite and editable install passed; spec §9 perf/RSS/pipx evidence still belongs in `MEASUREMENTS.md`. Report: `handoff/reports/P7-REPORT.md`. |
+| P8 | Done | DAMON passive | v1.5 | Read-only vaddr attribution and host paddr detection. Report: `handoff/reports/P8-REPORT.md`. |
+| P9 | Core done, UI modal pending | DAMON controlled vaddr session | v1.5 | CLI/API and ownership safety are covered; full Textual typed-confirmation modal and real-root acceptance remain open. Report: `handoff/reports/P9-REPORT.md`. |
+| P10 | Done with enrichment gaps | Incident snapshots | v1.5 | Bundles, manifest, CLI inspect, TUI hotkey; live systemctl/docker enrichment can improve snapshots. Report: `handoff/reports/P10-REPORT.md`. |
+| P11 | Core done, UI modal pending | DAMON paddr host heat | v1.5 | Host heat metrics/banner/status and CLI/API start exist; full modal and live-root acceptance remain open. Report: `handoff/reports/P11-REPORT.md`. |
+| P12 | In review | Release hardening, acceptance evidence, packaging | v1/v1.5 | Agent branch has package/test evidence and reports; review/merge pending. Handoff: `handoff/P12-release-hardening-acceptance.md`. |
+| P13 | Proposed | UI navigation, replay controls, reserved action UX | v1 | Tree collapse, replay status/controls, disabled v2 action clarity. Handoff: `handoff/P13-ui-navigation-replay-polish.md`. |
+| P14 | Proposed | DAMON control modal and live-root acceptance | v1.5 | Full typed-confirmation modal and root acceptance evidence. Handoff: `handoff/P14-damon-modal-live-acceptance.md`. |
+| P15 | Proposed | Incident snapshot enrichment and UX | v1.5 | Fresh systemctl/docker metadata, progress, redaction polish. Handoff: `handoff/P15-snapshot-enrichment.md`. |
+| P19 | Proposed | ZRAM and swap-backend awareness | v1.5 | Detect active zswap/zram/disk backends, add host ZRAM metrics/banner, clarify formulas. Handoff: `handoff/P19-zram-swap-backend-awareness.md`. |
+| P16 | Proposed | Daemon read broker for non-root full reads | v1.5/v2 foundation | Unix-socket read broker prototype and threat model; prioritized before network/BPF. Handoff: `handoff/P16-daemon-read-broker-spike.md`. |
+| P17 | Proposed | BPF provider measurement gate and design | v2 foundation | Benchmarks and design before implementation/defaults. Handoff: `handoff/P17-bpf-provider-measurement-gate.md`. |
+| P18 | Proposed | Exact BPF network provider | v2 | Implement `net:BPF` after P16/P17 evidence. Handoff: `handoff/P18-bpf-provider-implementation.md`. |
 
-## Start order
+## Completed Package Order
 
-1. **P1 first, alone.** Everything depends on it; its golden JSONL fixtures
-   become the test input for every other package. Review + merge before
-   fanning out.
-2. **Wave 2 (parallel): P2, P3, P4.** Independent of each other; each consumes
-   P1's model/registry and fixtures only.
-3. **P5** can start with wave 2 (it can develop against P1's `--once --json`
-   output and replay fixtures); **P6** any time after P1 (its UI panel lands
-   via P5/P7).
-4. **P7 last for v1** — after P2–P6 are merged. Runs the spec §9 acceptance
-   criteria.
-5. **v1.5: P8 → P9 → P11** (strictly ordered — P11 reuses P9's controlled-
-   session machinery); **P10** any time after P2+P5 — parallel to P8 is fine.
+P1 was merged first, P2–P6 built v1, P7 integrated v1, and P8–P11 added v1.5
+DAMON/snapshot work. New work should branch from current `main` using the same
+worktree protocol below.
 
 ## Workflow protocol (every package agent MUST follow this)
 
@@ -80,6 +108,12 @@ the live TUI stream to JSONL while you inspect it.
   from the handoff doc, proposed contract changes (if any), test evidence
   (command + output tail), known gaps/open items; (c) your final message =
   that report, so review + merge can proceed without archaeology.
+- **Resumability log**: every package must also keep
+  `groop/handoff/reports/<PKG>-LOG.md` updated while working. Use
+  `handoff/AGENT-LOG-TEMPLATE.md`. The log records actions, commands, files
+  changed, decisions, blockers, and next steps; do not include private
+  chain-of-thought. Update it before long-running tests and before handoff so a
+  controller can resume safely after a session limit.
 - **Controller review**: the session controller reviews the branch diff,
   validates the report, runs the relevant gates from a clean checkout, fixes or
   sends back issues, then merges to `main` with a focused merge/commit. Later

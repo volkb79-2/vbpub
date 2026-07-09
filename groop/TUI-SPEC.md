@@ -59,8 +59,8 @@ non-container cgroup tree visibility, governance-origin drift detection, and
 DAMON integration.
 
 Above the table sits a verdict-first **system banner** (host CPU, memory, swap,
-zswap pool/stored/ratio, pressure verdict, per-device network and per-device
-disk rates — §3.0). v1 is read-only except record/replay: no DAMON session
+compressed-swap backend state, pressure verdict, per-device network and
+per-device disk rates — §3.0). v1 is read-only except record/replay: no DAMON session
 starts, no cgroup mutation, no container actions, and no BPF state changes. The
 tool runs **with or without root**: a developer in the `docker` group gets a
 useful degraded view (§6.2), and a v2 daemon can broker privileged read-only data
@@ -104,12 +104,13 @@ v1 is **read-only except record/replay**: it may collect, display, record, and
 replay; it must not start DAMON sessions, mutate cgroups, restart or update
 containers, alter BPF state, or browse arbitrary host file content.
 
-**v1.5 — DAMON analysis.** Goal: working-set inspection without destabilizing
-v1.
+**v1.5 — DAMON analysis and backend awareness.** Goal: working-set inspection
+and correct compressed-swap interpretation without destabilizing v1.
 
 - Passive DAMON session detection.
 - DAMON hot/warm/cold columns.
 - DAMON detail panel.
+- ZRAM/zswap/disk/mixed swap-backend detection and host ZRAM banner metrics.
 - Optional controlled `vaddr` session behind root and explicit confirmation.
 - Manual `paddr` host session (root + confirmation, §3.6d): system-wide
   hot/warm/cold heat bar in the banner + a host-memory status page; never
@@ -340,7 +341,7 @@ v1 first-screen shape:
 ```text
 HOST  OK|WARN|CRIT
 CPU 18% usr 4% sys 0.1% steal | MEM 3.1G avail | PSI mem full 0.0 io full 0.0 cpu some 3.2
-ZSWAP 1.9G pool / 5.8G stored / 3.1x / wb +0/s | DISK vda 12MB/s 25% util | NET uplink 4.2M down 0.9M up
+SWAP zswap:on zram:1.2G/3.8G disk:8.0G active:mixed | DISK vda 12MB/s 25% util | NET uplink 4.2M down 0.9M up
 
 TOP PRESSURE
 1 soulmask game     mem: rf_d 0/s rf_z 18/s psi 0.0  zswap 1.8G  drift none
@@ -360,14 +361,21 @@ history series (§3.5):
   (`/proc/stat` `cpu` line delta), load averages (`/proc/loadavg`), core count.
 - **Memory:** `MemTotal` / `MemAvailable` / `MemFree`, buff/cache, `Shmem`
   (`/proc/meminfo`) — rendered as a stacked bar, htop-style.
-- **Swap:** `SwapTotal` / used / `SwapCached`, plus the derived **`disk_sw`**
-  (bytes actually on the real device — the existing monitor's formula, §5).
+- **Swap:** `SwapTotal` / used / `SwapCached`, active swap backend
+  classification from `/proc/swaps`, and the derived non-zswap swap-device
+  usage estimate. Do not label this as physical disk on zram-only or mixed
+  hosts.
 - **zswap:** pool bytes (compressed), stored bytes (uncompressed equivalent),
   **ratio**, and pool utilization vs. `max_pool_percent`. Primary source is
   debugfs (`stored_pages`/`pool_total_size`, root only); fallback is
   `/proc/meminfo`'s `Zswap`/`Zswapped` fields (present since kernel ~5.19,
   world-readable) so the ratio survives non-root mode (§6.2).
   `written_back_pages` shown when debugfs is readable.
+- **zram:** when `/sys/block/zram*` devices exist, show host-level
+  uncompressed/compressed/memory-used totals, compression ratio, allocator
+  efficiency, failed read/write counters, and writeback bytes if `bd_stat`
+  exists. ZRAM is host/device-level only; never invent per-cgroup ZRAM
+  compression ratios.
 - **Network, PER DEVICE:** one line per interface from the host's
   `/proc/net/dev` — tx/rx bytes/s **and** packets/s. Interfaces matching the
   `[banner] net_device_exclude` globs (default `veth*`, `br-*`, `docker0`) are
@@ -528,9 +536,9 @@ and a **priority tier** used for adaptive width (§3.3).
 | `z_pool` | compressed bytes in zswap | `memory.zswap.current` |
 | `z_eq` | uncompressed-equivalent bytes in zswap | `memory.stat:zswapped` |
 | `ratio` | compression ratio | `z_eq / z_pool` |
-| `swap_disk` | bytes actually on real disk swap (generalized per-entity, not just pak) | `memory.swap.current − zswapped − swapcached`, clamp ≥0 (identical formula to the existing monitor's pak `p_disk`, now applied to every entity, not only the pak slice) |
+| `swap_disk` | legacy name for non-zswap swap-device usage estimate; disk only on disk-only hosts, logical zram-backed swap on zram-only hosts, unknown backend on mixed hosts | `memory.swap.current − zswapped − swapcached`, clamp ≥0 (identical formula to the existing monitor's pak `p_disk`, now applied to every entity, not only the pak slice) |
 | `rf_z/s` | zswap refault rate (µs-scale, healthy) | `Δ memory.stat:zswpin / Δt` |
-| `rf_d/s` | disk refault rate (ms-scale, THE lag predictor) | `max(0, Δ workingset_refault_anon − Δ zswpin) / Δt` |
+| `rf_d/s` | legacy name for non-zswap anonymous refault rate; disk-lag predictor on disk-backed swap, but backend-aware wording is required on zram/mixed hosts | `max(0, Δ workingset_refault_anon − Δ zswpin) / Δt` |
 | `rf_f/s` | file-cache refault rate (always a disk read) | `Δ memory.stat:workingset_refault_file / Δt` |
 
 **Operator-mandated additions — tier T1/T2:**
@@ -1483,6 +1491,7 @@ selected entity's Docker/systemd metadata.
 | Origin of a limit | `systemctl show <unit> -p FragmentPath -p DropInPaths -p ControlGroup -p Memory{Min,Low,High,Max} -p CPUWeight -p IOWeight` | unit name = path segment ending in `.slice/.scope/.service` (§3.4 algorithm) |
 | zswap module config | `/sys/module/zswap/parameters/{enabled,compressor,max_pool_percent,accept_threshold_percent,shrinker_enabled}` | system-wide, header banner |
 | zswap runtime stats | `/sys/kernel/debug/zswap/{stored_pages,pool_total_size,written_back_pages,reject_*,decompress_fail,pool_limit_hit,stored_incompressible_pages}` | **root + debugfs required**; degrade (drop from header, mark estimate with `*`) if unreadable — identical to the existing monitor's `disk_sw` `*` marker |
+| Swap backend classification | `/proc/swaps`, `/sys/block/zram*/{disksize,initstate,comp_algorithm,mm_stat,io_stat,bd_stat}` | v1.5 host banner/drill-down; classify zswap/zram/disk/mixed and show ZRAM host/device metrics |
 | `/proc/vmstat` | system-wide `workingset_*`, `pswpin/out`, `nr_anon_pages`, `nr_file_pages`, `nr_shmem`, `nr_swapcached`, `pgscan_kswapd`, `pgsteal_kswapd` | header/system-wide row |
 | `/proc/pressure/{memory,cpu,io}` | system-wide PSI | header/system-wide row |
 | `/proc/sys/vm/{swappiness,watermark_scale_factor,min_free_kbytes,vfs_cache_pressure,dirty_ratio,overcommit_*}` | header, read-only display | |
@@ -1630,6 +1639,8 @@ testing. Exactly what each mode gets:
 |---|---|
 | BFQ scheduler not active on a device (`io.bfq.weight` file present but inert, or scheduler ≠ `bfq`) | Column shows the raw value with a footnote "BFQ inactive — weight has no effect"; never hide the column, hiding would mask a misconfiguration |
 | `/sys/kernel/debug/zswap/` unreadable (non-root or `CONFIG_ZSWAP_DEBUGFS` off) | System-wide zswap header stats drop; **per-cgroup** `z_pool`/`z_eq` are unaffected (they come from cgroup files, not debugfs) — mirrors the existing monitor's `disk_sw` `*`-marked degraded estimate |
+| ZRAM devices active | Banner shows zram host/device totals from `/sys/block/zram*`; cgroup rows keep zswap-only `z_pool`/`z_eq` and mark `swap_disk`/`rf_d` wording as non-zswap swap-device estimates rather than physical disk claims |
+| ZRAM and non-zram swap devices active together | Banner state is `mixed`; per-cgroup backend attribution is unavailable, so drill-down explains that `memory.swap.current` cannot tell which backend holds a given cgroup's non-zswap pages |
 | No `docker` binary / daemon not running | Container-centric view (§3.1a) shows an empty-state message and disables its hotkey; tree view (§3.1b) — which has no docker dependency by construction, since the tree is keyed by cgroup path, not by container (§3.1) — remains fully functional |
 | `/sys/kernel/mm/damon/admin/` absent (`CONFIG_DAMON_SYSFS` not built) | DAMON columns and hotkeys are **removed from the column/action registry entirely**, not merely blank — the help screen and config validator say why |
 | A `memory.stat`/`cpu.stat`/etc. field absent (older kernel) | That one field shows `—`; does not affect sibling fields or crash the sweep |

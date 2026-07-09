@@ -1,0 +1,154 @@
+# groop Operations
+
+This is the practical runbook for the current implementation.
+
+## Install
+
+From the repository root:
+
+```bash
+pip install -e groop/
+groop --version
+```
+
+For test/dev without installing:
+
+```bash
+PYTHONPATH=groop/src python3 -m groop.cli --once --json
+```
+
+## Common Commands
+
+Collect one frame as JSON:
+
+```bash
+groop --once --json
+```
+
+Open the live TUI:
+
+```bash
+groop
+```
+
+Record while viewing:
+
+```bash
+groop --record /tmp/groop-live.jsonl
+```
+
+Replay:
+
+```bash
+groop --replay /tmp/groop-live.jsonl --step
+```
+
+Use a fixture cgroup root:
+
+```bash
+groop --once --json --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch
+```
+
+Inspect an incident snapshot:
+
+```bash
+groop snapshot inspect /path/to/groop-incident-*.tar
+```
+
+Stop groop-owned DAMON sessions:
+
+```bash
+sudo groop damon stop --all-mine
+```
+
+Start a manual paddr host heat session from CLI:
+
+```bash
+sudo groop damon paddr start --confirm START
+```
+
+## TUI Keys
+
+| Key | Action |
+|---|---|
+| `F5`, `t` | Toggle tree/container view. |
+| `p` | Cycle column profile. |
+| `F6`, `s` | Cycle sort. |
+| `/` | Filter rows. |
+| `Up`, `Down` | Move selection. |
+| `Enter` | Entity drill-down. |
+| `x` | Save incident snapshot for selected entity. |
+| `m` | Host-memory / paddr DAMON status. |
+| `b` | Collapse/expand banner. |
+| `F1`, `?` | Metric glossary/help. |
+| `q` | Quit. |
+
+## Safety Model
+
+- Normal collection is read-only.
+- `--once --json` and replay paths should not import Textual.
+- DAMON control writes are the only current mutating feature. They require root,
+  typed `START`, groop ownership markers, and audit logs.
+- `groop damon stop --all-mine` only stops sessions with groop markers.
+- Incident snapshots write only under the configured snapshot directory or the
+  XDG state fallback.
+- File/log/content browsing and Docker/systemd admin actions are not implemented.
+
+## Compressed Swap Interpretation
+
+Current builds expose zswap metrics and a legacy `swap_disk` estimate. On hosts
+that use zram, that estimate can represent logical swap stored on zram rather
+than physical disk IO. See `docs/COMPRESSED-SWAP.md` for the v1.5 backend-aware
+policy that will make this explicit in the banner and drill-down.
+
+## Configuration
+
+Default config path:
+
+```text
+$XDG_CONFIG_HOME/groop/config.toml
+```
+
+Everything is optional. Useful current sections:
+
+```toml
+[general]
+interval = 5.0
+default_view = "tree"
+default_column_profile = "auto"
+
+[history]
+full_resolution_seconds = 14400
+entity_grace_seconds = 30.0
+
+[record]
+flush_every_frames = 1
+fsync = false
+
+[snapshots]
+frames = 60
+redact = false
+
+[damon]
+hot_rate = 50.0
+warm_rate = 5.0
+cold_age = 30.0
+idle_age = 120.0
+vaddr_sample_us = 100000
+vaddr_aggr_us = 2000000
+vaddr_update_us = 1000000
+paddr_sample_us = 400000
+paddr_aggr_us = 8000000
+paddr_update_us = 1000000
+max_concurrent_targets = 4
+```
+
+## What To Check Before A Release Claim
+
+- Full test suite.
+- `py_compile` over `src/groop`.
+- `--once --json` on a real host and fixture root.
+- Replay UI smoke.
+- Editable install and wheel/sdist/pipx packaging.
+- `MEASUREMENTS.md` CPU/RSS evidence.
+- Live-root DAMON acceptance if claiming controlled DAMON support.
