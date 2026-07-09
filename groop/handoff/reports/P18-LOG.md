@@ -43,4 +43,16 @@
   - `PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m groop.cli --once --json --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch` -> schema=1 entities=8 host=36
   - `PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q` -> 147 passed in 25.14s
 - Result: Controller validation passed.
+
+2026-07-09 CEST
+- Action: Merged P18 into `main` and reran validation from the main checkout.
+- Commands:
+  - `git merge --no-ff feat/groop-p18-bpf-provider -m "Merge groop P18 BPF provider read side"`
+  - `PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests/test_network_providers.py -q` -> 15 passed in 0.15s
+  - `/tmp/vbpub-groop-p17-venv/bin/python -m py_compile ...` -> clean
+  - `PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m groop.cli --once --json --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch` -> schema=1 entities=8 host=36
+  - `PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q` -> 147 passed in 25.68s
+- Files changed: `groop/docs/STATUS.md`, `groop/handoff/reports/P18-LOG.md`, `groop/handoff/reports/P18-REPORT.md`.
+- Result: P18 merged and validated on `main`.
+- Follow-up: Commit post-merge evidence.
 ```

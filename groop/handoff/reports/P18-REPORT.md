@@ -140,7 +140,8 @@ PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m groop.cli \
 
 ```bash
 PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-# 147 passed in 25.14s
+# 147 passed in 25.14s on the branch
+# 147 passed in 25.68s after merge to main
 ```
 
 ## Known gaps

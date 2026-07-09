@@ -125,7 +125,7 @@ Most recent full-suite validation (P18 - BPF provider read side):
 
 ```bash
 /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-# 147 passed in 25.14s on the P18 branch
+# 147 passed in 25.68s after the P18 merge
 ```
 
 Also validated: Python compile over P18 files and `groop --once --json` fixture
