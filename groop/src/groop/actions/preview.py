@@ -8,8 +8,6 @@ is not active.
 from __future__ import annotations
 
 import dataclasses
-import datetime
-import typing
 
 from groop.actions.catalog import ACTION_CATALOG, ActionKind
 
@@ -41,7 +39,7 @@ AdminPreviewResult = ActionPlan | DisabledPlan
 def build_preview(kind: str, target: str) -> ActionPlan:
     """Build an ActionPlan for the given kind and target.
 
-    Raises KeyError for unknown action kinds.
+    Raises ValueError for unknown action kinds.
     """
     ak = ActionKind(kind)  # raises ValueError for invalid kind name
     entry = ACTION_CATALOG[ak]

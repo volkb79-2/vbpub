@@ -62,6 +62,19 @@
 - Files changed: `groop/docs/STATUS.md`, `groop/handoff/reports/P21-LOG.md`, `groop/handoff/reports/P21-REPORT.md`.
 - Result: Full suite green. All acceptance checks passed.
 - Follow-up: Commit validation/report updates, then controller review and merge.
+
+2026-07-09 CEST (controller review polish)
+- Action: Tightened review nits after Reasonix validation: removed unused imports, fixed the preview error docstring, and made audit/test file IO encoding-explicit.
+- Commands:
+  - controller code review over P21 diff
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests/test_actions.py -q` -> 30 passed in 0.18s
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m py_compile ...` -> clean
+  - `PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli action preview --kind docker-restart --target c1 --admin --json` -> valid JSON preview
+  - same command without `--admin` -> exit 2 with disabled message
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q` -> 138 passed in 24.96s
+- Files changed: `groop/src/groop/actions/audit.py`, `groop/src/groop/actions/preview.py`, `groop/tests/test_actions.py`, `groop/handoff/reports/P21-LOG.md`.
+- Result: Review polish validated successfully.
+- Follow-up: Commit and merge.
 ```
 
 ## Decisions

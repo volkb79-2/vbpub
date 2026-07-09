@@ -36,7 +36,7 @@ def _check_no_subprocess_in_modules() -> None:
         spec = importlib.util.find_spec(mod_name)
         assert spec is not None, f"{mod_name} not found"
         assert spec.origin is not None, f"{mod_name} has no origin"
-        with open(spec.origin) as f:
+        with open(spec.origin, encoding="utf-8") as f:
             tree = ast.parse(f.read())
         for node in ast.walk(tree):
             if isinstance(node, ast.Import) and any(n.name == "subprocess" for n in node.names):
@@ -74,8 +74,8 @@ class TestBuildPreview:
         with pytest.raises(ValueError):
             build_preview("docker-eject", "x")
 
-    def test_unknown_kind_via_key_error(self) -> None:
-        with pytest.raises((ValueError, KeyError)):
+    def test_unknown_kind_raises_value_error_for_any_invalid_name(self) -> None:
+        with pytest.raises(ValueError):
             build_preview("nonexistent-kind", "x")
 
 
@@ -112,7 +112,7 @@ class TestAuditLog:
         assert rec.mode == "preview"
         assert rec.admin is True
         assert log_path.exists()
-        lines = log_path.read_text().strip().splitlines()
+        lines = log_path.read_text(encoding="utf-8").strip().splitlines()
         assert len(lines) == 1
         data = json.loads(lines[0])
         assert data["kind"] == "docker-restart"
@@ -128,7 +128,7 @@ class TestAuditLog:
         audit = AuditLog(log_path)
         audit.record("docker-stop", "c1", ("docker", "stop", "c1"), admin=True)
         audit.record("systemd-restart", "srv", ("systemctl", "restart", "srv"), admin=False)
-        lines = log_path.read_text().strip().splitlines()
+        lines = log_path.read_text(encoding="utf-8").strip().splitlines()
         assert len(lines) == 2
         assert json.loads(lines[0])["kind"] == "docker-stop"
         assert json.loads(lines[1])["kind"] == "systemd-restart"

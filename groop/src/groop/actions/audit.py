@@ -44,7 +44,7 @@ class AuditLog:
     def _open(self) -> TextIO:
         """Open in append mode; create parent dirs if needed."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        return self._path.open("a")
+        return self._path.open("a", encoding="utf-8")
 
     def record(self, kind: str, target: str, argv: tuple[str, ...], *, admin: bool) -> AuditRecord:
         """Write one audit record and return it."""
