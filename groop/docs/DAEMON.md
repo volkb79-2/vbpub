@@ -30,6 +30,31 @@ Unsupported requests return an error object. The protocol has no arbitrary file
 read, command execution, admin, Docker mutation, systemd mutation, BPF, or DAMON
 mutation verb.
 
+## Attach Client
+
+`groop --attach SOCKET` consumes daemon frames through the same UI model used by
+live collection. The attach client is read-only and only speaks the P16 broker
+protocol.
+
+Common forms:
+
+```bash
+groop --attach /run/groop/groop.sock
+groop --attach /run/groop/groop.sock --once --json
+groop --attach /run/groop/groop.sock --ui-smoke
+```
+
+`--attach --once --json` prints one canonical frame JSON payload and is the
+preferred shell/test entry point. The interactive attach path polls the daemon
+for current frames and feeds them into the existing TUI path.
+
+Current slice limitations:
+
+- `--attach` is intentionally rejected with `--replay` and `--cgroup-root`.
+- `--attach` does not support `--record` in this slice.
+- The daemon protocol remains read-only; there is still no file-read, command,
+  Docker/systemd mutation, or DAMON mutation verb.
+
 ## Threat Model
 
 The daemon may run with privileges so it can read root-only kernel/debugfs/DAMON

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from groop.config import load
 from groop.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, stop_owned_sessions
 from groop.damon.passive import DEFAULT_DAMON_ROOT
 from groop.damon.paddr import paddr_confirmation_text, plan_start_paddr_session, start_planned_paddr_session
+from groop.daemon.client import DaemonClientError, current_frame
 from groop.daemon import FrameBroker, serve_unix_socket
 from groop.model import frame_to_jsonable
 from groop.record.live import live_frame_stream
@@ -27,6 +29,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--once", action="store_true", help="collect one frame and exit")
     parser.add_argument("--record", type=Path, default=None, help="record live frames to JSONL or JSONL.zst")
     parser.add_argument("--replay", type=Path, default=None, help="replay frames from a JSONL or JSONL.zst recording")
+    parser.add_argument("--attach", type=Path, default=None, help="attach to daemon frames over a Unix socket")
     parser.add_argument("--speed", type=float, default=1.0, help="replay speed multiplier")
     parser.add_argument("--step", action="store_true", help="step through replay without wall-clock pacing")
     parser.add_argument("--json", action="store_true", help="emit JSON for --once")
@@ -91,6 +94,13 @@ def _print_frame_json(frame, pretty: bool) -> None:
     print(json.dumps(payload, indent=2 if pretty else None, separators=None if pretty else (",", ":"), sort_keys=True))
 
 
+def _attach_frame_source(socket_path: Path, *, poll_interval_s: float) -> Iterator:
+    interval_s = max(0.1, poll_interval_s)
+    while True:
+        yield current_frame(socket_path)
+        time.sleep(interval_s)
+
+
 def _replay_frame_source(driver: ReplayDriver, *, speed: float, step: bool) -> Iterator:
     for replay_frame in driver.play(speed=speed, step=step):
         yield replay_frame.frame
@@ -103,6 +113,7 @@ def _run_ui(
     cgroup_root: Path | None,
     smoke: bool,
     profile: str | None,
+    source_label: str = "LIVE",
     replay_driver: ReplayDriver | None = None,
     replay_step: bool = False,
     replay_speed: float = 1.0,
@@ -122,6 +133,7 @@ def _run_ui(
         cgroup_root=cgroup_root,
         smoke=smoke,
         profile=profile,
+        source_label=source_label,
         replay_driver=replay_driver,
         replay_step=replay_step,
         replay_speed=replay_speed,
@@ -146,6 +158,47 @@ def main(argv: list[str] | None = None) -> int:
     if args.record is not None and args.replay is not None:
         print("choose either --record or --replay", file=sys.stderr)
         return 2
+    if args.attach is not None:
+        if args.replay is not None:
+            print("choose either --attach or --replay", file=sys.stderr)
+            return 2
+        if args.step or args.speed != 1.0:
+            print("--attach does not accept replay pacing flags", file=sys.stderr)
+            return 2
+        if args.cgroup_root is not None:
+            print("--attach does not accept --cgroup-root", file=sys.stderr)
+            return 2
+        if args.record is not None:
+            print("--attach does not support --record in this build", file=sys.stderr)
+            return 2
+        if args.json and not args.once:
+            print("--json is supported with --attach only when --once is also set", file=sys.stderr)
+            return 2
+        try:
+            if args.once:
+                if not args.json:
+                    print("groop --attach implements --once --json for canonical daemon frames", file=sys.stderr)
+                    return 2
+                frame = current_frame(args.attach)
+                _print_frame_json(frame, args.pretty_json)
+                return 0
+            ui_code = _run_ui(
+                _attach_frame_source(args.attach, poll_interval_s=config.interval),
+                config=config,
+                cgroup_root=None,
+                smoke=args.ui_smoke,
+                profile=args.profile,
+                source_label="ATTACH",
+            )
+            if ui_code == 0:
+                return 0
+            print("textual is not installed; use --once --json or install UI dependencies", file=sys.stderr)
+            return 2
+        except DaemonClientError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            return 0
     if args.replay is not None:
         driver = ReplayDriver.from_path(args.replay, config=config)
         ui_code = _run_ui(
@@ -154,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
             cgroup_root=args.cgroup_root,
             smoke=args.ui_smoke,
             profile=args.profile,
+            source_label="REPLAY",
             replay_driver=driver,
             replay_step=args.step,
             replay_speed=args.speed,
@@ -182,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
                     cgroup_root=args.cgroup_root,
                     smoke=args.ui_smoke,
                     profile=args.profile,
+                    source_label="LIVE",
                 )
                 if ui_code == 0:
                     return 0
@@ -197,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
             cgroup_root=args.cgroup_root,
             smoke=args.ui_smoke,
             profile=args.profile,
+            source_label="LIVE",
         )
         if ui_code == 0:
             return 0

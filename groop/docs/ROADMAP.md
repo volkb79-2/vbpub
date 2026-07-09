@@ -108,8 +108,9 @@ interface, owned by daemon/helper state rather than by the TUI.
 
 ### P20 — TUI Attach Mode
 
-Goal: `groop --attach <socket>` consumes daemon frames/history while preserving
-the same UI model as standalone live mode.
+Status: done. `groop --attach <socket>` now consumes daemon frames over the
+P16 socket protocol, preserves the same UI model as standalone live mode, and
+supports `--once --json` plus UI smoke.
 
 Handoff: `handoff/P20-daemon-attach-mode.md`.
 
