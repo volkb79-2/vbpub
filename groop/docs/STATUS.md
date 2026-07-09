@@ -78,9 +78,9 @@ core workflows, not yet production-certified.**
 
 ## Partially Implemented
 
-- **System banner:** host verdict, pressure summary, and paddr heat exist.
-  Per-device disk/network banner lines and CPU breakdown sparklines from spec
-  §3.0 are not complete.
+- **System banner:** host verdict, pressure summary, paddr heat, and per-device
+  network/disk rate summaries (P34) exist. CPU breakdown sparklines from spec
+  §3.0 remain not implemented.
 - **Compressed swap:** zswap host/cgroup metrics, host ZRAM totals,
   `/proc/swaps` backend classification, mixed-backend banner wording, and
   per-device ZRAM drill-down are implemented. Backend-aware aliases and

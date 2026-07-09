@@ -35,6 +35,8 @@ def render_banner(frame: Frame, config: GroopConfig, *, collapsed: bool = False)
         ),
         _swap_backend_line(frame),
     ]
+    device_lines = _host_device_lines(frame)
+    lines.extend(device_lines)
     heat_line = _host_damon_heat_line(frame)
     if heat_line is not None:
         lines.append(heat_line)
@@ -154,6 +156,108 @@ def _swap_backend_line(frame: Frame) -> str:
         f" {_fmt_ratio_metric(frame.host.get('host_zram_ratio'))} devs {_fmt_metric(zram_devices, digits=0)} "
         f"disk {_fmt_bytes_metric(frame.host.get('host_disk_swap'))} devs {_fmt_metric(disk_devices, digits=0)}"
     )
+
+
+def _host_device_lines(frame: Frame) -> list[str]:
+    """Render NET and DISK device-rate summary lines for the banner.
+
+    Shows the busiest 2-3 devices by total bytes/sec.
+    If rates are unavailable (first frame or missing data), renders
+    a graceful collecting/unavailable line.
+    """
+    lines: list[str] = []
+
+    meta = frame.host_meta
+    net_devices = _get_device_list(meta, "net_devices")
+    block_devices = _get_device_list(meta, "block_devices")
+
+    if net_devices is not None:
+        lines.append(_net_device_line(net_devices))
+    if block_devices is not None:
+        lines.append(_block_device_line(block_devices))
+
+    return lines
+
+
+def _get_device_list(meta: dict[str, object] | None, key: str) -> list[dict[str, object]] | None:
+    """Safely extract a device list from host_meta, returning None if absent."""
+    if meta is None:
+        return None
+    devices = meta.get(key)
+    if not isinstance(devices, list):
+        return None
+    return [device for device in devices if isinstance(device, dict) and "name" in device]
+
+
+def _net_device_line(devices: list[dict[str, object]]) -> str:
+    """Render the NET banner line from net_devices host_meta.
+
+    Shows the 2-3 busiest interfaces by rx_bps + tx_bps.
+    """
+    # Filter to devices with valid rates
+    with_rates = [d for d in devices if d.get("rx_bps") is not None or d.get("tx_bps") is not None]
+    if not with_rates:
+        return "NET collecting..." if devices else "NET n/a"
+
+    # Sort by total bytes/sec descending, take top 2-3
+    sorted_devs = sorted(
+        with_rates,
+        key=lambda d: (float(d.get("rx_bps", 0) or 0) + float(d.get("tx_bps", 0) or 0)),
+        reverse=True,
+    )
+    top = sorted_devs[:3]
+    parts: list[str] = []
+    for d in top:
+        name = str(d["name"])
+        rx_b = float(d.get("rx_bps", 0) or 0)
+        tx_b = float(d.get("tx_bps", 0) or 0)
+        rx_p = d.get("rx_pps")
+        tx_p = d.get("tx_pps")
+        dev_str = f"{name} rx{_fmt_bytes(rx_b)}/s tx{_fmt_bytes(tx_b)}/s"
+        if rx_p is not None and tx_p is not None:
+            dev_str += f" rx{_fmt_float_pps(float(rx_p))}/s tx{_fmt_float_pps(float(tx_p))}/s"
+        parts.append(dev_str)
+    return f"NET {' | '.join(parts)}"
+
+
+def _block_device_line(devices: list[dict[str, object]]) -> str:
+    """Render the DISK banner line from block_devices host_meta.
+
+    Shows the 2-3 busiest devices by read_bps + write_bps.
+    """
+    with_rates = [d for d in devices if d.get("read_bps") is not None or d.get("write_bps") is not None]
+    if not with_rates:
+        return "DISK collecting..." if devices else "DISK n/a"
+
+    sorted_devs = sorted(
+        with_rates,
+        key=lambda d: (float(d.get("read_bps", 0) or 0) + float(d.get("write_bps", 0) or 0)),
+        reverse=True,
+    )
+    top = sorted_devs[:3]
+    parts: list[str] = []
+    for d in top:
+        name = str(d["name"])
+        r_b = float(d.get("read_bps", 0) or 0)
+        w_b = float(d.get("write_bps", 0) or 0)
+        r_i = d.get("read_iops")
+        w_i = d.get("write_iops")
+        dev_str = f"{name} rd{_fmt_bytes(r_b)}/s wr{_fmt_bytes(w_b)}/s"
+        if r_i is not None and w_i is not None:
+            dev_str += f" rd{_fmt_float_pps(float(r_i))}/s wr{_fmt_float_pps(float(w_i))}/s"
+        parts.append(dev_str)
+    return f"DISK {' | '.join(parts)}"
+
+
+def _fmt_float_pps(value: float) -> str:
+    """Format packets/ops per second with appropriate unit."""
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    if value >= 1:
+        return f"{value:.1f}"
+    return "0"
 
 
 def _swap_backend_label(metric: MetricValue | None) -> str:

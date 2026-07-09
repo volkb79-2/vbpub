@@ -50,6 +50,7 @@ class Collector:
         )
         self._prev_ts: float | None = None
         self._prev_counters: dict[tuple[EntityKey, str], int] = {}
+        self._prev_device_counters: dict[str, list[dict[str, object]]] | None = None
 
     def collect_once(self) -> Frame:
         ts = self.now()
@@ -65,13 +66,15 @@ class Collector:
             frames[key] = EntityFrame(entity=sample.entity, metrics=metrics)
         self._apply_network_metrics(frames, entities, interval_s)
         self._prev_ts = ts
+        host_meta = collect_host_meta(proc_root=self.proc_root, sys_root=self.sys_root)
+        self._apply_host_device_rates(host_meta, interval_s)
         frame = Frame(
             schema_version=1,
             ts=ts,
             interval_s=interval_s,
             host=self.host_collector(),
             entities=frames,
-            host_meta=collect_host_meta(sys_root=self.sys_root),
+            host_meta=host_meta,
         )
         annotate_frame_damon(
             frame,
@@ -213,3 +216,112 @@ class Collector:
             else:
                 out["io_cap_saturation_pct"] = MetricValue(None, "unavail_kernel")
         return out
+
+    def _apply_host_device_rates(self, host_meta: dict[str, object], interval_s: float) -> None:
+        """Compute host device rates from raw counters and store in host_meta.
+
+        Replaces raw "net_device_counters" with rate "net_devices" and raw
+        "block_device_counters" with rate "block_devices". On first sample
+        (no previous counters) rates are None (collecting state).
+        """
+        prev = self._prev_device_counters
+        net_raw = _device_counter_list(host_meta, "net_device_counters")
+        block_raw = _device_counter_list(host_meta, "block_device_counters")
+
+        if net_raw is not None and (prev is None or "net_device_counters" not in prev):
+            # Compute first-sample rates (all None, collecting state)
+            net_rates = [
+                {
+                    "name": d["name"],
+                    "rx_bps": None,
+                    "tx_bps": None,
+                    "rx_pps": None,
+                    "tx_pps": None,
+                    "src": d["src"],
+                }
+                for d in net_raw
+            ]
+        elif net_raw is not None and prev is not None:
+            prev_net = prev.get("net_device_counters", [])
+            prev_map = {d["name"]: d for d in prev_net}
+            net_rates = []
+            for d in net_raw:
+                name = str(d["name"])
+                pd = prev_map.get(name)
+                if pd is None or interval_s <= 0:
+                    net_rates.append({"name": name, "rx_bps": None, "tx_bps": None, "rx_pps": None, "tx_pps": None, "src": "host"})
+                else:
+                    rx_b_delta = int(d["rx_bytes"]) - int(pd["rx_bytes"])
+                    tx_b_delta = int(d["tx_bytes"]) - int(pd["tx_bytes"])
+                    rx_p_delta = int(d["rx_packets"]) - int(pd["rx_packets"])
+                    tx_p_delta = int(d["tx_packets"]) - int(pd["tx_packets"])
+                    net_rates.append({
+                        "name": name,
+                        "rx_bps": max(0.0, rx_b_delta / interval_s),
+                        "tx_bps": max(0.0, tx_b_delta / interval_s),
+                        "rx_pps": max(0.0, rx_p_delta / interval_s),
+                        "tx_pps": max(0.0, tx_p_delta / interval_s),
+                        "src": "host",
+                    })
+            del prev_map
+        else:
+            net_rates = None
+
+        if block_raw is not None and (prev is None or "block_device_counters" not in prev):
+            block_rates = [
+                {
+                    "name": d["name"],
+                    "read_bps": None,
+                    "write_bps": None,
+                    "read_iops": None,
+                    "write_iops": None,
+                    "src": d["src"],
+                }
+                for d in block_raw
+            ]
+        elif block_raw is not None and prev is not None:
+            prev_block = prev.get("block_device_counters", [])
+            prev_map = {d["name"]: d for d in prev_block}
+            block_rates = []
+            for d in block_raw:
+                name = str(d["name"])
+                pd = prev_map.get(name)
+                if pd is None or interval_s <= 0:
+                    block_rates.append({"name": name, "read_bps": None, "write_bps": None, "read_iops": None, "write_iops": None, "src": "host"})
+                else:
+                    rd_s_delta = int(d["rd_sectors"]) - int(pd["rd_sectors"])
+                    wr_s_delta = int(d["wr_sectors"]) - int(pd["wr_sectors"])
+                    rd_io_delta = int(d["rd_ios"]) - int(pd["rd_ios"])
+                    wr_io_delta = int(d["wr_ios"]) - int(pd["wr_ios"])
+                    # Convert sectors to bytes (1 sector = 512 bytes)
+                    block_rates.append({
+                        "name": name,
+                        "read_bps": max(0.0, rd_s_delta * 512.0 / interval_s),
+                        "write_bps": max(0.0, wr_s_delta * 512.0 / interval_s),
+                        "read_iops": max(0.0, rd_io_delta / interval_s),
+                        "write_iops": max(0.0, wr_io_delta / interval_s),
+                        "src": "host",
+                    })
+            del prev_map
+        else:
+            block_rates = None
+
+        if net_rates is not None:
+            host_meta["net_devices"] = net_rates
+        host_meta.pop("net_device_counters", None)
+        if block_rates is not None:
+            host_meta["block_devices"] = block_rates
+        host_meta.pop("block_device_counters", None)
+
+        # Store current raw counters as previous for next frame
+        self._prev_device_counters = {
+            "net_device_counters": net_raw or [],
+            "block_device_counters": block_raw or [],
+        }
+
+
+def _device_counter_list(host_meta: dict[str, object], key: str) -> list[dict[str, object]] | None:
+    devices = host_meta.get(key)
+    if not isinstance(devices, list):
+        return None
+    return [device for device in devices if isinstance(device, dict) and "name" in device]
