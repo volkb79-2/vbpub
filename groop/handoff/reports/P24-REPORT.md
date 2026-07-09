@@ -42,16 +42,23 @@ None. All changes are additive (`seek_timestamp` method) or package-private (TUI
 ## Test evidence
 
 ```bash
-$ PYTHONPATH=groop/src:/tmp/groop-pytest /tmp/groop-pytest/bin/pytest groop/tests/ -q
-169 passed in 26.94s
+$ python3 -m py_compile groop/src/groop/record/replay.py groop/src/groop/ui/app.py groop/src/groop/ui/keys.py groop/tests/test_record.py groop/tests/test_ui_app.py
+# clean
+
+$ PYTHONPATH=groop/src:groop/tests /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests/test_record.py groop/tests/test_ui_app.py -q
+34 passed in 14.54s
+
+$ PYTHONPATH=groop/src:groop/tests /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
+170 passed in 28.03s
 ```
 
-8 new tests:
+9 new tests:
 - `test_replay_seek_timestamp_exact_and_clamped` — exact match, at-or-after, before-first, beyond-last, boundary.
 - `test_replay_seek_timestamp_single_frame` — single-frame edge case.
 - `test_pilot_replay_first_and_last_jump` — home/end keys, pause on jump.
 - `test_pilot_replay_jump_prompt_with_frame_number` — `j` prompt, enter "2".
 - `test_pilot_replay_jump_prompt_invalid_input_preserves_current_frame` — "not-a-number", frame unchanged, error shown.
+- `test_pilot_replay_jump_prompt_rejects_nonfinite_input` — "nan", frame unchanged, finite-value error shown.
 - `test_pilot_replay_jump_out_of_range_frame_number` — "99", frame unchanged, error shown.
 - `test_pilot_replay_jump_prompt_with_timestamp` — epoch timestamp input jumps to correct frame.
 - `test_pilot_replay_jump_in_non_replay_mode_shows_unavailable_message` — home/end/j in live mode.

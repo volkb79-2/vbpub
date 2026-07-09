@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 from collections import deque
 from collections.abc import Iterable, Iterator
@@ -314,8 +315,15 @@ class GroopApp(App[None]):
         except ValueError:
             self._refresh_status(f"invalid jump input: '{stripped}' — use a frame number or epoch timestamp")
             return
+        if not math.isfinite(parsed):
+            self._refresh_status(f"invalid jump input: '{stripped}' — use a finite frame number or epoch timestamp")
+            return
         if '.' not in stripped:
-            frame_num = int(parsed)
+            try:
+                frame_num = int(parsed)
+            except (OverflowError, ValueError):
+                self._refresh_status(f"invalid jump input: '{stripped}' — use a frame number or epoch timestamp")
+                return
             if 1 <= frame_num <= self._replay_driver.total:
                 self._replay_paused = True
                 self._cancel_replay_timer()

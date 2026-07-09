@@ -123,9 +123,9 @@ core workflows, not yet production-certified.**
 Most recent full-suite validation (P24 - Replay timestamp jump):
 
 ```bash
-/tmp/groop-pytest/bin/pytest groop/tests -q
-# 169 passed in 26.94s after the P24 merge
+/tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
+# 170 passed in 28.03s before the P24 merge
 ```
 
-Also validated: Python compile over P24 files and `groop --once --json`
-fixture smoke. P24 separately validated its replay jump features.
+Also validated: Python compile over P24 files and focused replay/UI tests.
+P24 separately validated its replay jump features.

@@ -222,6 +222,23 @@ def test_pilot_replay_jump_prompt_invalid_input_preserves_current_frame() -> Non
     asyncio.run(run())
 
 
+def test_pilot_replay_jump_prompt_rejects_nonfinite_input() -> None:
+    async def run() -> None:
+        app = _replay_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("j")
+            await pilot.pause()
+            input_widget = app.screen.query_one("#jump-input", Input)
+            input_widget.value = "nan"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app._replay_driver.index == 0
+            assert "finite frame number or epoch timestamp" in _status_text(app)
+
+    asyncio.run(run())
+
+
 def test_pilot_replay_jump_out_of_range_frame_number() -> None:
     async def run() -> None:
         app = _replay_app()

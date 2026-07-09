@@ -15,7 +15,7 @@ steps so another controller can continue after a session limit.
 ## Timeline
 
 ```text
-2025-07-11 session
+2026-07-09 session
 - Action: Created worktree and branch from main.
 - Commands: git worktree add -b feat/groop-p24-replay-jump .worktrees/-groop-p24-replay-jump main
 - Result: Worktree at 47717b6.
@@ -44,6 +44,11 @@ steps so another controller can continue after a session limit.
 - Action: Committed feature branch.
 - Commands: git add -A && git commit -m "feat(groop): P24 replay timestamp jump controls"
 - Result: Feature branch committed.
+
+- Action: Controller review hardened jump parsing and refreshed validation.
+- Commands: py_compile changed files; focused replay/UI pytest; full pytest.
+- Files changed: groop/src/groop/ui/app.py, groop/tests/test_ui_app.py, groop/docs/STATUS.md, report/log.
+- Result: Non-finite jump values now report an error instead of risking callback failure; 9 new tests total; full suite passed with 170 tests.
 ```
 
 ## Decisions
@@ -67,8 +72,14 @@ None.
 ## Validation
 
 ```bash
-PYTHONPATH=groop/src:/tmp/groop-pytest /tmp/groop-pytest/bin/pytest groop/tests/ -q
-# 169 passed in 26.94s
+python3 -m py_compile groop/src/groop/record/replay.py groop/src/groop/ui/app.py groop/src/groop/ui/keys.py groop/tests/test_record.py groop/tests/test_ui_app.py
+# clean
+
+PYTHONPATH=groop/src:groop/tests /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests/test_record.py groop/tests/test_ui_app.py -q
+# 34 passed in 14.54s
+
+PYTHONPATH=groop/src:groop/tests /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
+# 170 passed in 28.03s
 ```
 
 ## Handoff Checklist
