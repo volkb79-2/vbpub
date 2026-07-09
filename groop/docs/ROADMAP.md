@@ -37,6 +37,7 @@ flowchart TD
     P16 --> P20[P20 daemon attach mode]
     P20 --> P22[P22 daemon deployment preflight]
     P13 --> P21[P21 v2 action gating skeleton]
+    P19 --> P23[P23 ZRAM per-device drill-down]
 ```
 
 ## Near Term
@@ -85,6 +86,15 @@ wording, and documents the per-cgroup attribution boundary.
 
 Remaining polish: render per-device ZRAM details and consider compatibility
 aliases for the legacy `swap_disk`/`rf_d` names.
+
+### P23 - ZRAM Per-Device Drill-Down
+
+Status: planned. P23 should preserve per-device zram state as structured
+host-level frame metadata and render it in the host-memory surface. It must not
+claim per-cgroup zram compression or physical-memory attribution, because the
+kernel does not expose those values per cgroup.
+
+Handoff: `handoff/P23-zram-device-drilldown.md`.
 
 ## Medium Term
 
