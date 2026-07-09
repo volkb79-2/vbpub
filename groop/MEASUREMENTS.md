@@ -6,15 +6,15 @@ claims without updating this file.
 
 ## Current Evidence
 
-Most recent merged package validation after P13:
+Most recent merged package validation after P14:
 
 ```bash
-# isolated venv, from feat/groop-p13-ui-navigation
+# isolated venv reused from P13/P14 review
 /tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
-# 84 passed in 12.03s
+# 87 passed in 14.01s
 ```
 
-Also passed after P13 review: `py_compile`, `--once --json` over the
+Also passed after P14 review: `py_compile`, `--once --json` over the
 gstammtisch fixture, and replay UI smoke
 (`ui smoke ok frames=1 view=tree profile=auto`).
 

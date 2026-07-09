@@ -15,7 +15,7 @@ Approximate status:
 |---|---:|---:|---|
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 80-85% | medium | Core daily triage works. Remaining gaps are release evidence, UI polish, richer host banner/device surfaces, and some acceptance criteria. |
-| v1.5 DAMON/snapshots/backend awareness | 70-80% | medium-low | Passive/control APIs and CLI paths exist with fixture tests. Full Textual confirmation modals, real-root acceptance, and ZRAM/swap-backend awareness are still missing. |
+| v1.5 DAMON/snapshots/backend awareness | 75-85% | medium | Passive/control APIs, CLI paths, and TUI typed-confirmation modals exist with fixture tests. Real-root acceptance and ZRAM/swap-backend awareness are still missing. |
 | v2 daemon/BPF/admin actions | 5-10% | low | Provider abstractions and safety patterns exist; daemon, BPF, admin actions, file inspection, GPU/ZFS plugins are not implemented. |
 
 These percentages are engineering estimates, not release tags. The strongest
@@ -60,8 +60,8 @@ core workflows, not yet production-certified.**
   columns are surfaced as ignored metadata.
 - **Diagnostics inputs:** pressure score works, but true `io_cap_saturation_pct`
   and attributable network loss/retransmit inputs are absent.
-- **DAMON controls:** underlying APIs and CLI are tested; Textual typed-confirm
-  modal flow is still a notice/planning surface.
+- **DAMON controls:** underlying APIs, CLI, and TUI typed-confirm modals are
+  fixture-tested. Live-root acceptance still needs a deliberate test host.
 - **Snapshots:** snapshot bundles are usable; live systemctl/docker refresh at
   snapshot time is not yet wired.
 - **Acceptance evidence:** P12 records tests, packaging, fixture JSON, replay
@@ -103,11 +103,11 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent package validation from P13:
+Most recent package validation from P14:
 
 ```bash
 /tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
-# 84 passed in 12.03s
+# 87 passed in 14.01s
 ```
 
 Also validated: Python compile over `src/groop`, `--once --json`, replay UI

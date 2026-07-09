@@ -59,12 +59,13 @@ customization can be carved later if needed.
 
 ### P14 — DAMON Control Modal And Live-Root Acceptance
 
-Goal: full Textual typed-confirmation modal for vaddr and paddr, `damon_stat`
-conflict handling if feasible, and recorded live-root acceptance on a deliberate
-test host.
+Status: done with a live-root gap. P14 added Textual typed-confirmation modals
+for vaddr and paddr, groop-owned cleanup controls, fixture safety tests, and
+operations/measurement docs.
 
-Why next: P9/P11 are technically safe, but the TUI control flow is still a
-planning notice rather than an applied modal.
+Remaining gate: run live-root acceptance on a deliberate test host and record
+the results in `MEASUREMENTS.md`. `damon_stat` conflict handling remains
+conservative/read-only.
 
 ### P15 — Snapshot Enrichment
 
