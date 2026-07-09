@@ -68,6 +68,7 @@ def make_collector(root: Path, times: list[float], *, proc_root: Path | None = N
         lambda: times.pop(0),
         providers,
         proc_root=proc_root,
+        sys_root=fixture_root() / "sysfs" / "empty",
         damon_root=fixture_root() / "damonfs" / "no-root" / "kdamonds",
         systemctl_show_runner=systemctl_fixture_runner("gstammtisch"),
     )

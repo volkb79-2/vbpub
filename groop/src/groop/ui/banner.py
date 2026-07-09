@@ -186,7 +186,7 @@ def _get_device_list(meta: dict[str, object] | None, key: str) -> list[dict[str,
     devices = meta.get(key)
     if not isinstance(devices, list):
         return None
-    return devices  # type: ignore[return-value]
+    return [device for device in devices if isinstance(device, dict) and "name" in device]
 
 
 def _net_device_line(devices: list[dict[str, object]]) -> str:

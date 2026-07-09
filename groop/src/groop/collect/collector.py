@@ -225,8 +225,8 @@ class Collector:
         (no previous counters) rates are None (collecting state).
         """
         prev = self._prev_device_counters
-        net_raw: list[dict[str, object]] | None = host_meta.get("net_device_counters")  # type: ignore[assignment]
-        block_raw: list[dict[str, object]] | None = host_meta.get("block_device_counters")  # type: ignore[assignment]
+        net_raw = _device_counter_list(host_meta, "net_device_counters")
+        block_raw = _device_counter_list(host_meta, "block_device_counters")
 
         if net_raw is not None and (prev is None or "net_device_counters" not in prev):
             # Compute first-sample rates (all None, collecting state)
@@ -242,7 +242,7 @@ class Collector:
                 for d in net_raw
             ]
         elif net_raw is not None and prev is not None:
-            prev_net: list[dict[str, object]] = prev.get("net_device_counters", [])  # type: ignore[assignment]
+            prev_net = prev.get("net_device_counters", [])
             prev_map = {d["name"]: d for d in prev_net}
             net_rates = []
             for d in net_raw:
@@ -280,7 +280,7 @@ class Collector:
                 for d in block_raw
             ]
         elif block_raw is not None and prev is not None:
-            prev_block: list[dict[str, object]] = prev.get("block_device_counters", [])  # type: ignore[assignment]
+            prev_block = prev.get("block_device_counters", [])
             prev_map = {d["name"]: d for d in prev_block}
             block_rates = []
             for d in block_raw:
@@ -318,3 +318,10 @@ class Collector:
             "net_device_counters": net_raw or [],
             "block_device_counters": block_raw or [],
         }
+
+
+def _device_counter_list(host_meta: dict[str, object], key: str) -> list[dict[str, object]] | None:
+    devices = host_meta.get(key)
+    if not isinstance(devices, list):
+        return None
+    return [device for device in devices if isinstance(device, dict) and "name" in device]

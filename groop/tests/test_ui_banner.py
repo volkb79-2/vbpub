@@ -11,8 +11,8 @@ def test_banner_snapshot_renders_golden_fixture_summary() -> None:
     assert snapshot.verdict == "OK"
     assert snapshot.lines[0] == "HOST OK"
     assert snapshot.lines[1].startswith("LOAD 0.10/0.20/0.30 | MEM 7.8KiB avail / 15.6KiB total")
-    assert snapshot.lines[6] == "TOP PRESSURE"
-    assert snapshot.lines[7].startswith("1 /")
+    top_index = snapshot.lines.index("TOP PRESSURE")
+    assert snapshot.lines[top_index + 1].startswith("1 /")
 
 
 def test_banner_counts_unavailable_permissions_and_shows_notice() -> None:
@@ -139,8 +139,8 @@ def test_banner_renders_net_and_disk_lines() -> None:
     assert "DISK" in lines
     assert "nvme0n1" in lines
     # Verify byte formatting
-    assert "976.6KiB/s" in lines  # 1000000 B/s ≈ 976.6 KiB/s
-    assert "47.7MiB/s" in lines  # 50000000 B/s ≈ 47.7 MiB/s
+    assert "976.6KiB/s" in lines  # 1000000 B/s approximately 976.6 KiB/s
+    assert "47.7MiB/s" in lines  # 50000000 B/s approximately 47.7 MiB/s
 
 
 def test_banner_renders_collecting_line_on_first_sample() -> None:
@@ -167,6 +167,28 @@ def test_banner_renders_n_a_when_no_host_meta() -> None:
     lines = "\n".join(snapshot.lines)
     assert "NET" not in lines
     assert "DISK" not in lines
+
+
+def test_banner_ignores_malformed_host_meta_device_entries() -> None:
+    frame = _make_base_frame()
+    frame.host_meta = {
+        "net_devices": [
+            "bad-entry",
+            {"rx_bps": 1.0, "tx_bps": 2.0},
+            {"name": "eth0", "rx_bps": 1.0, "tx_bps": 2.0, "rx_pps": None, "tx_pps": None},
+        ],
+        "block_devices": [
+            None,
+            {"read_bps": 1.0, "write_bps": 2.0},
+            {"name": "nvme0n1", "read_bps": 1.0, "write_bps": 2.0, "read_iops": None, "write_iops": None},
+        ],
+    }
+
+    snapshot = render_banner(frame, GroopConfig())
+    lines = "\n".join(snapshot.lines)
+
+    assert "eth0" in lines
+    assert "nvme0n1" in lines
 
 
 def test_banner_shows_busiest_two_devices() -> None:
