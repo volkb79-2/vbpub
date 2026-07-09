@@ -70,6 +70,29 @@ The command returns non-zero with an error message on stderr if the socket is
 missing, unreachable, or returns a protocol error. It never falls back to live
 collection.
 
+## Daemon Status Command
+
+`groop daemon status --socket PATH --group NAME [--json] [--pretty-json]`
+combines deployment preflight checks with a protocol current-frame check to
+answer "is the daemon deployment usable from this account, and is it speaking
+the expected groop frame protocol?"
+
+```bash
+groop daemon status                              # default socket and group
+groop daemon status --json                       # JSON output
+groop daemon status --pretty-json                # indented JSON
+groop daemon status --socket /custom/path.sock --group mygroup
+```
+
+Exit codes:
+- `0` when preflight is usable and the current-frame protocol check succeeds.
+- `1` when preflight or protocol check fails (with guidance in the output).
+- `2` for argument/usage errors.
+
+The command is read-only: it inspects filesystem metadata, group membership,
+and makes one `current` request over the existing P16 daemon protocol. It
+never runs systemd, mutates files, or changes ownership/modes.
+
 Current slice limitations:
 
 - `--attach` is intentionally rejected with `--replay` and `--cgroup-root`.

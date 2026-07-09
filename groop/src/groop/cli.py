@@ -144,6 +144,21 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
     )
     current.add_argument("--json", action="store_true", help="emit JSON (default)")
     current.add_argument("--pretty-json", action="store_true", help="pretty-print the frame JSON")
+    status = subparsers.add_parser("status", help="check daemon deployment and protocol status")
+    status.add_argument(
+        "--socket",
+        type=Path,
+        default=DEFAULT_DAEMON_SOCKET,
+        help=f"daemon socket path (default: {DEFAULT_DAEMON_SOCKET})",
+    )
+    status.add_argument(
+        "--group",
+        type=str,
+        default=DEFAULT_DAEMON_GROUP,
+        help=f"expected daemon group (default: {DEFAULT_DAEMON_GROUP})",
+    )
+    status.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    status.add_argument("--pretty-json", action="store_true", help="pretty-print JSON output")
     return parser.parse_args(argv)
 
 
@@ -598,6 +613,19 @@ def _main_daemon(argv: list[str]) -> int:
             return 2
         _print_frame_json(frame, args.pretty_json)
         return 0
+    if args.command == "status":
+        from groop.daemon.status import build_daemon_status
+
+        try:
+            report = build_daemon_status(args.socket, group_name=args.group)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if args.json or args.pretty_json:
+            print(json.dumps(report.to_jsonable(), indent=2 if args.pretty_json else None, sort_keys=True))
+        else:
+            print(report.to_text())
+        return 0 if report.ok else 1
     print("unknown daemon command", file=sys.stderr)
     return 2
 
