@@ -11,7 +11,7 @@
 ## Timeline
 
 ```text
-2025-07-18 UTC
+2026-07-09 UTC
 - Action: Created worktree and branch from main
 - Commands: git worktree add -b feat/groop-p25-daemon-install-plan .worktrees/-groop-p25-daemon-install-plan main
 - Files changed: (worktree setup only)
@@ -49,8 +49,13 @@
 - Commands: 
   python3 -m py_compile groop/src/groop/daemon/deploy.py groop/src/groop/cli.py groop/tests/test_daemon_deploy.py
   python3 -m pytest groop/tests -q
-- Result: py_compile clean; 177 passed in 28.12s
+- Result: py_compile clean; pre-review full suite passed with 177 tests.
 - Follow-up: Write P25-REPORT.md and commit
+
+- Action: Controller review fixed custom socket/group rendering.
+- Commands: py_compile changed files; focused daemon deploy tests; custom JSON plan smoke; full pytest.
+- Files changed: groop/src/groop/daemon/deploy.py, groop/tests/test_daemon_deploy.py, groop/docs/STATUS.md, report/log.
+- Result: Custom plans now install rendered service/tmpfiles content matching the requested socket/group; focused tests passed; full suite passed with 177 tests in 27.93s.
 ```
 
 ## Decisions
@@ -79,7 +84,7 @@ python3 -m pytest groop/tests/test_daemon_deploy.py -v
 # 11 passed in 1.60s
 
 python3 -m pytest groop/tests -q
-# 177 passed in 28.12s
+# 177 passed in 27.93s
 
 python3 -m groop.cli daemon install-plan
 # Text output shows 7 ordered steps plus warnings

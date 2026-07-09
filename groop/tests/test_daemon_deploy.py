@@ -165,9 +165,6 @@ def test_systemd_templates_are_packaged() -> None:
 
 def test_install_plan_deterministic_defaults() -> None:
     """build_install_plan with defaults returns deterministic JSON."""
-    import grp as grp_module
-    import os as os_module
-    import subprocess as subprocess_module
     from groop.daemon.deploy import (
         DEFAULT_DAEMON_GROUP,
         DEFAULT_DAEMON_SOCKET,
@@ -196,6 +193,7 @@ def test_install_plan_deterministic_defaults() -> None:
     assert "PLAN only" in text
     assert "groupadd" in text
     assert "systemctl" in text
+    assert "install -m 0644 -o root -g root /dev/stdin" in text
     assert str(DEFAULT_DAEMON_SOCKET) in text
 
 
@@ -221,6 +219,11 @@ def test_install_plan_custom_args() -> None:
     assert j["service_dest"] == "/opt/systemd/system/groop.service"
     assert j["tmpfiles_dest"] == "/opt/tmpfiles.d/groop.conf"
     assert j["plan"] == "install"
+    assert "Group=custom-group" in plan.service_content
+    assert "--socket /tmp/custom/groop.sock" in plan.service_content
+    assert "d /tmp/custom 0750 root custom-group -" in plan.tmpfiles_content
+    assert "/run/groop 0750 root groop" not in plan.tmpfiles_content
+    assert all("assets/systemd" not in (step.command or "") for step in plan.steps)
 
 
 def test_install_plan_contains_correct_template_content() -> None:

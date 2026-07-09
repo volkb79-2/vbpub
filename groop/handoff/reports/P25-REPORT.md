@@ -29,8 +29,12 @@
 
 ## Deviations
 
-- Step commands for template installation use `$(python3 -c "import importlib.resources as r; ...")` to resolve the packaged asset path dynamically. This is more portable than a hardcoded filesystem path and works across editable, wheel, and pipx installs.
-- The embedded `service_content` and `tmpfiles_content` in JSON output are the full template text. The handoff said "source asset names" but including the content lets operators review the templates without finding them on disk.
+- Step commands for template installation use heredocs with rendered template
+  content. This makes custom `--socket` and `--group` plans self-consistent
+  instead of copying the default packaged templates unchanged.
+- The embedded `service_content` and `tmpfiles_content` in JSON output are the
+  rendered full template text. The handoff said "source asset names" but
+  including the content lets operators review the exact files before writing.
 - Step 2 (`usermod`) uses `<username>` as placeholder — the handoff did not specify a mechanism for listing approved users, so the operator must fill in actual usernames.
 
 ## Contract Changes
@@ -47,9 +51,9 @@ python3 -m pytest groop/tests/test_daemon_deploy.py -v
 # 11 passed in 1.60s
 
 python3 -m pytest groop/tests -q
-# 177 passed in 28.12s
+# 177 passed in 27.93s
 
-python3 -m groop.cli daemon install-plan
+PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m groop.cli daemon install-plan
 # groop daemon install plan
 # ============================================================
 # socket path : /run/groop/groop.sock
@@ -61,8 +65,12 @@ python3 -m groop.cli daemon install-plan
 # ... (7 steps, warnings, PLAN disclaimer)
 # This is a PLAN only. No files were written and no system state was changed.
 
-python3 -m groop.cli daemon install-plan --json > /dev/null
+PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m groop.cli daemon install-plan --json > /dev/null
 # exit 0; valid JSON with plan, steps, warnings, service_content, tmpfiles_content
+
+PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m groop.cli daemon install-plan --group custom --socket /tmp/custom/groop.sock --json
+# rendered service_content uses Group=custom and --socket /tmp/custom/groop.sock;
+# rendered tmpfiles_content creates /tmp/custom with root:custom
 ```
 
 ## Known Gaps
@@ -70,7 +78,9 @@ python3 -m groop.cli daemon install-plan --json > /dev/null
 - The plan is a guide only — there is no automated installer that executes the steps. The operator must copy and run each command manually.
 - Step 2 (`usermod -aG groop <username>`) uses a placeholder; no user-discovery or batch-add mechanism is provided.
 - No distro-specific logic: the plan assumes systemd with `groupadd`/`usermod`/`systemctl` commands (Debian/Ubuntu/RHEL compatible). BSD or non-systemd systems are not covered.
-- The template asset commands assume the groop package is installed in the active Python environment; an editable install with a different `PYTHONPATH` may resolve assets differently.
+- Custom socket paths outside `/run/groop` are rendered into the service and
+  tmpfiles content, but operators should still review systemd `RuntimeDirectory`
+  behavior for their target host.
 - The command does not inspect host state (the preflight command is the companion for that).
 
 ## Controller Merge Review
@@ -78,6 +88,6 @@ python3 -m groop.cli daemon install-plan --json > /dev/null
 - Feature commit(s) on `feat/groop-p25-daemon-install-plan`.
 - Pre-merge validation:
   - `python3 -m pytest groop/tests/test_daemon_deploy.py -v` -> `11 passed in 1.60s`
-  - `python3 -m pytest groop/tests -q` -> `177 passed in 28.12s`
+  - `python3 -m pytest groop/tests -q` -> `177 passed in 27.93s`
   - `python3 -m py_compile groop/src/groop/daemon/deploy.py groop/src/groop/cli.py groop/tests/test_daemon_deploy.py` -> clean
   - `python3 -m groop.cli daemon install-plan --json | python3 -m json.tool > /dev/null` -> exit 0, valid JSON

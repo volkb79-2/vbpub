@@ -400,8 +400,16 @@ def build_install_plan(
     service_dest = Path(service_dest)
     tmpfiles_dest = Path(tmpfiles_dest)
 
-    service_content = _read_asset(SERVICE_ASSET)
-    tmpfiles_content = _read_asset(TMPFILES_ASSET)
+    service_content = _render_service_content(
+        _read_asset(SERVICE_ASSET),
+        socket_path=socket_path,
+        group_name=group_name,
+    )
+    tmpfiles_content = _render_tmpfiles_content(
+        _read_asset(TMPFILES_ASSET),
+        runtime_dir=socket_path.parent,
+        group_name=group_name,
+    )
 
     steps = (
         InstallPlanStep(
@@ -428,28 +436,18 @@ def build_install_plan(
             order=3,
             description=(
                 f"Install the tmpfiles configuration to {tmpfiles_dest} "
-                f"(ensures /run/groop is created with 0750 root:{group_name})"
+                f"(ensures {socket_path.parent} is created with 0750 root:{group_name})"
             ),
-            command=(
-                f"install -m 0644 -o root -g root "
-                f"$(python3 -c \"import importlib.resources as r; "
-                f"print(r.files('groop') / '{TMPFILES_ASSET}')\") "
-                f"{tmpfiles_dest}"
-            ),
-            warning="Review the template content before copying; edit destination paths if needed.",
+            command=_install_heredoc_command(tmpfiles_content, tmpfiles_dest),
+            warning="Review the rendered tmpfiles content before copying.",
         ),
         InstallPlanStep(
             order=4,
             description=(
                 f"Install the systemd service unit to {service_dest}"
             ),
-            command=(
-                f"install -m 0644 -o root -g root "
-                f"$(python3 -c \"import importlib.resources as r; "
-                f"print(r.files('groop') / '{SERVICE_ASSET}')\") "
-                f"{service_dest}"
-            ),
-            warning="Review the service template before enabling; verify ExecStart and socket path.",
+            command=_install_heredoc_command(service_content, service_dest),
+            warning="Review the rendered service unit before enabling; verify ExecStart and socket path.",
         ),
         InstallPlanStep(
             order=5,
@@ -482,7 +480,7 @@ def build_install_plan(
     warnings = (
         "This is a PLAN, not an installer. No host state has been modified.",
         f"The daemon socket at {socket_path} will be group-readable by {group_name!r}.",
-        "Template files are read from the packaged groop assets; verify paths before copying.",
+        "Template files are rendered from the packaged groop assets; verify paths before copying.",
     )
 
     return DaemonInstallPlan(
@@ -522,6 +520,24 @@ def install_plan_to_jsonable(plan: DaemonInstallPlan) -> dict[str, object]:
         "tmpfiles_dest": str(plan.tmpfiles_dest),
         "warnings": list(plan.warnings),
     }
+
+
+def _render_service_content(template: str, *, socket_path: Path, group_name: str) -> str:
+    rendered = template.replace("Group=groop", f"Group={group_name}")
+    rendered = rendered.replace("--socket /run/groop/groop.sock", f"--socket {socket_path}")
+    rendered = rendered.replace("the groop group", f"the {group_name} group")
+    return rendered
+
+
+def _render_tmpfiles_content(template: str, *, runtime_dir: Path, group_name: str) -> str:
+    rendered = template.replace("the groop group", f"the {group_name} group")
+    rendered = rendered.replace("d /run/groop 0750 root groop -", f"d {runtime_dir} 0750 root {group_name} -")
+    return rendered
+
+
+def _install_heredoc_command(content: str, dest: Path) -> str:
+    body = content.rstrip("\n")
+    return f"install -m 0644 -o root -g root /dev/stdin {dest} <<'EOF'\n{body}\nEOF"
 
 
 def render_install_plan_text(plan: DaemonInstallPlan) -> str:
