@@ -41,6 +41,7 @@ flowchart TD
     P19 --> P23[P23 ZRAM per-device drill-down]
     P13 --> P24[P24 Replay timestamp jump controls]
     P15 --> P26[P26 Snapshot progress UI]
+    P19 --> P27[P27 Swap/refault terminology aliases]
 ```
 
 ## Near Term
@@ -99,12 +100,21 @@ Report: `handoff/reports/P26-REPORT.md`.
 
 ### P19 — ZRAM And Swap-Backend Awareness
 
-Status: done with a per-device drill-down gap. P19 detects active
+Status: done with a terminology-alias gap. P19 detects active
 zswap/zram/disk/mixed backends, adds host-level ZRAM metrics, corrects banner
-wording, and documents the per-cgroup attribution boundary.
+wording, and documents the per-cgroup attribution boundary. P23 closed the
+per-device drill-down gap.
 
 Remaining polish: consider compatibility aliases for the legacy `swap_disk` and
 `rf_d` names.
+
+### P27 - Swap/Refault Terminology Aliases
+
+Status: planned. P27 should keep canonical frame keys stable while allowing
+clearer `swap_dev` and `rf_dev_per_s` profile/UI aliases and backend-aware
+labels.
+
+Handoff: `handoff/P27-swap-refault-aliases.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 
