@@ -51,6 +51,7 @@ REGISTRY: dict[str, MetricSpec] = {
     "io_w_iops": _m("io_w_iops", "/s", "derived", "subtree", "kernel_subtree", True, ("io.stat:wios",), "Write operation rate from io.stat deltas."),
     "io_discard_bps": _m("io_discard_bps", "bytes/s", "derived", "subtree", "kernel_subtree", True, ("io.stat:dbytes",), "Discard bandwidth from io.stat deltas."),
     "io_max_capped": _m("io_max_capped", "count", "gauge", "local", "local_only", False, ("io.max",), "Whether any finite io.max cap is configured for the cgroup: 1 when capped, 0 when every io.max limit is unlimited."),
+    "io_cap_saturation_pct": _m("io_cap_saturation_pct", "%", "derived", "local", "local_only", False, ("io.max", "io.stat"), "I/O cap saturation: highest ratio of any I/O rate (r/w bytes/s or ops/s) to its finite io.max cap, expressed as a percentage. Values above 100 mean the rate exceeded the cap during the sample. Unavailable when no finite cap exists or rates are missing."),
     "mem_min": _m("mem_min", "bytes", "gauge", "local", "local_only", False, ("memory.min",), "Configured memory.min protection for this cgroup."),
     "mem_low": _m("mem_low", "bytes", "gauge", "local", "local_only", False, ("memory.low",), "Configured memory.low protection for this cgroup."),
     "mem_high": _m("mem_high", "bytes", "gauge", "local", "local_only", False, ("memory.high",), "Configured memory.high throttle threshold; src=unlimited when no throttle is configured."),

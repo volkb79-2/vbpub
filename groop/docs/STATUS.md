@@ -78,8 +78,8 @@ core workflows, not yet production-certified.**
   and smoke testing. Timestamp jump controls landed in P24.
 - **Custom profiles:** named profile lists work and unsupported configured
   columns are surfaced as ignored metadata.
-- **Diagnostics inputs:** pressure score works, but true `io_cap_saturation_pct`
-  and attributable network loss/retransmit inputs are absent.
+- **Diagnostics inputs:** pressure score and `io_cap_saturation_pct` work;
+  attributable network loss/retransmit is the remaining input gap.
 - **DAMON controls:** underlying APIs, CLI, and TUI typed-confirm modals are
   fixture-tested. Live-root acceptance still needs a deliberate test host.
 - **Snapshots:** snapshot bundles include bounded frame history, cgroup files,
@@ -130,12 +130,12 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P27 - Swap/refault aliases):
+Most recent full-suite validation (P28 - I/O cap saturation):
 
 ```bash
 python3 -m pytest groop/tests -q
-# 201 passed in 29.44s after the P27 merge
+# 216 passed in 29s (P28 adds io cap saturation tests)
 ```
 
-Also validated: Python compile over P27 files.
-P27 separately validated alias resolution, backend-aware labels, diagnostic wording changes.
+Also validated: Python compile over P28 files.
+P28 separately validated io.max parsing, saturation derivation, diagnostics integration.
