@@ -130,9 +130,9 @@ operator wants on top of the read-only socket boundary.
 
 ### P21 — Admin Action Gating Skeleton
 
-Goal: add disabled-by-default, preview-only admin action planning with explicit
-`--admin`, exact argv previews, and audit logging, without executing
-Docker/systemd commands.
+Status: done. P21 adds disabled-by-default, preview-only admin action planning
+with explicit `--admin`, exact argv previews, and optional audit logging,
+without executing Docker/systemd commands.
 
 Handoff: `handoff/P21-admin-action-gating-skeleton.md`.
 
