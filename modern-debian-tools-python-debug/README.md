@@ -475,6 +475,10 @@ Some release steps call `skopeo` directly instead of `docker push`. For those, s
 current shell cannot reuse `~/.docker/config.json`. Keep that file untracked; it is only a
 local runtime fallback, not a project artifact.
 
+> **Note:** When using the new cmru oci-image handler (cmru.toml `[project.xxx.oci]`),
+> cmru handles Docker login automatically. The `.ghcr-auth.json` fallback is only needed
+> for manual/local use outside cmru.
+
 ## Persisting AI Tool State
 
 If you want agent state to survive devcontainer rebuilds, keep the workspace mount persistent and

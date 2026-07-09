@@ -16,8 +16,6 @@ Plain Python-on-Debian runtime with curated CLI tooling, managed venv helpers, a
 OCI_DESCRIPTION_VSC = """Modern Debian Tools + Python Debug VS Code devcontainer image.
 Microsoft devcontainers base plus curated CLI tooling, managed venv helpers, and repository-hosted release manifests for richer per-package documentation.
 """
-RELEASE_IMAGE_FLOW = "repack"
-REPACK_TARGET_SIZE = "2GB"
 
 # BUILD_DATE is commit-derived by the release-manager (no counter; the
 # auto-increment keys were retired with the move to git-tag versioning).
@@ -156,8 +154,3 @@ commands = [
   { label = "modern-debian-tools-python-debug: push images", argv = ["bash", "scripts/release-bake.sh", "push"], cwd = "." },
 ]
 
-[steps.push-images.login]
-registry = "ghcr.io"
-username_env = "GITHUB_USERNAME"
-token_env = "GITHUB_PUSH_PAT"
-required = true

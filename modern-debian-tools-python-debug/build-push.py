@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Build and push modern-debian-tools-python-debug images.
 
+NOTE: When invoked via cmru release, the built-in oci-image handler replaces this script.
+This file remains for manual/local use outside cmru.
+
 Usage:
   ./build-push.py --build        # Resolve env, build images, save state
   ./build-push.py --push         # Load saved state, push images (skips resolver)

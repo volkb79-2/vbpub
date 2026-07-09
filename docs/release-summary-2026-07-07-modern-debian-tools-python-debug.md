@@ -21,6 +21,8 @@ Summary of the `20260707-10` release batch and the repack work that followed.
 - `scripts/release-bake.sh` now records build/repack timing markers.
 - `scripts/release-repack.sh` now pushes the repacked OCI layout correctly with `oci:${DST_OCI}`.
 - `/.ghcr-auth.json` is treated as workspace-local runtime auth and ignored by git.
+  > **Note:** The new cmru oci-image handler (cmru.toml `[project.xxx.oci]`) handles
+  > Docker login automatically; `.ghcr-auth.json` is only needed for manual/local use.
 
 ## Release batch
 

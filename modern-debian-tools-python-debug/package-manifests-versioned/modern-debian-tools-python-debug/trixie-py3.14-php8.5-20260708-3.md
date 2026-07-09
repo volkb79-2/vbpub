@@ -119,3 +119,7 @@ Key packages include: `bash-completion`, `bind9-dnsutils`, `ca-certificates`, `c
 This repository-hosted page exists because GHCR package descriptions render as flattened plain text.
 The image labels therefore point to GitHub-hosted Markdown for richer, package-specific release notes.
 The same manifest content is installed in-image at `/usr/local/share/modern-debian-tools-python-debug/manifest.md`.
+
+> **Note:** `skopeo` is included in this image for manual docker/OCI operations
+> (inspect, copy, tag, etc.). When releasing via the cmru built-in oci-image handler,
+> skopeo is not required — the handler uses docker-repack internally.
