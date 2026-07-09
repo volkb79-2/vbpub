@@ -105,6 +105,10 @@ v1.5 should implement read-only detection, metrics, banner/drill-down wording,
 fixtures, and tests. It should not tune zram, trigger recompression, configure
 writeback, reset devices, or write to zram sysfs.
 
+Per-device drill-down is implemented as structured host metadata
+(`Frame.host_meta["zram_devices"]`) and rendered in the host-memory screen.
+See `handoff/reports/P23-REPORT.md`.
+
 Primary sources:
 
 - Linux kernel ZRAM admin guide:

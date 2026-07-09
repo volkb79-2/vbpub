@@ -89,12 +89,13 @@ aliases for the legacy `swap_disk`/`rf_d` names.
 
 ### P23 - ZRAM Per-Device Drill-Down
 
-Status: planned. P23 should preserve per-device zram state as structured
-host-level frame metadata and render it in the host-memory surface. It must not
-claim per-cgroup zram compression or physical-memory attribution, because the
-kernel does not expose those values per cgroup.
+Status: done. P23 preserves per-device zram state as structured host-level frame
+metadata (`Frame.host_meta["zram_devices"]`) and renders it in the host-memory
+surface. It does not claim per-cgroup zram compression or physical-memory
+attribution, because the kernel does not expose those values per cgroup.
 
 Handoff: `handoff/P23-zram-device-drilldown.md`.
+Report: `handoff/reports/P23-REPORT.md`.
 
 ## Medium Term
 
