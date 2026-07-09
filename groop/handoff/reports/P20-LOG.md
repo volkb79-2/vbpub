@@ -128,3 +128,13 @@ Append newest entries at the bottom.
 - [x] Tests/compile/smoke recorded.
 - [x] Known gaps documented.
 - [x] Feature branch committed.
+
+## Controller Merge
+
+2026-07-09 14:50 CEST
+- Action: Controller reviewed, amended, merged P20 into `main`, and recorded
+  post-merge validation.
+- Commands: `git merge --no-ff feat/groop-p20-daemon-attach`, focused attach
+  tests, full groop suite, `py_compile`, once/json fixture smoke, replay UI
+  smoke, BPF gate JSON smoke.
+- Result: Merge commit `e8fb0cb`; post-merge full suite passed with 104 tests.

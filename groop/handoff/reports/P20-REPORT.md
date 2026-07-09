@@ -61,3 +61,14 @@ attach smoke against a local FrameBroker socket:
   is no additional authentication layer yet.
 - Further daemon history/stream refinements can come later if attach needs a
   richer subscription model.
+
+## Controller Merge Review
+
+- Feature commit reviewed and amended: `a1f9f31`.
+- Merge commit: `e8fb0cb`.
+- Post-merge validation from `main`:
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests/test_daemon_client.py groop/tests/test_attach_cli.py -q` -> `6 passed in 8.89s`
+  - `/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q` -> `104 passed in 23.08s`
+  - `PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli --once --json --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch` -> `schema_version=1 entities=8 host_metrics=36`
+  - `PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --step --ui-smoke` -> `ui smoke ok frames=1 view=tree profile=auto`
+  - `PYTHONPATH=groop/src /tmp/vbpub-groop-p13-venv/bin/python -m groop.cli bpf gate --proc-root groop/tests/fixtures/procfs/network --json` -> safe no-op JSON

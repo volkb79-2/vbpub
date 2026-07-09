@@ -6,19 +6,18 @@ claims without updating this file.
 
 ## Current Evidence
 
-Most recent merged package validation after P17:
+Most recent merged package validation after P20:
 
 ```bash
-# isolated venv reused from P13/P14/P16/P17 review
+# isolated venv reused from P13/P14/P16/P17/P20 review
 /tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
-# 98 passed in 15.40s
+# 104 passed in 23.08s
 ```
 
-Also passed after P17 review: focused BPF gate tests, `py_compile` over the
-changed BPF/CLI files, `groop bpf gate --proc-root
-groop/tests/fixtures/procfs/network --json`, `--once --json` over the
-gstammtisch cgroup fixture (`schema_version=1 entities=8 host_metrics=36`), and
-replay UI smoke (`ui smoke ok frames=1 view=tree profile=auto`).
+Also passed after P20 review: focused daemon attach tests, `py_compile` over the
+changed daemon/CLI/UI files, `--once --json` over the gstammtisch cgroup fixture
+(`schema_version=1 entities=8 host_metrics=36`), replay UI smoke (`ui smoke ok
+frames=1 view=tree profile=auto`), and the BPF gate JSON smoke.
 
 P12 package evidence remains: sdist/wheel build, fresh wheel install, and
 `groop --version` (`groop 0.1.0`).
