@@ -69,7 +69,7 @@ Useful feature hotkeys in the TUI:
 | P12 | Done | Release hardening, acceptance evidence, packaging | v1/v1.5 | Tests, compile, fixture JSON, replay smoke, build, wheel install, and version checks recorded. Report: `handoff/reports/P12-REPORT.md`. |
 | P13 | Done | UI navigation, replay controls, reserved action UX | v1 | Tree collapse/expand, replay status/controls, disabled v2 action messaging, profile warnings. Report: `handoff/reports/P13-REPORT.md`. |
 | P14 | Done with live-root gap | DAMON control modal and live-root acceptance | v1.5 | TUI typed-confirmation modals and fixture safety tests landed; live-root acceptance remains deliberate test-host work. Report: `handoff/reports/P14-REPORT.md`. |
-| P15 | Proposed | Incident snapshot enrichment and UX | v1.5 | Fresh systemctl/docker metadata, progress, redaction polish. Handoff: `handoff/P15-snapshot-enrichment.md`. |
+| P15 | Done with progress gap | Incident snapshot enrichment and UX | v1.5 | Fresh systemctl/docker metadata, richer inspect output, redaction/docs/tests; progress UI remains future polish. Report: `handoff/reports/P15-REPORT.md`. |
 | P19 | Proposed | ZRAM and swap-backend awareness | v1.5 | Detect active zswap/zram/disk backends, add host ZRAM metrics/banner, clarify formulas. Handoff: `handoff/P19-zram-swap-backend-awareness.md`. |
 | P16 | Proposed | Daemon read broker for non-root full reads | v1.5/v2 foundation | Unix-socket read broker prototype and threat model; prioritized before network/BPF. Handoff: `handoff/P16-daemon-read-broker-spike.md`. |
 | P17 | Proposed | BPF provider measurement gate and design | v2 foundation | Benchmarks and design before implementation/defaults. Handoff: `handoff/P17-bpf-provider-measurement-gate.md`. |

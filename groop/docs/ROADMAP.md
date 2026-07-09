@@ -69,11 +69,12 @@ conservative/read-only.
 
 ### P15 — Snapshot Enrichment
 
-Goal: snapshots should collect fresh systemctl/docker/provider metadata at
-snapshot time, show nonblocking progress, and document privacy clearly.
+Status: done with a progress-UI gap. P15 added fresh systemctl/docker metadata
+collection, richer inspect output, hash failure reporting, redaction tests, and
+operations docs.
 
-Why next: snapshots are already useful, and enrichment improves forensic value
-without changing core contracts.
+Remaining polish: a nonblocking progress screen for slow providers can be carved
+later if snapshot latency becomes visible in real use.
 
 ### P19 — ZRAM And Swap-Backend Awareness
 

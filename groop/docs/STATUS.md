@@ -62,8 +62,9 @@ core workflows, not yet production-certified.**
   and attributable network loss/retransmit inputs are absent.
 - **DAMON controls:** underlying APIs, CLI, and TUI typed-confirm modals are
   fixture-tested. Live-root acceptance still needs a deliberate test host.
-- **Snapshots:** snapshot bundles are usable; live systemctl/docker refresh at
-  snapshot time is not yet wired.
+- **Snapshots:** snapshot bundles include bounded frame history, cgroup files,
+  provider status, fresh systemctl/docker metadata where available, redaction,
+  CLI inspect, and hash verification. A progress UI remains future polish.
 - **Acceptance evidence:** P12 records tests, packaging, fixture JSON, replay
   smoke, wheel install, version, and bounded once/json CPU/RSS. `MEASUREMENTS.md`
   still needs a full 5-minute live perf/RSS run, DAMON, and future BPF
@@ -103,11 +104,11 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent package validation from P14:
+Most recent package validation from P15:
 
 ```bash
 /tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
-# 87 passed in 14.01s
+# 89 passed in 14.57s
 ```
 
 Also validated: Python compile over `src/groop`, `--once --json`, replay UI
