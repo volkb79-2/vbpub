@@ -41,7 +41,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--once", action="store_true", help="collect one frame and exit")
     parser.add_argument("--record", type=Path, default=None, help="record live frames to JSONL or JSONL.zst")
     parser.add_argument("--replay", type=Path, default=None, help="replay frames from a JSONL or JSONL.zst recording")
-    parser.add_argument("--attach", type=Path, default=None, help="attach to daemon frames over a Unix socket")
+    parser.add_argument(
+        "--attach",
+        nargs="?",
+        const=DEFAULT_DAEMON_SOCKET,
+        type=Path,
+        default=None,
+        help=f"attach to daemon frames over a Unix socket (default: {DEFAULT_DAEMON_SOCKET})",
+    )
     parser.add_argument("--speed", type=float, default=1.0, help="replay speed multiplier")
     parser.add_argument("--step", action="store_true", help="step through replay without wall-clock pacing")
     parser.add_argument("--json", action="store_true", help="emit JSON for --once")
@@ -128,6 +135,15 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
         help="destination path for the tmpfiles configuration",
     )
     install_plan.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    current = subparsers.add_parser("current", help="print one canonical frame from the daemon socket as JSON")
+    current.add_argument(
+        "--socket",
+        type=Path,
+        default=DEFAULT_DAEMON_SOCKET,
+        help=f"daemon socket path (default: {DEFAULT_DAEMON_SOCKET})",
+    )
+    current.add_argument("--json", action="store_true", help="emit JSON (default)")
+    current.add_argument("--pretty-json", action="store_true", help="pretty-print the frame JSON")
     return parser.parse_args(argv)
 
 
@@ -549,6 +565,16 @@ def _main_daemon(argv: list[str]) -> int:
             print(json.dumps(install_plan_to_jsonable(plan), sort_keys=True))
         else:
             print(render_install_plan_text(plan))
+        return 0
+    if args.command == "current":
+        from groop.daemon.client import DaemonClient
+
+        try:
+            frame = DaemonClient(args.socket).current_frame()
+        except DaemonClientError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        _print_frame_json(frame, args.pretty_json)
         return 0
     print("unknown daemon command", file=sys.stderr)
     return 2

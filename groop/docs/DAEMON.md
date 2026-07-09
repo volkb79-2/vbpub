@@ -36,10 +36,16 @@ mutation verb.
 live collection. The attach client is read-only and only speaks the P16 broker
 protocol.
 
+When no explicit socket path is given, `--attach` defaults to the packaged
+default daemon socket (`/run/groop/groop.sock`).
+
 Common forms:
 
 ```bash
-groop --attach /run/groop/groop.sock
+groop --attach                              # default socket, interactive UI
+groop --attach --once --json                # default socket, one canonical frame
+groop --attach --ui-smoke                   # default socket, UI smoke test
+groop --attach /run/groop/groop.sock        # explicit socket, interactive UI
 groop --attach /run/groop/groop.sock --once --json
 groop --attach /run/groop/groop.sock --ui-smoke
 ```
@@ -47,6 +53,22 @@ groop --attach /run/groop/groop.sock --ui-smoke
 `--attach --once --json` prints one canonical frame JSON payload and is the
 preferred shell/test entry point. The interactive attach path polls the daemon
 for current frames and feeds them into the existing TUI path.
+
+## Daemon Current Command
+
+`groop daemon current [--json] [--socket PATH] [--pretty-json]` prints one canonical frame
+from the daemon socket as JSON. It is a read-only, scriptable one-shot
+alternative to `--attach --once --json`.
+
+```bash
+groop daemon current --json                       # default socket, compact JSON
+groop daemon current --socket /custom/path.sock   # custom socket
+groop daemon current --pretty-json                # indented JSON
+```
+
+The command returns non-zero with an error message on stderr if the socket is
+missing, unreachable, or returns a protocol error. It never falls back to live
+collection.
 
 Current slice limitations:
 

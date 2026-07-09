@@ -16,7 +16,7 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 80-85% | medium | Core daily triage works. Remaining gaps are release evidence, UI polish, richer host banner/device surfaces, and some acceptance criteria. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 40-45% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode, daemon deployment preflight/templates, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, and the inspect-files safety skeleton exist; live BPF attach/snapshot writing, executable admin actions, GPU/ZFS plugins are not implemented. |
+| v2 daemon/BPF/admin actions | 45-50% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, and the daemon current command exist; live BPF attach/snapshot writing, executable admin actions, GPU/ZFS plugins are not implemented. |
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -64,6 +64,9 @@ core workflows, not yet production-certified.**
 - Disabled-by-default, read-only file/log inspection planning module
   (`groop/src/groop/inspect_files/`) with explicit --inspect-files and --admin
   gating and deterministic JSON/text plans via `groop inspect-files plan`.
+- Default-socket daemon attach (`--attach` with no path defaults to
+  `/run/groop/groop.sock`) and `groop daemon current --socket PATH
+  [--pretty-json]` one-frame read-only daemon command.
 
 ## Partially Implemented
 
@@ -132,14 +135,15 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P29 - Inspect-files safety skeleton):
+Most recent full-suite validation (P30 - Daemon default client UX):
 
 ```bash
-PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
-# 261 passed in 28.94s after merging P29
+/tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests -q
+# 270 passed in 32.21s after controller review
 ```
 
-Also validated: Python compile over P29 changed files.
-P29 focused tests passed: `44 passed in 0.29s` after merge.
-P28 separately validated io.max parsing, saturation derivation, diagnostics integration.
-P29 separately validated gating, JSON/text rendering, path/argv safety, no-execution/no-read guarantees.
+Also validated: Python compile over P30 changed files.
+P30 focused tests passed: `23 passed in 11.11s` after controller review.
+P30 separately validated default-socket attach argparse and behavior, groop
+daemon current JSON output, missing-socket error, and backward compatibility
+with explicit --attach paths.
