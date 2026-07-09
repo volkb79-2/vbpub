@@ -356,6 +356,114 @@ def do_build(ignore_new_releases: bool) -> None:
         sys.stderr.write(f"[ERROR] Build failed. Exit code: {exc.returncode}\n")
         raise SystemExit(exc.returncode) from None
 
+    # Post-build manifest extraction: copy the in-image canonical manifest
+    # into package-manifests-versioned/ so the committed version matches.
+    extract_manifests(build_date, env_vars)
+
+
+_MANIFEST_PATH = "/usr/local/share/modern-debian-tools-python-debug/manifest.md"
+
+
+def extract_manifests(build_date: str, env_vars: dict[str, str]) -> None:
+    """Extract canonical manifests from freshly built images.
+
+    Runs ``docker run --rm <image> cat <manifest_path>`` for each target in the
+    bake matrix and writes the result to ``package-manifests-versioned/``.
+    Only works when images are loaded into the local Docker daemon
+    (RELEASE_IMAGE_FLOW=load or repack).
+    """
+    username = os.environ.get("GITHUB_USERNAME") or env_vars.get("GITHUB_USERNAME", "volkb79-2")
+    repo = os.environ.get("GITHUB_REPO") or env_vars.get("GITHUB_REPO", "vbpub")
+
+    # Enumerate bake targets from the bake group.
+    BAKE_FILE = ROOT / "docker-bake.hcl"
+    try:
+        result = subprocess.run(
+            ["docker", "buildx", "bake", "-f", str(BAKE_FILE), "all", "--print"],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        sys.stderr.write(
+            f"[WARN] Failed to enumerate bake targets for manifest extraction: {exc}\n"
+        )
+        return
+
+    bake = json.loads(result.stdout)
+    target_names = ((bake.get("group") or {}).get("all") or {}).get("targets") or []
+    targets = bake.get("target") or {}
+
+    manifests_root = ROOT / "package-manifests-versioned"
+    extracted: list[str] = []
+    failed: list[str] = []
+
+    for name in target_names:
+        spec = targets.get(name) or {}
+        args = spec.get("args") or {}
+        tags = spec.get("tags") or []
+        if not tags:
+            continue
+        first_tag = str(tags[0])
+
+        # Extract canonical manifest from the local image.
+        try:
+            manifest_content = subprocess.run(
+                ["docker", "run", "--rm", first_tag, "cat", _MANIFEST_PATH],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=60,
+            ).stdout
+        except (subprocess.CalledProcessError, OSError) as exc:
+            sys.stderr.write(
+                f"[WARN] Failed to extract manifest from {first_tag}: {exc}\n"
+            )
+            failed.append(name)
+            continue
+
+        # Derive package name and tag for the output path.
+        debian = args.get("DEBIAN_VERSION") or ""
+        python = args.get("PYTHON_VERSION") or ""
+        install_php = str(args.get("INSTALL_PHP") or "").strip().lower() == "true"
+        php_version = str(args.get("PHP_VERSION") or "").strip()
+        variant = f"php{php_version}" if install_php and php_version else ""
+
+        # Derive package name from PACKAGE_MANIFEST_SOURCE.
+        manifest_source = args.get("PACKAGE_MANIFEST_SOURCE") or ""
+        parts = manifest_source.split("/")
+        if len(parts) >= 2 and parts[0] == "package-manifests-versioned" and parts[1]:
+            package_name = parts[1]
+        else:
+            is_vsc = any("-vsc-devcontainer" in str(tag) for tag in tags) or name.endswith("-vsc")
+            package_name = (
+                "modern-debian-tools-python-debug-vsc-devcontainer"
+                if is_vsc
+                else "modern-debian-tools-python-debug"
+            )
+
+        variant_part = f"-{variant}" if variant else ""
+        tag_str = f"{debian}-py{python}{variant_part}-{build_date}"
+        output_dir = manifests_root / package_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"{tag_str}.md"
+
+        output_path.write_text(manifest_content, encoding="utf-8")
+        extracted.append(str(output_path.relative_to(ROOT)))
+        sys.stderr.write(f"[INFO] Extracted manifest: {output_path}\n")
+
+    if extracted:
+        sys.stderr.write(
+            f"[INFO] Extracted {len(extracted)} manifest(s) to "
+            f"package-manifests-versioned/\n"
+        )
+    if failed:
+        sys.stderr.write(
+            f"[WARN] Failed to extract {len(failed)} manifest(s): "
+            f"{', '.join(failed)}\n"
+        )
+
 
 def do_push() -> None:
     """Push phase: load saved env, push to registry (no resolver re-run)."""

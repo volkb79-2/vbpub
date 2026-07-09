@@ -1485,75 +1485,36 @@ def render_manifest(
     runtime_probe_sections: list[str] | None,
     first_party_wheels: list[dict[str, str]] | None = None,
 ) -> str:
+    """Placeholder manifest — the real manifest is generated at build time.
+
+    ``manifest_sections.py`` inside the Dockerfile generates the canonical
+    manifest from live probes (pip freeze, dpkg-query, php -m, tool versions).
+    The post-build extraction step in ``build-push.py`` copies that in-image
+    manifest into this directory, overwriting this placeholder.
+    """
     package_name = entry["package_name"]
     family_title = entry["family_title"]
-    debian = entry["debian"]
-    python = entry["python"]
-    variant = entry.get("variant", "")
-    tag = build_tag(debian, python, build_date, variant)
-    package_readme_url = repo_blob_url(username, repo, family_readme_relpath(package_name))
-    release_manifest_url = repo_blob_url(
-        username,
-        repo,
-        manifest_relpath(package_name, debian, python, build_date, variant),
+    tag = build_tag(entry["debian"], entry["python"], build_date, entry.get("variant", ""))
+    return (
+        f"# {family_title}\n\n"
+        f"Versioned package manifest for `{package_name}`.\n\n"
+        "## Release\n\n"
+        f"- Build date: `{build_date}`\n"
+        f"- Target: `{entry['target']}`\n"
+        f"- Immutable image tag: `{tag}`\n\n"
+        "## Manifest\n\n"
+        "This manifest is generated at build time from live probes inside the "
+        "Docker image. The file is extracted post-build by ``build-push.py`` "
+        "from the freshly built image and committed here so the repo and image "
+        "always agree.\n\n"
+        "To view the manifest for this release, pull the image and run:\n\n"
+        "```bash\n"
+        f"docker pull ghcr.io/{username}/{package_name}:{tag}\n"
+        "docker run --rm "
+        f"ghcr.io/{username}/{package_name}:{tag} \\n"
+        "  cat /usr/local/share/modern-debian-tools-python-debug/manifest.md\n"
+        "```\n"
     )
-    source_url = f"https://github.com/{username}/{repo}/tree/main/modern-debian-tools-python-debug"
-    image_ref = image_reference(username, package_name, debian, python, build_date, variant)
-    latest_tag = build_latest_tag(debian, python, variant)
-
-    lines = [
-        f"# {family_title}",
-        "",
-        f"Versioned package manifest for `{package_name}`.",
-        "",
-        "## Release",
-        "",
-        f"- Build date: `{build_date}`",
-        f"- Target: `{entry['target']}`",
-        f"- Debian: `{debian}`",
-        f"- Python: `{python}`",
-        f"- Immutable image tag: `{tag}`",
-        f"- Floating image tag: `{latest_tag}`",
-        "",
-        "## Pull",
-        "",
-        "```bash",
-        f"docker pull {image_ref}",
-        "```",
-        "",
-        "## Purpose",
-        "",
-    ]
-    lines.extend((description.strip() or "No description provided.").splitlines())
-    lines.append("")
-    # First-party wheels summary (name + version + sha256) — before tool artifacts.
-    lines.extend(render_first_party_wheels_section(first_party_wheels))
-    lines.extend(render_tool_artifact_lines(tool_metadata))
-    if runtime_probe_sections:
-        lines.extend(runtime_probe_sections)
-    lines.extend(
-        [
-            "## In-Image File",
-            "",
-            f"- Devcontainer manifest: `/usr/local/share/modern-debian-tools-python-debug/manifest.md`",
-            "",
-            "## Rich Documentation Links",
-            "",
-            f"- Family overview: {package_readme_url}",
-            f"- This release page: {release_manifest_url}",
-            f"- Source tree: {source_url}",
-            "",
-            "## Notes",
-            "",
-            "This repository-hosted page exists because GHCR package descriptions render as flattened plain text.",
-            "The image labels therefore point to GitHub-hosted Markdown for richer, package-specific release notes.",
-            "The same manifest content is installed in-image at `/usr/local/share/modern-debian-tools-python-debug/manifest.md`.",
-            "",
-        ]
-    )
-    # Appendix: full sha256 digest listing at the END so the top stays readable.
-    lines.extend(render_artifact_digests_appendix(tool_metadata))
-    return "\n".join(lines) + "\n"
 
 
 def render_family_readme(

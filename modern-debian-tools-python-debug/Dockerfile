@@ -25,6 +25,7 @@ ARG OCI_VENDOR=""
 ARG OCI_VERSION=""
 ARG OCI_REVISION=""
 ARG OCI_CREATED=""
+ARG TARGET=""
 ARG AWSCLI_VERSION
 ARG B2_VERSION
 ARG BAT_VERSION
@@ -53,10 +54,10 @@ ARG INSTALL_REASONIX="true"
 ARG INSTALL_OPENCLAW="true"
 ARG INSTALL_COPILOT="true"
 ARG INSTALL_PHP="false"
-ARG PHP_VERSION="8.5"
+ARG PHP_VERSION
 ARG NVIM_VER=""
 ARG NVCHAD_VER=""
-ARG NODE_MAJOR="24"
+ARG NODE_MAJOR
 ARG GITHUB_USERNAME
 ARG GITHUB_REPO
 ARG CIU_WHEEL_TAG
@@ -620,32 +621,28 @@ RUN chmod 0755 /usr/local/bin/finalize_container_environment.py
 # up in an earlier RUN layer.
 COPY build/tool-artifacts-staging/metadata.json /tmp/tool-artifacts-metadata.json
 
-# Canonical user-facing manifest plus internal inventory snapshot.
+# Canonical user-facing manifest generated directly from live probes
+# (pip freeze, dpkg-query, php -m, tool versions). The same manifest is
+# extracted post-build into package-manifests-versioned/ so the committed
+# and in-image versions are always identical (see build-push.py).
 RUN set -euo pipefail; \
     manifest_dir="/usr/local/share/modern-debian-tools-python-debug"; \
     canonical_manifest="${manifest_dir}/manifest.md"; \
     user_manifest="/home/vscode/mdt-manifest.md"; \
-    inventory_manifest="/usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md"; \
-    source_manifest=""; \
-    if [ -n "${PACKAGE_MANIFEST_SOURCE:-}" ] && [ -f "/tmp/${PACKAGE_MANIFEST_SOURCE}" ]; then \
-        source_manifest="/tmp/${PACKAGE_MANIFEST_SOURCE}"; \
-    fi; \
+    inventory_manifest="${manifest_dir}/installed-tools-manifest.md"; \
     mkdir -p "${manifest_dir}"; \
-    if [ -n "${source_manifest}" ]; then \
-        install -m 0644 "${source_manifest}" "${canonical_manifest}"; \
-    else \
-        { \
-            echo "# Image Manifest"; \
-            echo ""; \
-            echo "Repository-hosted versioned manifest was not available during build."; \
-            echo ""; \
-            echo "- Image version: ${OCI_VERSION}"; \
-            echo "- Debian: ${DEBIAN_VERSION}"; \
-            echo "- Python: ${PYTHON_VERSION}"; \
-            echo "- Canonical manifest: ${canonical_manifest}"; \
-        } > "${canonical_manifest}"; \
+    \
+    # Derive target package name from PACKAGE_MANIFEST_SOURCE if set
+    # (e.g. "package-manifests-versioned/modern-debian-tools-python-debug/...").
+    _pkg_name=""; \
+    _manifest_path="${PACKAGE_MANIFEST_SOURCE:-}"; \
+    if [ -n "${_manifest_path}" ]; then \
+        _pkg_name="$(echo "${_manifest_path}" | cut -d/ -f2)"; \
     fi; \
-    ln -sfn "${canonical_manifest}" "${user_manifest}"; \
+    if [ -z "${_pkg_name}" ]; then \
+        _pkg_name="${OCI_TITLE:-}"; \
+    fi; \
+    \
     b2_version_output="$(b2 version 2>&1 | head -1 || true)"; \
     if [ -z "${b2_version_output}" ]; then \
         b2_version_output="$(b2 --version 2>&1 | head -1 || true)"; \
@@ -659,6 +656,7 @@ RUN set -euo pipefail; \
     custom_tooling_file="$(mktemp /tmp/custom-tooling.XXXXXX)"; \
     python_packages_file="$(mktemp /tmp/python-packages.XXXXXX)"; \
     system_packages_file="$(mktemp /tmp/system-packages.XXXXXX)"; \
+    php_extensions_file="$(mktemp /tmp/php-extensions.XXXXXX)"; \
     { \
         if [ -n "${cmru_version_output}" ]; then \
             echo "cmru=${cmru_version_output}"; \
@@ -766,15 +764,46 @@ RUN set -euo pipefail; \
         echo "shellcheck=${shellcheck_version_output}"; \
         echo "vault=$(vault version 2>&1 | head -1)"; \
         echo "yq=$(yq --version 2>&1)"; \
+        if [ "${INSTALL_PHP}" = "true" ]; then \
+            echo "php=$(php --version 2>&1 | head -1)"; \
+            if command -v composer >/dev/null 2>&1; then \
+                echo "composer=$(composer --version 2>&1 | head -1)"; \
+            fi; \
+        fi; \
     } > "${custom_tooling_file}"; \
     /home/vscode/.venv/bin/pip list --format=freeze > "${python_packages_file}"; \
     dpkg-query -W -f='${Package}=${Version}\n' \
         bash-completion ca-certificates locales curl bind9-dnsutils fuse3 gdb git git-lfs gnupg gzip httpie iputils-ping jq less lsb-release lsof man-db mc nano \
         netcat-openbsd ncdu openssl python3-venv psmisc rsync sqlite3 strace sshfs tar tree unzip vim w3m wget xz-utils skopeo \
-        postgresql-client redis-tools "${php_system_packages[@]}" > "${system_packages_file}"; \
+        postgresql-client redis-tools > "${system_packages_file}"; \
+    if [ "${INSTALL_PHP}" = "true" ]; then \
+        dpkg-query -W -f='${Package}=${Version}\n' \
+            composer "php${PHP_VERSION}-cli" "php${PHP_VERSION}-fpm" "php${PHP_VERSION}-mbstring" "php${PHP_VERSION}-xml" "php${PHP_VERSION}-curl" "php${PHP_VERSION}-zip" "php${PHP_VERSION}-gd" "php${PHP_VERSION}-intl" "php${PHP_VERSION}-xdebug" \
+            >> "${system_packages_file}"; \
+    fi; \
+    if [ "${INSTALL_PHP}" = "true" ]; then \
+        php -m 2>/dev/null | tail -n +2 > "${php_extensions_file}"; \
+    fi; \
     python3 /tmp/manifest_sections.py unified \
+        --output "${canonical_manifest}" \
+        --debian-version "${DEBIAN_VERSION}" \
+        --python-version "${PYTHON_VERSION}" \
+        --image-version "${OCI_VERSION}" \
+        --devcontainers-release "${DEVCONTAINERS_RELEASE}" \
+        --devcontainers-version "${DEVCONTAINERS_VERSION}" \
+        --custom-tooling-file "${custom_tooling_file}" \
+        --python-packages-file "${python_packages_file}" \
+        --system-packages-file "${system_packages_file}" \
+        --artifact-metadata "/tmp/tool-artifacts-metadata.json" \
+        --description "${OCI_DESCRIPTION_BASE:-${OCI_DESCRIPTION:-}}" \
+        --target "${TARGET:-}" \
+        --package-name "${_pkg_name}" \
+        --username "${GITHUB_USERNAME}" \
+        --repo "${GITHUB_REPO}" \
+        --install-php "${INSTALL_PHP:-false}" \
+        --php-extensions-file "${php_extensions_file}"; \
+    python3 /tmp/manifest_sections.py installed \
         --output "${inventory_manifest}" \
-        --source-manifest "${source_manifest}" \
         --debian-version "${DEBIAN_VERSION}" \
         --python-version "${PYTHON_VERSION}" \
         --image-version "${OCI_VERSION}" \
@@ -784,7 +813,8 @@ RUN set -euo pipefail; \
         --python-packages-file "${python_packages_file}" \
         --system-packages-file "${system_packages_file}" \
         --artifact-metadata "/tmp/tool-artifacts-metadata.json"; \
-    rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}" "/tmp/tool-artifacts-metadata.json"; \
+    ln -sfn "${canonical_manifest}" "${user_manifest}"; \
+    rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}" "${php_extensions_file}" "/tmp/tool-artifacts-metadata.json"; \
     rm -f /tmp/manifest_sections.py; \
     chown vscode:vscode "${canonical_manifest}" "${inventory_manifest}" "${user_manifest}"; \
     chmod 644 "${canonical_manifest}" "${inventory_manifest}"; \

@@ -279,6 +279,12 @@ variable "INSTALL_AIDER" {
   default = "true"
 }
 
+// Node.js major version (e.g. 26 for Node 26.x from nodesource).
+// Architectural decision set in docker-bake.hcl, not in the Dockerfile.
+variable "NODE_MAJOR" {
+  default = "26"
+}
+
 // CIU release coordinates are explicit because the resolver stages a concrete wheel,
 // records its tag/asset/shasum, and the image metadata needs to point at the exact artifact.
 variable "CIU_WHEEL_TAG" {
@@ -468,6 +474,7 @@ target "base" {
     INSTALL_CLAUDE_CODE = "${INSTALL_CLAUDE_CODE}"
     INSTALL_ANTIGRAVITY = "${INSTALL_ANTIGRAVITY}"
     INSTALL_AIDER = "${INSTALL_AIDER}"
+    NODE_MAJOR = "${NODE_MAJOR}"
     OCI_TITLE = "${OCI_TITLE}"
     OCI_DESCRIPTION = "${OCI_DESCRIPTION}"
     OCI_DESCRIPTION_BASE = "${OCI_DESCRIPTION_BASE}"

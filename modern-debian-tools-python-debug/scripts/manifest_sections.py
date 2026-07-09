@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Shared manifest rendering helpers for image and repo-hosted docs."""
+"""Shared manifest rendering helpers for image and repo-hosted docs.
+
+Single source of truth for all manifest generation. Called both at Docker build
+time (inside the image) and post-build to extract the same manifest into
+``package-manifests-versioned/`` so the committed and in-image versions are
+always identical.
+"""
 from __future__ import annotations
 
 import argparse
@@ -14,13 +20,30 @@ FIRST_PARTY_WHEEL_NAMES = ("CIU", "cmru")
 AI_CLI_TOOL_NAMES = ("aider", "antigravity", "claude", "codex", "copilot", "openclaw", "reasonix")
 CONTAINER_INSPECTION_TOOL_NAMES = ("dive", "dtop", "glances", "lazydocker", "syft")
 SECURITY_DEBUG_TOOL_NAMES = ("cdebug", "grype", "hadolint")
+# Node and npm are rendered in their own ## Node Runtime section.
+NODE_RUNTIME_NAMES = ("node", "npm")
 CUSTOM_TOOL_EXCLUSIONS = (
     FIRST_PARTY_WHEEL_NAMES
     + AI_CLI_TOOL_NAMES
     + CONTAINER_INSPECTION_TOOL_NAMES
     + SECURITY_DEBUG_TOOL_NAMES
+    + NODE_RUNTIME_NAMES
     + ("psql", "redis-cli")
 )
+
+# ── Installation-source annotations ───────────────────────────────────────
+# Shown as a parenthetical in each section heading.  Keys match section titles.
+INSTALLATION_SOURCES: dict[str, str] = {
+    "Node Runtime": "source: nodesource apt repo (https://deb.nodesource.com)",
+    "Python & PHP Runtime": "source: Debian trixie apt / sury.org PHP repo (https://packages.sury.org/php)",
+    "First-Party Wheels": "source: built from source, installed via pip",
+    "AI CLI Tools": "source: npm / PyPI / GitHub Releases",
+    "Container Inspection Tools": "source: GitHub Releases (pre-built binaries)",
+    "Security & Debug Tools": "source: GitHub Releases (pre-built binaries, sha256-verified)",
+    "Custom Tooling": "source: GitHub Releases / Debian apt",
+    "Python Packages": "source: PyPI (resolved at build time via pip)",
+    "System Packages": "source: Debian trixie apt",
+}
 
 # ── Version selection policy ────────────────────────────────────────────────
 # Each tool category declares how versions are selected.  This is displayed
@@ -247,6 +270,71 @@ def render_tool_table(
         line = f"| {name_cell} | {version_cell} | {policy} | {project_home} | {digest} |"
         lines.append(line)
     lines.append("")
+    return lines
+
+
+def _section_heading(title: str) -> str:
+    """Return a ``## Section Title`` with optional source annotation."""
+    source = INSTALLATION_SOURCES.get(title)
+    if source:
+        return f"## {title} ({source})"
+    return f"## {title}"
+
+
+def render_node_runtime_section(
+    custom_tooling: Mapping[str, str],
+) -> list[str]:
+    """Render the Node Runtime section (separate from Custom Tooling)."""
+    node_ver = custom_tooling.get("node", "")
+    npm_ver = custom_tooling.get("npm", "")
+    lines = [_section_heading("Node Runtime"), ""]
+    if node_ver:
+        lines.append(f"- Node.js: `{node_ver}`")
+    else:
+        lines.append("- Node.js: not installed")
+    if npm_ver:
+        lines.append(f"- npm: `{npm_ver}`")
+    lines.append("")
+    return lines
+
+
+def render_php_runtime_section(
+    custom_tooling: Mapping[str, str],
+    *,
+    php_extensions_file: str = "",
+    install_php: bool = False,
+) -> list[str]:
+    """Render the PHP Runtime section when PHP is installed.
+
+    Shows PHP version, composer version, source (sury.org), and the list of
+    loaded PHP extensions from ``php -m`` output (captured at build time).
+    """
+    lines = [_section_heading("Python & PHP Runtime"), ""]
+    if not install_php:
+        return lines
+
+    php_version = custom_tooling.get("php", "unknown")
+    composer_version = custom_tooling.get("composer", "")
+    lines.append(f"- PHP: `{php_version}`")
+    if composer_version:
+        lines.append(f"- Composer: `{composer_version}`")
+    lines.append("")
+
+    # Load php -m extension listing captured at build time.
+    ext_lines: list[str] = []
+    if php_extensions_file:
+        ext_path = Path(php_extensions_file)
+        if ext_path.exists():
+            raw = ext_path.read_text(encoding="utf-8").strip()
+            if raw:
+                ext_lines = [line.strip() for line in raw.splitlines() if line.strip()]
+
+    if ext_lines:
+        lines.append("### PHP Extensions (loaded modules)")
+        lines.append("")
+        for ext in ext_lines:
+            lines.append(f"- `{ext}`")
+        lines.append("")
     return lines
 
 
@@ -477,19 +565,32 @@ def render_unified_manifest(
     python_packages: Sequence[str],
     system_packages: Sequence[str],
     artifact_map: Mapping[str, dict] | None = None,
+    args_extra: dict[str, str] | None = None,
 ) -> str:
     """Render the unified devcontainer manifest (in-image + repo-hosted).
 
+    This is the SINGLE source of truth for manifest rendering. Called both at
+    Docker build time (inside the image) and post-build to extract the same
+    content into ``package-manifests-versioned/``.
+
+    When ``source_manifest_content`` is provided, sections are passed through
+    from it. Otherwise, sections are generated from the CLI arguments.
+    ``args_extra`` carries optional metadata (description, target, variant,
+    package_name, username, repo, install_php, php_extensions_file) for
+    standalone use without a source manifest.
+
     Structure:
-    1. Release / Pull / Base  (from source or generated)
-    2. Version Selection Policy (generated preamble)
-    3. AI CLI Tools           (table, live-inspected)
-    4. Container Inspection Tools (table, live-inspected)
-    5. Security & Debug Tools (table, live-inspected)
-    6. Custom Tooling         (table, live-inspected)
-    7. Python Packages        (pip freeze inside image)
-    8. System Packages        (dpkg-query inside image)
-    9. Rich Documentation Links / Notes (from source manifest)
+    1. Release / Pull / Base / Purpose
+    2. Node Runtime
+    3. Python & PHP Runtime
+    4. First-Party Wheels
+    5. AI CLI Tools
+    6. Container Inspection Tools
+    7. Security & Debug Tools
+    8. Custom Tooling
+    9. Python Packages
+    10. System Packages
+    11. Rich Documentation Links / Notes
     """
     tag = f"{debian_version}-py{python_version}-{image_version}"
     src = parse_source_manifest_sections(source_manifest_content) if source_manifest_content else {}
@@ -501,15 +602,28 @@ def render_unified_manifest(
     else:
         lines.extend([
             "## Release", "",
-            f"- Image tag: `{tag}`",
+            f"- Build date: `{image_version}`",
+            f"- Target: `{args_extra.get('target', 'unknown') if args_extra else 'unknown'}`",
             f"- Debian: `{debian_version}`",
             f"- Python: `{python_version}`",
-            f"- Image version: `{image_version}`",
+            f"- Immutable image tag: `{tag}`",
+            f"- Floating image tag: `{debian_version}-py{python_version}-latest`",
             "",
         ])
 
     if "Pull" in src:
         lines.extend(_section_block("Pull", src["Pull"]))
+    elif args_extra and args_extra.get("package_name") and args_extra.get("username") and args_extra.get("repo"):
+        image_ref = (
+            f"ghcr.io/{args_extra['username']}/{args_extra['package_name']}:{tag}"
+        )
+        lines.extend([
+            "## Pull", "",
+            "```bash",
+            f"docker pull {image_ref}",
+            "```",
+            "",
+        ])
 
     if "Base" in src:
         lines.extend(_section_block("Base", src["Base"]))
@@ -525,17 +639,38 @@ def render_unified_manifest(
             "",
         ])
 
+    # Purpose section — from source manifest or description arg.
+    if "Purpose" in src:
+        lines.extend(_section_block("Purpose", src["Purpose"]))
+    elif args_extra and args_extra.get("description"):
+        lines.extend(["## Purpose", ""])
+        lines.extend(args_extra["description"].strip().splitlines())
+        lines.append("")
+
+    # Node Runtime — separate from Custom Tooling.
+    lines.extend(render_node_runtime_section(custom_tooling))
+
+    # PHP Runtime — only when PHP is installed.
+    if args_extra and args_extra.get("install_php"):
+        lines.extend(
+            render_php_runtime_section(
+                custom_tooling,
+                php_extensions_file=args_extra.get("php_extensions_file", ""),
+                install_php=True,
+            )
+        )
+
     # First-Party Wheels — from source manifest if present, otherwise live.
     if "First-Party Wheels" in src:
         lines.extend(_section_block("First-Party Wheels", src["First-Party Wheels"]))
     else:
-        lines.extend(["## First-Party Wheels", ""])
+        lines.extend([_section_heading("First-Party Wheels"), ""])
         lines.extend(
             render_tool_table(custom_tooling, include=FIRST_PARTY_WHEEL_NAMES, artifact_map=artifact_map)
         )
 
     # AI CLI Tools — table with policy note.
-    lines.extend(["## AI CLI Tools", ""])
+    lines.extend([_section_heading("AI CLI Tools"), ""])
     an = POLICY_NOTES.get("AI CLI Tools", "")
     if an:
         lines.append(an)
@@ -545,7 +680,7 @@ def render_unified_manifest(
     )
 
     # Container Inspection Tools — table with policy note.
-    lines.extend(["## Container Inspection Tools", ""])
+    lines.extend([_section_heading("Container Inspection Tools"), ""])
     cin = POLICY_NOTES.get("Container Inspection Tools", "")
     if cin:
         lines.append(cin)
@@ -555,7 +690,7 @@ def render_unified_manifest(
     )
 
     # Security & Debug Tools — table with policy note.
-    lines.extend(["## Security & Debug Tools", ""])
+    lines.extend([_section_heading("Security & Debug Tools"), ""])
     sn = POLICY_NOTES.get("Security & Debug Tools", "")
     if sn:
         lines.append(sn)
@@ -565,7 +700,7 @@ def render_unified_manifest(
     )
 
     # Custom Tooling — table with policy note.
-    lines.extend(["## Custom Tooling", ""])
+    lines.extend([_section_heading("Custom Tooling"), ""])
     ctn = POLICY_NOTES.get("Custom Tooling", "")
     if ctn:
         lines.append(ctn)
@@ -575,7 +710,7 @@ def render_unified_manifest(
     )
 
     # Python Packages (pip freeze inside the image — the actual installed closure).
-    lines.extend(["## Python Packages", "", "    (installed via pip)"])
+    lines.extend([_section_heading("Python Packages"), "", "    (installed via pip)"])
     ppn = POLICY_NOTES.get("Python Packages", "")
     if ppn:
         lines.append(ppn)
@@ -586,7 +721,7 @@ def render_unified_manifest(
         lines.append("    unavailable")
     lines.append("")
 
-    lines.extend(["## System Packages", "", "    (installed via apt)"])
+    lines.extend([_section_heading("System Packages"), "", "    (installed via apt)"])
     spn = POLICY_NOTES.get("System Packages", "")
     if spn:
         lines.append(spn)
@@ -598,25 +733,83 @@ def render_unified_manifest(
     lines.append("")
 
     # Pass through any remaining sections from the source manifest that are not
-    # explicitly handled above (e.g. "Python & PHP Runtime", "Version Selection
-    # Policies", "In-Image File", "Notes", "Rich Documentation Links").
-    # List of section titles that are already generated or handled explicitly.
+    # explicitly handled above.
     _HANDLED_SECTIONS = {
-        "Release", "Pull", "Base",
+        "Release", "Pull", "Base", "Purpose",
         "First-Party Wheels",
         "AI CLI Tools", "Container Inspection Tools",
         "Security & Debug Tools", "Custom Tooling",
         "Python Packages", "System Packages",
+        "Node Runtime", "Python & PHP Runtime",
         "Rich Documentation Links", "Notes",
         "Runtime Version Snapshot (Pre-build Probe)", "Runtime Version Snapshot",
         "Staged Tool Artifacts", "Appendix: Artifact Sources and Digests",
     }
+
+    # If we generated a Purpose section from args_extra, also suppress it from pass-through.
+    if args_extra and args_extra.get("description"):
+        _HANDLED_SECTIONS.add("Purpose")
+
+    # If we rendered the Node Runtime section, suppress legacy node info.
+    _HANDLED_SECTIONS.add("Node Runtime")
+
     for key, content in src.items():
         if key == "__preamble__":
             continue
         if key in _HANDLED_SECTIONS:
             continue
         lines.extend(_section_block(key, content))
+
+    # Rich Documentation Links — always append when we have the metadata.
+    if "Rich Documentation Links" not in src and args_extra:
+        _user = args_extra.get("username", "")
+        _repo = args_extra.get("repo", "")
+        _pkg = args_extra.get("package_name", "")
+        _variant = args_extra.get("variant", "")
+        _variant_part = f"-{_variant}" if _variant else ""
+        _family_readme_url = (
+            f"https://github.com/{_user}/{_repo}/blob/main/"
+            f"modern-debian-tools-python-debug/package-manifests-versioned/"
+            f"{_pkg}/README.md"
+        )
+        _release_url = (
+            f"https://github.com/{_user}/{_repo}/blob/main/"
+            f"modern-debian-tools-python-debug/package-manifests-versioned/"
+            f"{_pkg}/{tag}.md"
+        )
+        _source_url = (
+            f"https://github.com/{_user}/{_repo}/tree/main/"
+            f"modern-debian-tools-python-debug"
+        )
+        lines.extend([
+            "## Rich Documentation Links", "",
+            f"- Family overview: {_family_readme_url}",
+            f"- This release page: {_release_url}",
+            f"- Source tree: {_source_url}",
+            "",
+        ])
+
+    # In-Image File path.
+    if "In-Image File" not in src:
+        lines.extend([
+            "## In-Image File", "",
+            "- Devcontainer manifest: "
+            "`/usr/local/share/modern-debian-tools-python-debug/manifest.md`",
+            "",
+        ])
+
+    # Notes — only if not already in src.
+    if "Notes" not in src:
+        lines.extend([
+            "## Notes", "",
+            "This repository-hosted page exists because GHCR package descriptions "
+            "render as flattened plain text.",
+            "The image labels therefore point to GitHub-hosted Markdown for richer, "
+            "package-specific release notes.",
+            "The same manifest content is installed in-image at "
+            "`/usr/local/share/modern-debian-tools-python-debug/manifest.md`.",
+            "",
+        ])
 
     return "\n".join(lines)
 
@@ -678,6 +871,15 @@ def _parse_args() -> argparse.Namespace:
     unified.add_argument("--python-packages-file", required=True)
     unified.add_argument("--system-packages-file", required=True)
     unified.add_argument("--artifact-metadata", default="", help="Path to artifact metadata.json for digests")
+    # New args for standalone manifest generation (no source manifest needed).
+    unified.add_argument("--description", default="", help="OCI description text (replaces Purpose section)")
+    unified.add_argument("--target", default="", help="Bake target name (e.g. trixie-py314-vsc)")
+    unified.add_argument("--variant", default="", help="Tag variant (e.g. php8.5)")
+    unified.add_argument("--package-name", default="", help="GHCR package name")
+    unified.add_argument("--username", default="", help="GitHub username/org")
+    unified.add_argument("--repo", default="", help="GitHub repository name")
+    unified.add_argument("--install-php", default="false", help="Whether PHP is installed ('true'/'false')")
+    unified.add_argument("--php-extensions-file", default="", help="Path to php -m output file")
 
     return parser.parse_args()
 
@@ -717,6 +919,24 @@ def _run_unified(args: argparse.Namespace) -> int:
     system_packages = read_list_file(Path(args.system_packages_file))
     artifact_map = _load_artifact_map(args.artifact_metadata)
 
+    # Build args_extra from CLI args for standalone generation.
+    args_extra: dict[str, str] = {}
+    if args.description:
+        args_extra["description"] = args.description
+    if args.target:
+        args_extra["target"] = args.target
+    if args.variant:
+        args_extra["variant"] = args.variant
+    if args.package_name:
+        args_extra["package_name"] = args.package_name
+    if args.username:
+        args_extra["username"] = args.username
+    if args.repo:
+        args_extra["repo"] = args.repo
+    args_extra["install_php"] = (args.install_php or "false").lower() == "true"
+    if args.php_extensions_file:
+        args_extra["php_extensions_file"] = args.php_extensions_file
+
     rendered = render_unified_manifest(
         source_manifest_content=source_content,
         debian_version=args.debian_version,
@@ -728,6 +948,7 @@ def _run_unified(args: argparse.Namespace) -> int:
         python_packages=python_packages,
         system_packages=system_packages,
         artifact_map=artifact_map,
+        args_extra=args_extra,
     )
 
     output_path.write_text(rendered, encoding="utf-8")
