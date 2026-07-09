@@ -53,7 +53,7 @@ the host-memory screen. This closes the P19 drill-down gap.
 
 ### 6. Tests (`tests/test_p23_zram_drilldown.py`)
 
-12 focused tests covering:
+14 focused tests covering:
 
 | Test | What it verifies |
 |---|---|
@@ -64,10 +64,12 @@ the host-memory screen. This closes the P19 drill-down gap.
 | `test_host_memory_text_renders_no_zram_devices` | No-device line shown when host_meta=None |
 | `test_host_memory_text_renders_no_zram_devices_empty_list` | No-device line shown when devices list empty |
 | `test_host_memory_text_handles_missing_host_meta_key` | No-device line shown when zram_devices key absent |
+| `test_host_memory_text_handles_malformed_replay_metadata` | Malformed replay metadata does not crash rendering |
 | `test_collect_host_meta_with_devices` | Two devices collected with correct fields |
 | `test_collect_host_meta_malformed_stats` | Malformed stat files produce zero/None values, not crashes |
 | `test_collect_host_meta_no_zram_devices` | Empty list when /sys/block has no zram* dirs |
 | `test_collect_host_aggregate_metrics_unchanged` | P19 aggregate metrics are unchanged by host_meta addition |
+| `test_collector_default_host_uses_configured_sys_root` | Collector `sys_root` feeds aggregate host metrics and host metadata |
 | `test_zram_device_lines_ratio_none_on_zero_compr` | Ratio is None when compr=0; efficiency is 0.0 |
 
 ### 7. Updated golden fixture
@@ -79,30 +81,23 @@ the host-memory screen. This closes the P19 drill-down gap.
 
 None. All scope items implemented as specified.
 
-## Proposed contract changes
+## Contract changes
 
-None. The `host_meta` field is additive and package-private; existing contracts
-(`model.py` serialization, `CONTRACTS.md` frozen interfaces) are unchanged.
+`CONTRACTS.md` now documents the additive `Frame.host_meta` field for
+host-level non-metric details. Existing frames without `host_meta` still read
+cleanly, and `Frame.host` remains strictly registry-backed.
 
 ## Test evidence
 
 ```bash
 $ /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-159 passed in 25.27s
+161 passed in 25.93s
 
-$ python3 -m py_compile groop/src/groop/model.py && echo OK
-OK
-$ python3 -m py_compile groop/src/groop/collect/host.py && echo OK
-OK
-$ python3 -m py_compile groop/src/groop/collect/collector.py && echo OK
-OK
-$ python3 -m py_compile groop/src/groop/ui/hostmem.py && echo OK
-OK
-$ python3 -m py_compile groop/tests/test_p23_zram_drilldown.py && echo OK
-OK
+$ python3 -m py_compile groop/src/groop/model.py groop/src/groop/collect/host.py groop/src/groop/collect/collector.py groop/src/groop/ui/hostmem.py groop/tests/test_p23_zram_drilldown.py
+# clean
 
-$ PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m groop.cli --once --json
-# Produced valid JSON output with host_meta: {"zram_devices": []}
+$ PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m groop.cli --once --json --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch
+# schema 1; host_meta keys ["zram_devices"]; zram_devices 0; entities 8
 ```
 
 ## Known gaps / open items

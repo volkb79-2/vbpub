@@ -193,14 +193,13 @@ def _zram_device_lines(frame: Frame) -> list[str]:
     )
     for dev in devices:
         name = str(dev.get("name", "?"))
-        orig = _fmt_bytes(int(dev.get("orig_bytes", 0)))
-        compr = _fmt_bytes(int(dev.get("compr_bytes", 0)))
-        mem_used = _fmt_bytes(int(dev.get("mem_used_bytes", 0)))
-        ratio_val = dev.get("ratio")
-        ratio_str = f"{ratio_val:.1f}" if isinstance(ratio_val, (int, float)) and ratio_val is not None else "-"
-        failed_reads = int(dev.get("failed_reads", 0))
-        failed_writes = int(dev.get("failed_writes", 0))
-        wb = _fmt_bytes(int(dev.get("writeback_bytes", 0)))
+        orig = _fmt_bytes(_metadata_int(dev, "orig_bytes"))
+        compr = _fmt_bytes(_metadata_int(dev, "compr_bytes"))
+        mem_used = _fmt_bytes(_metadata_int(dev, "mem_used_bytes"))
+        ratio_str = _fmt_ratio_value(dev.get("ratio"))
+        failed_reads = _metadata_int(dev, "failed_reads")
+        failed_writes = _metadata_int(dev, "failed_writes")
+        wb = _fmt_bytes(_metadata_int(dev, "writeback_bytes"))
         lines.append(
             "  {:<12} {:>10} {:>10} {:>10} {:>6} {:>5} {:>5} {:>10}".format(
                 name, orig, compr, mem_used, ratio_str, failed_reads, failed_writes, wb
@@ -219,6 +218,23 @@ def _get_zram_devices(frame: Frame) -> list[dict[str, object]]:
     if not isinstance(devices, list):
         return []
     return [d for d in devices if isinstance(d, dict)]
+
+
+def _metadata_int(data: dict[str, object], key: str) -> int:
+    value = data.get(key, 0)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return 0
+
+
+def _fmt_ratio_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "-"
+    if isinstance(value, (int, float)):
+        return f"{value:.1f}"
+    return "-"
 
 
 def _bar(value: int, total: int, *, width: int = 24) -> str:

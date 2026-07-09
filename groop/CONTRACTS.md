@@ -114,6 +114,7 @@ class Frame:
     interval_s: float          # actual elapsed since previous sample
     host: dict[str, MetricValue]        # banner facts (host_* metrics)
     entities: dict[EntityKey, EntityFrame]
+    host_meta: dict[str, object] | None = None  # host-level non-metric details
 
 @dataclass
 class EntityFrame:
@@ -130,6 +131,11 @@ uses it for passive session summaries (`sessions`, `host_sessions`, target PID
 coverage, region class histograms, sample age, kdamond/context identifiers).
 Numeric table/sort/chart surfaces still use registry-backed `damon_*`
 `MetricValue`s in `metrics`; consumers must tolerate absent `damon` metadata.
+
+`Frame.host_meta` is optional additive metadata for replayable host-level
+details that are not registry metrics, such as per-device ZRAM rows. Consumers
+must tolerate it being absent, and producers must keep `Frame.host` strictly
+registry-backed.
 
 Rate/reset contract (P1): the Collector keeps the previous raw counters per
 (EntityKey, metric). Rates are `(raw_now - raw_prev)/interval_s`. On counter

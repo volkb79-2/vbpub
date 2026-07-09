@@ -4,9 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from groop.collect.host import collect_host_meta, collect_host, SWAP_BACKEND_CODES
+from conftest import fixture_root
+from groop.collect.collector import Collector
+from groop.collect.host import SWAP_BACKEND_CODES, collect_host, collect_host_meta
 from groop.config import DamonConfig, GroopConfig
-from groop.model import Frame, MetricValue, Entity, EntityFrame, frame_to_jsonable, frame_from_jsonable
+from groop.model import Entity, EntityFrame, Frame, MetricValue, frame_from_jsonable, frame_to_jsonable
 from groop.ui.hostmem import render_host_memory_text
 
 
@@ -170,6 +172,30 @@ def test_host_memory_text_handles_missing_host_meta_key() -> None:
     assert "(no zram devices)" in text
 
 
+def test_host_memory_text_handles_malformed_replay_metadata() -> None:
+    """Host-memory text tolerates malformed metadata from replay files."""
+    frame = _minimal_frame(
+        host_meta={
+            "zram_devices": [
+                {
+                    "name": "zram0",
+                    "orig_bytes": "bad",
+                    "compr_bytes": None,
+                    "mem_used_bytes": object(),
+                    "ratio": "bad",
+                    "failed_reads": "bad",
+                    "failed_writes": None,
+                    "writeback_bytes": "bad",
+                }
+            ]
+        }
+    )
+    config = GroopConfig(damon=DamonConfig())
+    text = render_host_memory_text(frame, config=config, damon_root=Path("/sys/kernel/mm/damon/admin"))
+    assert "zram0" in text
+    assert "     -" in text
+
+
 def test_collect_host_meta_with_devices(tmp_path: Path) -> None:
     """collect_host_meta returns per-device details when zram devices exist."""
     sys = tmp_path / "sys"
@@ -250,6 +276,50 @@ def test_collect_host_aggregate_metrics_unchanged(tmp_path: Path) -> None:
     assert host["host_zram_failed_reads"].v == 1
     assert host["host_zram_failed_writes"].v == 2
     assert host["host_zram_writeback_bytes"].v == 5 * 4096
+
+
+def test_collector_default_host_uses_configured_sys_root(tmp_path: Path) -> None:
+    """Collector sys_root feeds both aggregate host metrics and host_meta."""
+    proc = _base_proc(
+        tmp_path,
+        "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/zram0 partition 4096 2048 100\n",
+    )
+    sys = _base_sys(tmp_path)
+    _make_zram_device("zram0", sys, mm_stat="8192 4096 6144 0 0 0 0 0 0\n")
+
+    collector = Collector(
+        cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+        config=GroopConfig(interval=5.0),
+        docker_inspect=lambda _cid: None,
+        now=lambda: 100.0,
+        network_providers=(),
+        proc_root=proc,
+        sys_root=sys,
+        damon_root=fixture_root() / "damonfs" / "no-root" / "kdamonds",
+    )
+
+    frame = collector.collect_once()
+
+    assert frame.host["host_zram_orig_bytes"].v == 8192
+    assert frame.host_meta == {
+        "zram_devices": [
+            {
+                "name": "zram0",
+                "orig_bytes": 8192,
+                "compr_bytes": 4096,
+                "mem_used_bytes": 6144,
+                "mem_limit_bytes": 0,
+                "mem_used_max_bytes": 0,
+                "same_pages": 0,
+                "huge_pages": 0,
+                "failed_reads": 0,
+                "failed_writes": 0,
+                "writeback_bytes": 0,
+                "ratio": 2.0,
+                "efficiency": pytest.approx(4096 / 6144),
+            }
+        ]
+    }
 
 
 def test_zram_device_lines_ratio_none_on_zero_compr(tmp_path: Path) -> None:

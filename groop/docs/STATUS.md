@@ -120,12 +120,12 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P18 - BPF provider read side):
+Most recent full-suite validation (P23 - ZRAM per-device drill-down):
 
 ```bash
 /tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-# 147 passed in 25.68s after the P18 merge
+# 161 passed in 25.93s before the P23 merge
 ```
 
-Also validated: Python compile over P18 files and `groop --once --json` fixture
-smoke. P17/P20/P21/P22 separately validated their respective features.
+Also validated: Python compile over P23 files and `groop --once --json`
+fixture smoke. P17/P20/P21/P22 separately validated their respective features.

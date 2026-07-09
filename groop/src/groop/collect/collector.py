@@ -35,10 +35,12 @@ class Collector:
         self.config = config or load()
         self.cgroup_root = cgroup_root or self.config.cgroup_root
         self.docker_inspect = docker_inspect
-        self.host_collector = host_collector or collect_host
         self.now = now or time.time
         self.proc_root = proc_root
         self.sys_root = sys_root
+        self.host_collector = host_collector or (
+            lambda: collect_host(proc_root=self.proc_root, sys_root=self.sys_root)
+        )
         self.damon_root = damon_root
         self.damon_state_dir = damon_state_dir
         self.systemctl_show_runner = systemctl_show_runner
