@@ -56,12 +56,12 @@ for current frames and feeds them into the existing TUI path.
 
 ## Daemon Current Command
 
-`groop daemon current --socket PATH [--pretty-json]` prints one canonical frame
+`groop daemon current [--json] [--socket PATH] [--pretty-json]` prints one canonical frame
 from the daemon socket as JSON. It is a read-only, scriptable one-shot
 alternative to `--attach --once --json`.
 
 ```bash
-groop daemon current                              # default socket, compact JSON
+groop daemon current --json                       # default socket, compact JSON
 groop daemon current --socket /custom/path.sock   # custom socket
 groop daemon current --pretty-json                # indented JSON
 ```

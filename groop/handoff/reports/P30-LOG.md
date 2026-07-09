@@ -11,7 +11,7 @@
 ## Timeline
 
 ```text
-2026-07-07 UTC
+2026-07-09 UTC
 - Action: Created git worktree on branch feat/groop-p30-daemon-default-client from main
 - Commands: git worktree add -b feat/groop-p30-daemon-default-client .worktrees/-groop-p30-daemon-default-client main
 - Result: Worktree ready at 80f5583
@@ -46,6 +46,15 @@
 
 - Action: Wrote log and report
 - Action: Committed feature branch
+
+- Action: Controller review patched P30 before merge
+- Files changed: groop/src/groop/cli.py, groop/tests/test_attach_cli.py,
+  groop/tests/test_daemon_deploy.py, groop/docs/DAEMON.md,
+  groop/handoff/reports/P30-LOG.md, groop/handoff/reports/P30-REPORT.md
+- Result: Help text now shows the concrete default socket path, `groop daemon
+  current --json` is accepted, the default-socket attach test exercises the
+  no-value `--attach` path with a monkeypatched fixture socket, and daemon
+  current asserts full canonical frame equality.
 ```
 
 ## Decisions
@@ -76,14 +85,23 @@
 /tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py -v
 # 24 passed in 11.04s
 
+PYTHONPATH=groop/src /tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py -q
+# 23 passed in 11.11s after controller review
+
 /tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests -q
 # 271 passed in 32.34s
+
+PYTHONPATH=groop/src /tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests -q
+# 270 passed in 32.21s after controller review
 
 /tmp/vbpub-groop-p30-venv/bin/python -m py_compile \
   groop/src/groop/cli.py \
   groop/tests/test_attach_cli.py \
   groop/tests/test_daemon_deploy.py
 # clean, exit 0
+
+PYTHONPATH=groop/src /tmp/vbpub-groop-p30-venv/bin/python -m py_compile groop/src/groop/cli.py groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py
+# clean, exit 0 after controller review
 ```
 
 ## Handoff Checklist

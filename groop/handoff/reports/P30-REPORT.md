@@ -7,12 +7,12 @@
   path) attaches to `/run/groop/groop.sock`. Existing `groop --attach /custom.sock`
   continues to work unchanged.
 - **`groop daemon current`**: New read-only subcommand that prints one canonical
-  frame JSON payload from the daemon socket. Supports `--socket PATH` (defaults to
-  `DEFAULT_DAEMON_SOCKET`) and `--pretty-json`. Uses existing `_print_frame_json`
-  for canonical output.
-- **Tests (10 new)**:
-  - 5 default-socket attach tests: argparse parsing, in-process fixture broker,
-    backward-compatible explicit socket, bare flag parsing, UI smoke flag.
+  frame JSON payload from the daemon socket. Supports `--json`, `--socket PATH`
+  (defaults to `DEFAULT_DAEMON_SOCKET`), and `--pretty-json`. Uses existing
+  `_print_frame_json` for canonical output.
+- **Tests (9 net new after controller review)**:
+  - 4 default-socket attach tests: argparse parsing, in-process fixture broker
+    using bare `--attach`, backward-compatible explicit socket, UI smoke flag.
   - 5 daemon current tests: canonical JSON, pretty-json, missing-socket error
     (no live fallback), default args parsing, custom socket args parsing.
 - **Docs updated**: `README.md` (P30 → Done), `ROADMAP.md` (P30 → done),
@@ -39,14 +39,23 @@
 /tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py -v
 # 24 passed in 11.04s
 
+PYTHONPATH=groop/src /tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py -q
+# 23 passed in 11.11s after controller review
+
 /tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests -q
 # 271 passed in 32.34s
+
+PYTHONPATH=groop/src /tmp/vbpub-groop-p30-venv/bin/python -m pytest groop/tests -q
+# 270 passed in 32.21s after controller review
 
 /tmp/vbpub-groop-p30-venv/bin/python -m py_compile \
   groop/src/groop/cli.py \
   groop/tests/test_attach_cli.py \
   groop/tests/test_daemon_deploy.py
 # clean, exit 0
+
+PYTHONPATH=groop/src /tmp/vbpub-groop-p30-venv/bin/python -m py_compile groop/src/groop/cli.py groop/tests/test_attach_cli.py groop/tests/test_daemon_deploy.py
+# clean, exit 0 after controller review
 
 PYTHONPATH=groop/src /tmp/vbpub-groop-p30-venv/bin/python -c "
 from groop.cli import parse_args
@@ -92,8 +101,9 @@ print('groop daemon current: OK')
 - Socket discovery is limited to `DEFAULT_DAEMON_SOCKET`; no auto-discovery of
   alternate sockets or environment variable overrides.
 - No `EnvironmentFile` or config file override for the default socket path.
-- `daemon current` always outputs JSON; there is no text/table rendering mode
-  (consistent with the scriptable use case).
+- `daemon current` always outputs JSON; `--json` is accepted for explicitness
+  and compatibility with the handoff examples, but text/table rendering is not
+  implemented.
 - No audit log or `--admin` gating for `daemon current` (it's a read-only
   command using the same daemon protocol).
 

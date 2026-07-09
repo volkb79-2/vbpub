@@ -341,10 +341,7 @@ def test_daemon_current_returns_canonical_json(tmp_path: Path) -> None:
             sys.stdout = old_stdout
         assert code == 0, f"expected 0, got {code}"
         payload = json.loads(output)
-        assert "schema_version" in payload
-        assert "ts" in payload
-        assert "host" in payload
-        assert "entities" in payload
+        assert payload == frame_to_jsonable(fixture_frame())
     finally:
         server.shutdown()
         server.server_close()
@@ -407,9 +404,10 @@ def test_daemon_current_parse_args(tmp_path: Path) -> None:
     from groop.cli import parse_daemon_args
     from groop.daemon.deploy import DEFAULT_DAEMON_SOCKET
 
-    args = parse_daemon_args(["current"])
+    args = parse_daemon_args(["current", "--json"])
     assert args.command == "current"
     assert args.socket == DEFAULT_DAEMON_SOCKET
+    assert args.json is True
     assert args.pretty_json is False
 
 

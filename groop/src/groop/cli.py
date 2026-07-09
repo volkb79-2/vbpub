@@ -41,7 +41,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--once", action="store_true", help="collect one frame and exit")
     parser.add_argument("--record", type=Path, default=None, help="record live frames to JSONL or JSONL.zst")
     parser.add_argument("--replay", type=Path, default=None, help="replay frames from a JSONL or JSONL.zst recording")
-    parser.add_argument("--attach", nargs="?", const=DEFAULT_DAEMON_SOCKET, type=Path, default=None, help="attach to daemon frames over a Unix socket (default: DEFAULT_DAEMON_SOCKET)")
+    parser.add_argument(
+        "--attach",
+        nargs="?",
+        const=DEFAULT_DAEMON_SOCKET,
+        type=Path,
+        default=None,
+        help=f"attach to daemon frames over a Unix socket (default: {DEFAULT_DAEMON_SOCKET})",
+    )
     parser.add_argument("--speed", type=float, default=1.0, help="replay speed multiplier")
     parser.add_argument("--step", action="store_true", help="step through replay without wall-clock pacing")
     parser.add_argument("--json", action="store_true", help="emit JSON for --once")
@@ -133,8 +140,9 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
         "--socket",
         type=Path,
         default=DEFAULT_DAEMON_SOCKET,
-        help="daemon socket path (default: DEFAULT_DAEMON_SOCKET)",
+        help=f"daemon socket path (default: {DEFAULT_DAEMON_SOCKET})",
     )
+    current.add_argument("--json", action="store_true", help="emit JSON (default)")
     current.add_argument("--pretty-json", action="store_true", help="pretty-print the frame JSON")
     return parser.parse_args(argv)
 
