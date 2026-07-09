@@ -6,18 +6,17 @@ claims without updating this file.
 
 ## Current Evidence
 
-Most recent merged package validation after P22:
+Most recent merged package validation after P33:
 
 ```bash
-# isolated venv reused from P13/P14/P16/P17/P20/P22 review
-/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
-# 108 passed in 24.82s
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 303 passed in 37.10s
 ```
 
-Also passed after P22 review: focused daemon deployment tests, `py_compile` over
-the changed daemon/CLI files, `groop daemon preflight --socket <missing> --json`
-with exit `1` for failed checks, and wheel build/package-data verification that
-`groop.service` and `groop.tmpfiles` are included.
+Also passed after P33 review: focused P32 daemon status/client/deploy/attach
+tests (`46 passed in 16.18s`), P33 acceptance/collector/record tests
+(`34 passed in 10.04s`), `py_compile` over merged P32/P33 changed files, and
+the P33 rootless smoke command below.
 
 P12 package evidence remains: sdist/wheel build, fresh wheel install, and
 `groop --version` (`groop 0.1.0`).
@@ -55,6 +54,20 @@ Example fixture evidence after P33 implementation:
   wall:   0.18s    user:   0.05s     sys:   0.01s     RSS:  23400 KB
   ALL CHECKS PASSED  (exit code 0)
 ```
+
+Controller fixture evidence after P33 merge:
+
+- Command:
+  - `PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m groop.acceptance smoke --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --json`
+- Result:
+  - exit `0`, `ok: true`
+  - entities: `8`
+  - metric source labels: `572`
+  - replay frames: `1`
+  - wall: `0.1794s`
+  - user CPU: `0.0393s`
+  - sys CPU: `0.0145s`
+  - max RSS: `89256 KB`
 
 ## v1 Acceptance Measurements
 

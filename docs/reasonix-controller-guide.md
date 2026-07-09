@@ -59,6 +59,16 @@ reasonix run -c --model deepseek-v4-flash --max-steps 0 \
   'Continue with groop P28 ...'
 ```
 
+Parallel two-stream run, when packages do not overlap:
+
+```bash
+reasonix run -c --model deepseek-v4-flash --max-steps 0 --dir /path/to/vbpub \
+  'Implement groop P32 ... worktree .worktrees/-groop-p32-daemon-status ...'
+
+reasonix run --model deepseek-v4-flash --max-steps 0 --dir /path/to/vbpub \
+  'Implement groop P33 ... worktree .worktrees/-groop-p33-release-smoke ...'
+```
+
 Useful help:
 
 ```bash
@@ -97,9 +107,43 @@ Practical pattern:
 - parallel streams: use separate feature branches and worktrees, then serialize
   merges on `main`.
 
+Recent P32/P33 example:
+
+- P32 continued the daemon-context session with `run -c`; its progress lines
+  showed roughly `315k` input tokens with more than `314k` cached by the end.
+- P33 used a fresh release-confidence session; it built a separate cache around
+  acceptance docs/tests and ended around `104k` tokens with most later input
+  cached.
+- The controller still reviewed both branches completely. Cache efficiency is a
+  cost signal, not a correctness signal.
+
+When durable stats matter, add a metrics artifact:
+
+```bash
+reasonix run --metrics .worktrees/reasonix-pNN-metrics.json ...
+```
+
+If no metrics file is used, read the terminal progress line:
+
+```text
+315444 tok · in 315148 (315008 cached / 140 new) · out 296 · ¥0.0070
+```
+
+Interpretation:
+
+- total tokens used by that session line;
+- input tokens, split into cached and new;
+- output tokens;
+- estimated cost shown by Reasonix.
+
+The cached/new split is the most useful controller signal. A high cached count
+means continuing that session is cheap for nearby work; a high new-token count
+means the task probably belongs in a fresh domain-specific session.
+
 ## Monitoring
 
-Polling every few minutes is usually enough:
+Prefer sparse monitoring. For long runs, wait for completion or poll every few
+minutes:
 
 ```bash
 # Codex tool-level equivalent:
@@ -124,6 +168,15 @@ Ctrl-C
 
 Then continue with controller review.
 
+Logs:
+
+- Every handoff should require `groop/handoff/reports/P<NN>-LOG.md`.
+- The log should contain observable actions, commands, files changed, decisions,
+  blockers, and next steps.
+- Do not trust dates or test counts until the controller verifies them.
+- After controller patches, append the controller validation to both `LOG.md`
+  and `REPORT.md`.
+
 ## Review Checklist
 
 Always review before merging. Reasonix is useful, but not a trusted committer.
@@ -145,6 +198,8 @@ Common issues found:
 - tests that pass but do not assert the important behavior;
 - stale docs after a review patch;
 - subtle correctness gaps around edge cases.
+- environment-specific claims, such as dependency failures in an agent venv
+  that do not reproduce in the controller validation venv.
 
 Patch in the feature worktree, then commit a controller review commit:
 
@@ -200,3 +255,15 @@ git commit -m "docs(groop): record PNN merge evidence"
   scope constraints finish more reliably.
 - Parallel agents are feasible only for non-overlapping areas. Merge them one at
   a time and expect minor README/ROADMAP/STATUS reconciliation.
+- Two-agent parallelism works best when each stream owns a different context:
+  for example daemon CLI work in one continued session and release measurement
+  work in a fresh session.
+- Reasonix may introduce polished but non-ASCII output in new files; normalize
+  to the repo's ASCII default unless the file already has a reason to use
+  Unicode.
+- Subprocess and UI-import tests need special scrutiny. P33 initially had a
+  test that passed alone but failed in the full suite because other UI tests had
+  already imported `groop.ui`; controller validation caught it.
+- If an agent installs or mutates local tooling to make tests pass, treat that
+  as agent-environment evidence only. Re-run in the controller's known venv
+  before merge.

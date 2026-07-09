@@ -83,6 +83,17 @@ PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile \
 
 PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
 # 290 passed in 34.63s
+
+# Post-merge main validation
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest \
+  groop/tests/test_daemon_status.py \
+  groop/tests/test_daemon_client.py \
+  groop/tests/test_daemon_deploy.py \
+  groop/tests/test_attach_cli.py -q
+# 46 passed in 16.18s
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 303 passed in 37.10s after P32/P33 merge
 ```
 
 ## Known Gaps

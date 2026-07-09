@@ -166,21 +166,23 @@ Report: `handoff/reports/P31-REPORT.md`.
 
 ### P32 - Daemon Status Command
 
-Status: planned. P32 should add a read-only `groop daemon status` command that
-combines P22 preflight checks with a P30/P31 current-frame protocol check, so
-non-root users can tell whether the default daemon deployment is usable without
-falling back to live collection.
+Status: done. P32 adds a read-only `groop daemon status` command that combines
+P22 preflight checks with a P30/P31 current-frame protocol check, so non-root
+users can tell whether the default daemon deployment is usable without falling
+back to live collection.
 
 Handoff: `handoff/P32-daemon-status-command.md`.
+Report: `handoff/reports/P32-REPORT.md`.
 
 ### P33 - Release Smoke Harness
 
-Status: planned. P33 should add a rootless `python -m groop.acceptance smoke`
-module for repeatable safe-path release evidence: one-frame collection,
-serialization, optional replay summary, wall/CPU/RSS measurement, and
-paste-friendly JSON/text output.
+Status: done. P33 adds a rootless `python -m groop.acceptance smoke` module for
+repeatable safe-path release evidence: one-frame collection, serialization,
+optional replay summary, wall/CPU/RSS measurement, and paste-friendly JSON/text
+output.
 
 Handoff: `handoff/P33-release-smoke-harness.md`.
+Report: `handoff/reports/P33-REPORT.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 

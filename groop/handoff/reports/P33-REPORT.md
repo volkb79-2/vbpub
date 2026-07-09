@@ -101,6 +101,24 @@ PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile \
 
 PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
 # 292 passed in 33.03s
+
+# Post-merge main validation
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 303 passed in 37.10s
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile \
+  groop/src/groop/daemon/status.py \
+  groop/src/groop/acceptance.py \
+  groop/src/groop/cli.py \
+  groop/tests/test_daemon_status.py \
+  groop/tests/test_acceptance.py
+# clean, exit 0
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m groop.acceptance smoke \
+  --cgroup-root groop/tests/fixtures/cgroupfs/gstammtisch \
+  --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl \
+  --json
+# exit 0, ok true, 8 entities, 572 metric source labels, wall 0.1794s, RSS 89256 KB
 ```
 
 ### Live smoke with fixture
