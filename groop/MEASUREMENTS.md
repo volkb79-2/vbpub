@@ -6,15 +6,24 @@ claims without updating this file.
 
 ## Current Evidence
 
-Most recent automated validation after P11:
+Most recent release-hardening validation after P12:
 
 ```bash
-PYTHONPATH=/tmp/groop-pytest:/home/vb/volkb79-2/vbpub/groop/src python3 -m pytest groop/tests -q
-# 79 passed
+# isolated venv, from feat/groop-p12-release-hardening
+python -m pytest groop/tests -q
+# 79 passed in 11.28s
 ```
 
-Also passed: `py_compile`, `--once --json` over the gstammtisch fixture, and
-replay UI smoke.
+Also passed: `py_compile`, `--once --json` over the gstammtisch fixture,
+replay UI smoke (`ui smoke ok frames=1 view=tree profile=auto`), sdist/wheel
+build, fresh wheel install, and `groop --version` (`groop 0.1.0`).
+
+Bounded once/json CPU/RSS smoke:
+
+- Wall time: `0.189s`
+- Child user CPU: `0.134s`
+- Child sys CPU: `0.028s`
+- Max RSS: `29984 KB`
 
 ## v1 Acceptance Measurements
 
@@ -65,8 +74,13 @@ groop --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --step --ui-sm
 Record:
 
 - Build artifact:
+- `groop-0.1.0.tar.gz`
+- `groop-0.1.0-py3-none-any.whl`
 - pipx version:
+- Not measured; P12 used fresh venv wheel install instead.
 - Result:
+- Pass: wheel installed in a fresh venv and `groop --version` returned
+  `groop 0.1.0`.
 
 ## DAMON Gate
 

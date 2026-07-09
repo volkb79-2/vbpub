@@ -42,11 +42,11 @@ flowchart TD
 
 ### P12 — Release Hardening And Acceptance
 
-Goal: make current v1/v1.5 claims measurable. Fill `MEASUREMENTS.md`, run
-packaging checks, and tighten fixture/manual acceptance hooks.
+Status: done. P12 records full tests, compile, fixture JSON, replay smoke,
+package build, wheel install, version, and bounded once/json CPU/RSS evidence.
 
-Why first: it tells us whether Python/Textual overhead and current collection
-cost are acceptable before daemon/BPF work changes the measurement baseline.
+Remaining release evidence: full 5-minute live TUI CPU/RSS, live DAMON
+acceptance, and any future BPF gate measurements.
 
 ### P13 — UI Navigation And Replay Polish
 

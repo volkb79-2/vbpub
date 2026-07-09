@@ -63,8 +63,10 @@ core workflows, not yet production-certified.**
   modal flow is still a notice/planning surface.
 - **Snapshots:** snapshot bundles are usable; live systemctl/docker refresh at
   snapshot time is not yet wired.
-- **Acceptance evidence:** tests are strong, but `MEASUREMENTS.md` still needs
-  live perf/RSS, packaging, DAMON, and future BPF measurements.
+- **Acceptance evidence:** P12 records tests, packaging, fixture JSON, replay
+  smoke, wheel install, version, and bounded once/json CPU/RSS. `MEASUREMENTS.md`
+  still needs a full 5-minute live perf/RSS run, DAMON, and future BPF
+  measurements.
 
 ## Not Implemented
 
@@ -83,8 +85,8 @@ core workflows, not yet production-certified.**
 
 | Spec §9 item | Current status |
 |---|---|
-| 1. CPU performance | Not measured over required 5-minute steady-state run. |
-| 2. Memory budget | Structural ring budget tested; live RSS measurement still needed. |
+| 1. CPU performance | Bounded once/json CPU smoke recorded in P12; required 5-minute steady-state TUI run still needed. |
+| 2. Memory budget | Bounded once/json max RSS recorded in P12; live TUI RSS measurement still needed. |
 | 3. Counter reset handling | Covered by tests. |
 | 4. Finding-D raw-write drift | Covered by tests; live destructive acceptance not run. |
 | 5. Non-container visibility | Covered by fixtures and UI tests. |
@@ -93,19 +95,19 @@ core workflows, not yet production-certified.**
 | 8. Diagnostics | Covered by tests; missing richer inputs noted above. |
 | 9. Network labels | Covered by provider tests. |
 | 10. Record/replay fidelity | Model equality covered; byte-for-byte rendered table acceptance still needed. |
-| 11. Packaging | Editable install tested; sdist/wheel/pipx still needed. |
+| 11. Packaging | P12 built sdist/wheel and verified fresh wheel install; pipx-specific install still optional evidence. |
 | 12. v2 gating | Mostly out of scope; reserved-action UX still should be explicit. |
 | 13. Unprivileged smoke | Basic non-root smoke was run in P7; formal repeat should be recorded. |
 | 14. Measurement gates | `MEASUREMENTS.md` created, but BPF/DAMON overhead gates are not recorded. |
 
 ## Current Quality Gate
 
-Most recent merged-main validation after P11:
+Most recent package validation from P12:
 
 ```bash
-PYTHONPATH=/tmp/groop-pytest:/home/vb/volkb79-2/vbpub/groop/src python3 -m pytest groop/tests -q
-# 79 passed
+python -m pytest groop/tests -q
+# 79 passed in 11.28s
 ```
 
-Also validated: Python compile over `src/groop`, `--once --json`, and replay
-UI smoke.
+Also validated: Python compile over `src/groop`, `--once --json`, replay UI
+smoke, build, wheel install, and `groop --version`.
