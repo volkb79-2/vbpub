@@ -3,10 +3,10 @@
 ## Context
 
 - Branch: `feat/groop-p21-admin-action-gating`
-- Worktree: `/tmp/vbpub-groop-p21-admin-action-gating`
+- Worktree: `/home/vb/volkb79-2/vbpub/.worktrees/-groop-p21-admin-action-gating`
 - Base commit: `e8a666e` (docs(groop): carve P21 admin gating handoff)
 - Package: P21 — v2 admin action gating skeleton
-- Current objective: Implement non-mutating preview/audit-only admin action gating
+- Current objective: Validate P21 implementation, run tests, fix issues, update reports
 
 ## Timeline
 
@@ -50,6 +50,18 @@
 - Files changed: `groop/src/groop/cli.py`, `groop/tests/test_actions.py`, `groop/README.md`, `groop/docs/ROADMAP.md`, `groop/docs/STATUS.md`, `groop/docs/OPERATIONS.md`.
 - Result: `groop action preview` works through `python -m groop.cli`, docs reflect preview-only admin planning, and the branch is ready for later full review.
 - Follow-up: Run focused validation and commit the feature branch for resume.
+
+2026-07-09 CEST (validation session)
+- Action: Full validation of P21 skeleton in .worktrees checkout.
+- Commands:
+  - pytest groop/tests/test_actions.py -v -> 30 passed
+  - py_compile on all P21 files -> clean
+  - CLI smoke: `action preview --kind docker-restart --target c1 --admin --json` -> valid JSON preview, exit 0
+  - CLI smoke: same without `--admin` -> disabled message, exit 2
+  - pytest groop/tests -q -> 138 passed in 26.11s
+- Files changed: `groop/docs/STATUS.md`, `groop/handoff/reports/P21-LOG.md`, `groop/handoff/reports/P21-REPORT.md`.
+- Result: Full suite green. All acceptance checks passed.
+- Follow-up: Commit validation/report updates, then controller review and merge.
 ```
 
 ## Decisions

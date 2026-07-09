@@ -110,20 +110,20 @@ core workflows, not yet production-certified.**
 | 9. Network labels | Covered by provider tests. |
 | 10. Record/replay fidelity | Model equality covered; byte-for-byte rendered table acceptance still needed. |
 | 11. Packaging | P12 built sdist/wheel and verified fresh wheel install; pipx-specific install still optional evidence. |
-| 12. v2 gating | Mostly out of scope; reserved-action UX still should be explicit. |
+| 12. v2 gating | Explicit admin-preview gating landed in P21: `groop action preview` with `--admin` required, no-execution guarantee, audit logging, and TUI reserved-key disabled messaging in P13. |
 | 13. Unprivileged smoke | Basic non-root smoke was run in P7; formal repeat should be recorded. |
 | 14. Measurement gates | `MEASUREMENTS.md` records the P17 safe BPF gate and blocker; DAMON overhead and privileged live-BPF overhead gates are not recorded. |
 
 ## Current Quality Gate
 
-Most recent package validation from P17:
+Most recent full-suite validation (P21 — admin action gating skeleton):
 
 ```bash
-/tmp/vbpub-groop-p17-venv/bin/python -m pytest groop/tests -q
-# 98 passed in 15.38s
+/tmp/vbpub-groop-p13-venv/bin/python -m pytest groop/tests -q
+# 138 passed in 26.11s
 ```
 
-Also validated: Python compile over changed P17 files and
-`groop bpf gate --proc-root groop/tests/fixtures/procfs/network --json`.
-P16 separately validated `--once --json` and replay UI smoke. P12 separately
-validated build, wheel install, and `groop --version`.
+Also validated: Python compile over P21 files,
+`groop action preview` with `--admin` returns valid JSON preview (exit 0),
+same command without `--admin` returns disabled message (exit 2).
+P17/P20/P22 separately validated their respective features.
