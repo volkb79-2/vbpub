@@ -127,7 +127,7 @@ Most recent full-suite validation (P25 - Daemon install plan):
 
 ```bash
 python3 -m pytest groop/tests -q
-# 177 passed in 27.93s before the P25 merge
+# 177 passed in 27.01s after the P25 merge
 ```
 
 Also validated: Python compile over P25 files.

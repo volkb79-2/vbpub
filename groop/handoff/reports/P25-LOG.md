@@ -56,6 +56,10 @@
 - Commands: py_compile changed files; focused daemon deploy tests; custom JSON plan smoke; full pytest.
 - Files changed: groop/src/groop/daemon/deploy.py, groop/tests/test_daemon_deploy.py, groop/docs/STATUS.md, report/log.
 - Result: Custom plans now install rendered service/tmpfiles content matching the requested socket/group; focused tests passed; full suite passed with 177 tests in 27.93s.
+
+- Action: Controller merged P25 into `main` and reran validation from the main checkout.
+- Commands: `git merge --no-ff feat/groop-p25-daemon-install-plan -m "Merge groop P25 daemon install plan"`, py_compile, focused daemon deploy tests, full pytest, install-plan JSON smoke.
+- Result: Merge succeeded; daemon deploy focused tests passed with 11 tests; full suite passed with 177 tests in 27.01s; JSON install plan parsed with `json.tool`.
 ```
 
 ## Decisions
@@ -84,7 +88,7 @@ python3 -m pytest groop/tests/test_daemon_deploy.py -v
 # 11 passed in 1.60s
 
 python3 -m pytest groop/tests -q
-# 177 passed in 27.93s
+# 177 passed in 27.01s after merge
 
 python3 -m groop.cli daemon install-plan
 # Text output shows 7 ordered steps plus warnings

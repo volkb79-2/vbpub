@@ -51,7 +51,7 @@ python3 -m pytest groop/tests/test_daemon_deploy.py -v
 # 11 passed in 1.60s
 
 python3 -m pytest groop/tests -q
-# 177 passed in 27.93s
+# 177 passed in 27.01s after merge
 
 PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m groop.cli daemon install-plan
 # groop daemon install plan
@@ -82,6 +82,19 @@ PYTHONPATH=groop/src /tmp/vbpub-groop-p17-venv/bin/python -m groop.cli daemon in
   tmpfiles content, but operators should still review systemd `RuntimeDirectory`
   behavior for their target host.
 - The command does not inspect host state (the preflight command is the companion for that).
+
+## Merge Evidence
+
+P25 merged to `main` with:
+
+```bash
+git merge --no-ff feat/groop-p25-daemon-install-plan -m "Merge groop P25 daemon install plan"
+```
+
+Post-merge validation from the main checkout: py_compile clean,
+`groop/tests/test_daemon_deploy.py` passed with 11 tests, full suite
+`177 passed in 27.01s`, and `groop daemon install-plan --json` parsed with
+`json.tool`.
 
 ## Controller Merge Review
 
