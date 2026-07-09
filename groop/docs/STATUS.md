@@ -133,8 +133,8 @@ core workflows, not yet production-certified.**
 Most recent full-suite validation (P28 - I/O cap saturation):
 
 ```bash
-python3 -m pytest groop/tests -q
-# 216 passed in 29s (P28 adds io cap saturation tests)
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 217 passed in 29.80s after merging P28
 ```
 
 Also validated: Python compile over P28 files.

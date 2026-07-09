@@ -62,7 +62,17 @@ python3 -m pytest groop/tests -q
 # 16 passed in 0.06s
 
 /tmp/p25-venv/bin/python -m pytest groop/tests -q
-# 217 passed in 29.91s
+# 217 passed in 29.89s
+
+# Main after merge
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_io_cap_saturation.py -q
+# 16 passed in 0.11s
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile groop/src/groop/collect/cgroup.py groop/src/groop/collect/collector.py groop/src/groop/registry.py groop/src/groop/ui/table.py groop/tests/test_io_cap_saturation.py
+# (no output - clean)
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 217 passed in 29.80s
 ```
 
 ## Known Gaps
@@ -74,8 +84,10 @@ python3 -m pytest groop/tests -q
 
 ## Controller Merge Review
 
-- Feature commit(s) on `feat/groop-p28-io-cap-saturation`.
+- Feature branch merged to main with `git merge --no-ff feat/groop-p28-io-cap-saturation`.
+- Merge commit: `177c370 Merge groop P28 io cap saturation`.
 - Pre-merge validation:
   - `python3 -m pytest groop/tests/test_io_cap_saturation.py -v` → `15 passed in 0.10s`
   - `python3 -m pytest groop/tests -q` → `216 passed in 29.28s`
   - `python3 -m py_compile ...` → clean
+- Controller review validation and main validation are recorded above.

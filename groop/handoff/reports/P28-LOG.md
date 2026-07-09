@@ -82,7 +82,23 @@ python3 -m pytest groop/tests -q
 # 16 passed in 0.06s after controller review
 
 /tmp/p25-venv/bin/python -m pytest groop/tests -q
-# 217 passed in 29.91s after controller review
+# 217 passed in 29.89s after controller review
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_io_cap_saturation.py -q
+# 16 passed in 0.11s on main after merge
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile groop/src/groop/collect/cgroup.py groop/src/groop/collect/collector.py groop/src/groop/registry.py groop/src/groop/ui/table.py groop/tests/test_io_cap_saturation.py
+# (no output - clean) on main after merge
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 217 passed in 29.80s on main after merge
+```
+
+## Controller Merge
+
+```bash
+git merge --no-ff feat/groop-p28-io-cap-saturation
+# Merge commit: 177c370 Merge groop P28 io cap saturation
 ```
 
 ## Handoff Checklist
