@@ -3,7 +3,7 @@
 ## What Was Built
 
 - Created centralized alias module `groop/src/groop/ui/aliases.py` with:
-  - `_COLUMN_ALIASES` map: `swap_dev → swap_disk`, `rf_dev_per_s → rf_d_per_s`, `rf_dev → rf_d_per_s`
+  - `_COLUMN_ALIASES` map: `swap_dev → swap_disk`, `rf_dev_per_s → rf_d_per_s`, `rf_dev → rf_d_per_s`, `rf_d → rf_d_per_s`
   - `resolve_column(name)` — resolves alias to canonical key, returns unknown names unchanged
   - `is_alias(name)` — returns True for registered aliases
   - `known_aliases(canonical)` — reverse lookup for doc generation
@@ -26,7 +26,7 @@
   - `docs/ROADMAP.md` — P27 marked done, P19 alias gap closed
   - `docs/STATUS.md` — added alias layer to Implemented, updated compressed swap partially-implemented note, updated Quality Gate
 - Added 20 focused tests in `tests/test_aliases.py`:
-  1. `test_resolve_column_known_aliases` — 3 alias → canonical
+  1. `test_resolve_column_known_aliases` — 4 aliases -> canonical
   2. `test_resolve_column_passthrough_canonical` — canonical pass-through
   3. `test_resolve_column_passthrough_unknown` — unknown pass-through
   4. `test_is_alias` — True for aliases, False for canonical/unknown
@@ -50,7 +50,9 @@
 ## Deviations
 
 - None significant. The handoff suggested the alias layer could live in `table.py`; I chose a dedicated `aliases.py` module for clarity and testability.
-- `rf_dev` was added as an alias for `rf_d_per_s` (alongside `rf_dev_per_s`) since the handoff mentioned `rf_dev` as a possible form.
+- `rf_dev` and `rf_d` were added as aliases for `rf_d_per_s` alongside
+  `rf_dev_per_s`; `rf_d` preserves the legacy short form used in older profile
+  examples.
 
 ## Contract Changes
 
@@ -70,6 +72,14 @@ python3 -m pytest groop/tests/test_ui_table.py groop/tests/test_diag.py -v
 
 python3 -m pytest groop/tests -q
 # 201 passed in 28.69s
+
+# Controller review after adding required `rf_d` alias and canonicalizing
+# configured alias columns.
+/tmp/p25-venv/bin/python -m pytest groop/tests/test_aliases.py groop/tests/test_ui_table.py groop/tests/test_diag.py -q
+# 39 passed in 0.31s
+
+/tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 201 passed in 28.91s
 ```
 
 ## Known Gaps
@@ -77,7 +87,9 @@ python3 -m pytest groop/tests -q
 - The alias layer covers profile/UI boundary only. Recorded JSONL and threshold config keys still use canonical names — this is by design.
 - No custom profile config migration tool exists for users who already have `swap_disk`/`rf_d_per_s` in their TOML configs (they don't need one — canonical keys still work).
 - Drill-down (`_metric_groups`) does not display alias names because entity_frame.metrics are always canonical keys; this is correct behavior.
-- Additional aliases (e.g. `rf_d` → `rf_d_per_s`) were not added — the handoff mentioned `rf_dev` and `rf_dev_per_s` as the primary targets.
+- The alias layer intentionally normalizes configured profile aliases to
+  canonical column names in `ProfileLayout.columns`; headers still display the
+  backend-aware labels.
 
 ## Controller Merge Review
 

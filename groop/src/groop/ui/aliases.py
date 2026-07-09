@@ -15,6 +15,7 @@ _COLUMN_ALIASES: dict[str, str] = {
     "swap_dev": "swap_disk",
     "rf_dev_per_s": "rf_d_per_s",
     "rf_dev": "rf_d_per_s",
+    "rf_d": "rf_d_per_s",
 }
 
 # Reverse lookup: canonical → set of known aliases (for doc / display).
@@ -50,11 +51,3 @@ BACKEND_AWARE_LABELS: dict[str, str] = {
     "swap_disk": "SWAP_DEV",
     "rf_d_per_s": "RF_DEV/S",
 }
-
-# Diagnostic wording template for drill-down text.
-# {rate} is replaced with the numeric value.
-REFUALT_DRILL_WORDING = (
-    "anonymous refaults that missed zswap; "
-    "backend is disk, zram, or mixed according to host swap classification; "
-    "cgroup backend attribution is unavailable"
-)

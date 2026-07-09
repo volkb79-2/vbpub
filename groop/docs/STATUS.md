@@ -57,8 +57,8 @@ core workflows, not yet production-certified.**
 - Safe BPF network accounting gate (`groop bpf gate`) and v2 BPF design doc;
   the gate is no-op and never loads or pins BPF state.
 - Swap/refault terminology aliases layer (`groop/ui/aliases.py`) resolving
-  `swap_dev` → `swap_disk` and `rf_dev_per_s`/`rf_dev` → `rf_d_per_s` in
-  configured profiles, with backend-aware display labels (`SWAP_DEV`,
+  `swap_dev` -> `swap_disk` and `rf_dev_per_s`/`rf_dev`/`rf_d` ->
+  `rf_d_per_s` in configured profiles, with backend-aware display labels (`SWAP_DEV`,
   `RF_DEV/S`) and diagnostic wording that avoids overclaiming physical disk
   on zram/mixed hosts.
 
@@ -134,7 +134,7 @@ Most recent full-suite validation (P27 - Swap/refault aliases):
 
 ```bash
 python3 -m pytest groop/tests -q
-# 201 passed in 28s (P27 adds alias tests)
+# 201 passed in 28.91s before merge
 ```
 
 Also validated: Python compile over P27 files.

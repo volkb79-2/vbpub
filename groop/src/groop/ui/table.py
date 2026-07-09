@@ -47,7 +47,8 @@ _LABELS = {
     "rf_f_per_s": "RF_F/S",
     "swap_dev": "SWAP_DEV",
     "rf_dev_per_s": "RF_DEV/S",
-    "rf_dev": "RF_DEV",
+    "rf_dev": "RF_DEV/S",
+    "rf_d": "RF_DEV/S",
     "cpu_pct": "CPU%",
     "cpu_weight": "CPU.W",
     "psi_mem_full_avg10": "PSI_MEM",
@@ -321,7 +322,10 @@ def _profile_from_config(config: GroopConfig, profile: str) -> tuple[str, ...] |
 
 def _column_supported(name: str) -> bool:
     canonical = resolve_column(name)
-    return (name in _LABELS or canonical in _LABELS) and (canonical in REGISTRY or canonical in {"name", "tier", "net_source", "governance_origin", "governance_drift"} or canonical == "sock")
+    supported_virtual = {"name", "tier", "net_source", "governance_origin", "governance_drift", "sock"}
+    return (name in _LABELS or canonical in _LABELS) and (
+        canonical in REGISTRY or canonical in supported_virtual
+    )
 
 
 def _dedupe(names) -> list[str]:
@@ -329,11 +333,9 @@ def _dedupe(names) -> list[str]:
     seen: set[str] = set()
     for name in names:
         canonical = resolve_column(name)
-        if canonical in seen and canonical != name:
-            continue
         if canonical not in seen and (_column_supported(name) or _column_supported(canonical)):
             seen.add(canonical)
-            out.append(name)
+            out.append(canonical)
     return out
 
 

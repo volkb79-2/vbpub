@@ -94,7 +94,7 @@ and resolve silently to the canonical metric key:
 | Alias | Canonical key | Display label |
 |---|---|---|
 | `swap_dev` | `swap_disk` | `SWAP_DEV` |
-| `rf_dev_per_s`, `rf_dev` | `rf_d_per_s` | `RF_DEV/S` |
+| `rf_dev_per_s`, `rf_dev`, `rf_d` | `rf_d_per_s` | `RF_DEV/S` |
 
 Legacy canonical keys (`swap_disk`, `rf_d_per_s`, `rf_d`) continue to work.
 The alias layer is cosmetic only — recorded frame JSON, threshold config keys,

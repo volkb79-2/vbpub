@@ -11,7 +11,7 @@
 ## Timeline
 
 ```text
-2025-07-18 UTC
+2026-07-09
 - Action: Created worktree and branch from main
 - Commands: git worktree add -b feat/groop-p27-swap-refault-aliases .worktrees/-groop-p27-swap-refault-aliases main
 - Files changed: (worktree setup only)
@@ -23,8 +23,8 @@
 
 - Action: Created centralized alias module src/groop/ui/aliases.py
 - Files changed: groop/src/groop/ui/aliases.py
-- Details: define_COLUMN_ALIASES map, resolve_column(), is_alias(), known_aliases(),
-  BACKEND_AWARE_LABELS, REFUALT_DRILL_WORDING
+- Details: `_COLUMN_ALIASES` map, resolve_column(), is_alias(), known_aliases(),
+  BACKEND_AWARE_LABELS
 - Result: Alias layer exported
 
 - Action: Integrated aliases into table.py
@@ -60,6 +60,15 @@
 - Commands: python3 -m pytest groop/tests -q
 - Result: 201 passed in 28.69s
 - Follow-up: Write P27-REPORT.md and commit
+
+- Action: Controller review patched P27 before merge.
+- Files changed: groop/src/groop/ui/aliases.py, groop/src/groop/ui/table.py,
+  groop/tests/test_aliases.py, groop/docs/COMPRESSED-SWAP.md,
+  groop/docs/STATUS.md, groop/handoff/reports/P27-LOG.md,
+  groop/handoff/reports/P27-REPORT.md.
+- Result: Added the required legacy `rf_d` alias, normalized configured alias
+  columns to canonical `ProfileLayout.columns`, removed an unused typo helper,
+  fixed report/log evidence, and reran focused plus full validation.
 ```
 
 ## Decisions
@@ -89,6 +98,12 @@ python3 -m pytest groop/tests/test_ui_table.py groop/tests/test_diag.py -v
 
 python3 -m pytest groop/tests -q
 # 201 passed in 28.69s
+
+/tmp/p25-venv/bin/python -m pytest groop/tests/test_aliases.py groop/tests/test_ui_table.py groop/tests/test_diag.py -q
+# 39 passed in 0.31s after controller review
+
+/tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 201 passed in 28.91s after controller review
 ```
 
 ## Handoff Checklist

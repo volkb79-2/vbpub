@@ -2,8 +2,6 @@ from __future__ import annotations
 
 """Tests for the centralized alias layer (P27)."""
 
-import json
-
 from groop.config import GroopConfig
 from groop.model import Entity, EntityFrame, MetricValue
 from groop.ui.aliases import BACKEND_AWARE_LABELS, is_alias, known_aliases, resolve_column
@@ -24,12 +22,13 @@ def test_resolve_column_known_aliases() -> None:
     assert resolve_column("swap_dev") == "swap_disk"
     assert resolve_column("rf_dev_per_s") == "rf_d_per_s"
     assert resolve_column("rf_dev") == "rf_d_per_s"
+    assert resolve_column("rf_d") == "rf_d_per_s"
 
 
 def test_resolve_column_passthrough_canonical() -> None:
     assert resolve_column("swap_disk") == "swap_disk"
     assert resolve_column("rf_d_per_s") == "rf_d_per_s"
-    assert resolve_column("rf_d") == "rf_d"
+    assert resolve_column("rf_z_per_s") == "rf_z_per_s"
 
 
 def test_resolve_column_passthrough_unknown() -> None:
@@ -41,6 +40,7 @@ def test_is_alias() -> None:
     assert is_alias("swap_dev") is True
     assert is_alias("rf_dev_per_s") is True
     assert is_alias("rf_dev") is True
+    assert is_alias("rf_d") is True
     assert is_alias("swap_disk") is False
     assert is_alias("rf_d_per_s") is False
     assert is_alias("ram") is False
@@ -50,6 +50,7 @@ def test_known_aliases() -> None:
     assert "swap_dev" in known_aliases("swap_disk")
     assert "rf_dev_per_s" in known_aliases("rf_d_per_s")
     assert "rf_dev" in known_aliases("rf_d_per_s")
+    assert "rf_d" in known_aliases("rf_d_per_s")
     assert known_aliases("nonexistent") == ()
 
 
@@ -70,6 +71,7 @@ def test_alias_columns_are_supported() -> None:
     assert _column_supported("swap_dev") is True
     assert _column_supported("rf_dev_per_s") is True
     assert _column_supported("rf_dev") is True
+    assert _column_supported("rf_d") is True
 
 
 def test_unknown_column_not_supported() -> None:
@@ -95,6 +97,8 @@ def test_header_label_aliases_show_same_label() -> None:
     """Alias names produce the same display label as canonical."""
     assert header_label("swap_dev") == header_label("swap_disk")
     assert header_label("rf_dev_per_s") == header_label("rf_d_per_s")
+    assert header_label("rf_dev") == header_label("rf_d_per_s")
+    assert header_label("rf_d") == header_label("rf_d_per_s")
 
 
 def test_header_label_legacy_swap_disk_still_works() -> None:
@@ -135,11 +139,12 @@ def test_custom_profile_with_aliases_resolve() -> None:
     config = GroopConfig(columns={"profiles": {"alice": {"list": ["name", "ram", "swap_dev", "rf_dev_per_s"]}}})
     layout = resolve_profile(config, width=140, profile="alice")
 
-    # The profile should include the alias names, not the canonical ones
     assert "name" in layout.columns
     assert "ram" in layout.columns
-    assert "swap_dev" in layout.columns
-    assert "rf_dev_per_s" in layout.columns
+    assert "swap_disk" in layout.columns
+    assert "rf_d_per_s" in layout.columns
+    assert "swap_dev" not in layout.columns
+    assert "rf_dev_per_s" not in layout.columns
     # No ignored columns for alias names
     assert "swap_dev" not in layout.ignored_columns
     assert layout.ignored_columns == ()
@@ -149,8 +154,7 @@ def test_custom_profile_with_mixed_aliases_and_canonical_deduplicates() -> None:
     """Using both alias and canonical in same profile deduplicates to canonical."""
     config = GroopConfig(columns={"profiles": {"bob": {"list": ["name", "swap_dev", "swap_disk"]}}})
     layout = resolve_profile(config, width=140, profile="bob")
-    assert len(layout.columns) == 2  # name + one of swap_dev/swap_disk — deduped
-    assert "swap_disk" not in layout.columns or "swap_dev" not in layout.columns  # only one
+    assert layout.columns == ("name", "swap_disk")
     assert layout.ignored_columns == ()
 
 
