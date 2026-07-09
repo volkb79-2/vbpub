@@ -177,7 +177,12 @@ def read_io_max_caps(path: Path) -> tuple[dict[str, int | None], MetricSource]:
             key, _, raw = part.partition("=")
             if key not in _IO_MAX_FIELDS:
                 continue
-            value = int(raw) if raw and raw != "max" else None
+            if not raw or raw == "max":
+                continue
+            try:
+                value = int(raw)
+            except ValueError:
+                continue
             if value is not None:
                 s = sums.get(key)
                 sums[key] = value if s is None else s + value

@@ -11,7 +11,7 @@
 ## Timeline
 
 ```text
-2025-07-18 UTC
+2026-07-09
 - Action: Read required context: cgroup.py, collector.py, registry.py, table.py, score.py, rules.py, tests
 - Result: Understood data flow for io.max parsing and rate derivation
 
@@ -43,6 +43,14 @@
 - Commands: python3 -m pytest groop/tests -q
 - Result: 216 passed in 29.28s
 - Follow-up: Write P28-REPORT.md and commit
+
+- Action: Controller review patched P28 before merge.
+- Files changed: groop/src/groop/collect/cgroup.py,
+  groop/tests/test_io_cap_saturation.py, groop/handoff/reports/P28-LOG.md,
+  groop/handoff/reports/P28-REPORT.md.
+- Result: Malformed `io.max` cap tokens are ignored instead of raising, reset
+  behavior is asserted more tightly, stale report dates/details were corrected,
+  and focused/full validation was rerun.
 ```
 
 ## Decisions
@@ -69,6 +77,12 @@ python3 -m pytest groop/tests/test_io_cap_saturation.py -v
 
 python3 -m pytest groop/tests -q
 # 216 passed in 29.28s
+
+/tmp/p25-venv/bin/python -m pytest groop/tests/test_io_cap_saturation.py -q
+# 16 passed in 0.06s after controller review
+
+/tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 217 passed in 29.91s after controller review
 ```
 
 ## Handoff Checklist

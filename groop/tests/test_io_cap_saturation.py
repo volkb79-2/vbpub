@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 """Tests for I/O cap saturation metric (P28)."""
-
-import json
 from pathlib import Path
 
-from groop.collect.cgroup import _IO_MAX_FIELDS, read_io_max_caps
+from groop.collect.cgroup import read_io_max_caps
 from groop.config import GroopConfig
 from groop.model import Entity, EntityFrame, MetricValue
 from groop.ui.table import format_metric_value, header_label, resolve_columns
@@ -60,6 +58,17 @@ def test_read_io_max_caps_empty_file(tmp_path: Path) -> None:
     caps, src = read_io_max_caps(path)
     assert src == "exact"
     assert all(v is None for v in caps.values())
+
+
+def test_read_io_max_caps_ignores_malformed_tokens(tmp_path: Path) -> None:
+    path = tmp_path / "io.max"
+    path.write_text("8:16 rbps=bad wbps=2000 riops= wiops=max\n")
+    caps, src = read_io_max_caps(path)
+    assert src == "exact"
+    assert caps["rbps"] is None
+    assert caps["wbps"] == 2000
+    assert caps["riops"] is None
+    assert caps["wiops"] is None
 
 
 # ── Saturation derivation (direct unit test) ─────────────────────────────────
@@ -130,6 +139,8 @@ def test_io_cap_saturation_clamps_lower_bound() -> None:
     sat = rates.get("io_cap_saturation_pct")
     # Rates with reset produce None v, so saturation should be unavailable
     assert sat is not None
+    assert sat.v is None
+    assert sat.src == "derived"
 
 
 def test_io_cap_saturation_allows_overshoot() -> None:

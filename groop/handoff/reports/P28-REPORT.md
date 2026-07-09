@@ -20,18 +20,19 @@
   - Default band warn=75%, crit=95%
   - Default weight 0.0 (opt-in)
   - Score contribution when saturation exceeds the configured band
-- Added 15 focused tests in `tests/test_io_cap_saturation.py`:
+- Added 16 focused tests in `tests/test_io_cap_saturation.py`:
   1-5: io.max caps parser (finite, max, multi-device, missing, empty)
-  6: Derivation uses highest ratio
-  7: Reset handling (lower bound)
-  8: Overshoot >100% preserved
-  9: All-max caps → unlimited source
-  10: Header label `IO_CAP%`
-  11: Value formatted as percentage
-  12: Appears in auto profile at 120 width
-  13: Appears in wide profile
-  14: Diagnostics contribution when high
-  15: Low saturation → small contribution
+  6: Malformed cap tokens are ignored gracefully
+  7: Derivation uses highest ratio
+  8: Reset handling/unavailable rate behavior
+  9: Overshoot >100% preserved
+  10: All-max caps -> unlimited source
+  11: Header label `IO_CAP%`
+  12: Value formatted as percentage
+  13: Appears in auto profile at 120 width
+  14: Appears in wide profile
+  15: Diagnostics contribution when high
+  16: Low saturation -> small contribution
 - Updated golden fixture to include `io_cap_saturation_pct` for all entities
 - Updated docs: `README.md` P28 → Done, `ROADMAP.md` P28 done, `STATUS.md` diagnostics gap narrowed + quality gate
 
@@ -55,6 +56,13 @@ python3 -m pytest groop/tests/test_io_cap_saturation.py -v
 
 python3 -m pytest groop/tests -q
 # 216 passed in 29.28s
+
+# Controller review after malformed-token hardening
+/tmp/p25-venv/bin/python -m pytest groop/tests/test_io_cap_saturation.py -q
+# 16 passed in 0.06s
+
+/tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 217 passed in 29.91s
 ```
 
 ## Known Gaps
