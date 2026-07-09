@@ -12,6 +12,7 @@ from groop.config import load
 from groop.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, stop_owned_sessions
 from groop.damon.passive import DEFAULT_DAMON_ROOT
 from groop.damon.paddr import paddr_confirmation_text, plan_start_paddr_session, start_planned_paddr_session
+from groop.daemon import FrameBroker, serve_unix_socket
 from groop.model import frame_to_jsonable
 from groop.record.live import live_frame_stream
 from groop.record.replay import ReplayDriver, format_frame_summary
@@ -60,6 +61,17 @@ def parse_snapshot_args(argv: list[str]) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     inspect_parser = subparsers.add_parser("inspect", help="inspect a groop incident snapshot bundle")
     inspect_parser.add_argument("file", type=Path, help="snapshot .tar or .tar.zst bundle")
+    return parser.parse_args(argv)
+
+
+def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="groop daemon")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    serve = subparsers.add_parser("serve", help="serve read-only frames over a Unix socket")
+    serve.add_argument("--socket", type=Path, required=True, help="Unix socket path")
+    serve.add_argument("--config", type=Path, default=None, help="load config from PATH instead of the default XDG location")
+    serve.add_argument("--cgroup-root", type=Path, default=None, help="cgroup v2 root for live or fixture collection")
+    serve.add_argument("--history-size", type=int, default=120, help="bounded in-memory frame history")
     return parser.parse_args(argv)
 
 
@@ -114,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_damon(raw_argv[1:])
     if raw_argv[:1] == ["snapshot"]:
         return _main_snapshot(raw_argv[1:])
+    if raw_argv[:1] == ["daemon"]:
+        return _main_daemon(raw_argv[1:])
     args = parse_args(raw_argv)
     config = load(args.config)
     if args.record is not None and args.replay is not None:
@@ -243,6 +257,24 @@ def _main_snapshot(argv: list[str]) -> int:
             return 1
         return 0
     print("unknown snapshot command", file=sys.stderr)
+    return 2
+
+
+def _main_daemon(argv: list[str]) -> int:
+    args = parse_daemon_args(argv)
+    if args.command == "serve":
+        config = load(args.config)
+        collector = Collector(cgroup_root=args.cgroup_root, config=config)
+        broker = FrameBroker(live_frame_stream(collector), history_size=args.history_size)
+        server = serve_unix_socket(args.socket, broker)
+        print(f"serving read-only groop frames on {args.socket}", flush=True)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            return 0
+        finally:
+            server.server_close()
+    print("unknown daemon command", file=sys.stderr)
     return 2
 
 

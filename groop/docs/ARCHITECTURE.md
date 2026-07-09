@@ -43,6 +43,7 @@ flowchart LR
 | `damon/` | passive DAMON parsing plus controlled vaddr/paddr session APIs. |
 | `record/` | live stream, JSONL reader/writer, replay, and history ring. |
 | `snapshot/` | incident bundle creation and inspection. |
+| `daemon/` | Read-only Unix-socket frame broker spike. |
 | `ui/` | Textual app, banner, table/tree, drill-down, host-memory status, keys. |
 
 ## Layering Rules
@@ -83,9 +84,27 @@ stateDiagram-v2
 
 ## Future Daemon Boundary
 
-The daemon should reuse the same frame model. A future attached client should
-see the same stream shape as standalone live mode, with the transport changing
-from in-process iterator to Unix socket.
+P16 adds the first daemon spike: `groop daemon serve --socket PATH` runs a
+read-only Unix-socket broker around the same frame model. A client sends one
+JSON object per connection:
+
+```json
+{"op":"current"}
+{"op":"stream","limit":3}
+```
+
+Responses are JSON lines: zero or more `{"type":"frame","frame":...}` objects
+using canonical `Frame` JSON, followed by `{"type":"end","count":N}`. Unknown
+operations return `{"type":"error",...}`. There is deliberately no file-read,
+command-execution, or mutation verb.
+
+Default socket permission is `0660`; deployment should place the socket under a
+root-owned runtime directory such as `/run/groop/groop.sock` with a dedicated
+`groop` group. The daemon may run as root to read root-only sources, but clients
+receive only the daemon-approved frame stream.
+
+A future attached client should see the same stream shape as standalone live
+mode, with the transport changing from in-process iterator to Unix socket.
 
 ```mermaid
 flowchart LR
