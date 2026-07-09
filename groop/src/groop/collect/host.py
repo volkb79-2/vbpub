@@ -276,6 +276,92 @@ def _zram_device_details(sys_root: Path) -> list[dict[str, object]]:
     return devices
 
 
-def collect_host_meta(sys_root: Path = Path("/sys")) -> dict[str, object]:
-    """Collect host-level non-metric metadata for the Frame."""
-    return {"zram_devices": _zram_device_details(sys_root)}
+# Default device exclusion glob prefixes for host_meta device collection.
+# Matches the spec §3.0 [banner] net_device_exclude / disk_device_exclude defaults.
+_NET_DEVICE_EXCLUDE_PREFIXES = ("veth", "br-", "docker", "lo")
+_BLOCK_DEVICE_EXCLUDE_PREFIXES = ("loop", "ram", "zram")
+
+
+def _net_dev_counters(proc_root: Path) -> list[dict[str, object]]:
+    """Parse /proc/net/dev for per-interface byte/packet counters.
+
+    Returns a list of dicts with name, rx_bytes, tx_bytes, rx_packets, tx_packets.
+    Excludes interfaces matching _NET_DEVICE_EXCLUDE_PREFIXES (veth*, br-*, docker*, lo).
+    Returns empty list on unreadable /proc/net/dev.
+    """
+    result = read_text(proc_root / "net" / "dev")
+    if result.value is None:
+        return []
+    devices: list[dict[str, object]] = []
+    lines = str(result.value).splitlines()
+    # Skip first two header lines: "Inter-|   Receive ..." and " face |bytes ..."
+    for line in lines[2:]:
+        if ":" not in line:
+            continue
+        name_part, _, rest = line.partition(":")
+        name = name_part.strip()
+        if any(name.startswith(p) for p in _NET_DEVICE_EXCLUDE_PREFIXES):
+            continue
+        parts = rest.split()
+        if len(parts) < 10:
+            continue
+        try:
+            rx_bytes = int(parts[0])
+            rx_packets = int(parts[1])
+            tx_bytes = int(parts[8])
+            tx_packets = int(parts[9])
+        except (ValueError, IndexError):
+            continue
+        devices.append({
+            "name": name,
+            "rx_bytes": rx_bytes,
+            "tx_bytes": tx_bytes,
+            "rx_packets": rx_packets,
+            "tx_packets": tx_packets,
+            "src": "host",
+        })
+    return devices
+
+
+def _block_dev_counters(sys_root: Path) -> list[dict[str, object]]:
+    """Parse /sys/block/*/stat for per-device I/O counters.
+
+    Returns a list of dicts with name, rd_sectors, wr_sectors, rd_ios, wr_ios.
+    Excludes devices matching _BLOCK_DEVICE_EXCLUDE_PREFIXES (loop*, ram*, zram*).
+    Returns empty list on unreadable /sys/block or stat files.
+    """
+    block_dir = sys_root / "block"
+    if not block_dir.is_dir():
+        return []
+    devices: list[dict[str, object]] = []
+    for device in sorted(block_dir.iterdir()):
+        if not device.is_dir():
+            continue
+        name = device.name
+        if any(name.startswith(p) for p in _BLOCK_DEVICE_EXCLUDE_PREFIXES):
+            continue
+        stat = _parse_stat_line(device / "stat")
+        if len(stat) < 7:
+            continue
+        devices.append({
+            "name": name,
+            "rd_ios": stat[0],
+            "rd_sectors": stat[2],
+            "wr_ios": stat[4],
+            "wr_sectors": stat[6],
+            "src": "host",
+        })
+    return devices
+
+
+def collect_host_meta(proc_root: Path = Path("/proc"), sys_root: Path = Path("/sys")) -> dict[str, object]:
+    """Collect host-level non-metric metadata for the Frame.
+
+    Includes zram device details, raw net device counters, and raw block device
+    counters. The Collector computes rates from the raw counters.
+    """
+    return {
+        "zram_devices": _zram_device_details(sys_root),
+        "net_device_counters": _net_dev_counters(proc_root),
+        "block_device_counters": _block_dev_counters(sys_root),
+    }

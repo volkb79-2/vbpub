@@ -253,8 +253,10 @@ def test_collect_host_meta_no_zram_devices(tmp_path: Path) -> None:
     """collect_host_meta returns empty list when no zram devices exist."""
     sys = tmp_path / "sys"
     (sys / "block").mkdir(parents=True)
-    meta = collect_host_meta(sys_root=sys)
-    assert meta == {"zram_devices": []}
+    meta = collect_host_meta(proc_root=tmp_path, sys_root=sys)
+    assert meta["zram_devices"] == []
+    assert "net_device_counters" in meta
+    assert "block_device_counters" in meta
 
 
 def test_collect_host_aggregate_metrics_unchanged(tmp_path: Path) -> None:
@@ -318,7 +320,9 @@ def test_collector_default_host_uses_configured_sys_root(tmp_path: Path) -> None
                 "ratio": 2.0,
                 "efficiency": pytest.approx(4096 / 6144),
             }
-        ]
+        ],
+        "net_devices": [],
+        "block_devices": [],
     }
 
 
