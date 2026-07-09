@@ -419,3 +419,56 @@ def test_daemon_current_parse_args_custom_socket(tmp_path: Path) -> None:
     assert args.command == "current"
     assert args.socket == Path("/tmp/custom.sock")
     assert args.pretty_json is True
+
+
+# ── Daemon current error guidance (P31) tests ─────────────────────────────
+
+
+def test_daemon_current_missing_default_socket_guidance(tmp_path: Path) -> None:
+    """daemon current against a missing default socket prints guidance with
+    preflight and install-plan."""
+    from groop.cli import _format_daemon_error
+    from groop.daemon.client import DaemonConnectError
+    from groop.daemon.deploy import DEFAULT_DAEMON_SOCKET
+
+    exc = DaemonConnectError(f"cannot connect to {DEFAULT_DAEMON_SOCKET}: No such file or directory")
+    msg = _format_daemon_error(exc, DEFAULT_DAEMON_SOCKET)
+    assert "cannot connect to " + str(DEFAULT_DAEMON_SOCKET) in msg
+    assert "Try: groop daemon preflight" in msg
+    assert "groop daemon install-plan" in msg
+
+
+def test_daemon_current_missing_custom_socket_guidance(tmp_path: Path) -> None:
+    """daemon current against a missing custom socket prints guidance with
+    preflight --socket <path>."""
+    from groop.cli import _format_daemon_error
+    from groop.daemon.client import DaemonConnectError
+
+    custom = Path("/tmp/missing-custom.sock")
+    exc = DaemonConnectError(f"cannot connect to {custom}: Connection refused")
+    msg = _format_daemon_error(exc, custom)
+    assert "cannot connect to /tmp/missing-custom.sock" in msg
+    assert "Try: groop daemon preflight --socket /tmp/missing-custom.sock" in msg
+    assert "install-plan" not in msg
+
+
+def test_daemon_current_missing_socket_guidance_via_cli(tmp_path: Path) -> None:
+    """daemon current CLI against a missing socket prints guidance."""
+    import io
+    from groop.cli import _main_daemon
+
+    missing = tmp_path / "no-socket-here.sock"
+    old_stdout, old_stderr = sys.stdout, sys.stderr
+    sys.stdout = io.StringIO()
+    sys.stderr = io.StringIO()
+    code = None
+    try:
+        code = _main_daemon(["current", "--socket", str(missing)])
+    finally:
+        stderr_val = sys.stderr.getvalue()
+        stdout_val = sys.stdout.getvalue()
+        sys.stdout, sys.stderr = old_stdout, old_stderr
+    assert code == 2
+    assert "cannot connect" in stderr_val.lower()
+    assert "Try: groop daemon preflight --socket" in stderr_val
+    assert stdout_val == ""

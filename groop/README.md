@@ -87,7 +87,7 @@ Useful feature hotkeys in the TUI:
 | P28 | Done | I/O cap saturation metric | v1 diagnostics polish | Populate dormant `io_cap_saturation_pct` from `io.max` and I/O rate counters. Handoff: `handoff/P28-io-cap-saturation.md`. Report: `handoff/reports/P28-REPORT.md`. |
 | P29 | Done | Inspect-files safety skeleton | v2 foundation | Add disabled-by-default, read-only file/log inspection planning module and CLI plan command. No content reads, no subprocess execution, no host mutation. Handoff: `handoff/P29-inspect-files-safety-skeleton.md`. Report: `handoff/reports/P29-REPORT.md`. |
 | P30 | Done | Daemon default client UX | v1.5/v2 daemon usability | Default-socket daemon attach and one-frame daemon current command for non-root clients. Handoff: `handoff/P30-daemon-default-client.md`. Report: `handoff/reports/P30-REPORT.md`. |
-| P31 | Planned | Daemon client error guidance | v1.5/v2 daemon usability | Add actionable preflight/install-plan guidance to attach/current daemon client failures. Handoff: `handoff/P31-daemon-client-error-guidance.md`. |
+| P31 | Done | Daemon client error guidance | v1.5/v2 daemon usability | Add actionable preflight/install-plan guidance to attach/current daemon client failures. Handoff: `handoff/P31-daemon-client-error-guidance.md`. Report: `handoff/reports/P31-REPORT.md`. |
 
 ## Completed Package Order
 

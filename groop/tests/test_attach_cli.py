@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 import threading
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
@@ -216,3 +216,77 @@ def test_attach_default_socket_with_ui_smoke(tmp_path: Path) -> None:
     args = parse_args(["--attach", "--ui-smoke"])
     assert args.attach == DEFAULT_DAEMON_SOCKET
     assert args.ui_smoke is True
+
+
+# ── Daemon error guidance (P31) tests ─────────────────────────────────────
+
+
+def test_default_socket_attach_error_guidance(tmp_path: Path) -> None:
+    """Default-socket attach missing socket prints original error and
+    preflight/install-plan guidance."""
+    from groop.cli import _format_daemon_error
+    from groop.daemon.client import DaemonConnectError
+    from groop.daemon.deploy import DEFAULT_DAEMON_SOCKET
+
+    exc = DaemonConnectError("cannot connect to /run/groop/groop.sock: No such file or directory")
+    msg = _format_daemon_error(exc, DEFAULT_DAEMON_SOCKET)
+    assert "cannot connect to /run/groop/groop.sock" in msg
+    assert "Try: groop daemon preflight" in msg
+    assert "groop daemon install-plan" in msg
+
+
+def test_custom_socket_attach_error_guidance(tmp_path: Path) -> None:
+    """Custom-socket attach error suggests preflight with that socket."""
+    from groop.cli import _format_daemon_error
+    from groop.daemon.client import DaemonConnectError
+    from pathlib import Path
+
+    custom = Path("/tmp/my-custom.sock")
+    exc = DaemonConnectError(f"cannot connect to {custom}: Connection refused")
+    msg = _format_daemon_error(exc, custom)
+    assert "cannot connect to /tmp/my-custom.sock" in msg
+    assert "Try: groop daemon preflight --socket /tmp/my-custom.sock" in msg
+    assert "install-plan" not in msg
+
+
+def test_protocol_error_guidance(tmp_path: Path) -> None:
+    """Protocol error guidance mentions compatible daemon and logs."""
+    from groop.cli import _format_daemon_error
+    from groop.daemon.client import DaemonProtocolError
+    from groop.daemon.deploy import DEFAULT_DAEMON_SOCKET
+
+    exc = DaemonProtocolError("daemon at /run/groop/groop.sock returned malformed JSON on line 1")
+    msg = _format_daemon_error(exc, DEFAULT_DAEMON_SOCKET)
+    assert "compatible groop daemon" in msg
+    assert "daemon logs" in msg
+    assert "malformed JSON" in msg
+
+
+def test_response_error_guidance(tmp_path: Path) -> None:
+    """Response error guidance mentions compatible daemon and logs."""
+    from groop.cli import _format_daemon_error
+    from groop.daemon.client import DaemonResponseError
+    from groop.daemon.deploy import DEFAULT_DAEMON_SOCKET
+
+    exc = DaemonResponseError("daemon at /run/groop/groop.sock returned an error: denied")
+    msg = _format_daemon_error(exc, DEFAULT_DAEMON_SOCKET)
+    assert "compatible groop daemon" in msg
+    assert "daemon logs" in msg
+    assert "denied" in msg
+
+
+def test_attach_missing_socket_returns_guidance_via_cli(tmp_path: Path) -> None:
+    """CLI --attach against a missing socket prints original error + guidance
+    and exits 2 without live-collection fallback."""
+    from groop.cli import _main_inspect_files as _  # noqa: F811
+    import groop.cli as cli_mod
+
+    missing = tmp_path / "nonexistent.sock"
+    output = StringIO()
+    err = StringIO()
+    with redirect_stdout(output), redirect_stderr(err):
+        code = cli_mod.main(["--attach", str(missing), "--once", "--json"])
+    assert code == 2
+    assert "cannot connect" in err.getvalue().lower() or "no such" in err.getvalue().lower()
+    assert "Try: groop daemon preflight --socket" in err.getvalue()
+    assert output.getvalue() == ""  # No live fallback

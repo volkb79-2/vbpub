@@ -106,6 +106,40 @@ The preflight command is read-only. It inspects the socket path, parent
 directory, group membership, and local connectability without mutating host
 state or invoking systemd.
 
+## Troubleshooting Daemon Client Errors
+
+When `groop --attach ...` or `groop daemon current ...` fails, the CLI prints
+the original error followed by actionable guidance:
+
+### Default socket (`/run/groop/groop.sock`)
+
+```
+cannot connect to /run/groop/groop.sock: No such file or directory
+
+Try: groop daemon preflight
+If the daemon is not installed: groop daemon install-plan
+```
+
+### Custom socket
+
+```
+cannot connect to /tmp/custom.sock: Connection refused
+
+Try: groop daemon preflight --socket /tmp/custom.sock
+```
+
+### Protocol/response errors
+
+```
+daemon at /run/groop/groop.sock returned malformed JSON on line 1
+
+Check that the process at the socket is a compatible groop daemon
+and review the daemon logs for errors.
+```
+
+All errors preserve the original exception text and exit code 2. No live
+collection fallback is introduced.
+
 ## Threat Model
 
 The daemon may run with privileges so it can read root-only kernel/debugfs/DAMON
