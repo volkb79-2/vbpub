@@ -43,6 +43,7 @@ flowchart TD
     P15 --> P26[P26 Snapshot progress UI]
     P19 --> P27[P27 Swap/refault terminology aliases]
     P6 --> P28[P28 I/O cap saturation]
+    P21 --> P29[P29 Inspect-files safety skeleton]
 ```
 
 ## Near Term
@@ -124,6 +125,14 @@ Status: planned. P28 should populate the existing diagnostics input
 network-loss attribution as the remaining diagnostics input gap.
 
 Handoff: `handoff/P28-io-cap-saturation.md`.
+
+### P29 - Inspect-Files Safety Skeleton
+
+Status: planned. P29 should establish the explicit, disabled-by-default
+read-only file/log inspection planning contract for v2 without content reads,
+tailing, subprocess execution, or daemon integration.
+
+Handoff: `handoff/P29-inspect-files-safety-skeleton.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 
