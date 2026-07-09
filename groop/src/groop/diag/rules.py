@@ -52,7 +52,7 @@ def _protected_disk_refault(entity_frame: EntityFrame, config: GroopConfig) -> R
     severity = "red" if rf_d >= band.crit else "warn"
     return RuleMatch(
         severity=severity,
-        message=f"Protected service is refaulting anonymous memory from disk at {rf_d:.1f}/s; the cold tail is touching real storage.",
+        message=f"Protected service is refaulting anonymous memory from swap device at {rf_d:.1f}/s; backend may be disk, zram, or mixed according to host classification.",
         remedy="Check writeback pressure, preserve memory.min for the service, and avoid shrinking its protected working set.",
         confidence=_confidence(entity_frame, ("rf_d_per_s",)),
     )

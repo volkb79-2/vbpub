@@ -105,16 +105,16 @@ zswap/zram/disk/mixed backends, adds host-level ZRAM metrics, corrects banner
 wording, and documents the per-cgroup attribution boundary. P23 closed the
 per-device drill-down gap.
 
-Remaining polish: consider compatibility aliases for the legacy `swap_disk` and
-`rf_d` names.
+Aliases landed in P27; canonical keys preserved, backend-aware labels added, diagnostic wording updated.
 
 ### P27 - Swap/Refault Terminology Aliases
 
-Status: planned. P27 should keep canonical frame keys stable while allowing
-clearer `swap_dev` and `rf_dev_per_s` profile/UI aliases and backend-aware
-labels.
+Status: done. P27 keeps canonical frame keys stable while allowing
+clearer `swap_dev`, `rf_dev_per_s`, and `rf_dev` profile/UI aliases and
+backend-aware labels/diagnostic wording.
 
 Handoff: `handoff/P27-swap-refault-aliases.md`.
+Report: `handoff/reports/P27-REPORT.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 

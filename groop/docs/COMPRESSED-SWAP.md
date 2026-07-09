@@ -78,13 +78,27 @@ There is no kernel file that attributes zram compressed bytes, zram physical
 memory cost, or zram compression ratio to an individual cgroup. Therefore:
 
 - Per-cgroup `z_pool`, `z_eq`, and `ratio` remain zswap-only.
-- The current `swap_disk` metric name means "non-zswap swap-device usage
-  estimate" until the code grows a clearer alias.
+- The canonical metric key `swap_disk` (alias `swap_dev`) means "non-zswap
+  swap-device usage estimate".
 - On `zram_only` hosts, that estimate is logical zram-backed swap, not disk IO.
 - On `disk_only` hosts, it is a disk-swap estimate.
 - On `mixed` hosts, the backend for a given cgroup is unknown; show the value
   with a mixed/estimated source label and explain it in drill-down.
 - Never fabricate per-cgroup zram compression ratios from host totals.
+
+## Alias Reference
+
+The following user-facing aliases are accepted in configured column profiles
+and resolve silently to the canonical metric key:
+
+| Alias | Canonical key | Display label |
+|---|---|---|
+| `swap_dev` | `swap_disk` | `SWAP_DEV` |
+| `rf_dev_per_s`, `rf_dev` | `rf_d_per_s` | `RF_DEV/S` |
+
+Legacy canonical keys (`swap_disk`, `rf_d_per_s`, `rf_d`) continue to work.
+The alias layer is cosmetic only — recorded frame JSON, threshold config keys,
+and diagnostic config keys are unaffected.
 
 ## Refault Wording
 

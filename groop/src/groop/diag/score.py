@@ -71,12 +71,12 @@ _INPUTS = (
     ),
     ScoreInput(
         key="rf_d_per_s",
-        label="Disk anon refaults",
+        label="Device anon refaults",
         metrics=("rf_d_per_s",),
         weight_key="rf_d_per_s",
         threshold_key="rf_d_per_s",
         default_band=ThresholdBand(1.0, 20.0),
-        detail="anonymous refaults that missed zswap",
+        detail="anonymous refaults that missed zswap; backend may be disk, zram, or mixed according to host classification",
     ),
     ScoreInput(
         key="rf_f_per_s",
