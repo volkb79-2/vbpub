@@ -45,6 +45,7 @@ flowchart TD
     P6 --> P28[P28 I/O cap saturation]
     P21 --> P29[P29 Inspect-files safety skeleton]
     P20 --> P30[P30 Daemon default client UX]
+    P30 --> P31[P31 Daemon client error guidance]
 ```
 
 ## Near Term
@@ -149,6 +150,15 @@ or daemon-side privilege changes.
 
 Handoff: `handoff/P30-daemon-default-client.md`.
 Report: `handoff/reports/P30-REPORT.md`.
+
+### P31 - Daemon Client Error Guidance
+
+Status: planned. P31 should keep daemon client errors read-only and exit-code
+compatible while adding actionable next steps: preflight for the relevant
+socket, install-plan for the packaged default path, and compatible-daemon/log
+guidance for protocol errors.
+
+Handoff: `handoff/P31-daemon-client-error-guidance.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 
