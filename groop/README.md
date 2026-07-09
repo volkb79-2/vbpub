@@ -90,9 +90,11 @@ worktree protocol below.
 
 - **Worktree + branch**: work in a dedicated git worktree on a feature branch
   named `feat/groop-<pkg>-<slug>`, e.g.
-  `git worktree add -b feat/groop-p1-collector /tmp/vbpub-groop-p1-collector main`.
-  The worktree MUST be outside this main checkout, under `/tmp`, and MUST branch
-  from local `main`. Never commit package work directly to `main`.
+  `git worktree add -b feat/groop-p1-collector .worktrees/-groop-p1-collector main`.
+  The worktree MUST live under the repo-root `.worktrees/` directory, using a
+  path like `.worktrees/-groop-<pkg>-<slug>`, and MUST branch from local
+  `main`. `.worktrees/` is gitignored; do not edit or commit package work
+  directly in the main checkout.
 - **Scope**: touch only `groop/**`. No edits to other vbpub areas, no host
   changes, no root, no docker mutations. The collector reads live
   `/sys/fs/cgroup` only in ad-hoc manual testing; automated tests use
