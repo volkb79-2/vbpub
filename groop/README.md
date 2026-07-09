@@ -77,6 +77,7 @@ Useful feature hotkeys in the TUI:
 | P17 | Done | BPF provider measurement gate and design | v2 foundation | Safe unprivileged gate plus design doc; no default behavior change. Report: `handoff/reports/P17-REPORT.md`. |
 | P18 | Proposed | Exact BPF network provider | v2 | Implement `net:BPF` after P16/P17 evidence. Handoff: `handoff/P18-bpf-provider-implementation.md`. |
 | P20 | Done | Daemon attach mode for non-root clients | v1.5/v2 foundation | Consume P16 daemon frames via `groop --attach SOCKET`; `--once --json` and UI smoke are supported. Report: `handoff/reports/P20-REPORT.md`. |
+| P22 | Proposed | Daemon deployment preflight and service templates | v1.5/v2 foundation | Safe preflight and packaged operator templates for root daemon plus group-readable socket. Handoff: `handoff/P22-daemon-deployment-preflight.md`. |
 
 ## Completed Package Order
 

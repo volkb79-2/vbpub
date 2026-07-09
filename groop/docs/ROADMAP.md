@@ -35,6 +35,7 @@ flowchart TD
     P16 --> P17[P17 BPF provider measurement gate]
     P17 --> P18[P18 BPF provider implementation]
     P16 --> P20[P20 daemon attach mode]
+    P20 --> P22[P22 daemon deployment preflight]
     P13 --> P21[P21 v2 action gating skeleton]
 ```
 
@@ -113,6 +114,14 @@ P16 socket protocol, preserves the same UI model as standalone live mode, and
 supports `--once --json` plus UI smoke.
 
 Handoff: `handoff/P20-daemon-attach-mode.md`.
+
+### P22 — Daemon Deployment Preflight
+
+Goal: add a safe `groop daemon preflight` check and packaged systemd/tmpfiles
+templates so non-root attach can be deployed deliberately without test-time host
+mutation.
+
+Handoff: `handoff/P22-daemon-deployment-preflight.md`.
 
 ## Later
 
