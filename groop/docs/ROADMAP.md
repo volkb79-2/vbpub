@@ -56,6 +56,7 @@ flowchart TD
     P38 --> P39[P39 Release readiness ledger]
     P39 --> P40[P40 Textual 8 compat]
     P40 --> P41[P41 Rendered replay fidelity]
+    P18 --> P42[P42 Daemon BPF snapshot bridge]
 ```
 
 ## Remaining Estimate
@@ -319,6 +320,16 @@ and `MEASUREMENTS.md` now records the live-BPF blocker on this host.
 
 Goal: implement exact per-cgroup socket counters behind the existing provider
 interface, owned by daemon/helper state rather than by the TUI.
+
+### P42 — Daemon BPF Snapshot Bridge
+
+Status: planned. P42 converts an explicitly configured, already-pinned BPF
+counter map into the P18 provider's atomic `snapshot.json` contract from the
+daemon. It deliberately excludes BPF program compilation and privileged
+attach/pin/detach lifecycle so those mutations remain a separately reviewed
+follow-up.
+
+Handoff: `handoff/P42-daemon-bpf-snapshot-bridge.md`.
 
 ### P20 — TUI Attach Mode
 
