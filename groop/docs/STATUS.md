@@ -14,7 +14,7 @@ Approximate status:
 | Release cut | Feature implementation | Release confidence | Notes |
 |---|---:|---:|---|
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
-| v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35 add repeatable rootless smoke and steady harnesses; P36/P37 close CPU trend and host network-loss polish; P38 adds rootless TUI smoke evidence harness. Remaining gaps are live 5-minute Textual TUI evidence and final release documentation. |
+| v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35 add repeatable rootless smoke and steady harnesses; P36/P37 close CPU trend and host network-loss polish; P38 adds rootless TUI smoke evidence harness; P39 adds the canonical release-readiness document. Remaining gaps are live 5-minute Textual TUI evidence and live-root DAMON acceptance. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
 | v2 daemon/BPF/admin actions | 50-55% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, and daemon current/status commands exist; live BPF attach/snapshot writing, executable admin actions, GPU/ZFS plugins are not implemented. |
 
@@ -113,7 +113,8 @@ core workflows, not yet production-certified.**
   smoke, wheel install, version, and bounded once/json CPU/RSS. P33 adds a
   repeatable rootless acceptance smoke command. P35 adds a rootless multi-sample
   collector steady harness. P38 adds a rootless TUI smoke evidence harness via
-  subprocess. P17 records the safe BPF gate and current live-BPF
+  subprocess. P39 adds the canonical release-readiness document mapping §9
+  gates to evidence sources. P17 records the safe BPF gate and current live-BPF
   blocker. P18 records the fixture-tested BPF provider implementation.
   `MEASUREMENTS.md` still needs a full 5-minute live Textual TUI perf/RSS run,
   DAMON, and privileged BPF measurements.

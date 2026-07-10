@@ -58,16 +58,16 @@ flowchart TD
 
 ## Remaining Estimate
 
-After P38, the roadmap is mostly in three buckets:
+After P39, the roadmap is mostly in three buckets:
 
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
-| v1/v1.5 release confidence and UI polish | 1 | P39 release readiness ledger, live DAMON evidence capture, and any last release-candidate fixes that evidence exposes. |
+| v1/v1.5 release confidence and UI polish | 0 | P39 release readiness ledger is complete. Remaining items are manual live-host evidence capture (5-minute Textual TUI CPU/RSS, live-root DAMON acceptance) and any last release-candidate fixes that evidence exposes. |
 | v2 privileged daemon/BPF/admin/file work | 5-7 | BPF daemon lifecycle, paddr daemon ownership, install execution/service hardening, executable admin actions, inspect-files content mode, systemd property governance. |
 | Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
 
 Pragmatic estimate from the current state: a shippable v1/v1.5 release
-candidate should need about **1 more package** plus live-host acceptance
+candidate needs **0 remaining packages** plus live-host acceptance
 evidence. Implementing the broader roadmap end-to-end still looks like **9-13
 small packages**, depending on whether "fully completed" includes optional
 plugins and web UI.
@@ -258,12 +258,13 @@ Report: `handoff/reports/P38-REPORT.md`.
 
 ### P39 - Release Readiness Ledger
 
-Status: planned. P39 should add a canonical release-readiness document mapping
+Status: done. P39 adds a canonical release-readiness document mapping
 `TUI-SPEC.md` §9 gates to tests, acceptance commands, measurements, and
 remaining manual live-host evidence. This is the last planned v1/v1.5 release
 confidence package before manual live-host evidence capture.
 
 Handoff: `handoff/P39-release-readiness-ledger.md`.
+Report: `handoff/reports/P39-REPORT.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 
