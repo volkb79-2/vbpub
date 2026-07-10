@@ -65,6 +65,9 @@ flowchart TD
     P45 --> P48[P48 Journald snapshot]
     P46 --> P49[P49 memory.high governance]
     P43 --> P50[P50 Mouse table interactions]
+    P16 --> P51[P51 Daemon sampling fanout]
+    P47 --> P52[P52 Versioned read API]
+    P51 --> P52
 ```
 
 ## Remaining Estimate
@@ -130,6 +133,15 @@ so header clicks sort/toggle direction and row clicks open drill-down, while
 retaining keyboard navigation and P41 formatted-cell fidelity.
 
 Handoff: `handoff/P50-mouse-table-interactions.md`.
+
+### P51-P52 - Web-Backend Readiness
+
+Status: queued. P51 fixes request-driven/stale daemon sampling with one
+background producer and non-consuming fan-out. After P47 and P51, P52 adds a
+versioned, bounded, peer-aware read API for attached and web frontends.
+
+Handoffs: `handoff/P51-daemon-sampling-fanout.md` and
+`handoff/P52-versioned-daemon-read-api.md`.
 
 ### P12 — Release Hardening And Acceptance
 

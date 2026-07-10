@@ -31,6 +31,12 @@ daemon component health, bounded journald snapshots, and structured
 P50 is queued as a non-privileged usability slice for clickable table sorting
 and row drill-down. Current builds remain keyboard-first until it is reviewed.
 
+Daemon sampling is currently request-driven: `current` caches the first frame
+and `stream` advances the source. P51 is queued to make one background producer
+serve fresh non-consuming fan-out; P52 then supplies the versioned bounded read
+contract required by a production web backend. Until those merge, web support is
+a prototype-only claim.
+
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
 core workflows, not yet production-certified.**
