@@ -135,6 +135,33 @@ IO_DEV=$(_io_dev)
 IO_DEV_PATH=$(_io_dev_path)
 [ -n "$IO_DEV" ] && log "discovered io device: $IO_DEV ($IO_DEV_PATH)" || log "WARN: could not discover block device for io.max"
 
+# --- besteffort.slice: dynamic disk IO caps (plan-stack-resource-tuning.md D2) ---
+# The unit file's static IOReadBandwidthMax/IOWriteBandwidthMax/IOReadIOPSMax/
+# IOWriteIOPSMax (31M/100/400) are a boot-window fallback only. Here we
+# override them at runtime with BE_IO_CAP_PCT% (default 40%) of the SAME
+# measured io-baseline.env ceilings the bench-container caps above use
+# (RIOPS_MAX/WIOPS_MAX/RBW_MAX_BPS/WBW_MAX_BPS) — sourced by the IO_BASELINE
+# block above, so this only fires when that file exists. Different percentage
+# than the 80% bench/devcontainer caps: this is a whole-tier ceiling (every
+# dstdns container together), not a single builder's share.
+BE_IO_CAP_PCT="${BE_IO_CAP_PCT:-40}"
+if [ -f "$IO_BASELINE" ] && [ -n "${RIOPS_MAX:-}" ] && [ -n "${WIOPS_MAX:-}" ] \
+   && [ -n "${RBW_MAX_BPS:-}" ] && [ -n "${WBW_MAX_BPS:-}" ]; then
+  BE_RIOPS=$(( RIOPS_MAX * BE_IO_CAP_PCT / 100 ))
+  BE_WIOPS=$(( WIOPS_MAX * BE_IO_CAP_PCT / 100 ))
+  BE_RBPS=$(( RBW_MAX_BPS * BE_IO_CAP_PCT / 100 ))
+  BE_WBPS=$(( WBW_MAX_BPS * BE_IO_CAP_PCT / 100 ))
+  if [ -n "$IO_DEV_PATH" ] && systemctl set-property --runtime besteffort.slice \
+       "IOReadBandwidthMax=$IO_DEV_PATH $BE_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $BE_WBPS" \
+       "IOReadIOPSMax=$IO_DEV_PATH $BE_RIOPS" "IOWriteIOPSMax=$IO_DEV_PATH $BE_WIOPS" 2>/tmp/cg-write-err; then
+    log "besteffort.slice: set-property io.max=${BE_RIOPS}r/${BE_WIOPS}w IOPS $((BE_RBPS/1048576))/$((BE_WBPS/1048576))MB/s r/w (${BE_IO_CAP_PCT}% of baseline)"
+  else
+    log "WARN: besteffort.slice IO*Max set-property failed ($(cat /tmp/cg-write-err 2>/dev/null)) — unit-file statics (31M/100/400) remain in force"
+  fi
+else
+  log "no io-baseline.env (or device undiscovered) — besteffort.slice keeps its unit-file static IO*Max (boot-window fallback)"
+fi
+
 # Pak is zstd-incompressible (1.006× measured) — bypass zswap entirely so cold pak
 # pages go straight to disk swap. Also declared in the soulmask-paks.slice unit
 # (MemoryZSwapMax=0); asserted here in case the unit predates that setting.
@@ -151,6 +178,21 @@ if [ -d "$DEV" ] && [ -w "$DEV/memory.zswap.writeback" ]; then
   echo 1 > "$DEV/memory.zswap.writeback" && log "dev-workloads.slice memory.zswap.writeback=1"
 else
   log "dev-workloads.slice not present yet (start it / launch a dev container first)"
+fi
+
+# --- interactive.slice: never page the IDE's cold tail to disk (2026-07-10 fix) ---
+# The interactive.slice unit file's comment has promised "memory.zswap.writeback=0
+# applied by setup-cgroups.sh" since it was created, but no code ever wrote it —
+# systemd has no property for this attribute (same as dev-workloads above), so
+# it's a raw cgroupfs write, not a set-property call. Opposite value from
+# dev-workloads: dev-workloads writes 1 (cold dev pages MAY page to disk),
+# interactive writes 0 (never — throttle via memory.high/zswap pool instead,
+# since this is also the VS Code server and disk-backed swap-in stalls the IDE).
+INTERACTIVE="$CG/interactive.slice"
+if [ -d "$INTERACTIVE" ] && [ -w "$INTERACTIVE/memory.zswap.writeback" ]; then
+  echo 0 > "$INTERACTIVE/memory.zswap.writeback" && log "interactive.slice memory.zswap.writeback=0"
+else
+  log "interactive.slice not present yet (start it / launch the devcontainer first)"
 fi
 
 _cg_write() {

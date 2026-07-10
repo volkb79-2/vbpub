@@ -5,18 +5,31 @@ Before=slices.target
 [Slice]
 # --- Memory ---
 # Soft limit first; hard cap keeps a leak here from poisoning the host.
-MemoryHigh=4G
+# 2026-07-10 (plan-stack-resource-tuning.md D1, dstdns supervisor interview):
+# relaxed from 4G/6G/12G. The dstdns stack (infra+apps+observability,
+# 12-15 containers) needs to run mostly un-throttled for meaningful dev work;
+# the Soulmask game's memory.min floor and interactive.slice's memory.low
+# claw RAM back reactively under real pressure, so a generous besteffort
+# ceiling is safe. systemd-oomd (below) stays as the leak backstop
+# regardless of ceiling size.
+MemoryHigh=8G
 # Hard host-safety cap: a leak here can never poison the host.
-MemoryMax=6G
+MemoryMax=12G
 # Leak-stopper: with 69G of swap, a leaking container would otherwise poison
 # swap/zswap long before MemoryMax fires.
-MemorySwapMax=12G
+MemorySwapMax=24G
 
 # --- CPU / IO weight ---
 CPUWeight=20
 IOWeight=10
 
-# --- Disk IO caps ---
+# --- Disk IO caps: BOOT-WINDOW FALLBACK ONLY ---
+# These static values are the operative caps only until setup-cgroups.sh runs
+# post-boot. From then on setup-cgroups.sh overrides them at runtime via
+# `systemctl set-property --runtime besteffort.slice` with BE_IO_CAP_PCT%
+# (default 40%) of the *measured* device ceilings in
+# /var/lib/gstammtisch/io-baseline.env (plan-stack-resource-tuning.md D2). If
+# no baseline file exists yet, these statics remain in force indefinitely.
 IOReadBandwidthMax=/dev/vda 31M
 IOWriteBandwidthMax=/dev/vda 31M
 IOReadIOPSMax=/dev/vda 100

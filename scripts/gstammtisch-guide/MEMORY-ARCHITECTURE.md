@@ -158,9 +158,20 @@ The goal: **Soulmask always preempts dev work and is the last thing reclaimed; d
 | Soulmask game | 6G (3 players; 5G caused login failures) | 12G | 7G (1G login/area-load transient headroom; 8G if logins regress) | 1 (since 2026-07-07) |
 | soulmask-paks.slice | 150M (calibrate via MEASUREMENTS.md M2) | — | — | zswap bypassed entirely (`memory.zswap.max=0` — pak incompressible) |
 | dev-workloads.slice | 0 | — | 8G | 1 |
+| interactive.slice | 0 | 2G | 5G | **0** (2026-07-10 fix — `setup-cgroups.sh` now actually writes this; the unit comment had promised it since creation but no code applied it, see `plan-stack-resource-tuning.md` PKG-1) |
+| besteffort.slice | 0 | 0 | **8G** (2026-07-10, was 4G) | 1 (default) |
 | system.slice (ancestor) | 7G (protection chain for the game floor) | — | — | — |
 | soulmask.slice (ancestor) | 1G (protection chain for the pak floor) | — | — | — |
 
+> **besteffort.slice, 2026-07-10** (`plan-stack-resource-tuning.md` D1/D2 — dstdns
+> needs its full stack, 12–15 containers, running for meaningful development):
+> `MemoryHigh=4G→8G`, `MemoryMax=6G→12G`, `MemorySwapMax=12G→24G` (columns above
+> only cover min/low/high/writeback; max/swap.max live in the unit file). Disk
+> IO caps are now **dynamic**: `setup-cgroups.sh` applies `BE_IO_CAP_PCT`
+> (default 40%) of the measured `io-baseline.env` ceilings at runtime via
+> `systemctl set-property --runtime besteffort.slice`; the unit's static
+> `IO*Max` (31M/100/400) is only a boot-window fallback before that runs.
+>
 > ⚠ **Protection chain (found 2026-07-06):** `memory.min`/`memory.low` are *hierarchical* — a cgroup's effective protection is capped by every ancestor's value. The game scope lives under `system.slice` and the pak slice under `soulmask.slice`; without `MemoryMin` on those ancestors both floors are **ineffective** against global reclaim. Since 2026-07-07 `setup-cgroups.sh` asserts the ancestor floors (table above) via `systemctl set-property`. Do NOT set `system.slice` below the game floor — the parent value silently CAPS the child's effective protection.
 
 **IO knobs** (BFQ scheduler required — without BFQ, `io.weight` / `io.bfq.weight` are no-ops):
@@ -220,7 +231,8 @@ the minimal consistent scheme; `setup-cgroups.sh` implements exactly this.
 
 ### 5.1 Applying it (files)
 - [`dev-workloads.slice`](files/etc/systemd/system/dev-workloads.slice) — standard knobs via systemd (memory, cpu/io weight, IO bandwidth cap, oomd).
-- [`setup-cgroups.sh`](files/usr/local/sbin/setup-cgroups.sh) (run by [`gstammtisch-cgroups.service`](files/etc/systemd/system/gstammtisch-cgroups.service)) — applies the knobs systemd can't: ancestor `MemoryMin` floors (protection chain), `memory.zswap.writeback` on the dev slice, pak-slice zswap bypass, and locates the Soulmask container's scope to set `memory.min/low/high` + writeback. Re-runnable after the server restarts.
+- [`besteffort.slice`](files/etc/systemd/system/besteffort.slice) / [`interactive.slice`](files/etc/systemd/system/interactive.slice) — the dstdns-stack and devcontainer tiers (2026-07-10 values, `plan-stack-resource-tuning.md` D1); enabled by `scripts/install.sh`.
+- [`setup-cgroups.sh`](files/usr/local/sbin/setup-cgroups.sh) (run by [`gstammtisch-cgroups.service`](files/etc/systemd/system/gstammtisch-cgroups.service)) — applies the knobs systemd can't: ancestor `MemoryMin` floors (protection chain), `memory.zswap.writeback` on the dev slice (1) and interactive slice (0, fixed 2026-07-10), pak-slice zswap bypass, dynamic `besteffort.slice` `IO*Max` at `BE_IO_CAP_PCT` of the measured `io-baseline.env` ceilings (2026-07-10, D2), and locates the Soulmask container's scope to set `memory.min/low/high` + writeback. Re-runnable after the server restarts.
 
 ### 5.2 Pterodactyl / Wings integration (be realistic)
 Wings creates the Soulmask container under Docker's default cgroup parent, and recreates it on updates — moving its cgroup is fragile. Use **defense in depth**:
