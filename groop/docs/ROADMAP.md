@@ -61,7 +61,7 @@ flowchart TD
     P14 --> P44[P44 Daemon paddr lifecycle]
     P29 --> P45[P45 Bounded inspect content]
     P21 --> P46[P46 Admin execution kernel]
-    P44 --> P47[P47 Daemon component health]
+    P44 --> P47[P47 Daemon component health]:::done
     P45 --> P48[P48 Journald snapshot]
     P46 --> P49[P49 memory.high governance]
     P43 --> P50[P50 Mouse table interactions]
@@ -91,8 +91,9 @@ plugins and web UI.
 ### P44 - Daemon-Owned paddr Lifecycle
 
 Status: done. Explicit `[damon] paddr_enabled = true` makes the root daemon
-own one audited whole-host paddr session for its lifetime. The default remains
-disabled and foreign sessions remain untouched.
+start or adopt one audited whole-host paddr session. Sessions created by the
+current daemon run stop with it; verified adopted sessions remain persistent.
+The default remains disabled and foreign sessions remain untouched.
 
 Handoff: `handoff/P44-daemon-paddr-lifecycle.md`.
 Report: `handoff/reports/P44-REPORT.md`.
@@ -102,30 +103,31 @@ Report: `handoff/reports/P44-REPORT.md`.
 Status: done. Extends P29 with gated, confined, bounded regular-file reads for
 resolved Docker JSON logs and cgroup files, without arbitrary paths,
 subprocesses, special files, or mutation. Uses no-follow opens, stat-verified
-regular-file checks, ``Path.is_relative_to()`` confinement, and bounded
-byte/line limits. CLI: ``groop inspect-files read --kind --target --inspect-files --admin [--json] [--max-bytes] [--max-lines]``.
+regular-file checks, descriptor-relative confinement, and bounded UTF-8
+payload byte/line limits. CLI: ``groop inspect-files read --kind --target --inspect-files --admin [--json] [--max-bytes] [--max-lines]``.
 
 Handoff: `handoff/P45-inspect-files-bounded-content.md`.
 
 ### P46 - Admin Action Execution Kernel
 
-Status: planned. Execute only Docker/systemd start, stop, and restart plans
+Status: done. Executes only Docker/systemd start, stop, and restart plans
 behind root, `--admin`, typed confirmation, strict target validation, durable
 audit, argv-only execution, and bounded results. Kill, update, set-property,
 TUI actions, and daemon RPCs remain later packages.
 
 Handoff: `handoff/P46-admin-action-execution-kernel.md`.
 
-### P47-P49 - Queued Stream Follow-Ups
+### P47-P49 - Stream Follow-Ups
 
-Status: queued behind controller-reviewed P44-P46 respectively. P47 exposes
-bounded daemon component health, P48 adds a fixed bounded journald snapshot,
-and P49 adds structured stale-safe `memory.high` governance through systemd.
-They are carved early to reuse each worker's domain cache, but implementation
-must not start from unreviewed predecessor code.
+P47 (Daemon Component Health) — status: **done**.
+Implements a thread-safe component health registry, a read-only ``health``
+protocol operation, and ``groop daemon health [--json]`` CLI. Models truthful,
+bounded collector/BPF/paddr transitions and strictly validates `health-v1`.
+See ``handoff/reports/P47-REPORT.md``.
 
-Handoffs: `handoff/P47-daemon-component-health.md`,
-`handoff/P48-inspect-files-journal-snapshot.md`, and
+P48 and P49 remain queued: bounded journald snapshot and structured
+``memory.high`` governance through systemd, respectively. Handoffs:
+`handoff/P48-inspect-files-journal-snapshot.md`,
 `handoff/P49-systemd-memory-governance.md`.
 
 ### P50 - Mouse Table Interactions

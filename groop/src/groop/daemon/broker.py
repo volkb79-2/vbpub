@@ -9,14 +9,26 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from groop.daemon.component_health import (
+    ComponentError,
+    ComponentHealthRegistry,
+    build_health_response,
+)
 from groop.model import Frame, frame_to_jsonable
 
 
 class FrameBroker:
-    def __init__(self, frame_source: Iterable[Frame], *, history_size: int = 120) -> None:
+    def __init__(
+        self,
+        frame_source: Iterable[Frame],
+        *,
+        history_size: int = 120,
+        health_registry: ComponentHealthRegistry | None = None,
+    ) -> None:
         self._source = iter(frame_source)
         self._history: deque[Frame] = deque(maxlen=max(1, history_size))
         self._lock = threading.Lock()
+        self._health_registry = health_registry
 
     def current(self) -> Frame:
         with self._lock:
@@ -33,8 +45,35 @@ class FrameBroker:
             return frames
 
     def _collect_locked(self) -> Frame:
-        frame = next(self._source)
+        try:
+            frame = next(self._source)
+        except StopIteration:
+            if self._health_registry is not None:
+                self._health_registry.record_failure(
+                    "collector",
+                    detail="frame source exhausted",
+                    error=ComponentError(
+                        message="frame source exhausted",
+                        error_code="collector_source_exhausted",
+                    ),
+                )
+            raise
+        except Exception:
+            if self._health_registry is not None:
+                self._health_registry.record_failure(
+                    "collector",
+                    detail="frame collection failed",
+                    error=ComponentError(
+                        message="frame collection failed",
+                        error_code="collector_collection_failed",
+                    ),
+                )
+            raise
         self._history.append(frame)
+        if self._health_registry is not None:
+            self._health_registry.record_success(
+                "collector", detail="frame collection succeeded"
+            )
         return frame
 
     def responses(self, request: dict[str, Any]) -> list[dict[str, Any]]:
@@ -45,7 +84,17 @@ class FrameBroker:
             limit = int(request.get("limit", 1))
             frames = self.stream(limit)
             return [*[_frame_response(frame) for frame in frames], {"type": "end", "count": len(frames)}]
+        if op == "health":
+            return [self._health_response()]
         return [{"type": "error", "error": "unsupported operation"}]
+
+    def _health_response(self) -> dict[str, Any]:
+        if self._health_registry is not None:
+            return build_health_response(self._health_registry)
+        return {
+            "type": "error",
+            "error": "health not available: daemon was started without a health registry",
+        }
 
 
 class BrokerUnixServer(socketserver.ThreadingUnixStreamServer):
