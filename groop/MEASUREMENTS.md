@@ -565,7 +565,7 @@ PY
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# Superseded by the post-merge controller gate recorded below.
+# 623 passed, 1 skipped in 48.05s after rebasing onto P44/P46.
 ```
 
 ### Full-Source py_compile

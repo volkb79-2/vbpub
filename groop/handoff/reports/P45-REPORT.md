@@ -80,7 +80,7 @@ PYTHONPATH=groop/src python3 -m pytest groop/tests/test_inspect_files.py -v
 # 113 passed in 0.64s (controller focused gate)
 
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 481 passed, 1 skipped in 48.35s
+# 623 passed, 1 skipped in 48.05s after current-main reconciliation
 
 mapfile -d '' pyfiles < <(find groop/src/groop groop/tests -name '*.py' -print0)
 python3 -m py_compile "${pyfiles[@]}"

@@ -205,17 +205,18 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent combined validation after P44 and P46 merged:
+Most recent combined validation after P44-P46 review:
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 554 passed, 1 skipped in 48.30s
+# 623 passed, 1 skipped in 48.05s
 ```
 
 Also validated:
 
 - P44 focused paddr lifecycle tests: `22 passed in 0.17s`.
+- P45 focused inspect-files tests: `113 passed in 0.64s`.
 - P46 focused action execution tests: `129 passed in 0.45s`.
-- Combined P44/P46 focused regression: `151 passed in 0.58s`.
+- Combined P44/P45/P46 focused regression: `264 passed in 1.12s`.
 - Full-source `py_compile` clean on all changed/new files.
 - Module-level imports and gate logic verified without real Docker/systemd.
