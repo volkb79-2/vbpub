@@ -1,6 +1,7 @@
 # Plan: Stack Resource Tuning — besteffort relaxation, interactive sizing, measured profiles
 
-**Status:** in flight — decisions locked via interview 2026-07-10 (dstdns supervisor session).
+**Status:** largely landed 2026-07-10 — see "Progress log" below; measurements continuing.
+Findings live in `container-memory-profiles.md` (same directory).
 **Driver:** dstdns needs its full stack (infra + apps + observability, 12–15 containers) running
 for meaningful development; the host (8c/16GB, 70G swap, zswap/zstd) is RAM-constrained with
 Soulmask as protected prod. Extends `plan-host-resource-governance.md` — that doc's design
@@ -34,15 +35,28 @@ program.
   (2.1G anon, 1.1G file), ~970M zswapped-equivalent, 4.3G swap. Squeeze run pending (operator).
 - `container-mempress.sh` deployed to `/usr/local/sbin/` and smoke-tested (no-op step + restore).
 
-## Operator action (whenever convenient)
+## Progress log (2026-07-10)
 
-```
-sudo container-mempress.sh dstdns-devcontainer-vb
-```
-Defaults: 256M steps, 15s settle, stop at PSI some>10%/full>5% or refaults>200/s, floor 1G,
-restores `memory.high=max` on exit/Ctrl-C. Watch IDE responsiveness; Ctrl-C is safe. Expect
-~10–20 min. Output JSONL lands in `/var/log/mempress/`; the summary line's `squeeze_point` is
-the hot+warm working set → basis for interactive.slice `high`.
+- **PKG-1 merged + applied on host** (vbpub `a037a47`): unit-persisted D1 values, dynamic
+  D2 IO caps live via `setup-cgroups.sh` (verified 36069r/23478w IOPS applied), interactive
+  zswap-writeback gap closed, both slices enabled in install.sh.
+- **PKG-2 merged** (`6caa818`): groop P53/P54 queued; amended same day with live findings
+  (447KB/frame → filtering/zst requirements, `569d3ce`); P55–P57 carve in flight.
+- **Squeeze run done (operator)** — D4 CLOSED: warm boundary ~1.8G, hot floor ~1.5G
+  (5810 rf/s cliff at 1280M). Staged interactive.slice values (2G/5G/7G) confirmed correct
+  unchanged; devcontainer rebuild can happen anytime. Details in
+  `container-memory-profiles.md` §3.
+- **First-ever full dstdns deploy: 20 stacks, 0 failed.** Unmasked by D2; four dstdns
+  hook/config bugs found+fixed en route (dstdns `c30a86b`), pwmcp consumer-network aliasing
+  fixed properly (dstdns `a0cffc9`). Steady state: stack = 3.2G RAM of the 8G high; game
+  PSI 0.0/0.0 throughout.
+- **CIU-9 fixed upstream** (vbpub `143ea82`): DooD reset cleanup now routes through the
+  physical path unconditionally; `create_hostdirs` open question resolved not-a-bug with a
+  regression test. 892 ciu tests pass.
+- **Prod-safety fix** (`c616521`): `soulmask_running_cids` no longer false-matches
+  `--pid=host` admin containers (watcher could have applied game knobs to them).
+- Recorder `groop-recorder.service` running (60s cadence); DAMON profiles: skywalking-oap
+  done, postgres running, controller/workers queued.
 
 ## Packages
 
