@@ -211,11 +211,11 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full validation on current main plus P47:
+Most recent full validation on current main plus P51:
 
 ```bash
-PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 672 passed, 1 skipped in 51.27s (controller review)
+PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q -W error
+# 692 passed, 1 skipped in 53.29s (controller review)
 ```
 
 Also validated:
@@ -224,6 +224,7 @@ Also validated:
 - P45 focused inspect-files tests: `113 passed in 0.64s`.
 - P46 focused action execution tests: `129 passed in 0.45s`.
 - P47 focused component health tests: `49 passed in 3.47s`.
+- P51 combined daemon/client/health/record gate: `90 passed in 16.84s` with warnings as errors.
 - Combined P47 daemon/P45 inspect regression: `238 passed in 6.60s` (controller review).
 - Combined P44/P45/P46 focused regression: `264 passed in 1.12s`.
 - Full-source `py_compile` clean on all changed/new files.

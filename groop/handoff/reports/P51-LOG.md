@@ -99,8 +99,20 @@
 1. **Lazy start**: `current()` and `stream()` auto-start the producer if `start()` hasn't been called. This keeps backward compatibility with existing callers (tests, attach client).
 2. **Bounded startup timeout**: default 5 s before `FrameUnavailableError`. Short enough for tests, long enough for real collectors.
 3. **Exhaustion preserves history**: after source exhaustion, `current()` returns the last frame from history rather than raising an error. This prevents unnecessary client failures.
-4. **Consecutive error limit (5)**: the producer tolerates transient errors; after 5 consecutive failures the error is captured and propagated.
+4. **Terminal errors fail closed**: an iterator exception terminates that
+   iterator and is recorded once as a persistent public-safe typed failure; no
+   fictional retry counter is claimed.
 
 ## Next Steps
 
 - P52: versioned bounded read contract for production web backend.
+
+## Controller Correction
+
+- Merged P47/current main and restored strict `health-v1` behavior.
+- Replaced racy startup, discarded errors, silent live-thread join, replaying
+  polling, and leaking socket tests with atomic lifecycle, persistent typed
+  terminal state, cursor/gap batches, bounded clients/requests, interruptible
+  production sleep, and warnings-as-errors coverage.
+- Focused daemon/client/health/record gate: `90 passed in 16.84s`.
+- Full gate: `692 passed, 1 skipped in 53.29s` with `-W error`.

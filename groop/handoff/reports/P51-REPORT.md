@@ -15,9 +15,9 @@ producer. Key changes:
    the frame source, publishing each frame into a bounded sequenced history.
    Read operations (`current`, `stream`) never call `next()` on the source.
 
-2. **`start()`/`stop()`/`join()` lifecycle.** The producer starts explicitly (or
-   lazily on first read), signals stop, and joins cleanly. Exceptions from the
-   producer thread are captured and re-raised by `join()`.
+2. **`start()`/`stop()`/`join()` lifecycle.** Startup is atomic under concurrent
+   callers. Production sleep is interruptible; a blocking arbitrary iterator
+   yields a typed bounded join-timeout instead of a false clean shutdown.
 
 3. **`current()` returns the latest published frame.** Before the first frame
    it waits for a bounded startup timeout (default 5 s) and raises
@@ -29,21 +29,22 @@ producer. Key changes:
    strictly after the cursor sequence number. Each response includes a `seq`
    field.
 
-5. **Typed errors.** `FrameBrokerError` (base), `FrameUnavailableError` (no
-   frame yet / exhausted / timeout), `FrameProducerError` (producer exception).
+5. **Typed terminal state.** Exhaustion, failure, stop, startup timeout, and
+   shutdown timeout persist without exposing raw producer exceptions. Last
+   valid frames remain readable while P47 health reports terminal failure.
 
 6. **Bounded history.** Configurable `history_size` (default 120), oldest frames
    are evicted via `deque(maxlen=...)`.
 
-7. **Consecutive error tolerance.** The producer tolerates up to
-   `source_error_limit` (default 5) consecutive exceptions before capturing the
-   error.
+7. **Bounded clients and history gaps.** Strict request size/time/client/limit
+   caps and cursor metadata prevent slow clients or evicted history from being
+   silently replayed.
 
 ### `groop/src/groop/cli.py` — Lifecycle Integration
 
-The `daemon serve` subcommand now calls `broker.start()` before opening the
-Unix server and `broker.stop()`/`broker.join()` in the finally block after
-`server.server_close()`, ensuring deterministic producer teardown.
+The daemon configures all providers, starts one broker producer before serving,
+and stops/joins it on shutdown. P47 collector health is updated only by real
+collection success/failure.
 
 ### `groop/src/groop/daemon/__init__.py` — Exports
 
@@ -51,19 +52,16 @@ Unix server and `broker.stop()`/`broker.join()` in the finally block after
 
 ### Tests — `groop/tests/test_daemon_p51.py`
 
-21 new tests:
+Fourteen focused P51 tests plus the existing daemon/client/health/record tests cover:
 
 | Category | Tests | What They Cover |
 |---|---|---|
-| Lifecycle | 4 | Producer advances independently, repeated-current freshness, idempotent start, stop/join termination |
-| Producer errors | 1 | join() re-raises captured exception |
-| Startup / unavailable | 2 | Empty source timeout, never-yielding source timeout |
-| Stream / cursor | 4 | Tail (no cursor), cursor, cursor beyond history, high limit |
-| History eviction | 1 | Bounded deque evicts old frames |
-| Concurrent fan-out | 2 | Two-client fan-out, concurrent current+stream |
-| Protocol dispatch | 4 | current, stream (no cursor), stream (cursor), unknown op |
-| Exhaustion | 2 | Current returns last frame after exhaustion, server stays alive |
-| Shutdown | 1 | Clean teardown of broker + server + socket |
+| Lifecycle | Atomic start, interruptible production stop, typed blocked-source timeout |
+| Producer state | Persistent failure/exhaustion, last-valid current, P47 health |
+| Fan-out | Repeated-current freshness and two-client non-consuming sequences |
+| History | Bounded eviction, cursor continuation, explicit gap metadata |
+| Protocol | Strict request/response validation and non-replaying polling client |
+| Resources | Bounded clients, request bytes/time, socket cleanup, warnings-as-errors |
 
 ### Documentation
 
@@ -76,8 +74,8 @@ Unix server and `broker.stop()`/`broker.join()` in the finally block after
 ## Test Results
 
 ```text
-$ PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-644 passed, 1 skipped, 1 warning in 51.39s
+$ PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q -W error
+692 passed, 1 skipped in 53.29s
 ```
 
 Full-source `py_compile` clean on all changed files:
@@ -100,7 +98,7 @@ Full-source `py_compile` clean on all changed files:
 | Backward-compatible stream over published frames with cursor | Done |
 | Producer exhaustion does not kill Unix server | Done (tested) |
 | Daemon serve starts producer before requests, stops after close | Done |
-| Deterministic concurrency tests | Done (21 tests) |
+| Deterministic concurrency tests | Done |
 | Repeated-current freshness test | Done |
 | Two-client fan-out test | Done |
 | History eviction/cursor test | Done |
