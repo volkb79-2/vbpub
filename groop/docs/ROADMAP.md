@@ -55,6 +55,7 @@ flowchart TD
     P35 --> P38[P38 TUI smoke evidence]
     P38 --> P39[P39 Release readiness ledger]
     P39 --> P40[P40 Textual 8 compat]
+    P40 --> P41[P41 Rendered replay fidelity]
 ```
 
 ## Remaining Estimate
@@ -63,7 +64,7 @@ After P39, the roadmap is mostly in three buckets:
 
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
-| v1/v1.5 release confidence and UI polish | 0 remaining | P40 removed the full-suite blocker; only manual live-host evidence remains. |
+| v1/v1.5 release confidence and UI polish | 1 | P40 removed the full-suite blocker; P41 automates strict rendered replay fidelity. Manual live-host evidence remains afterward. |
 | v2 privileged daemon/BPF/admin/file work | 5-7 | BPF daemon lifecycle, paddr daemon ownership, install execution/service hardening, executable admin actions, inspect-files content mode, systemd property governance. |
 | Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
 
@@ -277,6 +278,14 @@ assertions or adding version skips/xfails.
 
 Handoff: `handoff/P40-textual-8-test-compatibility.md`.
 Report: `handoff/reports/P40-REPORT.md`.
+
+### P41 - Rendered Replay Fidelity
+
+Status: planned. P41 closes spec section 9 item 10 with a multi-tick
+record/replay test comparing production-formatted row keys, columns, and plain
+cell text at a fixed profile and width. Model equality alone is insufficient.
+
+Handoff: `handoff/P41-rendered-replay-fidelity.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 
