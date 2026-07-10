@@ -14,7 +14,7 @@ Approximate status:
 | Release cut | Feature implementation | Release confidence | Notes |
 |---|---:|---:|---|
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
-| v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35 add repeatable rootless smoke and steady harnesses; P36/P37 close CPU trend and host network-loss polish; P38 adds rootless TUI smoke evidence harness; P39 adds the canonical release-readiness document. Remaining gaps are live 5-minute Textual TUI evidence and live-root DAMON acceptance. |
+| v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. The managed Textual 8 environment currently has 15 UI test-adapter failures tracked by P40; strict live performance, drift, replay-fidelity, pipx, and non-root gates also remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
 | v2 daemon/BPF/admin actions | 50-55% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, and daemon current/status commands exist; live BPF attach/snapshot writing, executable admin actions, GPU/ZFS plugins are not implemented. |
 
@@ -116,8 +116,11 @@ core workflows, not yet production-certified.**
   subprocess. P39 adds the canonical release-readiness document mapping §9
   gates to evidence sources. P17 records the safe BPF gate and current live-BPF
   blocker. P18 records the fixture-tested BPF provider implementation.
-  `MEASUREMENTS.md` still needs a full 5-minute live Textual TUI perf/RSS run,
-  DAMON, and privileged BPF measurements.
+  `MEASUREMENTS.md` records the current Textual 8 full-suite blocker and still
+  needs strict live TUI performance, controlled drift, rendered replay, pipx,
+  and docker-group non-root evidence. DAMON/daemon live evidence is required
+  when those controlled/deployed capabilities are claimed; privileged BPF
+  measurements are required before enabling BPF by default.
 - **BPF network provider:** P18 implements the userspace BPF provider reading
   pinned-map JSON snapshots with cgroup-id-to-entity-key mapping, fallback, and
   fixture tests. The live BPF ownership lifecycle (daemon attach/pin/detach) and

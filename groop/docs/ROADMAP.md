@@ -62,12 +62,12 @@ After P39, the roadmap is mostly in three buckets:
 
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
-| v1/v1.5 release confidence and UI polish | 0 | P39 release readiness ledger is complete. Remaining items are manual live-host evidence capture (5-minute Textual TUI CPU/RSS, live-root DAMON acceptance) and any last release-candidate fixes that evidence exposes. |
+| v1/v1.5 release confidence and UI polish | 1 | P39 is complete; its controller validation exposed P40, a Textual 8 UI-test compatibility blocker. Manual live-host evidence remains after that fix. |
 | v2 privileged daemon/BPF/admin/file work | 5-7 | BPF daemon lifecycle, paddr daemon ownership, install execution/service hardening, executable admin actions, inspect-files content mode, systemd property governance. |
 | Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
 
 Pragmatic estimate from the current state: a shippable v1/v1.5 release
-candidate needs **0 remaining packages** plus live-host acceptance
+candidate needs **1 remaining package** plus live-host acceptance
 evidence. Implementing the broader roadmap end-to-end still looks like **9-13
 small packages**, depending on whether "fully completed" includes optional
 plugins and web UI.
@@ -265,6 +265,16 @@ confidence package before manual live-host evidence capture.
 
 Handoff: `handoff/P39-release-readiness-ledger.md`.
 Report: `handoff/reports/P39-REPORT.md`.
+
+### P40 - Textual 8 Test Compatibility
+
+Status: planned. P39 controller validation under Python 3.14 / Textual 8.2.8
+produced 15 failures in `test_ui_app.py`, all caused by tests reading the
+removed `Static.renderable` attribute. P40 must restore supported cross-version
+widget-content inspection without weakening UI behavior assertions, then rerun
+the full release suite.
+
+Handoff: `handoff/P40-textual-8-test-compatibility.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 
