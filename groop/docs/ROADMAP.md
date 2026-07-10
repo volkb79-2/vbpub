@@ -323,13 +323,21 @@ interface, owned by daemon/helper state rather than by the TUI.
 
 ### P42 — Daemon BPF Snapshot Bridge
 
-Status: planned. P42 converts an explicitly configured, already-pinned BPF
-counter map into the P18 provider's atomic `snapshot.json` contract from the
-daemon. It deliberately excludes BPF program compilation and privileged
-attach/pin/detach lifecycle so those mutations remain a separately reviewed
-follow-up.
+Status: done. P42 adds ``groop/src/groop/daemon/bpf_snapshot.py`` containing
+``BpfSnapshotBridge``, which reads pinned BPF counter maps via
+``bpftool --json map dump pinned PATH`` through an argv-only injectable command
+runner, decodes P17/P18 logical dimensions, builds ``cgroup_map`` from a
+configured cgroup-v2 root, and atomically writes the P18 ``snapshot.json``
+contract. Path confinement, output bounds, last-good preservation, and
+non-world-writable permissions are enforced. The bridge integrates into
+``groop daemon serve`` via ``--bpf-root``/``--bpf-interval`` (disabled by
+default) and ``[bpf_snapshot]`` config section. The controller-validated gate is
+48 focused tests and 431 passing full-suite tests plus one optional skip. BPF
+program compilation and privileged attach/pin/detach lifecycle remain future
+work.
 
 Handoff: `handoff/P42-daemon-bpf-snapshot-bridge.md`.
+Report: `handoff/reports/P42-REPORT.md`.
 
 ### P20 — TUI Attach Mode
 

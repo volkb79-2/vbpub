@@ -97,6 +97,20 @@ class DamonConfig:
 
 
 @dataclass(frozen=True)
+class BpfSnapshotConfig:
+    """BPF snapshot bridge configuration.
+
+    All fields are disabled by default.
+    """
+
+    enabled: bool = False
+    root: Path | None = None  # BPF pin root, e.g. /sys/fs/bpf/groop
+    interval: float = 30.0  # refresh interval in seconds
+    map_name: str = "groop_cgroup_skb"  # pinned map name under root
+    state_dir: Path = Path("/run/groop/bpf")  # directory for snapshot.json output
+
+
+@dataclass(frozen=True)
 class GroopConfig:
     interval: float = 5.0
     cgroup_root: Path = Path("/sys/fs/cgroup")
@@ -114,6 +128,7 @@ class GroopConfig:
     snapshots: SnapshotConfig = field(default_factory=SnapshotConfig)
     net: NetConfig = field(default_factory=NetConfig)
     damon: DamonConfig = field(default_factory=DamonConfig)
+    bpf_snapshot: BpfSnapshotConfig = field(default_factory=BpfSnapshotConfig)
 
     def to_primitive(self) -> dict[str, Any]:
         return {
@@ -161,6 +176,13 @@ class GroopConfig:
                 "paddr_aggr_us": self.damon.paddr_aggr_us,
                 "paddr_update_us": self.damon.paddr_update_us,
                 "max_concurrent_targets": self.damon.max_concurrent_targets,
+            },
+            "bpf_snapshot": {
+                "enabled": self.bpf_snapshot.enabled,
+                "root": None if self.bpf_snapshot.root is None else str(self.bpf_snapshot.root),
+                "interval": self.bpf_snapshot.interval,
+                "map_name": self.bpf_snapshot.map_name,
+                "state_dir": str(self.bpf_snapshot.state_dir),
             },
         }
 
@@ -276,6 +298,7 @@ def load(path: Path | None = None) -> GroopConfig:
     snapshot_data = data.get("snapshots", {})
     net_data = data.get("net", {})
     damon_data = data.get("damon", {})
+    bpf_snapshot_data = data.get("bpf_snapshot", {})
     thresholds = dict(data.get("thresholds", {}) or {})
     tiers = {
         str(name): [str(prefix) for prefix in prefixes]
@@ -326,5 +349,12 @@ def load(path: Path | None = None) -> GroopConfig:
             paddr_aggr_us=max(1, int(_coerce_float(damon_data.get("paddr_aggr_us"), 8_000_000))),
             paddr_update_us=max(1, int(_coerce_float(damon_data.get("paddr_update_us"), 1_000_000))),
             max_concurrent_targets=max(1, int(_coerce_float(damon_data.get("max_concurrent_targets"), 4))),
+        ),
+        bpf_snapshot=BpfSnapshotConfig(
+            enabled=bool(bpf_snapshot_data.get("enabled", False)),
+            root=Path(bpf_snapshot_data["root"]) if isinstance(bpf_snapshot_data.get("root"), str) else None,
+            interval=float(bpf_snapshot_data.get("interval", 30.0)),
+            map_name=str(bpf_snapshot_data.get("map_name", "groop_cgroup_skb")),
+            state_dir=Path(bpf_snapshot_data["state_dir"]) if isinstance(bpf_snapshot_data.get("state_dir"), str) else BpfSnapshotConfig.state_dir,
         ),
     )

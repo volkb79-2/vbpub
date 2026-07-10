@@ -14,7 +14,9 @@ SNAPSHOT_FILENAME = "snapshot.json"
 class BpfProvider:
     """BPF-based per-cgroup socket traffic provider.
 
-    Reads pinned BPF map snapshots (JSON) from *bpf_root/snapshot.json*.
+    Reads daemon-produced BPF map snapshots (JSON) from
+    *state_dir/snapshot.json*. For compatibility with the P18 fixture seam,
+    *state_dir* falls back to *bpf_root* when omitted.
     Each snapshot contains:
 
     - ``maps["groop_cgroup_skb"]`` - list of entries with
@@ -34,8 +36,9 @@ class BpfProvider:
 
     name = "net_bpf"
 
-    def __init__(self, bpf_root: Path | None = None) -> None:
+    def __init__(self, bpf_root: Path | None = None, state_dir: Path | None = None) -> None:
         self.bpf_root = bpf_root
+        self.state_dir = state_dir or bpf_root
         self._status: dict[str, Any] = {
             "loaded": False,
             "attached": False,
@@ -54,7 +57,8 @@ class BpfProvider:
         if self.bpf_root is None:
             return self._all_unavailable("no BPF root configured")
 
-        snapshot_path = self.bpf_root / SNAPSHOT_FILENAME
+        state_dir = self.state_dir or self.bpf_root
+        snapshot_path = state_dir / SNAPSHOT_FILENAME
         if not snapshot_path.exists():
             return self._all_unavailable(f"no BPF snapshot at {snapshot_path}")
 
@@ -107,6 +111,7 @@ class BpfProvider:
             1 for s in result.values() if s.source_label == "net:BPF"
         )
         self._status["snapshot_path"] = str(snapshot_path)
+        self._status["state_dir"] = str(state_dir)
         return result
 
     def status(self) -> dict:

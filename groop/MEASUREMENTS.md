@@ -368,6 +368,44 @@ Full suite impact (BPF tests add negligible overhead):
 # 147 passed in 25.14s
 ```
 
+### P42 Daemon BPF Snapshot Bridge (2026-07-10)
+
+The P42 daemon BPF snapshot bridge was implemented as a fully fixture-tested
+module with no privileged operations required for testing. The bridge reads
+pinned BPF counter maps via ``bpftool --json map dump pinned PATH`` through an
+argv-only injectable command runner, decodes the P17/P18 logical dimensions,
+builds the ``cgroup_map``, and atomically writes the ``snapshot.json`` contract
+consumed by the P18 ``BpfProvider``.
+
+**Live BPF overhead was not measured.** Testing was done entirely with mock
+command runners and fixture directories. The bridge requires ``bpftool``
+installed, a writable BPF pin root, and already-pinned BPF maps to produce
+live snapshots — none of which are available on this development host.
+
+Controller fixture/unit evidence after review corrections:
+
+```bash
+PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest \
+  groop/tests/test_daemon_bpf_snapshot.py -q
+# 48 passed, 1 warning in 0.35s
+```
+
+Full suite impact:
+
+```bash
+PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
+# 431 passed, 1 skipped, 1 warning in 47.90s
+```
+
+Blocker for live BPF snapshot bridge measurement:
+
+- ``bpftool`` is not installed on this host
+- The current session is not a deliberate privileged BPF test host
+- ``/sys/fs/bpf/groop`` is not writable
+- No pinned BPF maps exist under ``/sys/fs/bpf/groop``
+- The P17 BPF gate remains the authoritative preflight check
+- No ``cgroup_skb`` BPF program is compiled or pinned in the repo
+
 Key overhead characteristics (userspace-only, no kernel BPF):
 
 - Snapshot parse: ~1ms for a 2KB JSON file with 14 map entries
@@ -380,7 +418,7 @@ Key overhead characteristics (userspace-only, no kernel BPF):
 Blocker for live BPF overhead measurement:
 
 - `bpftool` is not installed on this host
-- Current uid 1003 is not root
+- This session is not a deliberate privileged BPF test-host run
 - `/sys/fs/bpf/groop` is not writable
 - No `cgroup_skb` BPF C source or compiled object is present in the repo
 - The BPF gate (P17) remains the authoritative preflight check

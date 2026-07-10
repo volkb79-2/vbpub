@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -10,7 +11,7 @@ from pathlib import Path
 from groop import __version__
 from groop.bpf_gate import report_to_jsonable, render_report, run_bpf_gate
 from groop.collect.collector import Collector
-from groop.config import load
+from groop.config import BpfSnapshotConfig, load
 from groop.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, stop_owned_sessions
 from groop.damon.passive import DEFAULT_DAMON_ROOT
 from groop.damon.paddr import paddr_confirmation_text, plan_start_paddr_session, start_planned_paddr_session
@@ -27,7 +28,7 @@ from groop.daemon.deploy import (
     render_install_plan_text,
     render_preflight_text,
 )
-from groop.daemon import FrameBroker, serve_unix_socket
+from groop.daemon import BpfSnapshotBridge, BpfSnapshotError, FrameBroker, serve_unix_socket
 from groop.model import frame_to_jsonable
 from groop.record.live import live_frame_stream
 from groop.record.replay import ReplayDriver, format_frame_summary
@@ -95,6 +96,9 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
     serve.add_argument("--config", type=Path, default=None, help="load config from PATH instead of the default XDG location")
     serve.add_argument("--cgroup-root", type=Path, default=None, help="cgroup v2 root for live or fixture collection")
     serve.add_argument("--history-size", type=int, default=120, help="bounded in-memory frame history")
+    serve.add_argument("--bpf-root", type=Path, default=None, help="BPF pin root for periodic snapshot refresh (disabled by default)")
+    serve.add_argument("--bpf-interval", type=float, default=30.0, help="BPF snapshot refresh interval in seconds (default: 30.0)")
+    serve.add_argument("--bpf-state-dir", type=Path, default=None, help="BPF snapshot output directory (default: /run/groop/bpf)")
     preflight = subparsers.add_parser("preflight", help="check daemon deployment readiness")
     preflight.add_argument(
         "--socket",
@@ -570,11 +574,115 @@ def _main_daemon(argv: list[str]) -> int:
         broker = FrameBroker(live_frame_stream(collector), history_size=args.history_size)
         server = serve_unix_socket(args.socket, broker)
         print(f"serving read-only groop frames on {args.socket}", flush=True)
+
+        # BPF snapshot bridge (disabled by default)
+        bpf_bridge: BpfSnapshotBridge | None = None
+        bpf_thread: threading.Thread | None = None
+        _bpf_stop = threading.Event()
+
+        bpf_enabled = False
+        bpf_root: Path | None = None
+        bpf_interval = 30.0
+
+        # Check CLI args first, then config, then stay disabled
+        if args.bpf_root is not None:
+            bpf_enabled = True
+            bpf_root = args.bpf_root
+            bpf_interval = max(5.0, args.bpf_interval)
+        elif config.bpf_snapshot.enabled and config.bpf_snapshot.root is not None:
+            bpf_enabled = True
+            bpf_root = config.bpf_snapshot.root
+            bpf_interval = max(5.0, config.bpf_snapshot.interval)
+
+        if bpf_enabled and bpf_root is not None:
+            try:
+                map_name = config.bpf_snapshot.map_name if not args.bpf_root else "groop_cgroup_skb"
+                state_dir: Path = (
+                    args.bpf_state_dir
+                    if args.bpf_state_dir is not None
+                    else config.bpf_snapshot.state_dir
+                )
+                bpf_bridge = BpfSnapshotBridge(
+                    bpf_root,
+                    command_runner=None,
+                    cgroup_root=collector.cgroup_root,
+                )
+                # Restore last known good snapshot from disk if available
+                bpf_bridge.restore_last_known_good(state_dir)
+
+                # Integrate BpfProvider at highest rank into the Collector
+                from groop.providers.net_bpf import BpfProvider as BpfProv
+
+                bpf_provider = BpfProv(
+                    bpf_root=bpf_root, state_dir=state_dir
+                )
+                # Rebuild network_providers with BPF first, then existing
+                existing_providers = collector.network_providers or ()
+                collector.network_providers = (
+                    bpf_provider,
+                    *existing_providers,
+                )
+
+                print(
+                    f"BPF snapshot bridge enabled: root={bpf_root} "
+                    f"map={map_name} interval={bpf_interval}s "
+                    f"state_dir={state_dir}",
+                    flush=True,
+                )
+
+                # Perform an immediate pre-thread refresh (best-effort)
+                try:
+                    bpf_bridge.refresh_and_write(map_name, state_dir)
+                    print("BPF snapshot refreshed on startup", flush=True)
+                except BpfSnapshotError as exc:
+                    print(
+                        f"BPF snapshot initial refresh failed "
+                        f"(continuing with periodic retry): {exc}",
+                        flush=True,
+                    )
+
+                def _bpf_refresh_loop() -> None:
+                    while not _bpf_stop.wait(bpf_interval):
+                        try:
+                            snapshot = bpf_bridge.refresh(map_name)
+                            bpf_bridge.write_snapshot(snapshot, state_dir)
+                        except BpfSnapshotError as exc:
+                            last = bpf_bridge.last_valid_snapshot
+                            if last is not None:
+                                print(
+                                    f"BPF snapshot refresh failed "
+                                    f"(preserving last valid): {exc}",
+                                    flush=True,
+                                )
+                            else:
+                                print(
+                                    f"BPF snapshot refresh failed: {exc}",
+                                    flush=True,
+                                )
+                        except Exception as exc:
+                            print(
+                                f"BPF snapshot unexpected error: {exc}",
+                                flush=True,
+                            )
+
+                bpf_thread = threading.Thread(
+                    target=_bpf_refresh_loop, daemon=True
+                )
+                bpf_thread.start()
+            except Exception as exc:
+                print(
+                    f"Failed to start BPF snapshot bridge: {exc}",
+                    flush=True,
+                )
+
         try:
             server.serve_forever()
         except KeyboardInterrupt:
             return 0
         finally:
+            if bpf_thread is not None:
+                _bpf_stop.set()
+                bpf_thread.join(timeout=5.0)
             server.server_close()
     if args.command == "preflight":
         try:

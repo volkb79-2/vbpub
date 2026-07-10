@@ -239,6 +239,15 @@ paddr_sample_us = 400000
 paddr_aggr_us = 8000000
 paddr_update_us = 1000000
 max_concurrent_targets = 4
+
+[bpf_snapshot]
+# Disabled by default. Enable only when bpftool is installed and BPF maps are
+# already pinned under the configured root.
+enabled = false
+root = "/sys/fs/bpf/groop"
+interval = 30.0
+map_name = "groop_cgroup_skb"
+state_dir = "/run/groop/bpf" # regular runtime state; never place JSON in bpffs
 ```
 
 ## What To Check Before A Release Claim
