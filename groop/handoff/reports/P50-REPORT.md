@@ -8,7 +8,7 @@
 | Title | Mouse Table Interactions |
 | Branch | `feat/groop-p50-mouse-table-interactions` |
 | Status | **Done** |
-| Controller | Self-reviewed |
+| Controller | Corrected after controller review |
 
 ## Requirement Coverage
 
@@ -20,21 +20,21 @@
 | Name defaults ascending; numeric metrics default descending | ✅ | `sort_reverse` default: `False` for name, `True` for others; `_sort_rows()` matches |
 | Alias columns resolve to canonical metrics for sort | ✅ | Column keys are already resolved via `resolve_profile()` which uses canonical metrics |
 | Row highlight updates `selected_key` | ✅ | `on_data_table_row_highlighted()` |
-| Row selection/click opens drill-down (same as Enter) | ✅ | `on_data_table_row_selected()` calls `action_open_drill()` |
+| Row selection/click opens drill-down (same as Enter) | ✅ | Native Textual hit metadata posts one `RowSelected` on the first click; app handler calls `action_open_drill()` |
 | Empty placeholder rows never open drill-down | ✅ | `__empty__` prefix check in RowSelected handler |
 | Keyboard up/down preserved | ✅ | DataTable native cursor with up/down bindings |
 | Keyboard Enter preserved | ✅ | DataTable `action_select_cursor()` → `RowSelected` → app handler |
 | Tree left/right collapse/expand preserved | ✅ | `action_cursor_left/right` delegates to app |
 | Filtering, profile/view switching preserved | ✅ | Unchanged — all app action handlers still work |
-| Live refresh stable | ✅ | `_refresh_view()` repopulates table and restores cursor via `update_cursor_from_key()` |
-| Replay refresh stable | ✅ | Same `_refresh_view()` path |
-| No double-opening drill-down | ✅ | `RowSelected.stop()` prevents double-handling |
-| Cursor/keys stable across refreshes | ✅ | `test_p50_refresh_preserves_cursor` |
+| Live refresh stable | ✅ | Stable rows update in place; reordered rows retain columns and restore the selected entity key |
+| Replay refresh stable | ✅ | Replay test retains a selected nonzero key and cursor row |
+| No double-opening drill-down | ✅ | First click suppresses duplicate base dispatch; pilot asserts one overlay |
+| Cursor/keys stable across refreshes | ✅ | Live reorder and replay retention tests |
 | Mouse degrades harmlessly | ✅ | DataTable falls back to keyboard-only when terminal sends no mouse events; all 23 pre-P50 tests pass with same key presses |
-| P41 rendered replay fidelity preserved | ✅ | `format_metric_value()` cell formatting unchanged; `_sort_rows` backward-compatible |
+| P41 rendered replay fidelity preserved | ✅ | Original/replayed DataTable cells are compared directly with normalized legacy production cells |
 | Textual pilot tests for header clicks | ✅ | `test_p50_header_click_sorts_by_column`, `test_p50_header_click_toggles_direction` |
 | Row click/drill-down tests | ✅ | `test_p50_row_click_drilldown`, `test_p50_empty_placeholder_does_not_open_drill` |
-| Refresh retention test | ✅ | `test_p50_refresh_preserves_cursor` |
+| Refresh retention test | ✅ | Nonzero live-reorder and replay-refresh tests |
 | Keyboard parity tests | ✅ | `test_p50_keyboard_parity_up_down_native`, `test_p50_keyboard_parity_enter_drilldown`, `test_p50_keyboard_parity_left_right_tree` |
 | Docs updated | ✅ | README, ROADMAP, STATUS, OPERATIONS, MEASUREMENTS |
 
@@ -42,7 +42,7 @@
 
 | Risk | Mitigation |
 |---|---|
-| Textual DataTable API changes across versions | `inherit_bindings=False` isolates key bindings; explicit BINDINGS tuple avoids dependency on parent class bindings |
+| Textual DataTable API changes across versions | Real-click pilot tests pin native hit metadata, default-handler suppression, and selection dispatch; the full suite catches an upstream behavior change |
 | Left/right key conflict with tree collapse/expand | `action_cursor_left/right` delegates to app; container view is no-op |
 | Home/end key conflict with replay navigation | Excluded from MouseTable BINDINGS; app handles via `inherit_bindings=False` |
 | P41 rendered fidelity regression | All cell formatting unchanged; `_sort_rows` accepts optional reverse; selection markers removed from DataTable cells but DataTable provides its own cursor |
@@ -51,11 +51,11 @@
 ## Test Results
 
 ```
-cd groop && python3 -m pytest tests/test_ui_app.py -k "p50" -v
-========================= 10 passed, 23 deselected in 4.37s =========================
+PYTHONPATH=groop/src python -m pytest groop/tests/test_ui_app.py -k p50 -q
+# 12 passed, 23 deselected in 4.98s
 
-cd groop && python3 -m pytest tests/ -q
-# 633 passed, 1 skipped in 53.20s
+PYTHONPATH=groop/src python -m pytest groop/tests -q
+# 684 passed, 1 skipped in 56.56s
 ```
 
 ## Blocker

@@ -15,6 +15,10 @@ parity and P41 rendered-replay fidelity.
   left/right for tree collapse/expand, home/end for replay navigation).
 - `populate()`, `update_cursor_from_key()`, `row_key_at_cursor()`, and
   `action_select_cursor()` (delegates to `super()`).
+- Native Textual click metadata activates a real entity on its first click and
+  suppresses duplicate base dispatch; no terminal coordinate guessing.
+- Stable rows update cells in place. Reorders retain columns, native hit keys,
+  focus, and scroll state rather than rebuilding the entire table.
 - `action_cursor_left()` / `action_cursor_right()` override Textual's
   screen-level focus-navigation consumption; they delegate to the app's tree
   collapse/expand actions.
@@ -52,13 +56,15 @@ parity and P41 rendered-replay fidelity.
 - Left/right/h remain for tree collapse/expand (via app bindings).
 
 ### Tests (`groop/tests/test_ui_app.py`)
-- 10 new P50-focused pilot tests:
+- 12 P50-focused pilot tests, corrected to use real mouse events:
   - `test_p50_header_click_sorts_by_column`
   - `test_p50_header_click_toggles_direction`
   - `test_p50_row_highlight_updates_selected_key`
   - `test_p50_row_click_drilldown`
   - `test_p50_empty_placeholder_does_not_open_drill`
-  - `test_p50_refresh_preserves_cursor`
+  - `test_p50_live_refresh_preserves_nonzero_cursor_across_reorder`
+  - `test_p50_replay_refresh_preserves_nonzero_cursor`
+  - `test_p50_alias_backed_header_click_uses_canonical_sort_key`
   - `test_p50_keyboard_parity_up_down_native`
   - `test_p50_keyboard_parity_enter_drilldown`
   - `test_p50_keyboard_parity_left_right_tree`
@@ -94,8 +100,9 @@ A  groop/handoff/reports/P50-REPORT.md
 
 ## Quality Gate
 
-- 633 passed, 1 skipped in 53.20s (full suite)
-- 10 P50-focused tests pass in 4.37s
+- 684 passed, 1 skipped in 56.56s (full suite)
+- 12 P50-focused tests pass in 4.98s
+- 40 acceptance tests pass; replay TUI smoke exits 0
 - All 23 pre-P50 tests pass unchanged
 - P41 rendered replay fidelity remains green
 - `py_compile` clean on all changed/new files

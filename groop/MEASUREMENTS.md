@@ -642,34 +642,37 @@ drill-down.
 
 ### P50 Focused Tests
 
-- 10 P50-specific pilot tests pass in 4.37s
-- Covers: header click sort by column, header click toggle direction,
-  row highlight updates selected_key, row click/Enter opens drill-down,
-  empty placeholder rows never open drill-down, refresh preserves cursor,
-  keyboard parity up/down native, keyboard parity Enter drill-down,
-  keyboard parity left/right tree collapse/expand, container view keys harmless
+- 12 P50-specific pilot tests pass in 4.98s
+- Real pilot mouse events cover header sorting/direction reversal, one-click
+  row drill-down, harmless empty-row clicks, and alias-backed canonical sorting.
+- Live reorder and replay refresh tests preserve a selected nonzero entity key.
+- Keyboard parity covers up/down, Enter, left/right tree behavior, and harmless
+  container-view tree keys.
 
 ### P50 Full Suite
 
 ```bash
 cd groop && python3 -m pytest tests/ -q
-# 633 passed, 1 skipped in 53.20s
+# 684 passed, 1 skipped in 56.56s
 ```
 
 ### P50 Key Changes
 
 - Replaced `Static(id="body")` with `MouseTable(id="body-table")` in compose
 - Removed `rich.console.Group` and Rich `Table` body rendering
-- `_refresh_view` calls `_populate_table` which builds DataTable content
-  via the production cell-formatting path (`format_metric_value`)
+- `_refresh_view` calls `_populate_table` through the production
+  `format_metric_value` path; stable rows update cells in place, reordered rows
+  retain columns, and header-label changes preserve native column keys.
 - Sort direction tracked via `sort_reverse: bool`; header click toggles it
 - Column labels show `^` (ascending) or `v` (descending) indicator on
   active column
 - Keyboard: up/down/Enter handled natively by DataTable; left/right delegated
   to app for tree collapse/expand; home/end consumed by app for replay
-- P41 rendered replay fidelity remains green: all cell formatting still goes
-  through `format_metric_value`, `_sort_rows` accepts `reverse` parameter,
-  selection markers are omitted (DataTable cursor provides highlighting)
+- P41 rendered replay fidelity now explicitly compares the visible DataTable
+  extraction path with the legacy production-formatted cells for original and
+  replayed frames. Only the legacy two-character selection marker is omitted,
+  because DataTable provides native cursor highlighting.
+- Acceptance: `40 passed in 7.31s`; replay TUI smoke exited 0 with one frame.
 
 ### Degradation
 

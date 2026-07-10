@@ -34,11 +34,12 @@ Queued follow-ups P48-P49 continue bounded journald snapshots and structured
 `memory.high` governance after those streams.
 
 P50 is done. The entity table now uses a MouseTable (DataTable subclass) with
-clickable header sorting (toggle direction), row click/highlight drill-down,
+clickable header sorting (toggle direction), one-click row drill-down and
+highlight-driven selection,
 native keyboard up/down/Enter, left/right tree collapse/expand, and stable
-cursor restoration across refreshes. Ten focused pilot tests cover header
-clicks, direction toggles, row drill-down, empty rows, refresh retention,
-and keyboard parity.
+in-place refreshes. Twelve focused pilot tests use real mouse events for header
+clicks, direction toggles, one-click row drill-down, empty rows, canonicalized
+alias sorting, live/replay selection retention, and keyboard parity.
 
 Daemon sampling is currently request-driven: `current` caches the first frame
 and `stream` advances the source. P51 is queued to make one background producer
@@ -222,11 +223,11 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full validation on current main plus P47:
+Most recent full validation on current main plus corrected P50:
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 672 passed, 1 skipped in 51.27s (controller review)
+# 684 passed, 1 skipped in 56.56s
 ```
 
 Also validated:
@@ -237,7 +238,9 @@ Also validated:
 - P47 focused component health tests: `49 passed in 3.47s`.
 - Combined P47 daemon/P45 inspect regression: `238 passed in 6.60s` (controller review).
 - Combined P44/P45/P46 focused regression: `264 passed in 1.12s`.
-- P50 correction validation is pending.
+- P50 focused mouse tests: `12 passed, 23 deselected in 4.98s`.
+- P50 UI plus rendered fidelity: `36 passed, 1 skipped in 16.51s`.
+- Acceptance tests: `40 passed in 7.31s`; TUI smoke exit 0.
 - Full-source `py_compile` clean on all changed/new files.
 - Module-level imports and gate logic verified without real Docker/systemd.
 - Mouse support degrades harmlessly: DataTable falls back to keyboard-only
