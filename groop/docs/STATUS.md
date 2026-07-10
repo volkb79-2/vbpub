@@ -78,12 +78,16 @@ core workflows, not yet production-certified.**
 - Rootless steady-state collector harness via `python -m groop.acceptance steady`,
   with multi-sample wall/CPU/RSS measurement, entity-count bounds, threshold
   checks, JSON/text output, and collection-error reporting.
+- CPU trend ASCII sparkline surface (`cpu_trend` column) using existing
+  HistoryRing data, rendered as compact ASCII sparkline in entity table
+  profiles at sufficient width, plus a reusable `groop/ui/sparkline.py`
+  helper for ASCII-only trend rendering.
 
 ## Partially Implemented
 
 - **System banner:** host verdict, pressure summary, paddr heat, and per-device
   network/disk rate summaries (P34) exist. CPU breakdown sparklines from spec
-  §3.0 remain not implemented.
+  §3.0 remain not implemented (entity-table CPU sparklines added in P36).
 - **Compressed swap:** zswap host/cgroup metrics, host ZRAM totals,
   `/proc/swaps` backend classification, mixed-backend banner wording, and
   per-device ZRAM drill-down are implemented. Backend-aware aliases and
@@ -148,17 +152,15 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P34/P35 merged on main):
+Most recent full-suite validation (P36 on feat/groop-p36-cpu-sparklines):
 
 ```bash
-PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
-# 336 passed in 41.41s
+python3 -m pytest groop/tests -q
+# 354 passed in 40.24s
 ```
 
 Also validated:
 
-- Python compile over merged P34/P35 changed files.
-- P34/P35 focused post-merge tests on `main`: `64 passed in 5.42s`.
-- P35 steady command with fixture cgroup root:
-  exit `0`, `ok: true`, samples `2/2`, 8 entities, wall `0.5187s`,
-  CPU `12.34%`, max RSS `99616 KB`.
+- Python compile over all P36 changed files.
+- P36 focused tests: `18 passed in 0.06s`.
+- `groop --once --json` smoke exit `0`.
