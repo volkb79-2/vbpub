@@ -167,7 +167,7 @@ sudo groop damon paddr start --confirm START
 | `x` | Save incident snapshot for selected entity. |
 | `m` | Host-memory / paddr DAMON status. |
 | `b` | Collapse/expand banner. |
-| `k` | Reserved v2 admin action; current builds report that executable admin actions are not implemented. |
+| `k` | Reserved v2 admin action; the TUI mutation binding remains disabled. |
 | `F1`, `?` | Metric glossary/help. |
 | `q` | Quit. |
 
@@ -184,9 +184,9 @@ sudo groop damon paddr start --confirm START
 - Incident snapshots write only under the configured snapshot directory or the
   XDG state fallback. They do not collect arbitrary file/log content.
 - File/log/content browsing and executable Docker/systemd admin actions are
-  available behind explicit gates: `--admin`, typed `--confirm EXECUTE`,
-  target validation, and a fail-closed audit-first execution kernel.
-  See Safety Model below for the full gate chain.
+  separately gated. The P46 CLI requires `--admin`, typed `--confirm EXECUTE`,
+  root, strict target validation, and a fail-closed mandatory audit-first
+  execution kernel. See Safety Model below for the full gate chain.
 - Pressing a reserved v2 admin key in the TUI reports that the action is
   unavailable in the current build instead of failing silently.
 - `groop action preview --kind docker-restart --target NAME --admin --json`
@@ -195,13 +195,15 @@ sudo groop damon paddr start --confirm START
   preview-only JSONL record.
 - `groop action execute --kind docker-restart --target NAME --admin
   --confirm EXECUTE` runs the validated Docker/systemd start/stop/restart
-  command through eight gates: admin mode, typed confirmation, valid kind,
-  execution allowlist, target validation (safe container/unit identifiers
-  only), fail-closed pre-execution durable audit, argv-only subprocess with
-  clean minimal environment and bounded timeout, and post-execution audit
-  outcome.  Any gate failure produces a refusal result and executes nothing.
-- Execution requires root in production.  Tests inject a fake runner and prove
-  every gate without real Docker or systemd calls.
+  command through root, admin, typed confirmation, timeout, immutable-plan,
+  execution-allowlist, strict target, fixed-absolute-argv, fail-closed
+  mandatory audit, bounded argv-only runner, and post-audit gates. The
+  production audit is fixed at `/var/log/groop/actions.jsonl`; execute does not
+  accept `--audit-log`. Any pre-mutation gate failure produces a refusal and
+  executes nothing. API fixture paths are not CLI inputs.
+- Tests inject a fake runner and prove every gate without real Docker or
+  systemd calls. Post-audit failure is reported as a typed partial/audit
+  failure while preserving the action outcome.
 
 ## Compressed Swap Interpretation
 

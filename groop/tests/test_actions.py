@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from groop.actions.catalog import ACTION_CATALOG, ActionKind
+from groop.actions.catalog import ACTION_CATALOG, DOCKER_EXECUTABLE, SYSTEMCTL_EXECUTABLE, ActionKind
 from groop.actions.preview import ActionPlan, DisabledPlan, build_preview, build_admin_preview
 from groop.actions.audit import AuditLog
 
@@ -53,14 +53,14 @@ class TestBuildPreview:
     """build_preview returns ActionPlan for all known kinds."""
 
     @pytest.mark.parametrize("kind, target, expected_prefix", [
-        (ActionKind.DOCKER_RESTART, "my-container", ["docker", "restart", "my-container"]),
-        (ActionKind.DOCKER_STOP, "nginx", ["docker", "stop", "nginx"]),
-        (ActionKind.DOCKER_START, "db", ["docker", "start", "db"]),
-        (ActionKind.SYSTEMD_RESTART, "nginx.service", ["systemctl", "restart", "nginx.service"]),
-        (ActionKind.SYSTEMD_STOP, "sshd.service", ["systemctl", "stop", "sshd.service"]),
-        (ActionKind.SYSTEMD_START, "cron.service", ["systemctl", "start", "cron.service"]),
+        (ActionKind.DOCKER_RESTART, "my-container", [DOCKER_EXECUTABLE, "restart", "my-container"]),
+        (ActionKind.DOCKER_STOP, "nginx", [DOCKER_EXECUTABLE, "stop", "nginx"]),
+        (ActionKind.DOCKER_START, "db", [DOCKER_EXECUTABLE, "start", "db"]),
+        (ActionKind.SYSTEMD_RESTART, "nginx.service", [SYSTEMCTL_EXECUTABLE, "restart", "nginx.service"]),
+        (ActionKind.SYSTEMD_STOP, "sshd.service", [SYSTEMCTL_EXECUTABLE, "stop", "sshd.service"]),
+        (ActionKind.SYSTEMD_START, "cron.service", [SYSTEMCTL_EXECUTABLE, "start", "cron.service"]),
         (ActionKind.SYSTEMD_SET_PROPERTY, "my.slice MemoryMax=1G CPUQuota=50%",
-         ["systemctl", "set-property", "my.slice", "MemoryMax=1G", "CPUQuota=50%"]),
+         [SYSTEMCTL_EXECUTABLE, "set-property", "my.slice", "MemoryMax=1G", "CPUQuota=50%"]),
     ])
     def test_known_kind_returns_plan(self, kind, target, expected_prefix) -> None:
         plan = build_preview(kind.value, target)
@@ -91,7 +91,7 @@ class TestBuildAdminPreview:
     def test_with_admin_returns_plan(self) -> None:
         result = build_admin_preview("docker-restart", "x", admin=True)
         assert isinstance(result, ActionPlan)
-        assert list(result.argv) == ["docker", "restart", "x"]
+        assert list(result.argv) == [DOCKER_EXECUTABLE, "restart", "x"]
 
     def test_without_admin_rejects_via_exit_message(self) -> None:
         """Simulate what the CLI does: print message and exit 2."""
@@ -258,7 +258,7 @@ class TestCliIntegration:
             stderr=subprocess.PIPE,
         )
         payload = json.loads(proc.stdout)
-        assert payload["argv"] == ["docker", "restart", "c1"]
+        assert payload["argv"] == [DOCKER_EXECUTABLE, "restart", "c1"]
         assert payload["mode"] == "preview"
 
 class TestMainActionReturnCodes:
@@ -309,8 +309,8 @@ class TestTargetValidation:
         (ActionKind.DOCKER_START, "x\ny", False),      # newline
         (ActionKind.DOCKER_START, "abcdef0123456789" * 4, True),  # 64-char hex id
         (ActionKind.DOCKER_START, "abcdef0123456789" * 4 + "g", True),  # 65-char alphanumeric name (valid)
-        (ActionKind.DOCKER_START, ".", True),
-        (ActionKind.DOCKER_START, "_.-", True),
+        (ActionKind.DOCKER_START, ".", False),
+        (ActionKind.DOCKER_START, "_.-", False),
         (ActionKind.SYSTEMD_START, "nginx.service", True),
         (ActionKind.SYSTEMD_START, "user@1000.service", True),
         (ActionKind.SYSTEMD_START, "my.slice", True),
@@ -381,30 +381,33 @@ class TestExecutionGates:
 class TestExecutionSuccess:
     """Fully gated execution invokes the runner with the expected argv."""
 
-    def test_docker_restart_args(self) -> None:
+    def test_docker_restart_args(self, tmp_path: Path) -> None:
         from groop.actions.execute import execute_plan, ExecuteResult
         collected: list[tuple[str, ...]] = []
         def runner(argv, *, timeout=30.0):
             collected.append(argv)
             return ExecuteResult("", "", argv, 0, "", "", "success", 0.0)
-        result = execute_plan("docker-restart", "my-container", admin=True, confirm="EXECUTE", runner=runner)
+        result = execute_plan("docker-restart", "my-container", admin=True, confirm="EXECUTE", runner=runner,
+                              audit_path=tmp_path / "audit.jsonl", root_check=lambda: True)
         assert result.outcome == "success"
-        assert collected == [("docker", "restart", "my-container")]
+        assert collected == [(DOCKER_EXECUTABLE, "restart", "my-container")]
 
-    def test_systemd_stop_args(self) -> None:
+    def test_systemd_stop_args(self, tmp_path: Path) -> None:
         from groop.actions.execute import execute_plan, ExecuteResult
         collected: list[tuple[str, ...]] = []
         def runner(argv, *, timeout=30.0):
             collected.append(argv)
             return ExecuteResult("", "", argv, 0, "", "", "success", 0.0)
-        execute_plan("systemd-stop", "sshd.service", admin=True, confirm="EXECUTE", runner=runner)
-        assert collected == [("systemctl", "stop", "sshd.service")]
+        execute_plan("systemd-stop", "sshd.service", admin=True, confirm="EXECUTE", runner=runner,
+                     audit_path=tmp_path / "audit.jsonl", root_check=lambda: True)
+        assert collected == [(SYSTEMCTL_EXECUTABLE, "stop", "sshd.service")]
 
-    def test_nonzero_exit_propagates(self) -> None:
+    def test_nonzero_exit_propagates(self, tmp_path: Path) -> None:
         from groop.actions.execute import execute_plan, ExecuteResult
         def runner(argv, *, timeout=30.0):
             return ExecuteResult("", "", argv, 1, "", "error", "nonzero", 0.0)
-        result = execute_plan("docker-stop", "c1", admin=True, confirm="EXECUTE", runner=runner)
+        result = execute_plan("docker-stop", "c1", admin=True, confirm="EXECUTE", runner=runner,
+                              audit_path=tmp_path / "audit.jsonl", root_check=lambda: True)
         assert result.outcome == "nonzero"
         assert result.returncode == 1
         assert result.stderr == "error"
@@ -423,6 +426,7 @@ class TestExecutionAudit:
             admin=True, confirm="EXECUTE",
             audit_path=audit_path,
             runner=runner,
+            root_check=lambda: True,
         )
         assert result.outcome == "success"
         lines = audit_path.read_text().strip().splitlines()
@@ -434,29 +438,30 @@ class TestExecutionAudit:
         assert pre["kind"] == "docker-start"
         assert pre["target"] == "db"
         assert pre["admin"] is True
-        assert pre["confirm"] == "EXECUTE"
+        assert "confirm" not in pre
         assert post["stage"] == "post"
         assert post["outcome"] == "success"
         assert post["returncode"] == 0
         assert "duration_s" in post
 
-    def test_audit_skipped_without_path(self) -> None:
+    def test_audit_is_mandatory(self) -> None:
         from groop.actions.execute import execute_plan, ExecuteResult
         def runner(argv, *, timeout=30.0):
             return ExecuteResult("", "", argv, 0, "", "", "success", 0.0)
-        # Should not raise — no audit path means no audit attempt
-        result = execute_plan("docker-restart", "x", admin=True, confirm="EXECUTE", runner=runner)
-        assert result.outcome == "success"
+        result = execute_plan("docker-restart", "x", admin=True, confirm="EXECUTE", runner=runner,
+                              root_check=lambda: True, audit_path=None)  # type: ignore[arg-type]
+        assert result.outcome == "refusal"
 
 
 class TestExecutionTimeout:
     """Timeout outcome is produced correctly."""
 
-    def test_timeout_outcome(self) -> None:
+    def test_timeout_outcome(self, tmp_path: Path) -> None:
         from groop.actions.execute import execute_plan, ExecuteResult
         def runner(argv, *, timeout=30.0):
             return ExecuteResult("", "", argv, None, "", "", "timeout", 5.0)
-        result = execute_plan("docker-restart", "x", admin=True, confirm="EXECUTE", runner=runner)
+        result = execute_plan("docker-restart", "x", admin=True, confirm="EXECUTE", runner=runner,
+                              audit_path=tmp_path / "audit.jsonl", root_check=lambda: True)
         assert result.outcome == "timeout"
         assert result.returncode is None
 
@@ -464,11 +469,12 @@ class TestExecutionTimeout:
 class TestExecutionRunnerFailure:
     """Runner failure outcome is produced correctly."""
 
-    def test_runner_failure_outcome(self) -> None:
+    def test_runner_failure_outcome(self, tmp_path: Path) -> None:
         from groop.actions.execute import execute_plan, ExecuteResult
         def runner(argv, *, timeout=30.0):
             return ExecuteResult("", "", argv, None, "", "OSError: not found", "runner_failure", 0.0)
-        result = execute_plan("docker-restart", "x", admin=True, confirm="EXECUTE", runner=runner)
+        result = execute_plan("docker-restart", "x", admin=True, confirm="EXECUTE", runner=runner,
+                              audit_path=tmp_path / "audit.jsonl", root_check=lambda: True)
         assert result.outcome == "runner_failure"
 
 
@@ -589,4 +595,170 @@ class TestPreviewWithValidation:
     def test_preview_valid_target_still_works(self) -> None:
         plan = build_preview("docker-restart", "my-container")
         assert isinstance(plan, ActionPlan)
-        assert list(plan.argv) == ["docker", "restart", "my-container"]
+        assert list(plan.argv) == [DOCKER_EXECUTABLE, "restart", "my-container"]
+
+
+class TestP46ControllerSecurityCorrections:
+    """Adversarial production-boundary checks added after controller review."""
+
+    @staticmethod
+    def _success(argv, *, timeout=30.0):
+        from groop.actions.execute import ExecuteResult
+        return ExecuteResult("", "", argv, 0, "ok", "", "success", 0.0)
+
+    def test_root_gate_precedes_audit_and_runner(self, tmp_path: Path, monkeypatch) -> None:
+        import groop.actions.execute as execute
+        called = []
+        monkeypatch.setattr(execute, "_write_execution_audit_pre", lambda *a, **k: called.append("audit"))
+        result = execute.execute_plan(
+            "docker-start", "c1", admin=True, confirm="EXECUTE",
+            audit_path=tmp_path / "a.jsonl", root_check=lambda: False,
+            runner=lambda *a, **k: called.append("runner"),
+        )
+        assert result.outcome == "refusal"
+        assert called == []
+
+    @pytest.mark.parametrize("admin, confirm", [(False, "EXECUTE"), (True, "NO"), (True, "")])
+    def test_missing_gate_does_not_touch_audit_or_runner(self, tmp_path: Path, admin: bool, confirm: str) -> None:
+        called = []
+        result = __import__("groop.actions.execute", fromlist=["execute_plan"]).execute_plan(
+            "docker-start", "c1", admin=admin, confirm=confirm,
+            audit_path=tmp_path / "a.jsonl", root_check=lambda: True,
+            runner=lambda *a, **k: called.append(True),
+        )
+        assert result.outcome == "refusal"
+        assert called == []
+        assert not (tmp_path / "a.jsonl").exists()
+
+    @pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), 30.001])
+    def test_invalid_timeout_is_rejected_before_audit_or_runner(self, tmp_path: Path, timeout: float) -> None:
+        from groop.actions.execute import execute_plan
+        called = []
+        path = tmp_path / "a.jsonl"
+        result = execute_plan(
+            "docker-start", "c1", admin=True, confirm="EXECUTE", timeout=timeout,
+            audit_path=path, root_check=lambda: True,
+            runner=lambda *a, **k: called.append(True),
+        )
+        assert result.outcome == "refusal"
+        assert called == []
+        assert not path.exists()
+
+    def test_missing_and_default_audit_are_fail_closed(self, tmp_path: Path) -> None:
+        from groop.actions.execute import DEFAULT_EXECUTION_AUDIT_PATH, execute_plan
+        called = []
+        missing = execute_plan(
+            "docker-start", "c1", admin=True, confirm="EXECUTE", audit_path=None,  # type: ignore[arg-type]
+            root_check=lambda: True, runner=lambda *a, **k: called.append(True),
+        )
+        assert missing.outcome == "refusal"
+        assert called == []
+        default_result = execute_plan(
+            "docker-start", "c1", admin=True, confirm="EXECUTE", root_check=lambda: False,
+            runner=lambda *a, **k: called.append(True),
+        )
+        assert default_result.outcome == "refusal"
+        assert DEFAULT_EXECUTION_AUDIT_PATH.is_absolute()
+        assert called == []
+
+    @pytest.mark.parametrize("make_bad", [
+        lambda path: path.symlink_to(path.parent / "elsewhere"),
+        lambda path: (path.write_text("x"), path.chmod(0o644)),
+    ])
+    def test_symlink_and_broad_permissions_are_rejected(self, tmp_path: Path, make_bad) -> None:
+        from groop.actions.execute import execute_plan
+        path = tmp_path / "audit.jsonl"
+        if "symlink" in getattr(make_bad, "__name__", ""):
+            (tmp_path / "elsewhere").write_text("x")
+        make_bad(path)
+        called = []
+        result = execute_plan(
+            "docker-start", "c1", admin=True, confirm="EXECUTE", audit_path=path,
+            root_check=lambda: True, runner=lambda *a, **k: called.append(True),
+        )
+        assert result.outcome == "refusal"
+        assert called == []
+
+    def test_post_audit_failure_preserves_mutation_outcome(self, tmp_path: Path, monkeypatch) -> None:
+        import groop.actions.execute as execute
+        monkeypatch.setattr(execute, "_write_execution_audit_post", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+        result = execute.execute_plan(
+            "docker-start", "c1", admin=True, confirm="EXECUTE", audit_path=tmp_path / "a.jsonl",
+            root_check=lambda: True, runner=self._success,
+        )
+        assert result.outcome == "audit_failure"
+        assert result.action_outcome == "success"
+        assert result.audit_outcome == "post_failure"
+
+    def test_runner_exception_is_bounded_and_post_audited(self, tmp_path: Path) -> None:
+        from groop.actions.execute import execute_plan
+        def raises(argv, *, timeout):
+            raise RuntimeError("secret raw exception must not leak")
+        result = execute_plan(
+            "docker-stop", "c1", admin=True, confirm="EXECUTE", audit_path=tmp_path / "a.jsonl",
+            root_check=lambda: True, runner=raises,
+        )
+        assert result.outcome == "runner_failure"
+        assert "secret raw" not in result.stderr
+        assert len((tmp_path / "a.jsonl").read_text().splitlines()) == 2
+
+    def test_huge_injected_output_is_bounded(self, tmp_path: Path) -> None:
+        from groop.actions.execute import ExecuteResult, execute_plan
+        def huge(argv, *, timeout):
+            return ExecuteResult("", "", argv, 0, "x" * 100_000, "y" * 100_000, "success", 0.0)
+        result = execute_plan(
+            "docker-start", "c1", admin=True, confirm="EXECUTE", audit_path=tmp_path / "a.jsonl",
+            root_check=lambda: True, runner=huge,
+        )
+        assert len(result.stdout) <= 4096 + len(" ... (truncated)")
+        assert len(result.stderr) <= 4096 + len(" ... (truncated)")
+
+    def test_exact_absolute_argv_and_no_shell_true(self, tmp_path: Path) -> None:
+        import ast
+        import inspect
+        from groop.actions.execute import execute_plan
+        observed = []
+        def runner(argv, *, timeout):
+            observed.append(argv)
+            return self._success(argv, timeout=timeout)
+        result = execute_plan(
+            "systemd-restart", "demo.service", admin=True, confirm="EXECUTE",
+            audit_path=tmp_path / "a.jsonl", root_check=lambda: True, runner=runner,
+        )
+        assert result.outcome == "success"
+        assert observed == [(SYSTEMCTL_EXECUTABLE, "restart", "demo.service")]
+        tree = ast.parse(inspect.getsource(execute_plan.__globals__["_default_runner"]))
+        assert not any(
+            isinstance(node, ast.keyword) and node.arg == "shell" and getattr(node.value, "value", None) is True
+            for node in ast.walk(tree)
+        )
+
+    @pytest.mark.parametrize("target", [".", "_.-", "-bad", "bad/name", "bad;name", "bad name", ""])
+    def test_docker_names_are_actual_safe_names(self, target: str) -> None:
+        from groop.actions.execute import validate_target
+        with pytest.raises(ValueError):
+            validate_target(ActionKind.DOCKER_START, target)
+
+    @pytest.mark.parametrize("target", ["unit", ".service", "-unit.service", "unit.txt", "unit..service", "unit/service"])
+    def test_systemd_units_require_consistent_safe_forms(self, target: str) -> None:
+        from groop.actions.execute import validate_target
+        with pytest.raises(ValueError):
+            validate_target(ActionKind.SYSTEMD_START, target)
+
+    def test_audit_identity_is_stable_and_confirmation_is_not_logged(self, tmp_path: Path) -> None:
+        from groop.actions.execute import AuditIdentity, execute_plan
+        result = execute_plan(
+            "docker-start", "c1", admin=True, confirm="EXECUTE", audit_path=tmp_path / "a.jsonl",
+            root_check=lambda: True, identity=lambda: AuditIdentity(4242, "fixture-user"),
+            runner=self._success, clock=lambda: 1234.5,
+        )
+        assert result.outcome == "success"
+        records = [json.loads(line) for line in (tmp_path / "a.jsonl").read_text().splitlines()]
+        assert {record["uid"] for record in records} == {4242}
+        assert {record["user"] for record in records} == {"fixture-user"}
+        assert all("confirm" not in record for record in records)
+
+    def test_cli_execute_has_no_arbitrary_audit_log_option(self) -> None:
+        from groop.cli import parse_action_args
+        with pytest.raises(SystemExit):
+            parse_action_args(["execute", "--kind", "docker-start", "--target", "c1", "--audit-log", "/tmp/x"])

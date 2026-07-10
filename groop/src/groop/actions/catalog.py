@@ -12,6 +12,7 @@ so unknown kinds are rejected at import time rather than at runtime.
 from __future__ import annotations
 
 import enum
+import re
 from collections.abc import Callable
 from typing import NamedTuple
 
@@ -28,32 +29,38 @@ class ActionKind(str, enum.Enum):
     SYSTEMD_SET_PROPERTY = "systemd-set-property"
 
 
+# These are deliberately fixed.  The execution kernel never consults PATH and
+# never accepts an executable or argv from a caller.
+DOCKER_EXECUTABLE = "/usr/bin/docker"
+SYSTEMCTL_EXECUTABLE = "/usr/bin/systemctl"
+
+
 # ---------------------------------------------------------------------------
 # Builder helpers — each returns a list of argv strings, never a shell string.
 # ---------------------------------------------------------------------------
 
 def _docker_restart(target: str) -> list[str]:
-    return ["docker", "restart", target]
+    return [DOCKER_EXECUTABLE, "restart", target]
 
 
 def _docker_stop(target: str) -> list[str]:
-    return ["docker", "stop", target]
+    return [DOCKER_EXECUTABLE, "stop", target]
 
 
 def _docker_start(target: str) -> list[str]:
-    return ["docker", "start", target]
+    return [DOCKER_EXECUTABLE, "start", target]
 
 
 def _systemd_restart(target: str) -> list[str]:
-    return ["systemctl", "restart", target]
+    return [SYSTEMCTL_EXECUTABLE, "restart", target]
 
 
 def _systemd_stop(target: str) -> list[str]:
-    return ["systemctl", "stop", target]
+    return [SYSTEMCTL_EXECUTABLE, "stop", target]
 
 
 def _systemd_start(target: str) -> list[str]:
-    return ["systemctl", "start", target]
+    return [SYSTEMCTL_EXECUTABLE, "start", target]
 
 
 def _systemd_set_property(target: str) -> list[str]:
@@ -62,7 +69,7 @@ def _systemd_set_property(target: str) -> list[str]:
     if len(parts) < 2:
         msg = f"systemd-set-property target must be 'UNIT KEY=VALUE ...', got {target!r}"
         raise ValueError(msg)
-    return ["systemctl", "set-property", *parts]
+    return [SYSTEMCTL_EXECUTABLE, "set-property", *parts]
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +95,60 @@ EXECUTION_ALLOWLIST: frozenset[ActionKind] = frozenset({
     ActionKind.SYSTEMD_STOP,
     ActionKind.SYSTEMD_START,
 })
+
+
+# Shared plan-target contract.  Preview and execution both use this function;
+# execution calls it again immediately before invoking its runner.
+_INVALID_TARGET_RE = re.compile(
+    r"[\x00-\x1f\x7f;&|`$(){}\[\]<>\"'\\/]"
+)
+_DOCKER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_DOCKER_ID_RE = re.compile(r"^[a-f0-9]{64}$")
+_SYSTEMD_UNIT_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_:@.-]*\.(?:service|slice|scope|target|socket|mount|timer|path)$"
+)
+def validate_target(kind: ActionKind, target: str) -> None:
+    """Validate the target portion of an immutable action plan.
+
+    The validator intentionally accepts only names, never paths, options, or
+    shell syntax.  ``systemd-set-property`` remains preview-only, but its
+    first token is still required to be a valid unit name.
+    """
+    if not isinstance(target, str) or not target:
+        raise ValueError("target must not be empty")
+    if target.startswith("-"):
+        raise ValueError(f"target must not be option-like: {target!r}")
+    match = _INVALID_TARGET_RE.search(target)
+    if match:
+        raise ValueError(f"target contains invalid character {match.group(0)!r}: {target!r}")
+
+    if kind in EXECUTION_ALLOWLIST:
+        if any(char.isspace() for char in target):
+            raise ValueError(f"target must not contain whitespace: {target!r}")
+        if kind in {
+            ActionKind.DOCKER_START,
+            ActionKind.DOCKER_STOP,
+            ActionKind.DOCKER_RESTART,
+        }:
+            if _DOCKER_ID_RE.fullmatch(target) or _DOCKER_NAME_RE.fullmatch(target):
+                return
+            raise ValueError(f"invalid Docker container identifier: {target!r}")
+        if kind in {
+            ActionKind.SYSTEMD_START,
+            ActionKind.SYSTEMD_STOP,
+            ActionKind.SYSTEMD_RESTART,
+        }:
+            if ".." in target or not _SYSTEMD_UNIT_RE.fullmatch(target):
+                raise ValueError(f"invalid systemd unit name: {target!r}")
+            return
+        raise ValueError(f"execution not allowed for kind {kind.value!r}")
+
+    if kind is ActionKind.SYSTEMD_SET_PROPERTY:
+        parts = target.split()
+        if len(parts) < 2 or not _SYSTEMD_UNIT_RE.fullmatch(parts[0]):
+            raise ValueError(f"invalid systemd set-property target: {target!r}")
+        if any("=" not in part or part.startswith(("-", ".")) for part in parts[1:]):
+            raise ValueError(f"invalid systemd property target: {target!r}")
 
 
 ACTION_CATALOG: dict[ActionKind, CatalogEntry] = {

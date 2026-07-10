@@ -469,7 +469,6 @@ def parse_action_args(argv: list[str]) -> argparse.Namespace:
     execute.add_argument("--admin", action="store_true", help="enable admin execution mode (required)")
     execute.add_argument("--confirm", type=str, default="", help="type EXECUTE to confirm the action")
     execute.add_argument("--json", action="store_true", help="emit JSON result instead of text")
-    execute.add_argument("--audit-log", type=Path, default=None, help="path to append-only JSONL audit log")
     execute.add_argument("--timeout", type=float, default=30.0, help="subprocess timeout in seconds (default 30.0)")
     return parser.parse_args(argv)
 
@@ -530,7 +529,6 @@ def _main_action(argv: list[str]) -> int:
             args.target,
             admin=args.admin,
             confirm=args.confirm,
-            audit_path=args.audit_log,
             timeout=args.timeout,
         )
 

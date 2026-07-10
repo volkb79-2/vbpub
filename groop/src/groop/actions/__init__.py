@@ -17,26 +17,36 @@ Exposed public API:
     AuditLog — append-only JSONL audit logger.
     ExecuteResult — typed execution result.
     execute_plan(kind, target, *, admin, confirm, audit_path, runner, clock) —
-        gated execution entry point.
+        gated execution entry point. Production defaults to the fixed
+        /var/log/groop/actions.jsonl audit; fixture paths are API-only.
     validate_target(kind, target) — validate target safety (shared by preview
         and execution).
 """
 
-from groop.actions.catalog import ActionKind, ACTION_CATALOG, EXECUTION_ALLOWLIST
+from groop.actions.catalog import (
+    ACTION_CATALOG,
+    DOCKER_EXECUTABLE,
+    EXECUTION_ALLOWLIST,
+    SYSTEMCTL_EXECUTABLE,
+    ActionKind,
+)
 from groop.actions.preview import ActionPlan, build_preview, build_admin_preview
 from groop.actions.audit import AuditLog, AuditRecord
-from groop.actions.execute import ExecuteResult, execute_plan, validate_target
+from groop.actions.execute import AuditIdentity, ExecuteResult, execute_plan, validate_target
 
 __all__ = [
     "ActionKind",
     "ACTION_CATALOG",
     "EXECUTION_ALLOWLIST",
+    "DOCKER_EXECUTABLE",
+    "SYSTEMCTL_EXECUTABLE",
     "ActionPlan",
     "build_preview",
     "build_admin_preview",
     "AuditLog",
     "AuditRecord",
     "ExecuteResult",
+    "AuditIdentity",
     "execute_plan",
     "validate_target",
 ]

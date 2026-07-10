@@ -1,17 +1,19 @@
 """Audit logging for admin action previews and execution.
 
-Writes append-only JSONL records to a user-specified path. Each record contains
+Preview writes append-only JSONL records to a caller-specified path. Each record contains
 timestamp, user, action kind, target, command argv, mode (preview or execute),
 and whether admin mode was enabled.
 
 Preview records are written by ``AuditLog.record()`` (this module).
 
-Execution records are written by ``execute_plan()`` (``execute.py``) as two-line
-pre/post pairs with fsync durability and fail-closed semantics.  See
+Execution records are written by ``execute_plan()`` (``execute.py``) only to
+the fixed production path `/var/log/groop/actions.jsonl` or an API-injected
+fixture path, as two-line pre/post pairs with fsync durability and fail-closed semantics. See
 ``groop.actions.execute._write_execution_audit_pre`` and
 ``_write_execution_audit_post``.
 
-No implicit writes — only when --audit-log PATH is provided.
+Preview has no implicit writes — only when `action preview --audit-log PATH`
+is provided. Execute has mandatory audit and does not accept that CLI option.
 """
 
 from __future__ import annotations

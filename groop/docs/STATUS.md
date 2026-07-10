@@ -57,13 +57,14 @@ core workflows, not yet production-certified.**
   plan for the packaged systemd and tmpfiles templates, with deterministic JSON
   and human-readable text output.
 - Preview-only admin action planning for allowlisted Docker/systemd actions,
-  gated by explicit `--admin` and optional JSONL audit logging.
+  gated by explicit `--admin` and optional preview-only JSONL audit logging.
 - Gated admin action execution kernel (`groop action execute`) for validated
   Docker/systemd start/stop/restart targets: typed `--confirm EXECUTE`,
-  target validation (no shell meta, option-like, path syntax, invalid
-  container/unit forms), argv-only subprocess with clean minimal environment,
-  bounded timeout, fail-closed durable JSONL audit (pre/post records),
-  and injected runner/clock fixtures for zero-mutation test safety.
+  production root gate, strict container/unit validation, fixed absolute argv,
+  bounded timeout and pipe-drained output, mandatory fail-closed durable
+  `/var/log/groop/actions.jsonl` audit (pre/post records), typed post-audit
+  partial outcomes, and injected runner/clock/identity fixtures for
+  zero-mutation test safety.
 - Safe BPF network accounting gate (`groop bpf gate`) and v2 BPF design doc;
   the gate is no-op and never loads or pins BPF state.
 - Swap/refault terminology aliases layer (`groop/ui/aliases.py`) resolving
@@ -177,15 +178,17 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation after P46 changes:
+Most recent full-suite validation after this controller correction:
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 499 passed, 1 skipped in 48s
+# 531 passed in 45.00s
 ```
 
 Also validated:
 
 - Full-source `py_compile` clean on all changed/new files.
-- Focused P46 action execution tests: 96 passed (including 41 new P46 tests).
+- Focused corrected P46 action execution tests: 127 passed, including the
+  controller adversarial coverage. Full-source compile covered 97 Python
+  files.
 - Module-level imports and gate logic verified without real Docker/systemd.

@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from groop.actions.catalog import ACTION_CATALOG, ActionKind
-from groop.actions.execute import validate_target
+from groop.actions.catalog import ACTION_CATALOG, ActionKind, validate_target
 
 
 @dataclasses.dataclass(frozen=True)
