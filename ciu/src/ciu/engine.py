@@ -396,23 +396,50 @@ def privileged_rmtree(physical_path: Path) -> None:
 
 
 def _rmtree_with_fallback(vol_dir: Path, *, repo_root: Optional[Path]) -> None:
-    """shutil.rmtree; on PermissionError recover via the S6.5 root helper (S6.4).
+    """Remove *vol_dir*, routing through the S6.5 root helper whenever DooD applies (CIU-9).
 
-    A partial rmtree (some entries removed before hitting an image-owned ``0700``
-    subdir) is fine — the helper's ``rm -rf`` cleans whatever remains.
+    Resolve the physical path (S1.4) FIRST. In a DooD context
+    (``to_physical_path(vol_dir) != vol_dir`` — S1.4/S1.9) the operator's local
+    filesystem view of ``vol_dir`` is not necessarily the same directory the
+    Docker daemon actually bind-mounted; a local ``shutil.rmtree`` success on
+    the logical path proves nothing about the physical path's state (it can
+    silently no-op the removal the daemon-visible volume needed). So in DooD,
+    removal ALWAYS goes through :func:`privileged_rmtree` against the physical
+    path, unconditionally — the local attempt is skipped entirely, not just
+    used as an optimistic first try.
+
+    On a native host (S1.9, logical == physical) a local ``shutil.rmtree``
+    accurately reflects daemon-visible state, so it is used directly; a
+    ``PermissionError`` there (image-UID-owned data — postgres 999, pgAdmin
+    5050, S6.7 Pattern (a)) still falls back to the same root helper. A
+    partial rmtree (some entries removed before hitting an image-owned
+    ``0700`` subdir) is fine — the helper's ``rm -rf`` cleans whatever
+    remains.
     """
+    try:
+        physical = to_physical_path(vol_dir, repo_root=repo_root)
+    except ValueError:
+        # No DooD context resolvable (REPO_ROOT/PHYSICAL_REPO_ROOT unset) —
+        # treat as native host: logical is all we have.
+        physical = vol_dir
+
+    if physical != vol_dir:
+        # DooD: the daemon's view differs from ours. Route through the root
+        # helper unconditionally (S6.5) — never attempt the local rmtree.
+        print(
+            f"[INFO]     DooD context ({vol_dir} -> {physical}); "
+            "removing via root helper container (S6.5)",
+            flush=True,
+        )
+        privileged_rmtree(physical)
+        return
+
+    # Native host (S1.9): logical == physical, so a local rmtree is trustworthy.
     try:
         shutil.rmtree(vol_dir)
         return
     except PermissionError:
         pass
-    # The operator lacks privilege over an image-UID-owned subtree. Mount the
-    # PHYSICAL path (S1.4) so the daemon-side bind resolves on the host; fall back
-    # to the logical path when there is no DooD context (native host, S1.9).
-    try:
-        physical = to_physical_path(vol_dir, repo_root=repo_root)
-    except ValueError:
-        physical = vol_dir
     print(
         f"[INFO]     Operator lacks privilege over {vol_dir}; "
         "removing via root helper container (S6.5)",

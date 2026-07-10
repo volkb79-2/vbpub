@@ -495,6 +495,22 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   wipe completes; it MUST NOT abort on `Permission denied` and leave data
   un-wiped (the daemon is root even when the operator is not).
 
+  **DooD path routing (CIU-9, normative).** `vol-*` removal MUST resolve the
+  physical path (S1.4) *before* deciding how to remove the directory, not
+  merely as a `PermissionError` fallback. When `to_physical_path(vol_dir) !=
+  vol_dir` (a DooD context, S1.4/S1.9), removal MUST go through the S6.5 root
+  helper container against the **physical** path unconditionally — the local
+  attempt on the logical path MUST be skipped entirely, never merely tried
+  first. Rationale: in DooD the operator's logical-path view is not
+  necessarily the same directory the Docker daemon bind-mounted; when the
+  hostdir is owned by the operator's own UID:GID (not a fixed-image UID —
+  S6.7 Pattern (a) does not apply), a local `shutil.rmtree` on the logical
+  path *succeeds without error*, so a naive `except PermissionError` fallback
+  never fires and the daemon-visible directory is never touched — `--reset`
+  reports success while leaving stale state in place. Only when logical ==
+  physical (true native host, S1.9) does a local removal apply, with the
+  existing `PermissionError` → S6.5 helper degrade for fixed-UID data.
+
   **Teardown completeness (CIU-3).** Teardown MUST be exhaustive — a partial
   "clean" that leaves persisted state behind silently desynchronises a
   disposable-greenfield rebuild (a stale Vault token vs a freshly-bootstrapped

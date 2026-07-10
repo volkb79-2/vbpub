@@ -9,7 +9,7 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-06-21.
+Last updated: 2026-07-10.
 
 ## How issues get here
 
@@ -25,7 +25,7 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 
 | # | Title | Severity | Status |
 |---|---|---|---|
-| CIU-9 | `reset_service` volume cleanup silently no-ops in DooD when the operator can write the logical path | High | OPEN |
+| CIU-9 | `reset_service` volume cleanup silently no-ops in DooD when the operator can write the logical path | High | FIXED |
 
 ## Resolved / not-a-gap
 
@@ -104,6 +104,48 @@ sidesteps path resolution entirely by shelling out through the daemon.
 **Workaround in use (dstdns):** `infra/consul-server/cleanup-consul.sh` (already in-repo, predates
 this write-up). No other `vol-*` service reset failures have been observed yet in DooD — this may
 be specific to services that avoid the fixed-image-UID pattern.
+
+**Resolution:**
+
+**1. Main fix.** `_rmtree_with_fallback` (`src/ciu/engine.py`) now resolves the physical path (S1.4)
+*first*, before deciding how to remove anything. When `to_physical_path(vol_dir) != vol_dir` (DooD,
+S1.4/S1.9) it routes through `privileged_rmtree(physical)` unconditionally — the local
+`shutil.rmtree` attempt is skipped entirely, not merely tried first. On a true native host
+(logical == physical, S1.9) the local `shutil.rmtree` is used directly, with the pre-existing
+`PermissionError` → S6.5 root-helper degrade preserved for fixed-UID data (S6.7 Pattern (a)). When
+`to_physical_path` cannot resolve a DooD context at all (`ValueError`, no `REPO_ROOT`/
+`PHYSICAL_REPO_ROOT`), the function now falls back to treating the removal as native-host (same
+externally-observable behaviour as before this fix for non-DooD callers). SPEC updated: **S6.4**
+("DooD path routing (CIU-9, normative)" — `docs/SPEC.md`).
+
+**2. The "open question" (create_hostdirs → template rendering) — traced, confirmed NOT a bug.**
+Code reading of `engine.py`'s `main_execution` (the 17-step S8.3 pipeline) shows `merged` is not
+reassigned between step 8 (`create_hostdirs(merged, working_dir, repo_root=repo_root)`, `engine.py`
+~line 1003) and step 13 (`composefile.guard_config(merged, specs)` → `composefile.render_compose`,
+`engine.py` ~lines 1143/1151). `create_hostdirs`/`_scan_section` mutate the nested `hostdir` dict
+**in place** (`hostdir[purpose] = str(_to_physical(path))`, `engine.py` ~line 604) — no copy is made
+anywhere in that call chain, so the S6.2 physical-path rewrite lands directly in the same `merged`
+object that flows onward. `composefile.guard_config` → `_replace_entries`
+(`composefile.py` ~line 193) does `copy.deepcopy(config)`, but only takes that deep copy **after**
+`create_hostdirs` already mutated `merged` — so the copy `render_compose` receives already carries
+the physical paths, not the pre-rewrite logical ones. A new end-to-end test,
+`TestCIU9HostdirRewriteFeedsRender::test_physical_path_reaches_rendered_compose_in_dood`
+(`tests/tests/test_ciu_hostdir_creation.py`), exercises exactly this call sequence with a
+DooD-style `repo_root != physical_root` and asserts the rendered compose text contains the
+**physical** hostdir path and not the logical one — it passes against the current code
+unmodified, confirming the mutation-propagation mechanism already works correctly. No CIU-10 was
+filed: this is not a second live bug in the current codebase. (The live repro's rendered compose
+showing the logical path most likely reflects a stale artifact from a run predating this
+investigation, or an environment/ordering detail outside `engine.py`'s own pipeline — not a defect
+in `create_hostdirs`'s propagation to Jinja rendering as traced here.)
+
+**Tests:** `tests/tests/test_ciu_reset_service.py` → `TestRmtreeWithFallbackDooD` (5 new tests:
+DooD routes through the physical path unconditionally even when a local rmtree would silently
+"succeed" on the wrong directory; native host still uses local rmtree directly; native-host
+`PermissionError` still degrades to the S6.5 helper; no-DooD-context (`ValueError`) preserves prior
+native-host behaviour). `tests/tests/test_ciu_hostdir_creation.py` → `TestCIU9HostdirRewriteFeedsRender`
+(1 new end-to-end test, described above). Full suite: `python run-ciu-tests.py` — 892 passed,
+coverage 74.75% (floor 73%).
 
 ---
 
