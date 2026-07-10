@@ -30,6 +30,11 @@ CG_ROOT="${CG_ROOT:-/sys/fs/cgroup}"
 soulmask_running_cids() {
   local c
   for c in $(docker ps -q 2>/dev/null); do
+    # A --pid=host container (admin/nsenter shells, monitors) sees EVERY host
+    # process in `docker top`, so it would false-match the game binary below --
+    # and the watcher would eventually apply game-tier knobs (memory.min=6G!)
+    # to a random admin container. Skip host-PID containers outright.
+    [ "$(docker inspect -f '{{.HostConfig.PidMode}}' "$c" 2>/dev/null)" = "host" ] && continue
     docker top "$c" 2>/dev/null | grep -q 'WSServer-Linux-Shipping' && echo "$c"
   done
 }
