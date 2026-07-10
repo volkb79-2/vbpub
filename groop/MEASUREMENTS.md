@@ -653,7 +653,7 @@ drill-down.
 
 ```bash
 cd groop && python3 -m pytest tests/ -q
-# 684 passed, 1 skipped in 56.56s
+# 704 passed, 1 skipped in 58.25s after P51 reconciliation
 ```
 
 ### P50 Key Changes

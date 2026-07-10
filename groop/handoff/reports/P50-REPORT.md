@@ -52,10 +52,10 @@
 
 ```
 PYTHONPATH=groop/src python -m pytest groop/tests/test_ui_app.py -k p50 -q
-# 12 passed, 23 deselected in 4.98s
+# 12 passed, 23 deselected in 4.93s (controller review)
 
 PYTHONPATH=groop/src python -m pytest groop/tests -q
-# 684 passed, 1 skipped in 56.56s
+# 704 passed, 1 skipped in 58.25s after P51 reconciliation
 ```
 
 ## Blocker

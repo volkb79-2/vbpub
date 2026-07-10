@@ -224,11 +224,11 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full validation before the combined P50/P51 merge gate:
+Most recent combined P50/P51 validation:
 
 ```bash
 PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q -W error
-# 692 passed, 1 skipped in 53.29s (controller review)
+# 704 passed, 1 skipped in 58.25s (controller review)
 ```
 
 Also validated:
@@ -240,7 +240,8 @@ Also validated:
 - P51 combined daemon/client/health/record gate: `90 passed in 16.84s` with warnings as errors.
 - Combined P47 daemon/P45 inspect regression: `238 passed in 6.60s` (controller review).
 - Combined P44/P45/P46 focused regression: `264 passed in 1.12s`.
-- P50 focused mouse tests: `12 passed, 23 deselected in 4.98s`.
+- P50 focused mouse tests: `12 passed, 23 deselected in 4.93s`.
+- P50 UI/fidelity regression: `36 passed, 1 skipped in 16.57s`.
 - P50 UI plus rendered fidelity: `36 passed, 1 skipped in 16.51s`.
 - Acceptance tests: `40 passed in 7.31s`; TUI smoke exit 0.
 - Full-source `py_compile` clean on all changed/new files.
