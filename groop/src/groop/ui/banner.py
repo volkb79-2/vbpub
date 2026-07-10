@@ -193,6 +193,7 @@ def _net_device_line(devices: list[dict[str, object]]) -> str:
     """Render the NET banner line from net_devices host_meta.
 
     Shows the 2-3 busiest interfaces by rx_bps + tx_bps.
+    Appends drop/error annotations when any interface has non-zero loss.
     """
     # Filter to devices with valid rates
     with_rates = [d for d in devices if d.get("rx_bps") is not None or d.get("tx_bps") is not None]
@@ -216,6 +217,22 @@ def _net_device_line(devices: list[dict[str, object]]) -> str:
         dev_str = f"{name} rx{_fmt_bytes(rx_b)}/s tx{_fmt_bytes(tx_b)}/s"
         if rx_p is not None and tx_p is not None:
             dev_str += f" rx{_fmt_float_pps(float(rx_p))}/s tx{_fmt_float_pps(float(tx_p))}/s"
+        # Append loss/error info when non-zero
+        rx_d = _positive_float(d.get("rx_drops_s"))
+        tx_d = _positive_float(d.get("tx_drops_s"))
+        rx_e = _positive_float(d.get("rx_errors_s"))
+        tx_e = _positive_float(d.get("tx_errors_s"))
+        loss_parts: list[str] = []
+        if rx_d is not None:
+            loss_parts.append(f"rx_drop{_fmt_loss_rate(rx_d)}/s")
+        if tx_d is not None:
+            loss_parts.append(f"tx_drop{_fmt_loss_rate(tx_d)}/s")
+        if rx_e is not None:
+            loss_parts.append(f"rx_err{_fmt_loss_rate(rx_e)}/s")
+        if tx_e is not None:
+            loss_parts.append(f"tx_err{_fmt_loss_rate(tx_e)}/s")
+        if loss_parts:
+            dev_str += " LOSS " + " ".join(loss_parts)
         parts.append(dev_str)
     return f"NET {' | '.join(parts)}"
 
@@ -258,6 +275,25 @@ def _fmt_float_pps(value: float) -> str:
     if value >= 1:
         return f"{value:.1f}"
     return "0"
+
+
+def _fmt_loss_rate(value: float) -> str:
+    """Format a loss/error rate (typically <1 so show as-is with 2 decimal places)."""
+    if value >= 100:
+        return f"{value:.0f}"
+    if value >= 1:
+        return f"{value:.1f}"
+    return f"{value:.2f}"
+
+
+def _positive_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def _swap_backend_label(metric: MetricValue | None) -> str:

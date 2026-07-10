@@ -283,9 +283,10 @@ _BLOCK_DEVICE_EXCLUDE_PREFIXES = ("loop", "ram", "zram")
 
 
 def _net_dev_counters(proc_root: Path) -> list[dict[str, object]]:
-    """Parse /proc/net/dev for per-interface byte/packet counters.
+    """Parse /proc/net/dev for per-interface byte/packet/error/drop counters.
 
-    Returns a list of dicts with name, rx_bytes, tx_bytes, rx_packets, tx_packets.
+    Returns a list of dicts with name, rx_bytes/tx_bytes, rx_packets/tx_packets,
+    rx_errors/tx_errors, and rx_drops/tx_drops.
     Excludes interfaces matching _NET_DEVICE_EXCLUDE_PREFIXES (veth*, br-*, docker*, lo).
     Returns empty list on unreadable /proc/net/dev.
     """
@@ -303,13 +304,17 @@ def _net_dev_counters(proc_root: Path) -> list[dict[str, object]]:
         if any(name.startswith(p) for p in _NET_DEVICE_EXCLUDE_PREFIXES):
             continue
         parts = rest.split()
-        if len(parts) < 10:
+        if len(parts) < 16:
             continue
         try:
             rx_bytes = int(parts[0])
             rx_packets = int(parts[1])
+            rx_errors = int(parts[2])
+            rx_drop = int(parts[3])
             tx_bytes = int(parts[8])
             tx_packets = int(parts[9])
+            tx_errors = int(parts[10])
+            tx_drop = int(parts[11])
         except (ValueError, IndexError):
             continue
         devices.append({
@@ -318,6 +323,10 @@ def _net_dev_counters(proc_root: Path) -> list[dict[str, object]]:
             "tx_bytes": tx_bytes,
             "rx_packets": rx_packets,
             "tx_packets": tx_packets,
+            "rx_errors": rx_errors,
+            "rx_drop": rx_drop,
+            "tx_errors": tx_errors,
+            "tx_drop": tx_drop,
             "src": "host",
         })
     return devices

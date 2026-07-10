@@ -99,8 +99,9 @@ core workflows, not yet production-certified.**
   and smoke testing. Timestamp jump controls landed in P24.
 - **Custom profiles:** named profile lists work and unsupported configured
   columns are surfaced as ignored metadata.
-- **Diagnostics inputs:** pressure score and `io_cap_saturation_pct` work;
-  attributable network loss/retransmit is the remaining input gap.
+- **Diagnostics inputs:** pressure score, `io_cap_saturation_pct`, and
+  host/interface-level network drop/error diagnostics (P37) work; attributable
+  per-cgroup network loss remains v2 BPF work.
 - **DAMON controls:** underlying APIs, CLI, and TUI typed-confirm modals are
   fixture-tested. Live-root acceptance still needs a deliberate test host.
 - **Snapshots:** snapshot bundles include bounded frame history, cgroup files,
