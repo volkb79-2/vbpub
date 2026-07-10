@@ -4,6 +4,8 @@ Usage:
     python -m groop.acceptance smoke [--cgroup-root PATH] [--replay PATH] [--json] [--pretty-json]
     python -m groop.acceptance steady [--cgroup-root PATH] [--samples N] [--interval-s SECONDS]
                          [--max-cpu-pct FLOAT] [--max-rss-kb INT] [--json] [--pretty-json]
+    python -m groop.acceptance tui-smoke [--replay PATH] [--config PATH] [--profile NAME]
+                               [--timeout-s FLOAT] [--json] [--pretty-json]
 
 Exit codes:
     0  All requested checks pass.
@@ -18,6 +20,7 @@ import json
 import os
 import platform
 import resource
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -33,15 +36,19 @@ __all__ = [
     "SmokeResult",
     "SteadySample",
     "SteadyResult",
+    "TuiSmokeResult",
     "build_parser",
     "run_smoke",
     "run_steady",
+    "run_tui_smoke",
     "smoke_main",
     "acceptance_main",
     "format_text",
     "format_json",
     "format_steady_text",
     "format_steady_json",
+    "format_tui_smoke_text",
+    "format_tui_smoke_json",
 ]
 
 
@@ -96,6 +103,28 @@ class SteadyResult:
     entity_counts: dict[str, int]
     collection_errors: list[str]
     threshold_errors: list[str]
+
+
+@dataclass
+class TuiSmokeResult:
+    """Top-level result from a TUI smoke run."""
+
+    ok: bool
+    exit_code: int
+    version: str
+    python: str
+    platform: str
+    smoke_line: str | None
+    stdout_snippet: str
+    stderr_snippet: str
+    frames: int | None
+    view: str | None
+    profile: str | None
+    measurements: dict[str, float]
+
+
+# Default replay path for TUI smoke (repository checkout relative)
+_DEFAULT_REPLAY = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "frames" / "gstammtisch-once.jsonl"
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +204,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output structured JSON instead of human-readable text.",
     )
     steady.add_argument(
+        "--pretty-json",
+        action="store_true",
+        default=False,
+        help="Output indented JSON instead of compact JSON.",
+    )
+
+    tui = sub.add_parser("tui-smoke", help="Run TUI smoke evidence via subprocess (--ui-smoke path).")
+    tui.add_argument(
+        "--replay",
+        type=Path,
+        default=_DEFAULT_REPLAY,
+        metavar="PATH",
+        help=f"Replay path for UI smoke (default: {_DEFAULT_REPLAY}).",
+    )
+    tui.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Pass --config PATH through to the UI smoke child process.",
+    )
+    tui.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="Pass --profile NAME through to the UI smoke child process.",
+    )
+    tui.add_argument(
+        "--timeout-s",
+        type=float,
+        default=30.0,
+        help="Seconds before child process is killed (default: 30.0).",
+    )
+    tui.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Output structured JSON instead of human-readable text.",
+    )
+    tui.add_argument(
         "--pretty-json",
         action="store_true",
         default=False,
@@ -511,8 +581,214 @@ def run_steady(
 
 
 # ---------------------------------------------------------------------------
-# Output formatting
+# Core TUI smoke logic
 # ---------------------------------------------------------------------------
+
+
+def _parse_ui_smoke_line(line: str) -> dict[str, Any]:
+    """Parse a "ui smoke ok ..." line into structured fields.
+
+    Returns a dict with keys: frames, view, profile (or empty dict if unparseable).
+    """
+    result: dict[str, Any] = {}
+    text = line.strip()
+    if not text.startswith("ui smoke ok"):
+        return result
+    for part in text.split():
+        if "=" in part:
+            key, val = part.split("=", 1)
+            if key == "frames":
+                try:
+                    result["frames"] = int(val)
+                except ValueError:
+                    pass
+            elif key in ("view", "profile"):
+                result[key] = val
+    return result
+
+
+def run_tui_smoke(
+    replay_path: Path,
+    *,
+    config_path: Path | None = None,
+    profile: str | None = None,
+    timeout_s: float = 30.0,
+) -> TuiSmokeResult:
+    """Run the UI smoke child process and return a TuiSmokeResult.
+
+    This function uses ``subprocess`` to invoke the CLI with ``--ui-smoke``,
+    preserving the import contract: no Textual import in this module.
+    """
+    from groop import __version__
+
+    cmd = [
+        sys.executable, "-m", "groop.cli",
+        "--replay", str(replay_path),
+        "--step",
+        "--ui-smoke",
+    ]
+    if config_path is not None:
+        cmd.extend(["--config", str(config_path)])
+    if profile is not None:
+        cmd.extend(["--profile", profile])
+
+    # Capture child resource usage via RUSAGE_CHILDREN diff
+    ru0 = resource.getrusage(resource.RUSAGE_CHILDREN)
+    t0 = time.monotonic()
+
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent)}
+
+    try:
+        cp = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        t1 = time.monotonic()
+        ru1 = resource.getrusage(resource.RUSAGE_CHILDREN)
+        wall_s = t1 - t0
+        child_user_s = ru1.ru_utime - ru0.ru_utime
+        child_sys_s = ru1.ru_stime - ru0.ru_stime
+        child_rss_kb = float(ru1.ru_maxrss)
+        return TuiSmokeResult(
+            ok=False,
+            exit_code=-1,
+            version=__version__,
+            python=sys.version,
+            platform=platform.platform(),
+            smoke_line=None,
+            stdout_snippet="",
+            stderr_snippet="(timeout)",
+            frames=None,
+            view=None,
+            profile=None,
+            measurements={
+                "wall_s": round(wall_s, 4),
+                "user_s": round(child_user_s, 4),
+                "sys_s": round(child_sys_s, 4),
+                "rss_kb": child_rss_kb,
+            },
+        )
+
+    t1 = time.monotonic()
+    ru1 = resource.getrusage(resource.RUSAGE_CHILDREN)
+
+    wall_s = t1 - t0
+    child_user_s = ru1.ru_utime - ru0.ru_utime
+    child_sys_s = ru1.ru_stime - ru0.ru_stime
+    child_rss_kb = float(ru1.ru_maxrss)
+
+    measurements: dict[str, float] = {
+        "wall_s": round(wall_s, 4),
+        "user_s": round(child_user_s, 4),
+        "sys_s": round(child_sys_s, 4),
+        "rss_kb": child_rss_kb,
+    }
+
+    exit_code = cp.returncode
+
+    stdout_lines = cp.stdout.strip().split("\n")
+    # Find the ui smoke line
+    smoke_line: str | None = None
+    for line in stdout_lines:
+        if line.startswith("ui smoke ok"):
+            smoke_line = line
+            break
+
+    parsed = _parse_ui_smoke_line(smoke_line) if smoke_line else {}
+
+    frames: int | None = parsed.get("frames")
+    view: str | None = parsed.get("view")
+    prof: str | None = parsed.get("profile")
+
+    # Truncate snippets for JSON output
+    stdout_snippet = cp.stdout[:500] if len(cp.stdout) > 500 else cp.stdout
+    stderr_snippet = cp.stderr[:500] if len(cp.stderr) > 500 else cp.stderr
+
+    # Determine overall success
+    ok = exit_code == 0 and smoke_line is not None
+
+    return TuiSmokeResult(
+        ok=ok,
+        exit_code=exit_code,
+        version=__version__,
+        python=sys.version,
+        platform=platform.platform(),
+        smoke_line=smoke_line,
+        stdout_snippet=stdout_snippet,
+        stderr_snippet=stderr_snippet,
+        frames=frames,
+        view=view,
+        profile=prof,
+        measurements=measurements,
+    )
+
+
+# ---------------------------------------------------------------------------
+# TUI smoke output formatting
+# ---------------------------------------------------------------------------
+
+
+def format_tui_smoke_json(result: TuiSmokeResult, *, pretty: bool = False) -> str:
+    """Serialize a TUI smoke result as deterministic JSON."""
+    indent = 2 if pretty else None
+    obj: dict[str, Any] = {
+        "ok": result.ok,
+        "exit_code": result.exit_code,
+        "version": result.version,
+        "python": result.python,
+        "platform": result.platform,
+        "smoke_line": result.smoke_line,
+        "frames": result.frames,
+        "view": result.view,
+        "profile": result.profile,
+        "measurements": result.measurements,
+        "stdout_snippet": result.stdout_snippet,
+        "stderr_snippet": result.stderr_snippet,
+    }
+    return json.dumps(
+        obj,
+        indent=indent,
+        separators=None if pretty else (",", ":"),
+        sort_keys=True,
+        default=str,
+    )
+
+
+def format_tui_smoke_text(result: TuiSmokeResult) -> str:
+    """Format TUI smoke result as concise human-readable text."""
+    lines: list[str] = []
+    lines.append(f"groop acceptance tui-smoke  v{result.version}")
+    lines.append(f"python: {result.python.split()[0]}  platform: {result.platform}")
+    lines.append("")
+
+    if result.smoke_line:
+        lines.append(f"  UI smoke: {result.smoke_line}")
+    else:
+        lines.append("  UI smoke: line not found")
+
+    lines.append(f"  exit code: {result.exit_code}")
+    lines.append("")
+    lines.append("  Measurements:")
+    m = result.measurements
+    lines.append(f"    wall:    {m.get('wall_s', '?'):>9.4f}s")
+    lines.append(f"    user:    {m.get('user_s', '?'):>9.4f}s  (child)")
+    lines.append(f"     sys:    {m.get('sys_s', '?'):>9.4f}s  (child)")
+    lines.append(f"     RSS:    {m.get('rss_kb', '?'):>9.0f} KB  (child max)")
+
+    if result.stderr_snippet:
+        lines.append("")
+        lines.append("  stderr:")
+        for line in result.stderr_snippet.split("\n")[:5]:
+            lines.append(f"    {line}")
+
+    verdict = "ALL CHECKS PASSED" if result.ok else "SOME CHECKS FAILED"
+    lines.append("")
+    lines.append(f"  {verdict}  (exit code {'0' if result.ok else '1'})")
+    return "\n".join(lines)
 
 
 def _steady_to_jsonable(result: SteadyResult) -> dict[str, Any]:
@@ -686,6 +962,20 @@ def acceptance_main(argv: list[str] | None = None) -> int:
             output = format_steady_json(result, pretty=args.pretty_json)
         else:
             output = format_steady_text(result)
+    elif args.command == "tui-smoke":
+        if args.timeout_s <= 0:
+            print("error: --timeout-s must be positive", file=sys.stderr)
+            return 2
+        result = run_tui_smoke(
+            replay_path=args.replay,
+            config_path=args.config,
+            profile=args.profile,
+            timeout_s=args.timeout_s,
+        )
+        if args.json or args.pretty_json:
+            output = format_tui_smoke_json(result, pretty=args.pretty_json)
+        else:
+            output = format_tui_smoke_text(result)
     else:
         print(f"Unknown command: {args.command}", file=sys.stderr)
         return 2

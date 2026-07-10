@@ -66,6 +66,22 @@ PYTHONPATH=groop/src python3 -m groop.acceptance steady \
   --samples 5 --interval-s 0 --pretty-json
 ```
 
+Run a TUI smoke release evidence (rootless, subprocess-based):
+
+```bash
+PYTHONPATH=groop/src python3 -m groop.acceptance tui-smoke \
+  --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl \
+  --pretty-json
+```
+
+Run with a custom profile:
+
+```bash
+PYTHONPATH=groop/src python3 -m groop.acceptance tui-smoke \
+  --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl \
+  --profile minimal --json
+```
+
 Inspect an incident snapshot:
 
 ```bash

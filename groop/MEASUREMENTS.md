@@ -6,6 +6,16 @@ claims without updating this file.
 
 ## Current Evidence
 
+Most recent branch validation for P38:
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest groop/tests -q
+# 382 passed in 41.88s
+```
+
+P38 adds 14 focused TUI smoke tests to the acceptance test file.
+Also passed: `py_compile` over P38 changed files, and the P38 TUI smoke command below.
+
 Most recent merged package validation after P36/P37:
 
 ```bash
@@ -111,6 +121,45 @@ P35 fixture evidence:
   - avg sample wall: `0.2593s`
   - CPU: `12.34%` of one core
   - max RSS: `99616 KB`
+
+### P38 TUI smoke evidence harness
+
+The preferred rootless TUI smoke evidence path (P38) extends the acceptance
+module with a rooted subprocess-based `tui-smoke` command that exercises the
+existing `--ui-smoke` path from outside the UI process:
+
+```bash
+# Fixture-based (deterministic, no /sys/fs/cgroup dep):
+PYTHONPATH=groop/src python3 -m groop.acceptance tui-smoke \
+  --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl \
+  --json
+
+# Text output with child CPU/RSS measurements:
+PYTHONPATH=groop/src python3 -m groop.acceptance tui-smoke \
+  --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl
+```
+
+P38 fixture evidence (P38 branch):
+
+```text
+groop acceptance tui-smoke  v0.1.0
+  UI smoke: ui smoke ok frames=1 view=tree profile=auto
+  exit code: 0
+  wall:     0.3465s
+  user:     0.2780s  (child)
+   sys:     0.0238s  (child)
+   RSS:      41688 KB  (child max)
+```
+
+- Command:
+  - `PYTHONPATH=groop/src python3 -m groop.acceptance tui-smoke --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --json`
+- Result:
+  - exit `0`, `ok: true`
+  - smoke line: `ui smoke ok frames=1 view=tree profile=auto`
+  - wall: `0.3465s`
+  - child user CPU: `0.2780s`
+  - child sys CPU: `0.0238s`
+  - child max RSS: `41688 KB`
 
 ## v1 Acceptance Measurements
 
