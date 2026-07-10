@@ -72,9 +72,33 @@
 - Files changed: groop/README.md, groop/docs/ROADMAP.md, groop/docs/STATUS.md, groop/docs/OPERATIONS.md, groop/docs/DAEMON.md, groop/docs/RELEASE-READINESS.md, groop/MEASUREMENTS.md
 - Result: All documentation reflects P44 done status and new capability.
 - Follow-up: Write LOG, REPORT, commit.
+
+2026-07-10 ~18:45 UTC (P44 review fix round)
+- Action: Code review fixes applied to paddr_lifecycle.py, config.py, cli.py, control.py, and test file.
+- Files changed: multiple groop/** files.
+- Core fixes:
+  1. **Adoption validation.** _find_existing_groop_paddr now verifies the referenced kdamond
+     exists, is in state "on", and has operations "paddr" before adopting.  Stale markers
+     (kdamond "off") are cleaned up. Malformed/unreadable or internally
+     inconsistent markers fail closed and remain available for diagnosis.
+  2. **PaddrLifecycleOutcome enum.** start() sets outcome to DISABLED, STARTED, or ADOPTED.
+     CLI daemon serve uses match to print truthful messages.
+  3. **public owned_markers() API.** Added to damon/control.py; lifecycle no longer imports
+     private _owned_markers / _read_json.
+  4. **paddr_enabled real bool parsing.** config.py checks isinstance(x, bool) before
+     accepting the TOML value — string truthiness is rejected.
+  5. **22 focused tests** (was 13). Replaces the commentary-only test_lifecycle_stop_only_this_run
+     with real multi-slot assertions. Adds: stale-marker cleanup, malformed-marker refusal,
+     wrong-operations rejection, missing-kdamond rejection, adopted live session, different
+     damon_root ignored, daemon serve integration.
+- Result: 22 focused tests pass after controller hardening; the full suite is
+  revalidated before merge.
+- Follow-up: Update LOG/REPORT, commit.
 ```
 
 ## Decisions
+
+### Initial implementation
 
 - Decision: Use `getattr(collector, "damon_root", DEFAULT_DAMON_ROOT)` in CLI.
   Reason: FakeCollector in BPF snapshot tests doesn't have damon_root attribute.
@@ -95,6 +119,37 @@
   functions, not the dataclass directly.
   Impact: Cleaner import list.
 
+### Review fix round
+
+- Decision: Validate kdamond state and operations at marker adoption time.
+  Reason: Adopting from marker alone could adopt a stale or misconfigured session,
+  leading to attempts to stop a foreign-reused kdamond slot.
+  Impact: Safer adoption, bounded errors for mismatched sessions.
+
+- Decision: Fail closed on malformed or inconsistent ownership markers before
+  calling `plan_start_paddr_session`.
+  Reason: deleting uncertain ownership evidence could orphan a live DAMON
+  session. The bounded lifecycle error keeps the read-only daemon usable.
+  Impact: the marker is preserved for operator diagnosis and no sysfs write is
+  attempted.
+
+- Decision: Add public owned_markers() to damon/control.py.
+  Reason: Avoid importing private helpers from the lifecycle module; keep one source
+  of truth for marker discovery.
+  Impact: Cleaner API boundary.
+
+- Decision: Use isinstance check for paddr_enabled TOML boolean parsing.
+  Reason: bool(dict.get("key", False)) is truthy for any non-None value including
+  TOML strings like "true". A TOML boolean is a Python bool; anything else is invalid.
+  Impact: Invalid string values silently default to False rather than being accepted.
+
+- Decision: Do not auto-stop a verified paddr session adopted from a previous
+  daemon run.
+  Reason: this run did not create the kernel session, and marker/sysfs evidence
+  cannot uniquely prove session identity after index reuse.
+  Impact: current-run sessions are stopped automatically; adopted sessions
+  remain persistent until `groop damon stop --all-mine` is requested.
+
 ## Blockers
 
 None.
@@ -103,10 +158,10 @@ None.
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests/test_daemon_paddr_lifecycle.py -q
-# 13 passed in 0.22s
+# 22 passed in 0.17s
 
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 446 passed, 1 skipped in 49.25s
+# 455 passed, 1 skipped in 46.99s
 
 find groop/src/groop groop/tests -name '*.py' -print0 | xargs -0 python3 -m py_compile
 # (no output = clean)

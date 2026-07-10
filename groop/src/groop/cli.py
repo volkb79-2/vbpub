@@ -678,6 +678,7 @@ def _main_daemon(argv: list[str]) -> int:
         # Daemon-owned paddr lifecycle (disabled by default via [damon] paddr_enabled)
         from groop.daemon.paddr_lifecycle import (
             DaemonPaddrLifecycle,
+            PaddrLifecycleOutcome,
             PaddrLifecycleStartError,
         )
 
@@ -688,12 +689,13 @@ def _main_daemon(argv: list[str]) -> int:
         if config.damon.paddr_enabled:
             try:
                 paddr_lifecycle.start()
-                print(
-                    "Daemon-owned paddr session started"
-                    if paddr_lifecycle.started
-                    else "Daemon-owned paddr session adopted",
-                    flush=True,
-                )
+                match paddr_lifecycle.outcome:
+                    case PaddrLifecycleOutcome.STARTED:
+                        print("Daemon-owned paddr session started", flush=True)
+                    case PaddrLifecycleOutcome.ADOPTED:
+                        print("Daemon-owned paddr session adopted", flush=True)
+                    case PaddrLifecycleOutcome.DISABLED:
+                        pass  # not reached since we check paddr_enabled above
             except PaddrLifecycleStartError as exc:
                 print(
                     f"Paddr lifecycle start failed "
@@ -715,7 +717,7 @@ def _main_daemon(argv: list[str]) -> int:
                     if stopped:
                         print(
                             f"Stopped {stopped} daemon-owned paddr "
-                            f"session(s)",
+                            f"session",
                             flush=True,
                         )
                 except Exception as exc:

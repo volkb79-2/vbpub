@@ -2,7 +2,7 @@
 
 **Branch:** `feat/groop-p44-daemon-paddr-lifecycle`
 **Base:** `9d6327b` (docs(groop): carve P44-P46 v2 safety slices)
-**Date:** 2026-07-10
+**Date:** 2026-07-10 (review fix round)
 
 ## What Was Built
 
@@ -12,6 +12,10 @@ Added `paddr_enabled: bool = False` to `DamonConfig` with docstring explaining
 the disabled default and the existing interval settings (`paddr_sample_us`,
 `paddr_aggr_us`, `paddr_update_us`). The field is serialized via
 `to_primitive()` and parsed from `[damon]` TOML config section via `load()`.
+
+**Review fix:** `paddr_enabled` now only accepts a real TOML boolean (Python
+`bool`).  A TOML string like `"true"` is rejected and silently defaults to
+`False`, avoiding the `bool()` truthiness pitfall.
 
 ### `groop/src/groop/daemon/paddr_lifecycle.py` — `DaemonPaddrLifecycle`
 
@@ -26,21 +30,35 @@ A small daemon lifecycle owner around the existing `damon/paddr.py` and
    `plan_start_paddr_session` and `start_planned_paddr_session` functions.
    Operator config acts as authorization (passes `START` as confirmed text).
 
-3. **Idempotent restart.** If a groop-owned paddr marker already exists for the
-   same `damon_root`, the lifecycle adopts it rather than allocating a
-   duplicate kdamond slot. Foreign sessions (non-groop markers) are never
-   touched.
+3. **Idempotent restart with verification.** If a groop-owned paddr marker
+   already exists for the same `damon_root`, the lifecycle verifies the
+   referenced kdamond slot is live (state `on`, operations `paddr`) before
+   adopting. A stale marker (kdamond `off`) is cleaned up; a malformed,
+   unreadable, or internally inconsistent marker fails closed and is retained;
+   a marker pointing at a missing
+   kdamond or a kdamond running a different monitoring mode raises
+   `PaddrLifecycleStartError`.
 
 4. **Bounded failure.** `PaddrLifecycleStartError` is raised on failure
-   (no free kdamond, root required, ownership conflict). The daemon is expected
-   to catch this and continue without paddr.
+   (no free kdamond, root required, ownership conflict, stale/malformed marker,
+   or kdamond mismatch). The daemon is expected to catch this and continue
+   without paddr.
 
-5. **Graceful shutdown.** `stop()` calls `stop_owned_sessions` with the exact
-   kdamond index of this lifecycle's session, stopping only the session owned
-   by this daemon run. Foreign sessions are never affected.
+5. **Graceful shutdown.** `stop()` tears down a session created by the current
+   run using its exact kdamond index. A verified session adopted from an
+   earlier run remains persistent and requires explicit
+   `groop damon stop --all-mine` cleanup. Foreign sessions are never affected.
 
 6. **Fixture injection seams.** The lifecycle accepts `damon_root`, `state_dir`,
    `require_root`, `is_root`, and `now` parameters for testing.
+
+7. **PaddrLifecycleOutcome enum.** `start()` sets `outcome` to
+   `DISABLED`/`STARTED`/`ADOPTED` so callers can print truthful messages.
+
+### `groop/src/groop/damon/control.py` — `owned_markers()` public API
+
+Added a public `owned_markers(state_dir)` function so the lifecycle module does
+not need to import the private `_owned_markers` / `_read_json` helpers.
 
 ### `groop/src/groop/daemon/__init__.py` — Public API
 
@@ -51,45 +69,55 @@ Exports `DaemonPaddrLifecycle`, `DamonPaddrLifecycleError`,
 
 The `_main_daemon` `serve` command creates a `DaemonPaddrLifecycle` instance
 after the BPF snapshot bridge setup. If `config.damon.paddr_enabled` is `True`,
-it calls `start()` and logs the result. On graceful shutdown (KeyboardInterrupt),
-it calls `stop()` in the `finally` block. Uses `getattr(collector, "damon_root",
-DEFAULT_DAMON_ROOT)` for compatibility with test mocks.
+it calls `start()` and uses `match paddr_lifecycle.outcome` to print truthful
+"started" / "adopted" messages. On graceful shutdown (KeyboardInterrupt), it
+calls `stop()` in the `finally` block.
 
 ### `groop/tests/test_daemon_paddr_lifecycle.py` — Focused Tests
 
-13 focused tests covering:
+22 focused tests covering:
 
 | Test | What it verifies |
 |---|---|
 | `test_config_paddr_enabled_default_false` | Config default is False |
 | `test_config_paddr_enabled_round_trip` | Serialization/deserialization |
+| `test_config_paddr_enabled_string_is_not_truthy` | TOML string "true" rejected |
 | `test_lifecycle_disabled_does_nothing` | Disabled lifecycle is no-op |
 | `test_lifecycle_start_stop` | Full start/stop cycle |
 | `test_lifecycle_idempotent_adoption` | Existing marker adopted without duplicate |
-| `test_lifecycle_stop_only_this_run` | stop() only stops owned session |
+| `test_lifecycle_stop_only_this_run` | stop() only stops owned session (multi-slot) |
 | `test_lifecycle_foreign_session_not_touched` | Foreign markers/slots untouched |
+| `test_lifecycle_stale_marker_cleaned_up` | Stale (off-state) marker cleaned up |
+| `test_lifecycle_malformed_marker_fails_closed` | Invalid JSON marker retained; no writes |
+| `test_lifecycle_marker_index_mismatch_fails_closed` | Filename/payload mismatch retained; no slots touched |
+| `test_lifecycle_wrong_operations_raises_error` | vaddr kdamond refused for paddr marker |
+| `test_lifecycle_missing_kdamond_slot_raises_error` | Non-existent slot raises error |
+| `test_lifecycle_adopted_live_session` | Live kdamond adopted successfully |
+| `test_lifecycle_stale_marker_diff_damon_root_ignored` | Different damon_root marker ignored |
 | `test_lifecycle_start_failure_no_free_slot` | Bounded failure on busy kdamond |
 | `test_lifecycle_start_failure_root_required` | Bounded failure on root check |
 | `test_lifecycle_stop_no_session_returns_zero` | Safe no-op stop |
 | `test_lifecycle_stop_after_disabled_start` | Safe no-op after disabled start |
 | `test_lifecycle_disabled_no_damon_writes` | Zero DAMON writes when disabled |
-| `test_lifecycle_properties` | session/started properties reflect state |
+| `test_lifecycle_properties` | session/started/outcome properties |
+| `test_lifecycle_daemon_serve_integration` | Daemon serve CLI lifecycle wiring |
 
 ## Deviations From Handoff
 
-None. All requirements are met:
+None. All requirements are met, plus the review-fix additions:
 
 - [x] `DamonConfig.paddr_enabled: bool = false`, parse and serialize.
 - [x] Small lifecycle owner, no duplication of sysfs write lists.
 - [x] When enabled, daemon startup plans/starts exactly one groop-owned paddr
       session. Config = operator authorization.
-- [x] Idempotent across already-live groop-owned marker.
+- [x] Idempotent across already-live groop-owned marker (with kdamond
+      validation).
 - [x] Never adopts/stops/overwrites foreign session.
-- [x] Graceful shutdown stops only owned session.
+- [x] Graceful shutdown stops current-run sessions and leaves adopted sessions persistent.
 - [x] Bounded startup failure: daemon continues without paddr.
 - [x] Fixture injection seams for root, state dir, root check, clock.
 - [x] Focused tests: config, lifecycle, ownership/recovery, foreign-session,
-      failure, integration.
+      failure, validation, integration.
 - [x] No live DAMON mutation in normal suite.
 - [x] Updated README, ROADMAP, STATUS, OPERATIONS, DAEMON, RELEASE-READINESS,
       MEASUREMENTS.
@@ -104,11 +132,11 @@ to `groop/daemon/`.
 ```bash
 # Focused paddr lifecycle tests
 PYTHONPATH=groop/src python3 -m pytest groop/tests/test_daemon_paddr_lifecycle.py -q
-# 13 passed in 0.22s
+# 22 passed in 0.17s
 
 # Full suite
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 446 passed, 1 skipped in 49.25s
+# 455 passed, 1 skipped in 46.99s
 
 # Full-source py_compile
 find groop/src/groop groop/tests -name '*.py' -print0 | xargs -0 python3 -m py_compile
@@ -121,28 +149,18 @@ find groop/src/groop groop/tests -name '*.py' -print0 | xargs -0 python3 -m py_c
   session. The lifecycle uses the same `plan_start_paddr_session` /
   `start_planned_paddr_session` / `stop_owned_sessions` functions that are
   already fixture-tested by P14/P9/P11.
-- The daemon serve integration is tested only by the existing BPF snapshot
-  integration test (`test_daemon_enabled_bridge_uses_configured_root_and_shuts_down`)
-  which exercises the daemon serve path. A dedicated daemon + paddr lifecycle
-  integration test would be a future improvement.
 - No `--paddr-enabled` CLI flag was added to `groop daemon serve`; the feature
   is config-only. A CLI flag could be added later for convenience.
 
-## Files Changed
+## Files Changed (review fix round)
 
 ```
-M groop/README.md                                (P44 status: Planned -> Done)
-M groop/MEASUREMENTS.md                          (P44 evidence)
-M groop/docs/DAEMON.md                            (Daemon-owned paddr section)
-M groop/docs/OPERATIONS.md                        (paddr_enabled config example)
-M groop/docs/RELEASE-READINESS.md                 (non-claim updated)
-M groop/docs/ROADMAP.md                           (P44 status: planned -> done)
-M groop/docs/STATUS.md                            (v2 %, implemented list, quality gate)
-M groop/src/groop/cli.py                          (daemon serve integration)
-M groop/src/groop/config.py                       (DamonConfig.paddr_enabled)
-M groop/src/groop/daemon/__init__.py              (export new module)
-A groop/src/groop/daemon/paddr_lifecycle.py       (DaemonPaddrLifecycle)
-A groop/tests/test_daemon_paddr_lifecycle.py      (13 focused tests)
-A groop/handoff/reports/P44-LOG.md                (this log)
-A groop/handoff/reports/P44-REPORT.md             (this report)
+M groop/src/groop/config.py                          (real TOML bool parsing)
+M groop/src/groop/damon/control.py                   (public owned_markers())
+M groop/src/groop/daemon/paddr_lifecycle.py          (kdamond validation, outcome enum, fail-closed marker parsing)
+M groop/src/groop/cli.py                             (outcome-based messages)
+M groop/tests/test_daemon_paddr_lifecycle.py          (22 focused lifecycle tests)
+M groop/docs/DAEMON.md                                (updated validation contract)
+M groop/handoff/reports/P44-LOG.md                   (this log)
+M groop/handoff/reports/P44-REPORT.md                (this report)
 ```

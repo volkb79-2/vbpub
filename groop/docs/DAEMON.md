@@ -111,20 +111,27 @@ Key characteristics:
 1. **Disabled by default.** No DAMON writes occur unless the operator explicitly
    sets `paddr_enabled = true`.
 
-2. **Idempotent restart.** If a groop-owned paddr marker already exists (from a
-   prior daemon run), the lifecycle adopts it rather than allocating a
-   duplicate kdamond slot.
+2. **Idempotent restart with verification.** If a groop-owned paddr marker
+   already exists (from a prior daemon run), the lifecycle verifies the
+   referenced kdamond slot is live (state ``on``, operations ``paddr``) before
+   adopting. A stale marker (kdamond is ``off``) is cleaned up; a malformed or
+   internally inconsistent marker, a marker pointing at a missing kdamond, or
+   a marker whose kdamond runs a different monitoring mode raises a bounded
+   startup error.
 
-3. **Foreign-session safety.** Non-groop markers and foreign kdamond slots are
-   never touched during start, adoption, or stop.
+3. **Foreign-safety.** Non-groop markers and foreign kdamond slots are never
+   touched during start, adoption, or stop.
 
 4. **Bounded startup failure.** If the paddr session cannot be started (no free
-   kdamond, root required, or ownership conflict), the error is logged and the
-   daemon continues without paddr status. The read-only daemon is always usable.
+   kdamond, root required, ownership conflict, stale/malformed marker, or
+   kdamond mismatch), the error is logged and the daemon continues without
+   paddr status. The read-only daemon is always usable.
 
-5. **Graceful shutdown.** Only the session owned by this daemon run is stopped.
-   The existing `stop_owned_sessions` mechanism tears down the kdamond and
-   removes the groop ownership marker.
+5. **Graceful shutdown.** Only a session created by this daemon run is stopped.
+   A verified session adopted from an earlier run remains persistent; use
+   `groop damon stop --all-mine` for explicit cleanup. The existing
+   `stop_owned_sessions` mechanism tears down current-run sessions and removes
+   their groop ownership markers.
 
 6. **Audit trail.** Every start and stop produces a JSONL audit event in the
    daemon's state directory (default `~/.local/state/groop/actions.log`).

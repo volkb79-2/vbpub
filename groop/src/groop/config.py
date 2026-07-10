@@ -361,7 +361,11 @@ def load(path: Path | None = None) -> GroopConfig:
             paddr_aggr_us=max(1, int(_coerce_float(damon_data.get("paddr_aggr_us"), 8_000_000))),
             paddr_update_us=max(1, int(_coerce_float(damon_data.get("paddr_update_us"), 1_000_000))),
             max_concurrent_targets=max(1, int(_coerce_float(damon_data.get("max_concurrent_targets"), 4))),
-            paddr_enabled=bool(damon_data.get("paddr_enabled", False)),
+            paddr_enabled=(
+                damon_data["paddr_enabled"]
+                if isinstance(damon_data.get("paddr_enabled"), bool)
+                else False
+            ),
         ),
         bpf_snapshot=BpfSnapshotConfig(
             enabled=bool(bpf_snapshot_data.get("enabled", False)),

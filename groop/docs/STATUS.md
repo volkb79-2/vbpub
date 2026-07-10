@@ -183,11 +183,11 @@ Most recent full-suite validation after P44 changes:
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 446 passed, 1 skipped in 49.25s
+# 455 passed, 1 skipped in 46.99s
 ```
 
 Also validated:
 
-- P44 focused paddr lifecycle tests: `13 passed in 0.22s`.
+- P44 focused paddr lifecycle tests: `22 passed in 0.17s`.
 - Full-source `py_compile` clean.
 - Acceptance regression and UI regression unchanged.
