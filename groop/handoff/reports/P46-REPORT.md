@@ -42,7 +42,7 @@ runner work when the refusal occurs before the audit gate.
 
 ## Tests
 
-`groop/tests/test_actions.py` now has 127 passing tests. The correction tests
+`groop/tests/test_actions.py` now has 129 passing tests. The correction tests
 cover root/admin/confirmation ordering, no runner/audit on refusal, fixed and
 injected audit policy, symlinks, non-regular/broad-permission targets, parent
 handling, pre/post audit failure, timeout rejection including NaN/infinity,
@@ -54,10 +54,10 @@ confirmation text from audit records.
 
 ```text
 PYTHONPATH=groop/src /workspaces/vbpub/.venv/bin/python -m pytest groop/tests/test_actions.py -q
-127 passed in 0.41s
+129 passed in 0.45s
 
 PYTHONPATH=groop/src /workspaces/vbpub/.venv/bin/python -m pytest groop/tests -q
-531 passed in 43.88s
+532 passed, 1 skipped in 48.77s
 
 mapfile -d '' pyfiles < <(find groop/src/groop groop/tests -name '*.py' -print0)
 /workspaces/vbpub/.venv/bin/python -m py_compile "${pyfiles[@]}"
@@ -66,6 +66,10 @@ mapfile -d '' pyfiles < <(find groop/src/groop groop/tests -name '*.py' -print0)
 
 The full-suite and full-source compile results are recorded in this report and
 log after the final validation run.
+
+Controller review also requires the root-check seam to return the literal
+boolean `True` and kills/reaps a spawned child if bounded pipe draining fails
+unexpectedly, preventing truthiness bypass and orphan processes.
 
 ## Scope and known limitations
 

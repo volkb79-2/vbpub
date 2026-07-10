@@ -130,7 +130,11 @@ def _coerce_identity(value: AuditIdentity) -> AuditIdentity:
         raise ValueError("identity provider returned an invalid identity")
     if not isinstance(value.uid, int) or isinstance(value.uid, bool) or value.uid < 0:
         raise ValueError("identity uid is invalid")
-    if not isinstance(value.user, str) or not value.user or len(value.user) > _MAX_AUDIT_TEXT:
+    if (
+        not isinstance(value.user, str)
+        or not value.user
+        or len(value.user) > _MAX_AUDIT_TEXT
+    ):
         raise ValueError("identity user is invalid")
     if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value.user):
         raise ValueError("identity user contains control characters")
@@ -140,14 +144,20 @@ def _coerce_identity(value: AuditIdentity) -> AuditIdentity:
 def _validate_timeout(timeout: float) -> None:
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
         raise ValueError("timeout must be a finite positive number")
-    if not math.isfinite(float(timeout)) or not (_MIN_TIMEOUT <= float(timeout) <= _MAX_TIMEOUT):
+    if not math.isfinite(float(timeout)) or not (
+        _MIN_TIMEOUT <= float(timeout) <= _MAX_TIMEOUT
+    ):
         raise ValueError(
             f"timeout must be finite and between {_MIN_TIMEOUT} and {_MAX_TIMEOUT} seconds"
         )
 
 
 def _validate_plan(plan: ActionPlan, kind: ActionKind, target: str) -> None:
-    if not isinstance(plan, ActionPlan) or plan.kind is not kind or plan.target != target:
+    if (
+        not isinstance(plan, ActionPlan)
+        or plan.kind is not kind
+        or plan.target != target
+    ):
         raise ValueError("execution plan does not match the requested action")
     if plan.mode != "preview" or not isinstance(plan.argv, tuple):
         raise ValueError("execution plan is not an immutable preview plan")
@@ -213,7 +223,14 @@ def _open_safe_audit(path: Path, *, require_root_owner: bool) -> TextIO:
                 raise _AuditError("audit target permissions are too broad")
             if require_root_owner and existing.st_uid != 0:
                 raise _AuditError("production audit target is not root-owned")
-        leaf_flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+        leaf_flags = (
+            os.O_WRONLY
+            | os.O_APPEND
+            | os.O_CREAT
+            | os.O_CLOEXEC
+            | os.O_NOFOLLOW
+            | os.O_NONBLOCK
+        )
         fd = os.open(path.name, leaf_flags, 0o600, dir_fd=parent_fd)
         try:
             leaf_stat = os.fstat(fd)
@@ -257,12 +274,14 @@ def _audit_record(
         "stage": stage,
     }
     if result is not None:
-        record.update({
-            "outcome": result.outcome,
-            "action_outcome": result.action_outcome or result.outcome,
-            "returncode": result.returncode,
-            "duration_s": round(max(0.0, min(result.duration_s, _MAX_TIMEOUT)), 3),
-        })
+        record.update(
+            {
+                "outcome": result.outcome,
+                "action_outcome": result.action_outcome or result.outcome,
+                "returncode": result.returncode,
+                "duration_s": round(max(0.0, min(result.duration_s, _MAX_TIMEOUT)), 3),
+            }
+        )
     return record
 
 
@@ -291,8 +310,12 @@ def _write_execution_audit_pre(
         _write_json_record(
             fh,
             _audit_record(
-                identity=identity, kind=kind, target=target, argv=argv,
-                clock=clock, stage="pre",
+                identity=identity,
+                kind=kind,
+                target=target,
+                argv=argv,
+                clock=clock,
+                stage="pre",
             ),
         )
         return fh
@@ -319,8 +342,13 @@ def _write_execution_audit_post(
         _write_json_record(
             fh,
             _audit_record(
-                identity=identity, kind=kind, target=target, argv=argv,
-                clock=clock, stage="post", result=result,
+                identity=identity,
+                kind=kind,
+                target=target,
+                argv=argv,
+                clock=clock,
+                stage="post",
+                result=result,
             ),
         )
     except BaseException as exc:
@@ -334,7 +362,9 @@ def _write_execution_audit_post(
             pass
 
 
-def _drain_process(proc: subprocess.Popen[bytes], timeout: float) -> tuple[bytes, bytes, bool]:
+def _drain_process(
+    proc: subprocess.Popen[bytes], timeout: float
+) -> tuple[bytes, bytes, bool]:
     """Drain both pipes while retaining only a bounded prefix."""
     selector = selectors.DefaultSelector()
     captured = {"stdout": bytearray(), "stderr": bytearray()}
@@ -352,7 +382,7 @@ def _drain_process(proc: subprocess.Popen[bytes], timeout: float) -> tuple[bytes
                 proc.kill()
                 deadline = time.monotonic() + 1.0
                 remaining = 1.0
-            events = selector.select(min(remaining, 0.1))
+            events = selector.select(max(0.0, min(remaining, 0.1)))
             if not events and proc.poll() is not None:
                 # A final zero-time read observes EOF without waiting on the
                 # child and keeps the drain loop bounded after exit.
@@ -376,6 +406,14 @@ def _drain_process(proc: subprocess.Popen[bytes], timeout: float) -> tuple[bytes
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=1.0)
+    except BaseException:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            proc.wait(timeout=1.0)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        raise
     finally:
         selector.close()
         for stream, _ in streams:
@@ -402,39 +440,68 @@ def _default_runner(argv: tuple[str, ...], *, timeout: float) -> ExecuteResult:
         )
         stdout, stderr, timed_out = _drain_process(proc, timeout)
         returncode = proc.returncode
-        outcome = "timeout" if timed_out else ("success" if returncode == 0 else "nonzero")
+        outcome = (
+            "timeout" if timed_out else ("success" if returncode == 0 else "nonzero")
+        )
         return ExecuteResult(
-            kind="", target="", argv=argv, returncode=None if timed_out else returncode,
-            stdout=_decode_output(stdout), stderr=_decode_output(stderr),
-            outcome=outcome, duration_s=max(0.0, time.monotonic() - started),
+            kind="",
+            target="",
+            argv=argv,
+            returncode=None if timed_out else returncode,
+            stdout=_decode_output(stdout),
+            stderr=_decode_output(stderr),
+            outcome=outcome,
+            duration_s=max(0.0, time.monotonic() - started),
         )
     except subprocess.TimeoutExpired:
         return ExecuteResult(
-            kind="", target="", argv=argv, returncode=None, stdout="", stderr="",
-            outcome="timeout", duration_s=max(0.0, time.monotonic() - started),
+            kind="",
+            target="",
+            argv=argv,
+            returncode=None,
+            stdout="",
+            stderr="",
+            outcome="timeout",
+            duration_s=max(0.0, time.monotonic() - started),
         )
     except OSError as exc:
         return ExecuteResult(
-            kind="", target="", argv=argv, returncode=None, stdout="",
+            kind="",
+            target="",
+            argv=argv,
+            returncode=None,
+            stdout="",
             stderr=_bound_output(f"{type(exc).__name__}: {exc}"),
-            outcome="runner_failure", duration_s=max(0.0, time.monotonic() - started),
+            outcome="runner_failure",
+            duration_s=max(0.0, time.monotonic() - started),
         )
 
 
 def _normalise_runner_result(result: object, plan: ActionPlan) -> ExecuteResult:
     if not isinstance(result, ExecuteResult):
         raise ValueError("runner returned an invalid result type")
-    if result.argv != plan.argv or result.kind not in ("", plan.kind.value) or result.target not in ("", plan.target):
+    if (
+        result.argv != plan.argv
+        or result.kind not in ("", plan.kind.value)
+        or result.target not in ("", plan.target)
+    ):
         raise ValueError("runner result does not match the immutable plan")
     if result.outcome not in _VALID_ACTION_OUTCOMES:
         raise ValueError("runner returned an invalid outcome")
-    if result.returncode is not None and (not isinstance(result.returncode, int) or isinstance(result.returncode, bool)):
+    if result.returncode is not None and (
+        not isinstance(result.returncode, int) or isinstance(result.returncode, bool)
+    ):
         raise ValueError("runner returned an invalid return code")
     if result.outcome == "success" and result.returncode != 0:
         raise ValueError("successful runner result must have return code zero")
-    if result.outcome == "nonzero" and (result.returncode is None or result.returncode == 0):
+    if result.outcome == "nonzero" and (
+        result.returncode is None or result.returncode == 0
+    ):
         raise ValueError("nonzero runner result must have a nonzero return code")
-    if result.outcome in {"timeout", "runner_failure"} and result.returncode is not None:
+    if (
+        result.outcome in {"timeout", "runner_failure"}
+        and result.returncode is not None
+    ):
         raise ValueError("failed runner result must not have a return code")
     if result.action_outcome not in (None, result.outcome):
         raise ValueError("runner returned an inconsistent action outcome")
@@ -485,7 +552,7 @@ def execute_plan(
         is_root = root_check() if root_check is not None else os.geteuid() == 0
     except BaseException:
         is_root = False
-    if not is_root:
+    if is_root is not True:
         return _refusal(kind, target, "root privileges are required")
     try:
         _validate_timeout(timeout)
@@ -512,9 +579,13 @@ def execute_plan(
 
     now = clock or time.time
     try:
-        stable_identity = _coerce_identity(identity() if identity is not None else _production_identity())
+        stable_identity = _coerce_identity(
+            identity() if identity is not None else _production_identity()
+        )
     except BaseException as exc:
-        return _refusal(kind, target, f"invalid execution identity: {type(exc).__name__}")
+        return _refusal(
+            kind, target, f"invalid execution identity: {type(exc).__name__}"
+        )
 
     try:
         audit_fh = _write_execution_audit_pre(
@@ -527,7 +598,10 @@ def execute_plan(
         )
     except BaseException as exc:
         return _refusal(
-            kind, target, "audit failed before execution", audit_outcome=f"pre_failure:{type(exc).__name__}"
+            kind,
+            target,
+            "audit failed before execution",
+            audit_outcome=f"pre_failure:{type(exc).__name__}",
         )
 
     try:
@@ -544,34 +618,61 @@ def execute_plan(
         refused = _refusal(kind, target, str(exc))
         try:
             _write_execution_audit_post(
-                audit_fh, identity=stable_identity, kind=kind, target=target,
-                argv=current_plan.argv, result=refused, clock=now,
+                audit_fh,
+                identity=stable_identity,
+                kind=kind,
+                target=target,
+                argv=current_plan.argv,
+                result=refused,
+                clock=now,
             )
         except _AuditError:
             pass
         return refused
 
     try:
-        raw_result = (runner or _default_runner)(current_plan.argv, timeout=float(timeout))
+        raw_result = (runner or _default_runner)(
+            current_plan.argv, timeout=float(timeout)
+        )
     except subprocess.TimeoutExpired:
-        raw_result = ExecuteResult("", "", current_plan.argv, None, "", "", "timeout", 0.0)
+        raw_result = ExecuteResult(
+            "", "", current_plan.argv, None, "", "", "timeout", 0.0
+        )
     except OSError as exc:
         raw_result = ExecuteResult(
-            "", "", current_plan.argv, None, "", _bound_output(f"{type(exc).__name__}: {exc}"),
-            "runner_failure", 0.0,
+            "",
+            "",
+            current_plan.argv,
+            None,
+            "",
+            _bound_output(f"{type(exc).__name__}: {exc}"),
+            "runner_failure",
+            0.0,
         )
     except BaseException as exc:
         raw_result = ExecuteResult(
-            "", "", current_plan.argv, None, "", _bound_output(f"{type(exc).__name__}: runner failed"),
-            "runner_failure", 0.0,
+            "",
+            "",
+            current_plan.argv,
+            None,
+            "",
+            _bound_output(f"{type(exc).__name__}: runner failed"),
+            "runner_failure",
+            0.0,
         )
 
     try:
         result = _normalise_runner_result(raw_result, current_plan)
     except (TypeError, ValueError) as exc:
         result = ExecuteResult(
-            kind=kind, target=target, argv=current_plan.argv, returncode=None,
-            stdout="", stderr=_bound_output(str(exc)), outcome="runner_failure", duration_s=0.0,
+            kind=kind,
+            target=target,
+            argv=current_plan.argv,
+            returncode=None,
+            stdout="",
+            stderr=_bound_output(str(exc)),
+            outcome="runner_failure",
+            duration_s=0.0,
         )
     try:
         elapsed = float(now()) - started
@@ -579,14 +680,21 @@ def execute_plan(
         elapsed = 0.0
     result = dataclasses.replace(
         result,
-        duration_s=max(0.0, min(elapsed if math.isfinite(elapsed) else 0.0, _MAX_TIMEOUT)),
+        duration_s=max(
+            0.0, min(elapsed if math.isfinite(elapsed) else 0.0, _MAX_TIMEOUT)
+        ),
         action_outcome=result.outcome,
     )
 
     try:
         _write_execution_audit_post(
-            audit_fh, identity=stable_identity, kind=kind, target=target,
-            argv=current_plan.argv, result=result, clock=now,
+            audit_fh,
+            identity=stable_identity,
+            kind=kind,
+            target=target,
+            argv=current_plan.argv,
+            result=result,
+            clock=now,
         )
     except BaseException as exc:
         try:

@@ -182,13 +182,13 @@ Most recent full-suite validation after this controller correction:
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 531 passed in 45.00s
+# 532 passed, 1 skipped in 48.77s
 ```
 
 Also validated:
 
 - Full-source `py_compile` clean on all changed/new files.
-- Focused corrected P46 action execution tests: 127 passed, including the
+- Focused corrected P46 action execution tests: 129 passed, including the
   controller adversarial coverage. Full-source compile covered 97 Python
   files.
 - Module-level imports and gate logic verified without real Docker/systemd.

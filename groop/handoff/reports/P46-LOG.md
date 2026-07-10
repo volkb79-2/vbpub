@@ -24,8 +24,8 @@
 - Removed execute CLI --audit-log; preview --audit-log remains preview-only.
 - Added adversarial controller-review tests and updated old absolute-argv and
   mandatory-audit expectations.
-- Focused suite: 127 passed.
-- Full suite: 531 passed in 43.88s.
+- Focused suite after controller review: 129 passed in 0.45s.
+- Full suite after controller review: 532 passed, 1 skipped in 48.77s.
 - Full-source compile: 97 Python files compiled successfully.
 - Next: review diff and commit.
 ```
@@ -52,5 +52,9 @@ mapfile -d '' pyfiles < <(find groop/src/groop groop/tests -name '*.py' -print0)
 /workspaces/vbpub/.venv/bin/python -m py_compile "${pyfiles[@]}"
 ```
 
-Final validation: focused 127 passed; full 531 passed; full-source compile of
+Final validation: focused 129 passed; full 532 passed, 1 skipped; full-source compile of
 97 Python files passed.
+
+Controller review additionally made the injected root check fail closed unless
+it returns the boolean `True`, and guarantees that an unexpected pipe-drainer
+failure kills/reaps the child before returning a typed runner failure.
