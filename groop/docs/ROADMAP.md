@@ -62,11 +62,11 @@ flowchart TD
 
 ## Remaining Estimate
 
-After P41, the roadmap is mostly in three buckets:
+After P43, the roadmap is mostly in three buckets:
 
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
-| v1/v1.5 release confidence and UI polish | 1 | P43 removes the obsolete Textual `<1` resolver ceiling. Manual live-host acceptance evidence remains. |
+| v1/v1.5 release confidence and UI polish | 0 | P43 removes the obsolete Textual `<1` resolver ceiling and closes the last planned v1/v1.5 release-confidence package. Manual live-host acceptance evidence remains. |
 | v2 privileged daemon/BPF/admin/file work | 5-7 | BPF daemon lifecycle, paddr daemon ownership, install execution/service hardening, executable admin actions, inspect-files content mode, systemd property governance. |
 | Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
 
@@ -293,12 +293,21 @@ Report: `handoff/reports/P41-REPORT.md`.
 
 ### P43 - Current Textual Dependency Baseline
 
-Status: planned. P43 replaces the historical pre-1.0 dependency range with a
-current Textual 8.2.8-or-newer baseline and no artificial upper ceiling, then
-proves source metadata, wheel metadata, clean dependency resolution, UI smoke,
-and the full suite in the resolved environment.
+Status: done. P43 replaces the historical pre-1.0 dependency range (`>=0.58,<1`)
+with a current Textual 8.2.8-or-newer baseline (`textual>=8.2.8`) with no
+artificial upper ceiling. Source metadata and built-wheel METADATA both declare
+`Requires-Dist: textual>=8.2.8`. A clean resolver installation in an isolated
+venv selects Textual 8.2.8 or newer. The packaging-metadata regression test
+suite (`test_packaging_metadata.py`) proves the lower bound and absence of an
+upper cap by reading pyproject.toml; the wheel test is verified against the
+built artifact.
+
+The full suite, UI tests, acceptance tests, replay smoke, P38 TUI smoke, and
+`py_compile` all pass in the resolved environment. The historical P40 evidence
+of `textual>=0.58,<1` is preserved and clearly marked as superseded.
 
 Handoff: `handoff/P43-textual-current-baseline.md`.
+Report: `handoff/reports/P43-REPORT.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 

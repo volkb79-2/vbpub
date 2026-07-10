@@ -56,7 +56,7 @@ the named measurement gate.
 | 8 | Pressure sorting and finding explanations | Pass | Diagnostics and UI tests | Exact per-cgroup network loss remains a non-claim |
 | 9 | Host/netns network labels | Pass | Network provider and UI tests | None |
 | 10 | Byte-identical formatted replay cells | Pass | P41 `test_rendered_fidelity.py`: three annotated ticks written by `RecordWriter`, returned by `ReplayDriver.play(step=True)`, and compared through the production formatted-row snapshot at fixed width/profile/sort/filter; JSONL plus conditional compressed JSONL | None |
-| 11 | Local pipx install and no-config defaults | Pass | Post-P40 controller evidence in `MEASUREMENTS.md`: isolated build, pipx install, version, and empty-directory replay smoke | None |
+| 11 | Local pipx install and no-config defaults | Pass | Post-P40 controller evidence in `MEASUREMENTS.md`: isolated build, pipx install, version, and empty-directory replay smoke. P43 changes published dependency from `textual>=0.58,<1` to `textual>=8.2.8`, verified by source metadata, wheel METADATA, packaging-metadata regression tests, and clean resolver installation. | None |
 | 12 | v2 action/inspection gating | Partial | Disabled hotkeys, admin preview/audit, inspect-files planning | Executable actions are a non-claim; do not claim full v2 acceptance |
 | 13 | Live docker-group non-root smoke | Partial | P33/P35/P38 rootless fixture harnesses | Live non-root tree, Docker JOIN, populated metrics, and disabled mutations |
 | 14 | BPF/DAMON default measurement gates | Conditional | BPF and active DAMON remain disabled by default | Run the relevant overhead plan before changing either default |
@@ -230,3 +230,4 @@ notes repeat the unresolved gates and non-claims above.
 | Date | Change |
 |---|---|
 | 2026-07-10 | P39 created the canonical readiness map and live evidence templates. |
+| 2026-07-10 | P43 updates packaging evidence for textual>=8.2.8 (was >=0.58,<1), no upper ceiling. |

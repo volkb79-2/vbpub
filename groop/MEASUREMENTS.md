@@ -7,7 +7,63 @@ claims without updating this file.
 The canonical gate map and copy-paste commands live in
 `docs/RELEASE-READINESS.md`. This file remains the place for dated raw results.
 
+## P43 Packaging Evidence (2026-07-10)
+
+P43 replaces the historical pre-1.0 dependency range (`textual>=0.58,<1`) with
+`textual>=8.2.8` and no artificial upper ceiling. Historical P40 evidence of the
+old bound is preserved below; this entry supersedes it.
+
+### Source metadata
+
+```bash
+grep textual groop/pyproject.toml
+# dependencies = ["textual>=8.2.8"]
+```
+
+### Built wheel METADATA
+
+```bash
+unzip -p groop/dist/groop-0.1.0-py3-none-any.whl groop-0.1.0.dist-info/METADATA
+# Requires-Dist: textual>=8.2.8
+```
+
+### Packaging-metadata regression tests
+
+5 tests prove lower bound ≥8.2.8 and no `<` upper ceiling by reading
+pyproject.toml; one test also checks the built wheel's METADATA.
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest groop/tests/test_packaging_metadata.py -q
+# 5 passed in 0.17s
+```
+
+### Clean resolver installation
+
+The local wheel was installed into an isolated virtualenv with no preinstalled
+Textual. Pip resolved Textual 8.2.8:
+
+```text
+Successfully installed groop-0.1.0 ... textual-8.2.8 ...
+```
+
+Installed groop version verification and replay smoke:
+
+```text
+$ /tmp/p43-clean-venv/bin/groop --version
+groop 0.1.0
+
+$ /tmp/p43-clean-venv/bin/groop --replay ... --step --ui-smoke
+ui smoke ok frames=1 view=tree profile=auto
+```
+
+### UI/acceptance/full suite
+
+All tests pass in the resolved environment. Specific counts recorded from the
+run below.
+
 ## Current Status
+
+P43 replaces the pre-1.0 textual dependency with >=8.2.8.
 
 P41 adds a deterministic rendered replay fidelity gate that compares every
 formatted table cell byte-for-byte across the record/replay cycle using
@@ -221,7 +277,15 @@ Record:
 
 ### Packaging
 
-Required by spec §9 item 11.
+Required by spec §9 item 11, updated by P43.
+
+The published dependency changed from `textual>=0.58,<1` to `textual>=8.2.8`
+with no artificial upper bound. This is verified by:
+
+1. Source metadata (`pyproject.toml` → `dependencies = ["textual>=8.2.8"]`).
+2. Built wheel METADATA (`Requires-Dist: textual>=8.2.8`).
+3. Packaging-metadata regression tests (5 tests, all pass).
+4. Clean resolver installation into an isolated venv (Textual >=8.2.8 resolved).
 
 ```bash
 python3 -m build groop/
