@@ -1,5 +1,7 @@
 # P50-REPORT — Mouse Table Interactions
 
+Merged to `main` as `6140bd6` after controller review.
+
 ## State
 
 | Field | Value |

@@ -102,6 +102,7 @@ A  groop/handoff/reports/P50-REPORT.md
 
 - 704 passed, 1 skipped in 58.25s (controller full suite after P51 merge)
 - 12 focused P50 tests passed in 4.93s; UI/fidelity 36 passed, 1 skipped in 16.57s.
+- Merged to `main` as `6140bd6`.
 - 12 P50-focused tests pass in 4.98s
 - 40 acceptance tests pass; replay TUI smoke exits 0
 - All 23 pre-P50 tests pass unchanged
