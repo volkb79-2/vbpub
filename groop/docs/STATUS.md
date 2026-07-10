@@ -47,6 +47,13 @@ Daemon sampling is now request-independent with a background producer (P51):
 the versioned bounded read contract required by a production web backend.
 Until P52 merges, web support is a prototype-only claim.
 
+P53 and P54 are queued, spec-only recording follow-ups: P53 adds a headless
+`groop --record FILE --headless` driver reusing the existing P2
+`RecordWriter`/frame stream with no `textual` import, and P54 adds `groop
+report FILE --json` to compute a steady-state percentile/rate profile from a
+P2-format recording. Until P53/P54 merge, unattended recording and
+machine-readable steady-state profiles remain prototype-only claims.
+
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
 core workflows, not yet production-certified.**
@@ -202,6 +209,8 @@ core workflows, not yet production-certified.**
 - GPU and ZFS optional plugins.
 - CIU stack grouping/actions.
 - paddr auto-start / persistent daemon-owned paddr mode.
+- Headless (non-Textual) `--record` driver and `groop report` steady-state
+  profile command (queued: P53, P54).
 
 ## Acceptance Status
 
