@@ -169,6 +169,9 @@ find groop/src/groop groop/tests -name '*.py' -print0 | xargs -0 python3 -m py_c
 
 ## Handoff Checklist
 
+Post-merge controller validation with P46 on main: combined focused P44/P46
+regression `151 passed in 0.58s`; full suite `554 passed, 1 skipped in 48.30s`.
+
 - [x] Report file written.
 - [x] Log file current.
 - [x] Tests/compile/smoke recorded.

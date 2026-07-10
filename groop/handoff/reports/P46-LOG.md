@@ -58,3 +58,6 @@ Final validation: focused 129 passed; full 532 passed, 1 skipped; full-source co
 Controller review additionally made the injected root check fail closed unless
 it returns the boolean `True`, and guarantees that an unexpected pipe-drainer
 failure kills/reaps the child before returning a typed runner failure.
+
+Post-merge controller validation with P44 on main: combined focused P44/P46
+regression `151 passed in 0.58s`; full suite `554 passed, 1 skipped in 48.30s`.

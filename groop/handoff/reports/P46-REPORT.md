@@ -71,6 +71,9 @@ Controller review also requires the root-check seam to return the literal
 boolean `True` and kills/reaps a spawned child if bounded pipe draining fails
 unexpectedly, preventing truthiness bypass and orphan processes.
 
+Post-merge controller validation with P44 on main passed the combined focused
+regression (`151 passed`) and full suite (`554 passed, 1 skipped`).
+
 ## Scope and known limitations
 
 - The fixed production audit path must be provisioned root-owned and mode
