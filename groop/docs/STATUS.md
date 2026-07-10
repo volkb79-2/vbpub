@@ -28,6 +28,9 @@ Queued follow-ups P47-P49 continue those same three streams after review:
 daemon component health, bounded journald snapshots, and structured
 `memory.high` governance. They are not current implementation claims.
 
+P50 is queued as a non-privileged usability slice for clickable table sorting
+and row drill-down. Current builds remain keyboard-first until it is reviewed.
+
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
 core workflows, not yet production-certified.**

@@ -64,6 +64,7 @@ flowchart TD
     P44 --> P47[P47 Daemon component health]
     P45 --> P48[P48 Journald snapshot]
     P46 --> P49[P49 memory.high governance]
+    P43 --> P50[P50 Mouse table interactions]
 ```
 
 ## Remaining Estimate
@@ -121,6 +122,14 @@ must not start from unreviewed predecessor code.
 Handoffs: `handoff/P47-daemon-component-health.md`,
 `handoff/P48-inspect-files-journal-snapshot.md`, and
 `handoff/P49-systemd-memory-governance.md`.
+
+### P50 - Mouse Table Interactions
+
+Status: queued. Move the entity table to a Textual-native interactive surface
+so header clicks sort/toggle direction and row clicks open drill-down, while
+retaining keyboard navigation and P41 formatted-cell fidelity.
+
+Handoff: `handoff/P50-mouse-table-interactions.md`.
 
 ### P12 — Release Hardening And Acceptance
 

@@ -1108,6 +1108,17 @@ design brief) — pressing it shows "not available in this build; requires --adm
 (v2)" rather than doing nothing silently, so operators aren't left wondering if
 the keypress registered.
 
+**Mouse parity.** The main entity table is also a Textual-native mouse surface;
+mouse support supplements rather than replaces the fixed keyboard actions.
+Clicking a visible column header sorts by that column, and clicking it again
+reverses the direction. The active key/direction remain visible. Clicking an
+entity row updates the same stable selection key and opens the same drill-down
+screen as `Enter`; placeholder/empty rows are inert. Live and replay refreshes
+preserve the selected row/cursor when the entity remains visible. Terminals
+that do not forward mouse events retain the complete keyboard workflow with no
+degraded data or hidden action. Mouse input never bypasses DAMON, inspection,
+or admin confirmation gates.
+
 ### 3.10 Glossary (embedded in the tool's help screen, `F1`/`?`)
 
 Metric explanations, units, source paths, semantic tags, branch-row policy, and
@@ -1904,6 +1915,11 @@ add/remove an *action*):
     BPF overhead acceptance list in §10 item 2 has been run and recorded in
     `MEASUREMENTS.md`. DAMON defaults cannot be raised or enabled by default until
     the DAMON overhead gate in §10 item 3 has been run and recorded there.
+15. **Mouse/keyboard interaction parity:** clicking a visible header selects its
+    canonical sort key and repeated clicks reverse direction; clicking a real
+    entity row opens the same drill-down as keyboard selection plus `Enter`.
+    Keyboard-only navigation, tree collapse/expand, replay, selection retention,
+    and formatted record/replay cell fidelity remain unchanged.
 
 ---
 
