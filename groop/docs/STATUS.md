@@ -14,7 +14,7 @@ Approximate status:
 | Release cut | Feature implementation | Release confidence | Notes |
 |---|---:|---:|---|
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
-| v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. The managed Textual 8 environment currently has 15 UI test-adapter failures tracked by P40; strict live performance, drift, replay-fidelity, pipx, and non-root gates also remain. |
+| v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment (Python 3.14, Textual 8.2.8) via a version-compatible test helper; strict live performance, drift, replay-fidelity, pipx, and non-root gates also remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
 | v2 daemon/BPF/admin actions | 50-55% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, and daemon current/status commands exist; live BPF attach/snapshot writing, executable admin actions, GPU/ZFS plugins are not implemented. |
 
@@ -159,16 +159,16 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P38 merged on main):
+Most recent full-suite validation (P40):
 
 ```bash
-PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
-# 382 passed in 41.48s
+PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
+# 382 passed in 48.04s
 ```
 
 Also validated:
 
-- Python compile over P38 changed files.
-- P38 focused acceptance tests after merge: `40 passed in 7.05s`.
-- P38 fixture TUI smoke command after merge exited `0`.
-- Import-contract probe: importing `groop.acceptance` imported neither Textual nor `groop.ui.*`.
+- Focused UI tests: `23 passed in 11.24s` under Textual 8.2.8 and `23 passed in 8.35s` under isolated Textual 0.58.1.
+- P38/P40 focused acceptance tests: `40 passed in 8.12s`.
+- P38 fixture TUI smoke command exited `0` (ALL CHECKS PASSED).
+- `py_compile` over the changed test file and `git diff --check`.

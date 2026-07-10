@@ -60,8 +60,18 @@ def _wait_for_frame(app: GroopApp):
     return wait
 
 
+def _static_text(w: Static) -> str:
+    """Get the displayed text content of a ``Static`` widget.
+
+    ``Static.renderable`` exists in the declared Textual 0.x range but was
+    removed by Textual 8. ``Widget.render()`` is the supported public method
+    in both environments.
+    """
+    return str(w.render())
+
+
 def _status_text(app: GroopApp) -> str:
-    return str(app.query_one("#status", Static).renderable)
+    return _static_text(app.query_one("#status", Static))
 
 
 def _damon_root(tmp_path: Path, *, slots: tuple[str, ...] = ("off", "off")) -> Path:
@@ -523,7 +533,7 @@ def test_pilot_damon_vaddr_modal_requires_confirmation_and_starts_fixture_sessio
             await pilot.press("enter")
             await pilot.pause()
             assert isinstance(app.screen, DamonConfirmScreen)
-            assert "typed confirmation" in str(app.screen.query_one("#damon-confirm-body", Static).renderable)
+            assert "typed confirmation" in _static_text(app.screen.query_one("#damon-confirm-body", Static))
             input_widget = app.screen.query_one("#damon-confirm-input", Input)
             input_widget.value = APPROVAL_TEXT
             await pilot.press("enter")
@@ -564,7 +574,7 @@ def test_pilot_damon_paddr_modal_starts_and_duplicate_is_reported(tmp_path: Path
             await pilot.press("p")
             await pilot.pause()
             assert isinstance(app.screen, HostMemoryScreen)
-            assert "paddr DAMON session already exists" in str(app.screen.query_one("#hostmem-body", Static).renderable)
+            assert "paddr DAMON session already exists" in _static_text(app.screen.query_one("#hostmem-body", Static))
 
         assert (damon_root / "0" / "contexts" / "0" / "operations").read_text().strip() == "paddr"
         assert (state_dir / "damon" / "kdamond-0.json").exists()
