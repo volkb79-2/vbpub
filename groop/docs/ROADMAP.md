@@ -68,6 +68,9 @@ flowchart TD
     P16 --> P51[P51 Daemon sampling fanout]
     P47 --> P52[P52 Versioned read API]
     P51 --> P52
+    P2[P2 Record/replay/history ring] --> P53[P53 Headless record driver]
+    P2 --> P54[P54 Steady-state report]
+    P53 --> P54
 ```
 
 ## Remaining Estimate
@@ -150,6 +153,31 @@ server/client stream is scheduled by these prerequisites.
 
 Handoffs: `handoff/P51-daemon-sampling-fanout.md` and
 `handoff/P52-versioned-daemon-read-api.md`.
+
+### P53-P54 - Headless Recording And Steady-State Report
+
+Both queued, spec-only (no implementation yet). They build on the existing P2
+`RecordWriter`/JSONL(.zst) format and frame stream, not a new schema.
+
+P53 adds `groop --record FILE --headless [--interval N] [--duration S |
+--frames K]`: drives the existing collector loop and `RecordWriter` without a
+`textual` import, with clean SIGINT/SIGTERM finalization. Because a headless
+process keeps the collector's raw counters live across consecutive in-process
+sweeps, its `_per_s` fields are populated from frame 1 onward — unlike an
+externally looped `groop --once`, where every frame is cold and consumers
+must derive rates themselves from the embedded raw counters.
+
+P54 adds `groop report FILE [--window last:Ns|all] [--group-by
+slice|entity] --json`: reads a P2-format recording (headless or looped
+`--once`) and computes per-entity/per-slice p50/p95/max for key gauges (ram,
+anon, z_pool, z_eq, swap_disk, psi_* avg10 fields), deriving `_per_s` rates
+from embedded raw counters when the recorded live rate is `None`. This is the
+"steady-state profile" consumer for the gstammtisch stack measurement
+program (`scripts/gstammtisch-guide/plan-stack-resource-tuning.md` PKG-3).
+Steady-state window auto-detection is explicitly out of scope for v1.
+
+Handoffs: `handoff/P53-headless-record-driver.md` and
+`handoff/P54-steady-state-report.md`.
 
 ### P12 — Release Hardening And Acceptance
 

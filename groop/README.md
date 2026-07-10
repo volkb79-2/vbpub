@@ -112,6 +112,8 @@ Useful feature hotkeys in the TUI:
 | P50 | Done | Mouse table interactions | v1 UX | Textual-native one-click row drill-down and header sorting/reversal with keyboard parity, in-place refresh, alias handling, and live/replay fidelity coverage. Handoff: `handoff/P50-mouse-table-interactions.md`. Report: `handoff/reports/P50-REPORT.md`. |
 | P51 | Done | Daemon sampling fan-out | v2 daemon | One request-independent producer serves fresh current frames and bounded sequenced history to non-consuming clients, with typed terminal/gap/shutdown state and P47 health integration. Handoff: `handoff/P51-daemon-sampling-fanout.md`. Report: `handoff/reports/P51-REPORT.md`. |
 | P52 | Queued | Versioned daemon read API | v2/v3 API | Add capability negotiation, bounded health/history/entity reads, sensitivity metadata, and peer identity for separate frontends. Handoff: `handoff/P52-versioned-daemon-read-api.md`. |
+| P53 | Queued | Headless record driver | v1.5 recording | Drive the existing collector loop and `RecordWriter` from `groop --record FILE --headless [--interval N] [--duration S \| --frames K]` without importing textual, with clean SIGINT/SIGTERM finalization. Handoff: `handoff/P53-headless-record-driver.md`. |
+| P54 | Queued | Steady-state report command | v1.5 recording | Add `groop report FILE [--window last:Ns\|all] [--group-by slice\|entity] --json` computing per-entity p50/p95/max for key gauges and deriving `_per_s` rates from embedded raw counters when the recorded live rate is `None`. Handoff: `handoff/P54-steady-state-report.md`. |
 
 ## Completed Package Order
 
