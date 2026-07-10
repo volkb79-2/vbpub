@@ -52,6 +52,8 @@ flowchart TD
     P13 --> P34[P34 Host device banner]
     P13 --> P36[P36 CPU sparkline surface]
     P34 --> P37[P37 Network loss diagnostics]
+    P35 --> P38[P38 TUI smoke evidence]
+    P38 --> P39[P39 Release readiness ledger]
 ```
 
 ## Remaining Estimate
@@ -60,7 +62,7 @@ After P36/P37, the roadmap is mostly in three buckets:
 
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
-| v1/v1.5 release confidence and UI polish | 1-2 | Live TUI/DAMON evidence capture, final release docs, and any last release-candidate fixes that evidence exposes. |
+| v1/v1.5 release confidence and UI polish | 1-2 | P38 TUI smoke evidence, P39 release readiness ledger, live DAMON evidence capture, and any last release-candidate fixes that evidence exposes. |
 | v2 privileged daemon/BPF/admin/file work | 5-7 | BPF daemon lifecycle, paddr daemon ownership, install execution/service hardening, executable admin actions, inspect-files content mode, systemd property governance. |
 | Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
 
@@ -243,6 +245,23 @@ work.
 
 Handoff: `handoff/P37-network-loss-diagnostics.md`.
 Report: `handoff/reports/P37-REPORT.md`.
+
+### P38 - TUI Smoke Evidence Harness
+
+Status: planned. P38 should add a rootless `python -m groop.acceptance
+tui-smoke` command that exercises the existing Textual `--ui-smoke` path in a
+child process, records wall/CPU/RSS evidence, and preserves the acceptance
+module's no-Textual-import-on-import contract.
+
+Handoff: `handoff/P38-tui-smoke-evidence.md`.
+
+### P39 - Release Readiness Ledger
+
+Status: planned after P38. P39 should add a canonical release-readiness
+document mapping `TUI-SPEC.md` §9 gates to tests, acceptance commands,
+measurements, and remaining manual live-host evidence.
+
+Handoff: `handoff/P39-release-readiness-ledger.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 

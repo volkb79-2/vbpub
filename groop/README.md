@@ -94,6 +94,8 @@ Useful feature hotkeys in the TUI:
 | P35 | Done | Acceptance steady harness | v1/v1.5 release confidence | Adds rootless multi-sample collector CPU/RSS evidence via `python -m groop.acceptance steady`; live Textual TUI measurement remains separate release evidence. Handoff: `handoff/P35-acceptance-steady-harness.md`. Report: `handoff/reports/P35-REPORT.md`. |
 | P36 | Done | CPU sparkline surface | v1 polish | Adds stable ASCII CPU trend sparklines from existing UI history via a `cpu_trend` table column. Handoff: `handoff/P36-cpu-sparkline-surface.md`. Report: `handoff/reports/P36-REPORT.md`. |
 | P37 | Done | Network loss diagnostics | v1/v2 bridge | Adds host/interface-scoped drop/error parsing, banner LOSS annotations, and root-entity diagnostics while preserving the BPF attribution boundary. Handoff: `handoff/P37-network-loss-diagnostics.md`. Report: `handoff/reports/P37-REPORT.md`. |
+| P38 | Planned | TUI smoke evidence harness | v1/v1.5 release confidence | Add rootless `python -m groop.acceptance tui-smoke` evidence over the existing Textual `--ui-smoke` path. Handoff: `handoff/P38-tui-smoke-evidence.md`. |
+| P39 | Planned | Release readiness ledger | v1/v1.5 release confidence | Add canonical release-readiness docs tying spec §9 gates to tests, acceptance commands, measurements, and remaining manual evidence. Handoff: `handoff/P39-release-readiness-ledger.md`. |
 
 ## Completed Package Order
 
