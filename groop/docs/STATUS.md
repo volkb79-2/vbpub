@@ -33,8 +33,13 @@ bridge, and paddr lifecycle states and wires P42/P44 transitions.
 Queued follow-ups P48-P49 continue bounded journald snapshots and structured
 `memory.high` governance after those streams.
 
-P50 is queued as a non-privileged usability slice for clickable table sorting
-and row drill-down. Current builds remain keyboard-first until it is reviewed.
+P50 is done. The entity table now uses a MouseTable (DataTable subclass) with
+clickable header sorting (toggle direction), one-click row drill-down and
+highlight-driven selection,
+native keyboard up/down/Enter, left/right tree collapse/expand, and stable
+in-place refreshes. Twelve focused pilot tests use real mouse events for header
+clicks, direction toggles, one-click row drill-down, empty rows, canonicalized
+alias sorting, live/replay selection retention, and keyboard parity.
 
 Daemon sampling is now request-independent with a background producer (P51):
 `current` returns the latest published frame and changes as sampling advances;
@@ -126,6 +131,14 @@ core workflows, not yet production-certified.**
   HistoryRing data, rendered as compact ASCII sparkline in entity table
   profiles at sufficient width, plus a reusable `groop/ui/sparkline.py`
   helper for ASCII-only trend rendering.
+- Textual-native interactive entity table (`groop/ui/data_table.py`):
+  clickable column headers sort with direction toggle (^/v indicators);
+  row highlight updates `selected_key`; row click or Enter opens the
+  same drill-down screen; empty placeholder rows never open a drill-down;
+  native DataTable cursor for up/down/Enter with keyboard parity;
+  left/right delegated for tree collapse/expand; sort direction shown
+  in both column headers and status line; cursor restored stably across
+  live and replay refreshes.
 
 ## Partially Implemented
 
@@ -211,11 +224,11 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full validation on current main plus P51:
+Most recent combined P50/P51 validation:
 
 ```bash
 PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q -W error
-# 692 passed, 1 skipped in 53.29s (controller review)
+# 704 passed, 1 skipped in 58.25s (controller review)
 ```
 
 Also validated:
@@ -227,5 +240,11 @@ Also validated:
 - P51 combined daemon/client/health/record gate: `90 passed in 16.84s` with warnings as errors.
 - Combined P47 daemon/P45 inspect regression: `238 passed in 6.60s` (controller review).
 - Combined P44/P45/P46 focused regression: `264 passed in 1.12s`.
+- P50 focused mouse tests: `12 passed, 23 deselected in 4.93s`.
+- P50 UI/fidelity regression: `36 passed, 1 skipped in 16.57s`.
+- P50 UI plus rendered fidelity: `36 passed, 1 skipped in 16.51s`.
+- Acceptance tests: `40 passed in 7.31s`; TUI smoke exit 0.
 - Full-source `py_compile` clean on all changed/new files.
 - Module-level imports and gate logic verified without real Docker/systemd.
+- Mouse support degrades harmlessly: DataTable falls back to keyboard-only
+  when the terminal sends no mouse events.

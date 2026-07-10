@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from textual.widgets import Static
@@ -11,7 +12,7 @@ from conftest import fixture_frame, fixture_root
 from groop.config import GroopConfig, SnapshotConfig
 from groop.damon.control import APPROVAL_TEXT
 from groop.drift.origin import ShowResult
-from groop.model import Frame
+from groop.model import Frame, MetricValue
 from groop.record.replay import ReplayDriver
 from groop.snapshot.bundle import _extract_archive
 from groop.ui.app import GroopApp
@@ -614,5 +615,298 @@ def test_pilot_damon_stop_surface_stops_only_groop_owned_sessions(tmp_path: Path
         assert (damon_root / "0" / "state").read_text().strip() == "on"
         assert (damon_root / "1" / "state").read_text().strip() == "off"
         assert not (state_dir / "damon" / "kdamond-1.json").exists()
+
+    asyncio.run(run())
+
+
+# ── P50: Mouse Table Interactions ─────────────────────────────────────────
+
+
+GAME_KEY_2 = "besteffort.slice/docker-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.scope"
+
+
+def _column_click_offset(table, column_key: str) -> tuple[int, int]:
+    region = table._get_column_region(table._col_keys.index(column_key))
+    return (
+        region.x - table.scroll_offset.x + max(1, region.width // 2),
+        0,
+    )
+
+
+def _row_click_offset(table, row_index: int) -> tuple[int, int]:
+    region = table._get_row_region(row_index)
+    return (
+        max(1, min(5, table.size.width - 1)),
+        region.y - table.scroll_offset.y,
+    )
+
+
+def test_p50_header_click_sorts_by_column() -> None:
+    """Click a column header to sort by it; repeated click toggles direction."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            # Default sort is pressure descending (vpressure)
+            assert "vpressure" in _status_text(app)
+
+            await pilot.click("#body-table", offset=_column_click_offset(mt, "ram"))
+            await pilot.pause()
+            assert "vram" in _status_text(app)  # ram descending by default
+
+            # Click RAM again to toggle direction
+            await pilot.click("#body-table", offset=_column_click_offset(mt, "ram"))
+            await pilot.pause()
+            assert "^ram" in _status_text(app)  # now ascending
+
+    asyncio.run(run())
+
+
+def test_p50_header_click_toggles_direction() -> None:
+    """Repeated header click on same column toggles asc/desc."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            # Sort by name (ascending by default)
+            await pilot.click("#body-table", offset=_column_click_offset(mt, "name"))
+            await pilot.pause()
+            assert "^name" in _status_text(app)
+
+            # Toggle to descending
+            await pilot.click("#body-table", offset=_column_click_offset(mt, "name"))
+            await pilot.pause()
+            assert "vname" in _status_text(app)
+
+            # Toggle back to ascending
+            await pilot.click("#body-table", offset=_column_click_offset(mt, "name"))
+            await pilot.pause()
+            assert "^name" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_p50_row_highlight_updates_selected_key() -> None:
+    """Cursor movement (click row / up/down) updates selected_key."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            # Initially cursor is at row 0 (root entity "")
+            assert app.selected_key in ("", app._visible_row_keys[0])
+
+            # Press down to move cursor
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.selected_key == app._visible_row_keys[1]
+
+    asyncio.run(run())
+
+
+def test_p50_row_click_drilldown() -> None:
+    """Row click or Enter opens drill-down for real entities."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            rk = app._visible_row_keys[1]
+            assert not rk.startswith("__empty__")
+            await pilot.click("#body-table", offset=_row_click_offset(mt, 1))
+            await pilot.pause()
+            assert isinstance(app.screen, DrillDownScreen)
+            assert app.selected_key == rk
+            assert len(app.screen_stack) == 2
+            await pilot.press("escape")
+            await pilot.pause()
+
+    asyncio.run(run())
+
+
+def test_p50_empty_placeholder_does_not_open_drill() -> None:
+    """Enter on an empty placeholder row is a no-op (no drill-down)."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            # Force a filter that produces no matches to create empty state
+            app.filter_text = "ZZZZ_NONEXISTENT_ZZZZ"
+            app._refresh_view()
+            await pilot.pause()
+            assert len(app._visible_row_keys) == 1
+            assert app._visible_row_keys[0].startswith("__empty__")
+
+            await pilot.click("#body-table", offset=_row_click_offset(mt, 0))
+            await pilot.pause()
+            assert not isinstance(app.screen, DrillDownScreen)
+
+    asyncio.run(run())
+
+
+def test_p50_live_refresh_preserves_nonzero_cursor_across_reorder() -> None:
+    """A live refresh restores a nonzero selected key after row reordering."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            await pilot.press("down")
+            await pilot.pause()
+            selected = app.selected_key
+            assert selected is not None and selected != ""
+            app.sort_by = "name"
+            app.sort_reverse = True
+            base = app.current_frame
+            assert base is not None
+            later = replace(base, ts=base.ts + base.interval_s)
+            app._apply_frame(later)
+            await pilot.pause()
+            assert app.selected_key == selected
+            assert mt.cursor_coordinate.row == app._visible_row_keys.index(selected)
+
+    asyncio.run(run())
+
+
+def test_p50_replay_refresh_preserves_nonzero_cursor() -> None:
+    async def run() -> None:
+        app = _replay_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+            await pilot.press("down")
+            await pilot.pause()
+            selected = app.selected_key
+            assert selected is not None and selected != ""
+            await pilot.press("full_stop")
+            await pilot.pause()
+            assert app.selected_key == selected
+            assert mt.cursor_coordinate.row == app._visible_row_keys.index(selected)
+
+    asyncio.run(run())
+
+
+def test_p50_alias_backed_header_click_uses_canonical_sort_key() -> None:
+    async def run() -> None:
+        base = fixture_frame()
+        entities = dict(base.entities)
+        for key, value in (("besteffort.slice", 1.0), ("system.slice", 9.0)):
+            entity_frame = entities[key]
+            metrics = dict(entity_frame.metrics)
+            metrics["rf_d_per_s"] = MetricValue(value, "exact")
+            entities[key] = replace(entity_frame, metrics=metrics)
+        frame = replace(base, entities=entities)
+        config = GroopConfig(
+            default_view="tree",
+            default_column_profile="aliases",
+            columns={"profiles": {"aliases": {"list": ["name", "rf_dev"]}}},
+        )
+        app = GroopApp(iter([frame]), config=config)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+            assert mt._col_keys == ("name", "rf_d_per_s")
+            await pilot.click(
+                "#body-table", offset=_column_click_offset(mt, "rf_d_per_s")
+            )
+            await pilot.pause()
+            assert app.sort_by == "rf_d_per_s"
+            assert app.sort_reverse is True
+            assert app._visible_row_keys.index("system.slice") < app._visible_row_keys.index(
+                "besteffort.slice"
+            )
+
+    asyncio.run(run())
+
+
+def test_p50_keyboard_parity_up_down_native() -> None:
+    """Up/Down keys navigate rows via DataTable native cursor."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            initial = app.selected_key
+            # Press down
+            await pilot.press("down")
+            await pilot.pause()
+            after_down = app.selected_key
+            assert after_down != initial, "down should change selection"
+            # Press up to return
+            await pilot.press("up")
+            await pilot.pause()
+            assert app.selected_key == initial
+
+    asyncio.run(run())
+
+
+def test_p50_keyboard_parity_enter_drilldown() -> None:
+    """Enter key opens drill-down (parity with old keyboard workflow)."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            # Navigate to a real entity row
+            for _ in range(2):
+                await pilot.press("down")
+                await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DrillDownScreen)
+
+    asyncio.run(run())
+
+
+def test_p50_keyboard_parity_left_right_tree() -> None:
+    """Left/Right keys collapse/expand tree branches."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            assert app.view_mode == "tree"
+            full_count = len(app._visible_row_keys)
+            assert full_count > 1  # has children
+
+            # Left on root should collapse all children
+            await pilot.press("left")
+            await pilot.pause()
+            assert app._visible_row_keys == ("",)
+
+            # Right on root should expand all children
+            await pilot.press("right")
+            await pilot.pause()
+            assert len(app._visible_row_keys) == full_count
+
+    asyncio.run(run())
+
+
+def test_p50_container_view_keys_work() -> None:
+    """In container view, left/right/home/end are harmless (or replay-only)."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            app.view_mode = "container"
+            app._refresh_view()
+            await pilot.pause()
+            assert app.view_mode == "container"
+            assert len(app._visible_row_keys) > 0
+
+            # left/right should not break anything in container mode
+            await pilot.press("left")
+            await pilot.pause()
+            await pilot.press("right")
+            await pilot.pause()
+            assert app.view_mode == "container"
 
     asyncio.run(run())

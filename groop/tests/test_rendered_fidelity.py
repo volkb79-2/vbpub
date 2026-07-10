@@ -9,7 +9,11 @@ from groop.diag import annotate
 from groop.model import DockerMeta, Entity, EntityFrame, Frame, MetricValue
 from groop.record.replay import ReplayDriver
 from groop.record.writer import RecordWriter
-from groop.ui.table import FormattedTableSnapshot, snapshot_container_table
+from groop.ui.table import (
+    FormattedTableSnapshot,
+    render_data_table_container,
+    snapshot_container_table,
+)
 
 
 CONFIG = GroopConfig()
@@ -80,6 +84,22 @@ def _snapshot(frame: Frame) -> FormattedTableSnapshot:
     return snapshot_container_table(frame, CONFIG, **RENDER_ARGS)
 
 
+def _data_table_snapshot(frame: Frame) -> FormattedTableSnapshot:
+    columns, _labels, row_keys, rows = render_data_table_container(
+        frame,
+        CONFIG,
+        width=RENDER_ARGS["width"],
+        profile=RENDER_ARGS["profile"],
+        sort_by=RENDER_ARGS["sort_by"],
+        filter_text=RENDER_ARGS["filter_text"],
+    )
+    return FormattedTableSnapshot(
+        columns=columns,
+        row_keys=row_keys,
+        cells=tuple(tuple(cell.plain for cell in row) for row in rows),
+    )
+
+
 def _zstandard_available() -> bool:
     try:
         import zstandard  # noqa: F401
@@ -102,9 +122,24 @@ def test_recorded_ticks_replay_with_identical_formatted_cells(tmp_path: Path, fi
     replayed = [item.frame for item in ReplayDriver.from_path(path, config=CONFIG).play(step=True)]
     original_snapshots = tuple(_snapshot(frame) for frame in original)
     replayed_snapshots = tuple(_snapshot(frame) for frame in replayed)
+    original_data_tables = tuple(_data_table_snapshot(frame) for frame in original)
+    replayed_data_tables = tuple(_data_table_snapshot(frame) for frame in replayed)
 
     assert replayed_snapshots == original_snapshots
+    assert replayed_data_tables == original_data_tables
     assert len(set(original_snapshots)) == len(original_snapshots)
+    assert len(set(original_data_tables)) == len(original_data_tables)
+
+    # The visible DataTable path must retain the legacy production formatter's
+    # exact cells. Only the old Rich table's two-character selection marker is
+    # intentionally absent because DataTable supplies native cursor styling.
+    for legacy, interactive in zip(original_snapshots, original_data_tables):
+        assert interactive.columns == legacy.columns
+        assert interactive.row_keys == legacy.row_keys
+        normalized_legacy = tuple(
+            ((row[0][2:] if row else ""), *row[1:]) for row in legacy.cells
+        )
+        assert interactive.cells == normalized_legacy
 
     first = original_snapshots[0]
     assert first.row_keys == ("db.scope", "web.scope")

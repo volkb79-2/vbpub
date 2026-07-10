@@ -634,6 +634,52 @@ Blocker for live daemon paddr measurement:
 - P44 lifecycle testing uses injectable fixture seams (damon_root, state_dir,
   require_root=False, is_root=...) and does not mutate host sysfs.
 
+## P50 Mouse Table Interactions Evidence (2026-07-10)
+
+P50 replaces the non-interactive Rich-table `Static` body with a Textual-native
+`MouseTable(DataTable)` subclass supporting clickable column headers and row
+drill-down.
+
+### P50 Focused Tests
+
+- 12 P50-specific pilot tests pass in 4.98s
+- Real pilot mouse events cover header sorting/direction reversal, one-click
+  row drill-down, harmless empty-row clicks, and alias-backed canonical sorting.
+- Live reorder and replay refresh tests preserve a selected nonzero entity key.
+- Keyboard parity covers up/down, Enter, left/right tree behavior, and harmless
+  container-view tree keys.
+
+### P50 Full Suite
+
+```bash
+cd groop && python3 -m pytest tests/ -q
+# 704 passed, 1 skipped in 58.25s after P51 reconciliation
+```
+
+### P50 Key Changes
+
+- Replaced `Static(id="body")` with `MouseTable(id="body-table")` in compose
+- Removed `rich.console.Group` and Rich `Table` body rendering
+- `_refresh_view` calls `_populate_table` through the production
+  `format_metric_value` path; stable rows update cells in place, reordered rows
+  retain columns, and header-label changes preserve native column keys.
+- Sort direction tracked via `sort_reverse: bool`; header click toggles it
+- Column labels show `^` (ascending) or `v` (descending) indicator on
+  active column
+- Keyboard: up/down/Enter handled natively by DataTable; left/right delegated
+  to app for tree collapse/expand; home/end consumed by app for replay
+- P41 rendered replay fidelity now explicitly compares the visible DataTable
+  extraction path with the legacy production-formatted cells for original and
+  replayed frames. Only the legacy two-character selection marker is omitted,
+  because DataTable provides native cursor highlighting.
+- Acceptance: `40 passed in 7.31s`; replay TUI smoke exited 0 with one frame.
+
+### Degradation
+
+Mouse support degrades harmlessly: when the terminal sends no mouse events,
+the DataTable falls back to keyboard-only operation. All 23 pre-P50 tests pass
+with the same key presses.
+
 ## P47 Daemon Component Health (2026-07-10)
 
 P47 adds a thread-safe component health registry, a read-only ``health``

@@ -7,7 +7,6 @@ from collections import deque
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
-from rich.console import Group
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.screen import Screen
@@ -24,11 +23,12 @@ from groop.snapshot import create as create_snapshot
 from groop.snapshot.enrich import DockerSnapshotInspect, SystemctlSnapshotRunner, collect_docker_inspect, collect_systemctl_show
 
 from .banner import render_banner
+from .data_table import MouseTable
 from .drill import DrillDownScreen
 from .hostmem import HostMemoryScreen
 from .keys import BINDINGS, key_help
-from .table import SORT_ORDER, RenderedRows, available_profiles, normalize_profile_name, render_container_table
-from .tree import render_tree_table
+from .table import SORT_ORDER, available_profiles, normalize_profile_name, render_data_table_container
+from .tree import render_data_table_tree
 
 
 class FilterScreen(Screen[str | None]):
@@ -87,9 +87,8 @@ class GroopApp(App[None]):
         height: auto;
         padding: 0 1;
     }
-    #body {
+    #body-table {
         height: 1fr;
-        overflow: auto;
         padding: 0 1;
     }
     #status {
@@ -139,6 +138,7 @@ class GroopApp(App[None]):
         self.profile_name = normalize_profile_name(self.config, profile)
         self.profile_order = available_profiles(self.config)
         self.sort_by = SORT_ORDER[0]
+        self.sort_reverse: bool = self.sort_by != "name"  # name asc by default; pressure desc
         self.filter_text = ""
         self.banner_collapsed = False
         self.selected_key: str | None = None
@@ -155,7 +155,7 @@ class GroopApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Static(id="banner")
-        yield Static(id="body")
+        yield MouseTable(id="body-table")
         yield Static(id="status")
 
     def on_mount(self) -> None:
@@ -190,30 +190,64 @@ class GroopApp(App[None]):
         banner_snapshot = render_banner(frame, self.config, collapsed=self.banner_collapsed)
         self.query_one("#banner", Static).update("\n".join(banner_snapshot.lines))
         width = max(80, self.size.width or 80)
-        rendered = self._render_rows(frame, width=width)
-        self._visible_row_keys = rendered.row_keys
+        self._populate_table(frame, width=width)
         if self.selected_key not in self._visible_row_keys and self._visible_row_keys:
             self.selected_key = self._visible_row_keys[0]
-            rendered = self._render_rows(frame, width=width)
-            self._visible_row_keys = rendered.row_keys
-        self.query_one("#body", Static).update(Group(rendered.table))
+        mt = self.query_one("#body-table", MouseTable)
+        mt.update_cursor_from_key(self.selected_key)
         self._refresh_status(self._status_text())
 
-    def _render_rows(self, frame: Frame, *, width: int) -> RenderedRows:
+    def _populate_table(self, frame: Frame, *, width: int) -> None:
         kwargs = {
             "width": width,
             "profile": self.profile_name,
             "sort_by": self.sort_by,
+            "sort_reverse": self.sort_reverse,
             "filter_text": self.filter_text,
-            "selected_key": self.selected_key,
             "ring": self.ring,
         }
         if self.view_mode == "container":
-            return render_container_table(frame, self.config, **kwargs)
-        return render_tree_table(frame, self.config, collapsed_keys=self._collapsed_tree_keys, **kwargs)
+            col_keys, col_labels, row_keys, rows = render_data_table_container(frame, self.config, **kwargs)
+        else:
+            col_keys, col_labels, row_keys, rows = render_data_table_tree(
+                frame, self.config, collapsed_keys=self._collapsed_tree_keys, **kwargs
+            )
+        # Prepend direction indicator on the active column label.
+        direction_marker = "v" if self.sort_reverse else "^"
+        overridden_labels = tuple(
+            f"{direction_marker} {label}" if key == self.sort_by else label
+            for key, label in zip(col_keys, col_labels)
+        )
+        self._visible_row_keys = row_keys
+        table = self.query_one("#body-table", MouseTable)
+        table.populate(column_keys=col_keys, column_labels=overridden_labels, row_keys=row_keys, rows=rows)
 
     def _refresh_status(self, text: str) -> None:
         self.query_one("#status", Static).update(text)
+
+    def on_data_table_header_selected(self, event: MouseTable.HeaderSelected) -> None:
+        """Handle a header click: sort by that column, toggling direction if already active."""
+        event.stop()
+        col_key = event.column_key.value
+        if col_key == self.sort_by:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            self.sort_by = col_key
+            self.sort_reverse = col_key != "name"  # name asc by default; numeric desc
+        self._refresh_view()
+
+    def on_data_table_row_highlighted(self, event: MouseTable.RowHighlighted) -> None:
+        """Handle cursor move — update the selected key."""
+        event.stop()
+        self.selected_key = event.row_key.value
+
+    def on_data_table_row_selected(self, event: MouseTable.RowSelected) -> None:
+        """Handle a row activation (Enter, double-click, or click-on-highlighted)."""
+        event.stop()
+        rk = event.row_key.value
+        if not rk.startswith("__empty__"):
+            self.selected_key = rk
+            self.action_open_drill()
 
     def action_toggle_view(self) -> None:
         self.view_mode = "container" if self.view_mode == "tree" else "tree"
@@ -227,6 +261,7 @@ class GroopApp(App[None]):
     def action_cycle_sort(self) -> None:
         index = SORT_ORDER.index(self.sort_by) if self.sort_by in SORT_ORDER else 0
         self.sort_by = SORT_ORDER[(index + 1) % len(SORT_ORDER)]
+        self.sort_reverse = self.sort_by != "name"  # reset to default direction
         self._refresh_view()
 
     def action_toggle_banner(self) -> None:
@@ -359,7 +394,9 @@ class GroopApp(App[None]):
         else:
             index = self._visible_row_keys.index(self.selected_key)
             self.selected_key = self._visible_row_keys[(index + delta) % len(self._visible_row_keys)]
-        self._refresh_view()
+        self.query_one("#body-table", MouseTable).move_cursor(
+            row=self._visible_row_keys.index(self.selected_key)
+        )
 
     def action_open_drill(self) -> None:
         if self.current_frame is None or self.selected_key is None or self.selected_key not in self.current_frame.entities:
@@ -510,11 +547,13 @@ class GroopApp(App[None]):
     def _status_text(self) -> str:
         frame = self.current_frame
         rows = len(self._visible_row_keys)
+        dir_char = "v" if self.sort_reverse else "^"
         if self._replay_driver is None:
             if frame is None:
                 return f"mode={self._source_label} waiting for frames"
             return (
-                f"mode={self._source_label} view={self.view_mode} profile={self.profile_name} sort={self.sort_by} "
+                f"mode={self._source_label} view={self.view_mode} profile={self.profile_name} "
+                f"sort={dir_char}{self.sort_by} "
                 f"rows={rows} filter={self.filter_text or '-'} frames={self.frames_received} ts={frame.ts:.3f}"
             )
         if frame is None:
@@ -522,7 +561,7 @@ class GroopApp(App[None]):
         state = "paused" if self._replay_paused else "playing"
         return (
             f"mode=REPLAY {state} speed={self._replay_speed:g}x frame={self._replay_driver.index + 1}/{self._replay_driver.total} "
-            f"view={self.view_mode} profile={self.profile_name} sort={self.sort_by} rows={rows} "
+            f"view={self.view_mode} profile={self.profile_name} sort={dir_char}{self.sort_by} rows={rows} "
             f"filter={self.filter_text or '-'} ts={frame.ts:.3f} controls=space ,/. +/- home/end j"
         )
 
