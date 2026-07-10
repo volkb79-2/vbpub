@@ -63,6 +63,7 @@ RESERVED_GLOBAL_NAMESPACES: frozenset[str] = frozenset({
     "state",
     "auto_generated",
     "secrets",
+    "governance",
 })
 
 # ---------------------------------------------------------------------------

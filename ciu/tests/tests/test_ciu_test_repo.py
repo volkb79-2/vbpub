@@ -171,7 +171,9 @@ def test_app_config_full_pipeline_runs_under_dry_run(monkeypatch) -> None:
     # The pre_compose hook applied app_config.runtime_note via apply_to_config
     # (S9.4), so the rendered configfile (step 12, after the step 11 hook)
     # carries it.
-    rendered_cfg = (APP_STACK / ".ciu" / "rendered" / "app" / "main").read_text()
+    # S5.3a: mirrors the target's own path (/etc/app/config.toml), not
+    # named after cfg_name ("main").
+    rendered_cfg = (APP_STACK / ".ciu" / "rendered" / "app" / "etc" / "app" / "config.toml").read_text()
     assert 'runtime_note = "set-by-hook"' in rendered_cfg
     # The configfile is the ONLY place a secret value may appear (S5.4): the
     # ASK_EXTERNAL license value is embedded via secret('license').
@@ -181,7 +183,9 @@ def test_app_config_full_pipeline_runs_under_dry_run(monkeypatch) -> None:
     overlay = (APP_STACK / ".ciu" / "ciu.compose.overlay.yml").read_text()
     for name in ("api_key", "license", "run_nonce", "ca_bundle"):
         assert name in overlay
-    assert "/etc/app/config.toml" in overlay
+    # S5.3a: the mount now covers the target's parent directory, not the
+    # target file itself.
+    assert "/etc/app" in overlay
 
 
 def test_app_config_secrets_list(monkeypatch) -> None:

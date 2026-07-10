@@ -56,7 +56,7 @@ import copy
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
 import yaml
@@ -387,8 +387,16 @@ class ConfigFileMount:
     ----------
     service        : the service name (``[<root>.<service>.configfile.<name>]``).
     name           : the configfile name (``<cfgname>``).
-    rendered_path  : logical path of the rendered file under ``.ciu/rendered/``.
-    target         : absolute container path the overlay binds it to (S5.3).
+    rendered_path  : path of the rendered file under ``.ciu/rendered/<service>/``,
+                      mirroring ``target``'s own directory structure (S5.3a) —
+                      e.g. target ``/etc/app/config.toml`` renders to
+                      ``.ciu/rendered/<service>/etc/app/config.toml``. The
+                      overlay mounts ``rendered_path.parent`` (the staging
+                      directory), not this file directly — see S5.3a.
+    target         : absolute container path this configfile represents
+                      (S5.3); the overlay mount actually covers its parent
+                      directory, shared with any other configfile for the
+                      same service targeting the same directory.
     mode           : octal mode string, default ``"0440"`` (S5.1).
     consumed_secrets: secret names read by this template via ``secret()``
                       (S4.20/S5.4).
@@ -448,8 +456,14 @@ def render_configfiles(
     ``instances = 1``) behave identically to before this change.
 
     The result is written to
-    ``<stack_dir>/.ciu/rendered/<service[-index]>/<cfgname[-index]>`` (parents
-    created) and chmod'd to ``mode``.
+    ``<stack_dir>/.ciu/rendered/<service[-index]>/<target's own directory
+    structure, minus its leading '/'>/<target's own basename>`` (S5.3a;
+    parents created) and chmod'd to ``mode``. Mirroring ``target`` this way
+    — rather than naming the file after ``cfgname`` — lets
+    :func:`generate_overlay` bind-mount the file's parent directory (always
+    pre-created here, so it always exists) over ``target``'s parent
+    directory, instead of bind-mounting the lone file over the lone target
+    path (see S5.3a for why the file-level bind is unsafe).
 
     Parameters
     ----------
@@ -487,6 +501,10 @@ def render_configfiles(
 
     rendered_root = stack_dir / MACHINE_DIR / RENDERED_SUBDIR
     mounts: list[ConfigFileMount] = []
+    # S5.3a: staging directories already cleared once in this call (avoid
+    # re-clearing — and thus deleting a sibling file this same call just
+    # wrote — when multiple configfiles for one service share a target dir).
+    cleared_staging_dirs: set[Path] = set()
 
     for service_name, service_block in root.items():
         if not isinstance(service_block, Mapping):
@@ -565,8 +583,36 @@ def render_configfiles(
                     effective_service = service_name
                     effective_name = cfg_name
 
-                out_path = rendered_root / effective_service / effective_name
-                out_path.parent.mkdir(parents=True, exist_ok=True)
+                # S5.3a: mirror the target's own directory structure under
+                # the per-service staging root, and name the file after the
+                # target's own basename (not cfg_name) — so the whole
+                # STAGING DIRECTORY, not the lone file, can be bind-mounted
+                # over the target's parent directory (see generate_overlay).
+                # A single-file bind whose host source doesn't yet exist gets
+                # silently auto-created by Docker as a DIRECTORY, which then
+                # breaks the container's config-loading with "Is a
+                # directory" — mounting a directory that ciu itself always
+                # creates ahead of time (the mkdir below) sidesteps that
+                # class of failure entirely.
+                target_path = PurePosixPath(target)
+                if not target_path.is_absolute():
+                    raise ValueError(
+                        f"[S5.1] configfile '{cfg_name}' of service '{service_name}' "
+                        f"has a non-absolute `target`: {target!r}."
+                    )
+                staging_dir = rendered_root / effective_service / target_path.parent.relative_to("/")
+                out_path = staging_dir / target_path.name
+                staging_dir.mkdir(parents=True, exist_ok=True)
+                # Stale-file guard: clear any leftover files from a PRIOR
+                # render whose target/cfgname has since changed — otherwise
+                # they'd persist in the staging dir and get exposed into the
+                # container by the directory-level mount below, even though
+                # nothing in the current config asked for them.
+                if staging_dir not in cleared_staging_dirs:
+                    for stray in staging_dir.iterdir():
+                        if stray.is_file() or stray.is_symlink():
+                            stray.unlink()
+                    cleared_staging_dirs.add(staging_dir)
                 # Atomic replace (S8.4) — also the only way a SECOND run can
                 # overwrite the previous 0440 rendered file without write
                 # permission on it (os.replace needs only the directory).
@@ -684,7 +730,13 @@ def generate_overlay(
         services:
           <service-or-expanded-instance>:
             volumes:
-              - "<physical rendered path>:<target>:ro"     # per configfile mount
+              # per (service, target-directory) group (S5.3a) — the STAGING
+              # DIRECTORY bound over the target's parent directory, not the
+              # rendered file over the target file:
+              - type: bind
+                source: <physical staging directory>
+                target: <target's parent directory>
+                read_only: true
             cgroup_parent: ...                             # governance (S15), when enabled
             mem_limit: ...
             mem_reservation: ...
@@ -747,23 +799,39 @@ def generate_overlay(
     services: dict[str, Any] = {}
 
     if configfile_mounts:
+        # S5.3a: bind-mount each configfile's STAGING DIRECTORY (its rendered
+        # file's parent — see render_configfiles, which mirrors the target's
+        # own directory structure there) over the target's parent directory,
+        # rather than bind-mounting the single rendered file over the single
+        # target file. A single-file bind mount whose host source doesn't
+        # exist yet gets silently auto-created by Docker as a DIRECTORY —
+        # which then breaks the container's config loading with "Is a
+        # directory" instead of a sane "file not found". The staging
+        # directory always exists by the time the overlay is generated
+        # (render_configfiles creates it unconditionally before writing), so
+        # this class of failure cannot recur. Multiple configfiles for one
+        # service that share a target directory naturally consolidate into
+        # ONE directory mount here (they share the same staging directory).
+        seen_dirs: dict[tuple[str, str], Path] = {}
         for mount in configfile_mounts:
+            target_dir = str(PurePosixPath(mount.target).parent)
+            staging_dir = Path(mount.rendered_path).parent
+            for service_name in _configfile_mount_services(mount.service, compose_services):
+                seen_dirs.setdefault((service_name, target_dir), staging_dir)
+        for (service_name, target_dir), staging_dir in seen_dirs.items():
             phys = to_physical_path(
-                Path(mount.rendered_path),
-                repo_root=repo_root,
-                physical_root=physical_root,
+                staging_dir, repo_root=repo_root, physical_root=physical_root
             )
             # Long-form mount object: colon/space-safe (the short
             # "src:dst:ro" string form mis-splits on a ':' in either path).
             volume_entry = {
                 "type": "bind",
                 "source": str(phys),
-                "target": mount.target,
+                "target": target_dir,
                 "read_only": True,
             }
-            for service_name in _configfile_mount_services(mount.service, compose_services):
-                svc = services.setdefault(service_name, {})
-                svc.setdefault("volumes", []).append(volume_entry)
+            svc = services.setdefault(service_name, {})
+            svc.setdefault("volumes", []).append(volume_entry)
 
     if governance_injections:
         for service_name, frag in governance_injections.items():

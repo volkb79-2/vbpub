@@ -370,10 +370,59 @@ class TestRenderConfigfiles:
         config, stack = self._setup(tmp_path, body)
         mounts = render_configfiles(stack, "app", config, lambda n: "v")
         rel = mounts[0].rendered_path.relative_to(stack)
-        assert rel == Path(".ciu") / "rendered" / "svc" / "main"
+        # S5.3a: mirrors the target's own directory structure (minus the
+        # leading '/') and basename under .ciu/rendered/<service>/, NOT
+        # named after cfg_name — so the parent dir can be bind-mounted
+        # whole (see TestGenerateOverlay's configfile tests).
+        assert rel == Path(".ciu") / "rendered" / "svc" / "etc" / "app" / "config.toml"
         assert mounts[0].target == "/etc/app/config.toml"
         assert mounts[0].service == "svc"
         assert mounts[0].name == "main"
+
+    def test_stale_file_removed_when_target_changes_s5_3a(self, tmp_path: Path) -> None:
+        """A file left behind by a PRIOR render (since-changed target/cfg)
+        must not persist in the staging directory — it would otherwise be
+        exposed into the container by the directory-level mount (S5.3a)."""
+        body = 'log = "{{ app.name }}"\n'
+        config, stack = self._setup(tmp_path, body)
+        render_configfiles(stack, "app", config, lambda n: "v")
+        staging_dir = stack / ".ciu" / "rendered" / "svc" / "etc" / "app"
+        assert (staging_dir / "config.toml").exists()
+
+        # Simulate a stray leftover from an earlier, since-abandoned target
+        # in the SAME staging directory (e.g. a renamed target basename).
+        stray = staging_dir / "old-config.toml"
+        stray.write_text("stale", encoding="utf-8")
+
+        render_configfiles(stack, "app", config, lambda n: "v")
+        assert not stray.exists(), "stale file must be cleared on re-render"
+        assert (staging_dir / "config.toml").exists()
+
+    def test_two_configfiles_same_target_dir_share_staging_dir_s5_3a(
+        self, tmp_path: Path
+    ) -> None:
+        """Two configfiles for one service targeting the same directory
+        render into the SAME staging directory (so one directory mount
+        covers both — see TestGenerateOverlay)."""
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        (stack / "a.toml.j2").write_text("a\n", encoding="utf-8")
+        (stack / "b.toml.j2").write_text("b\n", encoding="utf-8")
+        config = {
+            "app": {
+                "svc": {
+                    "configfile": {
+                        "one": {"template": "a.toml.j2", "target": "/etc/app/a.toml"},
+                        "two": {"template": "b.toml.j2", "target": "/etc/app/b.toml"},
+                    }
+                }
+            }
+        }
+        mounts = render_configfiles(stack, "app", config, lambda n: "v")
+        assert len(mounts) == 2
+        assert {m.rendered_path.parent for m in mounts} == {
+            stack / ".ciu" / "rendered" / "svc" / "etc" / "app"
+        }
 
     def test_custom_mode_honored_s5_1(self, tmp_path: Path) -> None:
         body = 'log = "{{ app.name }}"\n'
@@ -434,7 +483,8 @@ class TestGenerateOverlay:
     def test_configfile_volume_entry_physical_s4_17(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Each configfile mount appends '<phys>:<target>:ro' to its service."""
+        """S5.3a: the mount binds the STAGING DIRECTORY over the target's
+        parent directory — not the rendered file over the target file."""
         import yaml
 
         repo = tmp_path / "repo"
@@ -446,7 +496,10 @@ class TestGenerateOverlay:
 
         stack = repo / "apps" / "controller"
         stack.mkdir(parents=True)
-        rendered = stack / ".ciu" / "rendered" / "ctl" / "main"
+        # Mirrors what render_configfiles actually produces (S5.3a): the
+        # rendered file lives under a directory that mirrors the target's
+        # own parent path, named after the target's basename.
+        rendered = stack / ".ciu" / "rendered" / "ctl" / "etc" / "controller" / "config.toml"
         rendered.parent.mkdir(parents=True)
         rendered.write_text("cfg", encoding="utf-8")
 
@@ -459,15 +512,49 @@ class TestGenerateOverlay:
         path = generate_overlay(stack, {}, [mount])
         doc = yaml.safe_load(path.read_text())
         vols = doc["services"]["ctl"]["volumes"]
-        phys = str(physical / "apps" / "controller" / ".ciu" / "rendered" / "ctl" / "main")
-        # Long-form mount object (colon/space-safe; R2 finding F4).
+        phys = str(physical / "apps" / "controller" / ".ciu" / "rendered" / "ctl" / "etc" / "controller")
+        # Long-form mount object (colon/space-safe; R2 finding F4). Directory
+        # source/target (S5.3a), not the file itself.
         assert vols == [{
             "type": "bind",
             "source": phys,
-            "target": "/etc/controller/config.toml",
+            "target": "/etc/controller",
             "read_only": True,
         }]
         assert "secrets" not in doc
+
+    def test_two_configfiles_same_target_dir_consolidate_to_one_mount_s5_3a(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two configfiles for one service, same target directory, produce
+        ONE directory mount, not two (S5.3a)."""
+        import yaml
+
+        repo = tmp_path / "repo"
+        monkeypatch.setenv("REPO_ROOT", str(repo))
+        monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(repo))
+
+        stack = repo / "apps" / "controller"
+        staging_dir = stack / ".ciu" / "rendered" / "ctl" / "etc" / "controller"
+        staging_dir.mkdir(parents=True)
+        (staging_dir / "a.toml").write_text("a", encoding="utf-8")
+        (staging_dir / "b.toml").write_text("b", encoding="utf-8")
+
+        mounts = [
+            ConfigFileMount(
+                service="ctl", name="one",
+                rendered_path=staging_dir / "a.toml", target="/etc/controller/a.toml",
+            ),
+            ConfigFileMount(
+                service="ctl", name="two",
+                rendered_path=staging_dir / "b.toml", target="/etc/controller/b.toml",
+            ),
+        ]
+        path = generate_overlay(stack, {}, mounts)
+        doc = yaml.safe_load(path.read_text())
+        vols = doc["services"]["ctl"]["volumes"]
+        assert len(vols) == 1
+        assert vols[0]["target"] == "/etc/controller"
 
     def test_configfile_base_service_fans_out_to_instances_s5_3(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1045,7 +1132,9 @@ class TestRenderConfigfilesDynamicInstances:
         assert m.service == "worker"
         assert m.name == "cfg"
         rel = m.rendered_path.relative_to(stack)
-        assert rel == Path(".ciu") / "rendered" / "worker" / "cfg"
+        # S5.3a: mirrors the target's directory structure (target is
+        # /etc/worker/worker.conf), not cfg_name ("cfg").
+        assert rel == Path(".ciu") / "rendered" / "worker" / "etc" / "worker" / "worker.conf"
 
     def test_instances_one_behaves_same_as_no_instances(self, tmp_path: Path) -> None:
         """instances=1: same behavior as no 'instances' key (single-instance path)."""

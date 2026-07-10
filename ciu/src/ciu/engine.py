@@ -49,6 +49,7 @@ from typing import Any, Callable, Optional
 
 from . import config_model
 from . import composefile
+from . import governance
 from . import hooks_runner
 from . import procutil
 from .deploy_pkg import health as _health
@@ -1175,7 +1176,9 @@ def main_execution(
 
         # ---- Step 15: overlay (S4.17/S8.1/S15) ----
         print("[STEP 15/17] Generating overlay...", flush=True)
-        governance_config = merged.get(root_key, {}).get("governance")
+        governance_config = governance.resolve_stack_governance(
+            merged.get(root_key, {}).get("governance"), global_config
+        )
         overlay_path = composefile.generate_overlay(
             working_dir, materialized, configfile_mounts,
             repo_root=repo_root, physical_root=None,

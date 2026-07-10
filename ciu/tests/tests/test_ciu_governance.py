@@ -65,6 +65,46 @@ class TestResolveConfig:
 
 
 # ---------------------------------------------------------------------------
+# S15.10 — resolve_stack_governance (global-default fallback)
+# ---------------------------------------------------------------------------
+
+class TestResolveStackGovernance:
+    def test_stack_table_wins_over_global(self) -> None:
+        stack = {"enabled": True, "mem_limit": "2g"}
+        global_cfg = {"governance": {"enabled": True, "mem_limit": "1g"}}
+        result = gov.resolve_stack_governance(stack, global_cfg)
+        assert result == stack
+        assert result is not stack  # defensive copy, not the same object
+
+    def test_falls_back_to_global_when_stack_declares_none(self) -> None:
+        global_cfg = {"governance": {"enabled": True, "cgroup_parent": "besteffort.slice"}}
+        result = gov.resolve_stack_governance(None, global_cfg)
+        assert result == global_cfg["governance"]
+
+    def test_empty_stack_table_still_wins_over_global(self) -> None:
+        # An explicit (even empty) table means "the stack declared one" —
+        # S15.10 says the stack layer wins whenever it is not None, so an
+        # empty dict does NOT fall through to the global default.
+        global_cfg = {"governance": {"enabled": True}}
+        result = gov.resolve_stack_governance({}, global_cfg)
+        assert result == {}
+
+    def test_no_stack_and_no_global_yields_none(self) -> None:
+        assert gov.resolve_stack_governance(None, None) is None
+        assert gov.resolve_stack_governance(None, {}) is None
+        assert gov.resolve_stack_governance(None, {"deploy": {}}) is None
+
+    def test_global_without_governance_key_yields_none(self) -> None:
+        assert gov.resolve_stack_governance(None, {"deploy": {"log_level": "INFO"}}) is None
+
+    def test_mutating_result_does_not_affect_source_tables(self) -> None:
+        stack = {"enabled": True}
+        result = gov.resolve_stack_governance(stack, None)
+        result["enabled"] = False
+        assert stack["enabled"] is True
+
+
+# ---------------------------------------------------------------------------
 # S15.4 — read_iops_baseline / derive_read_iops
 # ---------------------------------------------------------------------------
 

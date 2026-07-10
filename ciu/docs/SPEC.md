@@ -209,9 +209,10 @@ requirements are marked *(withdrawn)*.
   the code behavior is ratified).
 - **S3.7** The stack root key MUST NOT collide with a reserved global
   namespace: `ciu`, `deploy`, `topology`, `registry`, `vault`, `consul`,
-  `service`, `env`, `state`, `auto_generated`, `secrets`. Collision = abort.
-  (dstdns's vault stack root key `vault` collides with global `[vault.paths]`
-  and must be renamed, e.g. `vault_core` — see Appendix B.2.)
+  `service`, `env`, `state`, `auto_generated`, `secrets`, `governance`
+  (S15.10). Collision = abort. (dstdns's vault stack root key `vault`
+  collides with global `[vault.paths]` and must be renamed, e.g. `vault_core`
+  — see Appendix B.2.)
 - **S3.8** TOML keys use `snake_case`; hyphens in Docker names belong in
   `name` fields. The v1 directory→service auto-exposure
   (`[service.<cat>.<proj>.<svc>]` lifted to a top-level key by path
@@ -392,6 +393,52 @@ requirements are marked *(withdrawn)*.
   secrets = files".
 - **S5.6** v1's unused `SERVICE_CONFIG_DEFAULTS`/`SERVICE_CONFIG_ACTIVE`
   constants are withdrawn.
+
+### S5.3a — Directory-level mount, not file-level (hardening)
+
+The rendered file is written to `<stack>/.ciu/rendered/<service>/<target's own
+directory structure, minus its leading '/'>/<target's own basename>` — e.g.
+`target = "/etc/app/config.toml"` renders to
+`.ciu/rendered/<service>/etc/app/config.toml` — and the overlay (S5.3)
+bind-mounts that file's **parent directory** over `target`'s **parent
+directory**, not the file over the file.
+
+**Why:** a single-file bind mount whose host source does not yet exist at
+container-start time is silently auto-created by Docker as a **directory**
+(a long-standing Docker behavior, not a CIU bug) — which then makes the
+*container-side* path a directory too, breaking any app that expects to
+`open()` it as a file (observed live: "Is a directory" on a config-loading
+crash-loop, traced to a stray root-owned directory at the rendered file's
+path from an earlier failed/raced render). Mounting the file's **parent
+directory** instead sidesteps this class of failure entirely, because
+`render_configfiles` always `mkdir(parents=True)`s that directory
+unconditionally, before ever attempting the file write — so the host source
+of a directory-level mount is guaranteed to exist by the time `docker compose
+up` runs, regardless of whether the render itself later succeeds. If the
+file inside is still missing for some other reason, the app sees a mundane
+"file not found" instead of "is a directory".
+
+**Consolidation:** multiple `configfile` sections for one service that target
+the **same** directory share the same staging directory (both are rendered
+under the same mirrored path) and therefore consolidate into a **single**
+directory mount — not one mount per file. `configfile` sections for one
+service with **different** target directories get separate, independent
+staging directories (and separate mounts), since the mirrored-path scheme
+naturally buckets by the target's own directory structure.
+
+**Stale-file guard:** the first time `render_configfiles` writes into a given
+staging directory during one call, it first removes any files/symlinks
+already there. This prevents a file left behind by an earlier render (whose
+`target`/`cfgname` has since changed) from persisting in the staging
+directory and being silently exposed into the container by the directory
+mount, even though nothing in the current config asked for it.
+
+**Caveat:** because the whole parent directory is now the mount (not just the
+one file), it is `read_only: true` in full — an app that expects to write
+*other* files into that same container directory at runtime will find the
+whole directory read-only, not just the configfile itself. This matches the
+pre-existing intent (config directories are not meant to be app-writable) but
+is a slightly wider read-only surface than the old file-level bind.
 
 ## S5a — Dev-loop profile (`ciu dev`)
 
@@ -942,13 +989,20 @@ installed.
 ## S15 — Stack-wide resource governance (cgroups)
 
 A stack MAY declare `[<root>.governance]` (stack-scoped per S3.6, like
-`[<root>.secrets]`/`[<root>.hooks]` — **not** a top-level `[governance]`,
-which S3.5 would reject as a second non-reserved top-level key) to opt every
-service of the stack into host-level cgroup placement and resource ceilings,
-without the stack author hand-writing `cgroup_parent`/`mem_limit`/
-`blkio_config` on each service. This is **opt-in and purely additive**: a
-stack that declares no `governance` table behaves exactly as before — CIU
-does not even parse/log anything for it (S15.7).
+`[<root>.secrets]`/`[<root>.hooks]` — **not** a top-level `[governance]` in
+the stack's own `ciu.toml`, which S3.5 would reject as a second non-reserved
+top-level key there) to opt every service of the stack into host-level
+cgroup placement and resource ceilings, without the stack author
+hand-writing `cgroup_parent`/`mem_limit`/`blkio_config` on each service.
+This is **opt-in and purely additive**: a stack that declares no
+`governance` table of its own, and for which no global default resolves
+(S15.10), behaves exactly as before — CIU does not even parse/log anything
+for it (S15.7).
+
+A **top-level `[governance]` table IS valid in `ciu.global.toml`** (the
+global config file, not a stack's `ciu.toml`) — it is a reserved global
+namespace exactly like `deploy`/`ciu`/`registry` (S3.7) and serves as the
+universal default across every stack that declares none of its own (S15.10).
 
 ### S15.1 — Declaration
 
@@ -1136,6 +1190,39 @@ footgun):
 Exit codes (S10.3): `0` success or benign no-op (fio absent, fresh result
 kept) · `1` measurement/write failure (fio non-zero, unparseable JSON,
 unwritable output) · `2` invalid arguments.
+
+### S15.10 — Global default (`ciu.global.toml` top-level `[governance]`)
+
+Writing `[<root>.governance]` into every stack that wants the same policy is
+pure boilerplate once a host has more than a couple of stacks. CIU resolves
+governance for a stack in this order (first match wins):
+
+1. **Stack-scoped table**, from either the stack's own `ciu.toml` or
+   `ciu.global.toml`'s root-key-scoped section (`[<root>.governance]`) — both
+   already folded into `merged[root_key]` by the existing S3.3 merge, so this
+   layer is unchanged from S15.1–S15.3.
+2. **Global default**: a bare top-level `[governance]` table in
+   `ciu.global.toml` (reserved namespace, S3.7) — used only when step 1
+   resolves to nothing at all for this stack.
+3. **Nothing declared anywhere**: governance stays disabled, exactly as
+   before this section existed (no behavior change for hosts that don't use
+   it).
+
+The two layers do **not** deep-merge with each other: a stack that declares
+its own `[<root>.governance]` table (even a single key) fully owns its
+governance config for that stack, resolved against `GOVERNANCE_DEFAULTS`
+(S15.2) as normal — it does not inherit unset keys from the global table.
+This mirrors the S15.2 rule of "no further nesting" and keeps resolution a
+simple two-step lookup rather than a three-way merge to reason about. A
+stack that wants the global policy plus one tweak restates the whole table
+it cares about (in practice: just the one changed key, since
+`GOVERNANCE_DEFAULTS` already matches the common host policy — see S15.1).
+
+Practical effect: a host with N stacks that all want the same governance
+policy writes it **once**, as `[governance]` in `ciu.global.toml`; only
+stacks that need to differ (a different `cgroup_parent`, an exemption, or
+opting out entirely with `enabled = false`) declare their own
+`[<root>.governance]` table.
 
 ---
 

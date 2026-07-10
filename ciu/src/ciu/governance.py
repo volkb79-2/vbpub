@@ -19,6 +19,7 @@ LEGACY_BASELINE_PATH   : Path             — legacy (gstammtisch) fallback loca
 FALLBACK_READ_IOPS     : int              — used when no baseline is found
 BASELINE_MAX_AGE_DAYS  : int              — freshness window for re-measurement
 resolve_config(raw) -> dict
+resolve_stack_governance(stack_governance, global_config) -> dict | None   — S15.10
 baseline_search_candidates(configured="") -> list[Path]
 resolve_baseline_path(configured="") -> Path | None
 read_iops_baseline(path) -> int | None
@@ -114,6 +115,39 @@ def resolve_config(raw: Mapping[str, Any] | None) -> dict[str, Any]:
         )
     cfg["exempt_services"] = list(exempt)
     return cfg
+
+
+def resolve_stack_governance(
+    stack_governance: Mapping[str, Any] | None,
+    global_config: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """S15.10: resolve which raw ``governance`` table (if any) applies to a stack.
+
+    Resolution order (first match wins), mirroring the S15.10 spec text:
+
+    1. *stack_governance* — the stack's own ``[<root>.governance]`` table,
+       already extracted by the caller from ``merged[root_key]["governance"]``
+       (which itself already folds in ``ciu.global.toml``'s root-key-scoped
+       section per the existing S3.3 merge — nothing new there).
+    2. *global_config* — a bare top-level ``[governance]`` table in
+       ``ciu.global.toml`` (reserved namespace, S3.7), used only when (1) is
+       entirely absent for this stack.
+    3. Neither present: return ``None`` (governance stays disabled — no
+       behavior change for hosts that declare it nowhere).
+
+    The two layers do **not** deep-merge (S15.10): a stack with its own table,
+    however small, fully owns its governance config and does not inherit
+    unset keys from the global default. Callers pass the raw table straight
+    into :func:`resolve_config` as before; this function only decides *which*
+    raw table (if any) that call sees.
+    """
+    if stack_governance is not None:
+        return dict(stack_governance)
+    if global_config:
+        global_governance = global_config.get("governance")
+        if global_governance is not None:
+            return dict(global_governance)
+    return None
 
 
 def baseline_search_candidates(configured: str = "") -> list[Path]:

@@ -218,7 +218,9 @@ def read_compose(stack_dir: Path) -> str:
 
 
 def rendered_config(stack_dir: Path) -> str:
-    return (stack_dir / ".ciu" / "rendered" / "app" / "main").read_text()
+    # S5.3a: mirrors the target's own path (/etc/app/config.toml), not
+    # named after cfg_name ("main").
+    return (stack_dir / ".ciu" / "rendered" / "app" / "etc" / "app" / "config.toml").read_text()
 
 
 def store_value(repo_root: Path, rel: str) -> bytes:
@@ -648,7 +650,10 @@ class TestConfigfile:
         assert f'api_key = "{api_key}"' in cfg
         assert 'license = "demo-license"' in cfg
 
-        mode = stat.S_IMODE((stack / ".ciu" / "rendered" / "app" / "main").stat().st_mode)
+        # S5.3a: mirrors the target's own path, not cfg_name.
+        mode = stat.S_IMODE(
+            (stack / ".ciu" / "rendered" / "app" / "etc" / "app" / "config.toml").stat().st_mode
+        )
         assert mode == 0o440
 
     def test_unknown_secret_in_template_aborts_s5_4(self, tmp_path, monkeypatch):
@@ -686,7 +691,9 @@ class TestConfigfile:
 
         overlay = yaml.safe_load(read_overlay(stack))
         app_volumes = overlay["services"]["app"]["volumes"]
-        mount = next(v for v in app_volumes if v["target"] == "/etc/app/config.toml")
+        # S5.3a: the mount now covers the target's PARENT directory
+        # (/etc/app), not the target file itself.
+        mount = next(v for v in app_volumes if v["target"] == "/etc/app")
         assert mount["read_only"] is True
         assert mount["source"].startswith(str(physical_prefix))
         # The secret-file sources were remapped to the physical prefix too.
