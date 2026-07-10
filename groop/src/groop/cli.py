@@ -185,6 +185,14 @@ def parse_inspect_files_args(argv: list[str]) -> argparse.Namespace:
     plan.add_argument("--inspect-files", action="store_true", help="enable file inspection planning mode")
     plan.add_argument("--admin", action="store_true", help="enable admin mode for inspection planning")
     plan.add_argument("--json", action="store_true", help="emit JSON plan instead of text")
+    read_parser = subparsers.add_parser("read", help="read bounded file/log content (requires --inspect-files and --admin)")
+    read_parser.add_argument("--kind", type=str, required=True, help="inspection kind: docker-json-log, cgroup-files")
+    read_parser.add_argument("--target", type=str, required=True, help="inspection target: container id (64 hex) for docker, cgroup path for cgroup")
+    read_parser.add_argument("--inspect-files", action="store_true", help="enable file inspection mode")
+    read_parser.add_argument("--admin", action="store_true", help="enable admin mode")
+    read_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    read_parser.add_argument("--max-bytes", type=int, default=65536, help="maximum bytes to read (default: 65536)")
+    read_parser.add_argument("--max-lines", type=int, default=5000, help="maximum lines to read (default: 5000)")
     return parser.parse_args(argv)
 
 
@@ -556,6 +564,12 @@ def _main_inspect_files(argv: list[str]) -> int:
         InspectFilesPlan,
         build_gated_inspect_plan,
     )
+    from groop.inspect_files.reader import (
+        InspectFilesReadError,
+        InspectFilesReadResult,
+        ReadDenied,
+        build_inspect_read,
+    )
 
     args = parse_inspect_files_args(argv)
     if args.command == "plan":
@@ -581,6 +595,38 @@ def _main_inspect_files(argv: list[str]) -> int:
         else:
             print(result.to_text())
         return 0
+
+    if args.command == "read":
+        try:
+            result = build_inspect_read(
+                args.kind, args.target,
+                inspect_files=args.inspect_files,
+                admin=args.admin,
+                max_bytes=args.max_bytes,
+                max_lines=args.max_lines,
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+
+        if isinstance(result, ReadDenied):
+            print(result.message, file=sys.stderr)
+            return 2
+
+        if isinstance(result, InspectFilesReadError):
+            print(result.to_text(), file=sys.stderr)
+            return 1
+
+        if not isinstance(result, InspectFilesReadResult):
+            print("unexpected inspection read result", file=sys.stderr)
+            return 2
+
+        if args.json:
+            print(json.dumps(result.to_jsonable(), sort_keys=True))
+        else:
+            print(result.to_text())
+        return 0
+
     print("unknown inspect-files command", file=sys.stderr)
     return 2
 

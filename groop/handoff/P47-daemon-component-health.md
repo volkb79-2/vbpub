@@ -34,4 +34,3 @@ daemon protocol and CLI.
 
 - Mutating daemon RPCs, remote/TCP API, metrics exporter, live BPF load/attach,
   or automatic restart loops beyond existing component behavior.
-

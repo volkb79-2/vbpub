@@ -37,4 +37,3 @@ never a raw cgroup write.
 
 - Other properties, automatic recommendations, ancestor propagation, batch
   changes, TUI controls, daemon RPCs, or live destructive acceptance.
-

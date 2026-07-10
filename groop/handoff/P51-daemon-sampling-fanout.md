@@ -37,4 +37,3 @@ drive sampling cadence or make other clients see stale or distorted data.
 
 - Persistent disk history, HTTP, mutation RPCs, peer authorization, or changes
   to collector metric semantics.
-

@@ -1,0 +1,5 @@
+{"log":"2026-07-10T12:00:00Z container starting up\n","stream":"stdout","time":"2026-07-10T12:00:00Z"}
+{"log":"2026-07-10T12:00:01Z health check passed\n","stream":"stdout","time":"2026-07-10T12:00:01Z"}
+{"log":"2026-07-10T12:00:02Z request GET /index.html 200 1234\n","stream":"stdout","time":"2026-07-10T12:00:02Z"}
+{"log":"2026-07-10T12:00:03Z error: connection refused\n","stream":"stderr","time":"2026-07-10T12:00:03Z"}
+{"log":"2026-07-10T12:00:04Z background task completed\n","stream":"stdout","time":"2026-07-10T12:00:04Z"}
