@@ -239,6 +239,7 @@ paddr_sample_us = 400000
 paddr_aggr_us = 8000000
 paddr_update_us = 1000000
 max_concurrent_targets = 4
+# paddr_enabled = false   # disabled by default; enable for daemon-owned paddr
 
 [bpf_snapshot]
 # Disabled by default. Enable only when bpftool is installed and BPF maps are

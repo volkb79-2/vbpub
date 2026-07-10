@@ -16,12 +16,13 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment. P41 automates strict rendered replay fidelity (383 passing tests plus one optional skip). P43 replaces the obsolete pre-1.0 resolver ceiling with textual>=8.2.8. Isolated local-artifact pipx/no-config acceptance now passes. Strict live performance and non-root gates remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 55-60% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, daemon current/status commands, and the daemon BPF snapshot bridge exist; live BPF program compilation and attach/pin/detach, executable admin actions, GPU/ZFS plugins are not implemented. |
+| v2 daemon/BPF/admin actions | 60-65% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, daemon current/status commands, the daemon BPF snapshot bridge, and the daemon-owned paddr lifecycle exist; live BPF program compilation and attach/pin/detach, executable admin actions, GPU/ZFS plugins are not implemented. |
 
-Active planned packages P44-P46 address daemon-owned paddr lifecycle, the first
-bounded inspect-files content reads, and a deliberately narrow executable
-start/stop/restart action kernel. Until merged and validated, all three remain
-non-claims.
+P44 adds the daemon-owned paddr lifecycle — `[damon] paddr_enabled = true` starts
+one groop-owned whole-host paddr session at daemon startup with idempotent
+restart and safe shutdown. Active planned packages P45-P46 address bounded
+inspect-files content reads and the first executable admin action kernel. Until
+merged and validated, both remain non-claims.
 
 Queued follow-ups P47-P49 continue those same three streams after review:
 daemon component health, bounded journald snapshots, and structured
@@ -87,6 +88,11 @@ core workflows, not yet production-certified.**
 - Rootless steady-state collector harness via `python -m groop.acceptance steady`,
   with multi-sample wall/CPU/RSS measurement, entity-count bounds, threshold
   checks, JSON/text output, and collection-error reporting.
+- Daemon-owned paddr lifecycle: when `[damon] paddr_enabled = true`, the root
+  daemon owns one audited whole-host paddr session for its lifetime with
+  idempotent restart (adopts existing groop-owned markers), bounded startup
+  failure, foreign-session safety, and graceful shutdown that stops only the
+  daemon-run's owned session.
 - CPU trend ASCII sparkline surface (`cpu_trend` column) using existing
   HistoryRing data, rendered as compact ASCII sparkline in entity table
   profiles at sufficient width, plus a reusable `groop/ui/sparkline.py`
@@ -177,17 +183,15 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation after P43 changes:
+Most recent full-suite validation after P44 changes:
 
 ```bash
-PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q
-# 433 passed, 1 skipped in 47.31s
+PYTHONPATH=groop/src python3 -m pytest groop/tests -q
+# 455 passed, 1 skipped in 46.99s
 ```
 
 Also validated:
 
-- Acceptance regression: `40 passed in 7.27s`.
-- UI regression: `59 passed in 10.91s`.
-- Direct replay UI smoke and P38 TUI smoke: exit `0`, one frame, tree view,
-  auto profile.
-- Full-source `py_compile` in the clean resolved environment.
+- P44 focused paddr lifecycle tests: `22 passed in 0.17s`.
+- Full-source `py_compile` clean.
+- Acceptance regression and UI regression unchanged.

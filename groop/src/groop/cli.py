@@ -675,6 +675,34 @@ def _main_daemon(argv: list[str]) -> int:
                     flush=True,
                 )
 
+        # Daemon-owned paddr lifecycle (disabled by default via [damon] paddr_enabled)
+        from groop.daemon.paddr_lifecycle import (
+            DaemonPaddrLifecycle,
+            PaddrLifecycleOutcome,
+            PaddrLifecycleStartError,
+        )
+
+        paddr_lifecycle = DaemonPaddrLifecycle(
+            config=config.damon,
+            damon_root=getattr(collector, "damon_root", DEFAULT_DAMON_ROOT),
+        )
+        if config.damon.paddr_enabled:
+            try:
+                paddr_lifecycle.start()
+                match paddr_lifecycle.outcome:
+                    case PaddrLifecycleOutcome.STARTED:
+                        print("Daemon-owned paddr session started", flush=True)
+                    case PaddrLifecycleOutcome.ADOPTED:
+                        print("Daemon-owned paddr session adopted", flush=True)
+                    case PaddrLifecycleOutcome.DISABLED:
+                        pass  # not reached since we check paddr_enabled above
+            except PaddrLifecycleStartError as exc:
+                print(
+                    f"Paddr lifecycle start failed "
+                    f"(daemon continues without paddr): {exc}",
+                    flush=True,
+                )
+
         try:
             server.serve_forever()
         except KeyboardInterrupt:
@@ -683,6 +711,20 @@ def _main_daemon(argv: list[str]) -> int:
             if bpf_thread is not None:
                 _bpf_stop.set()
                 bpf_thread.join(timeout=5.0)
+            if paddr_lifecycle.started:
+                try:
+                    stopped = paddr_lifecycle.stop()
+                    if stopped:
+                        print(
+                            f"Stopped {stopped} daemon-owned paddr "
+                            f"session",
+                            flush=True,
+                        )
+                except Exception as exc:
+                    print(
+                        f"Failed to stop paddr session: {exc}",
+                        flush=True,
+                    )
             server.server_close()
     if args.command == "preflight":
         try:

@@ -100,6 +100,46 @@ Current slice limitations:
 - The daemon protocol remains read-only; there is still no file-read, command,
   Docker/systemd mutation, or DAMON mutation verb.
 
+## Daemon-Owned paddr Lifecycle
+
+When `[damon] paddr_enabled = true` is set in the daemon's TOML config, the
+root daemon starts and owns one audited whole-host paddr DAMON session at
+startup. The session is stopped gracefully on daemon shutdown.
+
+Key characteristics:
+
+1. **Disabled by default.** No DAMON writes occur unless the operator explicitly
+   sets `paddr_enabled = true`.
+
+2. **Idempotent restart with verification.** If a groop-owned paddr marker
+   already exists (from a prior daemon run), the lifecycle verifies the
+   referenced kdamond slot is live (state ``on``, operations ``paddr``) before
+   adopting. A stale marker (kdamond is ``off``) is cleaned up; a malformed or
+   internally inconsistent marker, a marker pointing at a missing kdamond, or
+   a marker whose kdamond runs a different monitoring mode raises a bounded
+   startup error.
+
+3. **Foreign-safety.** Non-groop markers and foreign kdamond slots are never
+   touched during start, adoption, or stop.
+
+4. **Bounded startup failure.** If the paddr session cannot be started (no free
+   kdamond, root required, ownership conflict, stale/malformed marker, or
+   kdamond mismatch), the error is logged and the daemon continues without
+   paddr status. The read-only daemon is always usable.
+
+5. **Graceful shutdown.** Only a session created by this daemon run is stopped.
+   A verified session adopted from an earlier run remains persistent; use
+   `groop damon stop --all-mine` for explicit cleanup. The existing
+   `stop_owned_sessions` mechanism tears down current-run sessions and removes
+   their groop ownership markers.
+
+6. **Audit trail.** Every start and stop produces a JSONL audit event in the
+   daemon's state directory (default `~/.local/state/groop/actions.log`).
+
+7. **Config-driven intervals.** The existing `[damon] paddr_sample_us`,
+   `paddr_aggr_us`, and `paddr_update_us` settings control the daemon-owned
+   session's interval configuration.
+
 ## Deployment Checklist
 
 Before deploying, run `groop daemon install-plan` to see the ordered
