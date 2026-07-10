@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -95,6 +96,8 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
     serve.add_argument("--config", type=Path, default=None, help="load config from PATH instead of the default XDG location")
     serve.add_argument("--cgroup-root", type=Path, default=None, help="cgroup v2 root for live or fixture collection")
     serve.add_argument("--history-size", type=int, default=120, help="bounded in-memory frame history")
+    serve.add_argument("--bpf-root", type=Path, default=None, help="BPF pin root for periodic snapshot refresh (disabled by default)")
+    serve.add_argument("--bpf-interval", type=float, default=30.0, help="BPF snapshot refresh interval in seconds (default: 30.0)")
     preflight = subparsers.add_parser("preflight", help="check daemon deployment readiness")
     preflight.add_argument(
         "--socket",
@@ -570,11 +573,61 @@ def _main_daemon(argv: list[str]) -> int:
         broker = FrameBroker(live_frame_stream(collector), history_size=args.history_size)
         server = serve_unix_socket(args.socket, broker)
         print(f"serving read-only groop frames on {args.socket}", flush=True)
+
+        # BPF snapshot bridge (disabled by default)
+        bpf_bridge: BpfSnapshotBridge | None = None
+        bpf_thread: threading.Thread | None = None
+        _bpf_stop = threading.Event()
+
+        bpf_enabled = False
+        bpf_root: Path | None = None
+        bpf_interval = 30.0
+
+        # Check CLI args first, then config, then stay disabled
+        if args.bpf_root is not None:
+            bpf_enabled = True
+            bpf_root = args.bpf_root
+            bpf_interval = max(5.0, args.bpf_interval)
+        elif config.bpf_snapshot.enabled and config.bpf_snapshot.root is not None:
+            bpf_enabled = True
+            bpf_root = config.bpf_snapshot.root
+            bpf_interval = max(5.0, config.bpf_snapshot.interval)
+
+        if bpf_enabled and bpf_root is not None:
+            try:
+                from groop.daemon.bpf_snapshot import BpfSnapshotBridge, BpfSnapshotError
+                bpf_bridge = BpfSnapshotBridge(bpf_root)
+                map_name = config.bpf_snapshot.map_name if not args.bpf_root else "groop_cgroup_skb"
+                print(f"BPF snapshot bridge enabled: root={bpf_root} map={map_name} interval={bpf_interval}s", flush=True)
+
+                def _bpf_refresh_loop() -> None:
+                    while not _bpf_stop.wait(bpf_interval):
+                        try:
+                            snapshot = bpf_bridge.refresh(map_name)
+                            # Write snapshot under the daemon's BPF root
+                            bpf_bridge.write_snapshot(snapshot, bpf_root)
+                        except BpfSnapshotError as exc:
+                            last = bpf_bridge.last_valid_snapshot
+                            if last is not None:
+                                print(f"BPF snapshot refresh failed (preserving last valid): {exc}", flush=True)
+                            else:
+                                print(f"BPF snapshot refresh failed: {exc}", flush=True)
+                        except Exception as exc:
+                            print(f"BPF snapshot unexpected error: {exc}", flush=True)
+
+                bpf_thread = threading.Thread(target=_bpf_refresh_loop, daemon=True)
+                bpf_thread.start()
+            except Exception as exc:
+                print(f"Failed to start BPF snapshot bridge: {exc}", flush=True)
+
         try:
             server.serve_forever()
         except KeyboardInterrupt:
             return 0
         finally:
+            if bpf_thread is not None:
+                _bpf_stop.set()
+                bpf_thread.join(timeout=5.0)
             server.server_close()
     if args.command == "preflight":
         try:

@@ -94,3 +94,17 @@ wire tap.
 P17 adds a safe, unprivileged measurement helper that reports the BPF preflight
 status and baseline host traffic without loading BPF or leaving pinned state.
 That helper is the evidence gate for future live BPF work.
+
+## Implementation Status
+
+P42 (done) implements the daemon-side ``BpfSnapshotBridge`` that reads an
+explicitly configured pinned BPF counter map via ``bpftool --json map dump pinned``
+through an argv-only, injectable command runner. It decodes the logical dimensions
+(cgroup id, direction, family, proto, bytes, packets), builds the ``cgroup_map``
+from a configured cgroup-v2 root, and atomically writes the P18 ``snapshot.json``
+contract with schema/version, generation timestamp, source/map metadata, ``maps``,
+and ``cgroup_map`` fields. The bridge enforces path confinement, output bounds,
+last-good preservation, and non-world-writable permissions. It integrates into
+``groop daemon serve`` behind an explicit ``--bpf-root`` CLI option or
+``[bpf_snapshot]`` config section, both disabled by default. BPF program
+compilation and the privileged attach/pin/detach lifecycle remain future work.

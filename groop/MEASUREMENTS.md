@@ -368,6 +368,73 @@ Full suite impact (BPF tests add negligible overhead):
 # 147 passed in 25.14s
 ```
 
+### P42 Daemon BPF Snapshot Bridge (2026-07-09)
+
+The P42 daemon BPF snapshot bridge was implemented as a fully fixture-tested
+module with no privileged operations required for testing. The bridge reads
+pinned BPF counter maps via ``bpftool --json map dump pinned PATH`` through an
+argv-only injectable command runner, decodes the P17/P18 logical dimensions,
+builds the ``cgroup_map``, and atomically writes the ``snapshot.json`` contract
+consumed by the P18 ``BpfProvider``.
+
+**Live BPF overhead was not measured.** Testing was done entirely with mock
+command runners and fixture directories. The bridge requires ``bpftool``
+installed, a writable BPF pin root, and already-pinned BPF maps to produce
+live snapshots — none of which are available on this development host.
+
+Fixture/unit evidence:
+
+```bash
+PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest \
+  groop/tests/test_daemon_bpf_snapshot.py -v --no-header 2>&1 | grep PASSED
+# 29 tests pass:
+#   test_decode_bpftool_entry_valid
+#   test_decode_bpftool_entry_top_level_fields
+#   test_decode_bpftool_entry_default_family_proto
+#   test_decode_bpftool_entry_rejects_negative_counters
+#   test_decode_bpftool_entry_rejects_invalid_direction
+#   test_decode_bpftool_entry_rejects_invalid_family
+#   test_validate_map_path_inside_root
+#   test_validate_map_path_rejects_traversal
+#   test_validate_map_path_rejects_escape
+#   test_run_bpftool_success
+#   test_run_bpftool_nonzero_exit
+#   test_run_bpftool_oversized_output
+#   test_refresh_returns_valid_snapshot
+#   test_write_snapshot_atomic_replace
+#   test_write_snapshot_permissions_not_world_writable
+#   test_write_snapshot_cleanup_temp_on_failure
+#   test_last_valid_snapshot_preserved_on_failure
+#   test_last_valid_snapshot_none_initially
+#   test_walk_cgroup_ids
+#   test_bridge_reports_missing_bpftool
+#   test_parse_bpftool_malformed_json
+#   test_parse_bpftool_non_array_output
+#   test_parse_bpftool_entry_non_dict
+#   test_daemon_bpf_disabled_by_default
+#   test_daemon_bpf_config_disabled_by_default
+#   test_daemon_bpf_config_enabled
+#   test_write_snapshot_cleans_tmp_on_rename
+#   test_bpf_snapshot_bridge_is_publicly_exported
+#   test_bpf_snapshot_error_is_publicly_exported
+```
+
+Full suite impact:
+
+```bash
+PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
+# 412 passed, 1 skipped in 49.71s
+```
+
+Blocker for live BPF snapshot bridge measurement:
+
+- ``bpftool`` is not installed on this host
+- Current uid 1003 is not root
+- ``/sys/fs/bpf/groop`` is not writable
+- No pinned BPF maps exist under ``/sys/fs/bpf/groop``
+- The P17 BPF gate remains the authoritative preflight check
+- No ``cgroup_skb`` BPF program is compiled or pinned in the repo
+
 Key overhead characteristics (userspace-only, no kernel BPF):
 
 - Snapshot parse: ~1ms for a 2KB JSON file with 14 map entries
