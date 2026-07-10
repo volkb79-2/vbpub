@@ -53,25 +53,28 @@ def _annotate_host_network_loss(frame: Frame) -> None:
     net_devices = meta.get("net_devices")
     if not isinstance(net_devices, list):
         return
+    root_ef.findings = [
+        finding for finding in root_ef.findings if finding.rule_id != "host_network_loss"
+    ]
 
     dropping: list[str] = []
     for device in net_devices:
         if not isinstance(device, dict):
             continue
         name = str(device.get("name", "?"))
-        rx_d = device.get("rx_drops_s")
-        tx_d = device.get("tx_drops_s")
-        rx_e = device.get("rx_errors_s")
-        tx_e = device.get("tx_errors_s")
+        rx_d = _positive_float(device.get("rx_drops_s"))
+        tx_d = _positive_float(device.get("tx_drops_s"))
+        rx_e = _positive_float(device.get("rx_errors_s"))
+        tx_e = _positive_float(device.get("tx_errors_s"))
         reasons: list[str] = []
-        if rx_d is not None and float(rx_d) > 0:
-            reasons.append(f"rx drops {float(rx_d):.1f}/s")
-        if tx_d is not None and float(tx_d) > 0:
-            reasons.append(f"tx drops {float(tx_d):.1f}/s")
-        if rx_e is not None and float(rx_e) > 0:
-            reasons.append(f"rx errors {float(rx_e):.1f}/s")
-        if tx_e is not None and float(tx_e) > 0:
-            reasons.append(f"tx errors {float(tx_e):.1f}/s")
+        if rx_d is not None:
+            reasons.append(f"rx drops {rx_d:.1f}/s")
+        if tx_d is not None:
+            reasons.append(f"tx drops {tx_d:.1f}/s")
+        if rx_e is not None:
+            reasons.append(f"rx errors {rx_e:.1f}/s")
+        if tx_e is not None:
+            reasons.append(f"tx errors {tx_e:.1f}/s")
         if reasons:
             dropping.append(f"host interface {name} has loss/errors ({'; '.join(reasons)})")
 
@@ -92,3 +95,13 @@ def _annotate_host_network_loss(frame: Frame) -> None:
         confidence="exact",
     )
     root_ef.findings.append(finding)
+
+
+def _positive_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None

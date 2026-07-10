@@ -51,9 +51,13 @@ counters while keeping per-cgroup attribution explicitly in the v2 BPF domain.
 | `test_ui_banner.py` | `test_banner_shows_loss_annotation_when_drops_nonzero` | LOSS annotation appears when non-zero |
 | `test_ui_banner.py` | `test_banner_shows_no_loss_annotation_when_all_zero` | No LOSS annotation when all zero |
 | `test_ui_banner.py` | `test_banner_loss_annotation_omits_none_values` | None values (collecting) produce no annotation |
+| `test_ui_banner.py` | `test_banner_loss_annotation_ignores_malformed_rates` | Malformed replay metadata does not crash or produce false LOSS text |
 | `test_diag.py` | `test_annotate_adds_host_network_loss_finding` | Finding created on root entity with correct wording |
 | `test_diag.py` | `test_annotate_no_host_network_loss_when_zero` | No finding when all rates zero |
 | `test_diag.py` | `test_annotate_no_host_network_loss_when_no_meta` | No finding when host_meta absent |
+| `test_diag.py` | `test_annotate_preserves_existing_host_network_loss_when_no_meta` | Existing replay finding is preserved when host_meta is absent |
+| `test_diag.py` | `test_annotate_host_network_loss_replaces_existing_finding` | Repeated annotation replaces its own host finding without duplicating |
+| `test_diag.py` | `test_annotate_host_network_loss_ignores_malformed_rates` | Malformed replay metadata is ignored safely |
 
 Plus updates to all existing `test_host_device.py` rate tests to include the
 new `rx_errors`, `rx_drop`, `tx_errors`, `tx_drop` fields in test data, and
@@ -70,14 +74,14 @@ schema changes.
 
 ## Test evidence
 
-### Full suite (345 passed)
+### Full suite (349 passed)
 
 ```bash
-PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 345 passed in 39.28s
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 349 passed in 40.95s
 ```
 
-### Focused P37 tests (9 new + updated existing)
+### Focused P37 tests (13 new + updated existing)
 
 ```text
 groop/tests/test_host_device.py::test_net_dev_counters_includes_drops_and_errors PASSED
@@ -86,15 +90,19 @@ groop/tests/test_host_device.py::test_apply_host_device_rates_drop_error_reset_h
 groop/tests/test_ui_banner.py::test_banner_shows_loss_annotation_when_drops_nonzero PASSED
 groop/tests/test_ui_banner.py::test_banner_shows_no_loss_annotation_when_all_zero PASSED
 groop/tests/test_ui_banner.py::test_banner_loss_annotation_omits_none_values PASSED
+groop/tests/test_ui_banner.py::test_banner_loss_annotation_ignores_malformed_rates PASSED
 groop/tests/test_diag.py::test_annotate_adds_host_network_loss_finding PASSED
 groop/tests/test_diag.py::test_annotate_no_host_network_loss_when_zero PASSED
 groop/tests/test_diag.py::test_annotate_no_host_network_loss_when_no_meta PASSED
+groop/tests/test_diag.py::test_annotate_preserves_existing_host_network_loss_when_no_meta PASSED
+groop/tests/test_diag.py::test_annotate_host_network_loss_replaces_existing_finding PASSED
+groop/tests/test_diag.py::test_annotate_host_network_loss_ignores_malformed_rates PASSED
 ```
 
 ### py_compile clean on all changed files
 
 ```bash
-python3 -m py_compile \
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile \
   groop/src/groop/collect/host.py \
   groop/src/groop/collect/collector.py \
   groop/src/groop/ui/banner.py \
@@ -123,10 +131,10 @@ python3 -m py_compile \
 | `groop/src/groop/collect/host.py` | Extended `_net_dev_counters()` to parse `rx_errors`, `rx_drop`, `tx_errors`, `tx_drop` |
 | `groop/src/groop/collect/collector.py` | Extended `_apply_host_device_rates()` to compute `rx_errors_s`, `rx_drops_s`, `tx_errors_s`, `tx_drops_s` |
 | `groop/src/groop/ui/banner.py` | Added LOSS annotation to `_net_device_line()`, added `_fmt_loss_rate()` |
-| `groop/src/groop/diag/__init__.py` | Added `_annotate_host_network_loss()`, wired into `annotate()` |
+| `groop/src/groop/diag/__init__.py` | Added `_annotate_host_network_loss()`, wired into `annotate()`, with deduplication, replay preservation, and malformed metadata tolerance |
 | `groop/tests/test_host_device.py` | Added 3 new tests, updated 4 existing tests for new fields |
-| `groop/tests/test_ui_banner.py` | Added 3 new tests for LOSS annotation display |
-| `groop/tests/test_diag.py` | Added 3 new tests for host network loss finding |
+| `groop/tests/test_ui_banner.py` | Added 4 new tests for LOSS annotation display and malformed-rate tolerance |
+| `groop/tests/test_diag.py` | Added 6 new tests for host network loss finding behavior |
 | `groop/tests/fixtures/frames/gstammtisch-once.jsonl` | Updated net_devices entry with new fields |
 | `groop/docs/STATUS.md` | Updated diagnostics input notes |
 | `groop/handoff/reports/P37-LOG.md` | Work log |

@@ -276,3 +276,29 @@ def test_banner_loss_annotation_omits_none_values() -> None:
     line = next(l for l in snapshot.lines if l.startswith("NET"))
     assert "LOSS" not in line
     assert "collecting" in line
+
+
+def test_banner_loss_annotation_ignores_malformed_rates() -> None:
+    frame = _make_base_frame()
+    frame.host_meta = {
+        "net_devices": [
+            {
+                "name": "eth0",
+                "rx_bps": 1000.0,
+                "tx_bps": 500.0,
+                "rx_pps": 10.0,
+                "tx_pps": 5.0,
+                "rx_drops_s": "bad",
+                "tx_drops_s": -1.0,
+                "rx_errors_s": None,
+                "tx_errors_s": 0.0,
+                "src": "host",
+            },
+        ],
+    }
+
+    snapshot = render_banner(frame, GroopConfig())
+    line = next(l for l in snapshot.lines if l.startswith("NET"))
+
+    assert "LOSS" not in line
+    assert "eth0" in line

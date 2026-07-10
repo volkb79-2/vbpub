@@ -333,3 +333,83 @@ def test_annotate_no_host_network_loss_when_no_meta() -> None:
     annotate(frame, CONFIG)
     host_finding = next((f for f in root_ef.findings if f.rule_id == "host_network_loss"), None)
     assert host_finding is None
+
+
+def test_annotate_preserves_existing_host_network_loss_when_no_meta() -> None:
+    root_entity = Entity(key="", kind="root", parent=None)
+    root_ef = EntityFrame(
+        entity=root_entity,
+        metrics={},
+        findings=[Finding("host_network_loss", "warn", "preserved")],
+    )
+    frame = Frame(1, 100.0, 5.0, {}, {"": root_ef})
+
+    annotate(frame, CONFIG, preserve_existing_findings=True)
+
+    assert [finding.rule_id for finding in root_ef.findings] == ["host_network_loss"]
+    assert root_ef.findings[0].message == "preserved"
+
+
+def test_annotate_host_network_loss_replaces_existing_finding() -> None:
+    root_entity = Entity(key="", kind="root", parent=None)
+    root_ef = EntityFrame(
+        entity=root_entity,
+        metrics={},
+        findings=[
+            Finding("host_network_loss", "warn", "old"),
+            Finding("other", "info", "keep"),
+        ],
+    )
+    frame = Frame(
+        1,
+        100.0,
+        5.0,
+        host={},
+        entities={"": root_ef},
+        host_meta={
+            "net_devices": [
+                {
+                    "name": "eth0",
+                    "rx_drops_s": 5.0,
+                    "tx_drops_s": 0.0,
+                    "rx_errors_s": 0.0,
+                    "tx_errors_s": 0.0,
+                },
+            ],
+        },
+    )
+
+    annotate(frame, CONFIG, preserve_existing_findings=True)
+    annotate(frame, CONFIG, preserve_existing_findings=True)
+
+    ids = [finding.rule_id for finding in root_ef.findings]
+    assert ids.count("host_network_loss") == 1
+    assert ids.count("other") == 1
+    assert all(finding.message != "old" for finding in root_ef.findings)
+
+
+def test_annotate_host_network_loss_ignores_malformed_rates() -> None:
+    root_entity = Entity(key="", kind="root", parent=None)
+    root_ef = EntityFrame(entity=root_entity, metrics={})
+    frame = Frame(
+        1,
+        100.0,
+        5.0,
+        host={},
+        entities={"": root_ef},
+        host_meta={
+            "net_devices": [
+                {
+                    "name": "eth0",
+                    "rx_drops_s": "not-a-number",
+                    "tx_drops_s": None,
+                    "rx_errors_s": -1.0,
+                    "tx_errors_s": 0.0,
+                },
+            ],
+        },
+    )
+
+    annotate(frame, CONFIG)
+
+    assert [finding.rule_id for finding in root_ef.findings] == []
