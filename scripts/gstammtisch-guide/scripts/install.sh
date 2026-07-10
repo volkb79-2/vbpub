@@ -32,7 +32,8 @@ chmod +x /usr/local/sbin/setup-cgroups.sh /usr/local/sbin/soulmask-shutdown.sh \
          /usr/local/sbin/soulmask-zswap-monitor.sh /usr/local/sbin/soulmask-zswap-monitor.py \
          /usr/local/sbin/soulmask-mempress.sh \
          /usr/local/sbin/soulmask-startup-cgroup.sh /usr/local/sbin/soulmask-pak-mempress.sh \
-         /usr/local/sbin/soulmask-cgroup-watcher.sh /usr/local/sbin/io-baseline.sh
+         /usr/local/sbin/soulmask-cgroup-watcher.sh /usr/local/sbin/io-baseline.sh \
+         /usr/local/sbin/container-mempress.sh
 # soulmask-instance-lib.sh is sourced only (not directly executed) — no +x needed.
 # /etc/gstammtisch/instance-defaults.env + instances.d/*.env came in via the
 # etc/ copy above — see SOULMASK.md "Multi-instance operations".
