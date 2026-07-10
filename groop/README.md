@@ -109,7 +109,7 @@ Useful feature hotkeys in the TUI:
 | P47 | Queued | Daemon component health | v2 daemon | Expose bounded collector/BPF/paddr lifecycle health through the read-only daemon protocol after P44. Handoff: `handoff/P47-daemon-component-health.md`. |
 | P48 | Queued | Journald inspection snapshot | v2 inspection | Add a gated, fixed-argv, bounded non-following journal snapshot after P45. Handoff: `handoff/P48-inspect-files-journal-snapshot.md`. |
 | P49 | Queued | systemd memory governance | v2 actions | Add structured, stale-safe `memory.high` set-property preview/execution after P46. Handoff: `handoff/P49-systemd-memory-governance.md`. |
-| P50 | Queued | Mouse table interactions | v1 UX | Add Textual-native clickable header sorting and row drill-down with keyboard parity and stable refresh behavior. Handoff: `handoff/P50-mouse-table-interactions.md`. |
+| P50 | Done | Mouse table interactions | v1 UX | Textual-native clickable header sorting and row drill-down with keyboard parity and stable refresh behavior. Handoff: `handoff/P50-mouse-table-interactions.md`. |
 | P51 | Queued | Daemon sampling fan-out | v2 daemon | Make one background producer advance frames independently of clients and serve fresh non-consuming current/history data. Handoff: `handoff/P51-daemon-sampling-fanout.md`. |
 | P52 | Queued | Versioned daemon read API | v2/v3 API | Add capability negotiation, bounded health/history/entity reads, sensitivity metadata, and peer identity for separate frontends. Handoff: `handoff/P52-versioned-daemon-read-api.md`. |
 

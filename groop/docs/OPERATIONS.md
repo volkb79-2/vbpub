@@ -159,6 +159,26 @@ Start a manual paddr host heat session from CLI:
 sudo groop damon paddr start --confirm START
 ```
 
+## Mouse Interactions (P50)
+
+The entity table is a Textual-native interactive ``DataTable``. Mouse support
+requires a terminal that sends mouse events (most modern terminals do; SSH
+with ``-o ForwardX11=no`` also works).
+
+| Mouse action | Effect |
+|---|---|
+| Click a column header | Sort by that column. Default direction: name ascending, numeric descending. Repeated click toggles direction. |
+| Click a row | Move cursor to that row (updates selection). |
+| Double-click a row (or click + Enter) | Open entity drill-down screen for that row. |
+| Click on a placeholder row ("no container rows", "no rows") | No-op — drill-down is never opened for empty placeholders. |
+
+Column headers show ``^`` (ascending) or ``v`` (descending) on the active sort
+column. The status line also shows the current sort key and direction.
+
+All keyboard bindings continue to work when no mouse is available: Up/Down,
+Enter, Left/Right for tree collapse/expand, Home/End for replay jump,
+PageUp/PageDown for scrolling, and all function keys.
+
 ## TUI Keys
 
 | Key | Action |
@@ -169,8 +189,8 @@ sudo groop damon paddr start --confirm START
 | `/` | Filter rows. |
 | `Left`, `h` | Collapse selected tree branch or move to parent. |
 | `Right`, `l` | Expand selected tree branch. |
-| `Up`, `Down` | Move selection. |
-| `Enter` | Entity drill-down. |
+| `Up`, `Down` | Move selection (or click rows). |
+| `Enter` | Entity drill-down (also triggered by row click on highlighted row). |
 | `d` | From entity drill-down: open DAMON vaddr typed-confirmation start modal. |
 | `p` | From host-memory screen: open DAMON paddr typed-confirmation start modal. |
 | `s` | From DAMON drill/host-memory screens: stop groop-owned DAMON sessions only. |

@@ -309,13 +309,13 @@ def _visible_entities(frame: Frame, *, container_only: bool, filter_text: str) -
     return rows
 
 
-def _sort_rows(entity_frames: list[EntityFrame], sort_by: str) -> list[EntityFrame]:
-    if sort_by == "name":
-        return sorted(entity_frames, key=lambda entity_frame: display_name(entity_frame.entity).lower())
+def _sort_rows(entity_frames: list[EntityFrame], sort_by: str, *, reverse: bool | None = None) -> list[EntityFrame]:
+    if reverse is None:
+        reverse = sort_by != "name"  # name asc by default; numeric desc
     return sorted(
         entity_frames,
-        key=lambda entity_frame: metric_sort_value(sort_by, entity_frame),
-        reverse=True,
+        key=lambda entity_frame: display_name(entity_frame.entity).lower() if sort_by == "name" else metric_sort_value(sort_by, entity_frame),
+        reverse=reverse,
     )
 
 
@@ -452,3 +452,53 @@ def _format_cpu_trend(entity_key: str, ring: HistoryRing | None) -> Text:
     if not trend:
         return Text("-", style="dim")
     return Text(trend)
+
+
+# ── DataTable extraction helpers (P50) ────────────────────────────────
+
+
+def render_data_table_container(
+    frame: Frame,
+    config: GroopConfig,
+    *,
+    width: int,
+    profile: str,
+    sort_by: str,
+    sort_reverse: bool | None = None,
+    filter_text: str,
+    ring: HistoryRing | None = None,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], list[list]]:
+    """Return (column_keys, column_labels, row_keys, rows) for a
+    DataTable-compatible container view.
+
+    *rows* is a list of lists of ``Text`` renderables suitable for
+    ``DataTable.add_row(*cells)``.  Empty rows get a placeholder entry.
+    Selection markers are omitted — the DataTable shows its own cursor.
+    """
+    layout = resolve_profile(config, width=width, profile=profile)
+    entity_frames = _visible_entities(frame, container_only=True, filter_text=filter_text)
+    ordered = _sort_rows(entity_frames, sort_by, reverse=sort_reverse)
+    col_labels = tuple(header_label(c) for c in layout.columns)
+    row_keys: list[str] = []
+    rows: list[list] = []
+    for entity_frame in ordered:
+        row_keys.append(entity_frame.entity.key)
+        rows.append(_row_cells_no_selection(layout.columns, entity_frame, ring=ring))
+    if not row_keys:
+        row_keys = ["__empty__"]
+        rows.append([Text("no container rows")] + [Text("")] * (max(0, len(layout.columns) - 1)))
+    return (layout.columns, col_labels, tuple(row_keys), rows)
+
+
+def _row_cells_no_selection(
+    columns: tuple[str, ...],
+    entity_frame: EntityFrame,
+    *,
+    ring: HistoryRing | None = None,
+) -> list:
+    """Cell list without the ``> `` selection marker.
+
+    The first cell (name) has no prefix; the DataTable cursor provides
+    visual highlighting instead.
+    """
+    return [format_metric_value(c, entity_frame, ring=ring) for c in columns]

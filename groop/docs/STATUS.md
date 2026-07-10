@@ -28,8 +28,12 @@ Queued follow-ups P47-P49 continue those same three streams after review:
 daemon component health, bounded journald snapshots, and structured
 `memory.high` governance. They are not current implementation claims.
 
-P50 is queued as a non-privileged usability slice for clickable table sorting
-and row drill-down. Current builds remain keyboard-first until it is reviewed.
+P50 is done. The entity table now uses a MouseTable (DataTable subclass) with
+clickable header sorting (toggle direction), row click/highlight drill-down,
+native keyboard up/down/Enter, left/right tree collapse/expand, and stable
+cursor restoration across refreshes. Ten focused pilot tests cover header
+clicks, direction toggles, row drill-down, empty rows, refresh retention,
+and keyboard parity.
 
 Daemon sampling is currently request-driven: `current` caches the first frame
 and `stream` advances the source. P51 is queued to make one background producer
@@ -120,6 +124,14 @@ core workflows, not yet production-certified.**
   HistoryRing data, rendered as compact ASCII sparkline in entity table
   profiles at sufficient width, plus a reusable `groop/ui/sparkline.py`
   helper for ASCII-only trend rendering.
+- Textual-native interactive entity table (`groop/ui/data_table.py`):
+  clickable column headers sort with direction toggle (^/v indicators);
+  row highlight updates `selected_key`; row click or Enter opens the
+  same drill-down screen; empty placeholder rows never open a drill-down;
+  native DataTable cursor for up/down/Enter with keyboard parity;
+  left/right delegated for tree collapse/expand; sort direction shown
+  in both column headers and status line; cursor restored stably across
+  live and replay refreshes.
 
 ## Partially Implemented
 
@@ -205,11 +217,11 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent combined validation after P44-P46 review:
+Most recent combined validation after P50 mouse table interactions:
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 623 passed, 1 skipped in 48.05s
+# 633 passed, 1 skipped in 53.20s
 ```
 
 Also validated:
@@ -217,6 +229,9 @@ Also validated:
 - P44 focused paddr lifecycle tests: `22 passed in 0.17s`.
 - P45 focused inspect-files tests: `113 passed in 0.64s`.
 - P46 focused action execution tests: `129 passed in 0.45s`.
-- Combined P44/P45/P46 focused regression: `264 passed in 1.12s`.
+- P50 focused mouse table tests: `10 passed in 4.37s`.
+- Combined P44/P45/P46/P50 focused regression: `274 passed in 5.58s`.
 - Full-source `py_compile` clean on all changed/new files.
 - Module-level imports and gate logic verified without real Docker/systemd.
+- Mouse support degrades harmlessly: DataTable falls back to keyboard-only
+  when the terminal sends no mouse events.

@@ -64,7 +64,7 @@ flowchart TD
     P44 --> P47[P47 Daemon component health]
     P45 --> P48[P48 Journald snapshot]
     P46 --> P49[P49 memory.high governance]
-    P43 --> P50[P50 Mouse table interactions]
+    P43 -.-> P50[P50 Mouse table interactions :done:]
     P16 --> P51[P51 Daemon sampling fanout]
     P47 --> P52[P52 Versioned read API]
     P51 --> P52
@@ -130,7 +130,7 @@ Handoffs: `handoff/P47-daemon-component-health.md`,
 
 ### P50 - Mouse Table Interactions
 
-Status: queued. Move the entity table to a Textual-native interactive surface
+Status: done. The entity table uses a Textual-native interactive surface
 so header clicks sort/toggle direction and row clicks open drill-down, while
 retaining keyboard navigation and P41 formatted-cell fidelity.
 

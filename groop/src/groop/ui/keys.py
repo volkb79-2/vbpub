@@ -26,10 +26,7 @@ BINDINGS = (
     Binding("k", "reserved_v2_action", "Admin", show=False),
     Binding("x", "create_snapshot", "Snapshot"),
     Binding("m", "open_host_memory", "Memory"),
-    Binding("enter", "open_drill", "Detail", show=False),
     Binding("escape", "close_overlay", "Back", show=False),
-    Binding("up", "select_prev", "Up", show=False),
-    Binding("down", "select_next", "Down", show=False),
     Binding("f1", "open_help", "Help"),
     Binding("question_mark", "open_help", "Help", show=False),
 )

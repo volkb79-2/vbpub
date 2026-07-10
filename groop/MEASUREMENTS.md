@@ -634,6 +634,49 @@ Blocker for live daemon paddr measurement:
 - P44 lifecycle testing uses injectable fixture seams (damon_root, state_dir,
   require_root=False, is_root=...) and does not mutate host sysfs.
 
+## P50 Mouse Table Interactions Evidence (2026-07-10)
+
+P50 replaces the non-interactive Rich-table `Static` body with a Textual-native
+`MouseTable(DataTable)` subclass supporting clickable column headers and row
+drill-down.
+
+### P50 Focused Tests
+
+- 10 P50-specific pilot tests pass in 4.37s
+- Covers: header click sort by column, header click toggle direction,
+  row highlight updates selected_key, row click/Enter opens drill-down,
+  empty placeholder rows never open drill-down, refresh preserves cursor,
+  keyboard parity up/down native, keyboard parity Enter drill-down,
+  keyboard parity left/right tree collapse/expand, container view keys harmless
+
+### P50 Full Suite
+
+```bash
+cd groop && python3 -m pytest tests/ -q
+# 633 passed, 1 skipped in 53.20s
+```
+
+### P50 Key Changes
+
+- Replaced `Static(id="body")` with `MouseTable(id="body-table")` in compose
+- Removed `rich.console.Group` and Rich `Table` body rendering
+- `_refresh_view` calls `_populate_table` which builds DataTable content
+  via the production cell-formatting path (`format_metric_value`)
+- Sort direction tracked via `sort_reverse: bool`; header click toggles it
+- Column labels show `^` (ascending) or `v` (descending) indicator on
+  active column
+- Keyboard: up/down/Enter handled natively by DataTable; left/right delegated
+  to app for tree collapse/expand; home/end consumed by app for replay
+- P41 rendered replay fidelity remains green: all cell formatting still goes
+  through `format_metric_value`, `_sort_rows` accepts `reverse` parameter,
+  selection markers are omitted (DataTable cursor provides highlighting)
+
+### Degradation
+
+Mouse support degrades harmlessly: when the terminal sends no mouse events,
+the DataTable falls back to keyboard-only operation. All 23 pre-P50 tests pass
+with the same key presses.
+
 ## Release Signoff Template
 
 - Release/tag:

@@ -616,3 +616,234 @@ def test_pilot_damon_stop_surface_stops_only_groop_owned_sessions(tmp_path: Path
         assert not (state_dir / "damon" / "kdamond-1.json").exists()
 
     asyncio.run(run())
+
+
+# ── P50: Mouse Table Interactions ─────────────────────────────────────────
+
+
+GAME_KEY_2 = "besteffort.slice/docker-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.scope"
+
+
+def test_p50_header_click_sorts_by_column() -> None:
+    """Click a column header to sort by it; repeated click toggles direction."""
+    async def run() -> None:
+        from textual.widgets._data_table import ColumnKey
+        from rich.text import Text
+
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            # Default sort is pressure descending (vpressure)
+            assert "vpressure" in _status_text(app)
+
+            # Post a HeaderSelected for the ram column
+            ram_idx = mt._col_keys.index("ram")
+            mt.post_message(mt.HeaderSelected(mt, ColumnKey("ram"), ram_idx, Text("RAM")))
+            await pilot.pause()
+            assert "vram" in _status_text(app)  # ram descending by default
+
+            # Click RAM again to toggle direction
+            mt.post_message(mt.HeaderSelected(mt, ColumnKey("ram"), ram_idx, Text("RAM")))
+            await pilot.pause()
+            assert "^ram" in _status_text(app)  # now ascending
+
+    asyncio.run(run())
+
+
+def test_p50_header_click_toggles_direction() -> None:
+    """Repeated header click on same column toggles asc/desc."""
+    async def run() -> None:
+        from textual.widgets._data_table import ColumnKey
+        from rich.text import Text
+
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            # Sort by name (ascending by default)
+            name_idx = mt._col_keys.index("name")
+            mt.post_message(mt.HeaderSelected(mt, ColumnKey("name"), name_idx, Text("NAME")))
+            await pilot.pause()
+            assert "^name" in _status_text(app)
+
+            # Toggle to descending
+            mt.post_message(mt.HeaderSelected(mt, ColumnKey("name"), name_idx, Text("NAME")))
+            await pilot.pause()
+            assert "vname" in _status_text(app)
+
+            # Toggle back to ascending
+            mt.post_message(mt.HeaderSelected(mt, ColumnKey("name"), name_idx, Text("NAME")))
+            await pilot.pause()
+            assert "^name" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_p50_row_highlight_updates_selected_key() -> None:
+    """Cursor movement (click row / up/down) updates selected_key."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            # Initially cursor is at row 0 (root entity "")
+            assert app.selected_key in ("", app._visible_row_keys[0])
+
+            # Press down to move cursor
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.selected_key == app._visible_row_keys[1]
+
+    asyncio.run(run())
+
+
+def test_p50_row_click_drilldown() -> None:
+    """Row click or Enter opens drill-down for real entities."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            # Navigate to a visible entity row and press Enter
+            await pilot.press("down")
+            await pilot.pause()
+            # Row 1 should be a real entity
+            rk = app._visible_row_keys[1]
+            assert not rk.startswith("__empty__")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DrillDownScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+
+    asyncio.run(run())
+
+
+def test_p50_empty_placeholder_does_not_open_drill() -> None:
+    """Enter on an empty placeholder row is a no-op (no drill-down)."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            # Force a filter that produces no matches to create empty state
+            app.filter_text = "ZZZZ_NONEXISTENT_ZZZZ"
+            app._refresh_view()
+            await pilot.pause()
+            assert len(app._visible_row_keys) == 1
+            assert app._visible_row_keys[0].startswith("__empty__")
+
+            # Enter on the empty placeholder
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not isinstance(app.screen, DrillDownScreen)
+
+    asyncio.run(run())
+
+
+def test_p50_refresh_preserves_cursor() -> None:
+    """Refresh (live update) restores cursor to the previously selected row."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            initial_key = app.selected_key
+
+            # Trigger a refresh
+            app._refresh_view()
+            await pilot.pause()
+            assert app.selected_key == initial_key
+
+    asyncio.run(run())
+
+
+def test_p50_keyboard_parity_up_down_native() -> None:
+    """Up/Down keys navigate rows via DataTable native cursor."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            mt = app.query_one("#body-table")
+
+            initial = app.selected_key
+            # Press down
+            await pilot.press("down")
+            await pilot.pause()
+            after_down = app.selected_key
+            assert after_down != initial, "down should change selection"
+            # Press up to return
+            await pilot.press("up")
+            await pilot.pause()
+            assert app.selected_key == initial
+
+    asyncio.run(run())
+
+
+def test_p50_keyboard_parity_enter_drilldown() -> None:
+    """Enter key opens drill-down (parity with old keyboard workflow)."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            # Navigate to a real entity row
+            for _ in range(2):
+                await pilot.press("down")
+                await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DrillDownScreen)
+
+    asyncio.run(run())
+
+
+def test_p50_keyboard_parity_left_right_tree() -> None:
+    """Left/Right keys collapse/expand tree branches."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            assert app.view_mode == "tree"
+            full_count = len(app._visible_row_keys)
+            assert full_count > 1  # has children
+
+            # Left on root should collapse all children
+            await pilot.press("left")
+            await pilot.pause()
+            assert app._visible_row_keys == ("",)
+
+            # Right on root should expand all children
+            await pilot.press("right")
+            await pilot.pause()
+            assert len(app._visible_row_keys) == full_count
+
+    asyncio.run(run())
+
+
+def test_p50_container_view_keys_work() -> None:
+    """In container view, left/right/home/end are harmless (or replay-only)."""
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            app.view_mode = "container"
+            app._refresh_view()
+            await pilot.pause()
+            assert app.view_mode == "container"
+            assert len(app._visible_row_keys) > 0
+
+            # left/right should not break anything in container mode
+            await pilot.press("left")
+            await pilot.pause()
+            await pilot.press("right")
+            await pilot.pause()
+            assert app.view_mode == "container"
+
+    asyncio.run(run())
