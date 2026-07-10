@@ -189,12 +189,12 @@ tier**, not by swap/zswap tuning.
 | `cpu.max` | `max` (no hard cap — proportional only) | `max` | optional soft: leave `max`, rely on weight |
 | `memory.min` (`MemoryMin`) | **5 G** game floor (+ pak, see §4) | 0 (responsiveness via cpu/io weight, not a floor) | **0** |
 | `memory.low` (`MemoryLow`) | 12 G (best-effort soft protection) | 2 G | 0 |
-| `memory.high` (`MemoryHigh`) | 6 G (production band ceiling) | **5 G** (soft throttle → spill to zswap) | **4 G** (whole tier) |
-| `memory.max` (`MemoryMax`) | `max` (min+high band already governs it) | **7 G** (don't OOM the IDE; headroom above high) | **6 G** (whole tier — hard host-safety cap) |
-| `memory.swap.max` | keep `max`; `zswap.writeback=0` (never to disk) | `max` | `max` (spill freely) |
-| `memory.zswap.writeback` | **0** (game never spills to disk swap) | 0 | **1** (cold best-effort → disk, frees zswap pool) |
+| `memory.high` (`MemoryHigh`) | 6 G (production band ceiling) | **5 G** (soft throttle → spill to zswap) | **8 G** (whole tier; was 4 G — 2026-07-10, plan-stack-resource-tuning.md D1) |
+| `memory.max` (`MemoryMax`) | `max` (min+high band already governs it) | **7 G** (don't OOM the IDE; headroom above high) | **12 G** (whole tier — hard host-safety cap; was 6 G — 2026-07-10, D1) |
+| `memory.swap.max` | keep `max`; `zswap.writeback=0` (never to disk) | `max` | **24 G** (leak-stopper; was `max`/12 G — 2026-07-10, D1) |
+| `memory.zswap.writeback` | **0** (game never spills to disk swap) | 0 (2026-07-10: actually applied by setup-cgroups.sh — was a documented-but-unimplemented gap, see PKG-1 in plan-stack-resource-tuning.md) | **1** (cold best-effort → disk, frees zswap pool) |
 | `io.weight` (BFQ) | **4950** (`io.bfq.weight` 1000) | 100 (default) | **10** (`io.bfq.weight` 1) |
-| `io.max` (hard IOPS/bps) | none | none | **builders/test-runner: `rbps=31M wbps=31M riops=100 wiops=400`** |
+| `io.max` (hard IOPS/bps) | none | none | **dynamic (2026-07-10, D2): `BE_IO_CAP_PCT`% (default 40%) of the measured `io-baseline.env` ceilings, applied by `setup-cgroups.sh` via `systemctl set-property --runtime besteffort.slice`; the unit's static `rbps=31M wbps=31M riops=100 wiops=400` is now only a boot-window fallback before that runs.** (Per-container builders/test-runner caps are separate — still `IO_CAP_PCT` default 80% of baseline, §setup-cgroups.sh.) |
 | systemd-oomd | off | off | **`ManagedOOMMemoryPressure=kill` @60% / `ManagedOOMSwap=kill`** |
 
 Rationale for weights vs caps: with ~7 idle cores, CPU is proportional (`cpu.weight`),
@@ -223,9 +223,10 @@ services:
   # <svc>: { cgroup_parent: besteffort.slice, mem_limit: 1g, mem_reservation: 256m }
 ```
 `mem_limit` → container `memory.max` (leak containment per service); the
-`besteffort.slice` (below) adds the tier-wide `MemoryMax=6G` host-safety cap and OOM
-policy. `cgroup_parent` places every dstdns container under the slice so the slice caps
-and cpu/io weights actually apply.
+`besteffort.slice` (below) adds the tier-wide `MemoryMax=12G` host-safety cap (was 6G
+— relaxed 2026-07-10, plan-stack-resource-tuning.md D1) and OOM policy. `cgroup_parent`
+places every dstdns container under the slice so the slice caps and cpu/io weights
+actually apply.
 
 **(b) INTERACTIVE — devcontainer.** Add to `.devcontainer/devcontainer.json`:
 ```json
@@ -255,11 +256,14 @@ is the only mechanism that can set a floor, and it already works. Two hardening 
 Description=Best-effort test stack — bounded, OOM-first, yields to prod+interactive
 Before=slices.target
 [Slice]
-MemoryHigh=4G
-MemoryMax=6G                 # hard host-safety cap: a leak here can never poison the host
+MemoryHigh=8G                # was 4G — relaxed 2026-07-10, plan-stack-resource-tuning.md D1
+MemoryMax=12G                # hard host-safety cap: a leak here can never poison the host (was 6G)
+MemorySwapMax=24G            # leak-stopper before MemoryMax fires (was 12G)
 CPUWeight=20
 IOWeight=10
-# hard IO cap for the whole tier's disk noise (device from `findmnt -no MAJ:MIN --target /var/lib/docker`)
+# BOOT-WINDOW FALLBACK ONLY (device from `findmnt -no MAJ:MIN --target /var/lib/docker`).
+# setup-cgroups.sh overrides these at runtime from the measured io-baseline.env
+# at BE_IO_CAP_PCT% (default 40%) once it runs post-boot — see D2, PKG-1.
 IOReadBandwidthMax=/dev/vda 31M
 IOWriteBandwidthMax=/dev/vda 31M
 IOReadIOPSMax=/dev/vda 100
@@ -378,7 +382,13 @@ to zswap/swap).
 | `test-runner` | BEST-EFFORT | — | 4 G (+ io.max) | 0 |
 | `buildx_buildkit_*` (builds) | BEST-EFFORT | — | 4 G (+ io.max) | 0 |
 | controller / webapp-* / vault / consul / redis / minio / adminer / pgadmin / docker-stats-exporter | BEST-EFFORT | — | 512 M–1 G each | 0 |
-| **`besteffort.slice` aggregate** | — | 4 G | **6 G (host-safety cap)** | 0 |
+| **`besteffort.slice` aggregate** | — | 8 G (was 4 G) | **12 G (host-safety cap; was 6 G)** | 0 |
+
+> 2026-07-10 (plan-stack-resource-tuning.md D1): besteffort tier relaxed to
+> `MemoryHigh=8G`/`MemoryMax=12G`/`MemorySwapMax=24G` — tests mostly
+> un-throttled; Soulmask's `memory.min` floor + `interactive.slice`'s
+> `memory.low` claw RAM back reactively, and oomd kill remains the leak
+> backstop. Per-container `mem_limit`s above are unchanged.
 
 Budget sanity: protected = 5 G game floor + 2 G pak = **7 G < 16 G RAM** → ~9 GB left for
 the zswap pool + interactive working set + best-effort. Best-effort is *deliberately*
@@ -443,7 +453,8 @@ Apply in this order — **safety first, throttles last** (throttles carry over-r
 risk and need a build to validate):
 
 1. **[SAFETY — apply first, low risk] Best-effort `memory.max` caps.** Add
-   `mem_limit` per dstdns service (§5) + create `besteffort.slice` with `MemoryMax=6G` +
+   `mem_limit` per dstdns service (§5) + create `besteffort.slice` with `MemoryMax=6G`
+   (superseded 2026-07-10 → `12G`, plan-stack-resource-tuning.md D1) +
    `cgroup_parent` on the compose stack. This alone prevents a future leak (or the current
    authentik-worker) from swap-poisoning the host. Risk: a container OOM-killed if its
    cap is too low → start generous, tighten later. **Do the authentik-worker
@@ -462,7 +473,11 @@ risk and need a build to validate):
    **`buildx_buildkit_*`** (currently untargeted — the real pak-evicting IO source) and to
    reapply independent of Soulmask restart. Risk: over-throttling makes builds crawl →
    start at 31 MB/s / 100r+400w IOPS, watch a real build, relax if builds stall
-   unacceptably while pak `mflt/s` stays ~0.
+   unacceptably while pak `mflt/s` stays ~0. (Superseded 2026-07-10 — the
+   `besteffort.slice` tier-wide `IO*Max` is now dynamic at `BE_IO_CAP_PCT`% of
+   measured `io-baseline.env` ceilings, applied by `setup-cgroups.sh`; the
+   static 31 MB/s/100r/400w values are a boot-window fallback only. See D2 in
+   plan-stack-resource-tuning.md.)
 6. **[CLEANUP] cpu.weight tiers** (800/200/20) — proportional, essentially free with 7
    idle cores; apply last as fine-tuning.
 
@@ -525,6 +540,28 @@ vm.swappiness=5`, `echo "" > .../io.max`. Nothing here is destructive; no data m
 > Readiness signal switched from RCON to the game-log `[SERVER_LIST] registe
 > server ... succeed.` line (RCON responsiveness is not a health signal).
 
+> **UPDATED 2026-07-10** (`plan-stack-resource-tuning.md` D1/D2, dstdns
+> supervisor interview — dstdns needs its full stack, 12–15 containers,
+> running for meaningful development): besteffort tier relaxed —
+> `MemoryHigh=4G→8G`, `MemoryMax=6G→12G`, `MemorySwapMax=12G→24G`. This
+> supersedes item #5 below's "8–12G" `memory.swap.max` estimate (now `24G`
+> explicitly) — tests mostly un-throttled; the game's `memory.min=6G` floor
+> and `interactive.slice`'s `memory.low` claw RAM back reactively under real
+> pressure, and systemd-oomd kill remains the leak backstop regardless of
+> ceiling size. Also: the static besteffort `IO*Max` (31M/100/400, item #7 /
+> §3.3) is now a boot-window fallback only — `setup-cgroups.sh` applies
+> dynamic slice-level `IO*Max` at `BE_IO_CAP_PCT` (default 40%) of the
+> measured `io-baseline.env` ceilings (2026-07-08 baseline: rbps 859614221,
+> wbps 206510649, riops 36069, wiops 23478) via `systemctl set-property
+> --runtime besteffort.slice`. Separately, the `interactive.slice`
+> `memory.zswap.writeback=0` gap (unit comment promised it since creation;
+> no code ever applied it) is fixed — `setup-cgroups.sh` now writes it via
+> raw cgroupfs (no systemd property exists for this attribute, same as
+> dev-workloads). Persisted in `gstammtisch-guide/files/` + `setup-cgroups.sh`
+> + `scripts/install.sh` (PKG-1); not yet applied live — see
+> `plan-stack-resource-tuning.md` "Live state" for the `--runtime` values
+> already applied on the host ahead of this persisted version landing.
+
 A second Soulmask instance (base map, clustered for character transfer — see
 `SOULMASK.md` §9) adds a second ~6 G hot set to a 16 G host. That forces a
 leaner posture than the plan above. Positions below are recommendations, not
@@ -536,7 +573,7 @@ yet applied.
 | 2 | Pak floor: protect only the hot part (~150 M?) | **Yes — and bypass zswap entirely for pak** (`memory.zswap.max=0` on the pak slice) since pak compresses 1.006× (Finding B): zswap for pak wastes CPU + RAM. Cold pak → disk directly. Measure hot pak with `vmtouch -v` under pressure (§10 M2), then set `MemoryMin` = measured hot + margin. Supersedes §4's "pin 2G". With the 2nd instance sharing one pak tmpfs, this floor is paid once. |
 | 3 | Lower `swappiness` to 5–10 to shrink buff/cache? | **No — keep 100.** Misreading: of the 3.1 G buff/cache, ~0.9 G is resident pak shmem (tmpfs counts here) and the rest is mostly executable text (game/wings/docker binaries) + Docker layer cache. Low swappiness makes the kernel drop *file* pages (code!) instead of swapping anon → major-fault storms from disk. With zswap, anon reclaim is the cheap direction; swappiness=100 is the design, not an accident (MEMORY-ARCHITECTURE §4). Per-cgroup swappiness does not exist in cgroup v2. |
 | 4 | Drop `memory.high` for prod entirely? | **Keep as pressure valve at 8 G** (well above ~6 G steady). Removing it entirely is defensible once besteffort caps exist, but high is what pre-compresses the cold tail during calm periods; without it the squeeze happens reactively under global pressure. Revisit after instance 2: two instances may need high to arbitrate between them. NEVER set high near steady RSS again (login throttling). |
-| 5 | `memory.max` only as leak insurance | Agreed — generous values, per container. **Addition: the real leak-stopper is `memory.swap.max`** — with 69 G swap, a leaking container (authentik-worker: 19 G swap) poisons swap/zswap long before any sane memory.max fires. Set `memory.swap.max` (e.g. 8–12 G) on besteffort.slice so leaks OOM inside their tier early. |
+| 5 | `memory.max` only as leak insurance | Agreed — generous values, per container. **Addition: the real leak-stopper is `memory.swap.max`** — with 69 G swap, a leaking container (authentik-worker: 19 G swap) poisons swap/zswap long before any sane memory.max fires. Set `memory.swap.max` (e.g. 8–12 G) on besteffort.slice so leaks OOM inside their tier early. **Superseded 2026-07-10: set to `24G`, see D1 addendum above.** |
 | 6 | `daemon.json` | Candidates: **`live-restore: true`** — verified against wings v1.13.1 source: wings re-attaches to running containers on its own restart by design; after a dockerd restart the attach stream dies → brief spurious offline→crash→online flap, then the crash handler re-attaches (works, but best-effort, no upstream guarantee). Net win: game survives dockerd upgrades. Also `log-opts` max-size (json logs currently unbounded), builder GC limits. Daemon-wide `"cgroup-parent"` exists (default parent for all containers that don't set one) but is unusable here: wings can't override it, so either the game would land in a capped tier or stray containers would land in the protected tier. |
 | 7 | Buildkit placement | Builder `keen_mestorf` (docker-container driver, buildx v0.35) runs unconfined. **Caveat (source-verified): the `cgroup-parent` driver-opt is silently ignored when dockerd uses the systemd cgroup driver** (this host does) — slice placement via buildx is impossible. The resource driver-opts (`memory`, `memory-swap`, `cpu-quota`, `cpu-shares`, `cpuset-cpus`; buildx ≥0.12) ARE applied unconditionally → recreate the builder with `--driver-opt memory=4g,cpu-shares=…` and add `buildx_buildkit_*` to setup-cgroups.sh bench targets for io.weight/io.max (§8 already planned). True slice placement would require running buildkitd as a systemd service (`Slice=besteffort.slice`) + a `remote`-driver builder. Note: plain `docker build` (docker driver) runs inside dockerd's own cgroup (system.slice/docker.service) — route all builds (incl. modern-debian-tools `release-bake.sh`/docker-repack) through the confined named builder via `BUILDX_BUILDER`. |
 | 8 | Devcontainer/base-image docs | Yes: `modern-debian-tools-python-debug/templates/devcontainer.json` already has a `runArgs` array — add `"--cgroup-parent=interactive.slice"` (+ document the host-side slice prerequisite in DEVCONTAINER-LIFECYCLE.md). The image can't enforce placement (cgroup is fixed at container create by the host) but can *display* effective limits in the shell banner (read /sys/fs/cgroup limits from inside). |

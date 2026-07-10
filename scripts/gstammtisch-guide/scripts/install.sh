@@ -73,6 +73,8 @@ systemctl daemon-reload
 systemctl enable --now zswap-config.service
 systemctl enable dev-workloads.slice 2>/dev/null || true
 systemctl enable soulmask-paks.slice 2>/dev/null || true   # pak ramdisk cgroup slice
+systemctl enable interactive.slice 2>/dev/null || true     # devcontainer + AI agents (2026-07-10)
+systemctl enable besteffort.slice 2>/dev/null || true      # dstdns stack containers (2026-07-10)
 systemctl enable --now gstammtisch-cgroups.service
 systemctl enable --now soulmask-cgroup-watcher.service
 systemctl enable --now soulmask-graceful-stop.service
