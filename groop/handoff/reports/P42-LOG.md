@@ -121,3 +121,11 @@ python3 -m py_compile groop/src/groop/daemon/bpf_snapshot.py groop/src/groop/con
 - Acceptance regression: 40 passed in 6.99s; TUI smoke exit 0 with `ok=true`,
   one frame, tree view, and auto profile.
 - Follow-up: Commit the controller correction and merge after main-state check.
+
+2026-07-10 post-merge validation
+- Merge: `8e48498` (`Merge groop P42 daemon BPF snapshot bridge`).
+- Focused: 48 passed in 0.29s.
+- Full suite: 431 passed, 1 skipped in 47.40s.
+- Acceptance: 40 passed in 7.41s.
+- TUI smoke: exit 0, `ok=true`, one frame, tree view, auto profile.
+- Full-source `py_compile`: clean.

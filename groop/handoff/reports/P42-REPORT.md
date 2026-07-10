@@ -217,6 +217,12 @@ PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m groop.acceptance \
 - [x] Integration-level daemon construction/refresh tests added
 - [x] Focused BPF snapshot tests: 48 passed
 
+Post-merge controller validation on merge `8e48498` supersedes the pre-merge
+timings above: 48 focused tests passed in 0.29s; the full suite reported 431
+passed and one optional skip in 47.40s; acceptance reported 40 passed in 7.41s;
+TUI smoke exited zero with one tree/auto frame; full-source `py_compile` was
+clean.
+
 ## Known Gaps / Open Items
 
 1. **Live `bpftool` execution not tested.** This host has no `bpftool`

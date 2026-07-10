@@ -170,10 +170,12 @@ Most recent full-suite validation after P42 controller review:
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 431 passed, 1 skipped in 47.90s
+# 431 passed, 1 skipped in 47.40s
 ```
 
 Also validated:
 
-- Focused BPF snapshot tests: `48 passed in 0.35s`.
+- Focused BPF snapshot tests: `48 passed in 0.29s`.
+- Acceptance regression: `40 passed in 7.41s`.
+- TUI smoke: exit `0`, `ok: true`, one frame, tree view, auto profile.
 - Full-source `py_compile`.

@@ -387,14 +387,14 @@ Controller fixture/unit evidence after review corrections:
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest \
   groop/tests/test_daemon_bpf_snapshot.py -q
-# 48 passed, 1 warning in 0.35s
+# Post-merge: 48 passed, 1 warning in 0.29s
 ```
 
 Full suite impact:
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 431 passed, 1 skipped, 1 warning in 47.90s
+# Post-merge: 431 passed, 1 skipped, 1 warning in 47.40s
 ```
 
 Blocker for live BPF snapshot bridge measurement:
