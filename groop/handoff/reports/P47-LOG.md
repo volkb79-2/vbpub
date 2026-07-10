@@ -50,10 +50,10 @@ PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest \
   groop/tests/test_daemon_bpf_snapshot.py \
   groop/tests/test_daemon_paddr_lifecycle.py \
   groop/tests/test_inspect_files.py -q
-# 238 passed in 5.98s
+# 238 passed in 6.60s (controller review)
 
 PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q
-# 672 passed, 1 skipped in 50.05s
+# 672 passed, 1 skipped in 51.27s (controller review)
 ```
 
 Changed-source `py_compile` and `git diff --check` are clean.

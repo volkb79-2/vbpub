@@ -91,8 +91,9 @@ plugins and web UI.
 ### P44 - Daemon-Owned paddr Lifecycle
 
 Status: done. Explicit `[damon] paddr_enabled = true` makes the root daemon
-own one audited whole-host paddr session for its lifetime. The default remains
-disabled and foreign sessions remain untouched.
+start or adopt one audited whole-host paddr session. Sessions created by the
+current daemon run stop with it; verified adopted sessions remain persistent.
+The default remains disabled and foreign sessions remain untouched.
 
 Handoff: `handoff/P44-daemon-paddr-lifecycle.md`.
 Report: `handoff/reports/P44-REPORT.md`.
@@ -102,8 +103,8 @@ Report: `handoff/reports/P44-REPORT.md`.
 Status: done. Extends P29 with gated, confined, bounded regular-file reads for
 resolved Docker JSON logs and cgroup files, without arbitrary paths,
 subprocesses, special files, or mutation. Uses no-follow opens, stat-verified
-regular-file checks, ``Path.is_relative_to()`` confinement, and bounded
-byte/line limits. CLI: ``groop inspect-files read --kind --target --inspect-files --admin [--json] [--max-bytes] [--max-lines]``.
+regular-file checks, descriptor-relative confinement, and bounded UTF-8
+payload byte/line limits. CLI: ``groop inspect-files read --kind --target --inspect-files --admin [--json] [--max-bytes] [--max-lines]``.
 
 Handoff: `handoff/P45-inspect-files-bounded-content.md`.
 

@@ -653,7 +653,7 @@ PYTHONPATH=groop/src python3 -m pytest \
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 672 passed, 1 skipped in 50.05s
+# 672 passed, 1 skipped in 51.27s (controller review)
 ```
 
 Full-source ``py_compile`` clean.
