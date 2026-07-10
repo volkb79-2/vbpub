@@ -25,7 +25,7 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 
 | # | Title | Severity | Status |
 |---|---|---|---|
-| _(none open)_ | | | |
+| CIU-9 | `reset_service` volume cleanup silently no-ops in DooD when the operator can write the logical path | High | OPEN |
 
 ## Resolved / not-a-gap
 
@@ -44,8 +44,66 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 
 ---
 
-_No open issues. File the next one under **Status board** above and resolve it with
-code + tests + spec + docs in lockstep._
+### CIU-9 detail: `reset_service` volume cleanup silently no-ops in DooD
+
+**Mechanism (confirmed):** `_rmtree_with_fallback` (`src/ciu/engine.py:398`) only translates a
+`vol-*` hostdir to its physical path (S1.4, via `to_physical_path`) **inside the
+`except PermissionError` branch** of a local `shutil.rmtree(vol_dir)` call. In a DooD deployment
+(`REPO_ROOT != PHYSICAL_REPO_ROOT`, S1.4/S1.9 — dstdns's case: `REPO_ROOT=/workspaces/dstdns`,
+`PHYSICAL_REPO_ROOT=/home/vb/volkb79-2/dstdns`), a local `shutil.rmtree` on the *logical* path only
+raises `PermissionError` when the hostdir's owning UID doesn't match the operator (the S6.7
+Pattern-(a) fixed-UID-image case: postgres 999, pgAdmin 5050, etc. — this is the only case the
+fallback was written for). When a service instead runs container-side as
+`CONTAINER_UID:DOCKER_GID` (the operator's own UID/GID — dstdns's `consul-server` stack does this),
+the local `shutil.rmtree` on the logical path **succeeds without error**, so the function returns
+at line 406 and the physical-path branch never runs. The logical-path directory it just wiped is
+not necessarily the same directory the Docker daemon actually bind-mounted into the container
+(that one lives under `PHYSICAL_REPO_ROOT` on the real host) — success on the wrong path is
+indistinguishable from success on the right one, so `reset_service` reports the volume removed
+and moves on having touched nothing the daemon cares about.
+
+**Live repro (dstdns, `infra/consul-server`, 2026-07-10):** `ciu clean -y` reported
+`vol-consul-data`/`vol-consul-config` removed (no error). A subsequent `ciu up --profile dev`
+started a Consul server that immediately crash-looped:
+`refusing to rejoin cluster because server has been offline for more than the configured
+server_rejoin_age_max (168h0m0s) - consider wiping your data dir`. `find` on
+`$REPO_ROOT/infra/consul-server/vol-consul-data` (from inside the devcontainer, i.e. the logical
+path) showed the directory genuinely empty. `docker exec <consul-container> find /consul/data`
+showed it full of raft/serf state dated months earlier (`Feb 1`/`Feb 2`, files owned `1003:994` —
+the operator's own UID:GID, confirming the fixed-UID branch never applied and no `PermissionError`
+was ever raised). Running the stack's own `infra/consul-server/cleanup-consul.sh` — which routes
+the removal through `docker run --rm -v <path>:/cleanup alpine rm -rf /cleanup/*`, i.e. always via
+the daemon's own path resolution regardless of local permission — immediately fixed it; Consul
+came up clean on the next restart. That script exists only because this project already hand-rolled
+the workaround CIU's generic reset should be doing.
+
+**Suspected fix:** `_rmtree_with_fallback` should not gate the physical-path removal on catching a
+`PermissionError` from the logical-path attempt. In any DooD context (`to_physical_path(vol_dir) !=
+vol_dir`), removal must go through the daemon-resolved physical path unconditionally — a
+local-path success proves nothing about the physical path's state. One option: always compute
+`to_physical_path` first; if it differs from the logical path, always route through
+`privileged_rmtree(physical)` (which already does the correct `docker run -v ... rm -rf`, S6.5) and
+skip the local attempt entirely; only use local `shutil.rmtree` when the two paths are identical
+(true native-host case, S1.9).
+
+**Open question (not yet traced):** separately, the *rendered* `ciu.compose.yml` for
+`consul-server` in the same repro still showed the **logical** path
+(`/workspaces/dstdns/infra/consul-server/vol-consul-data:/consul/data`) as the bind-mount source,
+even though `create_hostdirs` (`engine.py:447`, called at `engine.py:1003`) is documented to
+rewrite `hostdir[purpose]` to the absolute *physical* path in-place (S6.2) before template
+rendering, and the call did not raise (so `PHYSICAL_REPO_ROOT` was resolvable at that point — ruling
+out a simple missing-env-var explanation). If hostdir values are in fact reaching the compose
+template pre-rewrite, then containers are being bind-mounted against the *logical* path in the
+first place, which would make CIU-9's `_rmtree_with_fallback` fix necessary-but-insufficient — the
+create step would also need tracing (does `engine.py:1003`'s call site actually feed template
+rendering from the same mutated `merged` object, or from an earlier-captured copy?). Left open
+for whoever picks this up; the workaround above (`cleanup-consul.sh`-style forced-physical removal)
+is confirmed to work regardless of which of the two mechanisms is the actual live path, since it
+sidesteps path resolution entirely by shelling out through the daemon.
+
+**Workaround in use (dstdns):** `infra/consul-server/cleanup-consul.sh` (already in-repo, predates
+this write-up). No other `vol-*` service reset failures have been observed yet in DooD — this may
+be specific to services that avoid the fixed-image-UID pattern.
 
 ---
 
