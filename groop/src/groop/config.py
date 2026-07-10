@@ -83,6 +83,16 @@ class NetConfig:
 
 @dataclass(frozen=True)
 class DamonConfig:
+    """DAMON monitoring configuration.
+
+    Attributes:
+        paddr_enabled: When true and running under the root daemon, the daemon
+            starts and owns one whole-host paddr session. Disabled by default.
+            The existing paddr_sample_us, paddr_aggr_us, and paddr_update_us
+            fields control the interval settings for the daemon-owned paddr
+            session when enabled.
+    """
+
     hot_rate: float = 50.0
     warm_rate: float = 5.0
     cold_age: float = 30.0
@@ -94,6 +104,7 @@ class DamonConfig:
     paddr_aggr_us: int = 8_000_000
     paddr_update_us: int = 1_000_000
     max_concurrent_targets: int = 4
+    paddr_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -176,6 +187,7 @@ class GroopConfig:
                 "paddr_aggr_us": self.damon.paddr_aggr_us,
                 "paddr_update_us": self.damon.paddr_update_us,
                 "max_concurrent_targets": self.damon.max_concurrent_targets,
+                "paddr_enabled": self.damon.paddr_enabled,
             },
             "bpf_snapshot": {
                 "enabled": self.bpf_snapshot.enabled,
@@ -349,6 +361,7 @@ def load(path: Path | None = None) -> GroopConfig:
             paddr_aggr_us=max(1, int(_coerce_float(damon_data.get("paddr_aggr_us"), 8_000_000))),
             paddr_update_us=max(1, int(_coerce_float(damon_data.get("paddr_update_us"), 1_000_000))),
             max_concurrent_targets=max(1, int(_coerce_float(damon_data.get("max_concurrent_targets"), 4))),
+            paddr_enabled=bool(damon_data.get("paddr_enabled", False)),
         ),
         bpf_snapshot=BpfSnapshotConfig(
             enabled=bool(bpf_snapshot_data.get("enabled", False)),
