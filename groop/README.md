@@ -102,6 +102,7 @@ Useful feature hotkeys in the TUI:
 | P40 | Done | Textual 8 test compatibility | v1/v1.5 release confidence | Restore the full UI suite under the managed Textual 8 environment without weakening behavior assertions. Handoff: `handoff/P40-textual-8-test-compatibility.md`. Report: `handoff/reports/P40-REPORT.md`. |
 | P41 | Done | Rendered replay fidelity | v1 release confidence | Proves every recorded/replayed tick has byte-identical production-formatted cells at fixed width/profile. Handoff: `handoff/P41-rendered-replay-fidelity.md`. Report: `handoff/reports/P41-REPORT.md`. |
 | P42 | Done | Daemon BPF snapshot bridge | v2 daemon/BPF | Safely translate an explicitly configured, already-pinned counter map into the existing P18 atomic snapshot contract; no load/attach/detach. Handoff: `handoff/P42-daemon-bpf-snapshot-bridge.md`. Report: `handoff/reports/P42-REPORT.md`. |
+| P43 | Planned | Current Textual dependency baseline | v1 packaging | Make normal installs resolve Textual 8.2.8 or newer without an artificial upper ceiling, backed by wheel/resolver and full-suite evidence. Handoff: `handoff/P43-textual-current-baseline.md`. |
 
 ## Completed Package Order
 

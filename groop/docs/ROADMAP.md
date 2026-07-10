@@ -57,6 +57,7 @@ flowchart TD
     P39 --> P40[P40 Textual 8 compat]
     P40 --> P41[P41 Rendered replay fidelity]
     P18 --> P42[P42 Daemon BPF snapshot bridge]
+    P40 --> P43[P43 Current Textual baseline]
 ```
 
 ## Remaining Estimate
@@ -65,7 +66,7 @@ After P41, the roadmap is mostly in three buckets:
 
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
-| v1/v1.5 release confidence and UI polish | 0 | P40 removed the full-suite blocker; P41 automates strict rendered replay fidelity. Manual live-host acceptance evidence remains. |
+| v1/v1.5 release confidence and UI polish | 1 | P43 removes the obsolete Textual `<1` resolver ceiling. Manual live-host acceptance evidence remains. |
 | v2 privileged daemon/BPF/admin/file work | 5-7 | BPF daemon lifecycle, paddr daemon ownership, install execution/service hardening, executable admin actions, inspect-files content mode, systemd property governance. |
 | Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
 
@@ -289,6 +290,15 @@ covered; compressed JSONL runs when the optional zstandard dependency exists.
 
 Handoff: `handoff/P41-rendered-replay-fidelity.md`.
 Report: `handoff/reports/P41-REPORT.md`.
+
+### P43 - Current Textual Dependency Baseline
+
+Status: planned. P43 replaces the historical pre-1.0 dependency range with a
+current Textual 8.2.8-or-newer baseline and no artificial upper ceiling, then
+proves source metadata, wheel metadata, clean dependency resolution, UI smoke,
+and the full suite in the resolved environment.
+
+Handoff: `handoff/P43-textual-current-baseline.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 
