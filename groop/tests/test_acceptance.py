@@ -430,3 +430,220 @@ def test_subprocess_steady_pretty_json() -> None:
     assert obj["ok"] is True
     assert "\n" in cp.stdout
     assert cp.stdout.startswith("{\n  \"collection_errors\"")
+
+
+TUI_SMOKE_ARGS = [str(PYTHON), "-m", "groop.acceptance", "tui-smoke"]
+
+
+def _run_tui_smoke(*extra_args: str, **kwargs) -> subprocess.CompletedProcess:
+    """Run the TUI smoke harness as a subprocess and return the result."""
+    cmd = [*TUI_SMOKE_ARGS, *extra_args]
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        env=ENV,
+        **kwargs,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for run_tui_smoke()
+# ---------------------------------------------------------------------------
+
+
+def test_parse_ui_smoke_line_parses_correctly() -> None:
+    """``_parse_ui_smoke_line`` extracts frames, view, profile from a valid line."""
+    from groop.acceptance import _parse_ui_smoke_line
+
+    result = _parse_ui_smoke_line("ui smoke ok frames=1 view=tree profile=auto")
+    assert result == {"frames": 1, "view": "tree", "profile": "auto"}
+
+
+def test_parse_ui_smoke_line_handles_garbage() -> None:
+    """``_parse_ui_smoke_line`` returns empty dict for unparseable input."""
+    from groop.acceptance import _parse_ui_smoke_line
+
+    assert _parse_ui_smoke_line("") == {}
+    assert _parse_ui_smoke_line("random text here") == {}
+    assert _parse_ui_smoke_line("ui smoke fail") == {}
+
+
+def test_run_tui_smoke_fixture_replay() -> None:
+    """``run_tui_smoke`` with fixture replay returns ok=true with measurements."""
+    from groop.acceptance import run_tui_smoke
+
+    result = run_tui_smoke(
+        replay_path=FIXTURE_FRAME,
+        timeout_s=10,
+    )
+    assert result.ok is True
+    assert result.exit_code == 0
+    assert result.smoke_line is not None
+    assert "ui smoke ok" in result.smoke_line
+    assert result.frames == 1
+    assert result.view == "tree"
+    assert result.profile == "auto"
+
+    for key in ("wall_s", "user_s", "sys_s", "rss_kb"):
+        assert key in result.measurements, f"Missing measurement: {key}"
+
+
+def test_run_tui_smoke_bad_replay_path() -> None:
+    """``run_tui_smoke`` with a bad replay path exits 1."""
+    from groop.acceptance import run_tui_smoke
+
+    result = run_tui_smoke(
+        replay_path=NONEXISTENT,
+        timeout_s=10,
+    )
+    assert result.ok is False
+    assert result.exit_code == 1
+    assert result.smoke_line is None
+
+
+def test_run_tui_smoke_with_profile() -> None:
+    """``run_tui_smoke`` with ``--profile minimal`` passes through and appears in output."""
+    from groop.acceptance import run_tui_smoke
+
+    result = run_tui_smoke(
+        replay_path=FIXTURE_FRAME,
+        profile="minimal",
+        timeout_s=10,
+    )
+    assert result.ok is True
+    assert result.profile == "minimal"
+
+
+def test_format_tui_smoke_text_contains_expected_markers() -> None:
+    """Text output contains expected markers."""
+    from groop.acceptance import TuiSmokeResult, format_tui_smoke_text
+
+    result = TuiSmokeResult(
+        ok=True,
+        exit_code=0,
+        version="0.1.0",
+        python="3.13.5",
+        platform="Linux-x86_64",
+        smoke_line="ui smoke ok frames=1 view=tree profile=auto",
+        stdout_snippet="ui smoke ok frames=1 view=tree profile=auto\n",
+        stderr_snippet="",
+        frames=1,
+        view="tree",
+        profile="auto",
+        measurements={"wall_s": 0.3, "user_s": 0.1, "sys_s": 0.02, "rss_kb": 40000.0},
+    )
+    text = format_tui_smoke_text(result)
+    assert "groop acceptance tui-smoke" in text
+    assert "ALL CHECKS PASSED" in text
+    assert "ui smoke ok" in text
+    assert "wall:" in text
+    assert "user:" in text
+    assert "sys:" in text
+    assert "RSS:" in text
+    assert "exit code: 0" in text
+
+
+def test_format_tui_smoke_json_parseable() -> None:
+    """JSON output from tui-smoke is parseable and has expected fields."""
+    from groop.acceptance import TuiSmokeResult, format_tui_smoke_json
+
+    result = TuiSmokeResult(
+        ok=True,
+        exit_code=0,
+        version="0.1.0",
+        python="3.13.5",
+        platform="Linux-x86_64",
+        smoke_line="ui smoke ok frames=1 view=tree profile=auto",
+        stdout_snippet="ui smoke ok frames=1 view=tree profile=auto\n",
+        stderr_snippet="",
+        frames=1,
+        view="tree",
+        profile="auto",
+        measurements={"wall_s": 0.3, "user_s": 0.1, "sys_s": 0.02, "rss_kb": 40000.0},
+    )
+    json_str = format_tui_smoke_json(result, pretty=True)
+    obj = json.loads(json_str)
+    assert obj["ok"] is True
+    assert obj["exit_code"] == 0
+    assert obj["smoke_line"] is not None
+    assert obj["frames"] == 1
+    assert obj["view"] == "tree"
+    assert obj["profile"] == "auto"
+    assert "measurements" in obj
+    assert "wall_s" in obj["measurements"]
+
+
+# ---------------------------------------------------------------------------
+# Subprocess tests for tui-smoke
+# ---------------------------------------------------------------------------
+
+
+def test_subprocess_tui_smoke_json() -> None:
+    """``python -m groop.acceptance tui-smoke --json`` on fixture replay exit 0."""
+    cp = _run_tui_smoke(
+        "--replay", str(FIXTURE_FRAME),
+        "--timeout-s", "10",
+        "--json",
+    )
+    assert cp.returncode == 0, f"stderr={cp.stderr}"
+    obj = json.loads(cp.stdout)
+    assert obj["ok"] is True
+    assert obj["exit_code"] == 0
+    assert obj["frames"] == 1
+
+
+def test_subprocess_tui_smoke_text() -> None:
+    """``python -m groop.acceptance tui-smoke`` text output exit 0."""
+    cp = _run_tui_smoke(
+        "--replay", str(FIXTURE_FRAME),
+        "--timeout-s", "10",
+    )
+    assert cp.returncode == 0, f"stderr={cp.stderr}"
+    assert "ALL CHECKS PASSED" in cp.stdout
+    assert "ui smoke ok" in cp.stdout
+
+
+def test_subprocess_tui_smoke_bad_replay() -> None:
+    """Bad replay path exits 1."""
+    cp = _run_tui_smoke(
+        "--replay", str(NONEXISTENT),
+        "--timeout-s", "3",
+    )
+    assert cp.returncode == 1
+    assert "SOME CHECKS FAILED" in cp.stdout
+
+
+def test_subprocess_tui_smoke_pretty_json_parseable() -> None:
+    """``--pretty-json`` produces parseable indented JSON."""
+    cp = _run_tui_smoke(
+        "--replay", str(FIXTURE_FRAME),
+        "--timeout-s", "10",
+        "--pretty-json",
+    )
+    assert cp.returncode == 0
+    obj = json.loads(cp.stdout)
+    assert obj["ok"] is True
+    assert "\n" in cp.stdout
+
+
+def test_subprocess_tui_smoke_profile_minimal() -> None:
+    """``--profile minimal`` is reflected in the smoke output."""
+    cp = _run_tui_smoke(
+        "--replay", str(FIXTURE_FRAME),
+        "--timeout-s", "10",
+        "--profile", "minimal",
+        "--json",
+    )
+    assert cp.returncode == 0, f"stderr={cp.stderr}"
+    obj = json.loads(cp.stdout)
+    assert obj["profile"] == "minimal"
+
+
+def test_subprocess_tui_smoke_invalid_timeout() -> None:
+    """Invalid timeout exits 2."""
+    cp = _run_tui_smoke(
+        "--replay", str(FIXTURE_FRAME),
+        "--timeout-s", "-1",
+    )
+    assert cp.returncode == 2
