@@ -70,7 +70,7 @@ After P43, the roadmap is mostly in three buckets:
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
 | v1/v1.5 release confidence and UI polish | 0 | P43 removes the obsolete Textual `<1` resolver ceiling and closes the last planned v1/v1.5 release-confidence package. Manual live-host acceptance evidence remains. |
-| v2 privileged daemon/BPF/admin/file work | 5-7 | P44-P46 cover paddr daemon ownership, the first bounded inspect-files content slice, and the first executable admin slice; BPF lifecycle, install execution/service hardening, remaining content modes, kill/update, and systemd property governance remain. |
+| v2 privileged daemon/BPF/admin/file work | 4-6 | P46 (admin action execution kernel) is complete. P44-P45 cover paddr daemon ownership and the first bounded inspect-files content slice; BPF lifecycle, install execution/service hardening, remaining content modes, kill/update, and systemd property governance remain. |
 | Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
 
 Pragmatic estimate from the current state: a shippable v1/v1.5 release

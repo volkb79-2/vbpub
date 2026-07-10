@@ -183,13 +183,25 @@ sudo groop damon paddr start --confirm START
   the same groop-owned marker logic as the CLI.
 - Incident snapshots write only under the configured snapshot directory or the
   XDG state fallback. They do not collect arbitrary file/log content.
-- File/log/content browsing and executable Docker/systemd admin actions are not implemented.
+- File/log/content browsing and executable Docker/systemd admin actions are
+  available behind explicit gates: `--admin`, typed `--confirm EXECUTE`,
+  target validation, and a fail-closed audit-first execution kernel.
+  See Safety Model below for the full gate chain.
 - Pressing a reserved v2 admin key in the TUI reports that the action is
   unavailable in the current build instead of failing silently.
 - `groop action preview --kind docker-restart --target NAME --admin --json`
   prints an exact argv preview and never executes it. Omit `--admin` to verify
   that the preview is denied. Use `--audit-log PATH` to append an explicit
   preview-only JSONL record.
+- `groop action execute --kind docker-restart --target NAME --admin
+  --confirm EXECUTE` runs the validated Docker/systemd start/stop/restart
+  command through eight gates: admin mode, typed confirmation, valid kind,
+  execution allowlist, target validation (safe container/unit identifiers
+  only), fail-closed pre-execution durable audit, argv-only subprocess with
+  clean minimal environment and bounded timeout, and post-execution audit
+  outcome.  Any gate failure produces a refusal result and executes nothing.
+- Execution requires root in production.  Tests inject a fake runner and prove
+  every gate without real Docker or systemd calls.
 
 ## Compressed Swap Interpretation
 
