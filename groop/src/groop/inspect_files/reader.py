@@ -332,51 +332,34 @@ def _bounded_read(
         chunk = buf.read(_READ_CHUNK_SIZE)
         if not chunk:
             break
-        chunk_len = len(chunk)
-
-        # Count newlines in this chunk.
-        nl_count = chunk.count(b"\n")
-
-        # Would this chunk push us over either limit?
-        if total_bytes + chunk_len > max_bytes:
-            # Accept bytes up to the limit, then stop.
-            remaining = max_bytes - total_bytes
-            if remaining > 0:
-                partial = chunk[:remaining]
-                chunks.append(partial)
-                total_bytes += remaining
-            # If remaining == 0, total_bytes stays unchanged (exhausted).
-            total_bytes = max_bytes
+        remaining_bytes = max_bytes - total_bytes
+        candidate = chunk[:remaining_bytes]
+        if len(candidate) < len(chunk):
             truncated_bytes_flag = True
-            break
 
-        if total_lines + nl_count > max_lines:
-            # Accept lines up to the limit, then stop.
-            remaining_lines = max_lines - total_lines
-            if remaining_lines > 0:
-                pos = 0
-                for _ in range(remaining_lines):
-                    idx = chunk.find(b"\n", pos)
-                    if idx == -1:
-                        break
-                    pos = idx + 1
-                if pos > 0:
-                    partial = chunk[:pos]
-                    chunks.append(partial)
-                    total_bytes += len(partial)
-                # else: no newline in this chunk — already exhausting via
-                # bytes, so this should be unreachable (lines can't exceed
-                # max_lines without a newline when aggregate lines are < max).
-                # Fall through: stop reading.
-            # remaining_lines == 0: aggregate already exhausted — append
-            # nothing, the caps are already hit.
-            total_lines = max_lines
+        remaining_lines = max_lines - total_lines
+        newline_count = candidate.count(b"\n")
+        if newline_count > remaining_lines:
+            cut = 0
+            for _ in range(remaining_lines):
+                cut = candidate.find(b"\n", cut) + 1
+            candidate = candidate[:cut]
+            newline_count = remaining_lines
             truncated_lines_flag = True
+
+        chunks.append(candidate)
+        total_bytes += len(candidate)
+        total_lines += newline_count
+
+        if truncated_bytes_flag or truncated_lines_flag:
             break
 
-        chunks.append(chunk)
-        total_bytes += chunk_len
-        total_lines += nl_count
+        # A cap reached exactly is only truncation if more source data exists.
+        if total_bytes >= max_bytes or total_lines >= max_lines:
+            if buf.read(1):
+                truncated_bytes_flag = total_bytes >= max_bytes
+                truncated_lines_flag = total_lines >= max_lines
+            break
 
     raw = b"".join(chunks)
     text = raw.decode("utf-8", errors="replace")
@@ -397,6 +380,41 @@ def _bounded_read(
             sanitized_chars.append(ch)
     text = "".join(sanitized_chars)
     return text, truncated_bytes_flag, truncated_lines_flag, total_bytes, total_lines
+
+
+def _bound_rendered_text(
+    text: str,
+    *,
+    max_bytes: int,
+    max_lines: int,
+) -> tuple[str, bool, bool]:
+    """Apply exact UTF-8 byte and newline bounds to rendered payload text.
+
+    Source-byte accounting alone is insufficient because replacement
+    characters and generated framing can occupy multiple UTF-8 bytes.  This
+    final pass makes the externally returned ``content`` budget exact without
+    ever splitting a Unicode code point.
+    """
+    rendered: list[str] = []
+    byte_count = 0
+    line_count = 0
+    truncated_bytes = False
+    truncated_lines = False
+
+    for char in text:
+        if char == "\n" and line_count >= max_lines:
+            truncated_lines = True
+            break
+        char_bytes = len(char.encode("utf-8"))
+        if byte_count + char_bytes > max_bytes:
+            truncated_bytes = True
+            break
+        rendered.append(char)
+        byte_count += char_bytes
+        if char == "\n":
+            line_count += 1
+
+    return "".join(rendered), truncated_bytes, truncated_lines
 
 
 # ---------------------------------------------------------------------------
@@ -538,7 +556,7 @@ def build_inspect_read(
         return ReadDenied(kind=ik, target=target)
 
     # ---- Root check (production only) ----
-    if not _injectable_is_root(fixture_root=fixture_root, is_root=is_root):
+    if _injectable_is_root(fixture_root=fixture_root, is_root=is_root) is not True:
         try:
             ik = InspectFilesKind(kind)
         except ValueError:
@@ -665,15 +683,18 @@ def build_inspect_read(
             return InspectFilesReadError(
                 kind=ik, target=target, error=r["error"],
             )
+        bounded_content, rendered_trunc_b, rendered_trunc_l = _bound_rendered_text(
+            r["content"], max_bytes=max_bytes, max_lines=max_lines,
+        )
         return InspectFilesReadResult(
             kind=ik,
             target=target,
             kind_label=entry.kind_label,
             description=entry.description,
             path=r["path"],
-            content=r["content"],
-            truncated_bytes=r["truncated_bytes"],
-            truncated_lines=r["truncated_lines"],
+            content=bounded_content,
+            truncated_bytes=r["truncated_bytes"] or rendered_trunc_b,
+            truncated_lines=r["truncated_lines"] or rendered_trunc_l,
         )
 
     # Cgroup: combine multiple files into a structured result.
@@ -709,13 +730,18 @@ def build_inspect_read(
             kind=ik, target=target, error=first_error,
         )
 
+    combined_content, rendered_trunc_b, rendered_trunc_l = _bound_rendered_text(
+        "".join(combined_parts).rstrip("\n"),
+        max_bytes=max_bytes,
+        max_lines=max_lines,
+    )
     return InspectFilesReadResult(
         kind=ik,
         target=target,
         kind_label=entry.kind_label,
         description=entry.description,
         path="; ".join(combined_paths),
-        content="".join(combined_parts).rstrip("\n"),
-        truncated_bytes=any_trunc_bytes,
-        truncated_lines=any_trunc_lines,
+        content=combined_content,
+        truncated_bytes=any_trunc_bytes or rendered_trunc_b,
+        truncated_lines=any_trunc_lines or rendered_trunc_l,
     )

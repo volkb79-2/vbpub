@@ -30,6 +30,19 @@ from groop.inspect_files.plan import (
 )
 
 
+def _make_nonregular_cgroup_root(tmp_path: Path) -> Path:
+    """Create special-file fixtures outside the checkout for hermetic tests."""
+    root = tmp_path / "cgroup_nonreg"
+    leaf = root / "system.slice" / "ssh.service"
+    leaf.mkdir(parents=True)
+    (leaf / "memory.current").symlink_to("/etc/passwd")
+    (leaf / "cpu.stat").mkdir()
+    os.mkfifo(leaf / "pids.current")
+    (leaf / "pids.max").write_text("512\n")
+    (leaf / "memory.min").write_text("0\n")
+    return root
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -637,10 +650,18 @@ class TestReadContent:
     def test_docker_log_oversized_file_valid_id(self) -> None:
         """Read an oversized file with a valid container ID via max-lines cutoff."""
         from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
-        # The oversized fixture uses the ID 'oversized' but we need a valid hex ID.
-        # Create a symlink or use the file directly — we'll skip this test
-        # since the fixture ID is intentionally invalid.
-        pass
+        cid = "b" * 64
+        result = build_inspect_read(
+            "docker-json-log", cid,
+            inspect_files=True, admin=True,
+            max_bytes=200_000,
+            max_lines=3,
+            fixture_root=self.FIXTURE_ROOT / "docker",
+            is_root=lambda: True,
+        )
+        assert isinstance(result, InspectFilesReadResult)
+        assert result.truncated_lines
+        assert result.content.count("\n") <= 3
 
     def test_cgroup_files_read_success(self) -> None:
         """Read bounded content from cgroup fixture files."""
@@ -1246,10 +1267,11 @@ class TestP45BoundedContentCorrections:
         assert isinstance(result, InspectFilesReadError)
         assert "requires root" in result.error
 
-    def test_fixture_root_alone_does_not_bypass_root(self) -> None:
+    def test_fixture_root_alone_does_not_bypass_root(self, monkeypatch) -> None:
         """fixture_root without is_root must NOT bypass root check — the
         default os.geteuid() check applies unless is_root is provided."""
         from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        monkeypatch.setattr("groop.inspect_files.reader.os.geteuid", lambda: 1000)
         result = build_inspect_read(
             "docker-json-log", "a" * 64,
             inspect_files=True, admin=True,
@@ -1262,14 +1284,14 @@ class TestP45BoundedContentCorrections:
 
     # ---- Error-type tests: FIFO, directory, symlink at leaf ----
 
-    def test_fifo_leaf_rejected(self) -> None:
+    def test_fifo_leaf_rejected(self, tmp_path: Path) -> None:
         """A cgroup file path resolving to a FIFO must be rejected by
         _confine_and_open with a descriptive error (not hang)."""
         from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
         result = build_inspect_read(
             "cgroup-files", "system.slice/ssh.service",
             inspect_files=True, admin=True,
-            fixture_root=self.FIXTURE_ROOT / "cgroup_nonreg",
+            fixture_root=_make_nonregular_cgroup_root(tmp_path),
             is_root=lambda: True,
         )
         assert isinstance(result, InspectFilesReadResult)
@@ -1278,27 +1300,27 @@ class TestP45BoundedContentCorrections:
         # The regular files (pids.max, memory.min) should still succeed
         assert "512" in result.content
 
-    def test_directory_leaf_rejected(self) -> None:
+    def test_directory_leaf_rejected(self, tmp_path: Path) -> None:
         """A cgroup file path resolving to a directory must be rejected."""
         from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
         result = build_inspect_read(
             "cgroup-files", "system.slice/ssh.service",
             inspect_files=True, admin=True,
-            fixture_root=self.FIXTURE_ROOT / "cgroup_nonreg",
+            fixture_root=_make_nonregular_cgroup_root(tmp_path),
             is_root=lambda: True,
         )
         assert isinstance(result, InspectFilesReadResult)
         # cpu.stat is a directory — should error
         assert "cpu.stat" in result.content
 
-    def test_symlink_leaf_rejected(self) -> None:
+    def test_symlink_leaf_rejected(self, tmp_path: Path) -> None:
         """A cgroup file path whose final leaf is a symlink must be
         rejected by O_NOFOLLOW."""
         from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
         result = build_inspect_read(
             "cgroup-files", "system.slice/ssh.service",
             inspect_files=True, admin=True,
-            fixture_root=self.FIXTURE_ROOT / "cgroup_nonreg",
+            fixture_root=_make_nonregular_cgroup_root(tmp_path),
             is_root=lambda: True,
         )
         assert isinstance(result, InspectFilesReadResult)
@@ -1333,7 +1355,7 @@ class TestP45BoundedContentCorrections:
         # Newline must be preserved
         assert "\n" in content
         # Replacement character should appear
-        assert "\ufffd" in content or True  # content may or may not have U+FFFD depending on fixture
+        assert "\ufffd" in content
 
     def test_hostile_bytes_preserves_newline_tab(self) -> None:
         """Sanitization must preserve \\n and \\t."""
@@ -1352,34 +1374,34 @@ class TestP45BoundedContentCorrections:
 
     # ---- Descriptor-relative O_NOFOLLOW preserved ----
 
-    def test_confine_and_open_no_follow_leaf_symlink(self) -> None:
+    def test_confine_and_open_no_follow_leaf_symlink(self, tmp_path: Path) -> None:
         """_confine_and_open must reject a final-leaf symlink even when
         all parent directories are safe regular directories."""
         from groop.inspect_files.reader import _confine_and_open
         from pathlib import Path
         import pytest
-        leaf = self.FIXTURE_ROOT / "cgroup_nonreg" / "system.slice" / "ssh.service"
-        allow_root = self.FIXTURE_ROOT / "cgroup_nonreg"
+        allow_root = _make_nonregular_cgroup_root(tmp_path)
+        leaf = allow_root / "system.slice" / "ssh.service"
         with pytest.raises(OSError):
             _confine_and_open(leaf / "memory.current", allow_root)
 
-    def test_confine_and_open_no_follow_leaf_fifo(self) -> None:
+    def test_confine_and_open_no_follow_leaf_fifo(self, tmp_path: Path) -> None:
         """_confine_and_open must reject a FIFO final leaf."""
         from groop.inspect_files.reader import _confine_and_open
         from pathlib import Path
         import pytest
-        leaf = self.FIXTURE_ROOT / "cgroup_nonreg" / "system.slice" / "ssh.service"
-        allow_root = self.FIXTURE_ROOT / "cgroup_nonreg"
+        allow_root = _make_nonregular_cgroup_root(tmp_path)
+        leaf = allow_root / "system.slice" / "ssh.service"
         with pytest.raises(ValueError, match="not a regular file"):
             _confine_and_open(leaf / "pids.current", allow_root)
 
-    def test_confine_and_open_no_follow_leaf_directory(self) -> None:
+    def test_confine_and_open_no_follow_leaf_directory(self, tmp_path: Path) -> None:
         """_confine_and_open must reject a directory final leaf."""
         from groop.inspect_files.reader import _confine_and_open
         from pathlib import Path
         import pytest
-        leaf = self.FIXTURE_ROOT / "cgroup_nonreg" / "system.slice" / "ssh.service"
-        allow_root = self.FIXTURE_ROOT / "cgroup_nonreg"
+        allow_root = _make_nonregular_cgroup_root(tmp_path)
+        leaf = allow_root / "system.slice" / "ssh.service"
         with pytest.raises(ValueError, match="not a regular file"):
             _confine_and_open(leaf / "cpu.stat", allow_root)
 
@@ -1394,3 +1416,29 @@ class TestP45BoundedContentCorrections:
         data = buf.read()
         assert data  # non-empty
         buf.close()
+
+    def test_root_seam_requires_literal_true(self) -> None:
+        """A truthy non-bool test seam must never authorize a root read."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+
+        result = build_inspect_read(
+            "docker-json-log", "a" * 64,
+            inspect_files=True, admin=True,
+            fixture_root=self.FIXTURE_ROOT / "docker",
+            is_root=lambda: "true",  # type: ignore[return-value]
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "requires root" in result.error
+
+    def test_rendered_bound_counts_utf8_bytes_and_generated_lines(self) -> None:
+        """Rendered bounds use encoded bytes and include framing newlines."""
+        from groop.inspect_files.reader import _bound_rendered_text
+
+        text, trunc_b, trunc_l = _bound_rendered_text(
+            "# header\n\ufffd\ufffd\nbody\nextra",
+            max_bytes=14,
+            max_lines=2,
+        )
+        assert len(text.encode("utf-8")) <= 14
+        assert text.count("\n") <= 2
+        assert trunc_b or trunc_l
