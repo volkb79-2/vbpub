@@ -164,13 +164,13 @@ Most recent full-suite validation after P41:
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 383 passed, 1 skipped in 47.81s
+# 383 passed, 1 skipped in 46.81s
 ```
 
 Also validated:
 
 - Focused table/record/fidelity tests: `19 passed, 1 skipped in 9.57s`.
 - Focused rendered fidelity tests: `1 passed, 1 skipped in 0.27s`.
-- Focused acceptance tests: `40 passed in 7.28s`.
+- Post-merge focused acceptance tests: `40 passed in 7.26s`.
 - P41 TUI smoke: exit `0`, `ok: true`, `frames: 1`, `view: tree`, `profile: auto`.
 - Full-source `py_compile`.

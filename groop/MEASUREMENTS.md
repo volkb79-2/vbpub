@@ -17,16 +17,17 @@ passing tests plus one optional compressed-recording skip:
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 383 passed, 1 skipped in 47.81s
+# 383 passed, 1 skipped in 46.81s
 ```
 
 Also validated:
 
 - Focused table/record/fidelity tests: `19 passed, 1 skipped in 9.57s`.
 - Focused rendered fidelity tests: `1 passed, 1 skipped in 0.27s`.
-- Focused acceptance tests: `40 passed in 7.28s`.
+- Post-merge focused acceptance tests: `40 passed in 7.26s`.
 - P41 fixture replay TUI smoke: `ok: true`, exit `0`, `frames: 1`,
-  `view: tree`, `profile: auto`.
+  `view: tree`, `profile: auto`; wall `0.5304s`, user CPU `0.4143s`, system
+  CPU `0.0625s`, max RSS `48056 KB`.
 - Full-source `py_compile`.
 
 ## Prior Status

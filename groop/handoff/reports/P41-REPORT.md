@@ -35,9 +35,9 @@ order and the real replay driver and rendered-row paths.
 ```text
 focused fidelity:       1 passed, 1 skipped in 0.27s
 table/record/fidelity: 19 passed, 1 skipped in 9.57s
-full suite:           383 passed, 1 skipped in 47.81s
-acceptance:            40 passed in 7.28s
-TUI smoke:             exit 0, ok=true, frames=1
+full suite:           383 passed, 1 skipped in 46.81s (post-merge)
+acceptance:            40 passed in 7.26s (post-merge)
+TUI smoke:             exit 0, ok=true, frames=1, max RSS=48056 KB
 py_compile:            clean
 ```
 

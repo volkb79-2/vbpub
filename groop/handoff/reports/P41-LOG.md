@@ -35,3 +35,10 @@
 - Acceptance: 40 passed in 7.28s.
 - Fixture TUI smoke: exit 0, `ok: true`, one frame.
 - `py_compile`: clean.
+
+### 2026-07-10 - Post-merge validation
+
+- Full suite: 383 passed, 1 skipped in 46.81s.
+- Acceptance: 40 passed in 7.26s.
+- Fixture TUI smoke: exit 0, `ok: true`, max RSS 48056 KB.
+- `py_compile`: clean.
