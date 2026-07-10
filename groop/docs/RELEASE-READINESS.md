@@ -55,7 +55,7 @@ the named measurement gate.
 | 7 | Registry/branch semantics | Pass | Registry/model/aggregation tests | None |
 | 8 | Pressure sorting and finding explanations | Pass | Diagnostics and UI tests | Exact per-cgroup network loss remains a non-claim |
 | 9 | Host/netns network labels | Pass | Network provider and UI tests | None |
-| 10 | Byte-identical formatted replay cells | Partial | Model equality and replay fixtures | Record/replay rendered-cell comparison for every tick |
+| 10 | Byte-identical formatted replay cells | Pass | P41 `test_rendered_fidelity.py`: multi-tick record→replay comparison of row keys, column identities, and plain cell text for every tick at fixed width/profile/sort/filter; exercised through RecordReader and ReplayDriver; includes JSONL and conditional compressed JSONL | None |
 | 11 | Local pipx install and no-config defaults | Pass | Post-P40 controller evidence in `MEASUREMENTS.md`: isolated build, pipx install, version, and empty-directory replay smoke | None |
 | 12 | v2 action/inspection gating | Partial | Disabled hotkeys, admin preview/audit, inspect-files planning | Executable actions are a non-claim; do not claim full v2 acceptance |
 | 13 | Live docker-group non-root smoke | Partial | P33/P35/P38 rootless fixture harnesses | Live non-root tree, Docker JOIN, populated metrics, and disabled mutations |
