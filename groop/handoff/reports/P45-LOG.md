@@ -11,75 +11,87 @@
 
 ```text
 2026-07-10 14:30 UTC
-- Action: Read handoff P45, controller guide, existing P29 codebase (catalog, plan, __init__, CLI, tests, fixtures)
-- Files read: groop/handoff/P45-inspect-files-bounded-content.md, groop/src/groop/inspect_files/*, groop/src/groop/cli.py, groop/tests/test_inspect_files.py, groop/docs/*, groop/MEASUREMENTS.md
+- Action: Read handoff P45, controller guide, existing P29 codebase
 - Result: Full understanding of requirements and P29 safety patterns
 
-2026-07-10 14:35 UTC
-- Action: Created test fixture directories and content files
-- Files created: groop/tests/fixtures/inspect_files/docker/containers/<64hex>/<64hex>-json.log (5 lines), oversized-json.log (10000 lines), cgroup files (memory.current, cpu.stat, pids.current, pids.max), danger files (symlink, FIFO, regular)
-- Result: Fixtures ready for bounded content tests
+2026-07-10 14:35-15:00 UTC
+- Action: Implemented reader.py, CLI, fixtures, tests
+- Result: 77 passing tests, py_compile clean
 
-2026-07-10 14:40 UTC
-- Action: Implemented groop/inspect_files/reader.py
-- Files created: groop/src/groop/inspect_files/reader.py
-- Result: build_inspect_read() with gating, Docker JSON log and cgroup file resolution, confined open (os.O_NOFOLLOW), stat-verified regular-file check, bounded read (max-bytes, max-lines), safe surrogateescape decoding, deterministic JSON/text output
+2026-07-11 CORRECTIONS
+- Action: Chunk-based reads — replaced line-by-line iteration with fixed-size
+  chunk reads (_READ_CHUNK_SIZE=65536) so single giant lines never materialize
+  unboundedly. Removed unused `read_size` variable.
+- Files: groop/src/groop/inspect_files/reader.py
+- Result: _bounded_read now reads in chunks, not lines.
 
-2026-07-10 14:42 UTC
-- Action: Updated __init__.py to export new read API classes
-- Files changed: groop/src/groop/inspect_files/__init__.py
-- Result: InspectFilesReadResult, InspectFilesReadError, ReadDenied, build_inspect_read exported
+- Action: Descriptor-relative path confinement — replaced lexical
+  `Path.is_relative_to()` with fd-traversal: open allow_root with
+  `O_DIRECTORY|O_NOFOLLOW`, walk each intermediate component via `dir_fd` with
+  `O_NOFOLLOW`, reject `..` at every level. Race-resistant against symlink swaps
+  between check and open.
+- Files: groop/src/groop/inspect_files/reader.py
+- Result: _confine_and_open uses descriptor-relative traversal.
 
-2026-07-10 14:44 UTC
-- Action: Added read subcommand to CLI
-- Files changed: groop/src/groop/cli.py (parse_inspect_files_args, _main_inspect_files)
-- Result: groop inspect-files read --kind --target --inspect-files --admin [--json] [--max-bytes] [--max-lines] [--fixture-root]
+- Action: Positive max limits enforcement — added _validate_limits() checking
+  max_bytes/max_lines are positive ints below conservative caps (1 MiB / 100K lines).
+  Limits are aggregate across all cgroup files, not per-file.
+- Files: groop/src/groop/inspect_files/reader.py
+- Result: Negative/zero/huge limits rejected; cgroup reads share one byte/line budget.
 
-2026-07-10 14:50 UTC
-- Action: Added 33 focused tests for P45 read API
-- Files changed: groop/tests/test_inspect_files.py
-- Result: 77 total tests (44 P29 + 33 P45), all passing
+- Action: Removed --fixture-root from production CLI — users cannot select
+  arbitrary roots via CLI. The Python API `fixture_root=` parameter remains
+  as a testing-only seam.
+- Files: groop/src/groop/cli.py, groop/tests/test_inspect_files.py
+- Result: `groop inspect-files read` no longer accepts --fixture-root.
 
-2026-07-10 14:55 UTC
-- Action: Ran full test suite
-- Command: PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-- Result: 466 passed, 1 skipped in 49.67s
+- Action: Root enforcement per TUI-SPEC §4.8 — build_inspect_read checks
+  EUID == 0 in production (fixture_root=None). Injectable `_injectable_is_root()`
+  bypasses check when fixture_root is provided. Gating (--inspect-files/--admin)
+  checked before root to preserve ReadDenied behavior.
+- Files: groop/src/groop/inspect_files/reader.py
+- Result: Production reads require root; tests bypass via fixture_root.
 
-2026-07-10 14:56 UTC
-- Action: Ran full-source py_compile
-- Command: find groop/src/groop groop/tests -name '*.py' | py_compile
-- Result: clean, exit 0
+- Action: Replaced 20,000-line oversized-json.log fixture with compact 10-line
+  version (was 689KB, now 532 bytes).
+- Files: groop/tests/fixtures/inspect_files/docker/containers/oversized/oversized-json.log
+- Result: No large committed fixture.
 
-2026-07-10 15:00 UTC
-- Action: Updated all documentation files
-- Files changed: groop/README.md, groop/docs/ROADMAP.md, groop/docs/STATUS.md, groop/docs/INSPECT-FILES.md, groop/docs/OPERATIONS.md, groop/docs/RELEASE-READINESS.md, groop/MEASUREMENTS.md
-- Result: P45 marked Done in README/ROADMAP, added to STATUS implemented list, INSPECT-FILES.md documents read command, OPERATIONS.md adds CLI examples, RELEASE-READINESS.md removes content reads from non-claims, MEASUREMENTS.md adds P45 evidence
-
-2026-07-10 15:05 UTC
-- Action: Writing P45-LOG.md and P45-REPORT.md
-- Result: Log and report written
+- Action: Added 15 security/boundary tests — symlink escape, FIFO reject,
+  giant line (chunk-based), aggregate bounds, negative/zero/huge limits,
+  CLI fixture-root absence, root requirement, hostile bytes, no subprocess/writes.
+- Files: groop/tests/test_inspect_files.py
+- Result: 92 total tests in test_inspect_files.py (77 baseline + 15 new).
+  Full suite: 481 passed, 1 skipped.
 ```
 
 ## Decisions
 
-- Decision: Docker content reads require full 64-char hex container ID
-  Reason: Prevents Docker names from masquerading as container directory IDs (P45 requirement)
-  Impact: Short IDs and container names are rejected for reads; plans still accept them
-- Decision: Cgroup files use the catalog allowlist, combining multiple file reads
-  Reason: Same allowlist as P29 catalog, per-file error handling for missing files
-  Impact: Missing files get per-path error messages; existing files are returned
-- Decision: Use os.open with O_NOFOLLOW instead of Path.open
-  Reason: O_NOFOLLOW ensures symlinks are rejected at the kernel level
-  Impact: More secure than checking after resolution
+- Decision: Gating before root check in build_inspect_read
+  Reason: Users without --inspect-files/--admin should get ReadDenied (exit 2),
+  not root-required error (exit 1). Root requirement only applies when gating
+  passes.
+  Impact: All gating tests continue to pass.
+
+- Decision: Conservative absolute caps on max_bytes/max_lines
+  Reason: Prevents pathological values from any caller, even those using the
+  Python API directly.
+  Impact: 1 MiB / 100K line max.
+
+- Decision: Descriptor-relative traversal instead of pure lexical is_relative_to
+  Reason: Race-resistant — attacker cannot swap a symlink between the lexical
+  check and the open because intermediate components are walked via dir_fd
+  with O_NOFOLLOW.
+  Impact: Slightly more complex but provably stronger confinement.
 
 ## Validation
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests/test_inspect_files.py -v
-# 77 passed in 0.60s
+# 92 passed in 0.67s
 
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 466 passed, 1 skipped in 49.67s
+# 481 passed, 1 skipped in 48.35s
 
 mapfile -d '' pyfiles < <(find groop/src/groop groop/tests -name '*.py' -print0)
 python3 -m py_compile "${pyfiles[@]}"

@@ -748,6 +748,7 @@ class TestReadSafety:
         result = build_inspect_read(
             "systemd-journal", "ssh.service",
             inspect_files=True, admin=True,
+            fixture_root=Path("/nonexistent"),
         )
         assert isinstance(result, InspectFilesReadError)
         assert "does not support content reads" in result.error
@@ -787,7 +788,8 @@ class TestReadCliIntegration:
         assert args.max_bytes == 65536
         assert args.max_lines == 5000
         assert args.json is False
-        assert args.fixture_root is None
+        # --fixture-root must NOT be present in the production CLI
+        assert not hasattr(args, "fixture_root")
 
     def test_parse_read_args_custom_bounds(self) -> None:
         from groop.cli import parse_inspect_files_args
@@ -800,50 +802,44 @@ class TestReadCliIntegration:
         assert args.max_lines == 10
         assert args.json is True
 
-    def test_cli_read_docker_log_success(self) -> None:
-        """Full CLI path with docker fixture — reads bounded content."""
-        from groop.cli import _main_inspect_files
+    def test_api_read_docker_log_success(self) -> None:
+        """API-level docker fixture read (CLI has no --fixture-root)."""
+        from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
         cid = "a" * 64
-        code = _main_inspect_files([
-            "read", "--kind", "docker-json-log", "--target", cid,
-            "--inspect-files", "--admin",
-            "--fixture-root", str(self.FIXTURE_ROOT / "docker"),
-        ])
-        assert code == 0, f"CLI read failed with code {code}"
+        result = build_inspect_read(
+            "docker-json-log", cid,
+            inspect_files=True, admin=True,
+            fixture_root=self.FIXTURE_ROOT / "docker",
+        )
+        assert isinstance(result, InspectFilesReadResult), f"Got {type(result).__name__}: {result}"
+        assert result.kind.value == "docker-json-log"
+        assert "container starting up" in result.content
 
-    def test_cli_read_docker_log_json(self) -> None:
-        """CLI read with --json flag produces valid JSON."""
-        from groop.cli import _main_inspect_files
-        import io, sys
+    def test_api_read_docker_log_json(self) -> None:
+        """API read with JSON output."""
+        from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
         cid = "a" * 64
-        # Capture stdout
-        old_stdout = sys.stdout
-        sys.stdout = io.StringIO()
-        try:
-            code = _main_inspect_files([
-                "read", "--kind", "docker-json-log", "--target", cid,
-                "--inspect-files", "--admin", "--json",
-                "--fixture-root", str(self.FIXTURE_ROOT / "docker"),
-            ])
-            assert code == 0
-            output = sys.stdout.getvalue()
-        finally:
-            sys.stdout = old_stdout
-        import json as _json
-        payload = _json.loads(output)
-        assert payload["kind"] == "docker-json-log"
-        assert payload["mode"] == "content"
-        assert "container starting up" in payload["content"]
+        result = build_inspect_read(
+            "docker-json-log", cid,
+            inspect_files=True, admin=True,
+            fixture_root=self.FIXTURE_ROOT / "docker",
+        )
+        assert isinstance(result, InspectFilesReadResult)
+        j = result.to_jsonable()
+        assert j["mode"] == "content"
+        assert "container starting up" in j["content"]
 
-    def test_cli_read_cgroup_success(self) -> None:
-        """Full CLI path with cgroup fixture — reads bounded content."""
-        from groop.cli import _main_inspect_files
-        code = _main_inspect_files([
-            "read", "--kind", "cgroup-files", "--target", "system.slice/ssh.service",
-            "--inspect-files", "--admin",
-            "--fixture-root", str(self.FIXTURE_ROOT / "cgroup"),
-        ])
-        assert code == 0, f"CLI cgroup read failed with code {code}"
+    def test_api_read_cgroup_success(self) -> None:
+        """API-level cgroup fixture read (CLI has no --fixture-root)."""
+        from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
+        result = build_inspect_read(
+            "cgroup-files", "system.slice/ssh.service",
+            inspect_files=True, admin=True,
+            fixture_root=self.FIXTURE_ROOT / "cgroup",
+        )
+        assert isinstance(result, InspectFilesReadResult), f"Got {type(result).__name__}: {result}"
+        assert "memory.current" in result.content
+        assert "cpu.stat" in result.content
 
     def test_cli_read_denied_exit_2(self) -> None:
         """Read without flags returns exit 2."""
@@ -852,3 +848,213 @@ class TestReadCliIntegration:
             "read", "--kind", "docker-json-log", "--target", "a" * 64,
         ])
         assert code == 2
+
+
+# ---------------------------------------------------------------------------
+# Security and boundary tests for P45 corrections
+# ---------------------------------------------------------------------------
+
+
+class TestReadSecurityCorrections:
+    """Covers: parent symlink escape, giant line, aggregate bounds,
+    negative/zero/huge limits, CLI fixture-root absence, no special files,
+    hostile bytes."""
+
+    FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "inspect_files"
+
+    # ---- Symlink escape (descriptor-relative confinement) ----
+
+    def test_symlink_escape_in_component_rejected(self) -> None:
+        """If a component of the resolved path is a symlink, O_NOFOLLOW
+        on the directory walk MUST reject it."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "cgroup-files", "system.slice/ssh.service/dangerous_link/passwd_escape",
+            inspect_files=True, admin=True,
+            fixture_root=self.FIXTURE_ROOT / "cgroup_escape",
+        )
+        assert isinstance(result, InspectFilesReadError)
+
+    def test_fifo_rejected(self) -> None:
+        """FIFO (named pipe) is not a regular file -- must be rejected
+        by the catalog validation (traversal) or reader."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "cgroup-files", "../../inspect_files/_danger/test_fifo",
+            inspect_files=True, admin=True,
+            fixture_root=self.FIXTURE_ROOT / "cgroup_escape",
+        )
+        assert isinstance(result, InspectFilesReadError)
+
+    # ---- Single giant line (chunk-based reads) ----
+
+    def test_giant_line_bounded_with_valid_id(self) -> None:
+        """Read a file with small max_bytes to verify chunk-based read
+        truncates at the byte limit."""
+        from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
+        cid = "a" * 64
+        result = build_inspect_read(
+            "docker-json-log", cid,
+            inspect_files=True, admin=True,
+            max_bytes=20,
+            fixture_root=self.FIXTURE_ROOT / "docker",
+        )
+        assert isinstance(result, InspectFilesReadResult)
+        assert result.truncated_bytes
+        assert len(result.content) <= 20
+
+    # ---- Aggregate bounds for cgroup files ----
+
+    def test_cgroup_aggregate_bytes_truncation(self) -> None:
+        """Very small max_bytes should truncate across ALL cgroup files,
+        not per-file."""
+        from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
+        result = build_inspect_read(
+            "cgroup-files", "system.slice/ssh.service",
+            inspect_files=True, admin=True,
+            max_bytes=20,
+            fixture_root=self.FIXTURE_ROOT / "cgroup",
+        )
+        assert isinstance(result, InspectFilesReadResult)
+        assert result.truncated_bytes
+
+    def test_cgroup_aggregate_lines_truncation(self) -> None:
+        """Small max_lines should truncate across ALL cgroup files."""
+        from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
+        result = build_inspect_read(
+            "cgroup-files", "system.slice/ssh.service",
+            inspect_files=True, admin=True,
+            max_lines=1,
+            fixture_root=self.FIXTURE_ROOT / "cgroup",
+        )
+        assert isinstance(result, InspectFilesReadResult)
+        assert result.truncated_lines
+
+    # ---- Negative/zero/huge limits ----
+
+    def test_negative_max_bytes_rejected(self) -> None:
+        """Negative max_bytes must be rejected."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "docker-json-log", "a" * 64,
+            inspect_files=True, admin=True,
+            max_bytes=-1,
+            fixture_root=self.FIXTURE_ROOT / "docker",
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "max_bytes" in result.error.lower()
+
+    def test_zero_max_bytes_rejected(self) -> None:
+        """Zero max_bytes must be rejected."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "docker-json-log", "a" * 64,
+            inspect_files=True, admin=True,
+            max_bytes=0,
+            fixture_root=self.FIXTURE_ROOT / "docker",
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "max_bytes" in result.error.lower()
+
+    def test_huge_max_bytes_rejected(self) -> None:
+        """Excessive max_bytes exceeding absolute maximum must be rejected."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "docker-json-log", "a" * 64,
+            inspect_files=True, admin=True,
+            max_bytes=1_048_577,
+            fixture_root=self.FIXTURE_ROOT / "docker",
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "max_bytes" in result.error.lower()
+
+    def test_negative_max_lines_rejected(self) -> None:
+        """Negative max_lines must be rejected."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "docker-json-log", "a" * 64,
+            inspect_files=True, admin=True,
+            max_lines=-5,
+            fixture_root=self.FIXTURE_ROOT / "docker",
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "max_lines" in result.error.lower()
+
+    def test_huge_max_lines_rejected(self) -> None:
+        """Excessive max_lines exceeding absolute maximum must be rejected."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "docker-json-log", "a" * 64,
+            inspect_files=True, admin=True,
+            max_lines=100_001,
+            fixture_root=self.FIXTURE_ROOT / "docker",
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "max_lines" in result.error.lower()
+
+    # ---- CLI absence of fixture-root ----
+
+    def test_cli_no_fixture_root_flag(self) -> None:
+        """Verify --fixture-root is NOT accepted by the CLI parser."""
+        import pytest
+        with pytest.raises(SystemExit):
+            from groop.cli import parse_inspect_files_args
+            parse_inspect_files_args([
+                "read", "--kind", "docker-json-log", "--target", "x",
+                "--inspect-files", "--admin", "--fixture-root", "/tmp",
+            ])
+
+    # ---- Root requirement (production path) ----
+
+    def test_read_requires_root_in_production(self) -> None:
+        """Without fixture_root, build_inspect_read should require root."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "docker-json-log", "a" * 64,
+            inspect_files=True, admin=True,
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "requires root" in result.error
+
+    # ---- Hostile/control bytes ----
+
+    def test_hostile_bytes_safe(self) -> None:
+        """Null bytes and control characters must not crash the decoder."""
+        from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
+        cid = "a" * 64
+        result = build_inspect_read(
+            "docker-json-log", cid,
+            inspect_files=True, admin=True,
+            fixture_root=self.FIXTURE_ROOT / "docker",
+        )
+        assert isinstance(result, InspectFilesReadResult)
+        assert isinstance(result.content, str)
+
+    # ---- No subprocess/writes ----
+
+    def test_reader_no_subprocess(self) -> None:
+        """Reader module must not import subprocess."""
+        import ast, importlib.util
+        spec = importlib.util.find_spec("groop.inspect_files.reader")
+        assert spec is not None
+        assert spec.origin is not None
+        with open(spec.origin, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any(n.name == "subprocess" for n in node.names):
+                pytest.fail(f"reader imports subprocess: {node.names}")
+            if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+                pytest.fail(f"reader imports {node.module}: {node.names}")
+
+    def test_reader_no_write_operations(self) -> None:
+        """Reader must not open files for writing."""
+        import ast, importlib.util
+        spec = importlib.util.find_spec("groop.inspect_files.reader")
+        assert spec is not None
+        assert spec.origin is not None
+        with open(spec.origin, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute):
+                if node.attr in ("O_WRONLY", "O_RDWR", "O_CREAT", "O_APPEND"):
+                    pytest.fail(f"reader uses write flag {node.attr}")

@@ -5,10 +5,16 @@ paths.  No subprocess, no mutation, no arbitrary root-file reads.
 
 Every read path is:
 1. Resolved from catalog/entity metadata (not user-supplied absolute paths).
-2. Confined to the allowlisted root via ``Path.is_relative_to()``.
+2. Confined to the allowlisted root via descriptor-relative traversal
+   (``dir_fd`` + ``O_NOFOLLOW`` at every component) — never a lexical-only
+   check.
 3. Opened with ``os.open(..., os.O_RDONLY | os.O_NOFOLLOW)`` and stat-verified
    as a regular file (not a symlink, device, FIFO, socket, or directory).
 4. Read with a hard byte limit, a hard line limit, and safe decoding.
+   Reads are chunk-based, never line-by-line, so single giant lines are bounded.
+5. Limits are **aggregate** across all files in a multi-file read (e.g. cgroup).
+6. Production reads require root (EUID 0); the root check is an injectable seam
+   for testing.
 """
 
 from __future__ import annotations
@@ -31,6 +37,14 @@ _FULL_DOCKER_ID_PATTERN = __import__("re").compile(r"^[a-f0-9]{64}$")
 # Default read bounds.
 _DEFAULT_MAX_BYTES = 65536  # 64 KiB
 _DEFAULT_MAX_LINES = 5000
+
+# Conservative absolute maximums — enforced at argument validation time
+# to prevent pathological values, even from code that calls the API directly.
+_ABSOLUTE_MAX_BYTES = 1_048_576  # 1 MiB
+_ABSOLUTE_MAX_LINES = 100_000
+
+# Chunk size for bounded reads (must be <= _DEFAULT_MAX_BYTES).
+_READ_CHUNK_SIZE = 65536  # 64 KiB
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -138,48 +152,128 @@ def _confine_and_open(
     resolved_path: Path,
     allow_root: Path,
 ) -> IO[bytes]:
-    """Open *resolved_path* for bounded reading with no-follow + regular-file
-    validation.
+    """Open *resolved_path* for bounded reading via descriptor-relative
+    traversal — NOT a lexical ``is_relative_to`` check alone.
 
     Steps (in order):
-    1. Reject if the path is not **under** *allow_root* via
-       ``Path.is_relative_to()``.
-    2. Open with ``os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW`` so that
-       symlinks are rejected and FIFO opens do not hang.
-    3. ``fstat`` the descriptor and verify it is a regular file
+
+    1. Open *allow_root* with ``O_RDONLY | O_DIRECTORY | O_NOFOLLOW`` so that
+       if the root itself is a symlink we fail immediately.
+    2. Compute the relative path from *allow_root* to *resolved_path*.  Reject
+       any relative component that starts with ``..``.
+    3. Walk intermediate components one at a time, each with
+       ``O_RDONLY | O_DIRECTORY | O_NOFOLLOW | dir_fd=parent_fd`` — any
+       component that is a symlink (or a non-directory) is rejected.
+    4. Open the final leaf with ``O_RDONLY | O_NONBLOCK | O_NOFOLLOW |
+       dir_fd=parent_fd``.
+    5. ``fstat`` the descriptor and verify it is a regular file
        (``stat.S_ISREG``).
-    4. Return a regular ``io.BufferedReader`` wrapping the descriptor.
+    6. Return a regular ``io.BufferedReader`` wrapping the descriptor.
+
+    This approach is race-resistant: an attacker cannot swap a symlink in
+    between a lexical check and the open because every intermediate component
+    is traversed via ``dir_fd`` with ``O_NOFOLLOW``, anchored at the
+    already-opened *allow_root* directory descriptor.
 
     Raises ``ValueError`` or ``OSError`` on any violation.
     """
-    # 1. Confine to allow_root.
+    # 1. Open allow_root with no-follow.
     try:
-        if not resolved_path.is_relative_to(allow_root):
+        root_fd = os.open(
+            str(allow_root),
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as exc:
+        msg = f"cannot open allow_root {allow_root}: {exc}"
+        raise ValueError(msg) from exc
+
+    try:
+        # 2. Compute relative path and reject traversal.
+        relative_str = os.path.relpath(str(resolved_path), str(allow_root))
+        if relative_str.startswith(".."):
             msg = f"path {resolved_path} is not under {allow_root}"
             raise ValueError(msg)
-    except ValueError:
-        msg = f"path {resolved_path} is not under {allow_root}"
-        raise ValueError(msg) from None
 
-    # 2. Open with no-follow and nonblocking (to detect FIFOs immediately).
-    fd = os.open(
-        str(resolved_path),
-        os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
-    )
+        parts = Path(relative_str).parts
+        current_fd = root_fd
 
-    try:
-        # 3. fstat and require regular file.
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
+        # 3. Walk intermediate components.
+        for part in parts[:-1]:
+            if part in ("", ".", ".."):
+                msg = f"path {resolved_path} is not under {allow_root}"
+                raise ValueError(msg)
+            child_fd = os.open(
+                part,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=current_fd,
+            )
+            if current_fd != root_fd:
+                os.close(current_fd)
+            current_fd = child_fd
+
+        # 4. Open the final leaf.
+        leaf = parts[-1] if parts else "."
+        fd = os.open(
+            leaf,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+            dir_fd=current_fd,
+        )
+
+        try:
+            # 5. fstat and require regular file.
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                os.close(fd)
+                msg = (
+                    f"not a regular file: {resolved_path}"
+                    f" (mode={st.st_mode:o})"
+                )
+                raise ValueError(msg)
+
+            # 6. Wrap in a buffered reader.
+            return os.fdopen(fd, "rb")
+        except (ValueError, OSError):
             os.close(fd)
-            msg = f"not a regular file: {resolved_path} (mode={st.st_mode:o})"
-            raise ValueError(msg)
+            raise
 
-        # 4. Wrap in a buffered reader.
-        return os.fdopen(fd, "rb")
-    except (ValueError, OSError):
-        os.close(fd)
-        raise
+    finally:
+        if current_fd != root_fd:
+            os.close(current_fd)
+        os.close(root_fd)
+
+
+# ---------------------------------------------------------------------------
+# Limit validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_limits(
+    max_bytes: int,
+    max_lines: int,
+) -> None:
+    """Validate that *max_bytes* and *max_lines* are positive and within
+    conservative absolute maximums.
+
+    Raises ``ValueError`` on violation.
+    """
+    if not isinstance(max_bytes, int) or max_bytes <= 0:
+        msg = f"max_bytes must be a positive int, got {max_bytes!r}"
+        raise ValueError(msg)
+    if max_bytes > _ABSOLUTE_MAX_BYTES:
+        msg = (
+            f"max_bytes {max_bytes} exceeds absolute maximum"
+            f" {_ABSOLUTE_MAX_BYTES}"
+        )
+        raise ValueError(msg)
+    if not isinstance(max_lines, int) or max_lines <= 0:
+        msg = f"max_lines must be a positive int, got {max_lines!r}"
+        raise ValueError(msg)
+    if max_lines > _ABSOLUTE_MAX_LINES:
+        msg = (
+            f"max_lines {max_lines} exceeds absolute maximum"
+            f" {_ABSOLUTE_MAX_LINES}"
+        )
+        raise ValueError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -192,37 +286,78 @@ def _bounded_read(
     *,
     max_bytes: int = _DEFAULT_MAX_BYTES,
     max_lines: int = _DEFAULT_MAX_LINES,
-) -> tuple[str, bool, bool]:
-    """Read from *buf* with the given limits.
+    aggregate_bytes: int = 0,
+    aggregate_lines: int = 0,
+) -> tuple[str, bool, bool, int, int]:
+    """Read from *buf* with the given limits, in fixed-size chunks.
 
-    Returns ``(decoded_text, truncated_bytes, truncated_lines)``.
+    Reads in fixed-size chunks (never line-by-line) so that a single giant
+    line with no newline never materializes unboundedly in memory.
+
+    *aggregate_bytes* and *aggregate_lines* are byte/line counts already
+    consumed by previous files in the same multi-file read (e.g. cgroup).
+    If provided, the limits are applied **cumulatively** — the caps are still
+    *max_bytes*/*max_lines*, but the counts start from the given aggregate
+    offset.
+
+    Returns ``(decoded_text, truncated_bytes, truncated_lines,
+    new_aggregate_bytes, new_aggregate_lines)``.
     Bytes are decoded with ``surrogateescape`` so that arbitrary binary content
     does not raise.
     """
+    _validate_limits(max_bytes, max_lines)
+
     truncated_bytes_flag = False
     truncated_lines_flag = False
-    total_bytes = 0
-    line_count = 0
+    total_bytes = aggregate_bytes
+    total_lines = aggregate_lines
     chunks: list[bytes] = []
 
-    # Read one byte over the limit to detect truncation.
-    read_size = max_bytes + 1
+    # Read in fixed-size chunks — never line-by-line.
+    while True:
+        chunk = buf.read(_READ_CHUNK_SIZE)
+        if not chunk:
+            break
+        chunk_len = len(chunk)
 
-    for line_bytes in buf:
-        line_bytes: bytes
-        total_bytes += len(line_bytes)
-        if total_bytes > max_bytes:
+        # Count newlines in this chunk.
+        nl_count = chunk.count(b"\n")
+
+        # Would this chunk push us over either limit?
+        if total_bytes + chunk_len > max_bytes:
+            # Accept bytes up to the limit, then stop.
+            remaining = max_bytes - total_bytes
+            if remaining > 0:
+                partial = chunk[:remaining]
+                chunks.append(partial)
             truncated_bytes_flag = True
             break
-        line_count += 1
-        if line_count > max_lines:
+
+        if total_lines + nl_count > max_lines:
+            # Accept lines up to the limit, then stop.
+            remaining_lines = max_lines - total_lines
+            pos = 0
+            for _ in range(remaining_lines):
+                idx = chunk.find(b"\n", pos)
+                if idx == -1:
+                    break
+                pos = idx + 1
+            if pos > 0:
+                chunks.append(chunk[:pos])
+            else:
+                # No newline found — whole chunk fits within remaining lines.
+                chunks.append(chunk)
+            total_lines = max_lines
             truncated_lines_flag = True
             break
-        chunks.append(line_bytes)
+
+        chunks.append(chunk)
+        total_bytes += chunk_len
+        total_lines += nl_count
 
     raw = b"".join(chunks)
     text = raw.decode("utf-8", errors="surrogateescape")
-    return text, truncated_bytes_flag, truncated_lines_flag
+    return text, truncated_bytes_flag, truncated_lines_flag, total_bytes, total_lines
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +414,22 @@ def _resolve_cgroup_file_paths(
 
 
 # ---------------------------------------------------------------------------
+# Root enforcement (per TUI-SPEC 4.8)
+# ---------------------------------------------------------------------------
+
+
+def _injectable_is_root(*, fixture_root: Path | None = None) -> bool:
+    """Return True if the effective user is root (EUID == 0).
+
+    When *fixture_root* is provided (testing seam) the root check is
+    **bypassed** — tests can exercise the full read path without root.
+    """
+    if fixture_root is not None:
+        return True  # Testing bypass — caller is responsible for isolation.
+    return os.geteuid() == 0
+
+
+# ---------------------------------------------------------------------------
 # Public read API
 # ---------------------------------------------------------------------------
 
@@ -297,16 +448,32 @@ def build_inspect_read(
 
     Gated on **both** ``inspect_files=True`` and ``admin=True``.
 
-    *max_bytes* and *max_lines* control the read bounds.
+    *max_bytes* and *max_lines* control the read bounds.  Both must be
+    positive integers below conservative absolute maximums (1 MiB /
+    100 000 lines).
 
     *fixture_root* is a testing seam — when provided it replaces the standard
     filesystem root (``/var/lib/docker`` for Docker logs,
-    ``/sys/fs/cgroup`` for cgroup files).
+    ``/sys/fs/cgroup`` for cgroup files) **and** bypasses the root-EUID
+    requirement.
+
+    In production (``fixture_root is None``) the caller must be root, per
+    TUI-SPEC §4.8 ("available only in root/admin or daemon-approved modes").
 
     Returns ``InspectFilesReadResult`` on success, ``InspectFilesReadError``
     on a resolvable failure (missing file, permission denied, invalid path),
     or ``ReadDenied`` when the gating flags are not active.
     """
+    # ---- Validate limits early ----
+    try:
+        _validate_limits(max_bytes, max_lines)
+    except ValueError as exc:
+        try:
+            ik = InspectFilesKind(kind)
+        except ValueError:
+            ik = None
+        return InspectFilesReadError(kind=ik, target=target, error=str(exc))
+
     # ---- Gating ----
     if not inspect_files or not admin:
         try:
@@ -314,6 +481,19 @@ def build_inspect_read(
         except ValueError:
             ik = None
         return ReadDenied(kind=ik, target=target)
+
+    # ---- Root check (production only) ----
+    if not _injectable_is_root(fixture_root=fixture_root):
+        try:
+            ik = InspectFilesKind(kind)
+        except ValueError:
+            ik = None
+        return InspectFilesReadError(
+            kind=ik,
+            target=target,
+            error="file inspection requires root; re-run as root or via "
+            "the daemon",
+        )
 
     # ---- Resolve kind ----
     try:
@@ -351,8 +531,10 @@ def build_inspect_read(
     except ValueError as exc:
         return InspectFilesReadError(kind=ik, target=target, error=str(exc))
 
-    # ---- Read each path ----
+    # ---- Read each path with aggregate limits ----
     results: list[dict] = []
+    agg_bytes = 0
+    agg_lines = 0
     for path in paths_to_read:
         try:
             buf = _confine_and_open(path, allow_root)
@@ -367,8 +549,12 @@ def build_inspect_read(
             continue
 
         try:
-            text, trunc_b, trunc_l = _bounded_read(
-                buf, max_bytes=max_bytes, max_lines=max_lines,
+            text, trunc_b, trunc_l, agg_bytes, agg_lines = _bounded_read(
+                buf,
+                max_bytes=max_bytes,
+                max_lines=max_lines,
+                aggregate_bytes=agg_bytes,
+                aggregate_lines=agg_lines,
             )
             results.append({
                 "path": str(path),

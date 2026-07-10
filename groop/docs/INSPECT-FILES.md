@@ -108,25 +108,37 @@ both `--inspect-files` and `--admin`).
 
 #### Bounded Reads
 
-- `--max-bytes` (default 65536): Hard byte limit per file; truncated bytes
-  are reported via the `truncated_bytes` field.
-- `--max-lines` (default 5000): Hard line limit per file; truncated lines
-  are reported via the `truncated_lines` field.
+- `--max-bytes` (default 65536): Hard byte limit **aggregate** across all
+  files in a multi-file read (e.g. cgroup); truncated bytes are reported via
+  the `truncated_bytes` field.
+- `--max-lines` (default 5000): Hard line limit **aggregate** across all
+  files; truncated lines are reported via the `truncated_lines` field.
+- Both limits must be positive integers. Absolute maximums are enforced:
+  `max_bytes ≤ 1 MiB`, `max_lines ≤ 100 000`.
+- Reads are **chunk-based** (fixed-size 64 KiB chunks), never line-by-line,
+  so single giant lines with no newline never materialize unboundedly in
+  memory.
 - `--json` output includes both truncation flags; text output prepends
   `[TRUNCATED]` notices.
 
 #### Path Confinement
 
-Every read path undergoes three-stage validation:
+Every read path undergoes four-stage validation:
 
 1. **Catalog resolution**: The path is built from the allowlisted catalog and
    target metadata, never from user-supplied absolute paths.
-2. **Root confinement**: The resolved path is verified to be **under** the
-   allowlisted root via `Path.is_relative_to()`.
+2. **Root confinement**: The resolved path is verified to be under the
+   allowlisted root via descriptor-relative traversal — the root directory is
+   opened with `O_DIRECTORY | O_NOFOLLOW`, then each intermediate path
+   component is walked with ``dir_fd`` and ``O_NOFOLLOW``. This prevents
+   parent-component symlink escapes and is race-resistant.
 3. **No-follow open + stat check**: The file is opened with
    `os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW`, then `fstat`-verified as
    a regular file (`S_ISREG`). Symlinks, devices, FIFOs, sockets, and
    directories are rejected.
+4. **Descriptor-relative traversal**: All opens use `dir_fd` anchored at the
+   allow_root directory descriptor — never absolute-path opens that could
+   race with a symlink swap.
 
 #### No Subprocess, No Mutation
 
@@ -137,8 +149,14 @@ calls external commands. All reads use direct descriptor-based Python I/O.
 
 Production Docker log reads require a **full 64-character lowercase hex
 container ID**. Short IDs, container names, and partial prefixes are rejected.
-Fixture seams may provide an alternate root via `--fixture-root` (hidden flag
-for testing).
+Fixture seams may provide an alternate root via the `fixture_root=` Python
+parameter (testing only — not exposed on the CLI).
+
+#### Root Requirement
+
+Production reads (no `fixture_root`) require **root privileges** (EUID 0),
+per TUI-SPEC §4.8 ("available only in root/admin or daemon-approved modes").
+When a `fixture_root` is provided for testing, the root check is bypassed.
 
 #### Cgroup Reads
 
@@ -206,7 +224,8 @@ Path: /var/lib/docker/containers/.../<id>-json.log
 - **Not a subprocess executor** — no Docker, systemd/journalctl calls.
 - **Not a daemon feature** — no daemon protocol integration.
 - **Not a TUI screen** — CLI-only in this package.
-- **Not root** — no privilege elevation.
+- **Requires root** — production reads require EUID 0; testing uses fixture
+  seams per the Python API.
 - **Not arbitrary root reads** — every path must belong to the allowlisted catalog.
 - **Not streaming** — bounded reads only; no follow/stream mode.
 

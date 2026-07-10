@@ -193,7 +193,6 @@ def parse_inspect_files_args(argv: list[str]) -> argparse.Namespace:
     read_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     read_parser.add_argument("--max-bytes", type=int, default=65536, help="maximum bytes to read (default: 65536)")
     read_parser.add_argument("--max-lines", type=int, default=5000, help="maximum lines to read (default: 5000)")
-    read_parser.add_argument("--fixture-root", type=Path, default=None, help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -573,7 +572,6 @@ def _main_inspect_files(argv: list[str]) -> int:
                 admin=args.admin,
                 max_bytes=args.max_bytes,
                 max_lines=args.max_lines,
-                fixture_root=args.fixture_root,
             )
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
