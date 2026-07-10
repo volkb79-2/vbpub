@@ -54,6 +54,19 @@ report FILE --json` to compute a steady-state percentile/rate profile from a
 P2-format recording. Until P53/P54 merge, unattended recording and
 machine-readable steady-state profiles remain prototype-only claims.
 
+P55-P57 are queued, spec-only, and each independently implementable without
+P53/P54 or each other. P55 adds `--entities GLOB`/`--slice NAME`/`--metrics
+compact` collection-time filtering (extracted from P53's amendment so the
+two can build in parallel). P56 adds `groop squeeze`, a guided stepped
+`memory.high` working-set measurement absorbing the standalone
+`container-mempress.sh` workflow, gated through the existing P21/P46 admin
+action posture with mandatory `memory.high` restore on exit/SIGINT. P57 adds
+`--container NAME_OR_PREFIX` docker-name resolution wherever groop takes a
+cgroup-path/entity identifier today. Until P55-P57 merge, unattended
+recording remains full-tree/full-metric only, no guided squeeze measurement
+exists, and identifier flags accept only cgroup-path/target strings, not
+docker container names.
+
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
 core workflows, not yet production-certified.**
@@ -211,6 +224,10 @@ core workflows, not yet production-certified.**
 - paddr auto-start / persistent daemon-owned paddr mode.
 - Headless (non-Textual) `--record` driver and `groop report` steady-state
   profile command (queued: P53, P54).
+- Collector-level entity/metric filtering (`--entities`/`--slice`/`--metrics
+  compact`), guided stepped `memory.high` squeeze measurement (`groop
+  squeeze`), and docker-name entity selectors (`--container`) (queued: P55,
+  P56, P57).
 
 ## Acceptance Status
 
