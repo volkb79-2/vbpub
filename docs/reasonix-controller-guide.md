@@ -48,24 +48,24 @@ Each agent prompt should state:
 Fresh implementation agent:
 
 ```bash
-reasonix run --model deepseek-v4-flash --max-steps 0 \
+reasonix run --model deepseek-flash-high/deepseek-v4-flash --max-steps 0 \
   'Implement groop P29 ... follow groop/README.md Workflow protocol exactly ...'
 ```
 
 Continue the latest Reasonix session to reuse cache:
 
 ```bash
-reasonix run -c --model deepseek-v4-flash --max-steps 0 \
+reasonix run -c --model deepseek-flash-high/deepseek-v4-flash --max-steps 0 \
   'Continue with groop P28 ...'
 ```
 
 Parallel two-stream run, when packages do not overlap:
 
 ```bash
-reasonix run -c --model deepseek-v4-flash --max-steps 0 --dir /path/to/vbpub \
+reasonix run -c --model deepseek-flash-high/deepseek-v4-flash --max-steps 0 --dir /path/to/vbpub \
   'Implement groop P32 ... worktree .worktrees/-groop-p32-daemon-status ...'
 
-reasonix run --model deepseek-v4-flash --max-steps 0 --dir /path/to/vbpub \
+reasonix run --model deepseek-flash-high/deepseek-v4-flash --max-steps 0 --dir /path/to/vbpub \
   'Implement groop P33 ... worktree .worktrees/-groop-p33-release-smoke ...'
 ```
 
@@ -78,7 +78,7 @@ reasonix run --help
 
 Important flags:
 
-- `--model deepseek-v4-flash`: good default implementation model.
+- `--model PROVIDER/MODEL`: select an explicit model-and-effort provider alias.
 - `--max-steps 0`: no artificial step cap.
 - `-c` / `--continue`: resume latest saved session and preserve useful cache.
 - `--resume PATH`: resume a specific saved session.
@@ -86,6 +86,42 @@ Important flags:
 - `--metrics PATH`: write token/cache/cost summary JSON if a durable metric
   artifact is useful.
 - `--dir PATH`: run from a specific project root.
+
+### Model and effort tiers
+
+Non-interactive `reasonix run` in Reasonix 1.17.9 has no documented
+`--effort` option. Interactive `/effort` changes session state, but controller
+runs should be reproducible without an interactive prelude. Define separate
+provider entries in `~/.reasonix/config.toml` with the same endpoint/model and
+an explicit `effort = "high"` or `effort = "max"`, then use these exact
+selectors:
+
+| Selector | Intended use |
+| --- | --- |
+| `deepseek-flash-high/deepseek-v4-flash` | Default for bounded, low-risk implementation and documentation |
+| `deepseek-flash-max/deepseek-v4-flash` | Medium work where more effort is useful but Pro is not justified |
+| `deepseek-pro-high/deepseek-v4-pro` | Concurrency, lifecycle, protocol, security, or multi-module reconciliation |
+| `deepseek-pro-max/deepseek-v4-pro` | Exceptional ambiguous or adversarial architecture/recovery work |
+
+Validate configuration before assigning work:
+
+```bash
+reasonix doctor --json
+reasonix run --model deepseek-pro-high/deepseek-v4-pro \
+  --max-steps 1 'Reply with exactly ALIAS_OK.'
+```
+
+On 2026-07-10 all four selectors passed a live `ALIAS_OK` probe. Identical
+minimal probes cost about `¥0.012` for Flash and `¥0.036` for Pro under the
+configured price table, so the observed local premium was about 3x. Treat the
+price table as an estimate and verify it against actual provider billing.
+
+Do not infer that a higher tier removes the need for controller review. In a
+same-base P51 replay, Pro High found and repaired several of its own mistakes,
+but its committed result still passed its full suite while missing important
+blocked-producer shutdown, history-gap, terminal-state, and resource-bound
+contracts. Choose tiers by expected total cost: agent run plus review and the
+probability-weighted repair/rerun cost.
 
 ## Cache Strategy
 
