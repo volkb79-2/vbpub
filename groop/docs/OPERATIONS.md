@@ -175,7 +175,7 @@ sudo groop damon paddr start --confirm START
 | `x` | Save incident snapshot for selected entity. |
 | `m` | Host-memory / paddr DAMON status. |
 | `b` | Collapse/expand banner. |
-| `k` | Reserved v2 admin action; current builds report that executable admin actions are not implemented. |
+| `k` | Reserved v2 admin action; the TUI mutation binding remains disabled. |
 | `F1`, `?` | Metric glossary/help. |
 | `q` | Quit. |
 
@@ -191,13 +191,27 @@ sudo groop damon paddr start --confirm START
   the same groop-owned marker logic as the CLI.
 - Incident snapshots write only under the configured snapshot directory or the
   XDG state fallback. They do not collect arbitrary file/log content.
-- File/log/content browsing and executable Docker/systemd admin actions are not implemented.
+- File/log/content browsing and executable Docker/systemd admin actions are
+  separately gated. The P46 CLI requires `--admin`, typed `--confirm EXECUTE`,
+  root, strict target validation, and a fail-closed mandatory audit-first
+  execution kernel. See Safety Model below for the full gate chain.
 - Pressing a reserved v2 admin key in the TUI reports that the action is
   unavailable in the current build instead of failing silently.
 - `groop action preview --kind docker-restart --target NAME --admin --json`
   prints an exact argv preview and never executes it. Omit `--admin` to verify
   that the preview is denied. Use `--audit-log PATH` to append an explicit
   preview-only JSONL record.
+- `groop action execute --kind docker-restart --target NAME --admin
+  --confirm EXECUTE` runs the validated Docker/systemd start/stop/restart
+  command through root, admin, typed confirmation, timeout, immutable-plan,
+  execution-allowlist, strict target, fixed-absolute-argv, fail-closed
+  mandatory audit, bounded argv-only runner, and post-audit gates. The
+  production audit is fixed at `/var/log/groop/actions.jsonl`; execute does not
+  accept `--audit-log`. Any pre-mutation gate failure produces a refusal and
+  executes nothing. API fixture paths are not CLI inputs.
+- Tests inject a fake runner and prove every gate without real Docker or
+  systemd calls. Post-audit failure is reported as a typed partial/audit
+  failure while preserving the action outcome.
 
 ## Compressed Swap Interpretation
 

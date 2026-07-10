@@ -65,6 +65,10 @@ flowchart TD
 done
     P45 --> P48[P48 Journald snapshot]
     P46 --> P49[P49 memory.high governance]
+    P43 --> P50[P50 Mouse table interactions]
+    P16 --> P51[P51 Daemon sampling fanout]
+    P47 --> P52[P52 Versioned read API]
+    P51 --> P52
 ```
 
 ## Remaining Estimate
@@ -74,7 +78,7 @@ After P43, the roadmap is mostly in three buckets:
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
 | v1/v1.5 release confidence and UI polish | 0 | P43 removes the obsolete Textual `<1` resolver ceiling and closes the last planned v1/v1.5 release-confidence package. Manual live-host acceptance evidence remains. |
-| v2 privileged daemon/BPF/admin/file work | 5-7 | P44-P46 cover paddr daemon ownership, the first bounded inspect-files content slice, and the first executable admin slice; BPF lifecycle, install execution/service hardening, remaining content modes, kill/update, and systemd property governance remain. |
+| v2 privileged daemon/BPF/admin/file work | 4-6 | P46 (admin action execution kernel) is complete. P44-P45 cover paddr daemon ownership and the first bounded inspect-files content slice; BPF lifecycle, install execution/service hardening, remaining content modes, kill/update, and systemd property governance remain. |
 | Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
 
 Pragmatic estimate from the current state: a shippable v1/v1.5 release
@@ -122,6 +126,23 @@ P48 and P49 remain queued: bounded journald snapshot and structured
 ``memory.high`` governance through systemd, respectively. Handoffs:
 `handoff/P48-inspect-files-journal-snapshot.md`,
 `handoff/P49-systemd-memory-governance.md`.
+
+### P50 - Mouse Table Interactions
+
+Status: queued. Move the entity table to a Textual-native interactive surface
+so header clicks sort/toggle direction and row clicks open drill-down, while
+retaining keyboard navigation and P41 formatted-cell fidelity.
+
+Handoff: `handoff/P50-mouse-table-interactions.md`.
+
+### P51-P52 - Web-Backend Readiness
+
+Status: queued. P51 fixes request-driven/stale daemon sampling with one
+background producer and non-consuming fan-out. After P47 and P51, P52 adds a
+versioned, bounded, peer-aware read API for attached and web frontends.
+
+Handoffs: `handoff/P51-daemon-sampling-fanout.md` and
+`handoff/P52-versioned-daemon-read-api.md`.
 
 ### P12 — Release Hardening And Acceptance
 

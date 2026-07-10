@@ -145,6 +145,9 @@ find groop/src/groop groop/tests -name '*.py' -print0 | xargs -0 python3 -m py_c
 
 ## Known Gaps / Open Items
 
+Post-merge controller validation with P46 on main passed the combined focused
+regression (`151 passed`) and full suite (`554 passed, 1 skipped`).
+
 - Live-root acceptance of the daemon-owned paddr lifecycle is not run in this
   session. The lifecycle uses the same `plan_start_paddr_session` /
   `start_planned_paddr_session` / `stop_owned_sessions` functions that are

@@ -1108,6 +1108,17 @@ design brief) — pressing it shows "not available in this build; requires --adm
 (v2)" rather than doing nothing silently, so operators aren't left wondering if
 the keypress registered.
 
+**Mouse parity.** The main entity table is also a Textual-native mouse surface;
+mouse support supplements rather than replaces the fixed keyboard actions.
+Clicking a visible column header sorts by that column, and clicking it again
+reverses the direction. The active key/direction remain visible. Clicking an
+entity row updates the same stable selection key and opens the same drill-down
+screen as `Enter`; placeholder/empty rows are inert. Live and replay refreshes
+preserve the selected row/cursor when the entity remains visible. Terminals
+that do not forward mouse events retain the complete keyboard workflow with no
+degraded data or hidden action. Mouse input never bypasses DAMON, inspection,
+or admin confirmation gates.
+
 ### 3.10 Glossary (embedded in the tool's help screen, `F1`/`?`)
 
 Metric explanations, units, source paths, semantic tags, branch-row policy, and
@@ -1346,6 +1357,13 @@ collector. It runs the same collector/model layers (§6.1) once as root, then
 exposes a controlled read-only subset to local clients that should not run as root
 and should not need direct Docker socket access.
 
+Sampling is daemon-owned and request-independent: exactly one background
+producer advances the collector at the configured interval. `current`, history,
+TUI attach, and future web clients read the same sequenced snapshots without
+calling the collector, consuming frames, or changing cadence. A slow or broken
+client cannot stall sampling or another client. Startup-without-first-frame,
+collector failure, history eviction, and shutdown are bounded explicit states.
+
 Concretely:
 
 - Runs as a systemd unit (`groop-daemon.service`) with one instance per host.
@@ -1425,6 +1443,13 @@ design or audit. Scope is otherwise deliberately unspecified beyond "possible
 without foreclosing it" — no framework choice, no auth scheme, no deployment
 story is decided here; this section exists so §6.1's layering decision is
 justified by a concrete future consumer, not to spec the web UI itself.
+
+Before a production web backend begins, the daemon read API must provide a
+version/capability handshake, request-independent fresh sampling, bounded
+history/entity-detail queries, registry-derived sensitivity metadata, typed
+errors, peer identity, and per-client resource limits. A fixture/replay-backed
+frontend prototype may precede those gates, but it must not be described as a
+production daemon-backed web release.
 
 ### 4.7 Set-property edits
 
@@ -1904,6 +1929,11 @@ add/remove an *action*):
     BPF overhead acceptance list in §10 item 2 has been run and recorded in
     `MEASUREMENTS.md`. DAMON defaults cannot be raised or enabled by default until
     the DAMON overhead gate in §10 item 3 has been run and recorded there.
+15. **Mouse/keyboard interaction parity:** clicking a visible header selects its
+    canonical sort key and repeated clicks reverse direction; clicking a real
+    entity row opens the same drill-down as keyboard selection plus `Enter`.
+    Keyboard-only navigation, tree collapse/expand, replay, selection retention,
+    and formatted record/replay cell fidelity remain unchanged.
 
 ---
 
