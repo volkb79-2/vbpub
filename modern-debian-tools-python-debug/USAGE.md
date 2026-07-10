@@ -213,6 +213,7 @@ To keep tool state across rebuilds, persist the workspace mount plus these home 
 
 - `/home/vscode/.reasonix` for Reasonix user config and session state
 - `/home/vscode/.openclaw` for OpenClaw config and gateway state
+- `/home/vscode/.opencode` for OpenCode CLI state (auth, settings, history)
 - `/home/vscode/.config/modern-debian-tools-python-debug` for the central `ai.env`, `aliases.sh`, and their examples
 
 Relevant workspace files that should stay on the host mount:

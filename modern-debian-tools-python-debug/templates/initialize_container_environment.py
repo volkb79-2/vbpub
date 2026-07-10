@@ -44,7 +44,7 @@ TMP_MODE = 0o1777  # persisted host-backed /tmp: sticky + world-writable, like a
 PARENT_NAME = "mdt--mounted-folders"
 
 # Canonical set under the parent — used only if devcontainer.json can't be read.
-FALLBACK = [".ssh", ".claude", ".codex", ".reasonix", ".openclaw", ".config", ".minisign", ".gnupg"]
+FALLBACK = [".ssh", ".claude", ".codex", ".reasonix", ".openclaw", ".opencode", ".config", ".minisign", ".gnupg"]
 # File-level state mounts (not inside a subdirectory) — parent dir auto-created.
 FALLBACK_FILES = [".claude.json", ".reasonix.toml"]
 

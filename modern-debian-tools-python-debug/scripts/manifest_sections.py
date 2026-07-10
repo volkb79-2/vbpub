@@ -17,7 +17,7 @@ from typing import Mapping, Sequence
 PACKAGE_LIST_FILE = Path(__file__).resolve().parent.parent / "apt" / "packages.list"
 
 FIRST_PARTY_WHEEL_NAMES = ("CIU", "cmru")
-AI_CLI_TOOL_NAMES = ("aider", "antigravity", "claude", "codex", "copilot", "openclaw", "reasonix")
+AI_CLI_TOOL_NAMES = ("aider", "antigravity", "claude", "codex", "copilot", "openclaw", "opencode", "reasonix")
 CONTAINER_INSPECTION_TOOL_NAMES = ("dive", "dtop", "glances", "lazydocker", "syft")
 SECURITY_DEBUG_TOOL_NAMES = ("cdebug", "grype", "hadolint")
 # Node and npm are rendered in their own ## Node Runtime section.
@@ -87,6 +87,7 @@ PROJECT_HOMES = {
     "codex": "https://github.com/openai/codex",
     "copilot": "https://github.com/github/copilot-cli",
     "openclaw": "https://github.com/openclaw/openclaw",
+    "opencode": "https://github.com/opencode-ai/opencode",
     "reasonix": "https://github.com/reasonix/reasonix",
     "awscli": "https://github.com/aws/aws-cli",
     "b2": "https://github.com/Backblaze/B2_Command_Line_Tool",

@@ -249,6 +249,11 @@ variable "AIDER_VERSION" {
   default = "main"
 }
 
+// Version pin for OpenCode; "latest" resolves at staging time for reproducibility control.
+variable "OPENCODE_VERSION" {
+  default = "latest"
+}
+
 // Version pin for Neovim; "latest" resolves at staging time for reproducibility control.
 variable "NVIM_VER" {
   default = ""
@@ -276,6 +281,11 @@ variable "INSTALL_ANTIGRAVITY" {
 
 // Boolean toggle for whether Aider is installed into the image.
 variable "INSTALL_AIDER" {
+  default = "true"
+}
+
+// Boolean toggle for whether OpenCode is installed into the image.
+variable "INSTALL_OPENCODE" {
   default = "true"
 }
 
@@ -474,6 +484,8 @@ target "base" {
     INSTALL_CLAUDE_CODE = "${INSTALL_CLAUDE_CODE}"
     INSTALL_ANTIGRAVITY = "${INSTALL_ANTIGRAVITY}"
     INSTALL_AIDER = "${INSTALL_AIDER}"
+    OPENCODE_VERSION = "${OPENCODE_VERSION}"
+    INSTALL_OPENCODE = "${INSTALL_OPENCODE}"
     NODE_MAJOR = "${NODE_MAJOR}"
     OCI_TITLE = "${OCI_TITLE}"
     OCI_DESCRIPTION = "${OCI_DESCRIPTION}"
