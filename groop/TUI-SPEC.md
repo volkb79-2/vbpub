@@ -969,11 +969,17 @@ targets in (c):
   (c)'s `vaddr`-per-target mechanism. These two DAMON uses coexist as separate
   kdamond contexts (the same multi-kdamond pattern used everywhere else in
   this section, `DAMON-GUIDE.md` §14) and are never conflated in the UI.
-- Same `damon_stat` conflict handling, same idx-allocation discipline, and
-  same atexit-restore guarantee as (c) — a system-wide paddr session is still
-  a *mutation* (it starts a kdamond), so it is gated behind the same
-  confirmation-dialog-with-exact-command and root requirement as any (c)
-  control-stage action, never silently auto-started.
+- Same `damon_stat` conflict handling and idx-allocation discipline as (c),
+  but daemon ownership is explicit and persistent-state-aware. The disabled
+  default never mutates DAMON. Enabling `[damon] paddr_enabled = true` is an
+  operator configuration decision: the root daemon audits and marker-verifies
+  the one groop-owned session it starts or adopts. A session created by the
+  current daemon run is stopped on that run's shutdown; a verified groop-owned
+  session adopted from an earlier run remains active when the adopting daemon
+  exits. Foreign sessions are never stopped. Explicit administrative cleanup
+  uses `groop damon stop --all-mine`. Interactive TUI starts remain behind the
+  typed confirmation and exact-command gate; service startup does not pretend
+  to provide an interactive confirmation dialog.
 
 ### 3.7 Config: TOML file
 
