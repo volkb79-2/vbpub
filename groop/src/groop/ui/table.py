@@ -98,6 +98,15 @@ class RenderedRows:
 
 
 @dataclass(frozen=True)
+class FormattedTableSnapshot:
+    """Deterministic table content before terminal layout is applied."""
+
+    columns: tuple[str, ...]
+    row_keys: tuple[str, ...]
+    cells: tuple[tuple[str, ...], ...]
+
+
+@dataclass(frozen=True)
 class ProfileLayout:
     name: str
     columns: tuple[str, ...]
@@ -126,6 +135,40 @@ def render_container_table(
     if not row_keys:
         table.add_row("no container rows", *[""] * (max(0, len(layout.columns) - 1)))
     return RenderedRows(table=table, row_keys=tuple(row_keys), title=table.title or "")
+
+
+def snapshot_container_table(
+    frame: Frame,
+    config: GroopConfig,
+    *,
+    width: int,
+    profile: str,
+    sort_by: str,
+    filter_text: str,
+    selected_key: str | None,
+    ring: HistoryRing | None = None,
+) -> FormattedTableSnapshot:
+    """Return the exact formatted container cells, independent of terminal layout."""
+
+    layout = resolve_profile(config, width=width, profile=profile)
+    entity_frames = _visible_entities(frame, container_only=True, filter_text=filter_text)
+    ordered = _sort_rows(entity_frames, sort_by)
+    return FormattedTableSnapshot(
+        columns=layout.columns,
+        row_keys=tuple(entity_frame.entity.key for entity_frame in ordered),
+        cells=tuple(
+            tuple(
+                cell.plain
+                for cell in _row_cells(
+                    layout.columns,
+                    entity_frame,
+                    selected=entity_frame.entity.key == selected_key,
+                    ring=ring,
+                )
+            )
+            for entity_frame in ordered
+        ),
+    )
 
 
 def resolve_columns(config: GroopConfig, *, width: int, profile: str) -> tuple[str, ...]:

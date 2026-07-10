@@ -60,16 +60,16 @@ flowchart TD
 
 ## Remaining Estimate
 
-After P39, the roadmap is mostly in three buckets:
+After P41, the roadmap is mostly in three buckets:
 
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
-| v1/v1.5 release confidence and UI polish | 1 | P40 removed the full-suite blocker; P41 automates strict rendered replay fidelity. Manual live-host evidence remains afterward. |
+| v1/v1.5 release confidence and UI polish | 0 | P40 removed the full-suite blocker; P41 automates strict rendered replay fidelity. Manual live-host acceptance evidence remains. |
 | v2 privileged daemon/BPF/admin/file work | 5-7 | BPF daemon lifecycle, paddr daemon ownership, install execution/service hardening, executable admin actions, inspect-files content mode, systemd property governance. |
 | Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
 
 Pragmatic estimate from the current state: a shippable v1/v1.5 release
-candidate needs **1 remaining package** plus live-host acceptance
+candidate needs **0 remaining packages** after P41 plus live-host acceptance
 evidence. Implementing the broader roadmap end-to-end still looks like **9-13
 small packages**, depending on whether "fully completed" includes optional
 plugins and web UI.
@@ -281,11 +281,13 @@ Report: `handoff/reports/P40-REPORT.md`.
 
 ### P41 - Rendered Replay Fidelity
 
-Status: planned. P41 closes spec section 9 item 10 with a multi-tick
+Status: done. P41 closes spec section 9 item 10 with a multi-tick
 record/replay test comparing production-formatted row keys, columns, and plain
-cell text at a fixed profile and width. Model equality alone is insufficient.
+cell text at a fixed profile and width through `ReplayDriver`. JSONL is always
+covered; compressed JSONL runs when the optional zstandard dependency exists.
 
 Handoff: `handoff/P41-rendered-replay-fidelity.md`.
+Report: `handoff/reports/P41-REPORT.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 

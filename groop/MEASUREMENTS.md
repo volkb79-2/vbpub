@@ -9,31 +9,33 @@ The canonical gate map and copy-paste commands live in
 
 ## Current Status
 
-P40 restores the full green suite under the managed devcontainer environment
-(Python 3.14.6, Textual 8.2.8). Controller validation after P39/P40 merged on
-main:
+P41 adds a deterministic rendered replay fidelity gate that compares every
+formatted table cell byte-for-byte across the record/replay cycle using
+`RecordWriter`, `ReplayDriver.play(step=True)`, and the production table cell
+builder at a fixed width/profile/sort/filter. The full suite now covers 383
+passing tests plus one optional compressed-recording skip:
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 382 passed in 47.73s
+# 383 passed, 1 skipped in 47.81s
 ```
-
-The 15 `Static.renderable` failures reported in P39 are resolved via the
-`_static_text()` compatibility helper using the public `Static.render()` path
-available in both Textual 0.58.1 and 8.2.8. Semantic UI assertions for
-replay status, reserved actions, snapshot progress/results, and DAMON
-confirmation/status are preserved.
 
 Also validated:
 
-- Focused UI tests: `23 passed in 11.24s`.
-- Post-merge focused acceptance tests: `40 passed in 7.54s`.
-- P38 fixture TUI smoke: exit `0`, `ok: true`, `frames: 1`, `view: tree`,
-  `profile: auto`.
-- Isolated Textual 0.58.1 focused UI tests: `23 passed in 8.35s`.
-- Post-merge full-source `py_compile` and merge diff checks passed.
+- Focused table/record/fidelity tests: `19 passed, 1 skipped in 9.57s`.
+- Focused rendered fidelity tests: `1 passed, 1 skipped in 0.27s`.
+- Focused acceptance tests: `40 passed in 7.28s`.
+- P41 fixture replay TUI smoke: `ok: true`, exit `0`, `frames: 1`,
+  `view: tree`, `profile: auto`.
+- Full-source `py_compile`.
 
-## Current Evidence
+## Prior Status
+
+P40 restored the full green suite under the managed devcontainer environment
+(Python 3.14.6, Textual 8.2.8). Controller validation after P39/P40 merged on
+main:
+
+## Historical P38 Evidence
 
 Most recent merged validation after P38:
 
