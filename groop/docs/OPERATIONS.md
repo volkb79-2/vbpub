@@ -110,6 +110,19 @@ groop daemon status --pretty-json                # indented JSON
 groop daemon status --socket /custom/path.sock --group mygroup
 ```
 
+Retrieve daemon component health snapshot:
+
+```bash
+groop daemon health                              # JSON output (default)
+groop daemon health --pretty-json                # indented JSON
+groop daemon health --socket /custom/path.sock   # custom socket
+```
+
+Health output uses the strict `health-v1` capability and schema. Incompatible
+or malformed daemon responses fail with compatible-daemon guidance. Detail and
+error fields are single-line, redacted, and byte-bounded; collector health only
+becomes healthy after a frame is collected successfully.
+
 Retrieve one canonical frame from the daemon socket:
 
 ```bash
