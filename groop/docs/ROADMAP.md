@@ -56,17 +56,17 @@ flowchart TD
 
 ## Remaining Estimate
 
-After P34/P35, the roadmap is mostly in three buckets:
+After P36/P37, the roadmap is mostly in three buckets:
 
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
-| v1/v1.5 release confidence and UI polish | 2-3 | P36 CPU sparklines, live TUI/DAMON evidence capture, final release docs. |
+| v1/v1.5 release confidence and UI polish | 1-2 | Live TUI/DAMON evidence capture, final release docs, and any last release-candidate fixes that evidence exposes. |
 | v2 privileged daemon/BPF/admin/file work | 5-7 | BPF daemon lifecycle, paddr daemon ownership, install execution/service hardening, executable admin actions, inspect-files content mode, systemd property governance. |
 | Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
 
 Pragmatic estimate from the current state: a shippable v1/v1.5 release
-candidate should need about **2-3 more packages** plus live-host acceptance
-evidence. Implementing the broader roadmap end-to-end still looks like **10-14
+candidate should need about **1-2 more packages** plus live-host acceptance
+evidence. Implementing the broader roadmap end-to-end still looks like **9-13
 small packages**, depending on whether "fully completed" includes optional
 plugins and web UI.
 
@@ -227,19 +227,22 @@ Report: `handoff/reports/P35-REPORT.md`.
 
 ### P36 - CPU Sparkline Surface
 
-Status: planned. P36 should add stable ASCII CPU trend sparklines using existing
-UI history data, improving the quick trend-read promised by the spec without
-changing collector/model contracts.
+Status: done. P36 adds stable ASCII CPU trend sparklines using existing
+UI history data through a `cpu_trend` virtual table column, improving the quick
+trend-read promised by the spec without changing collector/model contracts.
 
 Handoff: `handoff/P36-cpu-sparkline-surface.md`.
+Report: `handoff/reports/P36-REPORT.md`.
 
 ### P37 - Network Loss Diagnostics
 
-Status: planned. P37 should add host/interface-scoped drop/error diagnostics
-from kernel counters while keeping exact per-cgroup attribution reserved for v2
-BPF/daemon work.
+Status: done. P37 adds host/interface-scoped drop/error diagnostics from
+`/proc/net/dev`, NET banner LOSS annotations, and a root-entity diagnostic
+finding while keeping exact per-cgroup attribution reserved for v2 BPF/daemon
+work.
 
 Handoff: `handoff/P37-network-loss-diagnostics.md`.
+Report: `handoff/reports/P37-REPORT.md`.
 
 ### P23 - ZRAM Per-Device Drill-Down
 

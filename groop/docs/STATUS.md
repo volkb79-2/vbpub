@@ -14,7 +14,7 @@ Approximate status:
 | Release cut | Feature implementation | Release confidence | Notes |
 |---|---:|---:|---|
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
-| v1 read-only TUI | 85-90% | medium | Core daily triage works. P33/P35 add repeatable rootless smoke and steady harnesses; remaining gaps are live 5-minute Textual TUI evidence, CPU sparklines, network-loss diagnostics, and final release documentation. |
+| v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35 add repeatable rootless smoke and steady harnesses; P36/P37 close CPU trend and host network-loss polish. Remaining gaps are live 5-minute Textual TUI evidence and final release documentation. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
 | v2 daemon/BPF/admin actions | 50-55% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, and daemon current/status commands exist; live BPF attach/snapshot writing, executable admin actions, GPU/ZFS plugins are not implemented. |
 
@@ -85,9 +85,10 @@ core workflows, not yet production-certified.**
 
 ## Partially Implemented
 
-- **System banner:** host verdict, pressure summary, paddr heat, and per-device
-  network/disk rate summaries (P34) exist. CPU breakdown sparklines from spec
-  §3.0 remain not implemented (entity-table CPU sparklines added in P36).
+- **System banner / trend surface:** host verdict, pressure summary, paddr heat,
+  per-device network/disk rate summaries (P34), and host/interface LOSS
+  annotations (P37) exist. CPU trend sparklines are implemented in the entity
+  table via P36; banner-level CPU breakdown sparklines remain optional polish.
 - **Compressed swap:** zswap host/cgroup metrics, host ZRAM totals,
   `/proc/swaps` backend classification, mixed-backend banner wording, and
   per-device ZRAM drill-down are implemented. Backend-aware aliases and
@@ -143,7 +144,7 @@ core workflows, not yet production-certified.**
 | 5. Non-container visibility | Covered by fixtures and UI tests. |
 | 6. Graceful degradation | Covered by focused tests; more host matrix evidence would help. |
 | 7. Registry semantics | Covered by registry/model tests and branch-policy labels. |
-| 8. Diagnostics | Covered by tests; missing richer inputs noted above. |
+| 8. Diagnostics | Covered by tests; host/interface network loss is covered by P37. Exact per-cgroup network-loss attribution remains v2 BPF work. |
 | 9. Network labels | Covered by provider tests. |
 | 10. Record/replay fidelity | Model equality covered; byte-for-byte rendered table acceptance still needed. |
 | 11. Packaging | P12 built sdist/wheel and verified fresh wheel install; pipx-specific install still optional evidence. |
@@ -153,15 +154,14 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P36 on feat/groop-p36-cpu-sparklines):
+Most recent full-suite validation (P36/P37 merged on main):
 
 ```bash
-python3 -m pytest groop/tests -q
-# 354 passed in 40.24s
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 368 passed in 40.03s
 ```
 
 Also validated:
 
-- Python compile over all P36 changed files.
-- P36 focused tests: `18 passed in 0.06s`.
-- `groop --once --json` smoke exit `0`.
+- Python compile over merged P36/P37 changed files.
+- P36/P37 focused post-merge tests on `main`: `71 passed in 0.45s`.

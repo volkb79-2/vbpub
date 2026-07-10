@@ -92,8 +92,8 @@ Useful feature hotkeys in the TUI:
 | P33 | Done | Release smoke harness | v1/v1.5 release confidence | Add rootless `python -m groop.acceptance smoke` for deterministic safe-path evidence. Handoff: `handoff/P33-release-smoke-harness.md`. Report: `handoff/reports/P33-REPORT.md`. |
 | P34 | Done | Host device banner | v1 polish | Adds host-level per-device network and block-device rate summaries to the system banner via `host_meta`; no per-cgroup attribution claim. Handoff: `handoff/P34-host-device-banner.md`. Report: `handoff/reports/P34-REPORT.md`. |
 | P35 | Done | Acceptance steady harness | v1/v1.5 release confidence | Adds rootless multi-sample collector CPU/RSS evidence via `python -m groop.acceptance steady`; live Textual TUI measurement remains separate release evidence. Handoff: `handoff/P35-acceptance-steady-harness.md`. Report: `handoff/reports/P35-REPORT.md`. |
-| P36 | Planned | CPU sparkline surface | v1 polish | Add stable ASCII CPU trend sparklines from existing UI history. Handoff: `handoff/P36-cpu-sparkline-surface.md`. |
-| P37 | Planned | Network loss diagnostics | v1/v2 bridge | Add host/interface-scoped network drop/error diagnostics while preserving the BPF attribution boundary. Handoff: `handoff/P37-network-loss-diagnostics.md`. |
+| P36 | Done | CPU sparkline surface | v1 polish | Adds stable ASCII CPU trend sparklines from existing UI history via a `cpu_trend` table column. Handoff: `handoff/P36-cpu-sparkline-surface.md`. Report: `handoff/reports/P36-REPORT.md`. |
+| P37 | Done | Network loss diagnostics | v1/v2 bridge | Adds host/interface-scoped drop/error parsing, banner LOSS annotations, and root-entity diagnostics while preserving the BPF attribution boundary. Handoff: `handoff/P37-network-loss-diagnostics.md`. Report: `handoff/reports/P37-REPORT.md`. |
 
 ## Completed Package Order
 

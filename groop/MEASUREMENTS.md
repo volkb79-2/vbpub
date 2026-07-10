@@ -6,16 +6,16 @@ claims without updating this file.
 
 ## Current Evidence
 
-Most recent merged package validation after P34/P35:
+Most recent merged package validation after P36/P37:
 
 ```bash
 PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
-# 336 passed in 41.41s
+# 368 passed in 40.03s
 ```
 
-Also passed after P34/P35 review: focused P34/P35 collector/banner/ZRAM/
-acceptance tests (`64 passed in 5.42s`), `py_compile` over merged P34/P35
-changed files, and the P35 rootless steady command below.
+Also passed after P36/P37 review: focused P36/P37 sparkline/host-device/
+banner/diagnostics tests (`71 passed in 0.45s`), `py_compile` over merged
+P36/P37 changed files, and the P35 rootless steady command below.
 
 P12 package evidence remains: sdist/wheel build, fresh wheel install, and
 `groop --version` (`groop 0.1.0`).
