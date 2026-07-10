@@ -56,4 +56,6 @@ PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q
 # 672 passed, 1 skipped in 51.27s (controller review)
 ```
 
+Merged to `main` as `2acc965` after controller review.
+
 Changed-source `py_compile` and `git diff --check` are clean.

@@ -4,6 +4,8 @@
 
 **Latest-main merge:** `a08a464` (main `7737daf`)
 
+**Merged to main:** `2acc965`
+
 **Date:** 2026-07-10
 
 ## Result
