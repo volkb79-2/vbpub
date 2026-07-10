@@ -23,6 +23,10 @@ bounded inspect-files content reads, and a deliberately narrow executable
 start/stop/restart action kernel. Until merged and validated, all three remain
 non-claims.
 
+Queued follow-ups P47-P49 continue those same three streams after review:
+daemon component health, bounded journald snapshots, and structured
+`memory.high` governance. They are not current implementation claims.
+
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
 core workflows, not yet production-certified.**
