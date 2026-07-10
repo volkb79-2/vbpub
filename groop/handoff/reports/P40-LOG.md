@@ -2,55 +2,57 @@
 
 ## Context
 
+- Date: 2026-07-10 UTC
 - Branch: `feat/groop-p40-textual-8-test-compatibility`
 - Worktree: `.worktrees/-groop-p40-textual-8-test-compatibility`
-- Base: main at `58b751f` (includes P39 and the MDT merge)
-- Package: Textual 8 test compatibility as a small test-only helper
-- Current objective: Restore green full suite under Textual 8.2.8 / Python 3.14
+- Stacked base: reviewed P39 commit `58b751f`
 
-## Timeline
+## Diagnosis
 
-```text
-2026-07-17 UTC
-- Action: Diagnosed 15 test failures in test_ui_app.py.
-  All read the removed Static.renderable attribute.
-- Commands: pytest with --tb=full, hasattr checks on Static
-- Files inspected: groop/tests/test_ui_app.py
-- Result: Every failure is AttributeError at line 64, 526, or 567.
-- Decision: Use a version-compatible _static_text() helper preferring
-  .content (Textual >=8) with .renderable fallback.
-- Action: Implemented _static_text() and replaced 3 .renderable call sites.
-- Result: Focused UI tests: 23/23 green.
-- Action: Ran full suite, acceptance, P38 tui-smoke, py_compile.
-- Result: 382/382 full suite, 40/40 acceptance, P38 ALL CHECKS PASSED, compile OK.
-```
+The managed Python 3.14.6 / Textual 8.2.8 environment reproduced 15 failures
+in `test_ui_app.py`. Production code did not use the removed API. Three test
+locations read `Static.renderable`, and shared helper use caused the 15-test
+cascade.
 
-## Decisions
+The package declares `textual>=0.58,<1`; Textual 8.2.8 is therefore a newer
+managed-environment compatibility target, not a silently broadened published
+dependency range.
 
-- Decision: Use `hasattr(w, "content")` dispatch instead of try/except.
-  Reason: Cleaner, no exception overhead, self-documenting.
-  Impact: Same behavior on Textual <1 (falls back to .renderable) and >=1/8 (uses .content).
-- Decision: No changes to production code.
-  Reason: No production code uses .renderable.
-  Impact: Zero regression risk outside the test file.
-- Decision: No version pins, skips, or xfails.
-  Reason: The fix is entirely forward/backward compatible.
-  Impact: The declared dependency range `>=0.58,<1` and Textual 8.x both work.
+## Implementation
+
+- Added `_static_text(Static)`, implemented as `str(widget.render())`.
+- Replaced the three direct `.renderable` reads.
+- Preserved every existing substring/behavior assertion.
+- Added no skips, xfails, pins, or production-code changes.
+
+`Static.render()` is a public widget method in both isolated Textual 0.58.1 and
+managed Textual 8.2.8, avoiding branches over version-specific attributes.
 
 ## Validation
 
-```text
-Focused UI tests:     23 passed in 11.40s
-Full suite:           382 passed in 49.63s
-Acceptance tests:     40 passed in 8.70s
-P38 tui-smoke:        ALL CHECKS PASSED (exit code 0)
-py_compile:           PASS
-```
+Agent evidence before controller refinement:
 
-## Handoff Checklist
+- Textual 8.2.8 UI tests: 23 passed.
+- Full suite: 382 passed.
+- Acceptance tests: 40 passed.
+- P38 TUI smoke: exit 0.
+- Changed test file compiled.
 
-- [x] Report file written.
-- [x] Log file current.
-- [x] Tests/compile/smoke recorded.
-- [x] Known gaps documented.
-- [x] Feature branch committed.
+Controller evidence after the public-API refinement:
+
+- Isolated Textual 0.58.1 UI suite: 23 passed in 8.35s.
+- Managed Textual 8.2.8 UI suite: 23 passed in 11.24s.
+- Managed Textual 8.2.8 full suite: 382 passed in 48.04s.
+- Focused acceptance: 40 passed in 8.12s.
+- P38 TUI smoke: exit 0, `ok: true`, one tree/auto frame.
+- `git diff --check` and changed-file `py_compile`: passed.
+
+## Documentation
+
+README, STATUS, ROADMAP, and MEASUREMENTS mark P40 complete while preserving
+P39's remaining manual production gates.
+
+## Blockers
+
+P40 has no implementation blocker. The live/manual release gates in
+`docs/RELEASE-READINESS.md` remain unchanged.

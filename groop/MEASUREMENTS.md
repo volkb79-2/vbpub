@@ -14,21 +14,23 @@ P40 restores the full green suite under the managed devcontainer environment
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 382 passed in 49.63s
+# 382 passed in 48.04s
 ```
 
 The 15 `Static.renderable` failures reported in P39 are resolved via the
-`_static_text()` compatibility helper that prefers `.content` (Textual >=8)
-with a fallback to `.renderable` (Textual <1). Semantic UI assertions for
+`_static_text()` compatibility helper using the public `Static.render()` path
+available in both Textual 0.58.1 and 8.2.8. Semantic UI assertions for
 replay status, reserved actions, snapshot progress/results, and DAMON
 confirmation/status are preserved.
 
 Also validated:
 
-- Focused UI tests: `23 passed in 11.40s`.
-- Focused acceptance tests: `40 passed in 8.70s`.
-- P38 fixture TUI smoke: `ALL CHECKS PASSED, exit code 0`.
-- `py_compile` over the changed test file.
+- Focused UI tests: `23 passed in 11.24s`.
+- Focused acceptance tests: `40 passed in 8.12s`.
+- P38 fixture TUI smoke: exit `0`, `ok: true`, `frames: 1`, `view: tree`,
+  `profile: auto`.
+- Isolated Textual 0.58.1 focused UI tests: `23 passed in 8.35s`.
+- `py_compile` over the changed test file and `git diff --check`.
 
 ## Current Evidence
 

@@ -163,13 +163,12 @@ Most recent full-suite validation (P40):
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 382 passed in 49.63s
+# 382 passed in 48.04s
 ```
 
 Also validated:
 
-- Focused UI tests: `23 passed in 11.40s`.
-- P38/P40 focused acceptance tests: `40 passed in 8.70s`.
+- Focused UI tests: `23 passed in 11.24s` under Textual 8.2.8 and `23 passed in 8.35s` under isolated Textual 0.58.1.
+- P38/P40 focused acceptance tests: `40 passed in 8.12s`.
 - P38 fixture TUI smoke command exited `0` (ALL CHECKS PASSED).
-- `py_compile` over the changed test file.
-- Python compile of all touched files.
+- `py_compile` over the changed test file and `git diff --check`.

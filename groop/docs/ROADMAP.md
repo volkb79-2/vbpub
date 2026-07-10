@@ -270,8 +270,8 @@ Report: `handoff/reports/P39-REPORT.md`.
 ### P40 - Textual 8 Test Compatibility
 
 Status: done. P40 replaces direct dependence on the removed `Static.renderable`
-attribute with a version-compatible `_static_text()` helper that prefers
-`.content` (Textual >=8) with a `.renderable` fallback (Textual <1). All 23 UI
+attribute with a version-compatible `_static_text()` helper using the public
+`Static.render()` method. All 23 UI
 tests pass under Textual 8.2.8 / Python 3.14 without weakening behavior
 assertions or adding version skips/xfails.
 

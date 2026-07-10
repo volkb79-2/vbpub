@@ -63,15 +63,11 @@ def _wait_for_frame(app: GroopApp):
 def _static_text(w: Static) -> str:
     """Get the displayed text content of a ``Static`` widget.
 
-    Textual >=8 removed the ``.renderable`` property; this helper uses
-    ``.content`` (available since Textual >=1) as the primary path so that
-    the same test code works across the declared dependency range
-    (``>=0.58,<1`` interpreted broadly).
+    ``Static.renderable`` exists in the declared Textual 0.x range but was
+    removed by Textual 8. ``Widget.render()`` is the supported public method
+    in both environments.
     """
-    # Prefer .content (Textual >=1 / >=8) over the removed .renderable
-    if hasattr(w, "content"):
-        return str(w.content)
-    return str(w.renderable)  # pragma: no cover -- Textual <1
+    return str(w.render())
 
 
 def _status_text(app: GroopApp) -> str:
