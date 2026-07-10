@@ -138,11 +138,15 @@ retaining keyboard navigation and P41 formatted-cell fidelity.
 
 Handoff: `handoff/P50-mouse-table-interactions.md`.
 
-### P51-P52 - Web-Backend Readiness
+### P51-P52 - Daemon Read Prerequisites
 
-Status: queued. P51 fixes request-driven/stale daemon sampling with one
-background producer and non-consuming fan-out. After P47 and P51, P52 adds a
-versioned, bounded, peer-aware read API for attached and web frontends.
+P51 status: done. One request-independent producer now supplies fresh current
+frames and bounded sequenced history with cursor/gap semantics, deterministic
+production shutdown, strict request bounds, and P47 collector health.
+
+P52 remains queued in the correct daemon maturation order: it adds a versioned,
+bounded, peer-aware read API for attached and future frontends. No web
+server/client stream is scheduled by these prerequisites.
 
 Handoffs: `handoff/P51-daemon-sampling-fanout.md` and
 `handoff/P52-versioned-daemon-read-api.md`.

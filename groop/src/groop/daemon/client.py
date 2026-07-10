@@ -41,6 +41,23 @@ class DaemonResponseError(DaemonClientError):
     pass
 
 
+class DaemonHistoryGapError(DaemonClientError):
+    pass
+
+
+@dataclass(frozen=True)
+class DaemonFrameBatch:
+    entries: tuple[tuple[int, Frame], ...]
+    oldest_seq: int | None
+    latest_seq: int | None
+    next_cursor: int | None
+    gap: bool
+
+    @property
+    def frames(self) -> tuple[Frame, ...]:
+        return tuple(frame for _, frame in self.entries)
+
+
 @dataclass(frozen=True)
 class DaemonClient:
     socket_path: Path
@@ -55,8 +72,28 @@ class DaemonClient:
         return frames[0]
 
     def stream_frames(self, limit: int = 1) -> list[Frame]:
-        bounded = max(1, int(limit))
-        return self.request_frames({"op": "stream", "limit": bounded})
+        return list(self.stream_batch(limit=limit).frames)
+
+    def stream_batch(self, limit: int = 1, *, cursor: int | None = None) -> DaemonFrameBatch:
+        request: dict[str, Any] = {"op": "stream", "limit": limit}
+        if cursor is not None:
+            request["cursor"] = cursor
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                if self.timeout_s is not None:
+                    sock.settimeout(self.timeout_s)
+                sock.connect(str(self.socket_path))
+                sock.sendall(
+                    json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    + b"\n"
+                )
+                sock.shutdown(socket.SHUT_WR)
+                with sock.makefile("r", encoding="utf-8", newline="") as fh:
+                    return self._read_stream_batch(fh)
+        except OSError as exc:
+            raise DaemonConnectError(
+                f"cannot connect to {self.socket_path}: {exc.strerror or exc}"
+            ) from exc
 
     def request_health(self) -> HealthSnapshot:
         """Request a component health snapshot from the daemon.
@@ -271,6 +308,90 @@ class DaemonClient:
             raise DaemonProtocolError(f"daemon at {self.socket_path} closed the connection without an end response")
         return frames
 
+    def _read_stream_batch(self, fh) -> DaemonFrameBatch:
+        entries: list[tuple[int, Frame]] = []
+        for line_no, raw_line in enumerate(fh, 1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise DaemonProtocolError(
+                    f"daemon at {self.socket_path} returned malformed JSON on line {line_no}"
+                ) from exc
+            if not isinstance(payload, dict):
+                raise DaemonProtocolError(
+                    f"daemon at {self.socket_path} returned a non-object response on line {line_no}"
+                )
+            response_type = payload.get("type")
+            if response_type == "error":
+                message = payload.get("error") or payload.get("message") or "daemon returned an error"
+                raise DaemonResponseError(
+                    f"daemon at {self.socket_path} returned an error: {message}"
+                )
+            if response_type == "frame":
+                seq = payload.get("seq")
+                if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+                    raise DaemonProtocolError(
+                        f"daemon at {self.socket_path} returned an invalid frame sequence on line {line_no}"
+                    )
+                if entries and seq <= entries[-1][0]:
+                    raise DaemonProtocolError(
+                        f"daemon at {self.socket_path} returned non-increasing frame sequences"
+                    )
+                try:
+                    frame = frame_from_jsonable(payload.get("frame"))
+                except Exception as exc:  # noqa: BLE001
+                    raise DaemonProtocolError(
+                        f"daemon at {self.socket_path} returned an invalid frame on line {line_no}: {exc}"
+                    ) from exc
+                entries.append((seq, frame))
+                continue
+            if response_type != "end":
+                raise DaemonProtocolError(
+                    f"daemon at {self.socket_path} returned unsupported response type {response_type!r} on line {line_no}"
+                )
+            count = payload.get("count")
+            gap = payload.get("gap")
+            if isinstance(count, bool) or not isinstance(count, int) or count != len(entries):
+                raise DaemonProtocolError(
+                    f"daemon at {self.socket_path} returned an invalid stream end count"
+                )
+            if not isinstance(gap, bool):
+                raise DaemonProtocolError(
+                    f"daemon at {self.socket_path} returned an invalid stream gap marker"
+                )
+            oldest = self._optional_sequence(payload.get("oldest_seq"), "oldest_seq")
+            latest = self._optional_sequence(payload.get("latest_seq"), "latest_seq")
+            next_cursor = self._optional_sequence(payload.get("next_cursor"), "next_cursor", allow_minus_one=True)
+            if (oldest is None) != (latest is None) or (
+                oldest is not None and latest is not None and oldest > latest
+            ):
+                raise DaemonProtocolError(
+                    f"daemon at {self.socket_path} returned invalid stream history bounds"
+                )
+            if entries and next_cursor != entries[-1][0]:
+                raise DaemonProtocolError(
+                    f"daemon at {self.socket_path} returned an invalid next cursor"
+                )
+            return DaemonFrameBatch(tuple(entries), oldest, latest, next_cursor, gap)
+        raise DaemonProtocolError(
+            f"daemon at {self.socket_path} closed the connection without an end response"
+        )
+
+    def _optional_sequence(
+        self, value: object, field: str, *, allow_minus_one: bool = False
+    ) -> int | None:
+        minimum = -1 if allow_minus_one else 0
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise DaemonProtocolError(
+                f"daemon at {self.socket_path} returned an invalid {field}"
+            )
+        return value
+
 
 def current_frame(socket_path: Path, *, timeout_s: float | None = 5.0) -> Frame:
     return DaemonClient(socket_path, timeout_s=timeout_s).current_frame()
@@ -279,10 +400,17 @@ def current_frame(socket_path: Path, *, timeout_s: float | None = 5.0) -> Frame:
 def stream_frames(socket_path: Path, *, limit: int = 1, poll_interval_s: float = 5.0) -> Iterator[Frame]:
     client = DaemonClient(socket_path)
     bounded_interval = max(0.1, poll_interval_s)
-    bounded_limit = max(1, int(limit))
+    bounded_limit = int(limit)
+    cursor: int | None = None
     while True:
-        for frame in client.stream_frames(limit=bounded_limit):
+        batch = client.stream_batch(limit=bounded_limit, cursor=cursor)
+        if batch.gap:
+            raise DaemonHistoryGapError(
+                f"daemon history evicted frames after cursor {cursor}; oldest available is {batch.oldest_seq}"
+            )
+        for frame in batch.frames:
             yield frame
+        cursor = batch.next_cursor
         time.sleep(bounded_interval)
 
 

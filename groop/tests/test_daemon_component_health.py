@@ -23,13 +23,14 @@ import json
 from io import StringIO
 import socket
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from conftest import fixture_frame
 from groop.daemon.client import DaemonClient, DaemonProtocolError
-from groop.daemon.broker import FrameBroker, serve_unix_socket
+from groop.daemon.broker import FrameBroker, FrameProducerError, serve_unix_socket
 from groop.daemon.component_health import (
     COMPONENT_NAMES,
     MAX_HEALTH_DETAIL_BYTES,
@@ -582,21 +583,29 @@ def test_request_health_converts_invalid_utf8_to_protocol_error(tmp_path: Path) 
 
 
 def test_broker_collector_health_tracks_real_collection() -> None:
+    fail = threading.Event()
+
     def frames():
         yield fixture_frame()
+        fail.wait(2.0)
         raise RuntimeError("TOKEN=topsecret /private/path")
 
     reg = ComponentHealthRegistry()
     reg.mark_starting("collector", detail="awaiting first frame")
     broker = FrameBroker(frames(), health_registry=reg)
-    broker.stream(1)
+    broker.current()
     assert reg.snapshot().by_name("collector").state is ComponentState.HEALTHY
-    with pytest.raises(RuntimeError):
-        broker.stream(1)
+    fail.set()
+    deadline = time.monotonic() + 2.0
+    while reg.snapshot().by_name("collector").state is not ComponentState.FAILED:
+        assert time.monotonic() < deadline
+        time.sleep(0.001)
     component = reg.snapshot().by_name("collector")
     assert component.state is ComponentState.FAILED
     assert component.error.error_code == "collector_collection_failed"
     assert "topsecret" not in json.dumps(component.to_jsonable())
+    with pytest.raises(FrameProducerError):
+        broker.join(timeout=1.0)
 
 
 def test_daemon_serve_health_tracks_collector_lifecycle(
@@ -608,6 +617,8 @@ def test_daemon_serve_health_tracks_collector_lifecycle(
 
     config = GroopConfig(interval=0.0, cgroup_root=tmp_path / "cgroup")
     observed: list[dict] = []
+    allow_collect = threading.Event()
+    allow_failure = threading.Event()
 
     class FakeCollector:
         def __init__(self, cgroup_root, config) -> None:
@@ -619,7 +630,9 @@ def test_daemon_serve_health_tracks_collector_lifecycle(
         def collect_once(self):
             self.calls += 1
             if self.calls == 1:
+                allow_collect.wait(2.0)
                 return fixture_frame()
+            allow_failure.wait(2.0)
             raise RuntimeError("TOKEN=topsecret /private/path")
 
     class FakeServer:
@@ -628,10 +641,16 @@ def test_daemon_serve_health_tracks_collector_lifecycle(
 
         def serve_forever(self) -> None:
             observed.append(self.broker.responses({"op": "health"})[0])
-            self.broker.stream(1)
+            allow_collect.set()
+            deadline = time.monotonic() + 2.0
+            while self.broker.responses({"op": "health"})[0]["components"][0]["state"] != "healthy":
+                assert time.monotonic() < deadline
+                time.sleep(0.001)
             observed.append(self.broker.responses({"op": "health"})[0])
-            with pytest.raises(RuntimeError):
-                self.broker.stream(1)
+            allow_failure.set()
+            while self.broker.responses({"op": "health"})[0]["components"][0]["state"] != "failed":
+                assert time.monotonic() < deadline
+                time.sleep(0.001)
             observed.append(self.broker.responses({"op": "health"})[0])
             raise KeyboardInterrupt
 

@@ -34,13 +34,16 @@ def _serve_lines(socket_path: Path, lines: list[bytes]) -> socketserver.UnixStre
 def test_daemon_client_current_and_stream_parsing(tmp_path: Path) -> None:
     frames = [_frame_at(100.0), _frame_at(105.0), _frame_at(110.0)]
     socket_path = tmp_path / "groop.sock"
-    server = serve_unix_socket(socket_path, FrameBroker(frames, history_size=3))
+    server = serve_unix_socket(socket_path, FrameBroker(frames, history_size=10))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         client = DaemonClient(socket_path)
-        assert frame_to_jsonable(client.current_frame()) == frame_to_jsonable(frames[0])
-        assert [frame_to_jsonable(frame) for frame in client.stream_frames(limit=2)] == [
+        # current() returns the latest frame from the background producer
+        assert frame_to_jsonable(client.current_frame()) == frame_to_jsonable(frames[2])
+        # stream without cursor returns the tail of history
+        assert [frame_to_jsonable(frame) for frame in client.stream_frames(limit=10)] == [
+            frame_to_jsonable(frames[0]),
             frame_to_jsonable(frames[1]),
             frame_to_jsonable(frames[2]),
         ]

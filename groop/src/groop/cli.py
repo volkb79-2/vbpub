@@ -28,7 +28,13 @@ from groop.daemon.deploy import (
     render_install_plan_text,
     render_preflight_text,
 )
-from groop.daemon import BpfSnapshotBridge, BpfSnapshotError, FrameBroker, serve_unix_socket
+from groop.daemon import (
+    BpfSnapshotBridge,
+    BpfSnapshotError,
+    FrameBroker,
+    FrameBrokerError,
+    serve_unix_socket,
+)
 from groop.daemon.component_health import (
     ComponentError,
     ComponentHealthRegistry,
@@ -667,10 +673,12 @@ def _main_daemon(argv: list[str]) -> int:
         health_registry = ComponentHealthRegistry()
         health_registry.mark_starting("collector", detail="collector initialized")
 
+        frame_stop = threading.Event()
         broker = FrameBroker(
-            live_frame_stream(collector),
+            live_frame_stream(collector, stop_event=frame_stop),
             history_size=args.history_size,
             health_registry=health_registry,
+            stop_callback=frame_stop.set,
         )
         server = serve_unix_socket(args.socket, broker)
         print(f"serving read-only groop frames on {args.socket}", flush=True)
@@ -879,10 +887,29 @@ def _main_daemon(argv: list[str]) -> int:
                 )
 
         try:
+            # Start only after all collector providers and daemon-owned
+            # components are configured. The socket is not accepting handler
+            # work until serve_forever starts below.
+            broker.start()
             server.serve_forever()
         except KeyboardInterrupt:
             return 0
         finally:
+            broker.stop()
+            collector_stopped = False
+            try:
+                broker.join(timeout=5.0)
+                collector_stopped = True
+            except FrameBrokerError as exc:
+                health_registry.record_failure(
+                    "collector",
+                    detail="collector producer did not stop cleanly",
+                    error=ComponentError(
+                        message="collector producer did not stop cleanly",
+                        error_code="collector_shutdown_failed",
+                    ),
+                )
+                print(f"Collector producer shutdown failed: {exc}", flush=True)
             if bpf_thread is not None:
                 health_registry.mark_stopping("bpf_snapshot_bridge", detail="shutting down BPF bridge")
                 _bpf_stop.set()
@@ -930,7 +957,8 @@ def _main_daemon(argv: list[str]) -> int:
                         f"Failed to stop paddr session: {exc}",
                         flush=True,
                     )
-            health_registry.mark_stopped("collector", detail="collector stopped")
+            if collector_stopped:
+                health_registry.mark_stopped("collector", detail="collector stopped")
             server.server_close()
     if args.command == "preflight":
         try:

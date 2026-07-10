@@ -729,6 +729,29 @@ Blocker for live daemon health measurement:
 - The daemon health registry is fixture-tested and does not require live
   daemon state.
 
+## P51 Daemon Sampling And Fan-Out (2026-07-10)
+
+P51 replaces request-driven collection with one background producer, bounded
+sequenced history, non-consuming current/cursor reads, explicit eviction gaps,
+and typed persistent failure/exhaustion/shutdown state. Production sampling
+sleep is interruptible; arbitrary blocked iterators produce a bounded typed
+join-timeout rather than a false clean-shutdown claim. P47 collector health is
+updated only by real collection outcomes.
+
+```bash
+PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest \
+  groop/tests/test_daemon_p51.py groop/tests/test_daemon_broker.py \
+  groop/tests/test_daemon_client.py groop/tests/test_daemon_component_health.py \
+  groop/tests/test_record.py -q -W error
+# 90 passed in 16.84s
+
+PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q -W error
+# 692 passed, 1 skipped in 53.29s
+```
+
+Full-source `py_compile` and `git diff --check` clean. This is fixture and
+concurrency evidence, not a live systemd-daemon performance certification.
+
 ## Release Signoff Template
 
 - Release/tag:
