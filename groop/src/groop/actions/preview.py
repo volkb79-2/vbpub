@@ -1,6 +1,6 @@
 """Preview planner — builds immutable ActionPlan objects.
 
-build_preview() always succeeds for known kinds.
+build_preview() validates the target and builds a plan for known kinds.
 build_admin_preview() gates on --admin and returns a DisabledPlan if admin mode
 is not active.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 
 from groop.actions.catalog import ACTION_CATALOG, ActionKind
+from groop.actions.execute import validate_target
 
 
 @dataclasses.dataclass(frozen=True)
@@ -39,9 +40,11 @@ AdminPreviewResult = ActionPlan | DisabledPlan
 def build_preview(kind: str, target: str) -> ActionPlan:
     """Build an ActionPlan for the given kind and target.
 
-    Raises ValueError for unknown action kinds.
+    Validates the target for safety, then builds the argv preview.
+    Raises ValueError for unknown action kinds or invalid targets.
     """
     ak = ActionKind(kind)  # raises ValueError for invalid kind name
+    validate_target(ak, target)
     entry = ACTION_CATALOG[ak]
     argv = entry.builder(target)
     return ActionPlan(

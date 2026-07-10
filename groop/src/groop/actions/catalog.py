@@ -1,6 +1,10 @@
 """Allowlisted action catalog — defines every permitted action kind and how to
 build its argv command preview.
 
+Preview is available for all catalog kinds. Execution is restricted to the
+EXECUTION_ALLOWLIST (start/stop/restart only). systemd-set-property, update,
+kill, and any future kinds are preview-only unless separately opted in.
+
 No subprocess, no shell, no host mutation. Every action kind is an enum member
 so unknown kinds are rejected at import time rather than at runtime.
 """
@@ -69,6 +73,21 @@ class CatalogEntry(NamedTuple):
     kind: ActionKind
     builder: Callable[[str], list[str]]
     description: str
+
+
+# ---------------------------------------------------------------------------
+# Execution allowlist — only start, stop, restart kinds are executable.
+# systemd-set-property, update, kill, and unknown kinds are excluded.
+# ---------------------------------------------------------------------------
+
+EXECUTION_ALLOWLIST: frozenset[ActionKind] = frozenset({
+    ActionKind.DOCKER_RESTART,
+    ActionKind.DOCKER_STOP,
+    ActionKind.DOCKER_START,
+    ActionKind.SYSTEMD_RESTART,
+    ActionKind.SYSTEMD_STOP,
+    ActionKind.SYSTEMD_START,
+})
 
 
 ACTION_CATALOG: dict[ActionKind, CatalogEntry] = {
