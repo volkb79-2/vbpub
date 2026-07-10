@@ -14,7 +14,9 @@ SNAPSHOT_FILENAME = "snapshot.json"
 class BpfProvider:
     """BPF-based per-cgroup socket traffic provider.
 
-    Reads pinned BPF map snapshots (JSON) from *bpf_root/snapshot.json*.
+    Reads daemon-produced BPF map snapshots (JSON) from
+    *state_dir/snapshot.json*. For compatibility with the P18 fixture seam,
+    *state_dir* falls back to *bpf_root* when omitted.
     Each snapshot contains:
 
     - ``maps["groop_cgroup_skb"]`` - list of entries with

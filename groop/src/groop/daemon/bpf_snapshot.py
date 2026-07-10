@@ -61,11 +61,14 @@ class BpfSnapshotBridge:
         *,
         command_runner: CommandRunner | None = None,
         cgroup_id_resolver: Callable[[], dict[int, str]] | None = None,
+        cgroup_root: Path = Path("/sys/fs/cgroup"),
         max_output_bytes: int = MAX_OUTPUT_BYTES,
     ) -> None:
         self._bpf_root = _resolve_safe(bpf_root)
         self._command_runner = command_runner or _subprocess_runner
-        self._cgroup_id_resolver = cgroup_id_resolver or _walk_cgroup_ids
+        self._cgroup_id_resolver = cgroup_id_resolver or (
+            lambda: _walk_cgroup_ids(cgroup_root)
+        )
         self._max_output_bytes = max_output_bytes
         self._last_valid_snapshot: dict[str, Any] | None = None
 
@@ -167,7 +170,10 @@ class BpfSnapshotBridge:
         path = Path(state_dir) / SNAPSHOT_FILENAME
         try:
             raw = path.read_text(encoding="utf-8")
-            self._last_valid_snapshot = json.loads(raw)
+            snapshot = json.loads(raw)
+            if not _is_snapshot_shape(snapshot):
+                return
+            self._last_valid_snapshot = snapshot
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -309,7 +315,16 @@ class BpfSnapshotBridge:
         except OSError as exc:
             raise BpfSnapshotError(f"cgroup id resolution failed: {exc}") from exc
 
-        return {str(cid): ekey for cid, ekey in raw.items()}
+        result: dict[str, str] = {}
+        for cid, ekey in raw.items():
+            if isinstance(cid, bool) or not isinstance(cid, int) or cid < 0:
+                raise BpfSnapshotError(f"invalid cgroup id from resolver: {cid!r}")
+            if not isinstance(ekey, str):
+                raise BpfSnapshotError(
+                    f"invalid entity key from resolver for cgroup {cid}: {ekey!r}"
+                )
+            result[str(cid)] = ekey
+        return result
 
     def _build_snapshot(
         self,
@@ -409,6 +424,10 @@ def _decode_bpftool_entry(item: dict[str, Any], index: int) -> dict[str, Any]:
     # Validate required fields
     if entry.get("cgroup_id") is None:
         raise BpfSnapshotError(f"bpftool entry {index}: missing or invalid 'cgroup_id'")
+    if entry["cgroup_id"] < 0:
+        raise BpfSnapshotError(
+            f"bpftool entry {index}: negative cgroup_id={entry['cgroup_id']}"
+        )
     direction = entry.get("direction", "")
     if direction not in ("ingress", "egress"):
         raise BpfSnapshotError(
@@ -424,6 +443,11 @@ def _decode_bpftool_entry(item: dict[str, Any], index: int) -> dict[str, Any]:
         raise BpfSnapshotError(
             f"bpftool entry {index}: invalid proto {proto!r}; expected tcp/udp/icmp/other"
         )
+    for counter in ("bytes", "packets"):
+        if entry.get(counter) is None:
+            raise BpfSnapshotError(
+                f"bpftool entry {index}: missing or invalid '{counter}'"
+            )
 
     return entry
 
@@ -511,6 +535,17 @@ def _walk_cgroup_ids(cgroup_root: Path | None = None) -> dict[int, str]:
         result[cid] = str(rel)
 
     return result
+
+
+def _is_snapshot_shape(value: object) -> bool:
+    """Return whether *value* has the minimum P18 snapshot contract shape."""
+    if not isinstance(value, dict):
+        return False
+    if value.get("schema_version") != SCHEMA_VERSION:
+        return False
+    return isinstance(value.get("maps"), dict) and isinstance(
+        value.get("cgroup_map"), dict
+    )
 
 
 def _subprocess_runner(argv: list[str]) -> str:

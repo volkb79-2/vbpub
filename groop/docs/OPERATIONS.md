@@ -247,6 +247,7 @@ enabled = false
 root = "/sys/fs/bpf/groop"
 interval = 30.0
 map_name = "groop_cgroup_skb"
+state_dir = "/run/groop/bpf" # regular runtime state; never place JSON in bpffs
 ```
 
 ## What To Check Before A Release Claim

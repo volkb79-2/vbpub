@@ -169,14 +169,14 @@ provider-interface changes are needed.
 cd /workspaces/vbpub/.worktrees/-groop-p42-daemon-bpf-snapshot-bridge
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest \
   groop/tests/test_daemon_bpf_snapshot.py -q
-# 44 passed in 0.28s
+# 48 passed in 0.35s
 ```
 
 ### Full suite
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 427 passed, 1 skipped in 47.73s
+# 431 passed, 1 skipped, 1 warning in 47.90s
 ```
 
 ### py_compile
@@ -193,9 +193,21 @@ python3 -m py_compile \
 # (exit 0, no output)
 ```
 
+### Acceptance regression
+
+```bash
+PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest \
+  groop/tests/test_acceptance.py -q
+# 40 passed in 6.99s
+
+PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m groop.acceptance \
+  tui-smoke --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --json
+# exit 0; ok=true; frames=1; view=tree; profile=auto
+```
+
 ## Quality Gates
 
-- [x] Full test suite green (427 passed, 1 skipped)
+- [x] Full test suite green (431 passed, 1 skipped)
 - [x] `py_compile` clean on all new/changed Python files
 - [x] Fixture tests cover decoding, cgroup mapping, atomic replacement,
       last-good preservation, path confinement, output bounds, command
@@ -203,7 +215,7 @@ python3 -m py_compile \
 - [x] Daemon config tests prove disabled by default and config-enabled
 - [x] P18 `BpfProvider` existing tests remain green
 - [x] Integration-level daemon construction/refresh tests added
-- [x] Focused BPF snapshot tests: 44 passed (was 29)
+- [x] Focused BPF snapshot tests: 48 passed
 
 ## Known Gaps / Open Items
 

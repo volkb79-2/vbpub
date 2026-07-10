@@ -368,7 +368,7 @@ Full suite impact (BPF tests add negligible overhead):
 # 147 passed in 25.14s
 ```
 
-### P42 Daemon BPF Snapshot Bridge (2026-07-09)
+### P42 Daemon BPF Snapshot Bridge (2026-07-10)
 
 The P42 daemon BPF snapshot bridge was implemented as a fully fixture-tested
 module with no privileged operations required for testing. The bridge reads
@@ -382,54 +382,25 @@ command runners and fixture directories. The bridge requires ``bpftool``
 installed, a writable BPF pin root, and already-pinned BPF maps to produce
 live snapshots — none of which are available on this development host.
 
-Fixture/unit evidence:
+Controller fixture/unit evidence after review corrections:
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest \
-  groop/tests/test_daemon_bpf_snapshot.py -v --no-header 2>&1 | grep PASSED
-# 29 tests pass:
-#   test_decode_bpftool_entry_valid
-#   test_decode_bpftool_entry_top_level_fields
-#   test_decode_bpftool_entry_default_family_proto
-#   test_decode_bpftool_entry_rejects_negative_counters
-#   test_decode_bpftool_entry_rejects_invalid_direction
-#   test_decode_bpftool_entry_rejects_invalid_family
-#   test_validate_map_path_inside_root
-#   test_validate_map_path_rejects_traversal
-#   test_validate_map_path_rejects_escape
-#   test_run_bpftool_success
-#   test_run_bpftool_nonzero_exit
-#   test_run_bpftool_oversized_output
-#   test_refresh_returns_valid_snapshot
-#   test_write_snapshot_atomic_replace
-#   test_write_snapshot_permissions_not_world_writable
-#   test_write_snapshot_cleanup_temp_on_failure
-#   test_last_valid_snapshot_preserved_on_failure
-#   test_last_valid_snapshot_none_initially
-#   test_walk_cgroup_ids
-#   test_bridge_reports_missing_bpftool
-#   test_parse_bpftool_malformed_json
-#   test_parse_bpftool_non_array_output
-#   test_parse_bpftool_entry_non_dict
-#   test_daemon_bpf_disabled_by_default
-#   test_daemon_bpf_config_disabled_by_default
-#   test_daemon_bpf_config_enabled
-#   test_write_snapshot_cleans_tmp_on_rename
-#   test_bpf_snapshot_bridge_is_publicly_exported
-#   test_bpf_snapshot_error_is_publicly_exported
+  groop/tests/test_daemon_bpf_snapshot.py -q
+# 48 passed, 1 warning in 0.35s
 ```
 
 Full suite impact:
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 412 passed, 1 skipped in 49.71s
+# 431 passed, 1 skipped, 1 warning in 47.90s
 ```
 
 Blocker for live BPF snapshot bridge measurement:
 
 - ``bpftool`` is not installed on this host
-- Current uid 1003 is not root
+- The current session is not a deliberate privileged BPF test host
 - ``/sys/fs/bpf/groop`` is not writable
 - No pinned BPF maps exist under ``/sys/fs/bpf/groop``
 - The P17 BPF gate remains the authoritative preflight check
@@ -447,7 +418,7 @@ Key overhead characteristics (userspace-only, no kernel BPF):
 Blocker for live BPF overhead measurement:
 
 - `bpftool` is not installed on this host
-- Current uid 1003 is not root
+- This session is not a deliberate privileged BPF test-host run
 - `/sys/fs/bpf/groop` is not writable
 - No `cgroup_skb` BPF C source or compiled object is present in the repo
 - The BPF gate (P17) remains the authoritative preflight check

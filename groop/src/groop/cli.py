@@ -603,7 +603,9 @@ def _main_daemon(argv: list[str]) -> int:
                     else config.bpf_snapshot.state_dir
                 )
                 bpf_bridge = BpfSnapshotBridge(
-                    bpf_root, command_runner=None
+                    bpf_root,
+                    command_runner=None,
+                    cgroup_root=collector.cgroup_root,
                 )
                 # Restore last known good snapshot from disk if available
                 bpf_bridge.restore_last_known_good(state_dir)

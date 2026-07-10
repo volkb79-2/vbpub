@@ -51,15 +51,18 @@
 - Decision: Use injectable `CommandRunner` (Callable[[list[str]], str] type) matching bpf_gate.py pattern.
   Reason: Consistency with existing codebase; avoids shell injection by using argv-only.
   Impact: Tests can mock command output without subprocess.
-- Decision: Store last valid snapshot as dict in memory rather than writing a .last file.
-  Reason: Simpler, no stale file cleanup needed; the bridge is daemon-internal.
-  Impact: A daemon restart loses the last-good cache; acceptable since it only affects the first refresh after restart.
+- Decision: Keep the atomically replaced snapshot as the on-disk last-good file
+  and restore its validated minimum schema on daemon restart.
+  Reason: A transient first refresh must not discard usable prior telemetry.
+  Impact: No parallel `.last` file or cleanup path is required.
 - Decision: Use Python's `os.replace()` for atomic file replacement after fsync of temp file.
   Reason: POSIX atomic rename on same filesystem; matches requirement.
   Impact: Safe against partial writes.
-- Decision: Cgroup ID resolver reads /proc/self/cgroup or the kernel interface file to get numeric cgroup id.
-  Reason: The kernel exposes cgroup id via /proc/<pid>/cgroup or /sys/fs/cgroup/<path> on newer kernels; for production, we document the assumption and allow injection for fixtures.
-  Impact: Fixture tests work without real cgroupfs.
+- Decision: Resolve IDs from directory inodes under the daemon's configured
+  cgroup-v2 root, with an injectable resolver and an explicit unverified kernel
+  identity boundary.
+  Reason: The snapshot needs a deterministic userspace ID-to-path mapping.
+  Impact: Live identity still requires validation on the privileged test host.
 
 ## Blockers
 
@@ -70,29 +73,31 @@ None.
 ```bash
 # Focused tests
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests/test_daemon_bpf_snapshot.py -q
-# ... tbd
+# 48 passed in 0.35s
 
 # Full suite
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# ... tbd
+# 431 passed, 1 skipped, 1 warning in 47.90s
 
 # py_compile
 python3 -m py_compile groop/src/groop/daemon/bpf_snapshot.py groop/src/groop/config.py groop/src/groop/cli.py groop/tests/test_daemon_bpf_snapshot.py
-# ... tbd
+# clean
 ```
 
 ## Handoff Checklist
 
-- [ ] Report file written.
-- [ ] Log file current.
-- [ ] Tests/compile/smoke recorded.
-- [ ] Known gaps documented.
-- [ ] Feature branch committed.
+- [x] Report file written.
+- [x] Log file current.
+- [x] Tests/compile/smoke recorded.
+- [x] Known gaps documented.
+- [x] Feature branch committed.
 
 2026-07-10 00:45 UTC
 - Action: Controller review of e8b9249 identified 9 categories of fixes.
 - Files changed: bpf_snapshot.py, config.py, net_bpf.py, cli.py, test_daemon_bpf_snapshot.py, STATUS.md, P42-REPORT.md
-- Result: All 9 items addressed. Full suite 427 passed, 1 skipped.
+- Result: Agent correction committed as 2d7c86b; further controller review found
+  configured-cgroup-root, schema-validation, required-counter, no-op-test, and
+  stale-evidence gaps.
 - Follow-up: Commit follow-up with disclosure.
 
 ## Controller Review Fixes
@@ -106,3 +111,13 @@ python3 -m py_compile groop/src/groop/daemon/bpf_snapshot.py groop/src/groop/con
 7. **Cgroup docs tightened.** Removed specific kernel version claim; documented as kernel-version dependent and unverified.
 8. **Raw byte array rejection.** Explicitly rejected in `_parse_bpftool_output`. Per-CPU array values also rejected. BTF-typed structured output required.
 9. **Docs/reports updated.** STATUS.md test counts corrected. P42-REPORT.md updated with controller review disclosure and new test counts.
+
+2026-07-10 controller final review
+- Action: Bound the default cgroup resolver to the daemon's configured root,
+  validate restored snapshot shape and resolver output, reject missing counters,
+  remove the no-op test, and align all evidence.
+- Result: 48 focused tests passed, including enabled daemon wiring and bounded
+  shutdown; full suite 431 passed, 1 skipped; py_compile clean.
+- Acceptance regression: 40 passed in 6.99s; TUI smoke exit 0 with `ok=true`,
+  one frame, tree view, and auto profile.
+- Follow-up: Commit the controller correction and merge after main-state check.

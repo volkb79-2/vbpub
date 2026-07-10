@@ -331,9 +331,10 @@ configured cgroup-v2 root, and atomically writes the P18 ``snapshot.json``
 contract. Path confinement, output bounds, last-good preservation, and
 non-world-writable permissions are enforced. The bridge integrates into
 ``groop daemon serve`` via ``--bpf-root``/``--bpf-interval`` (disabled by
-default) and ``[bpf_snapshot]`` config section. 29 focused fixture tests and the
-full suite (412+1) pass. BPF program compilation and privileged attach/pin/detach
-lifecycle remain future work.
+default) and ``[bpf_snapshot]`` config section. The controller-validated gate is
+48 focused tests and 431 passing full-suite tests plus one optional skip. BPF
+program compilation and privileged attach/pin/detach lifecycle remain future
+work.
 
 Handoff: `handoff/P42-daemon-bpf-snapshot-bridge.md`.
 Report: `handoff/reports/P42-REPORT.md`.

@@ -12,6 +12,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from groop.daemon.bpf_snapshot import (
     BpfSnapshotBridge,
     BpfSnapshotError,
@@ -651,11 +653,6 @@ def test_validate_map_path_rejects_sibling_prefix_escape(tmp_path: Path) -> None
 # ---------------------------------------------------------------------------
 
 
-def test_subprocess_called_process_error_dead() -> None:
-    """Dummy: tested via test_run_bpftool_called_process_error below."""
-    pass
-
-
 def _make_called_process_runner(returncode: int = 1, stderr: str = "error") -> callable:
     """Create a mock that simulates CalledProcessError behaviour."""
     import subprocess as _sp
@@ -716,7 +713,8 @@ def test_restore_last_known_good_loads_from_disk(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     (state_dir / "snapshot.json").write_text(
-        json.dumps({"schema_version": 1, "maps": {}}), encoding="utf-8"
+        json.dumps({"schema_version": 1, "maps": {}, "cgroup_map": {}}),
+        encoding="utf-8",
     )
     bridge = BpfSnapshotBridge(bpf_root, command_runner=_mock_runner("[]"))
     assert bridge.last_valid_snapshot is None
@@ -747,6 +745,48 @@ def test_restore_last_known_good_missing_file(tmp_path: Path) -> None:
     bridge = BpfSnapshotBridge(bpf_root, command_runner=_mock_runner("[]"))
     bridge.restore_last_known_good(state_dir)
     assert bridge.last_valid_snapshot is None
+
+
+def test_restore_last_known_good_rejects_invalid_shape(tmp_path: Path) -> None:
+    bpf_root = _make_bpf_root(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "snapshot.json").write_text(
+        json.dumps({"schema_version": 1, "unrelated": True}), encoding="utf-8"
+    )
+    bridge = BpfSnapshotBridge(bpf_root, command_runner=_mock_runner("[]"))
+    bridge.restore_last_known_good(state_dir)
+    assert bridge.last_valid_snapshot is None
+
+
+def test_default_resolver_uses_configured_cgroup_root(tmp_path: Path) -> None:
+    bpf_root = _make_bpf_root(tmp_path)
+    cgroup_root = _make_cgroup_fixture(tmp_path)
+    bridge = BpfSnapshotBridge(
+        bpf_root,
+        command_runner=_mock_runner(SAMPLE_BPFTOOL_OUTPUT),
+        cgroup_root=cgroup_root,
+    )
+    snapshot = bridge.refresh("groop_cgroup_skb")
+    paths = (cgroup_root, *cgroup_root.rglob("*"))
+    expected_ids = {str(path.stat().st_ino) for path in paths if path.is_dir()}
+    assert set(snapshot["cgroup_map"]) == expected_ids
+
+
+@pytest.mark.parametrize("field", ["bytes", "packets"])
+def test_decode_rejects_missing_required_counter(field: str) -> None:
+    item = {
+        "key": {
+            "cgroup_id": 42,
+            "direction": "ingress",
+            "family": "ipv4",
+            "proto": "tcp",
+        },
+        "value": {"bytes": 100, "packets": 2},
+    }
+    del item["value"][field]
+    with pytest.raises(BpfSnapshotError, match=field):
+        _decode_bpftool_entry(item, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -859,6 +899,79 @@ def test_bpf_provider_falls_back_to_bpf_root_as_state_dir(tmp_path: Path) -> Non
     )
     assert samples["beta.scope"].source_label == "net:BPF"
     assert samples["beta.scope"].rx_bytes == 50
+
+
+def test_daemon_enabled_bridge_uses_configured_root_and_shuts_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise the enabled serve wiring without BPF privileges or a live socket."""
+    import groop.cli as cli
+    from groop.config import BpfSnapshotConfig, GroopConfig
+
+    bpf_root = tmp_path / "pins"
+    bpf_root.mkdir()
+    cgroup_root = _make_cgroup_fixture(tmp_path)
+    state_dir = tmp_path / "state"
+    socket_path = tmp_path / "groop.sock"
+    config = GroopConfig(
+        cgroup_root=cgroup_root,
+        bpf_snapshot=BpfSnapshotConfig(
+            enabled=True,
+            root=bpf_root,
+            interval=5.0,
+            state_dir=state_dir,
+        ),
+    )
+    observed: dict[str, object] = {}
+
+    class FakeCollector:
+        def __init__(self, cgroup_root: Path | None, config: GroopConfig) -> None:
+            self.cgroup_root = cgroup_root or config.cgroup_root
+            self.network_providers = ("fallback",)
+
+    class FakeBridge:
+        last_valid_snapshot = None
+
+        def __init__(self, root: Path, **kwargs: object) -> None:
+            observed["root"] = root
+            observed["cgroup_root"] = kwargs["cgroup_root"]
+
+        def restore_last_known_good(self, path: Path) -> None:
+            observed["restored"] = path
+
+        def refresh_and_write(self, map_name: str, path: Path) -> dict[str, object]:
+            observed["initial"] = (map_name, path)
+            return {}
+
+        def refresh(self, map_name: str) -> dict[str, object]:
+            raise AssertionError("periodic refresh must not race after shutdown")
+
+        def write_snapshot(self, snapshot: dict[str, object], path: Path) -> Path:
+            raise AssertionError("periodic write must not race after shutdown")
+
+    class FakeServer:
+        closed = False
+
+        def serve_forever(self) -> None:
+            raise KeyboardInterrupt
+
+        def server_close(self) -> None:
+            self.closed = True
+
+    server = FakeServer()
+    monkeypatch.setattr(cli, "load", lambda _path: config)
+    monkeypatch.setattr(cli, "Collector", FakeCollector)
+    monkeypatch.setattr(cli, "BpfSnapshotBridge", FakeBridge)
+    monkeypatch.setattr(cli, "serve_unix_socket", lambda _path, _broker: server)
+
+    assert cli._main_daemon(["serve", "--socket", str(socket_path)]) == 0
+    assert observed == {
+        "root": bpf_root,
+        "cgroup_root": cgroup_root,
+        "restored": state_dir,
+        "initial": ("groop_cgroup_skb", state_dir),
+    }
+    assert server.closed is True
 
 
 # ---------------------------------------------------------------------------

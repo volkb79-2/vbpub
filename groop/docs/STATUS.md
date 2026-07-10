@@ -16,7 +16,7 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment. P41 automates strict rendered replay fidelity (383 passing tests plus one optional skip). Isolated local-artifact pipx/no-config acceptance now passes. Strict live performance and non-root gates remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 55-60% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, daemon current/status commands, and the daemon BPF snapshot bridge exist; live BPF attach/snapshot writing, executable admin actions, GPU/ZFS plugins are not implemented. |
+| v2 daemon/BPF/admin actions | 55-60% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, daemon current/status commands, and the daemon BPF snapshot bridge exist; live BPF program compilation and attach/pin/detach, executable admin actions, GPU/ZFS plugins are not implemented. |
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -170,10 +170,10 @@ Most recent full-suite validation after P42 controller review:
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 427 passed, 1 skipped in 47.73s
+# 431 passed, 1 skipped in 47.90s
 ```
 
 Also validated:
 
-- Focused BPF snapshot tests: `44 passed in 0.28s`.
+- Focused BPF snapshot tests: `48 passed in 0.35s`.
 - Full-source `py_compile`.
