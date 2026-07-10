@@ -100,9 +100,11 @@ Report: `handoff/reports/P44-REPORT.md`.
 
 ### P45 - Bounded Inspect-Files Content Reads
 
-Status: planned. Extend P29 with gated, confined, bounded regular-file reads for
+Status: done. Extends P29 with gated, confined, bounded regular-file reads for
 resolved Docker JSON logs and cgroup files, without arbitrary paths,
-subprocesses, special files, or mutation.
+subprocesses, special files, or mutation. Uses no-follow opens, stat-verified
+regular-file checks, ``Path.is_relative_to()`` confinement, and bounded
+byte/line limits. CLI: ``groop inspect-files read --kind --target --inspect-files --admin [--json] [--max-bytes] [--max-lines]``.
 
 Handoff: `handoff/P45-inspect-files-bounded-content.md`.
 

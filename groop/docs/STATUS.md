@@ -16,22 +16,19 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment. P41 automates strict rendered replay fidelity (383 passing tests plus one optional skip). P43 replaces the obsolete pre-1.0 resolver ceiling with textual>=8.2.8. Isolated local-artifact pipx/no-config acceptance now passes. Strict live performance and non-root gates remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 60-65% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd start/stop/restart execution, BPF gate/provider/snapshot bridge, inspect-files planning, and daemon-owned paddr lifecycle exist. Live BPF load/attach, broader actions, and GPU/ZFS plugins remain. |
+| v2 daemon/BPF/admin actions | 60-65% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd start/stop/restart execution, BPF gate/provider/snapshot bridge, bounded Docker/cgroup inspect-files reads, and daemon-owned paddr lifecycle exist. Live BPF load/attach, broader actions, and GPU/ZFS plugins remain. |
 
 P44 adds the daemon-owned paddr lifecycle — `[damon] paddr_enabled = true` starts
-one groop-owned whole-host paddr session at daemon startup with idempotent
-restart; current-run sessions stop safely while verified adopted sessions remain
-persistent. P46 adds the narrowly allowlisted executable admin kernel. P45
-bounded content reads remain under review and are still a non-claim.
+or adopts one groop-owned whole-host paddr session. Sessions created by the
+current run stop on shutdown; verified adopted sessions persist. P45 adds
+bounded descriptor-confined Docker/cgroup reads. P46 adds the narrowly
+allowlisted executable admin kernel.
 
 P47 adds a thread-safe daemon component health registry with byte-bounded,
 redacted public error detail, a strictly validated read-only ``health-v1``
 protocol operation, and
 ``groop daemon health [--json]``. The registry models collector, BPF snapshot
 bridge, and paddr lifecycle states and wires P42/P44 transitions.
-
-Active planned package P45 addresses bounded inspect-files content reads. Until
-merged and validated, it remains a non-claim.
 
 Queued follow-ups P48-P49 continue bounded journald snapshots and structured
 `memory.high` governance after those streams.
@@ -98,6 +95,13 @@ core workflows, not yet production-certified.**
 - Disabled-by-default, read-only file/log inspection planning module
   (`groop/src/groop/inspect_files/`) with explicit --inspect-files and --admin
   gating and deterministic JSON/text plans via `groop inspect-files plan`.
+- Bounded read API for allowlisted inspect-files content with no-follow
+  opens, stat-verified regular-file checks, ``Path.is_relative_to()`` path
+  confinement, bounded bytes/lines, safe ``surrogateescape`` decoding, and
+  deterministic JSON/text output via ``groop inspect-files read``.
+  Docker JSON logs require a full 64-char hex container ID; cgroup files use
+  the catalog-defined allowlist. Both kinds are gated on
+  ``--inspect-files`` and ``--admin`` (default: disabled).
 - Default-socket daemon attach (`--attach` with no path defaults to
   `/run/groop/groop.sock`) and `groop daemon current --socket PATH
   [--pretty-json]` one-frame read-only daemon command.
@@ -200,7 +204,7 @@ core workflows, not yet production-certified.**
 | 9. Network labels | Covered by provider tests. |
 | 10. Record/replay fidelity | P41 compares row keys, column identities, and every production-formatted plain-text cell for three annotated ticks returned by `ReplayDriver.play(step=True)`. JSONL passes; compressed JSONL is the same parametrized gate and skips when optional zstandard is absent. |
 | 11. Packaging | P12 built sdist/wheel and verified fresh-venv install; post-P40 controller evidence adds the required isolated local-wheel pipx install, version check, and empty-directory no-config replay smoke. P43 changes the published dependency from textual>=0.58,<1 to textual>=8.2.8, verified by source metadata, built-wheel METADATA, clean resolver installation, and packaging-metadata regression tests. |
-| 12. v2 gating | Explicit admin-preview gating landed in P21: `groop action preview` with `--admin` required, no-execution guarantee, audit logging, and TUI reserved-key disabled messaging in P13. |
+| 12. v2 gating | Explicit admin-preview gating landed in P21: `groop action preview` with `--admin` required, no-execution guarantee, audit logging, and TUI reserved-key disabled messaging in P13. P45 adds gated bounded content reads via `groop inspect-files read`, also disabled by default. |
 | 13. Unprivileged smoke | P33 provides `python -m groop.acceptance smoke`, P35 provides `python -m groop.acceptance steady`, and P38 provides `python -m groop.acceptance tui-smoke` for repeatable rootless safe-path evidence; fresh live-host results should be pasted into `MEASUREMENTS.md` before a release claim. |
 | 14. Measurement gates | `MEASUREMENTS.md` records the P17 safe BPF gate and blocker; DAMON overhead and privileged live-BPF overhead gates are not recorded. |
 
@@ -210,15 +214,16 @@ Most recent full validation on current main plus P47:
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 601 passed, 1 skipped in 50.81s
+# pending refresh after latest-main merge
 ```
 
 Also validated:
 
 - P44 focused paddr lifecycle tests: `22 passed in 0.17s`.
+- P45 focused inspect-files tests: `113 passed in 0.64s`.
 - P46 focused action execution tests: `129 passed in 0.45s`.
-- Combined P44/P46 focused regression: `151 passed in 0.58s`.
 - P47 focused component health tests: `47 passed in 3.46s`.
 - P47 daemon-focused regression: `108 passed in 6.13s`.
+- Combined P44/P45/P46 focused regression: `264 passed in 1.12s`.
 - Full-source `py_compile` clean on all changed/new files.
 - Module-level imports and gate logic verified without real Docker/systemd.

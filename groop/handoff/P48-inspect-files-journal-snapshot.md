@@ -31,4 +31,3 @@ snapshot for an allowlisted systemd unit.
 
 - `--follow`, journal mutation/vacuum, arbitrary journalctl arguments, volume or
   overlay trees, daemon transport, and live-host content certification.
-

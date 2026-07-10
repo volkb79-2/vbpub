@@ -37,4 +37,3 @@ attached TUI and a separate web-backend process.
 
 - HTTP/WebSocket transport, browser auth, TLS/CORS/CSRF, mutation APIs,
   persistent history, or frontend framework selection.
-

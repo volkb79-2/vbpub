@@ -504,6 +504,89 @@ Blocker for live BPF overhead measurement:
 - No `cgroup_skb` BPF C source or compiled object is present in the repo
 - The BPF gate (P17) remains the authoritative preflight check
 
+## P45 Bounded Inspect-Files Content Reads Evidence (2026-07-10)
+
+### Focused Tests
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest groop/tests/test_inspect_files.py -v
+# 113 passed in 0.64s (controller correction focused gate)
+```
+
+The P45 suite covers:
+
+- Read gating: disabled without --inspect-files, without --admin, without both
+- Read disabled-via-CLI: exit codes for denied/error/success paths
+- Read content: Docker JSON log and cgroup file reads with fixture roots
+- Read bounds: max-bytes and max-lines truncation
+- Read safety: no subprocess import in reader, no arbitrary path escape,
+  short Docker ID rejection, absolute path/traversal rejection,
+  unsupported kind rejection, error JSON format (no content echo)
+- Read CLI integration: args parsing, custom bounds,
+  JSON/text output, denied exit code
+
+### Structural Safety
+
+```bash
+python3 -m py_compile groop/src/groop/inspect_files/reader.py
+# clean, exit 0
+```
+
+The reader module:
+
+- Never imports `subprocess`
+- Uses `os.open()` with `O_RDONLY | O_NONBLOCK | O_NOFOLLOW` for no-follow opens
+- Verifies `stat.S_ISREG` on all opened descriptors (rejects symlinks, devices,
+  FIFOs, sockets, directories)
+- Traverses every path component descriptor-relatively under the allowlisted
+  root with `O_NOFOLLOW`
+- Decodes invalid bytes with replacement and sanitizes terminal control bytes
+- Returns deterministic JSON/text output with explicit truncation flags
+- Never echoes content on error/denied paths
+
+### Fixture API Smoke
+
+```bash
+PYTHONPATH=groop/src python3 - <<'PY'
+from pathlib import Path
+from groop.inspect_files.reader import build_inspect_read
+r = build_inspect_read(
+    "docker-json-log", "a" * 64,
+    inspect_files=True, admin=True,
+    fixture_root=Path("groop/tests/fixtures/inspect_files/docker"),
+    is_root=lambda: True,
+)
+assert r.mode == "content" and "container starting up" in r.content
+print("P45 FIXTURE SMOKE OK")
+PY
+```
+
+### Full Suite
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest groop/tests -q
+# 623 passed, 1 skipped in 48.05s after rebasing onto P44/P46.
+```
+
+### Full-Source py_compile
+
+All Python files under `groop/src/groop` and `groop/tests` compile cleanly:
+
+```bash
+mapfile -d '' pyfiles < <(find groop/src/groop groop/tests -name '*.py' -print0)
+python3 -m py_compile "${pyfiles[@]}"
+# clean, exit 0
+```
+
+### Known Limitations
+
+- Production Docker log reads require a full 64-char hex container ID.
+  Short IDs and container names are rejected.
+- Systemd journal content reads are not implemented (requires subprocess).
+- Only Docker JSON logs and cgroup files support content reads.
+- No follow/stream mode or daemon integration.
+- No TUI integration for file reads.
+
 ## P44 Daemon-Owned paddr Lifecycle (2026-07-10)
 
 P44 adds a daemon lifecycle owner around the existing `damon/paddr.py` and

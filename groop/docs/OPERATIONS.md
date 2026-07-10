@@ -88,6 +88,19 @@ Inspect an incident snapshot:
 groop snapshot inspect /path/to/groop-incident-*.tar
 ```
 
+Plan a read-only file inspection (no content reads):
+
+```bash
+groop inspect-files plan --kind docker-json-log --target my-container --inspect-files --admin
+```
+
+Read bounded file/content (requires full 64-hex container ID for Docker):
+
+```bash
+groop inspect-files read --kind docker-json-log --target <64hex> --inspect-files --admin
+groop inspect-files read --kind cgroup-files --target system.slice/ssh.service --inspect-files --admin --json
+```
+
 Check daemon deployment and protocol status (non-root, read-only):
 
 ```bash
@@ -206,6 +219,12 @@ sudo groop damon paddr start --confirm START
   prints an exact argv preview and never executes it. Omit `--admin` to verify
   that the preview is denied. Use `--audit-log PATH` to append an explicit
   preview-only JSONL record.
+- `groop inspect-files read` provides bounded, confined, read-only content
+  reads for allowlisted Docker JSON logs and cgroup files. Requires both
+  `--inspect-files` and `--admin`. Reads are bounded by `--max-bytes`
+  (default 65536) and `--max-lines` (default 5000). Every path component is
+  traversed descriptor-relatively with `O_NOFOLLOW`; leaves are stat-verified
+  regular files. The module never imports `subprocess` and never writes files.
 - `groop action execute --kind docker-restart --target NAME --admin
   --confirm EXECUTE` runs the validated Docker/systemd start/stop/restart
   command through root, admin, typed confirmation, timeout, immutable-plan,

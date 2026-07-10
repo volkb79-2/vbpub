@@ -40,4 +40,3 @@ select/open drill-down, and keep live/replay refresh stable.
 
 - Touch gestures, context menus, drag selection, multi-select, wheel-controlled
   value adjustment, or enabling any privileged action by mouse.
-
