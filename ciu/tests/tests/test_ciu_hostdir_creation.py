@@ -25,6 +25,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu.engine import create_hostdirs  # noqa: E402
+from ciu.composefile import guard_config, render_compose  # noqa: E402
 
 
 def _base_config() -> dict:
@@ -167,3 +168,55 @@ def test_gid_zero_is_valid(tmp_path):
                     chown_fn=lambda p, u, g: seen.update({"uid": u, "gid": g}))
 
     assert seen == {"uid": 0, "gid": 0}
+
+
+class TestCIU9HostdirRewriteFeedsRender:
+    """CIU-9 open question: does create_hostdirs' in-place S6.2 physical-path
+    rewrite actually reach Jinja compose rendering, or does render_compose read
+    an earlier-captured (pre-rewrite, still-logical) copy of the config?
+
+    Code-reading trace (engine.py ``main_execution``, steps 8→13): step 8 calls
+    ``create_hostdirs(merged, working_dir, repo_root=repo_root)`` — this mutates
+    the nested ``hostdir`` dict *in place* inside ``merged`` (no copy is made
+    anywhere in ``create_hostdirs``/``_scan_section``); ``merged`` is not
+    reassigned again before step 13's ``composefile.guard_config(merged, specs)``,
+    which deep-copies ``merged`` (see ``composefile._replace_entries``) — i.e.
+    it deep-copies the config only AFTER the S6.2 rewrite already happened, so
+    the copy it hands to ``render_compose`` carries the physical paths. This
+    test pins that mechanism directly (create_hostdirs -> guard_config ->
+    render_compose, DooD-style ``repo_root != physical_root``) without needing
+    the full CLI pipeline, and passing it confirms the open question:
+    create_hostdirs' rewrite DOES feed template rendering in the current code —
+    it is not a second live bug. See KNOWN_ISSUES_TODO_BACKLOG.md CIU-9.
+    """
+
+    def test_physical_path_reaches_rendered_compose_in_dood(self, tmp_path):
+        repo_root = tmp_path / "workspace"
+        physical_root = tmp_path / "physical"
+        stack_dir = repo_root / "infra" / "demo-service"
+        stack_dir.mkdir(parents=True)
+        (physical_root / "infra" / "demo-service").mkdir(parents=True)
+
+        config = _base_config()
+        config["service"] = {"name": "demo-service", "hostdir": {"data": ""}}
+
+        create_hostdirs(
+            config, stack_dir, repo_root=repo_root, physical_root=physical_root,
+            chown_fn=lambda *a: None,
+        )
+
+        logical_path = str((stack_dir / "vol-demo-service-data").resolve())
+        physical_path = config["service"]["hostdir"]["data"]
+        assert physical_path != logical_path
+        assert physical_path.startswith(str(physical_root))
+
+        # Downstream pipeline (engine.py steps 12-13): guard_config deep-copies
+        # the ALREADY-mutated config, then render_compose spreads it into the
+        # Jinja context — mirrors the real call sequence, no CLI needed.
+        guarded = guard_config(config, specs=[])
+        template = tmp_path / "ciu.compose.yml.j2"
+        template.write_text("volumes:\n  - {{ service.hostdir.data }}:/data\n")
+        rendered = render_compose(template, guarded)
+
+        assert physical_path in rendered
+        assert logical_path not in rendered

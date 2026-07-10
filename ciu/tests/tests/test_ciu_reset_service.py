@@ -135,6 +135,86 @@ class TestResetServicePrivilegeFallback:
         assert not (stack / "vol-data").exists()
 
 
+class TestRmtreeWithFallbackDooD:
+    """CIU-9: in a DooD context, removal must go through the physical path
+    unconditionally — a local rmtree success on the logical path proves
+    nothing about the physical path the daemon actually bind-mounted.
+    """
+
+    def test_dood_routes_through_physical_path_even_when_local_would_succeed(self, tmp_path):
+        """to_physical_path(vol_dir) != vol_dir → privileged_rmtree(physical),
+        and the local shutil.rmtree is never attempted at all (not even as an
+        optimistic first try) — this is the CIU-9 fix itself."""
+        vol_dir = tmp_path / "vol-consul-data"
+        vol_dir.mkdir()
+        physical = tmp_path / "physical-vol-consul-data"
+
+        with patch.object(engine, "to_physical_path", return_value=physical) as mock_to_phys, \
+             patch.object(engine.shutil, "rmtree") as mock_rmtree, \
+             patch.object(engine, "privileged_rmtree") as mock_helper:
+            engine._rmtree_with_fallback(vol_dir, repo_root=Path("/workspaces/dstdns"))
+
+        mock_to_phys.assert_called_once_with(vol_dir, repo_root=Path("/workspaces/dstdns"))
+        mock_rmtree.assert_not_called()  # local attempt skipped entirely in DooD
+        mock_helper.assert_called_once_with(physical)
+
+    def test_dood_routes_through_physical_path_even_when_dir_no_longer_exists_locally(self, tmp_path):
+        """The bug's exact symptom: the operator's own UID:GID owns the data
+        (no PermissionError possible), so a local rmtree always "succeeds" —
+        but that success is on the wrong (logical) directory. Even with the
+        vol_dir already gone locally, DooD routing still fires."""
+        vol_dir = tmp_path / "vol-consul-data"  # never created — simulates the
+        physical = tmp_path / "physical-vol-consul-data"  # daemon's real target
+
+        with patch.object(engine, "to_physical_path", return_value=physical), \
+             patch.object(engine.shutil, "rmtree") as mock_rmtree, \
+             patch.object(engine, "privileged_rmtree") as mock_helper:
+            engine._rmtree_with_fallback(vol_dir, repo_root=Path("/workspaces/dstdns"))
+
+        mock_rmtree.assert_not_called()
+        mock_helper.assert_called_once_with(physical)
+
+    def test_native_host_still_uses_local_rmtree_directly(self, tmp_path):
+        """to_physical_path(vol_dir) == vol_dir (S1.9, native host) → local
+        shutil.rmtree is used, helper not invoked when it succeeds."""
+        vol_dir = tmp_path / "vol-data"
+        vol_dir.mkdir()
+
+        with patch.object(engine, "to_physical_path", return_value=vol_dir), \
+             patch.object(engine, "privileged_rmtree") as mock_helper:
+            engine._rmtree_with_fallback(vol_dir, repo_root=tmp_path)
+
+        assert mock_helper.call_count == 0
+        assert not vol_dir.exists()
+
+    def test_native_host_permission_error_falls_back_to_helper(self, tmp_path):
+        """Native host (physical == logical) but PermissionError (fixed-UID
+        image, S6.7 Pattern (a)) still degrades to the root helper."""
+        vol_dir = tmp_path / "vol-postgres-data"
+        vol_dir.mkdir()
+
+        with patch.object(engine, "to_physical_path", return_value=vol_dir), \
+             patch.object(engine.shutil, "rmtree", side_effect=PermissionError(13, "Permission denied")), \
+             patch.object(engine, "privileged_rmtree") as mock_helper:
+            engine._rmtree_with_fallback(vol_dir, repo_root=tmp_path)
+
+        mock_helper.assert_called_once_with(vol_dir)
+
+    def test_no_repo_root_context_falls_back_to_native_behavior(self, tmp_path):
+        """to_physical_path raising ValueError (no REPO_ROOT/PHYSICAL_REPO_ROOT
+        resolvable) is treated as native host, not DooD — preserves the
+        pre-existing behavior for callers/tests with no DooD env configured."""
+        vol_dir = tmp_path / "vol-data"
+        vol_dir.mkdir()
+
+        with patch.object(engine, "to_physical_path", side_effect=ValueError("REPO_ROOT not set")), \
+             patch.object(engine, "privileged_rmtree") as mock_helper:
+            engine._rmtree_with_fallback(vol_dir, repo_root=None)
+
+        assert mock_helper.call_count == 0
+        assert not vol_dir.exists()
+
+
 class TestPrivilegedRmtree:
     def test_mounts_parent_and_rm_rf_named_child(self, tmp_path):
         """S6.5 deletion helper: mount the PARENT, rm -rf the named child so the
