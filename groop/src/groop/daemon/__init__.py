@@ -16,6 +16,14 @@ from groop.daemon.paddr_lifecycle import (
     PaddrLifecycleStartError,
     PaddrLifecycleStopError,
 )
+from groop.daemon.component_health import (
+    ComponentError,
+    ComponentHealthRegistry,
+    ComponentSnapshot,
+    ComponentState,
+    HealthSnapshot,
+    build_health_response,
+)
 from groop.daemon.status import (
     DaemonStatusReport,
     ProtocolStatus,
@@ -25,6 +33,10 @@ from groop.daemon.status import (
 __all__ = [
     "BpfSnapshotBridge",
     "BpfSnapshotError",
+    "ComponentError",
+    "ComponentHealthRegistry",
+    "ComponentSnapshot",
+    "ComponentState",
     "DaemonClient",
     "DaemonClientError",
     "DaemonConnectError",
@@ -34,11 +46,13 @@ __all__ = [
     "DaemonStatusReport",
     "DamonPaddrLifecycleError",
     "FrameBroker",
+    "HealthSnapshot",
     "PaddrLifecycleStartError",
     "PaddrLifecycleStopError",
     "ProtocolStatus",
     "SNAPSHOT_FILENAME",
     "build_daemon_status",
+    "build_health_response",
     "current_frame",
     "current_frame_stream",
     "serve_unix_socket",

@@ -9,14 +9,25 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from groop.daemon.component_health import (
+    ComponentHealthRegistry,
+    build_health_response,
+)
 from groop.model import Frame, frame_to_jsonable
 
 
 class FrameBroker:
-    def __init__(self, frame_source: Iterable[Frame], *, history_size: int = 120) -> None:
+    def __init__(
+        self,
+        frame_source: Iterable[Frame],
+        *,
+        history_size: int = 120,
+        health_registry: ComponentHealthRegistry | None = None,
+    ) -> None:
         self._source = iter(frame_source)
         self._history: deque[Frame] = deque(maxlen=max(1, history_size))
         self._lock = threading.Lock()
+        self._health_registry = health_registry
 
     def current(self) -> Frame:
         with self._lock:
@@ -45,7 +56,17 @@ class FrameBroker:
             limit = int(request.get("limit", 1))
             frames = self.stream(limit)
             return [*[_frame_response(frame) for frame in frames], {"type": "end", "count": len(frames)}]
+        if op == "health":
+            return [self._health_response()]
         return [{"type": "error", "error": "unsupported operation"}]
+
+    def _health_response(self) -> dict[str, Any]:
+        if self._health_registry is not None:
+            return build_health_response(self._health_registry)
+        return {
+            "type": "error",
+            "error": "health not available: daemon was started without a health registry",
+        }
 
 
 class BrokerUnixServer(socketserver.ThreadingUnixStreamServer):

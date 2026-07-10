@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from groop.daemon.component_health import (
+    PROTOCOL_CAPABILITY_HEALTH,
+    HealthSnapshot,
+    build_health_response,
+)
 from groop.model import Frame, frame_from_jsonable
 
 
@@ -43,6 +48,80 @@ class DaemonClient:
     def stream_frames(self, limit: int = 1) -> list[Frame]:
         bounded = max(1, int(limit))
         return self.request_frames({"op": "stream", "limit": bounded})
+
+    def request_health(self) -> HealthSnapshot:
+        """Request a component health snapshot from the daemon.
+
+        Raises:
+            DaemonResponseError: If the daemon returns an error response
+                (e.g. health not available, version mismatch).
+            DaemonProtocolError: If the response is malformed.
+            DaemonConnectError: On connection failure.
+        """
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                if self.timeout_s is not None:
+                    sock.settimeout(self.timeout_s)
+                sock.connect(str(self.socket_path))
+                sock.sendall(json.dumps({"op": "health"}, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n")
+                sock.shutdown(socket.SHUT_WR)
+                with sock.makefile("r", encoding="utf-8", newline="") as fh:
+                    return self._read_health(fh)
+        except OSError as exc:
+            raise DaemonConnectError(f"cannot connect to {self.socket_path}: {exc.strerror or exc}") from exc
+
+    def _read_health(self, fh) -> HealthSnapshot:
+        for line_no, raw_line in enumerate(fh, 1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise DaemonProtocolError(
+                    f"daemon at {self.socket_path} returned malformed JSON on line {line_no}"
+                ) from exc
+            if not isinstance(payload, dict):
+                raise DaemonProtocolError(
+                    f"daemon at {self.socket_path} returned a non-object response on line {line_no}"
+                )
+            response_type = payload.get("type")
+            if response_type == "health":
+                comps = payload.get("components", [])
+                from groop.daemon.component_health import (
+                    ComponentSnapshot,
+                    ComponentState,
+                )
+
+                snapshots = []
+                for c in comps:
+                    if not isinstance(c, dict):
+                        continue
+                    raw_state = c.get("state", "disabled")
+                    try:
+                        state = ComponentState(raw_state)
+                    except ValueError:
+                        state = ComponentState.DISABLED
+                    snapshots.append(
+                        ComponentSnapshot(
+                            name=str(c.get("name", "")),
+                            state=state,
+                            detail=str(c.get("detail", "")),
+                            last_attempt_ts=c.get("last_attempt_ts"),
+                            last_success_ts=c.get("last_success_ts"),
+                            consecutive_failures=int(c.get("consecutive_failures", 0)),
+                            state_change_count=int(c.get("state_change_count", 0)),
+                        )
+                    )
+                schema_version = int(payload.get("schema_version", 1))
+                return HealthSnapshot(snapshots=tuple(snapshots), schema_version=schema_version)
+            if response_type == "error":
+                message = payload.get("error") or payload.get("message") or "daemon returned an error"
+                raise DaemonResponseError(f"daemon at {self.socket_path} returned an error: {message}")
+            raise DaemonProtocolError(
+                f"daemon at {self.socket_path} returned unsupported response type {response_type!r} on line {line_no}"
+            )
+        raise DaemonProtocolError(f"daemon at {self.socket_path} closed the connection without a health response")
 
     def request_frames(self, request: dict[str, Any]) -> list[Frame]:
         try:
