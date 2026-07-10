@@ -80,7 +80,12 @@ class DaemonClient:
             raise DaemonConnectError(f"cannot connect to {self.socket_path}: {exc.strerror or exc}") from exc
 
     def _read_health(self, fh) -> HealthSnapshot:
-        raw_line = fh.readline(MAX_HEALTH_RESPONSE_BYTES + 1)
+        try:
+            raw_line = fh.readline(MAX_HEALTH_RESPONSE_BYTES + 1)
+        except UnicodeError as exc:
+            raise DaemonProtocolError(
+                f"daemon at {self.socket_path} returned invalid UTF-8 health data"
+            ) from exc
         if not raw_line:
             raise DaemonProtocolError(
                 f"daemon at {self.socket_path} closed the connection without a health response"

@@ -99,6 +99,13 @@ class ComponentSnapshot:
     error: ComponentError | None = None
     state_change_count: int = 0
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "detail",
+            sanitize_public_text(self.detail, limit=MAX_HEALTH_DETAIL_BYTES),
+        )
+
     def to_jsonable(self) -> dict:
         result: dict = {
             "name": self.name,

@@ -4,7 +4,7 @@
 
 - Branch: `feat/groop-p47-daemon-component-health`
 - Original base: P44 merge `9e15d85`
-- Current baseline: main `665b39a`, merged as `645e8f9`
+- Current baseline: main `7737daf`, merged as `a08a464`
 - Package: P47 daemon component health
 
 ## Work
@@ -30,25 +30,30 @@
 - Kept adopted paddr sessions persistent at daemon exit and made the shutdown
   detail explicit.
 - Added actual `_main_daemon serve` tests for collector and BPF lifecycle state.
+- Converted invalid UTF-8 into typed protocol failure and made direct public
+  `ComponentSnapshot` construction apply the same detail safety boundary.
 - Reconciled README, ROADMAP, STATUS, OPERATIONS, MEASUREMENTS, and this report.
+- Merged reviewed P45 and its evidence from latest main, preserving its
+  inspect-files/spec decisions, then reran focused and full gates.
 
 ## Validation
 
 ```bash
 PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest \
   groop/tests/test_daemon_component_health.py -q
-# 47 passed in 3.46s
+# 49 passed in 3.47s
 
 PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest \
   groop/tests/test_daemon_component_health.py \
   groop/tests/test_daemon_broker.py \
   groop/tests/test_daemon_client.py \
   groop/tests/test_daemon_bpf_snapshot.py \
-  groop/tests/test_daemon_paddr_lifecycle.py -q
-# 108 passed in 6.13s
+  groop/tests/test_daemon_paddr_lifecycle.py \
+  groop/tests/test_inspect_files.py -q
+# 238 passed in 5.98s
 
 PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q
-# 601 passed, 1 skipped in 50.81s
+# 672 passed, 1 skipped in 50.05s
 ```
 
 Changed-source `py_compile` and `git diff --check` are clean.

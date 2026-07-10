@@ -61,8 +61,7 @@ flowchart TD
     P14 --> P44[P44 Daemon paddr lifecycle]
     P29 --> P45[P45 Bounded inspect content]
     P21 --> P46[P46 Admin execution kernel]
-    P44 --> P47[P47 Daemon component health] :::
-done
+    P44 --> P47[P47 Daemon component health]:::done
     P45 --> P48[P48 Journald snapshot]
     P46 --> P49[P49 memory.high governance]
     P43 --> P50[P50 Mouse table interactions]

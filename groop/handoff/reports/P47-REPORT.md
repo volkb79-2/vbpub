@@ -2,7 +2,7 @@
 
 **Branch:** `feat/groop-p47-daemon-component-health`
 
-**Current baseline merge:** `645e8f9`
+**Latest-main merge:** `a08a464` (main `7737daf`)
 
 **Date:** 2026-07-10
 
@@ -48,27 +48,29 @@ timestamps, consecutive failed attempts, last error, and a transition count.
 
 ## Tests
 
-The 47 focused tests cover registry transitions, byte bounds and redaction,
+The 49 focused tests cover registry transitions, byte bounds and redaction,
 concurrency, socket/CLI behavior, strict malformed-response rejection, error
-round trips, collector truthfulness, and actual daemon-serve collector/BPF
+round trips (including invalid UTF-8), direct snapshot safety, collector
+truthfulness, and actual daemon-serve collector/BPF
 integration. The serve tests cover initial BPF failures with and without a
 last-valid snapshot and a worker that remains alive after its join deadline.
 
 ```bash
 PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest \
   groop/tests/test_daemon_component_health.py -q
-# 47 passed in 3.46s
+# 49 passed in 3.47s
 
 PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest \
   groop/tests/test_daemon_component_health.py \
   groop/tests/test_daemon_broker.py \
   groop/tests/test_daemon_client.py \
   groop/tests/test_daemon_bpf_snapshot.py \
-  groop/tests/test_daemon_paddr_lifecycle.py -q
-# 108 passed in 6.13s
+  groop/tests/test_daemon_paddr_lifecycle.py \
+  groop/tests/test_inspect_files.py -q
+# 238 passed in 5.98s
 
 PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q
-# 601 passed, 1 skipped in 50.81s
+# 672 passed, 1 skipped in 50.05s
 ```
 
 Changed-source `py_compile` and `git diff --check` are clean.

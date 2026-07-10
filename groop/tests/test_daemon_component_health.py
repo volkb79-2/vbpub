@@ -84,6 +84,18 @@ def test_public_health_text_is_bounded_single_line_and_redacted() -> None:
     assert component.error.error_code == "bad_code_with_controls"
 
 
+def test_direct_component_snapshot_sanitizes_and_bounds_detail() -> None:
+    snapshot = ComponentSnapshot(
+        name="collector",
+        state=ComponentState.FAILED,
+        detail="TOKEN=topsecret /private/path\n" + ("é" * 1000),
+    )
+    assert len(snapshot.detail.encode("utf-8")) <= MAX_HEALTH_DETAIL_BYTES
+    assert "\n" not in snapshot.detail
+    assert "topsecret" not in snapshot.detail
+    assert "/private/path" not in snapshot.detail
+
+
 def test_component_names_match_default_disabled() -> None:
     """All COMPONENT_NAMES start disabled by default."""
     reg = ComponentHealthRegistry()
@@ -544,6 +556,29 @@ def test_daemon_client_rejects_oversized_health_response() -> None:
     oversized = "x" * (16 * 1024 + 1)
     with pytest.raises(DaemonProtocolError, match="oversized"):
         DaemonClient(Path("/fixture.sock"))._read_health(StringIO(oversized))
+
+
+def test_request_health_converts_invalid_utf8_to_protocol_error(tmp_path: Path) -> None:
+    socket_path = tmp_path / "invalid-utf8.sock"
+    ready = threading.Event()
+
+    def serve_invalid_utf8() -> None:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(socket_path))
+            server.listen(1)
+            ready.set()
+            connection, _ = server.accept()
+            with connection:
+                connection.recv(4096)
+                connection.sendall(b"\xff\n")
+
+    thread = threading.Thread(target=serve_invalid_utf8, daemon=True)
+    thread.start()
+    assert ready.wait(2.0)
+    with pytest.raises(DaemonProtocolError, match="invalid UTF-8"):
+        DaemonClient(socket_path).request_health()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
 
 
 def test_broker_collector_health_tracks_real_collection() -> None:

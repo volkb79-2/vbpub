@@ -214,7 +214,7 @@ Most recent full validation on current main plus P47:
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# pending refresh after latest-main merge
+# 672 passed, 1 skipped in 50.05s
 ```
 
 Also validated:
@@ -222,8 +222,8 @@ Also validated:
 - P44 focused paddr lifecycle tests: `22 passed in 0.17s`.
 - P45 focused inspect-files tests: `113 passed in 0.64s`.
 - P46 focused action execution tests: `129 passed in 0.45s`.
-- P47 focused component health tests: `47 passed in 3.46s`.
-- P47 daemon-focused regression: `108 passed in 6.13s`.
+- P47 focused component health tests: `49 passed in 3.47s`.
+- Combined P47 daemon/P45 inspect regression: `238 passed in 5.98s`.
 - Combined P44/P45/P46 focused regression: `264 passed in 1.12s`.
 - Full-source `py_compile` clean on all changed/new files.
 - Module-level imports and gate logic verified without real Docker/systemd.

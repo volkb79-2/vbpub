@@ -646,14 +646,14 @@ public detail, and strict `health-v1` response validation.
 ```bash
 PYTHONPATH=groop/src python3 -m pytest \
   groop/tests/test_daemon_component_health.py -q
-# 47 passed in 3.46s
+# 49 passed in 3.47s
 ```
 
 ### Full suite impact
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 601 passed, 1 skipped in 50.81s
+# 672 passed, 1 skipped in 50.05s
 ```
 
 Full-source ``py_compile`` clean.
