@@ -83,11 +83,12 @@ plugins and web UI.
 
 ### P44 - Daemon-Owned paddr Lifecycle
 
-Status: planned. Explicit `[damon] paddr_enabled = true` makes the root daemon
+Status: done. Explicit `[damon] paddr_enabled = true` makes the root daemon
 own one audited whole-host paddr session for its lifetime. The default remains
 disabled and foreign sessions remain untouched.
 
 Handoff: `handoff/P44-daemon-paddr-lifecycle.md`.
+Report: `handoff/reports/P44-REPORT.md`.
 
 ### P45 - Bounded Inspect-Files Content Reads
 

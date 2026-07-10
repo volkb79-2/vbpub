@@ -32,7 +32,7 @@ its claim instead of running that capability's live gate.
 - Executable Docker/systemd admin actions; current actions are preview/audit
   planning only.
 - Automated production daemon installation or service mutation.
-- Persistent daemon-owned paddr DAMON.
+- Persistent daemon-owned paddr DAMON — enabled by explicit `[damon] paddr_enabled = true`; disabled by default (P44 adds the lifecycle, but the default is unchanged).
 - Inspect-files content reads or subprocess execution.
 - Web UI.
 - GPU and ZFS plugins.

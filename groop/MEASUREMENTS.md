@@ -504,6 +504,53 @@ Blocker for live BPF overhead measurement:
 - No `cgroup_skb` BPF C source or compiled object is present in the repo
 - The BPF gate (P17) remains the authoritative preflight check
 
+## P44 Daemon-Owned paddr Lifecycle (2026-07-10)
+
+P44 adds a daemon lifecycle owner around the existing `damon/paddr.py` and
+`damon/control.py` sources of truth. The lifecycle is fixture-tested and does
+not require host DAMON sysfs.
+
+### Fixture/unit evidence (no live DAMON mutation)
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest \
+  groop/tests/test_daemon_paddr_lifecycle.py -q
+# 13 passed in 0.22s
+```
+
+### Config evidence
+
+Default `paddr_enabled = False` confirmed by source default, TOML load
+round-trip, and to_primitive() serialization. Explicit `paddr_enabled = true`
+loaded correctly from `[damon]` TOML section.
+
+### Covered scenarios
+
+- Disabled lifecycle performs zero DAMON writes.
+- Enabled lifecycle starts one owned paddr session and stops it on stop().
+- Idempotent adoption: existing groop-owned marker is adopted without duplicate.
+- Foreign session: non-groop markers and foreign kdamond slots untouched.
+- No free slot: raises bounded PaddrLifecycleStartError.
+- Root required: raises bounded PaddrLifecycleStartError.
+- Stop returns 0 when nothing was started.
+
+### Full suite impact
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest groop/tests -q
+# 446 passed, 1 skipped in 49.25s
+```
+
+Full-source `py_compile` clean.
+
+Blocker for live daemon paddr measurement:
+
+- This development host is not a deliberate privileged test host.
+- DAMON sysfs is not available.
+- The daemon requires root to start DAMON sessions.
+- P44 lifecycle testing uses injectable fixture seams (damon_root, state_dir,
+  require_root=False, is_root=...) and does not mutate host sysfs.
+
 ## Release Signoff Template
 
 - Release/tag:
