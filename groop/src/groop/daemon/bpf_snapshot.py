@@ -3,7 +3,8 @@
 Reads an explicitly configured pinned BPF counter map via ``bpftool`` through
 an argv-only, injectable command runner, decodes the P17/P18 logical
 dimensions, builds the ``cgroup_map`` from a configured cgroup-v2 root, and
-atomically writes the resulting ``snapshot.json`` consumed by
+atomically writes the resulting ``snapshot.json`` to a separate *state_dir*
+(not the bpffs pin root) consumed by
 :class:`groop.providers.net_bpf.BpfProvider`.
 
 The bridge does **not** load, attach, detach, or compile BPF programs.
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -24,6 +26,7 @@ CommandRunner = Callable[[list[str]], str]
 SNAPSHOT_FILENAME = "snapshot.json"
 SCHEMA_VERSION = 1
 MAX_OUTPUT_BYTES = 1 * 1024 * 1024  # 1 MB max bpftool output
+_MAX_LOG_BYTES = 512  # bounded stderr captured on CalledProcessError
 
 
 class BpfSnapshotError(Exception):
@@ -102,6 +105,22 @@ class BpfSnapshotBridge:
         self._last_valid_snapshot = snapshot
         return snapshot
 
+    def refresh_and_write(
+        self, map_pin_rel_path: str, state_dir: Path
+    ) -> dict[str, Any]:
+        """Run a full refresh and atomically write the snapshot to *state_dir*.
+
+        This is a convenience for an immediate (pre-thread) refresh followed
+        by an atomic write. If either step fails the last valid snapshot is
+        preserved and the error is re-raised.
+
+        Raises:
+            BpfSnapshotError: On refresh or write failure.
+        """
+        snapshot = self.refresh(map_pin_rel_path)
+        self.write_snapshot(snapshot, state_dir)
+        return snapshot
+
     def write_snapshot(self, snapshot: dict[str, Any], dest_dir: Path) -> Path:
         """Atomically write *snapshot* as ``snapshot.json`` under *dest_dir*.
 
@@ -133,12 +152,35 @@ class BpfSnapshotBridge:
 
         return dest
 
+    def restore_last_known_good(self, state_dir: Path) -> None:
+        """Restore the last known good snapshot from an on-disk fallback.
+
+        If no in-memory snapshot exists but *state_dir/snapshot.json* holds a
+        valid file, load it into ``_last_valid_snapshot`` so subsequent
+        failures can still serve stale data.
+
+        Does nothing if a valid in-memory snapshot already exists or the
+        on-disk file is missing/parseable.
+        """
+        if self._last_valid_snapshot is not None:
+            return
+        path = Path(state_dir) / SNAPSHOT_FILENAME
+        try:
+            raw = path.read_text(encoding="utf-8")
+            self._last_valid_snapshot = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            pass
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _validate_map_path(self, rel_path: str) -> Path:
         """Resolve *rel_path* under *bpf_root* and enforce confinement.
+
+        Uses :meth:`pathlib.Path.is_relative_to` for prefix checking so that
+        a symlink that resolves to a sibling directory (e.g. ``bpf_root/../x``)
+        is correctly rejected.
 
         Raises:
             BpfSnapshotError: If the resolved path escapes *bpf_root* or
@@ -148,10 +190,12 @@ class BpfSnapshotBridge:
             raise BpfSnapshotError(f"invalid map pin relative path: {rel_path!r}")
 
         candidate = (self._bpf_root / rel_path).resolve()
-        if not str(candidate).startswith(str(self._bpf_root)):
+        try:
+            candidate.relative_to(self._bpf_root)
+        except ValueError:
             raise BpfSnapshotError(
                 f"map pin path {candidate} escapes bpf root {self._bpf_root}"
-            )
+            ) from None
         if not candidate.exists():
             raise BpfSnapshotError(f"map pin path {candidate} does not exist")
         return candidate
@@ -169,6 +213,18 @@ class BpfSnapshotBridge:
             raise BpfSnapshotError("bpftool is not installed") from None
         except OSError as exc:
             raise BpfSnapshotError(f"bpftool execution failed: {exc}") from exc
+        except subprocess.CalledProcessError as exc:
+            detail = ""
+            if exc.stderr:
+                detail = exc.stderr.decode("utf-8", errors="replace")[:_MAX_LOG_BYTES]
+            raise BpfSnapshotError(
+                f"bpftool exited {exc.returncode}"
+                + (f": {detail}" if detail else "")
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise BpfSnapshotError(
+                f"bpftool timed out after {exc.timeout}s"
+            ) from exc
 
         if len(stdout.encode("utf-8")) > self._max_output_bytes:
             raise BpfSnapshotError(
@@ -180,19 +236,20 @@ class BpfSnapshotBridge:
     def _parse_bpftool_output(raw: str) -> list[dict[str, Any]]:
         """Parse the JSON output from ``bpftool --json map dump pinned``.
 
-        ``bpftool`` returns a JSON array of entry objects. Each entry has:
-            - ``key`` (hex-encoded or raw bytes)
-            - ``value`` (hex-encoded or raw bytes)
+        ``bpftool`` returns a JSON array of entry objects when the map has
+        BTF or an explicit key/value spec (``--json`` with struct key/value).
+        Each entry has ``key`` and ``value`` sub-dicts with decoded fields.
 
-        This decoder expects a decoded representation where the map's
-        key/value spec has been applied via ``bpftool`` (i.e. ``--json`` with
-        the map's BTF or key/value size produces structured output).
+        Raw byte arrays (hex strings as key/value, or entries where ``key``
+        is a plain string) are **explicitly rejected** because this package
+        cannot decode their logical dimensions. BTF-typed structured output
+        is required.
 
         For percpu_array and similar per-CPU maps, bpftool returns an array
         ``values``. This bridge only handles the simple single-value case.
 
         Raises:
-            BpfSnapshotError: On parse failure.
+            BpfSnapshotError: On parse failure or unsupported format.
         """
         try:
             data = json.loads(raw)
@@ -200,12 +257,40 @@ class BpfSnapshotBridge:
             raise BpfSnapshotError(f"bpftool JSON parse error: {exc}") from exc
 
         if not isinstance(data, list):
-            raise BpfSnapshotError(f"bpftool output is not a JSON array: {type(data).__name__}")
+            raise BpfSnapshotError(
+                f"bpftool output is not a JSON array: {type(data).__name__}"
+            )
 
         entries: list[dict[str, Any]] = []
         for i, item in enumerate(data):
             if not isinstance(item, dict):
-                raise BpfSnapshotError(f"bpftool entry {i} is not a dict: {type(item).__name__}")
+                raise BpfSnapshotError(
+                    f"bpftool entry {i} is not a dict: {type(item).__name__}"
+                )
+
+            # Reject raw byte array format: when key or value is a plain
+            # string (hex bytes) we cannot decode logical dimensions.
+            key_val = item.get("key")
+            val_val = item.get("value")
+            if isinstance(key_val, str) or isinstance(val_val, str):
+                raise BpfSnapshotError(
+                    f"bpftool entry {i}: raw byte array key/value is not supported; "
+                    "BTF-typed structured output is required "
+                    "(key={!r}, value={!r})".format(
+                        type(key_val).__name__, type(val_val).__name__
+                    )
+                )
+            # Also reject entries where key/value are arrays (per-CPU maps)
+            # or where the entry has a "values" key (alternative per-CPU format)
+            if isinstance(key_val, list) or isinstance(val_val, list):
+                raise BpfSnapshotError(
+                    f"bpftool entry {i}: per-CPU array values are not supported"
+                )
+            if "values" in item and isinstance(item["values"], list):
+                raise BpfSnapshotError(
+                    f"bpftool entry {i}: per-CPU array values (key 'values') are not supported"
+                )
+
             entry = _decode_bpftool_entry(item, i)
             entries.append(entry)
         return entries
@@ -272,10 +357,10 @@ def _resolve_safe(path: Path) -> Path:
 def _decode_bpftool_entry(item: dict[str, Any], index: int) -> dict[str, Any]:
     """Decode a single bpftool JSON entry into P17/P18 logical dimensions.
 
-    ``bpftool --json map dump`` typically returns structured key/value
-
-    For a map with a known key/value shape, ``bpftool`` may present them as
-    decoded fields. This function handles both raw hex and structured output.
+    ``bpftool --json map dump`` with BTF-typed structured output returns
+    entries with ``key`` and ``value`` as dicts of decoded fields. This
+    function also handles top-level fields (some ``bpftool`` versions flatten
+    the output).
 
     The expected decoded shape (matching P17/P18 design):
         - ``cgroup_id`` (int)
@@ -284,14 +369,13 @@ def _decode_bpftool_entry(item: dict[str, Any], index: int) -> dict[str, Any]:
         - ``proto`` ("tcp" | "udp" | "icmp" | "other")
         - ``bytes`` (int, non-negative)
         - ``packets`` (int, non-negative)
+
+    Raw byte arrays (hex-encoded key/value strings) must be rejected at the
+    caller level before entering this function.
     """
     entry: dict[str, Any] = {}
 
     # Extract from either top-level decoded fields or key/value sub-objects
-    # bpftool --json with key/val spec selected returns:
-    # {"key": ..., "value": ..., ...}
-    # But with --json alone on a non-BTF map, it returns hex strings.
-    # We expect the bpftool version/format that produces decoded output.
     key_obj = item.get("key") if isinstance(item.get("key"), dict) else item
     val_obj = item.get("value") if isinstance(item.get("value"), dict) else item
 
@@ -383,18 +467,18 @@ def _pop_str(obj: dict[str, Any], key: str, index: int) -> str:
 def _walk_cgroup_ids(cgroup_root: Path | None = None) -> dict[int, str]:
     """Walk the cgroup-v2 tree and return ``{cgroup_id: entity_key}``.
 
-    This is the **production** cgroup-id resolver. It reads
-    ``/proc/self/cgroup`` and walks the cgroup tree to obtain numeric cgroup
-    IDs.
+    This is the **production** cgroup-id resolver. It reads cgroup directories
+    and uses the directory inode (``st_ino``) as the numeric cgroup id.
 
     .. important::
-        **Kernel identity assumption**: The cgroup ID read from
-        ``cgroupfs`` (via ``stat -c %i`` on a cgroup directory) is the same
-        numeric ID the kernel uses in BPF ``bpf_get_current_cgroup_id()``.
-        This holds on cgroup-v2 hosts running kernel >= 4.18. On earlier
-        kernels or cgroup-v1 hybrids, the IDs may differ. The caller must
-        validate this assumption on the target host before relying on BPF
-        cgroup ID mapping.
+        **Cgroup ID identity assumption**: The numeric cgroup id used by the
+        kernel (e.g. returned by ``bpf_get_current_cgroup_id()`` in BPF
+        programs) may be derived from inode numbers of the cgroup directory
+        on ``cgroupfs``. On cgroup-v2 hosts this is the common behaviour, but
+        the exact mapping is **kernel-version dependent and not verified by
+        this function**. The caller must validate this identity on the target
+        host before relying on BPF cgroup ID mapping. This function does not
+        guarantee the cgroup directory inode matches the BPF cgroup ID.
 
     Args:
         cgroup_root: Path to the cgroup-v2 root (default:
@@ -433,7 +517,25 @@ def _subprocess_runner(argv: list[str]) -> str:
     """Default command runner: delegate to ``subprocess.check_output``.
 
     Never invokes a shell. Returns stdout as text.
-    """
-    import subprocess
 
-    return subprocess.check_output(argv, timeout=30).decode("utf-8")
+    Raises:
+        BpfSnapshotError: If the command times out or exits non-zero.
+        FileNotFoundError: If ``bpftool`` is not installed.
+    """
+    import subprocess as _sp  # noqa: F811 (re-import needed for avoid circular)
+
+    try:
+        return _sp.check_output(argv, timeout=30, stderr=_sp.PIPE).decode("utf-8")
+    except _sp.CalledProcessError as exc:
+        # Bound the captured stderr to prevent unbounded output in error msg
+        detail = ""
+        if exc.stderr:
+            detail = exc.stderr.decode("utf-8", errors="replace")[:_MAX_LOG_BYTES]
+        raise BpfSnapshotError(
+            f"bpftool exited {exc.returncode}"
+            + (f": {detail}" if detail else "")
+        ) from exc
+    except _sp.TimeoutExpired as exc:
+        raise BpfSnapshotError(
+            f"bpftool timed out after {exc.timeout}s"
+        ) from exc

@@ -107,6 +107,7 @@ class BpfSnapshotConfig:
     root: Path | None = None  # BPF pin root, e.g. /sys/fs/bpf/groop
     interval: float = 30.0  # refresh interval in seconds
     map_name: str = "groop_cgroup_skb"  # pinned map name under root
+    state_dir: Path = Path("/run/groop/bpf")  # directory for snapshot.json output
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,7 @@ class GroopConfig:
                 "root": None if self.bpf_snapshot.root is None else str(self.bpf_snapshot.root),
                 "interval": self.bpf_snapshot.interval,
                 "map_name": self.bpf_snapshot.map_name,
+                "state_dir": str(self.bpf_snapshot.state_dir),
             },
         }
 
@@ -353,5 +355,6 @@ def load(path: Path | None = None) -> GroopConfig:
             root=Path(bpf_snapshot_data["root"]) if isinstance(bpf_snapshot_data.get("root"), str) else None,
             interval=float(bpf_snapshot_data.get("interval", 30.0)),
             map_name=str(bpf_snapshot_data.get("map_name", "groop_cgroup_skb")),
+            state_dir=Path(bpf_snapshot_data["state_dir"]) if isinstance(bpf_snapshot_data.get("state_dir"), str) else BpfSnapshotConfig.state_dir,
         ),
     )

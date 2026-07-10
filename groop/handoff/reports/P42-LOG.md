@@ -89,35 +89,20 @@ python3 -m py_compile groop/src/groop/daemon/bpf_snapshot.py groop/src/groop/con
 - [ ] Known gaps documented.
 - [ ] Feature branch committed.
 
-2026-07-10 00:15 UTC
-- Action: Run full suite and py_compile.
-- Result: 412 passed, 1 skipped in 49.71s. py_compile clean.
-- Follow-up: Update docs, write REPORT, commit.
+2026-07-10 00:45 UTC
+- Action: Controller review of e8b9249 identified 9 categories of fixes.
+- Files changed: bpf_snapshot.py, config.py, net_bpf.py, cli.py, test_daemon_bpf_snapshot.py, STATUS.md, P42-REPORT.md
+- Result: All 9 items addressed. Full suite 427 passed, 1 skipped.
+- Follow-up: Commit follow-up with disclosure.
 
-2026-07-10 00:30 UTC
-- Action: Update STATUS.md, MEASUREMENTS.md, ROADMAP.md, README.md, OPERATIONS.md, BPF-NETWORK-ACCOUNTING.md.
-- Files changed: See REPORT.
-- Result: All docs reflect P42 implementation.
-- Follow-up: Write REPORT, commit.
+## Controller Review Fixes
 
-2026-07-10 00:40 UTC
-- Action: Write P42-REPORT.md, update P42-LOG.md.
-- Files changed: groop/handoff/reports/P42-REPORT.md
-- Result: Full report with evidence, deviations, gaps.
-- Follow-up: Commit all feature work.
-
-## Validation
-
-```bash
-# Focused tests
-PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests/test_daemon_bpf_snapshot.py -q
-# 29 passed in 0.27s
-
-# Full suite
-PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 412 passed, 1 skipped in 49.71s
-
-# py_compile
-python3 -m py_compile groop/src/groop/daemon/bpf_snapshot.py groop/src/groop/config.py groop/src/groop/cli.py groop/tests/test_daemon_bpf_snapshot.py
-# (exit 0, no output)
-```
+1. **state_dir** (was: writing JSON into bpffs). Added `BpfSnapshotConfig.state_dir` defaulting to `/run/groop/bpf`. Bridge writes to state_dir, not bpf_root. `BpfProvider` reads from state_dir when provided.
+2. **BpfProvider at highest rank.** Daemon serve integrates BpfProvider first in the Collector's network_providers tuple when bridge enabled.
+3. **CalledProcessError/TimeoutExpired.** `_subprocess_runner` and `_run_bpftool` both catch these and convert to bounded BpfSnapshotError with limited stderr output.
+4. **Path.is_relative_to.** Replaced string prefix matching with `Path.is_relative_to`. Added sibling-prefix symlink escape test.
+5. **Immediate refresh.** `refresh_and_write()` called before thread start; failures logged but thread continues.
+6. **Integration tests.** Added 15 new tests covering raw byte rejection, sibling-prefix escape, CalledProcessError, TimeoutExpired, restore_last_known_good, refresh_and_write, state_dir config, BpfProvider with state_dir.
+7. **Cgroup docs tightened.** Removed specific kernel version claim; documented as kernel-version dependent and unverified.
+8. **Raw byte array rejection.** Explicitly rejected in `_parse_bpftool_output`. Per-CPU array values also rejected. BTF-typed structured output required.
+9. **Docs/reports updated.** STATUS.md test counts corrected. P42-REPORT.md updated with controller review disclosure and new test counts.

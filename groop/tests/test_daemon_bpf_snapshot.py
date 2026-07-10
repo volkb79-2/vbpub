@@ -545,6 +545,323 @@ def test_write_snapshot_cleans_tmp_on_rename(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Raw byte array rejection
+# ---------------------------------------------------------------------------
+
+
+def test_parse_bpftool_rejects_raw_byte_array_key(tmp_path: Path) -> None:
+    """Raw byte array key (hex string) is explicitly rejected."""
+    bpf_root = _make_bpf_root(tmp_path)
+    bridge = BpfSnapshotBridge(
+        bpf_root,
+        command_runner=_mock_runner(
+            json.dumps([
+                {
+                    "key": "0x01020304",
+                    "value": {"cgroup_id": 10001, "direction": "ingress",
+                              "family": "ipv4", "proto": "tcp",
+                              "bytes": 1000, "packets": 10},
+                }
+            ])
+        ),
+    )
+    try:
+        bridge.refresh("groop_cgroup_skb")
+        assert False, "expected BpfSnapshotError"
+    except BpfSnapshotError as exc:
+        assert "raw byte array" in str(exc).lower()
+
+
+def test_parse_bpftool_rejects_raw_byte_array_value(tmp_path: Path) -> None:
+    """Raw byte array value (hex string) is explicitly rejected."""
+    bpf_root = _make_bpf_root(tmp_path)
+    bridge = BpfSnapshotBridge(
+        bpf_root,
+        command_runner=_mock_runner(
+            json.dumps([
+                {
+                    "key": {"cgroup_id": 10001, "direction": "ingress"},
+                    "value": "0xdeadbeef",
+                }
+            ])
+        ),
+    )
+    try:
+        bridge.refresh("groop_cgroup_skb")
+        assert False, "expected BpfSnapshotError"
+    except BpfSnapshotError as exc:
+        assert "raw byte array" in str(exc).lower()
+
+
+def test_parse_bpftool_rejects_percpu_array_values(tmp_path: Path) -> None:
+    """Per-CPU array values (lists) are explicitly rejected."""
+    bpf_root = _make_bpf_root(tmp_path)
+    bridge = BpfSnapshotBridge(
+        bpf_root,
+        command_runner=_mock_runner(
+            json.dumps([
+                {
+                    "key": {"cgroup_id": 10001, "direction": "ingress"},
+                    "values": [{"bytes": 100, "packets": 1}],
+                }
+            ])
+        ),
+    )
+    try:
+        bridge.refresh("groop_cgroup_skb")
+        assert False, "expected BpfSnapshotError"
+    except BpfSnapshotError as exc:
+        assert "per-CPU" in str(exc)
+
+
+# ---------------------------------------------------------------------------
+# Sibling-prefix symlink escape (Path.is_relative_t(required))
+# ---------------------------------------------------------------------------
+
+
+def test_validate_map_path_rejects_sibling_prefix_escape(tmp_path: Path) -> None:
+    """A symlink that resolves to a sibling-like prefix of bpf_root is rejected.
+
+    Create ``/tmp/bpf-real`` and ``/tmp/bpf-real-evil``. The second is NOT
+    under the first even though it shares a prefix. ``Path.is_relative_t(required)``
+    correctly rejects it.
+    """
+    bpf_root = tmp_path / "bpf-real"
+    bpf_root.mkdir(parents=True)
+
+    # Create a sibling path that shares the prefix "bpf-real"
+    escape_target = tmp_path / "bpf-real-evil"
+    escape_target.mkdir()
+    (escape_target / "escape_map").touch()
+
+    # Create a symlink inside bpf_root that points to the sibling
+    link = bpf_root / "escape_link"
+    link.symlink_to(escape_target)
+
+    bridge = BpfSnapshotBridge(bpf_root, command_runner=_mock_runner("[]"))
+    try:
+        bridge._validate_map_path("escape_link")
+        assert False, "expected BpfSnapshotError"
+    except BpfSnapshotError as exc:
+        assert "escapes" in str(exc).lower()
+
+
+# ---------------------------------------------------------------------------
+# calledProcessError and TimeoutExpired in _subprocess_runner
+# ---------------------------------------------------------------------------
+
+
+def test_subprocess_called_process_error_dead() -> None:
+    """Dummy: tested via test_run_bpftool_called_process_error below."""
+    pass
+
+
+def _make_called_process_runner(returncode: int = 1, stderr: str = "error") -> callable:
+    """Create a mock that simulates CalledProcessError behaviour."""
+    import subprocess as _sp
+
+    def runner(argv: list[str]) -> str:
+        raise _sp.CalledProcessError(returncode, argv, stderr=stderr.encode())
+    return runner
+
+
+def _make_timeout_runner() -> callable:
+    import subprocess as _sp
+
+    def runner(argv: list[str]) -> str:
+        raise _sp.TimeoutExpired(argv, timeout=30)
+    return runner
+
+
+def test_run_bpftool_called_process_error(tmp_path: Path) -> None:
+    """CalledProcessError is converted to a bounded BpfSnapshotError."""
+    bpf_root = _make_bpf_root(tmp_path)
+    bridge = BpfSnapshotBridge(
+        bpf_root, command_runner=_make_called_process_runner(1, "bpftool: error")
+    )
+    map_path = bpf_root / "groop_cgroup_skb"
+    try:
+        bridge._run_bpftool(map_path)
+        assert False, "expected BpfSnapshotError"
+    except BpfSnapshotError as exc:
+        msg = str(exc)
+        assert "bpftool exited 1" in msg
+        # Should contain the bounded stderr
+        assert "bpftool: error" in msg
+
+
+def test_run_bpftool_timeout(tmp_path: Path) -> None:
+    """TimeoutExpired is converted to a bounded BpfSnapshotError."""
+    bpf_root = _make_bpf_root(tmp_path)
+    bridge = BpfSnapshotBridge(
+        bpf_root, command_runner=_make_timeout_runner()
+    )
+    map_path = bpf_root / "groop_cgroup_skb"
+    try:
+        bridge._run_bpftool(map_path)
+        assert False, "expected BpfSnapshotError"
+    except BpfSnapshotError as exc:
+        msg = str(exc)
+        assert "timed out" in msg.lower()
+
+
+# ---------------------------------------------------------------------------
+# on-disk last-good restoration
+# ---------------------------------------------------------------------------
+
+
+def test_restore_last_known_good_loads_from_disk(tmp_path: Path) -> None:
+    """restore_last_known_good loads a valid snapshot from state_dir."""
+    bpf_root = _make_bpf_root(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "snapshot.json").write_text(
+        json.dumps({"schema_version": 1, "maps": {}}), encoding="utf-8"
+    )
+    bridge = BpfSnapshotBridge(bpf_root, command_runner=_mock_runner("[]"))
+    assert bridge.last_valid_snapshot is None
+    bridge.restore_last_known_good(state_dir)
+    assert bridge.last_valid_snapshot is not None
+    assert bridge.last_valid_snapshot["schema_version"] == 1
+
+
+def test_restore_last_known_good_skips_if_already_present(tmp_path: Path) -> None:
+    """restore_last_known_good does nothing when a valid snapshot is already in memory."""
+    bpf_root = _make_bpf_root(tmp_path)
+    bridge = BpfSnapshotBridge(bpf_root, command_runner=_mock_runner("[]"))
+    bridge._last_valid_snapshot = {"existing": True}
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "snapshot.json").write_text(
+        json.dumps({"different": True}), encoding="utf-8"
+    )
+    bridge.restore_last_known_good(state_dir)
+    assert bridge.last_valid_snapshot == {"existing": True}
+
+
+def test_restore_last_known_good_missing_file(tmp_path: Path) -> None:
+    """restore_last_known_good silently does nothing if the on-disk file is missing."""
+    bpf_root = _make_bpf_root(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    bridge = BpfSnapshotBridge(bpf_root, command_runner=_mock_runner("[]"))
+    bridge.restore_last_known_good(state_dir)
+    assert bridge.last_valid_snapshot is None
+
+
+# ---------------------------------------------------------------------------
+# refresh_and_write convenience method
+# ---------------------------------------------------------------------------
+
+
+def test_refresh_and_write(tmp_path: Path) -> None:
+    """refresh_and_write runs a full cycle and writes to state_dir."""
+    bpf_root = _make_bpf_root(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    cg_root = _make_cgroup_fixture(tmp_path)
+
+    bridge = BpfSnapshotBridge(
+        bpf_root,
+        command_runner=_mock_runner(SAMPLE_BPFTOOL_OUTPUT),
+        cgroup_id_resolver=_mock_cgroup_ids(cg_root),
+    )
+    snapshot = bridge.refresh_and_write("groop_cgroup_skb", state_dir)
+    assert (state_dir / "snapshot.json").exists()
+    assert snapshot["schema_version"] == 1
+    assert bridge.last_valid_snapshot is snapshot
+
+
+# ---------------------------------------------------------------------------
+# Integration-level: daemon construction and refresh
+# ---------------------------------------------------------------------------
+
+
+def test_daemon_bpf_state_dir_from_config(tmp_path: Path) -> None:
+    """Config-specified state_dir is used for snapshot output."""
+    from groop.config import load
+
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        "[bpf_snapshot]\n"
+        'enabled = true\n'
+        'root = "/sys/fs/bpf/groop"\n'
+        'state_dir = "/run/groop/bpf"\n'
+    )
+    config = load(config_file)
+    assert config.bpf_snapshot.enabled is True
+    assert str(config.bpf_snapshot.state_dir) == "/run/groop/bpf"
+
+
+def test_daemon_bpf_state_dir_default_when_not_set(tmp_path: Path) -> None:
+    """When state_dir is not set in config, the default /run/groop/bpf is used."""
+    from groop.config import BpfSnapshotConfig
+
+    cfg = BpfSnapshotConfig(enabled=True, root=Path("/sys/fs/bpf/groop"))
+    assert str(cfg.state_dir) == "/run/groop/bpf"
+
+
+def test_bpf_provider_with_state_dir(tmp_path: Path) -> None:
+    """BpfProvider reads snapshot from state_dir when provided separately."""
+    from groop.providers.net_bpf import BpfProvider
+    from groop.model import Entity
+
+    # Create state dir with snapshot
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    bpf_root = tmp_path / "bpf" / "groop"
+    bpf_root.mkdir(parents=True)
+
+    snapshot = {
+        "maps": {
+            "groop_cgroup_skb": [
+                {"cgroup_id": 42, "direction": "ingress", "family": "ipv4",
+                 "proto": "tcp", "bytes": 100, "packets": 5},
+            ],
+        },
+        "cgroup_map": {"42": "alpha.scope"},
+    }
+    (state_dir / "snapshot.json").write_text(
+        json.dumps(snapshot), encoding="utf-8"
+    )
+
+    provider = BpfProvider(bpf_root=bpf_root, state_dir=state_dir)
+    samples = provider.collect(
+        {"alpha.scope": Entity(key="alpha.scope", kind="scope", parent="")}
+    )
+    assert samples["alpha.scope"].source_label == "net:BPF"
+    assert samples["alpha.scope"].rx_bytes == 100
+
+
+def test_bpf_provider_falls_back_to_bpf_root_as_state_dir(tmp_path: Path) -> None:
+    """When state_dir is not given, BpfProvider reads snapshot from bpf_root."""
+    from groop.providers.net_bpf import BpfProvider
+    from groop.model import Entity
+
+    bpf_root = tmp_path / "bpf"
+    bpf_root.mkdir(parents=True)
+    snapshot = {
+        "maps": {
+            "groop_cgroup_skb": [
+                {"cgroup_id": 42, "direction": "ingress", "family": "ipv4",
+                 "proto": "tcp", "bytes": 50, "packets": 3},
+            ],
+        },
+        "cgroup_map": {"42": "beta.scope"},
+    }
+    (bpf_root / "snapshot.json").write_text(
+        json.dumps(snapshot), encoding="utf-8"
+    )
+
+    provider = BpfProvider(bpf_root=bpf_root)
+    samples = provider.collect(
+        {"beta.scope": Entity(key="beta.scope", kind="scope", parent="")}
+    )
+    assert samples["beta.scope"].source_label == "net:BPF"
+    assert samples["beta.scope"].rx_bytes == 50
+
+
+# ---------------------------------------------------------------------------
 # Public exports
 # ---------------------------------------------------------------------------
 

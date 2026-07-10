@@ -2,7 +2,7 @@
 
 **Branch:** `feat/groop-p42-daemon-bpf-snapshot-bridge`
 **Base:** `fba1d89` (docs(groop): carve P42 daemon BPF snapshot bridge)
-**Date:** 2026-07-09
+**Date:** 2026-07-10 (updated after controller review)
 
 ## What Was Built
 
@@ -13,13 +13,16 @@ using `bpftool --json map dump pinned PATH` through an argv-only, injectable
 command runner. Key characteristics:
 
 1. **Path confinement.** The map pin path is validated to be beneath the
-   configured groop BPF root. Traversal (`..`) and symlink escape are rejected
-   with `BpfSnapshotError`.
+   configured groop BPF root. Uses ``Path.is_relative_to`` (not string prefix
+   matching) so a sibling-prefix symlink escape is correctly rejected.
+   Traversal (`..`) is also rejected with `BpfSnapshotError`.
 
 2. **Safe bpftool execution.** Command execution uses `subprocess.check_output`
-   with argv-only invocation (no shell). Output exceeding the 1 MB limit,
-   nonzero exit codes, and missing `bpftool` are all caught and reported as
-   `BpfSnapshotError`.
+   with argv-only invocation (no shell). ``subprocess.CalledProcessError`` and
+   ``subprocess.TimeoutExpired`` are caught and converted to bounded
+   ``BpfSnapshotError`` without dumping unbounded output. Output exceeding
+   the 1 MB limit, nonzero exit codes, and missing ``bpftool`` are all caught
+   and reported.
 
 3. **Decoding.** The JSON output from `bpftool` is parsed and validated.
    Entries are checked for required fields (`cgroup_id`, `direction`), valid
@@ -27,36 +30,56 @@ command runner. Key characteristics:
    proto (`tcp`/`udp`/`icmp`/`other`), and non-negative counters. Both
    nested `key`/`value` and top-level field formats are supported.
 
-4. **Cgroup mapping.** An injectable cgroup-id resolver (`_walk_cgroup_ids`)
-   walks the cgroup-v2 tree and maps `st_ino` (cgroup inode) to relative
-   entity key paths. The kernel identity assumption (`st_ino ==
-   bpf_get_current_cgroup_id()` on cgroup-v2 >= 4.18) is documented in the
-   docstring.
+4. **Raw byte array rejection.** Entries where ``key`` or ``value`` is a plain
+   string (hex-encoded bytes) are explicitly rejected with a clear error
+   message. Per-CPU array values (the ``values`` key) are also rejected.
+   BTF-typed structured output is required.
 
-5. **Snapshot assembly.** Produces the P18 `snapshot.json` contract with
+5. **Cgroup mapping.** An injectable cgroup-id resolver (`_walk_cgroup_ids`)
+   walks the cgroup-v2 tree and maps `st_ino` (cgroup inode) to relative
+   entity key paths. The kernel identity assumption is documented as
+   **kernel-version dependent and not verified by this function**; no specific
+   kernel version is claimed.
+
+6. **Snapshot assembly.** Produces the P18 `snapshot.json` contract with
    `schema_version`, `generated_at` (time.time()), `source` metadata (bpf_root,
    map name, bridge version), `maps` (decoded entries), and `cgroup_map`.
 
-6. **Atomic write.** Writes via a private `.snapshot.json.<PID>.tmp` file in the
-   destination directory, flushes and fsyncs the file, sets permissions to
-   `0o644` (non-world-writable), then atomically renames with `os.replace()`.
-   Temp files are cleaned up on failure.
+7. **Atomic write to separate state_dir.** Writes via a private
+   ``.snapshot.json.<PID>.tmp`` file in the **state directory** (default
+   ``/run/groop/bpf``, separate from the bpffs pin root), flushes and fsyncs
+   the file, sets permissions to ``0o644`` (non-world-writable), then
+   atomically renames with `os.replace()`. Temp files are cleaned up on failure.
 
-7. **Last-good preservation.** The bridge keeps the last valid snapshot in
+8. **Last-good preservation.** The bridge keeps the last valid snapshot in
    memory. Transient `bpftool` failures do not invalidate the previous snapshot.
+   ``restore_last_known_good()`` loads a valid on-disk snapshot if no in-memory
+   one is available.
+
+9. **Immediate pre-thread refresh.** ``refresh_and_write()`` performs an
+   immediate refresh before the periodic thread starts. If it fails, the
+   periodic loop continues.
 
 ### Integration into `groop daemon serve`
 
 The bridge is integrated into `groop daemon serve` via:
 - `--bpf-root PATH` CLI argument (disabled by default, default `None`)
 - `--bpf-interval SECONDS` CLI argument (default `30.0`, minimum `5.0`)
+- `--bpf-state-dir PATH` CLI argument (default `/run/groop/bpf`)
 - `[bpf_snapshot]` TOML config section with `enabled`, `root`, `interval`,
-  `map_name` fields (all disabled by default)
+  `map_name`, `state_dir` fields (all disabled by default)
 
-When enabled, a daemon `threading.Thread` runs the periodic refresh loop and
-writes the snapshot to `bpf_root/snapshot.json`. Refresh failures log a message
-but preserve the last good snapshot. On daemon shutdown, the thread is cleanly
-stopped via `threading.Event`.
+When enabled:
+- ``BpfProvider`` is integrated at **highest rank** (index 0) into the
+  daemon's ``Collector.network_providers`` tuple. Existing host/netns
+  providers remain as fallback for entities without BPF mapping.
+- The last known good snapshot is restored from disk.
+- An immediate ``refresh_and_write()`` occurs before the thread starts
+  (best-effort, failures logged).
+- A daemon ``threading.Thread`` runs the periodic refresh loop and
+  writes the snapshot to ``state_dir/snapshot.json``.
+- Refresh failures log a message but preserve the last good snapshot.
+- On daemon shutdown, the thread is cleanly stopped via ``threading.Event``.
 
 ### Configuration (`src/groop/config.py`)
 
@@ -65,61 +88,72 @@ Added `BpfSnapshotConfig` dataclass:
 - `root: Path | None = None`
 - `interval: float = 30.0`
 - `map_name: str = "groop_cgroup_skb"`
+- `state_dir: Path = Path("/run/groop/bpf")`
 
 Integrated into `GroopConfig.to_primitive()` and `load()`.
 
-### Tests - 29 test functions
+### Tests - 44 test functions (was 29)
 
 All in `groop/tests/test_daemon_bpf_snapshot.py`:
 
+**New tests added during controller review:**
+
 | Test | What it covers |
 |------|----------------|
-| `test_decode_bpftool_entry_valid` | Valid nested key/value entry decodes correctly |
-| `test_decode_bpftool_entry_top_level_fields` | Top-level field format also decodes |
-| `test_decode_bpftool_entry_default_family_proto` | Missing family/proto default to "other" |
-| `test_decode_bpftool_entry_rejects_negative_counters` | Negative bytes/packets raises error |
-| `test_decode_bpftool_entry_rejects_invalid_direction` | Invalid direction raises error |
-| `test_decode_bpftool_entry_rejects_invalid_family` | Invalid family raises error |
-| `test_validate_map_path_inside_root` | Valid path passes confinement |
-| `test_validate_map_path_rejects_traversal` | `..` traversal is rejected |
-| `test_validate_map_path_rejects_escape` | Symlink escape is rejected |
-| `test_run_bpftool_success` | Successful bpftool returns parsed output |
-| `test_run_bpftool_nonzero_exit` | Nonzero exit raises error |
-| `test_run_bpftool_oversized_output` | Oversized output raises error |
-| `test_refresh_returns_valid_snapshot` | Full refresh cycle returns valid P18 snapshot |
-| `test_write_snapshot_atomic_replace` | Atomic replace produces correct content |
-| `test_write_snapshot_permissions_not_world_writable` | Permissions are 0o644 |
-| `test_write_snapshot_cleanup_temp_on_failure` | Temp file cleaned on failure |
-| `test_last_valid_snapshot_preserved_on_failure` | Last valid snapshot preserved after failure |
-| `test_last_valid_snapshot_none_initially` | Initially None |
-| `test_walk_cgroup_ids` | Mock cgroup id resolver returns mapping |
-| `test_bridge_reports_missing_bpftool` | Missing bpftool raises error |
-| `test_parse_bpftool_malformed_json` | Malformed JSON raises error |
-| `test_parse_bpftool_non_array_output` | Non-array output raises error |
-| `test_parse_bpftool_entry_non_dict` | Non-dict entry raises error |
-| `test_daemon_bpf_disabled_by_default` | Config defaults to disabled |
-| `test_daemon_bpf_config_disabled_by_default` | Empty `[bpf_snapshot]` stays disabled |
-| `test_daemon_bpf_config_enabled` | Config can enable the bridge |
-| `test_write_snapshot_cleans_tmp_on_rename` | No .tmp files remain after write |
-| `test_bpf_snapshot_bridge_is_publicly_exported` | Public export works |
-| `test_bpf_snapshot_error_is_publicly_exported` | Public export works |
+| `test_parse_bpftool_rejects_raw_byte_array_key` | Raw hex string key is rejected |
+| `test_parse_bpftool_rejects_raw_byte_array_value` | Raw hex string value is rejected |
+| `test_parse_bpftool_rejects_percpu_array_values` | Per-CPU `values` key is rejected |
+| `test_validate_map_path_rejects_sibling_prefix_escape` | Sibling-prefix symlink escape (``is_relative_to``) |
+| `test_run_bpftool_called_process_error` | ``CalledProcessError`` converted to ``BpfSnapshotError`` |
+| `test_run_bpftool_timeout` | ``TimeoutExpired`` converted to ``BpfSnapshotError`` |
+| `test_restore_last_known_good_loads_from_disk` | On-disk snapshot restoration |
+| `test_restore_last_known_good_skips_if_already_present` | Doesn't overwrite in-memory |
+| `test_restore_last_known_good_missing_file` | Silent skip on missing file |
+| `test_refresh_and_write` | Convenience refresh+write method |
+| `test_daemon_bpf_state_dir_from_config` | Config-specified state_dir |
+| `test_daemon_bpf_state_dir_default_when_not_set` | Default state_dir |
+| `test_bpf_provider_with_state_dir` | BpfProvider reads from state_dir |
+| `test_bpf_provider_falls_back_to_bpf_root_as_state_dir` | BpfProvider fallback when no state_dir |
+| `test_bpf_snapshot_bridge_is_publicly_exported` (restored) | Public export |
+| `test_bpf_snapshot_error_is_publicly_exported` (restored) | Public export |
 
 ## Deviations from the Handoff Doc
 
-- **No separate sync thread with configurable destination dir.** The bridge
-  writes directly under `bpf_root` (the pin root) rather than accepting a
-  separate write destination. This matches the expected daemon deployment where
-  the pinned map and snapshot live under the same `bpf_root`.
+- **Snapshot written to separate state_dir, not bpffs pin root.** The bridge
+  writes ``snapshot.json`` to ``state_dir`` (default ``/run/groop/bpf``)
+  rather than directly under the bpffs ``bpf_root``. This prevents writing
+  regular JSON files into bpffs.
 
 - **Cgroup ID resolver uses `st_ino` for fixture tests.** The production
-  `_walk_cgroup_ids` reads cgroup directories on real `/sys/fs/cgroup`, but
-  fixture tests use a mock resolver. The kernel identity assumption is
-  documented in the `_walk_cgroup_ids` docstring.
+  ``_walk_cgroup_ids`` reads cgroup directories on real ``/sys/fs/cgroup``,
+  but fixture tests use a mock resolver. The kernel identity assumption is
+  documented as kernel-version dependent; no specific kernel version is claimed.
 
 - **The periodic refresh loop is a daemon `threading.Thread`, not a managed
   timer service.** For the current daemon spike this is sufficient; a
   production daemon (future work) may prefer `asyncio` or a dedicated service
   manager.
+
+- **``BpfProvider`` integrated at highest rank when enabled.** The original
+  implementation did not inject the BPF provider into the Collector. Now when
+  the bridge is enabled, ``BpfProvider`` is inserted at index 0 of
+  ``network_providers`` so that served/current frames can contain ``net:BPF``
+  samples.
+
+## Controller Review Disclosure
+
+This report reflects changes made in response to a controller review of commit
+``e8b9249``. The review identified nine categories of improvements:
+
+1. Separate snapshot ``state_dir`` (``/run/groop/bpf``) distinct from bpffs pin root
+2. ``BpfProvider`` integration at highest rank into daemon ``Collector``
+3. ``CalledProcessError``/``TimeoutExpired`` bounded conversion
+4. ``Path.is_relative_to`` for path confinement (sibling-prefix symlink escape)
+5. Immediate pre-thread ``refresh_and_write``
+6. Integration-level daemon construction/refresh tests
+7. Tightened cgroup-v2 identity docs (no unverified kernel version claims)
+8. Explicit raw byte array rejection; BTF-typed structured output required
+9. Docs/reports/test count corrections
 
 ## Proposed Contract Changes
 
@@ -135,14 +169,14 @@ provider-interface changes are needed.
 cd /workspaces/vbpub/.worktrees/-groop-p42-daemon-bpf-snapshot-bridge
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest \
   groop/tests/test_daemon_bpf_snapshot.py -q
-# 29 passed in 0.27s
+# 44 passed in 0.28s
 ```
 
 ### Full suite
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 412 passed, 1 skipped in 49.71s
+# 427 passed, 1 skipped in 47.73s
 ```
 
 ### py_compile
@@ -154,20 +188,22 @@ python3 -m py_compile \
   groop/src/groop/daemon/__init__.py \
   groop/src/groop/config.py \
   groop/src/groop/cli.py \
+  groop/src/groop/providers/net_bpf.py \
   groop/tests/test_daemon_bpf_snapshot.py
 # (exit 0, no output)
 ```
 
 ## Quality Gates
 
-- [x] Full test suite green (412 passed, 1 skipped)
+- [x] Full test suite green (427 passed, 1 skipped)
 - [x] `py_compile` clean on all new/changed Python files
 - [x] Fixture tests cover decoding, cgroup mapping, atomic replacement,
       last-good preservation, path confinement, output bounds, command
-      failure, and cleanup
+      failure, cleanup, raw byte array rejection, and subprocess errors
 - [x] Daemon config tests prove disabled by default and config-enabled
 - [x] P18 `BpfProvider` existing tests remain green
-- [x] Focused BPF snapshot tests: 29 passed
+- [x] Integration-level daemon construction/refresh tests added
+- [x] Focused BPF snapshot tests: 44 passed (was 29)
 
 ## Known Gaps / Open Items
 
@@ -176,10 +212,10 @@ python3 -m py_compile \
    bpftool interaction is tested via mock command runners. A privileged host
    is needed for end-to-end bpftool execution validation.
 
-2. **Cgroup ID kernel assumption unverified.** The production `_walk_cgroup_ids`
-   assumes `cgroup_dir.stat().st_ino` matches the cgroup ID from
-   `bpf_get_current_cgroup_id()`. This holds on cgroup-v2 >= 4.18 but is not
-   verified on this host.
+2. **Cgroup ID kernel assumption documented as unverified.** The production
+   `_walk_cgroup_ids` uses `st_ino` which may or may not match the BPF cgroup
+   ID on a given kernel. The docstring states this is kernel-version dependent
+   and not verified.
 
 3. **No live BPF overhead evidence.** The P17 BPF gate remains the authoritative
    preflight check. P42 adds no new source of live overhead measurement.
@@ -196,12 +232,15 @@ M groop/MEASUREMENTS.md                       (P42 evidence section)
 M groop/docs/BPF-NETWORK-ACCOUNTING.md        (P42 implementation status)
 M groop/docs/OPERATIONS.md                    (bpf_snapshot config example)
 M groop/docs/ROADMAP.md                       (P42 status: done)
-M groop/docs/STATUS.md                        (P42 added to partially implemented)
+M groop/docs/STATUS.md                        (P42 added, test counts updated)
 M groop/src/groop/daemon/__init__.py           (BpfSnapshotBridge/BpfSnapshotError exports)
-M groop/src/groop/config.py                    (BpfSnapshotConfig dataclass + integration)
-M groop/src/groop/cli.py                       (--bpf-root/--bpf-interval + integration)
-A groop/src/groop/daemon/bpf_snapshot.py       (BpfSnapshotBridge module, ~360 lines)
-A groop/tests/test_daemon_bpf_snapshot.py      (29 focused tests)
-A groop/handoff/reports/P42-LOG.md             (work log)
-A groop/handoff/reports/P42-REPORT.md          (this file)
+M groop/src/groop/config.py                    (BpfSnapshotConfig with state_dir)
+M groop/src/groop/cli.py                       (--bpf-root/--bpf-interval/--bpf-state-dir,
+                                                 BpfProvider integration, immediate refresh)
+A groop/src/groop/daemon/bpf_snapshot.py       (BpfSnapshotBridge module, ~500 lines
+                                                 with controller review fixes)
+M groop/src/groop/providers/net_bpf.py         (state_dir parameter, fallback to bpf_root)
+A groop/tests/test_daemon_bpf_snapshot.py      (44 focused tests, +15 for review fixes)
+A groop/handoff/reports/P42-LOG.md             (work log, updated)
+A groop/handoff/reports/P42-REPORT.md          (this file, updated)
 ```

@@ -126,10 +126,12 @@ core workflows, not yet production-certified.**
   pinned-map JSON snapshots with cgroup-id-to-entity-key mapping, fallback, and
   fixture tests. P42 adds the daemon-side ``BpfSnapshotBridge`` that reads
   pinned BPF counter maps via ``bpftool`` and writes the P18 ``snapshot.json``
-  contract atomically with path confinement, decoding, cgroup mapping, and
-  last-good preservation. The live BPF ownership lifecycle (daemon
-  attach/pin/detach) and kernel BPF program compilation are still daemon work
-  and not implemented.
+  contract atomically to a separate ``state_dir`` (default ``/run/groop/bpf``,
+  **not** the bpffs pin root) with path confinement (``Path.is_relative_to``),
+  decoding, cgroup mapping, last-good preservation, ``CalledProcessError``/
+  ``TimeoutExpired`` bounded conversion, explicit raw byte array rejection,
+  on-disk last-good restoration, and integration of ``BpfProvider`` at highest
+  rank into the daemon Collector when the bridge is enabled.
 
 ## Not Implemented
 
@@ -164,17 +166,14 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation after P41:
+Most recent full-suite validation after P42 controller review:
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 383 passed, 1 skipped in 46.81s
+# 427 passed, 1 skipped in 47.73s
 ```
 
 Also validated:
 
-- Focused table/record/fidelity tests: `19 passed, 1 skipped in 9.57s`.
-- Focused rendered fidelity tests: `1 passed, 1 skipped in 0.27s`.
-- Post-merge focused acceptance tests: `40 passed in 7.26s`.
-- P41 TUI smoke: exit `0`, `ok: true`, `frames: 1`, `view: tree`, `profile: auto`.
+- Focused BPF snapshot tests: `44 passed in 0.28s`.
 - Full-source `py_compile`.
