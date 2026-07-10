@@ -106,7 +106,7 @@ Useful feature hotkeys in the TUI:
 | P44 | Done | Daemon-owned paddr lifecycle | v2 daemon/DAMON | Make explicitly configured whole-host paddr daemon-owned, idempotent, audited, and safely stopped without changing the disabled default. Handoff: `handoff/P44-daemon-paddr-lifecycle.md`. Report: `handoff/reports/P44-REPORT.md`. |
 | P45 | Planned | Bounded inspect-files content | v2 inspection | Add gated, confined, bounded regular-file reads for catalog-resolved Docker logs and cgroup files without arbitrary root reads. Handoff: `handoff/P45-inspect-files-bounded-content.md`. |
 | P46 | Planned | Admin action execution kernel | v2 actions | Execute only validated Docker/systemd start/stop/restart plans behind root, admin, typed-confirmation, audit, timeout, and argv-only gates. Handoff: `handoff/P46-admin-action-execution-kernel.md`. |
-| P47 | Queued | Daemon component health | v2 daemon | Expose bounded collector/BPF/paddr lifecycle health through the read-only daemon protocol after P44. Handoff: `handoff/P47-daemon-component-health.md`. |
+| P47 | Done | Daemon component health | v2 daemon | Thread-safe component health registry, read-only `health` protocol op, `groop daemon health [--json]` CLI. Models collector/BPF/paddr lifecycle states. Report: `handoff/reports/P47-REPORT.md`. |
 | P48 | Queued | Journald inspection snapshot | v2 inspection | Add a gated, fixed-argv, bounded non-following journal snapshot after P45. Handoff: `handoff/P48-inspect-files-journal-snapshot.md`. |
 | P49 | Queued | systemd memory governance | v2 actions | Add structured, stale-safe `memory.high` set-property preview/execution after P46. Handoff: `handoff/P49-systemd-memory-governance.md`. |
 

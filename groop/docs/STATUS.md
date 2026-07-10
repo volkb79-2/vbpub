@@ -20,13 +20,19 @@ Approximate status:
 
 P44 adds the daemon-owned paddr lifecycle — `[damon] paddr_enabled = true` starts
 one groop-owned whole-host paddr session at daemon startup with idempotent
-restart and safe shutdown. Active planned packages P45-P46 address bounded
-inspect-files content reads and the first executable admin action kernel. Until
-merged and validated, both remain non-claims.
+restart and safe shutdown.
 
-Queued follow-ups P47-P49 continue those same three streams after review:
-daemon component health, bounded journald snapshots, and structured
-`memory.high` governance. They are not current implementation claims.
+P47 adds a thread-safe daemon component health registry with bounded public
+error detail, a read-only ``health`` protocol operation, and
+``groop daemon health [--json]``. The registry models collector, BPF snapshot
+bridge, and paddr lifecycle states and wires P42/P44 transitions.
+
+Active planned packages P45-P46 address bounded inspect-files content reads
+and the first executable admin action kernel. Until merged and validated,
+these remain non-claims.
+
+Queued follow-ups P48-P49 continue bounded journald snapshots and structured
+`memory.high` governance after those streams.
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -183,15 +189,21 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation after P44 changes:
+Most recent full-suite validation after P47 changes:
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest groop/tests -q
+# 487 passed, 1 skipped in 53.03s
+```
+
+Also validated:
+
+- P47 focused component health tests: `32 passed in 3.59s`.
+- Full-source `py_compile` clean.
+
+Pre-P47 validation preserved below:
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
 # 455 passed, 1 skipped in 46.99s
 ```
-
-Also validated:
-
-- P44 focused paddr lifecycle tests: `22 passed in 0.17s`.
-- Full-source `py_compile` clean.
-- Acceptance regression and UI regression unchanged.

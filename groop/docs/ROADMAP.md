@@ -61,7 +61,8 @@ flowchart TD
     P14 --> P44[P44 Daemon paddr lifecycle]
     P29 --> P45[P45 Bounded inspect content]
     P21 --> P46[P46 Admin execution kernel]
-    P44 --> P47[P47 Daemon component health]
+    P44 --> P47[P47 Daemon component health] :::
+done
     P45 --> P48[P48 Journald snapshot]
     P46 --> P49[P49 memory.high governance]
 ```
@@ -110,16 +111,16 @@ TUI actions, and daemon RPCs remain later packages.
 
 Handoff: `handoff/P46-admin-action-execution-kernel.md`.
 
-### P47-P49 - Queued Stream Follow-Ups
+### P47-P49 - Stream Follow-Ups
 
-Status: queued behind controller-reviewed P44-P46 respectively. P47 exposes
-bounded daemon component health, P48 adds a fixed bounded journald snapshot,
-and P49 adds structured stale-safe `memory.high` governance through systemd.
-They are carved early to reuse each worker's domain cache, but implementation
-must not start from unreviewed predecessor code.
+P47 (Daemon Component Health) — status: **done**.
+Implements a thread-safe component health registry, a read-only ``health``
+protocol operation, and ``groop daemon health [--json]`` CLI. Models collector,
+BPF snapshot bridge, and paddr lifecycle states. See ``handoff/reports/P47-REPORT.md``.
 
-Handoffs: `handoff/P47-daemon-component-health.md`,
-`handoff/P48-inspect-files-journal-snapshot.md`, and
+P48 and P49 remain queued: bounded journald snapshot and structured
+``memory.high`` governance through systemd, respectively. Handoffs:
+`handoff/P48-inspect-files-journal-snapshot.md`,
 `handoff/P49-systemd-memory-governance.md`.
 
 ### P12 — Release Hardening And Acceptance

@@ -97,6 +97,14 @@ groop daemon status --pretty-json                # indented JSON
 groop daemon status --socket /custom/path.sock --group mygroup
 ```
 
+Retrieve daemon component health snapshot:
+
+```bash
+groop daemon health                              # JSON output (default)
+groop daemon health --pretty-json                # indented JSON
+groop daemon health --socket /custom/path.sock   # custom socket
+```
+
 Retrieve one canonical frame from the daemon socket:
 
 ```bash

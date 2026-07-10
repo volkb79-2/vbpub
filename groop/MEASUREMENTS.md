@@ -551,6 +551,51 @@ Blocker for live daemon paddr measurement:
 - P44 lifecycle testing uses injectable fixture seams (damon_root, state_dir,
   require_root=False, is_root=...) and does not mutate host sysfs.
 
+## P47 Daemon Component Health (2026-07-10)
+
+P47 adds a thread-safe component health registry, a read-only ``health``
+protocol op, and ``groop daemon health [--json]`` CLI. Models collector, BPF
+snapshot bridge, and paddr lifecycle with stable states and bounded public
+error detail.
+
+### Fixture/unit evidence (no live daemon required)
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest \
+  groop/tests/test_daemon_component_health.py -q
+# 32 passed in 3.59s
+```
+
+### Full suite impact
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest groop/tests -q
+# 487 passed, 1 skipped in 53.03s
+```
+
+Full-source ``py_compile`` clean.
+
+### Covered scenarios
+
+- All 7 stable states (disabled, starting, healthy, degraded, failed, stopping,
+  stopped) for three tracked components.
+- Thread-safe deterministic snapshots during concurrent updates and shutdown.
+- Bounded error detail (no tracebacks, env vars, paths, or secrets).
+- Consecutive failure tracking with reset on healthy.
+- Timestamp tracking for last attempt and last success.
+- Protocol health op via FrameBroker and DaemonClient.
+- CLI ``groop daemon health --json`` and ``--pretty-json``.
+- Missing/corrupt socket returns exit 2 with P31-style actionable guidance.
+- Default-disabled components explicitly documented and tested.
+- P42 BPF bridge and P44 paddr lifecycle wired into health registry transitions.
+
+Blocker for live daemon health measurement:
+
+- This development host is not a deliberate test host with bpftool, BPF pins,
+  or DAMON sysfs.
+- The daemon health registry is fixture-tested and does not require live
+  daemon state.
+
 ## Release Signoff Template
 
 - Release/tag:
