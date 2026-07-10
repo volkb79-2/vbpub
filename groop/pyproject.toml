@@ -7,7 +7,7 @@ name = "groop"
 version = "0.1.0"
 description = "Host pressure inspector and cgroup forensics collector"
 requires-python = ">=3.11"
-dependencies = ["textual>=0.58,<1"]
+dependencies = ["textual>=8.2.8"]
 
 [project.optional-dependencies]
 zstandard = ["zstandard>=0.22"]
