@@ -4,8 +4,6 @@ Uses mocks and temp paths; never reaches the network or installs packages.
 """
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 import tarfile
 import tempfile
@@ -13,12 +11,11 @@ from pathlib import Path
 
 import pytest
 
+import stage_tool_artifacts as stage
 from install_ai_cli_tools import (
-    DEFAULT_DOWNLOADS_DIR,
     InstallerContext,
     InstallerError,
     archive_missing_binaries,
-    copy_binary,
     env_value,
     install_binaries_from_archive,
     install_codex,
@@ -28,7 +25,7 @@ from install_ai_cli_tools import (
 )
 
 
-# ── helpers ──────────────────────────────────────────────────────────────
+# helpers
 
 
 def _fake_ctx(tmp_path: Path) -> InstallerContext:
@@ -64,7 +61,7 @@ def _make_checksums(path: Path, archive_name: str, sha256_digest: str) -> None:
     path.write_text(f"{sha256_digest}  {archive_name}\n", encoding="utf-8")
 
 
-# ── archive_missing_binaries ─────────────────────────────────────────────
+# archive_missing_binaries
 
 
 class TestArchiveMissingBinaries:
@@ -85,13 +82,14 @@ class TestArchiveMissingBinaries:
         missing = archive_missing_binaries(archive, "codex", "codex-code-mode-host")
         assert sorted(missing) == ["codex", "codex-code-mode-host"]
 
-    def test_non_tar_archive_returns_empty(self, tmp_path: Path) -> None:
+    def test_non_tar_archive_raises(self, tmp_path: Path) -> None:
         archive = tmp_path / "not-a-tar.gz"
         archive.write_text("garbage", encoding="utf-8")
-        assert archive_missing_binaries(archive, "codex") == []
+        with pytest.raises(InstallerError, match="Failed to inspect archive"):
+            archive_missing_binaries(archive, "codex")
 
 
-# ── install_binaries_from_archive ──────────────────────────────────────
+# install_binaries_from_archive
 
 
 class TestInstallBinariesFromArchive:
@@ -120,7 +118,7 @@ class TestInstallBinariesFromArchive:
             )
 
 
-# ── install_codex ───────────────────────────────────────────────────────
+# install_codex
 
 
 class TestInstallCodex:
@@ -152,7 +150,7 @@ class TestInstallCodex:
         monkeypatch.undo()
 
     def test_missing_companion_host_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Archive has codex but not codex-code-mode-host → should fail."""
+        """Archive has codex but not codex-code-mode-host; installation should fail."""
         ctx = _fake_ctx(tmp_path)
         monkeypatch.setenv("CODEX_VER", "0.144.0")
         ctx.downloads_dir.mkdir(parents=True, exist_ok=True)
@@ -208,7 +206,7 @@ class TestInstallCodex:
         assert oct(host_dest.stat().st_mode)[-3:] == "755"
 
 
-# ── install_opencode ────────────────────────────────────────────────────
+# install_opencode
 
 
 class TestInstallOpencode:
@@ -222,6 +220,7 @@ class TestInstallOpencode:
         monkeypatch.setenv("INSTALL_OPENCODE", "true")
 
         recorded: list[list[str]] = []
+        required: list[str] = []
 
         def fake_run(argv: list[str]) -> None:
             recorded.append(argv)
@@ -229,6 +228,7 @@ class TestInstallOpencode:
             return
 
         import install_ai_cli_tools as mod
+        monkeypatch.setattr(mod, "require_command", lambda command, _description: required.append(command))
         original_run = mod.run_command
         try:
             mod.run_command = fake_run
@@ -238,6 +238,7 @@ class TestInstallOpencode:
 
         assert len(recorded) == 1
         assert recorded[0] == ["npm", "install", "-g", "opencode-ai@1.2.3"]
+        assert required == ["npm", "opencode"]
 
     def test_version_env_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """OPENCODE_VERSION is used when OPENCODE_VER is not set."""
@@ -249,6 +250,7 @@ class TestInstallOpencode:
             recorded.append(argv)
 
         import install_ai_cli_tools as mod
+        monkeypatch.setattr(mod, "require_command", lambda *_args: None)
         original_run = mod.run_command
         try:
             mod.run_command = fake_run
@@ -260,7 +262,7 @@ class TestInstallOpencode:
         assert recorded[0] == ["npm", "install", "-g", "opencode-ai@2.0.0"]
 
 
-# ── parse_tool_entries ──────────────────────────────────────────────────
+# parse_tool_entries
 
 
 class TestParseToolEntries:
@@ -278,7 +280,7 @@ class TestParseToolEntries:
         assert ("opencode", "root") in entries
 
 
-# ── env / toggle helpers ────────────────────────────────────────────────
+# env / toggle helpers
 
 
 class TestIsEnabled:
@@ -300,3 +302,23 @@ class TestEnvValue:
         monkeypatch.delenv("OPENCODE_VER", raising=False)
         monkeypatch.setenv("OPENCODE_VERSION", "2.0.0")
         assert env_value("OPENCODE_VER", "OPENCODE_VERSION") == "2.0.0"
+
+
+def test_stage_resolves_opencode_from_npm_package(monkeypatch: pytest.MonkeyPatch) -> None:
+    npm_calls: list[tuple[str | None, str]] = []
+
+    def fake_npm(requested: str | None, package_name: str) -> str:
+        npm_calls.append((requested, package_name))
+        return f"resolved-{package_name}"
+
+    monkeypatch.setenv("OPENCODE_VERSION", "latest")
+    monkeypatch.setattr(stage, "_resolve_npm_version", fake_npm)
+    monkeypatch.setattr(stage, "_resolve_codex_version", lambda _value: "codex")
+    monkeypatch.setattr(stage, "_resolve_claude_code_version", lambda _value: "claude")
+    monkeypatch.setattr(stage, "_resolve_pypi_version", lambda _value, package: f"resolved-{package}")
+    monkeypatch.setattr(stage, "_resolve_version", lambda _value, repo: f"resolved-{repo}")
+
+    resolved = stage._resolve_versions()
+
+    assert ("latest", "opencode-ai") in npm_calls
+    assert resolved["OPENCODE_VER"] == "resolved-opencode-ai"

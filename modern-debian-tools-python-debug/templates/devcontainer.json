@@ -69,6 +69,7 @@
     "source=${localEnv:HOME}/mdt--mounted-folders/.openclaw,target=/home/vscode/.openclaw,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix,target=/home/vscode/.reasonix,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/opencode-data,target=/home/vscode/.local/share/opencode,type=bind,consistency=cached",
     // File-level state mounts (not inside a subdirectory)
     "source=${localEnv:HOME}/mdt--mounted-folders/.claude.json,target=/home/vscode/.claude.json,type=bind,consistency=cached",
     // "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix.toml,target=/home/vscode/.reasonix.toml,type=bind,consistency=cached",

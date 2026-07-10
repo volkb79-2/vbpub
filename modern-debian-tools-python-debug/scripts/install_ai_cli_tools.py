@@ -135,14 +135,13 @@ def archive_missing_binaries(archive: Path, *binary_names: str) -> list[str]:
     """
     missing: list[str] = []
     try:
-        with tarfile.open(str(archive), "r") as tf:
+        with tarfile.open(str(archive), "r:*") as tf:
             names = {m.name for m in tf.getmembers() if m.isfile() and (m.mode & 0o111)}
             for name in binary_names:
                 if not any(n.endswith(f"/{name}") or n == name for n in names):
                     missing.append(name)
-    except tarfile.TarError:
-        # Fall back to the extraction-based check if we can't open as tar.
-        return []
+    except (OSError, tarfile.TarError) as exc:
+        raise InstallerError(f"Failed to inspect archive: {archive}") from exc
     return missing
 
 
@@ -295,6 +294,7 @@ def install_opencode() -> None:
     version = env_value("OPENCODE_VER", "OPENCODE_VERSION", default="latest")
     require_command("npm", "npm is required to install OpenCode")
     run_command(["npm", "install", "-g", f"opencode-ai@{version}"])
+    require_command("opencode", "OpenCode npm package did not expose the opencode command")
 
 
 def parse_tool_entries(tools_file: Path) -> list[tuple[str, str]]:

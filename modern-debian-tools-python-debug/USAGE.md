@@ -72,9 +72,9 @@ Optional overrides (environment variables):
 - `RELEASE_IMAGE_FLOW` (`repack` is the default, `load` keeps the current daemon-first split, `push` pushes during build)
 - `REPACK_TARGET_SIZE` (`2GB` by default for the repack flow)
 - `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `ANTIGRAVITY_VERSION`, `AIDER_VERSION`
-- `REASONIX_VERSION`, `OPENCLAW_VERSION`
+- `REASONIX_VERSION`, `OPENCLAW_VERSION`, `OPENCODE_VERSION`
 - `INSTALL_CODEX`, `INSTALL_CLAUDE_CODE`, `INSTALL_ANTIGRAVITY`, `INSTALL_AIDER`
-- `INSTALL_REASONIX`, `INSTALL_OPENCLAW`
+- `INSTALL_REASONIX`, `INSTALL_OPENCLAW`, `INSTALL_OPENCODE`
 
 Resolver-emitted build coordinates (normally not set manually):
 - `CIU_WHEEL_TAG`, `CIU_WHEEL_ASSET_NAME`, `CIU_WHEEL_VERSION`
@@ -213,7 +213,8 @@ To keep tool state across rebuilds, persist the workspace mount plus these home 
 
 - `/home/vscode/.reasonix` for Reasonix user config and session state
 - `/home/vscode/.openclaw` for OpenClaw config and gateway state
-- `/home/vscode/.opencode` for OpenCode CLI state (auth, settings, history)
+- `/home/vscode/.local/share/opencode` for OpenCode auth, sessions, logs, and runtime state
+- `/home/vscode/.config/opencode` for OpenCode user configuration (covered by the persisted `.config` mount)
 - `/home/vscode/.config/modern-debian-tools-python-debug` for the central `ai.env`, `aliases.sh`, and their examples
 
 Relevant workspace files that should stay on the host mount:

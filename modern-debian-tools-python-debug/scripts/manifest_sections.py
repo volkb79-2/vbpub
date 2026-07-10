@@ -87,7 +87,7 @@ PROJECT_HOMES = {
     "codex": "https://github.com/openai/codex",
     "copilot": "https://github.com/github/copilot-cli",
     "openclaw": "https://github.com/openclaw/openclaw",
-    "opencode": "https://github.com/opencode-ai/opencode",
+    "opencode": "https://github.com/anomalyco/opencode",
     "reasonix": "https://github.com/reasonix/reasonix",
     "awscli": "https://github.com/aws/aws-cli",
     "b2": "https://github.com/Backblaze/B2_Command_Line_Tool",

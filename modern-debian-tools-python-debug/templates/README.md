@@ -23,7 +23,7 @@ Persisted via host bind mounts (login once, keys + history survive rebuilds):
 | `~/.codex` | Codex CLI auth + history |
 | `~/.reasonix` | Reasonix config / `.env` / session state |
 | `~/.openclaw` | OpenClaw config / `.env` / session state |
-| `~/.opencode` | OpenCode CLI auth, settings, and history |
+| `~/.local/share/opencode` | OpenCode auth, sessions, logs, and runtime state |
 | `~/.config` | `gh` auth + tool configs + mdt customization root |
 | `~/.minisign` | Ed25519 signing key (cmru SPEC B / KI-01) |
 | `~/.gnupg` | GPG keys |
