@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
@@ -42,6 +43,7 @@ def live_frame_stream(
     writer: RecordWriter | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
+    stop_event: threading.Event | None = None,
 ) -> Iterator[Frame]:
     """Yield the canonical annotated live frame stream.
 
@@ -51,7 +53,7 @@ def live_frame_stream(
     instead of trying to "catch up" with negative or stacked delays.
     """
 
-    while True:
+    while stop_event is None or not stop_event.is_set():
         started = monotonic()
         frame = collector.collect_once()
         if writer is not None:
@@ -60,4 +62,8 @@ def live_frame_stream(
         timing = sample_timing(collector.config.interval, finished - started)
         yield frame
         if timing.sleep_s > 0:
-            sleeper(timing.sleep_s)
+            if stop_event is not None:
+                if stop_event.wait(timing.sleep_s):
+                    return
+            else:
+                sleeper(timing.sleep_s)

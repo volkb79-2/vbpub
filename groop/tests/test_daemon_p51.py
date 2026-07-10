@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 import json
+import queue
 import socket
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from conftest import fixture_frame
-from groop.daemon.broker import FrameBroker, FrameBrokerError, FrameProducerError, FrameUnavailableError, serve_unix_socket
-from groop.model import Frame, frame_to_jsonable
+from groop.daemon.broker import (
+    FrameBroker,
+    FrameProducerError,
+    FrameProducerTimeoutError,
+    FrameUnavailableError,
+    serve_unix_socket,
+)
+from groop.daemon.client import DaemonClient, DaemonHistoryGapError, stream_frames
+from groop.daemon.component_health import ComponentHealthRegistry, ComponentState
+from groop.model import Frame
+from groop.record.live import live_frame_stream
 
 
 def _frame_at(ts: float) -> Frame:
@@ -18,409 +29,306 @@ def _frame_at(ts: float) -> Frame:
     return Frame(base.schema_version, ts, base.interval_s, base.host, base.entities)
 
 
-def _infinite_frames(interval_s: float = 0.01) -> Frame:
-    """Yield frames at increasing timestamps forever (well, up to the moon)."""
-    base = fixture_frame()
-    tick = 0
-    while True:
-        yield Frame(base.schema_version, 1000.0 + tick, base.interval_s, base.host, base.entities)
-        tick += 1
+class ControlledSource:
+    def __init__(self) -> None:
+        self.items: queue.Queue[Frame | BaseException | None] = queue.Queue()
+
+    def __iter__(self) -> ControlledSource:
+        return self
+
+    def __next__(self) -> Frame:
+        item = self.items.get(timeout=5.0)
+        if item is None:
+            raise StopIteration
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    def frame(self, ts: float) -> None:
+        self.items.put(_frame_at(ts))
+
+    def fail(self, message: str) -> None:
+        self.items.put(RuntimeError(message))
+
+    def exhaust(self) -> None:
+        self.items.put(None)
 
 
-# ── lifecycle ─────────────────────────────────────────────────────────────
+def _wait_for(predicate, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            pytest.fail("condition did not become true before deadline")
+        time.sleep(0.001)
 
 
-def test_producer_advances_independently_of_requests() -> None:
-    """The background producer advances the source without any read call."""
-    frames = [_frame_at(10.0), _frame_at(20.0), _frame_at(30.0)]
-    broker = FrameBroker(frames)
-    broker.start()
-    time.sleep(0.1)  # let the producer run through all frames
-    # The producer should have consumed all three frames.
-    frame = broker.current()
-    assert frame.ts == 30.0
+def _stop(broker: FrameBroker, source: ControlledSource | None = None) -> None:
     broker.stop()
-    broker.join()
+    if source is not None and broker.producer_alive:
+        source.exhaust()
+    try:
+        broker.join(timeout=2.0)
+    except FrameProducerError:
+        pass
 
 
-def test_current_returns_latest_frame_on_repeated_calls() -> None:
-    """Repeated current() calls return the freshest published frame
-    as the producer advances, without blocking after the first frame."""
-    broker = FrameBroker(_infinite_frames(0.02))
-    first = broker.current()
-    time.sleep(0.05)
-    second = broker.current()
-    assert second.ts > first.ts, f"second.ts {second.ts} should exceed first.ts {first.ts}"
-    third = broker.current()
-    assert third.ts >= second.ts, f"third.ts {third.ts} should be >= second.ts {second.ts}"
-    broker.stop()
-    broker.join()
-
-
-def test_start_is_idempotent() -> None:
-    """Multiple start() calls do not create additional threads."""
-    broker = FrameBroker(_infinite_frames())
+def test_producer_advances_independently_and_current_is_fresh() -> None:
+    source = ControlledSource()
+    broker = FrameBroker(source)
     broker.start()
-    thread_id = id(broker._thread)  # type: ignore[attr-defined]
-    broker.start()
-    broker.start()
-    assert id(broker._thread) == thread_id  # type: ignore[attr-defined]
-    broker.stop()
-    broker.join()
+    try:
+        source.frame(10.0)
+        _wait_for(lambda: broker.current().ts == 10.0)
+        source.frame(20.0)
+        _wait_for(lambda: broker.current().ts == 20.0)
+    finally:
+        _stop(broker, source)
 
 
-def test_stop_and_join_terminates_producer() -> None:
-    """stop()+join() cleanly terminates the producer thread."""
-    broker = FrameBroker(_infinite_frames())
-    broker.current()  # trigger lazy start + one frame
-    broker.stop()
-    broker.join(timeout=3.0)
-    # The thread is no longer alive
-    assert broker._thread is None or not broker._thread.is_alive()  # type: ignore[attr-defined]
+def test_start_is_atomic_under_concurrent_callers() -> None:
+    source = ControlledSource()
+    broker = FrameBroker(source)
+    callers = [threading.Thread(target=broker.start) for _ in range(16)]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join()
+    producers = [thread for thread in threading.enumerate() if thread.name == "groop-broker-producer"]
+    try:
+        assert producers == [broker._thread]  # type: ignore[attr-defined]
+    finally:
+        _stop(broker, source)
 
 
-def test_join_re_raises_producer_error() -> None:
-    """join() re-raises an exception captured from the producer thread."""
-    def broken_source() -> None:
+def test_join_timeout_is_typed_for_uninterruptible_iterator() -> None:
+    release = threading.Event()
+
+    def blocked() -> Iterator[Frame]:
+        release.wait()
         yield _frame_at(1.0)
-        raise RuntimeError("boom")
 
-    broker = FrameBroker(broken_source(), source_error_limit=1)
-    broker.current()  # consumes the first frame
-    time.sleep(0.2)  # let the producer hit the error
+    broker = FrameBroker(blocked())
+    broker.start()
     broker.stop()
-    with pytest.raises(RuntimeError, match="boom"):
+    with pytest.raises(FrameProducerTimeoutError, match="timed out"):
+        broker.join(timeout=0.01)
+    release.set()
+    broker.join(timeout=2.0)
+
+
+def test_production_live_stream_sleep_is_stop_interruptible() -> None:
+    class Collector:
+        class Config:
+            interval = 60.0
+
+        config = Config()
+
+        def collect_once(self) -> Frame:
+            return _frame_at(1.0)
+
+    stop_event = threading.Event()
+    broker = FrameBroker(
+        live_frame_stream(Collector(), stop_event=stop_event),  # type: ignore[arg-type]
+        stop_callback=stop_event.set,
+    )
+    assert broker.current().ts == 1.0
+    started = time.monotonic()
+    broker.stop()
+    broker.join(timeout=1.0)
+    assert time.monotonic() - started < 0.5
+
+
+def test_empty_source_reports_exhaustion_without_waiting_full_timeout() -> None:
+    registry = ComponentHealthRegistry()
+    broker = FrameBroker([], startup_timeout_s=5.0, health_registry=registry)
+    started = time.monotonic()
+    with pytest.raises(FrameUnavailableError, match="exhausted"):
+        broker.current()
+    assert time.monotonic() - started < 0.5
+    assert broker.terminal_kind == "exhausted"
+    assert registry.snapshot().by_name("collector").state is ComponentState.FAILED
+    broker.join(timeout=1.0)
+
+
+def test_blocked_startup_times_out_but_can_be_released_for_shutdown() -> None:
+    release = threading.Event()
+
+    def blocked() -> Iterator[Frame]:
+        release.wait()
+        yield _frame_at(1.0)
+
+    broker = FrameBroker(blocked(), startup_timeout_s=0.05)
+    with pytest.raises(FrameUnavailableError, match="startup timeout"):
+        broker.current()
+    broker.stop()
+    release.set()
+    broker.join(timeout=1.0)
+
+
+def test_failure_before_first_frame_is_typed_sanitized_and_persistent() -> None:
+    source = ControlledSource()
+    registry = ComponentHealthRegistry()
+    broker = FrameBroker(source, health_registry=registry)
+    broker.start()
+    source.fail("TOKEN=secret /private/path")
+    with pytest.raises(FrameProducerError, match="failed before") as first:
+        broker.current()
+    assert "secret" not in str(first.value)
+    for _ in range(2):
+        with pytest.raises(FrameProducerError, match="frame producer failed"):
+            broker.join(timeout=1.0)
+    health = registry.snapshot().by_name("collector")
+    assert health.state is ComponentState.FAILED
+    assert health.error is not None
+    assert "secret" not in health.error.message
+
+
+def test_failure_after_valid_frame_preserves_last_valid_and_health_failure() -> None:
+    source = ControlledSource()
+    registry = ComponentHealthRegistry()
+    broker = FrameBroker(source, health_registry=registry)
+    broker.start()
+    source.frame(1.0)
+    _wait_for(lambda: broker.current().ts == 1.0)
+    source.fail("boom")
+    _wait_for(lambda: broker.terminal_kind == "failed")
+    assert broker.current().ts == 1.0
+    assert registry.snapshot().by_name("collector").state is ComponentState.FAILED
+    with pytest.raises(FrameProducerError):
         broker.join(timeout=1.0)
 
 
-# ── startup / unavailable ─────────────────────────────────────────────────
+def test_history_cursor_and_eviction_gap_are_explicit() -> None:
+    broker = FrameBroker([_frame_at(float(i)) for i in range(6)], history_size=3)
+    broker.start()
+    _wait_for(lambda: broker.terminal_kind == "exhausted")
+    batch = broker.stream(limit=3, cursor=0)
+    assert [seq for seq, _ in batch.entries] == [3, 4, 5]
+    assert batch.gap is True
+    assert (batch.oldest_seq, batch.latest_seq, batch.next_cursor) == (3, 5, 5)
+    tail = broker.stream(limit=2)
+    assert [seq for seq, _ in tail.entries] == [4, 5]
+    assert tail.gap is False
+    broker.join(timeout=1.0)
 
 
-def test_current_before_first_frame_times_out_on_empty_source() -> None:
-    """An empty source raises FrameUnavailableError after a timeout."""
-    broker = FrameBroker([], startup_timeout_s=0.5)
-    with pytest.raises(FrameUnavailableError, match="timeout"):
-        broker.current()
-    broker.stop()
-    broker.join()
-
-
-def test_current_fails_with_timeout_when_no_frame_produced() -> None:
-    """A source that never produces a frame times out with FrameUnavailableError."""
-    def slow_source() -> None:  # type: ignore[return]
-        if False:  # never yield
-            yield
-
-    broker = FrameBroker(slow_source(), startup_timeout_s=0.5)  # type: ignore[arg-type]
-    with pytest.raises(FrameUnavailableError, match="timeout"):
-        broker.current()
-    broker.stop()
-    broker.join()
-
-
-# ── stream / cursor ───────────────────────────────────────────────────────
-
-
-def test_stream_without_cursor_returns_tail() -> None:
-    """stream(limit=N) returns the last N published frames."""
-    frames = [_frame_at(f) for f in [1.0, 2.0, 3.0, 4.0, 5.0]]
-    broker = FrameBroker(frames)
-    broker.current()  # wait for all frames to be consumed
-    tail = broker.stream(limit=3)
-    assert len(tail) == 3
-    assert tail[0][0] == 2  # seq 2 = frame at ts 3.0
-    assert tail[0][1].ts == 3.0
-    assert tail[-1][0] == 4  # seq 4 = frame at ts 5.0
-    broker.stop()
-    broker.join()
-
-
-def test_stream_with_cursor_returns_frames_after_cursor() -> None:
-    """stream(limit=N, cursor=K) returns frames strictly after cursor K."""
-    frames = [_frame_at(f) for f in [10.0, 20.0, 30.0, 40.0]]
-    broker = FrameBroker(frames)
-    broker.current()  # wait for all frames
-    result = broker.stream(limit=10, cursor=1)
-    assert len(result) == 2
-    assert [seq for seq, _ in result] == [2, 3]
-    assert [f.ts for _, f in result] == [30.0, 40.0]
-    broker.stop()
-    broker.join()
-
-
-def test_stream_cursor_beyond_history_returns_empty() -> None:
-    """A cursor that exceeds all published sequences returns []."""
+@pytest.mark.parametrize(
+    "payload,message",
+    [
+        ({"op": "stream", "limit": True}, "integer"),
+        ({"op": "stream", "limit": 0}, "between"),
+        ({"op": "stream", "limit": 1001}, "between"),
+        ({"op": "stream", "cursor": 1.5}, "integer"),
+        ({"op": "stream", "cursor": -2}, "at least"),
+        ({"op": "stream", "extra": 1}, "invalid stream"),
+        ({"op": "current", "extra": 1}, "invalid current"),
+    ],
+)
+def test_request_validation_is_strict_and_bounded(payload: dict, message: str) -> None:
     broker = FrameBroker([_frame_at(1.0)])
-    broker.current()
-    assert broker.stream(limit=10, cursor=99) == []
-    broker.stop()
-    broker.join()
+    response = broker.responses(payload)
+    assert response[0]["type"] == "error"
+    assert message in response[0]["error"]
+    _stop(broker)
 
 
-def test_stream_with_high_limit_returns_all_available() -> None:
-    """stream with limit > available frame count returns everything."""
-    frames = [_frame_at(f) for f in [1.0, 2.0]]
-    broker = FrameBroker(frames)
-    broker.current()
-    result = broker.stream(limit=100)
-    assert len(result) == 2
-    broker.stop()
-    broker.join()
+def test_two_readers_observe_same_published_sequence() -> None:
+    source = ControlledSource()
+    broker = FrameBroker(source)
+    broker.start()
+    source.frame(12.0)
+    _wait_for(lambda: broker.current().ts == 12.0)
+    barrier = threading.Barrier(3)
+    results: list[tuple[int, float]] = []
 
+    def read() -> None:
+        barrier.wait()
+        seq, frame = broker.current_entry()
+        results.append((seq, frame.ts))
 
-# ── history eviction ──────────────────────────────────────────────────────
-
-
-def test_history_evicts_old_frames_when_bounded() -> None:
-    """Only the most recent history_size frames are retained."""
-    frames = [_frame_at(float(i)) for i in range(10)]
-    broker = FrameBroker(frames, history_size=3)
-    broker.current()  # wait for producer to finish
-    history = broker.stream(limit=100)
-    assert len(history) == 3
-    # Most recent 3 frames: seq 7,8,9 → ts 7.0,8.0,9.0
-    assert [f.ts for _, f in history] == [7.0, 8.0, 9.0]
-    broker.stop()
-    broker.join()
-
-
-# ── concurrent fan-out ────────────────────────────────────────────────────
-
-
-def test_multiple_clients_see_same_sequence(tmp_path: Path) -> None:
-    """Two concurrent client connections observe the same frames
-    and cannot accelerate or consume each other's data."""
-    broker = FrameBroker(_infinite_frames(0.02))
-    socket_path = tmp_path / "fanout.sock"
-    server = serve_unix_socket(socket_path, broker)
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
+    readers = [threading.Thread(target=read) for _ in range(2)]
+    for reader in readers:
+        reader.start()
+    barrier.wait()
+    for reader in readers:
+        reader.join()
     try:
-        results: list[list[float]] = []
-        lock = threading.Lock()
+        assert results == [(0, 12.0), (0, 12.0)]
+    finally:
+        _stop(broker, source)
 
-        def client() -> None:
-            local: list[float] = []
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.settimeout(3.0)
-            sock.connect(str(socket_path))
-            # Read 3 current frames with brief pauses
-            for _ in range(3):
-                sock.sendall(json.dumps({"op": "current"}).encode("utf-8") + b"\n")
-                sock.shutdown(socket.SHUT_WR)
-                data = b""
-                while True:
-                    chunk = sock.recv(65536)
-                    if not chunk:
-                        break
-                    data += chunk
-                responses = [json.loads(line) for line in data.decode("utf-8").splitlines()]
-                for resp in responses:
-                    if resp.get("type") == "frame":
-                        local.append(resp["frame"]["ts"])
-                time.sleep(0.03)
-                # Reconnect for each request
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                sock.settimeout(3.0)
-                sock.connect(str(socket_path))
-            with lock:
-                results.append(local)
 
-        threads = [threading.Thread(target=client, daemon=True) for _ in range(2)]
-        for th in threads:
-            th.start()
-        for th in threads:
-            th.join(timeout=10.0)
-
-        assert len(results) == 2
-        # Both clients see increasing timestamps (frames are not stale)
-        # and they see the same or overlapping sequence.
-        for timestamps in results:
-            assert len(timestamps) >= 1, "each client should see at least one frame"
-            for i in range(1, len(timestamps)):
-                assert timestamps[i] >= timestamps[i - 1], "timestamps must not go backward"
-        # Both clients see broadly similar ranges
-        min_seen = min(min(r) for r in results)
-        max_seen = max(max(r) for r in results)
-        assert min_seen >= 1000.0
+def test_client_cursor_batch_does_not_replay_tail(tmp_path: Path) -> None:
+    source = ControlledSource()
+    broker = FrameBroker(source, history_size=3)
+    path = tmp_path / "groop.sock"
+    server = serve_unix_socket(path, broker)
+    thread = threading.Thread(target=server.serve_forever)
+    broker.start()
+    thread.start()
+    try:
+        source.frame(1.0)
+        _wait_for(lambda: broker.current().ts == 1.0)
+        client = DaemonClient(path)
+        first = client.stream_batch(limit=3)
+        assert [frame.ts for frame in first.frames] == [1.0]
+        again = client.stream_batch(limit=3, cursor=first.next_cursor)
+        assert again.frames == ()
+        source.frame(2.0)
+        _wait_for(lambda: broker.current().ts == 2.0)
+        advanced = client.stream_batch(limit=3, cursor=first.next_cursor)
+        assert [frame.ts for frame in advanced.frames] == [2.0]
+        assert advanced.gap is False
     finally:
         server.shutdown()
         server.server_close()
-        broker.stop()
-        broker.join()
+        thread.join(timeout=2.0)
+        _stop(broker, source)
 
 
-def test_concurrent_current_and_stream(tmp_path: Path) -> None:
-    """Concurrent current() and stream() calls do not race."""
-    broker = FrameBroker(_infinite_frames(0.01))
-    socket_path = tmp_path / "concurrent.sock"
-    server = serve_unix_socket(socket_path, broker)
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
+def test_polling_helper_raises_on_evicted_cursor(tmp_path: Path) -> None:
+    source = ControlledSource()
+    broker = FrameBroker(source, history_size=1)
+    path = tmp_path / "groop.sock"
+    server = serve_unix_socket(path, broker)
+    thread = threading.Thread(target=server.serve_forever)
+    broker.start()
+    thread.start()
     try:
-        errors: list[str] = []
-        lock = threading.Lock()
-
-        def do_current() -> None:
-            try:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                sock.settimeout(3.0)
-                sock.connect(str(socket_path))
-                sock.sendall(json.dumps({"op": "current"}).encode("utf-8") + b"\n")
-                sock.shutdown(socket.SHUT_WR)
-                data = b"".join(iter(lambda: sock.recv(65536), b""))
-                responses = [json.loads(line) for line in data.decode("utf-8").splitlines()]
-                for resp in responses:
-                    if resp.get("type") == "error":
-                        with lock:
-                            errors.append(f"current error: {resp.get('error')}")
-            except Exception as exc:
-                with lock:
-                    errors.append(f"current exception: {exc}")
-
-        def do_stream() -> None:
-            try:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                sock.settimeout(3.0)
-                sock.connect(str(socket_path))
-                sock.sendall(json.dumps({"op": "stream", "limit": 5}).encode("utf-8") + b"\n")
-                sock.shutdown(socket.SHUT_WR)
-                data = b"".join(iter(lambda: sock.recv(65536), b""))
-                responses = [json.loads(line) for line in data.decode("utf-8").splitlines()]
-                for resp in responses:
-                    if resp.get("type") == "error":
-                        with lock:
-                            errors.append(f"stream error: {resp.get('error')}")
-            except Exception as exc:
-                with lock:
-                    errors.append(f"stream exception: {exc}")
-
-        threads = [threading.Thread(target=do_current, daemon=True) for _ in range(4)]
-        threads += [threading.Thread(target=do_stream, daemon=True) for _ in range(4)]
-        for th in threads:
-            th.start()
-        for th in threads:
-            th.join(timeout=10.0)
-
-        assert errors == [], f"concurrent access produced errors: {errors}"
+        source.frame(1.0)
+        _wait_for(lambda: broker.current().ts == 1.0)
+        frames = stream_frames(path, limit=1, poll_interval_s=0.01)
+        assert next(frames).ts == 1.0
+        source.frame(2.0)
+        source.frame(3.0)
+        _wait_for(lambda: broker.current().ts == 3.0)
+        with pytest.raises(DaemonHistoryGapError, match="evicted"):
+            next(frames)
     finally:
         server.shutdown()
         server.server_close()
-        broker.stop()
-        broker.join()
+        thread.join(timeout=2.0)
+        _stop(broker, source)
 
 
-# ── protocol dispatch backward compatibility ─────────────────────────────
-
-
-def test_responses_current_returns_latest_frame() -> None:
-    """responses({'op': 'current'}) returns the latest published frame."""
-    broker = FrameBroker([_frame_at(1.0), _frame_at(2.0)])
-    resp = broker.responses({"op": "current"})
-    assert resp[0]["type"] == "frame"
-    assert resp[0]["frame"]["ts"] == 2.0
-    assert resp[1] == {"type": "end", "count": 1}
-    broker.stop()
-    broker.join()
-
-
-def test_responses_stream_without_cursor_returns_tail() -> None:
-    """responses({'op': 'stream', 'limit': N}) returns the tail of history."""
-    broker = FrameBroker([_frame_at(float(i)) for i in range(10)])
-    broker.current()  # wait for all frames
-    resp = broker.responses({"op": "stream", "limit": 3})
-    frames = [r for r in resp if r["type"] == "frame"]
-    assert len(frames) == 3
-    assert [f["frame"]["ts"] for f in frames] == [7.0, 8.0, 9.0]
-    assert resp[-1] == {"type": "end", "count": 3}
-    broker.stop()
-    broker.join()
-
-
-def test_responses_stream_with_cursor() -> None:
-    """responses({'op': 'stream', 'limit': N, 'cursor': K}) works."""
-    broker = FrameBroker([_frame_at(float(i)) for i in range(5)])
-    broker.current()
-    resp = broker.responses({"op": "stream", "limit": 10, "cursor": 2})
-    frames = [r for r in resp if r["type"] == "frame"]
-    assert len(frames) == 2
-    assert [f["frame"]["ts"] for f in frames] == [3.0, 4.0]
-    assert [f["seq"] for f in frames] == [3, 4]
-    broker.stop()
-    broker.join()
-
-
-def test_responses_unknown_op_returns_error() -> None:
-    """responses({'op': 'unknown'}) returns an error."""
+def test_server_rejects_excess_slow_clients(tmp_path: Path) -> None:
     broker = FrameBroker([_frame_at(1.0)])
-    resp = broker.responses({"op": "read_file", "path": "/etc/shadow"})
-    assert resp == [{"type": "error", "error": "unsupported operation"}]
-    broker.stop()
-    broker.join()
-
-
-# ── producer exhaustion ───────────────────────────────────────────────────
-
-
-def test_current_after_source_exhaustion_returns_last_frame() -> None:
-    """After the source is exhausted current() still returns the last
-    published frame from history."""
-    broker = FrameBroker([_frame_at(1.0), _frame_at(2.0)])
-    first = broker.current()  # wait for producer to finish
-    second = broker.current()
-    assert second.ts == 2.0  # still returns latest from history
-    broker.stop()
-    broker.join()
-
-
-def test_producer_exhaustion_does_not_kill_server(tmp_path: Path) -> None:
-    """An exhausted source still serves cached frames without crashing."""
-    broker = FrameBroker([_frame_at(1.0)])
-    socket_path = tmp_path / "exhaust.sock"
-    server = serve_unix_socket(socket_path, broker)
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
+    path = tmp_path / "groop.sock"
+    server = serve_unix_socket(path, broker, request_timeout_s=1.0, max_clients=1)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    first = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    second = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        time.sleep(0.2)  # let the producer finish
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(3.0)
-        sock.connect(str(socket_path))
-        sock.sendall(json.dumps({"op": "current"}).encode("utf-8") + b"\n")
-        sock.shutdown(socket.SHUT_WR)
-        data = b"".join(iter(lambda: sock.recv(65536), b""))
-        responses = [json.loads(line) for line in data.decode("utf-8").splitlines()]
-        # Server should still respond with the cached frame, not crash
-        assert any(r.get("type") == "frame" for r in responses)
-        # Second request should also work from history
-        sock2 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock2.settimeout(3.0)
-        sock2.connect(str(socket_path))
-        sock2.sendall(json.dumps({"op": "current"}).encode("utf-8") + b"\n")
-        sock2.shutdown(socket.SHUT_WR)
-        data2 = b"".join(iter(lambda: sock2.recv(65536), b""))
-        responses2 = [json.loads(line) for line in data2.decode("utf-8").splitlines()]
-        assert any(r.get("type") == "frame" for r in responses2)
+        first.connect(str(path))
+        _wait_for(lambda: server._client_slots._value == 0)  # type: ignore[attr-defined]
+        second.connect(str(path))
+        response = second.recv(4096)
+        assert json.loads(response)["error"] == "server busy"
     finally:
+        first.close()
+        second.close()
         server.shutdown()
         server.server_close()
-        broker.stop()
-        broker.join()
-
-
-# ── shutdown ──────────────────────────────────────────────────────────────
-
-
-def test_shutdown_stops_producer_and_server(tmp_path: Path) -> None:
-    """stop()+join() on the broker plus server_close() cleanly tears down."""
-    broker = FrameBroker(_infinite_frames())
-    socket_path = tmp_path / "shutdown.sock"
-    server = serve_unix_socket(socket_path, broker)
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
-    time.sleep(0.05)
-    server.shutdown()
-    server.server_close()
-    broker.stop()
-    broker.join(timeout=3.0)
-    # Socket should be unlinked
-    assert not socket_path.exists()
+        thread.join(timeout=2.0)
+        _stop(broker)

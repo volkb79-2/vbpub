@@ -28,7 +28,17 @@ from groop.daemon.deploy import (
     render_install_plan_text,
     render_preflight_text,
 )
-from groop.daemon import BpfSnapshotBridge, BpfSnapshotError, FrameBroker, serve_unix_socket
+from groop.daemon import (
+    BpfSnapshotBridge,
+    BpfSnapshotError,
+    FrameBroker,
+    FrameBrokerError,
+    serve_unix_socket,
+)
+from groop.daemon.component_health import (
+    ComponentError,
+    ComponentHealthRegistry,
+)
 from groop.model import frame_to_jsonable
 from groop.record.live import live_frame_stream
 from groop.record.replay import ReplayDriver, format_frame_summary
@@ -163,6 +173,15 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
     )
     status.add_argument("--json", action="store_true", help="emit JSON instead of text")
     status.add_argument("--pretty-json", action="store_true", help="pretty-print JSON output")
+    health = subparsers.add_parser("health", help="print daemon component health snapshot")
+    health.add_argument(
+        "--socket",
+        type=Path,
+        default=DEFAULT_DAEMON_SOCKET,
+        help=f"daemon socket path (default: {DEFAULT_DAEMON_SOCKET})",
+    )
+    health.add_argument("--json", action="store_true", help="emit JSON (default)")
+    health.add_argument("--pretty-json", action="store_true", help="pretty-print the health JSON")
     return parser.parse_args(argv)
 
 
@@ -649,10 +668,24 @@ def _main_daemon(argv: list[str]) -> int:
     if args.command == "serve":
         config = load(args.config)
         collector = Collector(cgroup_root=args.cgroup_root, config=config)
-        broker = FrameBroker(live_frame_stream(collector), history_size=args.history_size)
-        broker.start()
+
+        # Create component health registry and wire it into the broker
+        health_registry = ComponentHealthRegistry()
+        health_registry.mark_starting("collector", detail="collector initialized")
+
+        frame_stop = threading.Event()
+        broker = FrameBroker(
+            live_frame_stream(collector, stop_event=frame_stop),
+            history_size=args.history_size,
+            health_registry=health_registry,
+            stop_callback=frame_stop.set,
+        )
         server = serve_unix_socket(args.socket, broker)
         print(f"serving read-only groop frames on {args.socket}", flush=True)
+
+        # Default-disabled components
+        health_registry.mark_disabled("bpf_snapshot_bridge", detail="disabled by default")
+        health_registry.mark_disabled("paddr_lifecycle", detail="disabled by default")
 
         # BPF snapshot bridge (disabled by default)
         bpf_bridge: BpfSnapshotBridge | None = None
@@ -674,6 +707,7 @@ def _main_daemon(argv: list[str]) -> int:
             bpf_interval = max(5.0, config.bpf_snapshot.interval)
 
         if bpf_enabled and bpf_root is not None:
+            health_registry.mark_starting("bpf_snapshot_bridge", detail="starting BPF snapshot bridge")
             try:
                 map_name = config.bpf_snapshot.map_name if not args.bpf_root else "groop_cgroup_skb"
                 state_dir: Path = (
@@ -713,7 +747,26 @@ def _main_daemon(argv: list[str]) -> int:
                 try:
                     bpf_bridge.refresh_and_write(map_name, state_dir)
                     print("BPF snapshot refreshed on startup", flush=True)
+                    health_registry.record_success("bpf_snapshot_bridge", detail="initial BPF refresh succeeded")
                 except BpfSnapshotError as exc:
+                    if bpf_bridge.last_valid_snapshot is not None:
+                        health_registry.record_degraded(
+                            "bpf_snapshot_bridge",
+                            detail="initial BPF refresh failed; preserving last valid snapshot",
+                            error=ComponentError(
+                                message="initial BPF refresh failed",
+                                error_code="bpf_initial_refresh_failed",
+                            ),
+                        )
+                    else:
+                        health_registry.record_failure(
+                            "bpf_snapshot_bridge",
+                            detail="initial BPF refresh failed; no valid snapshot",
+                            error=ComponentError(
+                                message="initial BPF refresh failed",
+                                error_code="bpf_initial_refresh_failed",
+                            ),
+                        )
                     print(
                         f"BPF snapshot initial refresh failed "
                         f"(continuing with periodic retry): {exc}",
@@ -725,20 +778,48 @@ def _main_daemon(argv: list[str]) -> int:
                         try:
                             snapshot = bpf_bridge.refresh(map_name)
                             bpf_bridge.write_snapshot(snapshot, state_dir)
+                            health_registry.record_success(
+                                "bpf_snapshot_bridge",
+                                detail="BPF refresh succeeded",
+                            )
                         except BpfSnapshotError as exc:
                             last = bpf_bridge.last_valid_snapshot
                             if last is not None:
+                                health_registry.record_degraded(
+                                    "bpf_snapshot_bridge",
+                                    detail="BPF refresh failed; preserving last valid snapshot",
+                                    error=ComponentError(
+                                        message="BPF refresh failed",
+                                        error_code="bpf_refresh_failed",
+                                    ),
+                                )
                                 print(
                                     f"BPF snapshot refresh failed "
                                     f"(preserving last valid): {exc}",
                                     flush=True,
                                 )
                             else:
+                                health_registry.record_failure(
+                                    "bpf_snapshot_bridge",
+                                    detail="BPF refresh failed; no valid snapshot",
+                                    error=ComponentError(
+                                        message="BPF refresh failed",
+                                        error_code="bpf_refresh_failed",
+                                    ),
+                                )
                                 print(
                                     f"BPF snapshot refresh failed: {exc}",
                                     flush=True,
                                 )
                         except Exception as exc:
+                            health_registry.record_failure(
+                                "bpf_snapshot_bridge",
+                                detail="BPF refresh encountered an unexpected error",
+                                error=ComponentError(
+                                    message="BPF refresh encountered an unexpected error",
+                                    error_code="bpf_unexpected_error",
+                                ),
+                            )
                             print(
                                 f"BPF snapshot unexpected error: {exc}",
                                 flush=True,
@@ -749,6 +830,14 @@ def _main_daemon(argv: list[str]) -> int:
                 )
                 bpf_thread.start()
             except Exception as exc:
+                health_registry.record_failure(
+                    "bpf_snapshot_bridge",
+                    detail="failed to start BPF snapshot bridge",
+                    error=ComponentError(
+                        message="failed to start BPF snapshot bridge",
+                        error_code="bpf_start_failed",
+                    ),
+                )
                 print(
                     f"Failed to start BPF snapshot bridge: {exc}",
                     flush=True,
@@ -766,16 +855,31 @@ def _main_daemon(argv: list[str]) -> int:
             damon_root=getattr(collector, "damon_root", DEFAULT_DAMON_ROOT),
         )
         if config.damon.paddr_enabled:
+            health_registry.mark_starting("paddr_lifecycle", detail="starting paddr lifecycle")
             try:
                 paddr_lifecycle.start()
                 match paddr_lifecycle.outcome:
                     case PaddrLifecycleOutcome.STARTED:
+                        health_registry.record_success("paddr_lifecycle", detail="paddr session started")
                         print("Daemon-owned paddr session started", flush=True)
                     case PaddrLifecycleOutcome.ADOPTED:
+                        health_registry.record_success("paddr_lifecycle", detail="paddr session adopted")
                         print("Daemon-owned paddr session adopted", flush=True)
                     case PaddrLifecycleOutcome.DISABLED:
                         pass  # not reached since we check paddr_enabled above
-            except PaddrLifecycleStartError as exc:
+            except Exception as exc:
+                health_registry.record_failure(
+                    "paddr_lifecycle",
+                    detail="paddr lifecycle start failed",
+                    error=ComponentError(
+                        message="paddr lifecycle start failed",
+                        error_code=(
+                            "paddr_start_failed"
+                            if isinstance(exc, PaddrLifecycleStartError)
+                            else "paddr_unexpected_start_error"
+                        ),
+                    ),
+                )
                 print(
                     f"Paddr lifecycle start failed "
                     f"(daemon continues without paddr): {exc}",
@@ -783,14 +887,47 @@ def _main_daemon(argv: list[str]) -> int:
                 )
 
         try:
+            # Start only after all collector providers and daemon-owned
+            # components are configured. The socket is not accepting handler
+            # work until serve_forever starts below.
+            broker.start()
             server.serve_forever()
         except KeyboardInterrupt:
             return 0
         finally:
+            broker.stop()
+            collector_stopped = False
+            try:
+                broker.join(timeout=5.0)
+                collector_stopped = True
+            except FrameBrokerError as exc:
+                health_registry.record_failure(
+                    "collector",
+                    detail="collector producer did not stop cleanly",
+                    error=ComponentError(
+                        message="collector producer did not stop cleanly",
+                        error_code="collector_shutdown_failed",
+                    ),
+                )
+                print(f"Collector producer shutdown failed: {exc}", flush=True)
             if bpf_thread is not None:
+                health_registry.mark_stopping("bpf_snapshot_bridge", detail="shutting down BPF bridge")
                 _bpf_stop.set()
                 bpf_thread.join(timeout=5.0)
+                if bpf_thread.is_alive():
+                    health_registry.record_failure(
+                        "bpf_snapshot_bridge",
+                        detail="BPF bridge did not stop before the shutdown deadline",
+                        error=ComponentError(
+                            message="BPF bridge shutdown timed out",
+                            error_code="bpf_shutdown_timeout",
+                        ),
+                    )
+                else:
+                    health_registry.mark_stopped("bpf_snapshot_bridge", detail="BPF bridge stopped")
             if paddr_lifecycle.started:
+                adopted = paddr_lifecycle.outcome is PaddrLifecycleOutcome.ADOPTED
+                health_registry.mark_stopping("paddr_lifecycle", detail="stopping paddr lifecycle")
                 try:
                     stopped = paddr_lifecycle.stop()
                     if stopped:
@@ -799,14 +936,30 @@ def _main_daemon(argv: list[str]) -> int:
                             f"session",
                             flush=True,
                         )
+                    health_registry.mark_stopped(
+                        "paddr_lifecycle",
+                        detail=(
+                            "daemon lifecycle stopped; adopted paddr session remains active"
+                            if adopted
+                            else "paddr lifecycle stopped"
+                        ),
+                    )
                 except Exception as exc:
+                    health_registry.record_failure(
+                        "paddr_lifecycle",
+                        detail="paddr lifecycle stop failed",
+                        error=ComponentError(
+                            message="paddr lifecycle stop failed",
+                            error_code="paddr_stop_failed",
+                        ),
+                    )
                     print(
                         f"Failed to stop paddr session: {exc}",
                         flush=True,
                     )
+            if collector_stopped:
+                health_registry.mark_stopped("collector", detail="collector stopped")
             server.server_close()
-            broker.stop()
-            broker.join(timeout=5.0)
     if args.command == "preflight":
         try:
             report = preflight_daemon_deployment(args.socket, group_name=args.group)
@@ -864,6 +1017,19 @@ def _main_daemon(argv: list[str]) -> int:
         else:
             print(report.to_text())
         return 0 if report.ok else 1
+    if args.command == "health":
+        from groop.daemon.client import DaemonClient
+
+        try:
+            health = DaemonClient(args.socket).request_health()
+        except DaemonClientError as exc:
+            print(_format_daemon_error(exc, args.socket), file=sys.stderr)
+            return 2
+        if args.pretty_json:
+            print(json.dumps(health.to_jsonable(), indent=2, sort_keys=True))
+        else:
+            print(json.dumps(health.to_jsonable(), sort_keys=True, separators=(",", ":")))
+        return 0
     print("unknown daemon command", file=sys.stderr)
     return 2
 

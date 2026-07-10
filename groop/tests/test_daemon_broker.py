@@ -41,13 +41,20 @@ def test_daemon_socket_serves_current_and_stream_frames(tmp_path: Path) -> None:
         current = _request(socket_path, {"op": "current"})
         assert current[0]["type"] == "frame"
         assert current[0]["frame"]["ts"] == 110.0
-        assert current[1] == {"type": "end", "count": 1}
+        assert current[1] == {"type": "end", "count": 1, "next_cursor": 2}
 
         # stream with cursor=None returns the tail of history.
         stream = _request(socket_path, {"op": "stream", "limit": 10})
         timestamps = [item["frame"]["ts"] for item in stream if item["type"] == "frame"]
         assert timestamps == [100.0, 105.0, 110.0]
-        assert stream[-1] == {"type": "end", "count": 3}
+        assert stream[-1] == {
+            "type": "end",
+            "count": 3,
+            "gap": False,
+            "oldest_seq": 0,
+            "latest_seq": 2,
+            "next_cursor": 2,
+        }
     finally:
         server.shutdown()
         server.server_close()

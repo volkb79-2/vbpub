@@ -24,9 +24,14 @@ current run stop on shutdown; verified adopted sessions persist. P45 adds
 bounded descriptor-confined Docker/cgroup reads. P46 adds the narrowly
 allowlisted executable admin kernel.
 
-Queued follow-ups P47-P49 continue those same three streams after review:
-daemon component health, bounded journald snapshots, and structured
-`memory.high` governance. They are not current implementation claims.
+P47 adds a thread-safe daemon component health registry with byte-bounded,
+redacted public error detail, a strictly validated read-only ``health-v1``
+protocol operation, and
+``groop daemon health [--json]``. The registry models collector, BPF snapshot
+bridge, and paddr lifecycle states and wires P42/P44 transitions.
+
+Queued follow-ups P48-P49 continue bounded journald snapshots and structured
+`memory.high` governance after those streams.
 
 P50 is queued as a non-privileged usability slice for clickable table sorting
 and row drill-down. Current builds remain keyboard-first until it is reviewed.
@@ -206,11 +211,11 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent combined validation after P44-P46 review:
+Most recent full validation on current main plus P47:
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 623 passed, 1 skipped in 48.05s
+# 672 passed, 1 skipped in 51.27s (controller review)
 ```
 
 Also validated:
@@ -218,6 +223,8 @@ Also validated:
 - P44 focused paddr lifecycle tests: `22 passed in 0.17s`.
 - P45 focused inspect-files tests: `113 passed in 0.64s`.
 - P46 focused action execution tests: `129 passed in 0.45s`.
+- P47 focused component health tests: `49 passed in 3.47s`.
+- Combined P47 daemon/P45 inspect regression: `238 passed in 6.60s` (controller review).
 - Combined P44/P45/P46 focused regression: `264 passed in 1.12s`.
 - Full-source `py_compile` clean on all changed/new files.
 - Module-level imports and gate logic verified without real Docker/systemd.
