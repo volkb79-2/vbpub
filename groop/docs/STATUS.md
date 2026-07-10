@@ -16,13 +16,12 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment. P41 automates strict rendered replay fidelity (383 passing tests plus one optional skip). P43 replaces the obsolete pre-1.0 resolver ceiling with textual>=8.2.8. Isolated local-artifact pipx/no-config acceptance now passes. Strict live performance and non-root gates remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 60-65% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, daemon current/status commands, the daemon BPF snapshot bridge, and the daemon-owned paddr lifecycle exist; live BPF program compilation and attach/pin/detach, executable admin actions, GPU/ZFS plugins are not implemented. |
+| v2 daemon/BPF/admin actions | 60-65% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd start/stop/restart execution, BPF gate/provider/snapshot bridge, inspect-files planning, and daemon-owned paddr lifecycle exist. Live BPF load/attach, broader actions, and GPU/ZFS plugins remain. |
 
 P44 adds the daemon-owned paddr lifecycle — `[damon] paddr_enabled = true` starts
 one groop-owned whole-host paddr session at daemon startup with idempotent
-restart and safe shutdown. Active planned packages P45-P46 address bounded
-inspect-files content reads and the first executable admin action kernel. Until
-merged and validated, both remain non-claims.
+restart and safe shutdown. P46 adds the narrowly allowlisted executable admin
+kernel. P45 bounded content reads remain under review and are still a non-claim.
 
 Queued follow-ups P47-P49 continue those same three streams after review:
 daemon component health, bounded journald snapshots, and structured
@@ -72,7 +71,14 @@ core workflows, not yet production-certified.**
   plan for the packaged systemd and tmpfiles templates, with deterministic JSON
   and human-readable text output.
 - Preview-only admin action planning for allowlisted Docker/systemd actions,
-  gated by explicit `--admin` and optional JSONL audit logging.
+  gated by explicit `--admin` and optional preview-only JSONL audit logging.
+- Gated admin action execution kernel (`groop action execute`) for validated
+  Docker/systemd start/stop/restart targets: typed `--confirm EXECUTE`,
+  production root gate, strict container/unit validation, fixed absolute argv,
+  bounded timeout and pipe-drained output, mandatory fail-closed durable
+  `/var/log/groop/actions.jsonl` audit (pre/post records), typed post-audit
+  partial outcomes, and injected runner/clock/identity fixtures for
+  zero-mutation test safety.
 - Safe BPF network accounting gate (`groop bpf gate`) and v2 BPF design doc;
   the gate is no-op and never loads or pins BPF state.
 - Swap/refault terminology aliases layer (`groop/ui/aliases.py`) resolving
@@ -164,7 +170,6 @@ core workflows, not yet production-certified.**
 - Production daemon installation execution and service hardening beyond the
   packaged operator templates plus safe P25 install plan.
 - Live BPF ownership lifecycle (daemon/helper attach, pin, detach).
-- Executable Docker/systemd admin actions: update/start/stop/restart/kill.
 - `systemctl set-property` governance actions.
 - Web UI.
 - GPU and ZFS optional plugins.
@@ -192,15 +197,17 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation after P44 changes:
+Most recent branch validation after P46 controller correction (post-merge
+combined validation follows):
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 455 passed, 1 skipped in 46.99s
+# 532 passed, 1 skipped in 48.77s
 ```
 
 Also validated:
 
 - P44 focused paddr lifecycle tests: `22 passed in 0.17s`.
-- Full-source `py_compile` clean.
-- Acceptance regression and UI regression unchanged.
+- P46 focused action execution tests: `129 passed in 0.45s`.
+- Full-source `py_compile` clean on all changed/new files.
+- Module-level imports and gate logic verified without real Docker/systemd.
