@@ -471,11 +471,19 @@ def parse_action_args(argv: list[str]) -> argparse.Namespace:
     preview.add_argument("--admin", action="store_true", help="enable admin preview mode")
     preview.add_argument("--json", action="store_true", help="emit JSON preview instead of text")
     preview.add_argument("--audit-log", type=Path, default=None, help="path to append-only JSONL audit log")
+    execute = subparsers.add_parser("execute", help="execute a gated admin action (start/stop/restart only)")
+    execute.add_argument("--kind", type=str, required=True, help="action kind, e.g. docker-restart, systemd-stop")
+    execute.add_argument("--target", type=str, required=True, help="action target, e.g. container name or systemd unit")
+    execute.add_argument("--admin", action="store_true", help="enable admin execution mode (required)")
+    execute.add_argument("--confirm", type=str, default="", help="type EXECUTE to confirm the action")
+    execute.add_argument("--json", action="store_true", help="emit JSON result instead of text")
+    execute.add_argument("--timeout", type=float, default=30.0, help="subprocess timeout in seconds (default 30.0)")
     return parser.parse_args(argv)
 
 
 def _main_action(argv: list[str]) -> int:
     from groop.actions.audit import AuditLog
+    from groop.actions.execute import ExecuteResult, execute_plan
     from groop.actions.preview import ActionPlan, DisabledPlan, build_admin_preview
 
     args = parse_action_args(argv)
@@ -522,6 +530,30 @@ def _main_action(argv: list[str]) -> int:
             print(f"Description: {result.description}")
             print("Mode: preview only; no command was executed")
         return 0
+
+    if args.command == "execute":
+        result = execute_plan(
+            args.kind,
+            args.target,
+            admin=args.admin,
+            confirm=args.confirm,
+            timeout=args.timeout,
+        )
+
+        if args.json:
+            from groop.actions.execute import result_to_jsonable
+            print(json.dumps(result_to_jsonable(result), sort_keys=True))
+        else:
+            from groop.actions.execute import render_result_text
+            print(render_result_text(result))
+
+        # Exit codes: 0 for success, 1 for nonzero/timeout/runner_failure, 2 for refusal
+        if result.outcome == "success":
+            return 0
+        if result.outcome == "refusal":
+            return 2
+        return 1
+
     print("unknown action command", file=sys.stderr)
     return 2
 
@@ -721,6 +753,34 @@ def _main_daemon(argv: list[str]) -> int:
                     flush=True,
                 )
 
+        # Daemon-owned paddr lifecycle (disabled by default via [damon] paddr_enabled)
+        from groop.daemon.paddr_lifecycle import (
+            DaemonPaddrLifecycle,
+            PaddrLifecycleOutcome,
+            PaddrLifecycleStartError,
+        )
+
+        paddr_lifecycle = DaemonPaddrLifecycle(
+            config=config.damon,
+            damon_root=getattr(collector, "damon_root", DEFAULT_DAMON_ROOT),
+        )
+        if config.damon.paddr_enabled:
+            try:
+                paddr_lifecycle.start()
+                match paddr_lifecycle.outcome:
+                    case PaddrLifecycleOutcome.STARTED:
+                        print("Daemon-owned paddr session started", flush=True)
+                    case PaddrLifecycleOutcome.ADOPTED:
+                        print("Daemon-owned paddr session adopted", flush=True)
+                    case PaddrLifecycleOutcome.DISABLED:
+                        pass  # not reached since we check paddr_enabled above
+            except PaddrLifecycleStartError as exc:
+                print(
+                    f"Paddr lifecycle start failed "
+                    f"(daemon continues without paddr): {exc}",
+                    flush=True,
+                )
+
         try:
             server.serve_forever()
         except KeyboardInterrupt:
@@ -729,6 +789,20 @@ def _main_daemon(argv: list[str]) -> int:
             if bpf_thread is not None:
                 _bpf_stop.set()
                 bpf_thread.join(timeout=5.0)
+            if paddr_lifecycle.started:
+                try:
+                    stopped = paddr_lifecycle.stop()
+                    if stopped:
+                        print(
+                            f"Stopped {stopped} daemon-owned paddr "
+                            f"session",
+                            flush=True,
+                        )
+                except Exception as exc:
+                    print(
+                        f"Failed to stop paddr session: {exc}",
+                        flush=True,
+                    )
             server.server_close()
     if args.command == "preflight":
         try:

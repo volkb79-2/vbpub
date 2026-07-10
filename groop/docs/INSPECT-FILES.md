@@ -111,7 +111,10 @@ both `--inspect-files` and `--admin`).
 - `--max-bytes` (default 65536): Hard byte limit **aggregate** across all
   files in a multi-file read (e.g. cgroup); truncated bytes are reported via
   the `truncated_bytes` field.  The limit applies to the **rendered** output
-  including per-file headers (``# /path``) and error annotations.
+  content payload in encoded UTF-8 bytes, including per-file headers
+  (``# /path``) and error annotations. The fixed typed text/JSON metadata
+  envelope is structurally bounded separately and is not charged to this
+  caller-selected content budget.
 - `--max-lines` (default 5000): Hard line limit **aggregate** across all
   files; truncated lines are reported via the `truncated_lines` field.
 - Both limits must be positive integers. Absolute maximums are enforced:

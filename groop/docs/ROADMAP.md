@@ -61,6 +61,13 @@ flowchart TD
     P14 --> P44[P44 Daemon paddr lifecycle]
     P29 --> P45[P45 Bounded inspect content]
     P21 --> P46[P46 Admin execution kernel]
+    P44 --> P47[P47 Daemon component health]
+    P45 --> P48[P48 Journald snapshot]
+    P46 --> P49[P49 memory.high governance]
+    P43 --> P50[P50 Mouse table interactions]
+    P16 --> P51[P51 Daemon sampling fanout]
+    P47 --> P52[P52 Versioned read API]
+    P51 --> P52
 ```
 
 ## Remaining Estimate
@@ -70,7 +77,7 @@ After P43, the roadmap is mostly in three buckets:
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
 | v1/v1.5 release confidence and UI polish | 0 | P43 removes the obsolete Textual `<1` resolver ceiling and closes the last planned v1/v1.5 release-confidence package. Manual live-host acceptance evidence remains. |
-| v2 privileged daemon/BPF/admin/file work | 5-7 | P44-P46 cover paddr daemon ownership, the first bounded inspect-files content slice, and the first executable admin slice; BPF lifecycle, install execution/service hardening, remaining content modes, kill/update, and systemd property governance remain. |
+| v2 privileged daemon/BPF/admin/file work | 4-6 | P46 (admin action execution kernel) is complete. P44-P45 cover paddr daemon ownership and the first bounded inspect-files content slice; BPF lifecycle, install execution/service hardening, remaining content modes, kill/update, and systemd property governance remain. |
 | Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
 
 Pragmatic estimate from the current state: a shippable v1/v1.5 release
@@ -83,11 +90,12 @@ plugins and web UI.
 
 ### P44 - Daemon-Owned paddr Lifecycle
 
-Status: planned. Explicit `[damon] paddr_enabled = true` makes the root daemon
+Status: done. Explicit `[damon] paddr_enabled = true` makes the root daemon
 own one audited whole-host paddr session for its lifetime. The default remains
 disabled and foreign sessions remain untouched.
 
 Handoff: `handoff/P44-daemon-paddr-lifecycle.md`.
+Report: `handoff/reports/P44-REPORT.md`.
 
 ### P45 - Bounded Inspect-Files Content Reads
 
@@ -107,6 +115,35 @@ audit, argv-only execution, and bounded results. Kill, update, set-property,
 TUI actions, and daemon RPCs remain later packages.
 
 Handoff: `handoff/P46-admin-action-execution-kernel.md`.
+
+### P47-P49 - Queued Stream Follow-Ups
+
+Status: queued behind controller-reviewed P44-P46 respectively. P47 exposes
+bounded daemon component health, P48 adds a fixed bounded journald snapshot,
+and P49 adds structured stale-safe `memory.high` governance through systemd.
+They are carved early to reuse each worker's domain cache, but implementation
+must not start from unreviewed predecessor code.
+
+Handoffs: `handoff/P47-daemon-component-health.md`,
+`handoff/P48-inspect-files-journal-snapshot.md`, and
+`handoff/P49-systemd-memory-governance.md`.
+
+### P50 - Mouse Table Interactions
+
+Status: queued. Move the entity table to a Textual-native interactive surface
+so header clicks sort/toggle direction and row clicks open drill-down, while
+retaining keyboard navigation and P41 formatted-cell fidelity.
+
+Handoff: `handoff/P50-mouse-table-interactions.md`.
+
+### P51-P52 - Web-Backend Readiness
+
+Status: queued. P51 fixes request-driven/stale daemon sampling with one
+background producer and non-consuming fan-out. After P47 and P51, P52 adds a
+versioned, bounded, peer-aware read API for attached and web frontends.
+
+Handoffs: `handoff/P51-daemon-sampling-fanout.md` and
+`handoff/P52-versioned-daemon-read-api.md`.
 
 ### P12 — Release Hardening And Acceptance
 

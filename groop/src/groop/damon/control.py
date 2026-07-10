@@ -298,11 +298,20 @@ def _marker_path(state_dir: Path, idx: int) -> Path:
     return _marker_dir(state_dir) / f"kdamond-{idx}.json"
 
 
-def _owned_markers(state_dir: Path) -> list[Path]:
+def owned_markers(state_dir: Path) -> list[Path]:
+    """Return sorted groop-owned marker paths under *state_dir*.
+
+    Public API for ownership inspection. Returns an empty list when the
+    marker directory does not exist.
+    """
     directory = _marker_dir(state_dir)
     if not directory.exists():
         return []
     return sorted(directory.glob("kdamond-*.json"))
+
+
+def _owned_markers(state_dir: Path) -> list[Path]:
+    return owned_markers(state_dir)
 
 
 def _marker_idx(marker: Path) -> int | None:

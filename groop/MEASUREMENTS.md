@@ -510,10 +510,10 @@ Blocker for live BPF overhead measurement:
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests/test_inspect_files.py -v
-# 77 passed in 0.60s
+# 113 passed in 0.64s (controller correction focused gate)
 ```
 
-The P45 tests add 33 focused tests covering:
+The P45 suite covers:
 
 - Read gating: disabled without --inspect-files, without --admin, without both
 - Read disabled-via-CLI: exit codes for denied/error/success paths
@@ -522,7 +522,7 @@ The P45 tests add 33 focused tests covering:
 - Read safety: no subprocess import in reader, no arbitrary path escape,
   short Docker ID rejection, absolute path/traversal rejection,
   unsupported kind rejection, error JSON format (no content echo)
-- Read CLI integration: args parsing, custom bounds, fixture-root path,
+- Read CLI integration: args parsing, custom bounds,
   JSON/text output, denied exit code
 
 ### Structural Safety
@@ -538,36 +538,34 @@ The reader module:
 - Uses `os.open()` with `O_RDONLY | O_NONBLOCK | O_NOFOLLOW` for no-follow opens
 - Verifies `stat.S_ISREG` on all opened descriptors (rejects symlinks, devices,
   FIFOs, sockets, directories)
-- Confines all paths via `Path.is_relative_to()` to the allowlisted root
-- Decodes with `surrogateescape` for safe binary handling
+- Traverses every path component descriptor-relatively under the allowlisted
+  root with `O_NOFOLLOW`
+- Decodes invalid bytes with replacement and sanitizes terminal control bytes
 - Returns deterministic JSON/text output with explicit truncation flags
 - Never echoes content on error/denied paths
 
-### CLI Smoke
+### Fixture API Smoke
 
 ```bash
-PYTHONPATH=groop/src python3 -m groop.cli inspect-files read \
-  --kind docker-json-log \
-  --target aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  --inspect-files --admin \
-  --fixture-root groop/tests/fixtures/inspect_files/docker --json
-# exit 0, valid JSON with content field
-```
-
-```bash
-PYTHONPATH=groop/src python3 -m groop.cli inspect-files read \
-  --kind cgroup-files \
-  --target system.slice/ssh.service \
-  --inspect-files --admin \
-  --fixture-root groop/tests/fixtures/inspect_files/cgroup
-# exit 0, text output with memory.current, cpu.stat, pids.current, pids.max
+PYTHONPATH=groop/src python3 - <<'PY'
+from pathlib import Path
+from groop.inspect_files.reader import build_inspect_read
+r = build_inspect_read(
+    "docker-json-log", "a" * 64,
+    inspect_files=True, admin=True,
+    fixture_root=Path("groop/tests/fixtures/inspect_files/docker"),
+    is_root=lambda: True,
+)
+assert r.mode == "content" and "container starting up" in r.content
+print("P45 FIXTURE SMOKE OK")
+PY
 ```
 
 ### Full Suite
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 466 passed, 1 skipped in 49.67s
+# Superseded by the post-merge controller gate recorded below.
 ```
 
 ### Full-Source py_compile
@@ -588,6 +586,53 @@ python3 -m py_compile "${pyfiles[@]}"
 - Only Docker JSON logs and cgroup files support content reads.
 - No follow/stream mode or daemon integration.
 - No TUI integration for file reads.
+
+## P44 Daemon-Owned paddr Lifecycle (2026-07-10)
+
+P44 adds a daemon lifecycle owner around the existing `damon/paddr.py` and
+`damon/control.py` sources of truth. The lifecycle is fixture-tested and does
+not require host DAMON sysfs.
+
+### Fixture/unit evidence (no live DAMON mutation)
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest \
+  groop/tests/test_daemon_paddr_lifecycle.py -q
+# 13 passed in 0.22s
+```
+
+### Config evidence
+
+Default `paddr_enabled = False` confirmed by source default, TOML load
+round-trip, and to_primitive() serialization. Explicit `paddr_enabled = true`
+loaded correctly from `[damon]` TOML section.
+
+### Covered scenarios
+
+- Disabled lifecycle performs zero DAMON writes.
+- Enabled lifecycle starts one owned paddr session and stops it on stop().
+- Idempotent adoption: existing groop-owned marker is adopted without duplicate.
+- Foreign session: non-groop markers and foreign kdamond slots untouched.
+- No free slot: raises bounded PaddrLifecycleStartError.
+- Root required: raises bounded PaddrLifecycleStartError.
+- Stop returns 0 when nothing was started.
+
+### Full suite impact
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest groop/tests -q
+# 446 passed, 1 skipped in 49.25s
+```
+
+Full-source `py_compile` clean.
+
+Blocker for live daemon paddr measurement:
+
+- This development host is not a deliberate privileged test host.
+- DAMON sysfs is not available.
+- The daemon requires root to start DAMON sessions.
+- P44 lifecycle testing uses injectable fixture seams (damon_root, state_dir,
+  require_root=False, is_root=...) and does not mutate host sysfs.
 
 ## Release Signoff Template
 

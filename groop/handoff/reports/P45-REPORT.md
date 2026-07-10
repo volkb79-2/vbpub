@@ -21,7 +21,7 @@
       `_ABSOLUTE_MAX_LINES` (100K) — negative/zero/huge values are rejected.
     - **Root enforcement**: production reads require EUID 0 (TUI-SPEC §4.8);
       injectable `fixture_root` seam bypasses in tests.
-    - Safe `surrogateescape` UTF-8 decoding for hostile bytes
+    - Replacement decoding plus terminal-control sanitization for hostile bytes
     - No `subprocess` import, no file writes, no host mutation
   - Docker JSON log reads: require full 64-char hex container ID (rejects short IDs/names)
   - Cgroup file reads: uses P29 catalog allowlist (20+ known files), per-file error handling
@@ -54,17 +54,15 @@
 | Path confinement | Lexical `Path.is_relative_to()` — race-prone | Descriptor-relative fd walk with `O_NOFOLLOW` on every component |
 | Limit validation | Any value accepted; limits per-file | Positive ints only; caps at 1 MiB / 100K lines; aggregate across cgroup files |
 | `--fixture-root` in CLI | Hidden but present; users could select arbitrary root | Removed entirely from CLI parser; `fixture_root=` is Python-only seam |
-| Root check | None | `os.geteuid() == 0` in production; bypass via `fixture_root` |
+| Root check | None | Literal `True` from `os.geteuid() == 0` or an injected test predicate; fixture roots do not bypass it |
 | 20K-line fixture | 689 KB committed binary | 10-line compact fixture (532 bytes) |
-| Test coverage | 77 tests | 92 tests (15 new security/boundary) |
+| Test coverage | 77 tests | 113 tests after controller security/boundary corrections |
 
 ## Deviations from Handoff
 
-- **CLI `--max-bytes`/`--max-lines`**: The handoff specifies "bound bytes, lines,
-  time/work, and rendered output". `--max-bytes` and `--max-lines` are implemented;
-  explicit wall-clock time bounds are not enforced because bounded file reads via
-  `os.open` + chunked reads on regular files are effectively instant for the configured
-  limits. A future package could add time bounds for large or slow files.
+- **Work bound**: reads cover a fixed catalog file set and stop at absolute
+  byte/line caps using fixed-size chunks. No claim is made that synchronous
+  local-filesystem `open`/`read` has a preemptive wall-clock deadline.
 
 - **Systemd journal**: The handoff lists journal follow and volume/overlay traversal
   as separate work. Journal reads were left out of scope for reads since they
@@ -79,7 +77,7 @@
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests/test_inspect_files.py -v
-# 92 passed in 0.67s
+# 113 passed in 0.64s (controller focused gate)
 
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
 # 481 passed, 1 skipped in 48.35s
@@ -94,9 +92,11 @@ python3 -m py_compile "${pyfiles[@]}"
 - Systemd journal content reads are not implemented (requires subprocess execution).
 - No follow/stream mode or daemon integration for content reads.
 - No TUI integration for file reads.
-- No wall-clock time bounds (bounded bytes/lines are sufficient for 64 KiB / 5000 lines on regular files).
+- No preemptive wall-clock deadline around local regular-file syscalls; work
+  and returned content are strictly bounded.
 - Docker log reads require full 64-hex container IDs; short IDs and names are rejected for reads.
 
 ## Contract-Change Proposals
 
-None. P45 is entirely additive and package-private.
+The public CLI is additive. Its caller-selected byte/line limits cover the
+content payload; the fixed typed metadata envelope is bounded separately.

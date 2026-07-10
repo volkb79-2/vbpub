@@ -10,6 +10,12 @@ from groop.daemon.client import (
     current_frame_stream,
     stream_frames,
 )
+from groop.daemon.paddr_lifecycle import (
+    DaemonPaddrLifecycle,
+    DamonPaddrLifecycleError,
+    PaddrLifecycleStartError,
+    PaddrLifecycleStopError,
+)
 from groop.daemon.status import (
     DaemonStatusReport,
     ProtocolStatus,
@@ -24,8 +30,12 @@ __all__ = [
     "DaemonConnectError",
     "DaemonProtocolError",
     "DaemonResponseError",
+    "DaemonPaddrLifecycle",
     "DaemonStatusReport",
+    "DamonPaddrLifecycleError",
     "FrameBroker",
+    "PaddrLifecycleStartError",
+    "PaddrLifecycleStopError",
     "ProtocolStatus",
     "SNAPSHOT_FILENAME",
     "build_daemon_status",

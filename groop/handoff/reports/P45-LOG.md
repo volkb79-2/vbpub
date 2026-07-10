@@ -46,8 +46,8 @@
 - Result: `groop inspect-files read` no longer accepts --fixture-root.
 
 - Action: Root enforcement per TUI-SPEC §4.8 — build_inspect_read checks
-  EUID == 0 in production (fixture_root=None). Injectable `_injectable_is_root()`
-  bypasses check when fixture_root is provided. Gating (--inspect-files/--admin)
+  EUID == 0 in production. Injectable `_injectable_is_root()` provides an
+  explicit test predicate; fixture roots never bypass the check. Gating (--inspect-files/--admin)
   checked before root to preserve ReadDenied behavior.
 - Files: groop/src/groop/inspect_files/reader.py
 - Result: Production reads require root; tests bypass via fixture_root.
@@ -96,4 +96,14 @@ PYTHONPATH=groop/src python3 -m pytest groop/tests -q
 mapfile -d '' pyfiles < <(find groop/src/groop groop/tests -name '*.py' -print0)
 python3 -m py_compile "${pyfiles[@]}"
 # clean, exit 0
+```
+
+```text
+2026-07-10 CONTROLLER CORRECTION
+- Required a literal True from the root predicate.
+- Applied exact UTF-8 byte and generated-line bounds to returned content.
+- Fixed simultaneous byte/line cutoff handling.
+- Replaced checkout-mutating FIFO fixtures with pytest temporary fixtures.
+- Replaced vacuous oversized/hostile-byte coverage with executable assertions.
+- Focused result: 113 passed in 0.64s.
 ```

@@ -26,8 +26,11 @@ primitive.
   symlink escapes, devices, FIFOs, sockets, directories, and non-regular files.
 - Use no shell and no mutation. Prefer direct descriptor reads with no-follow
   semantics; do not call `cat`, `tail`, Docker, or systemd to read content.
-- Bound bytes, lines, time/work, and rendered output. Expose truncation and
-  unavailable/error state explicitly; decode hostile bytes safely.
+- Bound source bytes, payload lines, and read work. Bound the returned content
+  payload exactly in UTF-8 bytes, including generated per-file framing; the
+  fixed, structurally bounded typed text/JSON metadata envelope is outside the
+  caller-selected content budget. Expose truncation and unavailable/error
+  state explicitly; decode hostile bytes safely.
 - Do not let Docker names masquerade as container directory IDs. Production
   Docker log reads require a validated full container ID or trusted resolved
   metadata; fixture seams may provide alternate roots.
@@ -51,4 +54,3 @@ primitive.
 - Follow/stream mode, journal execution, volume trees, or overlay traversal.
 - File writes, deletion, editing, chmod/chown, or command execution.
 - Daemon transport/API exposure.
-

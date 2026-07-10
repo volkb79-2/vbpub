@@ -180,7 +180,7 @@ sudo groop damon paddr start --confirm START
 | `x` | Save incident snapshot for selected entity. |
 | `m` | Host-memory / paddr DAMON status. |
 | `b` | Collapse/expand banner. |
-| `k` | Reserved v2 admin action; current builds report that executable admin actions are not implemented. |
+| `k` | Reserved v2 admin action; the TUI mutation binding remains disabled. |
 | `F1`, `?` | Metric glossary/help. |
 | `q` | Quit. |
 
@@ -196,7 +196,10 @@ sudo groop damon paddr start --confirm START
   the same groop-owned marker logic as the CLI.
 - Incident snapshots write only under the configured snapshot directory or the
   XDG state fallback. They do not collect arbitrary file/log content.
-- File/log/content browsing and executable Docker/systemd admin actions are not implemented.
+- File/log/content browsing and executable Docker/systemd admin actions are
+  separately gated. The P46 CLI requires `--admin`, typed `--confirm EXECUTE`,
+  root, strict target validation, and a fail-closed mandatory audit-first
+  execution kernel. See Safety Model below for the full gate chain.
 - Pressing a reserved v2 admin key in the TUI reports that the action is
   unavailable in the current build instead of failing silently.
 - `groop action preview --kind docker-restart --target NAME --admin --json`
@@ -206,9 +209,20 @@ sudo groop damon paddr start --confirm START
 - `groop inspect-files read` provides bounded, confined, read-only content
   reads for allowlisted Docker JSON logs and cgroup files. Requires both
   `--inspect-files` and `--admin`. Reads are bounded by `--max-bytes`
-  (default 65536) and `--max-lines` (default 5000). Paths are confined via
-  `Path.is_relative_to()`, opened with `os.O_NOFOLLOW`, and stat-verified as
+  (default 65536) and `--max-lines` (default 5000). Every path component is
+  traversed descriptor-relatively with `O_NOFOLLOW`; leaves are stat-verified
   regular files. The module never imports `subprocess` and never writes files.
+- `groop action execute --kind docker-restart --target NAME --admin
+  --confirm EXECUTE` runs the validated Docker/systemd start/stop/restart
+  command through root, admin, typed confirmation, timeout, immutable-plan,
+  execution-allowlist, strict target, fixed-absolute-argv, fail-closed
+  mandatory audit, bounded argv-only runner, and post-audit gates. The
+  production audit is fixed at `/var/log/groop/actions.jsonl`; execute does not
+  accept `--audit-log`. Any pre-mutation gate failure produces a refusal and
+  executes nothing. API fixture paths are not CLI inputs.
+- Tests inject a fake runner and prove every gate without real Docker or
+  systemd calls. Post-audit failure is reported as a typed partial/audit
+  failure while preserving the action outcome.
 
 ## Compressed Swap Interpretation
 
@@ -258,6 +272,7 @@ paddr_sample_us = 400000
 paddr_aggr_us = 8000000
 paddr_update_us = 1000000
 max_concurrent_targets = 4
+# paddr_enabled = false   # disabled by default; enable for daemon-owned paddr
 
 [bpf_snapshot]
 # Disabled by default. Enable only when bpftool is installed and BPF maps are
