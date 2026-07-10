@@ -43,3 +43,14 @@
 - Action: Final commit on feat/groop-p38-tui-smoke-evidence.
 - Follow-up: Ready for controller review and merge.
 ```
+
+```text
+2026-07-10 controller review
+- Action: Ran focused acceptance tests, import-contract probe, and fixture
+  tui-smoke JSON command.
+- Result: 40 acceptance tests passed; import of groop.acceptance did not import
+  textual or groop.ui.*; fixture tui-smoke exited 0.
+- Action: Added direct timeout-path coverage for run_tui_smoke and removed dead
+  stderr cleanup variable.
+- Follow-up: Re-run focused and full validation before merge.
+```

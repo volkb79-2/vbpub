@@ -46,14 +46,14 @@ None. The `tui-smoke` subcommand is additive and package-private within
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests/test_acceptance.py -q --tb=short
-# 39 passed in 7.28s
+# 40 passed in 7.21s
 ```
 
 Full suite:
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q --tb=short
-# 381 passed in 41.89s
+# 382 passed in 41.88s
 ```
 
 py_compile:
@@ -63,7 +63,7 @@ python3 -m py_compile groop/src/groop/acceptance.py groop/tests/test_acceptance.
 # (no output — clean)
 ```
 
-### 13 New Tests
+### 14 New Tests
 
 | Test | What It Covers |
 |------|----------------|
@@ -71,6 +71,7 @@ python3 -m py_compile groop/src/groop/acceptance.py groop/tests/test_acceptance.
 | `test_parse_ui_smoke_line_handles_garbage` | Empty/unparseable input returns `{}` |
 | `test_run_tui_smoke_fixture_replay` | Full fixture replay exit 0, smoke line parsed |
 | `test_run_tui_smoke_bad_replay_path` | Bad path exit 1, no smoke line |
+| `test_run_tui_smoke_timeout` | Timeout exits through bounded result with `(timeout)` stderr snippet |
 | `test_run_tui_smoke_with_profile` | `--profile minimal` pass-through |
 | `test_format_tui_smoke_text_contains_expected_markers` | Text output format |
 | `test_format_tui_smoke_json_parseable` | JSON output parseable with all fields |
@@ -92,10 +93,10 @@ PYTHONPATH=groop/src python3 -m groop.acceptance tui-smoke \
 Result:
 - exit `0`, `ok: true`
 - smoke line: `ui smoke ok frames=1 view=tree profile=auto`
-- wall: `0.3065s`
-- child user CPU: `0.2310s`
-- child sys CPU: `0.0352s`
-- child max RSS: `41848 KB`
+- wall: `0.3465s`
+- child user CPU: `0.2780s`
+- child sys CPU: `0.0238s`
+- child max RSS: `41688 KB`
 
 ### Import Contract
 

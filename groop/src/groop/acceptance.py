@@ -691,8 +691,6 @@ def run_tui_smoke(
     exit_code = cp.returncode
 
     stdout_lines = cp.stdout.strip().split("\n")
-    stderr_text = cp.stderr.strip()
-
     # Find the ui smoke line
     smoke_line: str | None = None
     for line in stdout_lines:

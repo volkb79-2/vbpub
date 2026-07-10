@@ -502,6 +502,21 @@ def test_run_tui_smoke_bad_replay_path() -> None:
     assert result.smoke_line is None
 
 
+def test_run_tui_smoke_timeout() -> None:
+    """``run_tui_smoke`` reports a bounded failure when the child times out."""
+    from groop.acceptance import run_tui_smoke
+
+    result = run_tui_smoke(
+        replay_path=FIXTURE_FRAME,
+        timeout_s=0.000001,
+    )
+    assert result.ok is False
+    assert result.exit_code == -1
+    assert result.smoke_line is None
+    assert result.stderr_snippet == "(timeout)"
+    assert result.measurements["wall_s"] >= 0
+
+
 def test_run_tui_smoke_with_profile() -> None:
     """``run_tui_smoke`` with ``--profile minimal`` passes through and appears in output."""
     from groop.acceptance import run_tui_smoke
