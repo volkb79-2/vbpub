@@ -17,7 +17,7 @@ The current candidate may claim these implemented, fixture-tested surfaces:
 | Cut | Claimable surface | Qualification |
 |---|---|---|
 | v0 | Cgroup v2 collection, registry/source labels, reset-safe rates, `--once --json` | Rootless fixture tests and acceptance smoke exist. |
-| v1 | Read-only Textual tree/container UI, diagnostics, record/replay, profiles, snapshots, host/netns network labels, CPU trends, host device/loss summaries | Final performance, rendered replay fidelity, pipx, and live non-root acceptance remain release gates. |
+| v1 | Read-only Textual tree/container UI, diagnostics, record/replay, profiles, snapshots, host/netns network labels, CPU trends, host device/loss summaries | Final performance, rendered replay fidelity, and live non-root acceptance remain release gates. |
 | v1.5 | Passive DAMON observation, explicitly controlled DAMON APIs/UI, incident workflows, compressed-swap awareness, daemon read-client foundations | Controlled DAMON and deployed non-root daemon claims require the applicable live-host templates below. |
 
 The candidate must not be described as production-certified until every
@@ -56,7 +56,7 @@ the named measurement gate.
 | 8 | Pressure sorting and finding explanations | Pass | Diagnostics and UI tests | Exact per-cgroup network loss remains a non-claim |
 | 9 | Host/netns network labels | Pass | Network provider and UI tests | None |
 | 10 | Byte-identical formatted replay cells | Partial | Model equality and replay fixtures | Record/replay rendered-cell comparison for every tick |
-| 11 | Local pipx install and no-config defaults | Partial | P12 build and fresh-venv wheel install | The spec-required local wheel/sdist `pipx install` run |
+| 11 | Local pipx install and no-config defaults | Pass | Post-P40 controller evidence in `MEASUREMENTS.md`: isolated build, pipx install, version, and empty-directory replay smoke | None |
 | 12 | v2 action/inspection gating | Partial | Disabled hotkeys, admin preview/audit, inspect-files planning | Executable actions are a non-claim; do not claim full v2 acceptance |
 | 13 | Live docker-group non-root smoke | Partial | P33/P35/P38 rootless fixture harnesses | Live non-root tree, Docker JOIN, populated metrics, and disabled mutations |
 | 14 | BPF/DAMON default measurement gates | Conditional | BPF and active DAMON remain disabled by default | Run the relevant overhead plan before changing either default |
@@ -215,7 +215,6 @@ evidence in `MEASUREMENTS.md` for:
 - [ ] Five-minute live TUI CPU and RSS budgets (spec items 1-2).
 - [ ] Controlled live Finding-D raw-write/reversion (item 4).
 - [ ] Rendered record/replay cell fidelity (item 10).
-- [ ] Local-artifact pipx install plus no-config defaults (item 11).
 - [ ] Live docker-group non-root acceptance (item 13).
 - [ ] Live DAMON and daemon evidence only for capabilities included in the
       release claim.

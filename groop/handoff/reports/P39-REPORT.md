@@ -68,7 +68,6 @@ Before a production-certified v1/v1.5 tag:
 
 - Record five-minute live TUI CPU/RSS.
 - Record controlled live drift/reversion and formatted replay fidelity.
-- Record local-artifact pipx/no-config behavior.
 - Record the exact live docker-group non-root smoke.
 - Record DAMON and daemon live evidence only when those capabilities are in
   the release claim.

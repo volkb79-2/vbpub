@@ -14,7 +14,7 @@ Approximate status:
 | Release cut | Feature implementation | Release confidence | Notes |
 |---|---:|---:|---|
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
-| v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment (Python 3.14, Textual 8.2.8) via a version-compatible test helper; strict live performance, drift, replay-fidelity, pipx, and non-root gates also remain. |
+| v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment; isolated local-artifact pipx/no-config acceptance now passes. Strict live performance, drift, replay-fidelity, and non-root gates remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
 | v2 daemon/BPF/admin actions | 50-55% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, and daemon current/status commands exist; live BPF attach/snapshot writing, executable admin actions, GPU/ZFS plugins are not implemented. |
 
@@ -117,8 +117,8 @@ core workflows, not yet production-certified.**
   gates to evidence sources. P17 records the safe BPF gate and current live-BPF
   blocker. P18 records the fixture-tested BPF provider implementation.
   `MEASUREMENTS.md` records the current Textual 8 full-suite blocker and still
-  needs strict live TUI performance, controlled drift, rendered replay, pipx,
-  and docker-group non-root evidence. DAMON/daemon live evidence is required
+  needs strict live TUI performance, controlled drift, rendered replay, and
+  docker-group non-root evidence. DAMON/daemon live evidence is required
   when those controlled/deployed capabilities are claimed; privileged BPF
   measurements are required before enabling BPF by default.
 - **BPF network provider:** P18 implements the userspace BPF provider reading
@@ -152,7 +152,7 @@ core workflows, not yet production-certified.**
 | 8. Diagnostics | Covered by tests; host/interface network loss is covered by P37. Exact per-cgroup network-loss attribution remains v2 BPF work. |
 | 9. Network labels | Covered by provider tests. |
 | 10. Record/replay fidelity | Model equality covered; byte-for-byte rendered table acceptance still needed. |
-| 11. Packaging | P12 built sdist/wheel and verified fresh wheel install; pipx-specific install still optional evidence. |
+| 11. Packaging | P12 built sdist/wheel and verified fresh-venv install; post-P40 controller evidence adds the required isolated local-wheel pipx install, version check, and empty-directory no-config replay smoke. |
 | 12. v2 gating | Explicit admin-preview gating landed in P21: `groop action preview` with `--admin` required, no-execution guarantee, audit logging, and TUI reserved-key disabled messaging in P13. |
 | 13. Unprivileged smoke | P33 provides `python -m groop.acceptance smoke`, P35 provides `python -m groop.acceptance steady`, and P38 provides `python -m groop.acceptance tui-smoke` for repeatable rootless safe-path evidence; fresh live-host results should be pasted into `MEASUREMENTS.md` before a release claim. |
 | 14. Measurement gates | `MEASUREMENTS.md` records the P17 safe BPF gate and blocker; DAMON overhead and privileged live-BPF overhead gates are not recorded. |

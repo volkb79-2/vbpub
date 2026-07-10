@@ -49,9 +49,10 @@ does not claim that all Textual 1-8 releases are package-supported.
 ## Remaining Release Gates
 
 P40 closes only the automated Textual suite blocker. Five-minute live TUI
-CPU/RSS, controlled drift/reversion, rendered replay fidelity, local-artifact
-pipx/no-config behavior, exact docker-group non-root smoke, and applicable
-DAMON/daemon live evidence remain governed by `docs/RELEASE-READINESS.md`.
+CPU/RSS, controlled drift/reversion, rendered replay fidelity, exact
+docker-group non-root smoke, and applicable DAMON/daemon live evidence remain
+governed by `docs/RELEASE-READINESS.md`. Local-artifact pipx/no-config
+acceptance passed after merge and is recorded in `MEASUREMENTS.md`.
 
 P40 merged on main as `970953a` after P39 merge `bfdf3db`. Post-merge
 controller validation recorded 382 passed in 47.73s, 40 focused acceptance

@@ -232,11 +232,20 @@ Record:
 - Build artifact:
 - `groop-0.1.0.tar.gz`
 - `groop-0.1.0-py3-none-any.whl`
-- pipx version:
-- Not measured; P12 used fresh venv wheel install instead.
-- Result:
-- Pass: wheel installed in a fresh venv and `groop --version` returned
-  `groop 0.1.0`.
+- pipx version: `1.15.0`
+- Controller evidence (2026-07-10, main after P39/P40):
+  - Build ran with `/home/vscode/.venv/bin/python -m build groop/` and an
+    isolated temporary output directory.
+  - Produced `groop-0.1.0.tar.gz` and
+    `groop-0.1.0-py3-none-any.whl`.
+  - `pipx install --force <temporary-wheel>` succeeded using isolated
+    temporary `PIPX_HOME` and `PIPX_BIN_DIR`.
+  - The isolated console script returned `groop 0.1.0`.
+  - From an empty directory with no config, the installed console script ran
+    fixture replay with `--step --ui-smoke` and printed
+    `ui smoke ok frames=1 view=tree profile=auto`.
+  - Temporary build and pipx state was removed after the check.
+- Result: Pass for spec section 9 item 11.
 
 ## DAMON Gate
 
