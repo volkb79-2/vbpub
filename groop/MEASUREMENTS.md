@@ -7,20 +7,28 @@ claims without updating this file.
 The canonical gate map and copy-paste commands live in
 `docs/RELEASE-READINESS.md`. This file remains the place for dated raw results.
 
-## Current Release Blocker
+## Current Status
 
-P39 controller validation in the new managed devcontainer environment used
-Python 3.14.6 and Textual 8.2.8:
+P40 restores the full green suite under the managed devcontainer environment
+(Python 3.14.6, Textual 8.2.8):
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 367 passed, 15 failed in 48.27s
+# 382 passed in 49.63s
 ```
 
-All 15 failures are in `groop/tests/test_ui_app.py` and attempt to read the
-removed `Static.renderable` attribute. The P38 subprocess TUI smoke path still
-passes. P40 tracks a compatibility fix; a green full suite from the candidate
-commit must replace this blocker before a production-certified claim.
+The 15 `Static.renderable` failures reported in P39 are resolved via the
+`_static_text()` compatibility helper that prefers `.content` (Textual >=8)
+with a fallback to `.renderable` (Textual <1). Semantic UI assertions for
+replay status, reserved actions, snapshot progress/results, and DAMON
+confirmation/status are preserved.
+
+Also validated:
+
+- Focused UI tests: `23 passed in 11.40s`.
+- Focused acceptance tests: `40 passed in 8.70s`.
+- P38 fixture TUI smoke: `ALL CHECKS PASSED, exit code 0`.
+- `py_compile` over the changed test file.
 
 ## Current Evidence
 
