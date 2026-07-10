@@ -1,6 +1,64 @@
-# groop Daemon Spike
+# groop Daemon
 
-P16 defines a small read-only broker, not the final daemon product.
+P51 introduces a request-independent background producer: the daemon owns one
+continuously advancing collector stream and serves non-consuming snapshots and
+history to any number of clients. Requests never call `next()` on the collector,
+so multiple concurrent clients observe the same sequence without being able to
+accelerate, consume, or starve each other.
+
+## Socket
+
+Recommended production path: `/run/groop/groop.sock`.
+
+Recommended ownership: `root:groop`, mode `0660`. Users who may read
+daemon-approved full telemetry join the `groop` group. The socket directory
+should be root-owned and not writable by clients.
+
+## Protocol
+
+One JSON request per connection:
+
+```json
+{"op":"current"}
+{"op":"stream","limit":3}
+{"op":"stream","limit":5,"cursor":7}
+```
+
+`current` returns the latest published frame (the most recent frame the
+background producer has written). Before the first frame is available it waits
+for a bounded startup timeout (default 5 s) and returns a typed
+`FrameUnavailableError` on timeout, source exhaustion, or producer failure.
+
+`stream` reads from the published history without advancing the collector.
+Without a `cursor` it returns the *limit* most recent frames (the tail of
+history).  With a `cursor` it returns frames whose sequence number is strictly
+greater than the cursor.  Each frame response includes a `seq` field when
+returned from a stream request.
+
+Responses are JSON lines:
+
+```json
+{"type":"frame","frame":{...canonical Frame JSON...},"seq":12}
+{"type":"end","count":1}
+```
+
+Unsupported requests return an error object. The protocol has no arbitrary file
+read, command execution, admin, Docker mutation, systemd mutation, BPF, or DAMON
+mutation verb.
+
+## Background Producer
+
+On `groop daemon serve` the daemon creates a `FrameBroker` with the live
+collector stream and immediately starts a background producer thread. The
+producer continuously advances the collector, publishing each frame into a
+bounded sequenced history (`--history-size`, default 120).  The producer runs
+independently of read requests; it automatically starts on first access (lazy)
+and stops deterministically after the Unix server closes.
+
+If the frame source is exhausted or the producer encounters repeated errors, the
+broker captures the failure and returns a `FrameUnavailableError` to clients
+without crashing the Unix server. The daemon continues to serve cached frames
+from history.
 
 ## Socket
 

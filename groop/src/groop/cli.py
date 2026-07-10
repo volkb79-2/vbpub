@@ -650,6 +650,7 @@ def _main_daemon(argv: list[str]) -> int:
         config = load(args.config)
         collector = Collector(cgroup_root=args.cgroup_root, config=config)
         broker = FrameBroker(live_frame_stream(collector), history_size=args.history_size)
+        broker.start()
         server = serve_unix_socket(args.socket, broker)
         print(f"serving read-only groop frames on {args.socket}", flush=True)
 
@@ -804,6 +805,8 @@ def _main_daemon(argv: list[str]) -> int:
                         flush=True,
                     )
             server.server_close()
+            broker.stop()
+            broker.join(timeout=5.0)
     if args.command == "preflight":
         try:
             report = preflight_daemon_deployment(args.socket, group_name=args.group)

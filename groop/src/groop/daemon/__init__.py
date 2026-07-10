@@ -1,5 +1,5 @@
 from groop.daemon.bpf_snapshot import BpfSnapshotBridge, BpfSnapshotError, SNAPSHOT_FILENAME
-from groop.daemon.broker import FrameBroker, serve_unix_socket
+from groop.daemon.broker import FrameBroker, FrameBrokerError, FrameProducerError, FrameUnavailableError, serve_unix_socket
 from groop.daemon.client import (
     DaemonClient,
     DaemonClientError,
@@ -34,6 +34,9 @@ __all__ = [
     "DaemonStatusReport",
     "DamonPaddrLifecycleError",
     "FrameBroker",
+    "FrameBrokerError",
+    "FrameProducerError",
+    "FrameUnavailableError",
     "PaddrLifecycleStartError",
     "PaddrLifecycleStopError",
     "ProtocolStatus",

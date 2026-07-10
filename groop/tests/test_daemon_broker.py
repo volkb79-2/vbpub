@@ -30,20 +30,24 @@ def _request(socket_path: Path, payload: dict[str, object]) -> list[dict[str, ob
 
 
 def test_daemon_socket_serves_current_and_stream_frames(tmp_path: Path) -> None:
-    broker = FrameBroker([_frame_at(100.0), _frame_at(105.0), _frame_at(110.0)], history_size=2)
+    broker = FrameBroker([_frame_at(100.0), _frame_at(105.0), _frame_at(110.0)], history_size=10)
     socket_path = tmp_path / "groop.sock"
     server = serve_unix_socket(socket_path, broker)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        # current() returns the latest frame produced by the background
+        # producer — all three frames have been consumed by now.
         current = _request(socket_path, {"op": "current"})
         assert current[0]["type"] == "frame"
-        assert current[0]["frame"]["ts"] == 100.0
+        assert current[0]["frame"]["ts"] == 110.0
         assert current[1] == {"type": "end", "count": 1}
 
-        stream = _request(socket_path, {"op": "stream", "limit": 2})
-        assert [item["frame"]["ts"] for item in stream if item["type"] == "frame"] == [105.0, 110.0]
-        assert stream[-1] == {"type": "end", "count": 2}
+        # stream with cursor=None returns the tail of history.
+        stream = _request(socket_path, {"op": "stream", "limit": 10})
+        timestamps = [item["frame"]["ts"] for item in stream if item["type"] == "frame"]
+        assert timestamps == [100.0, 105.0, 110.0]
+        assert stream[-1] == {"type": "end", "count": 3}
     finally:
         server.shutdown()
         server.server_close()

@@ -31,11 +31,11 @@ daemon component health, bounded journald snapshots, and structured
 P50 is queued as a non-privileged usability slice for clickable table sorting
 and row drill-down. Current builds remain keyboard-first until it is reviewed.
 
-Daemon sampling is currently request-driven: `current` caches the first frame
-and `stream` advances the source. P51 is queued to make one background producer
-serve fresh non-consuming fan-out; P52 then supplies the versioned bounded read
-contract required by a production web backend. Until those merge, web support is
-a prototype-only claim.
+Daemon sampling is now request-independent with a background producer (P51):
+`current` returns the latest published frame and changes as sampling advances;
+`stream` reads from history with optional sequence/cursor. P52 is queued for
+the versioned bounded read contract required by a production web backend.
+Until P52 merges, web support is a prototype-only claim.
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -62,8 +62,9 @@ core workflows, not yet production-certified.**
   confirmation, ownership markers, and audit logs.
 - Incident snapshots with bounded frame capture, raw cgroup copies, provider
   status, manifest hashes, redaction, and `groop snapshot inspect`.
-- Read-only Unix-socket daemon broker spike with current/stream protocol and
-  socket tests.
+- Read-only Unix-socket daemon broker with request-independent background
+  producer, bounded sequenced history, non-consuming current/stream fan-out,
+  sequence/cursor semantics, and deterministic start/stop/join lifecycle (P51).
 - `groop --attach SOCKET` client mode with current-frame polling, `--once
   --json`, and UI smoke coverage.
 - Daemon deployment preflight plus packaged systemd/tmpfiles templates for a
