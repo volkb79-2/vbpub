@@ -58,6 +58,9 @@ flowchart TD
     P40 --> P41[P41 Rendered replay fidelity]
     P18 --> P42[P42 Daemon BPF snapshot bridge]
     P40 --> P43[P43 Current Textual baseline]
+    P14 --> P44[P44 Daemon paddr lifecycle]
+    P29 --> P45[P45 Bounded inspect content]
+    P21 --> P46[P46 Admin execution kernel]
 ```
 
 ## Remaining Estimate
@@ -67,7 +70,7 @@ After P43, the roadmap is mostly in three buckets:
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
 | v1/v1.5 release confidence and UI polish | 0 | P43 removes the obsolete Textual `<1` resolver ceiling and closes the last planned v1/v1.5 release-confidence package. Manual live-host acceptance evidence remains. |
-| v2 privileged daemon/BPF/admin/file work | 5-7 | BPF daemon lifecycle, paddr daemon ownership, install execution/service hardening, executable admin actions, inspect-files content mode, systemd property governance. |
+| v2 privileged daemon/BPF/admin/file work | 5-7 | P44-P46 cover paddr daemon ownership, the first bounded inspect-files content slice, and the first executable admin slice; BPF lifecycle, install execution/service hardening, remaining content modes, kill/update, and systemd property governance remain. |
 | Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
 
 Pragmatic estimate from the current state: a shippable v1/v1.5 release
@@ -77,6 +80,31 @@ small packages**, depending on whether "fully completed" includes optional
 plugins and web UI.
 
 ## Near Term
+
+### P44 - Daemon-Owned paddr Lifecycle
+
+Status: planned. Explicit `[damon] paddr_enabled = true` makes the root daemon
+own one audited whole-host paddr session for its lifetime. The default remains
+disabled and foreign sessions remain untouched.
+
+Handoff: `handoff/P44-daemon-paddr-lifecycle.md`.
+
+### P45 - Bounded Inspect-Files Content Reads
+
+Status: planned. Extend P29 with gated, confined, bounded regular-file reads for
+resolved Docker JSON logs and cgroup files, without arbitrary paths,
+subprocesses, special files, or mutation.
+
+Handoff: `handoff/P45-inspect-files-bounded-content.md`.
+
+### P46 - Admin Action Execution Kernel
+
+Status: planned. Execute only Docker/systemd start, stop, and restart plans
+behind root, `--admin`, typed confirmation, strict target validation, durable
+audit, argv-only execution, and bounded results. Kill, update, set-property,
+TUI actions, and daemon RPCs remain later packages.
+
+Handoff: `handoff/P46-admin-action-execution-kernel.md`.
 
 ### P12 — Release Hardening And Acceptance
 

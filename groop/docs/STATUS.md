@@ -18,6 +18,11 @@ Approximate status:
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
 | v2 daemon/BPF/admin actions | 55-60% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, daemon current/status commands, and the daemon BPF snapshot bridge exist; live BPF program compilation and attach/pin/detach, executable admin actions, GPU/ZFS plugins are not implemented. |
 
+Active planned packages P44-P46 address daemon-owned paddr lifecycle, the first
+bounded inspect-files content reads, and a deliberately narrow executable
+start/stop/restart action kernel. Until merged and validated, all three remain
+non-claims.
+
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
 core workflows, not yet production-certified.**
