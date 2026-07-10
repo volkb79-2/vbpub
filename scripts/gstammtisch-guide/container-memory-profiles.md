@@ -86,15 +86,34 @@ claude/codex CLI sessions started from host shells live in
 `user.slice/user-1003.slice/session-<N>.scope` and are governed by nothing (decision
 2026-07-10: leave as-is, documented in `plan-stack-resource-tuning.md`).
 
-## 5. Pending measurements
+## 5. postgres DAMON profile + the idle-stack lesson (2026-07-10)
 
-- postgres DAMON profile (running 2026-07-10, `/var/log/damon/ts_postgres.jsonl`)
-- controller / worker-io / worker-db DAMON profiles (queued — one kdamond, sequential)
-- IO-PSI decay confirmation post-deploy-settle (from the groop recording)
+postgres (480 s, same intervals): backends at ~13 M RSS, majflt 0, hot/warm/cold all 0,
+CPU 0 — the DB is **idle**, and so is the whole apps tier (no tasks running yet).
+**Decision: further DAMON profiles of controller/worker-io/worker-db are DEFERRED until
+the stack is under real load** (a corpus run / integration suite) — idle-state profiles
+of on-demand services measure nothing but their allocator floor. skywalking-oap (§2) was
+the exception worth profiling idle because its ingest pipeline is always-on.
+
+## 6. Post-settle IO pressure (by design, not a problem)
+
+~40 min after deploy: besteffort RAM settled 3245→2855 M, `psi_mem_some10` ~1, but
+`psi_io_some10` ROSE to ~54 — driven almost entirely by **authentik-worker** (42 io-some;
+its cold pages get reclaimed during settle and every swap-in queues behind the whole
+host at IOWeight 10 + the 40 % caps). The game stayed at `psi_io_full 0.0` throughout —
+this is precisely the intended failure mode: the best-effort tier absorbs all the
+waiting, prod feels nothing. Only worth revisiting if a *latency-sensitive* service ever
+lands in besteffort.
+
+## 7. Pending
+
+- controller / worker-io / worker-db DAMON profiles **under load** (see §5)
 - per-service `mem_reservation`/`mem_limit` recommendation table → ciu governance
   overrides (today: blanket `mem_limit=2g`, `mem_reservation=256m` — already generous
   vs. the measured ~50 M apps tier; the interesting overrides are OAP reservation up,
   and possibly authentik-worker)
+- recorder `groop-recorder.service` dialed to 300 s cadence 2026-07-10 after the
+  measurement window (~130 MB/day; stop it or rotate `/var/log/groop/` when done)
 
 ## Reproduction crib
 
