@@ -8,8 +8,8 @@ manual live-host evidence is still required, and which commands to run before a
 release claim.
 
 This package should be mostly documentation plus small glue only if it removes
-duplication. It depends on P38 if it references the `tui-smoke` acceptance
-command.
+duplication. P38 has landed on `main`, so this package should include the
+`tui-smoke` acceptance command in the release-readiness surface.
 
 ## Workflow
 
@@ -17,7 +17,7 @@ Follow `groop/README.md` "Workflow protocol" exactly.
 
 - Branch: `feat/groop-p39-release-readiness-ledger`
 - Worktree: `.worktrees/-groop-p39-release-readiness-ledger`
-- Branch from local `main` after P38 merges
+- Branch from local `main` at or after P38 merge `e6ab8f8`
 - Touch only `groop/**`
 - Keep `groop/handoff/reports/P39-LOG.md` updated while working
 - Finish with `groop/handoff/reports/P39-REPORT.md` and a focused commit
@@ -33,6 +33,19 @@ Read before editing:
 - `groop/docs/OPERATIONS.md`
 - `groop/MEASUREMENTS.md`
 - reports for P33, P35, P36, P37, and P38
+
+Baseline evidence available before P39 starts:
+
+- P38 merge commit on `main`: `e6ab8f8`
+- Full suite after P38 merge:
+  `PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q`
+  -> `382 passed in 41.48s`
+- Focused acceptance tests after P38 merge:
+  `PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_acceptance.py -q`
+  -> `40 passed in 7.05s`
+- P38 fixture command after merge:
+  `PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m groop.acceptance tui-smoke --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --json`
+  -> exit `0`, `ok: true`, `frames: 1`, `view: tree`, `profile: auto`
 
 ## Functional Requirements
 
@@ -52,8 +65,8 @@ The document should include:
   - `py_compile`;
   - `python -m groop.acceptance smoke`;
   - `python -m groop.acceptance steady`;
-  - P38 `python -m groop.acceptance tui-smoke`;
-  - replay UI smoke;
+  - P38 `python -m groop.acceptance tui-smoke` with explicit fixture replay;
+  - replay UI smoke through `groop --replay ... --step --ui-smoke`;
   - packaging/wheel smoke.
 - A live-host evidence template for:
   - 5-minute Textual TUI CPU/RSS;
@@ -76,6 +89,11 @@ Update:
 - `groop/docs/STATUS.md` only if the readiness document changes wording of the
   current release claim.
 - `groop/docs/ROADMAP.md` to mark P39 done when the package is complete.
+
+Keep `groop/MEASUREMENTS.md` as the evidence ledger, not the new document.
+`RELEASE-READINESS.md` should point to the ledger and provide paste-in
+templates for missing live-host evidence instead of duplicating every historical
+measurement.
 
 ## Tests / Validation
 

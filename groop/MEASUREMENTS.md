@@ -6,26 +6,17 @@ claims without updating this file.
 
 ## Current Evidence
 
-Most recent branch validation for P38:
-
-```bash
-PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 382 passed in 41.88s
-```
-
-P38 adds 14 focused TUI smoke tests to the acceptance test file.
-Also passed: `py_compile` over P38 changed files, and the P38 TUI smoke command below.
-
-Most recent merged package validation after P36/P37:
+Most recent merged validation after P38:
 
 ```bash
 PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
-# 368 passed in 40.03s
+# 382 passed in 41.48s
 ```
 
-Also passed after P36/P37 review: focused P36/P37 sparkline/host-device/
-banner/diagnostics tests (`71 passed in 0.45s`), `py_compile` over merged
-P36/P37 changed files, and the P35 rootless steady command below.
+P38 adds 14 focused TUI smoke tests to the acceptance test file.
+Also passed after P38 merge: focused acceptance tests (`40 passed in 7.05s`),
+`py_compile` over P38 changed files, import-contract probe, and the P38 TUI
+smoke command below.
 
 P12 package evidence remains: sdist/wheel build, fresh wheel install, and
 `groop --version` (`groop 0.1.0`).
@@ -139,16 +130,16 @@ PYTHONPATH=groop/src python3 -m groop.acceptance tui-smoke \
   --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl
 ```
 
-P38 fixture evidence (P38 branch):
+P38 fixture evidence (post-merge main):
 
 ```text
 groop acceptance tui-smoke  v0.1.0
   UI smoke: ui smoke ok frames=1 view=tree profile=auto
   exit code: 0
-  wall:     0.3465s
-  user:     0.2780s  (child)
-   sys:     0.0238s  (child)
-   RSS:      41688 KB  (child max)
+  wall:     0.3569s
+  user:     0.2620s  (child)
+   sys:     0.0430s  (child)
+   RSS:      41656 KB  (child max)
 ```
 
 - Command:
@@ -156,10 +147,10 @@ groop acceptance tui-smoke  v0.1.0
 - Result:
   - exit `0`, `ok: true`
   - smoke line: `ui smoke ok frames=1 view=tree profile=auto`
-  - wall: `0.3465s`
-  - child user CPU: `0.2780s`
-  - child sys CPU: `0.0238s`
-  - child max RSS: `41688 KB`
+  - wall: `0.3569s`
+  - child user CPU: `0.2620s`
+  - child sys CPU: `0.0430s`
+  - child max RSS: `41656 KB`
 
 ## v1 Acceptance Measurements
 

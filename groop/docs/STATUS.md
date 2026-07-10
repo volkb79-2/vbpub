@@ -155,16 +155,16 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P38 branch, controller-reviewed):
+Most recent full-suite validation (P38 merged on main):
 
 ```bash
 PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
-# 382 passed in 41.88s
+# 382 passed in 41.48s
 ```
 
 Also validated:
 
 - Python compile over P38 changed files.
-- P38 focused acceptance tests: `40 passed in 7.21s`.
-- P38 fixture TUI smoke command exited `0`.
+- P38 focused acceptance tests after merge: `40 passed in 7.05s`.
+- P38 fixture TUI smoke command after merge exited `0`.
 - Import-contract probe: importing `groop.acceptance` imported neither Textual nor `groop.ui.*`.
