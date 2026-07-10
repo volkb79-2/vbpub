@@ -57,11 +57,15 @@ P39 itself changes documentation only. It introduces no runtime, schema,
 contract, default, or privilege behavior changes. No live-root actions or
 package publication were performed.
 
+P39 merged as `bfdf3db`. Its evidence-exposed P40 follow-up merged as
+`970953a` and restored the full suite. Post-merge controller validation recorded
+382 passed in 47.73s, 40 focused acceptance tests in 7.54s, passing TUI smoke,
+and clean full-source compilation.
+
 ## Remaining Gates
 
 Before a production-certified v1/v1.5 tag:
 
-- Complete P40 and record a green candidate full suite.
 - Record five-minute live TUI CPU/RSS.
 - Record controlled live drift/reversion and formatted replay fidelity.
 - Record local-artifact pipx/no-config behavior.

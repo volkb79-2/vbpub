@@ -74,6 +74,15 @@ P39 changes no production or test Python files.
 
 ## Blockers
 
-- P40 must restore the green full suite under current supported Textual.
+- P40 restored the green full suite and merged after P39.
 - The strict manual gates listed in `docs/RELEASE-READINESS.md` remain before a
   production-certified tag.
+
+## Merge Evidence
+
+- P39 merge commit: `bfdf3db`.
+- P40 follow-up merge commit: `970953a`.
+- Post-merge full suite: 382 passed in 47.73s.
+- Post-merge acceptance: 40 passed in 7.54s.
+- Post-merge TUI smoke: exit 0, `ok: true`, one tree/auto frame.
+- Full-source compilation and merge diff checks passed.

@@ -159,16 +159,16 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent full-suite validation (P40):
+Most recent full-suite validation after P39/P40 merged on main:
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 382 passed in 48.04s
+# 382 passed in 47.73s
 ```
 
 Also validated:
 
-- Focused UI tests: `23 passed in 11.24s` under Textual 8.2.8 and `23 passed in 8.35s` under isolated Textual 0.58.1.
-- P38/P40 focused acceptance tests: `40 passed in 8.12s`.
-- P38 fixture TUI smoke command exited `0` (ALL CHECKS PASSED).
-- `py_compile` over the changed test file and `git diff --check`.
+- Focused UI tests before merge: `23 passed in 11.24s` under Textual 8.2.8 and `23 passed in 8.35s` under isolated Textual 0.58.1.
+- Post-merge focused acceptance tests: `40 passed in 7.54s`.
+- Post-merge P38 fixture TUI smoke: exit `0`, `ok: true`, `frames: 1`, `view: tree`, `profile: auto`.
+- Post-merge full-source `py_compile` and merge diff checks passed.

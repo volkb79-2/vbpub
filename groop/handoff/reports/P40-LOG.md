@@ -56,3 +56,11 @@ P39's remaining manual production gates.
 
 P40 has no implementation blocker. The live/manual release gates in
 `docs/RELEASE-READINESS.md` remain unchanged.
+
+## Merge Evidence
+
+- Merge commit: `970953a` after P39 merge `bfdf3db`.
+- Full suite on main: 382 passed in 47.73s.
+- Focused acceptance on main: 40 passed in 7.54s.
+- P38 TUI smoke on main: exit 0, `ok: true`, one tree/auto frame.
+- Full-source `py_compile` and merge diff checks passed.

@@ -10,11 +10,12 @@ The canonical gate map and copy-paste commands live in
 ## Current Status
 
 P40 restores the full green suite under the managed devcontainer environment
-(Python 3.14.6, Textual 8.2.8):
+(Python 3.14.6, Textual 8.2.8). Controller validation after P39/P40 merged on
+main:
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 382 passed in 48.04s
+# 382 passed in 47.73s
 ```
 
 The 15 `Static.renderable` failures reported in P39 are resolved via the
@@ -26,11 +27,11 @@ confirmation/status are preserved.
 Also validated:
 
 - Focused UI tests: `23 passed in 11.24s`.
-- Focused acceptance tests: `40 passed in 8.12s`.
+- Post-merge focused acceptance tests: `40 passed in 7.54s`.
 - P38 fixture TUI smoke: exit `0`, `ok: true`, `frames: 1`, `view: tree`,
   `profile: auto`.
 - Isolated Textual 0.58.1 focused UI tests: `23 passed in 8.35s`.
-- `py_compile` over the changed test file and `git diff --check`.
+- Post-merge full-source `py_compile` and merge diff checks passed.
 
 ## Current Evidence
 
