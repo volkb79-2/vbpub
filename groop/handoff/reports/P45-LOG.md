@@ -108,4 +108,5 @@ python3 -m py_compile "${pyfiles[@]}"
 - Focused result: 113 passed in 0.64s.
 - Combined P44/P45/P46 focused result: 264 passed in 1.12s.
 - Full current-main result: 623 passed, 1 skipped in 48.05s.
+- Merged to main as b5ba9af.
 ```

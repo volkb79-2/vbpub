@@ -75,6 +75,8 @@
 
 ## Test Evidence
 
+Merged to `main` as `b5ba9af` after controller security review.
+
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests/test_inspect_files.py -v
 # 113 passed in 0.64s (controller focused gate)
