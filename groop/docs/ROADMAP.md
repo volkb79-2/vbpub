@@ -60,7 +60,7 @@ flowchart TD
 
 ## Remaining Estimate
 
-After P39, the roadmap is mostly in three buckets:
+After P41, the roadmap is mostly in three buckets:
 
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
@@ -283,9 +283,8 @@ Report: `handoff/reports/P40-REPORT.md`.
 
 Status: done. P41 closes spec section 9 item 10 with a multi-tick
 record/replay test comparing production-formatted row keys, columns, and plain
-cell text at a fixed profile and width across RecordReader and ReplayDriver,
-covering both JSONL and conditional compressed JSONL. 10 focused fidelity tests
-pass (2 skip when zstandard is absent).
+cell text at a fixed profile and width through `ReplayDriver`. JSONL is always
+covered; compressed JSONL runs when the optional zstandard dependency exists.
 
 Handoff: `handoff/P41-rendered-replay-fidelity.md`.
 Report: `handoff/reports/P41-REPORT.md`.

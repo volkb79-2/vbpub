@@ -9,21 +9,22 @@ The canonical gate map and copy-paste commands live in
 
 ## Current Status
 
-P41 adds deterministic rendered replay fidelity tests that compare every
-formatted table cell byte-for-byte across the record→replay cycle using
-production RecordWriter, RecordReader, ReplayDriver, and
-render_container_table at a fixed width/profile/sort/filter. The full suite
-now covers 392 tests:
+P41 adds a deterministic rendered replay fidelity gate that compares every
+formatted table cell byte-for-byte across the record/replay cycle using
+`RecordWriter`, `ReplayDriver.play(step=True)`, and the production table cell
+builder at a fixed width/profile/sort/filter. The full suite now covers 383
+passing tests plus one optional compressed-recording skip:
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 392 passed in 47.91s
+# 383 passed, 1 skipped in 47.81s
 ```
 
 Also validated:
 
-- Focused rendered fidelity tests: `10 passed, 2 skipped (no zstandard)`.
-- Focused acceptance tests: `40 passed in 7.09s`.
+- Focused table/record/fidelity tests: `19 passed, 1 skipped in 9.57s`.
+- Focused rendered fidelity tests: `1 passed, 1 skipped in 0.27s`.
+- Focused acceptance tests: `40 passed in 7.28s`.
 - P41 fixture replay TUI smoke: `ok: true`, exit `0`, `frames: 1`,
   `view: tree`, `profile: auto`.
 - Full-source `py_compile`.
@@ -34,7 +35,7 @@ P40 restored the full green suite under the managed devcontainer environment
 (Python 3.14.6, Textual 8.2.8). Controller validation after P39/P40 merged on
 main:
 
-## Current Evidence
+## Historical P38 Evidence
 
 Most recent merged validation after P38:
 

@@ -14,7 +14,7 @@ Approximate status:
 | Release cut | Feature implementation | Release confidence | Notes |
 |---|---:|---:|---|
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
-| v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment. P41 automates strict rendered replay fidelity (392 tests). Isolated local-artifact pipx/no-config acceptance now passes. Strict live performance and non-root gates remain. |
+| v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment. P41 automates strict rendered replay fidelity (383 passing tests plus one optional skip). Isolated local-artifact pipx/no-config acceptance now passes. Strict live performance and non-root gates remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
 | v2 daemon/BPF/admin actions | 50-55% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, and daemon current/status commands exist; live BPF attach/snapshot writing, executable admin actions, GPU/ZFS plugins are not implemented. |
 
@@ -116,9 +116,10 @@ core workflows, not yet production-certified.**
   subprocess. P39 adds the canonical release-readiness document mapping §9
   gates to evidence sources. P17 records the safe BPF gate and current live-BPF
   blocker. P18 records the fixture-tested BPF provider implementation.
-  `MEASUREMENTS.md` records the current Textual 8 full-suite blocker and still
-  needs strict live TUI performance, controlled drift, rendered replay, and
-  docker-group non-root evidence. DAMON/daemon live evidence is required
+  P40 removed the Textual 8 full-suite blocker, and P41 closes automated
+  rendered replay fidelity. `MEASUREMENTS.md` still needs strict live TUI
+  performance, controlled drift, and docker-group non-root evidence.
+  DAMON/daemon live evidence is required
   when those controlled/deployed capabilities are claimed; privileged BPF
   measurements are required before enabling BPF by default.
 - **BPF network provider:** P18 implements the userspace BPF provider reading
@@ -151,7 +152,7 @@ core workflows, not yet production-certified.**
 | 7. Registry semantics | Covered by registry/model tests and branch-policy labels. |
 | 8. Diagnostics | Covered by tests; host/interface network loss is covered by P37. Exact per-cgroup network-loss attribution remains v2 BPF work. |
 | 9. Network labels | Covered by provider tests. |
-| 10. Record/replay fidelity | P41 renders byte-identical formatted cell text across record→replay: 12 focused fidelity tests, 10 pass + 2 skip, covering row keys, column identities, cell-by-cell plain text for 3 ticks through RecordReader and ReplayDriver. |
+| 10. Record/replay fidelity | P41 compares row keys, column identities, and every production-formatted plain-text cell for three annotated ticks returned by `ReplayDriver.play(step=True)`. JSONL passes; compressed JSONL is the same parametrized gate and skips when optional zstandard is absent. |
 | 11. Packaging | P12 built sdist/wheel and verified fresh-venv install; post-P40 controller evidence adds the required isolated local-wheel pipx install, version check, and empty-directory no-config replay smoke. |
 | 12. v2 gating | Explicit admin-preview gating landed in P21: `groop action preview` with `--admin` required, no-execution guarantee, audit logging, and TUI reserved-key disabled messaging in P13. |
 | 13. Unprivileged smoke | P33 provides `python -m groop.acceptance smoke`, P35 provides `python -m groop.acceptance steady`, and P38 provides `python -m groop.acceptance tui-smoke` for repeatable rootless safe-path evidence; fresh live-host results should be pasted into `MEASUREMENTS.md` before a release claim. |
@@ -163,12 +164,13 @@ Most recent full-suite validation after P41:
 
 ```bash
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 392 passed in 47.91s
+# 383 passed, 1 skipped in 47.81s
 ```
 
 Also validated:
 
-- Focused rendered fidelity tests: `10 passed, 2 skipped (no zstandard)`.
-- Focused acceptance tests: `40 passed in 7.09s`.
+- Focused table/record/fidelity tests: `19 passed, 1 skipped in 9.57s`.
+- Focused rendered fidelity tests: `1 passed, 1 skipped in 0.27s`.
+- Focused acceptance tests: `40 passed in 7.28s`.
 - P41 TUI smoke: exit `0`, `ok: true`, `frames: 1`, `view: tree`, `profile: auto`.
 - Full-source `py_compile`.
