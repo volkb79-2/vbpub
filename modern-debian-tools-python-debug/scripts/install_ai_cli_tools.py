@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,6 +127,24 @@ def find_binary(root: Path, binary_name: str) -> Path:
     raise InstallerError(f"Failed to locate {binary_name} in extracted archive")
 
 
+def archive_missing_binaries(archive: Path, *binary_names: str) -> list[str]:
+    """Return subset of *binary_names* not found inside *archive*.
+
+    Uses ``tarfile`` so no extraction is needed.  Only works for tar-based
+    archives; callers must handle other formats via extraction first.
+    """
+    missing: list[str] = []
+    try:
+        with tarfile.open(str(archive), "r:*") as tf:
+            names = {m.name for m in tf.getmembers() if m.isfile() and (m.mode & 0o111)}
+            for name in binary_names:
+                if not any(n.endswith(f"/{name}") or n == name for n in names):
+                    missing.append(name)
+    except (OSError, tarfile.TarError) as exc:
+        raise InstallerError(f"Failed to inspect archive: {archive}") from exc
+    return missing
+
+
 def install_binary_from_archive(archive: Path, binary_name: str, destination: Path) -> None:
     with tempfile.TemporaryDirectory(prefix=f"{binary_name}-extract-") as temp_dir:
         extract_root = Path(temp_dir)
@@ -135,6 +154,19 @@ def install_binary_from_archive(archive: Path, binary_name: str, destination: Pa
             raise InstallerError(f"Failed to extract archive: {archive}") from exc
         extracted_binary = find_binary(extract_root, binary_name)
         copy_binary(extracted_binary, destination)
+
+
+def install_binaries_from_archive(archive: Path, *pairs: tuple[str, Path]) -> None:
+    """Extract *archive* once and copy each named binary to its destination."""
+    with tempfile.TemporaryDirectory(prefix="archive-extract-") as temp_dir:
+        extract_root = Path(temp_dir)
+        try:
+            shutil.unpack_archive(str(archive), extract_root)
+        except (shutil.ReadError, ValueError) as exc:
+            raise InstallerError(f"Failed to extract archive: {archive}") from exc
+        for binary_name, destination in pairs:
+            extracted_binary = find_binary(extract_root, binary_name)
+            copy_binary(extracted_binary, destination)
 
 
 def install_codex(ctx: InstallerContext) -> None:
@@ -159,7 +191,19 @@ def install_codex(ctx: InstallerContext) -> None:
             f"Codex checksum mismatch: expected {expected_sha}, got {actual_sha}"
         )
 
-    install_binary_from_archive(archive, "codex", Path("/usr/local/bin/codex"))
+    # Check that both required binaries are present in the archive.
+    missing = archive_missing_binaries(archive, "codex", "codex-code-mode-host")
+    if missing:
+        raise InstallerError(
+            f"Codex archive {archive.name!r} is missing required "
+            f"binary/binaries: {', '.join(sorted(missing))}"
+        )
+
+    install_binaries_from_archive(
+        archive,
+        ("codex", Path("/usr/local/bin/codex")),
+        ("codex-code-mode-host", Path("/usr/local/bin/codex-code-mode-host")),
+    )
 
 
 def install_claude(ctx: InstallerContext) -> None:
@@ -242,6 +286,17 @@ def install_aider(ctx: InstallerContext) -> None:
     )
 
 
+def install_opencode() -> None:
+    if not is_enabled("INSTALL_OPENCODE", True):
+        log("INFO", "INSTALL_OPENCODE=false; skipping OpenCode")
+        return
+
+    version = env_value("OPENCODE_VER", "OPENCODE_VERSION", default="latest")
+    require_command("npm", "npm is required to install OpenCode")
+    run_command(["npm", "install", "-g", f"opencode-ai@{version}"])
+    require_command("opencode", "OpenCode npm package did not expose the opencode command")
+
+
 def parse_tool_entries(tools_file: Path) -> list[tuple[str, str]]:
     entries: list[tuple[str, str]] = []
     for raw_line in tools_file.read_text(encoding="utf-8").splitlines():
@@ -274,6 +329,8 @@ def install_tool(tool: str, ctx: InstallerContext) -> None:
         install_copilot()
     elif tool == "aider":
         install_aider(ctx)
+    elif tool == "opencode":
+        install_opencode()
     else:
         log("WARN", f"Unknown AI CLI tool in {ctx.tools_file}: {tool}")
 

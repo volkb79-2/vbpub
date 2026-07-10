@@ -53,6 +53,7 @@ ARG INSTALL_AIDER="true"
 ARG INSTALL_REASONIX="true"
 ARG INSTALL_OPENCLAW="true"
 ARG INSTALL_COPILOT="true"
+ARG INSTALL_OPENCODE="true"
 ARG INSTALL_PHP="false"
 ARG PHP_VERSION
 ARG NVIM_VER=""
@@ -76,6 +77,7 @@ ARG SECONDARY_PYTHON_VERSIONS=""
 ARG REASONIX_VERSION="latest"
 ARG OPENCLAW_VERSION="latest"
 ARG COPILOT_VERSION="latest"
+ARG OPENCODE_VERSION="latest"
 
 ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
 ENV BACKPORTS_URI="${BACKPORTS_URI}"
@@ -687,6 +689,11 @@ RUN set -euo pipefail; \
             echo "copilot=$(copilot --version 2>&1 | head -1 || true)"; \
         else \
             echo "copilot=not-installed"; \
+        fi; \
+        if command -v opencode >/dev/null 2>&1; then \
+            echo "opencode=$(opencode --version 2>&1 | head -1 || true)"; \
+        else \
+            echo "opencode=not-installed"; \
         fi; \
         if command -v agy >/dev/null 2>&1; then \
             echo "antigravity=$(agy --version 2>&1 | head -1)"; \

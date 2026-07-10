@@ -170,10 +170,10 @@ annotated for what it's for. It splits into dev/build tooling (`ruff`, `mypy`, `
 
 Optional (controlled by `INSTALL_*` build args, all enabled by default):
 - `aider-chat` — `INSTALL_AIDER=true`
-- `reasonix`, `openclaw` — npm-based, installed separately from the venv and backed by the image's upstream Node 24 toolchain
+- `reasonix`, `openclaw`, `opencode`, `copilot` — npm-based, installed separately from the venv and backed by the image's upstream Node 26 toolchain
 - `codex`, `claude-code`, `antigravity` — installed separately from the venv
 
-Node 24 is sourced from NodeSource because Debian 13 still ships Node 20, and Reasonix/OpenClaw
+Node 26 is sourced from NodeSource because Debian 13 still ships Node 20, and the npm-based AI CLIs
 need a newer runtime.
 
 Container inspection tools are also installed in-image:
@@ -201,7 +201,7 @@ The image keeps one visible home for shipped behavior and one visible home for u
 - `/usr/local/share/modern-debian-tools-python-debug/` for shipped profile files, alias templates, and manifest support files
 - `/home/vscode/.config/modern-debian-tools-python-debug/` for user-editable bootstrap state, including the central `ai.env`, `aliases.sh`, `shell.env`, `htoprc`, `mc.ini`, `nanorc`, and `lesspipe.sh`
 
-The shell bootstrap sources the user files once at session start. That means `ai.env` becomes the single source of truth for tools such as Aider, Claude Code, Codex, Reasonix, and OpenClaw, while tool-specific auth files that need a local path but should not duplicate secrets are symlinked back to that central file.
+The shell bootstrap sources the user files once at session start. That means `ai.env` becomes the single source of truth for tools such as Aider, Claude Code, Codex, Reasonix, OpenClaw, and OpenCode, while tool-specific auth files that need a local path but should not duplicate secrets are symlinked back to that central file.
 
 ### Lean Venv Packages (Secondary Pythons)
 
@@ -382,7 +382,7 @@ The base section includes:
 ## About `Custom Tooling` vs `System packages`
 
 - `First-Party Wheels` is the wheel inventory view: image-owned releases (`ciu`, `cmru`).
-- `AI CLI Tools` is the agent CLI inventory view: `aider`, `reasonix`, `openclaw`, `codex`, `claude`, `antigravity`.
+- `AI CLI Tools` is the agent CLI inventory view: `aider`, `reasonix`, `openclaw`, `opencode`, `copilot`, `codex`, `claude`, `antigravity`.
 - `Custom Tooling` is an operational view: release-managed tool executables and their runtime `--version` output.
 - `System packages` is a Debian package inventory view: apt package names and versions.
 

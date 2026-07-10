@@ -642,6 +642,8 @@ def _stage_codex(version: str, records: list[StagedArtifact]) -> None:
 
     if not _tar_contains_binary(archive_path, "codex"):
         raise StageError("Downloaded Codex package does not contain codex binary")
+    if not _tar_contains_binary(archive_path, "codex-code-mode-host"):
+        raise StageError("Downloaded Codex package does not contain codex-code-mode-host binary")
 
     _record_artifact(
         records,
@@ -1404,6 +1406,7 @@ def _resolve_versions() -> dict[str, str]:
         "REASONIX_VER": _resolve_npm_version(os.getenv("REASONIX_VERSION"), "reasonix"),
         "OPENCLAW_VER": _resolve_npm_version(os.getenv("OPENCLAW_VERSION"), "openclaw"),
         "COPILOT_VER": _resolve_npm_version(os.getenv("COPILOT_VERSION"), "@github/copilot"),
+        "OPENCODE_VER": _resolve_npm_version(os.getenv("OPENCODE_VERSION"), "opencode-ai"),
         "DTOP_VER": _resolve_version(os.getenv("DTOP_VERSION"), "amir20/dtop"),
         "LAZYDOCKER_VER": _resolve_version(os.getenv("LAZYDOCKER_VERSION"), "jesseduffield/lazydocker"),
         "GLANCES_VER": _resolve_pypi_version(os.getenv("GLANCES_VERSION"), "glances"),
