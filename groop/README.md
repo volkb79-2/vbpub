@@ -114,6 +114,9 @@ Useful feature hotkeys in the TUI:
 | P52 | Queued | Versioned daemon read API | v2/v3 API | Add capability negotiation, bounded health/history/entity reads, sensitivity metadata, and peer identity for separate frontends. Handoff: `handoff/P52-versioned-daemon-read-api.md`. |
 | P53 | Queued | Headless record driver | v1.5 recording | Drive the existing collector loop and `RecordWriter` from `groop --record FILE --headless [--interval N] [--duration S \| --frames K]` without importing textual, with clean SIGINT/SIGTERM finalization. Handoff: `handoff/P53-headless-record-driver.md`. |
 | P54 | Queued | Steady-state report command | v1.5 recording | Add `groop report FILE [--window last:Ns\|all] [--group-by slice\|entity] --json` computing per-entity p50/p95/max for key gauges and deriving `_per_s` rates from embedded raw counters when the recorded live rate is `None`. Handoff: `handoff/P54-steady-state-report.md`. |
+| P55 | Queued | Collector entity & metric filtering | v1.5/v2 recording | Add `--entities GLOB`/`--slice NAME` entity selectors and `--metrics compact` gauge subset at collection time, cutting sysfs reads and frame size for `--once` and any recording path. Handoff: `handoff/P55-collector-entity-metric-filtering.md`. |
+| P56 | Queued | `groop squeeze` guided memory measurement | v2 actions | Add a guided, stepped `memory.high` squeeze that measures a cgroup's hot working set, with mandatory memory.high restore on exit/SIGINT and a groop-record-compatible JSONL log. Handoff: `handoff/P56-groop-squeeze.md`. |
+| P57 | Queued | Docker-name entity selectors | v1.5/v2 ergonomics | Add `--container NAME_OR_PREFIX`, resolved via the existing docker metadata join, wherever groop takes a cgroup-path/entity identifier. Handoff: `handoff/P57-docker-name-entity-selectors.md`. |
 
 ## Completed Package Order
 

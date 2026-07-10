@@ -92,11 +92,12 @@ this package must design for:
   1. `--headless` SHOULD default to (or at minimum loudly recommend) `.zst` output when
      the `zstandard` extra is installed — frames are highly self-similar and compress
      extremely well.
-  2. Add an entity filter — `--entities GLOB` (e.g. `--entities 'besteffort.slice/*'`)
-     or `--slice NAME` subtree selector — so a recording scoped to one tier does not
-     pay for the other ~70 entities per frame.
-  3. Consider a `--metrics compact` gauge subset (memory + PSI + refault-rate families,
-     drop network/DAMON/gov-drift blocks) for long-baseline recordings.
+  2. Entity (`--entities GLOB` / `--slice NAME`) and metric (`--metrics compact`)
+     filtering — originally sketched here as items 2/3 — is now specified separately
+     in `handoff/P55-collector-entity-metric-filtering.md`, extracted so it can be
+     built in parallel with this package. It lands at the `Collector`/`walk_entities`
+     level, so once P55 merges, `--headless` inherits it automatically with no P53-side
+     code change required.
 - The interim consumer derived `_per_s` rates from the embedded raw counters across
   consecutive one-shot frames and it worked — confirming the P54 requirement that
   report must support cold recordings, but also confirming in-process recording

@@ -71,6 +71,9 @@ flowchart TD
     P2[P2 Record/replay/history ring] --> P53[P53 Headless record driver]
     P2 --> P54[P54 Steady-state report]
     P53 --> P54
+    P2 --> P55[P55 Collector entity/metric filtering]
+    P46 --> P56[P56 groop squeeze]
+    P16 --> P57[P57 Docker-name entity selectors]
 ```
 
 ## Remaining Estimate
@@ -178,6 +181,44 @@ Steady-state window auto-detection is explicitly out of scope for v1.
 
 Handoffs: `handoff/P53-headless-record-driver.md` and
 `handoff/P54-steady-state-report.md`.
+
+### P55-P57 - Collector Filtering, Guided Squeeze, And Docker-Name Selectors
+
+All three queued, spec-only (no implementation yet), and each independently
+implementable without any of the others or without P53/P54 — none of P55,
+P56, or P57 require another to land first. Where two packages touch the same
+file (e.g. `src/groop/cli.py` argument parsing), merge order between them is
+flexible and conflicts are trivial.
+
+P55 adds `--entities GLOB`/`--slice NAME` entity selectors and a `--metrics
+compact` gauge-family subset at the `Collector`/`walk_entities` level, so
+excluded entities are never read from sysfs, not just pruned from output.
+Applies to `--once` today and to any recording path (existing TUI-driven
+`--record`, and P53's headless mode once that exists) since both share the
+same `Collector`. Extracted from P53's "Amendment 2026-07-10" so the two can
+be built in parallel; cites P53's live numbers (a full frame is ~447 KB
+across 89 entities) as motivation for scoping a recording to one tier.
+
+P56 adds `groop squeeze --target CGROUP_PATH`: a guided, stepped
+`memory.high` squeeze that measures a cgroup's real (hot) working set,
+absorbing the workflow already proven live by
+`scripts/gstammtisch-guide/files/usr/local/sbin/container-mempress.sh` into
+groop natively, gated through the existing P21/P46 admin action posture
+(root, `--admin`, typed confirmation, audit). `memory.high` is always
+restored on exit, including `SIGINT` — a hard safety requirement. Live
+validation on gstammtisch 2026-07-10 found a warm boundary ≈ 1.8 GB
+(refaults 375/s at 1536M) and a hot floor ≈ 1.5 GB (5810 refaults/s cliff at
+1280M) via two stratified runs.
+
+P57 adds `--container NAME_OR_PREFIX`, resolved via the existing docker
+metadata join (`src/groop/collect/dockerjoin.py`) that the collector already
+runs every sweep, wherever groop currently takes a raw cgroup-path/entity
+identifier (`inspect-files --target`, `action --target`, and P55's
+`--entities`/P56's `--target` if/when those land). Small, pure ergonomics.
+
+Handoffs: `handoff/P55-collector-entity-metric-filtering.md`,
+`handoff/P56-groop-squeeze.md`, and
+`handoff/P57-docker-name-entity-selectors.md`.
 
 ### P12 — Release Hardening And Acceptance
 
