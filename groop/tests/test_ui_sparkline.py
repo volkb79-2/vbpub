@@ -9,11 +9,15 @@ from rich.text import Text
 
 
 # ---------------------------------------------------------------------------
-# render_sparkline — ASCII sparkline helper
+# render_sparkline - ASCII sparkline helper
 # ---------------------------------------------------------------------------
 
 def test_sparkline_empty() -> None:
-    assert render_sparkline([]) == "(empty)"
+    assert render_sparkline([], width=4) == "...."
+
+
+def test_sparkline_zero_width() -> None:
+    assert render_sparkline([1.0, 2.0], width=0) == ""
 
 
 def test_sparkline_all_none() -> None:
@@ -28,15 +32,15 @@ def test_sparkline_flat() -> None:
 
 
 def test_sparkline_rising() -> None:
-    """Rising series maps low → high characters."""
+    """Rising series maps low to high characters."""
     result = render_sparkline([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], width=8)
-    # 0% → "_" (index 0), 100% → "#" (index 7)
+    # 0% maps to "_" (index 0), 100% maps to "#" (index 7)
     assert result[0] == "_"
     assert result[-1] == "#"
 
 
 def test_sparkline_falling() -> None:
-    """Falling series maps high → low characters."""
+    """Falling series maps high to low characters."""
     result = render_sparkline([100.0, 80.0, 60.0, 40.0, 20.0, 0.0], width=6)
     assert result[0] in ("%", "#")  # near 100%
     assert result[-1] in ("_", ",")  # near 0%
@@ -73,7 +77,7 @@ def test_sparkline_single_value() -> None:
 
 
 # ---------------------------------------------------------------------------
-# sparkline_from_history — convenience wrapper
+# sparkline_from_history - convenience wrapper
 # ---------------------------------------------------------------------------
 
 def test_sparkline_from_history_empty() -> None:
@@ -91,7 +95,7 @@ def test_sparkline_from_history_returns_bracketed() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _format_cpu_trend — table cell rendering with ring
+# _format_cpu_trend - table cell rendering with ring
 # ---------------------------------------------------------------------------
 
 def _make_ring_with_cpu(history: list[float | None]) -> HistoryRing:
@@ -135,7 +139,7 @@ def test_cpu_trend_no_history_for_entity() -> None:
 
 
 # ---------------------------------------------------------------------------
-# format_metric_value — cpu_trend column through public API
+# format_metric_value - cpu_trend column through public API
 # ---------------------------------------------------------------------------
 
 def test_format_cpu_trend_via_format_metric_value_no_ring() -> None:

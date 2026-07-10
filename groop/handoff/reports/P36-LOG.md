@@ -9,7 +9,7 @@ steps so another controller can continue after a session limit.
 - Branch: feat/groop-p36-cpu-sparklines
 - Worktree: .worktrees/-groop-p36-cpu-sparklines
 - Base commit: 55daa25 (docs(groop): record P34 P35 merge evidence)
-- Package: P36 — CPU Sparkline Surface
+- Package: P36 - CPU Sparkline Surface
 - Current objective: Add compact ASCII CPU trend sparklines to TUI surfaces using existing HistoryRing data
 
 ## Timeline
@@ -37,8 +37,16 @@ steps so another controller can continue after a session limit.
 - Files changed: groop/tests/test_ui_sparkline.py
 
 2026-07-10 02:40 UTC
-- Action: Ran quality gates — all 354 tests pass, compile clean, --once --json exit 0.
+- Action: Ran quality gates - all 354 tests pass, compile clean, --once --json exit 0.
 - Follow-up: Write REPORT.md and commit.
+
+2026-07-10 CEST (controller review)
+- Action: Hardened render_sparkline() width behavior for empty and zero-width inputs, added focused test, and converted new P36 files to ASCII-only wording.
+- Files changed: groop/src/groop/ui/sparkline.py, groop/tests/test_ui_sparkline.py, groop/handoff/reports/P36-REPORT.md, groop/handoff/reports/P36-LOG.md
+- Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_ui_sparkline.py -q -> 19 passed in 0.06s
+- Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m py_compile groop/src/groop/ui/sparkline.py groop/src/groop/ui/table.py groop/src/groop/ui/tree.py groop/src/groop/ui/app.py groop/tests/test_ui_sparkline.py -> clean
+- Validation: PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q -> 355 passed in 39.25s
+- Follow-up: Commit controller review patch and merge
 ```
 
 ## Decisions
@@ -62,8 +70,14 @@ steps so another controller can continue after a session limit.
 python3 -m pytest groop/tests/test_ui_sparkline.py -v
 # 18 passed in 0.06s
 
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests/test_ui_sparkline.py -q
+# 19 passed in 0.06s
+
 python3 -m pytest groop/tests -q
 # 354 passed in 40.24s
+
+PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+# 355 passed in 39.25s
 
 groop --once --json > /dev/null 2>&1; echo "exit=$?"
 # exit=0

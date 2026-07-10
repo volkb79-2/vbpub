@@ -7,18 +7,16 @@ cells and banner lines where Unicode block characters are not acceptable
 (intended for --once --json output and other ASCII-only contexts).
 """
 
-# 8-level ASCII ramp: low → high.  These are all printable ASCII characters
+from collections.abc import Sequence
+
+# 8-level ASCII ramp: low to high. These are all printable ASCII characters
 # that visually increase in density/height.
 _CHARS: tuple[str, ...] = ("_", ",", "-", "~", "=", "+", "%", "#")
 _MISSING: str = "."
 _N_CHARS: int = len(_CHARS)
 
 
-def render_sparkline(
-    values: list[float | None],
-    *,
-    width: int = 8,
-) -> str:
+def render_sparkline(values: Sequence[float | int | None], *, width: int = 8) -> str:
     """Render a compact ASCII sparkline for *values*, at most *width* chars.
 
     The series is down-sampled (evenly spaced) to fit *width* when the input
@@ -26,19 +24,21 @@ def render_sparkline(
 
     Edge cases
     ----------
-    - Empty list returns ``"(empty)"``.
+    - Empty list returns *width* copies of ``.``.
     - All-``None`` list returns *width* copies of ``.``.
     - Flat series (hi == lo) renders the middle character for every sample.
     - Stable and width-bounded: same input -> same output.
     """
+    if width <= 0:
+        return ""
     if not values:
-        return "(empty)"
+        return _MISSING * width
 
     n = len(values)
     finite = [v for v in values if v is not None]
 
     if not finite:
-        # All missing — nothing to map against.
+        # All missing: nothing to map against.
         return _MISSING * width
 
     lo = min(finite)
@@ -47,7 +47,7 @@ def render_sparkline(
 
     # Sample the series at *width* equally-spaced positions.
     if n <= width:
-        # Short series — render every element directly.
+        # Short series: render every element directly.
         sampled_indices = list(range(n))
     else:
         sampled_indices = [
@@ -77,11 +77,7 @@ def render_sparkline(
     return result
 
 
-def sparkline_from_history(
-    history: list[float | None],
-    *,
-    width: int = 6,
-) -> str:
+def sparkline_from_history(history: Sequence[float | int | None], *, width: int = 6) -> str:
     """Convenience wrapper: call ``render_sparkline`` then return ``f" [{s}]"``.
 
     Returns ``""`` (empty string) when *history* is empty or all-None so
