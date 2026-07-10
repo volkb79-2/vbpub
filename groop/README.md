@@ -25,6 +25,9 @@ Stack: Python; Textual allowed ONLY under `src/groop/ui/` (spec §6.1, §6.4).
   measurement-gate constraints.
 - `MEASUREMENTS.md` — acceptance and overhead evidence ledger. BPF defaults,
   DAMON default increases, and release claims should be blocked on this file.
+- `docs/RELEASE-READINESS.md` — release-candidate readiness surface mapping
+  `TUI-SPEC.md` §9 gates to evidence sources, live-host templates, and
+  explicit non-claims.
 - `handoff/*.md` — implementation briefs. Completed packages also have
   `handoff/reports/*-REPORT.md`.
 
@@ -95,7 +98,8 @@ Useful feature hotkeys in the TUI:
 | P36 | Done | CPU sparkline surface | v1 polish | Adds stable ASCII CPU trend sparklines from existing UI history via a `cpu_trend` table column. Handoff: `handoff/P36-cpu-sparkline-surface.md`. Report: `handoff/reports/P36-REPORT.md`. |
 | P37 | Done | Network loss diagnostics | v1/v2 bridge | Adds host/interface-scoped drop/error parsing, banner LOSS annotations, and root-entity diagnostics while preserving the BPF attribution boundary. Handoff: `handoff/P37-network-loss-diagnostics.md`. Report: `handoff/reports/P37-REPORT.md`. |
 | P38 | Done | TUI smoke evidence harness | v1/v1.5 release confidence | Adds rootless `python -m groop.acceptance tui-smoke` evidence over the existing Textual `--ui-smoke` path, with child wall/CPU/RSS measurements and import-contract coverage. Handoff: `handoff/P38-tui-smoke-evidence.md`. Report: `handoff/reports/P38-REPORT.md`. |
-| P39 | Planned | Release readiness ledger | v1/v1.5 release confidence | Add canonical release-readiness docs tying spec §9 gates to tests, acceptance commands, measurements, and remaining manual evidence. Handoff: `handoff/P39-release-readiness-ledger.md`. |
+| P39 | Done | Release readiness ledger | v1/v1.5 release confidence | Add canonical release-readiness docs tying spec §9 gates to tests, acceptance commands, measurements, and remaining manual evidence. Handoff: `handoff/P39-release-readiness-ledger.md`. Report: `handoff/reports/P39-REPORT.md`. |
+| P40 | Planned | Textual 8 test compatibility | v1/v1.5 release confidence | Restore the full UI suite under the managed Textual 8 environment without weakening behavior assertions. Handoff: `handoff/P40-textual-8-test-compatibility.md`. |
 
 ## Completed Package Order
 

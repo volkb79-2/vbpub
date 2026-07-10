@@ -243,10 +243,18 @@ max_concurrent_targets = 4
 
 ## What To Check Before A Release Claim
 
+See the canonical release readiness document at `docs/RELEASE-READINESS.md`
+for the full checklist mapping `TUI-SPEC.md` §9 gates to evidence sources,
+rootless automated check commands, live-host evidence templates, and explicit
+non-claims.
+
+Quick reference (see `docs/RELEASE-READINESS.md` for the exact commands):
+
 - Full test suite.
 - `py_compile` over `src/groop`.
 - `--once --json` on a real host and fixture root.
 - Replay UI smoke.
+- Acceptance smoke/steady/tui-smoke (P33/P35/P38).
 - Editable install and wheel/sdist/pipx packaging.
 - `MEASUREMENTS.md` CPU/RSS evidence.
 - Live-root DAMON acceptance if claiming controlled DAMON support.

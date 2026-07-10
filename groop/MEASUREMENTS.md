@@ -4,6 +4,24 @@ This file records acceptance and overhead evidence required by `TUI-SPEC.md`.
 Do not enable BPF by default, raise DAMON defaults, or make release performance
 claims without updating this file.
 
+The canonical gate map and copy-paste commands live in
+`docs/RELEASE-READINESS.md`. This file remains the place for dated raw results.
+
+## Current Release Blocker
+
+P39 controller validation in the new managed devcontainer environment used
+Python 3.14.6 and Textual 8.2.8:
+
+```bash
+PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
+# 367 passed, 15 failed in 48.27s
+```
+
+All 15 failures are in `groop/tests/test_ui_app.py` and attempt to read the
+removed `Static.renderable` attribute. The P38 subprocess TUI smoke path still
+passes. P40 tracks a compatibility fix; a green full suite from the candidate
+commit must replace this blocker before a production-certified claim.
+
 ## Current Evidence
 
 Most recent merged validation after P38:
