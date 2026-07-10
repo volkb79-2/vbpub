@@ -504,6 +504,91 @@ Blocker for live BPF overhead measurement:
 - No `cgroup_skb` BPF C source or compiled object is present in the repo
 - The BPF gate (P17) remains the authoritative preflight check
 
+## P45 Bounded Inspect-Files Content Reads Evidence (2026-07-10)
+
+### Focused Tests
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest groop/tests/test_inspect_files.py -v
+# 77 passed in 0.60s
+```
+
+The P45 tests add 33 focused tests covering:
+
+- Read gating: disabled without --inspect-files, without --admin, without both
+- Read disabled-via-CLI: exit codes for denied/error/success paths
+- Read content: Docker JSON log and cgroup file reads with fixture roots
+- Read bounds: max-bytes and max-lines truncation
+- Read safety: no subprocess import in reader, no arbitrary path escape,
+  short Docker ID rejection, absolute path/traversal rejection,
+  unsupported kind rejection, error JSON format (no content echo)
+- Read CLI integration: args parsing, custom bounds, fixture-root path,
+  JSON/text output, denied exit code
+
+### Structural Safety
+
+```bash
+python3 -m py_compile groop/src/groop/inspect_files/reader.py
+# clean, exit 0
+```
+
+The reader module:
+
+- Never imports `subprocess`
+- Uses `os.open()` with `O_RDONLY | O_NONBLOCK | O_NOFOLLOW` for no-follow opens
+- Verifies `stat.S_ISREG` on all opened descriptors (rejects symlinks, devices,
+  FIFOs, sockets, directories)
+- Confines all paths via `Path.is_relative_to()` to the allowlisted root
+- Decodes with `surrogateescape` for safe binary handling
+- Returns deterministic JSON/text output with explicit truncation flags
+- Never echoes content on error/denied paths
+
+### CLI Smoke
+
+```bash
+PYTHONPATH=groop/src python3 -m groop.cli inspect-files read \
+  --kind docker-json-log \
+  --target aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --inspect-files --admin \
+  --fixture-root groop/tests/fixtures/inspect_files/docker --json
+# exit 0, valid JSON with content field
+```
+
+```bash
+PYTHONPATH=groop/src python3 -m groop.cli inspect-files read \
+  --kind cgroup-files \
+  --target system.slice/ssh.service \
+  --inspect-files --admin \
+  --fixture-root groop/tests/fixtures/inspect_files/cgroup
+# exit 0, text output with memory.current, cpu.stat, pids.current, pids.max
+```
+
+### Full Suite
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest groop/tests -q
+# 466 passed, 1 skipped in 49.67s
+```
+
+### Full-Source py_compile
+
+All Python files under `groop/src/groop` and `groop/tests` compile cleanly:
+
+```bash
+mapfile -d '' pyfiles < <(find groop/src/groop groop/tests -name '*.py' -print0)
+python3 -m py_compile "${pyfiles[@]}"
+# clean, exit 0
+```
+
+### Known Limitations
+
+- Production Docker log reads require a full 64-char hex container ID.
+  Short IDs and container names are rejected.
+- Systemd journal content reads are not implemented (requires subprocess).
+- Only Docker JSON logs and cgroup files support content reads.
+- No follow/stream mode or daemon integration.
+- No TUI integration for file reads.
+
 ## Release Signoff Template
 
 - Release/tag:

@@ -16,12 +16,12 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment. P41 automates strict rendered replay fidelity (383 passing tests plus one optional skip). P43 replaces the obsolete pre-1.0 resolver ceiling with textual>=8.2.8. Isolated local-artifact pipx/no-config acceptance now passes. Strict live performance and non-root gates remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 55-60% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton, daemon current/status commands, and the daemon BPF snapshot bridge exist; live BPF program compilation and attach/pin/detach, executable admin actions, GPU/ZFS plugins are not implemented. |
+| v2 daemon/BPF/admin actions | 60-65% | low | Provider abstractions, safety patterns, a read-only Unix-socket daemon spike, daemon attach mode (including default-socket attach), daemon deployment preflight/templates/status, preview-only admin action planning, the BPF measurement/design gate, the BPF provider read side, the inspect-files safety skeleton with bounded content reads, daemon current/status commands, and the daemon BPF snapshot bridge exist; live BPF program compilation and attach/pin/detach, executable admin actions, GPU/ZFS plugins are not implemented. |
 
-Active planned packages P44-P46 address daemon-owned paddr lifecycle, the first
-bounded inspect-files content reads, and a deliberately narrow executable
-start/stop/restart action kernel. Until merged and validated, all three remain
-non-claims.
+Active planned packages P44 and P46 address daemon-owned paddr lifecycle and a
+deliberately narrow executable start/stop/restart action kernel. P45 (bounded
+inspect-files content reads) is done. Until P44 and P46 are merged and validated,
+all remain non-claims.
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -69,6 +69,13 @@ core workflows, not yet production-certified.**
 - Disabled-by-default, read-only file/log inspection planning module
   (`groop/src/groop/inspect_files/`) with explicit --inspect-files and --admin
   gating and deterministic JSON/text plans via `groop inspect-files plan`.
+- Bounded read API for allowlisted inspect-files content with no-follow
+  opens, stat-verified regular-file checks, ``Path.is_relative_to()`` path
+  confinement, bounded bytes/lines, safe ``surrogateescape`` decoding, and
+  deterministic JSON/text output via ``groop inspect-files read``.
+  Docker JSON logs require a full 64-char hex container ID; cgroup files use
+  the catalog-defined allowlist. Both kinds are gated on
+  ``--inspect-files`` and ``--admin`` (default: disabled).
 - Default-socket daemon attach (`--attach` with no path defaults to
   `/run/groop/groop.sock`) and `groop daemon current --socket PATH
   [--pretty-json]` one-frame read-only daemon command.
@@ -167,23 +174,21 @@ core workflows, not yet production-certified.**
 | 9. Network labels | Covered by provider tests. |
 | 10. Record/replay fidelity | P41 compares row keys, column identities, and every production-formatted plain-text cell for three annotated ticks returned by `ReplayDriver.play(step=True)`. JSONL passes; compressed JSONL is the same parametrized gate and skips when optional zstandard is absent. |
 | 11. Packaging | P12 built sdist/wheel and verified fresh-venv install; post-P40 controller evidence adds the required isolated local-wheel pipx install, version check, and empty-directory no-config replay smoke. P43 changes the published dependency from textual>=0.58,<1 to textual>=8.2.8, verified by source metadata, built-wheel METADATA, clean resolver installation, and packaging-metadata regression tests. |
-| 12. v2 gating | Explicit admin-preview gating landed in P21: `groop action preview` with `--admin` required, no-execution guarantee, audit logging, and TUI reserved-key disabled messaging in P13. |
+| 12. v2 gating | Explicit admin-preview gating landed in P21: `groop action preview` with `--admin` required, no-execution guarantee, audit logging, and TUI reserved-key disabled messaging in P13. P45 adds gated bounded content reads via `groop inspect-files read`, also disabled by default. |
 | 13. Unprivileged smoke | P33 provides `python -m groop.acceptance smoke`, P35 provides `python -m groop.acceptance steady`, and P38 provides `python -m groop.acceptance tui-smoke` for repeatable rootless safe-path evidence; fresh live-host results should be pasted into `MEASUREMENTS.md` before a release claim. |
 | 14. Measurement gates | `MEASUREMENTS.md` records the P17 safe BPF gate and blocker; DAMON overhead and privileged live-BPF overhead gates are not recorded. |
 
 ## Current Quality Gate
 
-Most recent full-suite validation after P43 changes:
+Most recent full-suite validation (P45 changes):
 
 ```bash
-PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q
-# 433 passed, 1 skipped in 47.31s
+PYTHONPATH=groop/src python3 -m pytest groop/tests -q
+# 466 passed, 1 skipped in 49.67s
 ```
 
 Also validated:
 
-- Acceptance regression: `40 passed in 7.27s`.
-- UI regression: `59 passed in 10.91s`.
-- Direct replay UI smoke and P38 TUI smoke: exit `0`, one frame, tree view,
-  auto profile.
-- Full-source `py_compile` in the clean resolved environment.
+- Focused inspect-files tests: `77 passed in 0.60s`.
+- Full-source `py_compile`: clean.
+- CLI smoke: `groop inspect-files read` with fixture root returns bounded JSON/text content.

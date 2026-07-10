@@ -3,26 +3,29 @@
 ## Overview
 
 The `groop inspect-files plan` command provides a disabled-by-default, read-only
-planning interface for file/log inspection. It is the v2 safety skeleton for
-future content browsing features, establishing the security contract before any
-real file content reads or subprocess execution are implemented.
+planning interface for file/log inspection. The `groop inspect-files read`
+command extends this with bounded, confined, read-only content reads for
+allowlisted paths.
 
 ## Gating
 
 File inspection requires **both** of these flags:
 
-- `--inspect-files` — enables the inspection planning mode.
+- `--inspect-files` — enables the inspection mode.
 - `--admin` — enables admin preview mode.
 
 Without either flag, the command prints a disabled message and exits with code 2.
 
 ```bash
 groop inspect-files plan --kind docker-json-log --target my-container --inspect-files --admin
+groop inspect-files read --kind docker-json-log --target <64hex> --inspect-files --admin
 ```
 
-## Safety Guarantees
+## Plan Command
 
-### No File Content Reads
+### Safety Guarantees
+
+#### No File Content Reads
 
 The planning module builds path previews **lexically only** — it never calls
 `open()`, `Path.read_text()`, `Path.read_bytes()`, or `os.open()`. Path objects
@@ -30,18 +33,18 @@ are constructed from allowlisted roots and targets, then normalized with string
 path normalization. The planner does not call `Path.resolve()`, so symlinks are
 not followed and existing path prefixes are not inspected.
 
-### No Subprocess Execution
+#### No Subprocess Execution
 
 The module does not import `subprocess`, `os.system`, or any command-execution
 facility. Command previews are returned as structured argv lists for display
 only — they are never executed.
 
-### No Host Mutation
+#### No Host Mutation
 
 All plans are immutable dataclasses. No files are created, modified, or deleted.
 No system state is changed.
 
-### Path Safety
+#### Path Safety
 
 - Absolute path targets supplied directly by users are rejected unless they belong
   to the allowlisted kind.
@@ -52,7 +55,7 @@ No system state is changed.
 - Path previews are normalised with `expanduser()` and lexical path
   normalization.
 
-## Plan Kinds
+### Plan Kinds
 
 | Kind | Description | Target format | Path previews | Command previews |
 |---|---|---|---|---|
@@ -60,9 +63,9 @@ No system state is changed.
 | `systemd-journal` | Plan journalctl query for a systemd unit | Unit name (e.g. `ssh.service`) | `/sys/fs/cgroup/system.slice/<unit>`, `/etc/systemd/system/<unit>` | `journalctl`, `systemctl status` |
 | `cgroup-files` | List known cgroup filenames for snapshots | Cgroup path relative to `/sys/fs/cgroup/` | 20+ known cgroup file paths | None (plain file reads) |
 
-## Output Formats
+### Output Formats
 
-### JSON (--json)
+#### JSON (--json)
 
 ```json
 {
@@ -76,7 +79,7 @@ No system state is changed.
 }
 ```
 
-### Text (default)
+#### Text (default)
 
 ```
 Inspection Plan: docker-json-log
@@ -95,6 +98,108 @@ Command previews (not executed):
 Mode: plan only; no file contents read, no commands executed
 ```
 
+## Read Command
+
+The `groop inspect-files read` command provides bounded content reads for
+allowlisted file paths from the P29 catalog. It is disabled by default (requires
+both `--inspect-files` and `--admin`).
+
+### Read Safety Guarantees
+
+#### Bounded Reads
+
+- `--max-bytes` (default 65536): Hard byte limit per file; truncated bytes
+  are reported via the `truncated_bytes` field.
+- `--max-lines` (default 5000): Hard line limit per file; truncated lines
+  are reported via the `truncated_lines` field.
+- `--json` output includes both truncation flags; text output prepends
+  `[TRUNCATED]` notices.
+
+#### Path Confinement
+
+Every read path undergoes three-stage validation:
+
+1. **Catalog resolution**: The path is built from the allowlisted catalog and
+   target metadata, never from user-supplied absolute paths.
+2. **Root confinement**: The resolved path is verified to be **under** the
+   allowlisted root via `Path.is_relative_to()`.
+3. **No-follow open + stat check**: The file is opened with
+   `os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW`, then `fstat`-verified as
+   a regular file (`S_ISREG`). Symlinks, devices, FIFOs, sockets, and
+   directories are rejected.
+
+#### No Subprocess, No Mutation
+
+The reader module never imports `subprocess`, never writes files, and never
+calls external commands. All reads use direct descriptor-based Python I/O.
+
+#### Docker Container IDs
+
+Production Docker log reads require a **full 64-character lowercase hex
+container ID**. Short IDs, container names, and partial prefixes are rejected.
+Fixture seams may provide an alternate root via `--fixture-root` (hidden flag
+for testing).
+
+#### Cgroup Reads
+
+Cgroup reads use the same allowlisted filename set as the catalog (memory.*,
+cpu.*, io.*, pids.*, cgroup.*). Missing files are reported per-path with
+clear error messages. Existing files are combined into a single output.
+
+### Read Kinds
+
+| Kind | Description | Target format | Read path | Notes |
+|---|---|---|---|---|
+| `docker-json-log` | Bounded Docker json-file log read | Full 64-hex container ID | `.../containers/<id>/<id>-json.log` | Rejects short IDs and names for content reads |
+| `cgroup-files` | Bounded cgroup file reads | Cgroup path under `/sys/fs/cgroup/` | 20+ known cgroup files under the resolved path | Per-file error handling for missing files |
+
+### Output Formats
+
+#### JSON (--json)
+
+```json
+{
+  "content": "{\"log\":\"...\"}...",
+  "description": "Plan the expected Docker json-file log path...",
+  "kind": "docker-json-log",
+  "kind_label": "Docker JSON log",
+  "mode": "content",
+  "path": "/var/lib/docker/containers/<id>/<id>-json.log",
+  "target": "<64hex>",
+  "truncated_bytes": false,
+  "truncated_lines": false
+}
+```
+
+Error output (no content echoed):
+
+```json
+{
+  "error": "path /etc/passwd is not under /var/lib/docker/containers",
+  "kind": "docker-json-log",
+  "mode": "error",
+  "target": "/etc/passwd"
+}
+```
+
+#### Text (default)
+
+```
+Read: docker-json-log
+Target: aaaa...aaaa
+Path: /var/lib/docker/containers/.../<id>-json.log
+
+[TRUNCATED: byte limit exceeded]
+<content starts here...>
+```
+
+### Error Handling
+
+- Exit code **2**: Denied (gating flags not active) or parse error.
+- Exit code **1**: Read error (file not found, not a regular file, path escape,
+  unsupported kind).
+- Exit code **0**: Success (content returned, possibly truncated).
+
 ## Scope (what this is NOT)
 
 - **Not a file browser** — no content reads, no directory listing, no tail/follow.
@@ -102,6 +207,8 @@ Mode: plan only; no file contents read, no commands executed
 - **Not a daemon feature** — no daemon protocol integration.
 - **Not a TUI screen** — CLI-only in this package.
 - **Not root** — no privilege elevation.
+- **Not arbitrary root reads** — every path must belong to the allowlisted catalog.
+- **Not streaming** — bounded reads only; no follow/stream mode.
 
 ## Adding New Plan Kinds
 
@@ -110,3 +217,4 @@ Mode: plan only; no file contents read, no commands executed
 3. Add an entry to `INSPECT_CATALOG`.
 4. Add validation rules in the builder.
 5. Add tests in `test_inspect_files.py`.
+6. For read support, add a resolution branch in `reader.py::build_inspect_read()`.
