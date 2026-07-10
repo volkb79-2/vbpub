@@ -19,17 +19,14 @@ removal condition.
 
 ### New test file: `groop/tests/test_packaging_metadata.py`
 
-Five regression tests:
+Two regression tests structurally parse `pyproject.toml`:
 
-1. `test_textual_dependency_present` — pyproject.toml must declare textual.
-2. `test_textual_lower_bound_at_least_8_2_8` — lower bound ≥8.2.8.
-3. `test_textual_has_no_upper_ceiling` — no `<` in the textual specifier.
-4. `test_no_other_upper_ceiling_on_textual` — no comma-separated multi-clause.
-5. `test_wheel_metadata_requires_dist` — checks built wheel's METADATA for
-   `Requires-Dist: textual>=8.2.8` without `<` (skipped when no wheel exists).
+1. `test_textual_lower_bound_is_current` — lower bound ≥8.2.8.
+2. `test_textual_has_no_upper_ceiling` — no `<` or `<=` ceiling.
 
-These tests read project metadata only; no network access or application
-behavior duplication.
+These tests read project metadata only; no network access, ignored build
+artifact, or application behavior duplication. Fresh wheel METADATA inspection
+remains a separate release gate.
 
 ### Documentation updates
 
@@ -65,8 +62,8 @@ No `<` upper bound present.
 ### Packaging-metadata regression tests
 
 ```bash
-$ python3 -m pytest groop/tests/test_packaging_metadata.py -q
-5 passed in 0.17s
+$ /tmp/p43-clean-venv/bin/python -m pytest groop/tests/test_packaging_metadata.py -q
+2 passed in 0.03s
 ```
 
 ### Clean resolver installation
@@ -88,17 +85,26 @@ ui smoke ok frames=1 view=tree profile=auto
 ### Full test suite
 
 ```bash
-$ PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-436 passed, 1 skipped in 48.49s
+$ PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q
+433 passed, 1 skipped in 47.31s
 ```
 
-The 5 new packaging-metadata tests are included in the 436 passing count.
+The two new packaging-metadata tests are included in the passing count.
 
 ### Focused acceptance tests
 
 ```bash
-$ PYTHONPATH=groop/src python3 -m pytest groop/tests/test_acceptance.py -q
-40 passed in 7.29s
+$ PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest \
+    groop/tests/test_acceptance.py -q
+40 passed in 7.27s
+```
+
+### UI tests
+
+The five UI/Textual test modules pass in the same clean resolved environment:
+
+```text
+59 passed in 10.91s
 ```
 
 ### P38 TUI smoke
@@ -135,9 +141,18 @@ $ python3 -m py_compile "${pyfiles[@]}"
 ```
 Clean exit, no errors.
 
+## Controller Review Correction
+
+The initial agent result installed the wheel into the clean resolver venv but
+ran pytest through the managed environment. Controller review installed pytest
+into the clean venv and reran the full suite, focused acceptance/UI tests,
+direct replay smoke, P38 TUI smoke, and `py_compile` there. The initial regex
+metadata tests and soft ignored-wheel check were also replaced with structural
+TOML/PEP 508 parsing; fresh wheel inspection remains an explicit release gate.
+
 ## Deviations from Handoff
 
-None. All handoff requirements are met:
+None remaining. All handoff requirements are met:
 
 - [x] Published dependency changed to `textual>=8.2.8` with no upper bound.
 - [x] Packaging-metadata regression test proves lower bound ≥8.2.8 and no ceiling.

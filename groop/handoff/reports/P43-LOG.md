@@ -17,17 +17,15 @@ upper bound.
 
 ### Packaging-metadata regression test
 
-Added `groop/tests/test_packaging_metadata.py` with 5 tests:
+Added `groop/tests/test_packaging_metadata.py` with two tests that structurally
+parse `pyproject.toml` and its PEP 508 requirement:
 
-1. `test_textual_dependency_present` — pyproject.toml must declare textual.
-2. `test_textual_lower_bound_at_least_8_2_8` — lower bound must be ≥8.2.8.
-3. `test_textual_has_no_upper_ceiling` — no `<` in the textual specifier.
-4. `test_no_other_upper_ceiling_on_textual` — no comma-separated multi-clause.
-5. `test_wheel_metadata_requires_dist` — checks a built wheel's METADATA for
-   `Requires-Dist: textual>=8.2.8` without `<` (skipped when no wheel exists).
+1. `test_textual_lower_bound_is_current` — lower bound must be ≥8.2.8.
+2. `test_textual_has_no_upper_ceiling` — no `<` or `<=` ceiling.
 
-These test project metadata only; no network access or application behavior
-duplication.
+These test project metadata only; no network access, ignored build artifact,
+or application behavior duplication. Fresh wheel METADATA inspection remains
+a separate release gate.
 
 ### Documentation updates
 
@@ -58,22 +56,23 @@ UI replay smoke passed (ui smoke ok frames=1 view=tree profile=auto).
 ### Packaging metadata tests
 
 ```text
-5 passed in 0.17s
+2 passed in 0.03s
 ```
 
 ### Full suite
 
 ```text
-436 passed, 1 skipped in 48.49s
+433 passed, 1 skipped in 47.31s
 ```
 
 ### P38 TUI smoke
 
-exit 0, ok=true, frames=1, view=tree, profile=auto, wall 0.5303s, RSS 48436KB.
+Controller clean-venv rerun: exit 0, ok=true, frames=1, view=tree,
+profile=auto, wall 0.4614s, RSS 46392KB.
 
-### Acceptance tests
+### Acceptance and UI tests
 
-40 passed in 7.29s.
+Acceptance: 40 passed in 7.27s. UI/Textual: 59 passed in 10.91s.
 
 ### P33 acceptance smoke
 
@@ -102,6 +101,14 @@ Clean exit across all groop/src/groop and groop/tests .py files.
 ## Blockers
 
 None.
+
+## Controller Review Correction
+
+The agent's first result did not have pytest installed in the clean resolver
+venv. Controller review installed pytest there and reran the full suite,
+acceptance/UI gates, replay smokes, and `py_compile`. It also replaced the
+regex/soft-wheel metadata tests with structural TOML/PEP 508 assertions so a
+stale ignored wheel cannot affect the normal suite.
 
 ## Handoff Checklist
 

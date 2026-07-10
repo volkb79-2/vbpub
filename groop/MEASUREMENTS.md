@@ -29,12 +29,14 @@ unzip -p groop/dist/groop-0.1.0-py3-none-any.whl groop-0.1.0.dist-info/METADATA
 
 ### Packaging-metadata regression tests
 
-5 tests prove lower bound ≥8.2.8 and no `<` upper ceiling by reading
-pyproject.toml; one test also checks the built wheel's METADATA.
+Two tests structurally parse `pyproject.toml` and prove a lower bound of at
+least 8.2.8 with no `<` or `<=` upper ceiling. Wheel METADATA is checked from a
+fresh build as the separate release gate above, avoiding stale ignored
+artifacts in the normal suite.
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests/test_packaging_metadata.py -q
-# 5 passed in 0.17s
+# 2 passed in 0.03s
 ```
 
 ### Clean resolver installation
@@ -58,12 +60,23 @@ ui smoke ok frames=1 view=tree profile=auto
 
 ### UI/acceptance/full suite
 
-All tests pass in the resolved environment. Specific counts recorded from the
-run below.
+All required gates pass using `/tmp/p43-clean-venv/bin/python`, with the wheel's
+normally resolved Textual 8.2.8:
+
+- Full suite: `433 passed, 1 skipped in 47.31s`.
+- Acceptance: `40 passed in 7.27s`.
+- UI/Textual: `59 passed in 10.91s`.
+- Direct replay UI smoke: exit `0`, one frame, tree view, auto profile.
+- P38 TUI smoke: exit `0`, `ok: true`, one frame, tree view, auto profile,
+  wall `0.4614s`, max RSS `46392 KB`.
+- Full-source `py_compile`: clean.
 
 ## Current Status
 
-P43 replaces the pre-1.0 textual dependency with >=8.2.8.
+P43 replaces the pre-1.0 Textual dependency with `>=8.2.8`, with source,
+fresh-wheel, normal resolver, and clean-environment behavioral evidence above.
+
+## Prior P41 Status
 
 P41 adds a deterministic rendered replay fidelity gate that compares every
 formatted table cell byte-for-byte across the record/replay cycle using
@@ -86,7 +99,7 @@ Also validated:
   CPU `0.0625s`, max RSS `48056 KB`.
 - Full-source `py_compile`.
 
-## Prior Status
+## Prior P40 Status
 
 P40 restored the full green suite under the managed devcontainer environment
 (Python 3.14.6, Textual 8.2.8). Controller validation after P39/P40 merged on
@@ -284,8 +297,12 @@ with no artificial upper bound. This is verified by:
 
 1. Source metadata (`pyproject.toml` → `dependencies = ["textual>=8.2.8"]`).
 2. Built wheel METADATA (`Requires-Dist: textual>=8.2.8`).
-3. Packaging-metadata regression tests (5 tests, all pass).
+3. Packaging-metadata regression tests (2 tests, all pass).
 4. Clean resolver installation into an isolated venv (Textual >=8.2.8 resolved).
+
+Dependency policy: prefer current compatible upstream releases. Add an upper
+bound only for a reproduced incompatibility, with a tracked condition for
+removing that bound.
 
 ```bash
 python3 -m build groop/

@@ -171,13 +171,14 @@ core workflows, not yet production-certified.**
 Most recent full-suite validation after P43 changes:
 
 ```bash
-PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest groop/tests -q
-# 431 passed, 1 skipped in 47.40s
+PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q
+# 433 passed, 1 skipped in 47.31s
 ```
 
 Also validated:
 
-- Focused BPF snapshot tests: `48 passed in 0.29s`.
-- Acceptance regression: `40 passed in 7.41s`.
-- TUI smoke: exit `0`, `ok: true`, one frame, tree view, auto profile.
-- Full-source `py_compile`.
+- Acceptance regression: `40 passed in 7.27s`.
+- UI regression: `59 passed in 10.91s`.
+- Direct replay UI smoke and P38 TUI smoke: exit `0`, one frame, tree view,
+  auto profile.
+- Full-source `py_compile` in the clean resolved environment.
