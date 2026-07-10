@@ -116,3 +116,4 @@
   production sleep, and warnings-as-errors coverage.
 - Focused daemon/client/health/record gate: `90 passed in 16.84s`.
 - Full gate: `692 passed, 1 skipped in 53.29s` with `-W error`.
+- Merged to `main` as `152b686`.

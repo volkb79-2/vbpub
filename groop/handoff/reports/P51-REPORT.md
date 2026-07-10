@@ -4,6 +4,8 @@
 **Base:** `b5ba9af` (docs(groop): carve P51 daemon sampling fanout)
 **Date:** 2026-07-10
 
+**Merged to main:** `152b686`
+
 ## What Was Built
 
 ### `groop/src/groop/daemon/broker.py` — Refactored `FrameBroker`
