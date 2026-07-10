@@ -89,6 +89,17 @@ the hot+warm working set → basis for interactive.slice `high`.
 6. From the devcontainer squeeze result: final interactive.slice `low/high/max`, then the
    devcontainer.json runArgs change + single rebuild (operator-timed).
 
+## Host-side CLI agents (decision 2026-07-10: leave ungoverned, documented)
+
+Inventory (2026-07-10) found claude/codex CLI agents in TWO places: inside the
+devcontainer scope (covered by interactive.slice once the rebuild lands) AND directly
+on the host in `user.slice/user-1003.slice/session-<N>.scope` (SSH sessions running
+`claude`/`codex` from a host shell). The host-side ones are governed by NOTHING — not
+interactive.slice (devcontainer-only attach) and not besteffort. Operator decision:
+leave untouched for now. If host-side agent sessions become a standing pattern, give
+`user.slice` its own modest floor/ceiling (proposal: `MemoryLow=1G, MemoryHigh=4G`,
+no ManagedOOM) as a follow-up package.
+
 ## Out of scope (tracked elsewhere)
 - CIU-9 (`reset_service` DooD cleanup no-op) — `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`.
 - ciu post-compose hook 10s timeouts — re-evaluate after D2; if still failing, file against ciu.

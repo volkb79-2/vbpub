@@ -78,3 +78,26 @@ dependencies installed.
   `Collector` path, matching today's `--record` behavior).
 - The `report` reader/aggregator (Package B / P54, separate spec).
 - Steady-state auto-detection or any recording-time analysis.
+
+## Amendment 2026-07-10 — recording practicality (live findings, dstdns stack profiling)
+
+First real-world unattended-recording use (gstammtisch, 25-container dstdns stack +
+game + devcontainer, via an interim `groop --once --json` loop) surfaced hard numbers
+this package must design for:
+
+- **A full frame is ~447 KB** (89 entities, full metric set, pretty-printed one-shot).
+  At a 10 s cadence that is ~3.9 GB/day uncompressed; even at 60 s it is ~640 MB/day.
+  Long unattended recordings are the whole point of `--headless`, so size is a
+  first-class requirement, not an optimization:
+  1. `--headless` SHOULD default to (or at minimum loudly recommend) `.zst` output when
+     the `zstandard` extra is installed — frames are highly self-similar and compress
+     extremely well.
+  2. Add an entity filter — `--entities GLOB` (e.g. `--entities 'besteffort.slice/*'`)
+     or `--slice NAME` subtree selector — so a recording scoped to one tier does not
+     pay for the other ~70 entities per frame.
+  3. Consider a `--metrics compact` gauge subset (memory + PSI + refault-rate families,
+     drop network/DAMON/gov-drift blocks) for long-baseline recordings.
+- The interim consumer derived `_per_s` rates from the embedded raw counters across
+  consecutive one-shot frames and it worked — confirming the P54 requirement that
+  report must support cold recordings, but also confirming in-process recording
+  (rates live from frame 1) is strictly better for short windows.

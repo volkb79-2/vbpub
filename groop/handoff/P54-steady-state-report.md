@@ -81,3 +81,11 @@ schema.
   daemon-side report generation.
 - Alerting/threshold gating on the computed profile (a separate future
   consumer of this JSON).
+
+## Amendment 2026-07-10
+
+If P53 grows entity/metric filtering (see its 2026-07-10 amendment), `groop report`
+must tolerate filtered recordings: absent entities are simply absent from the report
+(no error), and a `--group-by slice` rollup over a filtered recording reports only the
+recorded subtree. First real consumer: dstdns `container-memory-profiles.md`
+(steady-state per-container RSS/zswap/PSI percentiles from a bring-up recording).
