@@ -110,7 +110,8 @@ both `--inspect-files` and `--admin`).
 
 - `--max-bytes` (default 65536): Hard byte limit **aggregate** across all
   files in a multi-file read (e.g. cgroup); truncated bytes are reported via
-  the `truncated_bytes` field.
+  the `truncated_bytes` field.  The limit applies to the **rendered** output
+  including per-file headers (``# /path``) and error annotations.
 - `--max-lines` (default 5000): Hard line limit **aggregate** across all
   files; truncated lines are reported via the `truncated_lines` field.
 - Both limits must be positive integers. Absolute maximums are enforced:
@@ -118,6 +119,10 @@ both `--inspect-files` and `--admin`).
 - Reads are **chunk-based** (fixed-size 64 KiB chunks), never line-by-line,
   so single giant lines with no newline never materialize unboundedly in
   memory.
+- Raw binary content is decoded with ``errors="replace"``.  Unsafe control
+  characters (C0 codes 0x00-0x1F excluding ``\\n``/``\\t``, DEL 0x7F, C1
+  codes 0x80-0x9F) are replaced with U+FFFD so terminal escape sequences,
+  NUL bytes, or other control codes cannot replay in the returned text.
 - `--json` output includes both truncation flags; text output prepends
   `[TRUNCATED]` notices.
 
@@ -154,9 +159,20 @@ parameter (testing only — not exposed on the CLI).
 
 #### Root Requirement
 
-Production reads (no `fixture_root`) require **root privileges** (EUID 0),
-per TUI-SPEC §4.8 ("available only in root/admin or daemon-approved modes").
-When a `fixture_root` is provided for testing, the root check is bypassed.
+Production reads (no `fixture_root`, no `is_root`) require **root privileges**
+(EUID 0), per TUI-SPEC §4.8 ("available only in root/admin or daemon-approved
+modes").
+
+When `fixture_root` is provided for testing, the root-PATH is redirected but
+the root-EUID check is NOT bypassed.  An explicit `is_root` callable must be
+provided to override the root check in tests:
+
+```python
+# Test with fixture root, simulating root:
+build_inspect_read(..., fixture_root=..., is_root=lambda: True)
+# Test with fixture root, simulating non-root:
+build_inspect_read(..., fixture_root=..., is_root=lambda: False)
+```
 
 #### Cgroup Reads
 
@@ -224,8 +240,8 @@ Path: /var/lib/docker/containers/.../<id>-json.log
 - **Not a subprocess executor** — no Docker, systemd/journalctl calls.
 - **Not a daemon feature** — no daemon protocol integration.
 - **Not a TUI screen** — CLI-only in this package.
-- **Requires root** — production reads require EUID 0; testing uses fixture
-  seams per the Python API.
+- **Requires root** — production reads require EUID 0; testing uses
+  ``is_root`` callable per the Python API.
 - **Not arbitrary root reads** — every path must belong to the allowlisted catalog.
 - **Not streaming** — bounded reads only; no follow/stream mode.
 

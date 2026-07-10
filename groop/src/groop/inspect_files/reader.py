@@ -23,6 +23,7 @@ import dataclasses
 import os
 import stat
 from pathlib import Path
+from collections.abc import Callable
 from typing import IO
 
 from groop.inspect_files.catalog import INSPECT_CATALOG, InspectFilesKind
@@ -219,21 +220,25 @@ def _confine_and_open(
             dir_fd=current_fd,
         )
 
+        # Track whether the fd is still owned by this function so we
+        # never double-close (the except handler runs on ValueError too).
+        fd_owned = True
         try:
             # 5. fstat and require regular file.
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode):
-                os.close(fd)
                 msg = (
                     f"not a regular file: {resolved_path}"
                     f" (mode={st.st_mode:o})"
                 )
                 raise ValueError(msg)
 
-            # 6. Wrap in a buffered reader.
+            # 6. Wrap in a buffered reader — transfer ownership.
+            fd_owned = False
             return os.fdopen(fd, "rb")
         except (ValueError, OSError):
-            os.close(fd)
+            if fd_owned:
+                os.close(fd)
             raise
 
     finally:
@@ -302,8 +307,11 @@ def _bounded_read(
 
     Returns ``(decoded_text, truncated_bytes, truncated_lines,
     new_aggregate_bytes, new_aggregate_lines)``.
-    Bytes are decoded with ``surrogateescape`` so that arbitrary binary content
-    does not raise.
+    Bytes are decoded with ``errors="replace"`` and unsafe C0 / C1 / DEL
+    control characters are sanitized (replaced with U+FFFD) while
+    preserving newline (``\\n``) and tab (``\\t``).  Terminal escape
+    sequences, NUL bytes, and other control codes cannot replay in the
+    returned text.
     """
     _validate_limits(max_bytes, max_lines)
 
@@ -312,6 +320,12 @@ def _bounded_read(
     total_bytes = aggregate_bytes
     total_lines = aggregate_lines
     chunks: list[bytes] = []
+
+    # If aggregate caps are already exhausted, read nothing from this file.
+    if total_bytes >= max_bytes:
+        return "", True, truncated_lines_flag, total_bytes, total_lines
+    if total_lines >= max_lines:
+        return "", truncated_bytes_flag, True, total_bytes, total_lines
 
     # Read in fixed-size chunks — never line-by-line.
     while True:
@@ -330,23 +344,32 @@ def _bounded_read(
             if remaining > 0:
                 partial = chunk[:remaining]
                 chunks.append(partial)
+                total_bytes += remaining
+            # If remaining == 0, total_bytes stays unchanged (exhausted).
+            total_bytes = max_bytes
             truncated_bytes_flag = True
             break
 
         if total_lines + nl_count > max_lines:
             # Accept lines up to the limit, then stop.
             remaining_lines = max_lines - total_lines
-            pos = 0
-            for _ in range(remaining_lines):
-                idx = chunk.find(b"\n", pos)
-                if idx == -1:
-                    break
-                pos = idx + 1
-            if pos > 0:
-                chunks.append(chunk[:pos])
-            else:
-                # No newline found — whole chunk fits within remaining lines.
-                chunks.append(chunk)
+            if remaining_lines > 0:
+                pos = 0
+                for _ in range(remaining_lines):
+                    idx = chunk.find(b"\n", pos)
+                    if idx == -1:
+                        break
+                    pos = idx + 1
+                if pos > 0:
+                    partial = chunk[:pos]
+                    chunks.append(partial)
+                    total_bytes += len(partial)
+                # else: no newline in this chunk — already exhausting via
+                # bytes, so this should be unreachable (lines can't exceed
+                # max_lines without a newline when aggregate lines are < max).
+                # Fall through: stop reading.
+            # remaining_lines == 0: aggregate already exhausted — append
+            # nothing, the caps are already hit.
             total_lines = max_lines
             truncated_lines_flag = True
             break
@@ -356,7 +379,23 @@ def _bounded_read(
         total_lines += nl_count
 
     raw = b"".join(chunks)
-    text = raw.decode("utf-8", errors="surrogateescape")
+    text = raw.decode("utf-8", errors="replace")
+    # Sanitize unsafe C0 control characters while preserving \n (0x0A)
+    # and \t (0x09).  Replace NUL (0x00), terminal escape (0x1B), and
+    # all other C0 codes (0x01-0x08, 0x0B, 0x0C, 0x0E-0x1F) with the
+    # Unicode replacement character U+FFFD.
+    sanitized_chars: list[str] = []
+    for ch in text:
+        code = ord(ch)
+        if code == 0x0A or code == 0x09:
+            sanitized_chars.append(ch)  # preserve newline and tab
+        elif code < 0x20 or code == 0x7F:
+            sanitized_chars.append("\ufffd")
+        elif 0x80 <= code <= 0x9F:
+            sanitized_chars.append("\ufffd")  # C1 control codes
+        else:
+            sanitized_chars.append(ch)
+    text = "".join(sanitized_chars)
     return text, truncated_bytes_flag, truncated_lines_flag, total_bytes, total_lines
 
 
@@ -418,14 +457,24 @@ def _resolve_cgroup_file_paths(
 # ---------------------------------------------------------------------------
 
 
-def _injectable_is_root(*, fixture_root: Path | None = None) -> bool:
+def _injectable_is_root(
+    *,
+    fixture_root: Path | None = None,
+    is_root: Callable[[], bool] | None = None,
+) -> bool:
     """Return True if the effective user is root (EUID == 0).
 
-    When *fixture_root* is provided (testing seam) the root check is
-    **bypassed** — tests can exercise the full read path without root.
+    When *is_root* is provided (testing seam) it is called directly —
+    tests can inject ``lambda: True`` or ``lambda: False`` without
+    requiring actual root privileges or relying on *fixture_root*.
+
+    For backward compatibility, when *fixture_root* is provided but
+    *is_root* is not, the check defaults to ``os.geteuid() == 0``
+    (the production path).  *fixture_root* does **not** itself imply
+    root; use *is_root* to explicitly control that seam.
     """
-    if fixture_root is not None:
-        return True  # Testing bypass — caller is responsible for isolation.
+    if is_root is not None:
+        return is_root()
     return os.geteuid() == 0
 
 
@@ -443,6 +492,7 @@ def build_inspect_read(
     max_bytes: int = _DEFAULT_MAX_BYTES,
     max_lines: int = _DEFAULT_MAX_LINES,
     fixture_root: Path | None = None,
+    is_root: Callable[[], bool] | None = None,
 ) -> GatedReadResult:
     """Build a bounded file read for the given kind and target.
 
@@ -454,11 +504,16 @@ def build_inspect_read(
 
     *fixture_root* is a testing seam — when provided it replaces the standard
     filesystem root (``/var/lib/docker`` for Docker logs,
-    ``/sys/fs/cgroup`` for cgroup files) **and** bypasses the root-EUID
-    requirement.
+    ``/sys/fs/cgroup`` for cgroup files).  It does **not** bypass the
+    root-EUID check; use *is_root* for that.
 
-    In production (``fixture_root is None``) the caller must be root, per
-    TUI-SPEC §4.8 ("available only in root/admin or daemon-approved modes").
+    *is_root* is an optional callable for testing — when provided it is
+    called to determine root status.  In production (``is_root is None``)
+    the ``os.geteuid() == 0`` check is used, so the caller must be root.
+
+    In production (``fixture_root is None`` and ``is_root is None``) the
+    caller must be root, per TUI-SPEC §4.8 ("available only in root/admin
+    or daemon-approved modes").
 
     Returns ``InspectFilesReadResult`` on success, ``InspectFilesReadError``
     on a resolvable failure (missing file, permission denied, invalid path),
@@ -483,7 +538,7 @@ def build_inspect_read(
         return ReadDenied(kind=ik, target=target)
 
     # ---- Root check (production only) ----
-    if not _injectable_is_root(fixture_root=fixture_root):
+    if not _injectable_is_root(fixture_root=fixture_root, is_root=is_root):
         try:
             ik = InspectFilesKind(kind)
         except ValueError:
@@ -532,15 +587,49 @@ def build_inspect_read(
         return InspectFilesReadError(kind=ik, target=target, error=str(exc))
 
     # ---- Read each path with aggregate limits ----
+    # The aggregate limits apply to the RENDERED content (headers + body),
+    # so we reserve per-file framing overhead before each read.
     results: list[dict] = []
     agg_bytes = 0
     agg_lines = 0
     for path in paths_to_read:
+        pstr = str(path)
+        # Framing overhead for a successfully rendered file:
+        #   "# /path\n"  = len(pstr) + 3
+        #   trailing "\n\n" up to 2
+        header_cost = len(pstr) + 5
+
+        # If we can't fit even the header, skip this file entirely.
+        if agg_bytes + header_cost > max_bytes:
+            results.append({
+                "path": pstr,
+                "error": None,
+                "content": "",
+                "truncated_bytes": True,
+                "truncated_lines": False,
+            })
+            agg_bytes = max_bytes
+            continue
+
         try:
             buf = _confine_and_open(path, allow_root)
         except (ValueError, OSError, FileNotFoundError) as exc:
+            # Error entries also consume budget for the rendered line:
+            # "# /path: [ERROR] msg\n"
+            error_cost = len(pstr) + len(str(exc)) + 14
+            if agg_bytes + error_cost > max_bytes:
+                results.append({
+                    "path": pstr,
+                    "error": None,
+                    "content": "",
+                    "truncated_bytes": True,
+                    "truncated_lines": False,
+                })
+                agg_bytes = max_bytes
+                continue
+            agg_bytes += error_cost
             results.append({
-                "path": str(path),
+                "path": pstr,
                 "error": str(exc),
                 "content": "",
                 "truncated_bytes": False,
@@ -549,15 +638,17 @@ def build_inspect_read(
             continue
 
         try:
+            # Reserve framing overhead in aggregate before reading content.
+            read_agg_bytes = agg_bytes + header_cost
             text, trunc_b, trunc_l, agg_bytes, agg_lines = _bounded_read(
                 buf,
                 max_bytes=max_bytes,
                 max_lines=max_lines,
-                aggregate_bytes=agg_bytes,
+                aggregate_bytes=read_agg_bytes,
                 aggregate_lines=agg_lines,
             )
             results.append({
-                "path": str(path),
+                "path": pstr,
                 "error": None,
                 "content": text,
                 "truncated_bytes": trunc_b,
@@ -585,25 +676,31 @@ def build_inspect_read(
             truncated_lines=r["truncated_lines"],
         )
 
-    # Cgroup: combine multiple files into a structured result
+    # Cgroup: combine multiple files into a structured result.
+    # Files whose content is empty because the aggregate cap was already
+    # exhausted (truncated flag set) are omitted from the rendered output
+    # — their headers would consume budget we no longer have.
     combined_parts: list[str] = []
     any_trunc_bytes = False
     any_trunc_lines = False
     first_error: str | None = None
     combined_paths: list[str] = []
     for r in results:
-        combined_paths.append(r["path"])
+        any_trunc_bytes = any_trunc_bytes or r["truncated_bytes"]
+        any_trunc_lines = any_trunc_lines or r["truncated_lines"]
         if r["error"] is not None:
             if first_error is None:
                 first_error = r["error"]
             combined_parts.append(f"# {r['path']}: [ERROR] {r['error']}\n")
-        else:
-            any_trunc_bytes = any_trunc_bytes or r["truncated_bytes"]
-            any_trunc_lines = any_trunc_lines or r["truncated_lines"]
+            combined_paths.append(r["path"])
+        elif r["content"] or not (r["truncated_bytes"] or r["truncated_lines"]):
+            # Non-empty content or non-truncated empty file — render.
             combined_parts.append(f"# {r['path']}\n{r['content']}")
             if not r["content"].endswith("\n"):
                 combined_parts.append("\n")
             combined_parts.append("\n")
+            combined_paths.append(r["path"])
+        # else: empty content because aggregate cap exhausted — skip header too.
 
     if first_error is not None and not any(
         r["error"] is None for r in results
