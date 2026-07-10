@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from groop.daemon.component_health import (
+    ComponentError,
     ComponentHealthRegistry,
     build_health_response,
 )
@@ -44,8 +45,35 @@ class FrameBroker:
             return frames
 
     def _collect_locked(self) -> Frame:
-        frame = next(self._source)
+        try:
+            frame = next(self._source)
+        except StopIteration:
+            if self._health_registry is not None:
+                self._health_registry.record_failure(
+                    "collector",
+                    detail="frame source exhausted",
+                    error=ComponentError(
+                        message="frame source exhausted",
+                        error_code="collector_source_exhausted",
+                    ),
+                )
+            raise
+        except Exception:
+            if self._health_registry is not None:
+                self._health_registry.record_failure(
+                    "collector",
+                    detail="frame collection failed",
+                    error=ComponentError(
+                        message="frame collection failed",
+                        error_code="collector_collection_failed",
+                    ),
+                )
+            raise
         self._history.append(frame)
+        if self._health_registry is not None:
+            self._health_registry.record_success(
+                "collector", detail="frame collection succeeded"
+            )
         return frame
 
     def responses(self, request: dict[str, Any]) -> list[dict[str, Any]]:

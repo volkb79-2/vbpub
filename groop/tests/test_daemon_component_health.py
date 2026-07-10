@@ -20,19 +20,24 @@ Covers:
 from __future__ import annotations
 
 import json
+from io import StringIO
 import socket
 import threading
 from pathlib import Path
 
+import pytest
+
 from conftest import fixture_frame
+from groop.daemon.client import DaemonClient, DaemonProtocolError
 from groop.daemon.broker import FrameBroker, serve_unix_socket
 from groop.daemon.component_health import (
     COMPONENT_NAMES,
+    MAX_HEALTH_DETAIL_BYTES,
+    MAX_HEALTH_ERROR_BYTES,
     ComponentError,
     ComponentHealthRegistry,
     ComponentSnapshot,
     ComponentState,
-    HealthSnapshot,
     HealthSnapshot,
     build_health_response,
 )
@@ -58,6 +63,25 @@ def test_component_error_bounded() -> None:
     err2 = ComponentError(message="timeout", error_code="ERR_TIMEOUT")
     assert err2.message == "timeout"
     assert err2.error_code == "ERR_TIMEOUT"
+
+
+def test_public_health_text_is_bounded_single_line_and_redacted() -> None:
+    secret = "TOKEN=topsecret /home/alice/.aws/credentials\n" + ("é" * 1000)
+    reg = ComponentHealthRegistry()
+    reg.record_failure(
+        "collector",
+        detail=secret,
+        error=ComponentError(message=secret, error_code="bad code/with controls\n"),
+    )
+    component = reg.snapshot().by_name("collector")
+    assert component is not None and component.error is not None
+    assert len(component.detail.encode("utf-8")) <= MAX_HEALTH_DETAIL_BYTES
+    assert len(component.error.message.encode("utf-8")) <= MAX_HEALTH_ERROR_BYTES
+    combined = component.detail + component.error.message
+    assert "\n" not in combined
+    assert "topsecret" not in combined
+    assert "/home/alice" not in combined
+    assert component.error.error_code == "bad_code_with_controls"
 
 
 def test_component_names_match_default_disabled() -> None:
@@ -170,6 +194,14 @@ def test_record_degraded() -> None:
     assert cs.state is ComponentState.DEGRADED
     assert cs.detail == "partial data"
     assert cs.error is not None
+    assert cs.consecutive_failures == 1
+
+
+def test_lifecycle_markers_record_attempt_timestamps() -> None:
+    reg = ComponentHealthRegistry(now=lambda: 123.0)
+    for marker in (reg.mark_starting, reg.mark_stopping, reg.mark_stopped, reg.mark_disabled):
+        marker("collector")
+        assert reg.snapshot().by_name("collector").last_attempt_ts == 123.0
 
 
 def test_mark_starting_stopping_stopped_disabled() -> None:
@@ -410,6 +442,7 @@ def test_daemon_client_request_health(tmp_path: Path) -> None:
         cs = health.by_name("collector")
         assert cs is not None
         assert cs.state is ComponentState.HEALTHY
+        assert health.capability == "health-v1"
     finally:
         server.shutdown()
         server.server_close()
@@ -468,6 +501,255 @@ def test_component_snapshot_includes_error_when_set() -> None:
     j = reg.snapshot().to_jsonable()
     collector = [c for c in j["components"] if c["name"] == "collector"][0]
     assert collector["error"]["message"] == "test error"
+
+
+def test_daemon_client_preserves_component_error() -> None:
+    reg = ComponentHealthRegistry()
+    reg.record_failure(
+        "collector",
+        detail="collection failed",
+        error=ComponentError(message="collection failed", error_code="collector_failed"),
+    )
+    payload = build_health_response(reg)
+    health = DaemonClient(Path("/fixture.sock"))._read_health(
+        StringIO(json.dumps(payload) + "\n")
+    )
+    error = health.by_name("collector").error
+    assert error == ComponentError(
+        message="collection failed", error_code="collector_failed"
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda payload: payload.update(schema_version=999),
+        lambda payload: payload.update(capability="future-health"),
+        lambda payload: payload["components"][0].update(state="future-state"),
+        lambda payload: payload["components"][0].update(name="wrong-name"),
+        lambda payload: payload["components"][0].update(detail="x\nunsafe"),
+        lambda payload: payload["components"][0].pop("consecutive_failures"),
+    ),
+)
+def test_daemon_client_rejects_incompatible_health_payload(mutation) -> None:
+    payload = build_health_response(ComponentHealthRegistry())
+    mutation(payload)
+    with pytest.raises(DaemonProtocolError, match="incompatible health-v1"):
+        DaemonClient(Path("/fixture.sock"))._read_health(
+            StringIO(json.dumps(payload) + "\n")
+        )
+
+
+def test_daemon_client_rejects_oversized_health_response() -> None:
+    oversized = "x" * (16 * 1024 + 1)
+    with pytest.raises(DaemonProtocolError, match="oversized"):
+        DaemonClient(Path("/fixture.sock"))._read_health(StringIO(oversized))
+
+
+def test_broker_collector_health_tracks_real_collection() -> None:
+    def frames():
+        yield fixture_frame()
+        raise RuntimeError("TOKEN=topsecret /private/path")
+
+    reg = ComponentHealthRegistry()
+    reg.mark_starting("collector", detail="awaiting first frame")
+    broker = FrameBroker(frames(), health_registry=reg)
+    broker.stream(1)
+    assert reg.snapshot().by_name("collector").state is ComponentState.HEALTHY
+    with pytest.raises(RuntimeError):
+        broker.stream(1)
+    component = reg.snapshot().by_name("collector")
+    assert component.state is ComponentState.FAILED
+    assert component.error.error_code == "collector_collection_failed"
+    assert "topsecret" not in json.dumps(component.to_jsonable())
+
+
+def test_daemon_serve_health_tracks_collector_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise the actual serve wiring through one success and one failure."""
+    import groop.cli as cli
+    from groop.config import GroopConfig
+
+    config = GroopConfig(interval=0.0, cgroup_root=tmp_path / "cgroup")
+    observed: list[dict] = []
+
+    class FakeCollector:
+        def __init__(self, cgroup_root, config) -> None:
+            self.cgroup_root = cgroup_root or config.cgroup_root
+            self.config = config
+            self.network_providers = ()
+            self.calls = 0
+
+        def collect_once(self):
+            self.calls += 1
+            if self.calls == 1:
+                return fixture_frame()
+            raise RuntimeError("TOKEN=topsecret /private/path")
+
+    class FakeServer:
+        def __init__(self, broker) -> None:
+            self.broker = broker
+
+        def serve_forever(self) -> None:
+            observed.append(self.broker.responses({"op": "health"})[0])
+            self.broker.stream(1)
+            observed.append(self.broker.responses({"op": "health"})[0])
+            with pytest.raises(RuntimeError):
+                self.broker.stream(1)
+            observed.append(self.broker.responses({"op": "health"})[0])
+            raise KeyboardInterrupt
+
+        def server_close(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli, "load", lambda _path: config)
+    monkeypatch.setattr(cli, "Collector", FakeCollector)
+    monkeypatch.setattr(cli, "serve_unix_socket", lambda _path, broker: FakeServer(broker))
+    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "groop.sock")]) == 0
+
+    states = [entry["components"][0]["state"] for entry in observed]
+    assert states == ["starting", "healthy", "failed"]
+    assert "topsecret" not in json.dumps(observed)
+
+
+@pytest.mark.parametrize(
+    ("has_last_valid", "expected_state"), ((False, "failed"), (True, "degraded"))
+)
+def test_daemon_serve_initial_bpf_failure_reflects_last_valid_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    has_last_valid: bool,
+    expected_state: str,
+) -> None:
+    import groop.cli as cli
+    from groop.config import BpfSnapshotConfig, GroopConfig
+
+    bpf_root = tmp_path / "pins"
+    bpf_root.mkdir()
+    config = GroopConfig(
+        cgroup_root=tmp_path / "cgroup",
+        bpf_snapshot=BpfSnapshotConfig(
+            enabled=True, root=bpf_root, interval=5.0, state_dir=tmp_path / "state"
+        ),
+    )
+    observed: dict = {}
+
+    class FakeCollector:
+        def __init__(self, cgroup_root, config) -> None:
+            self.cgroup_root = cgroup_root or config.cgroup_root
+            self.config = config
+            self.network_providers = ()
+
+    class FakeBridge:
+        def __init__(self, *args, **kwargs) -> None:
+            self.last_valid_snapshot = object() if has_last_valid else None
+
+        def restore_last_known_good(self, _path) -> None:
+            pass
+
+        def refresh_and_write(self, _map_name, _path) -> None:
+            raise cli.BpfSnapshotError("TOKEN=topsecret /private/path")
+
+        def refresh(self, _map_name):
+            raise AssertionError("periodic refresh should not run")
+
+    class FakeServer:
+        def __init__(self, broker) -> None:
+            self.broker = broker
+
+        def serve_forever(self) -> None:
+            observed.update(self.broker.responses({"op": "health"})[0])
+            raise KeyboardInterrupt
+
+        def server_close(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli, "load", lambda _path: config)
+    monkeypatch.setattr(cli, "Collector", FakeCollector)
+    monkeypatch.setattr(cli, "BpfSnapshotBridge", FakeBridge)
+    monkeypatch.setattr(cli, "serve_unix_socket", lambda _path, broker: FakeServer(broker))
+    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "groop.sock")]) == 0
+    bpf = next(
+        component
+        for component in observed["components"]
+        if component["name"] == "bpf_snapshot_bridge"
+    )
+    assert bpf["state"] == expected_state
+    assert bpf["consecutive_failures"] == 1
+    assert "topsecret" not in json.dumps(bpf)
+
+
+def test_daemon_serve_does_not_claim_bpf_stopped_when_worker_is_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import groop.cli as cli
+    from groop.config import BpfSnapshotConfig, GroopConfig
+
+    bpf_root = tmp_path / "pins"
+    bpf_root.mkdir()
+    config = GroopConfig(
+        cgroup_root=tmp_path / "cgroup",
+        bpf_snapshot=BpfSnapshotConfig(
+            enabled=True, root=bpf_root, interval=5.0, state_dir=tmp_path / "state"
+        ),
+    )
+    observed: dict = {}
+
+    class FakeCollector:
+        def __init__(self, cgroup_root, config) -> None:
+            self.cgroup_root = cgroup_root or config.cgroup_root
+            self.config = config
+            self.network_providers = ()
+
+    class FakeBridge:
+        last_valid_snapshot = None
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def restore_last_known_good(self, _path) -> None:
+            pass
+
+        def refresh_and_write(self, _map_name, _path) -> None:
+            pass
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def join(self, timeout=None) -> None:
+            assert timeout == 5.0
+
+        def is_alive(self) -> bool:
+            return True
+
+    class FakeServer:
+        def __init__(self, broker) -> None:
+            self.broker = broker
+
+        def serve_forever(self) -> None:
+            raise KeyboardInterrupt
+
+        def server_close(self) -> None:
+            observed.update(self.broker.responses({"op": "health"})[0])
+
+    monkeypatch.setattr(cli, "load", lambda _path: config)
+    monkeypatch.setattr(cli, "Collector", FakeCollector)
+    monkeypatch.setattr(cli, "BpfSnapshotBridge", FakeBridge)
+    monkeypatch.setattr(cli.threading, "Thread", FakeThread)
+    monkeypatch.setattr(cli, "serve_unix_socket", lambda _path, broker: FakeServer(broker))
+    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "groop.sock")]) == 0
+    bpf = next(
+        component
+        for component in observed["components"]
+        if component["name"] == "bpf_snapshot_bridge"
+    )
+    assert bpf["state"] == "failed"
+    assert bpf["error"]["error_code"] == "bpf_shutdown_timeout"
 
 
 def test_state_change_count_increments() -> None:

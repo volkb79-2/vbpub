@@ -32,7 +32,6 @@ from groop.daemon import BpfSnapshotBridge, BpfSnapshotError, FrameBroker, serve
 from groop.daemon.component_health import (
     ComponentError,
     ComponentHealthRegistry,
-    ComponentState,
 )
 from groop.model import frame_to_jsonable
 from groop.record.live import live_frame_stream
@@ -630,9 +629,6 @@ def _main_daemon(argv: list[str]) -> int:
         server = serve_unix_socket(args.socket, broker)
         print(f"serving read-only groop frames on {args.socket}", flush=True)
 
-        # Mark collector healthy once broker is serving
-        health_registry.record_success("collector", detail="collector running, serving frames")
-
         # Default-disabled components
         health_registry.mark_disabled("bpf_snapshot_bridge", detail="disabled by default")
         health_registry.mark_disabled("paddr_lifecycle", detail="disabled by default")
@@ -699,11 +695,24 @@ def _main_daemon(argv: list[str]) -> int:
                     print("BPF snapshot refreshed on startup", flush=True)
                     health_registry.record_success("bpf_snapshot_bridge", detail="initial BPF refresh succeeded")
                 except BpfSnapshotError as exc:
-                    health_registry.record_degraded(
-                        "bpf_snapshot_bridge",
-                        detail=f"initial BPF refresh failed: {exc}",
-                        error=ComponentError(message=f"initial refresh failed: {exc}"),
-                    )
+                    if bpf_bridge.last_valid_snapshot is not None:
+                        health_registry.record_degraded(
+                            "bpf_snapshot_bridge",
+                            detail="initial BPF refresh failed; preserving last valid snapshot",
+                            error=ComponentError(
+                                message="initial BPF refresh failed",
+                                error_code="bpf_initial_refresh_failed",
+                            ),
+                        )
+                    else:
+                        health_registry.record_failure(
+                            "bpf_snapshot_bridge",
+                            detail="initial BPF refresh failed; no valid snapshot",
+                            error=ComponentError(
+                                message="initial BPF refresh failed",
+                                error_code="bpf_initial_refresh_failed",
+                            ),
+                        )
                     print(
                         f"BPF snapshot initial refresh failed "
                         f"(continuing with periodic retry): {exc}",
@@ -724,9 +733,10 @@ def _main_daemon(argv: list[str]) -> int:
                             if last is not None:
                                 health_registry.record_degraded(
                                     "bpf_snapshot_bridge",
-                                    detail=f"BPF refresh failed (preserving last valid): {exc}",
+                                    detail="BPF refresh failed; preserving last valid snapshot",
                                     error=ComponentError(
-                                        message=f"refresh failed: {exc}",
+                                        message="BPF refresh failed",
+                                        error_code="bpf_refresh_failed",
                                     ),
                                 )
                                 print(
@@ -737,9 +747,10 @@ def _main_daemon(argv: list[str]) -> int:
                             else:
                                 health_registry.record_failure(
                                     "bpf_snapshot_bridge",
-                                    detail=f"BPF refresh failed (no valid snapshot): {exc}",
+                                    detail="BPF refresh failed; no valid snapshot",
                                     error=ComponentError(
-                                        message=f"refresh failed: {exc}",
+                                        message="BPF refresh failed",
+                                        error_code="bpf_refresh_failed",
                                     ),
                                 )
                                 print(
@@ -749,9 +760,10 @@ def _main_daemon(argv: list[str]) -> int:
                         except Exception as exc:
                             health_registry.record_failure(
                                 "bpf_snapshot_bridge",
-                                detail=f"BPF unexpected error: {exc}",
+                                detail="BPF refresh encountered an unexpected error",
                                 error=ComponentError(
-                                    message=f"unexpected error: {exc}",
+                                    message="BPF refresh encountered an unexpected error",
+                                    error_code="bpf_unexpected_error",
                                 ),
                             )
                             print(
@@ -766,8 +778,11 @@ def _main_daemon(argv: list[str]) -> int:
             except Exception as exc:
                 health_registry.record_failure(
                     "bpf_snapshot_bridge",
-                    detail=f"failed to start BPF snapshot bridge: {exc}",
-                    error=ComponentError(message=f"start failed: {exc}"),
+                    detail="failed to start BPF snapshot bridge",
+                    error=ComponentError(
+                        message="failed to start BPF snapshot bridge",
+                        error_code="bpf_start_failed",
+                    ),
                 )
                 print(
                     f"Failed to start BPF snapshot bridge: {exc}",
@@ -798,11 +813,18 @@ def _main_daemon(argv: list[str]) -> int:
                         print("Daemon-owned paddr session adopted", flush=True)
                     case PaddrLifecycleOutcome.DISABLED:
                         pass  # not reached since we check paddr_enabled above
-            except (PaddrLifecycleStartError, Exception) as exc:
+            except Exception as exc:
                 health_registry.record_failure(
                     "paddr_lifecycle",
-                    detail=f"paddr start failed: {exc}",
-                    error=ComponentError(message=f"start failed: {exc}"),
+                    detail="paddr lifecycle start failed",
+                    error=ComponentError(
+                        message="paddr lifecycle start failed",
+                        error_code=(
+                            "paddr_start_failed"
+                            if isinstance(exc, PaddrLifecycleStartError)
+                            else "paddr_unexpected_start_error"
+                        ),
+                    ),
                 )
                 print(
                     f"Paddr lifecycle start failed "
@@ -819,8 +841,19 @@ def _main_daemon(argv: list[str]) -> int:
                 health_registry.mark_stopping("bpf_snapshot_bridge", detail="shutting down BPF bridge")
                 _bpf_stop.set()
                 bpf_thread.join(timeout=5.0)
-                health_registry.mark_stopped("bpf_snapshot_bridge", detail="BPF bridge stopped")
+                if bpf_thread.is_alive():
+                    health_registry.record_failure(
+                        "bpf_snapshot_bridge",
+                        detail="BPF bridge did not stop before the shutdown deadline",
+                        error=ComponentError(
+                            message="BPF bridge shutdown timed out",
+                            error_code="bpf_shutdown_timeout",
+                        ),
+                    )
+                else:
+                    health_registry.mark_stopped("bpf_snapshot_bridge", detail="BPF bridge stopped")
             if paddr_lifecycle.started:
+                adopted = paddr_lifecycle.outcome is PaddrLifecycleOutcome.ADOPTED
                 health_registry.mark_stopping("paddr_lifecycle", detail="stopping paddr lifecycle")
                 try:
                     stopped = paddr_lifecycle.stop()
@@ -830,12 +863,22 @@ def _main_daemon(argv: list[str]) -> int:
                             f"session",
                             flush=True,
                         )
-                    health_registry.mark_stopped("paddr_lifecycle", detail="paddr lifecycle stopped")
+                    health_registry.mark_stopped(
+                        "paddr_lifecycle",
+                        detail=(
+                            "daemon lifecycle stopped; adopted paddr session remains active"
+                            if adopted
+                            else "paddr lifecycle stopped"
+                        ),
+                    )
                 except Exception as exc:
                     health_registry.record_failure(
                         "paddr_lifecycle",
-                        detail=f"failed to stop paddr: {exc}",
-                        error=ComponentError(message=f"stop failed: {exc}"),
+                        detail="paddr lifecycle stop failed",
+                        error=ComponentError(
+                            message="paddr lifecycle stop failed",
+                            error_code="paddr_stop_failed",
+                        ),
                     )
                     print(
                         f"Failed to stop paddr session: {exc}",

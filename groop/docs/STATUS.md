@@ -24,8 +24,9 @@ restart; current-run sessions stop safely while verified adopted sessions remain
 persistent. P46 adds the narrowly allowlisted executable admin kernel. P45
 bounded content reads remain under review and are still a non-claim.
 
-P47 adds a thread-safe daemon component health registry with bounded public
-error detail, a read-only ``health`` protocol operation, and
+P47 adds a thread-safe daemon component health registry with byte-bounded,
+redacted public error detail, a strictly validated read-only ``health-v1``
+protocol operation, and
 ``groop daemon health [--json]``. The registry models collector, BPF snapshot
 bridge, and paddr lifecycle states and wires P42/P44 transitions.
 
@@ -205,11 +206,11 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent combined validation after P44 and P46 merged:
+Most recent full validation on current main plus P47:
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 554 passed, 1 skipped in 48.30s
+# 601 passed, 1 skipped in 50.81s
 ```
 
 Also validated:
@@ -217,5 +218,7 @@ Also validated:
 - P44 focused paddr lifecycle tests: `22 passed in 0.17s`.
 - P46 focused action execution tests: `129 passed in 0.45s`.
 - Combined P44/P46 focused regression: `151 passed in 0.58s`.
+- P47 focused component health tests: `47 passed in 3.46s`.
+- P47 daemon-focused regression: `108 passed in 6.13s`.
 - Full-source `py_compile` clean on all changed/new files.
 - Module-level imports and gate logic verified without real Docker/systemd.

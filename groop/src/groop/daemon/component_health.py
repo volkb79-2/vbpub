@@ -1,24 +1,25 @@
-"""Thread-safe daemon component health registry.
-
-Provides a typed, bounded health snapshot for daemon-owned background
-components — collector, BPF snapshot bridge, and paddr lifecycle —
-with stable states, deterministic concurrency, and bounded public error
-detail.  Never exposes tracebacks, environment variables, arbitrary paths,
-command output, or secrets.
-"""
+"""Bounded, thread-safe health for daemon-owned components."""
 
 from __future__ import annotations
 
+import math
+import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from threading import Lock
 from typing import Callable
 
 
-class ComponentState(Enum):
-    """Stable state of a daemon-owned component."""
+HEALTH_PROTOCOL_VERSION = 1
+PROTOCOL_CAPABILITY_HEALTH = "health-v1"
+MAX_HEALTH_DETAIL_BYTES = 256
+MAX_HEALTH_ERROR_BYTES = 256
+MAX_HEALTH_ERROR_CODE_BYTES = 64
+MAX_HEALTH_RESPONSE_BYTES = 16 * 1024
 
+
+class ComponentState(Enum):
     DISABLED = "disabled"
     STARTING = "starting"
     HEALTHY = "healthy"
@@ -34,107 +35,157 @@ COMPONENT_NAMES: tuple[str, ...] = (
     "paddr_lifecycle",
 )
 
-# ---------------------------------------------------------------------------
-# Public, bounded error detail — never tracebacks, env vars, paths, secrets
-# ---------------------------------------------------------------------------
+_SENSITIVE_ASSIGNMENT = re.compile(
+    r"(?i)\b(password|passwd|secret|token|api[_-]?key|credential|authorization|cookie)\s*[:=]\s*\S+"
+)
+_ABSOLUTE_PATH = re.compile(r"(?<![\w.])/(?:[^\s/]+/)*[^\s,;:)]*")
+_ERROR_CODE = re.compile(r"[^a-zA-Z0-9_.-]+")
+
+
+def _truncate_utf8(value: str, limit: int) -> str:
+    raw = value.encode("utf-8")
+    if len(raw) <= limit:
+        return value
+    suffix = "..."
+    kept = raw[: max(0, limit - len(suffix))]
+    while kept:
+        try:
+            return kept.decode("utf-8") + suffix
+        except UnicodeDecodeError:
+            kept = kept[:-1]
+    return suffix[:limit]
+
+
+def sanitize_public_text(value: object, *, limit: int) -> str:
+    """Return bounded, single-line text with common sensitive forms redacted."""
+    text = str(value)
+    text = " ".join(text.split())
+    text = _SENSITIVE_ASSIGNMENT.sub(lambda match: f"{match.group(1)}=<redacted>", text)
+    text = _ABSOLUTE_PATH.sub("<path>", text)
+    return _truncate_utf8(text, limit)
+
+
+def _sanitize_error_code(value: str | None) -> str | None:
+    if value is None:
+        return None
+    safe = _ERROR_CODE.sub("_", value).strip("_")
+    return _truncate_utf8(safe, MAX_HEALTH_ERROR_CODE_BYTES) or None
 
 
 @dataclass(frozen=True)
 class ComponentError:
-    """Bounded, public-safe error detail for a component.
-
-    The *message* is a short, static-safe string (no traceback, no
-    environment, no secret, no arbitrary path).  The *error_code* is an
-    opaque identifier the caller can use for grouping or log correlation.
-    """
+    """Public-safe, bounded error information."""
 
     message: str
     error_code: str | None = None
 
-
-# ---------------------------------------------------------------------------
-# Snapshot types
-# ---------------------------------------------------------------------------
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "message",
+            sanitize_public_text(self.message, limit=MAX_HEALTH_ERROR_BYTES),
+        )
+        object.__setattr__(self, "error_code", _sanitize_error_code(self.error_code))
 
 
 @dataclass(frozen=True)
 class ComponentSnapshot:
-    """Bounded health snapshot for a single component at a point in time."""
-
     name: str
     state: ComponentState
-    detail: str = ""  # static-safe one-line summary
+    detail: str = ""
     last_attempt_ts: float | None = None
     last_success_ts: float | None = None
     consecutive_failures: int = 0
     error: ComponentError | None = None
-    # Transitions tracked since the registry was created (monotonic counter)
     state_change_count: int = 0
 
     def to_jsonable(self) -> dict:
-        d: dict = {
+        result: dict = {
             "name": self.name,
             "state": self.state.value,
             "detail": self.detail,
+            "consecutive_failures": self.consecutive_failures,
+            "state_change_count": self.state_change_count,
         }
         if self.last_attempt_ts is not None:
-            d["last_attempt_ts"] = self.last_attempt_ts
+            result["last_attempt_ts"] = self.last_attempt_ts
         if self.last_success_ts is not None:
-            d["last_success_ts"] = self.last_success_ts
-        if self.consecutive_failures:
-            d["consecutive_failures"] = self.consecutive_failures
+            result["last_success_ts"] = self.last_success_ts
         if self.error is not None:
-            d["error"] = {"message": self.error.message}
+            result["error"] = {"message": self.error.message}
             if self.error.error_code is not None:
-                d["error"]["error_code"] = self.error.error_code
-        if self.state_change_count:
-            d["state_change_count"] = self.state_change_count
-        return d
+                result["error"]["error_code"] = self.error.error_code
+        return result
 
 
 @dataclass(frozen=True)
 class HealthSnapshot:
-    """Atomic, deterministic health snapshot of all tracked components."""
-
     snapshots: tuple[ComponentSnapshot, ...] = ()
-    schema_version: int = 1
+    schema_version: int = HEALTH_PROTOCOL_VERSION
+    capability: str = PROTOCOL_CAPABILITY_HEALTH
 
     def to_jsonable(self) -> dict:
         return {
             "schema_version": self.schema_version,
-            "components": [s.to_jsonable() for s in self.snapshots],
+            "capability": self.capability,
+            "components": [snapshot.to_jsonable() for snapshot in self.snapshots],
         }
 
     def by_name(self, name: str) -> ComponentSnapshot | None:
-        for s in self.snapshots:
-            if s.name == name:
-                return s
-        return None
+        return next((snapshot for snapshot in self.snapshots if snapshot.name == name), None)
 
 
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
+class _ComponentRecord:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.state = ComponentState.DISABLED
+        self.detail = ""
+        self.last_attempt_ts: float | None = None
+        self.last_success_ts: float | None = None
+        self.consecutive_failures = 0
+        self.error: ComponentError | None = None
+        self.state_change_count = 0
 
 
 class ComponentHealthRegistry:
-    """Thread-safe registry for daemon component health.
-
-    All public methods acquire the internal lock so snapshots are
-    deterministic even during concurrent updates and shutdown.
-    """
+    """Atomic registry whose every public value is bounded at ingestion."""
 
     def __init__(self, *, now: Callable[[], float] | None = None) -> None:
         self._lock = Lock()
         self._now = now or time.time
-        # Internal mutable records keyed by component name
-        self._records: dict[str, _ComponentRecord] = {}
-        for name in COMPONENT_NAMES:
-            self._records[name] = _ComponentRecord(name=name)
+        self._records = {name: _ComponentRecord(name) for name in COMPONENT_NAMES}
 
-    # ------------------------------------------------------------------
-    # State transitions
-    # ------------------------------------------------------------------
+    def _update(
+        self,
+        name: str,
+        state: ComponentState,
+        *,
+        detail: str = "",
+        error: ComponentError | None = None,
+        success: bool = False,
+        failed_attempt: bool = False,
+    ) -> None:
+        with self._lock:
+            record = self._records.get(name)
+            if record is None:
+                return
+            timestamp = float(self._now())
+            if not math.isfinite(timestamp):
+                timestamp = 0.0
+            if record.state is not state:
+                record.state_change_count += 1
+            record.state = state
+            record.detail = sanitize_public_text(detail, limit=MAX_HEALTH_DETAIL_BYTES)
+            record.last_attempt_ts = timestamp
+            if success:
+                record.last_success_ts = timestamp
+                record.consecutive_failures = 0
+                record.error = None
+            elif failed_attempt:
+                record.consecutive_failures += 1
+                record.error = error
+            elif state in {ComponentState.DISABLED, ComponentState.STARTING}:
+                record.error = None
 
     def set_state(
         self,
@@ -144,208 +195,71 @@ class ComponentHealthRegistry:
         detail: str = "",
         error: ComponentError | None = None,
     ) -> None:
-        """Set *name* to *state* with bounded detail.
-
-        Consecutive-failure count is automatically incremented when the
-        state is FAILED and the previous state was also FAILED (or was a
-        transition *into* failed).  It is reset to 0 when the state becomes
-        HEALTHY.
-        """
-        with self._lock:
-            rec = self._records.get(name)
-            if rec is None:
-                return  # unknown component — silently ignored
-            ts = self._now()
-
-            rec.state = state
-            rec.detail = detail
-            last_change = rec.last_state_change_ts
-            rec.last_state_change_ts = ts
-            rec.previous_state = rec.state  # store for failure tracking
-            rec.state_change_count += 1
-
-            if state is ComponentState.HEALTHY:
-                rec.consecutive_failures = 0
-                rec.error = None
-            elif state is ComponentState.FAILED:
-                rec.consecutive_failures += 1
-                rec.error = error
-
-            rec.last_attempt_ts = ts
+        self._update(
+            name,
+            state,
+            detail=detail,
+            error=error,
+            success=state is ComponentState.HEALTHY,
+            failed_attempt=state in {ComponentState.DEGRADED, ComponentState.FAILED},
+        )
 
     def record_success(self, name: str, *, detail: str = "") -> None:
-        """Mark *name* as healthy and record the success timestamp."""
-        with self._lock:
-            rec = self._records.get(name)
-            if rec is None:
-                return
-            ts = self._now()
-            rec.state = ComponentState.HEALTHY
-            rec.detail = detail or ""
-            rec.last_attempt_ts = ts
-            rec.last_success_ts = ts
-            rec.consecutive_failures = 0
-            rec.error = None
-            rec.state_change_count += 1
+        self._update(name, ComponentState.HEALTHY, detail=detail, success=True)
 
     def record_failure(
-        self,
-        name: str,
-        *,
-        detail: str = "",
-        error: ComponentError | None = None,
+        self, name: str, *, detail: str = "", error: ComponentError | None = None
     ) -> None:
-        """Mark *name* as failed and increment consecutive-failure count."""
-        with self._lock:
-            rec = self._records.get(name)
-            if rec is None:
-                return
-            ts = self._now()
-            rec.state = ComponentState.FAILED
-            rec.detail = detail or ""
-            rec.last_attempt_ts = ts
-            rec.consecutive_failures += 1
-            rec.error = error
-            rec.state_change_count += 1
+        self._update(
+            name,
+            ComponentState.FAILED,
+            detail=detail,
+            error=error,
+            failed_attempt=True,
+        )
 
     def record_degraded(
-        self,
-        name: str,
-        *,
-        detail: str = "",
-        error: ComponentError | None = None,
+        self, name: str, *, detail: str = "", error: ComponentError | None = None
     ) -> None:
-        """Mark *name* as degraded (healthy-but-impaired)."""
-        with self._lock:
-            rec = self._records.get(name)
-            if rec is None:
-                return
-            ts = self._now()
-            rec.state = ComponentState.DEGRADED
-            rec.detail = detail or ""
-            rec.last_attempt_ts = ts
-            rec.error = error
-            rec.state_change_count += 1
-
-    # ------------------------------------------------------------------
-    # Snapshot
-    # ------------------------------------------------------------------
-
-    def snapshot(self) -> HealthSnapshot:
-        """Return a deterministic, atomic health snapshot."""
-        with self._lock:
-            snapshots: list[ComponentSnapshot] = []
-            for name in COMPONENT_NAMES:
-                rec = self._records.get(name)
-                if rec is None:
-                    continue
-                snapshots.append(
-                    ComponentSnapshot(
-                        name=rec.name,
-                        state=rec.state,
-                        detail=rec.detail,
-                        last_attempt_ts=rec.last_attempt_ts,
-                        last_success_ts=rec.last_success_ts,
-                        consecutive_failures=rec.consecutive_failures,
-                        error=rec.error,
-                        state_change_count=rec.state_change_count,
-                    )
-                )
-            return HealthSnapshot(snapshots=tuple(snapshots))
-
-    # ------------------------------------------------------------------
-    # Mark components starting/stopping for deterministic lifecycle
-    # ------------------------------------------------------------------
+        self._update(
+            name,
+            ComponentState.DEGRADED,
+            detail=detail,
+            error=error,
+            failed_attempt=True,
+        )
 
     def mark_starting(self, name: str, *, detail: str = "") -> None:
-        with self._lock:
-            rec = self._records.get(name)
-            if rec is None:
-                return
-            rec.state = ComponentState.STARTING
-            rec.detail = detail or ""
-            rec.state_change_count += 1
+        self._update(name, ComponentState.STARTING, detail=detail)
 
     def mark_stopping(self, name: str, *, detail: str = "") -> None:
-        with self._lock:
-            rec = self._records.get(name)
-            if rec is None:
-                return
-            rec.state = ComponentState.STOPPING
-            rec.detail = detail or ""
-            rec.state_change_count += 1
+        self._update(name, ComponentState.STOPPING, detail=detail)
 
     def mark_stopped(self, name: str, *, detail: str = "") -> None:
-        with self._lock:
-            rec = self._records.get(name)
-            if rec is None:
-                return
-            rec.state = ComponentState.STOPPED
-            rec.detail = detail or ""
-            rec.state_change_count += 1
+        self._update(name, ComponentState.STOPPED, detail=detail)
 
     def mark_disabled(self, name: str, *, detail: str = "") -> None:
-        """Explicitly set a component to disabled state."""
+        self._update(name, ComponentState.DISABLED, detail=detail)
+
+    def snapshot(self) -> HealthSnapshot:
         with self._lock:
-            rec = self._records.get(name)
-            if rec is None:
-                return
-            rec.state = ComponentState.DISABLED
-            rec.detail = detail or ""
-            rec.error = None
-            rec.state_change_count += 1
-
-
-# ---------------------------------------------------------------------------
-# Internal mutable record (private — not exposed outside the module)
-# ---------------------------------------------------------------------------
-
-
-class _ComponentRecord:
-    """Mutable, lock-guarded record for one component's health."""
-
-    __slots__ = (
-        "name",
-        "state",
-        "detail",
-        "last_attempt_ts",
-        "last_success_ts",
-        "consecutive_failures",
-        "error",
-        "state_change_count",
-        "previous_state",
-        "last_state_change_ts",
-    )
-
-    def __init__(self, name: str) -> None:
-        self.name: str = name
-        self.state: ComponentState = ComponentState.DISABLED
-        self.detail: str = ""
-        self.last_attempt_ts: float | None = None
-        self.last_success_ts: float | None = None
-        self.consecutive_failures: int = 0
-        self.error: ComponentError | None = None
-        self.state_change_count: int = 0
-        self.previous_state: ComponentState = ComponentState.DISABLED
-        self.last_state_change_ts: float | None = None
-
-
-# ---------------------------------------------------------------------------
-# Convenience — HealthStatus enum used in broker responses
-# ---------------------------------------------------------------------------
-
-HEALTH_PROTOCOL_VERSION = 1
-
-# Protocol capability string used in responses / version gating
-PROTOCOL_CAPABILITY_HEALTH = "health-v1"
+            return HealthSnapshot(
+                snapshots=tuple(
+                    ComponentSnapshot(
+                        name=record.name,
+                        state=record.state,
+                        detail=record.detail,
+                        last_attempt_ts=record.last_attempt_ts,
+                        last_success_ts=record.last_success_ts,
+                        consecutive_failures=record.consecutive_failures,
+                        error=record.error,
+                        state_change_count=record.state_change_count,
+                    )
+                    for name in COMPONENT_NAMES
+                    if (record := self._records.get(name)) is not None
+                )
+            )
 
 
 def build_health_response(registry: ComponentHealthRegistry) -> dict:
-    """Build a protocol response dict for the ``health`` operation."""
-    snap = registry.snapshot()
-    return {
-        "type": "health",
-        "schema_version": HEALTH_PROTOCOL_VERSION,
-        "capability": PROTOCOL_CAPABILITY_HEALTH,
-        "components": [s.to_jsonable() for s in snap.snapshots],
-    }
+    return {"type": "health", **registry.snapshot().to_jsonable()}

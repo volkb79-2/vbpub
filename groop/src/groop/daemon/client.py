@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import socket
 import time
 from collections.abc import Iterator
@@ -9,9 +10,17 @@ from pathlib import Path
 from typing import Any
 
 from groop.daemon.component_health import (
+    COMPONENT_NAMES,
+    HEALTH_PROTOCOL_VERSION,
+    MAX_HEALTH_DETAIL_BYTES,
+    MAX_HEALTH_ERROR_BYTES,
+    MAX_HEALTH_ERROR_CODE_BYTES,
+    MAX_HEALTH_RESPONSE_BYTES,
     PROTOCOL_CAPABILITY_HEALTH,
+    ComponentError,
+    ComponentSnapshot,
+    ComponentState,
     HealthSnapshot,
-    build_health_response,
 )
 from groop.model import Frame, frame_from_jsonable
 
@@ -71,57 +80,128 @@ class DaemonClient:
             raise DaemonConnectError(f"cannot connect to {self.socket_path}: {exc.strerror or exc}") from exc
 
     def _read_health(self, fh) -> HealthSnapshot:
-        for line_no, raw_line in enumerate(fh, 1):
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise DaemonProtocolError(
-                    f"daemon at {self.socket_path} returned malformed JSON on line {line_no}"
-                ) from exc
-            if not isinstance(payload, dict):
-                raise DaemonProtocolError(
-                    f"daemon at {self.socket_path} returned a non-object response on line {line_no}"
-                )
-            response_type = payload.get("type")
-            if response_type == "health":
-                comps = payload.get("components", [])
-                from groop.daemon.component_health import (
-                    ComponentSnapshot,
-                    ComponentState,
-                )
-
-                snapshots = []
-                for c in comps:
-                    if not isinstance(c, dict):
-                        continue
-                    raw_state = c.get("state", "disabled")
-                    try:
-                        state = ComponentState(raw_state)
-                    except ValueError:
-                        state = ComponentState.DISABLED
-                    snapshots.append(
-                        ComponentSnapshot(
-                            name=str(c.get("name", "")),
-                            state=state,
-                            detail=str(c.get("detail", "")),
-                            last_attempt_ts=c.get("last_attempt_ts"),
-                            last_success_ts=c.get("last_success_ts"),
-                            consecutive_failures=int(c.get("consecutive_failures", 0)),
-                            state_change_count=int(c.get("state_change_count", 0)),
-                        )
-                    )
-                schema_version = int(payload.get("schema_version", 1))
-                return HealthSnapshot(snapshots=tuple(snapshots), schema_version=schema_version)
-            if response_type == "error":
-                message = payload.get("error") or payload.get("message") or "daemon returned an error"
-                raise DaemonResponseError(f"daemon at {self.socket_path} returned an error: {message}")
+        raw_line = fh.readline(MAX_HEALTH_RESPONSE_BYTES + 1)
+        if not raw_line:
             raise DaemonProtocolError(
-                f"daemon at {self.socket_path} returned unsupported response type {response_type!r} on line {line_no}"
+                f"daemon at {self.socket_path} closed the connection without a health response"
             )
-        raise DaemonProtocolError(f"daemon at {self.socket_path} closed the connection without a health response")
+        if len(raw_line.encode("utf-8")) > MAX_HEALTH_RESPONSE_BYTES:
+            raise DaemonProtocolError(
+                f"daemon at {self.socket_path} returned an oversized health response"
+            )
+        line = raw_line.strip()
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise DaemonProtocolError(
+                f"daemon at {self.socket_path} returned malformed JSON on line 1"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise DaemonProtocolError(
+                f"daemon at {self.socket_path} returned a non-object response on line 1"
+            )
+        response_type = payload.get("type")
+        if response_type == "error":
+            message = payload.get("error") or payload.get("message") or "daemon returned an error"
+            raise DaemonResponseError(
+                f"daemon at {self.socket_path} returned an error: {message}"
+            )
+        if response_type != "health":
+            raise DaemonProtocolError(
+                f"daemon at {self.socket_path} returned unsupported response type {response_type!r} on line 1"
+            )
+        return self._parse_health_payload(payload)
+
+    def _parse_health_payload(self, payload: dict[str, Any]) -> HealthSnapshot:
+        if payload.get("schema_version") != HEALTH_PROTOCOL_VERSION:
+            raise self._health_protocol_error("unsupported schema_version")
+        if payload.get("capability") != PROTOCOL_CAPABILITY_HEALTH:
+            raise self._health_protocol_error("missing or incompatible health capability")
+        components = payload.get("components")
+        if not isinstance(components, list) or len(components) != len(COMPONENT_NAMES):
+            raise self._health_protocol_error("invalid components array")
+
+        snapshots: list[ComponentSnapshot] = []
+        for expected_name, component in zip(COMPONENT_NAMES, components, strict=True):
+            if not isinstance(component, dict) or component.get("name") != expected_name:
+                raise self._health_protocol_error("invalid component name or order")
+            state_value = component.get("state")
+            try:
+                state = ComponentState(state_value)
+            except (TypeError, ValueError) as exc:
+                raise self._health_protocol_error("invalid component state") from exc
+            detail = self._bounded_health_string(
+                component.get("detail"), "detail", MAX_HEALTH_DETAIL_BYTES
+            )
+            last_attempt = self._optional_health_timestamp(
+                component.get("last_attempt_ts"), "last_attempt_ts"
+            )
+            last_success = self._optional_health_timestamp(
+                component.get("last_success_ts"), "last_success_ts"
+            )
+            failures = self._health_counter(
+                component.get("consecutive_failures"), "consecutive_failures"
+            )
+            changes = self._health_counter(
+                component.get("state_change_count"), "state_change_count"
+            )
+            error_payload = component.get("error")
+            error: ComponentError | None = None
+            if error_payload is not None:
+                if not isinstance(error_payload, dict):
+                    raise self._health_protocol_error("invalid component error")
+                message = self._bounded_health_string(
+                    error_payload.get("message"), "error.message", MAX_HEALTH_ERROR_BYTES
+                )
+                error_code_value = error_payload.get("error_code")
+                error_code = None
+                if error_code_value is not None:
+                    error_code = self._bounded_health_string(
+                        error_code_value,
+                        "error.error_code",
+                        MAX_HEALTH_ERROR_CODE_BYTES,
+                    )
+                error = ComponentError(message=message, error_code=error_code)
+            snapshots.append(
+                ComponentSnapshot(
+                    name=expected_name,
+                    state=state,
+                    detail=detail,
+                    last_attempt_ts=last_attempt,
+                    last_success_ts=last_success,
+                    consecutive_failures=failures,
+                    error=error,
+                    state_change_count=changes,
+                )
+            )
+        return HealthSnapshot(snapshots=tuple(snapshots))
+
+    def _health_protocol_error(self, message: str) -> DaemonProtocolError:
+        return DaemonProtocolError(
+            f"daemon at {self.socket_path} returned incompatible health-v1 data: {message}"
+        )
+
+    def _bounded_health_string(self, value: object, field: str, limit: int) -> str:
+        if not isinstance(value, str) or len(value.encode("utf-8")) > limit:
+            raise self._health_protocol_error(f"invalid or oversized {field}")
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise self._health_protocol_error(f"control character in {field}")
+        return value
+
+    def _optional_health_timestamp(self, value: object, field: str) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise self._health_protocol_error(f"invalid {field}")
+        result = float(value)
+        if not math.isfinite(result) or result < 0:
+            raise self._health_protocol_error(f"invalid {field}")
+        return result
+
+    def _health_counter(self, value: object, field: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise self._health_protocol_error(f"invalid {field}")
+        return value
 
     def request_frames(self, request: dict[str, Any]) -> list[Frame]:
         try:

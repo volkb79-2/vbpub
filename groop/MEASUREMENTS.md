@@ -554,23 +554,23 @@ Blocker for live daemon paddr measurement:
 ## P47 Daemon Component Health (2026-07-10)
 
 P47 adds a thread-safe component health registry, a read-only ``health``
-protocol op, and ``groop daemon health [--json]`` CLI. Models collector, BPF
-snapshot bridge, and paddr lifecycle with stable states and bounded public
-error detail.
+protocol op, and ``groop daemon health [--json]`` CLI. It models collector, BPF
+snapshot bridge, and paddr lifecycle with stable states, byte-bounded redacted
+public detail, and strict `health-v1` response validation.
 
 ### Fixture/unit evidence (no live daemon required)
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest \
   groop/tests/test_daemon_component_health.py -q
-# 32 passed in 3.59s
+# 47 passed in 3.46s
 ```
 
 ### Full suite impact
 
 ```bash
 PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-# 487 passed, 1 skipped in 53.03s
+# 601 passed, 1 skipped in 50.81s
 ```
 
 Full-source ``py_compile`` clean.
@@ -584,9 +584,13 @@ Full-source ``py_compile`` clean.
 - Consecutive failure tracking with reset on healthy.
 - Timestamp tracking for last attempt and last success.
 - Protocol health op via FrameBroker and DaemonClient.
+- Strict schema, capability, component, state, field, and response-size checks;
+  component errors survive the client round trip.
 - CLI ``groop daemon health --json`` and ``--pretty-json``.
 - Missing/corrupt socket returns exit 2 with P31-style actionable guidance.
 - Default-disabled components explicitly documented and tested.
+- Actual daemon-serve wiring proves collector starting/success/failure, BPF
+  initial failure with/without last-valid data, and shutdown-timeout truthfulness.
 - P42 BPF bridge and P44 paddr lifecycle wired into health registry transitions.
 
 Blocker for live daemon health measurement:

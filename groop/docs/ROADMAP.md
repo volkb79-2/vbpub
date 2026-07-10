@@ -108,7 +108,7 @@ Handoff: `handoff/P45-inspect-files-bounded-content.md`.
 
 ### P46 - Admin Action Execution Kernel
 
-Status: planned. Execute only Docker/systemd start, stop, and restart plans
+Status: done. Executes only Docker/systemd start, stop, and restart plans
 behind root, `--admin`, typed confirmation, strict target validation, durable
 audit, argv-only execution, and bounded results. Kill, update, set-property,
 TUI actions, and daemon RPCs remain later packages.
@@ -119,8 +119,9 @@ Handoff: `handoff/P46-admin-action-execution-kernel.md`.
 
 P47 (Daemon Component Health) — status: **done**.
 Implements a thread-safe component health registry, a read-only ``health``
-protocol operation, and ``groop daemon health [--json]`` CLI. Models collector,
-BPF snapshot bridge, and paddr lifecycle states. See ``handoff/reports/P47-REPORT.md``.
+protocol operation, and ``groop daemon health [--json]`` CLI. Models truthful,
+bounded collector/BPF/paddr transitions and strictly validates `health-v1`.
+See ``handoff/reports/P47-REPORT.md``.
 
 P48 and P49 remain queued: bounded journald snapshot and structured
 ``memory.high`` governance through systemd, respectively. Handoffs:
