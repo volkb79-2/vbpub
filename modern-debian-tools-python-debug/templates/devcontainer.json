@@ -65,6 +65,7 @@
     "source=${localEnv:HOME}/mdt--mounted-folders/.codex,target=/home/vscode/.codex,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.config,target=/home/vscode/.config,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.gnupg,target=/home/vscode/.gnupg,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt--mounted-folders/.local,target=/home/vscode/.local,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.minisign,target=/home/vscode/.minisign,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.openclaw,target=/home/vscode/.openclaw,type=bind,consistency=cached",
     "source=${localEnv:HOME}/mdt--mounted-folders/.reasonix,target=/home/vscode/.reasonix,type=bind,consistency=cached",
