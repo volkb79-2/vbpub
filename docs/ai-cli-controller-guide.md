@@ -1,14 +1,15 @@
-# Reasonix Controller Guide
+# AI CLI Controller Guide
 
-This guide records the controller workflow used for `groop` handoff packages.
-It is intentionally operational: commands, monitoring habits, merge protocol,
-and lessons learned from using Reasonix as an implementation agent.
+This guide records the controller workflow used for `groop` handoff packages
+across Reasonix, Codex CLI, Claude Code, and OpenCode. It is intentionally
+operational: exact worktree boundaries, non-interactive invocation, metrics,
+monitoring, review, and merge protocol.
 
 ## Controller Role
 
 The controller should keep the main session for architecture, carving, review,
-merge, and evidence. Reasonix agents should do bounded implementation packages
-in dedicated worktrees.
+merge, and evidence. Implementation agents should do bounded packages in
+dedicated worktrees.
 
 Default package flow:
 
@@ -43,7 +44,7 @@ Each agent prompt should state:
 - write log/report files;
 - commit the feature branch.
 
-## Starting Agents
+## Starting Reasonix Agents
 
 Fresh implementation agent:
 
@@ -89,17 +90,16 @@ Important flags:
 
 ### Model and effort tiers
 
-Non-interactive `reasonix run` in Reasonix 1.17.9 has no documented
-`--effort` option. Interactive `/effort` changes session state, but controller
-runs should be reproducible without an interactive prelude. Define separate
-provider entries in `~/.reasonix/config.toml` with the same endpoint/model and
-an explicit `effort = "high"` or `effort = "max"`, then use these exact
-selectors:
+Reasonix effort is encoded in provider aliases in `~/.reasonix/config.toml`, so
+controller runs are reproducible without an interactive `/effort` prelude. The
+configured selectors are:
 
 | Selector | Intended use |
 | --- | --- |
+| `deepseek-flash-auto/deepseek-v4-flash` | Let Reasonix select Flash effort |
 | `deepseek-flash-high/deepseek-v4-flash` | Default for bounded, low-risk implementation and documentation |
 | `deepseek-flash-max/deepseek-v4-flash` | Medium work where more effort is useful but Pro is not justified |
+| `deepseek-pro-auto/deepseek-v4-pro` | Let Reasonix select Pro effort |
 | `deepseek-pro-high/deepseek-v4-pro` | Concurrency, lifecycle, protocol, security, or multi-module reconciliation |
 | `deepseek-pro-max/deepseek-v4-pro` | Exceptional ambiguous or adversarial architecture/recovery work |
 
@@ -122,6 +122,78 @@ but its committed result still passed its full suite while missing important
 blocked-producer shutdown, history-gap, terminal-state, and resource-bound
 contracts. Choose tiers by expected total cost: agent run plus review and the
 probability-weighted repair/rerun cost.
+
+## Starting Codex CLI Agents
+
+Use native Codex when the requested OpenAI model is unavailable through the
+configured OpenRouter account or when native Codex harness behavior is part of
+the comparison:
+
+```bash
+codex exec --json --dangerously-bypass-approvals-and-sandbox \
+  -m gpt-5.6-luna -c 'model_reasoning_effort="medium"' \
+  -C /path/to/worktree 'Implement PNN ...'
+```
+
+- `-C` establishes the actual workspace root; still repeat the exact worktree
+  and branch in the prompt.
+- `--json` emits machine-readable events. The final `turn.completed` event
+  includes input, cached-input, output, and reasoning token totals.
+- Use `--dangerously-bypass-approvals-and-sandbox` only inside an already
+  isolated, trusted worktree/container. It is not a substitute for isolation.
+- Native subscription runs may report tokens but no per-run cash cost. When
+  comparing value, label any catalog-price calculation as an estimate.
+
+## Starting Claude Code Agents
+
+For a non-interactive Claude implementation run:
+
+```bash
+claude -p --output-format json --dangerously-skip-permissions \
+  --model claude-sonnet-5 --effort medium \
+  --name PNN-sonnet5-medium 'Implement PNN ...'
+```
+
+Run the command with its process working directory set to the exact worktree.
+The final JSON result includes `num_turns`, token/cache usage, `modelUsage`, and
+`total_cost_usd`. Use `--dangerously-skip-permissions` only under the same
+trusted-isolated-worktree rule as Codex bypass mode.
+
+## Starting OpenCode Agents
+
+OpenCode supports explicit directory, model, effort variant, session export,
+and non-interactive permissions:
+
+```bash
+opencode run --auto \
+  --model openrouter/z-ai/glm-5.2 --variant high \
+  --dir /path/to/worktree --title PNN-glm52-high \
+  'Implement PNN ...'
+```
+
+Operational points:
+
+- `--dir` is the project boundary. Repeat it in the prompt and verify `pwd`,
+  branch, and `git status` in the resulting transcript.
+- `--auto` approves requests that would otherwise ask, but explicit permission
+  denies still apply. For durable policy, use `permission` in `opencode.json`;
+  deny destructive commands and `git push` even for automated agents.
+- OpenCode permissions distinguish `read`, `edit`, `bash`, `task`, network
+  tools, and `external_directory`. Paths outside `--dir` require an explicit
+  external-directory rule.
+- `opencode session list`, `opencode export SESSION`, and `opencode stats
+  --models` provide durable evidence. `~/.local/state/opencode/model.json`
+  records recent model/variant selections, but is not the authorization source.
+- Model catalog presence does not prove a usable route. On 2026-07-12,
+  OpenRouter authentication and a GLM-5.2 control request succeeded while both
+  `openai/gpt-5.6-luna` and `anthropic/claude-sonnet-5` failed before generation
+  with `No allowed providers are available for the selected model`. This is an
+  OpenRouter provider/routing-policy failure, not a worktree-permission failure.
+  Use native Codex/Claude for those models unless the OpenRouter routing policy
+  is changed and a minimal live probe succeeds.
+
+Official references: [OpenCode CLI](https://opencode.ai/docs/cli/) and
+[OpenCode permissions](https://opencode.ai/docs/permissions/).
 
 ## Cache Strategy
 
