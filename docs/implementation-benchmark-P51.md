@@ -332,3 +332,62 @@ Recommended policy:
   acceptance lessons, so it measures handoff improvement, not the same prompt.
 - P51 is representative of concurrency/protocol work, not UI, parsing, or
   documentation-only packages.
+
+## Addendum 2026-07-12 — P52 / GLM-5.2 High / OpenCode (different task)
+
+**This is NOT a P51 data point.** P52 (versioned daemon read API,
+`groop/handoff/P52-versioned-daemon-read-api.md`) is a different, adjacent
+protocol/privilege-boundary package — but it is the first package whose
+handoff was written contract-rich FROM THE CARVE (the optimized-P51 handoff
+was a retrofit), so this run tests the codified authoring guide and a new
+(harness, model) pair at once. No ranking against the P51 rows is implied.
+
+### Quantitative
+
+| Field | Value |
+| --- | --- |
+| Variant | OpenCode 1.17.18 / `openrouter/z-ai/glm-5.2` `--variant high` |
+| Durable usage (opencode stats, GLM total incl. 3 trivial probes) | 277.4K input; 81.1K output; 21.5M cache read; 210 messages |
+| Reported cost | $1.5871 |
+| Legs | 3 (two OpenRouter `504 Upstream idle timeout` interruptions, resumed with `run -s <session>`) |
+| Agent validation | staged everything incl. LOG/REPORT; third 504 landed between `git add` and `git commit`; controller committed the staged tree as `d16a465` |
+| Controller gates (clean venv, textual 8.2.8, `-W error`) | focused 57 passed; full suite 762 passed in ~69 s; py_compile/diff-check clean |
+
+### Qualitative — the contract-rich handoff did its job
+
+Opus review verdict: **mergeable after controller patches; no blockers.** The
+implementation got right, on the first attempt, the exact mechanism classes
+that sank all four P51 variants: a real `BoundedSemaphore` client cap (not the
+ineffective `ThreadingMixIn.max_children`), a real `socket.settimeout()` read
+deadline (not a dead `rfile` attribute), `readline(max+1)` byte capping, and
+raising validation with zero silent clamping. Controller repair was small
+(+102/−15, commit `e22e4c1`): two false-green tests (a peer-cred-failure test
+that monkeypatched a function its direct-call path never invoked; a
+response-size bound claimed "tested at mechanism level" with no violation
+test existing), one missing legacy-op decision test, a doubled audit record,
+a dead import, and appendix corrections to LOG/REPORT (placeholder timestamps,
+drifting test counts). Familiar review-tax categories, far smaller bill than
+any original P51 variant.
+
+### Harness notes (OpenCode / OpenRouter operability)
+
+- **Long argv prompts wedge `opencode run` pre-session**: a ~1,800-char prompt
+  argument hung the process at the `init` log step twice (no session created,
+  no API call, no stdout); a ~450-char prompt pointing at the handoff worked
+  instantly. Keep CLI prompts terse; put substance in the handoff.
+- **Non-TTY stdout is silent** until far into a run — check
+  `~/.local/share/opencode/log/opencode.log` (look for `created`/`loop`/
+  `stream` after `init`) to distinguish wedged from working.
+- **Provider idle timeouts kill long single-file generations**: both mid-run
+  504s struck exactly when the model attempted one large test-file write.
+  Mitigation that worked: instruct incremental writes (~80-line batches with
+  test runs between). Add this instruction proactively for OpenRouter-routed
+  models on packages with large single-artifact deliverables.
+- **`run -s <session>` resume is cheap and effective** (cache-read dominated;
+  the LOG-file-as-resumability-artifact convention worked exactly as designed).
+- **Title sub-agent noise**: every run attempts `google/gemini-3.5-flash` for
+  titling and fails with "No allowed providers" on this account — harmless but
+  a wasted call and a red herring in the logs.
+- **Controller-side false-red trap**: gating groop with the dstdns
+  devcontainer venv python turns a schemathesis `DeprecationWarning` into 55
+  instant failures under `-W error`. Groop gates require a clean venv.
