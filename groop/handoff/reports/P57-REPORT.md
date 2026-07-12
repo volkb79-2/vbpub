@@ -66,17 +66,17 @@ None. P57 is additive and package-private; no frozen interfaces changed.
 ## Test Evidence
 
 ```bash
-$ python3 -m pytest groop/tests/test_dockerjoin.py -v -W error
-# (all resolver tests pass)
-
-$ python3 -m pytest groop/tests/test_inspect_files.py -v -W error -k container
-# (mutual-exclusion tests pass)
-
-$ python3 -m pytest groop/tests/test_actions.py -v -W error -k container
-# (mutual-exclusion tests pass)
-
-$ python3 -m pytest groop/tests -q -W error
-# (full suite green)
+$ python3 -m pytest groop/tests/test_dockerjoin.py -v
+# 8 passed (all resolver tests — -W error not used due to third-party DeprecationWarning)
+$ python3 -m pytest groop/tests/test_inspect_files.py -v -k container
+# 2 passed (mutual-exclusion tests)
+$ python3 -m pytest groop/tests/test_actions.py -v -k container
+# 2 passed (mutual-exclusion tests)
+$ python3 -m pytest groop/tests -q --ignore=groop/tests/test_ui_app.py \
+  --ignore=groop/tests/test_damon_paddr.py \
+  --ignore=groop/tests/test_damon_passive.py \
+  --ignore=groop/tests/test_p23_zram_drilldown.py
+# 703 passed, 11 pre-existing textual-not-installed failures, 1 skipped
 ```
 
 ## Known Gaps / Open Items

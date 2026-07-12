@@ -92,7 +92,7 @@ $ python3 -m py_compile groop/src/groop/collect/dockerjoin.py
 $ python3 -m py_compile groop/src/groop/cli.py
 $ python3 -m py_compile groop/tests/test_dockerjoin.py
 # All compile clean
-$ python3 -m pytest groop/tests -q --ignore=.... (no textual tests)
+$ python3 -m pytest groop/tests -q --ignore=groop/tests/test_ui_app.py --ignore=groop/tests/test_damon_paddr.py --ignore=groop/tests/test_damon_passive.py --ignore=groop/tests/test_p23_zram_drilldown.py
 # 703 passed, 11 pre-existing textual-not-installed failures, 1 skipped
 ```
 
