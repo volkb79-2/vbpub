@@ -659,7 +659,9 @@ def test_daemon_serve_health_tracks_collector_lifecycle(
 
     monkeypatch.setattr(cli, "load", lambda _path: config)
     monkeypatch.setattr(cli, "Collector", FakeCollector)
-    monkeypatch.setattr(cli, "serve_unix_socket", lambda _path, broker: FakeServer(broker))
+    monkeypatch.setattr(
+        cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: FakeServer(_broker)
+    )
     assert cli._main_daemon(["serve", "--socket", str(tmp_path / "groop.sock")]) == 0
 
     states = [entry["components"][0]["state"] for entry in observed]
@@ -722,7 +724,9 @@ def test_daemon_serve_initial_bpf_failure_reflects_last_valid_snapshot(
     monkeypatch.setattr(cli, "load", lambda _path: config)
     monkeypatch.setattr(cli, "Collector", FakeCollector)
     monkeypatch.setattr(cli, "BpfSnapshotBridge", FakeBridge)
-    monkeypatch.setattr(cli, "serve_unix_socket", lambda _path, broker: FakeServer(broker))
+    monkeypatch.setattr(
+        cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: FakeServer(_broker)
+    )
     assert cli._main_daemon(["serve", "--socket", str(tmp_path / "groop.sock")]) == 0
     bpf = next(
         component
@@ -795,7 +799,9 @@ def test_daemon_serve_does_not_claim_bpf_stopped_when_worker_is_alive(
     monkeypatch.setattr(cli, "Collector", FakeCollector)
     monkeypatch.setattr(cli, "BpfSnapshotBridge", FakeBridge)
     monkeypatch.setattr(cli.threading, "Thread", FakeThread)
-    monkeypatch.setattr(cli, "serve_unix_socket", lambda _path, broker: FakeServer(broker))
+    monkeypatch.setattr(
+        cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: FakeServer(_broker)
+    )
     assert cli._main_daemon(["serve", "--socket", str(tmp_path / "groop.sock")]) == 0
     bpf = next(
         component

@@ -212,3 +212,103 @@ must import textual lazily so `--once --json` works with no UI deps installed.
 - Docker join in tests: `dockerjoin.py` accepts an injectable
   `docker_inspect: Callable` — fixtures provide canned JSON; no docker daemon
   in CI/tests.
+
+## 10. Daemon read API envelope (P52)
+
+`groop/src/groop/daemon/api.py` implements a versioned, bounded, peer-aware
+read API over the P51 `FrameBroker`. The envelope is additive: legacy
+requests without a `v` field continue to be served by the P51 multi-line
+protocol unchanged (compatibility mode, documented in `docs/DAEMON.md`).
+
+### Envelope shape
+
+Every request carries `id` (opaque client string, echoed verbatim in the
+response), `op` (closed set), and `v` (protocol version integer). Every
+response carries the echoed `id`, `ok` boolean, and on failure a typed
+`error` object (`code` from the closed enum below, safe `message`). On
+success the response carries `result`.
+
+```json
+{"id":"client-1","op":"hello","v":1}
+{"id":"client-1","ok":true,"result":{...}}
+{"id":"client-1","ok":false,"error":{"code":"unknown_op","message":"..."}}
+```
+
+### Protocol version and capabilities
+
+- `PROTOCOL_VERSION = 1`; `PROTOCOL_VERSIONS = (1,)`.
+- `CAPABILITIES = ("hello","current","history","entity","health")`. Every
+  served op is listed and every listed op is served. An unlisted op is
+  rejected with `unknown_op` before the authorization hook runs.
+
+### Error code enum (closed)
+
+`bad_request`, `unknown_op`, `unknown_field`, `invalid_type`,
+`non_finite`, `out_of_range`, `malformed_cursor`, `oversized_request`,
+`oversized_response`, `request_timeout`, `server_busy`, `unavailable`,
+`denied`, `not_found`, `protocol_version`, `internal`.
+
+A response error NEVER carries a raw exception, secret, filesystem path, or
+arbitrary exception text. The P47 `sanitize_public_text` helper is reused so
+the P51 safety contract persists through the new envelope.
+
+### Sensitivity enum (closed)
+
+Every metric in a response carries exactly one sensitivity level:
+
+| Level | Meaning | Example metrics |
+|---|---|---|
+| `public` | Host banner facts; safe for any local consumer | `host_mem_total`, `host_load1` |
+| `operational` | Standard cgroup telemetry | `ram`, `cpu_pct`, `io_r_bps` |
+| `sensitive` | Process-identity/counts; privacy-relevant | `cgroup_procs`, `pids_current`, `pids_max`, `pids_events_max_per_s` |
+
+The level is attached in `metrics_meta` alongside registry-derived
+`unit`/`kind`/`locality`/`glossary` so a web/MCP consumer can render without
+duplicating registry prose.
+
+### Read-only ops
+
+- `hello` — protocol version(s), capabilities, daemon identity, and current
+  limits (max request bytes, max response items, history capacity).
+- `current` — latest atomic `(sequence, frame)` plus `metrics_meta`.
+- `history` — bounded by sequence cursor OR by time window (`since_ts`
+  inclusive, `until_ts` exclusive); each form returns explicit
+  `gap`/`oldest_seq`/`latest_seq`/`next_cursor` metadata identical to the P51
+  legacy `stream` op. The two forms are mutually exclusive.
+- `entity` — one entity's frame/model data plus registry metadata. Resolves
+  ONLY against daemon-approved in-memory frame data; `key` is validated (no
+  absolute path, `..`, NUL, or control chars) and never reaches a filesystem
+  path, registry lookup by arbitrary key, command, or sysfs/procfs read.
+- `health` — P47 component health through the new envelope.
+
+### Peer identity and authorization
+
+- `SO_PEERCRED` (pid/uid/gid) is observed at accept time on every
+  connection and attached to the connection context. It appears in every
+  audit/rate-limit record produced for that client.
+- An authorization hook (`Callable[[PeerCredentials, str], tuple[ErrorCode,
+  str] | None]`) is injectable for tests. Default policy: socket-group read
+  access enforced by the OS (mode 0660 root:groop). The hook receives
+  `(peer, op)` and may deny with a typed error. Mutation-shaped ops are
+  rejected before the hook runs.
+- Peer-credential read failure (platform or race): the connection is served
+  anonymously (`peer=None`); the daemon never refuses on a best-effort
+  introspection race.
+
+### Resource bounds (enforced, not declared)
+
+`ApiLimits` validates every bound at construction; out-of-range values raise
+(`TypeError`/`ValueError`) and are never silently clamped. Bounds cover:
+
+| Bound | Scope | Enforcement mechanism |
+|---|---|---|
+| `max_request_bytes` | per request | `rfile.readline(cap+1)`; over-cap or missing newline → `oversized_request` |
+| `request_timeout_s` | per request read | `socket.settimeout()` on the connection; idle past deadline → `request_timeout` |
+| `max_clients` | aggregate | `BoundedSemaphore` acquired in `process_request`; N+1th → `server_busy` |
+| `max_response_items` | per response | history `limit` validated against this cap → `out_of_range` |
+| `max_response_bytes` | per response | serialized response byte length checked; over → `oversized_response` |
+| `history_capacity` | aggregate | `deque(maxlen=...)` in `FrameBroker` |
+
+Each bound has a test that violates it for real and asserts the observable
+outcome (actual thread counts, actual byte lengths, actual refused
+connections) — not just the constant.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import socketserver
@@ -202,6 +203,50 @@ class FrameBroker:
             next_cursor = entries[-1][0] if entries else cursor
             return FrameBatch(entries, oldest, latest, next_cursor, gap)
 
+    def stream_window(
+        self,
+        *,
+        since_ts: float | None = None,
+        until_ts: float | None = None,
+        limit: int = 1,
+    ) -> FrameBatch:
+        """Read published history filtered by a time window (P52).
+
+        ``since_ts`` is inclusive, ``until_ts`` is exclusive. Either may be
+        omitted to mean unbounded on that side. ``gap`` is True when the
+        window's lower bound precedes the oldest retained frame's timestamp
+        (history was evicted inside the requested window). Cursor metadata is
+        identical to :meth:`stream`.
+        """
+        limit = _validate_limit(limit)
+        if since_ts is not None:
+            since_ts = _validate_finite(since_ts, "since_ts")
+        if until_ts is not None:
+            until_ts = _validate_finite(until_ts, "until_ts")
+        if since_ts is not None and until_ts is not None and since_ts > until_ts:
+            raise ValueError("since_ts must not exceed until_ts")
+        self._ensure_started()
+        with self._condition:
+            if not self._history:
+                return FrameBatch((), None, None, None, False)
+            oldest_seq, oldest_frame = self._history[0]
+            latest_seq = self._history[-1][0]
+            gap = since_ts is not None and since_ts < oldest_frame.ts
+            selected: list[tuple[int, Frame]] = []
+            for seq, frame in self._history:
+                if since_ts is not None and frame.ts < since_ts:
+                    continue
+                if until_ts is not None and frame.ts >= until_ts:
+                    continue
+                selected.append((seq, frame))
+            entries = tuple(selected[-limit:]) if selected else ()
+            next_cursor = entries[-1][0] if entries else None
+            return FrameBatch(entries, oldest_seq, latest_seq, next_cursor, gap)
+
+    def history_capacity(self) -> int:
+        """Return the configured history capacity (bounded retention bound)."""
+        return self._history.maxlen or 0
+
     def _set_terminal(self, kind: _TerminalKind) -> None:
         with self._condition:
             if self._terminal is None:
@@ -318,6 +363,15 @@ def _validate_cursor(value: object) -> int | None:
     if value < -1:
         raise ValueError("stream cursor must be at least -1")
     return value
+
+
+def _validate_finite(value: object, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{field} must be a number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{field} must be finite")
+    return result
 
 
 class BrokerUnixServer(socketserver.ThreadingUnixStreamServer):

@@ -6,6 +6,12 @@ history to any number of clients. Requests never call `next()` on the collector,
 so multiple concurrent clients observe the same sequence without being able to
 accelerate, consume, or starve each other.
 
+P52 adds a versioned, bounded, peer-aware read API envelope over the P51
+broker. The envelope carries a client `id`, protocol version, typed error
+codes, sensitivity metadata, peer credentials, and proven resource bounds.
+Legacy clients (requests without a `v` field) continue to be served
+unchanged — see "Protocol compatibility" below.
+
 ## Socket
 
 Recommended production path: `/run/groop/groop.sock`.
@@ -45,6 +51,93 @@ Responses are JSON lines:
 Unsupported requests return an error object. The protocol has no arbitrary file
 read, command execution, admin, Docker mutation, systemd mutation, BPF, or DAMON
 mutation verb.
+
+## Versioned Read API (P52)
+
+P52 adds a versioned envelope for attached TUI and separate frontend
+processes (web backend, MCP server — see P58). The envelope is single-line:
+one JSON request, one JSON response.
+
+### Envelope
+
+Every request carries `id` (opaque client string, echoed verbatim), `op`
+(closed set), and `v` (protocol version integer). Every response carries the
+echoed `id`, `ok` boolean, and on failure a typed `error` object (`code` from
+a closed enum, safe `message`). A successful response carries `result`.
+
+```json
+{"id":"c1","op":"hello","v":1}
+{"id":"c1","ok":true,"result":{"protocol_versions":[1],"capabilities":[...]}}
+{"id":"c1","ok":false,"error":{"code":"unknown_op","message":"unknown op: exec"}}
+```
+
+The error object never carries a raw exception, secret, filesystem path, or
+arbitrary exception text. The P47 `sanitize_public_text` helper is reused so
+the P51 safety contract persists through the new envelope.
+
+### Ops
+
+- `hello` — protocol version(s) served, capability list, daemon identity, and
+  current limits (max request bytes, max response items, history capacity).
+- `current` — latest atomic `(sequence, frame)` plus `metrics_meta`.
+- `history` — bounded by sequence cursor OR by time window (`since_ts`
+  inclusive, `until_ts` exclusive); each form returns explicit
+  `gap`/`oldest_seq`/`latest_seq`/`next_cursor` metadata identical to the P51
+  legacy `stream` op. The two forms are mutually exclusive.
+- `entity` — one entity's frame/model data plus registry metadata. Resolves
+  ONLY against daemon-approved in-memory frame data; `key` is validated (no
+  absolute path, `..`, NUL, or control chars) and never reaches a filesystem
+  path, registry lookup by arbitrary key, command, or sysfs/procfs read.
+- `health` — P47 component health through the new envelope.
+
+### Sensitivity metadata
+
+Every metric in a `current`/`history`/`entity` response carries a
+sensitivity level from the closed enum `{public, operational, sensitive}` in
+`metrics_meta`, alongside registry-derived `unit`/`kind`/`locality`/`glossary`
+so a web/MCP consumer can render without duplicating registry prose. See
+`CONTRACTS.md` §10 for the mapping.
+
+### Peer identity and authorization
+
+`SO_PEERCRED` (pid/uid/gid) is observed at accept time on every connection
+and attached to the connection context; it appears in every audit/rate-limit
+record produced for that client. An authorization hook
+(`Callable[[PeerCredentials, str], tuple[ErrorCode, str] | None]`) is
+injectable for tests. Default policy: socket-group read access enforced by
+the OS (mode 0660 root:groop). The hook receives `(peer, op)` and may deny
+with a typed error. Mutation-shaped ops are rejected before the hook runs.
+
+**Peer-credential read failure** (platform or race): the connection is served
+anonymously (`peer=None`); the daemon never refuses on a best-effort
+introspection race. Authorization remains enforced at the socket-group
+boundary by the OS.
+
+### Resource bounds
+
+`ApiLimits` validates every bound at construction; out-of-range values raise
+and are never silently clamped. Bounds cover: per-request bytes, per-request
+read time, aggregate concurrent clients, per-response items, per-response
+bytes, and aggregate history capacity. Each bound has a test that violates it
+for real and asserts the observable outcome. See `CONTRACTS.md` §10 for the
+full table.
+
+### Protocol compatibility (legacy ops)
+
+Pre-P52 clients send requests without a `v` field. The daemon serves these
+unchanged through the P51 multi-line protocol (compatibility mode, choice
+(a) per the P52 handoff). Each legacy op is documented below; tests cover
+both the accepted (legacy) and rejected (envelope-with-bad-version) forms.
+
+| Legacy op | Without `v` (legacy) | With `v` (envelope) |
+|---|---|---|
+| `current` | Served unchanged (multi-line) | Served as envelope `current` |
+| `stream` | Served unchanged (multi-line) | Replaced by envelope `history` |
+| `health` | Served unchanged (single-line) | Served as envelope `health` |
+| `status` | Not a broker op (CLI composite) | `unknown_op` |
+
+An envelope request with an unsupported `v` is rejected with
+`protocol_version`; its message names the supported version(s).
 
 ## Background Producer
 

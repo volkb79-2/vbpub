@@ -44,7 +44,7 @@ flowchart LR
 | `damon/` | passive DAMON parsing plus controlled vaddr/paddr session APIs. |
 | `record/` | live stream, JSONL reader/writer, replay, and history ring. |
 | `snapshot/` | incident bundle creation and inspection. |
-| `daemon/` | Request-independent Unix-socket frame broker with background producer, bounded sequenced history, non-consuming fan-out, and lifecycle (P51). |
+| `daemon/` | Request-independent Unix-socket frame broker with background producer, bounded sequenced history, non-consuming fan-out, lifecycle (P51), and a versioned, bounded, peer-aware read API envelope with typed errors, sensitivity metadata, peer credentials, and proven resource bounds (P52). |
 | `bpf_gate.py` | Safe no-op BPF preflight and baseline measurement helper. |
 | `ui/` | Textual app, banner, table/tree, drill-down, host-memory status, keys. |
 
@@ -94,6 +94,13 @@ published history with optional sequence/cursor. Multiple concurrent clients
 observe the same sequence without accelerating, consuming, or starving each
 other.
 
+P52 adds a versioned, bounded, peer-aware read API envelope over the P51
+broker. Requests carrying a `v` field are dispatched through `DaemonApi`
+(single-line envelope response with `id` echo, typed error codes, sensitivity
+metadata, and peer credentials). Requests without `v` flow through the P51
+multi-line protocol unchanged. `SO_PEERCRED` is observed at accept time; an
+injectable authorization hook may deny with a typed error.
+
 ```mermaid
 flowchart LR
     RootDaemon[groop-daemon as root] --> Producer[background producer thread]
@@ -111,5 +118,6 @@ flowchart LR
 - A future `EntityFrame.diagnostics` block could preserve exact pressure
   breakdowns instead of recomputing them in UI.
 - `NetSample` may need optional traffic-class metadata from `[net.classes]`.
-- Daemon frames may need sensitivity metadata for fields exposed to non-root
-  clients. Prefer additive metadata over changing metric compact forms.
+- Daemon frames carry sensitivity metadata (closed enum: public,
+  operational, sensitive) in `metrics_meta` for non-root consumers; the
+  metric compact form is unchanged.
