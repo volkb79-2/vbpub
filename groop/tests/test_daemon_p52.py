@@ -672,25 +672,79 @@ def test_peer_credentials_recorded_in_audit_log(tmp_path: Path) -> None:
         _stop(broker)
 
 
-def test_peer_credentials_anonymous_when_read_fails() -> None:
-    """Simulate SO_PEERCRED failure: connection is still served, peer=None."""
+def test_peer_credentials_anonymous_when_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SO_PEERCRED failure on the REAL server path: served anonymously.
+
+    The handler (not DaemonApi.handle) is what calls read_peer_credentials,
+    so this must drive a live socket — a direct api.handle(..., None) call
+    would never exercise the failure path (controller review finding).
+    """
+    import groop.daemon.api as api_mod
+
+    monkeypatch.setattr(api_mod, "read_peer_credentials", lambda _sock: None)
     broker = FrameBroker([_frame_at(1.0)])
     audit = AuditLog()
     api = DaemonApi(broker, audit_log=audit)
-
-    # Monkeypatch the credential reader to simulate platform/race failure.
-    import groop.daemon.api as api_mod
-
-    original = api_mod.read_peer_credentials
-    api_mod.read_peer_credentials = lambda _sock: None
+    path = tmp_path / "s.sock"
+    server, thread = _serve(path, broker, api=api)
     try:
-        resp = api.handle({"id": "a", "op": "hello", "v": 1}, None)
+        resp = _envelope(path, {"id": "a", "op": "hello", "v": 1})
         assert resp["ok"] is True
         records = audit.snapshot()
         assert records[-1].peer is None
         assert records[-1].allowed is True
     finally:
-        api_mod.read_peer_credentials = original
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2.0)
+        _stop(broker)
+
+
+def test_oversized_response_is_replaced_with_typed_error(tmp_path: Path) -> None:
+    """Violate max_response_bytes for real through the live server path.
+
+    A tiny byte cap forces any successful `current` payload over the limit;
+    the wire response must be the typed OVERSIZED_RESPONSE error envelope,
+    never a truncated or full-size body (controller review finding: this
+    bound previously had no violation test).
+    """
+    broker = FrameBroker([_frame_at(1.0)])
+    api = DaemonApi(broker, limits=ApiLimits(max_response_bytes=120))
+    path = tmp_path / "s.sock"
+    server, thread = _serve(path, broker, api=api)
+    try:
+        resp = _envelope(path, {"id": "big", "op": "current", "v": 1})
+        assert resp["ok"] is False
+        assert resp["error"]["code"] == "oversized_response"
+        raw = json.dumps(resp, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        # The replacement envelope itself must be small and carry no frame data.
+        assert b"entities" not in raw
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2.0)
+        _stop(broker)
+
+
+def test_legacy_status_op_decision_both_forms(tmp_path: Path) -> None:
+    """DAEMON.md compat table: `status` is not a broker op — typed rejection
+    in the envelope form, legacy error object in the legacy form."""
+    broker = FrameBroker([_frame_at(1.0)])
+    path = tmp_path / "s.sock"
+    server, thread = _serve(path, broker)
+    try:
+        enveloped = _envelope(path, {"id": "s", "op": "status", "v": 1})
+        assert enveloped["ok"] is False
+        assert enveloped["error"]["code"] == "unknown_op"
+        legacy = _legacy(path, {"op": "status"})
+        assert legacy, "legacy path must answer, not hang or close silently"
+        assert all(item.get("type") == "error" for item in legacy)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2.0)
         _stop(broker)
 
 
@@ -983,4 +1037,3 @@ def test_concurrent_mixed_clients_fast_observes_bounded_latency(tmp_path: Path) 
         server.server_close()
         thread.join(timeout=2.0)
         _stop(broker, source)
-

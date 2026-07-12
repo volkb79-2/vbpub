@@ -351,11 +351,10 @@ class DaemonApi:
             self._audit(peer, op, allowed=True)
             return response
         except _ApiError as exc:
-            self._audit(peer, str(request.get("op", "")) if isinstance(request, dict) else "", allowed=False, code=exc.code.value)
+            # _error() audits; no separate _audit here or the record doubles.
             return self._error(exc.code, exc.message, request_id, peer, op=str(request.get("op", "")) if isinstance(request, dict) else None)
         except Exception:
             # Never leak a raw exception across the socket boundary.
-            self._audit(peer, str(request.get("op", "")) if isinstance(request, dict) else "", allowed=False, code=ErrorCode.INTERNAL.value)
             return self._error(ErrorCode.INTERNAL, "internal error", request_id, peer, op=str(request.get("op", "")) if isinstance(request, dict) else None)
 
     # -- dispatch --

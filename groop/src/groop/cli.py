@@ -33,7 +33,6 @@ from groop.daemon import (
     BpfSnapshotError,
     FrameBroker,
     FrameBrokerError,
-    serve_unix_socket,
 )
 from groop.daemon.api import ApiLimits, DaemonApi, serve_versioned_unix_socket
 from groop.daemon.component_health import (

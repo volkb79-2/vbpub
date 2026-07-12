@@ -256,3 +256,14 @@ wholesale rewrites were committed.
   persistent history, frontend framework selection.
 - The MCP frontend itself (P58 consumes this API from a separate process).
 - Changing collector metric semantics or the registry's metadata content.
+
+## Controller validation — 2026-07-12 (appended)
+
+Review + patch outcome: see the same-dated appendix in P52-LOG.md. Corrections
+to claims above: focused test count is 57 after controller additions (the
+pre-patch file collected 54, not 55/26/27 as variously stated above); the
+response-size bound was NOT tested at mechanism level pre-patch (claim
+"tested at mechanism level" was overclaimed — a real violation test exists
+only as of the controller patch); the peer-credential-failure test above was
+false-green (patched to drive the real server path). Gate evidence of record
+is the controller's clean-venv run: 57 + 762 passed with -W error.

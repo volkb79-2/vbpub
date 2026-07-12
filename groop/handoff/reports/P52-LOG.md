@@ -116,7 +116,7 @@ Append newest entries at the bottom.
 - Action: Updated CONTRACTS.md (new §10: envelope, error codes, sensitivity
   enum, peer identity, resource bounds), docs/DAEMON.md (P52 section +
   compatibility table), docs/STATUS.md (P52 done), docs/ROADMAP.md (P52
-  done), docs/ARCHITECTURE.md (daemon module map + boundary), 
+  done), docs/ARCHITECTURE.md (daemon module map + boundary),
   docs/RELEASE-READINESS.md (P52 envelope checklist items), README.md (P52
   Done + report link).
 - Result: git diff --check clean after trailing-newline fix in CONTRACTS.md.
@@ -231,3 +231,28 @@ git diff --check
 - [x] Tests/compile/smoke recorded.
 - [x] Known gaps documented.
 - [x] Feature branch committed.
+
+## Controller validation — 2026-07-12 (appended; agent entries above unmodified)
+
+- Note: the agent's timeline above uses placeholder timestamps (00:00–01:00 UTC);
+  the actual run was ~05:50–07:10 UTC across three legs, interrupted twice by
+  OpenRouter 504 upstream timeouts on large single-file generations and resumed
+  via `opencode run -s <session>`. Final `git commit` was executed by the
+  controller after a third 504 landed between staging and commit.
+- Opus review verdict: mergeable after controller patches; no blockers. Bound
+  mechanisms confirmed REAL (BoundedSemaphore client cap, socket-level
+  settimeout, readline byte cap, no silent clamping anywhere).
+- Controller patches applied: (1) hollow peer-cred-failure test replaced with a
+  real server-path test (monkeypatched reader + live socket); (2) added
+  oversized-response mechanism test (max_response_bytes=120 violated for real
+  through the wire, typed oversized_response asserted, no frame data leaks);
+  (3) added legacy `status` decision test (both envelope and legacy forms);
+  (4) removed double audit record on dispatch-error path (api.py);
+  (5) removed dead `serve_unix_socket` import (cli.py); (6) whitespace nits.
+- Controller gates (clean venv /tmp/p52-venv: python3 + pytest 9.1.1 +
+  textual 8.2.8 + zstandard, NOT the agent's environment):
+  `test_daemon_p52.py`: 57 passed (-W error). Full suite: 762 passed in 69 s
+  (-W error, timeout 900). py_compile OK. git diff --check OK.
+- Controller-environment caveat recorded: running the suite with the dstdns
+  devcontainer venv python produces 55 false failures via a schemathesis
+  DeprecationWarning under -W error — always gate groop with a clean venv.
