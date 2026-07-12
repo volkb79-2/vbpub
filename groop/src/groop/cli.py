@@ -11,6 +11,7 @@ from pathlib import Path
 from groop import __version__
 from groop.bpf_gate import report_to_jsonable, render_report, run_bpf_gate
 from groop.collect.collector import Collector
+from groop.collect.cgroup import _validate_slice_name
 from groop.config import BpfSnapshotConfig, load
 from groop.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, stop_owned_sessions
 from groop.damon.passive import DEFAULT_DAMON_ROOT
@@ -68,6 +69,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--profile", type=str, default=None, help="override the active UI column profile for this run")
     parser.add_argument("--cgroup-root", type=Path, default=None, help="cgroup v2 root for live or fixture collection")
     parser.add_argument("--ui-smoke", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--entities", action="append", default=None, type=str, dest="entities",
+                        help="include entities matching GLOB (repeatable, fnmatch against EntityKey path)")
+    parser.add_argument("--slice", type=str, default=None,
+                        help="include a *.slice (or other) entity key and everything under it")
+    parser.add_argument("--metrics", type=str, default="full", choices=["full", "compact"],
+                        help="metric output mode: full (default) or compact (keep only memory/PSI/refault families)")
     return parser.parse_args(argv)
 
 
@@ -220,6 +227,25 @@ def _print_frame_json(frame, pretty: bool) -> None:
     print(json.dumps(payload, indent=2 if pretty else None, separators=None if pretty else (",", ":"), sort_keys=True))
 
 
+def _filter_kwargs(args: argparse.Namespace) -> dict[str, object]:
+    """Extract entity/metric filtering kwargs for Collector from parsed args.
+
+    Caller must validate --slice before calling this. Converts the argparse
+    list/groups into the tuple/frozenset form the Collector expects.
+    """
+    slice_names: tuple[str, ...] | None = None
+    if args.slice is not None:
+        slice_names = (args.slice,)
+    entities_globs: tuple[str, ...] | None = None
+    if args.entities is not None:
+        entities_globs = tuple(args.entities)
+    return {
+        "entities_globs": entities_globs,
+        "slice_names": slice_names,
+        "metrics_mode": args.metrics,
+    }
+
+
 def _format_daemon_error(exc: DaemonClientError, socket_path: Path) -> str:
     """Format a daemon client error with actionable guidance.
 
@@ -310,6 +336,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.record is not None and args.replay is not None:
         print("choose either --record or --replay", file=sys.stderr)
         return 2
+    # Validate --slice early so bad values are rejected before collector work
+    if args.slice is not None:
+        try:
+            _validate_slice_name(args.slice)
+        except ValueError as exc:
+            print(f"invalid --slice: {exc}", file=sys.stderr)
+            return 2
     if args.attach is not None:
         if args.replay is not None:
             print("choose either --attach or --replay", file=sys.stderr)
@@ -325,6 +358,9 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         if args.json and not args.once:
             print("--json is supported with --attach only when --once is also set", file=sys.stderr)
+            return 2
+        if args.entities is not None or args.slice is not None or args.metrics != "full":
+            print("--attach does not accept --entities/--slice/--metrics", file=sys.stderr)
             return 2
         try:
             if args.once:
@@ -352,6 +388,9 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             return 0
     if args.replay is not None:
+        if args.entities is not None or args.slice is not None or args.metrics != "full":
+            print("--replay does not accept --entities/--slice/--metrics", file=sys.stderr)
+            return 2
         driver = ReplayDriver.from_path(args.replay, config=config)
         ui_code = _run_ui(
             (),
@@ -373,7 +412,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.json and not args.once:
             print("--json is supported with --record only when --once is also set", file=sys.stderr)
             return 2
-        collector = Collector(cgroup_root=args.cgroup_root, config=config)
+        collector = Collector(cgroup_root=args.cgroup_root, config=config, **_filter_kwargs(args))  # type: ignore[arg-type]
         try:
             with RecordWriter(args.record, config=collector.config) as writer:
                 stream = live_frame_stream(collector, writer=writer)
@@ -397,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             return 0
     if not args.once and not args.json:
-        collector = Collector(cgroup_root=args.cgroup_root, config=config)
+        collector = Collector(cgroup_root=args.cgroup_root, config=config, **_filter_kwargs(args))  # type: ignore[arg-type]
         ui_code = _run_ui(
             live_frame_stream(collector),
             config=config,
@@ -413,7 +452,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.once or not args.json:
         print("groop implements --once --json for live collection and --replay for frame playback", file=sys.stderr)
         return 2
-    frame = Collector(cgroup_root=args.cgroup_root, config=config).collect_once()
+    frame = Collector(cgroup_root=args.cgroup_root, config=config, **_filter_kwargs(args)).collect_once()  # type: ignore[arg-type]
     _print_frame_json(frame, args.pretty_json)
     return 0
 

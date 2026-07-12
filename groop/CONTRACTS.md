@@ -161,6 +161,11 @@ the compact form from §5 everywhere (`[v, src]` or `[v, src, raw]`) so
 - Ring buffer (`ring.py`): fixed-capacity per-(entity,metric) numeric arrays
   (`array`/`memoryview`, NOT lists of Python floats), default profile 4h @ 5s
   (spec §3.5 budget: 20–40 MB).
+- Filtered recordings (P55): `--entities`/`--slice`/`--metrics compact` produce
+  frames with fewer ``entities`` keys and/or fewer ``metrics`` per entity. These
+  filtered frames are a valid subset of the existing P2 schema: they serialize
+  and deserialize identically, pass ``validate_frame_metrics()``, and replay
+  as normal frames. No new schema or format version is introduced.
 
 ## 6. Provider interface (P3, v2-BPF-ready) — spec §3.2/App. B
 
