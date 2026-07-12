@@ -5,7 +5,6 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
-from pathlib import Path
 
 from groop.collect.collector import Collector
 from groop.record.live import live_frame_stream
@@ -41,8 +40,8 @@ def make_second_signal_handler(
 ) -> Callable[[int, object], None]:
     """Return a signal handler with second-signal abort support.
 
-    First signal → set *stop_event* (clean in-flight completion).
-    Second signal (stop_event already set) → set *abort_event* (prompt exit).
+    First signal -> set *stop_event* (clean in-flight completion).
+    Second signal (stop_event already set) -> set *abort_event* (prompt exit).
     """
     def _handler(signum: int, _frame: object) -> None:
         if stop_event.is_set():
@@ -207,7 +206,7 @@ class HeadlessRecordDriver:
                 # The stream itself stopped (e.g. because stop_event was set
                 # inside live_frame_stream).  The current in-flight sweep
                 # completed and its frame has already been written by the
-                # stream — we're done.
+                # stream -- we're done.
                 break
             except Exception as exc:
                 # Writer or collector failure mid-run.
@@ -271,7 +270,7 @@ class HeadlessRecordDriver:
         try:
             self._writer.flush(force=True)
         except Exception as exc:
-            # Writer flush failed — attempt best-effort close and report.
+            # Writer flush failed -- attempt best-effort close and report.
             frame_hint = (
                 "0" if not self._first_frame_yielded
                 else f"{self._frames_written}"
