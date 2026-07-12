@@ -42,19 +42,24 @@ is the live template.
 
 ## Required Contracts
 
-### Transport decision (resolve FIRST, record in LOG)
+### Transport (RESOLVED 2026-07-12 — controller verified upstream docs)
 
-`chrome-devtools-mcp` is stdio-first. At implementation time, check the
-pinned version's CLI for a native HTTP/streamable transport (`--transport`,
-`--port` or equivalent):
-- If native HTTP exists: serve it directly on container port **8932**.
-- If not: front it with a pinned stdio→streamable-HTTP MCP proxy npm package
-  on 8932 (choose one, pin its exact version in the Dockerfile like
-  `@playwright/mcp@0.0.76` is pinned, and record the choice + version in the
-  LOG/REPORT). The proxy must pass through MCP protocol semantics unchanged.
-Either way the consumer-facing contract is: `http://pwmcp:8932/mcp`
-(HTTP/streamable) on the shared Docker network, internal mode, no auth —
-identical trust model to 8931.
+`chrome-devtools-mcp` v1.5.0 is **stdio-only**: no native HTTP/streamable
+transport exists (no `--transport`/`--port`/`--http` flags). Therefore:
+front it with a pinned stdio→streamable-HTTP MCP proxy npm package on 8932
+(candidates: `supergateway`, `mcp-proxy` — evaluate, choose one, pin its
+exact version in the Dockerfile like `@playwright/mcp@0.0.76` is pinned,
+record choice + rationale in the LOG). A proxy that spawns one stdio child
+per HTTP session is preferred — it maps cleanly onto chrome-devtools-mcp's
+own-browser-per-instance model (use `--isolated` for auto-cleaned profiles).
+The proxy must pass MCP protocol semantics through unchanged.
+Confirmed upstream flags to build on: `--executablePath` (feed from
+`/etc/pwmcp-chromium-path.txt`), `--headless`, `--isolated`, `--logFile`;
+pin `chrome-devtools-mcp@1.5.x` exactly and note its Node "LTS" requirement
+against the base image's Node version in the REPORT.
+The consumer-facing contract is: `http://pwmcp:8932/mcp` (HTTP/streamable)
+on the shared Docker network, internal mode, no auth — identical trust model
+to 8931.
 
 ### Container integration
 
