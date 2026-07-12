@@ -423,3 +423,58 @@ def test_filtering_rejected_with_attach() -> None:
 
     rc = main(["--attach", "/tmp/fake.sock", "--metrics", "compact"])
     assert rc == 2
+
+
+# --- Record round-trip with filtering ---
+
+
+def test_record_with_filtering(tmp_path: Path) -> None:
+    """Filtered frames written through RecordWriter and read back with
+    RecordReader contain only the selected entities and compact metrics."""
+    from conftest import fixture_root
+    from groop.collect.cgroup import walk_entities
+    from groop.collect.collector import Collector
+    from groop.config import GroopConfig
+    from groop.model import frame_to_jsonable
+    from groop.record.reader import RecordReader
+    from groop.record.writer import RecordWriter
+
+    root = fixture_root() / "cgroupfs" / "gstammtisch"
+    all_keys = set(walk_entities(root).keys())
+
+    # Build a collector with --slice system.slice --metrics compact
+    c = Collector(
+        cgroup_root=root,
+        config=GroopConfig(interval=5.0),
+        slice_names=("system.slice",),
+        metrics_mode="compact",
+        docker_inspect=lambda _cid: None,
+        host_collector=host_stub,
+        now=lambda: 100.0,
+        network_providers=(),
+        proc_root=fixture_root() / "procfs" / "network",
+        sys_root=fixture_root() / "sysfs" / "empty",
+        damon_root=fixture_root() / "damonfs" / "no-root" / "kdamonds",
+        systemctl_show_runner=systemctl_fixture_runner("gstammtisch"),
+    )
+    frame = c.collect_once()
+
+    # Write to RecordWriter and read back
+    path = tmp_path / "filtered.jsonl"
+    with RecordWriter(path, started_at=frame.ts) as writer:
+        writer.write_frame(frame)
+    reader_frames = list(RecordReader(path))
+    assert len(reader_frames) == 1
+    restored = reader_frames[0]
+
+    # Verify only filtered entities are present
+    assert "system.slice" in restored.entities
+    assert "system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope" in restored.entities
+    assert "besteffort.slice" not in restored.entities
+    assert len(restored.entities) < len(all_keys)
+
+    # Verify compact metrics
+    ef = restored.entities["system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope"]
+    assert "ram" in ef.metrics
+    assert "net_rx_bps" not in ef.metrics
+    assert "cpu_pct" not in ef.metrics

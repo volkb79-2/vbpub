@@ -63,7 +63,6 @@ class Collector:
         self._prev_device_counters: dict[str, list[dict[str, object]]] | None = None
         # Entity and metric filtering state
         self._entity_predicate = build_entity_predicate(entities_globs, slice_names)
-        self._metrics_mode = metrics_mode
         # Pre-compute the set of metric names to keep under compact mode
         if metrics_mode == "compact":
             self._compact_metric_names: frozenset[str] = frozenset().union(

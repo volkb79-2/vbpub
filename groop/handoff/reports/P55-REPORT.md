@@ -35,7 +35,8 @@
 | Tests: `--metrics compact` field-set precision | ✅ | `test_metrics_compact_keeps_memory_psi_refault` |
 | Tests: collection-time pruning (excluded not collected) | ✅ | `test_entity_filtering_skips_sysfs_reads_for_excluded` |
 | Tests: combination with `--replay`/`--attach` rejected | ✅ | 2 rejection tests |
-| Tests: `--record` output filtering | ✅ | Covered by `test_slice_entity_filtering` + `test_compact_entity_and_metric_together` |
+| Tests: `--record` output filtering | ✅ | `test_record_with_filtering` — writes/reads filtered frame through RecordWriter/RecordReader |
+| Tests: `--slice` validation (empty, absolute, traversal, control chars) | ✅ | 5 `test_validate_slice_name_*` tests |
 | Docs updated: README.md | ✅ | CLI quickstart updated |
 | Docs updated: CONTRACTS.md | ✅ | §5 recording format — filtered recordings noted as valid subset |
 | Docs updated: ROADMAP.md | ✅ | P55 marked done |
@@ -56,16 +57,25 @@
 
 ```bash
 PYTHONPATH=groop/src python -m pytest groop/tests/test_p55_filtering.py -q
-# 31 passed in 0.33s
+# 32 passed in 0.36s
 
 PYTHONPATH=groop/src python -m pytest groop/tests/test_collector.py -q
 # 6 passed in 0.24s
 
 PYTHONPATH=groop/src python -m py_compile groop/src/groop/collect/cgroup.py groop/src/groop/registry.py groop/src/groop/collect/collector.py groop/src/groop/cli.py
 # All compile OK
+
+# CLI smoke: groop --once --json --slice system.slice --metrics compact exits 0
+PYTHONPATH=groop/src python -c "
+import sys; sys.argv = ['groop', '--once', '--json', '--slice', 'system.slice',
+  '--metrics', 'compact', '--cgroup-root',
+  'groop/tests/fixtures/cgroupfs/gstammtisch']
+from groop.cli import main; exit(main())
+" 2>&1 >/dev/null; echo "CLI smoke exit code: $?"
+# CLI smoke exit code: 0
 ```
 
-Full suite (excluding 4 textual-dependent tests): **723 passed, 1 skipped**, 11 pre-existing flaky failures (text dependency import ordering).
+Full suite (excluding 4 textual-dependent tests): **723 passed, 1 skipped**, 11 pre-existing flaky failures (test ordering / text dependency import).
 
 ## File Manifest
 
@@ -75,7 +85,7 @@ Full suite (excluding 4 textual-dependent tests): **723 passed, 1 skipped**, 11 
 | `groop/src/groop/collect/cgroup.py` | Added `_validate_slice_name`, `build_entity_predicate`, `add_entity_ancestors` |
 | `groop/src/groop/collect/collector.py` | Added `entities_globs`, `slice_names`, `metrics_mode` params to `Collector`; entity/metric filtering in `collect_once()` |
 | `groop/src/groop/cli.py` | Added `--entities`, `--slice`, `--metrics` args; `_filter_kwargs` helper; validation in `main()`; wiring into 3 `Collector()` calls |
-| `groop/tests/test_p55_filtering.py` | 31 new tests covering all filtering behaviors |
+| `groop/tests/test_p55_filtering.py` | 32 new tests covering all filtering behaviors |
 | `groop/README.md` | Updated CLI quickstart |
 | `groop/CONTRACTS.md` | Added filtered-recording note to §5 |
 | `groop/docs/ROADMAP.md` | Marked P55 done |
