@@ -105,6 +105,14 @@ to 8931.
 
 - Bump `PWMCP_VERSION_PYPI`/`PWMCP_VERSION_NPM` in `docker-bake.hcl` and
   `[pwmcp.unified.image].tag` in `ciu.defaults.toml.j2` (next `-rN`).
+- **Templatize the `@playwright/mcp` pin while you are in these files**
+  (folded in 2026-07-12; was a separate package candidate but touches the
+  same Dockerfile/bake lines): promote the hardcoded `0.0.76` to a
+  `PLAYWRIGHT_MCP_VERSION` Dockerfile ARG with a matching `docker-bake.hcl`
+  arg and `cmru.vars` entry, defaulting to the current pin — same discipline
+  `PLAYWRIGHT_VERSION` already follows. Pin your new packages
+  (`chrome-devtools-mcp`, the proxy) the same templated way from the start.
+  Rendered/built output with defaults must be behavior-identical to before.
 - Add the chrome-devtools-mcp pin to wherever the README documents the
   `@playwright/mcp` pin, and note the Chrome-major ↔ chrome-devtools-mcp
   compatibility expectation.
