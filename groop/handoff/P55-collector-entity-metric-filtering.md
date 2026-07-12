@@ -1,5 +1,12 @@
 # P55 - Collector-Level Entity & Metric Filtering
 
+<!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
+> **Tier:** flash-high
+> **Depends-on:** none
+> **Base:** main
+> **Session-hint:** fresh
+> **Escalate-if:** a named contract cannot be met as specified; >2 files outside scope needed
+
 ## Goal
 
 Add `--entities GLOB` (repeatable) / `--slice NAME` entity-subtree selectors and

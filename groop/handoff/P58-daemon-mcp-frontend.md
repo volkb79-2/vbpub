@@ -1,5 +1,12 @@
 # P58 - Daemon MCP Frontend
 
+<!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
+> **Tier:** flash-max
+> **Depends-on:** P52 (merged, reviewed)
+> **Base:** main
+> **Session-hint:** fresh (P52 session was OpenCode/GLM; API surface is documented in the P52 handoff + report)
+> **Escalate-if:** a named contract cannot be met as specified; the versioned read API (P52) itself would need changes
+
 ## Goal
 
 Add `groop mcp serve`: a read-only Model Context Protocol server exposing the

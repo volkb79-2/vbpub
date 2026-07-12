@@ -1,5 +1,12 @@
 # P56 - `groop squeeze` (Guided Working-Set Measurement)
 
+<!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
+> **Tier:** flash-max
+> **Depends-on:** P49
+> **Base:** main after P49 merge
+> **Session-hint:** resume P49 implementer session if same area, else fresh
+> **Escalate-if:** a named contract cannot be met as specified; squeeze stepping logic requires privileged writes outside the governed action path
+
 ## Goal
 
 Add `groop squeeze --target CGROUP_PATH [options]`: a guided, stepped

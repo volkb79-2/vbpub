@@ -1,5 +1,12 @@
 # P49 - Governed systemd memory.high Adjustment
 
+<!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
+> **Tier:** flash-max
+> **Depends-on:** P46 (merged)
+> **Base:** main
+> **Session-hint:** fresh
+> **Escalate-if:** a named contract cannot be met as specified; any change to the action-gating kernel (P46) itself is needed
+
 ## Goal
 
 Build on reviewed P46 with a single Finding-D-safe resource governance action:

@@ -1,5 +1,12 @@
 # pwmcp P01 - chrome-devtools-mcp Sibling Server
 
+<!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
+> **Tier:** flash-max
+> **Depends-on:** none
+> **Base:** main
+> **Session-hint:** fresh
+> **Escalate-if:** a named contract cannot be met as specified; the stdio->HTTP proxy candidates both fail the pinned-version probe
+
 ## Goal
 
 Extend the pwmcp unified container with a second MCP server: Google's

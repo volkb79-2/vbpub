@@ -1,5 +1,13 @@
 # pwmcp P03 - Opt-In Shared Persistent Browser Mode
 
+<!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
+> **Tier:** sonnet5-high  <!-- BENCHMARK PACKAGE: run head-to-head terra-med (codex) vs sonnet5-high (claude); record addendum in docs/implementation-benchmark-P51.md -->
+> **Depends-on:** P01 (reviewed)
+> **Base:** main after P01 merge (after P02 if P02 dispatched first)
+> **Session-hint:** fresh (benchmark requires uncontaminated sessions)
+> **Serialize-with:** P02 (shared files: Dockerfile, supervisord.conf)
+> **Escalate-if:** n/a — already at escalation ceiling; write BLOCKED if CDP isolation contracts conflict with supervisord restart semantics
+
 ## Goal
 
 Add an opt-in `browser_mode = "shared"` (ciu var; default `"per-session"`

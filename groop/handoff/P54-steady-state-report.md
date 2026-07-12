@@ -1,5 +1,12 @@
 # P54 - Steady-State Report Command
 
+<!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
+> **Tier:** flash-high
+> **Depends-on:** P53
+> **Base:** main after P53 merge
+> **Session-hint:** resume P53 implementer session (same area, warm cache)
+> **Escalate-if:** a named contract cannot be met as specified; percentile oracle cannot be satisfied without changing RecordReader
+
 ## Goal
 
 Add `groop report FILE` to read a recording and compute a machine-readable

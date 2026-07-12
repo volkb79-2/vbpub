@@ -1,5 +1,13 @@
 # pwmcp P02 - Lighthouse Audit MCP Server
 
+<!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
+> **Tier:** flash-max
+> **Depends-on:** P01 (reviewed)
+> **Base:** main after P01 merge
+> **Session-hint:** resume P01 implementer session (same container/supervisord area)
+> **Serialize-with:** P03 (shared files: Dockerfile, supervisord.conf)
+> **Escalate-if:** a named contract cannot be met as specified; Lighthouse cannot run against the hardened container profile without cap changes
+
 ## Goal
 
 Add one-shot Lighthouse audits (performance / accessibility / SEO /

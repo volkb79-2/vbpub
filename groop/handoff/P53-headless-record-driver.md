@@ -1,5 +1,12 @@
 # P53 - Headless Record Driver
 
+<!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
+> **Tier:** flash-max
+> **Depends-on:** none
+> **Base:** main
+> **Session-hint:** fresh
+> **Escalate-if:** a named contract cannot be met as specified; signal/lifecycle semantics require touching the collector core beyond the named seams
+
 ## Goal
 
 Add a headless CLI record path (`groop --record FILE --headless ...`) that

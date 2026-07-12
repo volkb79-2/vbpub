@@ -7,9 +7,19 @@ monitoring, review, and merge protocol.
 
 ## Controller Role
 
-The controller should keep the main session for architecture, carving, review,
-merge, and evidence. Implementation agents should do bounded packages in
-dedicated worktrees.
+> **Superseded framing — see `docs/controller-workflow-v2.md` (2026-07-12).**
+> In v2 the roles are split by model tier: the **controller** (cheap model,
+> Claude Code harness only — the sole CLI with async supervision) *only*
+> dispatches, monitors, and routes; it never carves, reviews, or merges. The
+> **frontier review/carve session** (Opus-tier) owns architecture, carving,
+> review pass #2, merge, and evidence. A flash/pro-tier session must never be
+> the merge authority over flash-tier output (P51 replay + P52 false-green
+> evidence). This section's original wording described the era when one
+> frontier session played all roles; read everything below as the *invocation
+> reference* for whichever role runs the command, not as a single-session
+> job description.
+
+Implementation agents do bounded packages in dedicated worktrees.
 
 Default package flow:
 

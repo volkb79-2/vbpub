@@ -228,6 +228,55 @@ model choice:
   slice stays lean — over-specification inflates patches (the optimized-P51
   run produced an 18-file rewrite whose reconciliation ate its quality gain).
 - **Declare out-of-scope explicitly** — silence reads as permission.
+- **Stamp the machine-readable header** (workflow v2): every carved handoff
+  starts with a `Tier / Depends-on / Base / Session-hint / Serialize-with /
+  Escalate-if` block per `../docs/controller-workflow-v2.md` §7. The
+  controller parses headers only — it never reads handoff bodies. Keep ≥5
+  planned handoffs carved ahead when scoped work exists; respect the
+  `.CARVE_LOCK` protocol (v2 §8).
+
+## Standing escalation rule (BLOCKED exits)
+
+Escalation is **mechanical, not introspective** — do not ask an agent to
+reflect on whether a task suits its expertise (P51: four models, identical
+omissions, zero flagged uncertainty). Instead, every implementation agent
+inherits this trigger rule:
+
+> If a named contract cannot be met as specified, or the work requires
+> touching files the handoff forbids, or an `Escalate-if:` condition in the
+> handoff header fires: STOP. Write `BLOCKED: <reason>` to the LOG, commit
+> the branch as-is, and exit. Do not improvise a workaround.
+
+A BLOCKED exit is a first-class outcome the controller routes to a higher
+tier — it is what makes cheap-model-first dispatch safe.
+
+## Self-review pass (pass #1 — advisory, never a merge gate)
+
+After the implementation commit, the controller resumes the SAME agent
+session (`reasonix run -c` / `opencode run -s <id>` / `codex resume`) with
+this standing prompt (handoffs may append package-specific probes under a
+`Self-review probes:` heading — do not restate this template per handoff):
+
+> Implementation is committed. Now switch roles: you are reviewing your own
+> diff against the handoff. Do not re-read your reasoning — read the DIFF.
+> Check mechanically, and fix what you find, committing fixes separately:
+> 1. Every gate command in the handoff was actually run, in the required
+>    environment, and the REPORT quotes real output (no reconstructed
+>    numbers, no future-tense claims like "will pass after merge").
+> 2. Every file in the diff is inside the declared scope; nothing in scope
+>    was silently skipped (walk the handoff's numbered requirements 1-by-1).
+> 3. Every numbered adversarial test exists and asserts the OBSERVABLE
+>    outcome, not mock bookkeeping. Name any test that would still pass if
+>    the mechanism under test were deleted — that is a hollow test; fix it.
+> 4. Dates, counts, and paths in LOG/REPORT are real (today is <DATE>).
+> 5. LOG, REPORT present; ASCII; no dead code/scaffolding in the diff.
+> Write findings (including "none") to handoff/reports/P<NN>-SELFREVIEW.md,
+> commit to the feature branch.
+
+Known limit (set expectations, and measure): same-session self-review has the
+maximum correlated blind spot. **Trial metric:** the frontier pass #2 records
+`flagged-by-pass-1: yes/no` per finding in the REPORT; after ~4 packages, if
+overlap <~25%, demote this pass to a plain checklist runner or drop it.
 
 ## Reference deployment
 

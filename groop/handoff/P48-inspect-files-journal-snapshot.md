@@ -1,5 +1,12 @@
 # P48 - Bounded Journald Inspection Snapshot
 
+<!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
+> **Tier:** flash-high
+> **Depends-on:** P45 (merged)
+> **Base:** main
+> **Session-hint:** fresh
+> **Escalate-if:** a named contract cannot be met as specified; >2 files outside scope needed
+
 ## Goal
 
 Extend reviewed P45 content inspection with one bounded, non-following journald
