@@ -151,6 +151,14 @@ class TestDisabledViaCli:
         code = _main_inspect_files(["plan", "--kind", "unknown-kind", "--target", "x", "--inspect-files", "--admin"])
         assert code == 2
 
+    def test_plan_both_target_and_container_exit_2(self) -> None:
+        """--target and --container are mutually exclusive."""
+        from groop.cli import _main_inspect_files
+        code = _main_inspect_files(
+            ["plan", "--kind", "docker-json-log", "--target", "x", "--container", "my-app", "--inspect-files", "--admin"]
+        )
+        assert code == 2
+
 
 # ---------------------------------------------------------------------------
 # Plan rendering tests
@@ -541,6 +549,14 @@ class TestReadDisabledViaCli:
             ["read", "--kind", "unknown-kind", "--target", "x", "--inspect-files", "--admin"]
         )
         assert code == 1  # InspectFilesReadError returns exit 1
+
+    def test_read_both_target_and_container_exit_2(self) -> None:
+        """--target and --container are mutually exclusive for read."""
+        from groop.cli import _main_inspect_files
+        code = _main_inspect_files(
+            ["read", "--kind", "docker-json-log", "--target", "x", "--container", "my-app", "--inspect-files", "--admin"]
+        )
+        assert code == 2
 
 
 class TestReadContent:

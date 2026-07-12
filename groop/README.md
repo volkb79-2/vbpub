@@ -43,7 +43,10 @@ groop snapshot inspect /path/to/groop-incident-*.tar
 
 Use `--config PATH` to point at an alternate TOML config, `--profile NAME` to
 override the active UI column profile for one run, and `--record FILE` to record
-the live TUI stream to JSONL while you inspect it.
+the live TUI stream to JSONL while you inspect it. Use `--container NAME_OR_PREFIX`
+on `groop inspect-files plan/read --target` or `groop action preview/execute --target`
+to resolve a Docker container name or prefix to its cgroup path automatically
+instead of manually specifying `--target`.
 
 Useful feature hotkeys in the TUI:
 
@@ -116,7 +119,7 @@ Useful feature hotkeys in the TUI:
 | P54 | Queued | Steady-state report command | v1.5 recording | Add `groop report FILE [--window last:Ns\|all] [--group-by slice\|entity] --json` computing per-entity p50/p95/max for key gauges and deriving `_per_s` rates from embedded raw counters when the recorded live rate is `None`. Handoff: `handoff/P54-steady-state-report.md`. |
 | P55 | Queued | Collector entity & metric filtering | v1.5/v2 recording | Add `--entities GLOB`/`--slice NAME` entity selectors and `--metrics compact` gauge subset at collection time, cutting sysfs reads and frame size for `--once` and any recording path. Handoff: `handoff/P55-collector-entity-metric-filtering.md`. |
 | P56 | Queued | `groop squeeze` guided memory measurement | v2 actions | Add a guided, stepped `memory.high` squeeze that measures a cgroup's hot working set, with mandatory memory.high restore on exit/SIGINT and a groop-record-compatible JSONL log. Handoff: `handoff/P56-groop-squeeze.md`. |
-| P57 | Queued | Docker-name entity selectors | v1.5/v2 ergonomics | Add `--container NAME_OR_PREFIX`, resolved via the existing docker metadata join, wherever groop takes a cgroup-path/entity identifier. Handoff: `handoff/P57-docker-name-entity-selectors.md`. |
+| P57 | Done | Docker-name entity selectors | v1.5/v2 ergonomics | Add `--container NAME_OR_PREFIX`, resolved via the existing docker metadata join, wherever groop takes a cgroup-path/entity identifier. Handoff: `handoff/P57-docker-name-entity-selectors.md`. Report: `handoff/reports/P57-REPORT.md`. |
 | P58 | Planned | Daemon MCP frontend | v2/v3 API | Add `groop mcp serve` (optional `groop[mcp]` extra, stdio transport): a read-only MCP server over the P52 typed adapter exposing bounded health/overview/entity/history tools for AI CLI agents. Starts only after reviewed P52 merges. Handoff: `handoff/P58-daemon-mcp-frontend.md`. |
 
 ## Completed Package Order

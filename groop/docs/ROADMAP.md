@@ -73,7 +73,7 @@ flowchart TD
     P53 --> P54
     P2 --> P55[P55 Collector entity/metric filtering]
     P46 --> P56[P56 groop squeeze]
-    P16 --> P57[P57 Docker-name entity selectors]
+    P16 --> P57[P57 Docker-name entity selectors :done:]
     P52 --> P58[P58 Daemon MCP frontend]
 ```
 

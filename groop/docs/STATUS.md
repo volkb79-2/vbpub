@@ -58,18 +58,20 @@ report FILE --json` to compute a steady-state percentile/rate profile from a
 P2-format recording. Until P53/P54 merge, unattended recording and
 machine-readable steady-state profiles remain prototype-only claims.
 
-P55-P57 are queued, spec-only, and each independently implementable without
-P53/P54 or each other. P55 adds `--entities GLOB`/`--slice NAME`/`--metrics
+P55 and P56 remain queued, spec-only, and independently implementable without
+each other. P55 adds `--entities GLOB`/`--slice NAME`/`--metrics
 compact` collection-time filtering (extracted from P53's amendment so the
 two can build in parallel). P56 adds `groop squeeze`, a guided stepped
 `memory.high` working-set measurement absorbing the standalone
 `container-mempress.sh` workflow, gated through the existing P21/P46 admin
-action posture with mandatory `memory.high` restore on exit/SIGINT. P57 adds
-`--container NAME_OR_PREFIX` docker-name resolution wherever groop takes a
-cgroup-path/entity identifier today. Until P55-P57 merge, unattended
-recording remains full-tree/full-metric only, no guided squeeze measurement
-exists, and identifier flags accept only cgroup-path/target strings, not
-docker container names.
+action posture with mandatory `memory.high` restore on exit/SIGINT.
+
+P57 (this package) adds `--container NAME_OR_PREFIX` docker-name resolution
+wherever groop takes a cgroup-path/entity identifier today. The resolver
+lives in `groop/collect/dockerjoin.py` and resolves against already-enriched
+`Entity.docker` metadata — no new Docker API calls. `--container` is wired
+into `inspect-files plan/read --target` and `action preview/execute --target`
+as a mutually exclusive alternative to `--target`.
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -232,9 +234,8 @@ core workflows, not yet production-certified.**
 - Headless (non-Textual) `--record` driver and `groop report` steady-state
   profile command (queued: P53, P54).
 - Collector-level entity/metric filtering (`--entities`/`--slice`/`--metrics
-  compact`), guided stepped `memory.high` squeeze measurement (`groop
-  squeeze`), and docker-name entity selectors (`--container`) (queued: P55,
-  P56, P57).
+  compact`), and guided stepped `memory.high` squeeze measurement (`groop
+  squeeze`) (queued: P55, P56).
 
 ## Acceptance Status
 
