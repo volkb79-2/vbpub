@@ -97,7 +97,7 @@ For performance profiling, CDP tracing, and CPU/network throttling emulation, ad
 }
 ```
 
-In external mode the URL becomes `https://<unified_host>/mcp` with a `/devtools` path prefix.
+In external mode the URL becomes `https://<unified_host>/devtools/mcp` (the `/devtools` prefix is stripped by Traefik before forwarding to the backend).
 
 Note: `chrome-devtools-mcp` is served via `mcp-proxy` (stdio→streamable-HTTP proxy). Unlike `@playwright/mcp`, it does not have native `--allowed-hosts` DNS-rebinding protection. In internal mode the Docker network boundary is the access control; see [SECURITY.md](docs/SECURITY.md) for details.
 
@@ -131,6 +131,7 @@ The following npm packages are pinned via `docker-bake.hcl` ARGs (with matching 
 | `mcp-proxy` | `6.5.2` | stdio→streamable-HTTP proxy for chrome-devtools-mcp |
 
 `@playwright/mcp` bundles playwright-core for chromium-1226, verified to work with Playwright 1.61.0 base images.
+`chrome-devtools-mcp@1.5.0` targets Chrome/Chromium 130+ (DevTools Protocol compatibility).
 `chrome-devtools-mcp` requires Node `^20.19.0 || ^22.12.0 || >=23` (verify compatibility when upgrading the base image).
 
 ## Browser Isolation Hardening

@@ -62,3 +62,24 @@ All changes committed to branch `feat/pwmcp-p01-chrome-devtools-mcp`.
 6. Updated version scripts (resolve-playwright-version.py, _vars.py)
 7. Created smoke-endpoints.sh validation script
 8. Updated all documentation (README, ARCHITECTURE, USAGE, DEPLOYMENT, SECURITY)
+
+## 2026-07-12 — Self-review fixes
+
+Self-review against the handoff (see P01-SELFREVIEW.md) found and fixed 10 issues:
+
+### Fixed bugs
+1. **Traefik devtools router rule**: `PathPrefix(\`/mcp\`) && PathPrefix(\`/devtools\`)` would never match. Fixed to `PathPrefix(\`/devtools\`)` with StripPrefix middleware. (ciu.compose.yml.j2)
+2. **Supervisord status check**: Was hollow (only checked exit code). Replaced with `wait_for_supervisord()` that polls for 30s and asserts each program by name. (smoke-endpoints.sh)
+3. **MCP initialize response parsing**: Was only checking HTTP 2xx. Added `mcp_initialize_assert_ok()` and `mcp_initialize_assert_fail()` that use `jq` to validate JSON-RPC body (no `.error`, has `.result.serverInfo.name`). (smoke-endpoints.sh)
+4. **Devtools forged-Host assertion**: Was expecting rejection, but mcp-proxy has no host allowlist. Changed to expect SUCCESS and document the gap inline. (smoke-endpoints.sh)
+5. **Dead `check` function**: Removed (unused; only `check_cmd` was called). (smoke-endpoints.sh)
+6. **Missing Chrome-major compat note**: Added to README pin table. (README.md)
+7. **Misleading external URL**: Fixed to `https://<unified_host>/devtools/mcp` and noted StripPrefix. (README.md)
+8. **jq unused**: Now actually used for JSON-RPC body validation. (smoke-endpoints.sh)
+9. **No 30s delay**: `wait_for_supervisord()` polls for up to 30s with 1s interval. (smoke-endpoints.sh)
+10. **`local` keyword in main script body**: Removed (bash error in non-function context). (smoke-endpoints.sh)
+
+### Remaining gaps (documented, not BLOCKERs)
+- Smoke script not run (no Docker in agent environment).
+- ciu template rendering diff not verified (no ciu in agent environment).
+- Base image Node version vs chrome-devtools-mcp requirement unverified.

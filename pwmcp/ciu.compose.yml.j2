@@ -64,14 +64,20 @@ services:
       - traefik.http.routers.{{ pwmcp.unified.name }}-ws.tls=true
       - traefik.http.services.{{ pwmcp.unified.name }}-ws.loadbalancer.server.port={{ pwmcp.unified.ws_port }}
       # DevTools MCP endpoint: route by hostname to port {{ pwmcp.unified.devtools_port }}
-      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.rule=Host(`{{ pwmcp.external.unified_host }}`) && PathPrefix(`/mcp`) && PathPrefix(`/devtools`)
+      # Path prefix /devtools is stripped so the backend sees /mcp (mcp-proxy endpoint).
+      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.rule=Host(`{{ pwmcp.external.unified_host }}`) && PathPrefix(`/devtools`)
       - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.entrypoints=websecure
       - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.tls=true
       - traefik.http.services.{{ pwmcp.unified.name }}-devtools.loadbalancer.server.port={{ pwmcp.unified.devtools_port }}
+      - traefik.http.middlewares.{{ pwmcp.unified.name }}-devtools-strip.stripprefix.prefixes=/devtools
+      {% if pwmcp.external.guard_enabled %}
+      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.middlewares={{ pwmcp.unified.name }}-devtools-strip,{{ pwmcp.unified.name }}-guard
+      {% else %}
+      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.middlewares={{ pwmcp.unified.name }}-devtools-strip
+      {% endif %}
       {% if pwmcp.external.guard_enabled %}
       - traefik.http.routers.{{ pwmcp.unified.name }}-mcp.middlewares={{ pwmcp.unified.name }}-guard
       - traefik.http.routers.{{ pwmcp.unified.name }}-ws.middlewares={{ pwmcp.unified.name }}-guard
-      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.middlewares={{ pwmcp.unified.name }}-guard
       - traefik.http.middlewares.{{ pwmcp.unified.name }}-guard.basicauth.users={{ pwmcp.external.guard_user }}:{{ pwmcp.external.guard_htpasswd | replace("$", "$$") }}
       {% endif %}
     {% endif %}
