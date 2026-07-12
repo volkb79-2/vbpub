@@ -962,7 +962,7 @@ def test_daemon_enabled_bridge_uses_configured_root_and_shuts_down(
     monkeypatch.setattr(cli, "load", lambda _path: config)
     monkeypatch.setattr(cli, "Collector", FakeCollector)
     monkeypatch.setattr(cli, "BpfSnapshotBridge", FakeBridge)
-    monkeypatch.setattr(cli, "serve_unix_socket", lambda _path, _broker: server)
+    monkeypatch.setattr(cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: server)
 
     assert cli._main_daemon(["serve", "--socket", str(socket_path)]) == 0
     assert observed == {

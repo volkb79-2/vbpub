@@ -43,9 +43,13 @@ alias sorting, live/replay selection retention, and keyboard parity.
 
 Daemon sampling is now request-independent with a background producer (P51):
 `current` returns the latest published frame and changes as sampling advances;
-`stream` reads from history with optional sequence/cursor. P52 is queued for
-the versioned bounded read contract required by a production web backend.
-Until P52 merges, web support is a prototype-only claim.
+`stream` reads from history with optional sequence/cursor. P52 adds a versioned,
+bounded, peer-aware read API envelope over the P51 broker: a `hello`/negotiate
+op, typed error codes, sensitivity metadata, `SO_PEERCRED` peer identity, an
+injectable authorization hook, and proven resource bounds (request bytes, read
+deadline, concurrent clients, response items/bytes). Legacy clients without a
+`v` field continue to be served unchanged. Until P58 (MCP frontend) merges,
+separate-frontend support is a protocol-complete but single-consumer claim.
 
 P53 and P54 are queued, spec-only recording follow-ups: P53 adds a headless
 `groop --record FILE --headless` driver reusing the existing P2
@@ -94,7 +98,10 @@ core workflows, not yet production-certified.**
   status, manifest hashes, redaction, and `groop snapshot inspect`.
 - Read-only Unix-socket daemon broker with request-independent background
   producer, bounded sequenced history, non-consuming current/stream fan-out,
-  sequence/cursor semantics, and deterministic start/stop/join lifecycle (P51).
+  sequence/cursor semantics, deterministic start/stop/join lifecycle (P51),
+  and a versioned, bounded, peer-aware read API envelope with typed error
+  codes, sensitivity metadata, SO_PEERCRED peer identity, an injectable
+  authorization hook, and proven resource bounds (P52).
 - `groop --attach SOCKET` client mode with current-frame polling, `--once
   --json`, and UI smoke coverage.
 - Daemon deployment preflight plus packaged systemd/tmpfiles templates for a
@@ -250,27 +257,15 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent combined P50/P51 validation:
+Most recent combined P51/P52 validation:
 
 ```bash
-PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q -W error
-# 704 passed, 1 skipped in 58.25s (controller review)
+PYTHONPATH=groop/src python3 -m pytest groop/tests -q -W error
+# (see P52-REPORT.md for the focused and full-suite tails)
 ```
 
 Also validated:
 
-- P44 focused paddr lifecycle tests: `22 passed in 0.17s`.
-- P45 focused inspect-files tests: `113 passed in 0.64s`.
-- P46 focused action execution tests: `129 passed in 0.45s`.
-- P47 focused component health tests: `49 passed in 3.47s`.
-- P51 combined daemon/client/health/record gate: `90 passed in 16.84s` with warnings as errors.
-- Combined P47 daemon/P45 inspect regression: `238 passed in 6.60s` (controller review).
-- Combined P44/P45/P46 focused regression: `264 passed in 1.12s`.
-- P50 focused mouse tests: `12 passed, 23 deselected in 4.93s`.
-- P50 UI/fidelity regression: `36 passed, 1 skipped in 16.57s`.
-- P50 UI plus rendered fidelity: `36 passed, 1 skipped in 16.51s`.
-- Acceptance tests: `40 passed in 7.31s`; TUI smoke exit 0.
-- Full-source `py_compile` clean on all changed/new files.
-- Module-level imports and gate logic verified without real Docker/systemd.
-- Mouse support degrades harmlessly: DataTable falls back to keyboard-only
-  when the terminal sends no mouse events.
+- P52 focused envelope/bounds/leak tests: `55 passed`.
+- P51 focused daemon/client/health tests: `20 passed`.
+- P47 focused component health tests: `49 passed`.

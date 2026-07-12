@@ -194,6 +194,9 @@ After an operator deliberately applies the packaged templates/install plan:
 - [ ] `groop --attach --once --json` returns a frame as the non-root user.
 - [ ] `groop --attach` opens the TUI as the non-root user.
 - [ ] Socket ownership/mode matches the documented group-readable policy.
+- [ ] P52 envelope `hello` negotiates protocol version and capabilities.
+- [ ] P52 envelope `current`/`history`/`entity`/`health` return typed
+      responses with sensitivity metadata; peer credentials are observed.
 
 ### Live Non-Root Acceptance
 

@@ -564,7 +564,7 @@ def test_lifecycle_daemon_serve_integration(tmp_path: Path) -> None:
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(cli, "load", lambda _path: config)
     monkeypatch.setattr(cli, "Collector", FakeCollector)
-    monkeypatch.setattr(cli, "serve_unix_socket", lambda _path, _broker: server)
+    monkeypatch.setattr(cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: server)
 
     try:
         assert cli._main_daemon(["serve", "--socket", str(socket_path)]) == 0

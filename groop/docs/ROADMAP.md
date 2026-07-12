@@ -151,9 +151,11 @@ P51 status: done. One request-independent producer now supplies fresh current
 frames and bounded sequenced history with cursor/gap semantics, deterministic
 production shutdown, strict request bounds, and P47 collector health.
 
-P52 remains queued in the correct daemon maturation order: it adds a versioned,
-bounded, peer-aware read API for attached and future frontends. No web
-server/client stream is scheduled by these prerequisites.
+P52 status: done. Adds a versioned, bounded, peer-aware read API envelope
+over the P51 broker: `hello`/negotiate, typed error codes, sensitivity
+metadata, `SO_PEERCRED` peer identity, an injectable authorization hook, and
+proven resource bounds. Legacy clients without a `v` field are served
+unchanged. P58 (MCP frontend) is the next consumer.
 
 Handoffs: `handoff/P51-daemon-sampling-fanout.md` and
 `handoff/P52-versioned-daemon-read-api.md`.

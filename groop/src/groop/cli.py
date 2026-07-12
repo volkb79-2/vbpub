@@ -33,8 +33,8 @@ from groop.daemon import (
     BpfSnapshotError,
     FrameBroker,
     FrameBrokerError,
-    serve_unix_socket,
 )
+from groop.daemon.api import ApiLimits, DaemonApi, serve_versioned_unix_socket
 from groop.daemon.component_health import (
     ComponentError,
     ComponentHealthRegistry,
@@ -680,7 +680,12 @@ def _main_daemon(argv: list[str]) -> int:
             health_registry=health_registry,
             stop_callback=frame_stop.set,
         )
-        server = serve_unix_socket(args.socket, broker)
+        api = DaemonApi(
+            broker,
+            limits=ApiLimits(history_capacity=args.history_size),
+            health_registry=health_registry,
+        )
+        server = serve_versioned_unix_socket(args.socket, broker, api)
         print(f"serving read-only groop frames on {args.socket}", flush=True)
 
         # Default-disabled components
