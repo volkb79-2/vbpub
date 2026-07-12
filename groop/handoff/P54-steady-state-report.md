@@ -89,3 +89,25 @@ must tolerate filtered recordings: absent entities are simply absent from the re
 (no error), and a `--group-by slice` rollup over a filtered recording reports only the
 recorded subtree. First real consumer: dstdns `container-memory-profiles.md`
 (steady-state per-container RSS/zswap/PSI percentiles from a bring-up recording).
+
+## Amendment 2026-07-12 — contract tightening (P51 benchmark / P20+ review lessons)
+
+- **Percentile method is pinned**: p50/p95 use the nearest-rank method
+  (sorted ascending non-`None` samples, index `ceil(p/100 * N) - 1`,
+  0-based); `max` is the plain maximum. Do NOT use `statistics.quantiles`
+  interpolation or any averaging variant — different methods diverge on
+  small windows, and steady-state windows are often small. Add one fixture
+  test whose sample count makes nearest-rank and linear interpolation give
+  DIFFERENT answers, asserting the nearest-rank value (an oracle that
+  detects the wrong mechanism, not just a plausible number).
+- **Float determinism**: round every emitted float to 6 decimal places at
+  serialization; combined with sorted keys this makes byte-identical output
+  for identical inputs a testable contract — assert it (same file reported
+  twice → identical bytes).
+- **`.zst` input without the `zstandard` extra installed**: exit 2 with a
+  clear install hint, matching whatever `RecordReader`/replay already does
+  for this case (cite the existing behavior in the LOG; do not invent a
+  second error path).
+- **Gates**: run focused tests and the full suite with `-W error`; wrap the
+  full-suite command in `timeout`; state in the REPORT which environment
+  each result came from.

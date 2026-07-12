@@ -117,6 +117,7 @@ Useful feature hotkeys in the TUI:
 | P55 | Queued | Collector entity & metric filtering | v1.5/v2 recording | Add `--entities GLOB`/`--slice NAME` entity selectors and `--metrics compact` gauge subset at collection time, cutting sysfs reads and frame size for `--once` and any recording path. Handoff: `handoff/P55-collector-entity-metric-filtering.md`. |
 | P56 | Queued | `groop squeeze` guided memory measurement | v2 actions | Add a guided, stepped `memory.high` squeeze that measures a cgroup's hot working set, with mandatory memory.high restore on exit/SIGINT and a groop-record-compatible JSONL log. Handoff: `handoff/P56-groop-squeeze.md`. |
 | P57 | Queued | Docker-name entity selectors | v1.5/v2 ergonomics | Add `--container NAME_OR_PREFIX`, resolved via the existing docker metadata join, wherever groop takes a cgroup-path/entity identifier. Handoff: `handoff/P57-docker-name-entity-selectors.md`. |
+| P58 | Planned | Daemon MCP frontend | v2/v3 API | Add `groop mcp serve` (optional `groop[mcp]` extra, stdio transport): a read-only MCP server over the P52 typed adapter exposing bounded health/overview/entity/history tools for AI CLI agents. Starts only after reviewed P52 merges. Handoff: `handoff/P58-daemon-mcp-frontend.md`. |
 
 ## Completed Package Order
 
@@ -163,6 +164,70 @@ worktree protocol below.
   validates the report, runs the relevant gates from a clean checkout, fixes or
   sends back issues, then merges to `main` with a focused merge/commit. Later
   packages branch only after their declared dependencies are merged.
+
+## Standing package contracts (inherited by EVERY handoff)
+
+Every handoff implicitly includes these; a handoff only restates one to
+tighten it further. They are distilled from the controller corrections that
+P1–P51 review commits actually had to make (see
+`../docs/implementation-benchmark-P51.md` for the systematic study):
+
+- **Input trust**: any value parsed from kernel/sysfs files, JSON frames,
+  Docker/systemd metadata, or user input is runtime-validated
+  (`isinstance`/`try-except`) before use. Blind `int()`/`float()` casts and
+  `# type: ignore` used to silence a real type gap are review-rejected.
+- **Error disclosure**: no raw exception text, secrets, or filesystem paths
+  cross a socket, CLI, or tool-output boundary — typed, bounded errors only.
+- **Bounds are enforced, then proven**: enumerate what each bound covers
+  (per-request/per-client/aggregate); never silently clamp out-of-range
+  values; every bound gets a test that actually violates it and asserts the
+  observable outcome — verify the mechanism, not its constant.
+- **Test seams are Python-API-only**: injectable seams (signals, readers,
+  runners, clocks) must not surface as production CLI flags.
+- **No hollow tests**: assert the behavioral contract on the observable
+  artifact (rendered cells, written file re-parsed by the real reader,
+  actual thread liveness), not mock-call bookkeeping; never weaken existing
+  tests to make new code pass.
+- **Golden fixtures**: if collector/frame output changes, regenerate affected
+  golden recordings via the documented command in the same package.
+- **Deterministic machine output**: sorted keys, explicit `json.dumps`
+  separators, pinned float rounding wherever output is diffed or replayed.
+- **Operator-facing commands/templates** are parameterized and render exactly
+  what any preview/plan mode shows — no ad-hoc shell substitutions.
+- **Hygiene**: ASCII by default; no dead code, unused imports, or leftover
+  scaffolding in the final diff.
+- **Gates**: focused tests AND the full suite with `-W error`, the full-suite
+  command wrapped in `timeout` (a hung gate is a finding, never a pass);
+  `py_compile` on changed files; `git diff --check`. The REPORT states which
+  environment every result came from — an agent-env green suite is evidence,
+  not the verdict; the controller's rerun decides.
+- **Patch discipline**: additive, focused diffs; propose wholesale rewrites
+  or doc restructuring in the REPORT instead of committing them.
+
+## Handoff authoring guide (controller-side)
+
+What separated near-clean packages (P26, P31) from heavy-repair ones
+(P42–P51), per the review-commit history and the P51 four-model benchmark —
+where all four models made the *same* omissions, proving spec gaps dominate
+model choice:
+
+- **Contracts over capabilities**: state invariants that must hold in
+  failure/terminal states ("stop() returns only when the thread is dead"),
+  not just feature lists. Implicit semantics WILL be filled in wrong, the
+  same way, by every model.
+- **One acceptance oracle per requirement**: name the exact assertion that
+  proves it, preferably one that fails against the wrong mechanism (e.g. a
+  sample count where nearest-rank and interpolation percentiles differ).
+- **Name an in-repo exemplar** module/pattern to imitate; both near-clean
+  packages had one.
+- **Bound the context**: a "Context To Read First" list keeps a Flash-class
+  agent from surveying the tree or, worse, improvising from the wrong file.
+- **Number the adversarial tests** so completeness is checkable at review.
+- **Scale richness to risk**: concurrency/protocol/privilege slices get the
+  full optimized-P51 treatment; a narrow, fixture-testable, exemplar-backed
+  slice stays lean — over-specification inflates patches (the optimized-P51
+  run produced an 18-file rewrite whose reconciliation ate its quality gain).
+- **Declare out-of-scope explicitly** — silence reads as permission.
 
 ## Reference deployment
 

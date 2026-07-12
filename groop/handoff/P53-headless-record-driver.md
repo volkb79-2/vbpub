@@ -102,3 +102,33 @@ this package must design for:
   consecutive one-shot frames and it worked — confirming the P54 requirement that
   report must support cold recordings, but also confirming in-process recording
   (rates live from frame 1) is strictly better for short windows.
+
+## Amendment 2026-07-12 — contract tightening (P51 benchmark / P20+ review lessons)
+
+Implicit semantics below caused controller repair in earlier packages when left
+to the implementing model; they are now explicit contracts:
+
+- **Writer failure AFTER frames were written** (the original exit-code bullet
+  only covers failure *before* the first frame): on an unrecoverable
+  `RecordWriter` I/O error mid-run, attempt best-effort `close()`, exit
+  non-zero with a message stating how many frames were durably written; the
+  partial file must remain valid JSONL(.zst) up to the last flushed frame.
+  Use a distinct exit code or message text so "failed at frame 0" and
+  "failed at frame N>0" are distinguishable in automation.
+- **Second signal during shutdown**: a second `SIGINT`/`SIGTERM` while the
+  final sweep/flush is in progress exits promptly and non-zero rather than
+  hanging on a slow flush; the no-truncated-frame guarantee applies only to
+  the single-signal path.
+- **Mechanism-level finalization oracle**: the finalization test must assert,
+  for BOTH plain `.jsonl` and `.zst` output, that after a simulated signal the
+  written file parses end-to-end with the existing `RecordReader` and its last
+  frame is complete — not merely that `flush`/`close` were called (hollow-test
+  pattern from prior reviews: mock-call assertions passing while the artifact
+  is truncated).
+- **Progress cadence pinned**: one stderr progress line every 30 s (or every
+  frame if interval > 30 s); exact format free, but it must not exceed one
+  line per emission.
+- **Gates**: run focused tests and the full suite with `-W error`; wrap the
+  full-suite command in `timeout` (a hung run is a finding, never a pass);
+  state in the REPORT which environment each result came from (agent env
+  results are evidence, not the verdict — controller reruns decide).
