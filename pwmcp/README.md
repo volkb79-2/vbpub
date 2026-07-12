@@ -4,22 +4,24 @@ PWMCP is a thin, hardened [ciu](https://github.com/volkb79-2/vbpub/tree/main/ciu
 
 ## Unified Image
 
-The unified image `ghcr.io/volkb79-2/pwmcp` bundles **both** the Playwright `run-server` and `@playwright/mcp` into a **single container** under a **single hostname** `pwmcp`:
+The unified image `ghcr.io/volkb79-2/pwmcp` bundles the Playwright `run-server`, `@playwright/mcp`, and `chrome-devtools-mcp` into a **single container** under a **single hostname** `pwmcp`:
 
 | Endpoint | Port | Purpose |
 |---|---|---|
 | `ws://pwmcp:3000/` | 3000 | Native Playwright `connect()` — full API, test suites |
-| `http://pwmcp:8931/mcp` | 8931 | MCP (HTTP/SSE) — AI clients (VS Code Copilot, etc.) |
+| `http://pwmcp:8931/mcp` | 8931 | `@playwright/mcp` (HTTP/SSE) — AI clients (VS Code Copilot, etc.) |
+| `http://pwmcp:8932/mcp` | 8932 | `chrome-devtools-mcp` (CDP profiling via mcp-proxy) — performance tracing |
 
-Both services are managed by `supervisord` (PID 1), which reaps children and forwards SIGTERM on shutdown.
+All services are managed by `supervisord` (PID 1), which reaps children and forwards SIGTERM on shutdown.
 
 ## Deployment Modes
 
 **internal** (default): the container joins the project Docker network with plain HTTP and no authentication. Sibling containers (test runner, devcontainer) reach both endpoints by **container name** on the shared network — never via `localhost`:
 
 ```
-ws://pwmcp:3000/          — Playwright connect() endpoint
-http://pwmcp:8931/mcp     — MCP endpoint
+ws://pwmcp:3000/              — Playwright connect() endpoint
+http://pwmcp:8931/mcp         — @playwright/mcp endpoint
+http://pwmcp:8932/mcp         — chrome-devtools-mcp (CDP profiling)
 ```
 
 The network boundary is the access control. This is the correct mode for dev and CI.
@@ -53,7 +55,9 @@ async with async_playwright() as p:
 
 The `pip install playwright` version **must** match `pwmcp.playwright_version` in `ciu.defaults.toml.j2` (currently `1.61.0`). The Dockerfile bakes in the same version so the wire protocol is in lockstep.
 
-### MCP (AI clients)
+### MCP
+
+#### `@playwright/mcp` (port 8931)
 
 Add to your MCP client configuration (e.g. VS Code `settings.json`):
 
@@ -72,6 +76,31 @@ Add to your MCP client configuration (e.g. VS Code `settings.json`):
 
 In external mode the URL becomes `https://<unified_host>/mcp`.
 
+#### `chrome-devtools-mcp` (port 8932)
+
+For performance profiling, CDP tracing, and CPU/network throttling emulation, add a second MCP server entry:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "pwmcp": {
+        "type": "http",
+        "url": "http://pwmcp:8931/mcp"
+      },
+      "chrome-devtools": {
+        "type": "http",
+        "url": "http://pwmcp:8932/mcp"
+      }
+    }
+  }
+}
+```
+
+In external mode the URL becomes `https://<unified_host>/mcp` with a `/devtools` path prefix.
+
+Note: `chrome-devtools-mcp` is served via `mcp-proxy` (stdio→streamable-HTTP proxy). Unlike `@playwright/mcp`, it does not have native `--allowed-hosts` DNS-rebinding protection. In internal mode the Docker network boundary is the access control; see [SECURITY.md](docs/SECURITY.md) for details.
+
 ## `PWMCP_MCP_ALLOWED_HOSTS` Environment Variable
 
 `@playwright/mcp` has DNS-rebinding protection: it rejects requests whose `Host` header does not match an allowlist. The ciu compose template injects `PWMCP_MCP_ALLOWED_HOSTS` at container start with the two ciu-derived container names:
@@ -82,12 +111,27 @@ PWMCP_MCP_ALLOWED_HOSTS=pwmcp:8931,<project>-<env>-pwmcp:8931
 
 The image default is `localhost:8931,127.0.0.1:8931` for standalone usage. Override via `extra_args` in `ciu.toml.j2` to add further hosts.
 
-## Version Pin
+## Package Version Pins
+
+### Playwright Version
 
 `pwmcp.playwright_version` in `ciu.defaults.toml.j2` is the single source of truth. It pins:
 - the base image tag (`mcr.microsoft.com/playwright:v<version>-<distro>`)
 - the playwright JS package baked into the image
 - the version consumers must `pip install playwright==<version>`
+
+### npm Package Pins
+
+The following npm packages are pinned via `docker-bake.hcl` ARGs (with matching defaults in the `Dockerfile`):
+
+| Package | Pin | Source |
+|---|---|---|
+| `@playwright/mcp` | `0.0.76` | MCP HTTP/SSE server for AI clients |
+| `chrome-devtools-mcp` | `1.5.0` | CDP-based performance tracing and DevTools insights |
+| `mcp-proxy` | `6.5.2` | stdio→streamable-HTTP proxy for chrome-devtools-mcp |
+
+`@playwright/mcp` bundles playwright-core for chromium-1226, verified to work with Playwright 1.61.0 base images.
+`chrome-devtools-mcp` requires Node `^20.19.0 || ^22.12.0 || >=23` (verify compatibility when upgrading the base image).
 
 ## Browser Isolation Hardening
 

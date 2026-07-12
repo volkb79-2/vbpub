@@ -2,15 +2,17 @@
 # (+ optional ciu.toml.j2 overrides). See that file for the full mode docs.
 #
 # UNIFIED MODE (only supported mode):
-#   One container "pwmcp" exposes both endpoints under a single hostname:
+#   One container "pwmcp" exposes three endpoints under a single hostname:
 #     ws://{{ pwmcp.unified.name }}:{{ pwmcp.unified.ws_port }}/    — Playwright connect()
-#     http://{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}/mcp  — MCP surface
+#     http://{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}/mcp  — @playwright/mcp
+#     http://{{ pwmcp.unified.name }}:{{ pwmcp.unified.devtools_port }}/mcp  — chrome-devtools-mcp
 
 services:
   # ── Unified single-image service ──────────────────────────────────────────
   {{ pwmcp.unified.name }}:
     # Unified image: Playwright run-server (:{{ pwmcp.unified.ws_port }}) +
-    # @playwright/mcp HTTP/SSE (:{{ pwmcp.unified.mcp_port }}) in one container.
+    # @playwright/mcp HTTP/SSE (:{{ pwmcp.unified.mcp_port }}) +
+    # chrome-devtools-mcp via mcp-proxy (:{{ pwmcp.unified.devtools_port }}) in one container.
     image: {{ pwmcp.unified.image.registry }}/{{ pwmcp.unified.image.namespace }}/{{ pwmcp.unified.image.name }}:{{ pwmcp.unified.image.tag }}
     container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}
     # No command override — supervisord is the ENTRYPOINT; it manages both services.
@@ -32,10 +34,15 @@ services:
       #   short service alias (compose DNS)     : {{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}
       #   full container name (Docker hostname) : {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}
       PWMCP_MCP_ALLOWED_HOSTS: "{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}{% if pwmcp.unified.extra_args %},{{ pwmcp.unified.extra_args }}{% endif %}"
+      # Parallel allowed-hosts for chrome-devtools-mcp (port 8932 via mcp-proxy).
+      # mcp-proxy does not have native --allowed-hosts; this var is for documentation
+      # and external-mode Traefik rules.
+      PWMCP_DEVTOOLS_ALLOWED_HOSTS: "{{ pwmcp.unified.name }}:{{ pwmcp.unified.devtools_port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.devtools_port }}{% if pwmcp.unified.devtools_extra_args %},{{ pwmcp.unified.devtools_extra_args }}{% endif %}"
     {% if pwmcp.unified.expose %}
     ports:
       - "127.0.0.1:{{ pwmcp.unified.host_ws_port }}:{{ pwmcp.unified.ws_port }}"
       - "127.0.0.1:{{ pwmcp.unified.host_mcp_port }}:{{ pwmcp.unified.mcp_port }}"
+      - "127.0.0.1:{{ pwmcp.unified.host_devtools_port }}:{{ pwmcp.unified.devtools_port }}"
     {% endif %}
     networks:
       - default
@@ -56,9 +63,15 @@ services:
       - traefik.http.routers.{{ pwmcp.unified.name }}-ws.entrypoints=websecure
       - traefik.http.routers.{{ pwmcp.unified.name }}-ws.tls=true
       - traefik.http.services.{{ pwmcp.unified.name }}-ws.loadbalancer.server.port={{ pwmcp.unified.ws_port }}
+      # DevTools MCP endpoint: route by hostname to port {{ pwmcp.unified.devtools_port }}
+      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.rule=Host(`{{ pwmcp.external.unified_host }}`) && PathPrefix(`/mcp`) && PathPrefix(`/devtools`)
+      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.entrypoints=websecure
+      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.tls=true
+      - traefik.http.services.{{ pwmcp.unified.name }}-devtools.loadbalancer.server.port={{ pwmcp.unified.devtools_port }}
       {% if pwmcp.external.guard_enabled %}
       - traefik.http.routers.{{ pwmcp.unified.name }}-mcp.middlewares={{ pwmcp.unified.name }}-guard
       - traefik.http.routers.{{ pwmcp.unified.name }}-ws.middlewares={{ pwmcp.unified.name }}-guard
+      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.middlewares={{ pwmcp.unified.name }}-guard
       - traefik.http.middlewares.{{ pwmcp.unified.name }}-guard.basicauth.users={{ pwmcp.external.guard_user }}:{{ pwmcp.external.guard_htpasswd | replace("$", "$$") }}
       {% endif %}
     {% endif %}

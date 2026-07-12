@@ -37,7 +37,7 @@ In external mode, access is controlled by:
 
 The guard htpasswd hash is stored in `ciu.toml.j2` (the operator's override file, not committed to shared repos with the hash in plaintext). Use `ASK_EXTERNAL:PWMCP_GUARD_HTPASSWD` as a placeholder when generating env; supply the real hash in the deployed override.
 
-The guard covers both the Playwright WebSocket route and the MCP HTTP route independently.
+The guard covers the Playwright WebSocket route, the @playwright/mcp HTTP route, and the chrome-devtools-mcp HTTP route independently.
 
 ## Credential Hygiene
 
@@ -57,4 +57,28 @@ external mode:
   [project network] — same as internal
   [ingress_public]  — tls-edge/Traefik is the only external entry point
   Traefik enforces TLS + basicAuth before forwarding
+
+## chrome-devtools-mcp Host-Allowlist Gap
+
+`chrome-devtools-mcp` is served via `mcp-proxy` (the stdio→streamable-HTTP proxy package).
+Unlike `@playwright/mcp`, which provides built-in DNS-rebinding protection via the
+`--allowed-hosts` flag, **`mcp-proxy` does not have a native `Host` header allowlist**.
+
+This means the `PWMCP_DEVTOOLS_ALLOWED_HOSTS` environment variable injected by the ciu
+compose template is **informational only** — it is not enforced by the mcp-proxy server
+itself. The gap is mitigated by:
+
+1. **Internal mode**: the Docker network boundary is the access control. Only sibling
+   containers on the same network can reach port 8932.
+2. **External mode**: requests pass through Traefik (tls-edge), which enforces TLS +
+   basicAuth before reaching mcp-proxy. The Traefik route is configured to accept the
+   known hostname only.
+
+If stronger Host-header enforcement is required for internal-mode deployments, options
+include:
+- Placing a reverse proxy (e.g. another Traefik or nginx instance) in front of mcp-proxy
+  that validates the Host header before forwarding.
+- Replacing mcp-proxy with a future proxy that supports `--allowed-hosts` natively.
+- Using mcp-proxy's API key mechanism (`--apiKey` / `MCP_PROXY_API_KEY`) as an
+  additional bearer-token check for trusted callers.
 ```

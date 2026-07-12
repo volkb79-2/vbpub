@@ -6,29 +6,32 @@ PWMCP is a thin ciu packaging of the **official Microsoft Playwright unified ima
 
 ## Unified Image (Only Supported Mode)
 
-The unified image bundles **both** the Playwright `run-server` and `@playwright/mcp` into a **single container** under a **single hostname**. This is the only deployment mode.
+The unified image bundles the Playwright `run-server`, `@playwright/mcp`, and `chrome-devtools-mcp` into a **single container** under a **single hostname**. This is the only deployment mode.
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Project Docker network (e.g. myproject-dev)                        │
-│                                                                     │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │  pwmcp  (unified image: ghcr.io/volkb79-2/pwmcp:<version>)  │  │
-│  │                                                              │  │
-│  │  ┌─────────────────────────┐  ┌──────────────────────────┐  │  │
-│  │  │  playwright run-server  │  │  @playwright/mcp         │  │  │
-│  │  │  (supervisord program)  │  │  (supervisord program)   │  │  │
-│  │  │                         │  │                          │  │  │
-│  │  │  :3000 WebSocket        │  │  :8931 HTTP/SSE at /mcp  │  │  │
-│  │  └─────────────────────────┘  └──────────────────────────┘  │  │
-│  │            supervisord (PID 1 — reaps, forwards SIGTERM)      │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-│          ▲                                ▲                          │
-│          │ ws://pwmcp:3000/               │ http://pwmcp:8931/mcp    │
-│  ┌───────┴────────────────────────────────┴─────────────────────┐   │
-│  │  test runner / devcontainer / AI client (sibling container)   │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│  Project Docker network (e.g. myproject-dev)                                        │
+│                                                                                     │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐  │
+│  │  pwmcp  (unified image: ghcr.io/volkb79-2/pwmcp:<version>)                  │  │
+│  │                                                                              │  │
+│  │  ┌─────────────────────────┐  ┌──────────────────────────┐  ┌──────────────┐ │  │
+│  │  │  playwright run-server  │  │  @playwright/mcp         │  │  mcp-proxy   │ │  │
+│  │  │  (supervisord program)  │  │  (supervisord program)   │  │  (supervisor)│ │  │
+│  │  │                         │  │                          │  │  ↓           │ │  │
+│  │  │  :3000 WebSocket        │  │  :8931 HTTP/SSE at /mcp  │  │  chrome-     │ │  │
+│  │  │                         │  │                          │  │  devtools-   │ │  │
+│  │  │                         │  │                          │  │  mcp :8932   │ │  │
+│  │  └─────────────────────────┘  └──────────────────────────┘  └──────────────┘ │  │
+│  │            supervisord (PID 1 — reaps, forwards SIGTERM)                      │  │
+│  └──────────────────────────────────────────────────────────────────────────────┘  │
+│          ▲                                ▲                    ▲                     │
+│          │ ws://pwmcp:3000/               │               http://pwmcp:8932/mcp      │
+│          │                                │ http://pwmcp:8931/mcp                    │
+│  ┌───────┴────────────────────────────────┴────────────────────────────────────┐   │
+│  │  test runner / devcontainer / AI client / profiling tool (sibling container) │   │
+│  └───────────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Unified Image: `ghcr.io/volkb79-2/pwmcp:<version>`
@@ -36,12 +39,14 @@ The unified image bundles **both** the Playwright `run-server` and `@playwright/
 - **Base image**: `mcr.microsoft.com/playwright:v<playwright_version>-<image_distro>` (ships browser binaries)
 - **Layers added**:
   - `playwright@<playwright_version>` JS package installed globally via npm (needed for `run-server`)
-  - `@playwright/mcp@0.0.76` installed globally via npm (MCP HTTP/SSE server; exposes `playwright-mcp` bin; pinned for reproducibility — track upstream when bumping PLAYWRIGHT_VERSION)
+  - `@playwright/mcp@<version>` installed globally via npm (MCP HTTP/SSE server; pinned for reproducibility)
+  - `chrome-devtools-mcp@1.5.0` installed globally via npm (CDP-based MCP server; stdio-only, wrapped by mcp-proxy)
+  - `mcp-proxy@6.5.2` installed globally via npm (stdio→streamable-HTTP proxy for chrome-devtools-mcp)
   - `supervisor` (apt) — PID-1 process manager
   - `/etc/pwmcp-chromium-path.txt` — baked chromium binary path (see below)
-- **Process manager**: `supervisord --nodaemon` as PID 1; manages two programs (`run-server`, `mcp`)
+- **Process manager**: `supervisord --nodaemon` as PID 1; manages three programs (`run-server`, `mcp`, `devtools-mcp`)
 - **Entrypoint**: `/usr/local/bin/pwmcp-entrypoint.sh` — exports `PWMCP_CHROMIUM_PATH` then execs supervisord
-- **Ports**: 3000 (WebSocket) + 8931 (HTTP/SSE)
+- **Ports**: 3000 (WebSocket) + 8931 (HTTP/SSE @playwright/mcp) + 8932 (HTTP/SSE chrome-devtools-mcp via mcp-proxy)
 - **Built from**: `containers/pwmcp/Dockerfile`
 
 ### Chromium Path Resolution
@@ -50,17 +55,25 @@ The unified image bundles **both** the Playwright `run-server` and `@playwright/
 
 1. During the Docker build, `playwright.chromium.executablePath()` from the globally-installed `playwright@<version>` package is written to `/etc/pwmcp-chromium-path.txt`.
 2. The entrypoint script exports this as `PWMCP_CHROMIUM_PATH`.
-3. `supervisord.conf` passes `--executable-path %(ENV_PWMCP_CHROMIUM_PATH)s` to `playwright-mcp`, bypassing the bundled chromium discovery.
+3. `supervisord.conf` passes `--executable-path %(ENV_PWMCP_CHROMIUM_PATH)s` to **both** `playwright-mcp` and `chrome-devtools-mcp` (via mcp-proxy), bypassing the bundled chromium discovery.
 
 ### Allowed Hosts
 
-`@playwright/mcp` has DNS-rebinding protection. The unified container receives `PWMCP_MCP_ALLOWED_HOSTS` from the ciu compose template:
+`@playwright/mcp` has DNS-rebinding protection via its `--allowed-hosts` flag. The unified container receives `PWMCP_MCP_ALLOWED_HOSTS` from the ciu compose template:
 
 ```
 PWMCP_MCP_ALLOWED_HOSTS=pwmcp:8931,<project>-<env>-pwmcp:8931
 ```
 
 `supervisord.conf` passes `--allowed-hosts %(ENV_PWMCP_MCP_ALLOWED_HOSTS)s` to `playwright-mcp`. The image default (for standalone use) is `localhost:8931,127.0.0.1:8931`.
+
+`chrome-devtools-mcp` (via `mcp-proxy`) does **not** have a native `--allowed-hosts` flag. A parallel `PWMCP_DEVTOOLS_ALLOWED_HOSTS` env var is injected by the ciu compose template for documentation and external-mode Traefik rules:
+
+```
+PWMCP_DEVTOOLS_ALLOWED_HOSTS=pwmcp:8932,<project>-<env>-pwmcp:8932
+```
+
+See [SECURITY.md](SECURITY.md) for the host-allowlist gap analysis.
 
 ## Release Model
 
@@ -83,6 +96,11 @@ sha256sum -c pwmcp-<version>.tar.xz.sha256
 - Determines the playwright JS package version baked into the image
 - Consumers must `pip install playwright==<playwright_version>` to match the wire protocol
 
+Additional npm package pins (see `docker-bake.hcl`):
+- `@playwright/mcp@<version>` — MCP HTTP/SSE server
+- `chrome-devtools-mcp@1.5.0` — CDP profiling MCP server
+- `mcp-proxy@6.5.2` — stdio→streamable-HTTP proxy
+
 ## Deployment Modes
 
 **internal** (default): service on the project Docker network only, plain HTTP, no auth. The network boundary is the access control.
@@ -92,8 +110,10 @@ PWMCP **joins the project network it is placed in** via the ciu `deploy.network_
 ```
 ws://pwmcp:3000/                          # short alias (compose service name)
 ws://<project>-<env>-pwmcp:3000/          # full container name
-http://pwmcp:8931/mcp                     # MCP short alias
-http://<project>-<env>-pwmcp:8931/mcp     # MCP full container name
+http://pwmcp:8931/mcp                     # @playwright/mcp short alias
+http://<project>-<env>-pwmcp:8931/mcp     # @playwright/mcp full container name
+http://pwmcp:8932/mcp                     # chrome-devtools-mcp short alias
+http://<project>-<env>-pwmcp:8932/mcp     # chrome-devtools-mcp full container name
 ```
 
 **external** (`pwmcp.external.enabled = true`): the service also joins the `ingress_public` network and gains Traefik labels for TLS termination and optional basicAuth guard via tls-edge.

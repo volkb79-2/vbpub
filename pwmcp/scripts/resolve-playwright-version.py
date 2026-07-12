@@ -187,12 +187,30 @@ def update_bake_hcl(
     path.write_text(content, encoding="utf-8")
 
 
+# Non-auto-updated package pins: read from bake file to preserve current values.
+_BAKE_VAR_PATTERN = re.compile(
+    r'variable\s+"([A-Z_]+)"\s*\{[^}]*default\s*=\s*"([^"]+)"', re.DOTALL
+)
+
+
+def _read_bake_var(name: str) -> str:
+    """Read a single variable default from docker-bake.hcl."""
+    content = BAKE_FILE.read_text(encoding="utf-8")
+    m = re.search(r'variable\s+"' + re.escape(name) + r'"\s*\{[^}]*default\s*=\s*"([^"]+)"', content, re.DOTALL)
+    if not m:
+        fail(f"{name} not found in {BAKE_FILE.name}")
+    return m.group(1)
+
+
 def write_release_vars(
     npm_version: str,
     pypi_version: str,
     distro: str,
     pwmcp_version_npm: str,
     pwmcp_version_pypi: str,
+    playwrght_mcp_version: str,
+    chrome_devtools_mcp_version: str,
+    mcp_proxy_version: str,
 ) -> None:
     # PLAYWRIGHT_VERSION is kept as alias for PLAYWRIGHT_VERSION_PYPI for backwards compat
     # (consumed by _vars.py which checks for PLAYWRIGHT_VERSION key).
@@ -201,6 +219,9 @@ def write_release_vars(
         f"PLAYWRIGHT_VERSION_PYPI={pypi_version}\n"
         f"PLAYWRIGHT_VERSION={pypi_version}\n"
         f"PLAYWRIGHT_DISTRO={distro}\n"
+        f"PLAYWRIGHT_MCP_VERSION={playwrght_mcp_version}\n"
+        f"CHROME_DEVTOOLS_MCP_VERSION={chrome_devtools_mcp_version}\n"
+        f"MCP_PROXY_VERSION={mcp_proxy_version}\n"
         f"PWMCP_VERSION_NPM={pwmcp_version_npm}\n"
         f"PWMCP_VERSION_PYPI={pwmcp_version_pypi}\n"
         f"PWMCP_VERSION={pwmcp_version_pypi}\n"
@@ -246,7 +267,11 @@ def main() -> None:
     update_bake_hcl(BAKE_FILE, npm_version, pypi_version, pwmcp_version_npm, pwmcp_version_pypi)
 
     log(f"Writing {RELEASE_VARS_FILE.name}...")
-    write_release_vars(npm_version, pypi_version, distro, pwmcp_version_npm, pwmcp_version_pypi)
+    pw_mcp_ver = _read_bake_var("PLAYWRIGHT_MCP_VERSION")
+    cdt_mcp_ver = _read_bake_var("CHROME_DEVTOOLS_MCP_VERSION")
+    mcp_proxy_ver = _read_bake_var("MCP_PROXY_VERSION")
+    write_release_vars(npm_version, pypi_version, distro, pwmcp_version_npm, pwmcp_version_pypi,
+                       pw_mcp_ver, cdt_mcp_ver, mcp_proxy_ver)
 
     log(
         f"Done. PLAYWRIGHT_VERSION_NPM={npm_version}  PLAYWRIGHT_VERSION_PYPI={pypi_version}  "
