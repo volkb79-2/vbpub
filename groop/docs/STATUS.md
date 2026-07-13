@@ -337,7 +337,7 @@ Evidence commits for this wave:
 |---|---|---|
 | P60 free-form `--metrics` field/family list | review-fixes `ee8132c`; review report `handoff/reports/P60-REVIEW.md` | `df13253` (`--no-ff`) |
 | P62 steady-state `--window auto` | review report `handoff/reports/P62-REVIEW.md` | `36f60a2` (`--no-ff`) |
-| P58 daemon MCP frontend (v4) | `handoff/reports/P58-REPORT.md` | current branch (awaiting review) |
+| P58 daemon MCP frontend (v4) | review-fixes `7bf8389`; review report `handoff/reports/P58-REVIEW.md` | `72e9c61` (`--no-ff`) |
 
 Live CLI verification from `main` (not tests — the real commands):
 
@@ -351,6 +351,12 @@ groop report REC --json --window auto                 -> samples=3 ram.p50=100.0
 groop report REC --json --window auto --assert busy:ram:max<=101  -> exit 0 (binds to the DETECTED window)
 groop report REC --json --window all  --assert busy:ram:max<=101  -> exit 1 (breach, correctly)
 two consecutive --window auto invocations             -> byte-identical stdout
+
+groop mcp serve --socket /tmp/no-daemon.sock          -> exit 1, "could not reach a compatible daemon"
+                                                         (P58 startup hello probe, no traceback)
+groop mcp serve            [groop[mcp] NOT installed]  -> exit 2, "install it with: pip install 'groop[mcp]'"
+groop --once --json        [groop[mcp] NOT installed]  -> exit 0 (optional extra stays off the ordinary path)
+pytest groop/tests         [groop[mcp] NOT installed]  -> collects and runs; the MCP module skips
 ```
 
 Also validated (earlier waves):
