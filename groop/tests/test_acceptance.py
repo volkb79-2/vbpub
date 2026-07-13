@@ -662,3 +662,215 @@ def test_subprocess_tui_smoke_invalid_timeout() -> None:
         "--timeout-s", "-1",
     )
     assert cp.returncode == 2
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for MCP smoke (no live daemon required)
+# ---------------------------------------------------------------------------
+
+
+MCP_SMOKE_ARGS = [str(PYTHON), "-m", "groop.acceptance", "mcp-smoke"]
+
+
+def _run_mcp_smoke(*extra_args: str, **kwargs) -> subprocess.CompletedProcess:
+    """Run the MCP smoke harness as a subprocess and return the result."""
+    cmd = [*MCP_SMOKE_ARGS, *extra_args]
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        env=ENV,
+        **kwargs,
+    )
+
+
+def test_format_mcp_smoke_json_outputs_known_fixture() -> None:
+    """``format_mcp_smoke_json`` produces deterministic JSON with all pass checks."""
+    from groop.acceptance import Check, McpSmokeResult, format_mcp_smoke_json
+
+    result = McpSmokeResult(
+        ok=True,
+        version="0.1.0",
+        python="3.14.6",
+        platform="Linux-x86_64",
+        extra_installed=True,
+        checks=[
+            Check(name="hello", ok=True, message="Tool discovery passed", details={"found_count": 4}),
+            Check(name="tool_discovery", ok=True, message="All 4 tools present"),
+            Check(name="tool_calls", ok=True, message="All 4 tools succeeded"),
+            Check(name="response_cap", ok=True, message="Largest response: 51200 bytes", details={"max_response_bytes": 51200}),
+            Check(name="daemon_loss", ok=True, message="Typed error returned"),
+            Check(name="invalid_selector", ok=True, message="Typed error returned"),
+        ],
+        max_response_bytes=51200,
+        measurements={"wall_s": 1.23, "user_s": 0.45, "sys_s": 0.12, "rss_kb": 80000.0},
+    )
+    json_str = format_mcp_smoke_json(result, pretty=True)
+    obj = json.loads(json_str)
+    assert obj["ok"] is True
+    assert obj["version"] == "0.1.0"
+    assert obj["extra_installed"] is True
+    assert obj["max_response_bytes"] == 51200
+    assert len(obj["checks"]) == 6
+    assert obj["checks"][0]["name"] == "hello"
+    assert obj["checks"][0]["ok"] is True
+    for check in obj["checks"]:
+        assert "name" in check
+        assert "ok" in check
+        assert "message" in check
+        assert "details" in check
+    assert "wall_s" in obj["measurements"]
+
+
+def test_format_mcp_smoke_json_absent_extra() -> None:
+    """Extra-absent skip shape is distinguishable in JSON."""
+    from groop.acceptance import McpSmokeResult, format_mcp_smoke_json
+
+    result = McpSmokeResult(
+        ok=True,
+        version="0.1.0",
+        python="3.14.6",
+        platform="Linux-x86_64",
+        extra_installed=False,
+        checks=[],
+        max_response_bytes=None,
+        measurements={"wall_s": 0.01, "user_s": 0.0, "sys_s": 0.0, "rss_kb": 10000.0},
+    )
+    json_str = format_mcp_smoke_json(result, pretty=True)
+    obj = json.loads(json_str)
+    assert obj["ok"] is True
+    assert obj["extra_installed"] is False
+    assert obj["max_response_bytes"] is None
+    assert obj["checks"] == []
+
+
+def test_format_mcp_smoke_text_mixed_pass_fail() -> None:
+    """Text output shows [OK] and [FAIL] markers for mixed pass/fail checks."""
+    from groop.acceptance import Check, McpSmokeResult, format_mcp_smoke_text
+
+    result = McpSmokeResult(
+        ok=False,
+        version="0.1.0",
+        python="3.14.6",
+        platform="Linux-x86_64",
+        extra_installed=True,
+        checks=[
+            Check(name="hello", ok=True, message="Tool discovery passed"),
+            Check(name="tool_discovery", ok=True, message="All 4 tools present"),
+            Check(name="tool_calls", ok=False, message="One or more tool calls failed"),
+        ],
+        max_response_bytes=None,
+        measurements={"wall_s": 0.5, "user_s": 0.1, "sys_s": 0.02, "rss_kb": 20000.0},
+    )
+    text = format_mcp_smoke_text(result)
+    assert "[OK] hello:" in text
+    assert "[OK] tool_discovery:" in text
+    assert "[FAIL] tool_calls:" in text
+    assert "SOME CHECKS FAILED" in text
+    assert "wall:" in text
+    assert "user:" in text
+    assert "sys:" in text
+    assert "RSS:" in text
+
+
+def test_format_mcp_smoke_text_absent_extra() -> None:
+    """Extra-absent path yields skipped, exit 0, and is textually distinguishable."""
+    from groop.acceptance import McpSmokeResult, format_mcp_smoke_text
+
+    result = McpSmokeResult(
+        ok=True,
+        version="0.1.0",
+        python="3.14.6",
+        platform="Linux-x86_64",
+        extra_installed=False,
+        checks=[],
+        max_response_bytes=None,
+        measurements={"wall_s": 0.01, "user_s": 0.0, "sys_s": 0.0, "rss_kb": 10000.0},
+    )
+    text = format_mcp_smoke_text(result)
+    assert "SKIPPED" in text
+    assert "groop[mcp] extra not installed" in text
+    assert "ALL CHECKS PASSED" in text
+    assert "[OK]" not in text
+    assert "[FAIL]" not in text
+
+
+def test_build_parser_wires_mcp_smoke() -> None:
+    """``build_parser`` wires ``mcp-smoke`` with ``--socket``, ``--timeout-s``, ``--json``, ``--pretty-json``."""
+    from groop.acceptance import build_parser
+
+    parser = build_parser()
+    # Try parsing mcp-smoke with each flag shape
+    args = parser.parse_args(["mcp-smoke"])
+    assert args.command == "mcp-smoke"
+
+    args = parser.parse_args(["mcp-smoke", "--socket", "/tmp/test.sock", "--timeout-s", "10", "--json"])
+    assert args.socket == Path("/tmp/test.sock")
+    assert args.timeout_s == 10.0
+    assert args.json is True
+
+    args = parser.parse_args(["mcp-smoke", "--pretty-json"])
+    assert args.pretty_json is True
+
+
+def test_build_parser_rejects_negative_timeout() -> None:
+    """``mcp-smoke`` with negative --timeout-s exits 2 via acceptance_main."""
+    from groop.acceptance import acceptance_main
+
+    rc = acceptance_main(["mcp-smoke", "--timeout-s", "-1"])
+    assert rc == 2
+
+
+def test_terminate_process_handles_none() -> None:
+    """``_terminate_process`` handles None process gracefully."""
+    from groop.acceptance import _terminate_process
+
+    _terminate_process(None)  # must not raise
+
+
+def test_terminate_process_already_dead() -> None:
+    """``_terminate_process`` handles a process that has already exited."""
+    import subprocess
+    from groop.acceptance import _terminate_process
+
+    proc = subprocess.Popen([PYTHON, "-c", ""])
+    proc.wait()
+    _terminate_process(proc)  # must not raise
+
+
+def test_mcp_smoke_no_daemon_yields_checks() -> None:
+    """``run_mcp_smoke`` with a non-existent socket yields a failing hello check, no crash."""
+    from groop.acceptance import run_mcp_smoke
+
+    result = run_mcp_smoke(socket_path=Path("/nonexistent/socket.sock"), timeout_s=0.5)
+    assert result.extra_installed is True or result.extra_installed is False
+    if result.extra_installed:
+        assert any(
+            c.name == "hello" and c.ok is False
+            for c in result.checks
+        ) or any(
+            c.name == "daemon_start" and c.ok is False
+            for c in result.checks
+        )
+
+
+def test_subprocess_mcp_smoke_json_no_daemon() -> None:
+    """``mcp-smoke --json`` with a non-existent socket exits 1 (checks fail)."""
+    cp = _run_mcp_smoke(
+        "--socket", "/nonexistent/mcp-smoke-test.sock",
+        "--timeout-s", "1",
+        "--json",
+    )
+    # Should exit 1 because no daemon is available
+    assert cp.returncode == 1
+    obj = json.loads(cp.stdout)
+    assert "checks" in obj
+    assert obj["ok"] is False
+
+
+def test_subprocess_mcp_smoke_invalid_timeout() -> None:
+    """Invalid --timeout-s exits 2."""
+    cp = _run_mcp_smoke(
+        "--timeout-s", "-1",
+    )
+    assert cp.returncode == 2

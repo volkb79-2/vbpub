@@ -196,6 +196,20 @@ Selectors use exact EntityKeys or P57's docker name/prefix resolver. Use
 `--redact-above public|operational|sensitive` to replace values above the
 chosen P52 sensitivity with a typed `__redacted__` marker.
 
+### Acceptance leg (P75)
+
+Run the live-daemon MCP acceptance harness:
+
+```bash
+python -m groop.acceptance mcp-smoke [--socket PATH] [--timeout-s FLOAT] [--json] [--pretty-json]
+```
+
+The leg starts a real daemon on a temp socket, connects `groop mcp serve` via
+the MCP SDK's stdio client, drives all four tools, records the largest response
+size, verifies daemon-loss yields a typed error, and verifies a bogus selector
+yields `invalid-selector`. Rootless, self-contained lifecycle, skip when the
+`groop[mcp]` extra is absent.
+
 ## Background Producer
 
 On `groop daemon serve` the daemon creates a `FrameBroker` with the live

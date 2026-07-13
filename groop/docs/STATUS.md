@@ -227,6 +227,13 @@ core workflows, not yet production-certified.**
   selector. ``COMPACT_GROUPS`` is now a literal set of the original three
   families (``mem_usage``, ``psi``, ``refault``) so these new families do not
   expand compact mode. 20 focused tests covering all acceptance oracles.
+- MCP live-daemon acceptance leg (P75): ``python -m groop.acceptance mcp-smoke``
+  starts a real daemon on a temp socket, connects ``groop mcp serve`` via the MCP
+  SDK's stdio client, drives all four MCP tools, records the largest response size
+  (vs. the 4 MiB cap), verifies daemon-loss yields typed ``daemon-unavailable``,
+  and verifies a bogus selector yields ``invalid-selector``. Rootless,
+  self-contained lifecycle, distinguishable skip when ``groop[mcp]`` extra is
+  absent. 10 focused unit tests + the live leg itself.
 - Structured systemd `memory.high` set-property governance (P49): preview and
   execution through the P46 action kernel with structured unit/property/value
   inputs, `memory.high`-only validation with max/byte overflow/range checks,

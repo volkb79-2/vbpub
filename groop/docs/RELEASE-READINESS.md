@@ -66,6 +66,7 @@ the named measurement gate.
 | 12 | v2 action/inspection gating | Partial | Disabled hotkeys; admin preview/audit; P45 gated bounded Docker/cgroup content reads; P46 production-root execution kernel with strict start/stop/restart validation, fixed absolute argv, mandatory fixed-path audit, bounded runner, and injected test fixtures | Remaining v2 actions and inspect-files journal/follow execution are non-claims |
 | 13 | Live docker-group non-root smoke | Partial | P33/P35/P38 rootless fixture harnesses | Live non-root tree, Docker JOIN, populated metrics, and disabled mutations |
 | 14 | BPF/DAMON default measurement gates | Conditional | BPF and active DAMON remain disabled by default | Run the relevant overhead plan before changing either default |
+| 15 | MCP live-daemon acceptance | Pass | P75 `mcp-smoke` leg: rootless live daemon + MCP server over real stdio client, 6 checks (hello, tool discovery, tool calls, response cap, daemon loss, invalid selector), max response size recorded | None |
 
 ## Rootless Automated Checks
 
@@ -143,6 +144,18 @@ Record the artifact names and pipx version. Run from a directory without a
 groop config file as well, proving documented defaults load without error.
 This pipx check is required by spec item 11; a normal venv install is useful
 but is not a substitute.
+
+### MCP acceptance (P75)
+
+```bash
+PYTHONPATH=groop/src python3 -m groop.acceptance mcp-smoke --json --pretty
+```
+
+Require exit zero, `extra_installed: true`, and all six MCP checks passing
+(hello, tool_discovery, tool_calls, response_cap, daemon_loss, invalid_selector).
+The response cap check records the largest observed response size. When the
+`groop[mcp]` extra is absent the leg reports a distinguishable skip (exit 0,
+`extra_installed: false`, `checks: []`).
 
 ## Live-Host Evidence Templates
 
