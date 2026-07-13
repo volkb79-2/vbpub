@@ -156,6 +156,60 @@ untouched). **Unprobed as of 2026-07-12** — run the probe in the script header
 before relying on it; if it works, flash-tier implementers gain Claude Code's
 worktree/task tooling and this matrix gets a new best row.
 
+## 5.2 Resumability and session-limit handling
+
+Every dispatch must be started so it can be resumed in place after an
+early/forced termination, not restarted from scratch — this applies to
+implementer, self-review, and frontier-review dispatches alike.
+
+**At dispatch time, capture the resume handle immediately:**
+- **claude** (`-p` background invocations): the session's transcript file
+  appears at `~/.claude/projects/<slugified-cwd>/<session-id>.jsonl`. Right
+  after launch, find the newest `.jsonl` in that project dir (`ls -t`) and
+  record its session id against the task in the slot table. Resume with
+  `claude --resume <session-id> --model <model> --effort <effort> -p "<continue prompt>"`.
+- **codex**: worktree-scoped — no id capture needed. Resume with
+  `codex exec --sandbox danger-full-access --cd <worktree> resume --last "<continue prompt>"`
+  (or `resume <session_id> "..."` if `--last` is ambiguous because more than
+  one codex session ran in that worktree).
+- **reasonix**: directory-scoped — resume with
+  `reasonix run -c -dir <worktree> "<continue prompt>"` (`-c` picks up the
+  most recent session in that dir).
+- **opencode**: no session-id/resume mechanism confirmed as of 2026-07-13 —
+  treat a killed opencode dispatch as needing a fresh redispatch until this
+  is verified otherwise.
+
+Record the captured handle (session id / worktree path) in the slot table
+alongside the pid so a mid-run kill can be resumed without re-deriving it
+from logs under time pressure.
+
+**Detecting a session-limit kill.** Treat a dispatch as service-limited, not
+merely failed, when its log/exit shows a limit-shaped signal rather than a
+task-shaped failure: an immediate or early exit with no LOG/REPORT/commit
+progress, plus wording like "session limit," "usage limit," "rate limit
+exceeded," "quota," or an auth/plan-limit error surfaced by the CLI itself
+(distinct from a test failure or an agent-authored escalation). When in
+doubt, re-check the log for the exact phrase before concluding a limit was
+hit — do not infer it from a bare non-zero exit alone.
+
+**On detecting a session-limit hit for a given service (claude or codex,
+tracked independently):**
+1. Immediately pause that **service** — do not start any *other* new
+   dispatch on it (implementer, self-review, or frontier) — while it is
+   plausible the limit is still in effect.
+2. Leave already-captured resume handles for that service's in-flight/killed
+   tasks recorded; do not discard them.
+3. Report the pause to the user and wait for their explicit notice that the
+   limit has reset/been raised before dispatching anything new on that
+   service. Do not poll or guess a reset time.
+4. **Services that are not limited stay fully usable** — flash-high/flash-max
+   routes (reasonix/opencode DeepSeek) and any other unaffected CLI continue
+   dispatching normally; a pause on one service is never a pause on the
+   pipeline as a whole.
+5. Once the user confirms the limit is cleared, resume the paused service's
+   killed tasks first (using their captured handles), then resume normal
+   dispatch on it.
+
 ## 6. Review protocol (two passes, one gate)
 
 Three strategies were weighed against P51/P52 evidence:

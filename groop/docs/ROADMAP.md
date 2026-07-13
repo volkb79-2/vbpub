@@ -219,6 +219,29 @@ Three packages, one per carve source, per controller-workflow-v2 §8:
   standing "launch the product with the new UI" priority, which §8 ranks above
   both other sources). = P69c above.
 
+### P81-P83 - Carved 2026-07-13 (post-P67/P75/P76 carve cycle)
+
+Three packages, blended per controller-workflow-v2 §8:
+
+- **P81 - Redaction: one enforcement point, no bypass** (*review-derived*, from
+  P67's pass #2). Two read frontends -- the P67 HTTP gateway and the P58 MCP
+  server -- now enforce the same `Sensitivity` ceiling independently, in two
+  different marker dialects, and both redact only `metrics` while `findings[]`
+  ships free-text messages that can carry the very values the ceiling exists to
+  hide. Latent today (no current rule interpolates a sensitive value into a
+  message), which is luck and a small rule set rather than a boundary.
+- **P82 - Repair the red gate on main** (*review-derived*, hygiene).
+  `test_zst_without_zstandard_exits_2` fails on unmodified `main` because the
+  venv *has* `zstandard`, so the "without zstandard" branch cannot be reached.
+  Every package in this wave had to hand-prove the failure was pre-existing
+  before its own gate could be read -- the precise erosion that lets a real
+  regression hide behind a familiar failure.
+- **P83 - CIU stack grouping in the TUI** (*roadmap-driven*, the Optional-plugins
+  bucket residue named directly above). P76 shipped detection only; this is its
+  first real consumer. The carve names the numeric-phase trap explicitly, because
+  P76's own grouping "oracles" grouped and sorted with lambdas defined inside the
+  tests and so passed against an implementation that did not exist.
+
 Pragmatic estimate from the current state: a shippable v1/v1.5 release
 candidate needs **0 remaining packages** after P41 plus live-host acceptance
 evidence. Implementing the broader roadmap end-to-end still looks like **9-13
