@@ -27,6 +27,9 @@ class ActionKind(str, enum.Enum):
     SYSTEMD_STOP = "systemd-stop"
     SYSTEMD_START = "systemd-start"
     SYSTEMD_SET_PROPERTY = "systemd-set-property"
+    DOCKER_KILL = "docker-kill"
+    SYSTEMD_KILL = "systemd-kill"
+    DOCKER_UPDATE = "docker-update"
 
 
 # These are deliberately fixed.  The execution kernel never consults PATH and
@@ -84,6 +87,21 @@ def _systemd_set_property(target: str) -> list[str]:
     return [SYSTEMCTL_EXECUTABLE, "set-property", target]
 
 
+def _docker_kill(target: str) -> list[str]:
+    """Basic docker kill argv builder (signal added by kill_ops.py)."""
+    return [DOCKER_EXECUTABLE, "kill", target]
+
+
+def _systemd_kill(target: str) -> list[str]:
+    """Basic systemctl kill argv builder (signal added by kill_ops.py)."""
+    return [SYSTEMCTL_EXECUTABLE, "kill", target]
+
+
+def _docker_update(target: str) -> list[str]:
+    """Basic docker update argv builder (resources added by update_ops.py)."""
+    return [DOCKER_EXECUTABLE, "update", target]
+
+
 # ---------------------------------------------------------------------------
 # Catalog entry
 # ---------------------------------------------------------------------------
@@ -95,8 +113,8 @@ class CatalogEntry(NamedTuple):
 
 
 # ---------------------------------------------------------------------------
-# Execution allowlist — only start, stop, restart kinds are executable.
-# systemd-set-property, update, kill, and unknown kinds are excluded.
+# Execution allowlist — start, stop, restart, kill, and update kinds
+# are executable.  systemd-set-property is excluded (uses governance.py).
 # ---------------------------------------------------------------------------
 
 EXECUTION_ALLOWLIST: frozenset[ActionKind] = frozenset({
@@ -106,6 +124,9 @@ EXECUTION_ALLOWLIST: frozenset[ActionKind] = frozenset({
     ActionKind.SYSTEMD_RESTART,
     ActionKind.SYSTEMD_STOP,
     ActionKind.SYSTEMD_START,
+    ActionKind.DOCKER_KILL,
+    ActionKind.SYSTEMD_KILL,
+    ActionKind.DOCKER_UPDATE,
 })
 
 
@@ -141,6 +162,8 @@ def validate_target(kind: ActionKind, target: str) -> None:
             ActionKind.DOCKER_START,
             ActionKind.DOCKER_STOP,
             ActionKind.DOCKER_RESTART,
+            ActionKind.DOCKER_KILL,
+            ActionKind.DOCKER_UPDATE,
         }:
             if _DOCKER_ID_RE.fullmatch(target) or _DOCKER_NAME_RE.fullmatch(target):
                 return
@@ -149,6 +172,7 @@ def validate_target(kind: ActionKind, target: str) -> None:
             ActionKind.SYSTEMD_START,
             ActionKind.SYSTEMD_STOP,
             ActionKind.SYSTEMD_RESTART,
+            ActionKind.SYSTEMD_KILL,
         }:
             if ".." in target or not _SYSTEMD_UNIT_RE.fullmatch(target):
                 raise ValueError(f"invalid systemd unit name: {target!r}")
@@ -164,6 +188,20 @@ def validate_target(kind: ActionKind, target: str) -> None:
             raise ValueError(f"systemd set-property target must not contain whitespace: {target!r}")
         if not _SYSTEMD_UNIT_RE.fullmatch(target):
             raise ValueError(f"invalid systemd unit name for set-property: {target!r}")
+
+    if kind in {ActionKind.DOCKER_KILL, ActionKind.DOCKER_UPDATE}:
+        # Docker kill and update: target is a container identifier.
+        if any(char.isspace() for char in target):
+            raise ValueError(f"target must not contain whitespace: {target!r}")
+        if not (_DOCKER_ID_RE.fullmatch(target) or _DOCKER_NAME_RE.fullmatch(target)):
+            raise ValueError(f"invalid Docker container identifier: {target!r}")
+
+    if kind is ActionKind.SYSTEMD_KILL:
+        # Systemd kill: target is a unit name.
+        if any(char.isspace() for char in target):
+            raise ValueError(f"target must not contain whitespace: {target!r}")
+        if ".." in target or not _SYSTEMD_UNIT_RE.fullmatch(target):
+            raise ValueError(f"invalid systemd unit name: {target!r}")
 
 
 ACTION_CATALOG: dict[ActionKind, CatalogEntry] = {
@@ -201,5 +239,20 @@ ACTION_CATALOG: dict[ActionKind, CatalogEntry] = {
         ActionKind.SYSTEMD_SET_PROPERTY,
         _systemd_set_property,
         "Preview systemctl set-property for memory.high governance (use administrative preview instead).",
+    ),
+    ActionKind.DOCKER_KILL: CatalogEntry(
+        ActionKind.DOCKER_KILL,
+        _docker_kill,
+        "Send a signal to a Docker container (use --signal).",
+    ),
+    ActionKind.SYSTEMD_KILL: CatalogEntry(
+        ActionKind.SYSTEMD_KILL,
+        _systemd_kill,
+        "Send a signal to a systemd unit (use --signal).",
+    ),
+    ActionKind.DOCKER_UPDATE: CatalogEntry(
+        ActionKind.DOCKER_UPDATE,
+        _docker_update,
+        "Update Docker container resource limits (use --memory/--cpus).",
     ),
 }
