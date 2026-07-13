@@ -1062,7 +1062,10 @@ def _main_report(argv: list[str]) -> int:
     except OSError as exc:
         print(f"error reading {args.file}: {exc.strerror}", file=sys.stderr)
         return 2
-    except Exception as exc:
+    except Exception:
+        # Backstop only: every known damaged-input failure is typed above and
+        # names its failure class. Reaching here means an unclassified fault,
+        # so it still must not put a traceback across the CLI boundary.
         print(f"unexpected error reading {args.file}", file=sys.stderr)
         return 2
 

@@ -23,6 +23,71 @@ def _sniff_magic(path: Path) -> bytes:
         return fh.read(len(_ZSTD_MAGIC))
 
 
+class _ZstdStreamReader(io.RawIOBase):
+    """Streaming zstd reader that fails closed on a truncated frame.
+
+    ``ZstdDecompressor.stream_reader`` reports a truncated frame as a plain
+    EOF rather than an error, so a half-written recording decompresses to a
+    prefix and reads back as a shorter but perfectly valid recording. For a
+    diagnostic tool that is worse than a crash: the report is believable and
+    wrong.
+
+    A ``decompressobj`` decodes exactly one frame, sets ``eof`` when that frame
+    terminates cleanly, and hands the remaining bytes back as ``unused_data``.
+    Chaining one per frame therefore reads an append-mode recording (each
+    ``RecordWriter`` session appends its own frame) while still being able to
+    tell "the frame ended" from "the input ran out". ``read_across_frames=True``
+    cannot be used instead: it leaves ``eof`` permanently False, which is the
+    signal this class exists to read.
+    """
+
+    def __init__(self, binary, path: Path, chunk_size: int = 65536) -> None:
+        self._binary = binary
+        self._path = path
+        self._chunk_size = chunk_size
+        self._decompressor = None
+        self._carry = b""
+        self._pending = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def _pump(self) -> bytes:
+        """Decompress the next chunk; b"" only at a clean end of the last frame."""
+        while True:
+            if self._carry:
+                data, self._carry = self._carry, b""
+            else:
+                data = self._binary.read(self._chunk_size)
+            if not data:
+                if self._decompressor is not None and not self._decompressor.eof:
+                    raise ValueError(f"corrupt or truncated compressed recording: {self._path}")
+                return b""
+            if self._decompressor is None or self._decompressor.eof:
+                self._decompressor = _zstd.ZstdDecompressor().decompressobj()
+            chunk = self._decompressor.decompress(data)
+            if self._decompressor.eof and self._decompressor.unused_data:
+                self._carry = self._decompressor.unused_data
+            if chunk:
+                return chunk
+
+    def readinto(self, buf) -> int:
+        if not self._pending:
+            self._pending = self._pump()
+            if not self._pending:
+                return 0
+        count = min(len(buf), len(self._pending))
+        buf[:count] = self._pending[:count]
+        self._pending = self._pending[count:]
+        return count
+
+    def close(self) -> None:
+        try:
+            self._binary.close()
+        finally:
+            super().close()
+
+
 def _open_text(path: Path) -> TextIO:
     magic = _sniff_magic(path)
     binary = path.open("rb")
@@ -30,15 +95,8 @@ def _open_text(path: Path) -> TextIO:
         if _zstd is None:
             binary.close()
             raise RuntimeError(f"cannot read compressed recording without zstandard: {path}")
-        try:
-            decompressor = _zstd.ZstdDecompressor()
-            stream = decompressor.stream_reader(binary)
-        except Exception as exc:
-            if _ZstdError is not None and isinstance(exc, _ZstdError):
-                binary.close()
-                raise ValueError(f"corrupt compressed recording: {path}") from None
-            raise
-        return io.TextIOWrapper(stream, encoding="utf-8", newline="")
+        raw = _ZstdStreamReader(binary, path)
+        return io.TextIOWrapper(io.BufferedReader(raw), encoding="utf-8", newline="")
     return io.TextIOWrapper(binary, encoding="utf-8", newline="")
 
 

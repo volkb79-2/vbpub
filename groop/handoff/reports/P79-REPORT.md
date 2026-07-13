@@ -115,19 +115,75 @@ $ git diff --check HEAD
 (no output)
 ```
 
+## Review Pass #2 — findings and fixes
+
+Pass #2 rebuilt the environment the handoff actually specifies (the package venv
+**with `zstandard` 0.25.0`**). The implementer's venv does **not** have the extra,
+so oracles 1/2/5 all `skip`ped there and the entire zstd surface — the headline
+defect — was never once executed. Re-run in the gate env, the package was **red**:
+it swapped main's failing test for a new failing test of its own.
+
+The pass-#1 claims "Deviations from Handoff: **None**" and "Contract 6: Done —
+0 failed" were therefore artifacts of testing in the one environment where the
+bug is invisible. That is the same disease P79 was carved to cure.
+
+Four defects found and fixed:
+
+1. **Truncated recordings silently produced a partial report (exit 0).** Oracle 2's
+   own test failed in the gate env. `stream_reader` reports a truncated zstd frame
+   as a clean EOF rather than an error, so `groop report` decoded the surviving
+   prefix and reported on it. On a multi-block recording a half-file leaves ~786KB
+   of perfectly valid frames behind the cut, so the operator gets a *believable and
+   wrong* report — worse than the traceback it replaced. Fixed with
+   `_ZstdStreamReader`, which chains one `decompressobj` per frame and uses `eof`
+   to tell "the frame ended" from "the input ran out". (`read_across_frames=True`
+   cannot be used: it pins `eof` to False.) The pass-#1 "Known Gaps" entry
+   misdiagnosed this as a trailing-partial-line issue; the stream decodes to
+   nothing or to a prefix, never to a partial line.
+2. **Oracles 1 and 2 were hollow.** `_main_report`'s new `except Exception`
+   backstop turns a raw `ZstdError` into exit 2 with no traceback, so both oracles
+   passed with the *entire* reader fix reverted — exactly the blanket the handoff's
+   Oracle 1 spec warned about by name. Hardened to assert the typed message.
+3. **`test_zst_without_zstandard_exits_2` was hollow via its own tmp path.** It
+   asserted the bare token `"zstandard"` in stderr, and pytest names `tmp_path`
+   after the test (`test_zst_without_zstandard_exi...`), so the token arrived via
+   the echoed **file path**, not the message. It passed with the missing-dependency
+   branch deleted. Oracle 5's negative form passed only because its dir name
+   truncates one character short of the token. All such assertions now compare the
+   full typed phrase (`MISSING_ZSTD_MSG` / `CORRUPT_MSG` / `NO_FRAMES_MSG`).
+4. **An empty/frameless recording still reported `{"profiles":[]}` at exit 0.** A
+   report always reads a completed file, so zero frames is damaged input, not a
+   quiet one. `compute_report_with_selection` now raises. (A *window* that selects
+   zero frames is a different thing and still reports normally.)
+
+A header check was considered and **rejected**: the header is optional in practice —
+the canonical fixture `gstammtisch-once.jsonl` begins with a `frame` and no fixture
+carries a header — so requiring one would break the happy path and oracle 6.
+
+**Mutation evidence (every guard is load-bearing).** Reverting `reader.py` to main
+turns 6 tests red (2 of which passed against it before this pass). Disabling only
+the `eof` truncation guard turns oracles 2/2b/2d red. Deleting the
+missing-`zstandard` branch turns `test_zst_without_zstandard_exits_2` and oracle 5
+red — which is also **P82's oracle 3**. Removing the no-frames guard turns oracle
+2c red.
+
+New oracles: **2b** (truncated multi-block never reports a partial profile), **2c**
+(empty recording is not an empty success), **2d** (append-mode `.zst` — several
+concatenated frames from resumed `RecordWriter` sessions — reads whole, and a
+cut-off appended frame still exits 2).
+
+Happy path is **byte-identical to main**, plain and zstd-compressed.
+
 ## Known Gaps / Open Items
 
-- The `RecordReader.iter_frames()` method silently skips the last line if it is
-  an incomplete JSON line (no trailing newline). This is intentional for
-  concurrent live-reading scenarios but means a file truncated mid-line produces
-  an empty profile with exit 0 rather than exit 2. The oracle 3 test
-  (`test_oracle_3_corrupt_jsonl_body`) places the corrupt JSON in the **middle**
-  of the file to avoid this path. A future package could make truncated trailing
-  lines an error for `groop report` (which always reads completed files) without
-  changing `RecordReader` itself.
-- `groop --replay` and `groop snapshot inspect` error paths were not changed
-  (per the handoff's out-of-scope declaration), but they share the same
-  `RecordReader`. If a user replays a corrupt recording, it will now produce a
-  `ValueError` from the reader, which the replay CLI path should handle
-  gracefully. This is an improvement over the previous traceback but was not
-  explicitly tested in this package.
+- The zstd-specific oracles still `skip` when the extra is absent — you cannot
+  exercise zstd decompression without zstd. The skips are honest and named, but
+  they mean a dev venv without the extra silently under-tests this path. The
+  durable fix is to pin the extra into the gate environment; `pyproject.toml`
+  declares no test/dev extra at all today, and that is out of scope for both P79
+  ("do not make `zstandard` a hard dependency") and P82 ("no dependency changes").
+  Carved as **P84**.
+- `groop --replay` and `groop snapshot inspect` share the same `RecordReader` and
+  therefore inherit the truncation guard (verified: a truncated recording now
+  raises `ValueError` instead of decoding a prefix). Their CLI error paths were not
+  otherwise changed, per the handoff's out-of-scope declaration.
