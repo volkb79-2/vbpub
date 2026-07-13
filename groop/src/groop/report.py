@@ -5,10 +5,18 @@ per-entity or per-slice percentiles (p50/p95/max) for a fixed set of gauges,
 plus derived rates from embedded raw counters when the recorded live rate is
 ``None``.
 
+Threshold gating (P61): assertions consume the already-computed
+``GroupProfile`` list — they NEVER recompute or re-read frames.  Pass
+``--assert GROUP:METRIC:STAT<=VALUE`` (or ``>=``) to get exit code 1 when a
+bound is breached.
+
 Module-level exports (the public API):
     compute_profile — main computation entry point
     report_to_jsonable — deterministic JSON serialization
     parse_window_spec — window string → (start_ts, end_ts) or None
+    evaluate_assertions — threshold gating helper (pure, no argparse dependency)
+    Assertion — assertion spec dataclass
+    AssertionResult — single assertion evaluation result
 """
 
 from __future__ import annotations
@@ -55,6 +63,219 @@ def _is_rate_metric(name: str) -> bool:
     as described in the P54 handoff.
     """
     return name.endswith(_RATE_SUFFIXES)
+
+
+# ---------------------------------------------------------------------------
+# Assertion types (P61 — threshold gating)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Assertion:
+    """One parsed ``--assert GROUP:METRIC:STAT<=VALUE`` specification.
+
+    Attributes:
+        group: Profile key to match (entity key or slice key).
+        metric: Gauge or rate metric name present in the report.
+        stat: Percentile/statistic — ``"p50"``, ``"p95"``, or ``"max"``.
+        op: Comparison operator — ``"<="`` or ``">="``.
+        value: Threshold value (float).
+    """
+    group: str
+    metric: str
+    stat: str
+    op: str
+    value: float
+
+
+_VALID_STATS = frozenset({"p50", "p95", "max"})
+_VALID_OPS = frozenset({"<=", ">="})
+
+_ASSERT_PATTERN = re.compile(
+    r"^"
+    r"(?P<group>[^:]*)"
+    r":(?P<metric>[^:]+)"
+    r":(?P<stat>p50|p95|max)"
+    r"(?P<op><=|>=)"
+    r"(?P<value>[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)"
+    r"$"
+)
+
+
+def parse_assert_spec(spec: str) -> Assertion:
+    """Parse a single ``--assert`` string into an ``Assertion``.
+
+    Raises ``ValueError`` with a descriptive message on malformed input,
+    unknown stat, or non-finite/NaN-like value.
+    """
+    m = _ASSERT_PATTERN.match(spec.strip())
+    if m is None:
+        raise ValueError(
+            f"invalid --assert spec {spec!r} — expected "
+            f"GROUP:METRIC:STAT<=VALUE or GROUP:METRIC:STAT>=VALUE"
+        )
+    group = m.group("group")
+    metric = m.group("metric")
+    stat = m.group("stat")
+    op = m.group("op")
+    value_str = m.group("value")
+
+    try:
+        value = float(value_str)
+    except ValueError:
+        raise ValueError(
+            f"invalid --assert value {value_str!r} — not a number"
+        )
+
+    if math.isnan(value) or math.isinf(value):
+        raise ValueError(
+            f"invalid --assert value {value_str!r} — must be finite"
+        )
+
+    return Assertion(group=group, metric=metric, stat=stat, op=op, value=value)
+
+
+@dataclass
+class AssertionResult:
+    """Outcome of evaluating one assertion against the report.
+
+    Serialized under the ``"assertions"`` top-level key in the JSON output.
+    """
+    group: str
+    metric: str
+    stat: str
+    op: str
+    threshold: float
+    actual: float | None
+    passed: bool
+    reason: str | None = None
+
+
+def _find_profile_metric(
+    profile: GroupProfile,
+    metric: str,
+) -> dict[str, float | None] | None:
+    """Look up *metric* (gauge or rate) in *profile*.
+
+    Returns the ``{p50, p95, max}`` dict, or ``None`` if the metric is absent.
+    """
+    if metric in profile.gauges:
+        return profile.gauges[metric]
+    if metric in profile.rates:
+        return profile.rates[metric]
+    return None
+
+
+def evaluate_assertions(
+    profiles: list[GroupProfile],
+    assertions: list[Assertion],
+) -> list[AssertionResult]:
+    """Evaluate threshold assertions against the already-computed profiles.
+
+    This is a pure function with no file or argparse I/O — independently
+    unit-testable.
+
+    Args:
+        profiles: The ``GroupProfile`` list from ``compute_profile``.
+        assertions: Parsed ``Assertion`` specs.
+
+    Returns:
+        Sorted list of ``AssertionResult`` (sorted by group, metric, stat, op
+        for deterministic output).
+    """
+    results: list[AssertionResult] = []
+
+    # Build a lookup from group key -> GroupProfile
+    profile_map: dict[str, GroupProfile] = {}
+    for p in profiles:
+        profile_map[p.key] = p
+
+    for a in assertions:
+        profile = profile_map.get(a.group)
+
+        # Absent group -> breach
+        if profile is None:
+            results.append(AssertionResult(
+                group=a.group,
+                metric=a.metric,
+                stat=a.stat,
+                op=a.op,
+                threshold=a.value,
+                actual=None,
+                passed=False,
+                reason="group not present in report",
+            ))
+            continue
+
+        metric_result = _find_profile_metric(profile, a.metric)
+
+        # Absent metric -> breach
+        if metric_result is None:
+            results.append(AssertionResult(
+                group=a.group,
+                metric=a.metric,
+                stat=a.stat,
+                op=a.op,
+                threshold=a.value,
+                actual=None,
+                passed=False,
+                reason="metric not present in report",
+            ))
+            continue
+
+        actual = metric_result.get(a.stat)
+
+        # Null stat -> breach  (single-frame rate, degenerate window)
+        if actual is None:
+            results.append(AssertionResult(
+                group=a.group,
+                metric=a.metric,
+                stat=a.stat,
+                op=a.op,
+                threshold=a.value,
+                actual=None,
+                passed=False,
+                reason="stat is null (e.g. single-frame rate, degenerate window)",
+            ))
+            continue
+
+        if a.op == "<=":
+            passed = actual <= a.value
+        else:
+            passed = actual >= a.value
+
+        results.append(AssertionResult(
+            group=a.group,
+            metric=a.metric,
+            stat=a.stat,
+            op=a.op,
+            threshold=a.value,
+            actual=actual,
+            passed=passed,
+            reason=None if passed else f"breached: {actual} {a.op} {a.value}",
+        ))
+
+    # Deterministic sort: group, metric, stat, op
+    results.sort(key=lambda r: (r.group, r.metric, r.stat, r.op))
+    return results
+
+
+def assertion_result_to_jsonable(r: AssertionResult) -> dict[str, object]:
+    """Convert one ``AssertionResult`` to a JSON-compatible dict.
+
+    Floats are rounded to 6 decimal places for byte-determinism.
+    """
+    d: dict[str, object] = {
+        "group": r.group,
+        "metric": r.metric,
+        "stat": r.stat,
+        "op": r.op,
+        "threshold": _round_float(r.threshold),
+        "actual": _round_float(r.actual) if r.actual is not None else None,
+        "passed": r.passed,
+    }
+    if r.reason is not None:
+        d["reason"] = r.reason
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -397,22 +618,35 @@ def profile_to_jsonable(profile: GroupProfile) -> dict[str, Any]:
     return d
 
 
-def report_to_jsonable(profiles: list[GroupProfile]) -> dict[str, Any]:
+def report_to_jsonable(
+    profiles: list[GroupProfile],
+    assertions: list[AssertionResult] | None = None,
+) -> dict[str, Any]:
     """Convert the full report to a deterministic JSON dict.
 
     Keys are sorted, floats are rounded to 6 decimal places, and output is
     suitable for ``json.dumps(..., sort_keys=True)``.
+
+    If *assertions* is provided, an ``"assertions"`` block is included.
     """
-    return {
+    d: dict[str, Any] = {
         "profiles": [profile_to_jsonable(p) for p in profiles],
         "metrics_version": 1,
     }
+    if assertions is not None:
+        d["assertions"] = [
+            assertion_result_to_jsonable(r) for r in assertions
+        ]
+    return d
 
 
-def format_report(profiles: list[GroupProfile]) -> str:
+def format_report(
+    profiles: list[GroupProfile],
+    assertions: list[AssertionResult] | None = None,
+) -> str:
     """Return a deterministic JSON string for the full report."""
     return json.dumps(
-        report_to_jsonable(profiles),
+        report_to_jsonable(profiles, assertions=assertions),
         sort_keys=True,
         separators=(",", ":"),
     )

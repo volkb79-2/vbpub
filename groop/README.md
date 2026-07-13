@@ -72,6 +72,23 @@ roll entities up under their owning ``*.slice`` ancestor. This is the
 steady-state profile input for the gstammtisch stack measurement program
 (``scripts/gstammtisch-guide/plan-stack-resource-tuning.md`` PKG-3).
 
+Use ``--assert GROUP:METRIC:STAT<=VALUE`` (or ``>=``) repeatably to add
+threshold gating: exit code 1 when a bound is breached (genuine gate
+failure), exit code 2 on malformed specs. Absent groups/metrics and null
+STATs are breaches. Assertion outcomes appear under a top-level
+``"assertions"`` key in the JSON output.
+
+::
+
+    # Assert that root entity RAM max <= 4 GB
+    groop report recording.jsonl --json --assert ':ram:max<=4294967296'
+    echo $?   # 0 when satisfied, 1 when breached
+
+    # Multiple asserts ANDed together
+    groop report recording.jsonl --json \
+      --assert 'system.slice:ram:max<=8589934592' \
+      --assert 'system.slice:psi_mem_some_avg10:p95<=5.0'
+
 Useful feature hotkeys in the TUI:
 
 - `F5` / `t` toggles tree vs. container view.
