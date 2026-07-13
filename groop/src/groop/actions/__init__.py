@@ -9,11 +9,19 @@ environment, bounded timeout, durable audit, and returns typed results.
 Preview is available for all catalog kinds.  Execution is restricted to the
 EXECUTION_ALLOWLIST (start/stop/restart only).
 
+P49 adds structured ``memory.high`` set-property governance through
+``SetPropertyPlan`` / ``build_set_property_preview()``, reusing the P46
+execution gates with additional stale detection.
+
 Exposed public API:
     ActionKind — enum of allowed action kinds.
     ActionPlan — immutable preview plan (kind, target, argv, description).
     build_preview(kind, target) — build an ActionPlan (raises for unknown kinds).
-    build_admin_preview(kind, target, admin=False) — gated version.
+    build_admin_preview(kind, target, admin=False) — gated version (P49:
+        also accepts property_name, property_value for systemd-set-property).
+    SetPropertyPlan — structured preview plan for memory.high governance.
+    build_set_property_preview(unit, property_name, property_value, ...) —
+        build a SetPropertyPlan.
     AuditLog — append-only JSONL audit logger.
     ExecuteResult — typed execution result.
     execute_plan(kind, target, *, admin, confirm, audit_path, runner, clock) —
@@ -30,9 +38,17 @@ from groop.actions.catalog import (
     SYSTEMCTL_EXECUTABLE,
     ActionKind,
 )
+from groop.actions.governance import (
+    SetPropertyPlan,
+    build_set_property_preview,
+    render_set_property_preview,
+    set_property_plan_to_jsonable,
+    validate_memory_high_value,
+    validate_memory_high_unit,
+)
 from groop.actions.preview import ActionPlan, build_preview, build_admin_preview
 from groop.actions.audit import AuditLog, AuditRecord
-from groop.actions.execute import AuditIdentity, ExecuteResult, execute_plan, validate_target
+from groop.actions.execute import AuditIdentity, ExecuteResult, execute_plan, execute_set_property, validate_target
 
 __all__ = [
     "ActionKind",
@@ -43,10 +59,17 @@ __all__ = [
     "ActionPlan",
     "build_preview",
     "build_admin_preview",
+    "SetPropertyPlan",
+    "build_set_property_preview",
+    "render_set_property_preview",
+    "set_property_plan_to_jsonable",
+    "validate_memory_high_value",
+    "validate_memory_high_unit",
     "AuditLog",
     "AuditRecord",
     "ExecuteResult",
     "AuditIdentity",
     "execute_plan",
+    "execute_set_property",
     "validate_target",
 ]

@@ -567,6 +567,9 @@ def parse_action_args(argv: list[str]) -> argparse.Namespace:
     preview.add_argument("--admin", action="store_true", help="enable admin preview mode")
     preview.add_argument("--json", action="store_true", help="emit JSON preview instead of text")
     preview.add_argument("--audit-log", type=Path, default=None, help="path to append-only JSONL audit log")
+    preview.add_argument("--property", type=str, default=None, help="property for systemd-set-property (e.g. memory.high)")
+    preview.add_argument("--value", type=str, default=None, help="value for systemd-set-property (e.g. max or byte count)")
+    preview.add_argument("--mode", type=str, default=None, help="persistence mode: runtime|persistent (default: auto-detect)")
     execute = subparsers.add_parser("execute", help="execute a gated admin action (start/stop/restart only)")
     execute.add_argument("--kind", type=str, required=True, help="action kind, e.g. docker-restart, systemd-stop")
     execute.add_argument("--target", type=str, default=None, help="action target, e.g. container name or systemd unit")
@@ -575,12 +578,20 @@ def parse_action_args(argv: list[str]) -> argparse.Namespace:
     execute.add_argument("--confirm", type=str, default="", help="type EXECUTE to confirm the action")
     execute.add_argument("--json", action="store_true", help="emit JSON result instead of text")
     execute.add_argument("--timeout", type=float, default=30.0, help="subprocess timeout in seconds (default 30.0)")
+    execute.add_argument("--property", type=str, default=None, help="property for systemd-set-property (e.g. memory.high)")
+    execute.add_argument("--value", type=str, default=None, help="value for systemd-set-property (e.g. max or byte count)")
+    execute.add_argument("--mode", type=str, default=None, help="persistence mode: runtime|persistent (default: auto-detect)")
     return parser.parse_args(argv)
 
 
 def _main_action(argv: list[str]) -> int:
     from groop.actions.audit import AuditLog
     from groop.actions.execute import ExecuteResult, execute_plan
+    from groop.actions.governance import (
+        SetPropertyPlan,
+        render_set_property_preview,
+        set_property_plan_to_jsonable,
+    )
     from groop.actions.preview import ActionPlan, DisabledPlan, build_admin_preview
 
     args = parse_action_args(argv)
@@ -595,7 +606,13 @@ def _main_action(argv: list[str]) -> int:
 
     if args.command == "preview":
         try:
-            result = build_admin_preview(args.kind, resolved_target, admin=args.admin)
+            result = build_admin_preview(
+                args.kind, resolved_target,
+                admin=args.admin,
+                property_name=args.property,
+                property_value=args.value,
+                persistence=args.mode,
+            )
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2
@@ -603,6 +620,26 @@ def _main_action(argv: list[str]) -> int:
         if isinstance(result, DisabledPlan):
             print(result.message, file=sys.stderr)
             return 2
+
+        if isinstance(result, SetPropertyPlan):
+            if args.audit_log is not None:
+                AuditLog(args.audit_log).record(
+                    kind=result.kind,
+                    target=result.unit,
+                    argv=result.argv,
+                    admin=args.admin,
+                )
+            if args.json:
+                print(
+                    json.dumps(
+                        set_property_plan_to_jsonable(result),
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(render_set_property_preview(result))
+            return 0
+
         if not isinstance(result, ActionPlan):
             print("unexpected action preview result", file=sys.stderr)
             return 2
@@ -638,13 +675,25 @@ def _main_action(argv: list[str]) -> int:
         return 0
 
     if args.command == "execute":
-        result = execute_plan(
-            args.kind,
-            resolved_target,
-            admin=args.admin,
-            confirm=args.confirm,
-            timeout=args.timeout,
-        )
+        if args.kind == "systemd-set-property" and args.property is not None and args.value is not None:
+            from groop.actions.governance import execute_set_property
+            result = execute_set_property(
+                resolved_target,
+                property_name=args.property,
+                property_value=args.value,
+                persistence=args.mode,
+                admin=args.admin,
+                confirm=args.confirm,
+                timeout=args.timeout,
+            )
+        else:
+            result = execute_plan(
+                args.kind,
+                resolved_target,
+                admin=args.admin,
+                confirm=args.confirm,
+                timeout=args.timeout,
+            )
 
         if args.json:
             from groop.actions.execute import result_to_jsonable

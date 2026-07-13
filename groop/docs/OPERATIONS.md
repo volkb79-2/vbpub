@@ -255,6 +255,19 @@ PageUp/PageDown for scrolling, and all function keys.
 - Tests inject a fake runner and prove every gate without real Docker or
   systemd calls. Post-audit failure is reported as a typed partial/audit
   failure while preserving the action outcome.
+- `groop action preview --kind systemd-set-property --target UNIT --property
+  memory.high --value max|BYTES --admin [--mode runtime|persistent] [--json]`
+  generates a structured set-property plan and validates the property/value
+  against `memory.high`-only rules with overflow/range checks. `--mode runtime`
+  is the default for `.scope` units; `--mode persistent` is the default for
+  service/slice units. Stale detection re-reads the current `memory.high` value
+  before execution and refuses if it has changed since planning.
+- `groop action execute --kind systemd-set-property --target UNIT --property
+  memory.high --value 2G --admin --confirm EXECUTE [--mode persistent]`
+  executes the validated plan through the P46 kernel with durable audit. The
+  full gate chain (root, `--admin`, typed confirmation, bounded timeout,
+  immutable plan, fail-closed audit) applies identically to Docker/systemd
+  start/stop/restart actions.
 
 ## Compressed Swap Interpretation
 

@@ -63,7 +63,7 @@ flowchart TD
     P21 --> P46[P46 Admin execution kernel]
     P44 --> P47[P47 Daemon component health]:::done
     P45 --> P48[P48 Journald snapshot]
-    P46 --> P49[P49 memory.high governance]
+    P46 --> P49[P49 memory.high governance]:::done
     P43 -.-> P50[P50 Mouse table interactions :done:]
     P16 --> P51[P51 Daemon sampling fanout]
     P47 --> P52[P52 Versioned read API]
@@ -129,7 +129,7 @@ Handoff: `handoff/P45-inspect-files-bounded-content.md`.
 
 Status: done. Executes only Docker/systemd start, stop, and restart plans
 behind root, `--admin`, typed confirmation, strict target validation, durable
-audit, argv-only execution, and bounded results. Kill, update, set-property,
+audit, argv-only execution, and bounded results. Kill, update,
 TUI actions, and daemon RPCs remain later packages.
 
 Handoff: `handoff/P46-admin-action-execution-kernel.md`.
@@ -142,8 +142,9 @@ protocol operation, and ``groop daemon health [--json]`` CLI. Models truthful,
 bounded collector/BPF/paddr transitions and strictly validates `health-v1`.
 See ``handoff/reports/P47-REPORT.md``.
 
-P48 and P49 remain queued: bounded journald snapshot and structured
-``memory.high`` governance through systemd, respectively. Handoffs:
+P48 remains queued: bounded journald snapshot.
+P49 is **done**: structured ``memory.high`` governance through systemd.
+Handoffs:
 `handoff/P48-inspect-files-journal-snapshot.md`,
 `handoff/P49-systemd-memory-governance.md`.
 
