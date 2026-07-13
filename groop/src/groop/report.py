@@ -87,9 +87,6 @@ class Assertion:
     value: float
 
 
-_VALID_STATS = frozenset({"p50", "p95", "max"})
-_VALID_OPS = frozenset({"<=", ">="})
-
 _ASSERT_PATTERN = re.compile(
     r"^"
     r"(?P<group>[^:]*)"

@@ -12,7 +12,7 @@
 ## Timeline
 
 ```text
-2026-07-18 (session)
+2026-07-13 (session)
 - Action: Read handoff P61-report-threshold-gating.md, CONTRACTS.md, README.md,
   cli.py, report.py, tests/test_report.py, docs/OPERATIONS.md
 - Commands: read_file, explore
@@ -21,7 +21,7 @@
   GroupProfile, report_to_jsonable, parse_report_args, _main_report)
 - Follow-up: Implement assertion types and evaluate_assertions helper
 
-2026-07-18
+2026-07-13
 - Action: Added Assertion and AssertionResult dataclasses, parse_assert_spec
   regex parser, evaluate_assertions pure function, assertion_result_to_jsonable,
   and _find_profile_metric helper to report.py
@@ -31,7 +31,7 @@
   to accept optional assertions list.
 - Follow-up: Add CLI --assert argument
 
-2026-07-18
+2026-07-13
 - Action: Added --assert action="append" to parse_report_args in cli.py. Wired
   assertion parsing and evaluation into _main_report. Exit 0 on all pass, exit 1
   on any breach, exit 2 on malformed specs.
@@ -43,9 +43,9 @@
   - Malformed spec → exit 2
 - Follow-up: Write tests
 
-2026-07-18
+2026-07-13
 - Action: Added comprehensive test classes: TestParseAssertSpec (12 tests),
-  TestEvaluateAssertions (10 tests), TestReportAssertionCLI (11 tests).
+  TestEvaluateAssertions (11 tests), TestReportAssertionCLI (11 tests).
   Updated imports in test_report.py.
 - Commands: py_compile test_report.py; pytest test_report.py -v
 - Files changed: groop/tests/test_report.py
@@ -53,14 +53,14 @@
   CLI tests verify exact exit codes 0, 1, and 2.
 - Follow-up: Run full suite gates
 
-2026-07-18
+2026-07-13
 - Action: Updated documentation in README.md and OPERATIONS.md with threshold-
   gating examples.
 - Commands: (edits)
 - Files changed: groop/README.md, groop/docs/OPERATIONS.md
 - Result: Docs updated with --assert usage and examples.
 
-2026-07-18
+2026-07-13
 - Action: Ran full test suite: 1037 passed, 2 skipped (zstandard, expected).
   py_compile on changed files passed. git diff --check passed.
 - Commands: timeout 300 python3 -m pytest groop/tests/ -q

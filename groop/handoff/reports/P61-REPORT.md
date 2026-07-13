@@ -14,7 +14,7 @@ gstammtisch stack measurement program.
 |------|--------|
 | `groop/src/groop/report.py` | Added `Assertion`, `AssertionResult` dataclasses; `parse_assert_spec` regex parser; `evaluate_assertions` pure function; `assertion_result_to_jsonable`; `_find_profile_metric` helper. Updated `report_to_jsonable` and `format_report` to accept optional assertions list. Updated module docstring. |
 | `groop/src/groop/cli.py` | Added `--assert` (action="append", dest="assert_specs") to `parse_report_args`. Wired parsing and evaluation into `_main_report` with exit codes: 0 = all pass, 1 = breach, 2 = malformed/unknown. |
-| `groop/tests/test_report.py` | Added `TestParseAssertSpec` (12 tests), `TestEvaluateAssertions` (10 tests), `TestReportAssertionCLI` (11 tests). Updated imports. |
+| `groop/tests/test_report.py` | Added `TestParseAssertSpec` (12 tests), `TestEvaluateAssertions` (11 tests), `TestReportAssertionCLI` (11 tests). Updated imports. |
 | `groop/README.md` | Added `--assert` documentation and examples to the `groop report` paragraph. |
 | `groop/docs/OPERATIONS.md` | Added threshold-gating examples to the report command section. |
 | `groop/handoff/reports/P61-LOG.md` | New — work log. |
@@ -83,7 +83,7 @@ PYTHONPATH=groop/src python3 -m pytest groop/tests/test_report.py -v --tb=short
 → 91 passed in 2.96s
 ```
 
-All 91 tests pass — 77 pre-existing + 12 `TestParseAssertSpec` + 10
+All 91 tests pass — 57 pre-existing + 12 `TestParseAssertSpec` + 11
 `TestEvaluateAssertions` + 11 `TestReportAssertionCLI`.
 
 Notable CLI subprocess tests that verify exact exit codes:
