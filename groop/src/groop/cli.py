@@ -829,7 +829,7 @@ def _main_action(argv: list[str]) -> int:
 
 
 def parse_report_args(argv: list[str]) -> argparse.Namespace:
-    """Parse groop report [--window last:Ns|all] [--group-by slice|entity] --json FILE.
+    """Parse groop report [--window last:Ns|all|auto] [--group-by slice|entity] --json FILE.
 
     Also accepts repeatable ``--assert GROUP:METRIC:STAT<=VALUE`` (or ``>=``)
     for threshold gating (P61).
@@ -838,7 +838,19 @@ def parse_report_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("file", type=Path, help="JSONL or JSONL.zst recording to analyze")
     parser.add_argument(
         "--window", type=str, default="all",
-        help="time window: 'all' or 'last:Ns' (default: all)",
+        help="time window: 'all', 'last:Ns', or 'auto' (default: all)",
+    )
+    parser.add_argument(
+        "--stability-gauge", type=str, default="ram",
+        help="primary gauge for --window auto (default: ram)",
+    )
+    parser.add_argument(
+        "--stability-cov", type=str, default="0.05",
+        help="maximum population CoV for --window auto (default: 0.05)",
+    )
+    parser.add_argument(
+        "--min-frames", type=str, default="3",
+        help="minimum frames in a --window auto suffix (default: 3)",
     )
     parser.add_argument(
         "--group-by", type=str, default="entity", choices=["slice", "entity"],
@@ -866,18 +878,32 @@ def _main_report(argv: list[str]) -> int:
     from groop.report import (
         Assertion,
         AssertionResult,
-        compute_report,
+        compute_report_with_selection,
         evaluate_assertions,
         format_report,
         parse_assert_spec,
     )
 
+    try:
+        stability_cov = float(args.stability_cov)
+    except ValueError:
+        print("invalid --stability-cov — must be a finite non-negative number", file=sys.stderr)
+        return 2
+    try:
+        min_frames = int(args.min_frames)
+    except ValueError:
+        print("invalid --min-frames — must be a positive integer", file=sys.stderr)
+        return 2
+
     # Handle .zst without zstandard: catch the RuntimeError from RecordReader
     try:
-        profiles = compute_report(
+        computation = compute_report_with_selection(
             args.file,
             window_spec=args.window,
             group_by=args.group_by,
+            stability_gauge=args.stability_gauge,
+            stability_cov=stability_cov,
+            min_frames=min_frames,
         )
     except FileNotFoundError:
         print(f"file not found: {args.file}", file=sys.stderr)
@@ -893,6 +919,8 @@ def _main_report(argv: list[str]) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
+    profiles = computation.profiles
+
     # Parse and evaluate assertions (P61)
     assertions: list[Assertion] = []
     if args.assert_specs:
@@ -907,7 +935,13 @@ def _main_report(argv: list[str]) -> int:
     if assertions:
         assertion_results = evaluate_assertions(profiles, assertions)
 
-    print(format_report(profiles, assertions=assertion_results))
+    print(
+        format_report(
+            profiles,
+            assertions=assertion_results,
+            window_selection=computation.window_selection,
+        )
+    )
 
     # Exit code: 1 when any assertion is breached
     if assertion_results:
