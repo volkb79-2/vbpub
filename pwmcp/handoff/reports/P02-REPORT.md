@@ -10,7 +10,7 @@ Implemented `lighthouse-mcp` (Lighthouse audit server) as a fourth service in th
 **Rationale**: No existing npm Lighthouse MCP package met all three named criteria (pinnable, executable-path injectable, bounded results). The leading candidate `lighthouse-mcp@0.1.15` blocks RFC 1918 IPs (breaking internal Docker hostnames), pins an old Lighthouse version (12.x vs 13.x), and lacks response bounds or chrome-path injection.
 **Trade-off**: Maintenance cost of a small in-repo server vs integrating an external package that doesn't fit the handoff's requirements.
 
-## Changes (15 modified + 4 new files)
+## Changes (13 modified + 4 new files)
 
 ### Server
 - **containers/pwmcp/lighthouse-mcp/package.json**: Dependencies on `@modelcontextprotocol/sdk`, `chrome-launcher`, `lighthouse`.

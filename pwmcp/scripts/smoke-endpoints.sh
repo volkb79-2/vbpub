@@ -372,7 +372,6 @@ if [ "${1:-}" != "--quick" ]; then
         # A successful audit result has .result.content[0].text with JSON, no isError
         if echo "$body" | jq -e '(.error == null) and (.result | type == "object") and ((.result.isError // false) == false) and (.result.content[0].text | type == "string")' >/dev/null 2>&1; then
             # Verify categories are present and scores are numeric
-            local text
             text=$(echo "$body" | jq -r '.result.content[0].text')
             if echo "$text" | jq -e '.scores.performance != null and .scores.seo != null and .lighthouseVersion != null' >/dev/null 2>&1; then
                 record_pass
@@ -385,26 +384,64 @@ if [ "${1:-}" != "--quick" ]; then
     fi
 fi
 
-# 4d: Rejection of file:// URL (typed error)
+# 4d: Rejection of file:// URL (typed error — McpError InvalidParams)
 if [ "${1:-}" != "--quick" ]; then
     total=$((total + 1))
     echo -n "  CHECK ${total}: Lighthouse MCP rejects file:// URL (typed error) ... "
     body=$(mcp_session_tool_call "${LIGHTHOUSE_URL}" "${PWMCP_HOST}:${LIGHTHOUSE_PORT}" \
         lighthouse_audit '{"url":"file:///etc/passwd"}' 2>/dev/null) || {
-        # Transport failure is acceptable (error is returned as isError)
+        record_fail "file:// rejection transport failed (expected typed error)"
         body=""
     }
     if [ -n "${body:-}" ]; then
-        # Expect either JSON-RPC error OR isError=true in tool result
-        if echo "$body" | jq -e '(.error != null) or (.result.isError == true)' >/dev/null 2>&1; then
+        # Expect JSON-RPC error (InvalidParams) — the validateUrl() throws McpError
+        if echo "$body" | jq -e '.error != null' >/dev/null 2>&1; then
+            record_pass
+        elif echo "$body" | jq -e '.result.isError == true' >/dev/null 2>&1; then
             record_pass
         else
             record_fail "file:// URL was not rejected" "$(echo "$body" | jq -c . 2>/dev/null || echo "$body")"
         fi
-    else
-        # Transport error may occur if the MCP server rejects at protocol level — accept as pass
-        echo -n " (transport error — file:// rejected at protocol level) "
-        record_pass
+    fi
+fi
+
+# 4e: Rejection of data: URL (typed error)
+if [ "${1:-}" != "--quick" ]; then
+    total=$((total + 1))
+    echo -n "  CHECK ${total}: Lighthouse MCP rejects data: URL (typed error) ... "
+    body=$(mcp_session_tool_call "${LIGHTHOUSE_URL}" "${PWMCP_HOST}:${LIGHTHOUSE_PORT}" \
+        lighthouse_audit '{"url":"data:text/html,<h1>test</h1>"}' 2>/dev/null) || {
+        record_fail "data: rejection transport failed (expected typed error)"
+        body=""
+    }
+    if [ -n "${body:-}" ]; then
+        if echo "$body" | jq -e '.error != null' >/dev/null 2>&1; then
+            record_pass
+        elif echo "$body" | jq -e '.result.isError == true' >/dev/null 2>&1; then
+            record_pass
+        else
+            record_fail "data: URL was not rejected" "$(echo "$body" | jq -c . 2>/dev/null || echo "$body")"
+        fi
+    fi
+fi
+
+# 4f: Rejection of chrome:// URL (typed error)
+if [ "${1:-}" != "--quick" ]; then
+    total=$((total + 1))
+    echo -n "  CHECK ${total}: Lighthouse MCP rejects chrome:// URL (typed error) ... "
+    body=$(mcp_session_tool_call "${LIGHTHOUSE_URL}" "${PWMCP_HOST}:${LIGHTHOUSE_PORT}" \
+        lighthouse_audit '{"url":"chrome://version"}' 2>/dev/null) || {
+        record_fail "chrome:// rejection transport failed (expected typed error)"
+        body=""
+    }
+    if [ -n "${body:-}" ]; then
+        if echo "$body" | jq -e '.error != null' >/dev/null 2>&1; then
+            record_pass
+        elif echo "$body" | jq -e '.result.isError == true' >/dev/null 2>&1; then
+            record_pass
+        else
+            record_fail "chrome:// URL was not rejected" "$(echo "$body" | jq -c . 2>/dev/null || echo "$body")"
+        fi
     fi
 fi
 

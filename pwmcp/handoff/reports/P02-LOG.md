@@ -54,3 +54,17 @@ Modified files:
 - **Host-header allowlist**: Same gap as chrome-devtools-mcp — mcp-proxy does not enforce `--allowed-hosts`. The `PWMCP_LIGHTHOUSE_ALLOWED_HOSTS` env var is informational only. Mitigation: Docker network boundary (internal) + Traefik TLS+basicAuth (external). Documented in SECURITY.md.
 - **Smoke validation**: The smoke script could not be run in this environment (no Docker). The script is committed and ready for execution against a locally built + ciu-started stack.
 - **Node version compatibility**: `lighthouse@13.x` has the same Node version requirements as chrome-devtools-mcp. The P01 review verified the base image Node satisfies these.
+
+## Post-Commit Fixes (Self-Review)
+
+Issues found during self-review and fixed in follow-up commits:
+
+1. **AbortController dead code (CRITICAL)** — The timeout timer called `controller.abort()` but nothing listened; abandoned audits would never be killed. Fixed: moved the timeout into `runLighthouse()` where it kills the Chrome process if the audit exceeds the limit (line 122-125). The dead `AbortController` variables and timer/clearTimeout were removed from both tool handlers.
+
+2. **`local text` outside function** — Used `local` keyword at the script top level, which is a bash runtime error (`local: can only be used in a function`). Fixed: removed the `local` keyword, relying on the top-level scope.
+
+3. **Hollow file:// rejection test** — The transport-error branch accepted a null body as a pass, which would falsely pass even if the server was down. Fixed: the test now calls `record_fail` on transport failure, requiring a real error body.
+
+4. **Missing data: and chrome:// rejection tests** — The handoff list includes `file://`, `data:`, and `chrome://`. Only `file://` was tested. Added two additional smoke checks (4e, 4f) for `data:` and `chrome://` URLs.
+
+5. **REPORT file count wrong** — Claimed "15 modified" but `git diff --stat` shows 13 modified files. Corrected to "13 modified + 4 new files".

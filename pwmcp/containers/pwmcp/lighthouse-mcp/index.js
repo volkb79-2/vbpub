@@ -109,7 +109,7 @@ function capResponse(data) {
 }
 
 // ── Lighthouse runner ──────────────────────────────────────────────────────
-async function runLighthouse(url, categories, formFactor) {
+async function runLighthouse(url, categories, formFactor, timeoutMs) {
   const chromePath = process.env.PWMCP_CHROMIUM_PATH;
   const chromeFlags = ["--headless", "--no-sandbox", "--disable-setuid-sandbox"];
 
@@ -118,6 +118,11 @@ async function runLighthouse(url, categories, formFactor) {
     chromeFlags,
     logLevel: "error",
   });
+
+  // Timeout: kill Chrome if audit exceeds limit so no Chromium is pinned.
+  const timer = setTimeout(() => {
+    chrome.kill().catch(() => {});
+  }, timeoutMs);
 
   try {
     const options = {
@@ -150,6 +155,7 @@ async function runLighthouse(url, categories, formFactor) {
 
     return runnerResult.lhr;
   } finally {
+    clearTimeout(timer);
     try {
       await chrome.kill();
     } catch {
@@ -307,59 +313,45 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const categories = validateCategories(args?.categories);
         const formFactor = validateFormFactor(args?.form_factor);
 
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+        const lhr = await runLighthouse(url, categories, formFactor, TIMEOUT_MS);
+        const scores = extractScores(lhr, categories);
+        const opportunities = extractOpportunities(lhr, categories);
+        const finalUrl = lhr.finalDisplayedUrl || lhr.finalUrl || url;
 
-        try {
-          const lhr = await runLighthouse(url, categories, formFactor);
-          const scores = extractScores(lhr, categories);
-          const opportunities = extractOpportunities(lhr, categories);
-          const finalUrl = lhr.finalDisplayedUrl || lhr.finalUrl || url;
+        const result = capResponse({
+          url: finalUrl,
+          lighthouseVersion: lhr.lighthouseVersion,
+          fetchTime: lhr.fetchTime,
+          scores,
+          opportunities,
+        });
 
-          const result = capResponse({
-            url: finalUrl,
-            lighthouseVersion: lhr.lighthouseVersion,
-            fetchTime: lhr.fetchTime,
-            scores,
-            opportunities,
-          });
-
-          return {
-            content: [{ type: "text", text: JSON.stringify(result) }],
-          };
-        } finally {
-          clearTimeout(timer);
-        }
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+        };
       }
 
       case "lighthouse_metrics": {
         const url = validateUrl(args?.url);
         const formFactor = validateFormFactor(args?.form_factor);
 
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+        // Only need performance category for metrics
+        const lhr = await runLighthouse(url, ["performance"], formFactor, TIMEOUT_MS);
+        const metrics = extractMetrics(lhr);
+        const scores = extractScores(lhr, ["performance"]);
+        const finalUrl = lhr.finalDisplayedUrl || lhr.finalUrl || url;
 
-        try {
-          // Only need performance category for metrics
-          const lhr = await runLighthouse(url, ["performance"], formFactor);
-          const metrics = extractMetrics(lhr);
-          const scores = extractScores(lhr, ["performance"]);
-          const finalUrl = lhr.finalDisplayedUrl || lhr.finalUrl || url;
+        const result = capResponse({
+          url: finalUrl,
+          lighthouseVersion: lhr.lighthouseVersion,
+          fetchTime: lhr.fetchTime,
+          performanceScore: scores.performance ?? null,
+          metrics,
+        });
 
-          const result = capResponse({
-            url: finalUrl,
-            lighthouseVersion: lhr.lighthouseVersion,
-            fetchTime: lhr.fetchTime,
-            performanceScore: scores.performance ?? null,
-            metrics,
-          });
-
-          return {
-            content: [{ type: "text", text: JSON.stringify(result) }],
-          };
-        } finally {
-          clearTimeout(timer);
-        }
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+        };
       }
 
       default:
