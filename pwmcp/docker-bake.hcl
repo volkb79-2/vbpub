@@ -37,14 +37,20 @@ variable "MCP_PROXY_VERSION" {
   default = "6.5.2"
 }
 
+// lighthouse pin (Node API for programmatic audits).
+// Used by the vendored in-repo lighthouse-mcp server.
+variable "LIGHTHOUSE_VERSION" {
+  default = "13.4.0"
+}
+
 // pwmcp release tag for the PyPI-based build (e.g. 1.60.0-r1).
 variable "PWMCP_VERSION_PYPI" {
-  default = "1.61.0-r3"
+  default = "1.61.0-r4"
 }
 
 // pwmcp release tag for the npm-based build (e.g. 1.61.0-r1).
 variable "PWMCP_VERSION_NPM" {
-  default = "1.61.1-r2"
+  default = "1.61.1-r3"
 }
 
 variable "OCI_SOURCE" {
@@ -68,6 +74,7 @@ target "pwmcp-pypi-latest" {
     PLAYWRIGHT_MCP_VERSION      = "${PLAYWRIGHT_MCP_VERSION}"
     CHROME_DEVTOOLS_MCP_VERSION = "${CHROME_DEVTOOLS_MCP_VERSION}"
     MCP_PROXY_VERSION           = "${MCP_PROXY_VERSION}"
+    LIGHTHOUSE_VERSION          = "${LIGHTHOUSE_VERSION}"
   }
   tags = [
     "${REGISTRY}/${NAMESPACE}/pwmcp:${PWMCP_VERSION_PYPI}",
@@ -87,6 +94,7 @@ target "pwmcp-npm-latest" {
     PLAYWRIGHT_MCP_VERSION      = "${PLAYWRIGHT_MCP_VERSION}"
     CHROME_DEVTOOLS_MCP_VERSION = "${CHROME_DEVTOOLS_MCP_VERSION}"
     MCP_PROXY_VERSION           = "${MCP_PROXY_VERSION}"
+    LIGHTHOUSE_VERSION          = "${LIGHTHOUSE_VERSION}"
   }
   tags = [
     "${REGISTRY}/${NAMESPACE}/pwmcp:${PWMCP_VERSION_NPM}",

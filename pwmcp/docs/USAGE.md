@@ -17,15 +17,16 @@ pip install playwright==1.61.0   # use that exact value — do not omit the pin
 Do **not** run `playwright install` — browser binaries belong in the pwmcp container,
 not in your project.
 
-## Unified Image: Two Services, One Hostname
+## Unified Image: Three Services, One Hostname
 
-The unified image exposes both endpoints from the single service alias `pwmcp`:
+The unified image exposes three endpoints from the single service alias `pwmcp`:
 
 | Endpoint | URL | Purpose |
 |---|---|---|
 | Playwright run-server | `ws://pwmcp:3000/` | Full Playwright API via `connect()` |
 | @playwright/mcp | `http://pwmcp:8931/mcp` | MCP-compatible AI clients |
 | chrome-devtools-mcp | `http://pwmcp:8932/mcp` | CDP performance tracing, DevTools insights |
+| lighthouse-mcp | `http://pwmcp:8933/mcp` | Lighthouse audit scores + opportunities |
 
 ## Playwright `connect()` — Test Suites
 
@@ -139,6 +140,10 @@ extra_args = "*"
       "chrome-devtools": {
         "type": "http",
         "url": "http://pwmcp:8932/mcp"
+      },
+      "lighthouse": {
+        "type": "http",
+        "url": "http://pwmcp:8933/mcp"
       }
     }
   }
@@ -166,6 +171,13 @@ This works when VS Code is running inside a devcontainer on the same Docker netw
         "headers": {
           "Authorization": "Basic <base64(pwmcp:secret)>"
         }
+      },
+      "lighthouse": {
+        "type": "http",
+        "url": "https://pw.example.com/lighthouse/mcp",
+        "headers": {
+          "Authorization": "Basic <base64(pwmcp:secret)>"
+        }
       }
     }
   }
@@ -186,10 +198,11 @@ For `--caps` or other playwright-mcp flags, they cannot be passed directly via t
 
 ## Multiple Consumers
 
-Both services support multiple simultaneous consumers:
+All services support multiple simultaneous consumers:
 - `run-server` (port 3000): each `browser.connect()` call creates an independent browser session; isolate further by using separate browser contexts or pages
 - `@playwright/mcp` (port 8931): the MCP server handles concurrent MCP clients
 - `chrome-devtools-mcp` (port 8932): served via mcp-proxy, which handles concurrent MCP clients; all sessions share a single chrome-devtools-mcp process (stdio child)
+- `lighthouse-mcp` (port 8933): served via mcp-proxy; each audit launches a fresh browser instance (per-audit launch, not shared)
 
 No per-consumer authentication exists in internal mode — the network boundary is the control.
 
