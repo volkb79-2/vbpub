@@ -41,6 +41,7 @@ groop --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --step
 groop snapshot inspect /path/to/groop-incident-*.tar
 groop report groop/tests/fixtures/frames/gstammtisch-once.jsonl --json
 groop report groop/tests/fixtures/frames/gstammtisch-once.jsonl --json --window last:60s --group-by slice
+groop report recording.jsonl --json --window auto
 groop squeeze --target /sys/fs/cgroup/system.slice/app.service --admin --confirm SQUEEZE
 ```
 
@@ -71,8 +72,10 @@ Use `groop report FILE --json` to compute a machine-readable steady-state
 profile from a P2-format recording (JSONL or JSONL.zst). Per-entity p50/p95/max
 for key memory/PSI gauges are computed, with derived rates from embedded raw
 counters when the recorded live rate is ``None``. Use ``--window last:Ns`` to
-restrict to the last N seconds of a recording, and ``--group-by slice`` to
-roll entities up under their owning ``*.slice`` ancestor. This is the
+restrict to the last N seconds of a recording, or ``--window auto`` to choose
+the longest stable trailing window (the busiest entity's primary gauge has
+population CoV <= 0.05; ``ram`` and three frames by default). ``--group-by slice``
+rolls entities up under their owning ``*.slice`` ancestor. This is the
 steady-state profile input for the gstammtisch stack measurement program
 (``scripts/gstammtisch-guide/plan-stack-resource-tuning.md`` PKG-3).
 
@@ -169,7 +172,7 @@ Useful feature hotkeys in the TUI:
 | P59 | Done | `--container` as an entity selector | v1.5/v2 ergonomics | Compose P57's `--container` name resolution into P55's `--entities`/`--slice` collection-path selectors (resolution moved into the collector sweep for post-enrich correctness). Handoff: `handoff/P59-container-entity-selector-composition.md`. Report: `handoff/reports/P59-REPORT.md`. |
 | P60 | Done | Free-form `--metrics` field/family list | v1.5/v2 recording | Generalize P55's `--metrics full\|compact` enum with an open comma-separated family/name selector, registry-validated, reusing the compact prune + block-drop path. Handoff: `handoff/P60-metrics-fieldlist-selector.md`. Report: `handoff/reports/P60-REPORT.md`. |
 | P61 | Done | Steady-state report threshold gating | v1.5 recording | Add repeatable `--assert GROUP:METRIC:STAT<=VALUE` to `groop report` (exit 1 on breach), evaluated over the already-computed P54 profile without recomputing it; absent group/metric and null STAT are breaches. Handoff: `handoff/P61-report-threshold-gating.md`. Report: `handoff/reports/P61-REPORT.md`. |
-| P62 | Queued | Steady-state window auto-detection | v1.5 recording | Add `--window auto` to `groop report`: select the longest trailing window whose primary gauge coefficient-of-variation is within a pinned bound, then profile it via the existing P54 math. Serialize-with P61. Handoff: `handoff/P62-report-steady-state-autodetect.md`. |
+| P62 | Done | Steady-state window auto-detection | v1.5 recording | Add `--window auto` to `groop report`: select the longest trailing window whose primary gauge coefficient-of-variation is within a pinned bound, then profile it via the existing P54 math. Serialize-with P61. Handoff: `handoff/P62-report-steady-state-autodetect.md`. Report: `handoff/reports/P62-REPORT.md`. |
 | P63 | Dispatched | Daemon client versioned read methods | v2/v3 API | Extend P52's typed `DaemonClient` with typed/validated `entity`/`history`/`current`/`hello` methods so the P58 MCP frontend consumes the P52 read API exclusively through the typed client (re-carved from the P58 BLOCKED architecture violation). Handoff: `handoff/P63-daemon-client-versioned-read-methods.md`. |
 | P64 | Queued | Steady-state report baseline regression gate | v1.5 recording | Add `--baseline BASE` + repeatable `--assert-delta GROUP:METRIC:STAT:OP:VALUE` to `groop report` (pct/abs deltas vs a baseline profile, exit 1 on regression), consuming two already-computed P54 profiles without recomputing. The multi-run comparison P61 deferred. Serialize-with P62/P65. Handoff: `handoff/P64-report-baseline-regression-gate.md`. |
 | P65 | Queued | Steady-state report human-readable rendering | v1.5 recording | Add `--format {json,table}` to `groop report`: a deterministic fixed-width ASCII rendering of the same already-computed profile + P61 assertion results, formatted from the JSON figures (no recompute). The human-readable rendering P61 deferred. Serialize-with P62/P64. Handoff: `handoff/P65-report-human-readable-render.md`. |

@@ -13,7 +13,8 @@ bound is breached.
 Module-level exports (the public API):
     compute_profile — main computation entry point
     report_to_jsonable — deterministic JSON serialization
-    parse_window_spec — window string → (start_ts, end_ts) or None
+    parse_window_spec — manual window string → (start_ts, end_ts) or None
+    detect_steady_window — pure trailing-window stability detector
     evaluate_assertions — threshold gating helper (pure, no argparse dependency)
     Assertion — assertion spec dataclass
     AssertionResult — single assertion evaluation result
@@ -308,6 +309,10 @@ class WindowRange:
 
 _WINDOW_PATTERN = re.compile(r"^last:(\d+)s$|^all$")
 
+DEFAULT_STABILITY_GAUGE = "ram"
+DEFAULT_STABILITY_COV = 0.05
+DEFAULT_MIN_FRAMES = 3
+
 
 def parse_window_spec(spec: str, last_frame_ts: float) -> WindowRange | None:
     """Parse a ``--window`` flag value.
@@ -315,6 +320,8 @@ def parse_window_spec(spec: str, last_frame_ts: float) -> WindowRange | None:
     Returns a ``WindowRange`` or ``None`` (for ``all``).  Raises
     ``ValueError`` on malformed specs.
     """
+    if not isinstance(spec, str):
+        raise ValueError("invalid window spec — expected 'all' or 'last:Ns'")
     spec = spec.strip()
     if spec == "all":
         return None
@@ -327,6 +334,147 @@ def parse_window_spec(spec: str, last_frame_ts: float) -> WindowRange | None:
     if seconds <= 0:
         raise ValueError(f"invalid window spec {spec!r} — duration must be positive")
     return WindowRange(start_ts=last_frame_ts - seconds, end_ts=last_frame_ts)
+
+
+def _validate_stability_options(
+    stability_gauge: str,
+    stability_cov: float,
+    min_frames: int,
+) -> None:
+    """Validate the fixed-domain auto-window detector inputs."""
+    if not isinstance(stability_gauge, str) or stability_gauge not in REPORT_GAUGES:
+        raise ValueError(
+            f"invalid --stability-gauge {stability_gauge!r} — expected one of: "
+            + ", ".join(REPORT_GAUGES)
+        )
+    if (
+        isinstance(stability_cov, bool)
+        or not isinstance(stability_cov, (int, float))
+        or not math.isfinite(stability_cov)
+        or stability_cov < 0
+    ):
+        raise ValueError("invalid --stability-cov — must be a finite non-negative number")
+    if not isinstance(min_frames, int) or isinstance(min_frames, bool) or min_frames < 1:
+        raise ValueError("invalid --min-frames — must be a positive integer")
+
+
+def _finite_gauge_value(frame: Frame, entity_key: str, gauge: str) -> float | None:
+    """Return one finite gauge value, rejecting absent/non-numeric values."""
+    entity_frame = frame.entities.get(entity_key)
+    if entity_frame is None:
+        return None
+    metric = entity_frame.metrics.get(gauge)
+    if metric is None or metric.v is None or isinstance(metric.v, bool):
+        return None
+    if not isinstance(metric.v, (int, float)):
+        return None
+    value = float(metric.v)
+    return value if math.isfinite(value) else None
+
+
+def detect_steady_window(
+    frames: list[Frame],
+    *,
+    stability_gauge: str = DEFAULT_STABILITY_GAUGE,
+    stability_cov: float = DEFAULT_STABILITY_COV,
+    min_frames: int = DEFAULT_MIN_FRAMES,
+) -> WindowRange | None:
+    """Return the longest stable trailing frame window, if one exists.
+
+    Every candidate is a suffix of *frames* with at least ``min_frames``.
+    An entity is eligible only when it has a finite ``stability_gauge`` value
+    in every frame of that suffix.  The busiest eligible entity is the one
+    with the largest arithmetic mean (ties use lexical ``EntityKey`` order).
+    Its population coefficient of variation (stddev / mean) must be at most
+    ``stability_cov``.  A constant all-zero series has CoV 0; a zero-mean
+    series with non-zero spread is rejected to avoid division by zero.
+
+    Candidate suffixes are scanned from shortest to longest.  The last
+    accepted candidate is therefore the longest accepted trailing window.
+    ``None`` means no candidate satisfies the criterion.
+    """
+    _validate_stability_options(stability_gauge, stability_cov, min_frames)
+    if len(frames) < min_frames:
+        return None
+
+    selected: WindowRange | None = None
+    last_index = len(frames) - 1
+    for start_index in range(last_index - min_frames + 1, -1, -1):
+        candidate = frames[start_index:]
+        candidate_len = len(candidate)
+        values_by_entity: dict[str, list[float]] = {}
+        entity_keys = sorted({key for frame in candidate for key in frame.entities})
+        for entity_key in entity_keys:
+            values: list[float] = []
+            for frame in candidate:
+                value = _finite_gauge_value(frame, entity_key, stability_gauge)
+                if value is None:
+                    break
+                values.append(value)
+            if len(values) == candidate_len:
+                values_by_entity[entity_key] = values
+
+        if not values_by_entity:
+            continue
+
+        busiest_key = min(
+            values_by_entity,
+            key=lambda key: (-sum(values_by_entity[key]) / candidate_len, key),
+        )
+        values = values_by_entity[busiest_key]
+        mean = sum(values) / candidate_len
+        variance = sum((value - mean) ** 2 for value in values) / candidate_len
+        stddev = math.sqrt(variance)
+        if mean == 0:
+            cov = 0.0 if stddev == 0 else math.inf
+        else:
+            cov = stddev / mean
+        if cov <= stability_cov:
+            selected = WindowRange(
+                start_ts=candidate[0].ts,
+                end_ts=candidate[-1].ts,
+            )
+    return selected
+
+
+@dataclass(frozen=True)
+class WindowSelection:
+    """Resolved report window and whether automatic detection succeeded."""
+    mode: str
+    window: WindowRange | None
+    detected: bool = False
+
+
+def select_report_window(
+    frames: list[Frame],
+    *,
+    window_spec: str,
+    stability_gauge: str = DEFAULT_STABILITY_GAUGE,
+    stability_cov: float = DEFAULT_STABILITY_COV,
+    min_frames: int = DEFAULT_MIN_FRAMES,
+) -> WindowSelection:
+    """Resolve a report window without changing profile computation."""
+    _validate_stability_options(stability_gauge, stability_cov, min_frames)
+    if not isinstance(window_spec, str):
+        raise ValueError("invalid window spec — expected 'all', 'auto', or 'last:Ns'")
+    if window_spec == "auto":
+        detected = detect_steady_window(
+            frames,
+            stability_gauge=stability_gauge,
+            stability_cov=stability_cov,
+            min_frames=min_frames,
+        )
+        return WindowSelection(mode="auto", window=detected, detected=detected is not None)
+    if window_spec == "all":
+        return WindowSelection(mode="all", window=None)
+    if not frames:
+        # Validate the manual spelling even though no timestamp exists.
+        parse_window_spec(window_spec, 0.0)
+        return WindowSelection(mode="last", window=None)
+    return WindowSelection(
+        mode="last",
+        window=parse_window_spec(window_spec, frames[-1].ts),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +766,7 @@ def profile_to_jsonable(profile: GroupProfile) -> dict[str, Any]:
 def report_to_jsonable(
     profiles: list[GroupProfile],
     assertions: list[AssertionResult] | None = None,
+    window_selection: WindowSelection | None = None,
 ) -> dict[str, Any]:
     """Convert the full report to a deterministic JSON dict.
 
@@ -634,16 +783,27 @@ def report_to_jsonable(
         d["assertions"] = [
             assertion_result_to_jsonable(r) for r in assertions
         ]
+    if window_selection is not None and window_selection.mode == "auto":
+        d["window_mode"] = "auto"
+        d["window_detected"] = window_selection.detected
+        if window_selection.window is not None:
+            d["window_start_ts"] = _round_float(window_selection.window.start_ts)
+            d["window_end_ts"] = _round_float(window_selection.window.end_ts)
     return d
 
 
 def format_report(
     profiles: list[GroupProfile],
     assertions: list[AssertionResult] | None = None,
+    window_selection: WindowSelection | None = None,
 ) -> str:
     """Return a deterministic JSON string for the full report."""
     return json.dumps(
-        report_to_jsonable(profiles, assertions=assertions),
+        report_to_jsonable(
+            profiles,
+            assertions=assertions,
+            window_selection=window_selection,
+        ),
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -653,21 +813,31 @@ def format_report(
 # Convenience: load + compute in one call
 # ---------------------------------------------------------------------------
 
-def compute_report(
+@dataclass(frozen=True)
+class ReportComputation:
+    """Profiles plus the resolved window used to produce them."""
+    profiles: list[GroupProfile]
+    window_selection: WindowSelection
+
+
+def compute_report_with_selection(
     path: Path,
     *,
     window_spec: str = "all",
     group_by: str = "entity",
-) -> list[GroupProfile]:
+    stability_gauge: str = DEFAULT_STABILITY_GAUGE,
+    stability_cov: float = DEFAULT_STABILITY_COV,
+    min_frames: int = DEFAULT_MIN_FRAMES,
+) -> ReportComputation:
     """Load a recording and compute a steady-state profile.
 
     Args:
         path: Path to a ``.jsonl`` or ``.jsonl.zst`` recording.
-        window_spec: ``"all"`` or ``"last:Ns"``.
+        window_spec: ``"all"``, ``"last:Ns"``, or ``"auto"``.
         group_by: ``"entity"`` or ``"slice"``.
 
     Returns:
-        Sorted list of ``GroupProfile``.
+        Profiles plus the selected window metadata.
 
     Raises:
         FileNotFoundError: File does not exist.
@@ -676,13 +846,34 @@ def compute_report(
     """
     reader = RecordReader(path)
     frames = list(reader.iter_frames())
-    if not frames:
-        return []
+    selection = select_report_window(
+        frames,
+        window_spec=window_spec,
+        stability_gauge=stability_gauge,
+        stability_cov=stability_cov,
+        min_frames=min_frames,
+    )
+    return ReportComputation(
+        profiles=compute_profile(frames, window=selection.window, group_by=group_by),
+        window_selection=selection,
+    )
 
-    last_ts = frames[-1].ts
-    if window_spec != "all":
-        window = parse_window_spec(window_spec, last_ts)
-    else:
-        window = None
 
-    return compute_profile(frames, window=window, group_by=group_by)
+def compute_report(
+    path: Path,
+    *,
+    window_spec: str = "all",
+    group_by: str = "entity",
+    stability_gauge: str = DEFAULT_STABILITY_GAUGE,
+    stability_cov: float = DEFAULT_STABILITY_COV,
+    min_frames: int = DEFAULT_MIN_FRAMES,
+) -> list[GroupProfile]:
+    """Load a recording and return its profiles (legacy convenience API)."""
+    return compute_report_with_selection(
+        path,
+        window_spec=window_spec,
+        group_by=group_by,
+        stability_gauge=stability_gauge,
+        stability_cov=stability_cov,
+        min_frames=min_frames,
+    ).profiles

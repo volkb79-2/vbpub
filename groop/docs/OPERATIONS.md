@@ -93,11 +93,18 @@ Compute a steady-state profile from a recording:
 ```bash
 groop report recording.jsonl --json
 groop report recording.jsonl --json --window last:300s --group-by slice
+groop report recording.jsonl --json --window auto
 groop report recording.jsonl --json --assert ':ram:max<=4294967296'              # pass/fail gate
 groop report recording.jsonl --json --window last:300s --group-by slice \
   --assert 'system.slice:ram:p95<=8589934592' \
   --assert ':psi_mem_some_avg10:max<=5.0'                                        # multiple ANDed asserts
 ```
+
+`--window auto` profiles the longest stable trailing frame window. Stability is
+the population coefficient of variation (standard deviation / mean) for the
+busiest eligible entity's `ram` gauge, at most 0.05 across at least three
+frames. Use `--stability-gauge`, `--stability-cov`, and `--min-frames` to
+override those defaults.
 
 Plan a read-only file inspection (no content reads):
 

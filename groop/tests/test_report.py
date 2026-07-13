@@ -23,6 +23,9 @@ import pytest
 
 from groop.model import Entity, EntityFrame, Frame, MetricValue
 from groop.report import (
+    DEFAULT_MIN_FRAMES,
+    DEFAULT_STABILITY_COV,
+    DEFAULT_STABILITY_GAUGE,
     REPORT_GAUGES,
     Assertion,
     GroupProfile,
@@ -37,13 +40,17 @@ from groop.report import (
     _nearest_rank_percentile,
     compute_profile,
     compute_report,
+    compute_report_with_selection,
+    detect_steady_window,
     evaluate_assertions,
     format_report,
     parse_assert_spec,
     parse_window_spec,
     profile_to_jsonable,
     report_to_jsonable,
+    select_report_window,
 )
+from groop.record.writer import RecordWriter
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +128,13 @@ def _rate_none(raw: int) -> MetricValue:
 def _rate_live(v: float) -> MetricValue:
     """A rate metric with a live v (as from P53 headless recording)."""
     return MetricValue(v=v, src="derived")
+
+
+def _write_recording(path: Path, frames: list[Frame]) -> None:
+    """Write synthetic frames through the production P2 writer."""
+    with RecordWriter(path, fsync=False) as writer:
+        for frame in frames:
+            writer.write_frame(frame)
 
 
 # ===========================================================================
@@ -264,6 +278,168 @@ class TestFilterFramesByWindow:
         window = WindowRange(start_ts=200.0, end_ts=300.0)
         filtered = _filter_frames_by_window(frames, window)
         assert len(filtered) == 0
+
+
+# ===========================================================================
+# P62 — Automatic trailing steady-state window detection
+# ===========================================================================
+
+class TestAutoSteadyWindow:
+    """Oracle tests for the pinned longest-stable-suffix detector."""
+
+    def _tail_stable_frames(self) -> list[Frame]:
+        return [
+            _frame(100.0, {"busy": {"ram": _gauge(1000), "anon": _gauge(50)}}),
+            _frame(105.0, {"busy": {"ram": _gauge(1000), "anon": _gauge(50)}}),
+            _frame(110.0, {"busy": {"ram": _gauge(1000), "anon": _gauge(50)}}),
+            _frame(115.0, {"busy": {"ram": _gauge(100), "anon": _gauge(50)}}),
+            _frame(120.0, {"busy": {"ram": _gauge(101), "anon": _gauge(50)}}),
+            _frame(125.0, {"busy": {"ram": _gauge(99), "anon": _gauge(50)}}),
+        ]
+
+    def test_oracle_selects_exact_stable_tail_not_all(self, tmp_path):
+        """The exact boundary is 115, not a plausible six-frame/all result."""
+        frames = self._tail_stable_frames()
+        window = detect_steady_window(frames)
+        assert window == WindowRange(start_ts=115.0, end_ts=125.0)
+        selected = _filter_frames_by_window(frames, window)
+        assert [frame.ts for frame in selected] == [115.0, 120.0, 125.0]
+        path = tmp_path / "exact-tail.jsonl"
+        _write_recording(path, frames)
+        auto_computation = compute_report_with_selection(path, window_spec="auto")
+        all_computation = compute_report_with_selection(path, window_spec="all")
+        assert auto_computation.window_selection.window == window
+        auto = auto_computation.profiles
+        all_profiles = all_computation.profiles
+        assert auto[0].sample_count == 3
+        assert all_profiles[0].sample_count == 6
+        assert auto[0].gauges["ram"]["p50"] == 100.0
+        assert all_profiles[0].gauges["ram"]["p50"] == 101.0
+
+    def test_no_stable_suffix_falls_back_to_all(self, tmp_path):
+        frames = [
+            _frame(100.0 + i * 5, {"busy": {"ram": _gauge(value)}})
+            for i, value in enumerate((10, 20, 10, 20))
+        ]
+        path = tmp_path / "noisy.jsonl"
+        _write_recording(path, frames)
+        computation = compute_report_with_selection(path, window_spec="auto")
+        selection = computation.window_selection
+        assert selection.mode == "auto"
+        assert selection.detected is False
+        assert selection.window is None
+        assert computation.profiles == compute_report(path, window_spec="all")
+        data = json.loads(format_report(
+            computation.profiles,
+            window_selection=selection,
+        ))
+        assert data["window_mode"] == "auto"
+        assert data["window_detected"] is False
+        assert "window_start_ts" not in data
+
+    def test_gauge_and_cov_overrides_change_window(self, tmp_path):
+        frames = self._tail_stable_frames()
+        path = tmp_path / "overrides.jsonl"
+        _write_recording(path, frames)
+        ram_selection = compute_report_with_selection(path, window_spec="auto").window_selection
+        anon_selection = compute_report_with_selection(
+            path, window_spec="auto", stability_gauge="anon",
+        ).window_selection
+        cov_selection = compute_report_with_selection(
+            path, window_spec="auto", stability_cov=1.0,
+        ).window_selection
+        assert ram_selection.window == WindowRange(115.0, 125.0)
+        assert anon_selection.window == WindowRange(100.0, 125.0)
+        assert cov_selection.window == WindowRange(100.0, 125.0)
+
+    def test_busiest_entity_and_lexical_tie_are_deterministic(self):
+        frames = [
+            _frame(100.0 + i * 5, {
+                "quiet": {"ram": _gauge(value)},
+                "busy": {"ram": _gauge(value * 10)},
+            })
+            for i, value in enumerate((10, 20, 10))
+        ]
+        # quiet's CoV is also noisy, but busy must be the measured entity;
+        # a stable quiet entity must never mask a noisy busiest entity.
+        frames[0].entities["quiet"].metrics["ram"] = _gauge(10)
+        frames[1].entities["quiet"].metrics["ram"] = _gauge(10)
+        frames[2].entities["quiet"].metrics["ram"] = _gauge(10)
+        assert detect_steady_window(frames, stability_cov=0.05) is None
+
+    @pytest.mark.parametrize(
+        ("gauge", "cov", "min_frames"),
+        [
+            ("unknown", DEFAULT_STABILITY_COV, DEFAULT_MIN_FRAMES),
+            (DEFAULT_STABILITY_GAUGE, -0.1, DEFAULT_MIN_FRAMES),
+            (DEFAULT_STABILITY_GAUGE, float("inf"), DEFAULT_MIN_FRAMES),
+            (DEFAULT_STABILITY_GAUGE, DEFAULT_STABILITY_COV, 0),
+        ],
+    )
+    def test_invalid_detector_options_raise_value_error(self, gauge, cov, min_frames):
+        with pytest.raises(ValueError):
+            detect_steady_window([], stability_gauge=gauge, stability_cov=cov, min_frames=min_frames)
+
+    def test_auto_json_metadata_and_determinism(self, tmp_path):
+        path = tmp_path / "tail.jsonl"
+        _write_recording(path, self._tail_stable_frames())
+        first = compute_report_with_selection(path, window_spec="auto")
+        second = compute_report_with_selection(path, window_spec="auto")
+        first_json = format_report(first.profiles, window_selection=first.window_selection)
+        second_json = format_report(second.profiles, window_selection=second.window_selection)
+        data = json.loads(first_json)
+        assert first_json == second_json
+        assert data["window_mode"] == "auto"
+        assert data["window_detected"] is True
+        assert data["window_start_ts"] == 115.0
+        assert data["window_end_ts"] == 125.0
+
+
+class TestReportAutoCLI:
+    """CLI validation and assertion composition for auto windows."""
+
+    def _invoke(self, recording: Path, *args: str) -> subprocess.CompletedProcess:
+        src_root = Path(__file__).resolve().parents[1] / "src"
+        return subprocess.run(
+            [sys.executable, "-m", "groop.cli", "report", str(recording), "--json", *args],
+            capture_output=True,
+            text=True,
+            cwd=str(src_root),
+            env={"PYTHONPATH": str(src_root)},
+        )
+
+    def test_auto_asserts_detected_window(self, tmp_path):
+        path = tmp_path / "tail.jsonl"
+        frames = TestAutoSteadyWindow()._tail_stable_frames()
+        _write_recording(path, frames)
+        result = self._invoke(path, "--window", "auto", "--assert", "busy:ram:max<=101")
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["window_detected"] is True
+        assert data["assertions"][0]["actual"] == 101.0
+
+    def test_auto_cli_is_byte_deterministic(self, tmp_path):
+        path = tmp_path / "tail.jsonl"
+        _write_recording(path, TestAutoSteadyWindow()._tail_stable_frames())
+        first = self._invoke(path, "--window", "auto")
+        second = self._invoke(path, "--window", "auto")
+        assert first.returncode == second.returncode == 0
+        assert first.stdout == second.stdout
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ("--stability-gauge", "not-a-gauge"),
+            ("--stability-cov", "nan"),
+            ("--stability-cov", "-0.1"),
+            ("--min-frames", "0"),
+        ],
+    )
+    def test_malformed_auto_overrides_exit_2(self, tmp_path, args):
+        path = tmp_path / "one.jsonl"
+        _write_recording(path, [_frame(100.0, {"busy": {"ram": _gauge(1)}})])
+        result = self._invoke(path, "--window", "auto", *args)
+        assert result.returncode == 2
 
 
 class TestFindSliceAncestor:
