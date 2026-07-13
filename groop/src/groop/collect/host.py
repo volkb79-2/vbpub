@@ -324,15 +324,20 @@ def _gpu_metrics(sys_root: Path) -> dict[str, MetricValue]:
 
     Returns host_gpu_vram_total, host_gpu_vram_used, host_gpu_busy_pct,
     host_gpu_count -- all unavail_kernel when no DRM cards are readable.
+
+    An absent /sys/class/drm means the count is unreadable (unavail_kernel),
+    not zero: a kernel without the DRM sysfs tree is not the same host as one
+    that exposes the tree with no cards in it, and only the latter is a
+    measurement of "zero GPUs".
     """
     drm_dir = sys_root / "class" / "drm"
+    unavail = MetricValue(None, "unavail_kernel")
     if not drm_dir.is_dir():
-        unavail = MetricValue(None, "unavail_kernel")
         return {
             "host_gpu_vram_total": unavail,
             "host_gpu_vram_used": unavail,
             "host_gpu_busy_pct": unavail,
-            "host_gpu_count": MetricValue(0, "host"),
+            "host_gpu_count": unavail,
         }
 
     cards: list[str] = []
@@ -341,7 +346,6 @@ def _gpu_metrics(sys_root: Path) -> dict[str, MetricValue]:
             cards.append(entry.name)
 
     if not cards:
-        unavail = MetricValue(None, "unavail_kernel")
         return {
             "host_gpu_vram_total": unavail,
             "host_gpu_vram_used": unavail,

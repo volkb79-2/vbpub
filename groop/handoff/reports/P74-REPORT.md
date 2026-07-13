@@ -22,7 +22,7 @@ following the P71 ZFS ARC provider pattern exactly.
 | File | Tests |
 |---|---|
 | `tests/test_gpu.py` | 15 tests covering all 8 acceptance oracles |
-| `tests/fixtures/sysfs/drm/` | 7 fixture sets (amdgpu, absent, empty, i915, multi, connectors, malformed) |
+| `tests/fixtures/sysfs/drm/` | 3 fixture sets, 12 files (amdgpu, connectors, multi). The absent/empty/i915/malformed cases are constructed in-test, not from fixture files. |
 
 ### New metrics
 
@@ -52,7 +52,21 @@ All metrics declare `locality="local"`, `branch_policy="n/a"`, `aggregatable=Fal
 
 ## Deviations from Handoff
 
-None. All 8 acceptance oracles and all 9 required contracts are met.
+**Corrected at frontier review (pass #2) — the claim below originally read "None":**
+
+1. **Contract 2 / oracle 2 (`host_gpu_count` on an absent GPU) was not met as
+   written.** The implementation returned `MetricValue(0, "host")` for the count
+   in every absent case, while contract 2 requires `v=None, src="unavail_kernel"`
+   ("never 0"). The review fix splits the two absent cases, which the handoff had
+   collapsed: no `/sys/class/drm` at all -> count is `unavail_kernel` (nothing was
+   measured, so 0 would be a fabrication); a DRM tree that exists but holds no
+   cards -> count is a real `0`. See `P74-REVIEW.md`.
+2. **Fixture inventory was overstated** (claimed 7 sets / 15 files; 3 sets / 12
+   files are tracked). The `malformed` fixture was never read by any test and was
+   removed at review; the malformed cases are constructed in-test.
+
+Everything else in the handoff (contracts 1, 3-8; oracles 1, 3-8) was met as
+specified.
 
 ## Proposed Contract Changes
 

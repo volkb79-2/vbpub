@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from conftest import fixture_root
 from groop.collect.host import (
     _gpu_metrics,
@@ -99,22 +97,25 @@ def test_gpu_present_fixture_exact_values(tmp_path: Path) -> None:
 
 
 def test_gpu_absent_no_drm_dir(tmp_path: Path) -> None:
-    """No /sys/class/drm at all: all four metrics unavail_kernel, count=0."""
+    """No /sys/class/drm at all: all four metrics unavail_kernel, including the count.
+
+    A kernel with no DRM sysfs tree did not measure "zero GPUs" -- it exposed no
+    count at all, so the count must not be fabricated as 0 (handoff contract 2).
+    """
     sys = _base_sys(tmp_path)  # no drm directory at all
     metrics = _gpu_metrics(sys)
 
-    assert metrics["host_gpu_vram_total"].v is None
-    assert metrics["host_gpu_vram_total"].src == "unavail_kernel"
-    assert metrics["host_gpu_vram_used"].v is None
-    assert metrics["host_gpu_vram_used"].src == "unavail_kernel"
-    assert metrics["host_gpu_busy_pct"].v is None
-    assert metrics["host_gpu_busy_pct"].src == "unavail_kernel"
-    assert metrics["host_gpu_count"].v == 0
-    assert metrics["host_gpu_count"].src == "host"
+    for name in ("host_gpu_vram_total", "host_gpu_vram_used", "host_gpu_busy_pct", "host_gpu_count"):
+        assert metrics[name].v is None, f"{name} must not be fabricated"
+        assert metrics[name].src == "unavail_kernel"
 
 
 def test_gpu_absent_empty_drm(tmp_path: Path) -> None:
-    """Empty /sys/class/drm (no card dirs): all four metrics unavail_kernel, count=0."""
+    """Empty /sys/class/drm (no card dirs): VRAM/busy unavail_kernel, count is a real 0.
+
+    This is the case that DOES measure zero cards, and it must not render like the
+    no-DRM-tree host above.
+    """
     sys = _empty_sys(tmp_path)
     metrics = _gpu_metrics(sys)
 
@@ -361,12 +362,10 @@ def test_gpu_non_gpu_fixtures_unaffected(tmp_path: Path) -> None:
     sys = _base_sys(tmp_path)  # no DRM at all
     host = collect_host(proc_root=proc, sys_root=sys)
 
-    # Verify GPU metrics are all unavail_kernel (count=0)
-    for name in ("host_gpu_vram_total", "host_gpu_vram_used", "host_gpu_busy_pct"):
+    # Verify GPU metrics are all unavail_kernel (no DRM tree: nothing was measured)
+    for name in ("host_gpu_vram_total", "host_gpu_vram_used", "host_gpu_busy_pct", "host_gpu_count"):
         assert host[name].v is None, f"{name}.v should be None"
         assert host[name].src == "unavail_kernel", f"{name}.src should be unavail_kernel"
-    assert host["host_gpu_count"].v == 0
-    assert host["host_gpu_count"].src == "host"
 
     # Verify existing metrics are unchanged
     assert host["host_mem_total"].v == 16384 * 1024
