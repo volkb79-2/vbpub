@@ -325,3 +325,25 @@ duplicating registry prose.
 Each bound has a test that violates it for real and asserts the observable
 outcome (actual thread counts, actual byte lengths, actual refused
 connections) — not just the constant.
+
+## 11. MCP frontend (P58)
+
+`groop mcp serve` is an optional `groop[mcp]`, stdio-only, read-only frontend.
+It imports the MCP SDK only after this subcommand is selected and uses only
+P63's typed `DaemonClient` methods; it does not open sockets or parse daemon
+envelopes itself. Startup probes `hello`; an unavailable daemon exits nonzero,
+while a later loss becomes a safe typed tool result.
+
+| Tool | Parameters and enforced bounds | Result |
+|---|---|---|
+| `groop_health` | fixed maximum 16 component summaries; 4 MiB aggregate cap | daemon health summary |
+| `groop_overview` | closed sort keys; `limit` integer 1..50; 4 MiB aggregate cap | ranked compact metric rows |
+| `groop_entity` | exact EntityKey or P57 docker name/prefix; max 128 metrics and 64 findings; 4 MiB aggregate cap | one entity detail |
+| `groop_history` | exact EntityKey or P57 docker name/prefix; `last:Ns` (max 7 days) or `since:TS`; `limit` integer 1..100; 4 MiB aggregate cap | one metric's timestamp/value pairs |
+
+No bound is silently clamped: a violated item or byte bound returns the closed
+`over-limit` tool error. `None` metric values are omitted. Values include the
+P52 sensitivity level and `--redact-above LEVEL` replaces values above that
+level with `"__redacted__"`, retaining the key and sensitivity. Adapter errors
+are mapped without copying exception text to `daemon-unavailable`,
+`invalid-selector`, `over-limit`, or `internal`.

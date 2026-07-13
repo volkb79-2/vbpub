@@ -56,8 +56,11 @@ bounded, peer-aware read API envelope over the P51 broker: a `hello`/negotiate
 op, typed error codes, sensitivity metadata, `SO_PEERCRED` peer identity, an
 injectable authorization hook, and proven resource bounds (request bytes, read
 deadline, concurrent clients, response items/bytes). Legacy clients without a
-`v` field continue to be served unchanged. Until P58 (MCP frontend) merges,
-separate-frontend support is a protocol-complete but single-consumer claim.
+`v` field continue to be served unchanged. P58 is now the first separate
+frontend: `groop mcp serve` is an optional stdio MCP server over P63's typed
+client, exposing exactly bounded health, overview, entity, and history tools.
+It uses P57 docker selectors, P52 sensitivity redaction, typed safe errors,
+and an enforced 4 MiB aggregate result cap.
 
 P53 and P54 are queued, spec-only recording follow-ups: P53 adds a headless
 `groop --record FILE --headless` driver reusing the existing P2
@@ -334,7 +337,7 @@ Evidence commits for this wave:
 |---|---|---|
 | P60 free-form `--metrics` field/family list | review-fixes `ee8132c`; review report `handoff/reports/P60-REVIEW.md` | `df13253` (`--no-ff`) |
 | P62 steady-state `--window auto` | review report `handoff/reports/P62-REVIEW.md` | `36f60a2` (`--no-ff`) |
-| P58 daemon MCP frontend (v3) | **REJECTED, not merged** — `handoff/reports/P58-REVIEW-v3.md` | none |
+| P58 daemon MCP frontend (v4) | `handoff/reports/P58-REPORT.md` | current branch (awaiting review) |
 
 Live CLI verification from `main` (not tests — the real commands):
 

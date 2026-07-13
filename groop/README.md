@@ -35,6 +35,8 @@ Stack: Python; Textual allowed ONLY under `src/groop/ui/` (spec §6.1, §6.4).
 
 ```bash
 pip install -e groop/
+pip install -e './groop[mcp]'
+claude mcp add groop -- groop mcp serve
 groop --once --json
 groop
 groop --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --step
@@ -67,6 +69,12 @@ Use `--container NAME_OR_PREFIX` on `groop inspect-files plan/read --target` or
 `groop action preview/execute --target` to resolve a Docker container name or
 prefix to its cgroup path automatically instead of manually specifying
 `--target`.
+
+For AI CLI access to a running local daemon, install `groop[mcp]` and register
+the stdio frontend with `claude mcp add groop -- groop mcp serve`. The four
+read-only tools have stated item limits and an enforced 4 MiB aggregate result
+cap; use `groop mcp serve --redact-above operational` when sensitive metric
+values should be replaced by typed redaction markers.
 
 Use `groop report FILE --json` to compute a machine-readable steady-state
 profile from a P2-format recording (JSONL or JSONL.zst). Per-entity p50/p95/max
@@ -168,7 +176,7 @@ Useful feature hotkeys in the TUI:
 | P55 | Done | Collector entity & metric filtering | v1.5/v2 recording | Add `--entities GLOB`/`--slice NAME` entity selectors and `--metrics compact` gauge subset at collection time, cutting sysfs reads and frame size for `--once` and any recording path. Compact also drops per-entity network/DAMON/governance blocks. Handoff: `handoff/P55-collector-entity-metric-filtering.md`. Report: `handoff/reports/P55-REPORT.md`. |
 | P56 | **Done** | `groop squeeze` guided memory measurement | v2 actions | Add a guided, stepped `memory.high` squeeze that measures a cgroup's hot working set, with mandatory memory.high restore on exit/SIGINT and a groop-record-compatible JSONL log. Handoff: `handoff/P56-groop-squeeze.md`. Report: `handoff/reports/P56-REPORT.md`. |
 | P57 | Done | Docker-name entity selectors | v1.5/v2 ergonomics | Add `--container NAME_OR_PREFIX`, resolved via the existing docker metadata join, wherever groop takes a cgroup-path/entity identifier. Handoff: `handoff/P57-docker-name-entity-selectors.md`. Report: `handoff/reports/P57-REPORT.md`. |
-| P58 | Blocked (review, v3) | Daemon MCP frontend | v2/v3 API | Add `groop mcp serve` (optional `groop[mcp]` extra, stdio transport): a read-only MCP server over the P52 read API via the P63 typed `DaemonClient`. v3 pass #2 REJECTED (not merged), branch `feat/groop-p58-daemon-mcp-frontend-v3`: the P63 client integration and exit-2 path are now correct, but `MAX_RESPONSE_BYTES` is still declared-and-never-enforced (repeat blocker), the tool descriptions/CONTRACTS document a docker selector + byte cap + 1000-point history limit that do not exist, `_metric_sensitivity` hand-rolls a classifier that `daemon.api` already exports (46/113 metrics misclassified), `_handle_history` hand-rolls the forbidden third docker resolver, and no test drives the MCP layer (the discovery test passes with all four tools deleted). Tier escalated to sonnet5-high. Review: `handoff/reports/P58-REVIEW-v3.md`. Handoff: `handoff/P58-daemon-mcp-frontend.md`. |
+| P58 | Done | Daemon MCP frontend | v2/v3 API | `groop mcp serve` is an optional stdio MCP frontend over the P52 API via P63's typed client. It exposes exactly health, bounded overview/entity/history reads, P57 docker selectors, sensitivity redaction, and an enforced 4 MiB response cap. Handoff: `handoff/P58-daemon-mcp-frontend.md`. Report: `handoff/reports/P58-REPORT.md`. |
 | P59 | Done | `--container` as an entity selector | v1.5/v2 ergonomics | Compose P57's `--container` name resolution into P55's `--entities`/`--slice` collection-path selectors (resolution moved into the collector sweep for post-enrich correctness). Handoff: `handoff/P59-container-entity-selector-composition.md`. Report: `handoff/reports/P59-REPORT.md`. |
 | P60 | Done | Free-form `--metrics` field/family list | v1.5/v2 recording | Generalize P55's `--metrics full\|compact` enum with an open comma-separated family/name selector, registry-validated, reusing the compact prune + block-drop path. Handoff: `handoff/P60-metrics-fieldlist-selector.md`. Report: `handoff/reports/P60-REPORT.md`. |
 | P61 | Done | Steady-state report threshold gating | v1.5 recording | Add repeatable `--assert GROUP:METRIC:STAT<=VALUE` to `groop report` (exit 1 on breach), evaluated over the already-computed P54 profile without recomputing it; absent group/metric and null STAT are breaches. Handoff: `handoff/P61-report-threshold-gating.md`. Report: `handoff/reports/P61-REPORT.md`. |
