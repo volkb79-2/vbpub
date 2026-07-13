@@ -165,6 +165,23 @@ implementation packages and `DECISIONS-INBOX.md` entries for the product calls
 in parallel with P67, and its verdict on P67's handoff lands *before* P67 is
 dispatched.
 
+**Standing user decision (2026-07-13): React, tested via pwmcp.** The
+framework choice for the web UI is React — already decided, not open for
+P69's scoping analysis to re-litigate; P69's framework-recommendation output
+should be read as confirmation/packaging-consequence analysis against that
+choice, not a fresh pick. For browser-level testing/access of the groop web
+UI once it exists, adopt **pwmcp** (the Playwright-MCP-based browser-testing
+surface already used actively in the `dstdns` project) rather than building
+new ad hoc browser tooling for groop. Two deployment options, either
+acceptable — the implementation carve should pick one and record which:
+(a) reuse the running dstdns pwmcp instance cross-repo (unclean, but the
+resource-constrained pragmatic choice), or (b) deploy a fresh pwmcp instance
+scoped to vbpub/groop. If a stack needs to be started for either option, use
+CIU (groop's own container-inspection/orchestration surface) to start it
+rather than a bespoke script. This decision supersedes any contrary framework
+or test-tooling recommendation an earlier P69 draft may have produced, and
+should be reflected in the implementation packages carved after P69 merges.
+
 Pragmatic estimate from the current state: a shippable v1/v1.5 release
 candidate needs **0 remaining packages** after P41 plus live-host acceptance
 evidence. Implementing the broader roadmap end-to-end still looks like **9-13
