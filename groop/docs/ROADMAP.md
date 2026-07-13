@@ -62,7 +62,7 @@ flowchart TD
     P29 --> P45[P45 Bounded inspect content]
     P21 --> P46[P46 Admin execution kernel]
     P44 --> P47[P47 Daemon component health]:::done
-    P45 --> P48[P48 Journald snapshot]
+    P45 --> P48[P48 Journald snapshot :done:]
     P46 --> P49[P49 memory.high governance]
     P43 -.-> P50[P50 Mouse table interactions :done:]
     P16 --> P51[P51 Daemon sampling fanout]
@@ -142,10 +142,13 @@ protocol operation, and ``groop daemon health [--json]`` CLI. Models truthful,
 bounded collector/BPF/paddr transitions and strictly validates `health-v1`.
 See ``handoff/reports/P47-REPORT.md``.
 
-P48 and P49 remain queued: bounded journald snapshot and structured
-``memory.high`` governance through systemd, respectively. Handoffs:
-`handoff/P48-inspect-files-journal-snapshot.md`,
-`handoff/P49-systemd-memory-governance.md`.
+P48 adds bounded journald inspection via fixed absolute
+``/usr/bin/journalctl`` argv, completing the three-kind inspect-files
+content surface. Status: **done**. P49 remains queued: structured
+``memory.high`` governance through systemd.
+
+Handoff: `handoff/P48-inspect-files-journal-snapshot.md`.
+Report: `handoff/reports/P48-REPORT.md`.
 
 ### P50 - Mouse Table Interactions
 

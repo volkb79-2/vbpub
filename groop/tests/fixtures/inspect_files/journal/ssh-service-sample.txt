@@ -1,0 +1,5 @@
+2026-07-10T12:00:00+0000 host sshd[1234]: Accepted public key for admin from 10.0.0.1 port 54321 ssh2: RSA SHA256:abc123
+2026-07-10T12:00:01+0000 host sshd[1234]: pam_unix(sshd:session): session opened for user admin
+2026-07-10T12:00:02+0000 host sshd[1234]: Starting session: shell on pts/0
+2026-07-10T12:00:10+0000 host sshd[1234]: Closing session: shell on pts/0
+2026-07-10T12:00:11+0000 host sshd[1234]: pam_unix(sshd:session): session closed for user admin

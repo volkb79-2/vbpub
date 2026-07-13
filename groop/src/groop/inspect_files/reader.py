@@ -1,9 +1,11 @@
 """Bounded read API for allowlisted inspect-files content.
 
-Provides gated, confined, bounded regular-file reads for catalog-resolved
-paths.  No subprocess, no mutation, no arbitrary root-file reads.
+Provides gated, confined, bounded reads for catalog-resolved paths.
+File-content reads (Docker logs, cgroup files) use direct descriptor I/O.
+Journald reads invoke a single fixed absolute ``journalctl`` argv with
+``shell=False``, bounded timeout, and bounded output.
 
-Every read path is:
+Every file-content read path is:
 1. Resolved from catalog/entity metadata (not user-supplied absolute paths).
 2. Confined to the allowlisted root via descriptor-relative traversal
    (``dir_fd`` + ``O_NOFOLLOW`` at every component) — never a lexical-only
@@ -15,6 +17,14 @@ Every read path is:
 5. Limits are **aggregate** across all files in a multi-file read (e.g. cgroup).
 6. Production reads require root (EUID 0); the root check is an injectable seam
    for testing.
+
+Journald reads use:
+- Fixed absolute ``/usr/bin/journalctl`` argv with ``shell=False``.
+- ``--unit``, ``--no-pager``, ``--output=short-iso``, and a bounded ``-n``.
+- A wall-clock timeout (default 30 s, max 60 s).
+- An injectable runner for testing.
+- On timeout or nonzero exit the result is typed unavailable/error —
+  never a fallback to arbitrary reads.
 """
 
 from __future__ import annotations
@@ -22,6 +32,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import stat
+import subprocess
 from pathlib import Path
 from collections.abc import Callable
 from typing import IO
@@ -46,6 +57,13 @@ _ABSOLUTE_MAX_LINES = 100_000
 
 # Chunk size for bounded reads (must be <= _DEFAULT_MAX_BYTES).
 _READ_CHUNK_SIZE = 65536  # 64 KiB
+
+# Absolute path to journalctl (fixed, never configurable).
+_JOURNALCTL = "/usr/bin/journalctl"
+
+# Default and absolute-maximum timeout for journalctl subprocess.
+_DEFAULT_JOURNAL_TIMEOUT = 30.0
+_ABSOLUTE_MAX_JOURNAL_TIMEOUT = 60.0
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -418,6 +436,189 @@ def _bound_rendered_text(
 
 
 # ---------------------------------------------------------------------------
+# Journald runner — fixed absolute journalctl argv with bounded timeout
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class _JournaldRunResult:
+    """Bounded result from a journalctl subprocess invocation.
+
+    ``stdout`` and ``stderr`` are decoded strings.  ``returncode`` is
+    ``None`` when the process timed out.
+    """
+
+    stdout: str
+    stderr: str
+    returncode: int | None
+    timed_out: bool
+
+
+def _default_journald_runner(
+    argv: tuple[str, ...],
+    *,
+    timeout: float,
+) -> _JournaldRunResult:
+    """Run a fixed journalctl argv via subprocess with bounded timeout.
+
+    Uses ``shell=False``, a minimal environment, and bounded capture.
+    """
+    try:
+        proc = subprocess.run(
+            list(argv),
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+            shell=False,
+            close_fds=True,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "LANG": "C.UTF-8",
+            },
+        )
+        return _JournaldRunResult(
+            stdout=proc.stdout.decode("utf-8", errors="replace"),
+            stderr=proc.stderr.decode("utf-8", errors="replace"),
+            returncode=proc.returncode,
+            timed_out=False,
+        )
+    except subprocess.TimeoutExpired:
+        return _JournaldRunResult(
+            stdout="", stderr="", returncode=None, timed_out=True,
+        )
+    except OSError as exc:
+        return _JournaldRunResult(
+            stdout="", stderr=f"OSError: {exc}", returncode=None, timed_out=False,
+        )
+
+
+# Pattern: a systemd unit name that was already validated by catalog.
+_SYSTEMD_UNIT_READ_PATTERN = __import__("re").compile(r"^[a-zA-Z0-9@._+-]+$")
+
+
+def _validate_journald_read_target(target: str) -> None:
+    """Validate a systemd unit name for journald content reads.
+
+    Rejects empty names, absolute/relative paths, option-like tokens
+    (starting with ``-``), and unsafe characters.  This is a safety
+    double-check on top of the catalog-level validation.
+    """
+    if not target:
+        msg = f"systemd unit name must not be empty: {target!r}"
+        raise ValueError(msg)
+    if target.startswith("/") or target.startswith("."):
+        msg = f"systemd unit name must not be a path: {target!r}"
+        raise ValueError(msg)
+    if target.startswith("-"):
+        msg = f"systemd unit name must not start with dash: {target!r}"
+        raise ValueError(msg)
+    if not _SYSTEMD_UNIT_READ_PATTERN.match(target):
+        msg = f"systemd unit name contains unsafe characters: {target!r}"
+        raise ValueError(msg)
+
+
+def _run_journald_snapshot(
+    target: str,
+    *,
+    max_lines: int,
+    timeout: float = _DEFAULT_JOURNAL_TIMEOUT,
+    runner: Callable[..., _JournaldRunResult] | None = None,
+) -> InspectFilesReadResult | InspectFilesReadError:
+    """Run a bounded journalctl snapshot for a validated systemd unit.
+
+    *target* is the validated systemd unit name.  *max_lines* controls the
+    ``-n`` argument passed to journalctl.  *timeout* is the wall-clock
+    deadline for the subprocess (validated between 1 and
+    ``_ABSOLUTE_MAX_JOURNAL_TIMEOUT``).  *runner* is an injectable fixture
+    for tests; when ``None`` the production ``_default_journald_runner`` is
+    used.
+
+    Returns ``InspectFilesReadResult`` on success or
+    ``InspectFilesReadError`` on timeout, nonzero exit, or runner failure.
+    Never falls back to arbitrary reads.
+    """
+    # ---- Validate timeout ----
+    if not isinstance(timeout, (int, float)) or timeout <= 0:
+        return InspectFilesReadError(
+            kind=InspectFilesKind.SYSTEMD_JOURNAL,
+            target=target,
+            error=f"journal timeout must be a positive number, got {timeout!r}",
+        )
+    if timeout > _ABSOLUTE_MAX_JOURNAL_TIMEOUT:
+        return InspectFilesReadError(
+            kind=InspectFilesKind.SYSTEMD_JOURNAL,
+            target=target,
+            error=f"journal timeout {timeout}s exceeds maximum"
+            f" {_ABSOLUTE_MAX_JOURNAL_TIMEOUT}s",
+        )
+
+    # ---- Validate target ----
+    try:
+        _validate_journald_read_target(target)
+    except ValueError as exc:
+        return InspectFilesReadError(
+            kind=InspectFilesKind.SYSTEMD_JOURNAL,
+            target=target,
+            error=str(exc),
+        )
+
+    # ---- Build fixed absolute argv ----
+    argv = (
+        _JOURNALCTL,
+        "--unit",
+        target,
+        "--no-pager",
+        "--output=short-iso",
+        "-n",
+        str(max_lines),
+    )
+
+    # ---- Run ----
+    active_runner = runner or _default_journald_runner
+    result = active_runner(argv, timeout=timeout)
+
+    # ---- Process result ----
+    if result.timed_out:
+        return InspectFilesReadError(
+            kind=InspectFilesKind.SYSTEMD_JOURNAL,
+            target=target,
+            error=f"journalctl timed out after {timeout}s for unit {target!r}",
+        )
+    if result.returncode is None or result.returncode != 0:
+        detail = result.stderr.strip() or f"exit code {result.returncode}"
+        return InspectFilesReadError(
+            kind=InspectFilesKind.SYSTEMD_JOURNAL,
+            target=target,
+            error=f"journalctl failed for unit {target!r}: {detail}",
+        )
+
+    entry = INSPECT_CATALOG.get(InspectFilesKind.SYSTEMD_JOURNAL)
+    kind_label = entry.kind_label if entry else "Systemd journal"
+    description = entry.description if entry else (
+        "Read a bounded journald snapshot for a systemd unit."
+    )
+
+    # Bound output by max_bytes/max_lines (the -n arg is advisory;
+    # we also enforce via _bound_rendered_text).
+    bounded_content, trunc_b, trunc_l = _bound_rendered_text(
+        result.stdout,
+        max_bytes=_DEFAULT_MAX_BYTES,
+        max_lines=max_lines,
+    )
+
+    return InspectFilesReadResult(
+        kind=InspectFilesKind.SYSTEMD_JOURNAL,
+        target=target,
+        kind_label=kind_label,
+        description=description,
+        path=f"journalctl --unit {target}",
+        content=bounded_content,
+        truncated_bytes=trunc_b,
+        truncated_lines=trunc_l,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Resolve paths from catalog entries
 # ---------------------------------------------------------------------------
 
@@ -511,6 +712,8 @@ def build_inspect_read(
     max_lines: int = _DEFAULT_MAX_LINES,
     fixture_root: Path | None = None,
     is_root: Callable[[], bool] | None = None,
+    journald_runner: Callable[..., _JournaldRunResult] | None = None,
+    journal_timeout: float = _DEFAULT_JOURNAL_TIMEOUT,
 ) -> GatedReadResult:
     """Build a bounded file read for the given kind and target.
 
@@ -529,13 +732,20 @@ def build_inspect_read(
     called to determine root status.  In production (``is_root is None``)
     the ``os.geteuid() == 0`` check is used, so the caller must be root.
 
+    *journald_runner* is an injectable callable for testing journald reads;
+    when ``None`` the production ``_default_journald_runner`` is used.
+
+    *journal_timeout* is the wall-clock deadline for the journalctl
+    subprocess (default 30 s, max 60 s).
+
     In production (``fixture_root is None`` and ``is_root is None``) the
     caller must be root, per TUI-SPEC §4.8 ("available only in root/admin
     or daemon-approved modes").
 
     Returns ``InspectFilesReadResult`` on success, ``InspectFilesReadError``
-    on a resolvable failure (missing file, permission denied, invalid path),
-    or ``ReadDenied`` when the gating flags are not active.
+    on a resolvable failure (missing file, permission denied, invalid path,
+    journalctl timeout/error), or ``ReadDenied`` when the gating flags are
+    not active.
     """
     # ---- Validate limits early ----
     try:
@@ -595,6 +805,14 @@ def build_inspect_read(
             base_root = fixture_root if fixture_root is not None else Path("/sys/fs/cgroup")
             allow_root = base_root
             paths_to_read = _resolve_cgroup_file_paths(target, fixture_root=fixture_root)
+
+        elif ik == InspectFilesKind.SYSTEMD_JOURNAL:
+            return _run_journald_snapshot(
+                target,
+                max_lines=max_lines,
+                timeout=journal_timeout,
+                runner=journald_runner,
+            )
 
         else:
             return InspectFilesReadError(

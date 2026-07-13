@@ -39,8 +39,10 @@ class InspectFilesKind(str, enum.Enum):
 _DOCKER_ID_PATTERN = re.compile(r"^[a-f0-9]{6,64}$")
 # Docker names are not paths and should stay shell-token boring.
 _DOCKER_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
-# Systemd unit name pattern: alphanumeric, dots, dashes, underscores, @.
-_SYSTEMD_UNIT_PATTERN = re.compile(r"^[a-zA-Z0-9@._-]+$")
+# Systemd unit name pattern: must not start with a dash (would parse as an
+# option), must not contain glob/reserved characters, whitespace, or shell
+# metacharacters.  Alphanumeric, dots, dashes, underscores, @, and + are safe.
+_SYSTEMD_UNIT_PATTERN = re.compile(r"^[a-zA-Z0-9@._+-]+$")
 # Cgroup path segment pattern: safe characters only.
 _CGROUP_PATH_PATTERN = re.compile(r"^[a-zA-Z0-9@._/-]+$")
 
@@ -90,9 +92,9 @@ def _systemd_journal(target: str) -> tuple[list[Path], list[list[str]]]:
     ]
     # Structured argv list — never a shell string.
     command_previews = [
-        ["journalctl", "--unit", target, "--no-pager", "-n", "100"],
-        ["journalctl", "--unit", target, "--follow", "-n", "10"],
-        ["systemctl", "status", target, "--no-pager"],
+        ["/usr/bin/journalctl", "--unit", target, "--no-pager", "-n", "100"],
+        ["/usr/bin/journalctl", "--unit", target, "--follow", "-n", "10"],
+        ["/usr/bin/systemctl", "status", target, "--no-pager"],
     ]
     return path_previews, command_previews
 
@@ -158,6 +160,9 @@ def _validate_systemd_target(target: str) -> None:
     """Reject systemd targets that look like absolute paths or unsafe strings."""
     if not target or target.startswith("/") or target.startswith("."):
         msg = f"systemd target must be a unit name, not a path: {target!r}"
+        raise ValueError(msg)
+    if target.startswith("-"):
+        msg = f"systemd target must not start with dash (would parse as option): {target!r}"
         raise ValueError(msg)
     if not _SYSTEMD_UNIT_PATTERN.match(target):
         msg = f"systemd target contains unsafe characters: {target!r}"

@@ -33,7 +33,9 @@ its claim instead of running that capability's live gate.
   start/stop/restart kernel (update, kill, set-property, raw subprocess).
 - Automated production daemon installation or service mutation.
 - Persistent daemon-owned paddr DAMON — enabled by explicit `[damon] paddr_enabled = true`; disabled by default (P44 adds the lifecycle, but the default is unchanged).
-- Inspect-files subprocess execution, journal reads, and follow/stream mode.
+- Inspect-files subprocess execution is limited to the bounded journald
+  snapshot (fixed absolute ``/usr/bin/journalctl`` argv). No follow/stream
+  mode, no arbitrary subprocess.
 - Web UI.
 - GPU and ZFS plugins.
 
