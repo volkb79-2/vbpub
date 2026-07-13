@@ -76,7 +76,7 @@ acceptance oracle, scope rule, and gate.
   inspect their contents. `git diff --cached --check` was subsequently run
   after staging and returned no output; `git show --check edbf698` in this
   self-review also returned no whitespace errors. The original report's
-  unqualified “`git diff --check` passed” was therefore incomplete context.
+  unqualified "`git diff --check` passed" was therefore incomplete context.
 - The exact prescribed pytest command was run with system Python 3.14.6 and
   produced the real error `/usr/local/bin/python3: No module named pytest`.
   It was not reconstructed. A real full-suite run under

@@ -1,24 +1,31 @@
 # Decisions inbox — product calls awaiting the user
 
-> **PROCESS WARNING — NOT FRONTIER-PROMOTED:** P69's implementation agent
-> created this file and the three entries below because the P69 handoff named
-> them as a deliverable. That violated `controller-workflow-v2.md` §8, which
-> reserves inbox promotion to the frontier reviewer. Treat these as proposed
-> entries only. The frontier reviewer must explicitly promote, edit, or remove
-> them; their current presence is not a valid workflow promotion.
+Purpose: record a *product* decision (not a mechanical contract failure — that
+is BLOCKED) without blocking engineering. An OPEN entry is carved around under
+its stated assumption; it becomes DECIDED when the decision, and where it was
+encoded, are recorded. Never break non-interactive mode to ask.
 
-Purpose: record product decisions without blocking engineering analysis.  An
-OPEN entry is carved around under its stated assumption; it becomes DECIDED
-when the decision and where it was encoded are recorded.
+How to use (user): pick an OPEN entry, start a frontier session, and paste its
+**Resume prompt** — the context pointers restore the filer's reasoning without
+re-reading the repo. When decided, that session updates the entry to DECIDED
+(decision, date, where it was encoded) and unblocks dependent packages. The
+controller surfaces inbox deltas in its status reports.
+
+Who may file: frontier sessions (carver / reviewer) only. Implementation agents
+propose ideas in their REPORT; the reviewer promotes the worthy ones here. That
+filter is what keeps this file worth reading.
 
 Entry schema: ID · date · raised-by · status (OPEN / DISCUSSING / DECIDED /
 DROPPED) · question · why it matters · options with trade-offs · recommendation
 and reasoning · context pointers · resume prompt · (when closed) decision
 record.
 
+Reference implementation: `dstdns/docs/ai-dev/DECISIONS-INBOX.md` (a sibling
+repo, not vendored here).
+
 ---
 
-## D-001 · 2026-07-13 · P69 web-UI scoping · OPEN
+## D-001 · 2026-07-13 · reviewer (frontier pass #2, from P69 analysis) · OPEN
 
 **Question:** Should browser v1 use a dependency-free single static client, a
 server-rendered Python surface, or a full SPA framework?
@@ -38,13 +45,13 @@ runtime. Same-distribution static assets will still grow the core wheel;
 extras cannot make package data conditional. Revisit only when demonstrated
 interface complexity makes the manual client costly.
 
-**Context pointers:** `docs/WEB-UI-SCOPING.md` “Framework and stack options”;
+**Context pointers:** `docs/WEB-UI-SCOPING.md` "Framework and stack options";
 `handoff/P69-web-ui-scoping.md` deliverable 1.
 
-**Resume prompt:** “Discuss D-001 in `groop/docs/DECISIONS-INBOX.md`: choose
-the v1 web stack and explicitly accept or reject a Node build dependency.”
+**Resume prompt:** "Discuss D-001 in `groop/docs/DECISIONS-INBOX.md`: choose
+the v1 web stack and explicitly accept or reject a Node build dependency."
 
-## D-002 · 2026-07-13 · P69 web-UI scoping · OPEN
+## D-002 · 2026-07-13 · reviewer (frontier pass #2, from P69 analysis) · OPEN
 
 **Question:** Who is allowed to view browser telemetry, and how will that
 identity be authenticated at the HTTP gateway?
@@ -66,14 +73,14 @@ redaction above `operational`; grant `sensitive` only explicitly.  No
 non-loopback listener until an authenticated TLS reverse-proxy deployment is
 specified.
 
-**Context pointers:** `docs/WEB-UI-SCOPING.md` “Sensitivity and redaction UX”
-and “Trust boundary”; `CONTRACTS.md` §10; `handoff/P67-versioned-read-http-gateway.md`.
+**Context pointers:** `docs/WEB-UI-SCOPING.md` "Sensitivity and redaction UX"
+and "Trust boundary"; `CONTRACTS.md` §10; `handoff/P67-versioned-read-http-gateway.md`.
 
-**Resume prompt:** “Discuss D-002 in `groop/docs/DECISIONS-INBOX.md`: define
+**Resume prompt:** "Discuss D-002 in `groop/docs/DECISIONS-INBOX.md`: define
 the v1 viewer, authentication owner, and whether that viewer may see sensitive
-metrics and frame metadata.”
+metrics and frame metadata."
 
-## D-003 · 2026-07-13 · P69 web-UI scoping · OPEN
+## D-003 · 2026-07-13 · reviewer (frontier pass #2, from P69 analysis) · OPEN
 
 **Question:** Is the read-only web UI required for the v2 tag, or is it a
 post-v2 surface delivered after the daemon/gateway work?
@@ -93,9 +100,9 @@ as fast-follow.  This makes the product visible without tying the tag to an
 unproven richer UI.
 
 **Context pointers:** `docs/ROADMAP.md:144-166`;
-`docs/WEB-UI-SCOPING.md` “Smallest useful page inventory” and “Draft successor
-handoff headers”.
+`docs/WEB-UI-SCOPING.md` "Smallest useful page inventory" and "Draft successor
+handoff headers".
 
-**Resume prompt:** “Discuss D-003 in `groop/docs/DECISIONS-INBOX.md`: choose
+**Resume prompt:** "Discuss D-003 in `groop/docs/DECISIONS-INBOX.md`: choose
 whether the v2 tag requires the overview, the full four-page read UI, or no web
-surface.”
+surface."
