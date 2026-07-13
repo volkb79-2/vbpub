@@ -96,3 +96,85 @@ Mitigations are identical to the chrome-devtools-mcp gap above:
 2. **External mode**: Traefik enforces TLS + basicAuth before forwarding.
 
 The same remediation options apply (reverse proxy, future proxy, or mcp-proxy API key).
+
+
+## P03: Shared Browser Mode — Risk Posture
+
+`browser_mode = "shared"` (opt-in, default remains `"per-session"`) trades
+per-consumer browser isolation for a pooled, cross-tool-capable Chromium.
+Each traded-away risk gets an explicit mitigation and a documented residual:
+
+### State-bleed residual
+
+**Update (self-review, 2026-07-13):** the original implementation launched
+`mcp` and `devtools-mcp` with `--isolated` when attached to the shared
+browser, intended to give each MCP session its own incognito-style browser
+context. Running the P03 handoff's own required cross-tool proof (navigate
+via Playwright, then trace the same page via DevTools — `scripts/
+smoke-endpoints.sh --mode shared`, check "cross-tool proof") against a real
+built image showed this was broken: with `--isolated` on both servers, each
+attached to its OWN separate browser context, so DevTools traced a blank
+`chrome://new-tab-page/` instead of the page Playwright navigated — the
+core workflow this package exists for did not work at all.
+
+`--isolated` has been **removed** from both `mcp` and `devtools-mcp` in
+`supervisord.shared.conf` so they share Chromium's one default browser
+context, which fixes the cross-tool workflow (verified: the trace now
+correctly references the navigated URL). The direct consequence, also
+empirically verified (two MCP sessions, one sets `document.cookie` via
+`browser_evaluate` against an in-container HTTP fixture, the other reads
+it back and observes the first session's value) is:
+
+**Shared mode provides NO per-session state isolation.** Two concurrent
+consumers on the shared browser see each other's cookies, localStorage, and
+DOM state for the same origin. This is an accepted, permanent residual risk
+of shared mode as currently implemented, not a gap pending upstream
+confirmation — use `POST /browser/reset` between untrusted consumers, or
+use `per-session` mode (the default) when per-consumer isolation is
+required. `scripts/smoke-endpoints.sh --mode shared`'s state-bleed check
+now asserts this observed behavior (bleed present) rather than asserting an
+isolation guarantee that does not exist, per this package's own instruction
+to document real residual risk rather than claim unverified isolation.
+
+### Crash blast radius
+
+A Chromium crash in shared mode affects **every** attached MCP session
+simultaneously (vs. per-session mode, where a crash is scoped to the one
+session that triggered it). Mitigation: `autorestart=true` on
+`[program:chromium]` recovers the browser process within seconds (verified:
+a `kill -9` recovery test in this package restarted the program and a
+subsequent MCP tool call succeeded without a container restart); in-flight
+tool calls during the crash window fail with a transport error to the
+caller, who is expected to retry (reconnect-on-demand — no cached dead
+connection is held by either MCP server, since they dial the CDP endpoint
+per-call).
+
+### Admin endpoint trust
+
+`admin-server` grants itself exactly three capabilities and nothing more:
+close CDP browser contexts (`/browser/reset`), restart the single named
+`chromium` supervisord program (`/browser/restart`), and read CDP/process
+liveness (`/browser/health`). It has no generic supervisord RPC access (only
+`stopProcess`/`startProcess("chromium")` are called), no shell/exec surface,
+and never parses a request body (so there is no injectable parameter
+surface even though bodies are technically accepted by the HTTP layer).
+The admin port (default 8939) is injected into the container environment
+for `admin-server` to bind, but the ciu compose template **never** adds it
+to `ports:` and **never** creates a Traefik router for it, in either
+internal or external deployment mode — it is reachable only from sibling
+containers on the same Docker network, same as the CDP port is reachable
+only from `127.0.0.1` inside the container. Anyone who can reach the
+internal Docker network can call `/browser/reset` (deletes all state) or
+`/browser/restart` (brief service interruption) without authentication —
+this is an intentional trade consistent with the rest of pwmcp's internal-
+mode threat model (the network boundary is the access control), not a gap
+specific to P03.
+
+### CDP never leaves the container
+
+Verified directly: with the shared-mode container running,
+`docker run --rm --network <net> curlimages/curl -fsS http://<container>:9222/json/version`
+from a sibling container fails to connect (`curl: (7) Failed to connect`),
+while the MCP ports and the admin port on the same network succeed. CDP
+binds `127.0.0.1` only inside the container; the compose template does not
+publish it and does not route it through Traefik.

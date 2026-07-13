@@ -43,6 +43,21 @@ services:
       # Parallel allowed-hosts for lighthouse-mcp (port 8933 via mcp-proxy).
       # Same mcp-proxy allowlist gap as devtools.
       PWMCP_LIGHTHOUSE_ALLOWED_HOSTS: "{{ pwmcp.unified.name }}:{{ pwmcp.unified.lighthouse_port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.lighthouse_port }}{% if pwmcp.unified.lighthouse_extra_args %},{{ pwmcp.unified.lighthouse_extra_args }}{% endif %}"
+      # P03 opt-in shared persistent browser mode. "per-session" (default)
+      # renders byte-identical container behavior to pre-P03; "shared" runs
+      # one persistent Chromium the MCP servers attach to over CDP. Validation
+      # of the value itself (reject anything else fatally, no silent clamp)
+      # happens in the container entrypoint (entrypoint.sh), which is the
+      # single source of truth for this check -- not duplicated here.
+      PWMCP_BROWSER_MODE: "{{ pwmcp.unified.browser_mode }}"
+      {% if pwmcp.unified.browser_mode == "shared" %}
+      # Admin API port is internal-network-only: injected into the container
+      # environment but deliberately NEVER added to `ports:` and NEVER given
+      # a Traefik router below, in either deployment mode (safeguard 5 /
+      # "CDP never leaves the container" applies equally to the admin port).
+      PWMCP_ADMIN_PORT: "{{ pwmcp.unified.admin_port }}"
+      PWMCP_BROWSER_MAX_IDLE_S: "{{ pwmcp.unified.browser_max_idle_s }}"
+      {% endif %}
     {% if pwmcp.unified.expose %}
     ports:
       - "127.0.0.1:{{ pwmcp.unified.host_ws_port }}:{{ pwmcp.unified.ws_port }}"

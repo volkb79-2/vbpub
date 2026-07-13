@@ -6,9 +6,15 @@
 # endpoints (3000 WS, 8931 MCP, 8932 devtools-mcp, 8933 lighthouse-mcp) correctly.
 #
 # Usage:
-#   ./scripts/smoke-endpoints.sh              # full validation
+#   ./scripts/smoke-endpoints.sh              # full validation, per-session mode
 #   ./scripts/smoke-endpoints.sh --quick       # skip tool-call tests
+#   ./scripts/smoke-endpoints.sh --mode shared [--quick]   # P03 shared-browser-mode pass
 #   ./scripts/smoke-endpoints.sh --help        # this message
+#
+# --mode shared adds: admin endpoints (health/reset/restart), crash-restart
+# mechanism test (kill -9 chromium), cross-session cookie isolation, CDP
+# unreachability from a sibling container, and the cross-tool proof (drive a
+# page via Playwright MCP, then trace it via DevTools MCP on the SAME page).
 #
 # Exit codes:
 #   0 — all checks pass
@@ -21,6 +27,17 @@
 # ===========================================================================
 
 set -euo pipefail
+
+MODE="per-session"
+ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --mode) MODE="$2"; shift 2 ;;
+        *) ARGS+=("$1"); shift ;;
+    esac
+done
+set -- "${ARGS[@]:-}"
+if [ "${1:-}" = "" ] && [ ${#ARGS[@]} -eq 0 ]; then set --; fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PWMCP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -39,6 +56,10 @@ WS_URL="ws://${PWMCP_HOST}:${WS_PORT}/"
 MCP_URL="http://${PWMCP_HOST}:${MCP_PORT}/mcp"
 DEVTOOLS_URL="http://${PWMCP_HOST}:${DEVTOOLS_PORT}/mcp"
 LIGHTHOUSE_URL="http://${PWMCP_HOST}:${LIGHTHOUSE_PORT}/mcp"
+
+# P03 shared-browser-mode extras (only used when MODE=shared)
+ADMIN_PORT=8939
+CDP_PORT=9222
 
 # Colors
 RED='\033[0;31m'
@@ -509,6 +530,184 @@ fi
 docker exec "${CONTAINER_NAME}" supervisorctl -c /etc/supervisor/conf.d/pwmcp.conf start lighthouse-mcp 2>/dev/null || true
 
 echo ""
+
+# ── 6. P03 shared-browser-mode pass (only when --mode shared) ─────────────
+if [ "${MODE}" = "shared" ]; then
+    echo "[SHARED-BROWSER-MODE]"
+
+    # 6a. Admin health endpoint
+    total=$((total + 1))
+    echo -n "  CHECK ${total}: admin GET /browser/health (cdpAlive=true) ... "
+    if docker exec "${CONTAINER_NAME}" wget -q -O- "http://127.0.0.1:${ADMIN_PORT}/browser/health" 2>/dev/null \
+        | jq -e '.ok == true and .cdpAlive == true' >/dev/null 2>&1; then
+        record_pass
+    else
+        record_fail "admin /browser/health did not report cdpAlive"
+    fi
+
+    # 6b. Admin reset endpoint (closes contexts without killing the process)
+    total=$((total + 1))
+    echo -n "  CHECK ${total}: admin POST /browser/reset (200, ok=true) ... "
+    if docker exec "${CONTAINER_NAME}" wget -q -O- --post-data='' "http://127.0.0.1:${ADMIN_PORT}/browser/reset" 2>/dev/null \
+        | jq -e '.ok == true' >/dev/null 2>&1; then
+        record_pass
+    else
+        record_fail "admin /browser/reset did not return ok=true"
+    fi
+
+    # 6c. Closed endpoint set: an undefined path 404s, no body interpretation
+    total=$((total + 1))
+    echo -n "  CHECK ${total}: admin unknown path returns 404 ... "
+    admin_code=$(docker exec "${CONTAINER_NAME}" sh -c "wget -q -O- -S 'http://127.0.0.1:${ADMIN_PORT}/not-a-real-endpoint' 2>&1 | grep -o 'HTTP/[0-9.]* [0-9]*' | head -1 | awk '{print \$2}'" || true)
+    if [ "${admin_code}" = "404" ]; then
+        record_pass
+    else
+        record_fail "admin unknown path did not 404 (got: ${admin_code:-none})"
+    fi
+
+    # 6d. CDP never leaves the container: unreachable from a sibling container
+    # on the same Docker network (only the admin/MCP ports are).
+    total=$((total + 1))
+    echo -n "  CHECK ${total}: CDP port ${CDP_PORT} NOT reachable from a sibling container ... "
+    NET_NAME=$(docker inspect "${CONTAINER_NAME}" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null | head -1)
+    if [ -n "${NET_NAME}" ] && docker run --rm --network "${NET_NAME}" curlimages/curl:latest \
+        -fsS --max-time 3 "http://${PWMCP_HOST}:${CDP_PORT}/json/version" >/dev/null 2>&1; then
+        record_fail "CDP port ${CDP_PORT} was reachable from a sibling container (should not be)"
+    else
+        record_pass
+    fi
+
+    # 6e. Crash-restart mechanism: kill -9 chromium, assert supervisord
+    # restarts it within a bounded window AND a subsequent MCP tool call on
+    # each attached server succeeds (reconnect-on-demand, not a cached dead
+    # connection -- per handoff safeguard 1).
+    echo "  Killing chromium -9 (crash-restart mechanism test)..."
+    docker exec "${CONTAINER_NAME}" sh -c "kill -9 \$(supervisorctl -c /etc/supervisor/conf.d/pwmcp-shared.conf pid chromium) 2>/dev/null" || true
+    total=$((total + 1))
+    echo -n "  CHECK ${total}: chromium program RUNNING again within 30s of kill -9 ... "
+    ok=1
+    i=0
+    while [ $i -lt 30 ]; do
+        if docker exec "${CONTAINER_NAME}" supervisorctl -c /etc/supervisor/conf.d/pwmcp-shared.conf status chromium 2>/dev/null | grep -q RUNNING; then
+            ok=0
+            break
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    if [ $ok -eq 0 ]; then record_pass; else record_fail "chromium not RUNNING within 30s of kill -9"; fi
+
+    total=$((total + 1))
+    echo -n "  CHECK ${total}: MCP (8931) tool call succeeds after chromium crash-restart ... "
+    if mcp_initialize_assert_ok "${MCP_URL}" "${PWMCP_HOST}:${MCP_PORT}" "@playwright/mcp post-chromium-crash"; then
+        record_pass
+    else
+        record_fail "MCP did not recover after chromium crash-restart"
+    fi
+
+    total=$((total + 1))
+    echo -n "  CHECK ${total}: DevTools MCP (8932) tool call succeeds after chromium crash-restart ... "
+    if mcp_initialize_assert_ok "${DEVTOOLS_URL}" "${PWMCP_HOST}:${DEVTOOLS_PORT}" "chrome-devtools-mcp post-chromium-crash"; then
+        record_pass
+    else
+        record_fail "DevTools MCP did not recover after chromium crash-restart"
+    fi
+
+    if [ "${1:-}" != "--quick" ]; then
+        # 6f. Cross-tool proof: navigate via Playwright MCP, then start/stop a
+        # DevTools performance trace on the SAME page and assert it references
+        # the navigated URL -- the workflow this package exists for.
+        total=$((total + 1))
+        echo -n "  CHECK ${total}: cross-tool proof (Playwright navigate -> DevTools trace, same page) ... "
+        nav_url="data:text/html,<h1>pwmcp-shared-cross-tool</h1>"
+        pw_body=$(mcp_session_tool_call "${MCP_URL}" "${PWMCP_HOST}:${MCP_PORT}" \
+            browser_navigate "{\"url\":\"${nav_url}\"}" 2>/dev/null) || pw_body=""
+        trace_start=$(mcp_session_tool_call "${DEVTOOLS_URL}" "${PWMCP_HOST}:${DEVTOOLS_PORT}" \
+            performance_start_trace '{}' 2>/dev/null) || trace_start=""
+        trace_stop=$(mcp_session_tool_call "${DEVTOOLS_URL}" "${PWMCP_HOST}:${DEVTOOLS_PORT}" \
+            performance_stop_trace '{}' 2>/dev/null) || trace_stop=""
+        # NOTE (self-review 2026-07-13): performance_start_trace defaults to
+        # autoStop:true, so chrome-devtools-mcp records + analyzes the trace
+        # synchronously and returns the full summary (incl. the navigated
+        # URL) from the START call; performance_stop_trace is then a no-op
+        # ack on a fresh MCP session with nothing left to stop, and returns
+        # empty. Assert on EITHER call's body, not stop_trace alone --
+        # observed empirically: with --isolated removed (see
+        # supervisord.shared.conf), trace_start now correctly shows
+        # "URL: data:text/html,...pwmcp-shared-cross-tool..." instead of
+        # "URL: chrome://new-tab-page/".
+        if [ -n "$pw_body" ] && { printf '%s' "$trace_start" | grep -qF "$nav_url" || printf '%s' "$trace_stop" | grep -qF "$nav_url"; }; then
+            record_pass
+        else
+            record_fail "cross-tool trace did not reference the navigated URL" "nav=$pw_body start=$trace_start stop=$trace_stop"
+        fi
+    fi
+
+    # 6g. State-bleed characterization (safeguard 3): self-review (2026-07-13)
+    # found the original version of this check only asserted that two
+    # sessions could independently navigate -- it never set or read a
+    # cookie, so it would PASS identically whether isolation existed or not
+    # (a hollow test). It has been rewritten to actually set a cookie in
+    # session A and read document.cookie in session B against the SAME
+    # in-container HTTP fixture origin (127.0.0.1:FIXTURE_PORT, started
+    # above for the lighthouse check), using browser_evaluate. Per the
+    # --isolated removal above (required to make the cross-tool proof
+    # work -- see [program:mcp]/[program:devtools-mcp] comments in
+    # supervisord.shared.conf), shared mode does NOT provide per-session
+    # cookie isolation: this is now an accepted, explicitly documented
+    # residual risk (docs/SECURITY.md, "State-bleed residual"), not a
+    # safeguard that passes. This check verifies reality matches that
+    # documented posture (asserts the bleed IS observed) so a future
+    # regression in either direction -- silent isolation appearing, or the
+    # bleed becoming undocumented -- gets caught rather than silently
+    # passing either way.
+    total=$((total + 1))
+    echo -n "  CHECK ${total}: state-bleed characterization matches documented residual risk ... "
+    session_set_then_read_cookie() {
+        # $1: cookie value to set (empty to skip the set, i.e. read-only)
+        local val="$1" hdrs sid out
+        hdrs=$(mktemp)
+        curl -fsS --max-time 30 -D "$hdrs" -o /dev/null -X POST "${MCP_URL}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -H "Host: ${PWMCP_HOST}:${MCP_PORT}" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"1.0"}}}' \
+            || { rm -f "$hdrs"; return 1; }
+        sid=$(tr -d '\r' < "$hdrs" | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2}')
+        rm -f "$hdrs"
+        [ -n "$sid" ] || return 1
+        curl -fsS --max-time 30 -o /dev/null -X POST "${MCP_URL}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -H "Host: ${PWMCP_HOST}:${MCP_PORT}" -H "Mcp-Session-Id: ${sid}" \
+            -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' || return 1
+        curl -fsS --max-time 30 -o /dev/null -X POST "${MCP_URL}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -H "Host: ${PWMCP_HOST}:${MCP_PORT}" -H "Mcp-Session-Id: ${sid}" \
+            -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"browser_navigate\",\"arguments\":{\"url\":\"http://127.0.0.1:${FIXTURE_PORT}/\"}}}" || return 1
+        local js='() => document.cookie'
+        if [ -n "$val" ]; then
+            js="() => { document.cookie = \\\"sid=${val}\\\"; return document.cookie; }"
+        fi
+        out=$(curl -fsS --max-time 30 -X POST "${MCP_URL}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -H "Host: ${PWMCP_HOST}:${MCP_PORT}" -H "Mcp-Session-Id: ${sid}" \
+            -d "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"browser_evaluate\",\"arguments\":{\"function\":\"${js}\"}}}") || return 1
+        sse_extract_json "$out"
+    }
+    cookie_a=$(session_set_then_read_cookie "alice-$$" 2>/dev/null) || cookie_a=""
+    cookie_b=$(session_set_then_read_cookie "" 2>/dev/null) || cookie_b=""
+    if [ -n "$cookie_a" ] && [ -n "$cookie_b" ] && printf '%s' "$cookie_b" | grep -qF "alice-$$"; then
+        record_pass
+        echo "    (bleed observed as expected -- session B's document.cookie included session A's value; matches docs/SECURITY.md residual-risk documentation, not an isolation guarantee)"
+    else
+        record_fail "state-bleed characterization did not match documented residual risk (either isolation appeared -- update SECURITY.md and re-add --isolated commentary -- or both sessions failed transport-level)" "a=$cookie_a b=$cookie_b"
+    fi
+
+    echo ""
+fi
 
 # ── Summary ────────────────────────────────────────────────────────────────
 echo "============================================"

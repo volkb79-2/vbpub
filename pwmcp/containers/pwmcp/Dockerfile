@@ -109,8 +109,16 @@ RUN mkdir -p /var/log/supervisor \
  && chmod 1777 /var/log/supervisor
 
 COPY containers/pwmcp/supervisord.conf /etc/supervisor/conf.d/pwmcp.conf
+# browser_mode=shared config (P03): both configs are always baked into the
+# image; PWMCP_BROWSER_MODE selects which one the entrypoint passes to
+# supervisord at container start -- no divergent Dockerfiles.
+COPY containers/pwmcp/supervisord.shared.conf /etc/supervisor/conf.d/pwmcp-shared.conf
 COPY containers/pwmcp/entrypoint.sh /usr/local/bin/pwmcp-entrypoint.sh
-RUN chmod +x /usr/local/bin/pwmcp-entrypoint.sh
+COPY containers/pwmcp/wait-for-cdp.sh /usr/local/bin/wait-for-cdp.sh
+RUN chmod +x /usr/local/bin/pwmcp-entrypoint.sh /usr/local/bin/wait-for-cdp.sh
+
+# Shared-mode admin API (Node stdlib http only -- no new framework dependency).
+COPY containers/pwmcp/admin-server/ /opt/pwmcp/admin-server/
 
 # Install vendored lighthouse-mcp server (dependencies: @modelcontextprotocol/sdk, chrome-launcher, lighthouse).
 COPY containers/pwmcp/lighthouse-mcp/ /opt/pwmcp/lighthouse-mcp/

@@ -142,6 +142,20 @@ PWMCP_MCP_ALLOWED_HOSTS=pwmcp:8931,<project>-<env>-pwmcp:8931
 
 The image default is `localhost:8931,127.0.0.1:8931` for standalone usage. Override via `extra_args` in `ciu.toml.j2` to add further hosts.
 
+## Shared Persistent Browser Mode (P03, opt-in)
+
+By default, `@playwright/mcp` and `chrome-devtools-mcp` each launch their
+own Chromium (`browser_mode = "per-session"`, unchanged from before). Set
+`browser_mode = "shared"` (in `ciu.toml.j2`) to run ONE persistent headless
+Chromium that both attach to over CDP — enabling the cross-tool workflow
+(drive a page with Playwright tools, then profile that SAME page with
+DevTools tools) and pooling browser memory under concurrent use. See
+[docs/USAGE.md](docs/USAGE.md#p03-shared-persistent-browser-mode-opt-in) for
+configuration and the admin endpoint (`POST /browser/reset`,
+`POST /browser/restart`, `GET /browser/health`), and
+[docs/SECURITY.md](docs/SECURITY.md#p03-shared-browser-mode--risk-posture)
+for the risk posture.
+
 ## Package Version Pins
 
 ### Playwright Version

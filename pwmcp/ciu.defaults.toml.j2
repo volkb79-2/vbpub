@@ -78,6 +78,24 @@ host_mcp_port = 8931
 host_devtools_port = 8932
 host_lighthouse_port = 8933
 
+# ---- P03: opt-in shared persistent browser mode -----------------------
+# browser_mode = "per-session" (default, byte-identical to pre-P03 behavior:
+# @playwright/mcp and chrome-devtools-mcp each launch their own Chromium) or
+# "shared" (one persistent Chromium; both attach over CDP). Any other value
+# is a fatal entrypoint error (no silent fallback). Lighthouse is NOT wired
+# to the shared browser in either mode (see P03 handoff "Out Of Scope").
+browser_mode = "per-session"
+# Admin HTTP API port (shared mode only) -- internal Docker network only,
+# NEVER published, NEVER routed through Traefik (see [pwmcp.external] below
+# and docs/SECURITY.md). POST /browser/reset, POST /browser/restart,
+# GET /browser/health.
+admin_port = 8939
+# Optional idle recycle (shared mode only): 0 disables it (default). When
+# > 0, the admin-server restarts the shared browser after this many seconds
+# with zero open CDP targets. Must be a non-negative integer -- the
+# entrypoint rejects nonsense values fatally, not by clamping.
+browser_max_idle_s = 0
+
 [pwmcp.unified.image]
 registry = "ghcr.io"
 namespace = "volkb79-2"
