@@ -91,7 +91,11 @@ class Collector:
         interval_s = self.config.interval if self._prev_ts is None else max(0.0, ts - self._prev_ts)
         entities = walk_entities(self.cgroup_root)
         self._apply_config(entities)
-        entities = enrich_entities(entities, self.docker_inspect)
+        entities = enrich_entities(
+            entities,
+            self.docker_inspect,
+            known_stack_roots=set(self.config.ciu.known_stacks) if self.config.ciu.known_stacks else None,
+        )
         # Apply entity filtering: determine which entity keys to collect.
         # Non-matching entities are skipped (no sysfs reads for their cgroup).
         # Container selectors resolve inside collect_once() against the

@@ -126,13 +126,14 @@ class CiuConfig:
     """CIU stack metadata configuration.
 
     Attributes:
-        stack_roots: Directories whose subdirectory names are treated as known
-            CIU stack names for the inference heuristic. An empty list (default)
-            disables inference; no ciu-managed containers are detected by
-            heuristic alone.
+        known_stacks: Stack directory names used by the inference heuristic
+            (e.g. ``"infra/redis-core"``, ``"app/web"``). When a container's
+            ``com.docker.compose.project`` matches a name in this set AND its
+            container name matches ciu's anchored pattern, it is inferred to be
+            ciu-managed. An empty tuple (default) disables inference.
     """
 
-    stack_roots: tuple[Path, ...] = ()
+    known_stacks: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -205,7 +206,7 @@ class GroopConfig:
                 "paddr_enabled": self.damon.paddr_enabled,
             },
             "ciu": {
-                "stack_roots": [str(p) for p in self.ciu.stack_roots],
+                "known_stacks": list(self.ciu.known_stacks),
             },
             "bpf_snapshot": {
                 "enabled": self.bpf_snapshot.enabled,
@@ -387,9 +388,9 @@ def load(path: Path | None = None) -> GroopConfig:
             ),
         ),
         ciu=CiuConfig(
-            stack_roots=tuple(
-                Path(p) for p in (ciu_data.get("stack_roots", []) or [])
-                if isinstance(p, str)
+            known_stacks=tuple(
+                str(s) for s in (ciu_data.get("known_stacks", []) or [])
+                if isinstance(s, str)
             ),
         ),
         bpf_snapshot=BpfSnapshotConfig(

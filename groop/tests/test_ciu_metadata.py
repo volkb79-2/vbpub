@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -666,18 +665,18 @@ class TestEnrichEntitiesIntegration:
 
 class TestCiuConfig:
     def test_ciu_config_defaults(self) -> None:
-        """Default CiuConfig has empty stack_roots."""
+        """Default CiuConfig has empty known_stacks."""
         config = GroopConfig()
-        assert config.ciu.stack_roots == ()
+        assert config.ciu.known_stacks == ()
 
     def test_ciu_config_custom(self) -> None:
-        config = GroopConfig(ciu=CiuConfig(stack_roots=(Path("/opt/stacks"),)))
-        assert config.ciu.stack_roots == (Path("/opt/stacks"),)
+        config = GroopConfig(ciu=CiuConfig(known_stacks=("infra/redis-core",)))
+        assert config.ciu.known_stacks == ("infra/redis-core",)
 
     def test_ciu_config_digest_stable(self) -> None:
         """ciu config is included in the config digest."""
         config_a = GroopConfig()
-        config_b = GroopConfig(ciu=CiuConfig(stack_roots=(Path("/opt/stacks"),)))
+        config_b = GroopConfig(ciu=CiuConfig(known_stacks=("infra/redis-core",)))
         assert config_a.digest() != config_b.digest()
 
 

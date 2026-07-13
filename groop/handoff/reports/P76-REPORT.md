@@ -20,7 +20,7 @@ phase 0.
 
 **Inferred (fallback) detection** (`detect_ciu_inferred`): When no `ciu.*`
 labels exist, checks whether the container's `com.docker.compose.project`
-matches a known stack directory name (from configurable `stack_roots`) AND
+matches a known stack name (from configurable `known_stacks`) AND
 its container name matches ciu's anchored `^<project>-<env>-<name>$` pattern
 (CIU-DEPLOY.md S7.8). This is a heuristic, explicitly marked `source="inferred"`
 and never conflated with `source="label"`.
@@ -40,13 +40,15 @@ the inspect-failure path where both `docker` and `ciu` are `None` (unreadable).
 Attached to `Entity.ciu` as an optional field. Includes full serialization
 (`ciu_to_jsonable`/`ciu_from_jsonable`) through the canonical model
 serializers. Existing frames without `ciu` fields parse unchanged —
-no schema break, no golden fixture regeneration needed.
+no schema break. The golden fixture was regenerated to include the new
+`"ciu": null` field on every entity — an additive serialization change
+that does not affect deserialization of legacy frames.
 
 ### Configuration in `config.py`
 
-`CiuConfig` with `stack_roots: tuple[Path, ...]` (default empty). When
-configured in `config.toml` under `[ciu]`, the named directories' subdirectory
-names become known stack names for the inference heuristic. Label-confirmed
+`CiuConfig` with `known_stacks: tuple[str, ...]` (default empty). Stack
+directory names like ``"infra/redis-core"`` or ``"app/web"`` listed here
+become known stack names for the inference heuristic. Label-confirmed
 detection works unconditionally without any configuration.
 
 ### `enrich_entities` extension
@@ -68,7 +70,20 @@ handoff specifies.
 
 ## Deviations from the handoff doc
 
-None. All named contracts are met as specified.
+As submitted, two:
+
+1. **Golden fixture regenerated.** The handoff says "existing fixtures must not
+   need regeneration." Because `entity_to_jsonable` emits `"ciu": null` on every
+   entity (necessary for round-trip symmetry), the golden fixture
+   `gstammtisch-once.jsonl` needed regeneration. This is an additive
+   serialization change; deserialization of legacy frames is unaffected.
+
+2. **Collector had no CIU config wiring.** The handoff says "make [stack roots]
+   overridable through the existing config mechanism." The initial commit added
+   `CiuConfig` but did not thread it into `Collector.collect_once()` — an operator
+   configuring `[ciu] known_stacks` in `config.toml` would not see inference
+   working. Fixed in the self-review pass: the Collector now passes
+   `known_stack_roots=set(self.config.ciu.known_stacks)` to `enrich_entities()`.
 
 ## Proposed contract changes
 
@@ -130,11 +145,11 @@ $ git diff --check
 
 ## Known gaps / open items
 
-- **Golden frames**: No golden frame regeneration needed — all changes are
-  purely additive (new optional `ciu` field on `Entity`, `None` when absent).
-  Existing pre-P76 fixtures deserialize with `ciu=None` as verified by
-  `test_pre_p76_fixture_still_parses`.
-- **Inferred detection requires configuration**: Without `[ciu] stack_roots`
+- **Golden fixture regenerated**: The frame serialization emits `"ciu": null`
+  on every entity dict, so `gstammtisch-once.jsonl` was regenerated.
+  Deserialization of legacy frames is unaffected (verified by
+  `test_pre_p76_fixture_still_parses`).
+- **Inferred detection requires configuration**: Without `[ciu] known_stacks`
   in `config.toml`, inference is disabled. This is by design — a host not
   running ciu shouldn't produce false positives. Documentation in
   `config.toml` examples would help operators discover this.
