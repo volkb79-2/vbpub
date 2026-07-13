@@ -25,6 +25,7 @@ flowchart LR
 
     Frame --> Record[RecordWriter JSONL/zstd]
     Record --> Replay[RecordReader/ReplayDriver]
+    Record --> Report[groop report steady-state profile]
     Replay --> UI
     Frame --> UI[Textual UI]
     Frame --> Snapshot[Incident snapshot bundle]
@@ -46,6 +47,7 @@ flowchart LR
 | `snapshot/` | incident bundle creation and inspection. |
 | `daemon/` | Request-independent Unix-socket frame broker with background producer, bounded sequenced history, non-consuming fan-out, lifecycle (P51), and a versioned, bounded, peer-aware read API envelope with typed errors, sensitivity metadata, peer credentials, and proven resource bounds (P52). |
 | `bpf_gate.py` | Safe no-op BPF preflight and baseline measurement helper. |
+| `report.py` | Read-only steady-state profile computation from a P2-format recording: per-entity/per-slice p50/p95/max for key memory/PSI gauges plus derived rates. |
 | `ui/` | Textual app, banner, table/tree, drill-down, host-memory status, keys. |
 
 ## Layering Rules

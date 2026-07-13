@@ -88,6 +88,13 @@ Inspect an incident snapshot:
 groop snapshot inspect /path/to/groop-incident-*.tar
 ```
 
+Compute a steady-state profile from a recording:
+
+```bash
+groop report recording.jsonl --json
+groop report recording.jsonl --json --window last:300s --group-by slice
+```
+
 Plan a read-only file inspection (no content reads):
 
 ```bash
