@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import math
 import os
 import signal
 import time
@@ -29,43 +28,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 from groop.actions.audit import AuditLog
-
-# ---------------------------------------------------------------------------
-# Constants — defaults matching container-mempress.sh proven values
-# ---------------------------------------------------------------------------
-
-_DEFAULT_STEP = 256 * 1024 * 1024  # 256 MiB
-_DEFAULT_DELAY = 15.0  # seconds
-_DEFAULT_FLOOR = 1024 * 1024 * 1024  # 1 GiB
-_DEFAULT_PSI_SOME_LIMIT = 10.0  # percent
-_DEFAULT_PSI_FULL_LIMIT = 5.0  # percent
-_DEFAULT_RF_LIMIT = 200  # refaults/s
-_DEFAULT_RELAX_TO: str = "max"
-
-# groop-owned log directory for squeeze logs
-_SQUEEZE_LOG_DIR = Path("/var/log/groop/squeeze")
-
-# ---------------------------------------------------------------------------
-# Type aliases for injectable test seams
-# ---------------------------------------------------------------------------
-
-CgroupIntReader = Callable[[str], int | None]
-"""Read an integer cgroup file (e.g. memory.current) from the cgroup path.
-Returns the integer value or None if unreadable."""
-
-CgroupFlatKvReader = Callable[[str], dict[str, int]]
-"""Read a flat key-value cgroup file (e.g. memory.stat) from the cgroup path.
-Returns a dict of key->int, empty on error."""
-
-CgroupPressureReader = Callable[[str], dict[str, dict[str, float]]]
-"""Read a PSI pressure file (e.g. memory.pressure) from the cgroup path.
-Returns {section: {field: value}} dict, empty on error."""
-
-CgroupTextWriter = Callable[[str, str], None]
-"""Write a string value to a cgroup file. Used for memory.high writes."""
-
-CgroupTextReader = Callable[[str], str | None]
-"""Read the raw text content of a cgroup file."""
 
 
 # ---------------------------------------------------------------------------
@@ -128,14 +90,6 @@ def _default_cgroup_pressure_reader(cgroup_path: str, filename: str) -> dict[str
 
     data, _src = read_pressure(Path(cgroup_path) / filename)
     return data
-
-
-def _default_cgroup_text_reader(cgroup_path: str, filename: str) -> str | None:
-    """Read the raw text content of *filename* under *cgroup_path*."""
-    from groop.collect.cgroup import read_text
-
-    result = read_text(Path(cgroup_path) / filename)
-    return str(result.value) if result.value is not None and result.src != "unavail_kernel" else None
 
 
 def _default_cgroup_writer(cgroup_path: str, filename: str, value: str) -> None:
@@ -317,7 +271,6 @@ def run_squeeze(
     cgroup_int_reader: Callable[[str, str], int | None] | None = None,
     cgroup_flat_kv_reader: Callable[[str, str], dict[str, int]] | None = None,
     cgroup_pressure_reader: Callable[[str, str], dict[str, dict[str, float]]] | None = None,
-    cgroup_text_reader: Callable[[str, str], str | None] | None = None,
     cgroup_writer: Callable[[str, str, str], None] | None = None,
     clock: Callable[[], float] | None = None,
     auditor: AuditLog | None = None,
@@ -329,7 +282,6 @@ def run_squeeze(
         cgroup_int_reader: Injectable integer cgroup reader.
         cgroup_flat_kv_reader: Injectable flat-key-value cgroup reader.
         cgroup_pressure_reader: Injectable PSI pressure cgroup reader.
-        cgroup_text_reader: Injectable text cgroup reader.
         cgroup_writer: Injectable cgroup writer.
         clock: Injectable clock (default ``time.time``).
         auditor: Injectable audit log (default ``AuditLog(config.audit_path)``).
@@ -341,7 +293,6 @@ def run_squeeze(
     int_reader = cgroup_int_reader or _default_cgroup_int_reader
     flat_kv_reader = cgroup_flat_kv_reader or _default_cgroup_flat_kv_reader
     pressure_reader = cgroup_pressure_reader or _default_cgroup_pressure_reader
-    text_reader = cgroup_text_reader or _default_cgroup_text_reader
     writer = cgroup_writer or _default_cgroup_writer
     audit = auditor if auditor is not None else AuditLog(config.audit_path)
 

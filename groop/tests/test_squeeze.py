@@ -8,10 +8,7 @@ writers with no real cgroupfs mutation.
 from __future__ import annotations
 
 import json
-import math
-import os
 import signal
-import sys
 import time
 from pathlib import Path
 
@@ -120,16 +117,6 @@ class _FakeCgroup:
         if filename not in self._writes:
             self._writes[filename] = []
         self._writes[filename].append(value)
-
-    def text_reader(self, cgroup_path: str, filename: str) -> str | None:
-        val = self._current_state().get(filename)
-        if val is None:
-            return None
-        return str(val)
-
-    def advance(self) -> None:
-        """Move to the next read state."""
-        self._call_count += 1
 
 
 def _make_config(
