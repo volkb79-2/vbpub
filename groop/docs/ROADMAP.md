@@ -77,18 +77,32 @@ flowchart TD
     P52 --> P58[P58 Daemon MCP frontend]
     P57 --> P59[P59 --container entity selector :done:]
     P55 --> P59
-    P55 --> P60[P60 free-form --metrics list]
+    P55 --> P60[P60 free-form --metrics list :done:]
     P54 --> P61[P61 report threshold gating :done:]
-    P54 --> P62[P62 report steady-state auto-detect]
+    P54 --> P62[P62 report steady-state auto-detect :done:]
     P61 -.-> P62
     P61 --> P64[P64 report baseline regression gate]
     P61 --> P65[P65 report table rendering]
+    P62 --> P70[P70 detector performance]
     P63[P63 Daemon client versioned read methods :done:] --> P66[P66 Daemon client versioned health]
     P63 --> P67[P67 Versioned read HTTP/WebSocket gateway]
     P52 --> P67
     P63 --> P68[P68 Versioned current subscribe client]
-    P67 --> P69[P69 Web UI over daemon API]
+    P69[P69 Web UI scoping + analysis] -.-> P67
+    P67 --> P69impl[Web UI implementation - carved from P69]
+    P69 --> P69impl
+    P3 --> P71[P71 ZFS ARC host provider]
+    P46 --> P72[P72 Admin action kill/update verbs]
+    P49 --> P72
 ```
+
+P69 is the **scoping** package for the web-UI product goal, not the UI itself: the
+area is unscoped (framework, page inventory, auth/redaction UX all undecided), so
+per controller-workflow-v2 §8 the first carve is a small analysis package whose
+output is the input to the real implementation carves. It reads the merged
+P52/P63 read surface and P67's *carved handoff* — it does not need P67 merged, and
+one of its jobs is to tell us whether P67's handoff is sufficient before P67 is
+dispatched (dashed edge). The implementation successors depend on P67 landing.
 
 P61 and P62 are the carved successors of the P54 steady-state-report slice,
 both consumers P54 explicitly deferred: P61 (done) adds `--assert GROUP:METRIC:STAT`
@@ -125,7 +139,7 @@ After P43, the roadmap is mostly in three buckets:
 |---|---:|---|
 | v1/v1.5 release confidence and UI polish | 0 | P43 removes the obsolete Textual `<1` resolver ceiling and closes the last planned v1/v1.5 release-confidence package. Manual live-host acceptance evidence remains. |
 | v2 privileged daemon/BPF/admin/file work | 4-6 | P46 (admin action execution kernel) is complete. P44-P45 cover paddr daemon ownership and the first bounded inspect-files content slice; BPF lifecycle, install execution/service hardening, remaining content modes, kill/update, and systemd property governance remain. |
-| Optional plugins / future surfaces | 2-3 | GPU, ZFS, CIU grouping/actions. Web UI over daemon API is promoted out of this bucket — see P69 below (product-goal-driven, standing user priority as of 2026-07-13). |
+| Optional plugins / future surfaces | 2-3 | GPU, ZFS, CIU grouping/actions. **ZFS is now carved as P71** (2026-07-13) — the first package ever drawn from this bucket, which had gone un-carved for the project's whole life (the exact review-children-only drift controller-workflow-v2 §8 exists to stop). GPU and CIU remain. Web UI over daemon API is promoted out of this bucket — see P69 below (product-goal-driven, standing user priority as of 2026-07-13). |
 
 ### P69 — Web UI over daemon API (product-goal-driven)
 
@@ -138,6 +152,18 @@ first carved package here should be a small scoping/analysis package per the
 controller-workflow-v2 §8 carve-source-blend rule ("if the area is too
 unknown to carve confidently, carve a small scoping/analysis package for it
 instead of skipping it"), not a full implementation handoff sight-unseen.
+
+**Carved 2026-07-13** as `handoff/P69-web-ui-scoping.md` (product-goal-driven,
+sonnet5-high, docs-only). It produces `docs/WEB-UI-SCOPING.md` — read-surface gap
+analysis with `file:line` citations, page inventory grounded in the existing TUI
+surfaces and sized against real frame bytes, sensitivity/redaction UX against the
+CONTRACTS §10 enum, the trust-boundary verdict on P67's handoff (a listening HTTP
+port is a real change to the v1 socket-only boundary), and a framework
+recommendation with its packaging consequence — plus draft handoff headers for the
+implementation packages and `DECISIONS-INBOX.md` entries for the product calls
+(framework, auth posture, v2-tag scope). It touches no source, so it can run now,
+in parallel with P67, and its verdict on P67's handoff lands *before* P67 is
+dispatched.
 
 Pragmatic estimate from the current state: a shippable v1/v1.5 release
 candidate needs **0 remaining packages** after P41 plus live-host acceptance

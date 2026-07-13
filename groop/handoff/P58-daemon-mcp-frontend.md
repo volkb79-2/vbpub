@@ -1,11 +1,54 @@
 # P58 - Daemon MCP Frontend
 
 <!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
-> **Tier:** flash-max
-> **Depends-on:** P52 (merged, reviewed) AND P63 (typed versioned client methods — dispatch P58 only after P63 merges)
-> **Base:** main
-> **Session-hint:** fresh (P52 session was OpenCode/GLM; API surface is documented in the P52 handoff + report; the typed client surface P58 consumes is P63)
+> **Tier:** sonnet5-high   <!-- escalated 2026-07-13 after the v3 rejection; see the v3 carve note below -->
+> **Depends-on:** P52 (merged), P63 (merged)
+> **Base:** main after P63 merge
+> **Session-hint:** fresh
 > **Escalate-if:** a named contract cannot be met as specified; the versioned read API (P52) or its typed client (P63) itself would need changes beyond what P63 delivered
+
+<!--
+CARVE NOTE v3 (2026-07-13, frontier pass #2, controller-workflow-v2 §8):
+The v3 attempt (branch feat/groop-p58-daemon-mcp-frontend-v3, terra-med) was
+REVIEWED AND REJECTED — not merged. Full review: reports/P58-REVIEW-v3.md.
+
+What v3 got RIGHT (keep it — do NOT re-carve, do NOT start over):
+  - Consumes the P63 typed DaemonClient exclusively. No raw socket, no envelope
+    parsing, no wire JSON in groop.mcp. The architecture violation that killed
+    v1 and BLOCKED v2 is genuinely fixed.
+  - `groop mcp serve` without the extra exits 2 (v1 blocker, fixed).
+  - The four-tool shape and the typed-error taxonomy are the right design.
+
+What must be fixed before re-review (all five are merge blockers):
+  B1. MAX_RESPONSE_BYTES is declared and documented but enforced NOWHERE
+      (grep: the name appears once, at its own definition). Same blocker the v1
+      review rejected. Enforce in _ok(); test it with a payload that violates it.
+  B2. Tool descriptions + CONTRACTS.md §11 promise behavior that does not exist:
+      a docker name/prefix selector on groop_entity (not implemented), a 4 MiB
+      response cap (see B1), a 1000-point history limit (code hardcodes 100 and
+      exposes no limit param), and an extended test_textual_boundary.py (the file
+      is not touched). For an MCP server the tool description IS the API — the
+      calling model reads nothing else.
+  B3. _metric_sensitivity() hand-rolls a classifier that groop.daemon.api already
+      exports as metric_sensitivity() — from a module server.py ALREADY imports.
+      It never returns PUBLIC and misclassifies 46 of 113 registry metrics. Delete
+      it; use the canonical function (or the metrics_meta the daemon already
+      returns).
+  B4. _handle_history hand-rolls a docker name/prefix resolver (the "no third
+      resolver" the handoff forbids), while _handle_entity has none — so the two
+      tools resolve the same `selector` parameter differently. Pick one.
+  B5. No test drives the MCP layer at all: all 27 tests call private _handle_*
+      methods. test_tool_discovery_lists_four_tools builds an `expected` set,
+      never uses it, and asserts constructor attribute assignment — it passes
+      with all four tools deleted. And test_overview_rejects_bool_as_limit
+      asserts bool-as-int SUCCEEDS, the opposite of the contract it is named for.
+
+Tier escalated flash-max -> sonnet5-high: the failure mode is no longer code
+generation (the plumbing is correct) but specification fidelity — documenting
+bounds that do not exist and tests that cannot fail. Prime the re-dispatch with
+B1-B5 as the acceptance list.
+-->
+
 
 <!--
 CARVE NOTE (2026-07-13, frontier carve authority, controller-workflow-v2 §8):
