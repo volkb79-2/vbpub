@@ -223,6 +223,39 @@ def parse_mcp_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def parse_gateway_args(argv: list[str]) -> argparse.Namespace:
+    """Parse the separately-run HTTP gateway command.
+
+    Principals are supplied by the operator because the trusted reverse proxy
+    owns authentication; this process only maps its verified identity header to
+    a closed sensitivity ceiling.
+    """
+    parser = argparse.ArgumentParser(prog="groop gateway")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    serve = subparsers.add_parser("serve", help="serve authenticated versioned reads over HTTP")
+    serve.add_argument(
+        "--daemon-socket",
+        type=Path,
+        default=DEFAULT_DAEMON_SOCKET,
+        help=f"versioned daemon Unix socket (default: {DEFAULT_DAEMON_SOCKET})",
+    )
+    serve.add_argument("--host", type=str, default="127.0.0.1", help="HTTP bind address (default: 127.0.0.1)")
+    serve.add_argument("--port", type=int, default=8080, help="HTTP port (default: 8080)")
+    serve.add_argument(
+        "--principal",
+        action="append",
+        required=True,
+        metavar="NAME:CEILING",
+        help="trusted-proxy principal and ceiling: public, operational, or sensitive (repeatable)",
+    )
+    serve.add_argument(
+        "--allow-non-loopback",
+        action="store_true",
+        help="explicitly permit a non-loopback bind; still trusts identities only from a local proxy",
+    )
+    return parser.parse_args(argv)
+
+
 def parse_bpf_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="groop bpf")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -477,6 +510,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_daemon(raw_argv[1:])
     if raw_argv[:1] == ["mcp"]:
         return _main_mcp(raw_argv[1:])
+    if raw_argv[:1] == ["gateway"]:
+        return _main_gateway(raw_argv[1:])
     if raw_argv[:1] == ["bpf"]:
         return _main_bpf(raw_argv[1:])
     if raw_argv[:1] == ["action"]:
@@ -1245,6 +1280,53 @@ def _main_mcp(argv: list[str]) -> int:
 
     redact_above = Sensitivity(args.redact_above) if args.redact_above is not None else None
     return run_server(args.socket, redact_above=redact_above)
+
+
+def _main_gateway(argv: list[str]) -> int:
+    """Run the explicitly configured, authenticated HTTP read gateway."""
+    from groop.daemon.http_gateway import (
+        GatewayAuthConfig,
+        GatewayConfig,
+        GatewayStartupError,
+        serve_versioned_http_gateway,
+    )
+
+    args = parse_gateway_args(argv)
+    if args.command != "serve":
+        print("unknown gateway command", file=sys.stderr)
+        return 2
+    principals: dict[str, str] = {}
+    for item in args.principal:
+        if item.count(":") != 1:
+            print("--principal must have NAME:CEILING form", file=sys.stderr)
+            return 2
+        name, ceiling = item.split(":", 1)
+        if name in principals:
+            print("--principal names must be unique", file=sys.stderr)
+            return 2
+        principals[name] = ceiling
+    try:
+        gateway = serve_versioned_http_gateway(
+            args.daemon_socket,
+            config=GatewayConfig(
+                host=args.host,
+                port=args.port,
+                auth=GatewayAuthConfig(principals),
+                allow_non_loopback=args.allow_non_loopback,
+            ),
+        )
+    except GatewayStartupError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    host, port = gateway.server_address
+    print(f"serving authenticated groop reads on http://{host}:{port}", flush=True)
+    try:
+        gateway.serve_forever()
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        gateway.server_close()
+    return 0
 
 
 def _main_daemon(argv: list[str]) -> int:
