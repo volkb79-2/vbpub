@@ -2,7 +2,8 @@
 
 ## Session
 
-- **Date:** 2026-07-17
+- **Date:** 2026-07-13   <!-- was 2026-07-17 (a future date); corrected at pass #2 -->
+
 - **Package:** P72
 - **Worktree:** `.worktrees/groop-p72-admin-action-kill-update`
 - **Branch:** `feat/groop-p72-admin-action-kill-update`

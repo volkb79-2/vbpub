@@ -115,22 +115,35 @@ CurrentMemoryReader = Callable[[str], int | None]
 
 
 def _default_current_memory_reader(target: str) -> int | None:
-    """Read the current memory usage for a container target.
+    """Read a container's current memory usage in bytes, or None if unreadable.
 
-    If the target contains a ``/``, treat it as a cgroup path and read
-    ``memory.current`` from the cgroup filesystem.  Otherwise return
-    None (unreadable without cgroup path resolution).
+    An ``update`` target is a Docker container name or 64-hex id
+    (``catalog.validate_target``), never a path — so this resolves the name to
+    its cgroup key through one collector sweep, the same path ``--container``
+    resolution already uses (``cli._resolve_container_target``), and reads
+    ``memory.current`` from the resolved cgroup.
 
-    This is the production implementation; tests inject a custom reader.
+    Returning None means "current usage could not be established", which callers
+    treat as a refusal unless ``--below-current`` is passed: an unverifiable
+    usage must not silently permit a limit that OOM-kills the container.
     """
-    if "/" in target:
-        path = Path("/sys/fs/cgroup") / target / "memory.current"
+    key = target
+    if "/" not in target:
         try:
-            raw = path.read_text(encoding="utf-8").strip()
-            return int(raw)
-        except (OSError, ValueError):
+            from groop.collect.collector import Collector
+            from groop.collect.dockerjoin import resolve_container_key
+            from groop.config import load
+
+            frame = Collector(config=load(None)).collect_once()
+            entities = {k: ef.entity for k, ef in frame.entities.items()}
+            key = resolve_container_key(target, entities)
+        except BaseException:
             return None
-    return None
+    try:
+        raw = (Path("/sys/fs/cgroup") / key / "memory.current").read_text(encoding="utf-8").strip()
+        return int(raw)
+    except (OSError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +275,10 @@ def build_update_preview(
     if cpus is not None:
         parsed_cpus = validate_cpus(cpus)
 
-    # Read current memory usage
+    # Read current memory usage.  A memory limit below current usage OOM-kills the
+    # container immediately, so the check is fail-closed: an unreadable current
+    # usage is refused exactly like a breach, under the same override flag.  Only
+    # a --memory request needs it; a --cpus-only update cannot OOM anything.
     reader = current_memory_reader or _default_current_memory_reader
     current_usage: int | None = None
     if parsed_memory is not None:
@@ -271,17 +287,19 @@ def build_update_preview(
         except BaseException:
             current_usage = None
 
-        # Refuse memory limit below current usage (unless override)
-        if (
-            current_usage is not None
-            and parsed_memory < current_usage
-            and not below_current
-        ):
-            raise ValueError(
-                f"memory limit {parsed_memory} bytes is below current "
-                f"usage {current_usage} bytes; use --below-current to "
-                "override (this may OOM the container)"
-            )
+        if not below_current:
+            if current_usage is None:
+                raise ValueError(
+                    f"current memory usage of {target!r} could not be established, so a "
+                    f"limit of {parsed_memory} bytes cannot be shown to be safe; pass "
+                    "--below-current to apply it anyway (this may OOM the container)"
+                )
+            if parsed_memory < current_usage:
+                raise ValueError(
+                    f"memory limit {parsed_memory} bytes is below current "
+                    f"usage {current_usage} bytes; use --below-current to "
+                    "override (this may OOM the container)"
+                )
 
     argv = build_update_argv(target, memory=parsed_memory, cpus=parsed_cpus)
 

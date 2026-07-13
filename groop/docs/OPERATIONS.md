@@ -286,6 +286,37 @@ PageUp/PageDown for scrolling, and all function keys.
   full gate chain (root, `--admin`, typed confirmation, bounded timeout,
   immutable plan, fail-closed audit) applies identically to Docker/systemd
   start/stop/restart actions.
+- `groop action execute --kind docker-kill|systemd-kill --target NAME --admin
+  --confirm KILL [--signal SIGNAL] [--force]` sends one signal from a closed
+  allowlist (TERM, INT, HUP, KILL, QUIT, USR1, USR2) to a Docker container or a
+  systemd unit, through the same P46 gate chain. Signals are bare names: `9`,
+  `SIGKILL` and anything outside the allowlist are refused, never defaulted to
+  TERM. **Data-loss gate:** `--signal KILL` additionally requires `--force`,
+  because it is the one verb in the surface that guarantees data loss — prefer
+  TERM and let the workload shut down. **Protected entities:** a target listed in
+  the config's `[tiers] protected_services` is refused at plan time even with
+  `--admin` and a correct token; if that check cannot be answered at all (e.g. an
+  unreadable config), the kill is refused rather than allowed. Protected
+  containers must be listed by the name you address them with — a container
+  addressed by its 64-hex id is not matched against a name entry.
+- `groop action execute --kind docker-update --target NAME --admin --confirm
+  UPDATE [--memory LIMIT] [--cpus COUNT] [--below-current]` applies `--memory`
+  and/or `--cpus` to a running Docker container (no other `docker update` fields,
+  and no systemd targets — those are `set-property`'s surface, and passing one
+  refuses with that pointer). Memory accepts suffixes (`512M`, `2G`) or bare
+  bytes. **OOM gate:** `docker update --memory` below the container's current
+  usage OOM-kills it on the spot, so groop reads the container's current
+  `memory.current` at plan time and refuses a limit under it. The check is
+  fail-closed: if current usage *cannot be established* (container not resolvable
+  to a cgroup, cgroupfs unreadable), the update is refused too — `--below-current`
+  is the single override for both cases, and it means "apply it anyway, accepting
+  the container may be OOM-killed". Do not make `--below-current` a habit: it
+  turns the only guard between a typo and a dead workload into a formality.
+- Neither kill nor update is reachable through the generic
+  `--confirm EXECUTE` path: both carry validated arguments and their own gates, so
+  they are deliberately excluded from the execution allowlist and are routed to
+  their own entry points (as `systemd-set-property` already was). The generic path
+  still executes only start/stop/restart.
 - `groop squeeze --target CGROUP_PATH --admin --confirm SQUEEZE [options]`
   performs a guided, stepped `memory.high` squeeze that measures a cgroup's real
   (hot+warm) working set under pressure. Requires root, `--admin`, and typed
@@ -295,24 +326,6 @@ PageUp/PageDown for scrolling, and all function keys.
   rather than one per step. **Hard safety requirement:** `memory.high` is always
   restored on exit, including Ctrl-C / SIGINT, via a `try/finally` + signal
   handler restore guard.
-
-  `groop action execute --kind docker-kill --target NAME --admin
-  --confirm KILL [--signal SIGNAL] [--force]` executes a kill action
-  against a Docker container or systemd unit with a closed signal allowlist
-  (TERM, INT, HUP, KILL, QUIT, USR1, USR2). Signals must be bare names
-  (no `SIG` prefix, no numeric signals). **Data-loss prevention:** the KILL
-  signal requires `--force` in addition to the normal `--confirm KILL` typed
-  confirmation. Protected entities (config `protected_services`) are refused
-  at plan time even with `--admin` and a correct token.
-
-  `groop action execute --kind docker-update --target NAME --admin
-  --confirm UPDATE [--memory LIMIT] [--cpus COUNT] [--below-current]`
-  applies `--memory` and/or `--cpus` limits to a running Docker container.
-  Memory values accept suffixes (512M, 2G) or bare byte counts.
-  **OOM prevention:** a memory limit below the container's current RSS is
-  refused at plan time unless `--below-current` is explicitly passed, which
-  may OOM the container. Systemd unit targets are refused; use
-  `groop action set-property` instead.
 
   Default options (drawn from `container-mempress.sh` proven values):
   `--step 256M`, `--delay 15` (PSI avg10 window is 10s; values below ~10s

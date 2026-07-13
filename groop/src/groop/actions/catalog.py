@@ -113,8 +113,17 @@ class CatalogEntry(NamedTuple):
 
 
 # ---------------------------------------------------------------------------
-# Execution allowlist — start, stop, restart, kill, and update kinds
-# are executable.  systemd-set-property is excluded (uses governance.py).
+# Execution allowlist — only the argument-free start/stop/restart kinds are
+# executable through the generic execute_plan() path.
+#
+# systemd-set-property (P49), docker-kill/systemd-kill and docker-update (P72)
+# are deliberately EXCLUDED: each carries validated arguments (property/value,
+# signal + --force, memory/cpus + below-current) and its own gates, and each has
+# a dedicated entry point (execute_set_property / execute_kill / execute_update)
+# that enforces them.  Admitting them here would let execute_plan() run the
+# catalog's argument-free builder — `docker kill <target>`, whose docker default
+# is SIGKILL — under the generic EXECUTE token, with no signal allowlist, no
+# --force gate and no protected-entity check.
 # ---------------------------------------------------------------------------
 
 EXECUTION_ALLOWLIST: frozenset[ActionKind] = frozenset({
@@ -124,9 +133,6 @@ EXECUTION_ALLOWLIST: frozenset[ActionKind] = frozenset({
     ActionKind.SYSTEMD_RESTART,
     ActionKind.SYSTEMD_STOP,
     ActionKind.SYSTEMD_START,
-    ActionKind.DOCKER_KILL,
-    ActionKind.SYSTEMD_KILL,
-    ActionKind.DOCKER_UPDATE,
 })
 
 
@@ -162,8 +168,6 @@ def validate_target(kind: ActionKind, target: str) -> None:
             ActionKind.DOCKER_START,
             ActionKind.DOCKER_STOP,
             ActionKind.DOCKER_RESTART,
-            ActionKind.DOCKER_KILL,
-            ActionKind.DOCKER_UPDATE,
         }:
             if _DOCKER_ID_RE.fullmatch(target) or _DOCKER_NAME_RE.fullmatch(target):
                 return
@@ -172,7 +176,6 @@ def validate_target(kind: ActionKind, target: str) -> None:
             ActionKind.SYSTEMD_START,
             ActionKind.SYSTEMD_STOP,
             ActionKind.SYSTEMD_RESTART,
-            ActionKind.SYSTEMD_KILL,
         }:
             if ".." in target or not _SYSTEMD_UNIT_RE.fullmatch(target):
                 raise ValueError(f"invalid systemd unit name: {target!r}")

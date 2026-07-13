@@ -191,13 +191,28 @@ ProtectedCheck = Callable[[str, str], bool]
 
 
 def _default_protected_check(kind: str, target: str) -> bool:
-    """Default protected-entity check.
+    """Production protected-entity check: is *target* a protected service?
 
-    Returns False as a safe default.  The production check uses the
-    config's protected_services list, which is resolved via the collector.
-    Tests inject a custom check.
+    Reads ``[tiers] protected_services`` from the loaded config and compares it
+    against the target the same way the collector does when it stamps
+    ``Entity.is_protected`` (``collect/collector.py``: an entity is protected if
+    its key OR its name is listed).  A ``kill`` target is always a resolved
+    Docker container name / id or a systemd unit name, i.e. exactly the "name"
+    half of that comparison.
+
+    Raising is a refusal, not a pass: ``execute_kill`` treats an exception here
+    as "protection could not be established" and refuses.  Returning False means
+    the check ran and the target is not protected.
+
+    Known limit: a container addressed by its 64-hex id is not matched against a
+    ``protected_services`` entry that lists it by name (resolving the two would
+    need a collector sweep at kill time).  Address protected containers by name,
+    or list the id.  Documented in docs/OPERATIONS.md.
     """
-    return False
+    from groop.config import load
+
+    protected = load(None).protected_services
+    return target in protected
 
 
 # ---------------------------------------------------------------------------

@@ -886,9 +886,6 @@ class TestExecutionAllowlistExclusion:
                 ActionKind.SYSTEMD_RESTART,
                 ActionKind.SYSTEMD_STOP,
                 ActionKind.SYSTEMD_START,
-                ActionKind.DOCKER_KILL,
-                ActionKind.SYSTEMD_KILL,
-                ActionKind.DOCKER_UPDATE,
             }
         )
         assert EXECUTION_ALLOWLIST == expected

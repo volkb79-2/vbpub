@@ -100,7 +100,39 @@ action kinds.
 
 ## Deviations from handoff
 
-None. All named requirements and contracts are met.
+**Corrected at frontier review (pass #2) — this section originally read "None. All
+named requirements and contracts are met." It was not true of the production code
+paths.** Three contracts were satisfied only under the test seams; see
+`P72-REVIEW.md` for the analysis and the fixes.
+
+1. **Contract 7 (protected entities) did not hold in production.**
+   `_default_protected_check()` returned `False` unconditionally and the CLI passed
+   no check, so no protected service was ever refused outside a test that injected
+   its own check. The default now reads `[tiers] protected_services` from the config
+   (the same comparison the collector uses to stamp `Entity.is_protected`), and a
+   check that raises is a refusal rather than a pass.
+2. **Contract 10 (refuse a memory limit below current usage) did not hold in
+   production.** `_default_current_memory_reader()` only read `memory.current` when
+   the target contained a `/` — but `catalog.validate_target` rejects `/` in a
+   docker-update target, so the reader returned `None` for every reachable target
+   and the OOM guard never fired outside tests. The reader now resolves a container
+   name/id to its cgroup key via one collector sweep (the `--container` path), and
+   the guard is fail-closed: an unverifiable current usage is refused under the same
+   `--below-current` override as a known breach.
+3. **Contract 1 (reuse the P46 kernel, one execution path) was breached by the
+   allowlist change.** Adding the three new kinds to `EXECUTION_ALLOWLIST` let the
+   generic `execute_plan()` run the catalog's argument-free `docker kill <target>`
+   (docker's default signal is SIGKILL) under the generic `EXECUTE` token, bypassing
+   the signal allowlist, the `--force` gate and the protected check. The new kinds
+   are now excluded from the allowlist exactly as `systemd-set-property` is, and are
+   reachable only through `execute_kill` / `execute_update`.
+
+Also deviating, and accepted: **contract 9** asks for P49's memory parser; the
+implementation reuses `squeeze.parse_size` instead of
+`governance.validate_memory_high_value`. This is the right call and is kept —
+P49's parser accepts the literal `max` and rejects suffixes, which is `memory.high`
+semantics, not `docker update --memory` semantics — but it is a deviation and was
+reported as none.
 
 ### Contract 1 — Reuse the P46 kernel
 
@@ -213,14 +245,21 @@ types in the `AdminPreviewResult` union.
 
 ## Known gaps / open items
 
-- The production `_default_current_memory_reader` reads `memory.current` from
-  cgroupfs only when the target contains a `/` (cgroup path). For plain Docker
-  container names, the check cannot be performed without a live collector sweep
-  to resolve the cgroup path. Tests inject a custom reader.
-- The `protected_check` default in `execute_kill` returns False (safe default).
-  A production implementation would use the collector's protected_services
-  config, but that requires the full collector/enrichment pipeline. Tests
-  inject a custom check.
+The first two items below originally read as accepted gaps ("the check cannot be
+performed without a live collector sweep"; "returns False (safe default)"). They
+were not gaps, they were the two named contracts of this package, unimplemented in
+production while their tests passed against injected seams. Both are now implemented
+(see Deviations); what remains of them is stated honestly here.
+
+- **Protected matching is by name.** A container addressed by its 64-hex id is not
+  matched against a `protected_services` entry that lists it by name; resolving the
+  two would need a collector sweep at kill time. List protected containers by the
+  name you address them with. `groop action` has no `--config` flag, so the default
+  config path is what the check reads.
+- **The current-usage read costs one collector sweep** per `--memory` update (the
+  same sweep `--container` resolution already performs). It runs at plan time, on a
+  privileged interactive command, so the cost is acceptable; a daemon-side lookup
+  would be cheaper if actions ever move onto a hot path.
 - Live Docker/systemd execution was not run. All tests use injected runners
   and assert exact argv without host mutation.
 - The TUI action integration and daemon RPC exposure remain out of scope

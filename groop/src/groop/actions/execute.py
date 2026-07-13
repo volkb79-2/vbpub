@@ -1068,13 +1068,17 @@ def execute_kill(
     if validated_signal == "KILL" and not force:
         return _refusal(kind, target, "KILL signal requires --force (data-loss prevention gate)")
 
-    # -- Protected entity check ----------------------------------------------
+    # -- Protected entity check (fail-closed: an unusable check refuses) ------
     check = protected_check or _default_protected_check
     try:
-        if check(kind, target):
-            return _refusal(kind, target, "target is a protected service; kill refused")
-    except BaseException:
-        pass
+        is_protected = check(kind, target)
+    except BaseException as exc:
+        return _refusal(
+            kind, target,
+            f"protected-service check failed ({type(exc).__name__}); kill refused",
+        )
+    if is_protected is not False:
+        return _refusal(kind, target, "target is a protected service; kill refused")
 
     # -- Build argv ----------------------------------------------------------
     try:
@@ -1285,16 +1289,26 @@ def execute_update(
     except ValueError as exc:
         return _refusal("docker-update", target, str(exc))
 
-    # -- Current-memory check (before audit, plan-time) ----------------------
+    # -- Current-memory check (before audit, plan-time; fail-closed) ----------
+    # A limit below current usage OOM-kills the container on apply, so an
+    # unreadable current usage is refused exactly like a breach, under the same
+    # override flag.  A --cpus-only update needs no such check.
     reader = current_memory_reader or _default_current_memory_reader
     current_usage: int | None = None
-    if parsed_memory is not None:
+    if parsed_memory is not None and not below_current:
         try:
             current_usage = reader(target)
         except BaseException:
             current_usage = None
 
-        if current_usage is not None and parsed_memory < current_usage and not below_current:
+        if current_usage is None:
+            return _refusal(
+                "docker-update", target,
+                f"current memory usage of {target!r} could not be established, so a "
+                f"limit of {parsed_memory} bytes cannot be shown to be safe; pass "
+                "--below-current to apply it anyway (this may OOM the container)",
+            )
+        if parsed_memory < current_usage:
             return _refusal(
                 "docker-update", target,
                 f"memory limit {parsed_memory} bytes is below current "
