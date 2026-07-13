@@ -43,7 +43,11 @@ groop snapshot inspect /path/to/groop-incident-*.tar
 
 Use `--config PATH` to point at an alternate TOML config, `--profile NAME` to
 override the active UI column profile for one run, and `--record FILE` to record
-the live TUI stream to JSONL while you inspect it.
+the live TUI stream to JSONL while you inspect it. For unattended (headless)
+recording without the TUI, use `--record FILE --headless [--interval N]
+[--duration S | --frames K]`. Headless mode drives the existing collector loop
+without importing `textual`, so it works even when the UI dependencies are not
+installed.
 
 Useful feature hotkeys in the TUI:
 
@@ -112,7 +116,7 @@ Useful feature hotkeys in the TUI:
 | P50 | Done | Mouse table interactions | v1 UX | Textual-native one-click row drill-down and header sorting/reversal with keyboard parity, in-place refresh, alias handling, and live/replay fidelity coverage. Handoff: `handoff/P50-mouse-table-interactions.md`. Report: `handoff/reports/P50-REPORT.md`. |
 | P51 | Done | Daemon sampling fan-out | v2 daemon | One request-independent producer serves fresh current frames and bounded sequenced history to non-consuming clients, with typed terminal/gap/shutdown state and P47 health integration. Handoff: `handoff/P51-daemon-sampling-fanout.md`. Report: `handoff/reports/P51-REPORT.md`. |
 | P52 | Done | Versioned daemon read API | v2/v3 API | Add capability negotiation, bounded health/history/entity reads, sensitivity metadata, and peer identity for separate frontends. Handoff: `handoff/P52-versioned-daemon-read-api.md`. Report: `handoff/reports/P52-REPORT.md`. |
-| P53 | Queued | Headless record driver | v1.5 recording | Drive the existing collector loop and `RecordWriter` from `groop --record FILE --headless [--interval N] [--duration S \| --frames K]` without importing textual, with clean SIGINT/SIGTERM finalization. Handoff: `handoff/P53-headless-record-driver.md`. |
+| P53 | **Done** | Headless record driver | v1.5 recording | CLI `--record --headless [--interval] [--duration|--frames]` drives the collector loop and RecordWriter without importing textual, with clean SIGINT/SIGTERM finalization, bounded stderr progress, and injectable signal tests. Report: `handoff/reports/P53-REPORT.md`. |
 | P54 | Queued | Steady-state report command | v1.5 recording | Add `groop report FILE [--window last:Ns\|all] [--group-by slice\|entity] --json` computing per-entity p50/p95/max for key gauges and deriving `_per_s` rates from embedded raw counters when the recorded live rate is `None`. Handoff: `handoff/P54-steady-state-report.md`. |
 | P55 | Queued | Collector entity & metric filtering | v1.5/v2 recording | Add `--entities GLOB`/`--slice NAME` entity selectors and `--metrics compact` gauge subset at collection time, cutting sysfs reads and frame size for `--once` and any recording path. Handoff: `handoff/P55-collector-entity-metric-filtering.md`. |
 | P56 | Queued | `groop squeeze` guided memory measurement | v2 actions | Add a guided, stepped `memory.high` squeeze that measures a cgroup's hot working set, with mandatory memory.high restore on exit/SIGINT and a groop-record-compatible JSONL log. Handoff: `handoff/P56-groop-squeeze.md`. |

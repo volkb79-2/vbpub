@@ -161,6 +161,9 @@ the compact form from §5 everywhere (`[v, src]` or `[v, src, raw]`) so
 - Ring buffer (`ring.py`): fixed-capacity per-(entity,metric) numeric arrays
   (`array`/`memoryview`, NOT lists of Python floats), default profile 4h @ 5s
   (spec §3.5 budget: 20–40 MB).
+- The `--headless` record driver (P53) reuses the same `RecordWriter`/JSONL
+  format unchanged; no schema differences exist between TUI-recorded and
+  headless-recorded output.
 
 ## 6. Provider interface (P3, v2-BPF-ready) — spec §3.2/App. B
 

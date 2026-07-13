@@ -41,6 +41,7 @@ from groop.daemon.component_health import (
 )
 from groop.model import frame_to_jsonable
 from groop.record.live import live_frame_stream
+from groop.record.headless import run_headless_record
 from groop.record.replay import ReplayDriver, format_frame_summary
 from groop.record.writer import RecordWriter
 from groop.snapshot import inspect_bundle
@@ -67,6 +68,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=None, help="load config from PATH instead of the default XDG location")
     parser.add_argument("--profile", type=str, default=None, help="override the active UI column profile for this run")
     parser.add_argument("--cgroup-root", type=Path, default=None, help="cgroup v2 root for live or fixture collection")
+    parser.add_argument("--headless", action="store_true", help="run without UI (requires --record FILE)")
+    parser.add_argument("--interval", type=float, default=None, help="collector interval override in seconds")
+    parser.add_argument("--duration", type=float, default=None, help="stop after S seconds")
+    parser.add_argument("--frames", type=int, default=None, help="stop after K frames")
     parser.add_argument("--ui-smoke", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
@@ -307,8 +312,20 @@ def main(argv: list[str] | None = None) -> int:
         return _main_inspect_files(raw_argv[1:])
     args = parse_args(raw_argv)
     config = load(args.config)
+    if args.headless and args.replay is not None:
+        print("--headless is not supported with --replay", file=sys.stderr)
+        return 2
+    if args.headless and args.record is None:
+        print("--headless requires --record FILE", file=sys.stderr)
+        return 2
     if args.record is not None and args.replay is not None:
         print("choose either --record or --replay", file=sys.stderr)
+        return 2
+    if args.headless and args.attach is not None:
+        print("--headless is not supported with --attach", file=sys.stderr)
+        return 2
+    if args.duration is not None and args.frames is not None:
+        print("--duration and --frames are mutually exclusive", file=sys.stderr)
         return 2
     if args.attach is not None:
         if args.replay is not None:
@@ -376,6 +393,23 @@ def main(argv: list[str] | None = None) -> int:
         collector = Collector(cgroup_root=args.cgroup_root, config=config)
         try:
             with RecordWriter(args.record, config=collector.config) as writer:
+                if args.headless:
+                    # When --once is given with --headless, collect one frame
+                    # and exit like the normal --record --once path.
+                    if args.once:
+                        stream = live_frame_stream(collector, writer=writer)
+                        frame = next(stream)
+                        if args.json:
+                            _print_frame_json(frame, args.pretty_json)
+                        return 0
+                    exit_code = run_headless_record(
+                        collector,
+                        writer,
+                        interval=args.interval,
+                        duration=args.duration,
+                        max_frames=args.frames,
+                    )
+                    return exit_code
                 stream = live_frame_stream(collector, writer=writer)
                 if args.once:
                     frame = next(stream)
