@@ -6,12 +6,15 @@ from rich.table import Table
 from rich.text import Text
 
 from groop.config import GroopConfig
+from groop.grouping import CiuGroup, group_entities
 from groop.model import Entity, EntityFrame, Frame, MetricValue
 from groop.record.ring import HistoryRing
 from groop.registry import REGISTRY
 from groop.ui.aliases import resolve_column
 from groop.ui.sparkline import sparkline_from_history
 
+VIEW_MODES = ("tree", "container", "ciu-grouped")
+"""Valid view mode identifiers."""
 PROFILE_ORDER = ("auto", "triage", "memory", "network", "governance", "damon", "wide", "minimal")
 SORT_ORDER = ("pressure", "ram", "cpu_pct", "name")
 
@@ -502,3 +505,122 @@ def _row_cells_no_selection(
     visual highlighting instead.
     """
     return [format_metric_value(c, entity_frame, ring=ring) for c in columns]
+
+
+def _group_header_row(columns: tuple[str, ...], group: CiuGroup) -> list:
+    """Render a CIU group header row spanning all columns.
+
+    The header shows the stack name, phase, and detection tier.  A group whose
+    entities do not share one tier renders as ``(mixed)`` -- never as
+    ``(label)``, which would imply the whole group was label-confirmed.  The
+    per-entity tier is marked on the entity rows themselves
+    (``_tier_marked_cells``), because the contract is about entities.
+    """
+    phase_str = _phase_display(group.phase, group.phase_raw)
+    header = Text(
+        f"  {group.stack}  |  phase {phase_str}  ({group.source})",
+        style="bold cyan",
+    )
+    cells: list = [header]
+    cells.extend(Text("") for _ in range(len(columns) - 1))
+    return cells
+
+
+def _tier_marked_cells(
+    columns: tuple[str, ...],
+    entity_frame: EntityFrame,
+    *,
+    ring: HistoryRing | None,
+) -> list:
+    """Row cells with an ``(inferred)`` marker on inferred-source entities.
+
+    An entity whose stack membership was *inferred* must be visually distinct
+    from one confirmed by a ciu label: inference is a heuristic, and an
+    operator reading a grouped view needs to know which containers the
+    heuristic claimed rather than which ones said so themselves.
+    """
+    cells = _row_cells_no_selection(columns, entity_frame, ring=ring)
+    ciu = entity_frame.entity.ciu
+    if ciu is None or ciu.source == "label" or not cells:
+        return cells
+    marker_index = columns.index("name") if "name" in columns else 0
+    cells[marker_index] = Text.assemble(
+        cells[marker_index], Text(f" ({ciu.source})", style="dim italic")
+    )
+    return cells
+
+
+def _phase_display(phase: int | None, phase_raw: str | None) -> str:
+    """Return a human-readable phase string."""
+    if phase is not None:
+        return str(phase)
+    if phase_raw is not None:
+        return f"? ({phase_raw})"
+    return "-"
+
+
+def render_data_table_container_grouped(
+    frame: Frame,
+    config: GroopConfig,
+    *,
+    width: int,
+    profile: str,
+    sort_by: str,
+    sort_reverse: bool | None = None,
+    filter_text: str,
+    ring: HistoryRing | None = None,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], list[list]]:
+    """Return (column_keys, column_labels, row_keys, rows) for a
+    DataTable-compatible CIU-grouped container view.
+
+    Entities are grouped by CIU stack and phase using ``group_entities()``.
+    Each group has a header row showing the stack name, phase, and detection
+    tier; inferred entities are marked individually.  Ungrouped entities (those
+    without CIU metadata) follow after all groups.
+
+    ``sort_by``/``sort_reverse`` order entities *within* each group (and within
+    the ungrouped block), using the same ``_sort_rows`` the flat container view
+    uses -- group order itself is fixed by (stack, phase).
+    """
+    layout = resolve_profile(config, width=width, profile=profile)
+    col_labels = tuple(header_label(c) for c in layout.columns)
+    row_keys: list[str] = []
+    rows: list[list] = []
+
+    # Filter if needed.
+    needle = filter_text.lower().strip()
+
+    def _include(entity_frame: EntityFrame) -> bool:
+        if not needle:
+            return True
+        haystacks = (display_name(entity_frame.entity).lower(), entity_frame.entity.key.lower())
+        return any(needle in haystack for haystack in haystacks)
+
+    grouped = group_entities(frame)
+
+    def _emit(entity_frames: list[EntityFrame]) -> None:
+        for entity_frame in _sort_rows(entity_frames, sort_by, reverse=sort_reverse):
+            row_keys.append(entity_frame.entity.key)
+            rows.append(_tier_marked_cells(layout.columns, entity_frame, ring=ring))
+
+    for group in grouped.groups:
+        filtered = [ef for ef in group.entity_frames if _include(ef)]
+        if not filtered:
+            continue
+        group_key = f"__group__{group.stack or ''}__{group.phase_raw or ''}"
+        row_keys.append(group_key)
+        rows.append(_group_header_row(layout.columns, group))
+        _emit(filtered)
+
+    # Ungrouped entities (no CIU metadata).
+    ungrouped_filtered = [ef for ef in grouped.ungrouped if _include(ef)]
+    if ungrouped_filtered and not needle:
+        row_keys.append("__ungrouped__")
+        rows.append([Text("  other containers (no CIU)")] + [Text("")] * (max(0, len(layout.columns) - 1)))
+    _emit(ungrouped_filtered)
+
+    if not row_keys:
+        row_keys = ["__empty__"]
+        rows.append([Text("no container rows")] + [Text("")] * (max(0, len(layout.columns) - 1)))
+
+    return (layout.columns, col_labels, tuple(row_keys), rows)

@@ -27,7 +27,7 @@ from .data_table import MouseTable
 from .drill import DrillDownScreen
 from .hostmem import HostMemoryScreen
 from .keys import BINDINGS, key_help
-from .table import SORT_ORDER, available_profiles, normalize_profile_name, render_data_table_container
+from .table import SORT_ORDER, VIEW_MODES, available_profiles, normalize_profile_name, render_data_table_container, render_data_table_container_grouped
 from .tree import render_data_table_tree
 
 
@@ -134,7 +134,7 @@ class GroopApp(App[None]):
         self._replay_timer: Timer | None = None
         self.current_frame: Frame | None = None
         self.frames_received = 0
-        self.view_mode = self.config.default_view if self.config.default_view in {"tree", "container"} else "tree"
+        self.view_mode = self.config.default_view if self.config.default_view in VIEW_MODES else "tree"
         self.profile_name = normalize_profile_name(self.config, profile)
         self.profile_order = available_profiles(self.config)
         self.sort_by = SORT_ORDER[0]
@@ -206,7 +206,9 @@ class GroopApp(App[None]):
             "filter_text": self.filter_text,
             "ring": self.ring,
         }
-        if self.view_mode == "container":
+        if self.view_mode == "ciu-grouped":
+            col_keys, col_labels, row_keys, rows = render_data_table_container_grouped(frame, self.config, **kwargs)
+        elif self.view_mode == "container":
             col_keys, col_labels, row_keys, rows = render_data_table_container(frame, self.config, **kwargs)
         else:
             col_keys, col_labels, row_keys, rows = render_data_table_tree(
@@ -250,7 +252,8 @@ class GroopApp(App[None]):
             self.action_open_drill()
 
     def action_toggle_view(self) -> None:
-        self.view_mode = "container" if self.view_mode == "tree" else "tree"
+        index = VIEW_MODES.index(self.view_mode) if self.view_mode in VIEW_MODES else 0
+        self.view_mode = VIEW_MODES[(index + 1) % len(VIEW_MODES)]
         self._refresh_view()
 
     def action_cycle_profile(self) -> None:
