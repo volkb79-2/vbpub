@@ -19,28 +19,36 @@ series remain stable and zero-mean series with spread remain rejected.
 P70 uses Welford population variance while extending each suffix backwards.
 This was chosen over reverse cumulative `x`/`x^2` sums because subtracting two
 large nearly equal values is unstable in the steady-state case. A running total
-is retained for the busy-mean comparison and zero-mean behavior. The test-only
-copy of the old detector is the selection oracle: the new detector agrees with
-it over 210 generated recordings, including a CoV boundary placed within 1e-12
-of the configured threshold.
+is retained for the busy-mean comparison and zero-mean behavior. When a CoV or
+busy-mean comparison is within 1e-12 of changing the selected result, P70
+rebuilds only that ambiguous entity suffix and repeats P62's forward-order
+`sum`, mean, squared-deviation sum, and tie-break operations. This preserves the
+pinned floating-point decision without returning the normal path to quadratic
+work.
+
+The test-only copy of the old detector is the selection oracle. The new detector
+agrees with it over 210 generated recordings, two synthetic CoV boundaries
+within 1e-12, and a 14-value adversarial recording that made raw reverse Welford
+accept at 0.049999999999999996 while P62 rejected at 0.05000000000000001.
 
 ## Files Changed
 
 - `src/groop/report.py`: reverse-pass running statistics and detector rewrite.
 - `tests/test_report.py`: pre-P70 reference oracle, generated differential
-  corpus, near-boundary test, and 2880/5760-frame scaling regression test.
+  corpus, near-boundary and accumulation-order regressions, deterministic
+  linear-read oracle, pinned pre-P70 CLI bytes, and 2880/5760 scaling test.
 - `handoff/reports/P70-LOG.md`: execution log.
 
 ## Performance Evidence
 
-Environment: Linux amd64; Python 3.14.6; pytest 9.1.1;
-`/workspaces/vbpub/.venv/bin/python`; 20 entities, one `ram` gauge per frame.
+Environment: Linux amd64; Python 3.14.6; pytest 9.1.1; temporary clean
+`/tmp/p70-gate-venv`; 20 entities, one `ram` gauge per frame.
 
 ```text
-2880 frames, pre-P70 reference detector: approximately 28.1 s
-2880 frames, P70 reverse pass:             0.061770 s
-5760 frames, P70 reverse pass:             0.119430 s
-5760 / 2880:                               1.933x
+2880 frames, pre-P70 reference detector: 80.176641 s
+2880 frames, P70 reverse pass:            0.068608 s
+5760 frames, P70 reverse pass:            0.156531 s
+5760 / 2880:                              2.282x
 ```
 
 The P70 performance test asserts both recordings complete under two seconds
@@ -49,30 +57,24 @@ and that doubling frames stays within 2.5x plus a small scheduling allowance.
 ## Test Evidence
 
 ```text
-PYTHONPATH=groop/src /workspaces/vbpub/.venv/bin/python -m pytest \
-  groop/tests/test_report.py -q -W error -k 'not zst_without_zstandard'
-109 passed, 1 deselected in 4.91s
+PATH=/tmp/p70-gate-venv/bin:$PATH PYTHONPATH=groop/src \
+  python3 -m pytest groop/tests/test_report.py -q -W error
+113 passed in 6.13s
 
-PYTHONPATH=groop/src /workspaces/vbpub/.venv/bin/python -m pytest \
-  groop/tests/test_report.py -q -W error -k 'SteadyWindowDetectorPerformance'
-4 passed, 106 deselected in 1.52s
-
-timeout 900 env PYTHONPATH=groop/src /workspaces/vbpub/.venv/bin/python -m pytest \
-  groop/tests -q -W error -k 'not zst_without_zstandard'
-# completed successfully
+PATH=/tmp/p70-gate-venv/bin:$PATH timeout 900 env PYTHONPATH=groop/src \
+  python3 -m pytest groop/tests -q -W error
+1108 passed, 2 skipped in 146.95s (0:02:26)
 
 python3 -m py_compile groop/src/groop/report.py groop/tests/test_report.py
 git diff --check
 # both OK
 ```
 
-The exact mandated pytest command was also run with this environment's Python
-and exposes one existing environment-sensitive failure:
-`test_zst_without_zstandard_exits_2` expects zstandard not to be installed,
-but this virtualenv provides it. It is unrelated to P70; all report tests that
-do not encode that absent-dependency assumption pass under `-W error`.
-
 ## Deviations / Known Gaps
 
-None in implementation scope. The only incomplete gate is the pre-existing
-zstandard-availability expectation described above.
+The fast path is O(frames x eligible entities). Numerically ambiguous threshold
+or busy-mean comparisons intentionally rebuild the affected suffix in P62's
+forward order; this rare compatibility path can add superlinear work on an
+adversarial recording engineered to keep every suffix within 1e-12 of a
+decision boundary. Default-profile and doubled-profile performance remain well
+inside the acceptance bounds, and the read-count oracle pins the ordinary path.

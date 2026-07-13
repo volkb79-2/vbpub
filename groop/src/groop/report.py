@@ -390,6 +390,34 @@ class _ReverseRunningStats:
         self.m2 += delta * (value - self.mean)
 
 
+_FLOAT_DECISION_TOLERANCE = 1e-12
+
+
+def _forward_gauge_values(
+    frames: list[Frame],
+    start_index: int,
+    entity_key: str,
+    gauge: str,
+) -> list[float]:
+    """Rebuild one eligible series in the pre-P70 floating-point order."""
+    values = [
+        _finite_gauge_value(frame, entity_key, gauge)
+        for frame in frames[start_index:]
+    ]
+    # Callers only use active entities, whose suffix values are all finite.
+    return [value for value in values if value is not None]
+
+
+def _population_cov(values: list[float]) -> float:
+    """Compute CoV with the exact operation and summation order used by P62."""
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    stddev = math.sqrt(variance)
+    if mean == 0:
+        return 0.0 if stddev == 0 else math.inf
+    return stddev / mean
+
+
 def detect_steady_window(
     frames: list[Frame],
     *,
@@ -447,6 +475,27 @@ def detect_steady_window(
             stats_by_entity,
             key=lambda key: (-stats_by_entity[key].total / stats_by_entity[key].count, key),
         )
+        busiest_mean = stats_by_entity[busiest_key].total / candidate_len
+        mean_tolerance = _FLOAT_DECISION_TOLERANCE * max(1.0, abs(busiest_mean))
+        mean_contenders = [
+            key
+            for key, entity_stats in stats_by_entity.items()
+            if abs(entity_stats.total / candidate_len - busiest_mean) <= mean_tolerance
+        ]
+        if len(mean_contenders) > 1 and any(
+            stats_by_entity[key].total != stats_by_entity[busiest_key].total
+            for key in mean_contenders
+        ):
+            busiest_key = min(
+                mean_contenders,
+                key=lambda key: (
+                    -sum(_forward_gauge_values(
+                        frames, start_index, key, stability_gauge,
+                    )) / candidate_len,
+                    key,
+                ),
+            )
+
         stats = stats_by_entity[busiest_key]
         mean = stats.total / stats.count
         variance = stats.m2 / stats.count
@@ -455,6 +504,11 @@ def detect_steady_window(
             cov = 0.0 if stddev == 0 else math.inf
         else:
             cov = stddev / mean
+        cov_tolerance = _FLOAT_DECISION_TOLERANCE * max(1.0, abs(stability_cov))
+        if abs(cov - stability_cov) <= cov_tolerance:
+            cov = _population_cov(_forward_gauge_values(
+                frames, start_index, busiest_key, stability_gauge,
+            ))
         if cov <= stability_cov:
             selected = WindowRange(
                 start_ts=frame.ts,

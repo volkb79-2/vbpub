@@ -34,10 +34,7 @@
 
 ## Blockers
 
-- The exact mandated pytest invocation cannot pass in this virtualenv because
-  `zstandard` is installed. Its pre-existing `test_zst_without_zstandard_exits_2`
-  intentionally expects zstandard to be absent and receives exit 1 instead of 2.
-  This is unrelated to the detector change.
+None.
 
 ## Validation
 
@@ -57,4 +54,54 @@ timeout 900 env PYTHONPATH=groop/src /workspaces/vbpub/.venv/bin/python -m pytes
 python3 -m py_compile groop/src/groop/report.py groop/tests/test_report.py
 git diff --check
 # both OK
+```
+
+## Self-Review Pass 1
+
+```text
+2026-07-13 UTC
+- Mechanically reviewed 15108c4 against all five required contracts, all five
+  acceptance oracles, and every gate in the P70 handoff.
+- Finding (critical): reverse Welford did not preserve P62's floating-point
+  decision at the threshold. An adversarial 14-value series produced old CoV
+  0.05000000000000001 and reverse-Welford CoV 0.049999999999999996, changing
+  the selected window. Fixed by recomputing numerically ambiguous CoV and
+  busy-mean decisions in P62's original forward operation/summation order.
+  Added the exact disagreeing series as a regression oracle.
+- Finding (major): acceptance oracle 5 only checked two new invocations against
+  each other; it did not pin the pre-P70 bytes. Added a literal byte-for-byte
+  expected CLI result for P62's exact-tail recording.
+- Finding (major): the original report mislabeled the venv interpreter as
+  Python 3.14.6 (it is 3.13.5), gave no real full-suite summary, excluded an
+  environment-sensitive test, and called an approximately observed 28.1 s a
+  measurement. Replaced this evidence with verbatim gates in a clean temporary
+  Python 3.14.6 environment containing pytest and the declared groop dependency,
+  without the optional zstandard extra.
+- Hollow-test audit: the differential and boundary tests would still pass if
+  detect_steady_window were reverted to the reference implementation. They are
+  valid selection-equivalence oracles but are hollow as complexity guards.
+  Added a deterministic gauge-read mechanism oracle: P70 performs exactly 840
+  reads for 120 frames x 7 entities; the pre-P70 implementation performed
+  50,799. The existing 2880-frame under-two-second test also fails a revert
+  (the reference implementation measured 80.176641 s on this gate host).
+- Existing P62 TestAutoSteadyWindow and TestReportAutoCLI tests remain unchanged.
+```
+
+Self-review validation environment: Linux amd64, Python 3.14.6, pytest 9.1.1,
+temporary `/tmp/p70-gate-venv`; groop installed editable with declared
+dependencies and without the optional zstandard extra.
+
+```text
+PATH=/tmp/p70-gate-venv/bin:$PATH PYTHONPATH=groop/src \
+  python3 -m pytest groop/tests/test_report.py -q -W error
+113 passed in 6.13s
+
+PATH=/tmp/p70-gate-venv/bin:$PATH timeout 900 env PYTHONPATH=groop/src \
+  python3 -m pytest groop/tests -q -W error
+1108 passed, 2 skipped in 146.95s (0:02:26)
+
+Same-host detector measurements, 20 entities and one ram gauge:
+pre-P70 reference, 2880 frames: 80.176641 s
+P70, 2880 frames:              0.068608 s
+P70, 5760 frames:              0.156531 s (2.282x)
 ```
