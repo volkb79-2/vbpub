@@ -39,6 +39,8 @@ groop --once --json
 groop
 groop --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --step
 groop snapshot inspect /path/to/groop-incident-*.tar
+groop report groop/tests/fixtures/frames/gstammtisch-once.jsonl --json
+groop report groop/tests/fixtures/frames/gstammtisch-once.jsonl --json --window last:60s --group-by slice
 ```
 
 Use `--config PATH` to point at an alternate TOML config, `--profile NAME` to
@@ -59,6 +61,15 @@ Use `--container NAME_OR_PREFIX` on `groop inspect-files plan/read --target` or
 `groop action preview/execute --target` to resolve a Docker container name or
 prefix to its cgroup path automatically instead of manually specifying
 `--target`.
+
+Use `groop report FILE --json` to compute a machine-readable steady-state
+profile from a P2-format recording (JSONL or JSONL.zst). Per-entity p50/p95/max
+for key memory/PSI gauges are computed, with derived rates from embedded raw
+counters when the recorded live rate is ``None``. Use ``--window last:Ns`` to
+restrict to the last N seconds of a recording, and ``--group-by slice`` to
+roll entities up under their owning ``*.slice`` ancestor. This is the
+steady-state profile input for the gstammtisch stack measurement program
+(``scripts/gstammtisch-guide/plan-stack-resource-tuning.md`` PKG-3).
 
 Useful feature hotkeys in the TUI:
 
@@ -128,7 +139,7 @@ Useful feature hotkeys in the TUI:
 | P51 | Done | Daemon sampling fan-out | v2 daemon | One request-independent producer serves fresh current frames and bounded sequenced history to non-consuming clients, with typed terminal/gap/shutdown state and P47 health integration. Handoff: `handoff/P51-daemon-sampling-fanout.md`. Report: `handoff/reports/P51-REPORT.md`. |
 | P52 | Done | Versioned daemon read API | v2/v3 API | Add capability negotiation, bounded health/history/entity reads, sensitivity metadata, and peer identity for separate frontends. Handoff: `handoff/P52-versioned-daemon-read-api.md`. Report: `handoff/reports/P52-REPORT.md`. |
 | P53 | **Done** | Headless record driver | v1.5 recording | CLI `--record --headless [--interval] [--duration|--frames]` drives the collector loop and RecordWriter without importing textual, with clean SIGINT/SIGTERM finalization, bounded stderr progress, and injectable signal tests. Report: `handoff/reports/P53-REPORT.md`. |
-| P54 | Queued | Steady-state report command | v1.5 recording | Add `groop report FILE [--window last:Ns\|all] [--group-by slice\|entity] --json` computing per-entity p50/p95/max for key gauges and deriving `_per_s` rates from embedded raw counters when the recorded live rate is `None`. Handoff: `handoff/P54-steady-state-report.md`. |
+| P54 | **Done** | Steady-state report command | v1.5 recording | Add `groop report FILE [--window last:Ns\|all] [--group-by slice\|entity] --json` computing per-entity p50/p95/max for key gauges and deriving `_per_s` rates from embedded raw counters when the recorded live rate is `None`. Report: `handoff/reports/P54-REPORT.md`. |
 | P55 | Done | Collector entity & metric filtering | v1.5/v2 recording | Add `--entities GLOB`/`--slice NAME` entity selectors and `--metrics compact` gauge subset at collection time, cutting sysfs reads and frame size for `--once` and any recording path. Compact also drops per-entity network/DAMON/governance blocks. Handoff: `handoff/P55-collector-entity-metric-filtering.md`. Report: `handoff/reports/P55-REPORT.md`. |
 | P56 | Queued | `groop squeeze` guided memory measurement | v2 actions | Add a guided, stepped `memory.high` squeeze that measures a cgroup's hot working set, with mandatory memory.high restore on exit/SIGINT and a groop-record-compatible JSONL log. Handoff: `handoff/P56-groop-squeeze.md`. |
 | P57 | Done | Docker-name entity selectors | v1.5/v2 ergonomics | Add `--container NAME_OR_PREFIX`, resolved via the existing docker metadata join, wherever groop takes a cgroup-path/entity identifier. Handoff: `handoff/P57-docker-name-entity-selectors.md`. Report: `handoff/reports/P57-REPORT.md`. |

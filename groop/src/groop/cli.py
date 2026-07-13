@@ -339,6 +339,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_action(raw_argv[1:])
     if raw_argv[:1] == ["inspect-files"]:
         return _main_inspect_files(raw_argv[1:])
+    if raw_argv[:1] == ["report"]:
+        return _main_report(raw_argv[1:])
     args = parse_args(raw_argv)
     config = load(args.config)
     if args.headless and args.replay is not None:
@@ -711,6 +713,60 @@ def _main_action(argv: list[str]) -> int:
 
     print("unknown action command", file=sys.stderr)
     return 2
+
+
+
+def parse_report_args(argv: list[str]) -> argparse.Namespace:
+    """Parse groop report [--window last:Ns|all] [--group-by slice|entity] --json FILE."""
+    parser = argparse.ArgumentParser(prog="groop report")
+    parser.add_argument("file", type=Path, help="JSONL or JSONL.zst recording to analyze")
+    parser.add_argument(
+        "--window", type=str, default="all",
+        help="time window: 'all' or 'last:Ns' (default: all)",
+    )
+    parser.add_argument(
+        "--group-by", type=str, default="entity", choices=["slice", "entity"],
+        help="aggregation grain: 'entity' (per-EntityKey) or 'slice' (per-*.slice ancestor)",
+    )
+    parser.add_argument(
+        "--json", action="store_true", required=True,
+        help="emit JSON report (required)",
+    )
+    return parser.parse_args(argv)
+
+
+def _main_report(argv: list[str]) -> int:
+    """Implement groop report — load recording, compute profile, emit JSON."""
+    try:
+        args = parse_report_args(argv)
+    except SystemExit as exc:
+        return int(str(exc.code)) if exc.code is not None else 2
+
+    from groop.report import compute_report, format_report
+
+    # Handle .zst without zstandard: catch the RuntimeError from RecordReader
+    try:
+        profiles = compute_report(
+            args.file,
+            window_spec=args.window,
+            group_by=args.group_by,
+        )
+    except FileNotFoundError:
+        print(f"file not found: {args.file}", file=sys.stderr)
+        return 2
+    except RuntimeError as exc:
+        msg = str(exc)
+        if "zstandard" in msg:
+            print(msg, file=sys.stderr)
+            return 2
+        print(str(exc), file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    print(format_report(profiles))
+    return 0
 
 
 def _resolve_container_target(name_or_prefix: str) -> str:
