@@ -139,6 +139,42 @@ both the accepted (legacy) and rejected (envelope-with-bad-version) forms.
 An envelope request with an unsupported `v` is rejected with
 `protocol_version`; its message names the supported version(s).
 
+### Typed Versioned Client (P63)
+
+`DaemonClient` (``groop/src/groop/daemon/client.py``) provides typed,
+validated Python methods for the versioned envelope ops. These methods are
+additive — they do not change the existing legacy-method signatures.
+
+**Transport:** A single private ``_request_envelope`` helper owns the
+versioned-envelope round trip: ``AF_UNIX`` connect, ``json.dumps`` with
+sorted keys and compact separators, ``SHUT_WR``, single-line response read via
+``makefile`` bounded at ``DEFAULT_MAX_RESPONSE_BYTES`` (4 MB), envelope
+wrapper decode, and ``id`` echo assertion. A mismatch raises
+``DaemonProtocolError``.
+
+**Error codes:** ``DaemonResponseError`` carries a ``.code`` attribute
+with the P52 ``ErrorCode`` string (``not_found``, ``invalid_type``,
+``out_of_range``, ``unavailable``, etc.) so callers can branch on the
+typed code.
+
+**Result types** (all frozen dataclasses):
+
+| Method | Return type | Description |
+|---|---|---|
+| ``request_hello()`` | ``DaemonHello`` | Protocol versions, capabilities, identity, limits |
+| ``request_current()`` | ``DaemonCurrentResult`` | Latest ``(seq, Frame)`` + ``metrics_meta`` |
+| ``request_history(*, limit, cursor, since_ts, until_ts)`` | ``DaemonHistoryResult`` | Ordered ``(seq, Frame)`` entries, history bounds, ``metrics_meta``; fast-fail ``ValueError`` if cursor + time window both set |
+| ``request_entity(key)`` | ``DaemonEntityResult`` | One entity's frame + ``metrics_meta`` |
+
+``metrics_meta`` is validated as a dict-of-dicts with every entry's
+``sensitivity`` belonging to the closed ``Sensitivity`` enum
+(``public``/``operational``/``sensitive``), so a frontend can render
+``--redact-above`` rules without re-deriving registry prose.
+
+**Import:** add ``from groop.daemon import DaemonClient,
+DaemonCurrentResult, DaemonHistoryResult, DaemonEntityResult,
+DaemonHello``.
+
 ## Background Producer
 
 On `groop daemon serve` the daemon creates a `FrameBroker` with the live
