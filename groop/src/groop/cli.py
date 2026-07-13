@@ -676,7 +676,7 @@ def _main_action(argv: list[str]) -> int:
 
     if args.command == "execute":
         if args.kind == "systemd-set-property" and args.property is not None and args.value is not None:
-            from groop.actions.governance import execute_set_property
+            from groop.actions.execute import execute_set_property
             result = execute_set_property(
                 resolved_target,
                 property_name=args.property,

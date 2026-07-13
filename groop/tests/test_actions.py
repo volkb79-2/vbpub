@@ -794,6 +794,78 @@ class TestExecutionCliIntegration:
         )
         assert code == 2
 
+    def test_parse_execute_set_property_args(self) -> None:
+        """Verify --property, --value, --mode parse correctly for execute."""
+        from groop.cli import parse_action_args
+
+        args = parse_action_args(
+            [
+                "execute",
+                "--kind",
+                "systemd-set-property",
+                "--target",
+                "my.slice",
+                "--admin",
+                "--confirm",
+                "EXECUTE",
+                "--property",
+                "memory.high",
+                "--value",
+                "max",
+                "--mode",
+                "runtime",
+            ]
+        )
+        assert args.kind == "systemd-set-property"
+        assert args.target == "my.slice"
+        assert args.property == "memory.high"
+        assert args.value == "max"
+        assert args.mode == "runtime"
+        assert args.admin is True
+        assert args.confirm == "EXECUTE"
+
+    def test_parse_preview_set_property_args(self) -> None:
+        """Verify --property, --value parse correctly for preview."""
+        from groop.cli import parse_action_args
+
+        args = parse_action_args(
+            [
+                "preview",
+                "--kind",
+                "systemd-set-property",
+                "--target",
+                "my.slice",
+                "--admin",
+                "--property",
+                "memory.high",
+                "--value",
+                "1073741824",
+            ]
+        )
+        assert args.kind == "systemd-set-property"
+        assert args.property == "memory.high"
+        assert args.value == "1073741824"
+
+    def test_execute_set_property_refusal_exit_code_2(self) -> None:
+        """Verify execute_set_property routing via CLI (no admin => refusal)."""
+        from groop.cli import _main_action
+
+        code = _main_action(
+            [
+                "execute",
+                "--kind",
+                "systemd-set-property",
+                "--target",
+                "my.slice",
+                "--property",
+                "memory.high",
+                "--value",
+                "max",
+            ]
+        )
+        # Refused because no --admin
+        assert code == 2
+
 
 class TestExecutionAllowlistExclusion:
     """Verify that set-property and future non-allowlisted kinds are rejected."""

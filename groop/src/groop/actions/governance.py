@@ -14,10 +14,8 @@ current-value reader and runner are test-only API fixtures.
 from __future__ import annotations
 
 import dataclasses
-import math
 import re
 from collections.abc import Callable
-from pathlib import Path
 
 from groop.actions.catalog import SYSTEMCTL_EXECUTABLE
 
@@ -167,10 +165,6 @@ def validate_persistence_mode(mode: str) -> str:
 # ---------------------------------------------------------------------------
 # Current-value reader (injectable for tests)
 # ---------------------------------------------------------------------------
-
-# Cache for the show output to avoid multiple systemctl invocations.
-# This is reset on each plan/execute call.
-_SHOW_CACHE: dict[str, str | None] = {}
 
 
 def _systemctl_show_reader(unit: str) -> str | None:
