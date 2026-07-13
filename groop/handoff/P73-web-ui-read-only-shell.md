@@ -6,7 +6,7 @@
 > **Base:** main after P67 merge
 > **Session-hint:** fresh
 > **Serialize-with:** none
-> **Escalate-if:** the gateway cannot serve a page without a mutation route or a new daemon op; or D-001 is decided against the static-client assumption below before you are dispatched (then this handoff's stack section is re-carved, not improvised around)
+> **Escalate-if:** the gateway cannot serve a page without a mutation route or a new daemon op; or the pwmcp browser stack cannot be brought up via CIU (then report what blocks it -- do NOT hand-roll a browser harness, and do NOT silently drop the browser-level oracles)
 
 <!--
 CARVE SOURCE (controller-workflow-v2 §8): **product-goal-driven**.
@@ -14,11 +14,18 @@ Standing user priority (docs/ROADMAP.md, 2026-07-13): "get the product in front
 of users with a web UI." P69 scoped it; this is the first package that puts a
 pixel on a screen. It is deliberately the SMALLEST such package: one page.
 
-CARVE ASSUMPTION (D-001, OPEN): a dependency-free single static client, per
-P69's recommendation. D-001 is not a blocking hold -- the page inventory, data
-flow, redaction UX, and tests below are identical under any stack choice; only
-the "How to build it" section changes if the user picks otherwise. Recorded per
-§8 ("non-blocking gaps are carved around with the assumption recorded").
+STACK IS DECIDED, NOT ASSUMED (D-001, DECIDED 2026-07-13): **React**, tested via
+**pwmcp**. Standing user decision recorded in docs/ROADMAP.md (commit f14e9dd).
+This is not open for the implementer to re-litigate, and it supersedes P69's
+static-client recommendation -- read P69's framework section as packaging-
+consequence analysis against React, not as a competing option.
+
+pwmcp deployment: the decision left the choice to this carve. **Picked (b): a
+vbpub-scoped pwmcp instance started via CIU.** `pwmcp/` is already a first-class
+area on main (42 files) and ships CIU compose templates
+(`pwmcp/ciu.compose.yml.j2`), so the in-repo path is cleaner than cross-repo
+reuse of dstdns's running instance *and* cheap -- which removes the
+resource-constraint argument that motivated option (a).
 -->
 
 ## Goal
@@ -71,42 +78,80 @@ about what matters is a second product, not a frontend.
    ~5.2 MiB/min at a 5s poll before compression. Do not add a second concurrent
    full-frame poller. If you need the same frame twice, reuse it.
 
-## How to build it (D-001 assumption: static client)
+## How to build it (React - decided, D-001)
 
-Plain HTML + CSS + ES modules, no Node, no framework, no lockfile, no vendored
-library. Served by P67 as static assets. Keep all rendering/formatting logic in
-pure functions that take decoded JSON and return strings/DOM -- that is what makes
-it testable below without a browser.
+React SPA, built to a static bundle that P67 serves. Keep every rendering and
+formatting decision in **pure functions over decoded JSON** (frame -> view model
+-> cells), separate from components: those pure functions are what the
+deterministic pytest oracles below assert against, without a browser in the loop.
+A component tree that computes its own numbers inline is not reviewable and is a
+review reject.
 
-Note the packaging consequence, which is real and which the user should not be
-surprised by: **these assets grow the plain `pip install groop` wheel.** Python
-extras select *dependencies*, not *package data*, so a `groop[web]` extra cannot
-make same-wheel assets conditional. P69 accepted small, audited core-wheel growth
-for v1; say so in the REPORT with the actual byte delta.
+**Packaging: Node is a release dependency, never an end-user one.** This is the
+consequence P69 identified and it lands harder under React than under the static
+client it recommended:
+
+- Build the bundle at release time and **commit the built artifact**, so
+  `pip install groop` pulls no Node, no lockfile, and no JS dependency tree.
+- The bundled assets **grow the plain `groop` wheel**. Python extras select
+  *dependencies*, not *package data*, so a `groop[web]` extra cannot make
+  same-wheel assets conditional. Report the **actual wheel byte delta** in the
+  REPORT -- a number, not "small".
+- Pin the toolchain and commit the lockfile. An unpinned JS dependency tree in a
+  release path is a supply-chain surface, and this UI serves telemetry behind an
+  auth boundary.
 
 ## Acceptance Oracles (numbered, adversarial)
 
-Deterministic pytest, no browser, no Node. Stand up a real `DaemonApi` -> real
-`DaemonClient` -> real P67 gateway, and drive it with the stdlib HTTP client.
+Two layers, and the split is deliberate: **the security contracts are proven in
+pytest, not in the browser.** A browser-level suite needs a container stack to
+run; a security oracle that can be skipped when the stack is down is not a gate.
 
-1. **The page renders from a real frame**, not a fixture blob: fetch the served
-   HTML/JS, and assert the pure render functions produce the expected banner line
-   and table rows from the decoded `current` response.
-2. **A `sensitive` metric is never in the bytes.** Give the viewer an
-   `operational` ceiling; grep the full HTTP response body for the raw sensitive
-   value. If it appears anywhere -- payload, inline JSON, HTML comment -- fail.
+### Layer 1 - deterministic pytest (no browser, no Node)
+
+Stand up a real `DaemonApi` -> real `DaemonClient` -> real P67 gateway, and drive
+it with the stdlib HTTP client. These must pass in the normal suite with no pwmcp
+running.
+
+1. **Pure render functions produce the expected cells** from a decoded `current`
+   response: the banner line and the table rows, asserted as values -- not a
+   snapshot blob whose diff nobody reads.
+2. **A `sensitive` value is never in the bytes.** Give the viewer an
+   `operational` ceiling and grep the **entire HTTP response body** for the raw
+   value: the JSON payload, the served HTML, and **any hydration/initial-state
+   payload React embeds in it**. If it appears anywhere, fail. This is the oracle
+   React makes *more* dangerous, not less: a value can be absent from every
+   rendered component and still sit in a serialized state blob in the document.
    Assert the typed marker renders in that cell **and the key/label survive**.
 3. **Stale state is visible.** Freeze the gateway (or advance the clock past the
-   poll interval) and assert the rendered output carries the stale indicator and
-   the last-good timestamp -- not a silently-unchanged table.
+   poll interval) and assert the view model carries the stale indicator and the
+   last-good timestamp -- not a silently-unchanged table.
 4. **A failing gateway does not retry-storm.** Count requests against a gateway
    returning 503 over a fixed window; assert bounded backoff, not one-per-tick.
 5. **Sort and filter match the TUI's convention** (numeric desc, name asc; filter
    over display name or cgroup key) on the same input frame -- assert against the
-   TUI's own helpers so a divergence is a test failure, not a UX drift nobody
-   notices.
-6. **No mutation verb is reachable** from any asset: grep the shipped JS for
-   `POST`/`PUT`/`PATCH`/`DELETE`; assert none.
+   TUI's own helpers, so a divergence is a test failure rather than UX drift
+   nobody notices.
+6. **No mutation verb is reachable** from the shipped bundle: grep it for
+   `POST`/`PUT`/`PATCH`/`DELETE`/`fetch(...{method:`; assert none.
+
+### Layer 2 - pwmcp browser-level (option (b): vbpub-scoped instance via CIU)
+
+Bring the pwmcp stack up **with CIU** (`pwmcp/ciu.compose.yml.j2`), not a bespoke
+script. Record in the REPORT which pwmcp deployment you used and how you started
+it, so the next package can reproduce it.
+
+7. **The page actually renders in a real browser** against a live gateway: the
+   banner and table appear, populated, with no console errors.
+8. **The redaction marker is what a human sees** in the restricted cell -- the
+   rendered text, not the DOM attribute. Layer-1 oracle 2 proves the bytes are
+   clean; this proves the UI explains *why* the cell is restricted rather than
+   showing an empty box.
+9. **A disconnected gateway degrades visibly** rather than freezing: kill the
+   gateway, assert the stale/disconnected state is on screen.
+
+If the pwmcp stack cannot be started, **that is a BLOCKED exit, not a reason to
+delete layer 2** -- write what blocked it and stop.
 
 ## Out Of Scope
 
@@ -128,6 +173,13 @@ python3 -m py_compile <changed files>
 git diff --check
 ```
 
-State the environment for each result. Report the wheel byte delta from the added
-assets. Write P73-LOG.md / P73-REPORT.md and a short `docs/WEB-UI.md` operator
-note (how to serve it, what the trust posture is, what it deliberately cannot do).
+Plus the React build (pinned toolchain, committed lockfile, committed bundle) and
+the pwmcp browser layer started via CIU.
+
+State the environment for each result. Report:
+- the **wheel byte delta** from the committed bundle (a number),
+- which **pwmcp deployment** you used and the exact CIU invocation that started it,
+- confirmation that `pip install groop` needs **no Node**.
+
+Write P73-LOG.md / P73-REPORT.md and a short `docs/WEB-UI.md` operator note (how
+to serve it, what the trust posture is, what it deliberately cannot do).

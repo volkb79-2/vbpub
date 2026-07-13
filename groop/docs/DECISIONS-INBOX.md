@@ -25,7 +25,7 @@ repo, not vendored here).
 
 ---
 
-## D-001 · 2026-07-13 · reviewer (frontier pass #2, from P69 analysis) · OPEN
+## D-001 · 2026-07-13 · reviewer (frontier pass #2, from P69 analysis) · DECIDED 2026-07-13
 
 **Question:** Should browser v1 use a dependency-free single static client, a
 server-rendered Python surface, or a full SPA framework?
@@ -39,17 +39,41 @@ no Node, but makes the gateway a renderer and may add template complexity;
 (c) Vite/React SPA: strong component ecosystem, but adds Node, a JS dependency
 tree, generated-assets policy, and browser tooling.
 
-**Recommendation:** (a).  The first UI is four read-only pages over a bounded
-JSON API, so plain browser APIs meet the need and preserve the dependency-light
-runtime. Same-distribution static assets will still grow the core wheel;
-extras cannot make package data conditional. Revisit only when demonstrated
-interface complexity makes the manual client costly.
+**Recommendation (superseded by the decision below):** (a).  The first UI is four
+read-only pages over a bounded JSON API, so plain browser APIs meet the need and
+preserve the dependency-light runtime. Same-distribution static assets will still
+grow the core wheel; extras cannot make package data conditional. Revisit only
+when demonstrated interface complexity makes the manual client costly.
+
+**DECISION (user, 2026-07-13): (c) React.** Encoded in `docs/ROADMAP.md`
+("Standing user decision (2026-07-13): React, tested via pwmcp", commit
+`f14e9dd`). The framework choice is not open for re-litigation; P69's framework
+section is to be read as packaging-consequence analysis against React, not as a
+competing pick.
+
+Browser-level testing adopts **pwmcp** (the Playwright-MCP browser surface).
+The decision left the pwmcp deployment to the implementation carve; **the carve
+picked (b), a vbpub-scoped instance started via CIU** — `pwmcp/` is already a
+first-class area on `main` (42 files) and ships CIU compose templates
+(`pwmcp/ciu.compose.yml.j2`), so the in-repo path is both cleaner than
+cross-repo reuse of dstdns's running instance *and* cheap, which removes the
+resource-constraint argument that motivated option (a). Recorded in
+`handoff/P73-web-ui-read-only-shell.md`.
+
+What survives from the analysis: the packaging consequence is real and now
+lands harder. A Node toolchain enters the release path, and bundled assets grow
+the plain `pip install groop` wheel (extras select dependencies, not package
+data). P73 must build the bundle at release time and commit it, so that Node is
+a *release* dependency and never an end-user `pip install` dependency, and must
+report the actual wheel byte delta.
 
 **Context pointers:** `docs/WEB-UI-SCOPING.md` "Framework and stack options";
 `handoff/P69-web-ui-scoping.md` deliverable 1.
 
-**Resume prompt:** "Discuss D-001 in `groop/docs/DECISIONS-INBOX.md`: choose
-the v1 web stack and explicitly accept or reject a Node build dependency."
+**Resume prompt (closed):** the stack question is decided. The live follow-on is
+narrower: "Confirm P73's packaging call - React bundle built at release and
+committed, so `pip install groop` needs no Node; review the reported wheel byte
+delta." 
 
 ## D-002 · 2026-07-13 · reviewer (frontier pass #2, from P69 analysis) · OPEN
 

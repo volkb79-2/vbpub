@@ -159,6 +159,14 @@ it is a later efficiency/latency improvement.
 
 ## Framework and stack options
 
+> **SUPERSEDED (2026-07-13).** The framework is decided: **React**, browser-tested
+> via **pwmcp** (standing user decision, `docs/ROADMAP.md`; D-001 DECIDED in
+> `DECISIONS-INBOX.md`). Read this section as **packaging-consequence analysis
+> against React** -- which is exactly where it still earns its keep: the wheel-growth
+> and Node-toolchain findings below are the real constraints P73 must satisfy, and
+> the third row is the option that was chosen. The recommendation of a static client
+> is retained only as the record of what was analyzed, not as live guidance.
+
 | Candidate | Build/toolchain and dependency cost | Packaging (`pip install groop[web]`) | Deterministic pytest story |
 |---|---|---|---|
 | **Single static HTML/CSS/ES-module client served by P67 (recommended)** | Plain browser APIs; no Node, runtime framework, or vendored library. | Package the small audited asset set in the existing `groop` distribution. This **does grow the wheel used by plain `pip install groop`**; Python extras select dependencies, not package data. `pip install groop[web]` can remain a supported spelling but cannot make same-wheel assets conditional. Avoiding all core-wheel growth would require a separate distribution. | Real stdlib HTTP gateway tests plus `pytest` assertions over assets and deterministic JSON fixtures; no browser/Node required. Keep rendering/formatting functions pure and fixture-tested. |
