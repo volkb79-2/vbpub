@@ -254,6 +254,18 @@ Every open handoff carries, immediately after the title:
   **Queue composition floor:** of the ≥5 planned handoffs, at least 2 must be
   roadmap- or goal-driven (source 2/3), not review children. The carve commit
   message names each package's source so drift is auditable.
+- **Decisions inbox (added 2026-07-13).** When the carver/reviewer hits a
+  question that is a *product* decision (not a mechanical contract failure —
+  that's BLOCKED), it files an entry in the repo's `DECISIONS-INBOX.md`
+  (dstdns reference implementation: `dstdns/docs/ai-dev/DECISIONS-INBOX.md`,
+  schema in its header): question, why it matters, options + trade-offs,
+  recommendation, context pointers, and a **resume prompt** — captured while
+  the reasoning is warm so the user can later open a frontier session and
+  discuss at full depth without repo re-reading. Never break non-interactive
+  mode to ask; blocking gaps become `Depends-on: D-0XX` holds, non-blocking
+  ones are carved around with the assumption recorded. Implementer ideas
+  stay in REPORTs; only the reviewer promotes them to the inbox. The
+  controller surfaces inbox deltas in its status reports.
 - **Locking:** carving commits to `main`, so two concurrent carvers could
   race. Primary mechanism: **the controller is single-threaded and dispatches
   at most one carve task at a time** (carving is a controller-dispatched task
