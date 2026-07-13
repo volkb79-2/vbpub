@@ -156,12 +156,90 @@ METRIC_GROUPS: dict[str, tuple[str, ...]] = {
         "rf_z_per_s", "rf_d_per_s", "rf_f_per_s",
     ),
 }
-"""Compact-mode metric groups kept by ``--metrics compact``."""
+"""Metric families addressable by ``--metrics``.
 
-COMPACT_GROUPS: frozenset[str] = frozenset(METRIC_GROUPS.keys())
-"""The set of group names that ``--metrics compact`` retains."""
+``COMPACT_GROUPS`` below names the subset ``--metrics compact`` retains; the
+P60 field-list selector may address any family here by name.
+"""
+
+# The set of group names that ``--metrics compact`` retains.
+# Kept as a literal (not derived from METRIC_GROUPS.keys()) so that the
+# net/damon/governance families added for the field-list selector below
+# do NOT expand compact mode.
+COMPACT_GROUPS: frozenset[str] = frozenset({"mem_usage", "psi", "refault"})
+
+# Add net, damon, and governance families for the free-form --metrics field-list
+# selector (P60). These are NOT part of COMPACT_GROUPS — compact mode drops
+# them unconditionally. The field-list selector resolves them as family tokens
+# that expand to their metric-name tuples and keep the corresponding structured
+# per-entity block (eframe.network, eframe.damon, eframe.governance).
+METRIC_GROUPS["net"] = (
+    "net_rx_bps", "net_tx_bps", "net_rx_pps", "net_tx_pps",
+)
+METRIC_GROUPS["damon"] = (
+    "damon_hot_bytes", "damon_warm_bytes", "damon_cold_bytes", "damon_idle_bytes",
+    "damon_hot_pct", "damon_warm_pct", "damon_cold_pct", "damon_idle_pct",
+    "damon_sample_age_s", "damon_mode",
+)
+METRIC_GROUPS["governance"] = (
+    "governance_origin", "governance_drift", "effective_memory_min",
+)
+
+# Mapping from family token (as used in --metrics field-list) to the structured
+# per-entity EntityFrame attribute name. A family in this map keeps that block
+# when the family token is present in the selector; omitting it drops the block.
+# Defined here (not in cli.py or collector.py) so registry.py is the single
+# source of truth for all metric-group and block-ownership rules.
+FIELD_LIST_BLOCK_MAP: dict[str, str] = {
+    "net": "network",
+    "damon": "damon",
+    "governance": "governance",
+}
 
 # Verify every listed metric name exists in REGISTRY
 for _group_name, _metric_names in METRIC_GROUPS.items():
     for _name in _metric_names:
         assert _name in REGISTRY, f"METRIC_GROUPS.{_group_name}: {_name!r} not in REGISTRY"
+
+
+def parse_metrics_selector(selector: str) -> tuple[frozenset[str], frozenset[str]]:
+    """Parse a comma-separated field-list selector into (kept_metric_names, kept_block_families).
+
+    Each comma-separated token is either:
+    - a family name in METRIC_GROUPS (expands to that family's metric-name tuple), or
+    - an exact metric name in REGISTRY.
+
+    The kept set is the union of all expanded/resolved tokens.
+    A token matching a family in FIELD_LIST_BLOCK_MAP also keeps the corresponding
+    structured per-entity block (eframe.network, eframe.damon, eframe.governance).
+
+    Raises ValueError with the names of unknown tokens, or for an empty selector.
+    On success returns (kept_metric_names, kept_block_families).
+    """
+    cleaned = selector.strip()
+    if not cleaned:
+        raise ValueError("empty selector")
+    tokens = [t.strip() for t in cleaned.split(",")]
+    if not all(tokens):
+        raise ValueError("empty selector")
+
+    kept_metrics: set[str] = set()
+    kept_blocks: set[str] = set()
+    unknown: list[str] = []
+
+    for token in tokens:
+        if token in METRIC_GROUPS:
+            kept_metrics.update(METRIC_GROUPS[token])
+            if token in FIELD_LIST_BLOCK_MAP:
+                kept_blocks.add(FIELD_LIST_BLOCK_MAP[token])
+        elif token in REGISTRY:
+            kept_metrics.add(token)
+        else:
+            unknown.append(token)
+
+    if unknown:
+        raise ValueError(f"unknown metric token(s): {', '.join(sorted(unknown))}")
+    if not kept_metrics:
+        raise ValueError("empty selector")
+
+    return frozenset(kept_metrics), frozenset(kept_blocks)

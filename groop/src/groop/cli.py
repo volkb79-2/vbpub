@@ -46,6 +46,7 @@ from groop.record.live import live_frame_stream
 from groop.record.headless import run_headless_record
 from groop.record.replay import ReplayDriver, format_frame_summary
 from groop.record.writer import RecordWriter
+from groop.registry import METRIC_GROUPS, parse_metrics_selector
 from groop.snapshot import inspect_bundle
 
 
@@ -79,8 +80,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="include entities matching GLOB (repeatable, fnmatch against EntityKey path)")
     parser.add_argument("--slice", type=str, default=None,
                         help="include a *.slice (or other) entity key and everything under it")
-    parser.add_argument("--metrics", type=str, default="full", choices=["full", "compact"],
-                        help="metric output mode: full (default) or compact (keep only memory/PSI/refault families)")
+    parser.add_argument("--metrics", type=str, default="full",
+                        help="metric output mode: full (default), compact (keep only memory/PSI/refault families), "
+                             "or a comma-separated list of metric names and/or family names from the registry")
     parser.add_argument("--container", action="append", default=None, type=str, dest="container_selectors",
                         help="include entities matching a docker container name/prefix (repeatable)")
     return parser.parse_args(argv)
@@ -237,11 +239,27 @@ def _print_frame_json(frame, pretty: bool) -> None:
     print(json.dumps(payload, indent=2 if pretty else None, separators=None if pretty else (",", ":"), sort_keys=True))
 
 
+def _validate_metrics_mode(metrics: str) -> None:
+    """Validate --metrics value. Raises SystemExit(2) on invalid values.
+
+    Accepts 'full', 'compact', or a comma-separated selector list that
+    parse_metrics_selector can resolve. Empty selectors and unknown tokens
+    are rejected.
+    """
+    if metrics in ("full", "compact"):
+        return
+    try:
+        parse_metrics_selector(metrics)
+    except ValueError as exc:
+        print(f"invalid --metrics: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+
+
 def _filter_kwargs(args: argparse.Namespace) -> dict[str, object]:
     """Extract entity/metric filtering kwargs for Collector from parsed args.
 
-    Caller must validate --slice before calling this. Converts the argparse
-    list/groups into the tuple/frozenset form the Collector expects.
+    Caller must validate --slice and --metrics before calling this. Converts the
+    argparse list/groups into the tuple/frozenset form the Collector expects.
     """
     slice_names: tuple[str, ...] | None = None
     if args.slice is not None:
@@ -470,6 +488,11 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"invalid --slice: {exc}", file=sys.stderr)
             return 2
+    # Validate --metrics early (must be 'full', 'compact', or a valid selector list)
+    try:
+        _validate_metrics_mode(args.metrics)
+    except SystemExit:
+        return 2
     if args.attach is not None:
         if args.replay is not None:
             print("choose either --attach or --replay", file=sys.stderr)
