@@ -78,7 +78,20 @@ flowchart TD
     P57 --> P59[P59 --container entity selector]
     P55 --> P59
     P55 --> P60[P60 free-form --metrics list]
+    P54 --> P61[P61 report threshold gating]
+    P54 --> P62[P62 report steady-state auto-detect]
+    P61 -.-> P62
 ```
+
+P61 and P62 are the carved successors of the P54 steady-state-report slice,
+both consumers P54 explicitly deferred: P61 adds `--assert GROUP:METRIC:STAT`
+pass/fail threshold gating (exit 1 on breach) over the already-computed profile
+without recomputing it; P62 adds `--window auto` steady-state detection via a
+pinned coefficient-of-variation criterion. Both consume `compute_profile`
+rather than changing it, are fixture-testable, and share `cli.py`
+`parse_report_args` + `report.py`, so they carry `Serialize-with:` each other.
+P61 is flash-high; P62 is terra-med because its stability criterion is a design
+decision that must be pinned to a deterministic oracle.
 
 P59 and P60 are the carved successors of the P55/P57 recording-ergonomics
 slice. P59 wires P57's `--container` resolver into P55's collection-path
