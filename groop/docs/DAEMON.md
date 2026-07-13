@@ -175,6 +175,27 @@ typed code.
 DaemonCurrentResult, DaemonHistoryResult, DaemonEntityResult,
 DaemonHello``.
 
+## MCP frontend (P58)
+
+`groop mcp serve` is the stdio-only, read-only MCP frontend for local AI CLI
+agents. Install it with `pip install 'groop[mcp]'`, then register for example
+with `claude mcp add groop -- groop mcp serve`. It consumes the versioned API
+only through P63's typed `DaemonClient`; no MCP code implements daemon socket
+or envelope handling.
+
+The server probes `hello` before accepting a stdio session. A daemon absent at
+startup exits nonzero; loss after startup is returned as a typed
+`daemon-unavailable` tool result. The closed tool set is `groop_health`,
+`groop_overview`, `groop_entity`, and `groop_history`; all responses have an
+enforced 4 MiB aggregate cap. Overview accepts 1..50 rows, history accepts
+1..100 points, a registry-validated `metric` name, and a seven-day maximum
+`last:Ns` window; entity has fixed 128-metric/64-finding limits, and health has
+a fixed 16-component limit. A window containing no frames yields an empty
+series, not a selector error.
+Selectors use exact EntityKeys or P57's docker name/prefix resolver. Use
+`--redact-above public|operational|sensitive` to replace values above the
+chosen P52 sensitivity with a typed `__redacted__` marker.
+
 ## Background Producer
 
 On `groop daemon serve` the daemon creates a `FrameBroker` with the live

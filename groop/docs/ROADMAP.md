@@ -255,10 +255,21 @@ P52 status: done. Adds a versioned, bounded, peer-aware read API envelope
 over the P51 broker: `hello`/negotiate, typed error codes, sensitivity
 metadata, `SO_PEERCRED` peer identity, an injectable authorization hook, and
 proven resource bounds. Legacy clients without a `v` field are served
-unchanged. P58 (MCP frontend) is the next consumer.
+unchanged. P58 (MCP frontend) is the first separate consumer.
 
 Handoffs: `handoff/P51-daemon-sampling-fanout.md` and
 `handoff/P52-versioned-daemon-read-api.md`.
+
+### P58 - Daemon MCP Frontend
+
+Status: done. `groop mcp serve` supplies the first separate frontend over the
+P52 API via P63's typed client: exactly four bounded, read-only stdio MCP
+tools for daemon health, ranked overview, entity detail, and one-metric
+history. The optional `groop[mcp]` extra is isolated from ordinary CLI paths;
+P57 docker selectors, P52 sensitivity redaction, typed safe errors, and the
+enforced 4 MiB result cap are part of the frontend contract.
+
+Handoff: `handoff/P58-daemon-mcp-frontend.md`.
 
 ### P53-P54 - Headless Recording And Steady-State Report
 

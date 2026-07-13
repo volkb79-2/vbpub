@@ -202,6 +202,27 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def parse_mcp_args(argv: list[str]) -> argparse.Namespace:
+    """Parse the deliberately small, stdio-only MCP command surface."""
+    parser = argparse.ArgumentParser(prog="groop mcp")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    serve = subparsers.add_parser("serve", help="serve read-only daemon data over MCP stdio")
+    serve.add_argument(
+        "--socket",
+        type=Path,
+        default=DEFAULT_DAEMON_SOCKET,
+        help=f"daemon socket path (default: {DEFAULT_DAEMON_SOCKET})",
+    )
+    serve.add_argument(
+        "--redact-above",
+        choices=("public", "operational", "sensitive"),
+        default=None,
+        metavar="LEVEL",
+        help="replace metric values more sensitive than LEVEL with a typed redaction marker",
+    )
+    return parser.parse_args(argv)
+
+
 def parse_bpf_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="groop bpf")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -454,6 +475,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_snapshot(raw_argv[1:])
     if raw_argv[:1] == ["daemon"]:
         return _main_daemon(raw_argv[1:])
+    if raw_argv[:1] == ["mcp"]:
+        return _main_mcp(raw_argv[1:])
     if raw_argv[:1] == ["bpf"]:
         return _main_bpf(raw_argv[1:])
     if raw_argv[:1] == ["action"]:
@@ -1115,6 +1138,20 @@ def _main_bpf(argv: list[str]) -> int:
         return 0
     print("unknown bpf command", file=sys.stderr)
     return 2
+
+
+def _main_mcp(argv: list[str]) -> int:
+    """Dispatch MCP only after the user explicitly selected its optional extra."""
+    args = parse_mcp_args(argv)
+    if args.command != "serve":
+        return 2
+    # Importing this frontend is intentionally confined to this command path;
+    # server.py itself delays the optional SDK import until it starts serving.
+    from groop.daemon.api import Sensitivity
+    from groop.mcp.server import run_server
+
+    redact_above = Sensitivity(args.redact_above) if args.redact_above is not None else None
+    return run_server(args.socket, redact_above=redact_above)
 
 
 def _main_daemon(argv: list[str]) -> int:
