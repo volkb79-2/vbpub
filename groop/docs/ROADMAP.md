@@ -83,6 +83,11 @@ flowchart TD
     P61 -.-> P62
     P61 --> P64[P64 report baseline regression gate]
     P61 --> P65[P65 report table rendering]
+    P63[P63 Daemon client versioned read methods :done:] --> P66[P66 Daemon client versioned health]
+    P63 --> P67[P67 Versioned read HTTP/WebSocket gateway]
+    P52 --> P67
+    P63 --> P68[P68 Versioned current subscribe client]
+    P67 --> P69[P69 Web UI over daemon API]
 ```
 
 P61 and P62 are the carved successors of the P54 steady-state-report slice,
@@ -119,7 +124,19 @@ After P43, the roadmap is mostly in three buckets:
 |---|---:|---|
 | v1/v1.5 release confidence and UI polish | 0 | P43 removes the obsolete Textual `<1` resolver ceiling and closes the last planned v1/v1.5 release-confidence package. Manual live-host acceptance evidence remains. |
 | v2 privileged daemon/BPF/admin/file work | 4-6 | P46 (admin action execution kernel) is complete. P44-P45 cover paddr daemon ownership and the first bounded inspect-files content slice; BPF lifecycle, install execution/service hardening, remaining content modes, kill/update, and systemd property governance remain. |
-| Optional plugins / future surfaces | 3-4 | GPU, ZFS, CIU grouping/actions, web UI/API polish. |
+| Optional plugins / future surfaces | 2-3 | GPU, ZFS, CIU grouping/actions. Web UI over daemon API is promoted out of this bucket — see P69 below (product-goal-driven, standing user priority as of 2026-07-13). |
+
+### P69 — Web UI over daemon API (product-goal-driven)
+
+Standing priority set by the user (2026-07-13): a browser-based frontend over
+the daemon's read surface, consuming P67's HTTP/WebSocket gateway (which in
+turn consumes P63's typed `DaemonClient` over P52's versioned envelope) rather
+than talking to the daemon socket directly. Blocked on P67 landing; not yet
+scoped in detail (framework choice, page inventory, auth/redaction UX) — the
+first carved package here should be a small scoping/analysis package per the
+controller-workflow-v2 §8 carve-source-blend rule ("if the area is too
+unknown to carve confidently, carve a small scoping/analysis package for it
+instead of skipping it"), not a full implementation handoff sight-unseen.
 
 Pragmatic estimate from the current state: a shippable v1/v1.5 release
 candidate needs **0 remaining packages** after P41 plus live-host acceptance
@@ -589,7 +606,8 @@ Handoff: `handoff/P21-admin-action-gating-skeleton.md`.
 - Docker/CIU action integration.
 - File/log/content inspection behind explicit `--inspect-files`.
 - GPU and ZFS optional providers.
-- Web UI over daemon API.
+- Web UI over daemon API — see P69 (product-goal-driven, promoted from
+  "Optional plugins" 2026-07-13).
 
 ## Open Product Decisions
 
