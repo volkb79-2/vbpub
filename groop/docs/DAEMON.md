@@ -175,6 +175,88 @@ typed code.
 DaemonCurrentResult, DaemonHistoryResult, DaemonEntityResult,
 DaemonHello``.
 
+## Hardened Versioned Read HTTP Gateway (P67)
+
+`groop gateway serve` is a separate, read-only HTTP process over the typed P63
+client. It never opens or speaks the Unix socket protocol itself; every route
+uses exactly one of `DaemonClient.request_hello`, `request_current`,
+`request_history`, or `request_entity`. It does not expose `health` on this
+build because the typed versioned health method belongs to P66; it never falls
+back to legacy `request_health`.
+
+### Bind and deployment posture
+
+The default listener is `127.0.0.1:8080`. It never defaults to a wildcard or
+LAN address, and it is not advertised or auto-bound by any daemon socket
+option. A non-loopback IP is refused unless the operator supplies both
+`--allow-non-loopback` and at least one `--principal NAME:CEILING` setting.
+That refusal is a startup error, not a warning.
+
+The supported v1 authentication shape is a **trusted local reverse proxy**.
+The proxy authenticates the browser user, removes any client-supplied
+`X-Groop-Principal`, and supplies its verified principal on its private
+loopback hop to the gateway. The gateway trusts this header only when the TCP
+peer is loopback; a forwarded identity from any non-loopback peer receives no
+principal and no telemetry. Keep the gateway port private to that proxy (for
+example with a dedicated local network namespace/firewall policy); loopback
+alone is not a substitute for a proxy that overwrites client headers.
+
+The proxy owns TLS termination. Do not expose a direct gateway listener to a
+browser or use this header as a browser-controlled credential. A non-loopback
+listener is useful only when direct clients remain unauthenticated and a local
+TLS/auth proxy performs the private-hop connection.
+
+Example local deployment, with the daemon already listening at its normal
+group-protected socket:
+
+```bash
+groop gateway serve \
+  --daemon-socket /run/groop/groop.sock \
+  --principal dashboard:operational
+```
+
+`public`, `operational`, and `sensitive` are the only accepted ceilings. Start
+with `operational`; grant `sensitive` only where the authenticated viewer is
+explicitly allowed to see process-identifying/count telemetry.
+
+### HTTP contract
+
+Only these same-origin `GET` routes exist. Query fields are closed and
+duplicate/unknown fields are rejected before reaching the daemon client.
+
+| Route | Typed call | Accepted query fields |
+|---|---|---|
+| `/v1/hello` | `request_hello()` | none |
+| `/v1/current` | `request_current()` | none |
+| `/v1/history` | `request_history()` | `limit`, `cursor`, `since_ts`, `until_ts` |
+| `/v1/entity` | `request_entity(key)` | exactly `key` (an empty value selects the root entity) |
+
+`POST`, `PUT`, `PATCH`, and `DELETE` (as well as other unsupported methods)
+return `405 Allow: GET`; there are no write routes. The gateway emits no CORS
+headers, no JSONP, and no cookies, so cross-origin browser reads are not
+enabled. If a future authentication mode uses cookies, it must add `Secure`,
+`HttpOnly`, and `SameSite` cookie attributes plus Origin checking before it is
+enabled.
+
+Responses are compact, sorted JSON. `metrics_meta`, including the closed
+`sensitivity` value and its name/unit/glossary metadata, is retained intact. Before
+serialization, a metric above the principal's ceiling is replaced (never
+dropped) with this typed marker; the metric key and `metrics_meta` remain:
+
+```json
+{"pids_max":{"redacted":true,"sensitivity":"sensitive"}}
+```
+
+No raw value or raw counter for a redacted metric is present in the HTTP body.
+The marker is server-side authorization output, not browser masking.
+
+Typed daemon errors map deterministically: `not_found` to `404`,
+`invalid_type`/`out_of_range` (and other malformed request codes) to `400`,
+`denied` to `403`, and `unavailable`/`server_busy`/`request_timeout` to `503`.
+A daemon connection or protocol failure maps to `502`. Error bodies contain a
+short code only; they never include socket paths, exception text, or stack
+traces.
+
 ## Background Producer
 
 On `groop daemon serve` the daemon creates a `FrameBroker` with the live
