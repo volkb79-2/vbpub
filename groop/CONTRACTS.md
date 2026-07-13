@@ -164,11 +164,13 @@ the compact form from §5 everywhere (`[v, src]` or `[v, src, raw]`) so
 - The `--headless` record driver (P53) reuses the same `RecordWriter`/JSONL
   format unchanged; no schema differences exist between TUI-recorded and
   headless-recorded output.
-- Filtered recordings (P55): `--entities`/`--slice`/`--metrics compact` produce
-  frames with fewer ``entities`` keys and/or fewer ``metrics`` per entity. These
+- Filtered recordings (P55/P59): `--entities`/`--slice`/`--container`/`--metrics compact`
+  produce frames with fewer ``entities`` keys and/or fewer ``metrics`` per entity. These
   filtered frames are a valid subset of the existing P2 schema: they serialize
   and deserialize identically, pass ``validate_frame_metrics()``, and replay
-  as normal frames. No new schema or format version is introduced.
+  as normal frames. No new schema or format version is introduced. ``--container``
+  resolves inside the collector sweep (not pre-resolved in ``cli.py``) to ensure
+  post-enrichment Docker metadata accuracy.
 
 ## 6. Provider interface (P3, v2-BPF-ready) — spec §3.2/App. B
 

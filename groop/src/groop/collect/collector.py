@@ -11,7 +11,7 @@ from groop.collect.cgroup import (
     collect_cgroup,
     walk_entities,
 )
-from groop.collect.dockerjoin import DockerInspect, enrich_entities
+from groop.collect.dockerjoin import DockerInspect, ContainerResolveError, enrich_entities, resolve_container_key
 from groop.collect.host import collect_host, collect_host_meta
 from groop.config import GroopConfig, load
 from groop.damon import DEFAULT_DAMON_ROOT, annotate_frame_damon
@@ -40,6 +40,7 @@ class Collector:
         systemctl_show_runner: SystemctlShowRunner | None = None,
         entities_globs: tuple[str, ...] | None = None,
         slice_names: tuple[str, ...] | None = None,
+        container_selectors: tuple[str, ...] | None = None,
         metrics_mode: str = "full",
     ) -> None:
         self.config = config or load()
@@ -63,6 +64,7 @@ class Collector:
         self._prev_device_counters: dict[str, list[dict[str, object]]] | None = None
         # Entity and metric filtering state
         self._entity_predicate = build_entity_predicate(entities_globs, slice_names)
+        self._container_selectors = container_selectors
         # Pre-compute the set of metric names to keep under compact mode
         if metrics_mode == "compact":
             self._compact_metric_names: frozenset[str] = frozenset().union(
@@ -79,8 +81,20 @@ class Collector:
         entities = enrich_entities(entities, self.docker_inspect)
         # Apply entity filtering: determine which entity keys to collect.
         # Non-matching entities are skipped (no sysfs reads for their cgroup).
+        # Container selectors resolve inside collect_once() against the
+        # freshly enriched entities (not pre-resolved in cli.py) so that
+        # Entity.docker metadata from enrich_entities() is available. A
+        # pre-cli.py resolution would require a throwaway sweep, producing
+        # stale or cross-sweep results.
         if self._entity_predicate is not None:
             matched = {k for k in entities if self._entity_predicate(k)}
+        else:
+            matched = set()
+        if self._container_selectors is not None:
+            for sel in self._container_selectors:
+                key = resolve_container_key(sel, entities)
+                matched.add(key)
+        if self._entity_predicate is not None or self._container_selectors is not None:
             collect_keys = add_entity_ancestors(matched)
         else:
             collect_keys = set(entities.keys())

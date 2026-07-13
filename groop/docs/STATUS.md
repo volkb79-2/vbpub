@@ -195,6 +195,16 @@ core workflows, not yet production-certified.**
   31 focused tests covering glob matching, slice subtree inclusion, ancestor
   correctness, compact field-set precision, collection-time pruning, and
   replay/attach rejection.
+- Container-name entity selector (P59): ``--container NAME_OR_PREFIX``
+  (repeatable) added as a third entity-selector form alongside P55's
+  ``--entities``/``--slice`` on the collection path. Resolution runs inside
+  the collector's ``collect_once()`` against the current sweep's post-enrich
+  entities (not pre-resolved in ``cli.py``), ensuring correct Docker metadata
+  availability. Composes as a union with ``--entities``/``--slice``, works
+  with ``--metrics compact``, and is rejected with ``--replay``/``--attach``.
+  9 focused tests covering exact/prefix match, union, nonexistent/ambiguous
+  error handling, replay/attach rejection, compact composition, and
+  resolution-ordering guarantee.
 - Structured systemd `memory.high` set-property governance (P49): preview and
   execution through the P46 action kernel with structured unit/property/value
   inputs, `memory.high`-only validation with max/byte overflow/range checks,
