@@ -12,6 +12,7 @@ from groop import __version__
 from groop.bpf_gate import report_to_jsonable, render_report, run_bpf_gate
 from groop.collect.collector import Collector
 from groop.collect.cgroup import _validate_slice_name
+from groop.collect.dockerjoin import ContainerResolveError, resolve_container_key
 from groop.config import BpfSnapshotConfig, load
 from groop.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, stop_owned_sessions
 from groop.damon.passive import DEFAULT_DAMON_ROOT
@@ -212,13 +213,15 @@ def parse_inspect_files_args(argv: list[str]) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     plan = subparsers.add_parser("plan", help="plan a read-only file/log inspection (no content reads)")
     plan.add_argument("--kind", type=str, required=True, help="inspection kind: docker-json-log, systemd-journal, cgroup-files")
-    plan.add_argument("--target", type=str, required=True, help="inspection target: container id/name, systemd unit, or cgroup path")
+    plan.add_argument("--target", type=str, default=None, help="inspection target: container id/name, systemd unit, or cgroup path")
+    plan.add_argument("--container", type=str, default=None, help="container name or prefix to resolve (alternative to --target)")
     plan.add_argument("--inspect-files", action="store_true", help="enable file inspection planning mode")
     plan.add_argument("--admin", action="store_true", help="enable admin mode for inspection planning")
     plan.add_argument("--json", action="store_true", help="emit JSON plan instead of text")
     read_parser = subparsers.add_parser("read", help="read bounded file/log content (requires --inspect-files and --admin)")
     read_parser.add_argument("--kind", type=str, required=True, help="inspection kind: docker-json-log, cgroup-files")
-    read_parser.add_argument("--target", type=str, required=True, help="inspection target: container id (64 hex) for docker, cgroup path for cgroup")
+    read_parser.add_argument("--target", type=str, default=None, help="inspection target: container id (64 hex) for docker, cgroup path for cgroup")
+    read_parser.add_argument("--container", type=str, default=None, help="container name or prefix to resolve (alternative to --target)")
     read_parser.add_argument("--inspect-files", action="store_true", help="enable file inspection mode")
     read_parser.add_argument("--admin", action="store_true", help="enable admin mode")
     read_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
@@ -559,13 +562,15 @@ def parse_action_args(argv: list[str]) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     preview = subparsers.add_parser("preview", help="preview an admin action without executing it")
     preview.add_argument("--kind", type=str, required=True, help="action kind, e.g. docker-restart, systemd-stop")
-    preview.add_argument("--target", type=str, required=True, help="action target, e.g. container name or systemd unit")
+    preview.add_argument("--target", type=str, default=None, help="action target, e.g. container name or systemd unit")
+    preview.add_argument("--container", type=str, default=None, help="container name or prefix to resolve (alternative to --target)")
     preview.add_argument("--admin", action="store_true", help="enable admin preview mode")
     preview.add_argument("--json", action="store_true", help="emit JSON preview instead of text")
     preview.add_argument("--audit-log", type=Path, default=None, help="path to append-only JSONL audit log")
     execute = subparsers.add_parser("execute", help="execute a gated admin action (start/stop/restart only)")
     execute.add_argument("--kind", type=str, required=True, help="action kind, e.g. docker-restart, systemd-stop")
-    execute.add_argument("--target", type=str, required=True, help="action target, e.g. container name or systemd unit")
+    execute.add_argument("--target", type=str, default=None, help="action target, e.g. container name or systemd unit")
+    execute.add_argument("--container", type=str, default=None, help="container name or prefix to resolve (alternative to --target)")
     execute.add_argument("--admin", action="store_true", help="enable admin execution mode (required)")
     execute.add_argument("--confirm", type=str, default="", help="type EXECUTE to confirm the action")
     execute.add_argument("--json", action="store_true", help="emit JSON result instead of text")
@@ -579,9 +584,18 @@ def _main_action(argv: list[str]) -> int:
     from groop.actions.preview import ActionPlan, DisabledPlan, build_admin_preview
 
     args = parse_action_args(argv)
+
+    try:
+        resolved_target = _resolve_mutual_exclusive_target(
+            args.target, args.container, "action"
+        )
+    except (ValueError, ContainerResolveError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
     if args.command == "preview":
         try:
-            result = build_admin_preview(args.kind, args.target, admin=args.admin)
+            result = build_admin_preview(args.kind, resolved_target, admin=args.admin)
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2
@@ -626,7 +640,7 @@ def _main_action(argv: list[str]) -> int:
     if args.command == "execute":
         result = execute_plan(
             args.kind,
-            args.target,
+            resolved_target,
             admin=args.admin,
             confirm=args.confirm,
             timeout=args.timeout,
@@ -650,6 +664,54 @@ def _main_action(argv: list[str]) -> int:
     return 2
 
 
+def _resolve_container_target(name_or_prefix: str) -> str:
+    """Resolve a --container name/prefix to an EntityKey via a live collector sweep.
+
+    Returns the resolved cgroup-path key that ``--target`` would accept.
+    The collector collects one frame to ensure Docker metadata is enriched.
+    """
+    config = load(None)
+    collector = Collector(config=config)
+    frame = collector.collect_once()
+    # frame.entities is dict[EntityKey, EntityFrame]; extract Entity objects
+    entities = {k: ef.entity for k, ef in frame.entities.items()}
+    key = resolve_container_key(name_or_prefix, entities)
+    return key
+
+
+def _resolve_mutual_exclusive_target(target: str | None, container: str | None, command: str) -> str:
+    """Resolve --target / --container mutual exclusivity.
+
+    Returns the effective target string. Raises ValueError on misuse
+    (both given or neither given) and ContainerResolveError on
+    name-resolution failure.
+
+    .. todo::
+
+        **P55 composition:** If/when P55 (``--entities``/``--slice``) is
+        merged, also accept ``--container`` as a third selector form that
+        resolves to an ``EntityKey`` and feeds the same ancestor-inclusion /
+        collection-time-pruning path. No code changes in this package — just
+        supply P55's selector set with one more resolved key.
+
+        **P56 composition:** If/when P56 (``groop squeeze --target``) is
+        merged, accept ``--container`` as an alternative to
+        ``--target CGROUP_PATH``, resolving before P56's own root /
+        ``memory.min`` / ``--force`` checks run.
+    """
+    if target is not None and container is not None:
+        raise ValueError(
+            f"choose either --target or --container for {command}"
+        )
+    if container is not None:
+        return _resolve_container_target(container)
+    if target is not None:
+        return target
+    raise ValueError(
+        f"{command} requires either --target or --container"
+    )
+
+
 def _main_inspect_files(argv: list[str]) -> int:
     from groop.inspect_files.plan import (
         DisabledInspector,
@@ -664,10 +726,20 @@ def _main_inspect_files(argv: list[str]) -> int:
     )
 
     args = parse_inspect_files_args(argv)
+
+    # Resolve --container to --target before validation
+    try:
+        resolved_target = _resolve_mutual_exclusive_target(
+            args.target, args.container, "inspect-files"
+        )
+    except (ValueError, ContainerResolveError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
     if args.command == "plan":
         try:
             result = build_gated_inspect_plan(
-                args.kind, args.target,
+                args.kind, resolved_target,
                 inspect_files=args.inspect_files,
                 admin=args.admin,
             )
@@ -691,7 +763,7 @@ def _main_inspect_files(argv: list[str]) -> int:
     if args.command == "read":
         try:
             result = build_inspect_read(
-                args.kind, args.target,
+                args.kind, resolved_target,
                 inspect_files=args.inspect_files,
                 admin=args.admin,
                 max_bytes=args.max_bytes,

@@ -13,6 +13,17 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{
 DockerInspect = Callable[[str], Any]
 
 
+class ContainerResolveError(ValueError):
+    """Raised when --container name/prefix resolution fails.
+
+    The message is safe for CLI display (no raw paths, no secrets).
+    """
+
+    def __init__(self, message: str, *, candidates: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.candidates = candidates
+
+
 def docker_id_from_key(key: EntityKey) -> str | None:
     match = DOCKER_SCOPE_RE.search(key)
     return match.group(1) if match else None
@@ -60,3 +71,58 @@ def enrich_entities(entities: dict[EntityKey, Entity], docker_inspect: DockerIns
             entity.docker = None
         out[key] = entity
     return out
+
+
+def resolve_container_key(name_or_prefix: str, entities: dict[EntityKey, Entity]) -> EntityKey:
+    """Resolve a container name or prefix to an EntityKey via enriched Docker metadata.
+
+    Scans entities whose key matches DOCKER_SCOPE_RE and have non-None
+    DockerMeta. An exact match on ``DockerMeta.name`` wins over any prefix
+    match. If exactly one unique prefix match is found it is returned. If
+    multiple distinct prefix matches exist, ContainerResolveError is raised
+    listing the candidates. If zero matches exist, ContainerResolveError is
+    raised with a "no running container" message.
+
+    **Ordering constraint:** *entities* must already be docker-enriched
+    (``Entity.docker`` populated by :func:`enrich_entities`). Resolution
+    against a stale or cross-sweep entity set will produce stale/missing
+    results — this function does not call ``docker inspect`` itself.
+
+    The resolved EntityKey is a cgroup-path string like
+    ``"system.slice/docker-<64hex>.scope"``, which is the form already
+    accepted by ``--target`` flags on ``inspect-files`` and ``action``
+    subcommands.
+    """
+    exact: EntityKey | None = None
+    prefix: list[tuple[EntityKey, str]] = []
+
+    for key, entity in entities.items():
+        if entity.docker is None:
+            continue
+        if not DOCKER_SCOPE_RE.search(key):
+            continue
+        dname = entity.docker.name
+        cid = entity.docker.cid
+
+        if dname == name_or_prefix:
+            exact = key
+        elif dname.startswith(name_or_prefix) or cid.startswith(name_or_prefix):
+            prefix.append((key, dname))
+
+    if exact is not None:
+        return exact
+
+    if len(prefix) == 0:
+        raise ContainerResolveError(
+            f"no running container matches name filter '{name_or_prefix}'"
+        )
+    if len(prefix) == 1:
+        return prefix[0][0]
+
+    candidates = sorted(set(name for _, name in prefix))
+    candidates_str = ", ".join(candidates)
+    raise ContainerResolveError(
+        f"ambiguous container name prefix '{name_or_prefix}' matches "
+        f"multiple containers: {candidates_str}",
+        candidates=candidates,
+    )

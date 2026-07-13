@@ -60,7 +60,17 @@ machine-readable steady-state profiles remain prototype-only claims.
 
 P55 adds `--entities GLOB`/`--slice NAME`/`--metrics compact` collection-time
 filtering and is **done** (see implemented section). P56 (``groop squeeze``)
-and P57 (``--container``) remain queued.
+remains queued: a guided stepped `memory.high` working-set measurement
+absorbing the standalone `container-mempress.sh` workflow, gated through the
+existing P21/P46 admin action posture with mandatory `memory.high` restore on
+exit/SIGINT.
+
+P57 adds `--container NAME_OR_PREFIX` docker-name resolution wherever groop
+takes a cgroup-path/entity identifier today and is **done**. The resolver
+lives in `groop/collect/dockerjoin.py` and resolves against already-enriched
+`Entity.docker` metadata — no new Docker API calls. `--container` is wired
+into `inspect-files plan/read --target` and `action preview/execute --target`
+as a mutually exclusive alternative to `--target`.
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -233,8 +243,8 @@ core workflows, not yet production-certified.**
 - paddr auto-start / persistent daemon-owned paddr mode.
 - Headless (non-Textual) `--record` driver and `groop report` steady-state
   profile command (queued: P53, P54).
-- Guided stepped `memory.high` squeeze measurement (`groop squeeze`) and
-  docker-name entity selectors (`--container`) (queued: P56, P57).
+- Guided stepped `memory.high` squeeze measurement (`groop squeeze`)
+  (queued: P56).
 
 ## Acceptance Status
 

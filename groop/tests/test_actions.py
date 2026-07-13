@@ -369,10 +369,14 @@ class TestMainActionReturnCodes:
         )
         assert code == 0
 
+    def test_preview_both_target_and_container_exit_2(self) -> None:
+        """--target and --container are mutually exclusive for preview."""
+        from groop.cli import _main_action
 
-# ---------------------------------------------------------------------------
-# P46 — Admin action execution kernel tests
-# ---------------------------------------------------------------------------
+        code = _main_action(
+            ["preview", "--kind", "docker-restart", "--target", "c1", "--container", "my-app", "--admin"]
+        )
+        assert code == 2
 
 
 class TestTargetValidation:
@@ -766,6 +770,26 @@ class TestExecutionCliIntegration:
                 "--admin",
                 "--confirm",
                 "NO",
+            ]
+        )
+        assert code == 2
+
+    def test_execute_both_target_and_container_exit_2(self) -> None:
+        """--target and --container are mutually exclusive for execute."""
+        from groop.cli import _main_action
+
+        code = _main_action(
+            [
+                "execute",
+                "--kind",
+                "docker-restart",
+                "--target",
+                "c1",
+                "--container",
+                "my-app",
+                "--admin",
+                "--confirm",
+                "EXECUTE",
             ]
         )
         assert code == 2
