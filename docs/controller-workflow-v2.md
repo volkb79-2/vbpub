@@ -238,6 +238,22 @@ Every open handoff carries, immediately after the title:
   handoffs** in the queue whenever the roadmap has that much scoped work. At
   each post-merge carve step it may carve *multiple* successors to refill the
   buffer, so the controller never idles waiting for a carve.
+- **Carve sources — blend, don't drift (added 2026-07-13).** Observed failure
+  mode: a carver that only spins off children of what it just reviewed
+  (Out-of-Scope follow-ups, dependency-graph successors) produces a queue that
+  orbits recently-reviewed areas forever, while roadmap features nobody has
+  reviewed yet (e.g. an "Optional plugins" bucket) are never carved at all.
+  Rule: every carve cycle draws from THREE sources and states which —
+  1. **review-derived** follow-ups (warm context, cheapest to carve well);
+  2. **roadmap-driven**: the carver MUST re-read the roadmap/backlog index
+     each cycle and carve from its top priorities even when that area is
+     cold — if the area is too unknown to carve confidently, carve a small
+     *scoping/analysis package* for it instead of skipping it;
+  3. **product-goal-driven**: standing priorities set by the user (e.g. "get
+     the product launched with the new UI") outrank both.
+  **Queue composition floor:** of the ≥5 planned handoffs, at least 2 must be
+  roadmap- or goal-driven (source 2/3), not review children. The carve commit
+  message names each package's source so drift is auditable.
 - **Locking:** carving commits to `main`, so two concurrent carvers could
   race. Primary mechanism: **the controller is single-threaded and dispatches
   at most one carve task at a time** (carving is a controller-dispatched task
