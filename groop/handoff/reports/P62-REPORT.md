@@ -1,4 +1,4 @@
-# P62-REPORT — Steady-State Window Auto-Detection
+# P62-REPORT -- Steady-State Window Auto-Detection
 
 ## What Was Built
 
@@ -20,9 +20,9 @@ match, so the result is the longest valid trailing suffix.
 
 New options:
 
-- `--stability-gauge METRIC` — one of the fixed P54 report gauges; default `ram`.
-- `--stability-cov FLOAT` — finite non-negative maximum CoV; default `0.05`.
-- `--min-frames N` — positive candidate-frame floor; default `3`.
+- `--stability-gauge METRIC` -- one of the fixed P54 report gauges; default `ram`.
+- `--stability-cov FLOAT` -- finite non-negative maximum CoV; default `0.05`.
+- `--min-frames N` -- positive candidate-frame floor; default `3`.
 
 P61 assertions evaluate the detected profile because the CLI resolves the
 window before running the existing assertion evaluator.
@@ -57,7 +57,7 @@ Linux amd64.
 ```text
 PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest \
   groop/tests/test_report.py -q -W error -p no:schemathesis
-105 passed in 3.74s
+106 passed in 4.55s
 ```
 
 The global Schemathesis pytest plugin is disabled only for warning-as-error
@@ -83,10 +83,17 @@ git diff --check
 ```
 
 The required full suite completed under `timeout 300` and `-W error`, with only
-the unrelated Schemathesis plugin disabled. Its pytest `lastfailed` cache was
-empty after completion. The managed terminal runner did not retain the normal
-pytest summary line for this long command; the focused pass above is the
-complete output-tail evidence.
+the unrelated Schemathesis plugin disabled:
+
+```text
+PYTHONPATH=groop/src /home/vscode/.venv/bin/python -m pytest \
+  groop/tests -q -W error -p no:schemathesis
+1061 passed, 2 skipped in 126.12s (0:02:06)
+```
+
+The self-review reran both gates after adding recording-based observable tests
+and the second-invocation CLI byte-determinism check. The focused result above
+is that rerun's real output.
 
 ## Known Gaps / Open Items
 

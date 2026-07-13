@@ -5,7 +5,7 @@
 - Branch: `feat/groop-p62-report-steady-state-autodetect`
 - Worktree: `.worktrees/groop-p62-report-steady-state-autodetect`
 - Base commit: `86c444f` (local `main`, after P54 and P61)
-- Package: P62 — Steady-State Window Auto-Detection
+- Package: P62 -- Steady-State Window Auto-Detection
 - Current objective: add deterministic `groop report --window auto` selection.
 
 ## Timeline
@@ -43,6 +43,24 @@ Append newest entries at the bottom.
 - Files changed: P62-LOG.md, P62-REPORT.md.
 - Result: no failed-node cache entries after the full suite; diff check clean.
 - Follow-up: commit the focused P62 change.
+
+2026-07-13 UTC
+- Action: Performed the required same-session self-review against
+  `git diff 86c444f..HEAD` and reran the mandated gates after correcting the
+  review findings.
+- Commands: focused pytest under `-W error`; `timeout 300` full pytest under
+  `-W error`; `git diff --check`; ASCII scan of LOG/REPORT/SELFREVIEW.
+- Files changed: tests/test_report.py, P62-LOG.md, P62-REPORT.md,
+  P62-SELFREVIEW.md.
+- Findings fixed: recorded the full-suite's real pytest summary rather than a
+  cache-based claim; changed exact-boundary, fallback, and override tests to
+  run through production P2 recordings; added two-invocation CLI byte
+  determinism coverage; made LOG and REPORT ASCII as required.
+- Result: focused gate passed 106 tests; full timeout gate passed 1061 tests
+  with 2 skipped in 126.12s. Scope is confined to `groop/**`; no dead
+  scaffolding found; malformed override/window exit-2 and detected-window
+  assertion contracts remain covered.
+- Follow-up: commit the self-review fixes separately.
 ```
 
 ## Decisions

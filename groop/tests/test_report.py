@@ -297,47 +297,57 @@ class TestAutoSteadyWindow:
             _frame(125.0, {"busy": {"ram": _gauge(99), "anon": _gauge(50)}}),
         ]
 
-    def test_oracle_selects_exact_stable_tail_not_all(self):
+    def test_oracle_selects_exact_stable_tail_not_all(self, tmp_path):
         """The exact boundary is 115, not a plausible six-frame/all result."""
         frames = self._tail_stable_frames()
         window = detect_steady_window(frames)
         assert window == WindowRange(start_ts=115.0, end_ts=125.0)
         selected = _filter_frames_by_window(frames, window)
         assert [frame.ts for frame in selected] == [115.0, 120.0, 125.0]
-        auto = compute_profile(frames, window=window)
-        all_profiles = compute_profile(frames)
+        path = tmp_path / "exact-tail.jsonl"
+        _write_recording(path, frames)
+        auto_computation = compute_report_with_selection(path, window_spec="auto")
+        all_computation = compute_report_with_selection(path, window_spec="all")
+        assert auto_computation.window_selection.window == window
+        auto = auto_computation.profiles
+        all_profiles = all_computation.profiles
         assert auto[0].sample_count == 3
         assert all_profiles[0].sample_count == 6
         assert auto[0].gauges["ram"]["p50"] == 100.0
         assert all_profiles[0].gauges["ram"]["p50"] == 101.0
 
-    def test_no_stable_suffix_falls_back_to_all(self):
+    def test_no_stable_suffix_falls_back_to_all(self, tmp_path):
         frames = [
             _frame(100.0 + i * 5, {"busy": {"ram": _gauge(value)}})
             for i, value in enumerate((10, 20, 10, 20))
         ]
-        selection = select_report_window(frames, window_spec="auto")
+        path = tmp_path / "noisy.jsonl"
+        _write_recording(path, frames)
+        computation = compute_report_with_selection(path, window_spec="auto")
+        selection = computation.window_selection
         assert selection.mode == "auto"
         assert selection.detected is False
         assert selection.window is None
-        assert compute_profile(frames, window=selection.window) == compute_profile(frames)
+        assert computation.profiles == compute_report(path, window_spec="all")
         data = json.loads(format_report(
-            compute_profile(frames, window=selection.window),
+            computation.profiles,
             window_selection=selection,
         ))
         assert data["window_mode"] == "auto"
         assert data["window_detected"] is False
         assert "window_start_ts" not in data
 
-    def test_gauge_and_cov_overrides_change_window(self):
+    def test_gauge_and_cov_overrides_change_window(self, tmp_path):
         frames = self._tail_stable_frames()
-        ram_selection = select_report_window(frames, window_spec="auto")
-        anon_selection = select_report_window(
-            frames, window_spec="auto", stability_gauge="anon",
-        )
-        cov_selection = select_report_window(
-            frames, window_spec="auto", stability_cov=1.0,
-        )
+        path = tmp_path / "overrides.jsonl"
+        _write_recording(path, frames)
+        ram_selection = compute_report_with_selection(path, window_spec="auto").window_selection
+        anon_selection = compute_report_with_selection(
+            path, window_spec="auto", stability_gauge="anon",
+        ).window_selection
+        cov_selection = compute_report_with_selection(
+            path, window_spec="auto", stability_cov=1.0,
+        ).window_selection
         assert ram_selection.window == WindowRange(115.0, 125.0)
         assert anon_selection.window == WindowRange(100.0, 125.0)
         assert cov_selection.window == WindowRange(100.0, 125.0)
@@ -407,6 +417,14 @@ class TestReportAutoCLI:
         data = json.loads(result.stdout)
         assert data["window_detected"] is True
         assert data["assertions"][0]["actual"] == 101.0
+
+    def test_auto_cli_is_byte_deterministic(self, tmp_path):
+        path = tmp_path / "tail.jsonl"
+        _write_recording(path, TestAutoSteadyWindow()._tail_stable_frames())
+        first = self._invoke(path, "--window", "auto")
+        second = self._invoke(path, "--window", "auto")
+        assert first.returncode == second.returncode == 0
+        assert first.stdout == second.stdout
 
     @pytest.mark.parametrize(
         "args",
