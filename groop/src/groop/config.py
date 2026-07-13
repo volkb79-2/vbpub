@@ -127,10 +127,14 @@ class CiuConfig:
 
     Attributes:
         known_stacks: Stack directory names used by the inference heuristic
-            (e.g. ``"infra/redis-core"``, ``"app/web"``). When a container's
-            ``com.docker.compose.project`` matches a name in this set AND its
-            container name matches ciu's anchored pattern, it is inferred to be
-            ciu-managed. An empty tuple (default) disables inference.
+            (e.g. ``"redis-core"``, or the full ``"infra/redis-core"``, which is
+            matched on its last path segment). Compose derives its project name
+            from the stack directory's *basename* and a compose project can
+            never contain ``/``, so only that segment is compared. When a
+            container's ``com.docker.compose.project`` matches an entry AND its
+            container name is anchored to that project
+            (``<project>-<env>-<name>``), it is inferred to be ciu-managed. An
+            empty tuple (default) disables inference.
     """
 
     known_stacks: tuple[str, ...] = ()

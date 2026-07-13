@@ -159,15 +159,21 @@ def ciu_from_jsonable(value: Any) -> CiuMeta | None:
 
 
 def entity_to_jsonable(entity: Entity) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "key": entity.key,
         "kind": entity.kind,
         "parent": entity.parent,
         "docker": docker_to_jsonable(entity.docker),
-        "ciu": ciu_to_jsonable(entity.ciu),
         "tier": entity.tier,
         "is_protected": entity.is_protected,
     }
+    # Omitted rather than emitted as null when absent, matching governance /
+    # network / damon in entity_frame_to_jsonable.  Emitting "ciu": null on
+    # every entity would rewrite every recorded frame on disk and force the
+    # existing fixtures to be regenerated for a field they do not carry.
+    if entity.ciu is not None:
+        out["ciu"] = ciu_to_jsonable(entity.ciu)
+    return out
 
 
 def entity_from_jsonable(value: Any) -> Entity:

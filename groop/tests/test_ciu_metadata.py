@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import json
-
-import pytest
-
 from groop.collect.dockerjoin import (
     _parse_phase,
     detect_ciu_from_labels,
     detect_ciu_inferred,
     enrich_entities,
 )
-from groop.config import CiuConfig, GroopConfig, load
+from groop.config import CiuConfig, GroopConfig
 from groop.model import (
     CiuMeta,
     DockerMeta,
@@ -25,9 +21,11 @@ from groop.model import (
     frame_from_jsonable,
     frame_to_jsonable,
 )
-from groop.registry import REGISTRY
 
 FULL_ID = "a" * 64
+# Configured stack roots are repo-relative paths.  Compose derives its project
+# name from the stack *directory name*, so these are matched on their last path
+# segment ("infra/redis-core" -> compose project "redis-core").
 KNOWN_STACKS = {"infra/redis-core", "app/web", "monitoring/prometheus"}
 
 
@@ -47,23 +45,34 @@ class TestParsePhase:
         """phase_10 is valid: numeric ordering means 10 > 2."""
         assert _parse_phase("phase_10") == ("phase_10", 10)
 
-    def test_malformed_empty_string(self) -> None:
+    def test_absent_empty_string(self) -> None:
+        """An empty label is genuine absence: both fields are None."""
         assert _parse_phase("") == (None, None)
 
+    def test_none_input(self) -> None:
+        """No label at all is genuine absence: both fields are None."""
+        assert _parse_phase(None) == (None, None)
+
     def test_malformed_no_number(self) -> None:
-        assert _parse_phase("phase_") == (None, None)
+        """Present-but-unparseable keeps the raw string; only phase is None."""
+        assert _parse_phase("phase_") == ("phase_", None)
 
     def test_malformed_alpha(self) -> None:
-        assert _parse_phase("phase_abc") == (None, None)
+        assert _parse_phase("phase_abc") == ("phase_abc", None)
 
     def test_malformed_negative(self) -> None:
-        assert _parse_phase("phase_-1") == (None, None)
+        assert _parse_phase("phase_-1") == ("phase_-1", None)
 
     def test_malformed_garbage(self) -> None:
-        assert _parse_phase("not_a_phase") == (None, None)
+        assert _parse_phase("not_a_phase") == ("not_a_phase", None)
 
-    def test_none_input(self) -> None:
-        assert _parse_phase(None) == (None, None)
+    def test_unparseable_is_distinct_from_absent(self) -> None:
+        """Unparseable phase and absent phase are different states."""
+        unparseable = _parse_phase("phase_abc")
+        absent = _parse_phase(None)
+        assert unparseable != absent
+        assert unparseable[0] is not None
+        assert absent[0] is None
 
     def test_whitespace(self) -> None:
         assert _parse_phase("  phase_3  ") == ("phase_3", 3)
@@ -123,7 +132,7 @@ class TestDetectCiuFromLabels:
         assert detect_ciu_from_labels({}) is None
 
     def test_malformed_phase_is_not_a_crash(self) -> None:
-        """Malformed ciu.phase → phase=None, no exception."""
+        """Malformed ciu.phase → phase=None, raw kept, no exception."""
         labels = {
             "ciu.managed": "true",
             "ciu.stack": "app/web",
@@ -133,7 +142,7 @@ class TestDetectCiuFromLabels:
         assert meta is not None
         assert meta.source == "label"
         assert meta.stack == "app/web"
-        assert meta.phase_raw is None
+        assert meta.phase_raw == "phase_"
         assert meta.phase is None
 
     def test_malformed_phase_alpha(self) -> None:
@@ -144,7 +153,7 @@ class TestDetectCiuFromLabels:
         }
         meta = detect_ciu_from_labels(labels)
         assert meta is not None
-        assert meta.phase_raw is None
+        assert meta.phase_raw == "phase_abc"
         assert meta.phase is None
 
     def test_malformed_phase_negative(self) -> None:
@@ -154,6 +163,13 @@ class TestDetectCiuFromLabels:
             "ciu.phase": "phase_-1",
         }
         meta = detect_ciu_from_labels(labels)
+        assert meta is not None
+        assert meta.phase_raw == "phase_-1"
+        assert meta.phase is None
+
+    def test_absent_phase_label_keeps_both_none(self) -> None:
+        """Absent phase is distinguishable from an unparseable one."""
+        meta = detect_ciu_from_labels({"ciu.managed": "true", "ciu.stack": "app/web"})
         assert meta is not None
         assert meta.phase_raw is None
         assert meta.phase is None
@@ -165,18 +181,34 @@ class TestDetectCiuFromLabels:
 
 
 class TestDetectCiuInferred:
+    """Compose project names can never contain "/" ([a-z0-9][a-z0-9_-]*).
+
+    The configured stack root may be a path ("infra/redis-core"); it is matched
+    against the compose project on its last path segment ("redis-core").
+    """
+
     def test_matches_stack_root_and_name_pattern(self) -> None:
-        """Compose project is a known stack, name matches ^<project>-<env>-<name>$."""
+        """Real compose project + ^<project>-<env>-<name>$ container name."""
         meta = detect_ciu_inferred(
-            compose_project="infra/redis-core",
-            container_name="infra/redis-core-prod-redis01",
+            compose_project="redis-core",
+            container_name="redis-core-prod-redis01",
             known_stack_roots=KNOWN_STACKS,
         )
         assert meta is not None
         assert meta.source == "inferred"
-        assert meta.stack == "infra/redis-core"
+        assert meta.stack == "redis-core"
         assert meta.phase_raw is None
         assert meta.phase is None
+
+    def test_path_style_stack_root_matches_on_basename(self) -> None:
+        """A configured "infra/redis-core" matches compose project "redis-core"."""
+        meta = detect_ciu_inferred(
+            compose_project="redis-core",
+            container_name="redis-core-prod-redis01",
+            known_stack_roots={"infra/redis-core"},
+        )
+        assert meta is not None
+        assert meta.stack == "redis-core"
 
     def test_compose_project_not_in_known_stacks(self) -> None:
         meta = detect_ciu_inferred(
@@ -187,10 +219,10 @@ class TestDetectCiuInferred:
         assert meta is None
 
     def test_name_does_not_match_pattern(self) -> None:
-        """Container name doesn't match ^<project>-<env>-<name>$ — no inference."""
+        """Container name has no <env>-<name> tail — no inference."""
         meta = detect_ciu_inferred(
-            compose_project="app/web",
-            container_name="bare-name",
+            compose_project="web",
+            container_name="web-bare",
             known_stack_roots=KNOWN_STACKS,
         )
         assert meta is None
@@ -207,8 +239,8 @@ class TestDetectCiuInferred:
     def test_empty_stack_roots(self) -> None:
         """No known stack roots → no inference."""
         meta = detect_ciu_inferred(
-            compose_project="app/web",
-            container_name="app/web-prod-web01",
+            compose_project="web",
+            container_name="web-prod-web01",
             known_stack_roots=set(),
         )
         assert meta is None
@@ -216,8 +248,8 @@ class TestDetectCiuInferred:
     def test_inferred_is_distinct_from_label(self) -> None:
         """Inferred CiuMeta has source='inferred' not 'label'."""
         meta = detect_ciu_inferred(
-            compose_project="infra/redis-core",
-            container_name="infra/redis-core-prod-redis01",
+            compose_project="redis-core",
+            container_name="redis-core-prod-redis01",
             known_stack_roots=KNOWN_STACKS,
         )
         assert meta is not None
@@ -226,14 +258,54 @@ class TestDetectCiuInferred:
         assert meta.source != "label"
 
     def test_name_pattern_variants(self) -> None:
-        """Container names with hyphens in the name part still match."""
+        """Container names with hyphens in the <name> part still match."""
         meta = detect_ciu_inferred(
-            compose_project="app/web",
-            container_name="app/web-staging-web-api-v2",
+            compose_project="web",
+            container_name="web-staging-web-api-v2",
             known_stack_roots=KNOWN_STACKS,
         )
         assert meta is not None
         assert meta.source == "inferred"
+        assert meta.stack == "web"
+
+    # -- Regression: false positives fixed by anchoring the name to the project
+
+    def test_unrelated_container_name_is_rejected(self) -> None:
+        """Regression: an unrelated container sharing the compose project was
+        claimed as ciu-managed, because the old code matched the bare
+        ^<a>-<b>-<c>$ shape instead of anchoring on the project prefix."""
+        assert (
+            detect_ciu_inferred(
+                compose_project="redis-core",
+                container_name="totally-unrelated-thing",
+                known_stack_roots={"redis-core"},
+            )
+            is None
+        )
+
+    def test_pterodactyl_uuid_container_is_rejected(self) -> None:
+        """Regression: a Pterodactyl UUID-named container matched the bare
+        hyphen shape and was falsely inferred as a ciu container."""
+        assert (
+            detect_ciu_inferred(
+                compose_project="redis-core",
+                container_name="3f2b1a9c-1111-4222-8333-444455556666",
+                known_stack_roots={"redis-core"},
+            )
+            is None
+        )
+
+    def test_unconfigured_project_is_rejected(self) -> None:
+        """Regression: a well-formed container in a project that is NOT a
+        configured known stack must never be inferred as ciu-managed."""
+        assert (
+            detect_ciu_inferred(
+                compose_project="other-project",
+                container_name="other-project-prod-x",
+                known_stack_roots={"redis-core"},
+            )
+            is None
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +355,7 @@ class TestNegativeNonCiu:
         def label_inspect(_cid: str) -> list[dict]:
             return [{
                 "Id": "b" * 64,
-                "Name": "/infra/redis-core-prod-redis01",
+                "Name": "/redis-core-prod-redis01",
                 "Config": {
                     "Image": "redis:7",
                     "Labels": {
@@ -305,63 +377,16 @@ class TestNegativeNonCiu:
         def inf_inspect(_cid: str) -> list[dict]:
             return [{
                 "Id": "c" * 64,
-                "Name": "/infra/redis-core-prod-redis02",
+                "Name": "/redis-core-prod-redis02",
                 "Config": {
                     "Image": "redis:7",
-                    "Labels": {"com.docker.compose.project": "infra/redis-core"},
+                    "Labels": {"com.docker.compose.project": "redis-core"},
                 },
             }]
 
         inf_result = enrich_entities(inf_entities, inf_inspect, known_stack_roots=KNOWN_STACKS)
         assert inf_result[inf_key].ciu is not None
         assert inf_result[inf_key].ciu.source == "inferred"
-
-
-# ---------------------------------------------------------------------------
-# Phase ordering (engineered to fail a string sort)
-# ---------------------------------------------------------------------------
-
-
-class TestPhaseOrdering:
-    """Numeric phase ordering: phase_1 < phase_2 < phase_10."""
-
-    def test_numeric_ordering(self) -> None:
-        """Sort CiuMeta objects by phase and verify 1, 2, 10 order.
-
-        If the sort uses string comparison on phase_raw, phase_10 would
-        appear before phase_2. This test would detect that.
-        """
-        metas = [
-            CiuMeta(stack="s", phase_raw="phase_10", phase=10, source="label"),
-            CiuMeta(stack="s", phase_raw="phase_1", phase=1, source="label"),
-            CiuMeta(stack="s", phase_raw="phase_2", phase=2, source="label"),
-        ]
-        sorted_metas = sorted(metas, key=lambda m: (m.phase if m.phase is not None else -1))
-        expected_phases = [1, 2, 10]
-        assert [m.phase for m in sorted_metas] == expected_phases
-
-    def test_string_sort_would_fail(self) -> None:
-        """Demonstrate that string-sorting phase_raw gives wrong order.
-
-        This is a negative assertion: str('10') < str('2') in lexical order.
-        It proves the test would catch a string-sort bug.
-        """
-        raw_phases = ["phase_1", "phase_2", "phase_10"]
-        string_sorted = sorted(raw_phases)
-        # Lexicographic: phase_1, phase_10, phase_2 (wrong!)
-        assert string_sorted == ["phase_1", "phase_10", "phase_2"]
-
-    def test_unknown_phase_does_not_sort_as_zero(self) -> None:
-        """None phase sorts separately, not as 0."""
-        metas = [
-            CiuMeta(stack="s", phase_raw="phase_2", phase=2, source="label"),
-            CiuMeta(stack="s", phase_raw=None, phase=None, source="label"),
-            CiuMeta(stack="s", phase_raw="phase_1", phase=1, source="label"),
-        ]
-        sorted_metas = sorted(metas, key=lambda m: (m.phase if m.phase is not None else -1))
-        # Unknown (-1) comes first, then 1, then 2
-        assert sorted_metas[0].phase is None
-        assert [m.phase for m in sorted_metas] == [None, 1, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -376,61 +401,25 @@ class TestMalformedPhase:
         meta = detect_ciu_from_labels(labels)
         assert meta is not None
         assert meta.phase is None
+        assert meta.phase_raw == "phase_"
 
     def test_phase_alpha(self) -> None:
         labels = {"ciu.managed": "true", "ciu.phase": "phase_abc"}
         meta = detect_ciu_from_labels(labels)
         assert meta is not None
         assert meta.phase is None
+        assert meta.phase_raw == "phase_abc"
 
     def test_phase_missing(self) -> None:
         labels = {"ciu.managed": "true"}
         meta = detect_ciu_from_labels(labels)
         assert meta is not None
         assert meta.phase is None
+        assert meta.phase_raw is None
 
-    def test_phase_negative_sort(self) -> None:
-        """Negative phase numbers are treated as unknown (None)."""
-        assert _parse_phase("phase_-1") == (None, None)
-
-
-# ---------------------------------------------------------------------------
-# Grouping correctness
-# ---------------------------------------------------------------------------
-
-
-class TestGroupingCorrectness:
-    """N containers across 2 stacks and 3 phases → exact sets."""
-
-    def test_group_by_stack_and_phase(self) -> None:
-        containers = [
-            CiuMeta(stack="infra/redis-core", phase_raw="phase_1", phase=1, source="label"),
-            CiuMeta(stack="infra/redis-core", phase_raw="phase_1", phase=1, source="label"),
-            CiuMeta(stack="infra/redis-core", phase_raw="phase_2", phase=2, source="label"),
-            CiuMeta(stack="app/web", phase_raw="phase_1", phase=1, source="label"),
-            CiuMeta(stack="app/web", phase_raw="phase_3", phase=3, source="label"),
-            CiuMeta(stack="app/web", phase_raw="phase_3", phase=3, source="label"),
-        ]
-
-        # Group by (stack, phase)
-        groups: dict[tuple[str | None, int | None], list[CiuMeta]] = {}
-        for m in containers:
-            groups.setdefault((m.stack, m.phase), []).append(m)
-
-        assert len(groups) == 4  # (infra,1), (infra,2), (app,1), (app,3)
-
-        assert len(groups[("infra/redis-core", 1)]) == 2
-        assert len(groups[("infra/redis-core", 2)]) == 1
-        assert len(groups[("app/web", 1)]) == 1
-        assert len(groups[("app/web", 3)]) == 2
-
-        # Verify exact membership by phase number
-        assert {m.phase for m in groups[("infra/redis-core", 1)]} == {1}
-        assert {m.phase for m in groups[("app/web", 3)]} == {3}
-
-    def test_no_ciu_containers_yield_no_groups(self) -> None:
-        groups: dict[str, list] = {}
-        assert len(groups) == 0
+    def test_phase_negative_is_unparseable_not_absent(self) -> None:
+        """A negative phase number is unparseable — the raw label is kept."""
+        assert _parse_phase("phase_-1") == ("phase_-1", None)
 
 
 # ---------------------------------------------------------------------------
@@ -472,7 +461,7 @@ class TestFrameSchema:
         assert entity_frame.entity.docker is None
 
     def test_no_ciu_containers_serializes_without_ciu_noise(self) -> None:
-        """A frame with no CIU-managed containers serializes without ciu keys."""
+        """A frame with no CIU-managed containers omits the ciu key entirely."""
         frame = Frame(
             1,
             1000.0,
@@ -487,11 +476,18 @@ class TestFrameSchema:
         )
         jsonable = frame_to_jsonable(frame)
         entity_json = jsonable["entities"]["x.slice"]["entity"]
-        # No 'ciu' key present when ciu is None
-        assert "ciu" not in entity_json or entity_json["ciu"] is None
+        # The key is omitted, not emitted as null.
+        assert "ciu" not in entity_json
         # Round-trip
         restored = frame_from_jsonable(jsonable)
         assert restored == frame
+
+    def test_entity_to_jsonable_omits_ciu_when_none(self) -> None:
+        """entity_to_jsonable omits "ciu" rather than emitting "ciu": null."""
+        entity = Entity(key="x.slice", kind="slice", parent="")
+        jsonable = entity_to_jsonable(entity)
+        assert "ciu" not in jsonable
+        assert entity_from_jsonable(jsonable) == entity
 
     def test_ciu_meta_round_trip(self) -> None:
         """CiuMeta serializes and deserializes correctly."""
@@ -500,6 +496,15 @@ class TestFrameSchema:
         assert jsonable == {"stack": "app/web", "phase_raw": "phase_2", "phase": 2, "source": "label"}
         restored = ciu_from_jsonable(jsonable)
         assert restored == meta
+
+    def test_ciu_meta_unparseable_phase_round_trip(self) -> None:
+        """An unparseable phase_raw survives serialization with phase=None."""
+        meta = CiuMeta(stack="app/web", phase_raw="phase_abc", phase=None, source="label")
+        restored = ciu_from_jsonable(ciu_to_jsonable(meta))
+        assert restored == meta
+        assert restored is not None
+        assert restored.phase_raw == "phase_abc"
+        assert restored.phase is None
 
     def test_ciu_meta_none_round_trip(self) -> None:
         assert ciu_to_jsonable(None) is None
@@ -521,9 +526,9 @@ class TestFrameSchema:
                         docker=DockerMeta(
                             cid="aabbccddeeff",
                             full_id="a" * 64,
-                            name="infra/redis-core-prod-redis01",
+                            name="redis-core-prod-redis01",
                             image="redis:7",
-                            compose_project="infra/redis-core",
+                            compose_project="redis-core",
                         ),
                         ciu=CiuMeta(
                             stack="infra/redis-core",
@@ -551,9 +556,9 @@ class TestFrameSchema:
             docker=DockerMeta(
                 cid="ffffffffffff",
                 full_id="f" * 64,
-                name="app/web-prod-web01",
+                name="web-prod-web01",
                 image="nginx:latest",
-                compose_project="app/web",
+                compose_project="web",
             ),
             ciu=CiuMeta(stack="app/web", phase_raw="phase_1", phase=1, source="label"),
         )
@@ -577,14 +582,14 @@ class TestEnrichEntitiesIntegration:
         def inspect(_cid: str) -> list[dict]:
             return [{
                 "Id": FULL_ID,
-                "Name": "/infra/redis-core-prod-redis01",
+                "Name": "/redis-core-prod-redis01",
                 "Config": {
                     "Image": "redis:7",
                     "Labels": {
                         "ciu.managed": "true",
                         "ciu.stack": "infra/redis-core",
                         "ciu.phase": "phase_2",
-                        "com.docker.compose.project": "infra/redis-core",
+                        "com.docker.compose.project": "redis-core",
                     },
                 },
             }]
@@ -603,18 +608,41 @@ class TestEnrichEntitiesIntegration:
         def inspect(_cid: str) -> list[dict]:
             return [{
                 "Id": FULL_ID,
-                "Name": "/infra/redis-core-prod-redis01",
+                "Name": "/redis-core-prod-redis01",
                 "Config": {
                     "Image": "redis:7",
-                    "Labels": {"com.docker.compose.project": "infra/redis-core"},
+                    "Labels": {"com.docker.compose.project": "redis-core"},
+                },
+            }]
+
+        # KNOWN_STACKS carries "infra/redis-core"; compose ships "redis-core".
+        result = enrich_entities(entities, inspect, known_stack_roots=KNOWN_STACKS)
+        entity = result[key]
+        assert entity.ciu is not None
+        assert entity.ciu.source == "inferred"
+        assert entity.ciu.stack == "redis-core"
+
+    def test_uuid_container_in_known_project_not_inferred(self) -> None:
+        """Regression: a Pterodactyl UUID container in a known compose project
+        must not be annotated as ciu-managed by the full pipeline."""
+        key = f"system.slice/docker-{FULL_ID}.scope"
+        entities = {key: Entity(key=key, kind="scope", parent="system.slice")}
+
+        def inspect(_cid: str) -> list[dict]:
+            return [{
+                "Id": FULL_ID,
+                "Name": "/3f2b1a9c-1111-4222-8333-444455556666",
+                "Config": {
+                    "Image": "ghcr.io/pterodactyl/yolks:java_17",
+                    "Labels": {"com.docker.compose.project": "redis-core"},
                 },
             }]
 
         result = enrich_entities(entities, inspect, known_stack_roots=KNOWN_STACKS)
         entity = result[key]
-        assert entity.ciu is not None
-        assert entity.ciu.source == "inferred"
-        assert entity.ciu.stack == "infra/redis-core"
+        assert entity.docker is not None
+        assert entity.docker.ptero_uuid == "3f2b1a9c-1111-4222-8333-444455556666"
+        assert entity.ciu is None
 
     def test_no_inference_without_stack_roots(self) -> None:
         """Without known_stack_roots, inference is disabled."""
@@ -624,10 +652,10 @@ class TestEnrichEntitiesIntegration:
         def inspect(_cid: str) -> list[dict]:
             return [{
                 "Id": FULL_ID,
-                "Name": "/infra/redis-core-prod-redis01",
+                "Name": "/redis-core-prod-redis01",
                 "Config": {
                     "Image": "redis:7",
-                    "Labels": {"com.docker.compose.project": "infra/redis-core"},
+                    "Labels": {"com.docker.compose.project": "redis-core"},
                 },
             }]
 

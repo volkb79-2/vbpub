@@ -10,8 +10,10 @@ from groop.model import CiuMeta, DockerMeta, Entity, EntityKey
 
 DOCKER_SCOPE_RE = re.compile(r"(?:^|/)docker-([0-9a-f]{64})\.scope$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.IGNORECASE)
-# CIU container name pattern: ^<project>-<env>-<name>$ (CIU-DEPLOY.md S7.8)
-CIU_CONTAINER_NAME_RE = re.compile(r"^([^-]+)-([^-]+)-(.+)$")
+# The <env>-<name> tail of ciu's ^<project>-<env>-<name>$ container naming
+# (CIU-DEPLOY.md S7.8).  The <project> half is matched as a literal prefix by
+# detect_ciu_inferred, not by this pattern.
+CIU_CONTAINER_TAIL_RE = re.compile(r"^([^-]+)-(.+)$")
 PHASE_RE = re.compile(r"^phase_(\d+)$")
 DockerInspect = Callable[[str], Any]
 
@@ -48,9 +50,12 @@ def _first_inspect(value: Any) -> dict[str, Any] | None:
 def _parse_phase(raw: str | None) -> tuple[str | None, int | None]:
     """Parse a ``ciu.phase`` label value into (raw_label, numeric_phase).
 
-    ``phase_2`` → ``("phase_2", 2)``. Malformed values (``phase_``,
-    ``phase_abc``, ``phase_-1``, ``None``) return ``(None, None)`` — the
-    phase is unknown and no raw value is recorded.
+    ``phase_2`` -> ``("phase_2", 2)``.  A label that is present but does not
+    parse (``phase_``, ``phase_abc``, ``phase_-1``) keeps its raw value and
+    yields ``(raw, None)``: "ciu shipped a phase we could not parse" and "ciu
+    shipped no phase at all" are different states, and the honest-absence
+    contract forbids collapsing them.  Only a genuinely absent label yields
+    ``(None, None)``.
     """
     if raw is None:
         return None, None
@@ -59,11 +64,8 @@ def _parse_phase(raw: str | None) -> tuple[str | None, int | None]:
         return None, None
     match = PHASE_RE.match(raw)
     if match is None:
-        return None, None
-    num = int(match.group(1))
-    if num < 0:
-        return None, None
-    return raw, num
+        return raw, None
+    return raw, int(match.group(1))
 
 
 def detect_ciu_from_labels(labels: dict[str, str]) -> CiuMeta | None:
@@ -91,20 +93,30 @@ def detect_ciu_inferred(
     """Inferred (heuristic) CIU detection.
 
     A container is inferred to be ciu-managed when:
-    1. It has a ``com.docker.compose.project`` that matches a directory name
-       under a configured stack root.
-    2. Its container name matches ciu's anchored
-       ``^<project>-<env>-<name>$`` pattern (CIU-DEPLOY.md S7.8).
+    1. Its ``com.docker.compose.project`` matches a configured known stack.
+       Compose derives the project from the stack *directory name*, so a
+       configured ``infra/redis-core`` is matched on its last path segment --
+       a compose project can never itself contain ``/``, so comparing the whole
+       configured string would match nothing.
+    2. Its container name is anchored to that project:
+       ``^<project>-<env>-<name>$`` (CIU-DEPLOY.md S7.8).  The project is
+       matched as a literal prefix rather than as a regex group, because
+       project names routinely contain hyphens (``redis-core``) and a
+       ``([^-]+)`` group would capture only ``redis``.
 
     Returns ``CiuMeta(source="inferred")`` or ``None``.
     """
     if not compose_project or not known_stack_roots:
         return None
-    # Check if compose_project is a known stack directory name
-    if compose_project not in known_stack_roots:
+    if compose_project not in {root.rstrip("/").rpartition("/")[2] for root in known_stack_roots}:
         return None
-    # Container name must match ciu's anchored pattern
-    if not CIU_CONTAINER_NAME_RE.match(container_name):
+    # The name must belong to *this* project, then carry an <env>-<name> tail.
+    # Matching the bare shape instead would claim any container with two
+    # hyphens in a matched project -- including unrelated and UUID-named ones.
+    prefix = f"{compose_project}-"
+    if not container_name.startswith(prefix):
+        return None
+    if not CIU_CONTAINER_TAIL_RE.match(container_name[len(prefix):]):
         return None
     return CiuMeta(
         stack=compose_project,
