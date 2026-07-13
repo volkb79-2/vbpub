@@ -95,6 +95,10 @@ flowchart TD
     P71 --> P74[P74 GPU host provider]
     P46 --> P72[P72 Admin action kill/update verbs]
     P49 --> P72
+    P58[P58 Daemon MCP frontend :done:] --> P75[P75 MCP live acceptance leg]
+    P57 --> P76[P76 CIU stack metadata]
+    P73 --> P77[P77 Web UI entity detail + history]
+    P67 --> P77
 ```
 
 P69 is the **scoping** package for the web-UI product goal, not the UI itself: the
@@ -140,7 +144,7 @@ After P43, the roadmap is mostly in three buckets:
 |---|---:|---|
 | v1/v1.5 release confidence and UI polish | 0 | P43 removes the obsolete Textual `<1` resolver ceiling and closes the last planned v1/v1.5 release-confidence package. Manual live-host acceptance evidence remains. |
 | v2 privileged daemon/BPF/admin/file work | 4-6 | P46 (admin action execution kernel) is complete. P44-P45 cover paddr daemon ownership and the first bounded inspect-files content slice; BPF lifecycle, install execution/service hardening, remaining content modes, kill/update, and systemd property governance remain. |
-| Optional plugins / future surfaces | 2-3 | GPU, ZFS, CIU grouping/actions. **ZFS landed as P71** (merged 2026-07-13) — the first package ever drawn from this bucket, which had gone un-carved for the project's whole life (the exact review-children-only drift controller-workflow-v2 §8 exists to stop). **GPU is now carved as P74** (2026-07-13), following P71's exemplar. CIU remains. Web UI over daemon API is promoted out of this bucket — see P69 below (product-goal-driven, standing user priority as of 2026-07-13). |
+| Optional plugins / future surfaces | 2-3 | GPU, ZFS, CIU grouping/actions. **ZFS landed as P71** (merged 2026-07-13) — the first package ever drawn from this bucket, which had gone un-carved for the project's whole life (the exact review-children-only drift controller-workflow-v2 §8 exists to stop). **GPU is carved as P74** (2026-07-13), following P71's exemplar. **CIU's metadata slice is now carved as P76** (2026-07-13) — the bucket's last un-carved item, grounded in the existing TUI-SPEC §4.3 spec; its TUI-grouping and ciu-gated-action successors remain, and are the bucket's residue. Web UI over daemon API is promoted out of this bucket — see P69 below (product-goal-driven, standing user priority as of 2026-07-13). |
 
 ### P69 — Web UI over daemon API (product-goal-driven)
 
@@ -182,6 +186,33 @@ CIU (groop's own container-inspection/orchestration surface) to start it
 rather than a bespoke script. This decision supersedes any contrary framework
 or test-tooling recommendation an earlier P69 draft may have produced, and
 should be reflected in the implementation packages carved after P69 merges.
+
+**P69's draft successors, and where they landed.** `docs/WEB-UI-SCOPING.md`
+proposed four: P69a (hardened gateway) was carved as the **P67 re-carve**; P69b
+(read-only shell) as **P73**; P69c (entity detail + bounded recent history) as
+**P77** (carved 2026-07-13, blocked on P73). P69d (live subscribe updates) is
+deliberately **not** carved: it depends on P68, the scoping doc marks it optional,
+and polling is the committed fallback — carving it now would be speculative. That
+closes the scoping package's output; the web-UI goal is now fully carved through
+its first diagnostic surface.
+
+### P75-P77 - Carved 2026-07-13 (post-P58 carve cycle)
+
+Three packages, one per carve source, per controller-workflow-v2 §8:
+
+- **P75 - MCP live-daemon acceptance leg** (*review-derived*, from P58's pass #2).
+  P58 merged with an evidence gap its own REPORT states: every test drives an
+  injected fake client, so nothing has ever run `groop mcp serve` against a real
+  daemon. P75 adds an `mcp-smoke` leg to `groop.acceptance` on the P33/P35/P38
+  pattern, recording the largest observed live response against the 4 MiB cap
+  rather than merely asserting it fits.
+- **P76 - CIU stack metadata** (*roadmap-driven*, Optional-plugins bucket). The
+  bucket's last un-carved item. Not a cold carve: TUI-SPEC §4.3 already specifies
+  detection, the label schema, and the numeric-phase rule, and it extends a
+  `Config.Labels` parse `dockerjoin` already performs.
+- **P77 - Web UI entity detail + bounded history** (*product-goal-driven*, the
+  standing "launch the product with the new UI" priority, which §8 ranks above
+  both other sources). = P69c above.
 
 Pragmatic estimate from the current state: a shippable v1/v1.5 release
 candidate needs **0 remaining packages** after P41 plus live-host acceptance
