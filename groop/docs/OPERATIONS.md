@@ -296,6 +296,24 @@ PageUp/PageDown for scrolling, and all function keys.
   restored on exit, including Ctrl-C / SIGINT, via a `try/finally` + signal
   handler restore guard.
 
+  `groop action execute --kind docker-kill --target NAME --admin
+  --confirm KILL [--signal SIGNAL] [--force]` executes a kill action
+  against a Docker container or systemd unit with a closed signal allowlist
+  (TERM, INT, HUP, KILL, QUIT, USR1, USR2). Signals must be bare names
+  (no `SIG` prefix, no numeric signals). **Data-loss prevention:** the KILL
+  signal requires `--force` in addition to the normal `--confirm KILL` typed
+  confirmation. Protected entities (config `protected_services`) are refused
+  at plan time even with `--admin` and a correct token.
+
+  `groop action execute --kind docker-update --target NAME --admin
+  --confirm UPDATE [--memory LIMIT] [--cpus COUNT] [--below-current]`
+  applies `--memory` and/or `--cpus` limits to a running Docker container.
+  Memory values accept suffixes (512M, 2G) or bare byte counts.
+  **OOM prevention:** a memory limit below the container's current RSS is
+  refused at plan time unless `--below-current` is explicitly passed, which
+  may OOM the container. Systemd unit targets are refused; use
+  `groop action set-property` instead.
+
   Default options (drawn from `container-mempress.sh` proven values):
   `--step 256M`, `--delay 15` (PSI avg10 window is 10s; values below ~10s
   degrade signal quality), `--floor 1G`, `--start` (auto: current `memory.current`
