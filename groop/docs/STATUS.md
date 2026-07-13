@@ -82,6 +82,14 @@ lives in `groop/collect/dockerjoin.py` and resolves against already-enriched
 into `inspect-files plan/read --target` and `action preview/execute --target`
 as a mutually exclusive alternative to `--target`.
 
+P60 generalizes P55's ``--metrics full|compact`` closed enum into an open
+free-form field/family list selector: ``--metrics FIELD_OR_FAMILY,...`` accepts
+a comma-separated list of individual metric names (from the registry) and/or
+metric family names (from ``METRIC_GROUPS``), expands families to their
+constituent metrics, validates every token, and reuses P55's existing prune +
+block-drop code path. ``--metrics full`` and ``--metrics compact`` remain valid
+and byte-identical. P60 is **done** (see implemented section).
+
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
 core workflows, not yet production-certified.**
@@ -205,6 +213,17 @@ core workflows, not yet production-certified.**
   9 focused tests covering exact/prefix match, union, nonexistent/ambiguous
   error handling, replay/attach rejection, compact composition, and
   resolution-ordering guarantee.
+- Free-form ``--metrics`` field/family list selector (P60): Generalizes P55's
+  ``--metrics full|compact`` closed enum into an open comma-separated selector
+  that accepts individual metric names (from ``REGISTRY``) and/or family names
+  (from ``METRIC_GROUPS``). ``full`` and ``compact`` remain valid and
+  byte-identical. The ``net``, ``damon``, and ``governance`` families are added
+  to ``METRIC_GROUPS``, expanding to their constituent metrics and conditionally
+  keeping their structured per-entity blocks (``eframe.network``,
+  ``eframe.damon``, ``eframe.governance``) when the family token appears in the
+  selector. ``COMPACT_GROUPS`` is now a literal set of the original three
+  families (``mem_usage``, ``psi``, ``refault``) so these new families do not
+  expand compact mode. 19 focused tests covering all acceptance oracles.
 - Structured systemd `memory.high` set-property governance (P49): preview and
   execution through the P46 action kernel with structured unit/property/value
   inputs, `memory.high`-only validation with max/byte overflow/range checks,

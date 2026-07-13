@@ -21,7 +21,7 @@ from groop.model import Entity, EntityFrame, EntityKey, Frame, MetricSource, Met
 from groop.providers.base import NetSample, Provider, sample_rank
 from groop.providers.net_host import NetHostProvider
 from groop.providers.net_netns import NetnsProvider
-from groop.registry import COMPACT_GROUPS, METRIC_GROUPS
+from groop.registry import COMPACT_GROUPS, METRIC_GROUPS, FIELD_LIST_BLOCK_MAP, parse_metrics_selector
 
 
 class Collector:
@@ -65,13 +65,22 @@ class Collector:
         # Entity and metric filtering state
         self._entity_predicate = build_entity_predicate(entities_globs, slice_names)
         self._container_selectors = container_selectors
-        # Pre-compute the set of metric names to keep under compact mode
-        if metrics_mode == "compact":
-            self._compact_metric_names: frozenset[str] = frozenset().union(
+        # Pre-compute the set of metric names to keep under compact or field-list mode.
+        # None = full mode (keep all metrics); frozenset = filter to these metric names.
+        # _kept_block_families tracks which structured per-entity blocks to retain.
+        if metrics_mode == "full":
+            self._kept_metric_names: frozenset[str] | None = None
+            self._kept_block_families: frozenset[str] = frozenset()
+        elif metrics_mode == "compact":
+            self._kept_metric_names = frozenset().union(
                 *(METRIC_GROUPS[g] for g in COMPACT_GROUPS)
             )
+            self._kept_block_families = frozenset()  # compact drops all blocks
         else:
-            self._compact_metric_names = frozenset()
+            # Field-list mode: parse the comma-separated selector
+            _kept, _blocks = parse_metrics_selector(metrics_mode)
+            self._kept_metric_names = _kept
+            self._kept_block_families = _blocks
 
     def collect_once(self) -> Frame:
         ts = self.now()
@@ -130,22 +139,23 @@ class Collector:
         annotate_frame_governance(frame, self.systemctl_show_runner)
         frame = annotate_frame_diagnostics(frame, self.config)
         # Apply metric filtering last, after all annotations have populated
-        # entity metrics. This ensures ALL non-compact metrics (including
+        # entity metrics. This ensures ALL non-kept metrics (including
         # DAMON, governance, and diagnostics) are pruned.
-        if self._compact_metric_names:
+        if self._kept_metric_names is not None:
             for eframe in frame.entities.values():
                 eframe.metrics = {
                     k: v for k, v in eframe.metrics.items()
-                    if k in self._compact_metric_names
+                    if k in self._kept_metric_names
                 }
-                # The handoff's compact drop-list also covers the structured
-                # per-entity network / DAMON / governance-drift blocks, which
-                # live as separate EntityFrame attributes rather than in the
-                # metrics dict. Drop them too so a compact frame is genuinely
-                # the specified subset, not just a metrics-dict subset.
-                eframe.network = None
-                eframe.damon = None
-                eframe.governance = None
+                # The structured per-entity network / DAMON / governance-drift
+                # blocks live as separate EntityFrame attributes. Keep them
+                # only when the corresponding family token was in the selector.
+                if "network" not in self._kept_block_families:
+                    eframe.network = None
+                if "damon" not in self._kept_block_families:
+                    eframe.damon = None
+                if "governance" not in self._kept_block_families:
+                    eframe.governance = None
         return frame
 
     def _apply_config(self, entities: dict[EntityKey, Entity]) -> None:

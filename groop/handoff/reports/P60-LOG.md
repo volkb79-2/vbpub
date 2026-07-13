@@ -1,0 +1,88 @@
+# P60 Work Log
+
+## Context
+
+- Branch: `feat/groop-p60-metrics-fieldlist-selector`
+- Worktree: `.worktrees/groop-p60-metrics-fieldlist-selector`
+- Base commit: main (after P55 merge)
+- Package: P60 - Free-form `--metrics` field/family list selector
+- Current objective: Generalize P55's closed `--metrics full|compact` enum into an open comma-separated field/family list selector
+
+## Timeline
+
+```text
+2026-07-13 12:00 UTC
+- Action: Read handoff, existing codebase (registry.py, cli.py, collector.py, P55 tests/docs)
+- Result: Understanding phase complete
+
+2026-07-13 12:30 UTC
+- Action: Added net/damon/governance families to METRIC_GROUPS; froze COMPACT_GROUPS as literal; added FIELD_LIST_BLOCK_MAP and parse_metrics_selector()
+- Commands: PYTHONPATH=groop/src python3 -c "from groop.registry import parse_metrics_selector; ..."
+- Files changed: groop/src/groop/registry.py
+- Result: parse_metrics_selector() working; all test cases pass
+
+2026-07-13 12:45 UTC
+- Action: Changed --metrics from argparse choices to free-form string; added _validate_metrics_mode(); wired into main()
+- Files changed: groop/src/groop/cli.py
+- Result: CLI accepts free-form --metrics; validation rejects unknown/empty
+
+2026-07-13 13:00 UTC
+- Action: Generalized Collector pruning to handle field-list mode
+- Files changed: groop/src/groop/collect/collector.py
+- Result: Collector supports full/compact/field-list; 32 P55 tests still pass
+
+2026-07-13 13:20 UTC
+- Action: Wrote 19 tests in test_p60_fieldlist.py
+- Commands: python -m pytest groop/tests/test_p60_fieldlist.py -q (19 passed)
+- Files changed: groop/tests/test_p60_fieldlist.py
+- Result: All 7 acceptance oracles covered; additional edge cases test
+
+2026-07-13 13:40 UTC
+- Action: Updated docs (README.md, CONTRACTS.md, ROADMAP.md, STATUS.md)
+- Result: P60 documented as done
+
+2026-07-13 14:00 UTC
+- Action: Running full gates, writing LOG/REPORT, committing
+```
+
+## Decisions
+
+- Decision: Add net/damon/governance as METRIC_GROUPS entries, not a separate dict
+  Reason: The field-list resolution contract requires family tokens to resolve via METRIC_GROUPS. The alternative (separate FAMILIES dict) would split the source of truth.
+  Impact: COMPACT_GROUPS must be a literal set (not derived from METRIC_GROUPS.keys()) to keep compact mode from expanding.
+- Decision: FIELD_LIST_BLOCK_MAP lives in registry.py
+  Reason: Handoff requirement says "document this mapping in one place (registry or a small module-level dict), not scattered."
+  Impact: Single source of truth; collector and parser both import from registry.py.
+
+## Blockers
+
+None.
+
+## Validation
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest groop/tests/test_p60_fieldlist.py -q
+# 19 passed in 0.84s
+
+PYTHONPATH=groop/src python3 -m pytest groop/tests/test_p55_filtering.py -q
+# 32 passed in 0.56s
+
+PYTHONPATH=groop/src python3 -m py_compile groop/src/groop/registry.py groop/src/groop/cli.py groop/src/groop/collect/collector.py
+# All compile OK
+
+PYTHONPATH=groop/src python3 -c "
+import sys; sys.argv = ['groop', '--once', '--json', '--slice', 'system.slice',
+  '--metrics', 'ram,psi_mem_some_avg10', '--cgroup-root',
+  'groop/tests/fixtures/cgroupfs/gstammtisch']
+from groop.cli import main; exit(main())
+" 2>&1 >/dev/null; echo "CLI smoke exit code: $?"
+# CLI smoke exit code: 0
+```
+
+## Handoff Checklist
+
+- [x] Report file written.
+- [x] Log file current.
+- [x] Tests/compile/smoke recorded.
+- [x] Known gaps documented.
+- [x] Feature branch committed.

@@ -107,9 +107,10 @@ with P62, so P62/P64/P65 all carry `Serialize-with:` each other.
 
 P59 (done) wires P57's `--container` resolver into P55's collection-path
 `--entities`/`--slice` selectors (deferred by P57 while P55 was unmerged). P60
-generalizes P55's `--metrics full|compact` enum into an open registry-validated
-field/family list. Both are flash-high, fixture-testable, and share
-`src/groop/cli.py` argument parsing, so they carry `Serialize-with:` each other.
+(done) generalizes P55's `--metrics full|compact` enum into an open
+registry-validated field/family list. Both are flash-high, fixture-testable, and
+share `src/groop/cli.py` argument parsing, so they carry `Serialize-with:`
+each other.
 
 ## Remaining Estimate
 
