@@ -339,7 +339,7 @@ while a later loss becomes a safe typed tool result.
 | `groop_health` | fixed maximum 16 component summaries; 4 MiB aggregate cap | daemon health summary |
 | `groop_overview` | closed sort keys; `limit` integer 1..50; 4 MiB aggregate cap | ranked compact metric rows |
 | `groop_entity` | exact EntityKey or P57 docker name/prefix; max 128 metrics and 64 findings; 4 MiB aggregate cap | one entity detail |
-| `groop_history` | exact EntityKey or P57 docker name/prefix; `last:Ns` (max 7 days) or `since:TS`; `limit` integer 1..100; 4 MiB aggregate cap | one metric's timestamp/value pairs |
+| `groop_history` | exact EntityKey or P57 docker name/prefix; registry-validated `metric`; `last:Ns` (max 7 days) or `since:TS`; `limit` integer 1..100; 4 MiB aggregate cap | one metric's timestamp/value pairs |
 
 No bound is silently clamped: a violated item or byte bound returns the closed
 `over-limit` tool error. `None` metric values are omitted. Values include the

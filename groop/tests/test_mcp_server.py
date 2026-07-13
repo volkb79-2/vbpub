@@ -8,8 +8,16 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from mcp.server.fastmcp import FastMCP
-from mcp.shared.memory import create_connected_server_and_client_session
+
+import pytest
+
+# groop[mcp] is an optional extra: a base install must still collect and run the
+# suite. Without this guard the missing SDK is a collection error that aborts the
+# whole run rather than skipping this module.
+pytest.importorskip("mcp", reason="groop[mcp] extra not installed")
+
+from mcp.server.fastmcp import FastMCP  # noqa: E402
+from mcp.shared.memory import create_connected_server_and_client_session  # noqa: E402
 
 from groop.daemon.api import DEFAULT_MAX_RESPONSE_BYTES, Sensitivity, metric_sensitivity
 from groop.daemon.client import (
@@ -359,3 +367,67 @@ def test_non_mcp_import_path_does_not_import_the_optional_sdk() -> None:
     ]
     proc = subprocess.run(command, env={"PYTHONPATH": str(Path(__file__).parents[1] / "src")}, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_history_rejects_a_metric_that_is_not_in_the_registry() -> None:
+    """The tool description promises a registry metric; an unknown name must be refused."""
+    server = McpServer(FakeClient())
+    _, result = call(
+        server, "groop_history", selector=DOCKER_KEY, metric="ram_typo", window="last:30", limit=10
+    )
+    assert error_code(result) == "invalid-selector"
+    # The valid name still resolves, so the check gates on the registry, not on the fixture.
+    _, ok = call(
+        server, "groop_history", selector=DOCKER_KEY, metric="ram", window="last:30", limit=10
+    )
+    assert ok["ok"] is True
+
+
+class EmptyHistoryClient(FakeClient):
+    def request_history(
+        self, *, limit: int, since_ts: float | None = None, until_ts: float | None = None
+    ) -> DaemonHistoryResult:
+        return DaemonHistoryResult(
+            entries=(),
+            oldest_seq=None,
+            latest_seq=None,
+            next_cursor=None,
+            gap=False,
+            metrics_meta=self.metrics_meta,
+        )
+
+
+def test_empty_history_window_is_an_empty_series_not_an_invalid_selector() -> None:
+    """A live entity with no frames in the window has no data; it is not a bad selector."""
+    server = McpServer(EmptyHistoryClient())
+    _, result = call(
+        server, "groop_history", selector=DOCKER_KEY, metric="ram", window="last:30", limit=10
+    )
+    assert result["ok"] is True
+    assert result["data"]["series"] == []  # type: ignore[index]
+    assert result["data"]["count"] == 0  # type: ignore[index]
+
+    # A selector that names nothing is still refused, so the empty window did not
+    # turn the tool into a rubber stamp.
+    _, bogus = call(
+        server, "groop_history", selector="no-such-entity", metric="ram", window="last:30", limit=10
+    )
+    assert error_code(bogus) == "invalid-selector"
+
+
+def test_exact_key_entity_lookup_costs_one_daemon_request() -> None:
+    """An exact-key hit must be returned, not thrown away and refetched."""
+
+    class CountingClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entity_calls = 0
+
+        def request_entity(self, key: str) -> DaemonEntityResult:
+            self.entity_calls += 1
+            return super().request_entity(key)
+
+    client = CountingClient()
+    _, result = call(McpServer(client), "groop_entity", selector=DOCKER_KEY)
+    assert result["ok"] is True
+    assert client.entity_calls == 1

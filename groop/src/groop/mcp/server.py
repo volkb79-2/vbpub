@@ -31,7 +31,8 @@ from groop.daemon.client import (
 )
 from groop.daemon.component_health import HealthSnapshot
 from groop.daemon.deploy import DEFAULT_DAEMON_SOCKET
-from groop.model import Entity, EntityKey
+from groop.model import Entity, EntityFrame, EntityKey
+from groop.registry import REGISTRY
 
 DEFAULT_SOCKET_PATH = DEFAULT_DAEMON_SOCKET
 MAX_RESPONSE_BYTES = DEFAULT_MAX_RESPONSE_BYTES
@@ -202,6 +203,7 @@ class McpServer:
             name="groop_history",
             description=(
                 "Return one registry metric's time series for an exact EntityKey or P57 docker name/prefix; "
+                "metric must name a known registry metric or the call is rejected; "
                 "window is last:Ns or since:TS, limit is 1..100 points, and the aggregate response cap is 4 MiB; "
                 "P52 registry metadata supplies the metric semantics/sensitivity, unavailable values are omitted, "
                 "and redacted values are marked."
@@ -275,34 +277,43 @@ class McpServer:
         rows.sort(key=lambda pair: pair[0], reverse=True)
         return _ok({"sort_by": sort_by, "rows": [row for _, row in rows[:limit]]})
 
-    def _resolve_entity_selector(self, selector: str) -> str | dict[str, object]:
-        """Resolve an exact key directly, otherwise reuse P57's sole name resolver."""
-        if not isinstance(selector, str) or not selector:
-            return _tool_error("invalid-selector", "selector must be a non-empty string")
-        direct = self._try_call(lambda: self._client.request_entity(selector))
-        if not _is_error(direct):
+    def _resolve_in_entities(
+        self, selector: str, entities: dict[EntityKey, EntityFrame]
+    ) -> str | dict[str, object]:
+        """Exact key first, then P57's sole docker resolver. Both tools resolve through here."""
+        if EntityKey(selector) in entities:
             return selector
-        if not isinstance(direct, dict) or direct.get("error", {}).get("code") != "invalid-selector":
-            return direct  # daemon unavailable/internal must not be masked by a resolver lookup
+        live: dict[EntityKey, Entity] = {key: row.entity for key, row in entities.items()}
+        try:
+            return str(resolve_container_key(selector, live))
+        except ContainerResolveError:
+            return _tool_error("invalid-selector", "selector does not identify one entity")
 
+    def _resolve_docker_selector(self, selector: str) -> str | dict[str, object]:
+        """Resolve a docker name/prefix against the live frame."""
         current = self._try_call(self._client.request_current)
         if _is_error(current):
             return current  # type: ignore[return-value]
         if not isinstance(current, DaemonCurrentResult):
             return _tool_error("internal", "daemon returned an invalid current frame")
-        entities: dict[EntityKey, Entity] = {
-            key: frame.entity for key, frame in current.frame.entities.items()
-        }
-        try:
-            return str(resolve_container_key(selector, entities))
-        except ContainerResolveError:
-            return _tool_error("invalid-selector", "selector does not identify one running entity")
+        return self._resolve_in_entities(selector, current.frame.entities)
 
-    def _handle_entity(self, selector: str) -> dict[str, object]:
-        resolved = self._resolve_entity_selector(selector)
+    def _fetch_entity(self, selector: str) -> object:
+        """Try the selector as an exact key, then as a P57 docker name; never refetch a hit."""
+        if not isinstance(selector, str) or not selector:
+            return _tool_error("invalid-selector", "selector must be a non-empty string")
+        direct = self._try_call(lambda: self._client.request_entity(selector))
+        if not _is_error(direct):
+            return direct
+        if not isinstance(direct, dict) or direct.get("error", {}).get("code") != "invalid-selector":
+            return direct  # daemon unavailable/internal must not be masked by a resolver lookup
+        resolved = self._resolve_docker_selector(selector)
         if isinstance(resolved, dict):
             return resolved
-        result = self._try_call(lambda: self._client.request_entity(resolved))
+        return self._try_call(lambda: self._client.request_entity(resolved))
+
+    def _handle_entity(self, selector: str) -> dict[str, object]:
+        result = self._fetch_entity(selector)
         if _is_error(result):
             return result  # type: ignore[return-value]
         if not isinstance(result, DaemonEntityResult):
@@ -348,17 +359,21 @@ class McpServer:
         for _, frame in history.entries:
             if EntityKey(selector) in frame.entities:
                 return selector
-        if not history.entries:
-            return _tool_error("invalid-selector", "selector is not present in history")
-        latest = history.entries[-1][1]
-        try:
-            return str(resolve_container_key(selector, {key: row.entity for key, row in latest.entities.items()}))
-        except ContainerResolveError:
-            return _tool_error("invalid-selector", "selector does not identify one entity in history")
+        if history.entries:
+            return self._resolve_in_entities(selector, history.entries[-1][1].entities)
+        # No frames in the window: history cannot adjudicate existence, so resolve against
+        # the live frame. A real entity with no data in the window is an empty series, not
+        # a bad selector.
+        current = self._try_call(self._client.request_current)
+        if _is_error(current):
+            return current  # type: ignore[return-value]
+        if not isinstance(current, DaemonCurrentResult):
+            return _tool_error("internal", "daemon returned an invalid current frame")
+        return self._resolve_in_entities(selector, current.frame.entities)
 
     def _handle_history(self, selector: str, metric: str, window: str, limit: object) -> dict[str, object]:
-        if not isinstance(metric, str) or not metric:
-            return _tool_error("invalid-selector", "metric must be a non-empty registry metric name")
+        if not isinstance(metric, str) or metric not in REGISTRY:
+            return _tool_error("invalid-selector", "metric must be a known registry metric name")
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             return _tool_error("over-limit", "limit must be a positive integer")
         if limit > MAX_HISTORY_LIMIT:
