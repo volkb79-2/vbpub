@@ -130,8 +130,8 @@ Rules:
 | --- | --- | --- | --- | --- |
 | claude | opus, sonnet-5, haiku | `--effort` | **yes (only one)** | session limits — preflight, fallback |
 | codex | gpt-5.6-luna/terra/sol | `-c model_reasoning_effort="…"` | no (blocking) | subscription session limits; native only |
-| opencode | OpenRouter → deepseek, GLM-5.2 | `--variant high` per run | no | long-argv wedge (~1.8k chars hangs pre-session — keep prompts short, substance in handoff); OpenRouter 504 idle timeouts → always include incremental-write instruction (~80-line batches); luna/sonnet-5 return "No allowed providers" on OpenRouter (probed 2026-07-12) |
-| reasonix | DeepSeek **direct** (`api.deepseek.com`), aliases flash/pro × auto/high/max | provider alias | no — architectural, not configurable | not a trusted committer; `complete_step` stalls; third venv (see v1 guide) |
+| opencode | OpenRouter → deepseek (`openrouter/deepseek/deepseek-v4-flash`), GLM-5.2 | `--variant high`/`--variant max` per run | no | **preferred DeepSeek route as of 2026-07-13** — long-argv wedge (~1.8k chars hangs pre-session — keep prompts short, substance in handoff); OpenRouter 504 idle timeouts → always include incremental-write instruction (~80-line batches); luna/sonnet-5 return "No allowed providers" on OpenRouter (probed 2026-07-12) |
+| reasonix | DeepSeek **direct** (`api.deepseek.com`), aliases flash/pro × auto/high/max | provider alias | no — architectural, not configurable | **deprioritized as of 2026-07-13** in favor of opencode/OpenRouter — not a trusted committer; `complete_step` stalls (2026-07-13: P62 self-review leg dispatched via reasonix stalled silently, no LOG/REPORT/commit, had to be redispatched via a fresh process); third venv (see v1 guide); keep as fallback only when OpenRouter is confirmed down |
 
 Routing consequences:
 - gpt tiers → **native codex**; Claude tiers → **native claude**. OpenRouter
