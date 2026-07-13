@@ -35,7 +35,7 @@ through the P46 admin action execution kernel: unit/property/value inputs,
 `memory.high`-only validation with max/byte overflow/range checks, stale
 detection via re-read before execution, persistence mode auto-detection
 (`--runtime` for `.scope`, persistent for service/slice), CLI
-`--property`/`--value`/`--mode` args, and 197 focused tests.
+`--property`/`--value`/`--mode` args, and 200 focused tests.
 
 P48 remains queued: bounded journald snapshots. P49 is done: structured
 `memory.high` governance through the P46 admin execution kernel (see
@@ -191,7 +191,7 @@ core workflows, not yet production-certified.**
   inputs, `memory.high`-only validation with max/byte overflow/range checks,
   stale detection via re-read before execution, persistence mode auto-detection
   (`--runtime` for `.scope`, persistent for service/slice), CLI
-  `--property`/`--value`/`--mode` args, and 197 focused tests.
+  `--property`/`--value`/`--mode` args, and 200 focused tests.
 
 ## Partially Implemented
 

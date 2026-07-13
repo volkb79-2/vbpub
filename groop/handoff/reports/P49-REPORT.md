@@ -73,7 +73,12 @@ stale detection via planned-vs-fresh current-value comparison.
 - Execute automatically routes `systemd-set-property` with `--property`/`--value`
   to `execute_set_property()`.
 
-### Tests: `groop/tests/test_actions.py` — 66 new tests (197 total)
+### Tests: `groop/tests/test_actions.py` — 69 new tests (200 total)
+
+<!-- Count corrected by frontier review pass #2: the self-review fix commit
+     (22b48d8) added 3 CLI integration tests after this section was first
+     written (197). Reviewer rerun observed 200 passed. -->
+
 
 - 16 value validation tests (9 valid, 16 invalid, 1 non-string)
 - 8 unit validation tests (4 valid, 4 invalid)
