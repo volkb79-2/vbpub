@@ -345,11 +345,7 @@ def test_gpu_banner_multi_gpu(tmp_path: Path) -> None:
     frame = _minimal_frame(host=host, host_meta=meta)
     snapshot = render_banner(frame, GroopConfig())
 
-    # card0=4.0GiB/4.0GiB (busy 10%), card1=1.0GiB/4.0GiB (busy 90%)
-    # Sum: total=8.0GiB, used=5.0GiB -- wait let me recalculate
-    # card0: total=4294967296(4GiB), used=2147483648(2GiB), busy=10%
-    # card1: total=4294967296(4GiB), used=1073741824(1GiB), busy=90%
-    # Sum total: 8589934592(8GiB), Sum used: 3221225472(3GiB), max busy: 90%
+    # Aggregate: total=8.0GiB, used=3.0GiB, max busy=90%, count=2
     assert "GPU 3.0GiB/8.0GiB (busy 90%) x2" in snapshot.lines
 
 
