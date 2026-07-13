@@ -3,11 +3,13 @@
 # endpoint, so the only CLI with async supervision (Claude Code) can drive the
 # cheapest worker models. See docs/controller-workflow-v2.md §5.1.
 #
-# STATUS: UNPROBED (2026-07-12). Before first real use, run the probe:
-#   scripts/claude-deepseek.sh -p --output-format json 'Reply with exactly ALIAS_OK.'
-# Success criteria: reply text ALIAS_OK, no auth error, model id echoed in JSON.
-# If DeepSeek rejects the request, check https://api-docs.deepseek.com/guides/anthropic_api
-# for the current endpoint path and supported model names.
+# STATUS: PROBED OK (2026-07-13). `-p --output-format json 'Reply with exactly
+# ALIAS_OK.'` returned reply text ALIAS_OK, no auth error, model
+# deepseek-v4-flash (alias deepseek-chat), full Claude Code toolset present
+# (Task/Bash/Monitor/ScheduleWakeup/etc.). Safe to build on.
+# If DeepSeek rejects the request in the future, check
+# https://api-docs.deepseek.com/guides/anthropic_api for the current endpoint
+# path and supported model names.
 #
 # Credentials: DEEPSEEK_API_KEY from ~/.reasonix/.env (same key Reasonix uses
 # for its direct api.deepseek.com providers). Env is confined to this process;

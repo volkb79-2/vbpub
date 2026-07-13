@@ -286,6 +286,13 @@ P1–P51 review commits actually had to make (see
   not the verdict; the controller's rerun decides.
 - **Patch discipline**: additive, focused diffs; propose wholesale rewrites
   or doc restructuring in the REPORT instead of committing them.
+- **Backlog follow-ups (added 2026-07-13)**: if you identify follow-up work
+  you are not fixing now (an out-of-scope instance of a bug you just fixed, a
+  deferred hardening, a "worth a package" note), do not just mention it in
+  prose — append an entry to `docs/BACKLOG.md` (schema in its header) so it
+  survives past this session. Only the frontier reviewer promotes a backlog
+  entry into a carved handoff; implementers and self-reviews log entries but
+  do not carve.
 
 ## Handoff authoring guide (controller-side)
 

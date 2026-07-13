@@ -175,9 +175,16 @@ implementer, self-review, and frontier-review dispatches alike.
 - **reasonix**: directory-scoped — resume with
   `reasonix run -c -dir <worktree> "<continue prompt>"` (`-c` picks up the
   most recent session in that dir).
-- **opencode**: no session-id/resume mechanism confirmed as of 2026-07-13 —
-  treat a killed opencode dispatch as needing a fresh redispatch until this
-  is verified otherwise.
+- **opencode**: resume confirmed 2026-07-13 (opencode 1.17.18) — sessions
+  are durable, addressable objects, not ephemeral process state. Discover a
+  killed run's session id with `opencode session list --dir <worktree>
+  --format table` (match on the `Title` set via `--title` at dispatch),
+  then resume in place with `opencode run -c --session <sessionID> --auto
+  --model <model> --variant <v> --dir <worktree> --title <name> "<follow-up
+  prompt>"`. `-s/--session <id>` targets that specific session (safer than
+  bare `-c`, which only picks "the last session" — ambiguous with >1
+  dispatch in flight). `--fork` branches off instead of continuing in
+  place, for when the original history should stay untouched.
 
 Record the captured handle (session id / worktree path) in the slot table
 alongside the pid so a mid-run kill can be resumed without re-deriving it
@@ -209,6 +216,71 @@ tracked independently):**
 5. Once the user confirms the limit is cleared, resume the paused service's
    killed tasks first (using their captured handles), then resume normal
    dispatch on it.
+
+## 5.3 Controller independence from frontier session limits
+
+The controller itself (this role) does not need frontier-tier reasoning — it
+parses handoff headers, preflights routes, dispatches, arms monitors, and
+assembles review packets. It does not review code, carve, or merge. That
+means the controller's own uptime should not depend on the same native
+Claude/codex session-limit budget that the frontier review and sonnet-tier
+implementer dispatches consume.
+
+**Launch the controller over DeepSeek-direct**, not native Claude, via
+`scripts/controller-launch.sh <dispatch-doc>` (wraps the probed-OK
+`scripts/claude-deepseek.sh`, §5.1). This replaces a manual
+`claude --model sonnet --effort low --append-system-prompt "$(cat doc)"`
+invocation. Consequence: a native-Claude session limit still pauses new
+frontier-review and sonnet-tier dispatches per §5.2, but never kills the loop
+that is waiting to resume them.
+
+**Detecting reset without spending a real dispatch:** run
+`scripts/check-frontier-limits.sh`, a cheap 1-line probe against both
+`claude` and `codex` (`ALIAS_OK` round-trip). Prints `<service>: OK` or
+`<service>: LIMITED (<detail>)` per service; exit 0 only if both are clear.
+Use this to poll during a paused-service wait instead of guessing a reset
+time or re-attempting a real frontier dispatch speculatively. Still prefer
+the user's explicit all-clear (§5.2) as the primary resume signal — this
+probe is a corroborating check, not a replacement for it, since a probe
+succeeding once does not guarantee capacity for a full review-length session.
+
+## 5.4 Piggyback stall-check (no new ScheduleWakeup calls)
+
+Every dispatch already gets its stdout/stderr redirected to a log file.
+Fold staleness detection into whatever wakeup is already firing (heartbeat
+tick or task-notification) — never schedule an extra wakeup purely to check
+for stalls.
+
+- **Tier 1 (cheap, every existing tick):** for each in-flight background
+  dispatch, `stat` its log file's mtime. Threshold: **5 minutes**. Under 5
+  minutes since the last write, it's healthy — move on, no further check.
+  (Exception: a dispatch known to be mid-gate-run, e.g. inside a `timeout
+  600 pytest`, can legitimately go quiet for several minutes on buffered
+  stdout — don't Tier-3 kill on mtime alone; escalate to Tier 2 first.)
+- **Tier 2 (escalate only past the threshold):** tail the log, check
+  `/proc/<pid>/wchan` and process state, and — if the dispatch runs a
+  gate — inspect the gate container's process tree (e.g. `docker top
+  <container>`) to see whether a real CPU-active process (e.g. `pytest`) is
+  running inside it. A process that's `epoll_wait`/sleeping with a
+  genuinely growing container-side CPU process is healthy despite a quiet
+  log; a process with no forward motion anywhere (same todo item, same
+  wchan, no CPU-active child) is a real stall. (2026-07-13 case: an opencode
+  fix dispatch's log went silent for ~5 hours at 547 bytes, stuck on its
+  first todo item, while sibling dispatches in the same wave kept writing
+  fresh output every few minutes — that asymmetry, not any single
+  process-state snapshot, was what confirmed the stall.)
+- **Tier 3 (act):** on a confirmed stall, kill and resume rather than keep
+  paying heartbeat cost waiting on a dead end — see §5.2 for the
+  per-CLI resume command; all three now support it.
+
+**Prefer resume over cold restart.** All three CLIs have a confirmed resume
+mechanism (codex `resume --last`, reasonix `-c`, opencode `-s/--session
+<id>` — §5.2) — always use it over a fresh dispatch, it preserves the
+CLI's own conversation/message history, not just the worktree's file state.
+If a resume attempt itself fails or the session id can't be recovered, fall
+back to a fresh dispatch — the worktree's on-disk changes still survive the
+kill and carry forward, so cite the worktree's actual uncommitted state in
+the new prompt rather than re-explaining the task from scratch.
 
 ## 6. Review protocol (two passes, one gate)
 
@@ -252,8 +324,10 @@ orienting itself:
 Pass #2 then: (1) evaluates whether pass #1 reduced its work (record the
 overlap metric); (2) review-fixes in the feature worktree; (3) writes the
 review report, merges `--no-ff`, validates from `main`, records evidence;
-(4) surfaces follow-up work (checks SPEC/ROADMAP/STATUS for remaining scope);
-(5) **carves next** (§8).
+(4) surfaces follow-up work (checks SPEC/ROADMAP/STATUS/`BACKLOG.md` for
+remaining scope) — anything found worth doing but not carved this cycle gets
+logged to `groop/docs/BACKLOG.md`, not left in prose only;
+(5) **carves next** (§8), drawing on `BACKLOG.md` as one of the four sources.
 
 ## 7. Handoff header spec (machine-readable, parsed by the controller)
 
@@ -292,22 +366,35 @@ Every open handoff carries, immediately after the title:
   handoffs** in the queue whenever the roadmap has that much scoped work. At
   each post-merge carve step it may carve *multiple* successors to refill the
   buffer, so the controller never idles waiting for a carve.
-- **Carve sources — blend, don't drift (added 2026-07-13).** Observed failure
-  mode: a carver that only spins off children of what it just reviewed
-  (Out-of-Scope follow-ups, dependency-graph successors) produces a queue that
-  orbits recently-reviewed areas forever, while roadmap features nobody has
-  reviewed yet (e.g. an "Optional plugins" bucket) are never carved at all.
-  Rule: every carve cycle draws from THREE sources and states which —
+- **Carve sources — blend by priority, not quota (revised 2026-07-13).**
+  Observed failure mode: a carver that only spins off children of what it
+  just reviewed (Out-of-Scope follow-ups, dependency-graph successors)
+  produces a queue that orbits recently-reviewed areas forever, while roadmap
+  features nobody has reviewed yet (e.g. an "Optional plugins" bucket) are
+  never carved at all. Every carve cycle draws from FOUR sources and states
+  which for each package carved —
   1. **review-derived** follow-ups (warm context, cheapest to carve well);
-  2. **roadmap-driven**: the carver MUST re-read the roadmap/backlog index
-     each cycle and carve from its top priorities even when that area is
+  2. **backlog-derived**: `groop/docs/BACKLOG.md` — findings any prior
+     session identified but did not carve at the time (see its header for
+     entry/promotion rules);
+  3. **roadmap-driven**: the carver MUST re-read the roadmap/backlog index
+     each cycle and consider its top priorities even when that area is
      cold — if the area is too unknown to carve confidently, carve a small
      *scoping/analysis package* for it instead of skipping it;
-  3. **product-goal-driven**: standing priorities set by the user (e.g. "get
-     the product launched with the new UI") outrank both.
-  **Queue composition floor:** of the ≥5 planned handoffs, at least 2 must be
-  roadmap- or goal-driven (source 2/3), not review children. The carve commit
-  message names each package's source so drift is auditable.
+  4. **product-goal-driven**: standing priorities set by the user (e.g. "get
+     the product launched with the new UI").
+  **No fixed per-source quota.** An earlier version of this rule required
+  ≥2-of-5 planned handoffs to be roadmap/goal-driven; that was a stopgap for
+  not having a backlog to draw from, and a quota is not itself urgency/impact
+  reasoning. The carve set is now chosen by priority across all four sources
+  combined — the carver states, for each candidate considered (carved or
+  not), why it ranked where it did. **The old quota's intent survives as an
+  audit signal, not a rule**: if backlog/roadmap/goal items have not won a
+  priority ranking for several consecutive cycles, the carver must say so
+  explicitly in the carve commit rather than let it pass silently — that
+  pattern means those items are consistently under-scored (fix the scoring)
+  or genuinely low priority (say why, since a human may disagree). The carve
+  commit message names each package's source so drift is still auditable.
 - **Decisions inbox (added 2026-07-13).** When the carver/reviewer hits a
   question that is a *product* decision (not a mechanical contract failure —
   that's BLOCKED), it files an entry in the repo's `DECISIONS-INBOX.md`
