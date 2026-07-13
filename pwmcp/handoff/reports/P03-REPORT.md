@@ -128,11 +128,15 @@ session/state-reset safeguard.
   `PWMCP_BROWSER_MAX_IDLE_S`, `PWMCP_ADMIN_PORT` (entrypoint.sh, fatal
   `exit 1` paths).
 
-## Gaps / Unresolved
+## Gaps / Unresolved (as of the original implementation pass)
 1. **State-bleed containment upstream proof** (see Safeguard 3 above) —
    documented in `docs/SECURITY.md`, not a BLOCKER per the handoff's own
    framing ("if a server cannot guarantee ... document that residual risk
    explicitly ... rather than claiming isolation that does not exist").
+   **Superseded** — see `P03-SELFREVIEW.md`: `--isolated` did not actually
+   provide the isolation this gap questioned; it has been removed and
+   safeguard 3 is now an unconditional documented residual, not a
+   probabilistic one.
 2. **`scripts/smoke-endpoints.sh --mode shared` not run end-to-end** against
    a ciu-rendered stack — the script's container-naming assumptions
    (`${PROJECT}-${ENV}-pwmcp`) don't match the ad-hoc containers used for
@@ -145,9 +149,14 @@ session/state-reset safeguard.
    so the baseline `--mode per-session` checks in the pre-existing sections
    of the script are expected to be runnable directly; only the new
    `--mode shared` section's full-script run is deferred).
+   **Resolved** — run end-to-end during self-review (2026-07-13); it found
+   real defects (cross-tool proof failed, cookie-isolation check was
+   hollow). See `P03-SELFREVIEW.md` for full detail and fixes.
 3. **Idle-recycle end-to-end restart not observed** — code path verified by
    construction (shares the tested `/browser/restart` primitive) but no
    live multi-minute observation was run.
+   **Resolved** — run live during self-review; found the trigger condition
+   was unreachable (dead code) and fixed. See `P03-SELFREVIEW.md`.
 
 ## Files Changed
 ```
