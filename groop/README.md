@@ -51,9 +51,11 @@ installed.
 
 Use `--entities GLOB` (repeatable) to collect only entities whose `EntityKey`
 matches a glob pattern, `--slice NAME` to include an entity subtree, and
-`--metrics compact` to keep only the memory-gauge, PSI, and refault-rate metric
-families. These flags apply to `--once`, the live TUI, and `--record` (both
-TUI-driven and headless P53). They are rejected with `--replay` and `--attach`.
+`--container NAME_OR_PREFIX` (repeatable) to include entities matching a docker
+container name or prefix. Use `--metrics compact` to keep only the memory-gauge,
+PSI, and refault-rate metric families. These flags apply to `--once`, the live
+TUI, and `--record` (both TUI-driven and headless P53). They are rejected with
+`--replay` and `--attach`.
 
 Use `--container NAME_OR_PREFIX` on `groop inspect-files plan/read --target` or
 `groop action preview/execute --target` to resolve a Docker container name or
@@ -133,7 +135,7 @@ Useful feature hotkeys in the TUI:
 | P56 | Queued | `groop squeeze` guided memory measurement | v2 actions | Add a guided, stepped `memory.high` squeeze that measures a cgroup's hot working set, with mandatory memory.high restore on exit/SIGINT and a groop-record-compatible JSONL log. Handoff: `handoff/P56-groop-squeeze.md`. |
 | P57 | Done | Docker-name entity selectors | v1.5/v2 ergonomics | Add `--container NAME_OR_PREFIX`, resolved via the existing docker metadata join, wherever groop takes a cgroup-path/entity identifier. Handoff: `handoff/P57-docker-name-entity-selectors.md`. Report: `handoff/reports/P57-REPORT.md`. |
 | P58 | Planned | Daemon MCP frontend | v2/v3 API | Add `groop mcp serve` (optional `groop[mcp]` extra, stdio transport): a read-only MCP server over the P52 typed adapter exposing bounded health/overview/entity/history tools for AI CLI agents. Starts only after reviewed P52 merges. Handoff: `handoff/P58-daemon-mcp-frontend.md`. |
-| P59 | Queued | `--container` as an entity selector | v1.5/v2 ergonomics | Compose P57's `--container` name resolution into P55's `--entities`/`--slice` collection-path selectors (resolution moved into the collector sweep for post-enrich correctness). Handoff: `handoff/P59-container-entity-selector-composition.md`. |
+| P59 | Done | `--container` as an entity selector | v1.5/v2 ergonomics | Compose P57's `--container` name resolution into P55's `--entities`/`--slice` collection-path selectors (resolution moved into the collector sweep for post-enrich correctness). Handoff: `handoff/P59-container-entity-selector-composition.md`. Report: `handoff/reports/P59-REPORT.md`. |
 | P60 | Queued | Free-form `--metrics` field/family list | v1.5/v2 recording | Generalize P55's `--metrics full\|compact` enum with an open comma-separated family/name selector, registry-validated, reusing the compact prune + block-drop path. Handoff: `handoff/P60-metrics-fieldlist-selector.md`. |
 
 ## Completed Package Order

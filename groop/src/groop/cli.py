@@ -81,6 +81,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="include a *.slice (or other) entity key and everything under it")
     parser.add_argument("--metrics", type=str, default="full", choices=["full", "compact"],
                         help="metric output mode: full (default) or compact (keep only memory/PSI/refault families)")
+    parser.add_argument("--container", action="append", default=None, type=str, dest="container_selectors",
+                        help="include entities matching a docker container name/prefix (repeatable)")
     return parser.parse_args(argv)
 
 
@@ -247,9 +249,13 @@ def _filter_kwargs(args: argparse.Namespace) -> dict[str, object]:
     entities_globs: tuple[str, ...] | None = None
     if args.entities is not None:
         entities_globs = tuple(args.entities)
+    container_selectors: tuple[str, ...] | None = None
+    if args.container_selectors is not None:
+        container_selectors = tuple(args.container_selectors)
     return {
         "entities_globs": entities_globs,
         "slice_names": slice_names,
+        "container_selectors": container_selectors,
         "metrics_mode": args.metrics,
     }
 
@@ -379,8 +385,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.json and not args.once:
             print("--json is supported with --attach only when --once is also set", file=sys.stderr)
             return 2
-        if args.entities is not None or args.slice is not None or args.metrics != "full":
-            print("--attach does not accept --entities/--slice/--metrics", file=sys.stderr)
+        if args.entities is not None or args.slice is not None or args.metrics != "full" or args.container_selectors is not None:
+            print("--attach does not accept --entities/--slice/--metrics/--container", file=sys.stderr)
             return 2
         try:
             if args.once:
@@ -408,8 +414,8 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             return 0
     if args.replay is not None:
-        if args.entities is not None or args.slice is not None or args.metrics != "full":
-            print("--replay does not accept --entities/--slice/--metrics", file=sys.stderr)
+        if args.entities is not None or args.slice is not None or args.metrics != "full" or args.container_selectors is not None:
+            print("--replay does not accept --entities/--slice/--metrics/--container", file=sys.stderr)
             return 2
         driver = ReplayDriver.from_path(args.replay, config=config)
         ui_code = _run_ui(
@@ -470,6 +476,9 @@ def main(argv: list[str] | None = None) -> int:
                     return 0
                 print("textual is not installed; use --once --json or install UI dependencies", file=sys.stderr)
                 return 2
+        except ContainerResolveError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
         except KeyboardInterrupt:
             return 0
     if not args.once and not args.json:
@@ -489,7 +498,11 @@ def main(argv: list[str] | None = None) -> int:
     if not args.once or not args.json:
         print("groop implements --once --json for live collection and --replay for frame playback", file=sys.stderr)
         return 2
-    frame = Collector(cgroup_root=args.cgroup_root, config=config, **_filter_kwargs(args)).collect_once()  # type: ignore[arg-type]
+    try:
+        frame = Collector(cgroup_root=args.cgroup_root, config=config, **_filter_kwargs(args)).collect_once()  # type: ignore[arg-type]
+    except ContainerResolveError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     _print_frame_json(frame, args.pretty_json)
     return 0
 
@@ -735,13 +748,12 @@ def _resolve_mutual_exclusive_target(target: str | None, container: str | None, 
     (both given or neither given) and ContainerResolveError on
     name-resolution failure.
 
-    .. todo::
+    .. note::
 
-        **P55 composition:** If/when P55 (``--entities``/``--slice``) is
-        merged, also accept ``--container`` as a third selector form that
-        resolves to an ``EntityKey`` and feeds the same ancestor-inclusion /
-        collection-time-pruning path. No code changes in this package — just
-        supply P55's selector set with one more resolved key.
+        **P55/P57 composition (P59, merged):** The top-level ``--container``
+        collection-path selector is wired differently — it resolves inside the
+        collector's ``collect_once()`` against the current sweep's post-enrich
+        entities, not via this helper. See handoff/P59-container-entity-selector-composition.md.
 
         **P56 composition:** If/when P56 (``groop squeeze --target``) is
         merged, accept ``--container`` as an alternative to
