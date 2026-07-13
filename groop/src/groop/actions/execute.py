@@ -540,6 +540,14 @@ class _GateRefusal:
 
     message: str
     outcome: str = "refusal"
+    kind: str | None = None
+    """Reported ``kind``, when it differs from the chain's initial kind.
+
+    ``execute_set_property`` is entered with the *property* name as its
+    initial kind (that is what its generic P46 refusals report), but its
+    own property/unit/value/persistence refusals report the action kind.
+    A gate that must not inherit the initial kind states its own here.
+    """
 
 
 Gate = Callable[[], _GateRefusal | None]
@@ -596,7 +604,9 @@ def _execute_gated(
     for gate in pre_audit_gates:
         refusal = gate()
         if refusal is not None:
-            return _refusal(initial_kind, initial_target, refusal.message)
+            return _refusal(
+                refusal.kind or initial_kind, initial_target, refusal.message
+            )
     try:
         spec = build_spec()
     except (TypeError, ValueError, KeyError) as exc:
@@ -901,7 +911,7 @@ def execute_set_property(
         try:
             validate_memory_high_unit(unit)
         except ValueError as exc:
-            return _GateRefusal(str(exc))
+            return _GateRefusal(str(exc), kind="systemd-set-property")
         return None
 
     def value_gate() -> _GateRefusal | None:
@@ -909,7 +919,7 @@ def execute_set_property(
         try:
             canonical_value = validate_memory_high_value(property_value or "")
         except ValueError as exc:
-            return _GateRefusal(str(exc))
+            return _GateRefusal(str(exc), kind="systemd-set-property")
         return None
 
     def persistence_gate() -> _GateRefusal | None:
@@ -920,7 +930,7 @@ def execute_set_property(
         try:
             persistence_mode = validate_persistence_mode(persistence)
         except ValueError as exc:
-            return _GateRefusal(str(exc))
+            return _GateRefusal(str(exc), kind="systemd-set-property")
         return None
 
     def build_spec() -> _ExecutionSpec:

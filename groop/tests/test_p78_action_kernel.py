@@ -463,3 +463,70 @@ def test_all_four_success_paths_keep_the_pre_post_audit_shape(tmp_path: Path) ->
         records = [json.loads(line) for line in audit_path.read_text().splitlines()]
         assert [record["stage"] for record in records] == ["pre", "post"]
         assert records[1]["outcome"] == "success"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_kind", "stderr"),
+    [
+        # Generic P46 gates are entered before the action kind is known, so they
+        # report the property name -- as they did before the extraction.
+        (
+            {"admin": False},
+            "memory.high",
+            "admin mode is required",
+        ),
+        (
+            {"confirm": "NOPE"},
+            "memory.high",
+            "exact confirmation EXECUTE is required",
+        ),
+        (
+            {"root_check": lambda: False},
+            "memory.high",
+            "root privileges are required",
+        ),
+        (
+            {"property_name": "cpu.max"},
+            "cpu.max",
+            "property must be 'memory.high', got 'cpu.max'",
+        ),
+        # ...but the verb's own unit/value/persistence refusals report the
+        # ACTION kind, not the property name.  Collapsing these onto the
+        # chain's initial kind is the regression this test exists to catch.
+        (
+            {"target": "bad unit!"},
+            "systemd-set-property",
+            "invalid systemd unit name: 'bad unit!'",
+        ),
+        (
+            {"property_value": "512M"},
+            "systemd-set-property",
+            "memory.high value must be 'max' or a positive integer: '512M'",
+        ),
+        (
+            {"persistence": "bogus"},
+            "systemd-set-property",
+            "persistence mode must be 'runtime' or 'persistent', got 'bogus'",
+        ),
+    ],
+)
+def test_set_property_refusals_report_the_same_kind_as_before_extraction(
+    tmp_path: Path,
+    overrides: dict[str, object],
+    expected_kind: str,
+    stderr: str,
+) -> None:
+    """``kind`` is an ExecuteResult field surfaced by ``result_to_jsonable``.
+
+    ``execute_set_property`` enters the shared chain with the *property* name
+    as its initial kind, so a gate that must report ``systemd-set-property``
+    has to say so explicitly.  Asserting only (outcome, audit_outcome, stderr)
+    -- as the differential taxonomy above does -- does not catch a kind that
+    silently inherits the initial value.
+    """
+    result = _execute_verb("set-property", tmp_path / "audit.jsonl", **overrides)
+    assert (result.kind, result.outcome, result.stderr) == (
+        expected_kind,
+        "refusal",
+        stderr,
+    )
