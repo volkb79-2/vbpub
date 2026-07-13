@@ -135,6 +135,11 @@ _DEFAULT_REPLAY = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "
 # MCP smoke defaults
 _MCP_SMOKE_TIMEOUT_S = 30.0
 _MCP_SMOKE_TOOLS = {"groop_health", "groop_overview", "groop_entity", "groop_history"}
+# Call order is load-bearing, not cosmetic: groop_entity and groop_history need
+# the entity key that groop_overview discovers, so iterating the set above (whose
+# order varies with PYTHONHASHSEED) would call them with an empty selector in
+# most interpreters.
+_MCP_SMOKE_CALL_ORDER = ("groop_health", "groop_overview", "groop_entity", "groop_history")
 
 
 @dataclass
@@ -859,6 +864,29 @@ def _parse_tool_content(tool_result: Any) -> Any:
     return {}
 
 
+def _tool_call_failure(tool_result: Any) -> str | None:
+    """Return a reason string if a tool call failed, or None if it succeeded.
+
+    ``CallToolResult.isError`` is NOT sufficient on its own: the MCP SDK only
+    sets it when a tool *raises*, while groop's tools *return* their typed
+    failures as an ordinary ``{"error": {"code": ...}}`` payload
+    (``mcp/server.py`` ``_tool_error``).  Checking ``isError`` alone therefore
+    reports success for every typed groop error -- an assertion that cannot
+    fail.  The payload is the authority.
+    """
+    if getattr(tool_result, "isError", False):
+        return "transport reported isError"
+    content = _parse_tool_content(tool_result)
+    if not isinstance(content, dict):
+        return f"non-dict payload: {content!r}"
+    error = content.get("error")
+    if isinstance(error, dict):
+        return f"typed error: {error.get('code')}"
+    if error is not None:
+        return f"malformed error field: {error!r}"
+    return None
+
+
 def _update_byte_size(
     tool_result: Any,
     tool_name: str,
@@ -963,6 +991,7 @@ def run_mcp_smoke(
         )
 
     import asyncio  # noqa: E402
+    import socket  # noqa: E402
     import tempfile  # noqa: E402
     import shutil  # noqa: E402
 
@@ -1000,41 +1029,77 @@ def run_mcp_smoke(
             ))
             return _make_mcp_result(checks, max_response_bytes, t0, ru0)
 
-        # --- Wait for socket to appear ---
+        # --- Wait for the socket to ACCEPT A CONNECTION ---
+        # A bound-but-not-listening socket already exists on disk, so polling
+        # for the path can hand a not-yet-listening socket to the session and
+        # fail with ECONNREFUSED.  Connecting is the only readiness signal that
+        # means what it says.  Bail out early if the daemon is already dead
+        # rather than burning the whole timeout.
         deadline = time.monotonic() + timeout_s
         socket_ready = False
+        daemon_died = False
         while time.monotonic() < deadline:
-            if daemon_socket.exists():
-                socket_ready = True
+            if daemon_proc.poll() is not None:
+                daemon_died = True
                 break
-            time.sleep(0.1)
+            if daemon_socket.exists():
+                try:
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                        probe.settimeout(1.0)
+                        probe.connect(str(daemon_socket))
+                    socket_ready = True
+                    break
+                except OSError:
+                    pass
+            time.sleep(0.05)
 
         if not socket_ready:
             checks.append(Check(
                 name="hello",
                 ok=False,
-                message=f"Daemon socket did not appear within {timeout_s}s",
-                details={},
+                message=(
+                    f"Daemon exited with code {daemon_proc.returncode} before serving"
+                    if daemon_died
+                    else f"Daemon socket did not accept a connection within {timeout_s}s"
+                ),
+                details={"daemon_exit_code": daemon_proc.returncode},
             ))
 
         # --- Run async MCP client session ---
         if socket_ready:
-            checks_list, max_bytes = asyncio.run(
-                _run_mcp_client_session(daemon_socket, env, daemon_proc)
-            )
-            checks.extend(checks_list)
-            max_response_bytes = max_bytes
+            # A failure to even establish the session (missing extra in the
+            # child, server exiting non-zero at startup) must surface as a typed
+            # failing check -- an escaping traceback would leave --json consumers
+            # with unparseable output on the single most likely live failure.
+            try:
+                checks_list, max_bytes = asyncio.run(
+                    _run_mcp_client_session(daemon_socket, env, daemon_proc)
+                )
+                checks.extend(checks_list)
+                max_response_bytes = max_bytes
+            except Exception as exc:
+                checks.append(Check(
+                    name="mcp_session",
+                    ok=False,
+                    message=f"MCP client session failed: {exc}",
+                    details={"error": str(exc)},
+                ))
     finally:
         # --- Teardown: kill daemon on any exit path ---
         if daemon_proc is not None:
             _terminate_process(daemon_proc)
         try:
-            if daemon_socket.exists():
-                daemon_socket.unlink()
+            # Only remove a socket this process created.  Unlinking
+            # unconditionally would delete the packaged system daemon's socket
+            # when an operator points --socket at it.
             if socket_path is None:
-                shutil.rmtree(tmpdir, ignore_errors=True)
+                if daemon_socket.exists():
+                    daemon_socket.unlink()
         except OSError:
             pass
+        # tmpdir is created unconditionally, so it must be removed
+        # unconditionally or every --socket run leaks an empty directory.
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
     # Determine overall pass: all checks must be OK
     all_ok = all(c.ok for c in checks) if checks else True
@@ -1133,42 +1198,57 @@ async def _run_mcp_client_session(
             ))
 
             # --- Check 3: each tool returns valid result ---
-            tools_to_call = list(_MCP_SMOKE_TOOLS)
+            # Deterministic order: groop_overview must run before the two tools
+            # that consume the entity key it discovers.
             overview_key: str | None = None
             tool_calls_ok = True
             tool_call_details: dict[str, Any] = {}
 
-            for tool_name in tools_to_call:
+            for tool_name in _MCP_SMOKE_CALL_ORDER:
                 try:
                     if tool_name == "groop_health":
                         result = await session.call_tool(tool_name, {})
-                        _update_byte_size(result, tool_name, tool_call_details)
-                        tool_calls_ok &= not result.isError
 
                     elif tool_name == "groop_overview":
                         result = await session.call_tool(tool_name, {"sort_by": "ram", "limit": 5})
-                        _update_byte_size(result, tool_name, tool_call_details)
-                        if not result.isError:
-                            content_raw = _parse_tool_content(result)
-                            parsed = content_raw if isinstance(content_raw, dict) else {}
-                            rows = parsed.get("data", {}).get("rows", [])
-                            if rows:
-                                overview_key = rows[0].get("key")
 
                     elif tool_name == "groop_entity":
-                        key = overview_key or ""
-                        result = await session.call_tool(tool_name, {"selector": key})
-                        _update_byte_size(result, tool_name, tool_call_details)
-                        tool_calls_ok &= not result.isError
+                        if overview_key is None:
+                            tool_calls_ok = False
+                            tool_call_details[tool_name] = (
+                                "skipped: groop_overview yielded no entity key to drive this tool"
+                            )
+                            continue
+                        result = await session.call_tool(tool_name, {"selector": overview_key})
 
-                    elif tool_name == "groop_history":
-                        key = overview_key or ""
+                    else:  # groop_history
+                        if overview_key is None:
+                            tool_calls_ok = False
+                            tool_call_details[tool_name] = (
+                                "skipped: groop_overview yielded no entity key to drive this tool"
+                            )
+                            continue
                         result = await session.call_tool(
                             tool_name,
-                            {"selector": key, "metric": "ram", "window": "last:60", "limit": 5},
+                            {
+                                "selector": overview_key,
+                                "metric": "ram",
+                                "window": "last:60",
+                                "limit": 5,
+                            },
                         )
-                        _update_byte_size(result, tool_name, tool_call_details)
-                        tool_calls_ok &= not result.isError
+
+                    _update_byte_size(result, tool_name, tool_call_details)
+                    failure = _tool_call_failure(result)
+                    if failure is not None:
+                        tool_calls_ok = False
+                        tool_call_details[tool_name]["failure"] = failure
+                    elif tool_name == "groop_overview":
+                        content_raw = _parse_tool_content(result)
+                        parsed = content_raw if isinstance(content_raw, dict) else {}
+                        rows = parsed.get("data", {}).get("rows", [])
+                        if rows:
+                            overview_key = rows[0].get("key")
 
                 except Exception as exc:
                     tool_calls_ok = False
@@ -1205,7 +1285,7 @@ async def _run_mcp_client_session(
                 details={"max_response_bytes": _max_bytes, "cap_bytes": 4 * 1024 * 1024},
             ))
 
-                        # --- Check 5: bogus selector (live daemon) yields invalid-selector ---
+            # --- Check 5: bogus selector (live daemon) yields invalid-selector ---
             try:
                 bogus_result = await session.call_tool("groop_entity", {"selector": "__nonexistent__"})
                 bogus_content = _parse_tool_content(bogus_result)
@@ -1234,7 +1314,7 @@ async def _run_mcp_client_session(
                     details={"error": str(exc)},
                 ))
 
-# --- Check 6: daemon loss yields typed error, server still alive ---
+            # --- Check 6: daemon loss yields typed error, server still alive ---
             if daemon_proc is not None:
                 try:
                     daemon_proc.terminate()
@@ -1251,7 +1331,16 @@ async def _run_mcp_client_session(
                     and isinstance(loss_content.get("error"), dict)
                     and loss_content["error"].get("code") == "daemon-unavailable"
                 )
-                server_alive = True  # session is still connected
+                # The contract is that losing the daemon does not take the MCP
+                # server down with it, so this must be *observed*, not asserted:
+                # a hardcoded True would report "server alive" for a server that
+                # had already died.  Re-driving the session is the observation --
+                # a dead server cannot answer list_tools().
+                try:
+                    post_loss_tools = await session.list_tools()
+                    server_alive = {t.name for t in post_loss_tools.tools} >= _MCP_SMOKE_TOOLS
+                except Exception:
+                    server_alive = False
                 daemon_loss_ok = is_daemon_unavailable and server_alive
                 _checks.append(Check(
                     name="daemon_loss",

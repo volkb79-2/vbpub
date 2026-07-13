@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from conftest import fixture_root, SRC
 
 # Paths used in multiple tests
@@ -838,12 +840,152 @@ def test_terminate_process_already_dead() -> None:
     _terminate_process(proc)  # must not raise
 
 
+class _FakeToolResult:
+    """A CallToolResult stand-in: transport status plus a JSON text block."""
+
+    def __init__(self, payload: object, *, is_error: bool = False) -> None:
+        self.isError = is_error
+        block = type("Block", (), {"text": json.dumps(payload), "type": "text"})()
+        self.content = [block]
+
+
+def test_tool_call_failure_reads_the_payload_not_just_is_error() -> None:
+    """A tool call that *returns* a typed error is a failure, even with isError False.
+
+    groop's MCP tools return their typed failures as an ordinary
+    ``{"error": {"code": ...}}`` payload, and the SDK only sets ``isError`` when
+    a tool *raises*.  So ``isError`` alone is an assertion that cannot fail, and
+    the live acceptance leg would report "all tools succeeded" while the daemon
+    rejected every call.  The payload is the authority.
+    """
+    from groop.acceptance import _tool_call_failure
+
+    ok = _FakeToolResult({"data": {"rows": [{"key": "system.slice"}]}})
+    assert _tool_call_failure(ok) is None
+
+    typed = _FakeToolResult({"error": {"code": "invalid-selector", "message": "no"}})
+    assert _tool_call_failure(typed) is not None
+    assert "invalid-selector" in _tool_call_failure(typed)
+
+    unavailable = _FakeToolResult({"error": {"code": "daemon-unavailable", "message": "no"}})
+    assert _tool_call_failure(unavailable) is not None
+
+    raised = _FakeToolResult({"data": {}}, is_error=True)
+    assert _tool_call_failure(raised) is not None
+
+
+class _FakeProc:
+    """A daemon handle that records teardown instead of being one."""
+
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.terminated = False
+        self.killed = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode if self.returncode is not None else 0
+
+
+def _listening_unix_socket(path: Path):
+    import socket
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(path))
+    sock.listen(8)
+    return sock
+
+
+def test_mcp_smoke_terminates_the_daemon_when_the_session_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A check that raises mid-run must still tear the daemon down.
+
+    This is the contract most likely to be silently broken, so it is asserted
+    against injected process handles: delete the ``finally`` block in
+    ``run_mcp_smoke`` and this test fails.  It also pins the typed-failure
+    contract -- an exploding session must become a failing check, not an
+    escaping traceback that leaves ``--json`` consumers with no JSON.
+    """
+    import groop.acceptance as acceptance
+
+    socket_path = tmp_path / "daemon.sock"
+    listener = _listening_unix_socket(socket_path)
+    fake = _FakeProc()
+    monkeypatch.setattr(acceptance.subprocess, "Popen", lambda *a, **k: fake)
+
+    def _explode(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("session blew up mid-run")
+
+    monkeypatch.setattr(acceptance, "_run_mcp_client_session", _explode)
+    try:
+        result = acceptance.run_mcp_smoke(socket_path=socket_path, timeout_s=2.0)
+    finally:
+        listener.close()
+
+    assert fake.terminated or fake.killed, "daemon was not torn down on the exception path"
+    assert result.ok is False
+    assert any(c.name == "mcp_session" and c.ok is False for c in result.checks)
+
+
+def test_mcp_smoke_reports_a_daemon_that_dies_before_serving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A daemon that exits at startup is reported at once, not after the timeout."""
+    import groop.acceptance as acceptance
+
+    fake = _FakeProc()
+    fake.returncode = 2  # already dead
+    monkeypatch.setattr(acceptance.subprocess, "Popen", lambda *a, **k: fake)
+
+    result = acceptance.run_mcp_smoke(socket_path=tmp_path / "never.sock", timeout_s=30.0)
+
+    assert result.ok is False
+    hello = [c for c in result.checks if c.name == "hello"]
+    assert hello and hello[0].ok is False
+    assert hello[0].details["daemon_exit_code"] == 2
+
+
+def test_mcp_smoke_does_not_unlink_a_caller_supplied_socket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Teardown must not delete a socket this process did not create.
+
+    ``--socket /run/groop/groop.sock`` must not remove the packaged system
+    daemon's socket on exit.
+    """
+    import groop.acceptance as acceptance
+
+    socket_path = tmp_path / "system.sock"
+    listener = _listening_unix_socket(socket_path)
+    fake = _FakeProc()
+    monkeypatch.setattr(acceptance.subprocess, "Popen", lambda *a, **k: fake)
+    monkeypatch.setattr(
+        acceptance, "_run_mcp_client_session", lambda *a, **k: ([], None)
+    )
+    try:
+        acceptance.run_mcp_smoke(socket_path=socket_path, timeout_s=2.0)
+        assert socket_path.exists(), "teardown deleted a caller-supplied socket"
+    finally:
+        listener.close()
+
+
 def test_mcp_smoke_no_daemon_yields_checks() -> None:
     """``run_mcp_smoke`` with a non-existent socket yields a failing hello check, no crash."""
     from groop.acceptance import run_mcp_smoke
 
     result = run_mcp_smoke(socket_path=Path("/nonexistent/socket.sock"), timeout_s=0.5)
-    assert result.extra_installed is True or result.extra_installed is False
+    assert isinstance(result.extra_installed, bool)
     if result.extra_installed:
         assert any(
             c.name == "hello" and c.ok is False
