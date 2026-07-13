@@ -12,7 +12,6 @@ from typing import Any
 
 from groop.daemon.api import (
     DEFAULT_MAX_RESPONSE_BYTES,
-    ErrorCode,
     PROTOCOL_VERSION,
     Sensitivity,
 )

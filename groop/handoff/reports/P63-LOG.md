@@ -2,8 +2,8 @@
 
 ## Context
 
-- Branch: feat/groop-p63-daemon-client-versioned-read-methods
-- Worktree: .worktrees/-groop-p63-daemon-client-versioned-read-methods
+- Branch: feat/groop-p63-daemon-client-versioned-read
+- Worktree: .worktrees/groop-p63-daemon-client-versioned-read
 - Base commit: main (P52 merged)
 - Package: P63 — Daemon Client Versioned Read Methods
 - Current objective: Implement typed versioned-envelope client methods on DaemonClient
@@ -11,7 +11,7 @@
 ## Timeline
 
 ```text
-2025-07-18 UTC
+2026-07-13 UTC
 - Action: Read handoff and context files (client.py, api.py, CONTRACTS.md, test_daemon_client.py, test_daemon_p52.py, model.py, DAEMON.md)
 - Action: Added DaemonResponseError.code attribute for typed ErrorCode recovery
 - Action: Added frozen result dataclasses (DaemonCurrentResult, DaemonHistoryResult, DaemonEntityResult, DaemonHello)

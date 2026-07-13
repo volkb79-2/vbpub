@@ -26,13 +26,11 @@ from conftest import fixture_frame
 from groop.daemon import (
     DaemonApi,
     DEFAULT_MAX_RESPONSE_BYTES,
-    ErrorCode,
     FrameBroker,
     PROTOCOL_VERSION,
     Sensitivity,
     serve_versioned_unix_socket,
 )
-from groop.daemon.api import ApiLimits
 from groop.daemon.client import (
     DaemonClient,
     DaemonConnectError,
