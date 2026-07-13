@@ -18,8 +18,10 @@ The container name becomes `<project>-<env>-pwmcp` and is reachable from sibling
 ```
 ws://pwmcp:3000/                          # short alias (compose service name)
 ws://<project>-<env>-pwmcp:3000/          # full container name
-http://pwmcp:8931/mcp                     # MCP short alias
-http://<project>-<env>-pwmcp:8931/mcp     # MCP full container name
+http://pwmcp:8931/mcp                     # @playwright/mcp short alias
+http://<project>-<env>-pwmcp:8931/mcp     # @playwright/mcp full container name
+http://pwmcp:8932/mcp                     # chrome-devtools-mcp short alias
+http://<project>-<env>-pwmcp:8932/mcp     # chrome-devtools-mcp full container name
 ```
 
 When pwmcp is run standalone (not as a sub-stack), `deploy.project_name` defaults to `pwmcp` and the standard `pwmcp-dev` network is used.
@@ -36,7 +38,7 @@ ciu -d .
 
 The unified container comes up as `<project>-<env>-pwmcp` on the project network, serving both ports.
 
-To expose ports to the host for local debugging, set `pwmcp.unified.expose = true` in `ciu.toml.j2` (overrides file) and re-run `ciu -d .`. Exposed ports bind to `127.0.0.1` only.
+To expose ports to the host for local debugging, set `pwmcp.unified.expose = true` in `ciu.toml.j2` (overrides file) and re-run `ciu -d .`. Exposed ports bind to `127.0.0.1` only (3000, 8931, 8932).
 
 ### `PWMCP_MCP_ALLOWED_HOSTS` and the HTTP 403 on container-name access
 
@@ -92,9 +94,10 @@ ciu --generate-env -d .
 ciu -d .
 ```
 
-External endpoints (both served from one hostname):
+External endpoints (all served from one hostname):
 - Playwright connect: `wss://pw.example.com/` (WebSocket route to port 3000)
-- MCP: `https://pw.example.com/mcp` (HTTP route to port 8931)
+- @playwright/mcp: `https://pw.example.com/mcp` (HTTP route to port 8931)
+- chrome-devtools-mcp: `https://pw.example.com/devtools/mcp` (HTTP route to port 8932)
 
 ### Access Guard
 

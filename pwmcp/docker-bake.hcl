@@ -22,14 +22,29 @@ variable "PLAYWRIGHT_DISTRO" {
   default = "noble"
 }
 
+// @playwright/mcp pin (bundled MCP HTTP/SSE server).
+variable "PLAYWRIGHT_MCP_VERSION" {
+  default = "0.0.76"
+}
+
+// chrome-devtools-mcp pin (stdio-only CDP MCP server).
+variable "CHROME_DEVTOOLS_MCP_VERSION" {
+  default = "1.5.0"
+}
+
+// mcp-proxy pin (stdio→streamable-HTTP proxy for chrome-devtools-mcp).
+variable "MCP_PROXY_VERSION" {
+  default = "6.5.2"
+}
+
 // pwmcp release tag for the PyPI-based build (e.g. 1.60.0-r1).
 variable "PWMCP_VERSION_PYPI" {
-  default = "1.61.0-r2"
+  default = "1.61.0-r3"
 }
 
 // pwmcp release tag for the npm-based build (e.g. 1.61.0-r1).
 variable "PWMCP_VERSION_NPM" {
-  default = "1.61.1-r1"
+  default = "1.61.1-r2"
 }
 
 variable "OCI_SOURCE" {
@@ -48,8 +63,11 @@ target "pwmcp-pypi-latest" {
   context    = "."
   dockerfile = "containers/pwmcp/Dockerfile"
   args = {
-    PLAYWRIGHT_VERSION = "${PLAYWRIGHT_VERSION_PYPI}"
-    PLAYWRIGHT_DISTRO  = "${PLAYWRIGHT_DISTRO}"
+    PLAYWRIGHT_VERSION          = "${PLAYWRIGHT_VERSION_PYPI}"
+    PLAYWRIGHT_DISTRO           = "${PLAYWRIGHT_DISTRO}"
+    PLAYWRIGHT_MCP_VERSION      = "${PLAYWRIGHT_MCP_VERSION}"
+    CHROME_DEVTOOLS_MCP_VERSION = "${CHROME_DEVTOOLS_MCP_VERSION}"
+    MCP_PROXY_VERSION           = "${MCP_PROXY_VERSION}"
   }
   tags = [
     "${REGISTRY}/${NAMESPACE}/pwmcp:${PWMCP_VERSION_PYPI}",
@@ -64,8 +82,11 @@ target "pwmcp-npm-latest" {
   context    = "."
   dockerfile = "containers/pwmcp/Dockerfile"
   args = {
-    PLAYWRIGHT_VERSION = "${PLAYWRIGHT_VERSION_NPM}"
-    PLAYWRIGHT_DISTRO  = "${PLAYWRIGHT_DISTRO}"
+    PLAYWRIGHT_VERSION          = "${PLAYWRIGHT_VERSION_NPM}"
+    PLAYWRIGHT_DISTRO           = "${PLAYWRIGHT_DISTRO}"
+    PLAYWRIGHT_MCP_VERSION      = "${PLAYWRIGHT_MCP_VERSION}"
+    CHROME_DEVTOOLS_MCP_VERSION = "${CHROME_DEVTOOLS_MCP_VERSION}"
+    MCP_PROXY_VERSION           = "${MCP_PROXY_VERSION}"
   }
   tags = [
     "${REGISTRY}/${NAMESPACE}/pwmcp:${PWMCP_VERSION_NPM}",

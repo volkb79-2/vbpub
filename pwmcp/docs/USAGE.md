@@ -24,7 +24,8 @@ The unified image exposes both endpoints from the single service alias `pwmcp`:
 | Endpoint | URL | Purpose |
 |---|---|---|
 | Playwright run-server | `ws://pwmcp:3000/` | Full Playwright API via `connect()` |
-| MCP | `http://pwmcp:8931/mcp` | MCP-compatible AI clients |
+| @playwright/mcp | `http://pwmcp:8931/mcp` | MCP-compatible AI clients |
+| chrome-devtools-mcp | `http://pwmcp:8932/mcp` | CDP performance tracing, DevTools insights |
 
 ## Playwright `connect()` — Test Suites
 
@@ -134,6 +135,10 @@ extra_args = "*"
       "playwright": {
         "type": "http",
         "url": "http://pwmcp:8931/mcp"
+      },
+      "chrome-devtools": {
+        "type": "http",
+        "url": "http://pwmcp:8932/mcp"
       }
     }
   }
@@ -151,6 +156,13 @@ This works when VS Code is running inside a devcontainer on the same Docker netw
       "playwright": {
         "type": "http",
         "url": "https://pw.example.com/mcp",
+        "headers": {
+          "Authorization": "Basic <base64(pwmcp:secret)>"
+        }
+      },
+      "chrome-devtools": {
+        "type": "http",
+        "url": "https://pw.example.com/devtools/mcp",
         "headers": {
           "Authorization": "Basic <base64(pwmcp:secret)>"
         }
@@ -177,6 +189,7 @@ For `--caps` or other playwright-mcp flags, they cannot be passed directly via t
 Both services support multiple simultaneous consumers:
 - `run-server` (port 3000): each `browser.connect()` call creates an independent browser session; isolate further by using separate browser contexts or pages
 - `@playwright/mcp` (port 8931): the MCP server handles concurrent MCP clients
+- `chrome-devtools-mcp` (port 8932): served via mcp-proxy, which handles concurrent MCP clients; all sessions share a single chrome-devtools-mcp process (stdio child)
 
 No per-consumer authentication exists in internal mode — the network boundary is the control.
 
