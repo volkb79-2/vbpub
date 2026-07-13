@@ -452,3 +452,38 @@ for a package whose deliverable *is* runtime safeguards, an implementer that can
 execute its own gates beats a stronger-on-paper implementer that cannot, and the
 frontier Docker pass is where the codex legs' untested "static checks passed"
 claims first met reality.
+
+### Validity caveat — this is not yet a model comparison
+
+**This run says nothing about terra-med / luna-high / sonnet-5-high as models.**
+It compares three *conditions*, and two of the three were handicapped before the
+first line of code was written: terra-med and luna-high were dispatched via
+plain `codex exec` (no bypass flag), which defaults to `--sandbox
+workspace-write` — a sandbox that has no route to `docker.sock` at all. Neither
+codex leg could have passed the Docker-gated safeguards regardless of the
+underlying model's skill, because neither could execute a single container
+command to find out it was wrong. The sonnet5-high leg ran in Claude Code with
+ordinary Docker access. Concluding "sonnet beat terra/luna" from this data is
+exactly the apples-to-oranges error the controller must not make: it would be
+crediting the model for an advantage that was actually a harness/environment
+gap. (Separately, and unrelated to Docker: the same session also surfaced that
+`workspace-write` blocks codex from writing git worktree metadata at all —
+see `docs/ai-cli-controller-guide.md` "Starting Codex CLI Agents", incident
+2026-07-13 — so even the codex legs' *commits* required controller
+intervention. Both codex legs are additionally under-tested on the harness
+axis, not just the sandbox axis.)
+
+What this run *does* establish, validly: a Docker-gated adversarial oracle
+distinguishes implementations from claims regardless of who wrote them (all
+three legs "passed" on paper before the container ran), and it's worth keeping
+as a standing review step. It does not establish a model ranking.
+
+**Action item — re-run with equalized access.** The next package with
+comparable contract density (real runtime safeguards, not just static
+correctness) should repeat this same terra-med / luna-high / sonnet-5-high
+3-way, but dispatch the codex legs with `--sandbox danger-full-access` (per
+the incident note above) so all three legs have equal ability to build,
+run, and self-correct against the real gate. Until that re-run lands, treat
+the model-ladder conclusions in this addendum as provisional / harness-
+confounded, not as grounds to deprioritize gpt-5.6-terra or gpt-5.6-luna
+in the escalation ladder (§4 of `controller-workflow-v2.md`).

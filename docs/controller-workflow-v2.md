@@ -350,7 +350,7 @@ cache-warmth only, never polling).
 ## 12. Deciding log
 
 - 2026-07-12 · Controller = Sonnet 5 low in Claude Code (Haiku 4.5 trial later).
-- 2026-07-12 · Escalation head-to-head terra-med (codex) vs sonnet-5-high
+- 2026-07-12 · Escalation head-to-head terra-med (codex) vs luna-high vs sonnet-5-high
   (claude) reserved for pwmcp P03; recorded to benchmark doc when run.
 - 2026-07-12 · Codex subscription: prefer gpt tiers via codex until
   rate-limited, then fall back (claude for review-tier, opencode/reasonix for
@@ -361,3 +361,45 @@ cache-warmth only, never polling).
   + `.CARVE_LOCK` file.
 - 2026-07-12 · claude+DeepSeek-direct route documented, wrapper created,
   **probe pending**.
+- 2026-07-13 · pwmcp P03 3-way head-to-head ran (terra-med / luna-high / claude
+  sonnet-5-high). **Result is harness-confounded, not a model comparison:**
+  the codex legs ran under default `--sandbox workspace-write`, which has no
+  route to `docker.sock`, so they could not execute the package's Docker-gated
+  safeguards regardless of model skill; sonnet5-high had ordinary Docker
+  access and merged. Full caveat and required equalized re-run:
+  `docs/implementation-benchmark-P51.md` "Validity caveat" under the
+  2026-07-13 addendum. Do not read this run as evidence against gpt-5.6-terra
+  or gpt-5.6-luna in the ladder (§4) until the re-run lands.
+- 2026-07-13 · Incident: codex `--sandbox workspace-write` also cannot write
+  git worktree metadata (`.git/worktrees/<name>/` sits outside the sandboxed
+  cwd), so codex legs dispatched against a `git worktree` can implement but
+  not commit; controller had to finalize two legs' commits externally.
+  Fix: dispatch codex worker legs into worktrees with `--sandbox
+  danger-full-access` (see `docs/ai-cli-controller-guide.md`, "Starting Codex
+  CLI Agents"). Applied from this incident onward (e.g. P58's terra-med
+  retry).
+- 2026-07-13 · OpenCode + OpenRouter + DeepSeek (`openrouter/deepseek/deepseek-v4-flash`,
+  `--variant high`/`--variant max`) probed and live-tested (groop P59) with
+  zero 504s or routing failures — a change from the 2026-07-12 GLM-5.2 504
+  note in `docs/ai-cli-controller-guide.md` (§5.1/§5 caveats), suggesting the
+  earlier idle-timeout issue was either transient OpenRouter infra or
+  specific to GLM rather than DeepSeek. Sample size still thin (1
+  implementation + 1 self-review); treat as a usable fallback route for
+  DeepSeek work alongside reasonix-direct, not yet as fully proven for
+  high-volume unattended dispatch.
+- 2026-07-13 · BLOCKED-as-signal validated live: P58's flash-max attempt was
+  rejected for hand-rolling a raw socket/envelope path instead of extending
+  P52's `DaemonClient` (architectural violation, §1 same-tier blind spot). A
+  terra-med retry, primed with the exact rejection reasons, correctly refused
+  to repeat the workaround and wrote a clean `BLOCKED:` citing the real root
+  cause (`DaemonClient` has no typed `entity`/`history` methods) instead of
+  improvising a second bad fix. Routed to a proper carve (P63) rather than a
+  wasted review cycle — this is the mechanism §7's `Escalate-if` trigger-based
+  BLOCKED design was meant to produce.
+- 2026-07-13 · Self-review (pass #1) trial running well above the 25% demote
+  threshold on mechanical findings (dates, dead code, gate-not-run, unused
+  imports — overlap ~40-100% per package) but at 0% on substantive findings
+  across every package reviewed so far (hollow tests, overclaimed contracts,
+  P02's critical `--isolated` bug, P58's architecture violation) — confirms
+  §6's same-tier-blind-spot framing empirically, not just in theory. Keep
+  pass #1 as triage; do not promote it toward gate status.
