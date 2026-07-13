@@ -38,64 +38,91 @@ def systemctl_fixture_runner(name: str):
 
 
 # ---------------------------------------------------------------------------
-# P84 — Optional-extra gate: skipped zstandard oracles must be loud
+# P84 — Optional-extra gate: a skipped oracle must never read as a pass
 # ---------------------------------------------------------------------------
-# If zstandard is not installed and zstd-reliant tests exist in the
-# collection, the session prints a prominent FAIL banner and exits 1.
+# "Green with N skips" is indistinguishable from "green" at a glance, and that
+# is how P79 shipped a bug: it was validated in a venv without ``zstandard``,
+# so every zstd oracle skipped and the defect the package existed to fix was
+# never executed.
 #
-# Mechanism: prominent session-level summary (handoff §Contract 3 / Oracle 2).
-# The banner is deliberately formatted as a FAILURE so a reviewer cannot
-# skim past it.
+# The gate is keyed on the *extras the gate environment must provide*, not on
+# test names: a name-matching gate only covers the tests someone remembered to
+# name, which is how the ``mcp`` extra (16 tests, module-level importorskip)
+# stayed invisible. Any test that skips while a required extra is missing is
+# reported, whatever it is called.
 #
-# Tests whose nodeid contains "zstd", "zstandard", or "fidelity.jsonl.zst"
-# are recognised as zstandard-reliant, EXCEPT for
-# ``test_zst_without_zstandard_exits_2`` which intentionally forces zstd
-# absence via a stub module (it always runs).
+# ``pip install -e 'groop[dev]'`` installs every extra listed here.
+
+_REQUIRED_TEST_EXTRAS: tuple[tuple[str, str], ...] = (
+    # (import name, pip extra name)
+    ("zstandard", "zstandard"),
+    ("mcp", "mcp"),
+)
+
+
+def _missing_test_extras() -> list[str]:
+    """Return the pip extra names the gate needs that are not importable."""
+    missing = []
+    for module_name, extra_name in _REQUIRED_TEST_EXTRAS:
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing.append(extra_name)
+    return missing
+
+
+_SKIPPED: list[tuple[str, str]] = []
+
+
+def _skip_reason(report) -> str:
+    if isinstance(report.longrepr, tuple) and len(report.longrepr) == 3:
+        return report.longrepr[2]
+    return ""
+
+
+def pytest_runtest_logreport(report) -> None:
+    """Record every test that actually skipped, with its reason."""
+    if report.skipped and report.when in {"setup", "call"}:
+        _SKIPPED.append((report.nodeid, _skip_reason(report)))
+
+
+def pytest_collectreport(report) -> None:
+    """Record modules skipped at collection.
+
+    A module-level ``pytest.importorskip`` (test_mcp_server.py hides 16 tests
+    behind one) never produces a runtest report, so counting only runtest
+    skips would under-report the damage.
+    """
+    if report.skipped:
+        _SKIPPED.append((report.nodeid, _skip_reason(report) or "whole module skipped"))
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:
-    """Fail the session when zstandard is absent and zstd-reliant tests exist."""
-    try:
-        import zstandard  # noqa: F401
-    except ImportError:
-        pass
-    else:
+    """Fail the session when a required test extra is missing.
+
+    The observable outcome is the process exit code, not just a banner: a
+    reviewer (or CI) that only reads ``$?`` must still see the gate fail.
+    """
+    missing = _missing_test_extras()
+    if not missing:
         return
 
-    zstd_nodeids: set[str] = set()
-    for item in session.items:
-        nid = item.nodeid
-        nid_lower = nid.lower()
-        if "zstd" in nid_lower or "zstandard" in nid_lower or "fidelity.jsonl.zst" in nid_lower:
-            if "test_zst_without_zstandard_exits_2" not in nid:
-                zstd_nodeids.add(nid)
-            continue
-        test_name = nid.rsplit("::", 1)[-1] if "::" in nid else nid
-        if test_name == "test_oracle_2b_truncated_multiblock_never_reports_partial":
-            zstd_nodeids.add(nid)
-
-    if not zstd_nodeids:
-        return
-
-    sorted_items = sorted(zstd_nodeids)
     try:
         from _pytest.config import ExitCode as _EC
+
         session.exitstatus = _EC.TESTS_FAILED
     except ImportError:
         session.exitstatus = 1
 
+    bar = "!" * 64
     print(
-        "\n\n"
-        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
-        "!!  GATE FAILED: zstandard extra not installed               !!\n"
-        f"!!  {len(sorted_items)} zstandard-reliant test(s) will be SKIPPED        !!\n"
-        "!!  Install with: pip install -e 'groop[dev]'                 !!\n"
-        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+        f"\n\n{bar}\n"
+        f"!!  GATE FAILED: missing test extra(s): {', '.join(missing)}\n"
+        f"!!  {len(_SKIPPED)} test(s) skipped -- this run is NOT a gate.\n"
+        f"!!  Install with: pip install -e 'groop[dev]'\n"
+        f"{bar}",
         file=sys.stderr,
     )
-    for nid in sorted_items:
-        print(f"!!  SKIPPED: {nid}", file=sys.stderr)
-    print(
-        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",
-        file=sys.stderr,
-    )
+    for nodeid, reason in sorted(_SKIPPED):
+        print(f"!!  SKIPPED: {nodeid} -- {reason}", file=sys.stderr)
+    print(f"{bar}\n", file=sys.stderr)

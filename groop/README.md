@@ -119,35 +119,37 @@ Useful feature hotkeys in the TUI:
 
 ## Gate environment
 
-The full test suite exercises both the ``zstandard`` decompression paths (zstd-compressed
-recordings) and the missing-extra degradation paths.  To ensure every code path is tested,
-use the declared ``[dev]`` extra which pins these dependencies:
+Parts of the suite are only *reachable* when an optional extra is installed:
+the ``zstandard`` decompression oracles, and the 16 ``mcp`` frontend tests that
+sit behind a module-level ``importorskip``. Run the gate from the declared
+``[dev]`` extra, which pins every extra the suite needs:
 
 ```bash
 # From the repo root:
 pip install -e 'groop[dev]'
 ```
 
-This installs ``groop`` itself, its runtime dependency ``textual``, the
-``zstandard`` extra (so zstd-compressed test fixtures are readable), and
-``pytest`` (the gate runner).
+That installs ``groop``, its runtime dependency ``textual``, the ``zstandard``
+and ``mcp`` extras, and ``pytest``.
 
-**Without ``zstandard``**, a pytest session-level gate detects any zstd-reliant test
-in the collection and prints a prominent FAIL banner with the list of skipped tests,
-plus an install hint:
+If a required extra is missing, a session-level gate **fails the run** (exit 1)
+and names every test that skipped:
 
 ```
-!!! GATE FAILED: zstandard extra not installed
-!!! 8 zstandard-reliant test(s) will be SKIPPED
-!!! Install with: pip install -e 'groop[dev]'
+!!  GATE FAILED: missing test extra(s): zstandard
+!!  6 test(s) skipped -- this run is NOT a gate.
+!!  Install with: pip install -e 'groop[dev]'
+!!  SKIPPED: tests/test_report.py::... -- zstandard not installed
 ```
 
-This makes "green with 5 skips" visibly distinguishable from "green" — a reviewer
-cannot skim past the banner.
+This is why the gate exists: a skip reads as a pass at a glance. P79 shipped a
+real bug because it was validated in a venv without ``zstandard``, so every
+oracle that would have caught it skipped and the suite was green. The gate is
+keyed on the **extras**, not on test names — a name-matching gate only covers
+the tests someone remembered to name.
 
-The ``[dev]`` extra does not promote ``zstandard`` to a hard runtime dependency:
-``pip install groop`` (without extras) still imports and runs
-``groop report`` on a plain ``.jsonl`` file.
+Neither extra becomes a hard runtime dependency: ``pip install groop`` without
+extras still imports and runs ``groop report`` on a plain ``.jsonl`` file.
 
 ## Work packages
 

@@ -328,8 +328,8 @@ core workflows, not yet production-certified.**
 | 11. Packaging | P12 built sdist/wheel and verified fresh-venv install; post-P40 controller evidence adds the required isolated local-wheel pipx install, version check, and empty-directory no-config replay smoke. P43 changes the published dependency from textual>=0.58,<1 to textual>=8.2.8, verified by source metadata, built-wheel METADATA, clean resolver installation, and packaging-metadata regression tests. |
 | 12. v2 gating | Explicit admin-preview gating landed in P21: `groop action preview` with `--admin` required, no-execution guarantee, audit logging, and TUI reserved-key disabled messaging in P13. P45 adds gated bounded content reads via `groop inspect-files read`, also disabled by default. |
 | 13. Unprivileged smoke | P33 provides `python -m groop.acceptance smoke`, P35 provides `python -m groop.acceptance steady`, and P38 provides `python -m groop.acceptance tui-smoke` for repeatable rootless safe-path evidence; fresh live-host results should be pasted into `MEASUREMENTS.md` before a release claim. |
-| 14. Gate environment | P84 adds a declared `[dev]` extra (`pip install -e 'groop[dev]'`) that pins `zstandard` so the gate runs every oracle. Without `zstandard`, a session-level gate prints a prominent FAIL banner — "green with 5 skips" is no longer indistinguishable from "green". The `zstandard` runtime extra stays optional. |
 | 14. Measurement gates | `MEASUREMENTS.md` records the P17 safe BPF gate and blocker; DAMON overhead and privileged live-BPF overhead gates are not recorded. |
+| 15. Gate environment | P84 adds a declared `[dev]` extra (`pip install -e 'groop[dev]'`) pinning the `zstandard` and `mcp` extras, so the gate reaches every oracle. If a required extra is missing the session **fails** (exit 1) and names each skipped test — "green with N skips" is no longer indistinguishable from "green". Both extras stay optional at runtime. |
 
 ## Current Quality Gate
 

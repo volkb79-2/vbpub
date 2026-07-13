@@ -14,6 +14,7 @@ zstandard = ["zstandard>=0.22"]
 mcp = ["mcp>=1.28.0"]
 dev = [
     "groop[zstandard]",
+    "groop[mcp]",
     "pytest>=8.0",
 ]
 
