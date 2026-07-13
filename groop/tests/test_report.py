@@ -1106,6 +1106,7 @@ class TestReportCLI:
         zstandard = _try_import_zstandard()
         if zstandard is None:
             pytest.skip("zstandard not installed \u2014 corrupt-input path not reachable")
+        zstd_magic = b"\x28\xb5\x2f\xfd"
         src_root = Path(__file__).resolve().parents[1] / "src"
         fpath = tmp_path / "fake.zst"
         with open(fpath, "wb") as f:
@@ -1263,6 +1264,9 @@ class TestCorruptRecordingCLI:
         assert "Traceback" not in result.stderr
         # Must not blame compression
         assert "zstd" not in result.stderr.lower()
+        # Message must say "invalid recording frame" (proves the
+        # frame_from_jsonable wrapping is what fires, not the catch-all)
+        assert "invalid recording frame" in result.stderr
 
     # --- Oracle 5: missing zstandard, distinct from corrupt message ---
     def test_oracle_5_missing_zstandard_distinct_from_corrupt(self, tmp_path):

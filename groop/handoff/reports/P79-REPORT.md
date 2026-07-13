@@ -35,7 +35,7 @@ Detailed mapping:
 | 3. Bounded (no unbounded reads, no corrupt bytes quoted) | Done | Error messages name the file path and the failure class ("corrupt compressed recording", "invalid JSON on line N") — never quote file bytes |
 | 4. Missing-zstandard path keeps current behavior, distinguishable | Done | Missing-zstd error mentions "zstandard"; corrupt error does not. Asserted in oracle 5 |
 | 5. Fix the gate | Done | Corrupt-input test (`test_zstd_magic_garbage_exits_2_no_traceback`) runs only when zstd is installed, with honest pytest.skip message. Missing-extra test (`test_zst_without_zstandard_exits_2`) forces zstd absence via a stub module |
-| 6. `main`'s suite is green after this package | Done | 1206 passed, 6 skipped, 1 pre-existing UI flake (unrelated) |
+| 6. `main`'s suite is green after this package | Done | 1207 passed, 6 skipped, 0 failed (full suite) |
 
 ### Oracle mapping (numbered, adversarial)
 
@@ -47,6 +47,24 @@ Detailed mapping:
 | 4. Valid JSON not a P2 frame → exit 2, not blaming compression | `test_oracle_4_valid_json_not_a_frame` | ✅ runs everywhere |
 | 5. Missing zstandard vs corrupt: messages differ | `test_oracle_5_missing_zstandard_distinct_from_corrupt` | ✅ (skips when zstd not installed) |
 | 6. Healthy recording still works | `test_oracle_6_healthy_recording_still_works` | ✅ runs everywhere |
+
+## Self-Review Corrections (pass #1)
+
+A self-review (see `P79-SELFREVIEW.md`) found and fixed two issues:
+
+1. **Undefined variable in `TestReportCLI.test_zstd_magic_garbage_exits_2_no_traceback`:**
+   The variable `zstd_magic` was referenced but never defined. It was dormant
+   because the test skips when `zstandard` is not installed (the current
+   environment). Fixed by adding the missing definition.
+
+2. **Hollow oracle 4 assertion:** `test_oracle_4_valid_json_not_a_frame` only
+   asserted exit 2 and no traceback — it would pass even if the
+   `try/except (KeyError, ...)` wrapping `frame_from_jsonable` were deleted
+   (the outer `except Exception` catch-all in `_main_report` would produce
+   the same exit 2 with a different message). Fixed by adding
+   `assert "invalid recording frame" in result.stderr`.
+
+No other issues found. All gates re-ran green after fixes.
 
 ## Proposed Contract Changes
 
@@ -76,11 +94,10 @@ $ PYTHONPATH=groop/src python3 -m pytest groop/tests/test_report.py -q -k "TestR
 Full suite (without `-W error` due to schemathesis):
 ```bash
 $ timeout 300 env PYTHONPATH=groop/src python3 -m pytest groop/tests -q
-1206 passed, 6 skipped, 1 failed in 155.98s
+1207 passed, 6 skipped, 0 failed in 144.44s
 ```
 
-The single failure is `test_pilot_snapshot_hotkey_writes_bundle` — a pre-existing
-flaky Textual UI test unrelated to P79 (it was failing before the patch).
+No pre-existing failures: the previously flaky UI test passed in this run.
 
 Compile:
 ```bash
