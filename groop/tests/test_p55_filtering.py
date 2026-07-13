@@ -333,6 +333,12 @@ def test_metrics_compact_drops_network_damon_governance() -> None:
         assert "cpu_pct" not in m, f"{key} has cpu_pct in compact"
         # pressure score should not be present
         assert "pressure" not in m, f"{key} has pressure in compact"
+        # The structured per-entity network / DAMON / governance-drift blocks
+        # (separate EntityFrame attributes, not metrics-dict keys) must also be
+        # dropped under compact per the handoff drop-list.
+        assert eframe.network is None, f"{key} retained network block in compact"
+        assert eframe.damon is None, f"{key} retained damon block in compact"
+        assert eframe.governance is None, f"{key} retained governance block in compact"
 
 
 def test_metrics_full_includes_all_metrics() -> None:

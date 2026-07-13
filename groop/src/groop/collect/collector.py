@@ -124,6 +124,14 @@ class Collector:
                     k: v for k, v in eframe.metrics.items()
                     if k in self._compact_metric_names
                 }
+                # The handoff's compact drop-list also covers the structured
+                # per-entity network / DAMON / governance-drift blocks, which
+                # live as separate EntityFrame attributes rather than in the
+                # metrics dict. Drop them too so a compact frame is genuinely
+                # the specified subset, not just a metrics-dict subset.
+                eframe.network = None
+                eframe.damon = None
+                eframe.governance = None
         return frame
 
     def _apply_config(self, entities: dict[EntityKey, Entity]) -> None:
