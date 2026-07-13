@@ -14,8 +14,10 @@ Covers:
 
 from __future__ import annotations
 
+import io
 import json
 import math
+import os
 import subprocess
 import sys
 import time
@@ -55,6 +57,15 @@ from groop.report import (
     select_report_window,
 )
 from groop.record.writer import RecordWriter
+
+# The typed messages, asserted in full. Never assert the bare token
+# "zstandard" against stderr: every error echoes the recording's path, and
+# pytest names tmp_path after the test, so a test called ..._zstandard_...
+# smuggles the token into stderr and the assertion then passes on the
+# directory name rather than on the message.
+MISSING_ZSTD_MSG = "cannot read compressed recording without zstandard"
+CORRUPT_MSG = "corrupt or truncated compressed recording"
+NO_FRAMES_MSG = "recording contains no frames"
 
 
 # ---------------------------------------------------------------------------
@@ -1101,12 +1112,14 @@ class TestReportCLI:
                     assert "p95" in gauge_vals
                     assert "max" in gauge_vals
 
-    def test_zst_without_zstandard_exits_2(self, tmp_path):
-        """A .jsonl.zst file without the zstandard extra exits 2."""
+    def test_zstd_magic_garbage_exits_2_no_traceback(self, tmp_path):
+        """zstd magic + garbage content -> exit 2, typed, no traceback markers."""
+        zstandard = _try_import_zstandard()
+        if zstandard is None:
+            pytest.skip("zstandard not installed \u2014 corrupt-input path not reachable")
         zstd_magic = b"\x28\xb5\x2f\xfd"
         src_root = Path(__file__).resolve().parents[1] / "src"
         fpath = tmp_path / "fake.zst"
-        # Write zstd magic bytes + garbage so RecordReader detects zstd
         with open(fpath, "wb") as f:
             f.write(zstd_magic)
             f.write(b"not valid zstd content")
@@ -1116,9 +1129,48 @@ class TestReportCLI:
             cwd=str(src_root),
             env={"PYTHONPATH": str(src_root)},
         )
-        assert result.returncode == 2
-        # Should mention zstandard in the error
-        assert "zstandard" in result.stderr
+        assert result.returncode == 2, f"expected exit 2, got {result.returncode}: stderr={result.stderr!r}"
+        # Contract 2: no raw exception text, no traceback markers
+        assert "Traceback" not in result.stderr
+        assert "ZstdError" not in result.stderr
+        # This is the damaged-file message, not the missing-dependency one, and
+        # not _main_report's catch-all backstop.
+        assert CORRUPT_MSG in result.stderr
+        assert MISSING_ZSTD_MSG not in result.stderr
+        assert "unexpected error" not in result.stderr
+
+    def test_zst_without_zstandard_exits_2(self, tmp_path):
+        """A .jsonl.zst file without the zstandard extra exits 2.
+
+        Forces zstandard absence via a stub module rather than depending
+        on the ambient venv's installed extras.
+        """
+        zstd_magic = b"\x28\xb5\x2f\xfd"
+        src_root = Path(__file__).resolve().parents[1] / "src"
+        fpath = tmp_path / "fake.zst"
+        with open(fpath, "wb") as f:
+            f.write(zstd_magic)
+            f.write(b"not valid zstd content")
+        # Create a stub zstandard module that fails at import time
+        stub_dir = tmp_path / "stub_zstd"
+        stub_dir.mkdir()
+        (stub_dir / "zstandard.py").write_text(
+            'raise ImportError("blocked for test")\n'
+        )
+        env = {"PYTHONPATH": f"{stub_dir}:{src_root}"}
+        result = subprocess.run(
+            [sys.executable, "-m", "groop.cli", "report", str(fpath), "--json"],
+            capture_output=True, text=True,
+            cwd=str(src_root),
+            env=env,
+        )
+        assert result.returncode == 2, f"expected exit 2, got {result.returncode}: stderr={result.stderr!r}"
+        # Assert the whole typed phrase, not the bare token "zstandard": the
+        # error echoes the file path, and this test's own pytest tmp_path is
+        # named test_zst_without_zstandard_exi... — so a bare-token check is
+        # satisfied by the directory name and passes even with the
+        # missing-dependency branch deleted.
+        assert MISSING_ZSTD_MSG in result.stderr
 
     def test_cli_deterministic_output(self, tmp_path):
         """Same fixture reported twice → identical bytes."""
@@ -1138,6 +1190,266 @@ class TestReportCLI:
             env={"PYTHONPATH": str(src_root)},
         )
         assert r1.stdout == r2.stdout
+
+
+# ===========================================================================
+# P79 — Corrupt recording inputs are typed errors, not tracebacks
+# ===========================================================================
+
+class TestCorruptRecordingCLI:
+    """Six numbered adversarial oracles from P79 handoff §Acceptance Oracles.
+
+    All tests are subprocess-based and exercise the full CLI error path.
+    """
+
+    FIXTURE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "frames" / "gstammtisch-once.jsonl"
+
+    def _invoke(self, fpath: Path, *, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+        src_root = Path(__file__).resolve().parents[1] / "src"
+        env = {"PYTHONPATH": str(src_root)}
+        if extra_env:
+            env.update(extra_env)
+        return subprocess.run(
+            [sys.executable, "-m", "groop.cli", "report", str(fpath), "--json"],
+            capture_output=True, text=True,
+            cwd=str(src_root),
+            env=env,
+        )
+
+    def _write_zstd_garbage(self, tmp_path: Path, name: str = "fake.zst") -> Path:
+        """Write zstd magic + garbage bytes."""
+        fpath = tmp_path / name
+        with open(fpath, "wb") as f:
+            f.write(b"\x28\xb5\x2f\xfd")
+            f.write(b"not valid zstd content")
+        return fpath
+
+    # --- Oracle 1: zstd magic + garbage ---
+    def test_oracle_1_zstd_magic_garbage(self, tmp_path):
+        """zstd magic + garbage -> exit 2, typed, no traceback markers."""
+        zstandard = _try_import_zstandard()
+        if zstandard is None:
+            pytest.skip("zstandard not installed \u2014 corrupt-input path not reachable")
+        fpath = self._write_zstd_garbage(tmp_path)
+        result = self._invoke(fpath)
+        assert result.returncode == 2
+        assert "Traceback" not in result.stderr
+        assert "ZstdError" not in result.stderr
+        assert MISSING_ZSTD_MSG not in result.stderr  # distinct from missing-dependency
+        # The typed message must be the one the reader raises. Exit-2-plus-no-
+        # traceback alone is satisfied by _main_report's catch-all backstop, so
+        # this test would pass with the whole reader fix deleted if it stopped
+        # at the assertions above.
+        assert CORRUPT_MSG in result.stderr
+        assert "unexpected error" not in result.stderr
+
+    # --- Oracle 2: truncated valid zstd stream ---
+    def test_oracle_2_truncated_zstd_stream(self, tmp_path):
+        """Truncated valid zstd stream -> exit 2, typed."""
+        zstandard = _try_import_zstandard()
+        if zstandard is None:
+            pytest.skip("zstandard not installed \u2014 truncation path not reachable")
+        recording_bytes = self.FIXTURE.read_bytes()
+        compressor = zstandard.ZstdCompressor()
+        compressed = compressor.compress(recording_bytes)
+        half = len(compressed) // 2
+        fpath = tmp_path / "truncated.jsonl.zst"
+        with open(fpath, "wb") as f:
+            f.write(compressed[:half])
+        result = self._invoke(fpath)
+        assert result.returncode == 2
+        assert "Traceback" not in result.stderr
+        assert "ZstdError" not in result.stderr
+        assert CORRUPT_MSG in result.stderr
+        assert "unexpected error" not in result.stderr
+
+    # --- Oracle 2b: truncation must not yield a PARTIAL report ---
+    def test_oracle_2b_truncated_multiblock_never_reports_partial(self, tmp_path):
+        """A truncated multi-block recording must not report on the surviving prefix.
+
+        Truncating a large, poorly-compressible recording leaves whole valid
+        frames decodable before the cut. ``stream_reader`` surfaces that as a
+        clean EOF, so the reader would happily profile the prefix and exit 0 \u2014
+        a believable report computed from half the evidence, which is the worst
+        possible outcome for a diagnostic tool. Distinct from oracle 2, where
+        the truncated frame decodes to nothing and zero frames survive.
+        """
+        zstandard = _try_import_zstandard()
+        if zstandard is None:
+            pytest.skip("zstandard not installed \u2014 truncation path not reachable")
+        # Pad each frame with random hex so the stream spans many zstd blocks
+        # and a cut leaves a decodable prefix.
+        base = [json.loads(line) for line in self.FIXTURE.read_text().splitlines() if line.strip()]
+        lines = []
+        for i in range(300):
+            frame = dict(base[i % len(base)])
+            frame["ts"] = 100.0 + i
+            frame["_pad"] = os.urandom(400).hex()
+            lines.append(json.dumps(frame))
+        plain = ("\n".join(lines) + "\n").encode("utf-8")
+        compressed = zstandard.ZstdCompressor().compress(plain)
+
+        fpath = tmp_path / "truncated-multiblock.jsonl.zst"
+        with open(fpath, "wb") as f:
+            f.write(compressed[: len(compressed) // 2])
+
+        # Guard the premise: the cut really does leave decodable frames behind,
+        # otherwise this test silently degenerates into oracle 2.
+        survived = zstandard.ZstdDecompressor().stream_reader(
+            io.BytesIO(compressed[: len(compressed) // 2])
+        ).read()
+        assert b'"ts"' in survived, "premise broken: truncation left no decodable frames"
+
+        result = self._invoke(fpath)
+        assert result.returncode == 2, (
+            f"truncated recording silently reported: stdout={result.stdout[:200]!r}"
+        )
+        assert CORRUPT_MSG in result.stderr
+        assert "Traceback" not in result.stderr
+        # And it must not have emitted a report built from the surviving prefix.
+        assert '"profiles"' not in result.stdout
+
+    # --- Oracle 2c: an empty recording is damaged input, not an empty success ---
+    def test_oracle_2c_empty_recording_is_not_empty_success(self, tmp_path):
+        """A recording with no frames exits 2 rather than reporting {"profiles":[]}."""
+        fpath = tmp_path / "empty.jsonl"
+        fpath.write_text("")
+        result = self._invoke(fpath)
+        assert result.returncode == 2
+        assert "Traceback" not in result.stderr
+        assert NO_FRAMES_MSG in result.stderr
+        assert '"profiles"' not in result.stdout
+
+    # --- Oracle 2d: append-mode recordings read whole, and truncate loudly ---
+    def test_oracle_2d_appended_zstd_frames(self, tmp_path):
+        """An append-mode .zst reads every frame, but a cut-off appended frame exits 2.
+
+        Each ``RecordWriter`` session appends its own zstd frame, so a resumed
+        recording is several concatenated frames. A truncation guard that stops
+        at the first frame's end would read such a file as complete while
+        silently discarding every later session — a partial report that looks
+        whole, which is the failure this guard exists to prevent.
+        """
+        zstandard = _try_import_zstandard()
+        if zstandard is None:
+            pytest.skip("zstandard not installed — append-mode zstd path not reachable")
+        plain = self.FIXTURE.read_bytes()
+        compressor = zstandard.ZstdCompressor()
+        one = compressor.compress(plain)
+
+        whole = tmp_path / "appended.jsonl.zst"
+        whole.write_bytes(one + one)
+        result = self._invoke(whole)
+        assert result.returncode == 0, f"append-mode recording rejected: {result.stderr!r}"
+        frames_two = len(json.loads(result.stdout)["profiles"])
+
+        single = tmp_path / "single.jsonl.zst"
+        single.write_bytes(one)
+        assert self._invoke(single).returncode == 0
+        assert frames_two > 0
+
+        # Cutting the appended frame short must not read back as a whole recording.
+        cut = tmp_path / "appended-cut.jsonl.zst"
+        cut.write_bytes(one + one[: len(one) // 2])
+        result = self._invoke(cut)
+        assert result.returncode == 2, (
+            f"truncated appended frame read as complete: stdout={result.stdout[:200]!r}"
+        )
+        assert CORRUPT_MSG in result.stderr
+        assert "Traceback" not in result.stderr
+
+    # --- Oracle 3: plain .jsonl with corrupt body ---
+    def test_oracle_3_corrupt_jsonl_body(self, tmp_path):
+        """Plain .jsonl with valid header then corrupt JSON -> exit 2, typed.
+
+        The corrupt line is in the MIDDLE of the file (not the last line,
+        which the reader silently skips if it lacks a trailing newline).
+        """
+        fpath = tmp_path / "bad.jsonl"
+        with open(fpath, "w") as f:
+            f.write('{"type":"header","schema_version":1,"groop_version":"1.0",')
+            f.write('"host_id":"h","started_at":"now","config_digest":"d"}\n')
+            f.write('{"not": }\n')  # invalid JSON (not : followed by nothing valid)
+        result = self._invoke(fpath)
+        assert result.returncode == 2
+        assert "Traceback" not in result.stderr
+
+    # --- Oracle 4: valid JSON that is not a P2 frame ---
+    def test_oracle_4_valid_json_not_a_frame(self, tmp_path):
+        """Valid JSON that is not a P2 frame -> exit 2, typed, not blaming compression."""
+        fpath = tmp_path / "not-a-recording.jsonl"
+        with open(fpath, "w") as f:
+            f.write('{"foo": "bar"}\n')
+        result = self._invoke(fpath)
+        assert result.returncode == 2
+        assert "Traceback" not in result.stderr
+        # Must not blame compression
+        assert "zstd" not in result.stderr.lower()
+        # Message must say "invalid recording frame" (proves the
+        # frame_from_jsonable wrapping is what fires, not the catch-all)
+        assert "invalid recording frame" in result.stderr
+
+    # --- Oracle 5: missing zstandard, distinct from corrupt message ---
+    def test_oracle_5_missing_zstandard_distinct_from_corrupt(self, tmp_path):
+        """Missing zstandard vs corrupt: messages differ."""
+        zstandard = _try_import_zstandard()
+        if zstandard is None:
+            pytest.skip("zstandard not installed \u2014 distinct-message check not possible")
+        fpath = self._write_zstd_garbage(tmp_path)
+        src_root = Path(__file__).resolve().parents[1] / "src"
+
+        # (a) Corrupt input with zstandard installed
+        env_installed = {"PYTHONPATH": str(src_root)}
+        result_corrupt = subprocess.run(
+            [sys.executable, "-m", "groop.cli", "report", str(fpath), "--json"],
+            capture_output=True, text=True,
+            cwd=str(src_root),
+            env=env_installed,
+        )
+        assert result_corrupt.returncode == 2
+        assert CORRUPT_MSG in result_corrupt.stderr
+        assert MISSING_ZSTD_MSG not in result_corrupt.stderr
+
+        # (b) Missing zstandard via stub module
+        stub_dir = tmp_path / "stub_zstd"
+        stub_dir.mkdir()
+        (stub_dir / "zstandard.py").write_text('raise ImportError("blocked for test")\n')
+        env_missing = {"PYTHONPATH": f"{stub_dir}:{src_root}"}
+        result_missing = subprocess.run(
+            [sys.executable, "-m", "groop.cli", "report", str(fpath), "--json"],
+            capture_output=True, text=True,
+            cwd=str(src_root),
+            env=env_missing,
+        )
+        assert result_missing.returncode == 2
+        assert MISSING_ZSTD_MSG in result_missing.stderr
+
+        # The two messages MUST be different
+        assert result_corrupt.stderr != result_missing.stderr, (
+            f"corrupt and missing-dep messages must differ: "
+            f"corrupt={result_corrupt.stderr!r} missing={result_missing.stderr!r}"
+        )
+
+    # --- Oracle 6: healthy recording still works ---
+    def test_oracle_6_healthy_recording_still_works(self, tmp_path):
+        """A healthy recording reports identically (happy path regression)."""
+        result = self._invoke(self.FIXTURE)
+        assert result.returncode == 0
+        assert result.stdout
+        data = json.loads(result.stdout)
+        assert "profiles" in data
+        assert len(data["profiles"]) > 0
+        # Verify no corrupt-input message appears
+        assert "corrupt" not in result.stderr.lower()
+
+
+def _try_import_zstandard():
+    """Return the zstandard module or None if not available."""
+    try:
+        import zstandard
+        return zstandard
+    except ImportError:
+        return None
 
 
 # ===========================================================================

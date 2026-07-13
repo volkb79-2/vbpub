@@ -922,10 +922,18 @@ def compute_report_with_selection(
     Raises:
         FileNotFoundError: File does not exist.
         RuntimeError: ``.zst`` file without ``zstandard`` installed.
-        ValueError: Malformed window spec or invalid group_by.
+        ValueError: Malformed window spec, invalid group_by, or a recording
+            that yielded no frames at all.
     """
     reader = RecordReader(path)
     frames = list(reader.iter_frames())
+    if not frames:
+        # A report always reads a completed recording, so a file with no
+        # frames is a damaged or empty input, not a legitimately quiet one.
+        # Reporting an empty success here would fabricate a clean result for
+        # a file we could not read. (A window that selects zero frames is a
+        # different thing and still reports normally.)
+        raise ValueError(f"recording contains no frames: {path}")
     selection = select_report_window(
         frames,
         window_spec=window_spec,

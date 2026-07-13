@@ -1069,7 +1069,9 @@ def _main_report(argv: list[str]) -> int:
         print("invalid --min-frames — must be a positive integer", file=sys.stderr)
         return 2
 
-    # Handle .zst without zstandard: catch the RuntimeError from RecordReader
+    # Handle reader errors: corrupt/truncated recordings, missing zstandard,
+    # missing file, or any unexpected failure — all produce exit 2 with
+    # a bounded message (never a raw exception traceback).
     try:
         computation = compute_report_with_selection(
             args.file,
@@ -1091,6 +1093,15 @@ def _main_report(argv: list[str]) -> int:
         return 2
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"error reading {args.file}: {exc.strerror}", file=sys.stderr)
+        return 2
+    except Exception:
+        # Backstop only: every known damaged-input failure is typed above and
+        # names its failure class. Reaching here means an unclassified fault,
+        # so it still must not put a traceback across the CLI boundary.
+        print(f"unexpected error reading {args.file}", file=sys.stderr)
         return 2
 
     profiles = computation.profiles
