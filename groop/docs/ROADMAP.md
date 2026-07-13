@@ -81,6 +81,8 @@ flowchart TD
     P54 --> P61[P61 report threshold gating :done:]
     P54 --> P62[P62 report steady-state auto-detect]
     P61 -.-> P62
+    P61 --> P64[P64 report baseline regression gate]
+    P61 --> P65[P65 report table rendering]
 ```
 
 P61 and P62 are the carved successors of the P54 steady-state-report slice,
@@ -92,6 +94,16 @@ rather than changing it, are fixture-testable, and share `cli.py`
 `parse_report_args` + `report.py`, so they carry `Serialize-with:` each other.
 P61 is flash-high; P62 is terra-med because its stability criterion is a design
 decision that must be pinned to a deterministic oracle.
+
+P64 and P65 are the further carved successors of the report slice, both
+consumers P61 explicitly deferred in its Out-Of-Scope: P64 adds
+`--baseline` + `--assert-delta` regression gating (pct/abs deltas of the
+current profile vs a baseline profile, exit 1 on regression) — the multi-run
+comparison P61 left out; P65 adds `--format table`, a deterministic fixed-width
+ASCII rendering of the same already-computed profile + P61 assertion results.
+Both consume already-computed profiles rather than changing `compute_profile`,
+are flash-high and fixture-testable, and share `report.py` + `parse_report_args`
+with P62, so P62/P64/P65 all carry `Serialize-with:` each other.
 
 P59 (done) wires P57's `--container` resolver into P55's collection-path
 `--entities`/`--slice` selectors (deferred by P57 while P55 was unmerged). P60
