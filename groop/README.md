@@ -108,7 +108,11 @@ STATs are breaches. Assertion outcomes appear under a top-level
 
 Useful feature hotkeys in the TUI:
 
-- `F5` / `t` toggles tree vs. container view.
+- `F5` / `t` cycles tree -> container -> ciu-grouped view. The ciu-grouped view
+  groups containers by ciu stack and phase (numeric: `phase_2` before
+  `phase_10`); entities whose stack membership was *inferred* rather than
+  label-confirmed are marked `(inferred)`, and a group holding both tiers
+  renders as `(mixed)`.
 - `p` cycles column profiles.
 - `F6` / `s` cycles sort.
 - `/` filters rows.

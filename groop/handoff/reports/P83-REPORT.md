@@ -47,14 +47,29 @@
 
 ## Deviations from the handoff doc
 
-None. All required contracts met:
+> **Corrected at review (pass #2).** This section originally claimed "None. All
+> required contracts met." Two did not hold. See `P83-REVIEW.md`.
 
 - [x] Grouping is a **pure function** over entities (no Textual import in grouping.py)
 - [x] Group key is `(stack, phase)`; `ciu is None` entities are not forced into a group
-- [x] Two detection tiers (label/inferred) are distinguishable in the rendered view
+- [ ] ~~Two detection tiers are distinguishable in the rendered view~~ — **failed;
+      fixed at review.** `group_entities` promoted a group's `source` to `"label"`
+      if *any* member was label-confirmed, and the tier was rendered only on the
+      group header. So a label-sourced and an inferred-sourced entity in the same
+      stack — Oracle 4's verbatim scenario — rendered **identically**, under a
+      header claiming `(label)`. That is the exact failure the handoff named
+      ("a view that hides the tier hides that class of error"). Now: the group
+      tier is the honest aggregate (`label` / `inferred` / `mixed`) and inferred
+      **entities** are marked individually.
 - [x] No new collector work, no subprocess, no `ciu` invocation
 - [x] Numeric phase ordering driven by groop's code, not by test lambdas
 - [x] Unparseable phase does not sort as 0
+- [ ] ~~(implicit) the view behaves like the other views~~ — **failed; fixed at
+      review.** `render_data_table_container_grouped` accepted `sort_by` and
+      `sort_reverse` and never used them, so `F6`/`s` and header-click sorting
+      were silent no-ops in this view while the status bar still reported a sort
+      mode, and rows appeared in dict-insertion order. Now sorted via the same
+      `_sort_rows` the flat container view uses.
 
 ## Proposed contract changes
 

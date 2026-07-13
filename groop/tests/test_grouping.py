@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from groop.grouping import CiuGroup, GroupedEntities, _phase_sort_key, group_entities
+from groop.grouping import SOURCE_MIXED, CiuGroup, GroupedEntities, _phase_sort_key, group_entities
 from groop.model import CiuMeta, DockerMeta, Entity, EntityFrame, Frame, MetricValue
 
 
@@ -234,15 +234,20 @@ class TestOracle4TierVisible:
     """Label-confirmed and inferred entities in the same stack are
     distinguishable."""
 
-    def test_label_sources_promote_group_source(self) -> None:
-        """A group with at least one label-confirmed entity gets source='label'."""
+    def test_mixed_sources_are_not_promoted_to_label(self) -> None:
+        """A group holding both tiers is 'mixed' -- never promoted to 'label'.
+
+        Promoting would render the inferred entity under a '(label)' header,
+        hiding exactly the mis-attribution the inference heuristic can make
+        (P76's review found it claiming unrelated containers).
+        """
         frame = _make_frame([
             _make_entity("scope-inferred", "inf-01", stack="app/web", source="inferred"),
             _make_entity("scope-label", "lab-01", stack="app/web", source="label"),
         ])
         result = group_entities(frame)
         assert len(result.groups) == 1
-        assert result.groups[0].source == "label"
+        assert result.groups[0].source == SOURCE_MIXED
 
     def test_pure_inferred_group_has_inferred_source(self) -> None:
         """A group with only inferred entities keeps source='inferred'."""
@@ -254,17 +259,19 @@ class TestOracle4TierVisible:
         assert len(result.groups) == 1
         assert result.groups[0].source == "inferred"
 
-    def test_different_sources_same_stack_separate_groups(self) -> None:
-        """Different-source entities in the same stack-phase produce one group
-        with promoted source."""
+    def test_different_sources_same_stack_share_a_group_but_not_a_tier(self) -> None:
+        """Group key stays (stack, phase) -- the tier does not split it, and the
+        group's own tier reports the mixture honestly."""
         frame = _make_frame([
             _make_entity("scope-a", "inf-01", stack="app/web", phase_raw="phase_1", phase=1, source="inferred"),
             _make_entity("scope-b", "lab-01", stack="app/web", phase_raw="phase_1", phase=1, source="label"),
         ])
         result = group_entities(frame)
-        # Same (stack, phase) → same group, source promoted to label
         assert len(result.groups) == 1
-        assert result.groups[0].source == "label"
+        assert result.groups[0].source == SOURCE_MIXED
+        # Each entity keeps its own tier -- the view marks them individually.
+        sources = {ef.entity.key: ef.entity.ciu.source for ef in result.groups[0].entity_frames}
+        assert sources == {"scope-a": "inferred", "scope-b": "label"}
 
 
 # ---------------------------------------------------------------------------

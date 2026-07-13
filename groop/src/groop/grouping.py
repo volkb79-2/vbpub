@@ -13,6 +13,14 @@ _PHASE_ORDER_VALID = 0
 _PHASE_ORDER_UNPARSEABLE = 1
 _PHASE_ORDER_ABSENT = 2
 
+SOURCE_MIXED = "mixed"
+"""Group tier when its entities do not share one detection source.
+
+``CiuMeta.source`` is per entity (``"label"`` or ``"inferred"``).  A group can
+hold both, and the view must not present the group as if it were uniformly
+label-confirmed -- inference is a heuristic, and P76's review found it claiming
+unrelated containers."""
+
 
 def _phase_sort_key(phase: int | None, phase_raw: str | None) -> tuple[int, int]:
     """Return a sort key for a ciu phase.
@@ -39,9 +47,10 @@ class CiuGroup:
     """One CIU stack/phase group.
 
     Every entity in this group shares the same stack and phase.  The
-    ``source`` field reflects the **best** (most reliable) source among
-    the group's entities — if any entity is label-confirmed the group
-    is labelled ``"label"``; otherwise it is ``"inferred"``.
+    ``source`` field is the honest aggregate of its entities' detection
+    tiers: ``"label"`` when all are label-confirmed, ``"inferred"`` when all
+    are inferred, and ``SOURCE_MIXED`` when the group holds both.  It is
+    never promoted to the most reliable tier -- see ``SOURCE_MIXED``.
     """
 
     stack: str | None
@@ -54,7 +63,7 @@ class CiuGroup:
     """Raw phase label value (e.g. ``phase_2``).  ``None`` when absent."""
 
     source: str
-    """Detection tier for this group: ``"label"`` or ``"inferred"``."""
+    """Detection tier: ``"label"``, ``"inferred"``, or ``SOURCE_MIXED``."""
 
     entity_frames: list[EntityFrame] = field(default_factory=list)
     """Entities belonging to this group."""
@@ -104,9 +113,12 @@ def group_entities(frame: Frame) -> GroupedEntities:
             )
         group = by_key[key]
         group.entity_frames.append(entity_frame)
-        # Promote source to the most reliable tier in the group.
-        if ciu.source == "label":
-            group.source = "label"
+        # The group's tier is the honest aggregate of its members' tiers.  It
+        # is NOT promoted to "label" when any one member is label-confirmed:
+        # that would render an inferred entity under a "(label)" header and
+        # hide exactly the mis-attribution the inference heuristic can make.
+        if ciu.source != group.source:
+            group.source = SOURCE_MIXED
 
     groups = sorted(by_key.values(), key=_group_sort_key)
     return GroupedEntities(groups=groups, ungrouped=ungrouped)

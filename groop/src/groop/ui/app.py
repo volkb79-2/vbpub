@@ -252,9 +252,8 @@ class GroopApp(App[None]):
             self.action_open_drill()
 
     def action_toggle_view(self) -> None:
-        mode_order = ("tree", "container", "ciu-grouped")
-        index = mode_order.index(self.view_mode) if self.view_mode in mode_order else 0
-        self.view_mode = mode_order[(index + 1) % len(mode_order)]
+        index = VIEW_MODES.index(self.view_mode) if self.view_mode in VIEW_MODES else 0
+        self.view_mode = VIEW_MODES[(index + 1) % len(VIEW_MODES)]
         self._refresh_view()
 
     def action_cycle_profile(self) -> None:

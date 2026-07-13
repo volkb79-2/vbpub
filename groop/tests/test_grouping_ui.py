@@ -207,3 +207,84 @@ class TestRenderGroupedMixed:
         )
         header_plain = rows[0][0].plain
         assert "(inferred)" in header_plain, f"expected (inferred) in header, got {header_plain!r}"
+
+
+class TestOracle4TierVisibleInRenderedRows:
+    """Oracle 4, verbatim: "A ``label``-sourced and an ``inferred``-sourced
+    entity **in the same stack** are rendered distinguishably; assert on the
+    rendered artifact, not on an internal flag."
+
+    The original implementation promoted a mixed group's source to ``label``
+    and marked the tier only on the group header, so the two entities rendered
+    identically -- under a header that claimed ``(label)``. That hides the
+    mis-attribution the inference heuristic can make, which is the whole reason
+    the tiers are kept distinct.
+    """
+
+    def _render(self):
+        from groop.config import GroopConfig
+
+        lab = _make_entity_frame(
+            "c-lab", "lab-01", stack="app/web", phase_raw="phase_1", phase=1, source="label"
+        )
+        inf = _make_entity_frame(
+            "c-inf", "inf-01", stack="app/web", phase_raw="phase_1", phase=1, source="inferred"
+        )
+        frame = _make_frame([lab, inf])
+        _, _, row_keys, rows = render_data_table_container_grouped(
+            frame, GroopConfig(), width=120, profile="triage", sort_by="name", filter_text=""
+        )
+        return dict(zip(row_keys, rows))
+
+    def test_the_two_entities_render_differently(self) -> None:
+        by_key = self._render()
+        label_row = by_key["c-lab"][0].plain
+        inferred_row = by_key["c-inf"][0].plain
+        assert label_row != inferred_row
+        assert "(inferred)" in inferred_row
+        assert "(inferred)" not in label_row
+
+    def test_a_mixed_group_header_does_not_claim_label(self) -> None:
+        by_key = self._render()
+        header = by_key["__group__app/web__phase_1"][0].plain
+        assert "(mixed)" in header
+        assert "(label)" not in header
+
+
+class TestGroupedViewHonoursSort:
+    """``sort_by``/``sort_reverse`` were accepted and silently ignored, so the
+    sort hotkey and header-click sorting were no-ops in this view while the
+    status bar still reported a sort mode."""
+
+    def _row_order(self, sort_by: str, reverse: bool | None = None) -> list[str]:
+        from groop.config import GroopConfig
+
+        frames = [
+            _make_entity_frame("c-a", "alpha", stack="s", phase_raw="phase_1", phase=1),
+            _make_entity_frame("c-b", "bravo", stack="s", phase_raw="phase_1", phase=1),
+            _make_entity_frame("c-c", "charlie", stack="s", phase_raw="phase_1", phase=1),
+        ]
+        # Distinct ram values so a ram sort is observably different from a name sort.
+        for ef, ram in zip(frames, (10.0, 30.0, 20.0)):
+            ef.metrics["ram"] = MetricValue(ram, "exact", raw=int(ram))
+        frame = _make_frame(frames)
+        _, _, row_keys, _ = render_data_table_container_grouped(
+            frame,
+            GroopConfig(),
+            width=120,
+            profile="triage",
+            sort_by=sort_by,
+            sort_reverse=reverse,
+            filter_text="",
+        )
+        return [k for k in row_keys if not k.startswith("__")]
+
+    def test_sort_by_name_orders_entities_within_the_group(self) -> None:
+        assert self._row_order("name") == ["c-a", "c-b", "c-c"]
+
+    def test_sort_by_ram_reorders_entities_within_the_group(self) -> None:
+        # ram desc by default: bravo(30) > charlie(20) > alpha(10)
+        assert self._row_order("ram") == ["c-b", "c-c", "c-a"]
+
+    def test_sort_reverse_is_honoured(self) -> None:
+        assert self._row_order("ram", reverse=False) == ["c-a", "c-c", "c-b"]
