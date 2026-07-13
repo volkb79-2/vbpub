@@ -372,6 +372,52 @@ def _finite_gauge_value(frame: Frame, entity_key: str, gauge: str) -> float | No
     return value if math.isfinite(value) else None
 
 
+@dataclass
+class _ReverseRunningStats:
+    """Numerically stable statistics for one suffix, extended backwards."""
+
+    count: int = 0
+    total: float = 0.0
+    mean: float = 0.0
+    m2: float = 0.0
+
+    def add(self, value: float) -> None:
+        """Add one value using Welford's stable online variance update."""
+        self.count += 1
+        self.total += value
+        delta = value - self.mean
+        self.mean += delta / self.count
+        self.m2 += delta * (value - self.mean)
+
+
+_FLOAT_DECISION_TOLERANCE = 1e-12
+
+
+def _forward_gauge_values(
+    frames: list[Frame],
+    start_index: int,
+    entity_key: str,
+    gauge: str,
+) -> list[float]:
+    """Rebuild one eligible series in the pre-P70 floating-point order."""
+    values = [
+        _finite_gauge_value(frame, entity_key, gauge)
+        for frame in frames[start_index:]
+    ]
+    # Callers only use active entities, whose suffix values are all finite.
+    return [value for value in values if value is not None]
+
+
+def _population_cov(values: list[float]) -> float:
+    """Compute CoV with the exact operation and summation order used by P62."""
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    stddev = math.sqrt(variance)
+    if mean == 0:
+        return 0.0 if stddev == 0 else math.inf
+    return stddev / mean
+
+
 def detect_steady_window(
     frames: list[Frame],
     *,
@@ -398,41 +444,75 @@ def detect_steady_window(
         return None
 
     selected: WindowRange | None = None
+    stats_by_entity: dict[str, _ReverseRunningStats] = {}
     last_index = len(frames) - 1
-    for start_index in range(last_index - min_frames + 1, -1, -1):
-        candidate = frames[start_index:]
-        candidate_len = len(candidate)
-        values_by_entity: dict[str, list[float]] = {}
-        entity_keys = sorted({key for frame in candidate for key in frame.entities})
-        for entity_key in entity_keys:
-            values: list[float] = []
-            for frame in candidate:
+
+    # An entity absent or non-finite in the final frame can never be eligible
+    # for a trailing suffix.  Thereafter extending a suffix by one frame either
+    # adds one value to its running statistics or permanently disqualifies it.
+    for entity_key in frames[last_index].entities:
+        value = _finite_gauge_value(frames[last_index], entity_key, stability_gauge)
+        if value is not None:
+            stats = _ReverseRunningStats()
+            stats.add(value)
+            stats_by_entity[entity_key] = stats
+
+    for start_index in range(last_index, -1, -1):
+        frame = frames[start_index]
+        if start_index != last_index:
+            for entity_key, stats in list(stats_by_entity.items()):
                 value = _finite_gauge_value(frame, entity_key, stability_gauge)
                 if value is None:
-                    break
-                values.append(value)
-            if len(values) == candidate_len:
-                values_by_entity[entity_key] = values
+                    del stats_by_entity[entity_key]
+                else:
+                    stats.add(value)
 
-        if not values_by_entity:
+        candidate_len = last_index - start_index + 1
+        if candidate_len < min_frames or not stats_by_entity:
             continue
 
         busiest_key = min(
-            values_by_entity,
-            key=lambda key: (-sum(values_by_entity[key]) / candidate_len, key),
+            stats_by_entity,
+            key=lambda key: (-stats_by_entity[key].total / stats_by_entity[key].count, key),
         )
-        values = values_by_entity[busiest_key]
-        mean = sum(values) / candidate_len
-        variance = sum((value - mean) ** 2 for value in values) / candidate_len
+        busiest_mean = stats_by_entity[busiest_key].total / candidate_len
+        mean_tolerance = _FLOAT_DECISION_TOLERANCE * max(1.0, abs(busiest_mean))
+        mean_contenders = [
+            key
+            for key, entity_stats in stats_by_entity.items()
+            if abs(entity_stats.total / candidate_len - busiest_mean) <= mean_tolerance
+        ]
+        if len(mean_contenders) > 1 and any(
+            stats_by_entity[key].total != stats_by_entity[busiest_key].total
+            for key in mean_contenders
+        ):
+            busiest_key = min(
+                mean_contenders,
+                key=lambda key: (
+                    -sum(_forward_gauge_values(
+                        frames, start_index, key, stability_gauge,
+                    )) / candidate_len,
+                    key,
+                ),
+            )
+
+        stats = stats_by_entity[busiest_key]
+        mean = stats.total / stats.count
+        variance = stats.m2 / stats.count
         stddev = math.sqrt(variance)
         if mean == 0:
             cov = 0.0 if stddev == 0 else math.inf
         else:
             cov = stddev / mean
+        cov_tolerance = _FLOAT_DECISION_TOLERANCE * max(1.0, abs(stability_cov))
+        if abs(cov - stability_cov) <= cov_tolerance:
+            cov = _population_cov(_forward_gauge_values(
+                frames, start_index, busiest_key, stability_gauge,
+            ))
         if cov <= stability_cov:
             selected = WindowRange(
-                start_ts=candidate[0].ts,
-                end_ts=candidate[-1].ts,
+                start_ts=frame.ts,
+                end_ts=frames[last_index].ts,
             )
     return selected
 

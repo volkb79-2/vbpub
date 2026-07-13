@@ -15,12 +15,15 @@ Covers:
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
+import groop.report as report_module
 from groop.model import Entity, EntityFrame, Frame, MetricValue
 from groop.report import (
     DEFAULT_MIN_FRAMES,
@@ -34,6 +37,7 @@ from groop.report import (
     _RateSamples,
     _compute_metric_result,
     _derive_rate,
+    _finite_gauge_value,
     _filter_frames_by_window,
     _find_slice_ancestor,
     _is_rate_metric,
@@ -135,6 +139,57 @@ def _write_recording(path: Path, frames: list[Frame]) -> None:
     with RecordWriter(path, fsync=False) as writer:
         for frame in frames:
             writer.write_frame(frame)
+
+
+def _reference_detect_steady_window(
+    frames: list[Frame],
+    *,
+    stability_gauge: str = DEFAULT_STABILITY_GAUGE,
+    stability_cov: float = DEFAULT_STABILITY_COV,
+    min_frames: int = DEFAULT_MIN_FRAMES,
+) -> WindowRange | None:
+    """P70 test-only copy of the pre-optimization detector oracle."""
+    if len(frames) < min_frames:
+        return None
+
+    selected: WindowRange | None = None
+    last_index = len(frames) - 1
+    for start_index in range(last_index - min_frames + 1, -1, -1):
+        candidate = frames[start_index:]
+        candidate_len = len(candidate)
+        values_by_entity: dict[str, list[float]] = {}
+        entity_keys = sorted({key for frame in candidate for key in frame.entities})
+        for entity_key in entity_keys:
+            values: list[float] = []
+            for frame in candidate:
+                value = _finite_gauge_value(frame, entity_key, stability_gauge)
+                if value is None:
+                    break
+                values.append(value)
+            if len(values) == candidate_len:
+                values_by_entity[entity_key] = values
+
+        if not values_by_entity:
+            continue
+
+        busiest_key = min(
+            values_by_entity,
+            key=lambda key: (-sum(values_by_entity[key]) / candidate_len, key),
+        )
+        values = values_by_entity[busiest_key]
+        mean = sum(values) / candidate_len
+        variance = sum((value - mean) ** 2 for value in values) / candidate_len
+        stddev = math.sqrt(variance)
+        if mean == 0:
+            cov = 0.0 if stddev == 0 else math.inf
+        else:
+            cov = stddev / mean
+        if cov <= stability_cov:
+            selected = WindowRange(
+                start_ts=candidate[0].ts,
+                end_ts=candidate[-1].ts,
+            )
+    return selected
 
 
 # ===========================================================================
@@ -440,6 +495,175 @@ class TestReportAutoCLI:
         _write_recording(path, [_frame(100.0, {"busy": {"ram": _gauge(1)}})])
         result = self._invoke(path, "--window", "auto", *args)
         assert result.returncode == 2
+
+
+# ===========================================================================
+# P70 — Linear-time automatic steady-state detector
+# ===========================================================================
+
+class TestSteadyWindowDetectorPerformance:
+    """Differential and scaling oracles for the P70 reverse-pass detector."""
+
+    @staticmethod
+    def _frames(values: dict[str, list[float | None]]) -> list[Frame]:
+        frame_count = max(len(series) for series in values.values())
+        frames: list[Frame] = []
+        for index in range(frame_count):
+            entities: dict[str, dict[str, MetricValue]] = {}
+            for key, series in values.items():
+                if index >= len(series):
+                    continue
+                value = series[index]
+                if value is None:
+                    entities[key] = {}
+                else:
+                    entities[key] = {"ram": _gauge(value)}
+            frames.append(_frame(100.0 + index * 5, entities))
+        return frames
+
+    def test_reverse_pass_matches_pre_p70_oracle_on_generated_corpus(self):
+        """Generated shapes cover stability, gaps, zeroes, ties, and cardinality."""
+        corpus: list[list[Frame]] = []
+        for case in range(30):
+            base = 100.0 + case
+            count = 6 + case % 5
+            corpus.extend([
+                # Constant series.
+                self._frames({"one": [base] * count}),
+                # Monotone ramp.
+                self._frames({"one": [base + index for index in range(count)]}),
+                # Step change with a stable tail.
+                self._frames({
+                    "one": [base * 10] * (count // 2) + [base] * (count - count // 2),
+                }),
+                # Entity appearing and disappearing, plus missing gauge values.
+                self._frames({
+                    "always": [base] * count,
+                    "intermittent": [None, base, base, None, base, base][:count],
+                }),
+                # All-zero and zero-mean-with-spread series.
+                self._frames({"zero": [0.0] * count, "spread": [-1.0, 0.0, 1.0] + [0.0] * (count - 3)}),
+                # Equal-mean lexical tie, with one noisier entity.
+                self._frames({
+                    "alpha": [base] * count,
+                    "beta": [base] * count,
+                    "noisy": [base - 10, base + 10] * (count // 2) + ([base] if count % 2 else []),
+                }),
+                # A single entity and many entities in otherwise similar frames.
+                self._frames({
+                    "busy": [base + (index % 2) for index in range(count)],
+                    **{f"quiet-{index}": [1.0] * count for index in range(5)},
+                }),
+            ])
+
+        assert len(corpus) == 210
+        for frames in corpus:
+            assert detect_steady_window(frames) == _reference_detect_steady_window(frames)
+
+    @pytest.mark.parametrize(
+        ("offset", "expected_detected"),
+        ((-5e-13, True), (5e-13, False)),
+    )
+    def test_cov_boundary_within_one_trillionth_matches_reference(
+        self, offset, expected_detected,
+    ):
+        """Near-boundary CoV decisions must survive the changed accumulation order."""
+        threshold = 0.05
+        target_cov = threshold + offset
+        delta = target_cov * 100.0 / math.sqrt(2.0 / 3.0)
+        frames = self._frames({"busy": [100.0 - delta, 100.0, 100.0 + delta]})
+        assert abs(target_cov - threshold) < 1e-12
+        reference = _reference_detect_steady_window(frames, stability_cov=threshold)
+        assert (reference is not None) is expected_detected
+        assert detect_steady_window(frames, stability_cov=threshold) == reference
+
+    def test_reverse_welford_boundary_flip_uses_reference_order(self):
+        """This series made raw reverse Welford accept while P62 rejected."""
+        values = [
+            1.018689928456018e33,
+            9.510379349013826e32,
+            1.0274628101202901e33,
+            9.738221808425098e32,
+            1.0246098962410257e33,
+            1.1053478977123546e33,
+            1.0255499019080497e33,
+            9.390171270132967e32,
+            9.626065872600107e32,
+            1.0883304569007133e33,
+            9.586188942992692e32,
+            9.97595211159013e32,
+            9.393879626199037e32,
+            9.879232105661622e32,
+        ]
+        frames = self._frames({"busy": values})
+        reference = _reference_detect_steady_window(frames, stability_cov=0.05)
+        assert reference == WindowRange(130.0, 165.0)
+        assert detect_steady_window(frames, stability_cov=0.05) == reference
+
+    def test_finite_gauge_reads_are_linear(self, monkeypatch):
+        """Mechanism oracle: the old candidate rebuild performs quadratic reads."""
+        frame_count = 120
+        entity_count = 7
+        frames = self._performance_frames(frame_count, entity_count)
+        real_finite_gauge_value = report_module._finite_gauge_value
+        gauge_reads = 0
+
+        def counting_finite_gauge_value(frame, entity_key, gauge):
+            nonlocal gauge_reads
+            gauge_reads += 1
+            return real_finite_gauge_value(frame, entity_key, gauge)
+
+        monkeypatch.setattr(
+            report_module, "_finite_gauge_value", counting_finite_gauge_value,
+        )
+        assert detect_steady_window(frames) == WindowRange(100.0, 695.0)
+        assert gauge_reads == frame_count * entity_count
+
+    def test_p62_fixture_cli_bytes_match_pre_p70(self, tmp_path):
+        """Pin the complete pre-P70 CLI bytes for P62's exact-tail recording."""
+        path = tmp_path / "p62-tail.jsonl"
+        _write_recording(path, TestAutoSteadyWindow()._tail_stable_frames())
+        result = TestReportAutoCLI()._invoke(path, "--window", "auto")
+        expected = (
+            '{"metrics_version":1,"profiles":[{"gauges":{"anon":{"max":50.0,'
+            '"p50":50.0,"p95":50.0},"ram":{"max":101.0,"p50":100.0,'
+            '"p95":101.0}},"key":"busy","sample_count":3,"window_end_ts":125.0,'
+            '"window_start_ts":115.0}],"window_detected":true,'
+            '"window_end_ts":125.0,"window_mode":"auto",'
+            '"window_start_ts":115.0}\n'
+        )
+        assert result.returncode == 0
+        assert result.stdout == expected
+
+    @staticmethod
+    def _performance_frames(frame_count: int, entity_count: int = 20) -> list[Frame]:
+        return [
+            _frame(
+                100.0 + index * 5,
+                {
+                    f"entity-{entity:02d}": {"ram": _gauge(1000.0 + entity)}
+                    for entity in range(entity_count)
+                },
+            )
+            for index in range(frame_count)
+        ]
+
+    def test_default_recording_profile_is_linear_time(self):
+        """Catch a quadratic regression without treating this as a microbenchmark."""
+        short_frames = self._performance_frames(2880)
+        long_frames = self._performance_frames(5760)
+
+        start = time.perf_counter()
+        assert detect_steady_window(short_frames) == WindowRange(100.0, 14495.0)
+        short_elapsed = time.perf_counter() - start
+
+        start = time.perf_counter()
+        assert detect_steady_window(long_frames) == WindowRange(100.0, 28895.0)
+        long_elapsed = time.perf_counter() - start
+
+        assert short_elapsed < 2.0
+        assert long_elapsed < 2.0
+        assert long_elapsed <= short_elapsed * 2.5 + 0.05
 
 
 class TestFindSliceAncestor:
