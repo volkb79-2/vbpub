@@ -38,7 +38,7 @@ from that venv):
 ```bash
 PYTHONPATH=groop/src /workspaces/vbpub/.venv/bin/python -m pytest \
   groop/tests/test_daemon_http_gateway.py -q -W error -p no:schemathesis
-# 36 passed in 22.48s
+# 47 passed in 23.86s
 ```
 
 Required full gate, clean package test virtualenv
@@ -80,8 +80,9 @@ git diff --check
 5. A non-loopback peer cannot turn a forwarded identity header into a
    principal.
 6. POST, PUT, PATCH, and DELETE are rejected across every documented route.
-7. All routes return decoded JSON with intact `metrics_meta`; typed
-   `not_found`/invalid/out-of-range failures and a down daemon map safely.
+7. All routes return decoded JSON with intact `metrics_meta`; every closed P52
+   error code has a deterministic status mapping, and representative typed
+   `not_found`/invalid/out-of-range failures plus a down daemon map safely.
 
 ## Proposed contract changes
 

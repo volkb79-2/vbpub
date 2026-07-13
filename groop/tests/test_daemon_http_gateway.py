@@ -5,6 +5,8 @@ from __future__ import annotations
 import http.client
 import ipaddress
 import json
+import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -100,6 +102,23 @@ def test_non_loopback_bind_requires_explicit_opt_in_and_auth(tmp_path: Path) -> 
         ),
     )
     gateway.server_close()
+
+
+def test_gateway_configuration_rejects_untyped_trust_boundary_inputs() -> None:
+    with pytest.raises(GatewayStartupError, match="principals must be a mapping"):
+        GatewayAuthConfig([("operator", "operational")])
+    with pytest.raises(GatewayStartupError, match="must be a boolean"):
+        GatewayConfig(allow_non_loopback="yes")
+
+
+def test_daemon_import_does_not_load_the_http_gateway() -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", "import groop.daemon, sys; assert 'groop.daemon.http_gateway' not in sys.modules"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_gateway_cli_has_an_explicit_non_loopback_opt_in(capsys: pytest.CaptureFixture[str]) -> None:
@@ -239,12 +258,21 @@ def test_down_daemon_maps_to_safe_connect_error(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("code", "status"),
     [
+        ("bad_request", 400),
+        ("unknown_op", 502),
+        ("unknown_field", 400),
         ("not_found", 404),
         ("invalid_type", 400),
+        ("non_finite", 400),
         ("out_of_range", 400),
+        ("malformed_cursor", 400),
+        ("oversized_request", 502),
+        ("oversized_response", 502),
+        ("request_timeout", 503),
         ("unavailable", 503),
         ("server_busy", 503),
         ("denied", 403),
+        ("protocol_version", 502),
         ("internal", 502),
     ],
 )

@@ -76,6 +76,8 @@ class GatewayAuthConfig:
     principals: Mapping[str, Sensitivity | str]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.principals, Mapping):
+            raise GatewayStartupError("authentication principals must be a mapping")
         normalized: dict[str, Sensitivity] = {}
         for principal, ceiling in self.principals.items():
             if not isinstance(principal, str) or not _PRINCIPAL_RE.fullmatch(principal):
@@ -115,6 +117,8 @@ class GatewayConfig:
             raise GatewayStartupError("HTTP port must be an integer between 0 and 65535")
         if self.auth is not None and not isinstance(self.auth, GatewayAuthConfig):
             raise GatewayStartupError("authentication configuration is invalid")
+        if not isinstance(self.allow_non_loopback, bool):
+            raise GatewayStartupError("allow_non_loopback must be a boolean")
 
 
 def _is_loopback_address(address: str) -> bool:

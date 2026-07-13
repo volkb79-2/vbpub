@@ -31,6 +31,13 @@
 - Files changed: `groop/handoff/reports/P67-REPORT.md` and this log.
 - Result: Final clean full gate completed successfully with an empty pytest `lastfailed` cache. The workspace `.venv` optional-zstandard mismatch is documented in the report and is unrelated to P67.
 - Follow-up: Stage all P67 files, run final focused/compile/diff checks, and commit the feature branch.
+
+2026-07-13 UTC
+- Action: Performed the standing self-review against P67's four trust-boundary groups and fixed configuration-input validation plus complete error-code mapping coverage.
+- Commands: `PYTHONPATH=groop/src /workspaces/vbpub/.venv/bin/python -m pytest groop/tests/test_daemon_http_gateway.py -q -W error -p no:schemathesis`; `timeout 900 env PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q -W error -p no:schemathesis`; `py_compile`; `git diff --check`.
+- Files changed: `src/groop/daemon/http_gateway.py`, `tests/test_daemon_http_gateway.py`, `handoff/reports/P67-REPORT.md`, this log, and `handoff/reports/P67-SELFREVIEW.md`.
+- Result: Focused gate passed 47 tests. The clean full regression gate completed successfully with an empty pytest `lastfailed` cache.
+- Follow-up: Commit this separate self-review fix and report.
 ```
 
 ## Decisions
@@ -50,7 +57,17 @@
 ## Validation
 
 ```bash
-# Pending implementation.
+PYTHONPATH=groop/src /workspaces/vbpub/.venv/bin/python -m pytest groop/tests/test_daemon_http_gateway.py -q -W error -p no:schemathesis
+# 47 passed in 23.86s
+
+timeout 900 env PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python -m pytest groop/tests -q -W error -p no:schemathesis
+# passed (exit 0; pytest lastfailed cache empty)
+
+/tmp/p43-clean-venv/bin/python -m py_compile groop/src/groop/daemon/http_gateway.py groop/src/groop/cli.py groop/tests/test_daemon_http_gateway.py
+# clean
+
+git diff --check
+# clean
 ```
 
 ## Handoff Checklist
