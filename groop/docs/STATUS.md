@@ -190,9 +190,9 @@ core workflows, not yet production-certified.**
   entities, with ancestor auto-inclusion for path completeness. Metric
   filtering uses registry-defined ``METRIC_GROUPS``/``COMPACT_GROUPS`` and
   is applied as the final step after all annotations.
-31 focused tests covering glob matching, slice subtree inclusion, ancestor
-   correctness, compact field-set precision, collection-time pruning, and
-   replay/attach rejection.
+  31 focused tests covering glob matching, slice subtree inclusion, ancestor
+  correctness, compact field-set precision, collection-time pruning, and
+  replay/attach rejection.
 - Container-name entity selector (P59): ``--container NAME_OR_PREFIX``
   (repeatable) added as a third entity-selector form alongside P55's
   ``--entities``/``--slice`` on the collection path. Resolution runs inside

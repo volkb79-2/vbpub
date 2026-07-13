@@ -75,9 +75,9 @@ flowchart TD
     P46 --> P56[P56 groop squeeze]
     P16 --> P57[P57 Docker-name entity selectors :done:]
     P52 --> P58[P58 Daemon MCP frontend]
-P57 --> P59[P59 --container entity selector :done:]
-     P55 --> P59
-     P55 --> P60[P60 free-form --metrics list]
+    P57 --> P59[P59 --container entity selector :done:]
+    P55 --> P59
+    P55 --> P60[P60 free-form --metrics list]
 ```
 
 P59 (done) wires P57's `--container` resolver into P55's collection-path
