@@ -6,10 +6,13 @@ import subprocess
 from collections.abc import Callable
 from typing import Any
 
-from groop.model import DockerMeta, Entity, EntityKey
+from groop.model import CiuMeta, DockerMeta, Entity, EntityKey
 
 DOCKER_SCOPE_RE = re.compile(r"(?:^|/)docker-([0-9a-f]{64})\.scope$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.IGNORECASE)
+# CIU container name pattern: ^<project>-<env>-<name>$ (CIU-DEPLOY.md S7.8)
+CIU_CONTAINER_NAME_RE = re.compile(r"^([^-]+)-([^-]+)-(.+)$")
+PHASE_RE = re.compile(r"^phase_(\d+)$")
 DockerInspect = Callable[[str], Any]
 
 
@@ -42,6 +45,75 @@ def _first_inspect(value: Any) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _parse_phase(raw: str | None) -> tuple[str | None, int | None]:
+    """Parse a ``ciu.phase`` label value into (raw_label, numeric_phase).
+
+    ``phase_2`` → ``("phase_2", 2)``. Malformed values (``phase_``,
+    ``phase_abc``, ``phase_-1``, ``None``) return ``(None, None)`` — the
+    phase is unknown and no raw value is recorded.
+    """
+    if raw is None:
+        return None, None
+    raw = raw.strip()
+    if not raw:
+        return None, None
+    match = PHASE_RE.match(raw)
+    if match is None:
+        return None, None
+    num = int(match.group(1))
+    if num < 0:
+        return None, None
+    return raw, num
+
+
+def detect_ciu_from_labels(labels: dict[str, str]) -> CiuMeta | None:
+    """Label-confirmed CIU detection from Docker ``Config.Labels``.
+
+    Returns ``CiuMeta(source="label")`` when ``ciu.managed="true"`` is
+    present. The ``ciu.stack`` and ``ciu.phase`` labels are optional. Returns
+    ``None`` when no ``ciu.managed`` label exists (fall through to inference).
+
+    The caller is responsible for checking inference if this returns ``None``.
+    The two tiers are never merged.
+    """
+    if labels.get("ciu.managed") != "true":
+        return None
+    stack = labels.get("ciu.stack")
+    phase_raw, phase = _parse_phase(labels.get("ciu.phase"))
+    return CiuMeta(stack=stack, phase_raw=phase_raw, phase=phase, source="label")
+
+
+def detect_ciu_inferred(
+    compose_project: str | None,
+    container_name: str,
+    known_stack_roots: set[str],
+) -> CiuMeta | None:
+    """Inferred (heuristic) CIU detection.
+
+    A container is inferred to be ciu-managed when:
+    1. It has a ``com.docker.compose.project`` that matches a directory name
+       under a configured stack root.
+    2. Its container name matches ciu's anchored
+       ``^<project>-<env>-<name>$`` pattern (CIU-DEPLOY.md S7.8).
+
+    Returns ``CiuMeta(source="inferred")`` or ``None``.
+    """
+    if not compose_project or not known_stack_roots:
+        return None
+    # Check if compose_project is a known stack directory name
+    if compose_project not in known_stack_roots:
+        return None
+    # Container name must match ciu's anchored pattern
+    if not CIU_CONTAINER_NAME_RE.match(container_name):
+        return None
+    return CiuMeta(
+        stack=compose_project,
+        phase_raw=None,
+        phase=None,
+        source="inferred",
+    )
+
+
 def meta_from_inspect(full_id: str, data: dict[str, Any]) -> DockerMeta:
     config = data.get("Config") or {}
     labels = config.get("Labels") or {}
@@ -56,8 +128,13 @@ def meta_from_inspect(full_id: str, data: dict[str, Any]) -> DockerMeta:
     )
 
 
-def enrich_entities(entities: dict[EntityKey, Entity], docker_inspect: DockerInspect | None = None) -> dict[EntityKey, Entity]:
+def enrich_entities(
+    entities: dict[EntityKey, Entity],
+    docker_inspect: DockerInspect | None = None,
+    known_stack_roots: set[str] | None = None,
+) -> dict[EntityKey, Entity]:
     inspect = docker_inspect or default_docker_inspect
+    stack_roots = known_stack_roots or set()
     out: dict[EntityKey, Entity] = {}
     for key, entity in entities.items():
         cid = docker_id_from_key(key)
@@ -66,7 +143,21 @@ def enrich_entities(entities: dict[EntityKey, Entity], docker_inspect: DockerIns
             continue
         try:
             data = _first_inspect(inspect(cid))
-            entity.docker = meta_from_inspect(cid, data) if data is not None else None
+            if data is not None:
+                entity.docker = meta_from_inspect(cid, data)
+                # CIU detection: labels first, inference fallback
+                config = data.get("Config") or {}
+                labels = config.get("Labels") or {}
+                ciu = detect_ciu_from_labels(labels)
+                if ciu is None and entity.docker is not None:
+                    ciu = detect_ciu_inferred(
+                        entity.docker.compose_project,
+                        entity.docker.name,
+                        stack_roots,
+                    )
+                entity.ciu = ciu
+            else:
+                entity.docker = None
         except (OSError, ValueError, KeyError, TypeError):
             entity.docker = None
         out[key] = entity

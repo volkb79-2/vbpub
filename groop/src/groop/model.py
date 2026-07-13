@@ -9,6 +9,34 @@ MetricSource = Literal["exact", "derived", "netns", "bpf", "host", "unlimited", 
 
 
 @dataclass
+class CiuMeta:
+    """CIU (Configurable Infrastructure Utility) stack/phase metadata.
+
+    Describes whether a container is managed by ciu and, if so, which stack
+    and deploy phase it belongs to. Two detection tiers exist — label-confirmed
+    (guaranteed) and inferred (heuristic) — and are never merged.
+    """
+
+    stack: str | None = None
+    """Stack directory name (e.g. ``infra/redis-core``). Populated from
+    ``ciu.stack`` label (label-confirmed) or inferred from compose project."""
+
+    phase_raw: str | None = None
+    """Raw phase label value (e.g. ``phase_2``). None when no phase is
+    assigned or the container is not ciu-deploy-managed."""
+
+    phase: int | None = None
+    """Parsed numeric phase number. ``phase_2`` → ``2``, ``phase_10`` → ``10``.
+    Malformed values (``phase_``, ``phase_abc``, ``phase_-1``) set this to
+    ``None`` — the container still has ciu metadata but its phase is unknown."""
+
+    source: str = "label"
+    """Detection tier: ``"label"`` for label-confirmed (``ciu.managed="true"``
+    labels present), ``"inferred"`` for heuristic (name-pattern + compose
+    project matches a known stack root)."""
+
+
+@dataclass
 class DockerMeta:
     cid: str
     full_id: str
@@ -24,6 +52,7 @@ class Entity:
     kind: EntityKind
     parent: EntityKey | None
     docker: DockerMeta | None = None
+    ciu: CiuMeta | None = None
     tier: str | None = None
     is_protected: bool = False
 
@@ -107,12 +136,35 @@ def docker_from_jsonable(value: Any) -> DockerMeta | None:
     )
 
 
+def ciu_to_jsonable(meta: CiuMeta | None) -> dict[str, Any] | None:
+    if meta is None:
+        return None
+    return {
+        "stack": meta.stack,
+        "phase_raw": meta.phase_raw,
+        "phase": meta.phase,
+        "source": meta.source,
+    }
+
+
+def ciu_from_jsonable(value: Any) -> CiuMeta | None:
+    if value is None:
+        return None
+    return CiuMeta(
+        stack=value.get("stack"),
+        phase_raw=value.get("phase_raw"),
+        phase=value.get("phase"),
+        source=value.get("source", "label"),
+    )
+
+
 def entity_to_jsonable(entity: Entity) -> dict[str, Any]:
     return {
         "key": entity.key,
         "kind": entity.kind,
         "parent": entity.parent,
         "docker": docker_to_jsonable(entity.docker),
+        "ciu": ciu_to_jsonable(entity.ciu),
         "tier": entity.tier,
         "is_protected": entity.is_protected,
     }
@@ -124,6 +176,7 @@ def entity_from_jsonable(value: Any) -> Entity:
         kind=value["kind"],
         parent=value.get("parent"),
         docker=docker_from_jsonable(value.get("docker")),
+        ciu=ciu_from_jsonable(value.get("ciu")),
         tier=value.get("tier"),
         is_protected=bool(value.get("is_protected", False)),
     )

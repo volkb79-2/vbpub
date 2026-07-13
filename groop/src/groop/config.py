@@ -122,6 +122,20 @@ class BpfSnapshotConfig:
 
 
 @dataclass(frozen=True)
+class CiuConfig:
+    """CIU stack metadata configuration.
+
+    Attributes:
+        stack_roots: Directories whose subdirectory names are treated as known
+            CIU stack names for the inference heuristic. An empty list (default)
+            disables inference; no ciu-managed containers are detected by
+            heuristic alone.
+    """
+
+    stack_roots: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
 class GroopConfig:
     interval: float = 5.0
     cgroup_root: Path = Path("/sys/fs/cgroup")
@@ -139,6 +153,7 @@ class GroopConfig:
     snapshots: SnapshotConfig = field(default_factory=SnapshotConfig)
     net: NetConfig = field(default_factory=NetConfig)
     damon: DamonConfig = field(default_factory=DamonConfig)
+    ciu: CiuConfig = field(default_factory=CiuConfig)
     bpf_snapshot: BpfSnapshotConfig = field(default_factory=BpfSnapshotConfig)
 
     def to_primitive(self) -> dict[str, Any]:
@@ -188,6 +203,9 @@ class GroopConfig:
                 "paddr_update_us": self.damon.paddr_update_us,
                 "max_concurrent_targets": self.damon.max_concurrent_targets,
                 "paddr_enabled": self.damon.paddr_enabled,
+            },
+            "ciu": {
+                "stack_roots": [str(p) for p in self.ciu.stack_roots],
             },
             "bpf_snapshot": {
                 "enabled": self.bpf_snapshot.enabled,
@@ -310,6 +328,7 @@ def load(path: Path | None = None) -> GroopConfig:
     snapshot_data = data.get("snapshots", {})
     net_data = data.get("net", {})
     damon_data = data.get("damon", {})
+    ciu_data = data.get("ciu", {})
     bpf_snapshot_data = data.get("bpf_snapshot", {})
     thresholds = dict(data.get("thresholds", {}) or {})
     tiers = {
@@ -365,6 +384,12 @@ def load(path: Path | None = None) -> GroopConfig:
                 damon_data["paddr_enabled"]
                 if isinstance(damon_data.get("paddr_enabled"), bool)
                 else False
+            ),
+        ),
+        ciu=CiuConfig(
+            stack_roots=tuple(
+                Path(p) for p in (ciu_data.get("stack_roots", []) or [])
+                if isinstance(p, str)
             ),
         ),
         bpf_snapshot=BpfSnapshotConfig(

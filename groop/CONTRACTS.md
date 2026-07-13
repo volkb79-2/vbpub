@@ -56,6 +56,13 @@ groop/
 - `DockerMeta`: `cid` (12-hex short), `full_id`, `name`, `image`,
   `compose_project: str|None`, `ptero_uuid: str|None` (container name IS the
   Wings server UUID when it parses as one).
+- `CiuMeta` (optional, attached to `Entity.ciu`): `stack: str|None` (stack
+  directory name), `phase_raw: str|None` (raw label value e.g. ``phase_2``),
+  `phase: int|None` (parsed numeric phase number), `source: str` — detection
+  tier discriminator: ``"label"`` (label-confirmed guarantee) or ``"inferred"``
+  (heuristic, explicitly marked as such). The two tiers are never merged into
+  one boolean. See `dockerjoin.py` for detection logic and `TUI-SPEC.md §4.3`
+  for the spec.
 
 ## 3. Metric registry (`registry.py`) — spec §3.2
 
