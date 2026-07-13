@@ -43,6 +43,9 @@ def render_banner(frame: Frame, config: GroopConfig, *, collapsed: bool = False)
     arc_line = _zfs_arc_line(frame)
     if arc_line is not None:
         lines.append(arc_line)
+    gpu_line = _gpu_line(frame)
+    if gpu_line is not None:
+        lines.append(gpu_line)
     lines.append("TOP PRESSURE")
     pressure_lines = _top_pressure_lines(frame)
     lines.extend(pressure_lines if pressure_lines else ["n/a"])
@@ -159,6 +162,31 @@ def _zfs_arc_line(frame: Frame) -> str | None:
     else:
         hit_text = ""
     return f"ARC {_fmt_bytes_metric(arc_size)}/{_fmt_bytes_metric(arc_max)}{hit_text}"
+
+
+def _gpu_line(frame: Frame) -> str | None:
+    """Render the GPU banner segment when a readable GPU is present.
+
+    Shows GPU VRAM used/total and busy percent for amdgpu cards.
+    When multiple cards exist, count is appended (e.g. x2).
+    Absent or unreadable GPUs produce no banner segment.
+    """
+    vram_total = frame.host.get("host_gpu_vram_total")
+    vram_used = frame.host.get("host_gpu_vram_used")
+    busy_pct = frame.host.get("host_gpu_busy_pct")
+    gpu_count = frame.host.get("host_gpu_count")
+
+    # Only render when at least one GPU is readable (vram_total has a value)
+    if vram_total is None or vram_total.v is None:
+        return None
+
+    used_text = _fmt_bytes_metric(vram_used) if vram_used is not None and vram_used.v is not None else "?"
+    total_text = _fmt_bytes_metric(vram_total)
+    count = int(gpu_count.v) if gpu_count is not None and isinstance(gpu_count.v, int) else 1
+    count_suffix = f" x{count}" if count > 1 else ""
+    if busy_pct is not None and busy_pct.v is not None:
+        return f"GPU {used_text}/{total_text} (busy {float(busy_pct.v):.0f}%){count_suffix}"
+    return f"GPU {used_text}/{total_text}{count_suffix}"
 
 
 def _swap_backend_line(frame: Frame) -> str:
