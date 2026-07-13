@@ -6,12 +6,15 @@ from rich.table import Table
 from rich.text import Text
 
 from groop.config import GroopConfig
+from groop.grouping import CiuGroup, group_entities
 from groop.model import Entity, EntityFrame, Frame, MetricValue
 from groop.record.ring import HistoryRing
 from groop.registry import REGISTRY
 from groop.ui.aliases import resolve_column
 from groop.ui.sparkline import sparkline_from_history
 
+VIEW_MODES = ("tree", "container", "ciu-grouped")
+"""Valid view mode identifiers."""
 PROFILE_ORDER = ("auto", "triage", "memory", "network", "governance", "damon", "wide", "minimal")
 SORT_ORDER = ("pressure", "ram", "cpu_pct", "name")
 
@@ -502,3 +505,97 @@ def _row_cells_no_selection(
     visual highlighting instead.
     """
     return [format_metric_value(c, entity_frame, ring=ring) for c in columns]
+
+
+def _group_header_row(columns: tuple[str, ...], group: CiuGroup) -> list:
+    """Render a CIU group header row spanning all columns.
+
+    The header shows the stack name, phase, and source tier (label vs.
+    inferred) so the operator can distinguish detection confidence at a
+    glance.
+    """
+    phase_str = _phase_display(group.phase, group.phase_raw)
+    source_marker = "(label)" if group.source == "label" else "(inferred)"
+    header = Text(f"  {group.stack}  |  phase {phase_str}  {source_marker}", style="bold cyan")
+    cells: list = [header]
+    cells.extend(Text("") for _ in range(len(columns) - 1))
+    return cells
+
+
+def _phase_display(phase: int | None, phase_raw: str | None) -> str:
+    """Return a human-readable phase string."""
+    if phase is not None:
+        return str(phase)
+    if phase_raw is not None:
+        return f"? ({phase_raw})"
+    return "-"
+
+
+def render_data_table_container_grouped(
+    frame: Frame,
+    config: GroopConfig,
+    *,
+    width: int,
+    profile: str,
+    sort_by: str,
+    sort_reverse: bool | None = None,
+    filter_text: str,
+    ring: HistoryRing | None = None,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], list[list]]:
+    """Return (column_keys, column_labels, row_keys, rows) for a
+    DataTable-compatible CIU-grouped container view.
+
+    Entities are grouped by CIU stack and phase using ``group_entities()``.
+    Each group has a header row showing the stack name, phase, and
+    detection tier (``(label)`` vs. ``(inferred)``).  Ungrouped entities
+    (those without CIU metadata) follow after all groups, rendered
+    without a header.
+    """
+    layout = resolve_profile(config, width=width, profile=profile)
+    col_labels = tuple(header_label(c) for c in layout.columns)
+    row_keys: list[str] = []
+    rows: list[list] = []
+
+    # Filter if needed.
+    needle = filter_text.lower().strip()
+
+    def _include(entity_frame: EntityFrame) -> bool:
+        if not needle:
+            return True
+        haystacks = (display_name(entity_frame.entity).lower(), entity_frame.entity.key.lower())
+        return any(needle in haystack for haystack in haystacks)
+
+    grouped = group_entities(frame)
+
+    for group in grouped.groups:
+        # Filter entity frames.
+        filtered = [ef for ef in group.entity_frames if _include(ef)]
+        if not filtered and not needle:
+            continue
+        if not filtered:
+            continue
+        group_key = f"__group__{group.stack or ''}__{group.phase_raw or ''}"
+        row_keys.append(group_key)
+        rows.append(_group_header_row(layout.columns, group))
+        for entity_frame in filtered:
+            row_keys.append(entity_frame.entity.key)
+            rows.append(_row_cells_no_selection(layout.columns, entity_frame, ring=ring))
+
+    # Ungrouped entities (no CIU metadata).
+    ungrouped_filtered = [ef for ef in grouped.ungrouped if _include(ef)]
+    if ungrouped_filtered and needle:
+        for entity_frame in ungrouped_filtered:
+            row_keys.append(entity_frame.entity.key)
+            rows.append(_row_cells_no_selection(layout.columns, entity_frame, ring=ring))
+    elif ungrouped_filtered:
+        row_keys.append("__ungrouped__")
+        rows.append([Text("  other containers (no CIU)")] + [Text("")] * (max(0, len(layout.columns) - 1)))
+        for entity_frame in ungrouped_filtered:
+            row_keys.append(entity_frame.entity.key)
+            rows.append(_row_cells_no_selection(layout.columns, entity_frame, ring=ring))
+
+    if not row_keys:
+        row_keys = ["__empty__"]
+        rows.append([Text("no container rows")] + [Text("")] * (max(0, len(layout.columns) - 1)))
+
+    return (layout.columns, col_labels, tuple(row_keys), rows)
