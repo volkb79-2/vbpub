@@ -391,3 +391,64 @@ any original P51 variant.
 - **Controller-side false-red trap**: gating groop with the dstdns
   devcontainer venv python turns a schemathesis `DeprecationWarning` into 55
   instant failures under `-W error`. Groop gates require a clean venv.
+
+## Addendum 2026-07-13 — pwmcp P03 shared-browser-mode (3-way, different task)
+
+**This is NOT a P51 data point.** pwmcp P03
+(`pwmcp/handoff/P03-shared-browser-mode.md`) is a different package — an opt-in
+shared persistent Chromium that `@playwright/mcp` and `chrome-devtools-mcp`
+attach to over CDP, with five first-class safeguards plus a cross-tool proof
+(Playwright navigate → DevTools trace on the same page). It is recorded here
+because it is the first genuinely Docker-gated head-to-head of the escalation
+ladder: **two codex legs built in a sandbox with NO Docker access** (they could
+run only static checks) against **one claude leg with full Docker access**. The
+frontier review (Opus 4.8 high, native claude, Docker) ran every leg's runtime
+gates for the first time. Full review: `pwmcp/handoff/reports/P03-REVIEW.md`.
+
+### Quantitative
+
+Codex token usage is cumulative-per-session (`total_token_usage` from the
+rollout jsonl; input includes cached). Codex native subscription has no
+per-run cash charge; the cost column is a rough estimate anchored to the P51
+Luna datapoint (~4.28M cumulative tokens ≈ $0.63 at then-listed OpenRouter
+rates) and flagged accordingly. Sonnet token totals are the harness-reported
+run sizes supplied by the controller; the exact cache-creation/read split was
+not captured, so its cost is an approximate band from Sonnet 5 rates ($3/$15
+per MTok, $0.30/MTok cache read) — not a metered figure.
+
+| Leg | Model / harness | Core cross-tool contract | Token usage (impl + self-review = cumulative) | Approx cost | Notable defects found ONLY by frontier Docker pass |
+| --- | --- | --- | --- | --- | --- |
+| **sonnet5-high** ✅ merged | claude sonnet-5 high / Claude Code (Docker) | **PASS — verified 25/25** incl. cross-tool, crash-restart, reset, CDP-boundary | ~144.4K + ~134.3K = **~278.7K** (harness-reported) | **≈ $1.2–1.7** (est; no metered split) | none new — self-review already ran the full suite live and self-fixed the two feature-breakers (`--isolated` broke cross-tool; dead-code idle recycle) |
+| terra-med (ref) | gpt-5.6-terra med / Codex (no Docker) | cross-tool PASS, but 2 safeguards FAIL | 1,228,412 + 1,463,833 = **2,692,245** (94% cached) | **≈ $0.4** (est; subscription = no cash) | `/browser/reset` 503 (safeguard 2 broken); safeguard-3 gate asserts cookie isolation the impl can't deliver → runtime bleed; admin restart flaky; DevTools no-recover after adverse startup ordering |
+| luna-high (ref) | gpt-5.6-luna high / Codex (no Docker) | **cross-tool NOT reached** | 6,747,880 + 6,216,911 = **12,964,791** (96% cached) | **≈ $1.9** (est; subscription = no cash) | `/browser/reset` 503 that *wedges* CDP (`cdp_live:false`) — safeguard 2 destructive; cookie isolation FAIL (safeguard 3); browser wedges before the cross-tool proof runs |
+
+Wall time was not separately captured for any leg; the codex legs report no
+explicit durations and the sonnet leg cites only a "time budget."
+
+Scope discipline was clean on all three (touch only `pwmcp/**`; per-session
+`supervisord.conf` byte-identical). All three correctly avoided `--isolated`
+on both MCP servers, so all three were *architecturally* capable of the
+cross-tool workflow — the difference was entirely in what running the code
+under Docker revealed.
+
+### What this tells us about the model ladder
+
+The Docker gate was decisive, and it decided on *verification access*, not raw
+model strength. Both codex legs produced plausible, well-documented, ambitiously
+tested implementations — luna's especially, at ~13M cumulative tokens and the
+heaviest diff — yet both shipped a `/browser/reset` endpoint that fails (luna's
+destructively) and a safeguard-3 mechanism test that *asserts* per-session
+cookie isolation the shared-CDP architecture cannot provide. Neither could have
+caught these: with no container they never executed a single tool call. The
+inherent cookie-bleed of `playwright-mcp --cdp-endpoint` is invisible on paper
+and obvious in one `docker run`. The sonnet leg, at ~1/10th to ~1/50th the
+token spend of the codex legs and comparable-or-lower estimated cost, spent that
+smaller budget *running* the thing — its self-review executed the full 25/25
+suite, surfaced two feature-breaking defects (the `--isolated` cross-tool break
+and the dead-code idle recycle), fixed them, and correctly downgraded state-bleed
+to a documented residual instead of a false isolation claim. The lesson is
+consistent with the P51 finding that the expensive failures are mechanism-level:
+for a package whose deliverable *is* runtime safeguards, an implementer that can
+execute its own gates beats a stronger-on-paper implementer that cannot, and the
+frontier Docker pass is where the codex legs' untested "static checks passed"
+claims first met reality.
