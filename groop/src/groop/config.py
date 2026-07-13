@@ -122,6 +122,25 @@ class BpfSnapshotConfig:
 
 
 @dataclass(frozen=True)
+class CiuConfig:
+    """CIU stack metadata configuration.
+
+    Attributes:
+        known_stacks: Stack directory names used by the inference heuristic
+            (e.g. ``"redis-core"``, or the full ``"infra/redis-core"``, which is
+            matched on its last path segment). Compose derives its project name
+            from the stack directory's *basename* and a compose project can
+            never contain ``/``, so only that segment is compared. When a
+            container's ``com.docker.compose.project`` matches an entry AND its
+            container name is anchored to that project
+            (``<project>-<env>-<name>``), it is inferred to be ciu-managed. An
+            empty tuple (default) disables inference.
+    """
+
+    known_stacks: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class GroopConfig:
     interval: float = 5.0
     cgroup_root: Path = Path("/sys/fs/cgroup")
@@ -139,6 +158,7 @@ class GroopConfig:
     snapshots: SnapshotConfig = field(default_factory=SnapshotConfig)
     net: NetConfig = field(default_factory=NetConfig)
     damon: DamonConfig = field(default_factory=DamonConfig)
+    ciu: CiuConfig = field(default_factory=CiuConfig)
     bpf_snapshot: BpfSnapshotConfig = field(default_factory=BpfSnapshotConfig)
 
     def to_primitive(self) -> dict[str, Any]:
@@ -188,6 +208,9 @@ class GroopConfig:
                 "paddr_update_us": self.damon.paddr_update_us,
                 "max_concurrent_targets": self.damon.max_concurrent_targets,
                 "paddr_enabled": self.damon.paddr_enabled,
+            },
+            "ciu": {
+                "known_stacks": list(self.ciu.known_stacks),
             },
             "bpf_snapshot": {
                 "enabled": self.bpf_snapshot.enabled,
@@ -310,6 +333,7 @@ def load(path: Path | None = None) -> GroopConfig:
     snapshot_data = data.get("snapshots", {})
     net_data = data.get("net", {})
     damon_data = data.get("damon", {})
+    ciu_data = data.get("ciu", {})
     bpf_snapshot_data = data.get("bpf_snapshot", {})
     thresholds = dict(data.get("thresholds", {}) or {})
     tiers = {
@@ -365,6 +389,12 @@ def load(path: Path | None = None) -> GroopConfig:
                 damon_data["paddr_enabled"]
                 if isinstance(damon_data.get("paddr_enabled"), bool)
                 else False
+            ),
+        ),
+        ciu=CiuConfig(
+            known_stacks=tuple(
+                str(s) for s in (ciu_data.get("known_stacks", []) or [])
+                if isinstance(s, str)
             ),
         ),
         bpf_snapshot=BpfSnapshotConfig(

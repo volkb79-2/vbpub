@@ -210,10 +210,11 @@ Three packages, one per carve source, per controller-workflow-v2 §8:
   daemon. P75 now adds an `mcp-smoke` leg to `groop.acceptance` on the P33/P35/P38
   pattern, recording the largest observed live response against the 4 MiB cap
   rather than merely asserting it fits.
-- **P76 - CIU stack metadata** (*roadmap-driven*, Optional-plugins bucket). The
+- **P76 - CIU stack metadata** (*roadmap-driven*, Optional-plugins bucket — implemented). The
   bucket's last un-carved item. Not a cold carve: TUI-SPEC §4.3 already specifies
   detection, the label schema, and the numeric-phase rule, and it extends a
-  `Config.Labels` parse `dockerjoin` already performs.
+  `Config.Labels` parse `dockerjoin` already performs. The TUI-grouping and
+  ciu-gated-action successors remain as the bucket's residue.
 - **P77 - Web UI entity detail + bounded history** (*product-goal-driven*, the
   standing "launch the product with the new UI" priority, which §8 ranks above
   both other sources). = P69c above.
