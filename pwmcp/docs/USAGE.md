@@ -280,3 +280,50 @@ networks:
   pwmcp:
     external: true   # owned by the pwmcp stack; must be running first
 ```
+
+
+## P03: Shared Persistent Browser Mode (Opt-In)
+
+By default pwmcp runs in `browser_mode = "per-session"`: `@playwright/mcp`
+and `chrome-devtools-mcp` each launch their own Chromium, fully isolated
+from each other. This is unchanged and remains the default.
+
+Set `browser_mode = "shared"` in `ciu.toml.j2` when you need the
+**cross-tool workflow**: drive a page with Playwright MCP tools, then
+profile that SAME page with DevTools MCP tools, in the same browser. Shared
+mode also pools browser memory under concurrent use instead of paying for a
+Chromium process per session.
+
+```toml
+[pwmcp.unified]
+browser_mode = "shared"
+admin_port = 8939          # internal-network-only admin API (see below)
+browser_max_idle_s = 0     # 0 = disabled; >0 recycles the browser after
+                            # this many seconds with zero open pages
+```
+
+Choose `shared` when: you need the cross-tool proof (navigate via
+Playwright, trace via DevTools, same page) or you are running many
+concurrent short MCP sessions and want to pool browser memory.
+
+Stay on `per-session` (default) when: you want the strongest per-consumer
+isolation, or you don't need the cross-tool workflow — it is the simpler,
+longer-proven path.
+
+### Admin endpoint
+
+Shared mode exposes a small admin HTTP API on `admin_port` (default 8939),
+internal Docker network only — reach it from a sibling container as
+`http://pwmcp:8939/...` (never routed through Traefik, even in external
+mode):
+
+```bash
+# Clear all browser state (cookies/storage/pages) without restarting the process:
+curl -X POST http://pwmcp:8939/browser/reset
+
+# Hard-restart the shared Chromium (e.g. after a suspected leak):
+curl -X POST http://pwmcp:8939/browser/restart
+
+# Liveness + open-page count + uptime:
+curl http://pwmcp:8939/browser/health
+```

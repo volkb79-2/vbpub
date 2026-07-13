@@ -166,3 +166,18 @@ sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"
 The SHA256 digest is also embedded in the release notes for a quick manual check.
 
 "Latest" is resolved by scanning `pwmcp-v*` releases for the highest semver. The thin `pwmcp-latest` release contains only `latest.json` — a JSON pointer to the current versioned release — with no bundle duplication.
+
+
+## P03: Shared Browser Mode Vars
+
+New `[pwmcp.unified]` ciu vars (all opt-in; defaults preserve pre-P03
+behavior byte-for-byte):
+
+| Var | Default | Notes |
+|---|---|---|
+| `browser_mode` | `"per-session"` | `"shared"` opts into one persistent Chromium; any other value is a fatal entrypoint error |
+| `admin_port` | `8939` | Shared-mode admin API; internal network only, never published, never routed through Traefik |
+| `browser_max_idle_s` | `0` | Shared-mode idle recycle; `0` disables it; must be a non-negative integer or the entrypoint fails fatally |
+
+See `docs/USAGE.md` for the consumer-facing summary and `docs/ARCHITECTURE.md`
+for the mode-plumbing/mechanism details.

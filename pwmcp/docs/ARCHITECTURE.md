@@ -138,3 +138,97 @@ Both modes run with:
 - `cap_drop: [ALL]`
 - `security_opt: [no-new-privileges:true]`
 - `shm_size: 2gb` (Chromium's shared-memory requirement)
+
+
+## P03: Opt-In Shared Persistent Browser Mode
+
+`browser_mode` (ciu var under `[pwmcp.unified]`) selects between two runtime
+topologies. Default is `"per-session"` — byte-identical to pre-P03 behavior
+(verified: `containers/pwmcp/supervisord.conf` is unmodified by this
+package; see `pwmcp/handoff/reports/P03-REPORT.md` for the diff evidence).
+`"shared"` is opt-in.
+
+```
+per-session (default):                      shared (opt-in):
+┌──────────────┐  ┌──────────────┐          ┌──────────────┐  ┌──────────────┐
+│ @playwright/  │  │ chrome-      │          │ @playwright/  │  │ chrome-      │
+│ mcp           │  │ devtools-mcp │          │ mcp           │  │ devtools-mcp │
+│ (own browser) │  │ (own browser)│          │ --cdp-endpoint│  │ --browser-url│
+└──────┬───────┘  └──────┬───────┘          └──────┬───────┘  └──────┬───────┘
+       │ launches         │ launches                 │ attaches         │ attaches
+       ▼                  ▼                          ▼                  ▼
+  [chromium A]       [chromium B]              ┌──────────────────────────┐
+  (per session,      (per session,              │  chromium (ONE process)  │
+   isolated)          isolated)                 │  CDP 127.0.0.1:9222 only │
+                                                 └──────────────────────────┘
+                                                          ▲
+                                                          │ health/reset/restart
+                                                 ┌──────────────────────────┐
+                                                 │  admin-server (Node std) │
+                                                 │  0.0.0.0:8939 (internal) │
+                                                 └──────────────────────────┘
+lighthouse-mcp: unchanged in BOTH modes — always launches its own per-audit
+Chromium via chrome-launcher (explicit P03 "Out Of Scope").
+```
+
+### Chromium launch flags (shared mode)
+
+Pinned, explicit (see `containers/pwmcp/supervisord.shared.conf`
+`[program:chromium]`):
+
+```
+<PWMCP_CHROMIUM_PATH> --headless=new   --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1   --no-sandbox --disable-setuid-sandbox --disable-gpu   --user-data-dir=/tmp/pwmcp-shared-chromium-profile
+```
+
+`--remote-debugging-address=127.0.0.1` is the CDP-never-leaves-the-container
+control (see docs/SECURITY.md) — the Docker network cannot route to
+another container's loopback interface, so this is sufficient by itself;
+the ciu compose template additionally never publishes a CDP port and never
+adds a Traefik route for it.
+
+### Mode plumbing
+
+Both `supervisord.conf` (per-session) and `supervisord.shared.conf` (shared)
+are baked into every image (`Dockerfile` `COPY`s both) — there are no
+divergent Dockerfiles. `entrypoint.sh` reads `PWMCP_BROWSER_MODE`
+(`per-session` default, or `shared`) and execs
+`supervisord -c <selected-file>`. An unrecognized value is a fatal
+entrypoint error (`exit 1` with a message on stderr), not a silent
+fallback.
+
+### Admin endpoint (shared mode only)
+
+`admin-server` (`containers/pwmcp/admin-server/index.js`, Node stdlib
+`http`/`net`/`crypto` only — no new framework dependency) exposes exactly
+three routes, closed set, everything else 404, no request body is ever
+parsed:
+
+| Method | Path | Effect |
+|---|---|---|
+| `GET`  | `/browser/health`  | CDP liveness (`/json/version`) + open-target count (`/json/list`) + admin-server uptime |
+| `POST` | `/browser/reset`   | `Target.getBrowserContexts` + `Target.disposeBrowserContext` over a hand-rolled CDP WebSocket client — closes all contexts (cookies/storage/pages gone) without killing the Chromium process |
+| `POST` | `/browser/restart` | `supervisor.stopProcess`/`supervisor.startProcess("chromium")` over supervisord's unix-socket XML-RPC interface (the same transport `supervisorctl` uses) |
+
+It talks to supervisord only for `stopProcess`/`startProcess` on the single
+named `chromium` program — no broader RPC surface is used or exposed.
+`admin_port` (default 8939) is injected into the container environment but
+is **never** added to the compose `ports:` list and **never** given a
+Traefik router, in either deployment mode — see docs/SECURITY.md.
+
+### Startup ordering
+
+`wait-for-cdp.sh` (`containers/pwmcp/wait-for-cdp.sh`) prefixes the `mcp`
+and `devtools-mcp` program commands in shared mode: it polls
+`http://127.0.0.1:9222/json/version` for up to 30s before exec'ing the real
+attach command. If the browser never comes up in time, the wrapped command
+is exec'd anyway — its own connection failure then triggers supervisord's
+`autorestart`/`startretries` backoff rather than the program hanging
+half-attached indefinitely.
+
+### Optional idle recycle
+
+`browser_max_idle_s` (default `0`, disabled). When set, `admin-server`
+polls `/json/list` on an interval (`PWMCP_ADMIN_IDLE_CHECK_INTERVAL_S`,
+default 5s) and restarts the `chromium` program (via the same
+supervisord path as `/browser/restart`) once zero CDP targets have been
+observed continuously for at least `browser_max_idle_s` seconds.
