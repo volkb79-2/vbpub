@@ -6,14 +6,12 @@ import pytest
 
 from conftest import fixture_root
 from groop.collect.host import (
-    _zfs_arc_compute_hit_ratio,
     _zfs_arc_metrics,
     collect_host,
     collect_host_meta,
-    reset_zfs_arc_rate_state,
 )
 from groop.collect.collector import Collector
-from groop.config import DamonConfig, GroopConfig
+from groop.config import GroopConfig
 from groop.model import Entity, EntityFrame, Frame, MetricValue
 from groop.ui.banner import render_banner
 
@@ -66,11 +64,6 @@ def _base_sys(root: Path) -> Path:
     (zdebug / "stored_pages").write_text("0\n")
     (sys / "block").mkdir(parents=True)
     return sys
-
-
-@pytest.fixture(autouse=True)
-def _reset_arc_state() -> None:
-    reset_zfs_arc_rate_state()
 
 
 # ── Oracle 1: Present-ZFS fixture ──────────────────────────────────────────
@@ -163,39 +156,109 @@ def test_zfs_arc_malformed_missing_size(tmp_path: Path) -> None:
 
 
 # ── Oracle 4: Hit-ratio rate over two sweeps ──────────────────────────────
+#
+# The ratio is a rate, so it only exists on the Collector that holds the
+# previous sample. These drive the real `collect_once()` path and assert on
+# the Frame, not on a helper: a test that pokes a private accumulator would
+# pass even if nothing ever wired it into a frame.
 
 
-def test_zfs_arc_hit_ratio_rate_over_two_sweeps() -> None:
-    """Two consecutive reads with known deltas produce the exact expected ratio."""
-    reset_zfs_arc_rate_state()
-    r1 = _zfs_arc_compute_hit_ratio(1000000, 50000)
-    assert r1.v is None  # first sample, no previous
-    assert r1.raw == 1000000
-
-    r2 = _zfs_arc_compute_hit_ratio(1001000, 50100)
-    h_delta = 1001000 - 1000000
-    m_delta = 50100 - 50000
-    expected = h_delta / (h_delta + m_delta)
-    assert r2.v == pytest.approx(expected)
-    assert r2.raw == 1001000
-
-
-def test_zfs_arc_hit_ratio_counter_regression() -> None:
-    """Counter regression (pool export/import) emits v=None and reseeds."""
-    reset_zfs_arc_rate_state()
-    _zfs_arc_compute_hit_ratio(1000000, 50000)  # seed
-    r = _zfs_arc_compute_hit_ratio(500000, 30000)  # regression
-    assert r.v is None
-    assert r.raw == 500000  # reseeded to the new (lower) value
+def _write_arcstats(proc: Path, *, hits: int, misses: int) -> None:
+    arcpath = proc / "spl" / "kstat" / "zfs"
+    arcpath.mkdir(parents=True, exist_ok=True)
+    (arcpath / "arcstats").write_text(
+        "\n".join(
+            (
+                "13 1 0x01 98 26656 4319023 1234567890",
+                "name                            type data",
+                "size                            4    12884901888",
+                "c                               4    17179869184",
+                "c_max                           4    34359738368",
+                "c_min                           4    13743895347",
+                f"hits                            4    {hits}",
+                f"misses                          4    {misses}",
+            )
+        )
+        + "\n"
+    )
 
 
-def test_zfs_arc_hit_ratio_no_delta_regression() -> None:
-    """Zero delta (no new hits/misses) emits v=None."""
-    reset_zfs_arc_rate_state()
-    _zfs_arc_compute_hit_ratio(1000000, 50000)
-    r = _zfs_arc_compute_hit_ratio(1000000, 50000)  # no change
-    assert r.v is None
-    assert r.raw == 1000000
+def _zfs_collector(tmp_path: Path, *, hits: int, misses: int) -> tuple[Collector, Path]:
+    """A Collector whose procfs has ZFS, so collect_once() sees the ARC kstat."""
+    proc = _base_proc(tmp_path, "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n")
+    _write_arcstats(proc, hits=hits, misses=misses)
+    cgroup_root = tmp_path / "cgroup"
+    cgroup_root.mkdir()
+    collector = Collector(
+        cgroup_root,
+        GroopConfig(interval=5.0),
+        network_providers=(),
+        now=lambda: 100.0,
+        proc_root=proc,
+        sys_root=_base_sys(tmp_path),
+        damon_root=fixture_root() / "damonfs" / "no-root" / "kdamonds",
+    )
+    return collector, proc
+
+
+def _hit_ratio(collector: Collector) -> MetricValue:
+    return collector.collect_once().host["host_zfs_arc_hit_ratio"]
+
+
+def test_zfs_arc_hit_ratio_rate_over_two_sweeps(tmp_path: Path) -> None:
+    """Two sweeps with known deltas put the exact expected ratio in the frame."""
+    collector, proc = _zfs_collector(tmp_path, hits=1_000_000, misses=50_000)
+
+    first = _hit_ratio(collector)
+    assert first.v is None, "first sample has no baseline to diff against"
+    assert first.raw == 1_000_000
+
+    _write_arcstats(proc, hits=1_001_000, misses=50_100)
+    second = _hit_ratio(collector)
+    assert second.v == pytest.approx(1000 / (1000 + 100))
+    assert second.raw == 1_001_000
+
+
+def test_zfs_arc_hit_ratio_counter_regression(tmp_path: Path) -> None:
+    """A pool export/import walks the counters back: emit None and reseed."""
+    collector, proc = _zfs_collector(tmp_path, hits=1_000_000, misses=50_000)
+    _hit_ratio(collector)  # seed
+    _write_arcstats(proc, hits=1_001_000, misses=50_100)
+    assert _hit_ratio(collector).v is not None  # seeded, ratio flowing
+
+    _write_arcstats(proc, hits=500_000, misses=30_000)  # counters go backwards
+    regressed = _hit_ratio(collector)
+    assert regressed.v is None, "a regression must not yield a negative or absurd ratio"
+    assert regressed.raw == 500_000  # reseeded to the new, lower value
+
+    # Reseeded, so the very next sweep produces a ratio again from the new base.
+    _write_arcstats(proc, hits=500_900, misses=30_100)
+    assert _hit_ratio(collector).v == pytest.approx(900 / (900 + 100))
+
+
+def test_zfs_arc_hit_ratio_idle_interval(tmp_path: Path) -> None:
+    """No ARC accesses in the interval: there is no ratio to report, not 0.0."""
+    collector, _proc = _zfs_collector(tmp_path, hits=1_000_000, misses=50_000)
+    _hit_ratio(collector)  # seed
+    idle = _hit_ratio(collector)  # identical counters
+    assert idle.v is None
+    assert idle.raw == 1_000_000
+
+
+def test_zfs_arc_hit_ratio_state_is_per_collector(tmp_path: Path) -> None:
+    """A fresh Collector must not inherit another Collector's counter baseline.
+
+    Regression guard: the ARC rate was first built on a module-level global, so
+    a second Collector in the same process reported a ratio on its very first
+    sweep, computed against a previous Collector's counters.
+    """
+    warm, proc = _zfs_collector(tmp_path, hits=1_000_000, misses=50_000)
+    _hit_ratio(warm)  # seed
+    _write_arcstats(proc, hits=1_001_000, misses=50_100)
+    assert _hit_ratio(warm).v is not None  # warm collector has a baseline
+
+    fresh, _ = _zfs_collector(tmp_path / "second", hits=1_002_000, misses=50_200)
+    assert _hit_ratio(fresh).v is None, "a fresh Collector has no baseline of its own"
 
 
 # ── Oracle 5: Banner annotation ───────────────────────────────────────────

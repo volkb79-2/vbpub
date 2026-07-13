@@ -248,7 +248,11 @@ def _zfs_arc_metrics(proc_root: Path) -> dict[str, MetricValue]:
     if not isinstance(hits_raw, int) or not isinstance(misses_raw, int):
         hit_ratio = MetricValue(None, "unavail_kernel", None)
     else:
-        hit_ratio = _zfs_arc_compute_hit_ratio(hits_raw, misses_raw)
+        # A ratio needs two samples, so a single read can never produce one.
+        # The Collector derives it from the raw counters it carries in
+        # host_meta["zfs_arc"], using the same per-instance delta/reset
+        # machinery as every other counter (Collector._apply_zfs_arc_rate).
+        hit_ratio = MetricValue(None, "derived", hits_raw)
 
     return {
         "host_zfs_arc_size": size,
@@ -270,36 +274,6 @@ def _zfs_arc_detail(proc_root: Path) -> dict[str, object] | None:
     return {k: v for k, v in kstat.items() if isinstance(v, int)}
 
 
-# Module-level state for ARC hit-ratio rate computation.
-# Resets on each collect_once() via reset_zfs_arc_rate_state().
-_zfs_arc_rate_state: dict[str, int | None] = {
-    "prev_hits": None,
-    "prev_misses": None,
-}
-
-
-def reset_zfs_arc_rate_state() -> None:
-    _zfs_arc_rate_state["prev_hits"] = None
-    _zfs_arc_rate_state["prev_misses"] = None
-
-
-def _zfs_arc_compute_hit_ratio(hits_raw: int, misses_raw: int) -> MetricValue:
-    prev_hits = _zfs_arc_rate_state["prev_hits"]
-    prev_misses = _zfs_arc_rate_state["prev_misses"]
-    _zfs_arc_rate_state["prev_hits"] = hits_raw
-    _zfs_arc_rate_state["prev_misses"] = misses_raw
-    if prev_hits is None or prev_misses is None:
-        return MetricValue(None, "derived", hits_raw)
-    h_delta = hits_raw - prev_hits
-    m_delta = misses_raw - prev_misses
-    if h_delta < 0 or m_delta < 0:
-        return MetricValue(None, "derived", hits_raw)
-    total = h_delta + m_delta
-    if total == 0:
-        return MetricValue(None, "derived", hits_raw)
-    return MetricValue(h_delta / total, "derived", hits_raw)
-
-
 def _parse_arcstats(text: str) -> dict[str, object] | None:
     out: dict[str, object] = {}
     ok = False
@@ -314,12 +288,9 @@ def _parse_arcstats(text: str) -> dict[str, object] | None:
         dtype = parts[1]
         data = parts[2]
         try:
-            if dtype == "4":
-                out[name] = int(data)
-            elif dtype == "8":
-                out[name] = int(data)
-            else:
-                out[name] = data
+            # kstat types 4 (uint64) and 8 (hrtime) carry a numeric data column;
+            # anything else (the file's own header rows included) stays a string.
+            out[name] = int(data) if dtype in ("4", "8") else data
         except (ValueError, TypeError):
             return None
         if name in ("size", "c", "c_max", "c_min", "hits", "misses"):

@@ -23,6 +23,10 @@ from groop.providers.net_host import NetHostProvider
 from groop.providers.net_netns import NetnsProvider
 from groop.registry import COMPACT_GROUPS, METRIC_GROUPS, FIELD_LIST_BLOCK_MAP, parse_metrics_selector
 
+# Counter-history key for host-scoped (non-cgroup) counters. Cgroup keys are
+# absolute paths, so this cannot collide with a real entity.
+_HOST_RATE_KEY: EntityKey = "<host>"
+
 
 class Collector:
     def __init__(
@@ -119,11 +123,13 @@ class Collector:
         self._prev_ts = ts
         host_meta = collect_host_meta(proc_root=self.proc_root, sys_root=self.sys_root)
         self._apply_host_device_rates(host_meta, interval_s)
+        host = self.host_collector()
+        self._apply_zfs_arc_rate(host, host_meta)
         frame = Frame(
             schema_version=1,
             ts=ts,
             interval_s=interval_s,
-            host=self.host_collector(),
+            host=host,
             entities=frames,
             host_meta=host_meta,
         )
@@ -286,6 +292,32 @@ class Collector:
             else:
                 out["io_cap_saturation_pct"] = MetricValue(None, "unavail_kernel")
         return out
+
+    def _apply_zfs_arc_rate(self, host: dict[str, MetricValue], host_meta: dict[str, object]) -> None:
+        """Derive the ZFS ARC hit ratio from this interval's kstat counter deltas.
+
+        `collect_host` cannot compute this: a ratio needs two samples, and the
+        previous one belongs to this Collector, not to the module. Counters and
+        the regression/reseed rule go through `_delta` like every other counter,
+        so a fresh Collector reports None until it has a baseline of its own.
+        """
+        metric = host.get("host_zfs_arc_hit_ratio")
+        if metric is None or metric.src == "unavail_kernel":
+            return  # no ZFS on this host, or an unreadable kstat
+        arc = host_meta.get("zfs_arc")
+        hits = arc.get("hits") if isinstance(arc, dict) else None
+        misses = arc.get("misses") if isinstance(arc, dict) else None
+        if not isinstance(hits, int) or not isinstance(misses, int):
+            host["host_zfs_arc_hit_ratio"] = MetricValue(None, "unavail_kernel")
+            return
+        # Both deltas must be taken so both counters reseed on a pool export.
+        hit_delta, hits_raw = self._delta(_HOST_RATE_KEY, "arcstats:hits", hits)
+        miss_delta, _ = self._delta(_HOST_RATE_KEY, "arcstats:misses", misses)
+        total = None if hit_delta is None or miss_delta is None else hit_delta + miss_delta
+        if not total:  # first sample, counter regression, or no ARC access at all
+            host["host_zfs_arc_hit_ratio"] = MetricValue(None, "derived", hits_raw)
+            return
+        host["host_zfs_arc_hit_ratio"] = MetricValue(hit_delta / total, "derived", hits_raw)
 
     def _apply_host_device_rates(self, host_meta: dict[str, object], interval_s: float) -> None:
         """Compute host device rates from raw counters and store in host_meta.
