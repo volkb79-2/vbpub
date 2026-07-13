@@ -2,10 +2,30 @@
 
 <!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
 > **Tier:** flash-max
-> **Depends-on:** P52 (merged, reviewed)
+> **Depends-on:** P52 (merged, reviewed) AND P63 (typed versioned client methods — dispatch P58 only after P63 merges)
 > **Base:** main
-> **Session-hint:** fresh (P52 session was OpenCode/GLM; API surface is documented in the P52 handoff + report)
-> **Escalate-if:** a named contract cannot be met as specified; the versioned read API (P52) itself would need changes
+> **Session-hint:** fresh (P52 session was OpenCode/GLM; API surface is documented in the P52 handoff + report; the typed client surface P58 consumes is P63)
+> **Escalate-if:** a named contract cannot be met as specified; the versioned read API (P52) or its typed client (P63) itself would need changes beyond what P63 delivered
+
+<!--
+CARVE NOTE (2026-07-13, frontier carve authority, controller-workflow-v2 §8):
+P58 BLOCKED cleanly twice on the same root cause — P52's `DaemonClient`
+(groop/src/groop/daemon/client.py) exposed only legacy-protocol methods and had
+NO typed method for the versioned `entity`/`history` envelope ops that
+`DaemonApi` serves. flash-max's first attempt hand-rolled a raw socket/envelope
+path (rejected as B3 in reports/P58-REVIEW.md); the terra-med v2 retry correctly
+refused to repeat that and BLOCKED (reports/P58-REPORT.md on branch
+feat/groop-p58-daemon-mcp-frontend-v2). Resolution: carved P63
+(groop/handoff/P63-daemon-client-versioned-read-methods.md) to extend
+`DaemonClient` with typed, validated `request_current()`/`request_history()`/
+`request_entity()`/`request_hello()` methods that own envelope transport,
+decoding, and error mapping. Once P63 merges, the "consume P52 exclusively
+through the typed adapter" constraint below is satisfiable without any raw
+socket/envelope work in `groop.mcp`. Discard both prior P58 branches
+(feat/groop-p58-daemon-mcp-frontend and -v2) and dispatch P58 fresh on a base
+that includes merged P63; the four MCP tools each route through the P63 client.
+-->
+
 
 ## Goal
 
@@ -19,11 +39,15 @@ asks "which containers are under memory/PSI pressure right now" mid-debug.
 
 ## Dependency And Workflow
 
-- Starts ONLY after reviewed P52 is merged: P58 consumes the P52 versioned
-  read API exclusively through P52's typed Python adapter. It must not open
-  its own socket protocol path, parse wire JSON itself, or duplicate
-  envelope/validation logic. If the adapter is missing something P58 needs,
-  propose the adapter extension in the REPORT — do not work around it.
+- Starts ONLY after reviewed P52 AND P63 are merged: P58 consumes the P52
+  versioned read API exclusively through the P63 typed `DaemonClient` methods
+  (`request_current`/`request_history`/`request_entity`/`request_hello`, plus
+  the existing `request_health`). It must not open its own socket protocol
+  path, parse wire JSON itself, or duplicate envelope/validation logic — P63
+  now provides exactly the typed surface the two prior P58 attempts found
+  missing. If the client is STILL missing something P58 needs, propose the
+  extension in the REPORT and BLOCK — do not work around it with raw socket
+  I/O (that was the B3 rejection; see reports/P58-REVIEW.md).
 - Branch: `feat/groop-p58-daemon-mcp-frontend`
 - Worktree: `.worktrees/-groop-p58-daemon-mcp-frontend`
 - Touch only `groop/**`; write P58-LOG.md/P58-REPORT.md; commit, do not merge.
