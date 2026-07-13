@@ -47,16 +47,38 @@ deadline (10s) using `asyncio.get_event_loop().time()`.
 
 ### Other tests checked
 
-The remaining UI tests in `test_ui_app.py` that use `pilot.pause()` loops
-either:
-- Poll for a condition that is synchronously set (e.g., `_wait_for_frame`
-  which is the first frame during mount — the frame is delivered via
-  `call_from_thread` and the window is long enough with 10 iterations),
-- Use `pilot.press()` followed by `pilot.pause()` which waits for Textual
-  event processing (bounded by the widget tree state, not a thread race), or
-- Use iteration counts far above what any measured scenario needs.
+> **Corrected at review (pass #2).** This section originally read "No other
+> tests were found to be flaky by the same mechanism." That was wrong, and the
+> package's own SELFREVIEW contradicted it: it named two more tests with the
+> identical `for _ in range(20): await pilot.pause()` race, and **observed one
+> of them (`test_pilot_snapshot_success_reports_path`) actually fail** in a
+> full-suite run. Shipping that would have left a known-flaky test in the gate
+> — the exact tax this package exists to remove.
 
-No other tests were found to be flaky by the same mechanism.
+Two further tests polled a thread-set status with the same fixed-iteration
+loop, and were **repaired at review** with the same (already mutation-tested)
+`_wait_or_timeout` helper:
+
+- `test_pilot_snapshot_success_reports_path` — polled for `"snapshot saved:"`.
+  Observed failing under full-suite load during this package's own self-review.
+- `test_pilot_snapshot_handled_exception_reports_failure` — polled for
+  `"snapshot failed:"`.
+
+Both were mutation-tested at review (delete the `_refresh_status` write each
+covers → red) and stressed 20x green. See `P85-REVIEW.md`.
+
+Still using a fixed-iteration loop, and **not** repaired:
+
+- `_wait_for_frame` (10 iterations) — the shared first-frame helper used by
+  most UI tests. Same shape, but its producer has no `time.sleep`, and it was
+  not observed to flake in 20x stress or across four full-suite runs. Named
+  here rather than changed, because touching the helper every UI test depends
+  on is a change whose blast radius wants its own package if it ever does
+  flake.
+
+The remaining `pilot.pause()` uses are `pilot.press()`-then-`pause()` pairs,
+which wait on Textual event processing rather than on a worker thread, and are
+not exposed to this race.
 
 ## Files changed
 

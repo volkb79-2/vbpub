@@ -87,9 +87,9 @@ async def _wait_or_timeout(pilot, predicate, *, timeout: float = 10.0) -> None:
     could exhaust before the thread worker finishes. Wall-clock deadline
     removes the race (P85).
     """
-    import asyncio as _asyncio
-    deadline = _asyncio.get_event_loop().time() + timeout
-    while _asyncio.get_event_loop().time() < deadline:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
         await pilot.pause()
         if predicate():
             return
@@ -468,10 +468,7 @@ def test_pilot_snapshot_success_reports_path(tmp_path: Path) -> None:
             await _wait_for_frame(app)(pilot)
             await pilot.press("x")
             # Wait for the worker to finish and status to update
-            for _ in range(20):
-                await pilot.pause()
-                if "snapshot saved:" in _status_text(app):
-                    break
+            await _wait_or_timeout(pilot, lambda: "snapshot saved:" in _status_text(app))
             assert "snapshot saved:" in _status_text(app)
             assert "groop-incident" in _status_text(app)
 
@@ -498,10 +495,7 @@ def test_pilot_snapshot_handled_exception_reports_failure(tmp_path: Path) -> Non
             app._refresh_view()
             await pilot.press("x")
             # Wait for the worker to finish
-            for _ in range(20):
-                await pilot.pause()
-                if "snapshot failed:" in _status_text(app):
-                    break
+            await _wait_or_timeout(pilot, lambda: "snapshot failed:" in _status_text(app))
             assert "snapshot failed:" in _status_text(app)
 
     asyncio.run(run())
