@@ -58,18 +58,9 @@ report FILE --json` to compute a steady-state percentile/rate profile from a
 P2-format recording. Until P53/P54 merge, unattended recording and
 machine-readable steady-state profiles remain prototype-only claims.
 
-P55-P57 are queued, spec-only, and each independently implementable without
-P53/P54 or each other. P55 adds `--entities GLOB`/`--slice NAME`/`--metrics
-compact` collection-time filtering (extracted from P53's amendment so the
-two can build in parallel). P56 adds `groop squeeze`, a guided stepped
-`memory.high` working-set measurement absorbing the standalone
-`container-mempress.sh` workflow, gated through the existing P21/P46 admin
-action posture with mandatory `memory.high` restore on exit/SIGINT. P57 adds
-`--container NAME_OR_PREFIX` docker-name resolution wherever groop takes a
-cgroup-path/entity identifier today. Until P55-P57 merge, unattended
-recording remains full-tree/full-metric only, no guided squeeze measurement
-exists, and identifier flags accept only cgroup-path/target strings, not
-docker container names.
+P55 adds `--entities GLOB`/`--slice NAME`/`--metrics compact` collection-time
+filtering and is **done** (see implemented section). P56 (``groop squeeze``)
+and P57 (``--container``) remain queued.
 
 These percentages are engineering estimates, not release tags. The strongest
 claim the repo can currently make is: **feature-complete prototype for v1/v1.5
@@ -166,6 +157,17 @@ core workflows, not yet production-certified.**
   left/right delegated for tree collapse/expand; sort direction shown
   in both column headers and status line; cursor restored stably across
   live and replay refreshes.
+- Collector-level entity and metric filtering (P55): ``--entities GLOB``
+  (repeatable, fnmatch), ``--slice NAME`` (subtree selector), and ``--metrics
+  compact`` (gauge-family subset) added to the top-level parser, the
+  ``Collector``, and all ``Collector(...)`` call sites in ``cli.py``.
+  Entity filtering skips ``collect_cgroup()`` (sysfs reads) for excluded
+  entities, with ancestor auto-inclusion for path completeness. Metric
+  filtering uses registry-defined ``METRIC_GROUPS``/``COMPACT_GROUPS`` and
+  is applied as the final step after all annotations.
+  31 focused tests covering glob matching, slice subtree inclusion, ancestor
+  correctness, compact field-set precision, collection-time pruning, and
+  replay/attach rejection.
 
 ## Partially Implemented
 
@@ -231,10 +233,8 @@ core workflows, not yet production-certified.**
 - paddr auto-start / persistent daemon-owned paddr mode.
 - Headless (non-Textual) `--record` driver and `groop report` steady-state
   profile command (queued: P53, P54).
-- Collector-level entity/metric filtering (`--entities`/`--slice`/`--metrics
-  compact`), guided stepped `memory.high` squeeze measurement (`groop
-  squeeze`), and docker-name entity selectors (`--container`) (queued: P55,
-  P56, P57).
+- Guided stepped `memory.high` squeeze measurement (`groop squeeze`) and
+  docker-name entity selectors (`--container`) (queued: P56, P57).
 
 ## Acceptance Status
 

@@ -4,7 +4,13 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from groop.collect.cgroup import CgroupSample, collect_cgroup, walk_entities
+from groop.collect.cgroup import (
+    CgroupSample,
+    add_entity_ancestors,
+    build_entity_predicate,
+    collect_cgroup,
+    walk_entities,
+)
 from groop.collect.dockerjoin import DockerInspect, enrich_entities
 from groop.collect.host import collect_host, collect_host_meta
 from groop.config import GroopConfig, load
@@ -15,6 +21,7 @@ from groop.model import Entity, EntityFrame, EntityKey, Frame, MetricSource, Met
 from groop.providers.base import NetSample, Provider, sample_rank
 from groop.providers.net_host import NetHostProvider
 from groop.providers.net_netns import NetnsProvider
+from groop.registry import COMPACT_GROUPS, METRIC_GROUPS
 
 
 class Collector:
@@ -31,6 +38,9 @@ class Collector:
         damon_root: Path = DEFAULT_DAMON_ROOT,
         damon_state_dir: Path | None = None,
         systemctl_show_runner: SystemctlShowRunner | None = None,
+        entities_globs: tuple[str, ...] | None = None,
+        slice_names: tuple[str, ...] | None = None,
+        metrics_mode: str = "full",
     ) -> None:
         self.config = config or load()
         self.cgroup_root = cgroup_root or self.config.cgroup_root
@@ -51,6 +61,15 @@ class Collector:
         self._prev_ts: float | None = None
         self._prev_counters: dict[tuple[EntityKey, str], int] = {}
         self._prev_device_counters: dict[str, list[dict[str, object]]] | None = None
+        # Entity and metric filtering state
+        self._entity_predicate = build_entity_predicate(entities_globs, slice_names)
+        # Pre-compute the set of metric names to keep under compact mode
+        if metrics_mode == "compact":
+            self._compact_metric_names: frozenset[str] = frozenset().union(
+                *(METRIC_GROUPS[g] for g in COMPACT_GROUPS)
+            )
+        else:
+            self._compact_metric_names = frozenset()
 
     def collect_once(self) -> Frame:
         ts = self.now()
@@ -58,8 +77,17 @@ class Collector:
         entities = walk_entities(self.cgroup_root)
         self._apply_config(entities)
         entities = enrich_entities(entities, self.docker_inspect)
+        # Apply entity filtering: determine which entity keys to collect.
+        # Non-matching entities are skipped (no sysfs reads for their cgroup).
+        if self._entity_predicate is not None:
+            matched = {k for k in entities if self._entity_predicate(k)}
+            collect_keys = add_entity_ancestors(matched)
+        else:
+            collect_keys = set(entities.keys())
         frames: dict[EntityKey, EntityFrame] = {}
         for key, entity in entities.items():
+            if key not in collect_keys:
+                continue
             sample = collect_cgroup(self.cgroup_root, key, entity)
             metrics = dict(sample.metrics)
             metrics.update(self._derived_rates(key, sample, interval_s))
@@ -86,7 +114,25 @@ class Collector:
             state_dir=self.damon_state_dir,
         )
         annotate_frame_governance(frame, self.systemctl_show_runner)
-        return annotate_frame_diagnostics(frame, self.config)
+        frame = annotate_frame_diagnostics(frame, self.config)
+        # Apply metric filtering last, after all annotations have populated
+        # entity metrics. This ensures ALL non-compact metrics (including
+        # DAMON, governance, and diagnostics) are pruned.
+        if self._compact_metric_names:
+            for eframe in frame.entities.values():
+                eframe.metrics = {
+                    k: v for k, v in eframe.metrics.items()
+                    if k in self._compact_metric_names
+                }
+                # The handoff's compact drop-list also covers the structured
+                # per-entity network / DAMON / governance-drift blocks, which
+                # live as separate EntityFrame attributes rather than in the
+                # metrics dict. Drop them too so a compact frame is genuinely
+                # the specified subset, not just a metrics-dict subset.
+                eframe.network = None
+                eframe.damon = None
+                eframe.governance = None
+        return frame
 
     def _apply_config(self, entities: dict[EntityKey, Entity]) -> None:
         for entity in entities.values():

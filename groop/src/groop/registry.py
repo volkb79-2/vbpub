@@ -137,3 +137,31 @@ REGISTRY: dict[str, MetricSpec] = {
 }
 
 assert all(name == spec.name for name, spec in REGISTRY.items())
+
+# Metric groups for --metrics compact and other family-level filtering.
+# Each group is a tuple of metric names from REGISTRY.
+# The compact mode keeps only metrics in groups listed here.
+# Defined in registry.py (not inlined in cli.py) so it stays the single source of truth.
+METRIC_GROUPS: dict[str, tuple[str, ...]] = {
+    "mem_usage": (
+        "ram", "anon", "file", "shmem", "sock",
+        "z_pool", "z_eq", "swap_disk",
+    ),
+    "psi": (
+        "psi_mem_some_avg10", "psi_mem_full_avg10",
+        "psi_io_some_avg10", "psi_io_full_avg10",
+        "psi_cpu_some_avg10", "psi_cpu_full_avg10",
+    ),
+    "refault": (
+        "rf_z_per_s", "rf_d_per_s", "rf_f_per_s",
+    ),
+}
+"""Compact-mode metric groups kept by ``--metrics compact``."""
+
+COMPACT_GROUPS: frozenset[str] = frozenset(METRIC_GROUPS.keys())
+"""The set of group names that ``--metrics compact`` retains."""
+
+# Verify every listed metric name exists in REGISTRY
+for _group_name, _metric_names in METRIC_GROUPS.items():
+    for _name in _metric_names:
+        assert _name in REGISTRY, f"METRIC_GROUPS.{_group_name}: {_name!r} not in REGISTRY"

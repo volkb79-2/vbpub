@@ -187,12 +187,6 @@ Handoffs: `handoff/P53-headless-record-driver.md` and
 
 ### P55-P57 - Collector Filtering, Guided Squeeze, And Docker-Name Selectors
 
-All three queued, spec-only (no implementation yet), and each independently
-implementable without any of the others or without P53/P54 — none of P55,
-P56, or P57 require another to land first. Where two packages touch the same
-file (e.g. `src/groop/cli.py` argument parsing), merge order between them is
-flexible and conflicts are trivial.
-
 P55 adds `--entities GLOB`/`--slice NAME` entity selectors and a `--metrics
 compact` gauge-family subset at the `Collector`/`walk_entities` level, so
 excluded entities are never read from sysfs, not just pruned from output.
@@ -202,9 +196,15 @@ same `Collector`. Extracted from P53's "Amendment 2026-07-10" so the two can
 be built in parallel; cites P53's live numbers (a full frame is ~447 KB
 across 89 entities) as motivation for scoping a recording to one tier.
 
-P56 adds `groop squeeze --target CGROUP_PATH`: a guided, stepped
-`memory.high` squeeze that measures a cgroup's real (hot) working set,
-absorbing the workflow already proven live by
+Status: **done**.
+
+Handoff: `handoff/P55-collector-entity-metric-filtering.md`.
+Report: `handoff/reports/P55-REPORT.md`.
+
+P56 and P57 remain queued, spec-only (no implementation yet). P56 adds
+`groop squeeze --target CGROUP_PATH`: a guided, stepped `memory.high` squeeze
+that measures a cgroup's real (hot) working set, absorbing the workflow already
+proven live by
 `scripts/gstammtisch-guide/files/usr/local/sbin/container-mempress.sh` into
 groop natively, gated through the existing P21/P46 admin action posture
 (root, `--admin`, typed confirmation, audit). `memory.high` is always

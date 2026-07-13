@@ -49,6 +49,12 @@ recording without the TUI, use `--record FILE --headless [--interval N]
 without importing `textual`, so it works even when the UI dependencies are not
 installed.
 
+Use `--entities GLOB` (repeatable) to collect only entities whose `EntityKey`
+matches a glob pattern, `--slice NAME` to include an entity subtree, and
+`--metrics compact` to keep only the memory-gauge, PSI, and refault-rate metric
+families. These flags apply to `--once`, the live TUI, and `--record` (both
+TUI-driven and headless P53). They are rejected with `--replay` and `--attach`.
+
 Useful feature hotkeys in the TUI:
 
 - `F5` / `t` toggles tree vs. container view.

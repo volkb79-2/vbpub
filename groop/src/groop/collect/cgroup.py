@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import fnmatch
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -342,3 +344,74 @@ def collect_cgroup(root: Path, key: EntityKey, entity: Entity) -> CgroupSample:
     for name in ("net_rx_bps", "net_tx_bps", "net_rx_pps", "net_tx_pps", "pressure"):
         sample.metrics[name] = MetricValue(None, "unavail_kernel")
     return sample
+
+
+def _validate_slice_name(name: str) -> None:
+    """Validate a --slice argument is a plausible cgroup path segment.
+
+    Raises ValueError with a clear message if the name contains path
+    traversal (``..``), control characters, or begins/ends with ``/``.
+    """
+    if not name:
+        raise ValueError("slice name must not be empty")
+    if name.startswith("/"):
+        raise ValueError(f"slice name must not start with '/': {name!r}")
+    if name.endswith("/"):
+        raise ValueError(f"slice name must not end with '/': {name!r}")
+    if "\x00" in name:
+        raise ValueError("slice name must not contain NUL")
+    if any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ValueError("slice name must not contain control characters")
+    parts = name.split("/")
+    if any(part == ".." for part in parts):
+        raise ValueError(f"slice name must not contain parent traversal '..': {name!r}")
+
+
+def build_entity_predicate(
+    entities_globs: tuple[str, ...] | None,
+    slice_names: tuple[str, ...] | None,
+) -> Callable[[EntityKey], bool] | None:
+    """Build a predicate that returns True for entity keys matching any
+    ``--entities`` glob or falling under any ``--slice`` subtree.
+
+    Returns ``None`` when no filtering is requested (collect everything).
+    """
+    if not entities_globs and not slice_names:
+        return None
+
+    matchers: list[Callable[[EntityKey], bool]] = []
+
+    if entities_globs:
+        for g in entities_globs:
+            matchers.append(lambda key, glob=g: fnmatch.fnmatchcase(key, glob))
+
+    if slice_names:
+        for s in slice_names:
+            _validate_slice_name(s)
+            prefix = s + "/"
+            matchers.append(lambda key, pre=prefix, slc=s: key == slc or key.startswith(pre))
+
+    def _predicate(key: EntityKey) -> bool:
+        return any(m(key) for m in matchers)
+
+    return _predicate
+
+
+def add_entity_ancestors(keys: set[EntityKey]) -> set[EntityKey]:
+    """Return the set of entity keys with every ancestor included.
+
+    Given a set of entity keys, ensures every ancestor of each key
+    (root ``""`` through the matched entity's parent chain, via
+    ``parent_key()``) is present. Ancestors are included for path
+    completeness (tree rendering, effective-min clamping) even when
+    they did not match the original glob/slice.
+    """
+    result = set(keys)
+    for key in list(result):
+        while True:
+            parent = parent_key(key)
+            if parent is None:
+                break
+            result.add(parent)
+            key = parent
+    return result
