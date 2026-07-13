@@ -1,4 +1,4 @@
-# P58 REPORT — Daemon MCP Frontend (v4 respin)
+# P58 REPORT - Daemon MCP Frontend (v4 respin)
 
 ## Delivered
 
@@ -43,10 +43,10 @@ and redacts second.
 Run in this agent environment (Linux Debian 13, Python 3.14.6, MCP 1.28.1):
 
 ```text
-PYTHONPATH=groop/src /usr/local/py-utils/bin/pytest \
+PYTHONPATH=groop/src /usr/local/py-utils/venvs/pytest/bin/python -m pytest \
   groop/tests/test_mcp_server.py groop/tests/test_textual_boundary.py \
   groop/tests/test_packaging_metadata.py -q -W error
-15 passed in 1.52s
+17 passed in 1.19s
 ```
 
 This includes MCP-client discovery, all tool happy paths, unknown/zero/negative/
@@ -69,6 +69,6 @@ A live daemon end-to-end session was not claimed; it remains controller-side
 evidence as required.
 
 ```text
-timeout 900 env PYTHONPATH=groop/src /usr/local/py-utils/bin/pytest groop/tests -q -W error
-1113 passed, 2 skipped in 141.74s
+timeout 900 env PYTHONPATH=groop/src /usr/local/py-utils/venvs/pytest/bin/python -m pytest groop/tests -q -W error
+1115 passed, 2 skipped in 138.58s
 ```

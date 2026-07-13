@@ -8,12 +8,10 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
-
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from groop.daemon.api import DEFAULT_MAX_RESPONSE_BYTES, Sensitivity
+from groop.daemon.api import DEFAULT_MAX_RESPONSE_BYTES, Sensitivity, metric_sensitivity
 from groop.daemon.client import (
     DaemonConnectError,
     DaemonCurrentResult,
@@ -23,8 +21,9 @@ from groop.daemon.client import (
     DaemonResponseError,
 )
 from groop.daemon.component_health import ComponentSnapshot, ComponentState, HealthSnapshot
-from groop.mcp.server import MAX_HISTORY_LIMIT, MAX_OVERVIEW_LIMIT, McpServer
+from groop.mcp.server import MAX_HISTORY_LIMIT, MAX_OVERVIEW_LIMIT, McpServer, _sensitivity
 from groop.model import DockerMeta, Entity, EntityFrame, EntityKey, Frame, MetricValue
+from groop.registry import REGISTRY
 
 
 DOCKER_KEY = "system.slice/docker-" + ("a" * 64) + ".scope"
@@ -163,6 +162,13 @@ def call(server: McpServer, name: str, **arguments: object) -> tuple[set[str], d
     return asyncio.run(_mcp_call(server, name, arguments))
 
 
+async def _discovered_descriptions(server: McpServer) -> dict[str, str]:
+    app = server.build_mcp_server(FastMCP)
+    async with create_connected_server_and_client_session(app) as session:
+        tools = await session.list_tools()
+    return {tool.name: tool.description or "" for tool in tools.tools}
+
+
 def error_code(result: dict[str, object]) -> str:
     return result["error"]["code"]  # type: ignore[index]
 
@@ -185,6 +191,24 @@ def test_discovery_and_happy_paths_are_real_mcp_calls() -> None:
     _, history = call(server, "groop_history", selector="api", metric="ram", window="last:30", limit=3)
     assert history["data"]["entity_key"] == DOCKER_KEY  # type: ignore[index]
     assert history["data"]["series"] == [[1000.0, 2000.0], [1001.0, 2001.0], [1002.0, 2002.0]]  # type: ignore[index]
+
+
+def test_discovered_descriptions_state_only_enforced_contracts() -> None:
+    descriptions = asyncio.run(_discovered_descriptions(McpServer(FakeClient())))
+    assert "at most 16 components" in descriptions["groop_health"]
+    assert "limit is 1..50 rows" in descriptions["groop_overview"]
+    assert "P57 docker name/prefix" in descriptions["groop_entity"]
+    assert "at most 128 metrics, 64 findings" in descriptions["groop_entity"]
+    assert "P57 docker name/prefix" in descriptions["groop_history"]
+    assert "limit is 1..100 points" in descriptions["groop_history"]
+    assert all("4 MiB" in description for description in descriptions.values())
+    assert all("1000" not in description for description in descriptions.values())
+
+
+def test_sensitivity_fallback_matches_daemon_classifier_for_entire_registry() -> None:
+    actual = {name: _sensitivity(None, name) for name in REGISTRY}
+    expected = {name: metric_sensitivity(name) for name in REGISTRY}
+    assert actual == expected
 
 
 def test_overview_validation_is_typed_at_the_mcp_boundary() -> None:

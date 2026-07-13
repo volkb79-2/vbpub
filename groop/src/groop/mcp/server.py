@@ -31,7 +31,7 @@ from groop.daemon.client import (
 )
 from groop.daemon.component_health import HealthSnapshot
 from groop.daemon.deploy import DEFAULT_DAEMON_SOCKET
-from groop.model import Entity, EntityFrame, EntityKey, MetricValue
+from groop.model import Entity, EntityKey
 
 DEFAULT_SOCKET_PATH = DEFAULT_DAEMON_SOCKET
 MAX_RESPONSE_BYTES = DEFAULT_MAX_RESPONSE_BYTES
