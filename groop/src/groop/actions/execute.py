@@ -745,3 +745,255 @@ def render_result_text(result: ExecuteResult) -> str:
     if result.stderr:
         lines.extend(("--- stderr ---", _bound_output(result.stderr)))
     return "\n".join(lines)
+
+
+def execute_set_property(
+    unit: str,
+    *,
+    property_name: str | None = None,
+    property_value: str | None = None,
+    persistence: str | None = None,
+    admin: bool = False,
+    confirm: str = "",
+    audit_path: str | Path = DEFAULT_EXECUTION_AUDIT_PATH,
+    runner: Callable[..., ExecuteResult] | None = None,
+    clock: Callable[[], float] | None = None,
+    identity: Callable[[], AuditIdentity] | None = None,
+    root_check: Callable[[], bool] | None = None,
+    timeout: float = 30.0,
+    planned_current_value: str | None = None,
+    current_value_reader: Callable[[str], str | None] | None = None,
+) -> ExecuteResult:
+    """Execute a systemd memory.high set-property action through the P46 gates.
+
+    Reuses the P46 root/admin/typed-confirmation, absolute argv, timeout,
+    result bounds, and fail-closed audit contract.  Additionally validates
+    the property/value and performs stale detection by re-reading the
+    current value immediately before execution.
+
+    If *planned_current_value* is provided and the fresh read differs, the
+    action is refused with ``outcome="stale"`` — the plan was built against a
+    value that no longer holds.
+
+    The optional fixture parameters are intentionally API-only.  The
+    production CLI supplies no audit path, runner, identity, clock, or root
+    override and therefore uses the fixed root-owned policy.
+
+    Returns an ``ExecuteResult``.
+    """
+    # -- Gates (same as execute_plan) ---------------------------------------
+    if not admin:
+        return _refusal(property_name or "systemd-set-property", unit, "admin mode is required")
+    if confirm != "EXECUTE":
+        return _refusal(property_name or "systemd-set-property", unit, "exact confirmation EXECUTE is required")
+    try:
+        is_root = root_check() if root_check is not None else os.geteuid() == 0
+    except BaseException:
+        is_root = False
+    if is_root is not True:
+        return _refusal(property_name or "systemd-set-property", unit, "root privileges are required")
+    try:
+        _validate_timeout(timeout)
+    except (TypeError, ValueError) as exc:
+        return _refusal(property_name or "systemd-set-property", unit, str(exc))
+    if not isinstance(audit_path, (str, Path)):
+        return _refusal(property_name or "systemd-set-property", unit, "a mandatory audit path is required")
+    audit_path_obj = Path(audit_path)
+    if not audit_path_obj.is_absolute():
+        return _refusal(property_name or "systemd-set-property", unit, "audit path must be absolute")
+
+    # -- Validate property/value inputs --------------------------------------
+    from groop.actions.governance import (
+        ALLOWED_PROPERTY,
+        detect_default_persistence,
+        validate_memory_high_unit,
+        validate_memory_high_value,
+        validate_persistence_mode,
+    )
+
+    if property_name != ALLOWED_PROPERTY:
+        return _refusal(
+            property_name or "systemd-set-property",
+            unit,
+            f"property must be {ALLOWED_PROPERTY!r}, got {property_name!r}",
+        )
+    try:
+        validate_memory_high_unit(unit)
+    except ValueError as exc:
+        return _refusal("systemd-set-property", unit, str(exc))
+    try:
+        canonical_value = validate_memory_high_value(property_value or "")
+    except ValueError as exc:
+        return _refusal("systemd-set-property", unit, str(exc))
+
+    # Determine persistence mode
+    if persistence is None:
+        persistence_mode = detect_default_persistence(unit)
+    else:
+        try:
+            persistence_mode = validate_persistence_mode(persistence)
+        except ValueError as exc:
+            return _refusal("systemd-set-property", unit, str(exc))
+
+    # Build the argv
+    from groop.actions.governance import build_set_property_argv as _build_argv
+
+    argv = tuple(_build_argv(unit, property_name, canonical_value, persistence=persistence_mode))
+
+    # -- Identity & audit (same as execute_plan) ------------------------------
+    now = clock or time.time
+    try:
+        stable_identity = _coerce_identity(
+            identity() if identity is not None else _production_identity()
+        )
+    except BaseException as exc:
+        return _refusal(
+            property_name or "systemd-set-property",
+            unit,
+            f"invalid execution identity: {type(exc).__name__}",
+        )
+
+    try:
+        audit_fh = _write_execution_audit_pre(
+            audit_path_obj,
+            identity=stable_identity,
+            kind="systemd-set-property",
+            target=unit,
+            argv=argv,
+            clock=now,
+        )
+    except BaseException as exc:
+        return _refusal(
+            property_name or "systemd-set-property",
+            unit,
+            "audit failed before execution",
+            audit_outcome=f"pre_failure:{type(exc).__name__}",
+        )
+
+    # -- Stale detection: re-read current value before runner -----------------
+    try:
+        started = float(now())
+    except BaseException:
+        started = time.time()
+
+    if current_value_reader is not None or planned_current_value is not None:
+        reader = current_value_reader or _default_current_value_reader
+        fresh_current_value: str | None = None
+        try:
+            fresh_current_value = reader(unit)
+        except BaseException:
+            fresh_current_value = None
+
+        if planned_current_value is not None and fresh_current_value is not None:
+            if fresh_current_value != planned_current_value:
+                # The value changed since the plan was built — stale plan.
+                refusal = _refusal(
+                    "systemd-set-property",
+                    unit,
+                    f"current memory.high value changed ({planned_current_value} -> {fresh_current_value}); "
+                    "preview again with the fresh value",
+                )
+                try:
+                    _write_execution_audit_post(
+                        audit_fh,
+                        identity=stable_identity,
+                        kind="systemd-set-property",
+                        target=unit,
+                        argv=argv,
+                        result=refusal,
+                        clock=now,
+                    )
+                except _AuditError:
+                    pass
+                return dataclasses.replace(refusal, outcome="stale")
+
+    # -- Runner ----------------------------------------------------------------
+    try:
+        raw_result = (runner or _default_runner)(argv, timeout=float(timeout))
+    except subprocess.TimeoutExpired:
+        raw_result = ExecuteResult("", "", argv, None, "", "", "timeout", 0.0)
+    except OSError as exc:
+        raw_result = ExecuteResult(
+            "", "", argv, None, "",
+            _bound_output(f"{type(exc).__name__}: {exc}"),
+            "runner_failure", 0.0,
+        )
+    except BaseException as exc:
+        raw_result = ExecuteResult(
+            "", "", argv, None, "",
+            _bound_output(f"{type(exc).__name__}: runner failed"),
+            "runner_failure", 0.0,
+        )
+
+    try:
+        result = _normalise_runner_result(raw_result, _make_plan_stub("systemd-set-property", unit, argv))
+    except (TypeError, ValueError) as exc:
+        result = ExecuteResult(
+            kind="systemd-set-property",
+            target=unit,
+            argv=argv,
+            returncode=None,
+            stdout="",
+            stderr=_bound_output(str(exc)),
+            outcome="runner_failure",
+            duration_s=0.0,
+        )
+    try:
+        elapsed = float(now()) - started
+    except BaseException:
+        elapsed = 0.0
+    result = dataclasses.replace(
+        result,
+        kind="systemd-set-property",
+        target=unit,
+        argv=argv,
+        duration_s=max(0.0, min(elapsed if math.isfinite(elapsed) else 0.0, _MAX_TIMEOUT)),
+        action_outcome=result.outcome,
+    )
+
+    # -- Post audit -----------------------------------------------------------
+    try:
+        _write_execution_audit_post(
+            audit_fh,
+            identity=stable_identity,
+            kind="systemd-set-property",
+            target=unit,
+            argv=argv,
+            result=result,
+            clock=now,
+        )
+    except BaseException as exc:
+        try:
+            audit_fh.close()
+        except BaseException:
+            pass
+        return dataclasses.replace(
+            result,
+            outcome="audit_failure",
+            audit_outcome="post_failure",
+            audit_error=_bound_output(str(exc) or "post-audit write failed"),
+        )
+    return result
+
+
+def _default_current_value_reader(unit: str) -> str | None:
+    """Read the current memory.high value via systemctl show.
+
+    This is an injectable seam for tests; see governance.py's
+    ``_systemctl_show_reader`` for the production implementation.
+    """
+    from groop.actions.governance import _systemctl_show_reader
+    return _systemctl_show_reader(unit)
+
+
+def _make_plan_stub(kind: str, target: str, argv: tuple[str, ...]) -> ActionPlan:
+    """Create a minimal plan-like object for ``_normalise_runner_result``."""
+    from groop.actions.preview import ActionPlan
+    from groop.actions.catalog import ActionKind
+
+    return ActionPlan(
+        kind=ActionKind(kind),
+        target=target,
+        argv=argv,
+        description="",
+    )

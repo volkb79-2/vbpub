@@ -64,12 +64,24 @@ def _systemd_start(target: str) -> list[str]:
 
 
 def _systemd_set_property(target: str) -> list[str]:
-    # target format: "UNIT KEY=VALUE [KEY=VALUE...]"
-    parts = target.split()
-    if len(parts) < 2:
-        msg = f"systemd-set-property target must be 'UNIT KEY=VALUE ...', got {target!r}"
+    # P49 replaces the composite "UNIT KEY=VALUE" format with structured
+    # unit/property/value inputs.  The catalog-level builder still accepts
+    # a target string for backward compatibility of the catalog interface,
+    # but only when it is a bare unit name (no KEY=VALUE fragments).
+    # The structured path is in governance.py (build_set_property_argv).
+    if not target:
+        msg = "systemd-set-property target must be a bare unit name"
         raise ValueError(msg)
-    return [SYSTEMCTL_EXECUTABLE, "set-property", *parts]
+    if "=" in target or " " in target:
+        msg = (
+            "systemd-set-property composite target format is removed; "
+            "use --property and --value instead"
+        )
+        raise ValueError(msg)
+    # A bare unit name produces an incomplete argv (no property/value).
+    # This builder is only used for catalog completeness; the structured
+    # governance.py path builds the full argv.
+    return [SYSTEMCTL_EXECUTABLE, "set-property", target]
 
 
 # ---------------------------------------------------------------------------
@@ -144,11 +156,14 @@ def validate_target(kind: ActionKind, target: str) -> None:
         raise ValueError(f"execution not allowed for kind {kind.value!r}")
 
     if kind is ActionKind.SYSTEMD_SET_PROPERTY:
-        parts = target.split()
-        if len(parts) < 2 or not _SYSTEMD_UNIT_RE.fullmatch(parts[0]):
-            raise ValueError(f"invalid systemd set-property target: {target!r}")
-        if any("=" not in part or part.startswith(("-", ".")) for part in parts[1:]):
-            raise ValueError(f"invalid systemd property target: {target!r}")
+        # In P49, the target is just the unit name (not a composite).
+        # The property/value are validated separately in governance.py.
+        if not target:
+            raise ValueError(f"invalid systemd set-property target (empty): {target!r}")
+        if any(char.isspace() for char in target):
+            raise ValueError(f"systemd set-property target must not contain whitespace: {target!r}")
+        if not _SYSTEMD_UNIT_RE.fullmatch(target):
+            raise ValueError(f"invalid systemd unit name for set-property: {target!r}")
 
 
 ACTION_CATALOG: dict[ActionKind, CatalogEntry] = {
@@ -185,6 +200,6 @@ ACTION_CATALOG: dict[ActionKind, CatalogEntry] = {
     ActionKind.SYSTEMD_SET_PROPERTY: CatalogEntry(
         ActionKind.SYSTEMD_SET_PROPERTY,
         _systemd_set_property,
-        "Preview systemctl set-property for cgroup memory knobs on a unit.",
+        "Preview systemctl set-property for memory.high governance (use administrative preview instead).",
     ),
 }

@@ -97,13 +97,11 @@ class TestBuildPreview:
             ),
             (
                 ActionKind.SYSTEMD_SET_PROPERTY,
-                "my.slice MemoryMax=1G CPUQuota=50%",
+                "my.slice",
                 [
                     SYSTEMCTL_EXECUTABLE,
                     "set-property",
                     "my.slice",
-                    "MemoryMax=1G",
-                    "CPUQuota=50%",
                 ],
             ),
         ],
@@ -251,7 +249,9 @@ class TestCatalogCompleteness:
     def test_all_builders_produce_argv(self) -> None:
         for kind, entry in ACTION_CATALOG.items():
             if kind == ActionKind.SYSTEMD_SET_PROPERTY:
-                argv = entry.builder("my.slice MemoryMax=1G")
+                # Systemd-set-property requires structured inputs (governance.py).
+                # The catalog-level builder only accepts a bare unit name.
+                argv = entry.builder("my.slice")
             else:
                 argv = entry.builder("test-target")
             assert isinstance(argv, list)
@@ -794,6 +794,78 @@ class TestExecutionCliIntegration:
         )
         assert code == 2
 
+    def test_parse_execute_set_property_args(self) -> None:
+        """Verify --property, --value, --mode parse correctly for execute."""
+        from groop.cli import parse_action_args
+
+        args = parse_action_args(
+            [
+                "execute",
+                "--kind",
+                "systemd-set-property",
+                "--target",
+                "my.slice",
+                "--admin",
+                "--confirm",
+                "EXECUTE",
+                "--property",
+                "memory.high",
+                "--value",
+                "max",
+                "--mode",
+                "runtime",
+            ]
+        )
+        assert args.kind == "systemd-set-property"
+        assert args.target == "my.slice"
+        assert args.property == "memory.high"
+        assert args.value == "max"
+        assert args.mode == "runtime"
+        assert args.admin is True
+        assert args.confirm == "EXECUTE"
+
+    def test_parse_preview_set_property_args(self) -> None:
+        """Verify --property, --value parse correctly for preview."""
+        from groop.cli import parse_action_args
+
+        args = parse_action_args(
+            [
+                "preview",
+                "--kind",
+                "systemd-set-property",
+                "--target",
+                "my.slice",
+                "--admin",
+                "--property",
+                "memory.high",
+                "--value",
+                "1073741824",
+            ]
+        )
+        assert args.kind == "systemd-set-property"
+        assert args.property == "memory.high"
+        assert args.value == "1073741824"
+
+    def test_execute_set_property_refusal_exit_code_2(self) -> None:
+        """Verify execute_set_property routing via CLI (no admin => refusal)."""
+        from groop.cli import _main_action
+
+        code = _main_action(
+            [
+                "execute",
+                "--kind",
+                "systemd-set-property",
+                "--target",
+                "my.slice",
+                "--property",
+                "memory.high",
+                "--value",
+                "max",
+            ]
+        )
+        # Refused because no --admin
+        assert code == 2
+
 
 class TestExecutionAllowlistExclusion:
     """Verify that set-property and future non-allowlisted kinds are rejected."""
@@ -1225,3 +1297,405 @@ class TestP46ControllerSecurityCorrections:
         assert process.waited is True
         assert process.stdout.closed is True
         assert process.stderr.closed is True
+
+
+# ---------------------------------------------------------------------------
+# P49 — systemd memory.high governance tests
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryHighValueValidation:
+    """validate_memory_high_value rejects invalid inputs and accepts valid ones."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "max",
+            "1",
+            "1073741824",
+            "9223372036854775807",  # 2^63 - 1, max allowed
+            "+100",
+        ],
+    )
+    def test_valid_values(self, value: str) -> None:
+        from groop.actions.governance import validate_memory_high_value
+
+        result = validate_memory_high_value(value)
+        assert isinstance(result, str)
+        if value.startswith("+"):
+            assert result == value[1:]  # leading + is stripped
+        else:
+            assert result == value
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "",
+            "0",
+            "-1",
+            "1.5",
+            "50%",
+            "1 000",
+            "1,000",
+            "abc",
+            "0x100",
+            "1e6",
+            " ",
+            "\t",
+            "1\n",
+            "1;2",
+            "'123'",
+            '"456"',
+            "9223372036854775808",  # > 2^63 - 1
+            "18446744073709551616",  # > 2^64
+        ],
+    )
+    def test_invalid_values(self, value: str) -> None:
+        from groop.actions.governance import validate_memory_high_value
+
+        with pytest.raises(ValueError):
+            validate_memory_high_value(value)
+
+    def test_non_string_rejected(self) -> None:
+        from groop.actions.governance import validate_memory_high_value
+
+        with pytest.raises(ValueError):
+            validate_memory_high_value(None)  # type: ignore[arg-type]
+        with pytest.raises(ValueError):
+            validate_memory_high_value("")
+
+
+class TestMemoryHighUnitValidation:
+    """validate_memory_high_unit rejects invalid systemd unit names."""
+
+    @pytest.mark.parametrize("unit", ["my.slice", "user@1000.service", "nginx.scope", "my.target"])
+    def test_valid_units(self, unit: str) -> None:
+        from groop.actions.governance import validate_memory_high_unit
+
+        validate_memory_high_unit(unit)
+
+    @pytest.mark.parametrize(
+        "unit", ["", "-x.service", "..service", "unit.txt", "unit", ".service"]
+    )
+    def test_invalid_units(self, unit: str) -> None:
+        from groop.actions.governance import validate_memory_high_unit
+
+        with pytest.raises(ValueError):
+            validate_memory_high_unit(unit)
+
+
+class TestPersistenceDetection:
+    """detect_default_persistence returns the correct default for each unit type."""
+
+    def test_scope_defaults_to_runtime(self) -> None:
+        from groop.actions.governance import detect_default_persistence
+
+        assert detect_default_persistence("docker-abc123.scope") == "runtime"
+        assert detect_default_persistence("session-1.scope") == "runtime"
+
+    def test_slice_defaults_to_persistent(self) -> None:
+        from groop.actions.governance import detect_default_persistence
+
+        assert detect_default_persistence("my.slice") == "persistent"
+
+    def test_service_defaults_to_persistent(self) -> None:
+        from groop.actions.governance import detect_default_persistence
+
+        assert detect_default_persistence("nginx.service") == "persistent"
+
+    @pytest.mark.parametrize(
+        "mode, expected",
+        [("runtime", "runtime"), ("persistent", "persistent"), ("RUNTIME", "runtime"), ("Persistent", "persistent")],
+    )
+    def test_validate_persistence_mode(self, mode: str, expected: str) -> None:
+        from groop.actions.governance import validate_persistence_mode
+
+        assert validate_persistence_mode(mode) == expected
+
+    @pytest.mark.parametrize("mode", ["", "auto", "transient", "none", None])
+    def test_invalid_persistence_mode(self, mode: str) -> None:
+        from groop.actions.governance import validate_persistence_mode
+
+        with pytest.raises(ValueError):
+            validate_persistence_mode(mode)
+
+
+class TestBuildSetPropertyArgv:
+    """build_set_property_argv constructs correct systemctl argv."""
+
+    def test_persistent_mode(self) -> None:
+        from groop.actions.governance import build_set_property_argv, SYSTEMCTL_EXECUTABLE
+
+        argv = build_set_property_argv("my.slice", "memory.high", "1073741824", persistence="persistent")
+        assert argv == [SYSTEMCTL_EXECUTABLE, "set-property", "my.slice", "memory.high=1073741824"]
+
+    def test_runtime_mode(self) -> None:
+        from groop.actions.governance import build_set_property_argv, SYSTEMCTL_EXECUTABLE
+
+        argv = build_set_property_argv("my.scope", "memory.high", "max", persistence="runtime")
+        assert argv == [SYSTEMCTL_EXECUTABLE, "set-property", "--runtime", "my.scope", "memory.high=max"]
+
+    def test_max_value(self) -> None:
+        from groop.actions.governance import build_set_property_argv, SYSTEMCTL_EXECUTABLE
+
+        argv = build_set_property_argv("my.slice", "memory.high", "max", persistence="persistent")
+        assert argv == [SYSTEMCTL_EXECUTABLE, "set-property", "my.slice", "memory.high=max"]
+
+    def test_rejects_wrong_property(self) -> None:
+        from groop.actions.governance import build_set_property_argv
+
+        with pytest.raises(ValueError, match="memory.high"):
+            build_set_property_argv("my.slice", "memory.max", "100")
+
+    def test_rejects_invalid_value(self) -> None:
+        from groop.actions.governance import build_set_property_argv
+
+        with pytest.raises(ValueError):
+            build_set_property_argv("my.slice", "memory.high", "-1")
+
+
+class TestSetPropertyPreview:
+    """build_set_property_preview returns a complete SetPropertyPlan."""
+
+    def test_basic_preview(self) -> None:
+        from groop.actions.governance import (
+            SetPropertyPlan,
+            build_set_property_preview,
+            SYSTEMCTL_EXECUTABLE,
+        )
+
+        plan = build_set_property_preview("my.slice", "memory.high", "max")
+        assert isinstance(plan, SetPropertyPlan)
+        assert plan.unit == "my.slice"
+        assert plan.property_name == "memory.high"
+        assert plan.property_value == "max"
+        assert plan.kind == "systemd-set-property"
+        assert plan.mode == "preview"
+        assert SYSTEMCTL_EXECUTABLE in plan.argv
+        assert "memory.high=max" in plan.argv
+
+    def test_preview_with_current_value_reader(self) -> None:
+        from groop.actions.governance import build_set_property_preview
+
+        plan = build_set_property_preview(
+            "my.slice", "memory.high", "max",
+            current_value_reader=lambda u: "1073741824",
+        )
+        assert plan.current_value == "1073741824"
+
+    def test_preview_fallback_persistence(self) -> None:
+        from groop.actions.governance import build_set_property_preview
+
+        # Scope -> runtime
+        plan = build_set_property_preview("session-1.scope", "memory.high", "max")
+        assert plan.persistence == "runtime"
+
+        # Slice -> persistent
+        plan = build_set_property_preview("my.slice", "memory.high", "max")
+        assert plan.persistence == "persistent"
+
+    def test_render_preview(self) -> None:
+        from groop.actions.governance import build_set_property_preview, render_set_property_preview
+
+        plan = build_set_property_preview("my.slice", "memory.high", "max")
+        text = render_set_property_preview(plan)
+        assert "memory.high" in text
+        assert "max" in text
+        assert "my.slice" in text
+        assert "preview only" in text
+
+    def test_plan_to_jsonable(self) -> None:
+        from groop.actions.governance import build_set_property_preview, set_property_plan_to_jsonable
+
+        plan = build_set_property_preview("my.slice", "memory.high", "max")
+        d = set_property_plan_to_jsonable(plan)
+        assert d["property"] == "memory.high"
+        assert d["value"] == "max"
+        assert d["target"] == "my.slice"
+        assert d["kind"] == "systemd-set-property"
+
+
+class TestExecuteSetProperty:
+    """execute_set_property gates and stale detection."""
+
+    def _fake_runner(self, argv, *, timeout=30.0):
+        from groop.actions.execute import ExecuteResult
+
+        return ExecuteResult("", "", argv, 0, "ok", "", "success", 0.0)
+
+    def test_gate_admin_false(self, tmp_path: Path) -> None:
+        from groop.actions.execute import execute_set_property
+
+        result = execute_set_property(
+            "my.slice",
+            property_name="memory.high",
+            property_value="max",
+            admin=False,
+            audit_path=tmp_path / "audit.jsonl",
+        )
+        assert result.outcome == "refusal"
+
+    def test_gate_confirm_wrong(self, tmp_path: Path) -> None:
+        from groop.actions.execute import execute_set_property
+
+        result = execute_set_property(
+            "my.slice",
+            property_name="memory.high",
+            property_value="max",
+            admin=True,
+            confirm="wrong",
+            audit_path=tmp_path / "audit.jsonl",
+        )
+        assert result.outcome == "refusal"
+
+    def test_gate_root_false(self, tmp_path: Path) -> None:
+        from groop.actions.execute import execute_set_property
+
+        result = execute_set_property(
+            "my.slice",
+            property_name="memory.high",
+            property_value="max",
+            admin=True,
+            confirm="EXECUTE",
+            audit_path=tmp_path / "audit.jsonl",
+            root_check=lambda: False,
+        )
+        assert result.outcome == "refusal"
+
+    def test_invalid_property_rejected(self, tmp_path: Path) -> None:
+        from groop.actions.execute import execute_set_property
+
+        result = execute_set_property(
+            "my.slice",
+            property_name="memory.max",
+            property_value="100",
+            admin=True,
+            confirm="EXECUTE",
+            audit_path=tmp_path / "audit.jsonl",
+            root_check=lambda: True,
+        )
+        assert result.outcome == "refusal"
+
+    def test_invalid_value_rejected(self, tmp_path: Path) -> None:
+        from groop.actions.execute import execute_set_property
+
+        result = execute_set_property(
+            "my.slice",
+            property_name="memory.high",
+            property_value="-1",
+            admin=True,
+            confirm="EXECUTE",
+            audit_path=tmp_path / "audit.jsonl",
+            root_check=lambda: True,
+        )
+        assert result.outcome == "refusal"
+
+    def test_invalid_unit_rejected(self, tmp_path: Path) -> None:
+        from groop.actions.execute import execute_set_property
+
+        result = execute_set_property(
+            "-x.service",
+            property_name="memory.high",
+            property_value="max",
+            admin=True,
+            confirm="EXECUTE",
+            audit_path=tmp_path / "audit.jsonl",
+            root_check=lambda: True,
+        )
+        assert result.outcome == "refusal"
+
+    def test_success_path(self, tmp_path: Path) -> None:
+        from groop.actions.execute import execute_set_property, ExecuteResult
+
+        argv_collected = []
+
+        def runner(argv, *, timeout=30.0):
+            argv_collected.append(argv)
+            return ExecuteResult("", "", argv, 0, "ok", "", "success", 0.0)
+
+        result = execute_set_property(
+            "my.slice",
+            property_name="memory.high",
+            property_value="max",
+            admin=True,
+            confirm="EXECUTE",
+            audit_path=tmp_path / "audit.jsonl",
+            root_check=lambda: True,
+            runner=runner,
+        )
+        assert result.outcome == "success"
+        assert len(argv_collected) == 1
+        argv = argv_collected[0]
+        assert "/usr/bin/systemctl" in argv
+        assert "set-property" in argv
+        assert "memory.high=max" in argv
+
+    def test_audit_written(self, tmp_path: Path) -> None:
+        from groop.actions.execute import execute_set_property, ExecuteResult
+
+        def runner(argv, *, timeout=30.0):
+            return ExecuteResult("", "", argv, 0, "ok", "", "success", 0.0)
+
+        audit_path = tmp_path / "exec.jsonl"
+        execute_set_property(
+            "my.slice",
+            property_name="memory.high",
+            property_value="1073741824",
+            admin=True,
+            confirm="EXECUTE",
+            audit_path=audit_path,
+            root_check=lambda: True,
+            runner=runner,
+        )
+        lines = audit_path.read_text().strip().splitlines()
+        assert len(lines) == 2
+        pre = json.loads(lines[0])
+        post = json.loads(lines[1])
+        assert pre["stage"] == "pre"
+        assert pre["kind"] == "systemd-set-property"
+        assert post["stage"] == "post"
+        assert post["outcome"] == "success"
+
+    def test_stale_detection(self, tmp_path: Path) -> None:
+        """planned_current_value differs from fresh read => stale outcome."""
+        from groop.actions.execute import execute_set_property
+
+        def current_value_reader(unit: str) -> str:
+            return "1073741824"  # different from planned "max"
+
+        result = execute_set_property(
+            "my.slice",
+            property_name="memory.high",
+            property_value="max",
+            admin=True,
+            confirm="EXECUTE",
+            audit_path=tmp_path / "audit.jsonl",
+            root_check=lambda: True,
+            planned_current_value="original_value",
+            current_value_reader=current_value_reader,
+        )
+        assert result.outcome == "stale"
+        assert "value changed" in result.stderr
+
+    def test_runtime_mode_argv(self, tmp_path: Path) -> None:
+        """Scope units default to --runtime."""
+        from groop.actions.execute import execute_set_property, ExecuteResult
+
+        argv_collected = []
+
+        def runner(argv, *, timeout=30.0):
+            argv_collected.append(argv)
+            return ExecuteResult("", "", argv, 0, "", "", "success", 0.0)
+
+        result = execute_set_property(
+            "docker-abc.scope",
+            property_name="memory.high",
+            property_value="max",
+            admin=True,
+            confirm="EXECUTE",
+            audit_path=tmp_path / "audit.jsonl",
+            root_check=lambda: True,
+            runner=runner,
+        )
+        assert result.outcome == "success"
+        assert "--runtime" in argv_collected[0]

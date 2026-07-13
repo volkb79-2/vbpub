@@ -16,7 +16,7 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment. P41 automates strict rendered replay fidelity (383 passing tests plus one optional skip). P43 replaces the obsolete pre-1.0 resolver ceiling with textual>=8.2.8. Isolated local-artifact pipx/no-config acceptance now passes. Strict live performance and non-root gates remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 65-70% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd start/stop/restart execution, BPF gate/provider/snapshot bridge, bounded Docker/cgroup/journald inspect-files reads, and daemon-owned paddr lifecycle exist. Live BPF load/attach, broader actions, and GPU/ZFS plugins remain. |
+| v2 daemon/BPF/admin actions | 65-70% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd start/stop/restart execution, BPF gate/provider/snapshot bridge, bounded Docker/cgroup/journald inspect-files reads, daemon-owned paddr lifecycle, and systemd memory.high governance exist. Live BPF load/attach, broader actions, and GPU/ZFS plugins remain. |
 
 P44 adds the daemon-owned paddr lifecycle — `[damon] paddr_enabled = true` starts
 or adopts one groop-owned whole-host paddr session. Sessions created by the
@@ -34,7 +34,12 @@ P48 adds a bounded journald inspection snapshot via fixed absolute
 ``/usr/bin/journalctl`` argv (``shell=False``), bounded timeout, and injectable
 runner, extending the P45 inspect-files content read posture to systemd units.
 
-P49 remains queued: structured `memory.high` governance through systemd.
+P49 is done. Structured `memory.high` set-property governance is added
+through the P46 admin action execution kernel: unit/property/value inputs,
+`memory.high`-only validation with max/byte overflow/range checks, stale
+detection via re-read before execution, persistence mode auto-detection
+(`--runtime` for `.scope`, persistent for service/slice), CLI
+`--property`/`--value`/`--mode` args, and 200 focused tests.
 
 P50 is done. The entity table now uses a MouseTable (DataTable subclass) with
 clickable header sorting (toggle direction), one-click row drill-down and
@@ -188,6 +193,12 @@ core workflows, not yet production-certified.**
   31 focused tests covering glob matching, slice subtree inclusion, ancestor
   correctness, compact field-set precision, collection-time pruning, and
   replay/attach rejection.
+- Structured systemd `memory.high` set-property governance (P49): preview and
+  execution through the P46 action kernel with structured unit/property/value
+  inputs, `memory.high`-only validation with max/byte overflow/range checks,
+  stale detection via re-read before execution, persistence mode auto-detection
+  (`--runtime` for `.scope`, persistent for service/slice), CLI
+  `--property`/`--value`/`--mode` args, and 200 focused tests.
 
 ## Partially Implemented
 
@@ -246,7 +257,6 @@ core workflows, not yet production-certified.**
 - Production daemon installation execution and service hardening beyond the
   packaged operator templates plus safe P25 install plan.
 - Live BPF ownership lifecycle (daemon/helper attach, pin, detach).
-- `systemctl set-property` governance actions.
 - Web UI.
 - GPU and ZFS optional plugins.
 - CIU stack grouping/actions.
