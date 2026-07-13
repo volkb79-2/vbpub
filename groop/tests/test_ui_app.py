@@ -364,7 +364,9 @@ def test_pilot_snapshot_hotkey_writes_bundle(tmp_path: Path) -> None:
         async with app.run_test(size=(140, 40)) as pilot:
             await _wait_for_frame(app)(pilot)
             await pilot.press("x")
-            await pilot.pause()
+            # The bundle is written by a worker thread; a single pause() gives
+            # the event loop one tick and guarantees nothing (P85).
+            await _wait_or_timeout(pilot, lambda: app._snapshot_in_progress is False)
 
         assert len(list(tmp_path.glob("groop-incident-*"))) == 1
 
@@ -392,7 +394,8 @@ def test_pilot_snapshot_hotkey_collects_fresh_systemd_and_docker_metadata(tmp_pa
             app.selected_key = GAME_KEY
             app._refresh_view()
             await pilot.press("x")
-            await pilot.pause()
+            # Same worker-thread race as test_pilot_snapshot_hotkey_writes_bundle.
+            await _wait_or_timeout(pilot, lambda: app._snapshot_in_progress is False)
 
     asyncio.run(run())
     bundles = list(tmp_path.glob("groop-incident-*"))
