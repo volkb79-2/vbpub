@@ -34,7 +34,7 @@ flowchart LR
 ## Module Map
 
 | Module | Role |
-|---|---|---|
+|---|---|
 | `model.py` | Dataclasses and canonical JSON serialization. |
 | `registry.py` | Metric definitions, source semantics, help/glossary source. |
 | `config.py` | TOML parsing and defaults. |

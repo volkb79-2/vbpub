@@ -66,7 +66,7 @@ def _base_sys(root: Path) -> Path:
     return sys
 
 
-# ── Oracle 1: Present-ZFS fixture ──────────────────────────────────────────
+# --- Oracle 1: Present-ZFS fixture ---------------------------------------
 
 
 def test_zfs_arc_present_fixture_exact_values(tmp_path: Path) -> None:
@@ -89,7 +89,7 @@ def test_zfs_arc_present_fixture_exact_values(tmp_path: Path) -> None:
     assert metrics["host_zfs_arc_hit_ratio"].raw == 5000000000
 
 
-# ── Oracle 2: Absent-ZFS ──────────────────────────────────────────────────
+# --- Oracle 2: Absent-ZFS ------------------------------------------------
 
 
 def test_zfs_arc_absent_fixture_all_unavail(tmp_path: Path) -> None:
@@ -102,7 +102,7 @@ def test_zfs_arc_absent_fixture_all_unavail(tmp_path: Path) -> None:
         assert metrics[name].src == "unavail_kernel", f"{name}.src should be unavail_kernel, got {metrics[name].src}"
 
 
-# ── Oracle 3: Malformed kstat ─────────────────────────────────────────────
+# --- Oracle 3: Malformed kstat -------------------------------------------
 
 
 def test_zfs_arc_malformed_truncated(tmp_path: Path) -> None:
@@ -155,7 +155,7 @@ def test_zfs_arc_malformed_missing_size(tmp_path: Path) -> None:
     assert metrics["host_zfs_arc_hit_ratio"].src == "derived"
 
 
-# ── Oracle 4: Hit-ratio rate over two sweeps ──────────────────────────────
+# --- Oracle 4: Hit-ratio rate over two sweeps ----------------------------
 #
 # The ratio is a rate, so it only exists on the Collector that holds the
 # previous sample. These drive the real `collect_once()` path and assert on
@@ -261,7 +261,7 @@ def test_zfs_arc_hit_ratio_state_is_per_collector(tmp_path: Path) -> None:
     assert _hit_ratio(fresh).v is None, "a fresh Collector has no baseline of its own"
 
 
-# ── Oracle 5: Banner annotation ───────────────────────────────────────────
+# --- Oracle 5: Banner annotation -----------------------------------------
 
 
 def test_zfs_arc_banner_present(tmp_path: Path) -> None:
@@ -276,8 +276,29 @@ def test_zfs_arc_banner_present(tmp_path: Path) -> None:
     meta = collect_host_meta(proc_root=proc, sys_root=sys)
     frame = _minimal_frame(host=host, host_meta=meta)
     snapshot = render_banner(frame, GroopConfig())
-    lines = "\n".join(snapshot.lines)
-    assert "ARC" in lines
+
+    # Assert the rendered cells, not just that the substring "ARC" occurs:
+    # `assert "ARC" in lines` passes even when both figures render wrong. A
+    # single read carries no hit ratio (a ratio needs two samples), so the
+    # segment is size/max only -- see the two-sweep test below for `(hit N%)`.
+    assert "ARC 12.0GiB/32.0GiB" in snapshot.lines
+
+
+def test_zfs_arc_banner_hit_ratio_reaches_the_banner(tmp_path: Path) -> None:
+    """The derived ratio must render in the banner, not just sit in the frame.
+
+    Guards the wiring end to end: Collector._apply_zfs_arc_rate -> Frame.host ->
+    banner. The first sweep has no baseline, so the segment carries no ratio;
+    the second sweep must render `(hit 91%)` from a 1000/100 hit/miss delta.
+    """
+    collector, proc = _zfs_collector(tmp_path, hits=1_000_000, misses=50_000)
+
+    first = render_banner(collector.collect_once(), GroopConfig())
+    assert "ARC 12.0GiB/32.0GiB" in first.lines, "no ratio before a baseline exists"
+
+    _write_arcstats(proc, hits=1_001_000, misses=50_100)
+    second = render_banner(collector.collect_once(), GroopConfig())
+    assert "ARC 12.0GiB/32.0GiB (hit 91%)" in second.lines
 
 
 def test_zfs_arc_banner_absent(tmp_path: Path) -> None:
@@ -301,7 +322,7 @@ def test_zfs_arc_banner_absent(tmp_path: Path) -> None:
     assert "ARC" not in lines
 
 
-# ── Oracle 6: Golden frames unaffected ────────────────────────────────────
+# --- Oracle 6: Golden frames unaffected ----------------------------------
 
 
 def test_zfs_arc_non_zfs_fixtures_unaffected(tmp_path: Path) -> None:
@@ -326,7 +347,7 @@ def test_zfs_arc_non_zfs_fixtures_unaffected(tmp_path: Path) -> None:
     assert host["host_zswap_enabled"].v == 0
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
+# --- Helpers -------------------------------------------------------------
 
 
 def _minimal_frame(*, host: dict[str, MetricValue] | None = None, host_meta: dict[str, object] | None = None) -> Frame:

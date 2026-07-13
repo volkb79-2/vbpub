@@ -40,7 +40,17 @@ COMPRESSED-SWAP.md.
 
 ## Deviations from the handoff doc
 
-None. The implementation follows the handoff exactly.
+As submitted, one: the ARC hit ratio was derived from a module-level rate state
+in `collect/host.py` rather than from "the existing raw-counter/reset machinery"
+contract 4 names. The LOG recorded that as a deliberate decision; this section
+originally claimed no deviations, which was wrong.
+
+Frontier review reverted it to the contract: the rate now goes through
+`Collector._delta` / `_prev_counters` (per instance, regression/reseed included)
+via `Collector._apply_zfs_arc_rate`, reading the raw `hits`/`misses` this package
+already carries in `host_meta["zfs_arc"]`. `collect_host()` is a pure read again,
+and a fresh Collector reports `None` until it has a baseline of its own, like
+every other counter. See the review commit and `handoff/reports/P71-REVIEW.md`.
 
 ## Proposed contract changes
 
