@@ -72,7 +72,7 @@ flowchart TD
     P2 --> P54[P54 Steady-state report]
     P53 --> P54
     P2 --> P55[P55 Collector entity/metric filtering]
-    P46 --> P56[P56 groop squeeze]
+    P46 --> P56[P56 groop squeeze :done:]
     P16 --> P57[P57 Docker-name entity selectors :done:]
     P52 --> P58[P58 Daemon MCP frontend]
     P57 --> P59[P59 --container entity selector]
@@ -215,17 +215,22 @@ Status: **done**.
 Handoff: `handoff/P55-collector-entity-metric-filtering.md`.
 Report: `handoff/reports/P55-REPORT.md`.
 
-P56 and P57 remain queued, spec-only (no implementation yet). P56 adds
-`groop squeeze --target CGROUP_PATH`: a guided, stepped `memory.high` squeeze
-that measures a cgroup's real (hot) working set, absorbing the workflow already
-proven live by
-`scripts/gstammtisch-guide/files/usr/local/sbin/container-mempress.sh` into
+P56 is **done**. ``groop squeeze --target CGROUP_PATH --admin --confirm SQUEEZE``
+is a guided, stepped ``memory.high`` working-set measurement that absorbs the
+workflow proven live by
+``scripts/gstammtisch-guide/files/usr/local/sbin/container-mempress.sh`` into
 groop natively, gated through the existing P21/P46 admin action posture
-(root, `--admin`, typed confirmation, audit). `memory.high` is always
-restored on exit, including `SIGINT` — a hard safety requirement. Live
-validation on gstammtisch 2026-07-10 found a warm boundary ≈ 1.8 GB
+(root, ``--admin``, typed confirmation, per-session audit) with direct cgroupfs
+writes, a P2-compatible JSONL log, mandatory ``memory.high`` restore on
+exit/``SIGINT``, and 31 focused tests.
+
+Live validation on gstammtisch 2026-07-10 found a warm boundary ≈ 1.8 GB
 (refaults 375/s at 1536M) and a hot floor ≈ 1.5 GB (5810 refaults/s cliff at
-1280M) via two stratified runs.
+1280M) via two stratified runs. The two-run stratification pattern (warm
+boundary first, then tighter hot floor) is documented as recommended operator
+guidance in OPERATIONS.md.
+
+P57 remains queued, spec-only (no implementation yet). P57 adds
 
 P57 adds `--container NAME_OR_PREFIX`, resolved via the existing docker
 metadata join (`src/groop/collect/dockerjoin.py`) that the collector already

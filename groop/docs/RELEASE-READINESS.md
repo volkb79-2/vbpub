@@ -32,6 +32,9 @@ its claim instead of running that capability's live gate.
 - Executable Docker/systemd admin actions beyond the validated P46
   start/stop/restart kernel and P49 memory.high set-property (update, kill,
   raw subprocess).
+- Guided `memory.high` squeeze beyond the P56 single-target CLI (no TUI
+  integration, no daemon-side/remote squeeze, no automatic two-run stratification
+  mode — the two-run pattern is documented as operator guidance only).
 - Automated production daemon installation or service mutation.
 - Persistent daemon-owned paddr DAMON — enabled by explicit `[damon] paddr_enabled = true`; disabled by default (P44 adds the lifecycle, but the default is unchanged).
 - Inspect-files subprocess execution is limited to the bounded journald
