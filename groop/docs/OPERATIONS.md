@@ -268,6 +268,48 @@ PageUp/PageDown for scrolling, and all function keys.
   full gate chain (root, `--admin`, typed confirmation, bounded timeout,
   immutable plan, fail-closed audit) applies identically to Docker/systemd
   start/stop/restart actions.
+- `groop squeeze --target CGROUP_PATH --admin --confirm SQUEEZE [options]`
+  performs a guided, stepped `memory.high` squeeze that measures a cgroup's real
+  (hot+warm) working set under pressure. Requires root, `--admin`, and typed
+  `--confirm SQUEEZE` matching the P46 gate pattern. Directly writes
+  `memory.high` to cgroupfs (not through `systemctl set-property`), so each
+  step is fast and the full session produces only two audit records (start/end)
+  rather than one per step. **Hard safety requirement:** `memory.high` is always
+  restored on exit, including Ctrl-C / SIGINT, via a `try/finally` + signal
+  handler restore guard.
+
+  Default options (drawn from `container-mempress.sh` proven values):
+  `--step 256M`, `--delay 15` (PSI avg10 window is 10s; values below ~10s
+  degrade signal quality), `--floor 1G`, `--start` (auto: current `memory.current`
+  rounded up to `--step`), `--relax-to max`, `--psi-some-limit 10`,
+  `--psi-full-limit 5`, `--rf-limit 200`.
+
+  Stop conditions: PSI `some avg10` > `--psi-some-limit`, PSI `full avg10` >
+  `--psi-full-limit`, anon refaults/s > `--rf-limit`, or `memory.high` would go
+  below `--floor`. The last non-pressure `memory.high` is recorded as the
+  squeeze point (≈ hot+warm working set).
+
+  **Two-run stratification pattern (recommended workflow):** A first run with
+  default thresholds finds the warm boundary (where refaults or PSI first become
+  measurable). A second, tighter run (e.g. `--psi-some-limit 5 --psi-full-limit 2
+  --rf-limit 100`) finds the hot floor — the point where the working set
+  genuinely cannot shrink further without heavy thrashing. Live validation on
+  gstammtisch 2026-07-10 found a warm boundary ≈ 1.8 GB (refaults 375/s at
+  1536M) and a hot floor ≈ 1.5 GB (5810 refaults/s cliff at 1280M).
+
+  The per-step JSONL log is written to `/var/log/groop/squeeze/squeeze-<leaf>-<ts>.jsonl`
+  by default. The log schema is compatible with the P2 header+frame JSONL
+  convention so `groop report` (P54) or a future replay path can consume it.
+  Targets with `memory.min > 0` are refused unless `--force` is given (same
+  "protected/prod workload" refusal as the reference script).
+
+  Example:
+  ```bash
+  sudo groop squeeze --target /sys/fs/cgroup/system.slice/my.scope --admin --confirm SQUEEZE
+  # Two-run pattern:
+  sudo groop squeeze --target /sys/fs/cgroup/system.slice/my.scope --admin --confirm SQUEEZE --log /tmp/warm.jsonl
+  sudo groop squeeze --target /sys/fs/cgroup/system.slice/my.scope --admin --confirm SQUEEZE --psi-some-limit 5 --psi-full-limit 2 --rf-limit 100 --log /tmp/hot.jsonl
+  ```
 
 ## Compressed Swap Interpretation
 

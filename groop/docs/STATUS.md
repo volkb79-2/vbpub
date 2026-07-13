@@ -16,7 +16,7 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment. P41 automates strict rendered replay fidelity (383 passing tests plus one optional skip). P43 replaces the obsolete pre-1.0 resolver ceiling with textual>=8.2.8. Isolated local-artifact pipx/no-config acceptance now passes. Strict live performance and non-root gates remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 65-70% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd start/stop/restart execution, BPF gate/provider/snapshot bridge, bounded Docker/cgroup/journald inspect-files reads, daemon-owned paddr lifecycle, and systemd memory.high governance exist. Live BPF load/attach, broader actions, and GPU/ZFS plugins remain. |
+| v2 daemon/BPF/admin actions | 70-75% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd start/stop/restart execution, BPF gate/provider/snapshot bridge, bounded Docker/cgroup/journald inspect-files reads, daemon-owned paddr lifecycle, guided memory.high squeeze, and systemd memory.high governance exist. Live BPF load/attach, broader actions, and GPU/ZFS plugins remain. |
 
 P44 adds the daemon-owned paddr lifecycle — `[damon] paddr_enabled = true` starts
 or adopts one groop-owned whole-host paddr session. Sessions created by the
@@ -68,10 +68,12 @@ machine-readable steady-state profiles remain prototype-only claims.
 
 P55 adds `--entities GLOB`/`--slice NAME`/`--metrics compact` collection-time
 filtering and is **done** (see implemented section). P56 (``groop squeeze``)
-remains queued: a guided stepped `memory.high` working-set measurement
-absorbing the standalone `container-mempress.sh` workflow, gated through the
-existing P21/P46 admin action posture with mandatory `memory.high` restore on
-exit/SIGINT.
+is **done**: a guided stepped `memory.high` working-set measurement (`groop
+squeeze --target CGROUP_PATH --admin --confirm SQUEEZE`) that absorbs the
+standalone `container-mempress.sh` workflow into groop natively, gated through
+the existing P21/P46 admin action posture (root/--admin/typed-confirmation/audit)
+with direct cgroupfs writes, mandatory `memory.high` restore on exit/SIGINT,
+a P2-compatible JSONL log, per-session audit, and 31 focused tests.
 
 P57 adds `--container NAME_OR_PREFIX` docker-name resolution wherever groop
 takes a cgroup-path/entity identifier today and is **done**. The resolver

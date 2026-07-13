@@ -46,6 +46,16 @@ from groop.actions.governance import (
     validate_memory_high_value,
     validate_memory_high_unit,
 )
+from groop.actions.squeeze import (
+    SqueezeConfig,
+    SqueezeResult,
+    SqueezeStep,
+    parse_size,
+    render_squeeze_result,
+    run_squeeze,
+    run_squeeze_gated,
+    squeeze_result_to_jsonable,
+)
 from groop.actions.preview import ActionPlan, build_preview, build_admin_preview
 from groop.actions.audit import AuditLog, AuditRecord
 from groop.actions.execute import AuditIdentity, ExecuteResult, execute_plan, execute_set_property, validate_target
@@ -72,4 +82,12 @@ __all__ = [
     "execute_plan",
     "execute_set_property",
     "validate_target",
+    "SqueezeConfig",
+    "SqueezeResult",
+    "SqueezeStep",
+    "parse_size",
+    "render_squeeze_result",
+    "run_squeeze",
+    "run_squeeze_gated",
+    "squeeze_result_to_jsonable",
 ]

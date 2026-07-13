@@ -325,6 +325,105 @@ def _run_ui(
     return 0
 
 
+def _default_squeeze_log_path(target: str) -> Path:
+    """Build a default squeeze log path under ``/var/log/groop/squeeze/``.
+
+    Uses a timestamp and the target cgroup path's last component for a
+    descriptive filename, following the convention of groop audit log
+    locations (``/var/log/groop/``).
+    """
+    import datetime
+
+    ts = datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
+    leaf = Path(target).name if target and target != "/" else "root"
+    return Path("/var/log/groop/squeeze") / f"squeeze-{leaf}-{ts}.jsonl"
+
+
+def parse_squeeze_args(argv: list[str]) -> argparse.Namespace:
+    """Parse arguments for ``groop squeeze``.
+
+    Uses subcommand-free flat arguments (like ``groop --once``), not
+    subcommands (unlike ``groop action preview/execute``).
+    """
+    from groop.actions.squeeze import parse_size
+
+    parser = argparse.ArgumentParser(prog="groop squeeze")
+    parser.add_argument("--target", type=str, required=True, help="cgroup path to squeeze")
+    parser.add_argument("--admin", action="store_true", help="enable admin mode (required)")
+    parser.add_argument("--confirm", type=str, default="", help="type SQUEEZE to confirm the measurement")
+    parser.add_argument("--step", type=str, default="256M", help="step size (default: 256M)")
+    parser.add_argument("--delay", type=float, default=15.0, help="seconds between steps (default: 15)")
+    parser.add_argument("--floor", type=str, default="1G", help="never set memory.high below this (default: 1G)")
+    parser.add_argument("--start", type=str, default=None, help="initial memory.high (default: current rounded up to step)")
+    parser.add_argument("--relax-to", type=str, default="max", help="restore memory.high to this on exit (default: max)")
+    parser.add_argument("--psi-some-limit", type=float, default=10.0, help="stop when PSI some avg10 > PCT (default: 10)")
+    parser.add_argument("--psi-full-limit", type=float, default=5.0, help="stop when PSI full avg10 > PCT (default: 5)")
+    parser.add_argument("--rf-limit", type=int, default=200, help="stop when refaults/s > N (default: 200)")
+    parser.add_argument("--log", type=Path, default=None, help="path to JSONL log")
+    parser.add_argument("--json", action="store_true", help="emit JSON result instead of text")
+    parser.add_argument("--force", action="store_true", help="allow target with memory.min > 0")
+    parser.add_argument("--audit-path", type=Path, default=Path("/var/log/groop/actions.jsonl"), help="audit log path")
+    return parser.parse_args(argv)
+
+
+def _main_squeeze(argv: list[str]) -> int:
+    from groop.actions.squeeze import (
+        SqueezeConfig,
+        parse_size,
+        render_squeeze_result,
+        run_squeeze_gated,
+        squeeze_result_to_jsonable,
+    )
+
+    args = parse_squeeze_args(argv)
+
+    try:
+        step_bytes = parse_size(args.step)
+        floor_bytes = parse_size(args.floor)
+        start_bytes = parse_size(args.start) if args.start else None
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if args.delay is not None and args.delay < 1.0:
+        print("error: --delay should be at least 1 second (PSI avg10 window is 10s)", file=sys.stderr)
+        return 2
+
+    log_path = args.log if args.log is not None else _default_squeeze_log_path(args.target)
+
+    config = SqueezeConfig(
+        target=args.target,
+        step=step_bytes,
+        delay=args.delay,
+        floor=floor_bytes,
+        start=start_bytes,
+        relax_to=args.relax_to,
+        psi_some_limit=max(0.0, args.psi_some_limit),
+        psi_full_limit=max(0.0, args.psi_full_limit),
+        rf_limit=max(0, args.rf_limit),
+        force=args.force,
+        log_path=log_path,
+        audit_path=args.audit_path,
+        admin=args.admin,
+        confirm=args.confirm,
+    )
+
+    result = run_squeeze_gated(config)
+
+    if result.stop_reason == "error":
+        print(render_squeeze_result(result), file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(squeeze_result_to_jsonable(result), sort_keys=True))
+    else:
+        print(render_squeeze_result(result))
+
+    if result.stop_reason == "interrupted":
+        return 130
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if raw_argv[:1] == ["damon"]:
@@ -339,6 +438,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_action(raw_argv[1:])
     if raw_argv[:1] == ["inspect-files"]:
         return _main_inspect_files(raw_argv[1:])
+    if raw_argv[:1] == ["squeeze"]:
+        return _main_squeeze(raw_argv[1:])
     args = parse_args(raw_argv)
     config = load(args.config)
     if args.headless and args.replay is not None:
