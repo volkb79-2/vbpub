@@ -84,3 +84,12 @@ git diff --check
 - [x] Tests/compile/smoke recorded.
 - [x] Known gaps documented.
 - [x] Feature branch committed.
+
+## Controller / frontier-review post-merge validation (2026-07-13)
+
+- Frontier review pass #2 approved; merged `--no-ff` into main.
+- Post-merge full suite from main: `914 passed, 2 skipped, 1 warning in ~121s`
+  (PYTHONPATH=groop/src, /home/vscode/.venv python3.14, pytest 8.4.2, textual 8.2.8),
+  integrated tree including concurrently-merged pwmcp P02. No regressions.
+- Note: full suite fails under `-W error` on main independently of this package
+  (third-party `jsonschema`/`schemathesis` DeprecationWarning); pre-existing env condition.
