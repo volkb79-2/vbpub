@@ -16,13 +16,17 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment. P41 automates strict rendered replay fidelity (383 passing tests plus one optional skip). P43 replaces the obsolete pre-1.0 resolver ceiling with textual>=8.2.8. Isolated local-artifact pipx/no-config acceptance now passes. Strict live performance and non-root gates remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 70-75% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd start/stop/restart execution, BPF gate/provider/snapshot bridge, bounded Docker/cgroup/journald inspect-files reads, daemon-owned paddr lifecycle, guided memory.high squeeze, and systemd memory.high governance exist. Live BPF load/attach, broader actions, and GPU/ZFS plugins remain. |
+| v2 daemon/BPF/admin actions | 80-85% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd start/stop/restart execution, BPF gate/provider/snapshot bridge, bounded Docker/cgroup/journald inspect-files reads, daemon-owned paddr lifecycle, guided memory.high squeeze, and systemd memory.high governance exist. Live BPF load/attach, broader actions, and GPU/ZFS plugins remain. |
 
 P44 adds the daemon-owned paddr lifecycle — `[damon] paddr_enabled = true` starts
 or adopts one groop-owned whole-host paddr session. Sessions created by the
 current run stop on shutdown; verified adopted sessions persist. P45 adds
 bounded descriptor-confined Docker/cgroup reads. P46 adds the narrowly
 allowlisted executable admin kernel.
+
+P72 adds kill (closed signal allowlist, `--force` for KILL, protected-entity
+refusal) and update (`--memory`/`--cpus`, refuse limits below current usage)
+verbs to the P46 execution kernel, closing the action verb set.
 
 P47 adds a thread-safe daemon component health registry with byte-bounded,
 redacted public error detail, a strictly validated read-only ``health-v1``

@@ -730,17 +730,33 @@ def parse_action_args(argv: list[str]) -> argparse.Namespace:
     preview.add_argument("--property", type=str, default=None, help="property for systemd-set-property (e.g. memory.high)")
     preview.add_argument("--value", type=str, default=None, help="value for systemd-set-property (e.g. max or byte count)")
     preview.add_argument("--mode", type=str, default=None, help="persistence mode: runtime|persistent (default: auto-detect)")
-    execute = subparsers.add_parser("execute", help="execute a gated admin action (start/stop/restart only)")
+    # P72 kill-specific preview arguments
+    preview.add_argument("--signal", type=str, default=None, help="signal name for kill action (e.g. TERM, KILL)")
+    preview.add_argument("--force", action="store_true", help="allow KILL signal (required for --signal KILL)")
+    # P72 update-specific preview arguments
+    preview.add_argument("--memory", type=str, default=None, help="memory limit for docker-update (e.g. 512M, 2G)")
+    preview.add_argument("--cpus", type=str, default=None, help="CPU count for docker-update")
+    preview.add_argument("--below-current", action="store_true", dest="below_current",
+                         help="allow memory limit below current usage (may OOM)")
+    execute = subparsers.add_parser("execute", help="execute a gated admin action (start/stop/restart/kill/update only)")
     execute.add_argument("--kind", type=str, required=True, help="action kind, e.g. docker-restart, systemd-stop")
     execute.add_argument("--target", type=str, default=None, help="action target, e.g. container name or systemd unit")
     execute.add_argument("--container", type=str, default=None, help="container name or prefix to resolve (alternative to --target)")
     execute.add_argument("--admin", action="store_true", help="enable admin execution mode (required)")
-    execute.add_argument("--confirm", type=str, default="", help="type EXECUTE to confirm the action")
+    execute.add_argument("--confirm", type=str, default="", help="type EXECUTE/KILL/UPDATE to confirm the action")
     execute.add_argument("--json", action="store_true", help="emit JSON result instead of text")
     execute.add_argument("--timeout", type=float, default=30.0, help="subprocess timeout in seconds (default 30.0)")
     execute.add_argument("--property", type=str, default=None, help="property for systemd-set-property (e.g. memory.high)")
     execute.add_argument("--value", type=str, default=None, help="value for systemd-set-property (e.g. max or byte count)")
     execute.add_argument("--mode", type=str, default=None, help="persistence mode: runtime|persistent (default: auto-detect)")
+    # P72 kill-specific execute arguments
+    execute.add_argument("--signal", type=str, default=None, help="signal name for kill action (e.g. TERM, KILL)")
+    execute.add_argument("--force", action="store_true", help="allow KILL signal (required for --signal KILL)")
+    # P72 update-specific execute arguments
+    execute.add_argument("--memory", type=str, default=None, help="memory limit for docker-update (e.g. 512M, 2G)")
+    execute.add_argument("--cpus", type=str, default=None, help="CPU count for docker-update")
+    execute.add_argument("--below-current", action="store_true", dest="below_current",
+                         help="allow memory limit below current usage (may OOM)")
     return parser.parse_args(argv)
 
 
@@ -751,6 +767,16 @@ def _main_action(argv: list[str]) -> int:
         SetPropertyPlan,
         render_set_property_preview,
         set_property_plan_to_jsonable,
+    )
+    from groop.actions.kill_ops import (
+        KillPlan,
+        render_kill_preview,
+        kill_plan_to_jsonable,
+    )
+    from groop.actions.update_ops import (
+        UpdatePlan,
+        render_update_preview,
+        update_plan_to_jsonable,
     )
     from groop.actions.preview import ActionPlan, DisabledPlan, build_admin_preview
 
@@ -772,6 +798,13 @@ def _main_action(argv: list[str]) -> int:
                 property_name=args.property,
                 property_value=args.value,
                 persistence=args.mode,
+                # P72 kill arguments
+                signal=args.signal,
+                force=args.force,
+                # P72 update arguments
+                memory=args.memory,
+                cpus=args.cpus,
+                below_current=args.below_current,
             )
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
@@ -798,6 +831,44 @@ def _main_action(argv: list[str]) -> int:
                 )
             else:
                 print(render_set_property_preview(result))
+            return 0
+
+        if isinstance(result, KillPlan):
+            if args.audit_log is not None:
+                AuditLog(args.audit_log).record(
+                    kind=result.kind,
+                    target=result.target,
+                    argv=result.argv,
+                    admin=args.admin,
+                )
+            if args.json:
+                print(
+                    json.dumps(
+                        kill_plan_to_jsonable(result),
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(render_kill_preview(result))
+            return 0
+
+        if isinstance(result, UpdatePlan):
+            if args.audit_log is not None:
+                AuditLog(args.audit_log).record(
+                    kind=result.kind,
+                    target=result.target,
+                    argv=result.argv,
+                    admin=args.admin,
+                )
+            if args.json:
+                print(
+                    json.dumps(
+                        update_plan_to_jsonable(result),
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(render_update_preview(result))
             return 0
 
         if not isinstance(result, ActionPlan):
@@ -842,6 +913,28 @@ def _main_action(argv: list[str]) -> int:
                 property_name=args.property,
                 property_value=args.value,
                 persistence=args.mode,
+                admin=args.admin,
+                confirm=args.confirm,
+                timeout=args.timeout,
+            )
+        elif args.kind in ("docker-kill", "systemd-kill"):
+            from groop.actions.execute import execute_kill
+            result = execute_kill(
+                args.kind,
+                resolved_target,
+                signal=args.signal or "TERM",
+                force=args.force,
+                admin=args.admin,
+                confirm=args.confirm,
+                timeout=args.timeout,
+            )
+        elif args.kind == "docker-update":
+            from groop.actions.execute import execute_update
+            result = execute_update(
+                resolved_target,
+                memory=args.memory,
+                cpus=args.cpus,
+                below_current=args.below_current,
                 admin=args.admin,
                 confirm=args.confirm,
                 timeout=args.timeout,

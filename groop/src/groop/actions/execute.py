@@ -997,3 +997,442 @@ def _make_plan_stub(kind: str, target: str, argv: tuple[str, ...]) -> ActionPlan
         argv=argv,
         description="",
     )
+
+
+# ---------------------------------------------------------------------------
+# execute_kill — kill action through P46 gates
+# ---------------------------------------------------------------------------
+
+
+def execute_kill(
+    kind: str,
+    target: str,
+    *,
+    signal: str = "TERM",
+    force: bool = False,
+    admin: bool = False,
+    confirm: str = "",
+    audit_path: str | Path = DEFAULT_EXECUTION_AUDIT_PATH,
+    runner: Callable[..., ExecuteResult] | None = None,
+    clock: Callable[[], float] | None = None,
+    identity: Callable[[], AuditIdentity] | None = None,
+    root_check: Callable[[], bool] | None = None,
+    timeout: float = 30.0,
+    protected_check: Callable[[str, str], bool] | None = None,
+) -> ExecuteResult:
+    """Execute a kill action through the P46 gates.
+
+    Reuses the P46 root/admin/typed-confirmation, absolute argv, timeout,
+    result bounds, and fail-closed audit contract.  Additionally validates
+    the signal (closed allowlist) and checks protected entities.
+
+    ``confirm`` must be ``"KILL"`` (per-verb token — distinct from
+    ``"EXECUTE"`` used by start/stop/restart).
+
+    Signature matches the ``execute_set_property`` pattern.
+    """
+    from groop.actions.kill_ops import (
+        build_kill_argv,
+        validate_signal,
+        _default_protected_check,
+    )
+
+    # -- Gates (same pattern as execute_plan) --------------------------------
+    if not admin:
+        return _refusal(kind, target, "admin mode is required")
+    if confirm != "KILL":
+        return _refusal(kind, target, "exact confirmation KILL is required")
+    try:
+        is_root = root_check() if root_check is not None else os.geteuid() == 0
+    except BaseException:
+        is_root = False
+    if is_root is not True:
+        return _refusal(kind, target, "root privileges are required")
+    try:
+        _validate_timeout(timeout)
+    except (TypeError, ValueError) as exc:
+        return _refusal(kind, target, str(exc))
+    if not isinstance(audit_path, (str, Path)):
+        return _refusal(kind, target, "a mandatory audit path is required")
+    audit_path_obj = Path(audit_path)
+    if not audit_path_obj.is_absolute():
+        return _refusal(kind, target, "audit path must be absolute")
+
+    # -- Validate signal -----------------------------------------------------
+    try:
+        validated_signal = validate_signal(signal)
+    except ValueError as exc:
+        return _refusal(kind, target, str(exc))
+
+    # KILL requires --force
+    if validated_signal == "KILL" and not force:
+        return _refusal(kind, target, "KILL signal requires --force (data-loss prevention gate)")
+
+    # -- Protected entity check (fail-closed: an unusable check refuses) ------
+    check = protected_check or _default_protected_check
+    try:
+        is_protected = check(kind, target)
+    except BaseException as exc:
+        return _refusal(
+            kind, target,
+            f"protected-service check failed ({type(exc).__name__}); kill refused",
+        )
+    if is_protected is not False:
+        return _refusal(kind, target, "target is a protected service; kill refused")
+
+    # -- Build argv ----------------------------------------------------------
+    try:
+        action_kind = ActionKind(kind)
+    except (TypeError, ValueError):
+        return _refusal(kind, target, f"invalid action kind: {kind!r}")
+    try:
+        argv = tuple(build_kill_argv(action_kind, target, validated_signal))
+    except (TypeError, ValueError) as exc:
+        return _refusal(kind, target, str(exc))
+
+    # -- Identity & audit (same as execute_plan) -----------------------------
+    now = clock or time.time
+    try:
+        stable_identity = _coerce_identity(
+            identity() if identity is not None else _production_identity()
+        )
+    except BaseException as exc:
+        return _refusal(
+            kind, target,
+            f"invalid execution identity: {type(exc).__name__}",
+        )
+
+    try:
+        audit_fh = _write_execution_audit_pre(
+            audit_path_obj,
+            identity=stable_identity,
+            kind=kind,
+            target=target,
+            argv=argv,
+            clock=now,
+        )
+    except BaseException as exc:
+        return _refusal(
+            kind, target,
+            "audit failed before execution",
+            audit_outcome=f"pre_failure:{type(exc).__name__}",
+        )
+
+    try:
+        started = float(now())
+    except BaseException:
+        started = time.time()
+
+    # -- Revalidate target after pre-audit -----------------------------------
+    try:
+        validate_target(action_kind, target)
+    except (TypeError, ValueError, KeyError) as exc:
+        refused = _refusal(kind, target, str(exc))
+        try:
+            _write_execution_audit_post(
+                audit_fh,
+                identity=stable_identity,
+                kind=kind,
+                target=target,
+                argv=argv,
+                result=refused,
+                clock=now,
+            )
+        except _AuditError:
+            pass
+        return refused
+
+    # -- Runner ---------------------------------------------------------------
+    try:
+        raw_result = (runner or _default_runner)(argv, timeout=float(timeout))
+    except subprocess.TimeoutExpired:
+        raw_result = ExecuteResult("", "", argv, None, "", "", "timeout", 0.0)
+    except OSError as exc:
+        raw_result = ExecuteResult(
+            "", "", argv, None, "",
+            _bound_output(f"{type(exc).__name__}: {exc}"),
+            "runner_failure", 0.0,
+        )
+    except BaseException as exc:
+        raw_result = ExecuteResult(
+            "", "", argv, None, "",
+            _bound_output(f"{type(exc).__name__}: runner failed"),
+            "runner_failure", 0.0,
+        )
+
+    try:
+        result = _normalise_runner_result(raw_result, _make_plan_stub(kind, target, argv))
+    except (TypeError, ValueError) as exc:
+        result = ExecuteResult(
+            kind=kind, target=target, argv=argv,
+            returncode=None, stdout="", stderr=_bound_output(str(exc)),
+            outcome="runner_failure", duration_s=0.0,
+        )
+    try:
+        elapsed = float(now()) - started
+    except BaseException:
+        elapsed = 0.0
+    result = dataclasses.replace(
+        result,
+        kind=kind, target=target, argv=argv,
+        duration_s=max(0.0, min(elapsed if math.isfinite(elapsed) else 0.0, _MAX_TIMEOUT)),
+        action_outcome=result.outcome,
+    )
+
+    # -- Post audit -----------------------------------------------------------
+    try:
+        _write_execution_audit_post(
+            audit_fh,
+            identity=stable_identity,
+            kind=kind,
+            target=target,
+            argv=argv,
+            result=result,
+            clock=now,
+        )
+    except BaseException as exc:
+        try:
+            audit_fh.close()
+        except BaseException:
+            pass
+        return dataclasses.replace(
+            result,
+            outcome="audit_failure",
+            audit_outcome="post_failure",
+            audit_error=_bound_output(str(exc) or "post-audit write failed"),
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# execute_update — update action through P46 gates
+# ---------------------------------------------------------------------------
+
+
+def execute_update(
+    target: str,
+    *,
+    memory: str | None = None,
+    cpus: str | None = None,
+    below_current: bool = False,
+    admin: bool = False,
+    confirm: str = "",
+    audit_path: str | Path = DEFAULT_EXECUTION_AUDIT_PATH,
+    runner: Callable[..., ExecuteResult] | None = None,
+    clock: Callable[[], float] | None = None,
+    identity: Callable[[], AuditIdentity] | None = None,
+    root_check: Callable[[], bool] | None = None,
+    timeout: float = 30.0,
+    current_memory_reader: Callable[[str], int | None] | None = None,
+) -> ExecuteResult:
+    """Execute a docker-update action through the P46 gates.
+
+    Reuses the P46 root/admin/typed-confirmation, absolute argv, timeout,
+    result bounds, and fail-closed audit contract.  Additionally validates
+    memory/CPU limits and checks current memory usage.
+
+    ``confirm`` must be ``"UPDATE"`` (per-verb token — distinct from
+    ``"EXECUTE"`` and ``"KILL"``).
+
+    Signature matches the ``execute_set_property`` pattern.
+    """
+    from groop.actions.update_ops import (
+        validate_memory,
+        validate_cpus,
+        build_update_argv,
+        _reject_systemd_target,
+        _default_current_memory_reader,
+    )
+
+    # -- Gates (same pattern as execute_plan) --------------------------------
+    if not admin:
+        return _refusal("docker-update", target, "admin mode is required")
+    if confirm != "UPDATE":
+        return _refusal("docker-update", target, "exact confirmation UPDATE is required")
+    try:
+        is_root = root_check() if root_check is not None else os.geteuid() == 0
+    except BaseException:
+        is_root = False
+    if is_root is not True:
+        return _refusal("docker-update", target, "root privileges are required")
+    try:
+        _validate_timeout(timeout)
+    except (TypeError, ValueError) as exc:
+        return _refusal("docker-update", target, str(exc))
+    if not isinstance(audit_path, (str, Path)):
+        return _refusal("docker-update", target, "a mandatory audit path is required")
+    audit_path_obj = Path(audit_path)
+    if not audit_path_obj.is_absolute():
+        return _refusal("docker-update", target, "audit path must be absolute")
+
+    # -- Validate resource limits --------------------------------------------
+    parsed_memory: int | None = None
+    if memory is not None:
+        try:
+            parsed_memory = validate_memory(memory)
+        except ValueError as exc:
+            return _refusal("docker-update", target, str(exc))
+
+    parsed_cpus: float | None = None
+    if cpus is not None:
+        try:
+            parsed_cpus = validate_cpus(cpus)
+        except ValueError as exc:
+            return _refusal("docker-update", target, str(exc))
+
+    if parsed_memory is None and parsed_cpus is None:
+        return _refusal("docker-update", target, "at least one of --memory or --cpus is required")
+
+    # -- Systemd target check -----------------------------------------------
+    try:
+        _reject_systemd_target(target)
+    except ValueError as exc:
+        return _refusal("docker-update", target, str(exc))
+
+    # -- Current-memory check (before audit, plan-time; fail-closed) ----------
+    # A limit below current usage OOM-kills the container on apply, so an
+    # unreadable current usage is refused exactly like a breach, under the same
+    # override flag.  A --cpus-only update needs no such check.
+    reader = current_memory_reader or _default_current_memory_reader
+    current_usage: int | None = None
+    if parsed_memory is not None and not below_current:
+        try:
+            current_usage = reader(target)
+        except BaseException:
+            current_usage = None
+
+        if current_usage is None:
+            return _refusal(
+                "docker-update", target,
+                f"current memory usage of {target!r} could not be established, so a "
+                f"limit of {parsed_memory} bytes cannot be shown to be safe; pass "
+                "--below-current to apply it anyway (this may OOM the container)",
+            )
+        if parsed_memory < current_usage:
+            return _refusal(
+                "docker-update", target,
+                f"memory limit {parsed_memory} bytes is below current "
+                f"usage {current_usage} bytes; use --below-current to "
+                "override (this may OOM the container)",
+            )
+
+    # -- Build argv ----------------------------------------------------------
+    try:
+        argv = tuple(build_update_argv(target, memory=parsed_memory, cpus=parsed_cpus))
+    except (TypeError, ValueError) as exc:
+        return _refusal("docker-update", target, str(exc))
+
+    kind = "docker-update"
+
+    # -- Identity & audit (same as execute_plan) -----------------------------
+    now = clock or time.time
+    try:
+        stable_identity = _coerce_identity(
+            identity() if identity is not None else _production_identity()
+        )
+    except BaseException as exc:
+        return _refusal(
+            kind, target,
+            f"invalid execution identity: {type(exc).__name__}",
+        )
+
+    try:
+        audit_fh = _write_execution_audit_pre(
+            audit_path_obj,
+            identity=stable_identity,
+            kind=kind,
+            target=target,
+            argv=argv,
+            clock=now,
+        )
+    except BaseException as exc:
+        return _refusal(
+            kind, target,
+            "audit failed before execution",
+            audit_outcome=f"pre_failure:{type(exc).__name__}",
+        )
+
+    try:
+        started = float(now())
+    except BaseException:
+        started = time.time()
+
+    # -- Revalidate target after pre-audit -----------------------------------
+    try:
+        validate_target(ActionKind.DOCKER_UPDATE, target)
+    except (TypeError, ValueError, KeyError) as exc:
+        refused = _refusal(kind, target, str(exc))
+        try:
+            _write_execution_audit_post(
+                audit_fh,
+                identity=stable_identity,
+                kind=kind,
+                target=target,
+                argv=argv,
+                result=refused,
+                clock=now,
+            )
+        except _AuditError:
+            pass
+        return refused
+
+    # -- Runner ---------------------------------------------------------------
+    try:
+        raw_result = (runner or _default_runner)(argv, timeout=float(timeout))
+    except subprocess.TimeoutExpired:
+        raw_result = ExecuteResult("", "", argv, None, "", "", "timeout", 0.0)
+    except OSError as exc:
+        raw_result = ExecuteResult(
+            "", "", argv, None, "",
+            _bound_output(f"{type(exc).__name__}: {exc}"),
+            "runner_failure", 0.0,
+        )
+    except BaseException as exc:
+        raw_result = ExecuteResult(
+            "", "", argv, None, "",
+            _bound_output(f"{type(exc).__name__}: runner failed"),
+            "runner_failure", 0.0,
+        )
+
+    try:
+        result = _normalise_runner_result(raw_result, _make_plan_stub(kind, target, argv))
+    except (TypeError, ValueError) as exc:
+        result = ExecuteResult(
+            kind=kind, target=target, argv=argv,
+            returncode=None, stdout="", stderr=_bound_output(str(exc)),
+            outcome="runner_failure", duration_s=0.0,
+        )
+    try:
+        elapsed = float(now()) - started
+    except BaseException:
+        elapsed = 0.0
+    result = dataclasses.replace(
+        result,
+        kind=kind, target=target, argv=argv,
+        duration_s=max(0.0, min(elapsed if math.isfinite(elapsed) else 0.0, _MAX_TIMEOUT)),
+        action_outcome=result.outcome,
+    )
+
+    # -- Post audit -----------------------------------------------------------
+    try:
+        _write_execution_audit_post(
+            audit_fh,
+            identity=stable_identity,
+            kind=kind,
+            target=target,
+            argv=argv,
+            result=result,
+            clock=now,
+        )
+    except BaseException as exc:
+        try:
+            audit_fh.close()
+        except BaseException:
+            pass
+        return dataclasses.replace(
+            result,
+            outcome="audit_failure",
+            audit_outcome="post_failure",
+            audit_error=_bound_output(str(exc) or "post-audit write failed"),
+        )
+    return result

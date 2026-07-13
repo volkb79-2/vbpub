@@ -27,6 +27,9 @@ class ActionKind(str, enum.Enum):
     SYSTEMD_STOP = "systemd-stop"
     SYSTEMD_START = "systemd-start"
     SYSTEMD_SET_PROPERTY = "systemd-set-property"
+    DOCKER_KILL = "docker-kill"
+    SYSTEMD_KILL = "systemd-kill"
+    DOCKER_UPDATE = "docker-update"
 
 
 # These are deliberately fixed.  The execution kernel never consults PATH and
@@ -84,6 +87,21 @@ def _systemd_set_property(target: str) -> list[str]:
     return [SYSTEMCTL_EXECUTABLE, "set-property", target]
 
 
+def _docker_kill(target: str) -> list[str]:
+    """Basic docker kill argv builder (signal added by kill_ops.py)."""
+    return [DOCKER_EXECUTABLE, "kill", target]
+
+
+def _systemd_kill(target: str) -> list[str]:
+    """Basic systemctl kill argv builder (signal added by kill_ops.py)."""
+    return [SYSTEMCTL_EXECUTABLE, "kill", target]
+
+
+def _docker_update(target: str) -> list[str]:
+    """Basic docker update argv builder (resources added by update_ops.py)."""
+    return [DOCKER_EXECUTABLE, "update", target]
+
+
 # ---------------------------------------------------------------------------
 # Catalog entry
 # ---------------------------------------------------------------------------
@@ -95,8 +113,17 @@ class CatalogEntry(NamedTuple):
 
 
 # ---------------------------------------------------------------------------
-# Execution allowlist — only start, stop, restart kinds are executable.
-# systemd-set-property, update, kill, and unknown kinds are excluded.
+# Execution allowlist — only the argument-free start/stop/restart kinds are
+# executable through the generic execute_plan() path.
+#
+# systemd-set-property (P49), docker-kill/systemd-kill and docker-update (P72)
+# are deliberately EXCLUDED: each carries validated arguments (property/value,
+# signal + --force, memory/cpus + below-current) and its own gates, and each has
+# a dedicated entry point (execute_set_property / execute_kill / execute_update)
+# that enforces them.  Admitting them here would let execute_plan() run the
+# catalog's argument-free builder — `docker kill <target>`, whose docker default
+# is SIGKILL — under the generic EXECUTE token, with no signal allowlist, no
+# --force gate and no protected-entity check.
 # ---------------------------------------------------------------------------
 
 EXECUTION_ALLOWLIST: frozenset[ActionKind] = frozenset({
@@ -165,6 +192,20 @@ def validate_target(kind: ActionKind, target: str) -> None:
         if not _SYSTEMD_UNIT_RE.fullmatch(target):
             raise ValueError(f"invalid systemd unit name for set-property: {target!r}")
 
+    if kind in {ActionKind.DOCKER_KILL, ActionKind.DOCKER_UPDATE}:
+        # Docker kill and update: target is a container identifier.
+        if any(char.isspace() for char in target):
+            raise ValueError(f"target must not contain whitespace: {target!r}")
+        if not (_DOCKER_ID_RE.fullmatch(target) or _DOCKER_NAME_RE.fullmatch(target)):
+            raise ValueError(f"invalid Docker container identifier: {target!r}")
+
+    if kind is ActionKind.SYSTEMD_KILL:
+        # Systemd kill: target is a unit name.
+        if any(char.isspace() for char in target):
+            raise ValueError(f"target must not contain whitespace: {target!r}")
+        if ".." in target or not _SYSTEMD_UNIT_RE.fullmatch(target):
+            raise ValueError(f"invalid systemd unit name: {target!r}")
+
 
 ACTION_CATALOG: dict[ActionKind, CatalogEntry] = {
     ActionKind.DOCKER_RESTART: CatalogEntry(
@@ -201,5 +242,20 @@ ACTION_CATALOG: dict[ActionKind, CatalogEntry] = {
         ActionKind.SYSTEMD_SET_PROPERTY,
         _systemd_set_property,
         "Preview systemctl set-property for memory.high governance (use administrative preview instead).",
+    ),
+    ActionKind.DOCKER_KILL: CatalogEntry(
+        ActionKind.DOCKER_KILL,
+        _docker_kill,
+        "Send a signal to a Docker container (use --signal).",
+    ),
+    ActionKind.SYSTEMD_KILL: CatalogEntry(
+        ActionKind.SYSTEMD_KILL,
+        _systemd_kill,
+        "Send a signal to a systemd unit (use --signal).",
+    ),
+    ActionKind.DOCKER_UPDATE: CatalogEntry(
+        ActionKind.DOCKER_UPDATE,
+        _docker_update,
+        "Update Docker container resource limits (use --memory/--cpus).",
     ),
 }

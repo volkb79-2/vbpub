@@ -93,7 +93,7 @@ flowchart TD
     P69 --> P73
     P3 --> P71[P71 ZFS ARC host provider :done:]
     P71 --> P74[P74 GPU host provider :done:]
-    P46 --> P72[P72 Admin action kill/update verbs]
+    P46 --> P72[P72 Admin action kill/update verbs :done:]
     P49 --> P72
     P58[P58 Daemon MCP frontend :done:] --> P75[P75 MCP live acceptance leg]
     P57 --> P76[P76 CIU stack metadata]
@@ -143,7 +143,7 @@ After P43, the roadmap is mostly in three buckets:
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
 | v1/v1.5 release confidence and UI polish | 0 | P43 removes the obsolete Textual `<1` resolver ceiling and closes the last planned v1/v1.5 release-confidence package. Manual live-host acceptance evidence remains. |
-| v2 privileged daemon/BPF/admin/file work | 4-6 | P46 (admin action execution kernel) is complete. P44-P45 cover paddr daemon ownership and the first bounded inspect-files content slice; BPF lifecycle, install execution/service hardening, remaining content modes, kill/update, and systemd property governance remain. |
+| v2 privileged daemon/BPF/admin/file work | 4-6 | P46 (admin action execution kernel) is complete. P44-P45 cover paddr daemon ownership and the first bounded inspect-files content slice; BPF lifecycle, install execution/service hardening, remaining content modes, and systemd property governance remain. |
 | Optional plugins / future surfaces | 2-3 | GPU, ZFS, CIU grouping/actions. **ZFS landed as P71** (merged 2026-07-13) — the first package ever drawn from this bucket, which had gone un-carved for the project's whole life (the exact review-children-only drift controller-workflow-v2 §8 exists to stop). **GPU is carved as P74** (2026-07-13), following P71's exemplar. **CIU's metadata slice is now carved as P76** (2026-07-13) — the bucket's last un-carved item, grounded in the existing TUI-SPEC §4.3 spec; its TUI-grouping and ciu-gated-action successors remain, and are the bucket's residue. Web UI over daemon API is promoted out of this bucket — see P69 below (product-goal-driven, standing user priority as of 2026-07-13). |
 
 ### P69 — Web UI over daemon API (product-goal-driven)

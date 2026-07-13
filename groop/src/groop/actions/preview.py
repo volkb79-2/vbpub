@@ -3,6 +3,10 @@
 build_preview() validates the target and builds a plan for known kinds.
 build_admin_preview() gates on --admin and returns a DisabledPlan if admin mode
 is not active.
+
+P72 adds ``KillPlan`` (for docker-kill/systemd-kill) and ``UpdatePlan`` (for
+docker-update) — structured plan types that carry verb-specific arguments
+(signal/force, memory/cpus) in addition to the common kind+target+argv.
 """
 
 from __future__ import annotations
@@ -14,6 +18,8 @@ from groop.actions.governance import (
     SetPropertyPlan,
     build_set_property_preview as _build_set_property_preview,
 )
+from groop.actions.kill_ops import KillPlan, build_kill_preview as _build_kill_preview
+from groop.actions.update_ops import UpdatePlan, build_update_preview as _build_update_preview
 
 
 @dataclasses.dataclass(frozen=True)
@@ -37,7 +43,7 @@ class DisabledPlan:
     mode: str = "disabled"
 
 
-AdminPreviewResult = ActionPlan | SetPropertyPlan | DisabledPlan
+AdminPreviewResult = ActionPlan | SetPropertyPlan | KillPlan | UpdatePlan | DisabledPlan
 
 
 def build_preview(kind: str, target: str) -> ActionPlan:
@@ -50,6 +56,11 @@ def build_preview(kind: str, target: str) -> ActionPlan:
     ``property_name`` and ``property_value`` instead, which routes through
     the structured governance.py path.  This function rejects set-property
     targets that include property assignments.
+
+    Note: For ``docker-kill``, ``systemd-kill``, and ``docker-update``, use
+    ``build_admin_preview()`` with verb-specific arguments (--signal/--force
+    for kill, --memory/--cpus for update).  The basic catalog-level preview
+    omits those arguments.
     """
     ak = ActionKind(kind)  # raises ValueError for invalid kind name
     validate_target(ak, target)
@@ -71,6 +82,14 @@ def build_admin_preview(
     property_name: str | None = None,
     property_value: str | None = None,
     persistence: str | None = None,
+    # P72 kill-specific arguments
+    signal: str | None = None,
+    force: bool = False,
+    # P72 update-specific arguments
+    memory: str | None = None,
+    cpus: str | None = None,
+    below_current: bool = False,
+    current_memory_reader: object = None,
 ) -> AdminPreviewResult:
     """Build a preview gated on --admin.
 
@@ -80,6 +99,11 @@ def build_admin_preview(
     ``property_value`` for structured governance preview.  Without them the
     preview falls back to the composite target format (which raises a clear
     error for invalid inputs).
+
+    For ``docker-kill`` / ``systemd-kill``, pass ``signal`` (and ``force``
+    for KILL signal).
+
+    For ``docker-update``, pass ``memory`` and/or ``cpus``.
     """
     if not admin:
         ak = ActionKind(kind)
@@ -94,4 +118,16 @@ def build_admin_preview(
             )
         # If no structured inputs, fall through to the catalog preview which
         # will reject composite targets with a clear error.
+    if kind in ("docker-kill", "systemd-kill"):
+        return _build_kill_preview(
+            kind, target, signal=signal or "TERM", force=force,
+        )
+    if kind == "docker-update":
+        return _build_update_preview(
+            target,
+            memory=memory,
+            cpus=cpus,
+            below_current=below_current,
+            current_memory_reader=current_memory_reader,
+        )
     return build_preview(kind, target)
