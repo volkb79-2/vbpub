@@ -431,3 +431,32 @@ cache-warmth only, never polling).
   P02's critical `--isolated` bug, P58's architecture violation) — confirms
   §6's same-tier-blind-spot framing empirically, not just in theory. Keep
   pass #1 as triage; do not promote it toward gate status.
+- 2026-07-13 · **First substantive pass-#1 catch (P70), and it does not overturn
+  the prior — it sharpens it.** P70's self-review found a real numerical defect
+  before pass #2 saw the diff: reverse-Welford accepted a window at CoV
+  `0.049999999999999996` where P62 rejected at `0.05000000000000001`, silently
+  changing which window `--window auto` selects. That is exactly the
+  overclaimed-contract class pass #1 had never caught. **But the carve had
+  pre-named the failure mode:** P70's contract 3 told the implementer that
+  reverse cumulative sums "change summation order *and* are numerically unstable
+  for large means with small variance", and demanded a test case "engineered to
+  sit within 1e-12 of the CoV bound". Pass #1 did not *discover* an unknown risk;
+  it *executed a check the carver had specified*. Read this as further evidence
+  for "tightening contracts beats upgrading the model" (§4), not as evidence that
+  same-session review finds substantive bugs on its own — the same wave's P71,
+  whose carve named no such trap, had pass #1 clear a hollow oracle and a
+  fabricated fixture that pass #2 then caught (0% overlap on 3 substantive
+  findings). **Actionable form of the rule: a self-review can only check what the
+  carve made checkable.** Keep pass #1 as triage; keep investing in carve-time
+  contracts, which is what actually converts a cheap pass into a real one.
+- 2026-07-13 · Wave P69/P70/P71 exposed a **carve-authoring bug worth generalizing**:
+  P69's handoff made "write DECISIONS-INBOX entries" an implementer deliverable,
+  which §8 reserves to the frontier reviewer. The agent complied (correctly — it
+  followed its brief) and its own self-review then had to flag its output as a
+  process violation. The fault is the carve, not the agent. Fixed in groop's
+  handoff-authoring guide; the general rule is that **a handoff must never ask an
+  implementer to perform a reviewer-only action**, because a well-behaved agent
+  will do it. Same handoff also cited a cross-repo reference by a path that does
+  not resolve from the repo (`dstdns/...` is a sibling workspace), so the agent
+  could not read the schema it was told to follow and invented one — cite paths
+  that resolve, or vendor the reference.

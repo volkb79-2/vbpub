@@ -83,15 +83,16 @@ flowchart TD
     P61 -.-> P62
     P61 --> P64[P64 report baseline regression gate]
     P61 --> P65[P65 report table rendering]
-    P62 --> P70[P70 detector performance]
+    P62 --> P70[P70 detector performance :done:]
     P63[P63 Daemon client versioned read methods :done:] --> P66[P66 Daemon client versioned health]
     P63 --> P67[P67 Versioned read HTTP/WebSocket gateway]
     P52 --> P67
     P63 --> P68[P68 Versioned current subscribe client]
-    P69[P69 Web UI scoping + analysis] -.-> P67
-    P67 --> P69impl[Web UI implementation - carved from P69]
-    P69 --> P69impl
+    P69[P69 Web UI scoping + analysis :done:] -.-> P67
+    P67 --> P73[P73 Read-only web UI shell]
+    P69 --> P73
     P3 --> P71[P71 ZFS ARC host provider :done:]
+    P71 --> P74[P74 GPU host provider]
     P46 --> P72[P72 Admin action kill/update verbs]
     P49 --> P72
 ```
@@ -139,7 +140,7 @@ After P43, the roadmap is mostly in three buckets:
 |---|---:|---|
 | v1/v1.5 release confidence and UI polish | 0 | P43 removes the obsolete Textual `<1` resolver ceiling and closes the last planned v1/v1.5 release-confidence package. Manual live-host acceptance evidence remains. |
 | v2 privileged daemon/BPF/admin/file work | 4-6 | P46 (admin action execution kernel) is complete. P44-P45 cover paddr daemon ownership and the first bounded inspect-files content slice; BPF lifecycle, install execution/service hardening, remaining content modes, kill/update, and systemd property governance remain. |
-| Optional plugins / future surfaces | 2-3 | GPU, ZFS, CIU grouping/actions. **ZFS landed as P71** (merged 2026-07-13) — the first package ever drawn from this bucket, which had gone un-carved for the project's whole life (the exact review-children-only drift controller-workflow-v2 §8 exists to stop). GPU and CIU remain. Web UI over daemon API is promoted out of this bucket — see P69 below (product-goal-driven, standing user priority as of 2026-07-13). |
+| Optional plugins / future surfaces | 2-3 | GPU, ZFS, CIU grouping/actions. **ZFS landed as P71** (merged 2026-07-13) — the first package ever drawn from this bucket, which had gone un-carved for the project's whole life (the exact review-children-only drift controller-workflow-v2 §8 exists to stop). **GPU is now carved as P74** (2026-07-13), following P71's exemplar. CIU remains. Web UI over daemon API is promoted out of this bucket — see P69 below (product-goal-driven, standing user priority as of 2026-07-13). |
 
 ### P69 — Web UI over daemon API (product-goal-driven)
 
