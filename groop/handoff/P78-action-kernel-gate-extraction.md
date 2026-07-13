@@ -61,13 +61,17 @@ dropped a gate on an unexercised branch.
 1. **One chain.** After this package there is exactly one implementation of the
    gate/audit/runner sequence. The verbs supply, by parameter: the confirmation token
    (`EXECUTE`/`KILL`/`UPDATE`), the argv builder, the kind string, and an optional
-   ordered list of **pre-argv verb gates** (closures returning a refusal reason or
-   `None`) — which is what the signal allowlist, the `--force` gate, the protected
-   check, the systemd-target refusal, the below-current guard, and P49's stale re-read
-   all are.
-2. **Verb gates run before the pre-audit write and before the runner**, in the order
-   the verb declares. P72's plan-time refusals must remain plan-time refusals: no verb
-   gate may move to after the audit-first write.
+   ordered list of **pre-audit verb gates** (closures returning a refusal reason or
+   `None`), plus an optional ordered list of **post-audit revalidation gates**. The
+   signal allowlist, `--force` gate, protected check, systemd-target refusal, and
+   below-current guard are pre-audit gates. P49's stale re-read is the named
+   post-audit exception described in contract 2.
+2. **Gate placement and order.** Pre-audit verb gates run before the durable pre-audit
+   write and before the runner, in declaration order. P72's plan-time refusals remain
+   plan-time refusals. Post-audit revalidation gates run after that write and before
+   the runner, also in declaration order. The P49 stale re-read is a post-audit
+   revalidation gate because its established stale refusal intentionally retains the
+   `pre`, then `post` audit pair; it must not move ahead of the pre record.
 3. **Byte-identical observable behavior.** Every refusal string, every `outcome` /
    `audit_outcome` value, every audit record field and its ordering, and every CLI exit
    code is unchanged. This is the whole risk surface of the package: if a message must
@@ -78,8 +82,9 @@ dropped a gate on an unexercised branch.
    shared executor is package-private.
 5. **The existing test seams keep working unchanged** (runner / clock / identity /
    root_check / protected_check / current_memory_reader), and remain Python-API-only.
-6. **No new gate, no removed gate, no reordered gate** — except as forced by contract
-   2, which is a restatement of current behavior, not a change to it.
+6. **No new gate, no removed gate, no reordered gate.** The two declared gate
+   categories document current behavior: target revalidation and P49 stale detection
+   remain post-audit; all other verb-specific gates remain pre-audit.
 
 ## Acceptance Oracles (numbered, adversarial)
 

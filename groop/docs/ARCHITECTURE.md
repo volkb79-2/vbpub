@@ -55,6 +55,7 @@ flowchart LR
 | `daemon/` | Request-independent Unix-socket frame broker with background producer, bounded sequenced history, non-consuming fan-out, lifecycle (P51), and a versioned, bounded, peer-aware read API envelope with typed errors, sensitivity metadata, peer credentials, and proven resource bounds (P52). |
 | `bpf_gate.py` | Safe no-op BPF preflight and baseline measurement helper. |
 | `report.py` | Read-only steady-state profile computation from a P2-format recording: per-entity/per-slice p50/p95/max for key memory/PSI gauges plus derived rates. |
+| `actions/` | Immutable action previews and one private, audit-first execution chain for catalog, governance, kill, and update verbs. Verb-specific gates are ordered pre-audit gates except documented post-audit revalidation required to preserve an existing audit trail. |
 | `ui/` | Textual app, banner, table/tree, drill-down, host-memory status, keys. |
 
 ## Layering Rules
