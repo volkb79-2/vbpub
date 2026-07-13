@@ -214,29 +214,42 @@ def test_fieldlist_empty_selector_exits_2() -> None:
 # --- Acceptance Oracle 6: backward-compatible ---
 
 
-def test_fieldlist_full_is_byte_identical_to_p55() -> None:
-    """--metrics full behaves identically to P55 default (full mode)."""
+def test_fieldlist_full_prunes_nothing() -> None:
+    """--metrics full keeps every metric the collector produced and every
+    structured block. Fails if the generalized keep-set prunes in full mode."""
     root = fixture_root() / "cgroupfs" / "gstammtisch"
     collector_full = _make_collector(root, metrics_mode="full")
     frame_full = collector_full.collect_once()
-    # Assert that all expected full-mode metrics are present on root entity
+    compact_names = frozenset().union(*(METRIC_GROUPS[g] for g in COMPACT_GROUPS))
+    for key, eframe in frame_full.entities.items():
+        kept = frozenset(eframe.metrics.keys())
+        # Full must carry metrics outside the compact families, or it pruned.
+        assert kept - compact_names, f"{key}: full mode kept only compact metrics"
     root_entity = frame_full.entities[""]
-    assert "ram" in root_entity.metrics
-    assert "cpu_pct" in root_entity.metrics
-    assert "net_rx_bps" in root_entity.metrics
-    assert "governance_drift" in root_entity.metrics
+    for name in ("ram", "cpu_pct", "net_rx_bps", "governance_drift"):
+        assert name in root_entity.metrics, f"full mode dropped {name}"
+    # Structured blocks survive full mode.
+    assert any(e.network is not None for e in frame_full.entities.values())
+    assert any(e.governance is not None for e in frame_full.entities.values())
 
 
-def test_fieldlist_compact_byte_identical_to_p55() -> None:
-    """--metrics compact behaves identically to P55 compact mode — only
-    compact groups, and all blocks dropped."""
+def test_fieldlist_compact_keeps_exactly_p55_field_set() -> None:
+    """--metrics compact keeps exactly (full keys AND the compact families) on
+    every entity — not merely a subset — and drops all structured blocks.
+
+    Equality against the full-mode frame is the P55 regression guard: a compact
+    mode that dropped a compact metric, or leaked a non-compact one, fails here
+    where an issubset assertion would not.
+    """
     root = fixture_root() / "cgroupfs" / "gstammtisch"
-    collector = _make_collector(root, metrics_mode="compact")
-    frame = collector.collect_once()
-    expected_compact = frozenset().union(*(METRIC_GROUPS[g] for g in COMPACT_GROUPS))
-    for key, eframe in frame.entities.items():
-        assert set(eframe.metrics.keys()).issubset(expected_compact), (
-            f"{key} has non-compact metrics in compact mode"
+    frame_full = _make_collector(root, metrics_mode="full").collect_once()
+    frame_compact = _make_collector(root, metrics_mode="compact").collect_once()
+    compact_names = frozenset().union(*(METRIC_GROUPS[g] for g in COMPACT_GROUPS))
+    assert frame_compact.entities.keys() == frame_full.entities.keys()
+    for key, eframe in frame_compact.entities.items():
+        expected = frozenset(frame_full.entities[key].metrics) & compact_names
+        assert frozenset(eframe.metrics) == expected, (
+            f"{key}: compact kept {frozenset(eframe.metrics)}, expected {expected}"
         )
         assert eframe.network is None
         assert eframe.damon is None

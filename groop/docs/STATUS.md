@@ -223,7 +223,7 @@ core workflows, not yet production-certified.**
   ``eframe.damon``, ``eframe.governance``) when the family token appears in the
   selector. ``COMPACT_GROUPS`` is now a literal set of the original three
   families (``mem_usage``, ``psi``, ``refault``) so these new families do not
-  expand compact mode. 19 focused tests covering all acceptance oracles.
+  expand compact mode. 20 focused tests covering all acceptance oracles.
 - Structured systemd `memory.high` set-property governance (P49): preview and
   execution through the P46 action kernel with structured unit/property/value
   inputs, `memory.high`-only validation with max/byte overflow/range checks,

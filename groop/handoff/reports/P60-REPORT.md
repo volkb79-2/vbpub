@@ -79,7 +79,7 @@ from groop.cli import main; exit(main())
 | `groop/src/groop/registry.py` | Added net/damon/governance families to `METRIC_GROUPS`; froze `COMPACT_GROUPS` as literal; added `FIELD_LIST_BLOCK_MAP` and `parse_metrics_selector()` |
 | `groop/src/groop/cli.py` | Changed `--metrics` from `choices` to free-form; added `_validate_metrics_mode()`; updated import to include `METRIC_GROUPS` and `parse_metrics_selector` |
 | `groop/src/groop/collect/collector.py` | Generalized `_compact_metric_names` to `_kept_metric_names \| None` with `_kept_block_families`; conditional block dropping |
-| `groop/tests/test_p60_fieldlist.py` | 19 new tests covering all 7 acceptance oracles + edge cases |
+| `groop/tests/test_p60_fieldlist.py` | 20 new tests covering all 7 acceptance oracles + edge cases |
 | `groop/README.md` | Updated CLI quickstart and P60 entry to Done |
 | `groop/CONTRACTS.md` | Updated filtered recordings note to include P60 field-list selector |
 | `groop/docs/ROADMAP.md` | Updated P60 text to mark (done) |

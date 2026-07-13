@@ -156,7 +156,11 @@ METRIC_GROUPS: dict[str, tuple[str, ...]] = {
         "rf_z_per_s", "rf_d_per_s", "rf_f_per_s",
     ),
 }
-"""Compact-mode metric groups kept by ``--metrics compact``."""
+"""Metric families addressable by ``--metrics``.
+
+``COMPACT_GROUPS`` below names the subset ``--metrics compact`` retains; the
+P60 field-list selector may address any family here by name.
+"""
 
 # The set of group names that ``--metrics compact`` retains.
 # Kept as a literal (not derived from METRIC_GROUPS.keys()) so that the
