@@ -153,6 +153,21 @@ codex exec --json --dangerously-bypass-approvals-and-sandbox \
   isolated, trusted worktree/container. It is not a substitute for isolation.
 - Native subscription runs may report tokens but no per-run cash cost. When
   comparing value, label any catalog-price calculation as an estimate.
+- **Incident, 2026-07-13 (pwmcp P03 terra-med / luna-high legs):** dispatched
+  with plain `codex exec -c ... --model ...` (no bypass flag), which defaults
+  to `--sandbox workspace-write`. That sandbox scopes writes to `[workdir,
+  /tmp, $TMPDIR]` — but a `git worktree`'s actual index/metadata lives at
+  `<main-repo>/.git/worktrees/<name>/`, **outside** the worktree's own
+  directory. Both legs completed real implementation + self-review work but
+  could not `git commit` (`index.lock` creation denied) or reach
+  `docker.sock`, and the controller had to finalize their commits externally.
+  This is not a model-quality signal — it is a harness/sandbox-boundary
+  mismatch specific to git worktrees. Fix: always launch codex worker legs
+  against a git worktree with `--sandbox danger-full-access` (narrower than
+  full bypass — keeps approval semantics, widens only the disk boundary) or
+  `--dangerously-bypass-approvals-and-sandbox` per the existing guidance
+  above; do not use bare `workspace-write` for any codex run whose `-C`/`--dir`
+  is a `git worktree add`'d path.
 
 ## Starting Claude Code Agents
 
