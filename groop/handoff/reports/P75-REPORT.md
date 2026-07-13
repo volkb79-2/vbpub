@@ -68,19 +68,24 @@ None. P75 is additive and package-private. No shared interfaces were touched.
 
 ## Test Evidence
 
-### Focused MCP smoke tests (package venv, -W error)
+### Focused MCP smoke tests (package venv at `/usr/local/py-utils/venvs/pytest/bin/python`, -W error)
 
 ```bash
-PYTHONPATH=groop/src <venv>/python -m pytest groop/tests/test_acceptance.py \
+PYTHONPATH=groop/src /usr/local/py-utils/venvs/pytest/bin/python -m pytest groop/tests/test_acceptance.py \
   -k "mcp_smoke or format_mcp or build_parser_wires or terminate_process" \
   -v -W error
 # 10 passed in 1.93s
 ```
 
+The bare `python3` on this host triggers an unrelated `schemathesis`/`jsonschema`
+RefResolutionError deprecation promoted to error by `-W error` (same pre-existing
+issue documented in P58-REVIEW.md). All `-W error` results were produced with the
+package venv interpreter.
+
 ### Structural boundary test (no mcp import leakage)
 
 ```bash
-PYTHONPATH=groop/src <venv>/python \
+PYTHONPATH=groop/src /usr/local/py-utils/venvs/pytest/bin/python \
   -m pytest groop/tests/test_textual_boundary.py \
   ::test_mcp_imports_live_only_under_mcp_package -v -W error
 # 1 passed in 0.06s
@@ -89,7 +94,7 @@ PYTHONPATH=groop/src <venv>/python \
 ### Full suite (package venv, -W error)
 
 ```bash
-timeout 900 env PYTHONPATH=groop/src <venv>/python \
+timeout 900 env PYTHONPATH=groop/src /usr/local/py-utils/venvs/pytest/bin/python \
   -m pytest groop/tests -q -W error
 # 1147 passed, 1 failed, 2 skipped in 162.42s
 ```
@@ -111,7 +116,7 @@ git diff --check  # clean
 ### Live leg output (MCP extra installed, daemon reachable)
 
 ```bash
-PYTHONPATH=groop/src python3 -m groop.acceptance mcp-smoke --json --pretty
+PYTHONPATH=groop/src python3 -m groop.acceptance mcp-smoke --json --pretty-json
 ```
 
 ```json
