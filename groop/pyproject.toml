@@ -12,6 +12,10 @@ dependencies = ["textual>=8.2.8"]
 [project.optional-dependencies]
 zstandard = ["zstandard>=0.22"]
 mcp = ["mcp>=1.28.0"]
+dev = [
+    "groop[zstandard]",
+    "pytest>=8.0",
+]
 
 [project.scripts]
 groop = "groop.cli:main"

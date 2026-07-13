@@ -117,6 +117,38 @@ Useful feature hotkeys in the TUI:
 - `m` opens host-memory / paddr DAMON status.
 - `F1` / `?` opens generated registry help.
 
+## Gate environment
+
+The full test suite exercises both the ``zstandard`` decompression paths (zstd-compressed
+recordings) and the missing-extra degradation paths.  To ensure every code path is tested,
+use the declared ``[dev]`` extra which pins these dependencies:
+
+```bash
+# From the repo root:
+pip install -e 'groop[dev]'
+```
+
+This installs ``groop`` itself, its runtime dependency ``textual``, the
+``zstandard`` extra (so zstd-compressed test fixtures are readable), and
+``pytest`` (the gate runner).
+
+**Without ``zstandard``**, a pytest session-level gate detects any zstd-reliant test
+in the collection and prints a prominent FAIL banner with the list of skipped tests,
+plus an install hint:
+
+```
+!!! GATE FAILED: zstandard extra not installed
+!!! 8 zstandard-reliant test(s) will be SKIPPED
+!!! Install with: pip install -e 'groop[dev]'
+```
+
+This makes "green with 5 skips" visibly distinguishable from "green" — a reviewer
+cannot skim past the banner.
+
+The ``[dev]`` extra does not promote ``zstandard`` to a hard runtime dependency:
+``pip install groop`` (without extras) still imports and runs
+``groop report`` on a plain ``.jsonl`` file.
+
 ## Work packages
 
 | Pkg | Status | Title | Cut | Notes |
@@ -201,6 +233,7 @@ Useful feature hotkeys in the TUI:
 | P78 | Queued | Action kernel gate-chain extraction | v2 actions | Collapse the four near-identical executors in `actions/execute.py` (`execute_plan`/`execute_set_property`/`execute_kill`/`execute_update`) into one shared gate chain the verbs parameterize. Behavior must be byte-identical: same refusal strings, audit records, exit codes. Carve source: **review-derived** (P72 pass #2 — two of P72's three inert gates were inert *because* the chain is transcribed per verb). Handoff: `handoff/P78-action-kernel-gate-extraction.md`. |
 | P79 | Done | Corrupt recording inputs are typed errors | v1.5 recording | A corrupt/truncated `.jsonl.zst` now produces a typed exit-2 error message (not a raw `ZstdError` traceback). All damaged-input paths (decompression failure, truncated stream, corrupt JSONL, non-P2 frames) are typed. The environment-conditional test was split into a corrupt-input test and a forced-absence missing-extra test. Report: `handoff/reports/P79-REPORT.md`. |
 | P80 | Queued | Daemon install execution | v2 daemon | `groop daemon install --execute`: apply the *already-rendered* P25 install plan through the P46 kernel (root, `--admin`, typed `INSTALL`, argv-only, per-step fail-closed audit, P22 preflight as a gate). Today groop's most safety-critical output is applied by operator copy-paste, unaudited. What executes is the same plan object that was displayed — not a re-render. Carve source: **roadmap-driven** (the v2 bucket's named-but-never-carved "install execution/service hardening"). Handoff: `handoff/P80-daemon-install-execution.md`. |
+| P84 | Done | Pin the gate environment | v1 packaging | A declared `[dev]` extra pins `zstandard` + `pytest` so the gate env is reproducible. A pytest session-level gate fails loudly when zstandard is absent and zstd-reliant tests are collected — "green with 5 skips" is no longer indistinguishable from "green". Optional runtime extras stay optional. Report: `handoff/reports/P84-REPORT.md`. |
 
 ## Completed Package Order
 

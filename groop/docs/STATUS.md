@@ -324,10 +324,11 @@ core workflows, not yet production-certified.**
 | 7. Registry semantics | Covered by registry/model tests and branch-policy labels. |
 | 8. Diagnostics | Covered by tests; host/interface network loss is covered by P37. Exact per-cgroup network-loss attribution remains v2 BPF work. |
 | 9. Network labels | Covered by provider tests. |
-| 10. Record/replay fidelity | P41 compares row keys, column identities, and every production-formatted plain-text cell for three annotated ticks returned by `ReplayDriver.play(step=True)`. JSONL passes; compressed JSONL is the same parametrized gate and skips when optional zstandard is absent. |
+| 10. Record/replay fidelity | P41 compares row keys, column identities, and every production-formatted plain-text cell for three annotated ticks returned by `ReplayDriver.play(step=True)`. JSONL passes; compressed JSONL is the same parametrized gate — with `zstandard` installed (via the P84 `[dev]` extra) both paths run. |
 | 11. Packaging | P12 built sdist/wheel and verified fresh-venv install; post-P40 controller evidence adds the required isolated local-wheel pipx install, version check, and empty-directory no-config replay smoke. P43 changes the published dependency from textual>=0.58,<1 to textual>=8.2.8, verified by source metadata, built-wheel METADATA, clean resolver installation, and packaging-metadata regression tests. |
 | 12. v2 gating | Explicit admin-preview gating landed in P21: `groop action preview` with `--admin` required, no-execution guarantee, audit logging, and TUI reserved-key disabled messaging in P13. P45 adds gated bounded content reads via `groop inspect-files read`, also disabled by default. |
 | 13. Unprivileged smoke | P33 provides `python -m groop.acceptance smoke`, P35 provides `python -m groop.acceptance steady`, and P38 provides `python -m groop.acceptance tui-smoke` for repeatable rootless safe-path evidence; fresh live-host results should be pasted into `MEASUREMENTS.md` before a release claim. |
+| 14. Gate environment | P84 adds a declared `[dev]` extra (`pip install -e 'groop[dev]'`) that pins `zstandard` so the gate runs every oracle. Without `zstandard`, a session-level gate prints a prominent FAIL banner — "green with 5 skips" is no longer indistinguishable from "green". The `zstandard` runtime extra stays optional. |
 | 14. Measurement gates | `MEASUREMENTS.md` records the P17 safe BPF gate and blocker; DAMON overhead and privileged live-BPF overhead gates are not recorded. |
 
 ## Current Quality Gate
