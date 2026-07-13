@@ -351,10 +351,16 @@ class TestDeriveRate:
         assert result is None
 
     def test_live_v_used_as_is(self):
-        """When v is not None, derivation is not called (handoff §"use it as-is")."""
-        # The _group_frames function already handles this: it uses mv.v directly.
-        # This test just verifies the _derive_rate function is not needed.
-        pass
+        """When a frame carries a live v, _group_frames uses it verbatim rather
+        than re-deriving from raw counters (handoff: "use it as-is")."""
+        from groop.report import _group_frames
+        # Live v=7.0 but a raw counter that, if derived, would give a different
+        # number. The reported sample must be the live 7.0, not a derived value.
+        f1 = _frame(100.0, {"e1": {"rf_z_per_s": _rate_none(1000)}})
+        f2 = _frame(105.0, {"e1": {"rf_z_per_s": MetricValue(v=7.0, src="derived", raw=9999)}})
+        groups = _group_frames([f1, f2], "entity")
+        rate_samples = groups["e1"]["rf_z_per_s"].values
+        assert 7.0 in rate_samples
 
 
 # ===========================================================================
