@@ -207,18 +207,30 @@ def test_zfs_arc_banner_present(tmp_path: Path) -> None:
     sys = _base_sys(tmp_path)
     _base_proc(tmp_path, "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n")
     host = collect_host(proc_root=proc, sys_root=sys)
+    # Prove collection code ran: ARC metrics exist in the host dict
+    assert "host_zfs_arc_size" in host
+    assert host["host_zfs_arc_size"].v == 12884901888
     meta = collect_host_meta(proc_root=proc, sys_root=sys)
     frame = _minimal_frame(host=host, host_meta=meta)
     snapshot = render_banner(frame, GroopConfig())
     lines = "\n".join(snapshot.lines)
-    assert "ARC" in lines or "ZFS" in lines
+    assert "ARC" in lines
 
 
 def test_zfs_arc_banner_absent(tmp_path: Path) -> None:
-    """Banner does NOT contain ARC segment when ZFS is absent."""
+    """Banner does NOT contain ARC segment when ZFS is absent.
+
+    Also verifies the ARC collection code ran: the metrics exist in the host
+    dict as unavail_kernel. If the collection were deleted/stubbed, the metrics
+    would not be present at all and this test would fail with KeyError.
+    """
     proc = _base_proc(tmp_path, "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n")
     sys = _base_sys(tmp_path)
     host = collect_host(proc_root=proc, sys_root=sys)
+    # Prove collection code ran: ARC metrics exist as unavail_kernel
+    assert "host_zfs_arc_size" in host
+    assert host["host_zfs_arc_size"].v is None
+    assert host["host_zfs_arc_size"].src == "unavail_kernel"
     meta = collect_host_meta(proc_root=proc, sys_root=sys)
     frame = _minimal_frame(host=host, host_meta=meta)
     snapshot = render_banner(frame, GroopConfig())

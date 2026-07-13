@@ -71,6 +71,51 @@ Append newest entries at the bottom.
   Reason: Contract 7 allows it, provides drill-down capability without new Frame fields.
   Impact: host_meta grows when ZFS is present; consumers tolerate absence.
 
+## Self-Review Findings (pass #1, 2026-07-13)
+
+### Finding 1: Hollow test `test_zfs_arc_banner_absent`
+The test only checked that "ARC" was absent from the banner. If the ARC metric
+collection were deleted/stubbed, the banner would also lack "ARC" and the test
+would still pass — it verified nothing about the collection code actually
+running.
+
+**Fix:** Added explicit assertions that `host_zfs_arc_size` exists in the host
+dict with `v=None, src="unavail_kernel"` before checking the banner. Now if the
+collection code were deleted, the test would fail with KeyError.
+
+### Finding 2: Duplicate assertion in `test_zfs_arc_banner_absent`
+Two identical `assert "ARC" not in lines` lines were present (artifact of the
+edit). Removed the duplicate.
+
+### Gate commands — fresh output (not reconstructed)
+```
+$ PYTHONPATH=groop/src python3 -W ignore -m pytest groop/tests/test_zfs_arc.py -q -W ignore -v
+groop/tests/test_zfs_arc.py ...........                                  [100%]
+11 passed
+
+$ python3 -m py_compile groop/src/groop/collect/host.py groop/src/groop/registry.py groop/src/groop/ui/banner.py
+exit: 0
+
+$ git diff --check
+exit: 0
+```
+
+### Scope check
+All 12 changed files are under `groop/`. No files outside `groop/**` touched.
+
+### Hollow-test check
+`test_zfs_arc_banner_absent` was the only hollow test. Fixed. All other tests
+call the ARC collection functions directly (`_zfs_arc_metrics` or
+`_zfs_arc_compute_hit_ratio`) or access `host["host_zfs_arc_*"]` which would
+raise KeyError if the collection were deleted.
+
+### Absent-ZFS degrade path
+`test_zfs_arc_absent_fixture_all_unavail` tests the actual code path by calling
+`_zfs_arc_metrics()` on a path with no ZFS file. It asserts `v is None`
+explicitly (not falsy, which would pass for `0`) and `src == "unavail_kernel"`.
+The `test_zfs_arc_non_zfs_fixtures_unaffected` test validates the same through
+the full `collect_host()` integration path.
+
 ## Blockers
 
 None.
