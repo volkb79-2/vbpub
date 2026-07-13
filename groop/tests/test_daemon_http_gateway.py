@@ -164,6 +164,36 @@ def test_server_side_redaction_preserves_key_and_metadata(tmp_path: Path) -> Non
     assert decoded["metrics_meta"]["pids_max"]["unit"]
 
 
+@pytest.mark.parametrize("target", ["/v1/current", "/v1/history?limit=1"])
+def test_frame_routes_redact_server_side_above_the_ceiling(tmp_path: Path, target: str) -> None:
+    """The frame walker must redact too, not just the single-entity route.
+
+    ``_redact_frame`` traverses a shape (``host`` map plus ``entities`` map)
+    that ``_redact_metrics`` never sees, so a shape drift in
+    ``frame_to_jsonable`` would silently disarm redaction on exactly the two
+    routes that carry the most telemetry while every other oracle stayed green.
+    """
+    with _live_gateway(tmp_path) as gateway:
+        status, _headers, body = _request(gateway, "GET", target)
+    assert status == 200
+    assert b'"pids_max":[512,"exact"]' not in body
+    decoded = json.loads(body)
+    frame = decoded["frame"] if target == "/v1/current" else decoded["frames"][0]["frame"]
+    sensitive = {
+        name
+        for name, meta in decoded["metrics_meta"].items()
+        if meta["sensitivity"] == "sensitive"
+    }
+    assert sensitive, "fixture must carry a sensitive metric or this oracle proves nothing"
+    seen = 0
+    for entity_frame in frame["entities"].values():
+        for name, value in entity_frame["metrics"].items():
+            if name in sensitive:
+                assert value == {"redacted": True, "sensitivity": "sensitive"}
+                seen += 1
+    assert seen, "no sensitive metric reached the frame walker"
+
+
 def test_forwarded_identity_from_non_loopback_peer_is_not_trusted() -> None:
     auth = GatewayAuthConfig({"operator": "operational"})
     assert _principal_for_peer("203.0.113.9", ["operator"], auth) is None
