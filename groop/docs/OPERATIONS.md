@@ -106,6 +106,9 @@ busiest eligible entity's `ram` gauge, at most 0.05 across at least three
 frames. Use `--stability-gauge`, `--stability-cov`, and `--min-frames` to
 override those defaults.
 
+A damaged recording (corrupt, truncated, or non-P2 format) produces a typed
+error on stderr and exits 2 — never a raw traceback.
+
 Plan a read-only file inspection (no content reads):
 
 ```bash
