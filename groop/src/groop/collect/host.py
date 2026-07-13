@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from groop.collect.cgroup import read_int, read_pressure, read_text
 from groop.model import MetricValue
@@ -300,6 +301,136 @@ def _parse_arcstats(text: str) -> dict[str, object] | None:
     return out
 
 
+_CARD_RE = re.compile(r"^card\d+$")
+
+
+def _read_sysfs_int(sys_root: Path, *parts: str) -> int | None:
+    """Read an integer from a sysfs file. Returns None on any failure."""
+    result = read_text(sys_root / "class" / "drm" / Path(*parts))
+    if result.value is None:
+        return None
+    try:
+        return int(str(result.value).strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def _gpu_metrics(sys_root: Path) -> dict[str, MetricValue]:
+    """Read GPU metrics from /sys/class/drm/card*/device/.
+
+    amdgpu exposes mem_info_vram_total, mem_info_vram_used, and
+    gpu_busy_percent. Other drivers (i915, nvidia) expose none of these.
+    Multi-GPU sums VRAM, takes max busy percent, counts cards.
+
+    Returns host_gpu_vram_total, host_gpu_vram_used, host_gpu_busy_pct,
+    host_gpu_count -- all unavail_kernel when no DRM cards are readable.
+
+    An absent /sys/class/drm means the count is unreadable (unavail_kernel),
+    not zero: a kernel without the DRM sysfs tree is not the same host as one
+    that exposes the tree with no cards in it, and only the latter is a
+    measurement of "zero GPUs".
+    """
+    drm_dir = sys_root / "class" / "drm"
+    unavail = MetricValue(None, "unavail_kernel")
+    if not drm_dir.is_dir():
+        return {
+            "host_gpu_vram_total": unavail,
+            "host_gpu_vram_used": unavail,
+            "host_gpu_busy_pct": unavail,
+            "host_gpu_count": unavail,
+        }
+
+    cards: list[str] = []
+    for entry in sorted(drm_dir.iterdir()):
+        if entry.is_dir() and _CARD_RE.match(entry.name):
+            cards.append(entry.name)
+
+    if not cards:
+        return {
+            "host_gpu_vram_total": unavail,
+            "host_gpu_vram_used": unavail,
+            "host_gpu_busy_pct": unavail,
+            "host_gpu_count": MetricValue(0, "host"),
+        }
+
+    total_vram: int = 0
+    total_used: int = 0
+    max_busy: float | None = None
+    vram_readable = False
+    used_readable = False
+    busy_readable = False
+
+    for name in cards:
+        device_dir = drm_dir / name / "device"
+        if not device_dir.is_dir():
+            continue
+
+        vram_total = _read_sysfs_int(sys_root, name, "device", "mem_info_vram_total")
+        vram_used = _read_sysfs_int(sys_root, name, "device", "mem_info_vram_used")
+        busy_pct = _read_sysfs_int(sys_root, name, "device", "gpu_busy_percent")
+
+        if vram_total is not None:
+            total_vram += vram_total
+            vram_readable = True
+        if vram_used is not None:
+            total_used += vram_used
+            used_readable = True
+        if busy_pct is not None:
+            max_busy = max(max_busy or 0, float(busy_pct))
+            busy_readable = True
+
+    if not vram_readable and not used_readable and not busy_readable:
+        # Cards exist but none expose DRM facts -- driver without the files.
+        return {
+            "host_gpu_vram_total": MetricValue(None, "unavail_kernel"),
+            "host_gpu_vram_used": MetricValue(None, "unavail_kernel"),
+            "host_gpu_busy_pct": MetricValue(None, "unavail_kernel"),
+            "host_gpu_count": MetricValue(len(cards), "host"),
+        }
+
+    return {
+        "host_gpu_vram_total": MetricValue(total_vram, "host") if vram_readable else MetricValue(None, "unavail_kernel"),
+        "host_gpu_vram_used": MetricValue(total_used, "host") if used_readable else MetricValue(None, "unavail_kernel"),
+        "host_gpu_busy_pct": MetricValue(max_busy, "host") if busy_readable else MetricValue(None, "unavail_kernel"),
+        "host_gpu_count": MetricValue(len(cards), "host"),
+    }
+
+
+def _gpu_detail(sys_root: Path) -> dict[str, object] | None:
+    """Collect per-card GPU details for host_meta.
+
+    Returns a dict keyed by card name with per-card vram_total, vram_used,
+    and busy_pct where available. Returns None when no DRM cards exist.
+    """
+    drm_dir = sys_root / "class" / "drm"
+    if not drm_dir.is_dir():
+        return None
+
+    cards: list[str] = []
+    for entry in sorted(drm_dir.iterdir()):
+        if entry.is_dir() and _CARD_RE.match(entry.name):
+            cards.append(entry.name)
+
+    if not cards:
+        return None
+
+    details: dict[str, object] = {}
+    for name in cards:
+        card_info: dict[str, object] = {}
+        vram_total = _read_sysfs_int(sys_root, name, "device", "mem_info_vram_total")
+        vram_used = _read_sysfs_int(sys_root, name, "device", "mem_info_vram_used")
+        busy_pct = _read_sysfs_int(sys_root, name, "device", "gpu_busy_percent")
+        if vram_total is not None:
+            card_info["vram_total"] = vram_total
+        if vram_used is not None:
+            card_info["vram_used"] = vram_used
+        if busy_pct is not None:
+            card_info["busy_pct"] = busy_pct
+        if card_info:
+            details[name] = card_info
+    return details if details else None
+
+
 def collect_host(proc_root: Path = Path("/proc"), sys_root: Path = Path("/sys")) -> dict[str, MetricValue]:
     meminfo = _meminfo(proc_root)
     host = {
@@ -325,6 +456,7 @@ def collect_host(proc_root: Path = Path("/proc"), sys_root: Path = Path("/sys"))
     host.update(_swap_backend_metrics(proc_root, host["host_zswap_enabled"], host["host_zswap_stored"]))
     host.update(_zram_metrics(sys_root))
     host.update(_zfs_arc_metrics(proc_root))
+    host.update(_gpu_metrics(sys_root))
     return host
 
 
@@ -470,4 +602,7 @@ def collect_host_meta(proc_root: Path = Path("/proc"), sys_root: Path = Path("/s
     arc_detail = _zfs_arc_detail(proc_root)
     if arc_detail is not None:
         meta["zfs_arc"] = arc_detail
+    gpu_detail = _gpu_detail(sys_root)
+    if gpu_detail is not None:
+        meta["gpu"] = gpu_detail
     return meta

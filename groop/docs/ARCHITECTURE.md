@@ -11,6 +11,7 @@ flowchart LR
     Cgroup[cgroup v2 files] --> Collector
     Proc[/proc] --> Collector
     Zram[ZRAM sysfs + /proc/swaps] --> Collector
+    Gpu[DRM sysfs /sys/class/drm] --> Collector
     Docker[Docker inspect] --> Collector
     Systemd[systemctl show] --> Drift
     NetHost[host network provider] --> Collector
@@ -38,7 +39,7 @@ flowchart LR
 | `model.py` | Dataclasses and canonical JSON serialization. |
 | `registry.py` | Metric definitions, source semantics, help/glossary source. |
 | `config.py` | TOML parsing and defaults. |
-| `collect/` | cgroup, host (including ZFS ARC), docker, process, and collector orchestration. |
+| `collect/` | cgroup, host (including ZFS ARC and GPU DRM), docker, process, and collector orchestration. |
 | `providers/` | Network provider abstraction and current host/netns providers. |
 | `drift/` | systemd/live-origin classification and governance drift. |
 | `diag/` | pressure score and findings rules. |

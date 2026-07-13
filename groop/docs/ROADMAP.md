@@ -92,7 +92,7 @@ flowchart TD
     P67 --> P73[P73 Read-only web UI shell]
     P69 --> P73
     P3 --> P71[P71 ZFS ARC host provider :done:]
-    P71 --> P74[P74 GPU host provider]
+    P71 --> P74[P74 GPU host provider :done:]
     P46 --> P72[P72 Admin action kill/update verbs]
     P49 --> P72
     P58[P58 Daemon MCP frontend :done:] --> P75[P75 MCP live acceptance leg]
