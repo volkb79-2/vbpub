@@ -289,7 +289,7 @@ core workflows, not yet production-certified.**
   packaged operator templates plus safe P25 install plan.
 - Live BPF ownership lifecycle (daemon/helper attach, pin, detach).
 - Web UI.
-- GPU and ZFS optional plugins.
+- GPU optional plugins.
 - CIU stack grouping/actions.
 - paddr auto-start / persistent daemon-owned paddr mode.
 - Headless (non-Textual) `--record` driver and `groop report` steady-state
