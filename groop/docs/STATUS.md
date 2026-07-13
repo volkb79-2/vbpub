@@ -318,15 +318,51 @@ core workflows, not yet production-certified.**
 
 ## Current Quality Gate
 
-Most recent combined P51/P52 validation:
+Most recent validation, run by the frontier reviewer **from `main`** after the
+P60 + P62 merges (2026-07-13). Agent-environment greens are evidence, not the
+verdict; these are the controller's rerun.
 
 ```bash
-PYTHONPATH=groop/src python3 -m pytest groop/tests -q -W error
-# (see P52-REPORT.md for the focused and full-suite tails)
+PYTHONPATH=groop/src python -m pytest groop/tests -q -W error -p no:schemathesis
+# 1101 passed, 2 skipped in 144.71s      <- main @ 36f60a2 (P60 + P62 merged)
+# 1066 passed, 2 skipped in 129.35s      <- P60 branch, post-review-fix
 ```
 
-Also validated:
+Evidence commits for this wave:
+
+| Package | Evidence | Merge |
+|---|---|---|
+| P60 free-form `--metrics` field/family list | review-fixes `ee8132c`; review report `handoff/reports/P60-REVIEW.md` | `df13253` (`--no-ff`) |
+| P62 steady-state `--window auto` | review report `handoff/reports/P62-REVIEW.md` | `36f60a2` (`--no-ff`) |
+| P58 daemon MCP frontend (v3) | **REJECTED, not merged** — `handoff/reports/P58-REVIEW-v3.md` | none |
+
+Live CLI verification from `main` (not tests — the real commands):
+
+```
+groop --once --json --metrics ram,psi_mem_some_avg10  -> kept exactly those two; network block dropped
+groop --once --json --metrics net                     -> kept the four net_* metrics; network block retained
+groop --once --json --metrics ram,bogus_metric        -> exit 2, "unknown metric token(s): bogus_metric"
+groop report REC --json --window all                  -> samples=6 ram.p50=101.0 ram.max=1000.0
+groop report REC --json --window auto                 -> samples=3 ram.p50=100.0 ram.max=101.0
+                                                         window_mode=auto detected=True bounds=115.0..125.0
+groop report REC --json --window auto --assert busy:ram:max<=101  -> exit 0 (binds to the DETECTED window)
+groop report REC --json --window all  --assert busy:ram:max<=101  -> exit 1 (breach, correctly)
+two consecutive --window auto invocations             -> byte-identical stdout
+```
+
+Also validated (earlier waves):
 
 - P52 focused envelope/bounds/leak tests: `55 passed`.
 - P51 focused daemon/client/health tests: `20 passed`.
 - P47 focused component health tests: `49 passed`.
+
+### Known gap carried by this wave
+
+`--window auto` detection is `O(frames^2 x entities)`. Measured on the review
+host: 0.98 s at 480 frames, scaling cleanly quadratic — roughly 35 s at the 4 h /
+5 s default recording profile (2880 frames, 20 entities), ~90 s at 50 entities,
+and tens of minutes for a 24 h capture. The result is correct and deterministic;
+it is the cost that is wrong, on exactly the long recordings the feature exists
+for. Carved as **P70** (`handoff/P70-report-detector-performance.md`), whose
+acceptance oracle is identical window selections on every existing P62 test plus a
+2880-frame recording detected in under 2 s.
