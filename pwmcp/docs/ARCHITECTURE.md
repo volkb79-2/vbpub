@@ -230,5 +230,18 @@ half-attached indefinitely.
 `browser_max_idle_s` (default `0`, disabled). When set, `admin-server`
 polls `/json/list` on an interval (`PWMCP_ADMIN_IDLE_CHECK_INTERVAL_S`,
 default 5s) and restarts the `chromium` program (via the same
-supervisord path as `/browser/restart`) once zero CDP targets have been
-observed continuously for at least `browser_max_idle_s` seconds.
+supervisord path as `/browser/restart`) once zero *consumer* targets have
+been observed continuously for at least `browser_max_idle_s` seconds.
+
+**Self-review correction (2026-07-13):** the original idle condition was
+raw `/json/list` length === 0, which never fires in practice -- headless
+Chromium always keeps its own default `chrome://newtab/` page, a
+`chrome-untrusted://new-tab-page/...` iframe, and a Service Worker target
+open for the process lifetime, so the target list is never actually empty.
+"Idle" now means zero targets of CDP `type === "page"` with a `url` that
+is not one of Chromium's own `chrome://` / `chrome-untrusted://` pages —
+i.e. no consumer-navigated page left open. Verified live: with
+`browser_max_idle_s=10` / `PWMCP_ADMIN_IDLE_CHECK_INTERVAL_S=2` and no page
+navigated, `chromium`'s supervisord PID changed (recycled) within one
+check interval of the deadline; see `pwmcp/handoff/reports/
+P03-SELFREVIEW.md`.

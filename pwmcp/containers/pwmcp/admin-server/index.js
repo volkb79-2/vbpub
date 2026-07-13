@@ -259,13 +259,38 @@ async function health() {
 
 // ---------------------------------------------------------------------------
 // Optional idle-recycle loop.
+//
+// Self-review (2026-07-13): the original idle condition was raw
+// `/json/list` length === 0. Verified live (built image, MAX_IDLE_S=10,
+// IDLE_CHECK_INTERVAL_S=2, waited 20s+): this NEVER fires. Headless Chromium
+// always keeps several targets open for the lifetime of the process: its
+// default "New Tab" page (chrome://newtab/), a chrome-untrusted://
+// new-tab-page/... iframe, and a Service Worker target
+// (chrome-extension://.../thunk.js) -- `/json/list` is never actually
+// empty, so the idle-recycle feature was dead code in practice. Fixed by
+// counting only real consumer-navigated pages: CDP target `type === "page"`
+// AND a `url` that is not one of Chromium's own `chrome://` /
+// `chrome-untrusted://` internal pages. Iframes, service workers, and the
+// default new-tab page are excluded from the idle count on purpose --
+// "idle" means "no consumer left a page open", verified live after this fix
+// (see P03-LOG.md): the browser recycled (new PID) within one check
+// interval of the max-idle deadline once a real page was closed/never
+// opened.
 // ---------------------------------------------------------------------------
+function isIdleIrrelevantTarget(t) {
+  if (!t || t.type !== 'page') return true; // only real pages count toward "in use"
+  const url = t.url || '';
+  return url.startsWith('chrome://') || url.startsWith('chrome-untrusted://');
+}
+
 let idleSinceMs = null;
 if (MAX_IDLE_S > 0) {
   setInterval(async () => {
     try {
       const list = await cdpHttpGet('/json/list');
-      const count = Array.isArray(list) ? list.length : 0;
+      const count = Array.isArray(list)
+        ? list.filter((t) => !isIdleIrrelevantTarget(t)).length
+        : 0;
       if (count === 0) {
         if (idleSinceMs === null) idleSinceMs = Date.now();
         const idleForS = (Date.now() - idleSinceMs) / 1000;

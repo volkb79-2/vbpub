@@ -106,21 +106,35 @@ Each traded-away risk gets an explicit mitigation and a documented residual:
 
 ### State-bleed residual
 
-`mcp` and `devtools-mcp` are launched with `--isolated` when attached to the
-shared browser, which (per upstream flag semantics) gives each MCP session
-its own incognito-style browser context rather than sharing the default
-context. This was verified functionally in this package (a crash-restart
-recovery test and independent MCP initialize calls against the shared
-browser both succeeded without cross-session interference) but was **not**
-verified via an exhaustive read of `@playwright/mcp`'s and
-`chrome-devtools-mcp`'s internal session→context mapping source. If either
-server's `--isolated` flag does not create a genuinely new
-`Target.createBrowserContext` per MCP session under CDP-attach mode
-(as opposed to per-*process* mode, which is the mode both packages ship
-`--isolated` for by default), two concurrent sessions could observe each
-other's cookies/storage on the shared browser. Treat this as a residual
-risk in shared mode until confirmed against a specific upstream release;
-`--isolated` is applied defensively either way (see P03-LOG.md).
+**Update (self-review, 2026-07-13):** the original implementation launched
+`mcp` and `devtools-mcp` with `--isolated` when attached to the shared
+browser, intended to give each MCP session its own incognito-style browser
+context. Running the P03 handoff's own required cross-tool proof (navigate
+via Playwright, then trace the same page via DevTools — `scripts/
+smoke-endpoints.sh --mode shared`, check "cross-tool proof") against a real
+built image showed this was broken: with `--isolated` on both servers, each
+attached to its OWN separate browser context, so DevTools traced a blank
+`chrome://new-tab-page/` instead of the page Playwright navigated — the
+core workflow this package exists for did not work at all.
+
+`--isolated` has been **removed** from both `mcp` and `devtools-mcp` in
+`supervisord.shared.conf` so they share Chromium's one default browser
+context, which fixes the cross-tool workflow (verified: the trace now
+correctly references the navigated URL). The direct consequence, also
+empirically verified (two MCP sessions, one sets `document.cookie` via
+`browser_evaluate` against an in-container HTTP fixture, the other reads
+it back and observes the first session's value) is:
+
+**Shared mode provides NO per-session state isolation.** Two concurrent
+consumers on the shared browser see each other's cookies, localStorage, and
+DOM state for the same origin. This is an accepted, permanent residual risk
+of shared mode as currently implemented, not a gap pending upstream
+confirmation — use `POST /browser/reset` between untrusted consumers, or
+use `per-session` mode (the default) when per-consumer isolation is
+required. `scripts/smoke-endpoints.sh --mode shared`'s state-bleed check
+now asserts this observed behavior (bleed present) rather than asserting an
+isolation guarantee that does not exist, per this package's own instruction
+to document real residual risk rather than claim unverified isolation.
 
 ### Crash blast radius
 
