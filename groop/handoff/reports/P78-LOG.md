@@ -119,3 +119,49 @@ git diff --check
 - [x] Focused package-venv baseline recorded.
 - [x] Known blocker documented.
 - [x] Feature branch committed (blocked handover artifacts).
+
+## Resumption and implementation
+
+```text
+2026-07-13 UTC
+- Action: Read the reconciliation package, P78/P80 handoffs, blocker evidence,
+  action executors/helpers, standing contracts, and handoff guidance.
+- Decision: Preserve the P49 stale refusal's durable pre/post audit pair. Model
+  stale detection as a named post-audit revalidation gate, alongside the
+  existing target revalidation, while all other verb gates remain pre-audit.
+- Reason: This preserves the more complete audit trail and every existing
+  observable result; moving stale before pre-audit would erase both records.
+- Files changed: execute.py, a new P78 regression test, P78/P80 handoffs,
+  architecture map, and P78 report/log.
+
+2026-07-13 UTC
+- Action: Extracted `_execute_gated()` and routed execute_plan,
+  execute_set_property, execute_kill, and execute_update through it.
+- Result: execute.py reduced from 1,438 to 1,237 lines. Public signatures and
+  test seams are unchanged. The stale path still writes `pre`, then `post` and
+  returns outcome=stale with its original stderr.
+- Validation: `PYTHONPATH=groop/src groop/.venv/bin/python -m pytest
+  groop/tests/test_p78_action_kernel.py groop/tests/test_actions.py
+  groop/tests/test_p72_kill_update.py -q -W error` => 255 passed in 1.35s.
+- Validation: `python3 -m py_compile groop/src/groop/actions/execute.py
+  groop/tests/test_p78_action_kernel.py` => exit 0.
+- Validation: `git diff --check` => exit 0.
+- Follow-up: run the required full suite, record its result, perform final
+  diff review, and commit on this branch without merging.
+
+2026-07-13 UTC
+- Action: Ran the required full package test gate from the repository root.
+- Command: `timeout 900 env PYTHONPATH=groop/src groop/.venv/bin/python -m
+  pytest groop/tests -q -W error`.
+- Result: 1192 passed, 3 skipped in 146.99s (0:02:26). No failures; the
+  package virtual environment reproduced no P79 zstandard failure.
+- Follow-up: final source/doc review, whitespace check, self-review record,
+  then commit without merge.
+
+2026-07-13 UTC
+- Action: Re-ran the handoff's exact focused action gate after final edits.
+- Command: `PYTHONPATH=groop/src groop/.venv/bin/python -m pytest
+  groop/tests/test_actions.py groop/tests/test_p72_kill_update.py -q -W error`.
+- Result: 251 passed in 0.83s. `py_compile` for execute.py and the new P78
+  test, plus `git diff --check`, completed with exit 0.
+```

@@ -1,79 +1,90 @@
-# P78 — Action Kernel Gate-Chain Extraction — Blocked Report
+# P78 — Action Kernel Gate-Chain Extraction — Implementation Report
 
-## Status
+## Summary
 
-**BLOCKED before implementation.** No production source was changed.
+Extracted the four action executors into one private `_execute_gated()` chain.
+`execute_plan`, `execute_set_property`, `execute_kill`, and `execute_update`
+retain their public signatures and now supply only their confirmation token,
+ordered verb gates, and immutable argv/plan construction.
 
-The P78 handoff contains incompatible mandatory requirements for P49's stale
-set-property guard:
+## Architecture decision: preserve P49's stale audit trail
 
-- Required contracts 1 and 2 classify the stale re-read as a pre-argv verb
-  gate and require it to run before the pre-audit write.
-- The `main`-based implementation writes the durable pre-audit record before
-  that stale re-read. On a stale result it then writes a post-audit refusal
-  record.
-- Required contract 3 and the `Escalate-if` header forbid changing observable
-  audit behavior during this extraction.
+The P49 stale-value re-read remains after the durable pre-audit write. It is
+now an explicitly named **post-audit revalidation gate**, rather than an
+ambiguous pre-audit verb gate. This is the more defensible audit posture:
+when an operator attempts a stale mutation, the durable record shows both the
+attempt (`pre`) and its refusal (`post`), even though no runner is invoked.
 
-A package-venv probe established the current stale result exactly:
+All other verb-specific gates remain ordered pre-audit gates. The existing
+post-audit target revalidation also uses the same smaller category. This
+resolves the former contract conflict without changing any stale result,
+audit field, audit-record order, message, or exit-code behavior.
 
-```text
-outcome=stale
-audit_outcome=None
-stderr=current memory.high value changed (1024 -> 2048); preview again with the fresh value
-audit records=2; stages=[pre, post]
-```
+## What changed
 
-Moving stale detection before pre-audit would remove both records; retaining
-them leaves a named verb gate after pre-audit. The handoff says this is a
-BLOCKED condition, so the extraction has not been attempted.
+- Added the private `_ExecutionSpec`, `_GateRefusal`, and `_execute_gated()`
+  infrastructure in `src/groop/actions/execute.py`.
+- Routed all four public executors through that one gate/audit/runner sequence.
+- Kept the runner, clock, identity, root-check, protected-check, and
+  current-memory-reader Python API seams unchanged.
+- Added P78 tests for one-chain delegation, stale audit preservation,
+  per-verb ordering, and the pre/post audit shape for all four success paths.
+- Updated the architecture map and the P78 contract text to document the two
+  gate categories.
+- Updated P80's handoff: its install-specific checks must use P78's ordered
+  pre-audit gate extension; the P49 post-audit stale exception does not apply
+  to install actions. P80's audit record shape is unchanged.
 
-## What was built
+## Observable-behavior evidence
 
-- An ignored package virtual environment at `groop/.venv`, with editable groop
-  and pytest installed for validation.
-- P78 resumability evidence in `handoff/reports/P78-LOG.md`.
+The differential refusal taxonomy was rebuilt against the extracted code by
+the unchanged P46/P49/P72 action suites plus the P78 ordering probes. The
+focused run covers non-admin, confirmation, root, timeout, audit-path,
+identity, pre/post-audit, target, signal, force, protected-target, systemd
+target, below-current/unverifiable usage, runner OSError/timeout, and stale
+paths. All 255 cases passed with the same exact assertions. The stale case
+continues to return `outcome=stale`, `audit_outcome=None`, its original stderr
+text, and `pre`, then `post` records; no deliberate exception is required.
+
+`execute.py` changed from 1,438 to 1,237 lines. The reduction is the removed
+copied common execution bodies; the remaining per-verb lines declare their
+gates and immutable argv construction explicitly.
 
 ## Deviations from handoff
 
-The requested executor extraction, action tests, and architecture-map update
-were not made because the handoff's own escalation rule prohibits a choice
-between its conflicting audit-preservation and gate-placement contracts.
+None after the reconciliation package's contract update. The former contract
+2 wording incorrectly classified P49 stale detection as pre-audit. It is now
+the documented post-audit exception that preserves contract 3 exactly.
 
-## Proposed contract changes
+## Validation
 
-Maintainer direction is required for one of these mutually exclusive choices:
-
-1. Preserve current behavior: exempt P49's stale re-read from P78's
-   pre-audit verb-gate rule, keeping its existing `pre`/`post` audit pair.
-2. Make stale detection a true pre-audit gate: explicitly authorize removal of
-   those stale-path audit records and update the byte-identical/audit-equality
-   acceptance oracle accordingly.
-
-No public API or `actions/__init__.py.__all__` change is proposed.
-
-## Test evidence
-
-All results below were run from the repository root in the package virtual
-environment (`groop/.venv`) with `PYTHONPATH=groop/src`.
+All commands were run from the repository root using the package virtual
+environment at `groop/.venv` with `PYTHONPATH=groop/src`.
 
 ```text
 PYTHONPATH=groop/src groop/.venv/bin/python -m pytest \
   groop/tests/test_actions.py groop/tests/test_p72_kill_update.py -q -W error
-251 passed in 1.32s
+251 passed in 0.83s
+
+PYTHONPATH=groop/src groop/.venv/bin/python -m pytest \
+  groop/tests/test_p78_action_kernel.py groop/tests/test_actions.py \
+  groop/tests/test_p72_kill_update.py -q -W error
+255 passed in 1.35s
+
+python3 -m py_compile groop/src/groop/actions/execute.py \
+  groop/tests/test_p78_action_kernel.py
+# exit 0
+
+git diff --check
+# exit 0
 ```
 
 ```text
 timeout 900 env PYTHONPATH=groop/src groop/.venv/bin/python -m pytest \
   groop/tests -q -W error
-1188 passed, 3 skipped in 154.15s (0:02:34)
+1192 passed, 3 skipped in 146.99s (0:02:26)
 ```
-
-The documented P79 failure did not reproduce in this venv (the installed
-dependency path exercised a passing case); no other failure occurred. No Python
-source changed, so a changed-file `py_compile` gate is not applicable.
 
 ## Known gaps / open items
 
-- The P78 gate-chain extraction remains unimplemented pending the required
-  contract decision above.
+None.

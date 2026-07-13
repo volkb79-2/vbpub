@@ -57,7 +57,11 @@ flash-max attempt made (hand-rolling a parallel path instead of extending the ty
 
 1. **Reuse the P46 kernel.** Same gate chain, same audit record shape, same argv-only
    execution, same fail-closed audit. No new execution path, no shell, no
-   `subprocess.run(..., shell=True)`, ever.
+   `subprocess.run(..., shell=True)`, ever. P78 preserves that audit shape and exposes
+   the shared chain privately: if this package adds install-specific validation, make
+   it an ordered pre-audit verb gate in that chain. It needs no P49 stale-plan
+   post-audit hook; that exception is specific to retaining set-property's existing
+   `pre`/`post` stale-refusal trail.
 2. **Plan-once.** The plan is built once and carried through display and execution.
    Assert this structurally, not by eye (oracle 1).
 3. **Preflight is a gate, not advice.** P22's preflight runs at execute time and a
