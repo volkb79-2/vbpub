@@ -360,7 +360,6 @@ def run_squeeze(
     squeeze_point = high
     prev_rf: int | None = None
     prev_rf_time: float | None = None
-    restored = False
 
     # -- Write header record
     try:
@@ -456,7 +455,6 @@ def run_squeeze(
                     stop_reason = "floor"
 
             # -- Restore memory.high (handled by restore_guard.__exit__)
-            restored = True
 
         except KeyboardInterrupt:
             stop_reason = "interrupted"

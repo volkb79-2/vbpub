@@ -39,6 +39,7 @@ groop --once --json
 groop
 groop --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --step
 groop snapshot inspect /path/to/groop-incident-*.tar
+groop squeeze --target /sys/fs/cgroup/system.slice/app.service --admin --confirm SQUEEZE
 ```
 
 Use `--config PATH` to point at an alternate TOML config, `--profile NAME` to
@@ -130,7 +131,7 @@ Useful feature hotkeys in the TUI:
 | P53 | **Done** | Headless record driver | v1.5 recording | CLI `--record --headless [--interval] [--duration|--frames]` drives the collector loop and RecordWriter without importing textual, with clean SIGINT/SIGTERM finalization, bounded stderr progress, and injectable signal tests. Report: `handoff/reports/P53-REPORT.md`. |
 | P54 | Queued | Steady-state report command | v1.5 recording | Add `groop report FILE [--window last:Ns\|all] [--group-by slice\|entity] --json` computing per-entity p50/p95/max for key gauges and deriving `_per_s` rates from embedded raw counters when the recorded live rate is `None`. Handoff: `handoff/P54-steady-state-report.md`. |
 | P55 | Done | Collector entity & metric filtering | v1.5/v2 recording | Add `--entities GLOB`/`--slice NAME` entity selectors and `--metrics compact` gauge subset at collection time, cutting sysfs reads and frame size for `--once` and any recording path. Compact also drops per-entity network/DAMON/governance blocks. Handoff: `handoff/P55-collector-entity-metric-filtering.md`. Report: `handoff/reports/P55-REPORT.md`. |
-| P56 | Queued | `groop squeeze` guided memory measurement | v2 actions | Add a guided, stepped `memory.high` squeeze that measures a cgroup's hot working set, with mandatory memory.high restore on exit/SIGINT and a groop-record-compatible JSONL log. Handoff: `handoff/P56-groop-squeeze.md`. |
+| P56 | **Done** | `groop squeeze` guided memory measurement | v2 actions | Add a guided, stepped `memory.high` squeeze that measures a cgroup's hot working set, with mandatory memory.high restore on exit/SIGINT and a groop-record-compatible JSONL log. Handoff: `handoff/P56-groop-squeeze.md`. Report: `handoff/reports/P56-REPORT.md`. |
 | P57 | Done | Docker-name entity selectors | v1.5/v2 ergonomics | Add `--container NAME_OR_PREFIX`, resolved via the existing docker metadata join, wherever groop takes a cgroup-path/entity identifier. Handoff: `handoff/P57-docker-name-entity-selectors.md`. Report: `handoff/reports/P57-REPORT.md`. |
 | P58 | Planned | Daemon MCP frontend | v2/v3 API | Add `groop mcp serve` (optional `groop[mcp]` extra, stdio transport): a read-only MCP server over the P52 typed adapter exposing bounded health/overview/entity/history tools for AI CLI agents. Starts only after reviewed P52 merges. Handoff: `handoff/P58-daemon-mcp-frontend.md`. |
 | P59 | Queued | `--container` as an entity selector | v1.5/v2 ergonomics | Compose P57's `--container` name resolution into P55's `--entities`/`--slice` collection-path selectors (resolution moved into the collector sweep for post-enrich correctness). Handoff: `handoff/P59-container-entity-selector-composition.md`. |

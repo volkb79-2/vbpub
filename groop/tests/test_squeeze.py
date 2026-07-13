@@ -521,6 +521,34 @@ class TestSigintSafety:
         assert len(restored) >= 1
         assert restored[-1] == ("memory.high", "max")
 
+    def test_sigint_handler_restores_then_raises(self) -> None:
+        """Invoking the installed SIGINT handler must write the restore value
+        AND raise KeyboardInterrupt (the real signal-triggered path, not just
+        __exit__). Captures the handler closure via the injectable seam."""
+        restored: list[tuple[str, str]] = []
+        installed: dict[int, object] = {}
+
+        def tracking_writer(cgroup_path: str, filename: str, value: str) -> None:
+            restored.append((filename, value))
+
+        def capturing_handler(signum, handler):
+            installed[signum] = handler
+            return signal.SIG_DFL
+
+        guard = _RestoreGuard(
+            "/test", "max",
+            writer=tracking_writer,
+            signal_handler=capturing_handler,
+        )
+        with guard:
+            sigint_handler = installed[signal.SIGINT]
+            # Fire the captured SIGINT handler as the OS would.
+            with pytest.raises(KeyboardInterrupt):
+                sigint_handler(signal.SIGINT, None)
+            # Observable: memory.high was restored to "max" by the handler,
+            # before the KeyboardInterrupt propagated.
+            assert ("memory.high", "max") in restored
+
     def test_restore_guard_idempotent(self) -> None:
         """Restore guard only writes once."""
         restored = []

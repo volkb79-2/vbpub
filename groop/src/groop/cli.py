@@ -345,8 +345,6 @@ def parse_squeeze_args(argv: list[str]) -> argparse.Namespace:
     Uses subcommand-free flat arguments (like ``groop --once``), not
     subcommands (unlike ``groop action preview/execute``).
     """
-    from groop.actions.squeeze import parse_size
-
     parser = argparse.ArgumentParser(prog="groop squeeze")
     parser.add_argument("--target", type=str, required=True, help="cgroup path to squeeze")
     parser.add_argument("--admin", action="store_true", help="enable admin mode (required)")
