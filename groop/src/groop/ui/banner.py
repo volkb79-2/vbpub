@@ -40,6 +40,9 @@ def render_banner(frame: Frame, config: GroopConfig, *, collapsed: bool = False)
     heat_line = _host_damon_heat_line(frame)
     if heat_line is not None:
         lines.append(heat_line)
+    arc_line = _zfs_arc_line(frame)
+    if arc_line is not None:
+        lines.append(arc_line)
     lines.append("TOP PRESSURE")
     pressure_lines = _top_pressure_lines(frame)
     lines.extend(pressure_lines if pressure_lines else ["n/a"])
@@ -143,6 +146,19 @@ def _host_damon_owners(frame: Frame) -> tuple[str, ...]:
         return ()
     owners = {str(session.get("owner")) for session in sessions if isinstance(session, dict) and session.get("mode") == "paddr" and session.get("owner")}
     return tuple(sorted(owners))
+
+
+def _zfs_arc_line(frame: Frame) -> str | None:
+    arc_size = frame.host.get("host_zfs_arc_size")
+    arc_max = frame.host.get("host_zfs_arc_max")
+    if arc_size is None or arc_size.v is None or arc_max is None or arc_max.v is None:
+        return None
+    hit_ratio = frame.host.get("host_zfs_arc_hit_ratio")
+    if hit_ratio is not None and hit_ratio.v is not None:
+        hit_text = f" (hit {float(hit_ratio.v) * 100:.0f}%)"
+    else:
+        hit_text = ""
+    return f"ARC {_fmt_bytes_metric(arc_size)}/{_fmt_bytes_metric(arc_max)}{hit_text}"
 
 
 def _swap_backend_line(frame: Frame) -> str:

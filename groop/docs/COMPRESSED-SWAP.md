@@ -129,3 +129,20 @@ Primary sources:
   <https://docs.kernel.org/admin-guide/blockdev/zram.html>
 - Linux kernel cgroup v2 memory controller docs:
   <https://docs.kernel.org/admin-guide/cgroup-v2.html>
+
+## ZFS ARC and Memory Accounting
+
+On a ZFS host, the Adaptive Replacement Cache (ARC) can hold many GB of RAM
+that `MemAvailable` counts as *unavailable* — the ARC is a kernel-managed
+memory pool that automatically evicts under pressure, so it behaves more like
+reclaimable cache than like anonymous memory. groop's memory banner therefore
+annotates ARC usage when `/proc/spl/kstat/zfs/arcstats` is present, showing
+`ARC <size>/<max> (hit <pct>%)` so the operator can see how much of the
+reported "used" memory is reclaimable ARC.
+
+ZFS ARC is a read-only host provider. The kernel does not attribute ARC memory
+to individual cgroups, and groop never attempts to fabricate per-cgroup ARC
+attribution. The five `host_zfs_arc_*` metrics (size, target, max, min, hit
+ratio) are host-scope only. The hit ratio is computed as a rate over the sample
+interval from the cumulative `hits`/`misses` counters, not as a lifetime
+cumulative ratio. See `handoff/reports/P71-REPORT.md`.

@@ -34,11 +34,11 @@ flowchart LR
 ## Module Map
 
 | Module | Role |
-|---|---|
+|---|---|---|
 | `model.py` | Dataclasses and canonical JSON serialization. |
 | `registry.py` | Metric definitions, source semantics, help/glossary source. |
 | `config.py` | TOML parsing and defaults. |
-| `collect/` | cgroup, host, docker, process, and collector orchestration. |
+| `collect/` | cgroup, host (including ZFS ARC), docker, process, and collector orchestration. |
 | `providers/` | Network provider abstraction and current host/netns providers. |
 | `drift/` | systemd/live-origin classification and governance drift. |
 | `diag/` | pressure score and findings rules. |

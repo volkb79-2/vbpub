@@ -209,6 +209,126 @@ def _stat_value(values: tuple[int, ...], index: int) -> int:
     return values[index] if index < len(values) else 0
 
 
+def _zfs_arc_metrics(proc_root: Path) -> dict[str, MetricValue]:
+    path = proc_root / "spl" / "kstat" / "zfs" / "arcstats"
+    result = read_text(path)
+    if result.value is None:
+        unavail = MetricValue(None, result.src)
+        return {
+            "host_zfs_arc_size": unavail,
+            "host_zfs_arc_target": unavail,
+            "host_zfs_arc_max": unavail,
+            "host_zfs_arc_min": unavail,
+            "host_zfs_arc_hit_ratio": MetricValue(None, result.src),
+        }
+    kstat = _parse_arcstats(str(result.value))
+    if kstat is None:
+        unavail = MetricValue(None, "unavail_kernel")
+        return {
+            "host_zfs_arc_size": unavail,
+            "host_zfs_arc_target": unavail,
+            "host_zfs_arc_max": unavail,
+            "host_zfs_arc_min": unavail,
+            "host_zfs_arc_hit_ratio": MetricValue(None, "unavail_kernel"),
+        }
+
+    def _gauge(field: str) -> MetricValue:
+        v = kstat.get(field)
+        if v is None or not isinstance(v, int):
+            return MetricValue(None, "unavail_kernel")
+        return MetricValue(v, "host")
+
+    size = _gauge("size")
+    target = _gauge("c")
+    max_ = _gauge("c_max")
+    min_ = _gauge("c_min")
+
+    hits_raw = kstat.get("hits")
+    misses_raw = kstat.get("misses")
+    if not isinstance(hits_raw, int) or not isinstance(misses_raw, int):
+        hit_ratio = MetricValue(None, "unavail_kernel", None)
+    else:
+        hit_ratio = _zfs_arc_compute_hit_ratio(hits_raw, misses_raw)
+
+    return {
+        "host_zfs_arc_size": size,
+        "host_zfs_arc_target": target,
+        "host_zfs_arc_max": max_,
+        "host_zfs_arc_min": min_,
+        "host_zfs_arc_hit_ratio": hit_ratio,
+    }
+
+
+def _zfs_arc_detail(proc_root: Path) -> dict[str, object] | None:
+    path = proc_root / "spl" / "kstat" / "zfs" / "arcstats"
+    result = read_text(path)
+    if result.value is None:
+        return None
+    kstat = _parse_arcstats(str(result.value))
+    if kstat is None:
+        return None
+    return {k: v for k, v in kstat.items() if isinstance(v, int)}
+
+
+# Module-level state for ARC hit-ratio rate computation.
+# Resets on each collect_once() via reset_zfs_arc_rate_state().
+_zfs_arc_rate_state: dict[str, int | None] = {
+    "prev_hits": None,
+    "prev_misses": None,
+}
+
+
+def reset_zfs_arc_rate_state() -> None:
+    _zfs_arc_rate_state["prev_hits"] = None
+    _zfs_arc_rate_state["prev_misses"] = None
+
+
+def _zfs_arc_compute_hit_ratio(hits_raw: int, misses_raw: int) -> MetricValue:
+    prev_hits = _zfs_arc_rate_state["prev_hits"]
+    prev_misses = _zfs_arc_rate_state["prev_misses"]
+    _zfs_arc_rate_state["prev_hits"] = hits_raw
+    _zfs_arc_rate_state["prev_misses"] = misses_raw
+    if prev_hits is None or prev_misses is None:
+        return MetricValue(None, "derived", hits_raw)
+    h_delta = hits_raw - prev_hits
+    m_delta = misses_raw - prev_misses
+    if h_delta < 0 or m_delta < 0:
+        return MetricValue(None, "derived", hits_raw)
+    total = h_delta + m_delta
+    if total == 0:
+        return MetricValue(None, "derived", hits_raw)
+    return MetricValue(h_delta / total, "derived", hits_raw)
+
+
+def _parse_arcstats(text: str) -> dict[str, object] | None:
+    out: dict[str, object] = {}
+    ok = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            return None
+        name = parts[0]
+        dtype = parts[1]
+        data = parts[2]
+        try:
+            if dtype == "4":
+                out[name] = int(data)
+            elif dtype == "8":
+                out[name] = int(data)
+            else:
+                out[name] = data
+        except (ValueError, TypeError):
+            return None
+        if name in ("size", "c", "c_max", "c_min", "hits", "misses"):
+            ok = True
+    if not ok:
+        return None
+    return out
+
+
 def collect_host(proc_root: Path = Path("/proc"), sys_root: Path = Path("/sys")) -> dict[str, MetricValue]:
     meminfo = _meminfo(proc_root)
     host = {
@@ -233,6 +353,7 @@ def collect_host(proc_root: Path = Path("/proc"), sys_root: Path = Path("/sys"))
     host["host_disk_swap"] = _disk_swap(proc_root, meminfo, host["host_zswap_stored"])
     host.update(_swap_backend_metrics(proc_root, host["host_zswap_enabled"], host["host_zswap_stored"]))
     host.update(_zram_metrics(sys_root))
+    host.update(_zfs_arc_metrics(proc_root))
     return host
 
 
@@ -366,11 +487,16 @@ def _block_dev_counters(sys_root: Path) -> list[dict[str, object]]:
 def collect_host_meta(proc_root: Path = Path("/proc"), sys_root: Path = Path("/sys")) -> dict[str, object]:
     """Collect host-level non-metric metadata for the Frame.
 
-    Includes zram device details, raw net device counters, and raw block device
-    counters. The Collector computes rates from the raw counters.
+    Includes zram device details, raw net device counters, raw block device
+    counters, and ZFS ARC kstat detail. The Collector computes rates from the
+    raw counters.
     """
-    return {
+    meta: dict[str, object] = {
         "zram_devices": _zram_device_details(sys_root),
         "net_device_counters": _net_dev_counters(proc_root),
         "block_device_counters": _block_dev_counters(sys_root),
     }
+    arc_detail = _zfs_arc_detail(proc_root)
+    if arc_detail is not None:
+        meta["zfs_arc"] = arc_detail
+    return meta
