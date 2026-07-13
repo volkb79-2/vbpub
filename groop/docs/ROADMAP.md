@@ -75,7 +75,17 @@ flowchart TD
     P46 --> P56[P56 groop squeeze]
     P16 --> P57[P57 Docker-name entity selectors :done:]
     P52 --> P58[P58 Daemon MCP frontend]
+    P57 --> P59[P59 --container entity selector]
+    P55 --> P59
+    P55 --> P60[P60 free-form --metrics list]
 ```
+
+P59 and P60 are the carved successors of the P55/P57 recording-ergonomics
+slice. P59 wires P57's `--container` resolver into P55's collection-path
+`--entities`/`--slice` selectors (deferred by P57 while P55 was unmerged); P60
+generalizes P55's `--metrics full|compact` enum into an open registry-validated
+field/family list. Both are flash-high, fixture-testable, and share
+`src/groop/cli.py` argument parsing, so they carry `Serialize-with:` each other.
 
 ## Remaining Estimate
 
