@@ -1,24 +1,16 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 
 import pytest
 
 from conftest import fixture_root, systemctl_fixture_runner
 from groop.cli import main, _validate_metrics_mode
 from groop.collect.collector import Collector
-from groop.collect.cgroup import walk_entities
 from groop.config import GroopConfig
 from groop.model import MetricValue
 from groop.providers.net_host import NetHostProvider
 from groop.providers.net_netns import NetnsProvider
-from groop.registry import (
-    COMPACT_GROUPS,
-    FIELD_LIST_BLOCK_MAP,
-    METRIC_GROUPS,
-    parse_metrics_selector,
-)
+from groop.registry import COMPACT_GROUPS, METRIC_GROUPS
 
 GAME_KEY = "system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope"
 
@@ -58,11 +50,18 @@ def qdisc_stub(_argv: list[str]) -> str:
     )
 
 
+def _docker_inspect(cid: str) -> list[dict] | None:
+    if cid == "a" * 64:
+        return [{"Id": cid, "Name": "/my-game", "Config": {"Image": "game:latest", "Labels": {}}}]
+    return None
+
+
 def _make_collector(
     root: Path,
     *,
     entities_globs: tuple[str, ...] | None = None,
     slice_names: tuple[str, ...] | None = None,
+    container_selectors: tuple[str, ...] | None = None,
     metrics_mode: str = "full",
 ) -> Collector:
     proc_root = fixture_root() / "procfs" / "network"
@@ -78,12 +77,13 @@ def _make_collector(
             tiers={"prod": ["system.slice"]},
             protected_services=("soulmask-paks.slice",),
         ),
-        lambda _cid: None,
+        _docker_inspect,
         host_stub,
         lambda: 100.0,
         providers,
         entities_globs=entities_globs,
         slice_names=slice_names,
+        container_selectors=container_selectors,
         metrics_mode=metrics_mode,
         proc_root=proc_root,
         sys_root=fixture_root() / "sysfs" / "empty",
@@ -259,6 +259,26 @@ def test_fieldlist_rejected_with_attach() -> None:
 
 
 # --- Additional edge cases ---
+
+
+def test_fieldlist_composes_with_container() -> None:
+    """--metrics ram,psi composes with --container my-game."""
+    root = fixture_root() / "cgroupfs" / "gstammtisch"
+    collector = _make_collector(
+        root,
+        container_selectors=("my-game",),
+        metrics_mode="ram,psi",
+    )
+    frame = collector.collect_once()
+    # The game container should be present
+    assert GAME_KEY in frame.entities
+    # Only ram + psi metrics on every entity
+    expected = frozenset({"ram"}) | frozenset(METRIC_GROUPS["psi"])
+    for key, eframe in frame.entities.items():
+        kept = frozenset(eframe.metrics.keys())
+        assert kept.issubset(expected), (
+            f"{key}: unexpected metrics {kept - expected}"
+        )
 
 
 def test_fieldlist_union_of_family_and_single_metric() -> None:

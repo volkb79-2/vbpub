@@ -86,3 +86,23 @@ from groop.cli import main; exit(main())
 - [x] Tests/compile/smoke recorded.
 - [x] Known gaps documented.
 - [x] Feature branch committed.
+
+## Self-Review Findings (2026-07-13)
+
+Adversarial read of the P60 diff against the handoff:
+
+1. **Unused imports** caught: `json`, `Path`, `walk_entities`, `FIELD_LIST_BLOCK_MAP`, `parse_metrics_selector` were imported but unused in `test_p60_fieldlist.py`. Removed. `_docker_inspect` helper was also using `lambda _cid: None` which broke container resolution — replaced with a fixture-aware inspect stub.
+
+2. **Missing `--container` composition test**: Requirement 6 says `--metrics <list>` composes with `--container` if P59 is merged (it is). Added `test_fieldlist_composes_with_container` — 20 tests now, up from 19.
+
+3. **No hollow tests identified**: Every acceptance oracle asserts the OBSERVABLE outcome:
+   - Oracle 1: asserts exact kept metric set (equality, not subset)
+   - Oracle 2: asserts exact 6-name set (fails if single-name handling were used)
+   - Oracle 3: asserts `eframe.network is not None` / `is None` on real frame objects
+   - Oracle 4/5: subprocess with `returncode == 2` and `stderr` content check
+   - Oracle 6: uses same `issubset`/block-dropping assertions as P55's own tests
+   - Oracle 7: `main()` return value check with `rc == 2`
+   
+4. **Date in LOG/REPORT**: 2026-07-13 matches `date -u`. Counts (19→20 tests, 57→61 suite) are real.
+
+5. **LOG/REPORT present**, ASCII, no dead code or scaffolding in the diff.
