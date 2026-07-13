@@ -4,13 +4,58 @@ from __future__ import annotations
 
 import inspect
 import json
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 def _success_runner(argv, *, timeout=30.0):
     from groop.actions.execute import ExecuteResult
 
     return ExecuteResult("", "", argv, 0, "", "", "success", 0.0)
+
+
+def _execute_verb(verb: str, audit_path: Path | str, **overrides):
+    """Call one public executor with stable valid defaults."""
+    from groop.actions.execute import (
+        AuditIdentity,
+        execute_kill,
+        execute_plan,
+        execute_set_property,
+        execute_update,
+    )
+
+    common = {
+        "admin": True,
+        "audit_path": audit_path,
+        "clock": lambda: 10.0,
+        "identity": lambda: AuditIdentity(0, "tester"),
+        "root_check": lambda: True,
+        "runner": _success_runner,
+    }
+    target = overrides.pop("target", None)
+    common.update(overrides)
+    if verb == "plan":
+        common.setdefault("confirm", "EXECUTE")
+        return execute_plan("docker-start", target or "demo", **common)
+    if verb == "set-property":
+        common.setdefault("confirm", "EXECUTE")
+        common.setdefault("property_name", "memory.high")
+        common.setdefault("property_value", "1024")
+        return execute_set_property(target or "demo.service", **common)
+    if verb == "kill":
+        kind = common.pop("kind", "docker-kill")
+        common.setdefault("confirm", "KILL")
+        common.setdefault("signal", "TERM")
+        common.setdefault("protected_check", lambda kind, value: False)
+        return execute_kill(kind, target or "demo", **common)
+    if verb == "update":
+        common.setdefault("confirm", "UPDATE")
+        common.setdefault("memory", "512M")
+        common.setdefault("current_memory_reader", lambda value: 0)
+        return execute_update(target or "demo", **common)
+    raise AssertionError(f"unknown test verb: {verb}")
 
 
 def test_all_public_executors_use_the_one_private_chain() -> None:
@@ -67,8 +112,291 @@ def test_stale_revalidation_preserves_the_existing_two_record_audit_trail(
     assert records[1]["action_outcome"] == "refusal"
 
 
-def test_pre_audit_gate_ordering_remains_per_verb(tmp_path: Path) -> None:
-    from groop.actions.execute import execute_kill, execute_update
+@pytest.mark.parametrize("verb", ("plan", "set-property", "kill", "update"))
+@pytest.mark.parametrize(
+    ("failure", "outcome", "audit_outcome", "stderr"),
+    (
+        ("non-admin", "refusal", None, "admin mode is required"),
+        ("wrong-token", "refusal", None, "<per-verb confirmation>"),
+        ("non-root", "refusal", None, "root privileges are required"),
+        (
+            "bad-timeout",
+            "refusal",
+            None,
+            "timeout must be finite and between 0.001 and 30.0 seconds",
+        ),
+        ("relative-audit", "refusal", None, "audit path must be absolute"),
+        (
+            "invalid-identity",
+            "refusal",
+            None,
+            "invalid execution identity: ValueError",
+        ),
+        (
+            "pre-audit-failure",
+            "refusal",
+            "pre_failure:OSError",
+            "audit failed before execution",
+        ),
+        (
+            "invalid-target",
+            "refusal",
+            None,
+            "target must not be option-like: '-bad'",
+        ),
+        ("runner-oserror", "runner_failure", None, "OSError: runner unavailable"),
+        ("runner-timeout", "timeout", None, ""),
+        ("post-audit-failure", "audit_failure", "post_failure", ""),
+    ),
+)
+def test_differential_common_refusal_taxonomy(
+    tmp_path: Path,
+    monkeypatch,
+    verb: str,
+    failure: str,
+    outcome: str,
+    audit_outcome: str | None,
+    stderr: str,
+) -> None:
+    """Pin every common gate/result failure for every public verb."""
+    import groop.actions.execute as execute
+
+    overrides = {}
+    audit_path: Path | str = tmp_path / f"{verb}-{failure}.jsonl"
+    if failure == "non-admin":
+        overrides["admin"] = False
+    elif failure == "wrong-token":
+        overrides["confirm"] = "WRONG"
+    elif failure == "non-root":
+        overrides["root_check"] = lambda: False
+    elif failure == "bad-timeout":
+        overrides["timeout"] = 0
+    elif failure == "relative-audit":
+        audit_path = Path("relative-audit.jsonl")
+    elif failure == "invalid-identity":
+        overrides["identity"] = lambda: object()
+    elif failure == "pre-audit-failure":
+        monkeypatch.setattr(
+            execute,
+            "_write_execution_audit_pre",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("audit unavailable")),
+        )
+    elif failure == "invalid-target":
+        overrides["target"] = "-bad"
+        if verb == "update":
+            overrides["below_current"] = True
+    elif failure == "runner-oserror":
+        overrides["runner"] = lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("runner unavailable")
+        )
+    elif failure == "runner-timeout":
+        overrides["runner"] = lambda *args, **kwargs: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(cmd="action", timeout=30.0)
+        )
+    elif failure == "post-audit-failure":
+        monkeypatch.setattr(
+            execute,
+            "_write_execution_audit_post",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("audit unavailable")),
+        )
+
+    result = _execute_verb(verb, audit_path, **overrides)
+    if failure == "wrong-token":
+        token = {"plan": "EXECUTE", "set-property": "EXECUTE", "kill": "KILL", "update": "UPDATE"}[verb]
+        stderr = f"exact confirmation {token} is required"
+    elif failure == "invalid-target" and verb == "set-property":
+        stderr = "unit must not be option-like: '-bad'"
+    assert (result.outcome, result.audit_outcome, result.stderr) == (
+        outcome,
+        audit_outcome,
+        stderr,
+    )
+
+
+@pytest.mark.parametrize(
+    ("verb", "overrides", "outcome", "audit_outcome", "stderr"),
+    (
+        ("plan", {"kind": "unknown"}, "refusal", None, "unknown action kind"),
+        (
+            "plan",
+            {"kind": "docker-kill"},
+            "refusal",
+            None,
+            "kind 'docker-kill' is not in execution allowlist",
+        ),
+        (
+            "set-property",
+            {"property_name": "cpu.max"},
+            "refusal",
+            None,
+            "property must be 'memory.high', got 'cpu.max'",
+        ),
+        (
+            "set-property",
+            {"property_value": "0"},
+            "refusal",
+            None,
+            "memory.high value must be positive (got 0)",
+        ),
+        (
+            "set-property",
+            {"persistence": "sometimes"},
+            "refusal",
+            None,
+            "persistence mode must be 'runtime' or 'persistent', got 'sometimes'",
+        ),
+        (
+            "set-property",
+            {
+                "planned_current_value": "1024",
+                "current_value_reader": lambda unit: "2048",
+            },
+            "stale",
+            None,
+            "current memory.high value changed (1024 -> 2048); preview again with the fresh value",
+        ),
+        (
+            "kill",
+            {"signal": "bogus"},
+            "refusal",
+            None,
+            "unknown signal 'bogus'; allowed signals: HUP, INT, KILL, QUIT, TERM, USR1, USR2",
+        ),
+        (
+            "kill",
+            {"signal": "KILL"},
+            "refusal",
+            None,
+            "KILL signal requires --force (data-loss prevention gate)",
+        ),
+        (
+            "kill",
+            {"protected_check": lambda kind, target: True},
+            "refusal",
+            None,
+            "target is a protected service; kill refused",
+        ),
+        (
+            "kill",
+            {
+                "protected_check": lambda kind, target: (_ for _ in ()).throw(
+                    OSError("config unreadable")
+                )
+            },
+            "refusal",
+            None,
+            "protected-service check failed (OSError); kill refused",
+        ),
+        (
+            "kill",
+            {"kind": "unknown"},
+            "refusal",
+            None,
+            "invalid action kind: 'unknown'",
+        ),
+        (
+            "update",
+            {"memory": "garbage"},
+            "refusal",
+            None,
+            "invalid memory value: 'garbage'",
+        ),
+        (
+            "update",
+            {"memory": None, "cpus": "0"},
+            "refusal",
+            None,
+            "cpus must be positive: '0'",
+        ),
+        (
+            "update",
+            {"memory": None, "cpus": None},
+            "refusal",
+            None,
+            "at least one of --memory or --cpus is required",
+        ),
+        (
+            "update",
+            {"target": "demo.service"},
+            "refusal",
+            None,
+            "target 'demo.service' looks like a systemd unit; use 'groop action set-property' for systemd resource changes",
+        ),
+        (
+            "update",
+            {"memory": "100", "current_memory_reader": lambda target: 500},
+            "refusal",
+            None,
+            "memory limit 100 bytes is below current usage 500 bytes; use --below-current to override (this may OOM the container)",
+        ),
+        (
+            "update",
+            {"memory": "100", "current_memory_reader": lambda target: None},
+            "refusal",
+            None,
+            "current memory usage of 'demo' could not be established, so a limit of 100 bytes cannot be shown to be safe; pass --below-current to apply it anyway (this may OOM the container)",
+        ),
+    ),
+)
+def test_differential_verb_gate_taxonomy(
+    tmp_path: Path,
+    verb: str,
+    overrides: dict[str, object],
+    outcome: str,
+    audit_outcome: str | None,
+    stderr: str,
+) -> None:
+    """Pin each verb-specific gate's observable refusal."""
+    overrides = dict(overrides)
+    if verb == "plan":
+        from groop.actions.execute import execute_plan
+
+        kind = overrides.pop("kind")
+        result = execute_plan(
+            kind,
+            "-bad",
+            admin=True,
+            confirm="EXECUTE",
+            audit_path=tmp_path / "plan.jsonl",
+            root_check=lambda: True,
+        )
+    else:
+        result = _execute_verb(verb, tmp_path / f"{verb}.jsonl", **overrides)
+    assert (result.outcome, result.audit_outcome, result.stderr) == (
+        outcome,
+        audit_outcome,
+        stderr,
+    )
+
+
+def test_gate_ordering_proof_for_every_verb(tmp_path: Path) -> None:
+    from groop.actions.execute import (
+        execute_kill,
+        execute_plan,
+        execute_set_property,
+        execute_update,
+    )
+
+    plan = execute_plan(
+        "unknown",
+        "-bad",
+        admin=True,
+        confirm="EXECUTE",
+        audit_path=tmp_path / "plan.jsonl",
+        root_check=lambda: True,
+    )
+    assert plan.stderr == "unknown action kind"
+
+    set_property = execute_set_property(
+        "-bad",
+        property_name="cpu.max",
+        property_value="0",
+        admin=True,
+        confirm="EXECUTE",
+        audit_path=tmp_path / "set-property.jsonl",
+        root_check=lambda: True,
+    )
+    assert set_property.stderr == "property must be 'memory.high', got 'cpu.max'"
 
     kill = execute_kill(
         "docker-kill",

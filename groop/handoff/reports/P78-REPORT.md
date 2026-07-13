@@ -1,4 +1,4 @@
-# P78 — Action Kernel Gate-Chain Extraction — Implementation Report
+# P78 - Action Kernel Gate-Chain Extraction - Implementation Report
 
 ## Summary
 
@@ -27,8 +27,9 @@ audit field, audit-record order, message, or exit-code behavior.
 - Routed all four public executors through that one gate/audit/runner sequence.
 - Kept the runner, clock, identity, root-check, protected-check, and
   current-memory-reader Python API seams unchanged.
-- Added P78 tests for one-chain delegation, stale audit preservation,
-  per-verb ordering, and the pre/post audit shape for all four success paths.
+- Added P78 tests for one-chain delegation, a differential refusal table,
+  stale audit preservation, per-verb double-failure ordering, and the pre/post
+  audit shape for all four success paths.
 - Updated the architecture map and the P78 contract text to document the two
   gate categories.
 - Updated P80's handoff: its install-specific checks must use P78's ordered
@@ -37,14 +38,16 @@ audit field, audit-record order, message, or exit-code behavior.
 
 ## Observable-behavior evidence
 
-The differential refusal taxonomy was rebuilt against the extracted code by
-the unchanged P46/P49/P72 action suites plus the P78 ordering probes. The
-focused run covers non-admin, confirmation, root, timeout, audit-path,
-identity, pre/post-audit, target, signal, force, protected-target, systemd
-target, below-current/unverifiable usage, runner OSError/timeout, and stale
-paths. All 255 cases passed with the same exact assertions. The stale case
-continues to return `outcome=stale`, `audit_outcome=None`, its original stderr
-text, and `pre`, then `post` records; no deliberate exception is required.
+The self-review rebuilt the differential refusal taxonomy as an explicit
+golden table and ran the same tests against both the pre-extraction `HEAD^`
+source tree and the extracted code. It covers non-admin, confirmation, root,
+timeout, audit-path, identity, pre/post-audit, target, signal, force,
+protected-target, systemd target, below-current/unverifiable usage, runner
+OSError/timeout, and stale paths. It also makes two gates fail for each verb
+and asserts the exact winner. The pre-extraction tree passed all 62 selected
+cases; current code passed the same 62, plus three structural/audit-shape
+checks. The stale case continues to return `outcome=stale`,
+`audit_outcome=None`, its original stderr text, and `pre`, then `post` records.
 
 `execute.py` changed from 1,438 to 1,237 lines. The reduction is the removed
 copied common execution bodies; the remaining per-verb lines declare their
@@ -83,6 +86,24 @@ git diff --check
 timeout 900 env PYTHONPATH=groop/src groop/.venv/bin/python -m pytest \
   groop/tests -q -W error
 1192 passed, 3 skipped in 146.99s (0:02:26)
+```
+
+Self-review reruns after expanding the adversarial oracle:
+
+```text
+PYTHONPATH=/tmp/p78-baseline/groop/src groop/.venv/bin/python -m pytest \
+  groop/tests/test_p78_action_kernel.py -q -W error \
+  -k 'differential or gate_ordering_proof' --confcutdir=groop/tests
+62 passed, 3 deselected in 0.20s
+
+PYTHONPATH=groop/src groop/.venv/bin/python -m pytest \
+  groop/tests/test_p78_action_kernel.py groop/tests/test_actions.py \
+  groop/tests/test_p72_kill_update.py -q -W error
+316 passed in 1.20s
+
+timeout 900 env PYTHONPATH=groop/src groop/.venv/bin/python -m pytest \
+  groop/tests -q -W error
+1253 passed, 3 skipped in 151.25s (0:02:31)
 ```
 
 ## Known gaps / open items

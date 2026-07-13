@@ -5,7 +5,7 @@
 - Branch: `feat/groop-p78-action-kernel-gate-extraction`
 - Worktree: `/workspaces/vbpub/.worktrees/groop-p78-action-kernel-gate-extraction`
 - Base commit: `61b6aa1` (`main`)
-- Package: P78 — Action kernel gate-chain extraction
+- Package: P78 - Action kernel gate-chain extraction
 - Current objective: Extract the four action executors only if every existing
   observable result and audit behavior can be preserved.
 
@@ -164,4 +164,37 @@ git diff --check
   groop/tests/test_actions.py groop/tests/test_p72_kill_update.py -q -W error`.
 - Result: 251 passed in 0.83s. `py_compile` for execute.py and the new P78
   test, plus `git diff --check`, completed with exit 0.
+
+2026-07-13 UTC - self-review pass #1
+- Action: Read the committed diff mechanically against the standing
+  self-review template and P78 differential-taxonomy/gate-ordering oracles.
+- Finding: The first P78 regression file sampled the taxonomy and proved
+  double-failure ordering for only kill/update. It did not mechanically prove
+  every common failure for every verb or ordering for plan/set-property.
+- Fix: Expanded `test_p78_action_kernel.py` to pin exact `(outcome,
+  audit_outcome, stderr)` triples for every common failure across all four
+  verbs, every verb-specific gate, and a two-failing-gates ordering case for
+  each verb.
+- Differential command: extracted `HEAD^` action sources to
+  `/tmp/p78-baseline`, then ran the same `differential or
+  gate_ordering_proof` tests with that source tree first on `PYTHONPATH`.
+- Result: pre-extraction tree 62 passed, 3 deselected; extracted tree 65
+  passed. The golden refusal table and ordering winners are identical.
+- Production finding: none. Source inspection plus the differential run found
+  no dropped/reordered verb gate and required no execute.py change.
+- Follow-up: rerun focused and full package gates with the expanded tests,
+  update REPORT/SELFREVIEW with real tails, and commit the pass separately.
+
+2026-07-13 UTC - self-review validation complete
+- Focused command: `PYTHONPATH=groop/src groop/.venv/bin/python -m pytest
+  groop/tests/test_p78_action_kernel.py groop/tests/test_actions.py
+  groop/tests/test_p72_kill_update.py -q -W error`.
+- Focused result: 316 passed in 1.20s.
+- Full command: `timeout 900 env PYTHONPATH=groop/src groop/.venv/bin/python
+  -m pytest groop/tests -q -W error`.
+- Full result: 1253 passed, 3 skipped in 151.25s (0:02:31).
+- Compile/diff result: changed Python files compile; `git diff --check` exits
+  0.
+- Follow-up: write the final self-review finding and commit this pass
+  separately on the P78 branch without merging.
 ```
