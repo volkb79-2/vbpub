@@ -692,6 +692,25 @@ class TestReportCLI:
                     assert "p95" in gauge_vals
                     assert "max" in gauge_vals
 
+    def test_zst_without_zstandard_exits_2(self, tmp_path):
+        """A .jsonl.zst file without the zstandard extra exits 2."""
+        zstd_magic = b"\x28\xb5\x2f\xfd"
+        src_root = Path(__file__).resolve().parents[1] / "src"
+        fpath = tmp_path / "fake.zst"
+        # Write zstd magic bytes + garbage so RecordReader detects zstd
+        with open(fpath, "wb") as f:
+            f.write(zstd_magic)
+            f.write(b"not valid zstd content")
+        result = subprocess.run(
+            [sys.executable, "-m", "groop.cli", "report", str(fpath), "--json"],
+            capture_output=True, text=True,
+            cwd=str(src_root),
+            env={"PYTHONPATH": str(src_root)},
+        )
+        assert result.returncode == 2
+        # Should mention zstandard in the error
+        assert "zstandard" in result.stderr
+
     def test_cli_deterministic_output(self, tmp_path):
         """Same fixture reported twice → identical bytes."""
         src_root = Path(__file__).resolve().parents[1] / "src"

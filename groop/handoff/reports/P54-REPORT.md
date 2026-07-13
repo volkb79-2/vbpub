@@ -17,7 +17,7 @@
    - `_main_report()` — Dispatches to `compute_report()`, handles `FileNotFoundError` (exit 2), `.zst`-without-zstandard `RuntimeError` matching `RecordReader`'s existing error message (exit 2), and `ValueError` for bad window/group-by specs (exit 2).
    - Dispatch line in `main()`: `if raw_argv[:1] == ["report"]: return _main_report(raw_argv[1:])`.
 
-3. **Tests** — 56 tests in `groop/tests/test_report.py` covering:
+3. **Tests** — 57 tests in `groop/tests/test_report.py` covering:
    - Unit tests for percentile computation (including nearest-rank vs. interpolation oracle)
    - Window spec parsing (all, last:Ns, malformed, empty)
    - Frame filtering by window (inclusion, exclusion, boundaries, empty results)
@@ -54,11 +54,11 @@ None. The report module is additive and package‑private within `groop/`. No sh
 
 **Environment:** agent container (Linux x86_64, Python 3.14, no root, textual 8.2.8 installed, zstandard not installed).
 
-### Focused tests (56 passed)
+### Focused tests (57 passed)
 
 ```bash
 $ PYTHONPATH=groop/src python3 -m pytest groop/tests/test_report.py -q -W error::RuntimeWarning
-56 passed in 0.99s
+57 passed in 1.20s
 ```
 
 ### Full suite (970 passed, 2 skipped)
@@ -99,7 +99,7 @@ $ git diff --check
 # clean
 ```
 
-## Tests Added (56 tests)
+## Tests Added (57 tests)
 
 | Class | Test | What it covers |
 |---|---|---|
@@ -112,7 +112,7 @@ $ git diff --check
 | `TestDeriveRate` | 5 tests | basic, skip-missing-entity, entity-churn-gap, no-earlier-frame, counter-regression |
 | `TestComputeProfile` | 12 tests | empty frames, single entity, multiple entities, report-gauges-only, None-skipped, multi-frame p50/p95, window filtering, zero-frame window, single-frame profile, warm-vs-cold parity, slice rollup, all-gauges-covered, deterministic output, multiple-calls-same-bytes |
 | `TestJsonSerialization` | 3 tests | profile_to_jsonable, report_to_jsonable_deterministic, float_rounding |
-| `TestReportCLI` | 5 tests | missing --json, bad window, missing file, fixture smoke, deterministic bytes |
+| `TestReportCLI` | 6 tests | missing --json, bad window, missing file, .zst error, fixture smoke, deterministic bytes |
 | `TestEdgeCases` | 2 tests | entity present then absent, mixed live+derived rates |
 
 ## Known Gaps / Open Items

@@ -11,7 +11,7 @@
 ## Timeline
 
 ```text
-2026-07-14 UTC
+2026-07-13 UTC
 - Action: Read P54 handoff, P53-REPORT.md, P53-REVIEW.md for context.
 - Commands: read_file on handoff, reports, cli.py, model.py, reader.py, registry.py
 - Files changed: (none yet)
@@ -29,9 +29,9 @@
 - Files changed: groop/src/groop/cli.py
 - Result: `groop report FILE --json` works; all error cases handled.
 
-- Action: Wrote 56 tests in groop/tests/test_report.py.
+- Action: Wrote 57 tests in groop/tests/test_report.py.
 - Commands: PYTHONPATH=groop/src python3 -m pytest groop/tests/test_report.py -q -W error::RuntimeWarning
-- Result: All 56 tests pass.
+- Result: All 57 tests pass.
 
 - Action: Updated documentation.
 - Files changed: groop/README.md, groop/docs/ARCHITECTURE.md, groop/docs/OPERATIONS.md
@@ -40,6 +40,10 @@
 - Action: Ran quality gates.
 - Commands: py_compile (3 files), full suite timeout 300, git diff --check
 - Result: py_compile clean; 970 passed, 2 skipped (zstandard); git diff --check clean.
+
+- Action: Self-review — fixed date in LOG, removed dead import, added .zst error test.
+- Files changed: groop/src/groop/report.py, groop/tests/test_report.py, groop/handoff/reports/P54-LOG.md, groop/handoff/reports/P54-REPORT.md
+- Result: 57 tests pass; py_compile clean.
 
 - Action: Created P54-REPORT.md.
 - Files changed: groop/handoff/reports/P54-REPORT.md
@@ -79,7 +83,7 @@ $ PYTHONPATH=groop/src python3 -m py_compile groop/src/groop/report.py
 $ PYTHONPATH=groop/src python3 -m py_compile groop/src/groop/cli.py
 $ PYTHONPATH=groop/src python3 -m py_compile groop/tests/test_report.py
 $ PYTHONPATH=groop/src python3 -m pytest groop/tests/test_report.py -q -W error::RuntimeWarning
-56 passed in 0.99s
+57 passed in 1.20s
 $ PYTHONPATH=groop/src timeout 300 python3 -m pytest groop/tests/ -q -p no:asyncio -p no:schemathesis -W error
 970 passed, 2 skipped in 122.84s
 $ git diff --check

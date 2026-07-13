@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from groop.model import Frame, MetricValue
+from groop.model import Frame
 from groop.record.reader import RecordReader
 
 # ---------------------------------------------------------------------------
@@ -243,7 +243,7 @@ def _group_frames(
 
             for metric_name, mv in ef.metrics.items():
                 if metric_name in REPORT_GAUGES:
-                    if mv.v is not None and mv.v is not None:
+                    if mv.v is not None:
                         samples = groups[group_key].get(metric_name)
                         if samples is None:
                             samples = _GaugeSamples()
