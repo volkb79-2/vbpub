@@ -4,13 +4,14 @@ PWMCP is a thin, hardened [ciu](https://github.com/volkb79-2/vbpub/tree/main/ciu
 
 ## Unified Image
 
-The unified image `ghcr.io/volkb79-2/pwmcp` bundles the Playwright `run-server`, `@playwright/mcp`, and `chrome-devtools-mcp` into a **single container** under a **single hostname** `pwmcp`:
+The unified image `ghcr.io/volkb79-2/pwmcp` bundles the Playwright `run-server`, `@playwright/mcp`, `chrome-devtools-mcp`, and `lighthouse-mcp` into a **single container** under a **single hostname** `pwmcp`:
 
 | Endpoint | Port | Purpose |
 |---|---|---|
 | `ws://pwmcp:3000/` | 3000 | Native Playwright `connect()` — full API, test suites |
 | `http://pwmcp:8931/mcp` | 8931 | `@playwright/mcp` (HTTP/SSE) — AI clients (VS Code Copilot, etc.) |
 | `http://pwmcp:8932/mcp` | 8932 | `chrome-devtools-mcp` (CDP profiling via mcp-proxy) — performance tracing |
+| `http://pwmcp:8933/mcp` | 8933 | `lighthouse-mcp` (Lighthouse audit server via mcp-proxy) — audit scores + opportunities |
 
 All services are managed by `supervisord` (PID 1), which reaps children and forwards SIGTERM on shutdown.
 
@@ -22,6 +23,7 @@ All services are managed by `supervisord` (PID 1), which reaps children and forw
 ws://pwmcp:3000/              — Playwright connect() endpoint
 http://pwmcp:8931/mcp         — @playwright/mcp endpoint
 http://pwmcp:8932/mcp         — chrome-devtools-mcp (CDP profiling)
+http://pwmcp:8933/mcp         — lighthouse-mcp (Lighthouse audits)
 ```
 
 The network boundary is the access control. This is the correct mode for dev and CI.
@@ -101,6 +103,35 @@ In external mode the URL becomes `https://<unified_host>/devtools/mcp` (the `/de
 
 Note: `chrome-devtools-mcp` is served via `mcp-proxy` (stdio→streamable-HTTP proxy). Unlike `@playwright/mcp`, it does not have native `--allowed-hosts` DNS-rebinding protection. In internal mode the Docker network boundary is the access control; see [SECURITY.md](docs/SECURITY.md) for details.
 
+#### `lighthouse-mcp` (port 8933)
+
+For Lighthouse performance/accessibility/SEO/best-practices audits, add a third MCP server entry:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "pwmcp": {
+        "type": "http",
+        "url": "http://pwmcp:8931/mcp"
+      },
+      "chrome-devtools": {
+        "type": "http",
+        "url": "http://pwmcp:8932/mcp"
+      },
+      "lighthouse": {
+        "type": "http",
+        "url": "http://pwmcp:8933/mcp"
+      }
+    }
+  }
+}
+```
+
+In external mode the URL becomes `https://<unified_host>/lighthouse/mcp` (the `/lighthouse` prefix is stripped by Traefik).
+
+Note: `lighthouse-mcp` is served via `mcp-proxy`, same as `chrome-devtools-mcp`. It has no `--allowed-hosts` enforcement.
+
 ## `PWMCP_MCP_ALLOWED_HOSTS` Environment Variable
 
 `@playwright/mcp` has DNS-rebinding protection: it rejects requests whose `Host` header does not match an allowlist. The ciu compose template injects `PWMCP_MCP_ALLOWED_HOSTS` at container start with the two ciu-derived container names:
@@ -128,11 +159,16 @@ The following npm packages are pinned via `docker-bake.hcl` ARGs (with matching 
 |---|---|---|
 | `@playwright/mcp` | `0.0.76` | MCP HTTP/SSE server for AI clients |
 | `chrome-devtools-mcp` | `1.5.0` | CDP-based performance tracing and DevTools insights |
-| `mcp-proxy` | `6.5.2` | stdio→streamable-HTTP proxy for chrome-devtools-mcp |
+| `mcp-proxy` | `6.5.2` | stdio→streamable-HTTP proxy for chrome-devtools-mcp and lighthouse-mcp |
+| `lighthouse` | `13.4.0` | Node API for programmatic Lighthouse audits |
 
 `@playwright/mcp` bundles playwright-core for chromium-1226, verified to work with Playwright 1.61.0 base images.
 `chrome-devtools-mcp@1.5.0` targets Chrome/Chromium 130+ (DevTools Protocol compatibility).
 `chrome-devtools-mcp` requires Node `^20.19.0 || ^22.12.0 || >=23` (verify compatibility when upgrading the base image).
+
+Lighthouse is used by the vendored in-repo lighthouse-mcp server at `containers/pwmcp/lighthouse-mcp/`.
+It provides `lighthouse_audit()` and `lighthouse_metrics()` MCP tools returning bounded JSON results
+(capped at 100 KB / 10 opportunities) — never the raw LHR (hundreds of KB).
 
 ## Browser Isolation Hardening
 

@@ -7,7 +7,7 @@
 
 ## Internal Mode (Dev / CI — Default)
 
-The unified container (`pwmcp`) runs on the project Docker network with plain HTTP and no auth. Sibling containers reach both services by **container name** — never via `localhost`.
+The unified container (`pwmcp`) runs on the project Docker network with plain HTTP and no auth. Sibling containers reach all services by **container name** — never via `localhost`.
 
 ### Network joining
 
@@ -22,6 +22,8 @@ http://pwmcp:8931/mcp                     # @playwright/mcp short alias
 http://<project>-<env>-pwmcp:8931/mcp     # @playwright/mcp full container name
 http://pwmcp:8932/mcp                     # chrome-devtools-mcp short alias
 http://<project>-<env>-pwmcp:8932/mcp     # chrome-devtools-mcp full container name
+http://pwmcp:8933/mcp                     # lighthouse-mcp short alias
+http://<project>-<env>-pwmcp:8933/mcp     # lighthouse-mcp full container name
 ```
 
 When pwmcp is run standalone (not as a sub-stack), `deploy.project_name` defaults to `pwmcp` and the standard `pwmcp-dev` network is used.
@@ -36,9 +38,9 @@ ciu --generate-env -d .
 ciu -d .
 ```
 
-The unified container comes up as `<project>-<env>-pwmcp` on the project network, serving both ports.
+The unified container comes up as `<project>-<env>-pwmcp` on the project network, serving all ports.
 
-To expose ports to the host for local debugging, set `pwmcp.unified.expose = true` in `ciu.toml.j2` (overrides file) and re-run `ciu -d .`. Exposed ports bind to `127.0.0.1` only (3000, 8931, 8932).
+To expose ports to the host for local debugging, set `pwmcp.unified.expose = true` in `ciu.toml.j2` (overrides file) and re-run `ciu -d .`. Exposed ports bind to `127.0.0.1` only (3000, 8931, 8932, 8933).
 
 ### `PWMCP_MCP_ALLOWED_HOSTS` and the HTTP 403 on container-name access
 
@@ -98,6 +100,7 @@ External endpoints (all served from one hostname):
 - Playwright connect: `wss://pw.example.com/` (WebSocket route to port 3000)
 - @playwright/mcp: `https://pw.example.com/mcp` (HTTP route to port 8931)
 - chrome-devtools-mcp: `https://pw.example.com/devtools/mcp` (HTTP route to port 8932)
+- lighthouse-mcp: `https://pw.example.com/lighthouse/mcp` (HTTP route to port 8933)
 
 ### Access Guard
 

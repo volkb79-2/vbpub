@@ -206,6 +206,7 @@ def write_release_vars(
     playwrght_mcp_version: str,
     chrome_devtools_mcp_version: str,
     mcp_proxy_version: str,
+    lighthouse_version: str,
 ) -> None:
     # PLAYWRIGHT_VERSION is kept as alias for PLAYWRIGHT_VERSION_PYPI for backwards compat
     # (consumed by _vars.py which checks for PLAYWRIGHT_VERSION key).
@@ -217,6 +218,7 @@ def write_release_vars(
         f"PLAYWRIGHT_MCP_VERSION={playwrght_mcp_version}\n"
         f"CHROME_DEVTOOLS_MCP_VERSION={chrome_devtools_mcp_version}\n"
         f"MCP_PROXY_VERSION={mcp_proxy_version}\n"
+        f"LIGHTHOUSE_VERSION={lighthouse_version}\n"
         f"PWMCP_VERSION_NPM={pwmcp_version_npm}\n"
         f"PWMCP_VERSION_PYPI={pwmcp_version_pypi}\n"
         f"PWMCP_VERSION={pwmcp_version_pypi}\n"
@@ -265,8 +267,9 @@ def main() -> None:
     pw_mcp_ver = _read_bake_var("PLAYWRIGHT_MCP_VERSION")
     cdt_mcp_ver = _read_bake_var("CHROME_DEVTOOLS_MCP_VERSION")
     mcp_proxy_ver = _read_bake_var("MCP_PROXY_VERSION")
+    lh_ver = _read_bake_var("LIGHTHOUSE_VERSION")
     write_release_vars(npm_version, pypi_version, distro, pwmcp_version_npm, pwmcp_version_pypi,
-                       pw_mcp_ver, cdt_mcp_ver, mcp_proxy_ver)
+                       pw_mcp_ver, cdt_mcp_ver, mcp_proxy_ver, lh_ver)
 
     log(
         f"Done. PLAYWRIGHT_VERSION_NPM={npm_version}  PLAYWRIGHT_VERSION_PYPI={pypi_version}  "

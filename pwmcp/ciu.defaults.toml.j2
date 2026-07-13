@@ -9,6 +9,7 @@
 #   ws://pwmcp:3000/              — native Playwright connect() endpoint (FULL API)
 #   http://pwmcp:8931/mcp         — @playwright/mcp MCP surface (HTTP/SSE)
 #   http://pwmcp:8932/mcp         — chrome-devtools-mcp (CDP profiling via mcp-proxy)
+#   http://pwmcp:8933/mcp         — lighthouse-mcp (Lighthouse audits via mcp-proxy)
 #
 # Deployment modes
 # ----------------
@@ -42,13 +43,15 @@ ingress_network = "ingress_public"   # shared tls-edge network (external mode on
 # ============================================================
 # The unified image (ghcr.io/volkb79-2/pwmcp) bundles the Playwright
 # run-server (port 3000), @playwright/mcp (port 8931), AND
-# chrome-devtools-mcp via mcp-proxy (port 8932) in a single container
+# chrome-devtools-mcp via mcp-proxy (port 8932) AND lighthouse-mcp via mcp-proxy (port 8933)
+# in a single container
 # under a single hostname "pwmcp". This is the only deployment mode.
 #
 # Consumers on the shared Docker network:
 #   ws://pwmcp:3000/              — Playwright connect() (full API, test suites)
 #   http://pwmcp:8931/mcp         — @playwright/mcp (AI clients, VS Code Copilot, etc.)
 #   http://pwmcp:8932/mcp         — chrome-devtools-mcp (performance tracing, CDP tools)
+#   http://pwmcp:8933/mcp         — lighthouse-mcp (Lighthouse audit scores + opportunities)
 #
 # --allowed-hosts note (MCP DNS-rebinding protection):
 # @playwright/mcp rejects requests whose Host header does not match its allowlist.
@@ -64,13 +67,16 @@ name = "pwmcp"
 ws_port = 3000                    # Playwright run-server (connect() WebSocket)
 mcp_port = 8931                   # @playwright/mcp HTTP/SSE surface
 devtools_port = 8932              # chrome-devtools-mcp (via mcp-proxy)
+lighthouse_port = 8933            # lighthouse-mcp (via mcp-proxy)
 browser = "chromium"
 extra_args = ""                   # comma-separated extra allowed-hosts entries, e.g. "my-alias:8931"
 devtools_extra_args = ""           # comma-separated extra allowed-hosts for devtools, e.g. "my-alias:8932"
+lighthouse_extra_args = ""         # comma-separated extra allowed-hosts for lighthouse, e.g. "my-alias:8933"
 expose = false                    # publish to host 127.0.0.1 (dev convenience only)
 host_ws_port = 3000
 host_mcp_port = 8931
 host_devtools_port = 8932
+host_lighthouse_port = 8933
 
 [pwmcp.unified.image]
 registry = "ghcr.io"

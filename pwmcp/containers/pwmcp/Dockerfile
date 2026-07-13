@@ -1,8 +1,9 @@
 # pwmcp unified image
 # ====================
 # Bundles the native Playwright run-server (connect() WS, port 3000),
-# @playwright/mcp HTTP/SSE server (MCP surface, port 8931), AND
-# chrome-devtools-mcp (CDP-based profiling, port 8932 via mcp-proxy proxy) into
+# @playwright/mcp HTTP/SSE server (MCP surface, port 8931),
+# chrome-devtools-mcp (CDP-based profiling, port 8932 via mcp-proxy), AND
+# lighthouse-mcp (Lighthouse audit server, port 8933 via mcp-proxy) into
 # a single container under a single hostname.
 #
 # Consumers reach all endpoints from any sibling container on the shared
@@ -10,6 +11,7 @@
 #   ws://pwmcp:3000/              — Playwright connect() (full API, test suites)
 #   http://pwmcp:8931/mcp         — @playwright/mcp (AI clients, VS Code Copilot, etc.)
 #   http://pwmcp:8932/mcp         — chrome-devtools-mcp (performance tracing, CDP tools)
+#   http://pwmcp:8933/mcp         — lighthouse-mcp (Lighthouse audit server)
 #
 # PLAYWRIGHT_VERSION MUST match the base image tag AND the version connect()
 # consumers install (`pip install playwright==<PLAYWRIGHT_VERSION>`).
@@ -24,6 +26,9 @@ ARG CHROME_DEVTOOLS_MCP_VERSION=1.5.0
 
 # Pin mcp-proxy (stdio→streamable-HTTP proxy for chrome-devtools-mcp).
 ARG MCP_PROXY_VERSION=6.5.2
+
+# Pin lighthouse (Node API for programmatic audits).
+ARG LIGHTHOUSE_VERSION=13.4.0
 # Base image digest pinned for reproducibility (resolved via
 # 'docker buildx imagetools inspect mcr.microsoft.com/playwright:v<ver>-<distro>').
 # Multi-arch manifest digest (linux/amd64 + linux/arm64):
@@ -34,9 +39,10 @@ ARG PLAYWRIGHT_VERSION
 ARG PLAYWRIGHT_MCP_VERSION
 ARG CHROME_DEVTOOLS_MCP_VERSION
 ARG MCP_PROXY_VERSION
+ARG LIGHTHOUSE_VERSION
 
 LABEL org.opencontainers.image.title="pwmcp" \
-      org.opencontainers.image.description="Unified Playwright run-server + @playwright/mcp + chrome-devtools-mcp, single hostname" \
+      org.opencontainers.image.description="Unified Playwright run-server + @playwright/mcp + chrome-devtools-mcp + lighthouse-mcp, single hostname" \
       org.opencontainers.image.source="https://github.com/volkb79-2/vbpub" \
       org.opencontainers.image.documentation="https://github.com/volkb79-2/vbpub/tree/main/pwmcp"
 
@@ -52,6 +58,10 @@ ENV PWMCP_MCP_ALLOWED_HOSTS="localhost:8931,127.0.0.1:8931"
 # mcp-proxy does not have a native --allowed-hosts flag; this env var tracks
 # the expected hosts for documentation / external-mode Traefik rules.
 ENV PWMCP_DEVTOOLS_ALLOWED_HOSTS="localhost:8932,127.0.0.1:8932"
+
+# Default allowed-hosts for lighthouse-mcp (via mcp-proxy, port 8933).
+# Same mcp-proxy allowlist gap as devtools-mcp (informational only).
+ENV PWMCP_LIGHTHOUSE_ALLOWED_HOSTS="localhost:8933,127.0.0.1:8933"
 
 # Run-as-uid–agnostic cache/home. The image's default USER is 1000:1000 (home
 # /home/ubuntu, writable by 1000), but consumers commonly OVERRIDE `user:` to a
@@ -75,7 +85,7 @@ ENV HOME=/tmp \
 #
 # TODO(repro): pin supervisor=<ver> — determine the exact apt package version for
 # ubuntu noble (24.04) by running: apt-cache show supervisor | grep Version
-RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}" "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" "chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION}" "mcp-proxy@${MCP_PROXY_VERSION}" \
+RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}" "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" "chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION}" "mcp-proxy@${MCP_PROXY_VERSION}" "lighthouse@${LIGHTHOUSE_VERSION}" \
  && npm cache clean --force \
  && apt-get update \
  && apt-get install -y --no-install-recommends supervisor \
@@ -98,9 +108,13 @@ COPY containers/pwmcp/supervisord.conf /etc/supervisor/conf.d/pwmcp.conf
 COPY containers/pwmcp/entrypoint.sh /usr/local/bin/pwmcp-entrypoint.sh
 RUN chmod +x /usr/local/bin/pwmcp-entrypoint.sh
 
+# Install vendored lighthouse-mcp server (dependencies: @modelcontextprotocol/sdk, chrome-launcher).
+COPY containers/pwmcp/lighthouse-mcp/ /opt/pwmcp/lighthouse-mcp/
+RUN cd /opt/pwmcp/lighthouse-mcp && npm install --production && npm cache clean --force && rm -rf /tmp/*
+
 # Run as the non-root uid shipped by the base image (compose may override).
 USER 1000:1000
 
 # The entrypoint script exports PWMCP_CHROMIUM_PATH then execs supervisord.
-# supervisord is PID 1 — it reaps children and forwards SIGTERM to both programs.
+# supervisord is PID 1 — it reaps children and forwards SIGTERM to all programs.
 ENTRYPOINT ["/usr/local/bin/pwmcp-entrypoint.sh"]

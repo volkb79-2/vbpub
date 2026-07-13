@@ -37,7 +37,7 @@ In external mode, access is controlled by:
 
 The guard htpasswd hash is stored in `ciu.toml.j2` (the operator's override file, not committed to shared repos with the hash in plaintext). Use `ASK_EXTERNAL:PWMCP_GUARD_HTPASSWD` as a placeholder when generating env; supply the real hash in the deployed override.
 
-The guard covers the Playwright WebSocket route, the @playwright/mcp HTTP route, and the chrome-devtools-mcp HTTP route independently.
+The guard covers the Playwright WebSocket route, the @playwright/mcp HTTP route, the chrome-devtools-mcp HTTP route, and the lighthouse-mcp HTTP route independently.
 
 ## Credential Hygiene
 
@@ -57,6 +57,7 @@ external mode:
   [project network] — same as internal
   [ingress_public]  — tls-edge/Traefik is the only external entry point
   Traefik enforces TLS + basicAuth before forwarding
+```
 
 ## chrome-devtools-mcp Host-Allowlist Gap
 
@@ -81,4 +82,17 @@ include:
 - Replacing mcp-proxy with a future proxy that supports `--allowed-hosts` natively.
 - Using mcp-proxy's API key mechanism (`--apiKey` / `MCP_PROXY_API_KEY`) as an
   additional bearer-token check for trusted callers.
-```
+
+## lighthouse-mcp Host-Allowlist Gap
+
+`lighthouse-mcp` is also served via `mcp-proxy` (same package as chrome-devtools-mcp,
+port 8933). It shares the identical host-allowlist gap: **`mcp-proxy` has no native
+`Host` header allowlist**.
+
+The `PWMCP_LIGHTHOUSE_ALLOWED_HOSTS` environment variable is **informational only**.
+Mitigations are identical to the chrome-devtools-mcp gap above:
+
+1. **Internal mode**: Docker network boundary is the access control.
+2. **External mode**: Traefik enforces TLS + basicAuth before forwarding.
+
+The same remediation options apply (reverse proxy, future proxy, or mcp-proxy API key).
