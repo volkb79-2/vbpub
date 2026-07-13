@@ -28,7 +28,7 @@ def systemctl_fixture_runner(name: str):
 
     base = fixture_root() / "systemctl" / name
 
-    def _runner(unit: str, _parameters: tuple[str, ...]) -> ShowResult:
+    def _runner(unit: str, _properties: tuple[str, ...]) -> ShowResult:
         path = base / f"{unit}.show"
         if not path.exists():
             return ShowResult("", stderr=f"Unit {unit} not found", returncode=1)
