@@ -776,3 +776,15 @@ class TestP72ReviewRegressions:
         )
         assert result.outcome == "success"
         assert len(called) == 1
+
+    def test_preview_systemd_target_names_set_property(self) -> None:
+        """R4: the PREVIEW path must redirect a systemd target, not report it unverifiable.
+
+        Ordering regression: the fail-closed current-usage check (F2) must not run
+        before the systemd-target rejection, or the operator is told "usage could not
+        be established" instead of "use groop action set-property" (contract 8).
+        """
+        from groop.actions.update_ops import build_update_preview
+
+        with pytest.raises(ValueError, match="set-property"):
+            build_update_preview("nginx.service", memory="512M")

@@ -267,6 +267,12 @@ def build_update_preview(
     if memory is None and cpus is None:
         raise ValueError("at least one of --memory or --cpus is required")
 
+    # Before anything else: a systemd target belongs to set-property, and the
+    # operator must be told so.  Ordering matters -- the current-usage check below
+    # would otherwise answer a systemd target with "usage could not be established",
+    # which is true but useless (contract 8 / oracle 6 require the pointer).
+    _reject_systemd_target(target)
+
     parsed_memory: int | None = None
     if memory is not None:
         parsed_memory = validate_memory(memory)
