@@ -334,22 +334,45 @@ core workflows, not yet production-certified.**
 ## Current Quality Gate
 
 Most recent validation, run by the frontier reviewer **from `main`** after the
-P60 + P62 merges (2026-07-13). Agent-environment greens are evidence, not the
-verdict; these are the controller's rerun.
+P78 + P85 + P83 + P84 merges (2026-07-13). Agent-environment greens are evidence,
+not the verdict; these are the controller's rerun.
 
 ```bash
-PYTHONPATH=groop/src python -m pytest groop/tests -q -W error -p no:schemathesis
-# 1101 passed, 2 skipped in 144.71s      <- main @ 36f60a2 (P60 + P62 merged)
-# 1066 passed, 2 skipped in 129.35s      <- P60 branch, post-review-fix
+# 1. controller venv (zstandard + mcp + textual present)
+PYTHONPATH=groop/src python -m pytest groop/tests -q -p no:schemathesis
+# 1451 passed in 188.53s        <- main, all four merged. Zero failures.
+
+# 2. THE gate environment, built from scratch by the documented P84 procedure:
+python3 -m venv /tmp/gate && /tmp/gate/bin/pip install -e 'groop[dev]'
+PYTHONPATH=groop/src /tmp/gate/bin/python -m pytest groop/tests -q
+# 1451 passed in 182.65s, exit 0, ZERO SKIPS
+#   -> every zstandard oracle and all 16 mcp tests actually executed.
+#      Before P84's review-fix this venv was RED (3 failed, 16 mcp tests
+#      collapsed into one silent skip, no banner).
+
+# 3. the gate still fails when an extra is missing (negative case):
+#    !!  GATE FAILED: missing test extra(s): zstandard
+#    !!  6 test(s) skipped -- this run is NOT a gate.        exit 1
 ```
+
+**Zero skips is the point.** Until P84, "green with N skips" was
+indistinguishable from "green", and that is how P79 shipped a bug: it was
+validated in a venv without `zstandard`, so every oracle that would have caught
+it skipped. The suite is now only green in an environment that can actually run
+it.
+
+The two long-standing UI timing flakes are gone (P85 + its review follow-up):
+`test_pilot_snapshot_hotkey_writes_bundle` was failing ~1-in-30 and is now 0/40.
 
 Evidence commits for this wave:
 
 | Package | Evidence | Merge |
 |---|---|---|
-| P60 free-form `--metrics` field/family list | review-fixes `ee8132c`; review report `handoff/reports/P60-REVIEW.md` | `df13253` (`--no-ff`) |
-| P62 steady-state `--window auto` | review report `handoff/reports/P62-REVIEW.md` | `36f60a2` (`--no-ff`) |
-| P58 daemon MCP frontend (v4) | review-fixes `7bf8389`; review report `handoff/reports/P58-REVIEW.md` | `72e9c61` (`--no-ff`) |
+| P78 action kernel gate-chain extraction | review-fix `b133953` (set-property refusals reported the wrong `kind`); review report `handoff/reports/P78-REVIEW.md` | `--no-ff` |
+| P85 flaky UI timing gate | review-fix `f8bab9a` + post-merge follow-up `2e8af13` (two more tests raced the worker thread); review report `handoff/reports/P85-REVIEW.md` | `--no-ff` |
+| P83 CIU stack grouping TUI | review-fix `1294d13` (Oracle 4 failed; `sort_by` ignored); review report `handoff/reports/P83-REVIEW.md` | `--no-ff` |
+| P84 pin the gate environment | review-fix `221bad5` (`[dev]` omitted `mcp`; gate keyed on names); review report `handoff/reports/P84-REVIEW.md` | `--no-ff` |
+
 
 Live CLI verification from `main` (not tests — the real commands):
 

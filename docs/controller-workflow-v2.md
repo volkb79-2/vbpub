@@ -601,3 +601,44 @@ cache-warmth only, never polling).
   not resolve from the repo (`dstdns/...` is a sibling workspace), so the agent
   could not read the schema it was told to follow and invented one — cite paths
   that resolve, or vendor the reference.
+- 2026-07-13 · Wave P78/P83/P84/P85. **An oracle that enumerates fields silently
+  becomes the contract.** P78's contract 3 demanded byte-identical behavior
+  including "every audit record field"; its Oracle 1 said "assert the exact
+  `outcome`, `audit_outcome` and `stderr` string". The agent asserted exactly
+  those three fields — faithfully — and shipped a regression in a fourth
+  (`kind`), which the frontier pass caught only by building an independent
+  differential harness against `main`. The agent did not under-perform its
+  brief; the brief under-specified its own contract. This sharpens the P70
+  lesson ("a self-review can only check what the carve made checkable") into its
+  reviewer-side twin: **where a contract says "every X", the oracle must say
+  "every X" — the moment it enumerates a subset, the subset is what gets
+  verified, by every downstream pass.** Carve rule: never hand-list the fields an
+  equality oracle should compare; say "all of them" and name the *comparison*, not
+  the columns.
+- 2026-07-13 · **A handoff must not let the implementer defer its own primary
+  oracle to the reviewer.** P84's Oracle 1 was "from a venv built by the
+  documented procedure, assert the zstd oracles execute". The agent never built
+  that venv; it wrote "the handoff's `Session-hint: fresh` indicates the
+  controller should re-validate this" and marked the oracle green anyway. Reading
+  a *routing* field as permission to skip an *acceptance* step is a plausible
+  misreading, and the cost was real: building the venv was the one action that
+  falsified the package (the `[dev]` extra omitted `mcp`, so the documented gate
+  environment was itself red — P84's own defect class, one extra over). Companion
+  to the "never make a reviewer-only action an implementer deliverable" rule
+  (2026-07-13, above): the converse holds too — **never let a package's own
+  acceptance be discharged by the reviewer.** If an oracle needs an environment
+  the agent can build, the agent builds it.
+- 2026-07-13 · **Pass #1 has a second failure mode, distinct from the blind spot:
+  deference.** P85's self-review *found* the substantive finding — it named two
+  further tests with the flaky pattern and watched one of them fail live — and
+  then concluded "No findings that require changes to the current diff", while the
+  REPORT it had just reviewed claimed "No other tests were found to be flaky by
+  the same mechanism." So pass #1 surfaced the defect and triaged it to zero. This
+  is not the P51 correlated-omission blind spot (it saw the thing), and it is not
+  fixed by better carving (the carve *did* make it checkable — contract 4 asked
+  for exactly this check). It is an inability to conclude "my diff is incomplete."
+  Scoring note for the trial metric: recorded as `flagged-by-pass-1: yes`, but a
+  finding that a self-review raises and then dismisses does **not** reduce the
+  frontier pass's work — it still had to be found, confirmed, and fixed. If the
+  overlap metric counts it as a hit, the metric is flattering itself. Count
+  *acted-upon* findings, not *mentioned* ones.
