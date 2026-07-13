@@ -120,8 +120,22 @@ async function runLighthouse(url, categories, formFactor, timeoutMs) {
   });
 
   // Timeout: kill Chrome if audit exceeds limit so no Chromium is pinned.
+  // NOTE: chrome-launcher's kill() is not guaranteed to return a Promise in
+  // every code path (e.g. once the process has already exited) — calling
+  // `.catch()` on a non-Promise return value throws synchronously. Since this
+  // runs inside a bare setTimeout callback (not awaited by anything), an
+  // uncaught throw here is an unhandled exception that crashes the whole
+  // Node process — taking down every in-flight audit and the MCP connection
+  // itself, not just this one. Wrap defensively: coerce to a Promise via
+  // Promise.resolve() and swallow any synchronous OR asynchronous failure.
+  let timedOut = false;
   const timer = setTimeout(() => {
-    chrome.kill().catch(() => {});
+    timedOut = true;
+    try {
+      Promise.resolve(chrome.kill()).catch(() => {});
+    } catch {
+      // Best-effort — never let timeout cleanup crash the server.
+    }
   }, timeoutMs);
 
   try {
@@ -147,7 +161,19 @@ async function runLighthouse(url, categories, formFactor, timeoutMs) {
       },
     };
 
-    const runnerResult = await lighthouse(url, options, undefined);
+    let runnerResult;
+    try {
+      runnerResult = await lighthouse(url, options, undefined);
+    } catch (err) {
+      if (timedOut) {
+        throw new Error(`Lighthouse audit timed out after ${timeoutMs}ms`);
+      }
+      throw err;
+    }
+
+    if (timedOut) {
+      throw new Error(`Lighthouse audit timed out after ${timeoutMs}ms`);
+    }
 
     if (!runnerResult || !runnerResult.lhr) {
       throw new Error("Lighthouse returned no result");
@@ -157,7 +183,7 @@ async function runLighthouse(url, categories, formFactor, timeoutMs) {
   } finally {
     clearTimeout(timer);
     try {
-      await chrome.kill();
+      await Promise.resolve(chrome.kill());
     } catch {
       // Best-effort cleanup
     }
@@ -238,6 +264,20 @@ function safeToolError(message) {
     isError: true,
   };
 }
+
+// ── Crash safety net ──────────────────────────────────────────────────────
+// Defense in depth: no audit-triggered exception (e.g. a bug in cleanup code
+// running outside a tool-call's try/catch, such as a setTimeout callback)
+// should be able to crash the whole process and take down every in-flight
+// audit plus the MCP connection itself. Per the handoff's failure-safety
+// contract, log safely (stderr only — never proxied to the client as a tool
+// result) and keep serving.
+process.on("uncaughtException", (err) => {
+  process.stderr.write(`[lighthouse-mcp] uncaughtException: ${err?.message || err}\n`);
+});
+process.on("unhandledRejection", (reason) => {
+  process.stderr.write(`[lighthouse-mcp] unhandledRejection: ${reason?.message || reason}\n`);
+});
 
 // ── MCP Server ─────────────────────────────────────────────────────────────
 const server = new Server(

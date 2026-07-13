@@ -27,7 +27,11 @@ ARG CHROME_DEVTOOLS_MCP_VERSION=1.5.0
 # Pin mcp-proxy (stdio→streamable-HTTP proxy for chrome-devtools-mcp).
 ARG MCP_PROXY_VERSION=6.5.2
 
-# Pin lighthouse (Node API for programmatic audits).
+# Pin lighthouse (Node API for programmatic audits). NOT installed globally —
+# the vendored lighthouse-mcp/package.json declares the exact same version as
+# a non-caret dependency (npm resolves the actually-imported copy from THAT
+# local install, not any global one). The build below asserts the two stay
+# in sync; bump both together when updating this pin.
 ARG LIGHTHOUSE_VERSION=13.4.0
 # Base image digest pinned for reproducibility (resolved via
 # 'docker buildx imagetools inspect mcr.microsoft.com/playwright:v<ver>-<distro>').
@@ -85,7 +89,7 @@ ENV HOME=/tmp \
 #
 # TODO(repro): pin supervisor=<ver> — determine the exact apt package version for
 # ubuntu noble (24.04) by running: apt-cache show supervisor | grep Version
-RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}" "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" "chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION}" "mcp-proxy@${MCP_PROXY_VERSION}" "lighthouse@${LIGHTHOUSE_VERSION}" \
+RUN npm install -g "playwright@${PLAYWRIGHT_VERSION}" "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" "chrome-devtools-mcp@${CHROME_DEVTOOLS_MCP_VERSION}" "mcp-proxy@${MCP_PROXY_VERSION}" \
  && npm cache clean --force \
  && apt-get update \
  && apt-get install -y --no-install-recommends supervisor \
@@ -108,9 +112,15 @@ COPY containers/pwmcp/supervisord.conf /etc/supervisor/conf.d/pwmcp.conf
 COPY containers/pwmcp/entrypoint.sh /usr/local/bin/pwmcp-entrypoint.sh
 RUN chmod +x /usr/local/bin/pwmcp-entrypoint.sh
 
-# Install vendored lighthouse-mcp server (dependencies: @modelcontextprotocol/sdk, chrome-launcher).
+# Install vendored lighthouse-mcp server (dependencies: @modelcontextprotocol/sdk, chrome-launcher, lighthouse).
 COPY containers/pwmcp/lighthouse-mcp/ /opt/pwmcp/lighthouse-mcp/
-RUN cd /opt/pwmcp/lighthouse-mcp && npm install --production && npm cache clean --force && rm -rf /tmp/*
+RUN cd /opt/pwmcp/lighthouse-mcp && npm install --production && npm cache clean --force \
+ && installed="$(node -e "process.stdout.write(require('./node_modules/lighthouse/package.json').version)")" \
+ && if [ "$installed" != "${LIGHTHOUSE_VERSION}" ]; then \
+      echo "LIGHTHOUSE_VERSION ARG (${LIGHTHOUSE_VERSION}) drifted from lighthouse-mcp/package.json's installed lighthouse (${installed}) — bump both together." >&2; \
+      exit 1; \
+    fi \
+ && rm -rf /tmp/*
 
 # Run as the non-root uid shipped by the base image (compose may override).
 USER 1000:1000

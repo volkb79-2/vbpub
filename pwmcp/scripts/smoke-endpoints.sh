@@ -359,12 +359,28 @@ else
 fi
 
 # 4c: Drive a real lighthouse_audit tool call against an in-network HTTP URL.
+#
+# The MCP JSON-RPC endpoints (8931/8932/8933) are not audit-able HTML pages —
+# Lighthouse scores them null (unrenderable body), giving a false "categories
+# present" pass on a hollow target. Instead, start a tiny disposable HTML
+# fixture INSIDE the pwmcp container itself (Node's built-in http module,
+# already present — no extra image/container needed) on 127.0.0.1:9199, which
+# Lighthouse's in-container Chromium can actually render and score. This is a
+# genuine "reachable in-network HTTP URL" per the handoff, torn down after.
+FIXTURE_PORT=9199
+docker exec -d "${CONTAINER_NAME}" node -e "
+require('http').createServer((req,res)=>{
+  res.writeHead(200,{'Content-Type':'text/html'});
+  res.end('<!doctype html><html><head><title>pwmcp-smoke-fixture</title></head><body><h1>pwmcp lighthouse smoke fixture</h1><p>static page for lighthouse_audit end-to-end check.</p></body></html>');
+}).listen(${FIXTURE_PORT}, '127.0.0.1');
+" >/dev/null 2>&1 || true
+sleep 1
+
 if [ "${1:-}" != "--quick" ]; then
     total=$((total + 1))
     echo -n "  CHECK ${total}: Lighthouse MCP real lighthouse_audit tool call (categories present) ... "
-    # Use the MCP 8931 endpoint itself as a reachable internal HTTP URL
     body=$(mcp_session_tool_call "${LIGHTHOUSE_URL}" "${PWMCP_HOST}:${LIGHTHOUSE_PORT}" \
-        lighthouse_audit '{"url":"http://'"${PWMCP_HOST}:${MCP_PORT}"'/mcp","categories":["performance","seo"]}' 2>/dev/null) || {
+        lighthouse_audit '{"url":"http://127.0.0.1:'"${FIXTURE_PORT}"'/","categories":["performance","seo"]}' 2>/dev/null) || {
         record_fail "lighthouse_audit tool call transport failed"
         body=""
     }
