@@ -1,5 +1,42 @@
 # P82 - Repair the red gate on main
 
+> **STATUS: SUPERSEDED by P79 (merged). Do not implement. See "Superseded" below.**
+
+## Superseded
+
+P79's review pass #2 repaired `test_zst_without_zstandard_exits_2` as part of fixing
+the defect it was hiding, and it meets this handoff's contracts:
+
+- The degradation path **is** still tested with `zstandard` installed. P79 forces the
+  extra's absence in a subprocess by shadowing the import with a stub `zstandard.py`
+  on `PYTHONPATH`, so the branch is exercised in the environment we actually gate in
+  (this handoff's oracle 2).
+- The test **can** fail: deleting the missing-`zstandard` branch turns it red -
+  verified by mutation (this handoff's oracle 3). Note it did **not** satisfy that
+  oracle as first written: it asserted the bare token `"zstandard"` in stderr, and
+  pytest names `tmp_path` after the test (`test_zst_without_zstandard_exi...`), so the
+  token arrived via the echoed file path rather than the message. It passed with the
+  branch deleted. P79 pass #2 found and fixed this; it now asserts the full typed
+  phrase.
+- The CLI's user-visible behavior is unchanged (exit 2, message naming `zstandard`).
+
+The in-progress P82 branch took a different route: a `_ZSTD_FORCE_UNAVAILABLE` module
+global in `record/reader.py` that production code branches on. That is a test seam in
+shipping source, and P79 achieves the same coverage without one, so adopting it now
+would be a regression. **Abandon the P82 branch rather than rebasing it.**
+
+The *motivation* behind P82 - a gate that cannot be trusted is worse than no gate -
+was not fully discharged, and is carried forward by two carves:
+
+- **P84** (`handoff/P84-pin-the-gate-environment.md`): the extra is unpinned, so the
+  zstd tests skip in some venvs. P79 shipped "green" that way while actually being red.
+- **P85** (`handoff/P85-flaky-ui-timing-gate.md`): two UI/record tests are flaky on
+  unmodified `main`, which is the same tax this package was carved to remove.
+
+---
+
+## Original handoff (for the record)
+
 <!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
 > **Tier:** flash-high
 > **Depends-on:** none
