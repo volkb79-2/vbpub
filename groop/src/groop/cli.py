@@ -816,7 +816,11 @@ def _main_action(argv: list[str]) -> int:
 
 
 def parse_report_args(argv: list[str]) -> argparse.Namespace:
-    """Parse groop report [--window last:Ns|all] [--group-by slice|entity] --json FILE."""
+    """Parse groop report [--window last:Ns|all] [--group-by slice|entity] --json FILE.
+
+    Also accepts repeatable ``--assert GROUP:METRIC:STAT<=VALUE`` (or ``>=``)
+    for threshold gating (P61).
+    """
     parser = argparse.ArgumentParser(prog="groop report")
     parser.add_argument("file", type=Path, help="JSONL or JSONL.zst recording to analyze")
     parser.add_argument(
@@ -831,6 +835,11 @@ def parse_report_args(argv: list[str]) -> argparse.Namespace:
         "--json", action="store_true", required=True,
         help="emit JSON report (required)",
     )
+    parser.add_argument(
+        "--assert", action="append", type=str, default=None,
+        dest="assert_specs",
+        help="threshold assertion GROUP:METRIC:STAT<=VALUE or >=VALUE (repeatable)",
+    )
     return parser.parse_args(argv)
 
 
@@ -841,7 +850,14 @@ def _main_report(argv: list[str]) -> int:
     except SystemExit as exc:
         return int(str(exc.code)) if exc.code is not None else 2
 
-    from groop.report import compute_report, format_report
+    from groop.report import (
+        Assertion,
+        AssertionResult,
+        compute_report,
+        evaluate_assertions,
+        format_report,
+        parse_assert_spec,
+    )
 
     # Handle .zst without zstandard: catch the RuntimeError from RecordReader
     try:
@@ -864,7 +880,27 @@ def _main_report(argv: list[str]) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    print(format_report(profiles))
+    # Parse and evaluate assertions (P61)
+    assertions: list[Assertion] = []
+    if args.assert_specs:
+        for spec in args.assert_specs:
+            try:
+                assertions.append(parse_assert_spec(spec))
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+
+    assertion_results: list[AssertionResult] | None = None
+    if assertions:
+        assertion_results = evaluate_assertions(profiles, assertions)
+
+    print(format_report(profiles, assertions=assertion_results))
+
+    # Exit code: 1 when any assertion is breached
+    if assertion_results:
+        for r in assertion_results:
+            if not r.passed:
+                return 1
     return 0
 
 

@@ -24,6 +24,7 @@ import pytest
 from groop.model import Entity, EntityFrame, Frame, MetricValue
 from groop.report import (
     REPORT_GAUGES,
+    Assertion,
     GroupProfile,
     WindowRange,
     _GaugeSamples,
@@ -36,7 +37,9 @@ from groop.report import (
     _nearest_rank_percentile,
     compute_profile,
     compute_report,
+    evaluate_assertions,
     format_report,
+    parse_assert_spec,
     parse_window_spec,
     profile_to_jsonable,
     report_to_jsonable,
@@ -766,3 +769,325 @@ class TestEdgeCases:
         # f2: raw 1100, looks back to f1 → f1 has no raw, skip; no earlier → None
         # So rates: [10.0, 25.0] → p50 = ceil(0.5*2)-1 = 0 → 10.0
         assert profiles[0].rates["rf_z_per_s"]["p50"] == 10.0
+
+
+# ===========================================================================
+# P61 — Assertion parsing, evaluation, and CLI integration
+# ===========================================================================
+
+class TestParseAssertSpec:
+    """parse_assert_spec unit tests."""
+
+    def test_valid_less_or_equal(self):
+        a = parse_assert_spec("mygroup:ram:p50<=100.5")
+        assert a.group == "mygroup"
+        assert a.metric == "ram"
+        assert a.stat == "p50"
+        assert a.op == "<="
+        assert a.value == 100.5
+
+    def test_valid_greater_or_equal(self):
+        a = parse_assert_spec("e1:anon:p95>=1e9")
+        assert a.group == "e1"
+        assert a.metric == "anon"
+        assert a.stat == "p95"
+        assert a.op == ">="
+        assert a.value == 1e9
+
+    def test_valid_max_stat(self):
+        a = parse_assert_spec("s:ram:max<=1")
+        assert a.stat == "max"
+
+    def test_valid_empty_group(self):
+        """Root entity key is empty string."""
+        a = parse_assert_spec(":ram:p50<=10")
+        assert a.group == ""
+
+    def test_valid_integer_value(self):
+        a = parse_assert_spec("g:m:p50<=42")
+        assert a.value == 42.0
+
+    def test_valid_negative_value(self):
+        a = parse_assert_spec("g:m:p95>=-1.5")
+        assert a.value == -1.5
+
+    def test_invalid_no_colon(self):
+        with pytest.raises(ValueError, match="invalid --assert spec"):
+            parse_assert_spec("badformat")
+
+    def test_invalid_stat(self):
+        with pytest.raises(ValueError, match="invalid --assert spec"):
+            parse_assert_spec("g:m:p99<=1")
+
+    def test_invalid_op(self):
+        with pytest.raises(ValueError, match="invalid --assert spec"):
+            parse_assert_spec("g:m:max==1")
+
+    def test_invalid_not_a_number(self):
+        with pytest.raises(ValueError, match="invalid --assert spec"):
+            parse_assert_spec("g:m:max<=abc")
+
+    def test_invalid_nan(self):
+        with pytest.raises(ValueError, match="invalid --assert spec"):
+            parse_assert_spec("g:m:max<=nan")
+
+    def test_invalid_inf(self):
+        with pytest.raises(ValueError, match="invalid --assert spec"):
+            parse_assert_spec("g:m:max<=inf")
+
+
+class TestEvaluateAssertions:
+    """evaluate_assertions unit tests."""
+
+    def _make_profile(
+        self, key: str,
+        gauges: dict[str, dict[str, float | None]] | None = None,
+        rates: dict[str, dict[str, float | None]] | None = None,
+    ) -> GroupProfile:
+        return GroupProfile(
+            key=key,
+            sample_count=10,
+            window_start_ts=100.0,
+            window_end_ts=200.0,
+            gauges=gauges or {},
+            rates=rates or {},
+        )
+
+    def test_all_pass(self):
+        """All assertions pass when bounds are satisfied."""
+        profiles = [self._make_profile("e1", gauges={
+            "ram": {"p50": 100.0, "p95": 200.0, "max": 300.0},
+        })]
+        assertions = [Assertion("e1", "ram", "max", "<=", 500.0)]
+        results = evaluate_assertions(profiles, assertions)
+        assert len(results) == 1
+        assert results[0].passed is True
+
+    def test_pass_no_assertions(self):
+        """No assertions → empty results list."""
+        assert evaluate_assertions([], []) == []
+
+    def test_breached_less_or_equal(self):
+        """A <= assertion is breached when actual > threshold."""
+        profiles = [self._make_profile("e1", gauges={
+            "ram": {"max": 1000.0},
+        })]
+        assertions = [Assertion("e1", "ram", "max", "<=", 500.0)]
+        results = evaluate_assertions(profiles, assertions)
+        assert len(results) == 1
+        assert results[0].passed is False
+        assert results[0].actual == 1000.0
+        assert "breached" in (results[0].reason or "")
+
+    def test_breached_greater_or_equal(self):
+        """A >= assertion is breached when actual < threshold."""
+        profiles = [self._make_profile("e1", gauges={
+            "ram": {"max": 100.0},
+        })]
+        assertions = [Assertion("e1", "ram", "max", ">=", 500.0)]
+        results = evaluate_assertions(profiles, assertions)
+        assert len(results) == 1
+        assert results[0].passed is False
+        assert results[0].actual == 100.0
+
+    def test_passing_greater_or_equal(self):
+        """A >= assertion passes when actual >= threshold."""
+        profiles = [self._make_profile("e1", gauges={
+            "ram": {"max": 1000.0},
+        })]
+        assertions = [Assertion("e1", "ram", "max", ">=", 500.0)]
+        results = evaluate_assertions(profiles, assertions)
+        assert len(results) == 1
+        assert results[0].passed is True
+
+    def test_absent_group_breach(self):
+        """Referencing an absent group is a breach with clear reason."""
+        profiles = [self._make_profile("existing")]
+        assertions = [Assertion("absent", "ram", "max", "<=", 100)]
+        results = evaluate_assertions(profiles, assertions)
+        assert len(results) == 1
+        assert results[0].passed is False
+        assert results[0].reason == "group not present in report"
+
+    def test_absent_metric_breach(self):
+        """Referencing an absent metric is a breach with clear reason."""
+        profiles = [self._make_profile("e1", gauges={"ram": {"max": 100.0}})]
+        assertions = [Assertion("e1", "nonexistent_metric", "max", "<=", 100)]
+        results = evaluate_assertions(profiles, assertions)
+        assert len(results) == 1
+        assert results[0].passed is False
+        assert results[0].reason == "metric not present in report"
+
+    def test_null_stat_breach(self):
+        """A metric present but with a null stat is a breach (single-frame rate)."""
+        profiles = [self._make_profile("e1", rates={
+            "rf_z_per_s": {"p50": None, "p95": None, "max": None},
+        })]
+        assertions = [Assertion("e1", "rf_z_per_s", "p50", "<=", 100)]
+        results = evaluate_assertions(profiles, assertions)
+        assert len(results) == 1
+        assert results[0].passed is False
+        assert results[0].reason is not None
+        assert "null" in results[0].reason.lower()
+
+    def test_rate_metric_matched(self):
+        """Assertions can reference rate metrics."""
+        profiles = [self._make_profile("e1", rates={
+            "rf_z_per_s": {"p50": 10.0, "p95": 50.0, "max": 100.0},
+        })]
+        assertions = [Assertion("e1", "rf_z_per_s", "p95", "<=", 60.0)]
+        results = evaluate_assertions(profiles, assertions)
+        assert len(results) == 1
+        assert results[0].passed is True
+        assert results[0].actual == 50.0
+
+    def test_multiple_asserts_one_fails(self):
+        """Multiple ANDed assertions: one failure causes overall failure."""
+        profiles = [self._make_profile("e1", gauges={
+            "ram": {"p50": 100.0, "p95": 200.0, "max": 300.0},
+            "anon": {"p50": 50.0, "p95": 100.0, "max": 150.0},
+        })]
+        assertions = [
+            Assertion("e1", "ram", "max", "<=", 500.0),    # pass
+            Assertion("e1", "anon", "max", "<=", 100.0),   # fail (actual 150)
+        ]
+        results = evaluate_assertions(profiles, assertions)
+        assert len(results) == 2
+        # Deterministic sort: group, metric, stat, op = anon then ram
+        assert results[0].metric == "anon"
+        assert results[0].passed is False  # anon fails
+        assert results[1].metric == "ram"
+        assert results[1].passed is True   # ram passes
+
+    def test_deterministic_output(self):
+        """Same inputs produce identical results."""
+        profiles = [self._make_profile("b", gauges={"ram": {"max": 100.0}}),
+                    self._make_profile("a", gauges={"ram": {"max": 200.0}})]
+        assertions = [
+            Assertion("b", "ram", "max", "<=", 150),
+            Assertion("a", "ram", "max", "<=", 250),
+        ]
+        r1 = evaluate_assertions(profiles, assertions)
+        r2 = evaluate_assertions(profiles, assertions)
+        # Convert to jsonable for comparison
+        from groop.report import assertion_result_to_jsonable
+        j1 = [assertion_result_to_jsonable(r) for r in r1]
+        j2 = [assertion_result_to_jsonable(r) for r in r2]
+        assert j1 == j2
+        # Verify sort: a before b
+        assert r1[0].group == "a"
+        assert r1[1].group == "b"
+
+
+class TestReportAssertionCLI:
+    """CLI integration for --assert (subprocess-based, exact exit codes)."""
+
+    FIXTURE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "frames" / "gstammtisch-once.jsonl"
+
+    def _invoke(self, *args: str) -> subprocess.CompletedProcess:
+        src_root = Path(__file__).resolve().parents[1] / "src"
+        cmd = [sys.executable, "-m", "groop.cli", "report", str(self.FIXTURE), "--json", *args]
+        return subprocess.run(
+            cmd,
+            capture_output=True, text=True,
+            cwd=str(src_root),
+            env={"PYTHONPATH": str(src_root)},
+        )
+
+    def test_passing_bound_exit_0(self):
+        """A passing bound exits 0."""
+        result = self._invoke("--assert", ":ram:max<=5000000000")
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert "assertions" in data
+        assert data["assertions"][0]["passed"] is True
+
+    def test_breached_le_exit_1(self):
+        """A breached <= bound exits 1 with actual value in JSON."""
+        result = self._invoke("--assert", ":ram:max<=100")
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data["assertions"][0]["passed"] is False
+        assert data["assertions"][0]["actual"] is not None
+
+    def test_breached_ge_exit_1(self):
+        """A breached >= bound exits 1."""
+        result = self._invoke("--assert", ":ram:p50>=1e12")
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data["assertions"][0]["passed"] is False
+
+    def test_absent_group_exit_1(self):
+        """Absent group is a breach (exit 1), not a usage error."""
+        result = self._invoke("--assert", "nonexistent_group:ram:max<=100")
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data["assertions"][0]["passed"] is False
+        assert "not present" in data["assertions"][0].get("reason", "")
+
+    def test_absent_metric_exit_1(self):
+        """Absent metric is a breach (exit 1)."""
+        result = self._invoke("--assert", ":nonexistent:max<=100")
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data["assertions"][0]["passed"] is False
+
+    def test_null_stat_exit_1(self):
+        """A null STAT (single-frame rate) is a breach (exit 1).
+
+        The fixture has no rates (single frame), so any rate assertion
+        is an absent-metric breach.  The unit test ``test_null_stat_breach``
+        covers the actual null-stat scenario via synthetic profiles.
+        """
+        result = self._invoke("--assert", ":rf_z_per_s:p50<=100")
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data["assertions"][0]["passed"] is False
+
+    def test_malformed_assert_exit_2(self):
+        """Malformed --assert spec exits 2."""
+        result = self._invoke("--assert", "badformat")
+        assert result.returncode == 2
+
+    def test_unknown_stat_exit_2(self):
+        """Unknown STAT in --assert exits 2."""
+        result = self._invoke("--assert", ":ram:p99<=100")
+        assert result.returncode == 2
+
+    def test_multiple_asserts_one_fails_exit_1(self):
+        """Multiple asserts where one fails exits 1."""
+        result = self._invoke(
+            "--assert", ":ram:max<=5000000000",
+            "--assert", ":ram:max<=100",
+        )
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert len(data["assertions"]) == 2
+        passing = [a for a in data["assertions"] if a["passed"]]
+        failing = [a for a in data["assertions"] if not a["passed"]]
+        assert len(passing) == 1
+        assert len(failing) == 1
+
+    def test_byte_determinism_two_runs(self):
+        """Assertions block is byte-identical across two runs."""
+        r1 = self._invoke("--assert", ":ram:max<=5000000000")
+        r2 = self._invoke("--assert", ":ram:max<=5000000000")
+        assert r1.stdout == r2.stdout
+        # Same fixture + same args → both exit 0
+        assert r1.returncode == 0
+        assert r2.returncode == 0
+
+    def test_no_assert_no_change(self):
+        """Without --assert, output is identical to pre-assertion report."""
+        r_normal = self._invoke()
+        r_assert = self._invoke("--assert", ":ram:max<=5000000000")
+        # Both exit 0
+        assert r_normal.returncode == 0
+        assert r_assert.returncode == 0
+        data_normal = json.loads(r_normal.stdout)
+        data_assert = json.loads(r_assert.stdout)
+        # Profiles match
+        assert data_normal["profiles"] == data_assert["profiles"]
+        # Assertion-only output has assertions key
+        assert "assertions" not in data_normal
+        assert "assertions" in data_assert
