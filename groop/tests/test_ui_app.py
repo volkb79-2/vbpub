@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time as _time
 from dataclasses import replace
 from pathlib import Path
 
@@ -73,6 +74,26 @@ def _static_text(w: Static) -> str:
 
 def _status_text(app: GroopApp) -> str:
     return _static_text(app.query_one("#status", Static))
+
+
+async def _wait_or_timeout(pilot, predicate, *, timeout: float = 10.0) -> None:
+    """Wait for *predicate* to return ``True``, polling via ``pilot.pause()``,
+    with a wall-clock *timeout* in seconds.
+
+    The fixed-iteration ``pilot.pause()`` loop made the former snapshots and
+    smoke tests flaky because ``pause()`` yields to the asyncio event loop and
+    returns immediately when idle — it does **not** consume wall-clock time.
+    Under CPU contention (parallel workers, loaded hosts) the iteration count
+    could exhaust before the thread worker finishes. Wall-clock deadline
+    removes the race (P85).
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        await pilot.pause()
+        if predicate():
+            return
+    raise AssertionError(f"predicate {predicate!r} not satisfied within {timeout}s")
 
 
 def _damon_root(tmp_path: Path, *, slots: tuple[str, ...] = ("off", "off")) -> Path:
@@ -389,8 +410,6 @@ def test_pilot_snapshot_hotkey_collects_fresh_systemd_and_docker_metadata(tmp_pa
 
 def test_pilot_snapshot_running_status_appears_immediately(tmp_path: Path) -> None:
     async def run() -> None:
-        import time as _time
-
         def slow_systemctl(unit: str, _properties: tuple[str, ...]) -> ShowResult:
             _time.sleep(0.5)
             return ShowResult(stdout=f"Unit={unit}\n", returncode=0)
@@ -409,10 +428,7 @@ def test_pilot_snapshot_running_status_appears_immediately(tmp_path: Path) -> No
             app.action_create_snapshot()
             assert "snapshot running:" in _status_text(app)
             assert GAME_KEY in _status_text(app)
-            for _ in range(30):
-                await pilot.pause()
-                if app._snapshot_in_progress is False:
-                    break
+            await _wait_or_timeout(pilot, lambda: app._snapshot_in_progress is False, timeout=10.0)
             assert app._snapshot_in_progress is False
 
     asyncio.run(run())
@@ -452,10 +468,7 @@ def test_pilot_snapshot_success_reports_path(tmp_path: Path) -> None:
             await _wait_for_frame(app)(pilot)
             await pilot.press("x")
             # Wait for the worker to finish and status to update
-            for _ in range(20):
-                await pilot.pause()
-                if "snapshot saved:" in _status_text(app):
-                    break
+            await _wait_or_timeout(pilot, lambda: "snapshot saved:" in _status_text(app))
             assert "snapshot saved:" in _status_text(app)
             assert "groop-incident" in _status_text(app)
 
@@ -482,10 +495,7 @@ def test_pilot_snapshot_handled_exception_reports_failure(tmp_path: Path) -> Non
             app._refresh_view()
             await pilot.press("x")
             # Wait for the worker to finish
-            for _ in range(20):
-                await pilot.pause()
-                if "snapshot failed:" in _status_text(app):
-                    break
+            await _wait_or_timeout(pilot, lambda: "snapshot failed:" in _status_text(app))
             assert "snapshot failed:" in _status_text(app)
 
     asyncio.run(run())

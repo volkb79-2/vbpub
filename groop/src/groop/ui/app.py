@@ -632,7 +632,8 @@ async def _run_ui_smoke(
         replay_speed=replay_speed,
     )
     async with app.run_test(size=(140, 40)) as pilot:
-        for _ in range(20):
+        deadline = asyncio.get_event_loop().time() + 10.0
+        while asyncio.get_event_loop().time() < deadline:
             await pilot.pause()
             if app.frames_received:
                 break
