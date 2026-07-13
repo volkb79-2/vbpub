@@ -66,40 +66,31 @@ record_fail() {
     fi
 }
 
-# Run a command, capture output, assert expected pass/fail.
-check_cmd() {
-    local desc="$1"
-    local expected="$2"   # "pass" or "fail"
-    shift 2
-    total=$((total + 1))
-    echo -n "  CHECK ${total}: ${desc} ... "
-
-    set +e
-    local output
-    output=$(timeout 30 "$@" 2>&1)
-    local rc=$?
-    set -e
-
-    if [ "$expected" = "pass" ] && [ $rc -eq 0 ]; then
-        record_pass
-    elif [ "$expected" = "fail" ] && [ $rc -ne 0 ]; then
-        record_pass
-    elif [ "$expected" = "pass" ] && [ $rc -ne 0 ]; then
-        record_fail "expected pass, got rc=${rc}" "${output}"
-    else
-        record_fail "expected failure but got rc=${rc}" "${output}"
-    fi
-}
-
 # MCP initialize: POST to the given URL with the given Host header.
 # Outputs the full JSON-RPC response (stdout) + returns curl exit code.
 mcp_initialize_raw() {
     local url="$1"
     local host="$2"
+    # MCP streamable-HTTP servers require the client to accept BOTH JSON and
+    # SSE; omitting this Accept header yields HTTP 406 Not Acceptable.
     curl -fsS -X POST "$url" \
         -H "Content-Type: application/json" \
+        -H "Accept: application/json, text/event-stream" \
         -H "Host: ${host}" \
         -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"1.0"}}}'
+}
+
+# Extract the JSON-RPC payload from an MCP streamable-HTTP response. These
+# servers reply with an SSE frame ("event: message" / "data: {json}"), not raw
+# JSON, so the data line must be unwrapped before jq. Falls back to the raw
+# body if it is already plain JSON.
+sse_extract_json() {
+    local body="$1"
+    if printf '%s\n' "$body" | grep -q '^data:'; then
+        printf '%s\n' "$body" | sed -n 's/^data: \{0,1\}//p' | tail -1
+    else
+        printf '%s' "$body"
+    fi
 }
 
 # MCP initialize with JSON body validation using jq.
@@ -110,6 +101,7 @@ mcp_initialize_assert_ok() {
     local label="$3"
     local body
     body=$(mcp_initialize_raw "$url" "$host") || return 1
+    body=$(sse_extract_json "$body")
     # Validate JSON-RPC success: no .error, and .result exists with .serverInfo.name
     echo "$body" | jq -e '
         .error == null
@@ -148,13 +140,44 @@ mcp_initialize_assert_fail() {
     return 1
 }
 
+# Drive a real MCP tool end-to-end over the stateful streamable-HTTP session:
+#   initialize (capture Mcp-Session-Id) -> notifications/initialized -> tools/call.
+# Args: <url> <host> <tool-name> <arguments-json>. Prints the tool-result JSON
+# (SSE-unwrapped) on stdout; returns non-zero on transport failure.
+mcp_session_tool_call() {
+    local url="$1" host="$2" tool="$3" args="$4"
+    local hdrs sid
+    hdrs=$(mktemp)
+    curl -fsS --max-time 30 -D "$hdrs" -o /dev/null -X POST "$url" \
+        -H "Content-Type: application/json" \
+        -H "Accept: application/json, text/event-stream" \
+        -H "Host: ${host}" \
+        -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"1.0"}}}' \
+        || { rm -f "$hdrs"; return 1; }
+    sid=$(tr -d '\r' < "$hdrs" | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2}')
+    rm -f "$hdrs"
+    [ -n "$sid" ] || return 1
+    curl -fsS --max-time 30 -o /dev/null -X POST "$url" \
+        -H "Content-Type: application/json" \
+        -H "Accept: application/json, text/event-stream" \
+        -H "Host: ${host}" -H "Mcp-Session-Id: ${sid}" \
+        -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' || return 1
+    local body
+    body=$(curl -fsS --max-time 75 -X POST "$url" \
+        -H "Content-Type: application/json" \
+        -H "Accept: application/json, text/event-stream" \
+        -H "Host: ${host}" -H "Mcp-Session-Id: ${sid}" \
+        -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"${tool}\",\"arguments\":${args}}}") || return 1
+    sse_extract_json "$body"
+}
+
 # Check supervisord: wait up to 30s for all three programs to be RUNNING.
 wait_for_supervisord() {
     local retries=30
     local i=0
     while [ $i -lt $retries ]; do
         local status_output
-        status_output=$(docker exec "${CONTAINER_NAME}" supervisorctl status 2>/dev/null || true)
+        status_output=$(docker exec "${CONTAINER_NAME}" supervisorctl -c /etc/supervisor/conf.d/pwmcp.conf status 2>/dev/null || true)
         local run_server_running=0
         local mcp_running=0
         local devtools_running=0
@@ -178,7 +201,7 @@ wait_for_supervisord() {
         i=$((i + 1))
     done
     echo "  Timed out waiting for programs to reach RUNNING state:" >&2
-    docker exec "${CONTAINER_NAME}" supervisorctl status >&2 || true
+    docker exec "${CONTAINER_NAME}" supervisorctl -c /etc/supervisor/conf.d/pwmcp.conf status >&2 || true
     return 1
 }
 
@@ -221,8 +244,16 @@ echo ""
 # ── 1. Supervisord program status ──────────────────────────────────────────
 echo "[SUPERVISORD STATUS — wait up to 30s for RUNNING]"
 
-check_cmd "All three programs RUNNING (with 30s poll)" "pass" \
-    wait_for_supervisord
+# wait_for_supervisord is a shell function with its own bounded 30s poll loop,
+# so it is called directly (it cannot be run under `timeout`, which only execs
+# external binaries).
+total=$((total + 1))
+echo -n "  CHECK ${total}: All three programs RUNNING (with 30s poll) ... "
+if wait_for_supervisord; then
+    record_pass
+else
+    record_fail "supervisord did not report all three programs RUNNING within 30s"
+fi
 
 echo ""
 
@@ -274,22 +305,23 @@ else
     record_fail "DevTools MCP failed unexpectedly"
 fi
 
-# 3c: Call a real tool end-to-end (list tools)
+# 3c: Drive Chromium end-to-end via a real tool call (new_page to a data: URL).
+# This proves the server actually launched and controlled the browser, not just
+# answered initialize. Uses the full stateful MCP session handshake.
 if [ "${1:-}" != "--quick" ]; then
     total=$((total + 1))
-    echo -n "  CHECK ${total}: DevTools MCP end-to-end tools/list (JSON-RPC validated) ... "
-    body=$(timeout 30 curl -fsS -X POST "${DEVTOOLS_URL}" \
-        -H "Content-Type: application/json" \
-        -H "Host: ${PWMCP_HOST}:${DEVTOOLS_PORT}" \
-        -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' 2>/dev/null) || {
-        record_fail "tools/list HTTP request failed"
+    echo -n "  CHECK ${total}: DevTools MCP end-to-end new_page (drives Chromium) ... "
+    body=$(mcp_session_tool_call "${DEVTOOLS_URL}" "${PWMCP_HOST}:${DEVTOOLS_PORT}" \
+        new_page '{"url":"data:text/html,<h1>pwmcp-smoke</h1>"}' 2>/dev/null) || {
+        record_fail "new_page tool call transport failed"
         body=""
     }
     if [ -n "${body:-}" ]; then
-        if echo "$body" | jq -e '.error == null and .result.tools | type == "array"' >/dev/null 2>&1; then
+        # A successful tool result has .result.content and isError != true.
+        if echo "$body" | jq -e '(.error == null) and (.result | type == "object") and ((.result.isError // false) == false)' >/dev/null 2>&1; then
             record_pass
         else
-            record_fail "tools/list JSON-RPC body invalid" "$(echo "$body" | jq -c . 2>/dev/null || echo "$body")"
+            record_fail "new_page returned an error or invalid result" "$(echo "$body" | jq -c . 2>/dev/null || echo "$body")"
         fi
     fi
 fi
@@ -310,7 +342,7 @@ fi
 
 # 4b: Stop devtools-mcp, verify 8931 still works
 echo "  Stopping devtools-mcp program (fault isolation test)..."
-docker exec "${CONTAINER_NAME}" supervisorctl stop devtools-mcp 2>/dev/null || true
+docker exec "${CONTAINER_NAME}" supervisorctl -c /etc/supervisor/conf.d/pwmcp.conf stop devtools-mcp 2>/dev/null || true
 sleep 2
 
 total=$((total + 1))
@@ -322,7 +354,7 @@ else
 fi
 
 # Restart devtools-mcp for subsequent tests
-docker exec "${CONTAINER_NAME}" supervisorctl start devtools-mcp 2>/dev/null || true
+docker exec "${CONTAINER_NAME}" supervisorctl -c /etc/supervisor/conf.d/pwmcp.conf start devtools-mcp 2>/dev/null || true
 
 echo ""
 

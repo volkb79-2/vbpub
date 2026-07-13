@@ -188,11 +188,6 @@ def update_bake_hcl(
 
 
 # Non-auto-updated package pins: read from bake file to preserve current values.
-_BAKE_VAR_PATTERN = re.compile(
-    r'variable\s+"([A-Z_]+)"\s*\{[^}]*default\s*=\s*"([^"]+)"', re.DOTALL
-)
-
-
 def _read_bake_var(name: str) -> str:
     """Read a single variable default from docker-bake.hcl."""
     content = BAKE_FILE.read_text(encoding="utf-8")
