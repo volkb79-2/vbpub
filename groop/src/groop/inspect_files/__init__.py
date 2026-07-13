@@ -1,9 +1,10 @@
 """Inspect-files planning and bounded content-read module.
 
 This package builds immutable read-only inspection plans and performs bounded
-content reads for a small allowlisted set of log and cgroup file paths.  It
-never runs subprocesses, never mutates host state, and never reads arbitrary
-root files.
+content reads for a small allowlisted set of log, journal, and cgroup file
+paths.  File-content reads (Docker logs, cgroup files) use direct descriptor
+I/O with no subprocess.  Journald reads invoke a single fixed absolute
+``journalctl`` argv with ``shell=False``, bounded timeout, and bounded output.
 
 Disabled by default — requires both --inspect-files and --admin flags.
 

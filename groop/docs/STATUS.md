@@ -16,7 +16,7 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment. P41 automates strict rendered replay fidelity (383 passing tests plus one optional skip). P43 replaces the obsolete pre-1.0 resolver ceiling with textual>=8.2.8. Isolated local-artifact pipx/no-config acceptance now passes. Strict live performance and non-root gates remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 60-65% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd start/stop/restart execution, BPF gate/provider/snapshot bridge, bounded Docker/cgroup inspect-files reads, and daemon-owned paddr lifecycle exist. Live BPF load/attach, broader actions, and GPU/ZFS plugins remain. |
+| v2 daemon/BPF/admin actions | 65-70% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd start/stop/restart execution, BPF gate/provider/snapshot bridge, bounded Docker/cgroup/journald inspect-files reads, and daemon-owned paddr lifecycle exist. Live BPF load/attach, broader actions, and GPU/ZFS plugins remain. |
 
 P44 adds the daemon-owned paddr lifecycle — `[damon] paddr_enabled = true` starts
 or adopts one groop-owned whole-host paddr session. Sessions created by the
@@ -30,8 +30,11 @@ protocol operation, and
 ``groop daemon health [--json]``. The registry models collector, BPF snapshot
 bridge, and paddr lifecycle states and wires P42/P44 transitions.
 
-Queued follow-ups P48-P49 continue bounded journald snapshots and structured
-`memory.high` governance after those streams.
+P48 adds a bounded journald inspection snapshot via fixed absolute
+``/usr/bin/journalctl`` argv (``shell=False``), bounded timeout, and injectable
+runner, extending the P45 inspect-files content read posture to systemd units.
+
+P49 remains queued: structured `memory.high` governance through systemd.
 
 P50 is done. The entity table now uses a MouseTable (DataTable subclass) with
 clickable header sorting (toggle direction), one-click row drill-down and
@@ -136,6 +139,13 @@ core workflows, not yet production-certified.**
   Docker JSON logs require a full 64-char hex container ID; cgroup files use
   the catalog-defined allowlist. Both kinds are gated on
   ``--inspect-files`` and ``--admin`` (default: disabled).
+- Bounded journald inspection snapshot via ``groop inspect-files read``
+  with ``--kind systemd-journal``: fixed absolute ``/usr/bin/journalctl``
+  argv, ``shell=False``, ``--unit``/``--no-pager``/``--output=short-iso``,
+  bounded timeout (default 30s, max 60s), bounded output, injectable runner
+  for tests. Rejects option-like unit names (starting with ``-``). Timeout
+  and nonzero exit return typed error — never fallback to arbitrary reads.
+  Gated on ``--inspect-files`` and ``--admin`` (default: disabled).
 - Default-socket daemon attach (`--attach` with no path defaults to
   `/run/groop/groop.sock`) and `groop daemon current --socket PATH
   [--pretty-json]` one-frame read-only daemon command.

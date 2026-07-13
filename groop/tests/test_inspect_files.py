@@ -310,6 +310,24 @@ class TestPathSafety:
         result = build_gated_inspect_plan("systemd-journal", "ssh.service", inspect_files=False, admin=False)
         assert result.kind == InspectFilesKind.SYSTEMD_JOURNAL
 
+    def test_systemd_target_rejects_leading_dash(self) -> None:
+        """Systemd unit name must not start with dash (would parse as option)."""
+        with pytest.raises(ValueError, match="must not start with dash"):
+            build_inspect_plan("systemd-journal", "-u")
+
+    def test_systemd_target_rejects_long_option(self) -> None:
+        """Systemd unit name must not look like a long option."""
+        with pytest.raises(ValueError, match="must not start with dash"):
+            build_inspect_plan("systemd-journal", "--unit")
+
+    def test_systemd_target_accepts_valid_names(self) -> None:
+        """Common valid systemd unit names must be accepted."""
+        for name in ("ssh.service", "cron.service", "docker.service",
+                      "user@1000.service", "sshd.socket", "multi-user.target",
+                      "var-lib-docker.mount", "nginx.service"):
+            plan = build_inspect_plan("systemd-journal", name)
+            assert isinstance(plan, InspectFilesPlan)
+
 
 # ---------------------------------------------------------------------------
 # No-execution / no-read guarantees
@@ -735,19 +753,23 @@ class TestReadSafety:
     FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "inspect_files"
 
     def test_no_subprocess_import_in_reader(self) -> None:
-        """Verify the reader module never imports subprocess."""
+        """Verify the reader module imports subprocess only for the
+        bounded journald runner, not for arbitrary command execution.
+        The file-read paths (docker, cgroup) never use subprocess."""
         import ast, importlib.util
-        for mod_name in ("groop.inspect_files.reader",):
-            spec = importlib.util.find_spec(mod_name)
-            assert spec is not None
-            assert spec.origin is not None
-            with open(spec.origin, encoding="utf-8") as f:
-                tree = ast.parse(f.read())
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import) and any(n.name == "subprocess" for n in node.names):
-                    pytest.fail(f"{mod_name} imports subprocess: {node.names}")
-                if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
-                    pytest.fail(f"{mod_name} imports {node.module}: {node.names}")
+        spec = importlib.util.find_spec("groop.inspect_files.reader")
+        assert spec is not None
+        assert spec.origin is not None
+        with open(spec.origin, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        subprocess_refs = 0
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any(n.name == "subprocess" for n in node.names):
+                subprocess_refs += 1
+            if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+                subprocess_refs += 1
+        # reader.py intentionally imports subprocess for journald reads
+        assert subprocess_refs > 0, "reader.py should import subprocess for journald runner"
 
     def test_no_arbitrary_path_escape_docker(self) -> None:
         """User cannot escape the containers directory via path tricks."""
@@ -794,13 +816,12 @@ class TestReadSafety:
     def test_unknown_kind_returns_error(self) -> None:
         from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
         result = build_inspect_read(
-            "systemd-journal", "ssh.service",
+            "nosuch-kind", "x",
             inspect_files=True, admin=True,
-            fixture_root=Path("/nonexistent"),
-        is_root=lambda: True,
+            is_root=lambda: True,
         )
         assert isinstance(result, InspectFilesReadError)
-        assert "does not support content reads" in result.error
+        assert "not a valid" in result.error.lower()
 
     def test_read_error_json_no_content(self) -> None:
         """JSON output of InspectFilesReadError must not echo content."""
@@ -1096,18 +1117,24 @@ class TestReadSecurityCorrections:
     # ---- No subprocess/writes ----
 
     def test_reader_no_subprocess(self) -> None:
-        """Reader module must not import subprocess."""
+        """Reader imports subprocess for the bounded journald runner;
+        this is intentional and follows the P46 injectable-runner pattern.
+        Catalog, plan, and __init__ never import subprocess (verified
+        separately)."""
         import ast, importlib.util
         spec = importlib.util.find_spec("groop.inspect_files.reader")
         assert spec is not None
         assert spec.origin is not None
         with open(spec.origin, encoding="utf-8") as f:
             tree = ast.parse(f.read())
+        sub_found = False
         for node in ast.walk(tree):
             if isinstance(node, ast.Import) and any(n.name == "subprocess" for n in node.names):
-                pytest.fail(f"reader imports subprocess: {node.names}")
+                sub_found = True
             if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
-                pytest.fail(f"reader imports {node.module}: {node.names}")
+                sub_found = True
+        # reader.py intentionally imports subprocess for bounded journald reads
+        assert sub_found, "reader.py should import subprocess for journald runner"
 
     def test_reader_no_write_operations(self) -> None:
         """Reader must not open files for writing."""
@@ -1458,3 +1485,244 @@ class TestP45BoundedContentCorrections:
         assert len(text.encode("utf-8")) <= 14
         assert text.count("\n") <= 2
         assert trunc_b or trunc_l
+
+
+# ---------------------------------------------------------------------------
+# P48 — Journald content read tests
+# ---------------------------------------------------------------------------
+
+
+_JOURNALD_FIXTURE_OUTPUT = """\
+2026-07-10T12:00:00+0000 host sshd[1234]: Accepted public key for admin from 10.0.0.1 port 54321 ssh2: RSA SHA256:abc123
+2026-07-10T12:00:01+0000 host sshd[1234]: pam_unix(sshd:session): session opened for user admin
+2026-07-10T12:00:02+0000 host sshd[1234]: Starting session: shell on pts/0
+2026-07-10T12:00:10+0000 host sshd[1234]: Closing session: shell on pts/0
+2026-07-10T12:00:11+0000 host sshd[1234]: pam_unix(sshd:session): session closed for user admin
+"""
+
+
+class TestJournaldContentRead:
+    """Bounded journalctl content reads via injected runner."""
+
+    @staticmethod
+    def _make_runner(
+        stdout: str = _JOURNALD_FIXTURE_OUTPUT,
+        stderr: str = "",
+        returncode: int = 0,
+        timed_out: bool = False,
+    ) -> Callable:
+        def _runner(
+            argv: tuple[str, ...],
+            *,
+            timeout: float,
+        ) -> object:
+            from groop.inspect_files.reader import _JournaldRunResult
+            return _JournaldRunResult(
+                stdout=stdout,
+                stderr=stderr,
+                returncode=None if timed_out else returncode,
+                timed_out=timed_out,
+            )
+        return _runner
+
+    # 1. Successful journald read with fixture runner
+    def test_journald_read_success(self) -> None:
+        """Bounded journald read returns content with fixture runner."""
+        from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
+        result = build_inspect_read(
+            "systemd-journal", "ssh.service",
+            inspect_files=True, admin=True,
+            is_root=lambda: True,
+            journald_runner=self._make_runner(),
+        )
+        assert isinstance(result, InspectFilesReadResult), f"Got {type(result).__name__}: {result}"
+        assert result.kind.value == "systemd-journal"
+        assert "sshd" in result.content
+        assert "Accepted public key" in result.content
+        assert "journalctl --unit ssh.service" in result.path
+        assert result.mode == "content"
+        assert not result.truncated_bytes
+        assert not result.truncated_lines
+
+    # 2. Journald read JSON format
+    def test_journald_read_json_format(self) -> None:
+        """JSON output must have correct structure and not echo content on error."""
+        from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
+        result = build_inspect_read(
+            "systemd-journal", "ssh.service",
+            inspect_files=True, admin=True,
+            is_root=lambda: True,
+            journald_runner=self._make_runner(),
+        )
+        assert isinstance(result, InspectFilesReadResult)
+        j = result.to_jsonable()
+        assert j["kind"] == "systemd-journal"
+        assert j["target"] == "ssh.service"
+        assert j["mode"] == "content"
+        assert "content" in j
+        assert "truncated_bytes" in j
+        assert "truncated_lines" in j
+
+    # 3. Journald read text format
+    def test_journald_read_text_format(self) -> None:
+        """Text output includes kind, target, path, and content."""
+        from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
+        result = build_inspect_read(
+            "systemd-journal", "ssh.service",
+            inspect_files=True, admin=True,
+            is_root=lambda: True,
+            journald_runner=self._make_runner(),
+        )
+        assert isinstance(result, InspectFilesReadResult)
+        text = result.to_text()
+        assert "Read: systemd-journal" in text
+        assert "ssh.service" in text
+        assert "journalctl" in text
+        assert "sshd" in text
+
+    # 4. Timeout returns error (no fallback)
+    def test_journald_timeout_returns_error(self) -> None:
+        """A timed-out journalctl must return typed error, never fallback content."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "systemd-journal", "ssh.service",
+            inspect_files=True, admin=True,
+            is_root=lambda: True,
+            journald_runner=self._make_runner(timed_out=True),
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "timed out" in result.error
+        assert result.mode == "error"
+
+    # 5. Nonzero exit returns error
+    def test_journald_nonzero_exit_returns_error(self) -> None:
+        """A nonzero exit from journalctl must return typed error."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "systemd-journal", "ssh.service",
+            inspect_files=True, admin=True,
+            is_root=lambda: True,
+            journald_runner=self._make_runner(returncode=1, stderr="unit not found"),
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "failed" in result.error
+        assert result.mode == "error"
+
+    # 6. Reader OSError returns error
+    def test_journald_runner_oserror(self) -> None:
+        """A runner OSError (journalctl not found) returns typed error."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        def _broken_runner(argv: tuple[str, ...], *, timeout: float) -> object:
+            from groop.inspect_files.reader import _JournaldRunResult
+            return _JournaldRunResult(
+                stdout="", stderr="OSError: [Errno 2] No such file or directory",
+                returncode=None, timed_out=False,
+            )
+        result = build_inspect_read(
+            "systemd-journal", "ssh.service",
+            inspect_files=True, admin=True,
+            is_root=lambda: True,
+            journald_runner=_broken_runner,
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "failed" in result.error
+
+    # 7. Empty unit name rejected
+    def test_journald_empty_target_rejected(self) -> None:
+        """Empty systemd unit names must be rejected."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "systemd-journal", "",
+            inspect_files=True, admin=True,
+            is_root=lambda: True,
+            journald_runner=self._make_runner(),
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "must not be empty" in result.error
+
+    # 8. Dash-prefixed target rejected
+    def test_journald_dash_target_rejected(self) -> None:
+        """Systemd unit names starting with dash must be rejected."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "systemd-journal", "-u",
+            inspect_files=True, admin=True,
+            is_root=lambda: True,
+            journald_runner=self._make_runner(),
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "must not start with dash" in result.error
+
+    # 9. Path-like target rejected
+    def test_journald_path_target_rejected(self) -> None:
+        """Systemd unit names looking like paths must be rejected."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "systemd-journal", "/etc/shadow",
+            inspect_files=True, admin=True,
+            is_root=lambda: True,
+            journald_runner=self._make_runner(),
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "must not be a path" in result.error
+
+    # 10. Bounded output (line truncation)
+    def test_journald_line_truncation(self) -> None:
+        """max_lines=1 must truncate journald output."""
+        from groop.inspect_files.reader import InspectFilesReadResult, build_inspect_read
+        result = build_inspect_read(
+            "systemd-journal", "ssh.service",
+            inspect_files=True, admin=True,
+            is_root=lambda: True,
+            max_lines=1,
+            journald_runner=self._make_runner(),
+        )
+        assert isinstance(result, InspectFilesReadResult)
+        assert result.truncated_lines
+
+    # 11. Journald read requires gating
+    def test_journald_read_without_inspect_files_denied(self) -> None:
+        """Without --inspect-files, journald read must return ReadDenied."""
+        from groop.inspect_files.reader import ReadDenied, build_inspect_read
+        result = build_inspect_read(
+            "systemd-journal", "ssh.service",
+            inspect_files=False, admin=True,
+        )
+        assert isinstance(result, ReadDenied)
+
+    def test_journald_read_without_admin_denied(self) -> None:
+        """Without --admin, journald read must return ReadDenied."""
+        from groop.inspect_files.reader import ReadDenied, build_inspect_read
+        result = build_inspect_read(
+            "systemd-journal", "ssh.service",
+            inspect_files=True, admin=False,
+        )
+        assert isinstance(result, ReadDenied)
+
+    # 12. Journald read requires root
+    def test_journald_read_requires_root(self) -> None:
+        """Without root, journald read must return requires-root error."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        result = build_inspect_read(
+            "systemd-journal", "ssh.service",
+            inspect_files=True, admin=True,
+            is_root=lambda: False,
+            journald_runner=self._make_runner(),
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "requires root" in result.error
+
+    # 13. Journal timeout validation
+    def test_journald_bad_timeout_rejected(self) -> None:
+        """Invalid timeout values must be rejected."""
+        from groop.inspect_files.reader import InspectFilesReadError, build_inspect_read
+        # Negative timeout
+        result = build_inspect_read(
+            "systemd-journal", "ssh.service",
+            inspect_files=True, admin=True,
+            is_root=lambda: True,
+            journal_timeout=-1,
+            journald_runner=self._make_runner(),
+        )
+        assert isinstance(result, InspectFilesReadError)
+        assert "timeout" in result.error

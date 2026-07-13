@@ -582,10 +582,62 @@ python3 -m py_compile "${pyfiles[@]}"
 
 - Production Docker log reads require a full 64-char hex container ID.
   Short IDs and container names are rejected.
-- Systemd journal content reads are not implemented (requires subprocess).
-- Only Docker JSON logs and cgroup files support content reads.
+- Systemd journal content reads are implemented via subprocess (P48).
+- Only Docker JSON logs, systemd journal, and cgroup files support content reads.
 - No follow/stream mode or daemon integration.
 - No TUI integration for file reads.
+
+## P48 Bounded Journald Inspection Snapshot Evidence (2026-07-13)
+
+### Focused Tests
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest groop/tests/test_inspect_files.py -q
+# 132 passed in 0.85s
+```
+
+The P48 suite adds 18 tests (5 systemd target validation + 13 journald content read):
+
+- **Systemd target validation** (5 tests): Rejects absolute paths, unsafe chars,
+  leading dashes (options), long options; accepts valid unit names.
+- **Journald content reads** (13 tests): Success, JSON format, text format,
+  timeout → error, nonzero exit → error, runner OSError → error, empty/dash/path
+  target rejection, line truncation, gating (--inspect-files/--admin), root
+  requirement, timeout validation.
+
+### Structural Safety
+
+```bash
+python3 -m py_compile groop/src/groop/inspect_files/reader.py
+# clean, exit 0
+```
+
+The journald runner:
+
+- Uses fixed absolute ``/usr/bin/journalctl`` argv — never configurable.
+- Uses ``shell=False`` — argv is a list, never a shell string.
+- Bounded timeout (default 30s, max 60s).
+- Bounded output via ``_bound_rendered_text`` after capture.
+- Timeout/nonzero exit returns typed ``InspectFilesReadError`` — never
+  falls back to arbitrary reads.
+- Injected runner for tests — no live journalctl dependency in normal suite.
+
+### Full Suite
+
+```bash
+PYTHONPATH=groop/src python3 -m pytest groop/tests -q
+# 845 passed, 2 skipped in 121.53s
+```
+
+### Full-Source py_compile
+
+All Python files under `groop/src/groop` and `groop/tests` compile cleanly:
+
+```bash
+mapfile -d '' pyfiles < <(find groop/src/groop groop/tests -name '*.py' -print0)
+python3 -m py_compile "${pyfiles[@]}"
+# clean, exit 0
+```
 
 ## P44 Daemon-Owned paddr Lifecycle (2026-07-10)
 

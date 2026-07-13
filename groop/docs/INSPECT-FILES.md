@@ -19,6 +19,7 @@ Without either flag, the command prints a disabled message and exits with code 2
 ```bash
 groop inspect-files plan --kind docker-json-log --target my-container --inspect-files --admin
 groop inspect-files read --kind docker-json-log --target <64hex> --inspect-files --admin
+groop inspect-files read --kind systemd-journal --target ssh.service --inspect-files --admin
 ```
 
 ## Plan Command
@@ -49,7 +50,8 @@ No system state is changed.
 - Absolute path targets supplied directly by users are rejected unless they belong
   to the allowlisted kind.
 - Docker container targets are validated against path-traversal patterns.
-- Systemd unit targets are validated against unsafe character patterns.
+- Systemd unit targets are validated against unsafe character patterns and
+  option-like tokens (starting with ``-``).
 - Cgroup path targets are restricted to paths under `/sys/fs/cgroup/`.
 - Symlinks are never followed.
 - Path previews are normalised with `expanduser()` and lexical path
@@ -119,9 +121,11 @@ both `--inspect-files` and `--admin`).
   files; truncated lines are reported via the `truncated_lines` field.
 - Both limits must be positive integers. Absolute maximums are enforced:
   `max_bytes ≤ 1 MiB`, `max_lines ≤ 100 000`.
-- Reads are **chunk-based** (fixed-size 64 KiB chunks), never line-by-line,
-  so single giant lines with no newline never materialize unboundedly in
-  memory.
+- File-content reads (Docker logs, cgroup files) use **chunk-based** reads
+  (fixed-size 64 KiB chunks), never line-by-line, so single giant lines with
+  no newline never materialize unboundedly in memory.
+- Journald reads use the ``-n`` flag on ``journalctl`` to bound lines at the
+  source, plus additional byte/line enforcement via ``_bound_rendered_text``.
 - Raw binary content is decoded with ``errors="replace"``.  Unsafe control
   characters (C0 codes 0x00-0x1F excluding ``\\n``/``\\t``, DEL 0x7F, C1
   codes 0x80-0x9F) are replaced with U+FFFD so terminal escape sequences,
@@ -129,9 +133,9 @@ both `--inspect-files` and `--admin`).
 - `--json` output includes both truncation flags; text output prepends
   `[TRUNCATED]` notices.
 
-#### Path Confinement
+#### Path Confinement (file-content reads only)
 
-Every read path undergoes four-stage validation:
+Every file-content read path undergoes four-stage validation:
 
 1. **Catalog resolution**: The path is built from the allowlisted catalog and
    target metadata, never from user-supplied absolute paths.
@@ -148,10 +152,21 @@ Every read path undergoes four-stage validation:
    allow_root directory descriptor — never absolute-path opens that could
    race with a symlink swap.
 
-#### No Subprocess, No Mutation
+#### Journald Reads
 
-The reader module never imports `subprocess`, never writes files, and never
-calls external commands. All reads use direct descriptor-based Python I/O.
+Journald content reads use a **subprocess** — the only content-read kind that
+does so. The implementation follows strict safety constraints:
+
+- **Fixed absolute argv**: ``/usr/bin/journalctl`` — never configurable.
+- **``shell=False``**: argv is a ``list[str]``, never a shell string.
+- **Fixed flags**: ``--unit``, ``--no-pager``, ``--output=short-iso``,
+  ``-n <max_lines>``. No ``--follow``.
+- **Bounded timeout**: default 30 seconds, absolute maximum 60 seconds.
+- **Bounded output**: stdout and stderr are fully captured.
+- **No fallback**: a timeout or nonzero exit returns a typed error — never
+  arbitrary content.
+- **Injectability**: tests supply a mock runner that returns canned output
+  without calling subprocess.
 
 #### Docker Container IDs
 
@@ -185,10 +200,11 @@ clear error messages. Existing files are combined into a single output.
 
 ### Read Kinds
 
-| Kind | Description | Target format | Read path | Notes |
+| Kind | Description | Target format | Read mechanism | Notes |
 |---|---|---|---|---|
-| `docker-json-log` | Bounded Docker json-file log read | Full 64-hex container ID | `.../containers/<id>/<id>-json.log` | Rejects short IDs and names for content reads |
-| `cgroup-files` | Bounded cgroup file reads | Cgroup path under `/sys/fs/cgroup/` | 20+ known cgroup files under the resolved path | Per-file error handling for missing files |
+| `docker-json-log` | Bounded Docker json-file log read | Full 64-hex container ID | Direct descriptor I/O | Rejects short IDs and names for content reads |
+| `systemd-journal` | Bounded journald snapshot | Systemd unit name (e.g. `ssh.service`) | Subprocess: fixed absolute `/usr/bin/journalctl` argv, `shell=False`, bounded timeout | Rejects option-like names (starting with `-`). Timeout/nonzero → typed error |
+| `cgroup-files` | Bounded cgroup file reads | Cgroup path under `/sys/fs/cgroup/` | Direct descriptor I/O | Per-file error handling for missing files |
 
 ### Output Formats
 
@@ -230,17 +246,30 @@ Path: /var/lib/docker/containers/.../<id>-json.log
 <content starts here...>
 ```
 
+For journald:
+
+```
+Read: systemd-journal
+Target: ssh.service
+Path: journalctl --unit ssh.service
+
+2026-07-10T12:00:00+0000 host sshd[1234]: Accepted public key ...
+[TRUNCATED: line limit exceeded]
+```
+
 ### Error Handling
 
 - Exit code **2**: Denied (gating flags not active) or parse error.
 - Exit code **1**: Read error (file not found, not a regular file, path escape,
-  unsupported kind).
+  journalctl timeout/failure, unsupported kind).
 - Exit code **0**: Success (content returned, possibly truncated).
 
 ## Scope (what this is NOT)
 
 - **Not a file browser** — no content reads, no directory listing, no tail/follow.
-- **Not a subprocess executor** — no Docker, systemd/journalctl calls.
+- **Not a general subprocess executor** — the only subprocess is the bounded,
+  fixed-argv journald read. No Docker, arbitrary command execution, or shell
+  invocation.
 - **Not a daemon feature** — no daemon protocol integration.
 - **Not a TUI screen** — CLI-only in this package.
 - **Requires root** — production reads require EUID 0; testing uses
