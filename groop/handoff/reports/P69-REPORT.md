@@ -51,5 +51,20 @@ The two failures do not involve any file changed by P69:
 - `tests/test_ui_app.py::test_pilot_snapshot_hotkey_writes_bundle`: Textual
   pilot test observed no snapshot bundle after the `x` hotkey.
 
-`git diff --check` passed.  The final diff is restricted to `groop/docs/**` and
-`groop/handoff/reports/**`.
+Self-review then ran the suite in the available clean Python 3.14.6 environment
+without the optional `zstandard` extra:
+
+```bash
+timeout 900 env PYTHONPATH=groop/src /tmp/p43-clean-venv/bin/python \
+  -m pytest groop/tests -q -W error
+# 1101 passed, 2 skipped in 143.27s
+```
+
+This is the green full-suite result for the committed docs-only package. The
+two skips are optional-`zstandard` paths.
+
+The original `git diff --check` returned success while the new files were still
+untracked, so it did not inspect them. `git diff --cached --check` then checked
+the staged files successfully; self-review also ran `git show --check edbf698`
+and a new `git diff --check`, both successfully. The final diff is restricted
+to `groop/docs/**` and `groop/handoff/reports/**`.

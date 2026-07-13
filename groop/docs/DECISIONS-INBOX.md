@@ -1,5 +1,12 @@
 # Decisions inbox — product calls awaiting the user
 
+> **PROCESS WARNING — NOT FRONTIER-PROMOTED:** P69's implementation agent
+> created this file and the three entries below because the P69 handoff named
+> them as a deliverable. That violated `controller-workflow-v2.md` §8, which
+> reserves inbox promotion to the frontier reviewer. Treat these as proposed
+> entries only. The frontier reviewer must explicitly promote, edit, or remove
+> them; their current presence is not a valid workflow promotion.
+
 Purpose: record product decisions without blocking engineering analysis.  An
 OPEN entry is carved around under its stated assumption; it becomes DECIDED
 when the decision and where it was encoded are recorded.
@@ -26,9 +33,10 @@ no Node, but makes the gateway a renderer and may add template complexity;
 tree, generated-assets policy, and browser tooling.
 
 **Recommendation:** (a).  The first UI is four read-only pages over a bounded
-JSON API, so plain browser APIs meet the need and preserve core `pip install
-groop` as dependency-light.  Revisit only when demonstrated interface
-complexity makes the manual client costly.
+JSON API, so plain browser APIs meet the need and preserve the dependency-light
+runtime. Same-distribution static assets will still grow the core wheel;
+extras cannot make package data conditional. Revisit only when demonstrated
+interface complexity makes the manual client costly.
 
 **Context pointers:** `docs/WEB-UI-SCOPING.md` “Framework and stack options”;
 `handoff/P69-web-ui-scoping.md` deliverable 1.

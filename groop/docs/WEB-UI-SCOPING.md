@@ -53,16 +53,18 @@ host verdict, resource summary, swap/backend, device summary, and top-three
 pressure list [src/groop/ui/banner.py:16-46, 72-90].  Its table defines the
 triage columns and profiles [src/groop/ui/table.py:15-33], filtering by display
 name or cgroup key [table.py:298-309], and the normal numeric-desc/name-asc
-sort convention [table.py:312-319].  Its drill-down defines metrics, DAMON,
+sort convention [table.py:312-319].  Its tree preserves parent/child order,
+collapse state, and matching descendants [src/groop/ui/tree.py:44-76].  Its
+drill-down defines metrics, DAMON,
 governance, network, pressure breakdown, history, findings, and processes
 [src/groop/ui/drill.py:136-167].
 
 | Page | What a non-CLI user can do | Daemon operations and refresh | Response budget at 89 entities |
 |---|---|---|---|
-| **Overview / triage** (landing page) | See host banner, top pressure, and all entities in the existing triage table; filter and sort locally; open an entity. | `hello` once/reconnect; `current` every 5 s while visible; `health` every 30 s after P66/P67. | `current`: budget **~447 KB/frame** (P53), so ~5.2 MiB/min at 5 s before HTTP compression. `hello` and health contain no frame; their byte size is unmeasured and should not be invented. |
-| **Entity detail** | Show the TUI drill-down's metric groups, source labels, findings, governance, network, and DAMON metadata. Omit the local-process block in v1. | `entity?key=...` on entry and every 5 s while visible; reuse a matching overview frame while it is fresh. | One entity response is bounded above by the full-frame planning budget (**≤~447 KB** at this scale), but P53 measured only a full frame; no measured per-entity byte count exists. It should be materially smaller, but successors must measure rather than promise a fraction. |
-| **Recent history** | Pick an entity and show recent `ram`, `cpu_pct`, and `rf_d_per_s` trends, mirroring the TUI's tracked drill history [drill.py:297-305]; show sequence/time and a gap warning. | `history?limit=12` on entry and user refresh; do not poll it continuously—overview polling supplies the live point. | Up to **12 × ~447 KB = ~5.24 MB** as a deliberately conservative P53 planning budget, which may breach the 4 MiB API bound. Initial implementation therefore requests `limit=8` (budget ~3.58 MB) and treats `oversized_response` as a visible “narrow history” state. This is a budget, not a remeasurement. |
-| **Connection and data status** | Explain daemon/gateway version compatibility, last successful update, stale state, and component health. It makes failure intelligible to a non-operator rather than leaving a blank dashboard. | `hello` on load/reconnect; `health` every 30 s when supported; no full-frame request of its own. | No 89-entity frame. `hello` and health are small structured responses but have no P53 byte measurement; display them without asserting a byte estimate. |
+| **Overview / triage** (landing page) | See host banner, top pressure, and all entities; toggle the TUI-derived flat table or collapsible hierarchy; filter and sort locally; open an entity. | `hello` once/reconnect; `current` every 5 s while visible; `health` every 30 s after P66/P67. | `current`: budget **~447 KB/frame** (P53), so ~5.2 MiB/min at 5 s before HTTP compression. Use a **16 KiB planning budget each** for fixed-shape `hello` and health; unlike the frame budget, this is not a P53 measurement. The legacy health reader enforces 16 KiB [src/groop/daemon/client.py:182-196]. |
+| **Entity detail** | Show the TUI drill-down's metric groups, source labels, findings, governance, network, and DAMON metadata. Omit the local-process block in v1. | `entity(key)` on entry and every 5 s while visible; reuse a matching overview frame while it is fresh. | Use **~447 KB as a conservative planning budget**, not a proven upper bound. P53 measured a full frame without the entity response's `metrics_meta`; no measured per-entity envelope size exists. The only enforced absolute bound is the API's 4 MiB response cap [src/groop/daemon/api.py:61-63, 521-533]. |
+| **Recent history** | Pick an entity and show recent `ram`, `cpu_pct`, and `rf_d_per_s` trends, mirroring the TUI's tracked drill history [drill.py:297-305]; show sequence/time and a gap warning. | `history(limit=8)` on entry and user refresh; do not poll it continuously—overview polling supplies the live point. | **8 × ~447 KB = ~3.58 MB** as a deliberately conservative P53 planning budget. Envelope and metadata overhead mean even eight frames are not guaranteed to fit the 4 MiB cap; treat `oversized_response` as a visible “narrow history” state and retry only after explicit user narrowing. This is a budget, not a remeasurement. |
+| **Connection and data status** | Explain daemon/gateway version compatibility, last successful update, stale state, and component health. It makes failure intelligible to a non-operator rather than leaving a blank dashboard. | `hello` on load/reconnect; `health` every 30 s when supported; no full-frame request of its own. | Entity count does not affect either fixed-shape response. Use **16 KiB each** as the planning budget; health is bounded to that size by the existing typed legacy reader [src/groop/daemon/client.py:182-196], while `hello` has no dedicated byte cap below the general 4 MiB envelope cap. |
 
 There is deliberately no separate “containers-only” screen: the overview's
 TUI-derived filter covers it without a new data surface.  There is no control,
@@ -82,6 +84,15 @@ the useful normal telemetry view while treating process identity/count data as
 an authorization decision.  A public/operational-only deployment may make the
 same choice globally, but must not silently expose sensitive values merely
 because the browser can reach the page.
+
+Display redaction in JavaScript is not an authorization boundary: a viewer can
+inspect the HTTP response directly.  The merged `current`, `history`, and
+`entity` operations return raw values plus sensitivity metadata, not redacted
+values [src/groop/daemon/api.py:394-469].  Therefore P67 (or a trusted proxy in
+front of it) must replace values above the authenticated viewer's ceiling with
+a typed redaction marker **before bytes reach the browser**.  Until that HTTP
+representation exists, every authenticated browser user must be authorized for
+the full unredacted response; client-side markers are usability only.
 
 Redaction is a presentation replacement, never a missing key.  Preserve the
 metric's label, unit, and layout cell, and render a typed marker such as
@@ -143,22 +154,23 @@ P67 needs these additions before it is dispatched:
 These are changes to P67's handoff, not to P52.  P67 should additionally name
 the gateway process's minimum Unix-socket group access and test default bind,
 non-loopback refusal, unauthenticated denial, origin behavior, forbidden
-methods, and redaction pass-through.  P68 is not required for safe polling;
+methods, and server-side typed redaction.  P68 is not required for safe polling;
 it is a later efficiency/latency improvement.
 
 ## Framework and stack options
 
 | Candidate | Build/toolchain and dependency cost | Packaging (`pip install groop[web]`) | Deterministic pytest story |
 |---|---|---|---|
-| **Single static HTML/CSS/ES-module client served by P67 (recommended)** | Plain browser APIs; no Node, runtime framework, or vendored library. | Put a small static asset set in package data; `groop[web]` can expose the gateway/static feature without growing core `pip install groop` or making Node a build dependency. The web wheel grows only by audited static bytes. | Real stdlib HTTP gateway tests plus `pytest` assertions over assets and deterministic JSON fixtures; no browser/Node required. Keep rendering/formatting functions pure and fixture-tested. |
-| Server-rendered Python templates with progressively enhanced HTML | No Node; a template engine can be stdlib formatting or a new Python dependency. It also expands P67 from JSON adapter into page renderer. | Package templates/assets in the optional web wheel; core remains unchanged if the feature is an extra. A third-party template dependency complicates extras and security updates. | Test request/response HTML with stdlib client and HTML assertions; pure view-model tests. Browser behavior still needs limited JS fixture tests. |
-| Vite + React (or comparable SPA) | Node package manager, lockfile, build pipeline, and a large JS dependency tree added to a Python-first repository. | Either Node becomes a wheel-build dependency or generated assets must be committed/vendored; both increase release and supply-chain surface. Core `pip install groop` must remain free of it, but `groop[web]` becomes materially heavier. | Requires Node-based unit/build tests and usually Playwright/browser tooling in addition to pytest; deterministic but substantially more CI machinery. |
+| **Single static HTML/CSS/ES-module client served by P67 (recommended)** | Plain browser APIs; no Node, runtime framework, or vendored library. | Package the small audited asset set in the existing `groop` distribution. This **does grow the wheel used by plain `pip install groop`**; Python extras select dependencies, not package data. `pip install groop[web]` can remain a supported spelling but cannot make same-wheel assets conditional. Avoiding all core-wheel growth would require a separate distribution. | Real stdlib HTTP gateway tests plus `pytest` assertions over assets and deterministic JSON fixtures; no browser/Node required. Keep rendering/formatting functions pure and fixture-tested. |
+| Server-rendered Python templates with progressively enhanced HTML | No Node; a template engine can be stdlib formatting or a new Python dependency. It also expands P67 from JSON adapter into page renderer. | Templates/assets in the existing distribution grow the plain `groop` wheel too. An optional template-engine dependency can live behind `groop[web]`, but the package files themselves cannot. A separate web distribution avoids core-wheel asset growth at the cost of another release artifact. | Test request/response HTML with stdlib client and HTML assertions; pure view-model tests. Browser behavior still needs limited JS fixture tests. |
+| Vite + React (or comparable SPA) | Node package manager, lockfile, build pipeline, and a large JS dependency tree added to a Python-first repository. | Bundled assets grow the plain `groop` wheel if shipped in the same distribution. Committing generated assets keeps Node out of end-user `pip install`, but Node remains a release build/test tool; building them during wheel creation makes that coupling stronger. A separate distribution is the only way to keep the core wheel asset-free. | Requires Node-based unit/build tests and usually Playwright/browser tooling in addition to pytest; deterministic but substantially more CI machinery. |
 
 Recommendation: the single static client.  It fits the repository's
 dependency-light posture, consumes P67's JSON rather than duplicating backend
 logic, keeps the first user-facing UI auditable, and leaves a future framework
-migration possible once page complexity proves it necessary.  It is a product
-choice recorded as D-001 rather than an installed dependency.
+migration possible once page complexity proves it necessary.  Accept small,
+audited core-wheel growth rather than inventing a second distribution for v1.
+It is a product choice proposed as D-001 rather than an installed dependency.
 
 ## Draft successor handoff headers
 
