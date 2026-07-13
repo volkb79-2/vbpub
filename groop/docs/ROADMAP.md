@@ -95,7 +95,7 @@ flowchart TD
     P71 --> P74[P74 GPU host provider :done:]
     P46 --> P72[P72 Admin action kill/update verbs :done:]
     P49 --> P72
-    P58[P58 Daemon MCP frontend :done:] --> P75[P75 MCP live acceptance leg]
+    P58[P58 Daemon MCP frontend :done:] --> P75[P75 MCP live acceptance leg :done:]
     P57 --> P76[P76 CIU stack metadata]
     P73 --> P77[P77 Web UI entity detail + history]
     P67 --> P77
@@ -204,10 +204,10 @@ its first diagnostic surface.
 
 Three packages, one per carve source, per controller-workflow-v2 §8:
 
-- **P75 - MCP live-daemon acceptance leg** (*review-derived*, from P58's pass #2).
+- **P75 - MCP live-daemon acceptance leg** (*review-derived*, from P58's pass #2, **done**).
   P58 merged with an evidence gap its own REPORT states: every test drives an
-  injected fake client, so nothing has ever run `groop mcp serve` against a real
-  daemon. P75 adds an `mcp-smoke` leg to `groop.acceptance` on the P33/P35/P38
+  injected fake client, so nothing had ever run `groop mcp serve` against a real
+  daemon. P75 now adds an `mcp-smoke` leg to `groop.acceptance` on the P33/P35/P38
   pattern, recording the largest observed live response against the 4 MiB cap
   rather than merely asserting it fits.
 - **P76 - CIU stack metadata** (*roadmap-driven*, Optional-plugins bucket). The
