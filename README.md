@@ -34,6 +34,13 @@ pointer to a `cmru` verb):
 ./cmru.py --help                       # all verbs
 ```
 
+To keep a live transcript and preserve release failures through the pipeline:
+
+```bash
+set -o pipefail
+./cmru.release.sh 2>&1 | tee cmru.release.log
+```
+
 - **Config:** [`cmru.toml`](cmru.toml) (committed, no secrets). Template: `cmru.sample.toml`.
 - **Token:** `$GITHUB_PUSH_PAT` / `$GITHUB_TOKEN`, or a gitignored `cmru.secret.toml`
   (`[github] token = "…"`). Never commit a token. (SPEC S2.4)

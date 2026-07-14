@@ -157,8 +157,10 @@ lets you see at a glance whether you're on a governed host, it cannot change pla
 ### BuildKit/buildx builders are governed separately
 
 The above covers the devcontainer *itself*. Release builds run through `docker buildx bake` /
-`scripts/release-bake.sh`, which use their own BuildKit builder container(s) — see "Builder
-governance (`BUILDX_BUILDER`)" in [USAGE.md](USAGE.md) for how those are confined.
+`scripts/release-bake.sh`, which use their own BuildKit builder container. See
+[MDT build and release architecture](docs/BUILD-ARCHITECTURE.md) for its hard limits, why its host
+cgroup path can still appear beneath `docker.service`, and how the local repack workers inherit the
+caller's slice.
 
 ## Adopting the consolidation in a consuming repo
 

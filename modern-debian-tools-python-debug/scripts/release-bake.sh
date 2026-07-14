@@ -66,6 +66,17 @@ case "${FLOW}" in
             mkdir -p "${REPACK_WORK_DIR}/src-${safe}"
             tar -xf "${REPACK_WORK_DIR}/src-${safe}.tar" -C "${REPACK_WORK_DIR}/src-${safe}"
             rm -f "${REPACK_WORK_DIR}/src-${safe}.tar"
+
+            # BuildKit emits one index descriptor per output tag. They can all
+            # reference the same image manifest; docker-repack otherwise treats
+            # those aliases as separate images and merges the same filesystem
+            # repeatedly. Publication tags come from Bake below, so retain one
+            # descriptor per digest/platform here.
+            index="${REPACK_WORK_DIR}/src-${safe}/index.json"
+            tmp_index="${index}.tmp"
+            jq '.manifests |= unique_by([.digest, (.platform.os // ""), (.platform.architecture // ""), (.platform.variant // "")])' \
+                "${index}" >"${tmp_index}"
+            mv "${tmp_index}" "${index}"
         done
 
         echo "[INFO] [repack] bounded repack start $(ts)"

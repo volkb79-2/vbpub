@@ -13,9 +13,10 @@ MDT_BUILDER_CPU_PERIOD = "100000"
 REPACK_WORK_DIR = "build/repack"
 REPACK_TARGET_SIZE = "2GB"
 REPACK_COMPRESSION_LEVEL = "9"
-REPACK_JOBS = "2"
+REPACK_JOBS = "1"
 REPACK_CONCURRENCY = "2"
-REPACK_VMEM_KB = "3145728"
+REPACK_VMEM_KB = "6291456"
+DOCKER_REPACK_LOG = "warn"
 OCI_VENDOR = "Volker Badziong"
 OCI_DESCRIPTION = """Modern Debian Tools + Python Debug image family.
 Includes a curated Debian + Python environment with managed venv and CIU-focused workflow tooling.

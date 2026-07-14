@@ -112,7 +112,8 @@ The docker images use date-based tags (`trixie-py3.14-20260616`, `20260616-2` fo
 - A plain `docker buildx bake` resolves to the default group, which currently points at `everything`.
 - Release builds automatically use the resource-confined named builder selected
   by `BUILDX_BUILDER`; limits are defined in `cmru.build.toml`. See
-  [USAGE.md](USAGE.md) § "Builder governance (`BUILDX_BUILDER`)".
+  [the build architecture](docs/BUILD-ARCHITECTURE.md) for the complete
+  build/repack/publication flow, cgroup boundaries, and load-attribution guide.
 
 Helper functions:
 
@@ -529,10 +530,11 @@ Use PAT with package scopes (classic token):
 Configured via environment (for example `.env` loaded by your release tooling).
 The release pipeline mirrors each GHCR package's visibility to the source repository after push, so new releases should not need a manual package-settings toggle.
 
-Some release steps call `skopeo` directly instead of `docker push`. For those, set
-`REGISTRY_AUTH_FILE` to a workspace-local auth file such as `./.ghcr-auth.json` if the
-current shell cannot reuse `~/.docker/config.json`. Keep that file untracked; it is only a
-local runtime fallback, not a project artifact.
+The canonical OCI-layout release path publishes through BuildKit and does not
+call `skopeo`. The historical local compression benchmark still uses `skopeo`
+to import an image from Docker's local image store; if you run that benchmark,
+`REGISTRY_AUTH_FILE` may point at a workspace-local file such as
+`./.ghcr-auth.json`. Keep that file untracked.
 
 > **Note:** When using the new cmru oci-image handler (cmru.toml `[project.xxx.oci]`),
 > cmru handles Docker login automatically. The `.ghcr-auth.json` fallback is only needed
@@ -682,6 +684,8 @@ The release path is OCI-layout-native: Bake writes one OCI tar per target,
 the tar is extracted into disk-backed scratch, `docker-repack` writes a second
 OCI layout, and the governed BuildKit builder imports that layout for registry
 publication. No daemon image round-trip or `skopeo` copy is involved.
+See [MDT build and release architecture](docs/BUILD-ARCHITECTURE.md) for the
+resource model, cgroup/slice boundaries, and live load-attribution commands.
 
 (b) How to count layers, source vs target:
 ```bash

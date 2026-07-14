@@ -12,6 +12,10 @@ This runs the environment resolver (MCR check, tool version resolution, artifact
 staging), saves the resolved state to `.build-env.json`, then exports one OCI
 layout per release target through the governed builder.
 
+For the end-to-end data path, cgroup and slice boundaries, resource defaults,
+and guidance for attributing load in `top`, Docker stats, and systemd, read
+[MDT build and release architecture](docs/BUILD-ARCHITECTURE.md).
+
 `RELEASE_IMAGE_FLOW` controls the release path:
 - `repack` is the default release mode. It builds directly to OCI tar streams,
   extracts those into disk-backed layouts, repacks at `REPACK_TARGET_SIZE`
@@ -28,7 +32,8 @@ controls the slice size used by the repack flow.
 Release builds use a resource-confined, **named** buildx builder rather than
 whatever builder happens to be the current default. `cmru.build.toml` owns the
 limits and `scripts/ensure-release-builder.sh` creates the builder on first use,
-then refuses an existing builder with missing hard limits.
+automatically recreates a project-owned builder whose driver or limits drifted,
+and fails closed if Docker does not apply the configured values.
 
 ```bash
 BUILDX_BUILDER=mdt-governed-v1 ./build-push.py --build
@@ -60,9 +65,13 @@ Caveats:
   4 GiB RAM, 12 GiB RAM+swap total, low CPU shares, and four-core quota. Plain
   `docker build` uses dockerd's own cgroup and bypasses that confinement.
 - Repacking runs outside BuildKit, so it has separate controls: disk-backed
-  `REPACK_WORK_DIR`, two workers, two compression threads per worker, low
-  CPU/I/O priority, and a 3 GiB virtual-memory ceiling per worker. All values
-  live in `cmru.build.toml` and can be overridden explicitly.
+  `REPACK_WORK_DIR`, one target worker, two compression threads, low CPU/I/O
+  priority, and a 6 GiB virtual-memory ceiling. All values live in
+  `cmru.build.toml` and can be overridden explicitly.
+
+This section is the operator quick reference. The architecture document covers
+the important distinction between the builder's Docker cgroup leaf, the
+caller's inherited slice, and `dockerd` in `system.slice`.
 
 ### Build counter
 

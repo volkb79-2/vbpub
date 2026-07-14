@@ -16,6 +16,7 @@ REPACK_COMPRESSION_LEVEL="${REPACK_COMPRESSION_LEVEL:?REPACK_COMPRESSION_LEVEL m
 REPACK_CONCURRENCY="${REPACK_CONCURRENCY:?REPACK_CONCURRENCY must be configured}"
 REPACK_VMEM_KB="${REPACK_VMEM_KB:?REPACK_VMEM_KB must be configured}"
 DOCKER_REPACK_BIN="${DOCKER_REPACK_BIN:-docker-repack}"
+DOCKER_REPACK_LOG="${DOCKER_REPACK_LOG:?DOCKER_REPACK_LOG must be configured}"
 
 for bin in docker jq "${DOCKER_REPACK_BIN}"; do
     command -v "${bin}" >/dev/null 2>&1 || {
@@ -60,7 +61,7 @@ worker_target() {
     }
 
     echo "[INFO]     repack ${src_oci} -> ${dst_oci}"
-    run_low_priority "${DOCKER_REPACK_BIN}" \
+    RUST_LOG="${DOCKER_REPACK_LOG}" run_low_priority "${DOCKER_REPACK_BIN}" \
         --target-size "${TARGET_SIZE}" \
         --compression-level "${REPACK_COMPRESSION_LEVEL}" \
         --concurrency "${REPACK_CONCURRENCY}" \

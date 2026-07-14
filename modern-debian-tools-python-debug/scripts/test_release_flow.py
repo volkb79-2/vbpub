@@ -34,10 +34,16 @@ class ReleaseFlowTests(unittest.TestCase):
         ):
             self.assertTrue(self.env[key], key)
 
+        builder = (ROOT / "scripts/ensure-release-builder.sh").read_text()
+        self.assertIn('driver}" != "docker-container"', builder)
+        self.assertIn('actual_memory}" != "${expected_memory}', builder)
+        self.assertIn('docker buildx rm "${BUILDER}"', builder)
+
     def test_active_repack_path_is_oci_native(self) -> None:
         bake = (ROOT / "scripts/release-bake.sh").read_text()
         repack = (ROOT / "scripts/release-repack.sh").read_text()
         self.assertIn("type=oci", bake)
+        self.assertIn("unique_by([.digest", bake)
         self.assertIn("oci-layout://", repack)
         self.assertNotIn("run_low_priority skopeo", repack)
         self.assertNotIn("docker-daemon:", repack)
