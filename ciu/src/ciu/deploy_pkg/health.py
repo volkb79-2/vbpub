@@ -215,7 +215,9 @@ def anchored_name_filter(project: str, env_tag: str, name: str) -> str:
 # Healthcheck-probe validation (ciu health --preflight)
 # ---------------------------------------------------------------------------
 
+import json as _json
 import re as _re
+import shlex as _shlex
 import subprocess as _subprocess
 from pathlib import Path as _Path
 
@@ -229,28 +231,55 @@ _SHELL_KEYWORDS: frozenset[str] = frozenset({
     "true", "false",
 })
 
-_SHELL_OP_RE: _re.Pattern[str] = _re.compile(r"&&|\|\||\||;")
+_SHELL_CONTROL_PREFIXES: frozenset[str] = frozenset({
+    "if", "then", "else", "elif", "while", "until", "for", "in", "do",
+})
+_SHELL_WRAPPERS: frozenset[str] = frozenset({"exec"})
+_SHELL_OPERATORS: frozenset[str] = frozenset({"&&", "||", "|", ";", "&"})
+_TOOL_NAME_RE: _re.Pattern[str] = _re.compile(r"^[A-Za-z0-9_.+:-]+$")
 
 
 def _parse_cmd_shell_tools(cmd_str: str) -> list[str]:
     """Extract external tool names from a CMD-SHELL healthcheck string.
 
-    Splits on shell operators (&&, ||, |, ;) then takes the first non-flag,
-    non-builtin, non-assignment token of each segment as the command name.
+    Shell-aware tokenisation keeps quoted ``python -c`` programs intact, then
+    examines command positions separated by operators. Builtins such as
+    ``exit 1`` terminate their segment, so arguments and quoted source are not
+    misreported as executables.
     """
+    try:
+        lexer = _shlex.shlex(cmd_str, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        raw_tokens = list(lexer)
+    except ValueError:
+        # An invalid shell string will fail at runtime, but a preflight tool
+        # probe must not invent an executable from partially parsed quoting.
+        return []
+
+    segments: list[list[str]] = [[]]
+    for token in raw_tokens:
+        if token in _SHELL_OPERATORS:
+            segments.append([])
+        else:
+            segments[-1].append(token)
+
     tools: list[str] = []
-    for segment in _SHELL_OP_RE.split(cmd_str):
-        tokens = segment.strip().split()
+    for tokens in segments:
         for token in tokens:
-            if token.startswith("-"):
-                break  # Hit a flag; no command in this segment position
+            if token == "!":
+                continue
             if "=" in token and not token.startswith("/"):
                 continue  # VAR=value assignment — skip
             word = token.rsplit("/", 1)[-1]  # take basename of any /path/tool
-            if word and word not in _SHELL_KEYWORDS:
-                tools.append(word)
+            if word in _SHELL_CONTROL_PREFIXES or word in _SHELL_WRAPPERS:
+                continue
+            if word in _SHELL_KEYWORDS or word.startswith("-"):
                 break
-    return tools
+            if _TOOL_NAME_RE.fullmatch(word):
+                tools.append(word)
+            break
+    return list(dict.fromkeys(tools))
 
 
 def extract_healthcheck_tools(compose_path: _Path) -> dict[str, tuple[str, list[str]]]:
@@ -297,6 +326,27 @@ def probe_image_tools(image: str, tools: list[str], *, timeout_s: float = 20.0) 
     Uses ``docker run --rm --entrypoint "" <image> sh -c "command -v <tool>"``.
     Returns False for a tool when Docker is unavailable or the probe times out.
     """
+    # Distroless images cannot execute the ``sh -c command -v`` probe. Their
+    # declared absolute entrypoint is nevertheless authoritative for a direct
+    # CMD healthcheck such as ``/otelcol-contrib validate``.
+    declared: set[str] = set()
+    try:
+        metadata = _subprocess.run(
+            ["docker", "image", "inspect", image, "--format", "{{json .Config}}"],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+        if metadata.returncode == 0:
+            config = _json.loads(metadata.stdout)
+            for argv in (config.get("Entrypoint"), config.get("Cmd")):
+                if isinstance(argv, list) and argv:
+                    first = str(argv[0])
+                    if first and not first.startswith("-"):
+                        declared.add(first.rsplit("/", 1)[-1])
+    except (FileNotFoundError, _subprocess.TimeoutExpired, _json.JSONDecodeError):
+        pass
+
     available: dict[str, bool] = {}
     for tool in tools:
         try:
@@ -310,9 +360,9 @@ def probe_image_tools(image: str, tools: list[str], *, timeout_s: float = 20.0) 
                 capture_output=True,
                 timeout=timeout_s,
             )
-            available[tool] = result.returncode == 0
+            available[tool] = result.returncode == 0 or tool in declared
         except (FileNotFoundError, _subprocess.TimeoutExpired):
-            available[tool] = False
+            available[tool] = tool in declared
     return available
 
 

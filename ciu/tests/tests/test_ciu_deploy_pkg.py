@@ -43,6 +43,49 @@ from ciu.deploy_pkg import (  # noqa: E402
     service_enabled,
     wait_for_gate,
 )
+from ciu.deploy_pkg.health import _parse_cmd_shell_tools, probe_image_tools  # noqa: E402
+
+
+# ===========================================================================
+# health._parse_cmd_shell_tools — image healthcheck preflight
+# ===========================================================================
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("wget -qO- http://127.0.0.1:8080/health || exit 1", ["wget"]),
+        ("curl -fsS http://localhost/health | grep -q ok", ["curl", "grep"]),
+        (
+            "python3 -c \"import urllib.request; "
+            "urllib.request.urlopen('http://127.0.0.1:9000/health').read()\"",
+            ["python3"],
+        ),
+        ("if wget -qO- http://localhost; then exit 0; else exit 1; fi", ["wget"]),
+        ("exec /usr/local/bin/otelcol-contrib --config=/etc/otel.yaml", ["otelcol-contrib"]),
+    ],
+)
+def test_healthcheck_tool_parser_reports_only_executables(command, expected):
+    assert _parse_cmd_shell_tools(command) == expected
+
+
+def test_healthcheck_probe_accepts_distroless_declared_entrypoint(monkeypatch):
+    import subprocess
+    import ciu.deploy_pkg.health as health
+
+    def fake_run(argv, **kwargs):
+        if argv[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(
+                argv, 0,
+                stdout='{"Entrypoint":["/otelcol-contrib"],"Cmd":["--config","/etc/otel.yaml"]}',
+                stderr="",
+            )
+        return subprocess.CompletedProcess(argv, 127, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(health._subprocess, "run", fake_run)
+    assert probe_image_tools("example/distroless", ["otelcol-contrib", "wget"]) == {
+        "otelcol-contrib": True,
+        "wget": False,
+    }
 
 
 # ===========================================================================

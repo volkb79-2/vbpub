@@ -629,7 +629,13 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `healthy`. `starting`/pending counts as **not passed**; the gate polls
   until `--health-timeout` then fails (exit 1). Services without a
   healthcheck are reported as `no-healthcheck` (warning), not as passing
-  silently.
+  silently. `ciu health --preflight` parses `CMD`/`CMD-SHELL` healthchecks and
+  probes only external executables in the declared image. Shell builtins,
+  control-flow tokens, numeric arguments, and quoted `python -c`/`node -e`
+  source MUST NOT be treated as executable names; `--strict` exits 1 only for
+  a genuinely missing probed executable. A direct executable declared as a
+  distroless image's entrypoint counts as present even when the image has no
+  shell with which to run `command -v`.
 - **S7.8** Container lookups MUST use anchored name/label filters
   (`^<project>-<env>-<name>$` or label equality), never substring matches.
 
