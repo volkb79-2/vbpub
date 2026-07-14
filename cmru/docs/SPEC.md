@@ -144,6 +144,12 @@ wheel/image/bundle, create the GitHub Release + upload assets, push to ghcr, wri
 `oci-image`, by cmru's built-in handler — see S14). cmru never hardcodes a project's file
 paths.
 
+**S-REL.4 — delegated publication is source-first and fail-closed.** After the delegated
+build step, cmru commits any tracked changes confined to the project subtree and performs
+`git push origin HEAD` before the publish step, even when the build made no new diff. A
+non-fast-forward or any other source-push failure MUST abort publication so the remote host
+cannot create an immutable release tag from a tree different from the one that was built.
+
 **S-REL.4 — Overrides & guards** (`[project.X.release]`): `git_tag = false/true` overrides
 the profile's tag capability; `commit_generated = ["<project-relative path>", …]` lists
 build outputs cmru must `git add`+commit after `build` (e.g. mdt's

@@ -1433,14 +1433,21 @@ def _run_delegated_project(repo_root: Path, configs: Mapping[str, "ProjectConfig
     # Commit just this project's subtree (cmru.vars is gitignored) and push before publish.
     dirty = _git(repo_root, "status", "--porcelain", "--", cwd)
     if dirty:
-        subprocess.run(["git", "-C", str(repo_root), "add", "--", cwd], check=False)
-        rc = subprocess.run(
+        subprocess.run(["git", "-C", str(repo_root), "add", "--", cwd], check=True)
+        subprocess.run(
             ["git", "-C", str(repo_root), "commit", "-m", f"chore({name}): release build inputs"],
-        ).returncode
-        if rc == 0:
-            log_info(f"{name}: committed build-input changes")
-            if subprocess.run(["git", "-C", str(repo_root), "push", "origin", "HEAD"]).returncode != 0:
-                log_warn(f"{name}: push of build-input commit failed; publish tag may lag remote HEAD.")
+            check=True,
+        )
+        log_info(f"{name}: committed build-input changes")
+
+    # Push even when the resolver produced no new diff. Remote main may have
+    # advanced after the caller's last fetch; publishing in that state would
+    # let GitHub create the delegated tag from a different tree. Fail closed.
+    subprocess.run(
+        ["git", "-C", str(repo_root), "push", "origin", "HEAD"],
+        check=True,
+    )
+    log_info(f"{name}: source HEAD is present on origin before publish")
 
     if "push" in project.steps:
         log_info(f"{name}: running step 'push'")

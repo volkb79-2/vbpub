@@ -5,6 +5,8 @@ Stdlib + tmp files only — no network, no git side effects.
 from __future__ import annotations
 
 import io
+import subprocess
+from types import SimpleNamespace
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -142,6 +144,33 @@ def test_unknown_verb_exits_2():
     with pytest.raises(SystemExit) as exc:
         cli.main(["frobnicate"])
     assert exc.value.code == 2
+
+
+def test_delegated_release_stops_before_publish_when_source_push_fails(
+    tmp_path, monkeypatch
+):
+    project = SimpleNamespace(cwd="pwmcp", steps={"build": object(), "push": object()})
+    calls: list[str] = []
+
+    monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_args: None)
+    monkeypatch.setattr(cli, "_git", lambda *_args: "")
+    monkeypatch.setattr(
+        cli,
+        "run_project_step",
+        lambda _project, step, *_args: calls.append(step),
+    )
+
+    def fake_run(argv, **kwargs):
+        if argv[-3:] == ["push", "origin", "HEAD"]:
+            raise subprocess.CalledProcessError(1, argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        cli._run_delegated_project(tmp_path, {"pwmcp": project}, "pwmcp")
+
+    assert calls == ["build"]
 
 
 def test_invalid_config_missing_github(tmp_path):
