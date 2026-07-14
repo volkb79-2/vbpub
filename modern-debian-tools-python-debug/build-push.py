@@ -305,7 +305,7 @@ def do_build(ignore_new_releases: bool) -> None:
     release_image_flow = (
         os.getenv("RELEASE_IMAGE_FLOW")
         or _read_cmru_env_default("RELEASE_IMAGE_FLOW")
-        or "load"
+        or "repack"
     ).strip().lower()
     if release_image_flow not in {"load", "push", "repack"}:
         raise SystemExit(

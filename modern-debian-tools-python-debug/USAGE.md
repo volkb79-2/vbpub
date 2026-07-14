@@ -9,12 +9,14 @@ Build all variants:
 ```
 
 This runs the environment resolver (MCR check, tool version resolution, artifact
-staging), saves the resolved state to `.build-env.json`, then runs
-`docker buildx bake all --load`.
+staging), saves the resolved state to `.build-env.json`, then exports one OCI
+layout per release target through the governed builder.
 
 `RELEASE_IMAGE_FLOW` controls the release path:
-- `repack` is the default release mode. It builds with `--load`, repacks at
-  `REPACK_TARGET_SIZE` (default `2GB`), and then pushes the repacked OCI layout.
+- `repack` is the default release mode. It builds directly to OCI tar streams,
+  extracts those into disk-backed layouts, repacks at `REPACK_TARGET_SIZE`
+  (default `2GB`), and publishes from the repacked layouts through BuildKit.
+  It does not load the original image into dockerd and does not use `skopeo`.
 - `load` keeps the daemon-first split for local-only validation.
 - `push` pushes the unrepacked BuildKit output directly.
 
@@ -23,23 +25,22 @@ controls the slice size used by the repack flow.
 
 ### Builder governance (`BUILDX_BUILDER`)
 
-Release builds should run through a resource-confined, **named** buildx builder rather than
-whatever builder happens to be the current default. Neither `scripts/release-bake.sh` nor
-`build-push.py` nor `docker-bake.hcl` hardcode a builder or pass `--builder` — `docker buildx bake`
-picks up the `BUILDX_BUILDER` environment variable natively, so selecting a confined builder is
-purely a matter of exporting it before invoking `./build-push.py --build` / `--push` / `--rebuild`
-(or a raw `docker buildx bake` call):
+Release builds use a resource-confined, **named** buildx builder rather than
+whatever builder happens to be the current default. `cmru.build.toml` owns the
+limits and `scripts/ensure-release-builder.sh` creates the builder on first use,
+then refuses an existing builder with missing hard limits.
 
 ```bash
-export BUILDX_BUILDER=governed
-./build-push.py --build
+BUILDX_BUILDER=mdt-governed-v1 ./build-push.py --build
 ```
 
 Canonical one-time builder creation (resource-confined, `docker-container` driver):
 
 ```bash
-docker buildx create --name governed --driver docker-container \
-    --driver-opt memory=4g --driver-opt cpu-shares=512
+docker buildx create --name mdt-governed-v1 --driver docker-container \
+    --driver-opt memory=4g --driver-opt memory-swap=12g \
+    --driver-opt cpu-shares=128 --driver-opt cpu-quota=400000 \
+    --driver-opt cpu-period=100000
 ```
 
 Caveats:
@@ -53,10 +54,15 @@ Caveats:
   (the same mechanism host operators use for any other container — see
   [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) § "Host resource governance
   (cgroups/slices)" for the underlying primitives).
-- Plain `docker build` (the default `docker` driver, no builder object) runs **inside the Docker
-  daemon's own cgroup** and bypasses all of the above confinement entirely. Always use the named
-  builder (`BUILDX_BUILDER=governed`, or whatever you called it) for anything beyond a quick local
-  smoke build.
+- Seeing `dockerd` in `system.slice/docker.service` is normal. The governed
+  `docker-container` builder puts the CPU- and memory-heavy BuildKit worker in
+  `buildx_buildkit_mdt-governed-v10`, where Docker enforces the configured
+  4 GiB RAM, 12 GiB RAM+swap total, low CPU shares, and four-core quota. Plain
+  `docker build` uses dockerd's own cgroup and bypasses that confinement.
+- Repacking runs outside BuildKit, so it has separate controls: disk-backed
+  `REPACK_WORK_DIR`, two workers, two compression threads per worker, low
+  CPU/I/O priority, and a 3 GiB virtual-memory ceiling per worker. All values
+  live in `cmru.build.toml` and can be overridden explicitly.
 
 ### Build counter
 

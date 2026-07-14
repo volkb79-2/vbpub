@@ -12,4 +12,14 @@
 # Args pass straight through to cmru.
 set -euo pipefail
 export PYTHONUNBUFFERED=1
-exec "$(dirname "$(readlink -f "$0")")/cmru.py" release "$@"
+
+repo_dir="$(dirname "$(readlink -f "$0")")"
+if [[ -n "${CMRU_PYTHON:-}" ]]; then
+    python_bin="$CMRU_PYTHON"
+elif [[ -x "$repo_dir/.venv/bin/python" ]]; then
+    python_bin="$repo_dir/.venv/bin/python"
+else
+    python_bin="python3"
+fi
+
+exec "$python_bin" -u "$repo_dir/cmru.py" release "$@"

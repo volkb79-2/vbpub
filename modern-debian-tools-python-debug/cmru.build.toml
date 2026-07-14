@@ -3,6 +3,19 @@ log_dir = "logs"
 release_config = "../cmru.toml"
 
 [env]
+RELEASE_IMAGE_FLOW = "repack"
+BUILDX_BUILDER = "mdt-governed-v1"
+MDT_BUILDER_MEMORY = "4g"
+MDT_BUILDER_MEMORY_SWAP = "12g"
+MDT_BUILDER_CPU_SHARES = "128"
+MDT_BUILDER_CPU_QUOTA = "400000"
+MDT_BUILDER_CPU_PERIOD = "100000"
+REPACK_WORK_DIR = "build/repack"
+REPACK_TARGET_SIZE = "2GB"
+REPACK_COMPRESSION_LEVEL = "9"
+REPACK_JOBS = "2"
+REPACK_CONCURRENCY = "2"
+REPACK_VMEM_KB = "3145728"
 OCI_VENDOR = "Volker Badziong"
 OCI_DESCRIPTION = """Modern Debian Tools + Python Debug image family.
 Includes a curated Debian + Python environment with managed venv and CIU-focused workflow tooling.
@@ -159,4 +172,3 @@ required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
 commands = [
   { label = "modern-debian-tools-python-debug: push images", argv = ["bash", "scripts/release-bake.sh", "push"], cwd = "." },
 ]
-

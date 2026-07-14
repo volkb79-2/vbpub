@@ -110,7 +110,9 @@ The docker images use date-based tags (`trixie-py3.14-20260616`, `20260616-2` fo
 - `group "everything"`: local exhaustive superset (`all` + `base` + `multi`).
 - `group "detection"`: resolver-only latest-stable probe target.
 - A plain `docker buildx bake` resolves to the default group, which currently points at `everything`.
-- Release builds should run through a resource-confined, named builder via `BUILDX_BUILDER` — see [USAGE.md](USAGE.md) § "Builder governance (`BUILDX_BUILDER`)".
+- Release builds automatically use the resource-confined named builder selected
+  by `BUILDX_BUILDER`; limits are defined in `cmru.build.toml`. See
+  [USAGE.md](USAGE.md) § "Builder governance (`BUILDX_BUILDER`)".
 
 Helper functions:
 
@@ -676,12 +678,18 @@ For this image family, the benchmark script is:
 
 It is intentionally benchmark-only. The release flow uses the same repack logic via `RELEASE_IMAGE_FLOW=repack` and `REPACK_TARGET_SIZE=2GB`.
 
+The release path is OCI-layout-native: Bake writes one OCI tar per target,
+the tar is extracted into disk-backed scratch, `docker-repack` writes a second
+OCI layout, and the governed BuildKit builder imports that layout for registry
+publication. No daemon image round-trip or `skopeo` copy is involved.
+
 (b) How to count layers, source vs target:
 ```bash
-# source (registry, after resolving the amd64 digest):
-skopeo inspect --raw docker://<img> | jq '.layers | length'
-# target OCI layout dir:
-skopeo inspect --raw oci:///tmp/mdt-repacked2 | jq '.layers | length'
+# source registry manifest:
+docker buildx imagetools inspect --raw <img> | jq '.layers | length'
+# target OCI layout directory:
+digest=$(jq -r '.manifests[0].digest' /tmp/mdt-repacked2/index.json)
+jq '.layers | length' "/tmp/mdt-repacked2/blobs/sha256/${digest#sha256:}"
 # a local daemon image (diff-layer count):
 docker inspect <img> --format '{{len .RootFS.Layers}}'
 ```
