@@ -20,6 +20,7 @@ from install_ai_cli_tools import (
     install_binaries_from_archive,
     install_codex,
     install_opencode,
+    opencode_platform_package,
     main,
     is_enabled,
     parse_tool_entries,
@@ -132,6 +133,7 @@ class TestInstallOpencode:
 
         recorded: list[list[str]] = []
         required: list[str] = []
+        linked: list[tuple[Path, Path]] = []
 
         def fake_run(argv: list[str]) -> None:
             recorded.append(argv)
@@ -139,7 +141,11 @@ class TestInstallOpencode:
             return
 
         import install_ai_cli_tools as mod
+        monkeypatch.setattr(mod.platform, "machine", lambda: "x86_64")
+        monkeypatch.setattr(mod.platform, "libc_ver", lambda: ("glibc", "2.41"))
         monkeypatch.setattr(mod, "require_command", lambda command, _description: required.append(command))
+        monkeypatch.setattr(mod, "require_file", lambda *_args: None)
+        monkeypatch.setattr(mod, "link_binary", lambda source, destination: linked.append((source, destination)))
         original_run = mod.run_command
         try:
             mod.run_command = fake_run
@@ -148,8 +154,12 @@ class TestInstallOpencode:
             mod.run_command = original_run
 
         assert len(recorded) == 1
-        assert recorded[0] == ["npm", "install", "-g", "opencode-ai@1.2.3"]
+        assert recorded[0] == ["npm", "install", "-g", "opencode-linux-x64-baseline@1.2.3"]
         assert required == ["npm", "opencode"]
+        assert linked == [(
+            Path("/home/vscode/.local/lib/node_modules/opencode-linux-x64-baseline/bin/opencode"),
+            Path("/home/vscode/.local/bin/opencode"),
+        )]
 
     def test_version_env_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """OPENCODE_VERSION is used when OPENCODE_VER is not set."""
@@ -161,7 +171,11 @@ class TestInstallOpencode:
             recorded.append(argv)
 
         import install_ai_cli_tools as mod
+        monkeypatch.setattr(mod.platform, "machine", lambda: "aarch64")
+        monkeypatch.setattr(mod.platform, "libc_ver", lambda: ("musl", "1.2"))
         monkeypatch.setattr(mod, "require_command", lambda *_args: None)
+        monkeypatch.setattr(mod, "require_file", lambda *_args: None)
+        monkeypatch.setattr(mod, "link_binary", lambda *_args: None)
         original_run = mod.run_command
         try:
             mod.run_command = fake_run
@@ -170,7 +184,23 @@ class TestInstallOpencode:
             mod.run_command = original_run
 
         assert len(recorded) == 1
-        assert recorded[0] == ["npm", "install", "-g", "opencode-ai@2.0.0"]
+        assert recorded[0] == ["npm", "install", "-g", "opencode-linux-arm64-musl@2.0.0"]
+
+    def test_platform_package_prefers_portable_x64_build(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import install_ai_cli_tools as mod
+
+        monkeypatch.setattr(mod.platform, "machine", lambda: "amd64")
+        monkeypatch.setattr(mod.platform, "libc_ver", lambda: ("glibc", "2.41"))
+        assert opencode_platform_package() == "opencode-linux-x64-baseline"
+
+    def test_unsupported_architecture_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import install_ai_cli_tools as mod
+
+        monkeypatch.setattr(mod.platform, "machine", lambda: "riscv64")
+        with pytest.raises(InstallerError, match="Unsupported OpenCode architecture"):
+            opencode_platform_package()
 
 
 def test_user_mode_sets_user_owned_npm_prefix(

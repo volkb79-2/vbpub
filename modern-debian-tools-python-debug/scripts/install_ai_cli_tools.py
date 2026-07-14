@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -90,6 +91,12 @@ def copy_binary(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
     destination.chmod(0o755)
+
+
+def link_binary(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.unlink(missing_ok=True)
+    destination.symlink_to(os.path.relpath(source, destination.parent))
 
 
 def find_binary(root: Path, binary_name: str) -> Path:
@@ -223,6 +230,20 @@ def install_aider(ctx: InstallerContext) -> None:
     )
 
 
+def opencode_platform_package() -> str:
+    machine = platform.machine().lower()
+    if machine in {"x86_64", "amd64"}:
+        architecture = "x64-baseline"
+    elif machine in {"aarch64", "arm64"}:
+        architecture = "arm64"
+    else:
+        raise InstallerError(f"Unsupported OpenCode architecture: {machine}")
+
+    libc_name = platform.libc_ver()[0].lower()
+    libc_suffix = "-musl" if libc_name == "musl" else ""
+    return f"opencode-linux-{architecture}{libc_suffix}"
+
+
 def install_opencode() -> None:
     if not is_enabled("INSTALL_OPENCODE", True):
         log("INFO", "INSTALL_OPENCODE=false; skipping OpenCode")
@@ -230,8 +251,14 @@ def install_opencode() -> None:
 
     version = env_value("OPENCODE_VER", "OPENCODE_VERSION", default="latest")
     require_command("npm", "npm is required to install OpenCode")
-    run_command(["npm", "install", "-g", f"opencode-ai@{version}"])
-    require_command("opencode", "OpenCode npm package did not expose the opencode command")
+    package = opencode_platform_package()
+    run_command(["npm", "install", "-g", f"{package}@{version}"])
+
+    prefix = Path(env_value("NPM_CONFIG_PREFIX", default="/home/vscode/.local"))
+    binary = prefix / "lib" / "node_modules" / package / "bin" / "opencode"
+    require_file(binary, "OpenCode platform binary")
+    link_binary(binary, prefix / "bin" / "opencode")
+    require_command("opencode", "OpenCode platform package did not expose the opencode command")
 
 
 def parse_tool_entries(tools_file: Path) -> list[tuple[str, str]]:

@@ -217,7 +217,7 @@ annotated for what it's for. It splits into dev/build tooling (`ruff`, `mypy`, `
 
 Optional (controlled by `INSTALL_*` build args, all enabled by default):
 - `aider-chat` — `INSTALL_AIDER=true`
-- `reasonix`, `openclaw`, `opencode`, `copilot` — npm-based, installed separately from the venv into the user-owned `/home/vscode/.local` prefix and backed by the image's upstream Node 26 toolchain
+- `reasonix`, `openclaw`, `opencode`, `copilot` — npm-based, installed separately from the venv into the user-owned `/home/vscode/.local` prefix and backed by the image's upstream Node 26 toolchain. OpenCode uses its resolved platform package directly because the `opencode-ai` meta-package can select mutually incompatible glibc and musl optional packages under npm 11.
 - `codex` — installed separately from the venv with the official user-local standalone installer
 - `claude-code`, `antigravity` — installed separately from the venv as image-owned binaries
 
