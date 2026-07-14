@@ -610,8 +610,7 @@ USER vscode
 RUN --mount=type=cache,target=/home/vscode/.npm,uid=1000,gid=1000,sharing=locked \
     set -euo pipefail; \
     set -a; . /tmp/ai-tool-versions.env; set +a; \
-    python3 /tmp/install_ai_cli_tools.py user; \
-    rm -f /tmp/ai-tool-versions.env
+    python3 /tmp/install_ai_cli_tools.py user
 RUN --mount=type=cache,target=/home/vscode/.cache/pip,uid=1000,gid=1000,sharing=locked \
     set -euo pipefail; \
     python3 -m venv /home/vscode/.venv; \
@@ -666,7 +665,7 @@ ENV VIRTUAL_ENV="/home/vscode/.venv"
 ENV PATH="/home/vscode/.venv/bin:${PATH}"
 
 USER root
-RUN rm -f /tmp/install_ai_cli_tools.py /tmp/ai-cli-tools.list
+RUN rm -f /tmp/install_ai_cli_tools.py /tmp/ai-cli-tools.list /tmp/ai-tool-versions.env
 RUN set -euo pipefail; \
         cat > /etc/profile.d/dstdns-venv.sh << 'EOF'
 if [ -n "${BASH_VERSION:-}" ] && [[ $- == *i* ]] && [ -d /home/vscode/.venv ]; then
