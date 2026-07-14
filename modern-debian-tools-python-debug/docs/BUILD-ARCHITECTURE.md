@@ -49,6 +49,20 @@ The source and repacked layouts are temporary release scratch. Do not place
 `REPACK_WORK_DIR` on tmpfs: two large targets can require many GiB while source
 and destination layouts coexist.
 
+### Cache ownership
+
+The named `docker-container` builder owns a persistent BuildKit cache distinct
+from Docker's default builder. Its first release is therefore cold even if a
+different builder recently built the same Dockerfile; later releases reuse its
+layers and cache mounts. Recreating the builder to correct configuration drift
+also discards that builder-local cache.
+
+Large context-transfer and Block I/O totals can include staged tool downloads
+and prior cache activity. `.dockerignore` must keep `REPACK_WORK_DIR`, logs, and
+other generated scratch out of the context. Use an explicit no-cache build only
+when validating freshness semantics: it materially increases registry, package
+mirror, CPU, and disk load.
+
 ## Resource-governance boundaries
 
 There are two distinct execution boundaries. They intentionally do not depend
@@ -57,7 +71,7 @@ on a single global `dockerd` limit.
 | Work | Process/container to inspect | Governance |
 | --- | --- | --- |
 | Dockerfile steps, cache, layer compression, OCI export and OCI-context publication | `buildx_buildkit_mdt-governed-v10` | Docker hard limits created from `MDT_BUILDER_*`: 4 GiB RAM, 12 GiB combined RAM+swap, four-core quota, CPU shares 128 |
-| Resolver, artifact staging, OCI tar extraction, release orchestration | `build-push.py`, resolver scripts, `tar` | Inherits the caller's cgroup; from the MDT devcontainer this is normally `interactive.slice` |
+| Resolver, Bake client, artifact staging, OCI export streaming, tar extraction, release orchestration | `build-push.py`, `docker-buildx`, resolver scripts, `tar` | Inherits the caller's cgroup; from the MDT devcontainer this is normally `interactive.slice` |
 | Filesystem deduplication and zstd compression | `docker-repack` | Inherits the caller's cgroup, plus low CPU/I/O scheduling priority, configured worker count, compression concurrency, and a per-worker virtual-memory ceiling |
 | Docker API, container lifecycle, layer/accounting and registry coordination | `dockerd` in `system.slice/docker.service` | Host Docker service policy; CPU here is daemon work and is not evidence that Dockerfile commands escaped the governed builder |
 | Registry upload | BuildKit worker, `dockerd`, network stack | Builder limits still apply; host networking and Docker service work remain outside the builder leaf |
@@ -87,9 +101,12 @@ important distinction is:
 The default limits are deliberately layered. The BuildKit worker's hard cgroup
 limits contain a runaway build. Repack is a local process, so
 `REPACK_JOBS=1`, `REPACK_CONCURRENCY=2`, `nice`, idle-class `ionice`, and
-`REPACK_VMEM_KB=6291456` bound its pressure. One target at a time prevents two
-large merged filesystems from competing inside the default 7 GiB interactive
-tier. The caller's slice remains the aggregate backstop.
+the caller's cgroup bound its pressure. One target at a time prevents two large
+merged filesystems from competing inside the default 7 GiB interactive tier.
+`REPACK_VMEM_KB=unlimited` is intentional: `docker-repack` maps a large merged
+filesystem, and virtual address space is not resident RAM. A numeric override
+is available for diagnosis, but a low address-space limit causes false
+allocation failures before the cgroup is under memory pressure.
 
 `memory-swap=12g` is Docker's combined RAM-plus-swap ceiling, not a prohibition
 on swap. Paired with `memory=4g`, it permits up to 8 GiB of swap for the builder.
@@ -97,6 +114,33 @@ Whether those pages use zswap before disk swap is a host kernel policy.
 
 For the devcontainer's `interactive.slice` placement and host prerequisites,
 see [`DEVCONTAINER-LIFECYCLE.md`](../DEVCONTAINER-LIFECYCLE.md#host-resource-governance-cgroupsslices).
+
+### How the cgroup controls compose
+
+A process must satisfy its leaf and every ancestor. The effective ceiling is
+therefore the tightest applicable control, not the sum of all configured
+values.
+
+- `memory.high` is a reclaim/throttling boundary. Crossing it creates pressure
+  and may move cold anonymous pages toward swap; it is not an immediate kill.
+- `memory.max` is the hard RAM boundary for that cgroup. Sustained allocation
+  that cannot be reclaimed can produce an in-cgroup OOM kill.
+- In native cgroup v2, `memory.swap.max` limits swap separately. Docker's
+  `--memory-swap` / `HostConfig.MemorySwap` instead expresses the combined
+  RAM-plus-swap total when a memory limit is also present.
+- `memory.low` and `memory.min` protect pages during reclaim; they do not
+  pre-allocate or reserve physical RAM. Protection also has to be valid along
+  the ancestor chain to be effective.
+- `cpu.max` / Docker quota is a hard time budget. `cpu.weight` and Docker CPU
+  shares are proportional preferences that matter when sibling cgroups
+  contend; they do not cap an otherwise idle host.
+- `io.weight` is likewise proportional under contention. `io.max` is a hard
+  per-device bandwidth/IOPS ceiling. Empty `io.max` means no leaf ceiling, but
+  an ancestor can still impose one.
+
+This is why diagnosis must inspect both the builder container and its ancestor
+slice. An exit 137 can be a leaf limit, an ancestor OOM decision, or an explicit
+kill; the number alone does not identify which one.
 
 ## Entry points and live logs
 
@@ -122,6 +166,9 @@ attribute it:
 
 - High CPU in `buildkitd` or its executor descendants is a Dockerfile build,
   layer export, or publication phase. Check the named builder container first.
+- High CPU in the `docker-buildx` client can occur while it receives and writes
+  an OCI output stream. That client is local to the caller and inherits the
+  caller's slice; Dockerfile executors still run in the governed worker.
 - High CPU in `docker-repack` is the deduplication/compression phase. One target
   runs at a time by default, while `REPACK_CONCURRENCY=2` permits two internal
   compression threads.
@@ -170,6 +217,10 @@ cat /sys/fs/cgroup/cpu.weight
 cat /sys/fs/cgroup/io.max
 ```
 
+`docker stats` Block I/O counters are cumulative for the lifetime of the named
+builder container. Compare samples or use host I/O telemetry when you need a
+rate; a large single value does not mean that throughput is happening now.
+
 Do not compare Docker CPU percentages to whole-host `top` percentages without
 normalizing: Docker commonly reports `100%` per fully occupied logical CPU,
 while `top` configuration can display either per-CPU or whole-machine values.
@@ -193,7 +244,8 @@ The governed defaults are in the `[env]` table of
 - `BUILDX_BUILDER` and `MDT_BUILDER_*` control the BuildKit worker.
 - `REPACK_WORK_DIR`, `REPACK_TARGET_SIZE`, `REPACK_JOBS`,
   `REPACK_CONCURRENCY`, `REPACK_COMPRESSION_LEVEL`, and `REPACK_VMEM_KB`
-  control repack. `DOCKER_REPACK_LOG` controls library verbosity without
+  control repack. `REPACK_VMEM_KB` accepts `unlimited` or a positive numeric
+  diagnostic override. `DOCKER_REPACK_LOG` controls library verbosity without
   hiding the wrapper's target-level progress.
 - `RELEASE_IMAGE_FLOW` selects the architecture above.
 

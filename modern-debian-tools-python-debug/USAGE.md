@@ -66,8 +66,10 @@ Caveats:
   `docker build` uses dockerd's own cgroup and bypasses that confinement.
 - Repacking runs outside BuildKit, so it has separate controls: disk-backed
   `REPACK_WORK_DIR`, one target worker, two compression threads, low CPU/I/O
-  priority, and a 6 GiB virtual-memory ceiling. All values live in
-  `cmru.build.toml` and can be overridden explicitly.
+  priority, and the caller's cgroup. The default does not impose a virtual
+  address-space ceiling because the merged filesystem is much larger than the
+  process's resident memory; `REPACK_VMEM_KB` remains available as an explicit
+  diagnostic override. All values live in `cmru.build.toml`.
 
 This section is the operator quick reference. The architecture document covers
 the important distinction between the builder's Docker cgroup leaf, the
@@ -150,17 +152,17 @@ To do both in one command:
 ./build-push.py --rebuild
 ```
 
-Docker's build cache is checked during push: if the build context and Dockerfile
-haven't changed, cached layers are reused and only the image manifest is pushed.
-If the context changed (e.g. fresh tool downloads, counter increment), layers
-are rebuilt before pushing.
-
 When `RELEASE_IMAGE_FLOW=repack`, the push step becomes a no-op because the
 repack happens during the build phase. `docker-repack` changes digests, so the
 release flow must always push the repacked OCI layout, not the unrepacked
 BuildKit output. The canonical in-image manifest is exported directly from the
 repacked OCI layout; it is not obtained by pulling the published image back
 into Docker's local image store.
+
+In the non-release `load` mode, the later push is a second Bake invocation.
+BuildKit checks its cache, but changed inputs can rebuild layers and the result
+is unrepacked. In the explicit `push` mode, publication already happens during
+the build phase and its later push step is also a no-op.
 
 Ensure you are logged in to the registry (e.g., `docker login ghcr.io`) and that
 `GITHUB_USERNAME` matches your org/user. If `GITHUB_PUSH_PAT` and

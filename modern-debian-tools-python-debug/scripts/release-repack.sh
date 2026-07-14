@@ -24,7 +24,7 @@ for bin in docker jq "${DOCKER_REPACK_BIN}"; do
         exit 3
     }
 done
-for value_name in REPACK_JOBS REPACK_CONCURRENCY REPACK_VMEM_KB; do
+for value_name in REPACK_JOBS REPACK_CONCURRENCY; do
     value="${!value_name}"
     case "${value}" in
         ''|*[!0-9]*|0)
@@ -33,6 +33,10 @@ for value_name in REPACK_JOBS REPACK_CONCURRENCY REPACK_VMEM_KB; do
             ;;
     esac
 done
+if [[ "${REPACK_VMEM_KB}" != "unlimited" && ! "${REPACK_VMEM_KB}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[ERROR] REPACK_VMEM_KB must be 'unlimited' or a positive integer." >&2
+    exit 2
+fi
 
 run_low_priority() {
     if command -v ionice >/dev/null 2>&1; then
@@ -51,7 +55,9 @@ worker_target() {
     local -a push_args
 
     trap 'rc=$?; set +e; printf "%s\n" "$rc" >"$rc_file"; rm -rf "$src_oci" "$dst_oci" "$tmp_dir"' EXIT
-    ulimit -v "${REPACK_VMEM_KB}"
+    if [[ "${REPACK_VMEM_KB}" != "unlimited" ]]; then
+        ulimit -v "${REPACK_VMEM_KB}"
+    fi
     mkdir -p "${tmp_dir}"
     export TMPDIR="${tmp_dir}"
 
