@@ -39,25 +39,18 @@ limits and `scripts/ensure-release-builder.sh` creates the builder on first use,
 automatically recreates a project-owned builder whose driver or limits drifted,
 and fails closed if Docker does not apply the configured values.
 
-```bash
-BUILDX_BUILDER=mdt-governed-v1 ./build-push.py --build
-```
-
-Canonical one-time builder creation (resource-confined, `docker-container` driver):
-
-```bash
-docker buildx create --name mdt-governed-v1 --driver docker-container \
-    --driver-opt memory=4g --driver-opt memory-swap=12g \
-    --driver-opt cpu-shares=128 --driver-opt cpu-quota=400000 \
-    --driver-opt cpu-period=100000
-```
+Do not create or update the release builder by copying a `docker buildx create`
+command from this guide. Run the normal build entry point; it reads the current
+name and limits from `cmru.build.toml`, creates the builder when absent, repairs
+configuration drift, and verifies Docker's applied limits before building.
 
 Caveats:
 
-- The `cgroup-parent` driver-opt is **silently ignored** when the Docker daemon uses the systemd
-  cgroup driver (the common case on modern distros) — true slice placement of a buildx builder is
-  not possible that way. The `memory` / `cpu-shares` (and `cpu-quota`, `cpuset-cpus`) driver-opts
-  above ARE honored unconditionally and apply real limits regardless of cgroup driver.
+- The `cgroup-parent` Buildx driver option is not relied upon with Docker's
+  systemd cgroup driver. The release instead verifies the container leaf's
+  memory, memory+swap, CPU shares, and CPU quota. True placement in a specific
+  host slice requires a host-managed BuildKit service and the Buildx `remote`
+  driver.
 - I/O caps (e.g. read/write IOPS) are not expressible via buildx driver-opts at all; if you need
   them, apply them host-side against the running `buildx_buildkit_<name>_*` container's cgroup
   (the same mechanism host operators use for any other container — see
@@ -65,9 +58,9 @@ Caveats:
   (cgroups/slices)" for the underlying primitives).
 - Seeing `dockerd` in `system.slice/docker.service` is normal. The governed
   `docker-container` builder puts the CPU- and memory-heavy BuildKit worker in
-  `buildx_buildkit_mdt-governed-v10`, where Docker enforces the configured
-  4 GiB RAM, 12 GiB RAM+swap total, low CPU shares, and four-core quota. Plain
-  `docker build` uses dockerd's own cgroup and bypasses that confinement.
+  a separate generated container scope, where Docker enforces the values from
+  `cmru.build.toml`. Plain `docker build` does not select this named builder and
+  therefore bypasses that project-owned confinement.
 - Repacking runs outside BuildKit, so it has separate controls: disk-backed
   `REPACK_WORK_DIR`, one target worker, two compression threads, low CPU/I/O
   priority, and the caller's cgroup. The default does not impose a virtual

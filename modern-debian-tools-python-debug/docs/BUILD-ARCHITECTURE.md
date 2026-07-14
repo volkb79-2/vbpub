@@ -101,6 +101,12 @@ There are three accounting domains: the BuildKit container leaf, release
 processes in the caller's container, and the host Docker daemon. They
 intentionally do not depend on a single global `dockerd` limit.
 
+The release command crosses these domains through the Docker API. Process
+parentage and cgroup ownership are therefore not the same thing: `dockerd` can
+start a limited BuildKit container while remaining in `docker.service`, and a
+Buildx client in the devcontainer can stream data to that worker without
+Dockerfile commands joining the devcontainer's cgroup.
+
 On the intended systemd/cgroup-v2 host, the relationship is typically:
 
 ```mermaid
@@ -125,7 +131,7 @@ devcontainer's `interactive.slice`.
 
 | Work | Process/container to inspect | Governance |
 | --- | --- | --- |
-| Dockerfile steps, cache, layer compression, registry export, optional OCI export/import | `buildx_buildkit_mdt-governed-v10` | Docker hard limits created from `MDT_BUILDER_*`: 4 GiB RAM, 12 GiB combined RAM+swap, four-core quota, CPU shares 128 |
+| Dockerfile steps, cache, layer compression, registry export, optional OCI export/import | The container backing the configured `BUILDX_BUILDER` | Docker hard limits created from `MDT_BUILDER_*`: 4 GiB RAM, 12 GiB combined RAM+swap, four-core quota, CPU shares 128 |
 | Resolver, Bake client, artifact staging, OCI export streaming, tar extraction, release orchestration | `build-push.py`, `docker-buildx`, resolver scripts, `tar` | Inherits the caller's cgroup; from the MDT devcontainer this is normally `interactive.slice` |
 | Filesystem deduplication and zstd compression | `docker-repack` | Inherits the caller's cgroup, plus low CPU/I/O scheduling priority, configured worker count and compression concurrency; an optional diagnostic virtual-memory ceiling is disabled by default |
 | Docker API, container lifecycle, layer/accounting and registry coordination | `dockerd` in `system.slice/docker.service` | Host Docker service policy; CPU here is daemon work and is not evidence that Dockerfile commands escaped the governed builder |
@@ -169,6 +175,13 @@ shares/weight, and I/O weight let more important work win under contention, but
 do not stop MDT from using otherwise-idle capacity. The builder's CPU quota and
 memory settings are hard leaf limits. Local repack has no extra hard CPU quota;
 its hard boundary is whatever the caller and ancestor slice impose.
+
+The four-core quota is an aggregate budget. A multithreaded build can therefore
+show roughly `400%` in Docker's per-core CPU convention without violating it.
+Likewise, `dockerd` can show more than `100%` because it is multithreaded and is
+not inside the builder leaf. CPU shares 128 are only a contention preference;
+the quota is what prevents the builder from consuming more than four complete
+cores when the host is otherwise idle.
 
 `memory-swap=12g` is Docker's combined RAM-plus-swap ceiling, not a prohibition
 on swap. Paired with `memory=4g`, it permits up to 8 GiB of swap for the builder.
@@ -244,18 +257,41 @@ attribute it:
   may be in BuildKit or a repack worker. `build-push.py` and `cmru.release.sh`
   use unbuffered Python so progress is visible through `2>&1 | tee`.
 
+Use this phase map before changing a limit:
+
+| Visible load | Likely phase | First check | Usually bounded by |
+| --- | --- | --- | --- |
+| `buildkitd`, `runc`, compiler, package manager, or compression child beneath the builder | Dockerfile execution or layer export | Builder `docker stats`, `cpu.stat`, `memory.events`, and BuildKit progress | Builder leaf plus its ancestors |
+| `docker-buildx`, `tar`, or `build-push.py` in the MDT devcontainer | Resolve/stage/orchestrate or OCI stream handling | Caller cgroup and `interactive.slice` | Devcontainer leaf and `interactive.slice` |
+| `docker-repack` in the MDT devcontainer | Optional repack | Repack progress, caller PSI and I/O counters | Caller cgroup, job/concurrency settings, priority, and `interactive.slice` |
+| `dockerd` in `docker.service` | Snapshot, content-store, API, container, or registry coordination | Docker events/logs and host disk/network activity | Host policy for `docker.service`; not the builder's leaf |
+| `containerd`, `containerd-shim`, or kernel I/O workers | Runtime/snapshotter plumbing | Correlate timestamps and cumulative I/O deltas with the active phase | Their host service/cgroup and host I/O policy |
+| No hot process but high load average | Tasks blocked on disk or memory reclaim | `/proc/pressure/{io,memory}`, `vmstat`, and cgroup pressure | Host capacity and the tightest ancestor/leaf controls |
+
+Load average includes runnable and uninterruptible tasks; it is not a CPU
+percentage. High load with modest CPU is commonly storage wait or reclaim.
+Resident memory, page cache, and swap are also different signals: a high
+`memory.current` can be reclaimable cache, while rising `memory.swap.current`,
+`memory.events`, or memory PSI identifies actual pressure more directly.
+
 Useful live checks:
 
 ```bash
+# Resolve names from release configuration; do not copy a generated container
+# name from another host or an old run.
+builder=$(python3 -c \
+  'import tomllib; print(tomllib.load(open("cmru.build.toml", "rb"))["env"]["BUILDX_BUILDER"])')
+builder_container="buildx_buildkit_${builder}0"
+
 # Builder identity, driver and current endpoint
-docker buildx inspect mdt-governed-v1
+docker buildx inspect "$builder"
 
 # Hard limits actually applied to the builder leaf
-docker inspect buildx_buildkit_mdt-governed-v10 --format \
+docker inspect "$builder_container" --format \
   'memory={{.HostConfig.Memory}} memory+swap={{.HostConfig.MemorySwap}} shares={{.HostConfig.CpuShares}} quota={{.HostConfig.CpuQuota}}/{{.HostConfig.CpuPeriod}}'
 
 # Resource use by the governed worker
-docker stats --no-stream buildx_buildkit_mdt-governed-v10
+docker stats --no-stream "$builder_container"
 
 # Attribute host processes by command and cgroup
 ps -eo pid,ppid,pcpu,pmem,cgroup,comm,args --sort=-pcpu | head -40
@@ -265,6 +301,12 @@ systemctl show interactive.slice besteffort.slice \
   -p ControlGroup -p MemoryCurrent -p MemoryHigh -p MemoryMax \
   -p MemorySwapCurrent -p MemorySwapMax -p CPUWeight -p IOWeight
 ```
+
+Run the name-resolution commands from the
+`modern-debian-tools-python-debug` directory. The generated container name is
+an implementation detail of the Docker-container driver; the configured
+builder name in `cmru.build.toml` is the durable interface used by the release
+scripts.
 
 Run the `ps` and `systemctl` checks on the host. A container commonly has a
 private PID and cgroup namespace, so host PIDs from `docker inspect` may not
@@ -298,6 +340,19 @@ cat /sys/fs/cgroup/io.stat        # cumulative bytes and operations by device
 cat /sys/fs/cgroup/io.pressure
 ```
 
+On the host, obtain the builder's real cgroup path from its PID rather than
+guessing its slice:
+
+```bash
+pid=$(docker inspect "$builder_container" --format '{{.State.Pid}}')
+cat "/proc/$pid/cgroup"
+systemd-cgls --all | rg 'buildx_buildkit|dockerd|docker-repack|build-push'
+```
+
+This is the authoritative way to distinguish the builder's limited Docker
+scope from `docker.service` and from the invoking devcontainer. The cgroup path
+can differ with the host's Docker cgroup driver and systemd configuration.
+
 The host-wide PSI files under `/proc/pressure/` reveal global contention, while
 the cgroup files above attribute it to a workload. Zswap is also host-wide
 kernel policy rather than an MDT or Docker allocation. On hosts with debugfs
@@ -312,6 +367,14 @@ rate; a large single value does not mean that throughput is happening now.
 Do not compare Docker CPU percentages to whole-host `top` percentages without
 normalizing: Docker commonly reports `100%` per fully occupied logical CPU,
 while `top` configuration can display either per-CPU or whole-machine values.
+
+For example, a `top` row showing `dockerd` near `187%` in
+`system.slice/docker.service` means the daemon is using about 1.87 logical
+CPUs. That placement is intended. It says nothing by itself about whether the
+build worker is limited or whether repack is active. Check the separately
+resolved builder container and the `RELEASE_IMAGE_FLOW` value; only a
+`docker-repack` process and OCI-layout progress identify the optional repack
+lane.
 
 ## Release modes and their intended use
 
