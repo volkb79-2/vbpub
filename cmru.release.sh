@@ -11,4 +11,5 @@
 #
 # Args pass straight through to cmru.
 set -euo pipefail
+export PYTHONUNBUFFERED=1
 exec "$(dirname "$(readlink -f "$0")")/cmru.py" release "$@"

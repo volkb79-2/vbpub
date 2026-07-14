@@ -21,4 +21,9 @@ from cmru.cli import main  # noqa: E402
 
 
 if __name__ == "__main__":
+    # Keep progress visible through `2>&1 | tee ...`; otherwise Python switches
+    # stdout to block buffering because the pipeline is not a TTY.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
     main()

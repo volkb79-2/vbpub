@@ -96,11 +96,34 @@ admin_port = 8939
 # entrypoint rejects nonsense values fatally, not by clamping.
 browser_max_idle_s = 0
 
+# Native Playwright run-server policy. Port 3000 is the lease gateway; the
+# actual Playwright server is loopback-only on upstream_port. Clients may ask
+# for a lease through X-PWMCP-Lease-Seconds, clamped to max_lease_s.
+[pwmcp.run_server]
+upstream_port = 3001
+admin_port = 8940
+default_lease_s = 1800
+max_lease_s = 7200
+max_clients = 2
+idle_recycle_s = 30
+
+[pwmcp.health]
+interval = "30s"
+timeout = "5s"
+retries = 5
+start_period = "30s"
+
+# Optional consumer network. Set this in a consumer's override when pwmcp is
+# rendered separately from the application stack but must be reachable there.
+[pwmcp.consumer]
+network = ""
+aliases = ["pwmcp", "pwmcp-mcp", "pwmcp-playwright"]
+
 [pwmcp.unified.image]
 registry = "ghcr.io"
 namespace = "volkb79-2"
 name = "pwmcp"
-tag = "1.61.0-r3"
+tag = "1.61.0-r5"
 
 [pwmcp.hardening]
 # Applied in both internal and external modes.

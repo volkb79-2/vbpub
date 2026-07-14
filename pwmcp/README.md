@@ -45,17 +45,22 @@ Services come up as one container: `<project>-<env>-pwmcp` on the project networ
 ### Playwright `connect()` (test suites)
 
 ```python
-# pip install playwright==1.61.0   ← must match the pinned version
-from playwright.async_api import async_playwright
+from pwmcp_client import BrowserLease
 
-async with async_playwright() as p:
-    browser = await p.chromium.connect("ws://pwmcp:3000/")
-    page = await browser.new_page()
-    await page.goto("https://example.com")
-    await browser.close()
+with BrowserLease.connect(label="my-test-suite") as lease:
+    page = lease.browser.new_page()
+    page.goto("https://example.com")
 ```
 
-The `pip install playwright` version **must** match `pwmcp.playwright_version` in `ciu.defaults.toml.j2` (currently `1.61.0`). The Dockerfile bakes in the same version so the wire protocol is in lockstep.
+The GitHub release bundle contains `client/` and `pwmcp.contract.json`. A
+consumer verifies the URL and SHA-256 from `pwmcp-latest/latest.json`, installs
+the bundled client source, and installs the exact `playwright.python` version
+declared by the contract. This companion client is intentionally not on PyPI.
+
+Port 3000 is a policy gateway. Its defaults are two concurrent clients, a
+30-minute lease, a two-hour maximum, and a 30-second idle recycle. Override
+them in `[pwmcp.run_server]`. A client may request a lease, but it cannot exceed
+the server-side ceiling.
 
 ### MCP
 
@@ -209,7 +214,7 @@ The release notes embed the SHA256 digest. Verify any downloaded bundle with:
 sha256sum -c pwmcp-1.61.0-r2.tar.xz.sha256
 ```
 
-"Latest" is resolved programmatically by scanning `pwmcp-v*` releases and picking the highest semver — this works in a monorepo where GitHub's repo-global "Latest" badge cannot be per-project. The thin `pwmcp-latest` release contains only `latest.json` (a JSON redirect pointing at the versioned release); it does **not** duplicate the heavy bundle asset.
+"Latest" is resolved programmatically by scanning `pwmcp-v*` releases and picking the highest semver — this works in a monorepo where GitHub's repo-global "Latest" badge cannot be per-project. The thin `pwmcp-latest` release contains only `latest.json` (a JSON redirect pointing at the versioned release); it does **not** duplicate the heavy bundle asset. Development consumers use that stable manifest URL to rebuild automatically; production consumers may choose an immutable version/digest.
 
 ### Downloading a specific version
 

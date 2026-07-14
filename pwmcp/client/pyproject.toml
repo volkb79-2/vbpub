@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pwmcp-client"
+version = "0.1.0"
+description = "Python consumer helpers for a GitHub-released pwmcp server"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+pytest = ["pytest>=8"]
+
+[project.scripts]
+pwmcp = "pwmcp_client.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

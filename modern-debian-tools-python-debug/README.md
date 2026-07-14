@@ -26,6 +26,53 @@ The versioned release pages are copied into the image as `/usr/local/share/moder
 	- Base: `mcr.microsoft.com/devcontainers/python:${PYTHON_VERSION}-${DEBIAN_VERSION}`
 	- Use when you want Microsoft devcontainer behavior plus custom tooling.
 
+### Native versus VSC image
+
+The two families intentionally share the same project-owned tool layer. The main
+difference is the base image and the runtime integration around it:
+
+| Capability | Native image | VSC devcontainer image |
+|---|---|---|
+| Base | `python:<version>-<debian>` | `mcr.microsoft.com/devcontainers/python:<version>-<debian>` |
+| Intended use | Docker `run`, CI, SSH, or a plain shell | VS Code Dev Containers with `remoteUser: vscode` |
+| zsh and interactive helpers | Explicitly installed by this project | Explicitly installed by this project, with the base image's Oh My Zsh retained |
+| Docker CLI, Compose, Buildx | Present; no daemon or socket is provided | Present; the template adds `docker-outside-of-docker`, mounts the host socket, and supplies Docker group access |
+| VS Code server/features | Not included | Inherited from the Dev Containers base and consumer `devcontainer.json` |
+| Oh My Zsh | Not installed | Inherited from the Dev Containers base/common-utils setup |
+
+The Docker tools are clients only. The native image does not start or contain a
+Docker daemon, so `docker version` there needs an explicitly configured remote
+`DOCKER_HOST` or a mounted socket. The VSC template sets
+`DOCKER_HOST=unix:///var/run/docker.sock` and supplies that socket through the
+outside-of-Docker feature.
+
+Both variants now install zsh, Debian's standard zsh completion support,
+`zsh-autosuggestions`, and
+`zsh-syntax-highlighting`. The shared configuration is installed at
+`~/.config/modern-debian-tools-python-debug/zshrc`; it enables the standalone
+fzf integration (`fzf --zsh`), fuzzy Ctrl-R history search, Ctrl-T file search,
+Alt-C directory search, completions, inline suggestions, and syntax highlighting.
+The VSC base `.zshrc` is extended rather than replaced, so its existing prompt
+and Oh My Zsh behavior remain intact.
+
+### Oh My Zsh and Powerlevel10k
+
+These are different layers:
+
+- **Oh My Zsh** is a zsh configuration framework. It manages plugins, themes,
+  aliases, and startup configuration. The VSC base image provides it under
+  `/home/vscode/.oh-my-zsh` and currently selects the `devcontainers` theme.
+- **Powerlevel10k (p10k)** is a highly configurable zsh prompt theme. It can be
+  installed as an Oh My Zsh theme, but it does not replace zsh, and it does not
+  provide Oh My Zsh's plugin framework.
+
+P10k is useful when prompt performance, Git status detail, and extensive prompt
+customization matter. It is not required for history search, completions, fzf,
+autosuggestions, or syntax highlighting. We therefore do not install it by
+default: doing so would add a second prompt policy and would make the native and
+VSC images less predictable. Users who want it can install/configure it in their
+own `~/.zshrc` while retaining the shared interactive integrations.
+
 ### PHP 8.5 Flavor (Tag Variant)
 
 PHP 8.5 (CLI/FPM, Composer, Xdebug, and the common web-debugging extensions) is available
@@ -170,11 +217,21 @@ annotated for what it's for. It splits into dev/build tooling (`ruff`, `mypy`, `
 
 Optional (controlled by `INSTALL_*` build args, all enabled by default):
 - `aider-chat` — `INSTALL_AIDER=true`
-- `reasonix`, `openclaw`, `opencode`, `copilot` — npm-based, installed separately from the venv and backed by the image's upstream Node 26 toolchain
-- `codex`, `claude-code`, `antigravity` — installed separately from the venv
+- `reasonix`, `openclaw`, `opencode`, `copilot` — npm-based, installed separately from the venv into the user-owned `/home/vscode/.local` prefix and backed by the image's upstream Node 26 toolchain
+- `codex` — installed separately from the venv with the official user-local standalone installer
+- `claude-code`, `antigravity` — installed separately from the venv as image-owned binaries
+
+The user-local AI CLIs are deliberately installed for `vscode`, so their normal
+upgrade commands do not require `sudo`: `codex update`, `reasonix upgrade`, and
+`opencode upgrade`. Rebuild the image when you need the pinned build manifest or
+the image's initial versions refreshed.
 
 Node 26 is sourced from NodeSource because Debian 13 still ships Node 20, and the npm-based AI CLIs
 need a newer runtime.
+
+The GitHub release tools preserve their Linux manpages and shell completions where upstream ships
+them. The upstream `fd` command is installed as both `fd` and the Debian-compatible `fdfind`, with
+both corresponding manpage names available.
 
 Container inspection tools are also installed in-image:
 - `dtop` - live per-container CPU, memory, I/O, and network drilldown

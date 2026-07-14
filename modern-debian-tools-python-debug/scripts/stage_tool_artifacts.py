@@ -510,6 +510,7 @@ def _stage_tarball_tool(
     urls: list[str],
     expected_binary: str,
     archive_kind: str,
+    expected_companion_binaries: tuple[str, ...] = (),
     records: list[StagedArtifact],
 ) -> None:
     source_url, final_url = _download_first_available(destination, urls)
@@ -517,7 +518,14 @@ def _stage_tarball_tool(
         raise StageError(
             f"Downloaded {tool} archive does not contain expected binary '{expected_binary}'"
         )
+    for companion in expected_companion_binaries:
+        if not _tar_contains_binary(destination, companion):
+            raise StageError(
+                f"Downloaded {tool} archive does not contain expected companion "
+                f"binary '{companion}'"
+            )
 
+    verified_binaries = (expected_binary, *expected_companion_binaries)
     _record_artifact(
         records,
         tool=tool,
@@ -526,7 +534,7 @@ def _stage_tarball_tool(
         final_url=final_url,
         path=destination,
         kind=archive_kind,
-        verification=f"archive contains {expected_binary}",
+        verification="archive contains " + ", ".join(verified_binaries),
     )
 
 
@@ -615,55 +623,6 @@ def _stage_zip_tool(
         path=destination,
         kind="zip",
         verification=verification,
-    )
-
-
-def _stage_codex(version: str, records: list[StagedArtifact]) -> None:
-    release_tag = f"rust-v{version}"
-    archive_name = "codex-package-x86_64-unknown-linux-musl.tar.gz"
-    sums_name = "codex-package_SHA256SUMS"
-
-    base_url = f"https://github.com/openai/codex/releases/download/{release_tag}"
-    archive_url = f"{base_url}/{archive_name}"
-    sums_url = f"{base_url}/{sums_name}"
-
-    archive_path = DOWNLOADS_DIR / f"codex-{version}.tar.gz"
-    sums_path = DOWNLOADS_DIR / f"codex-{version}-SHA256SUMS"
-
-    sums_final_url = _download(sums_url, sums_path)
-    archive_final_url = _download(archive_url, archive_path)
-
-    expected_sha = _parse_hashicorp_sha256(sums_path, archive_name)
-    actual_sha = _sha256(archive_path)
-    if expected_sha != actual_sha:
-        raise StageError(
-            f"Codex checksum mismatch: expected {expected_sha}, got {actual_sha}"
-        )
-
-    if not _tar_contains_binary(archive_path, "codex"):
-        raise StageError("Downloaded Codex package does not contain codex binary")
-    if not _tar_contains_binary(archive_path, "codex-code-mode-host"):
-        raise StageError("Downloaded Codex package does not contain codex-code-mode-host binary")
-
-    _record_artifact(
-        records,
-        tool="codex",
-        version=version,
-        source_url=archive_url,
-        final_url=archive_final_url,
-        path=archive_path,
-        kind="tar.gz",
-        verification="sha256 from codex-package_SHA256SUMS + archive contains codex",
-    )
-    _record_artifact(
-        records,
-        tool="codex-sha256sums",
-        version=version,
-        source_url=sums_url,
-        final_url=sums_final_url,
-        path=sums_path,
-        kind="checksum-file",
-        verification="downloaded",
     )
 
 
@@ -766,7 +725,6 @@ def _stage_antigravity(requested: str, records: list[StagedArtifact]) -> str:
 def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     records: list[StagedArtifact] = []
 
-    _stage_codex(resolved["CODEX_VER"], records)
     _stage_claude_code(resolved["CLAUDE_CODE_VER"], records)
     resolved["ANTIGRAVITY_VER"] = _stage_antigravity(resolved["ANTIGRAVITY_VER"], records)
 
@@ -832,6 +790,7 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
             f"https://github.com/phiresky/ripgrep-all/releases/download/v{resolved['RGA_VER']}/ripgrep_all-{resolved['RGA_VER']}-x86_64-unknown-linux-musl.tar.gz",
         ],
         expected_binary="rga",
+        expected_companion_binaries=("rga-fzf", "rga-fzf-open", "rga-preproc"),
         archive_kind="tar.gz",
         records=records,
     )

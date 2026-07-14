@@ -165,6 +165,10 @@ RUN set -euo pipefail; \
     npm --version; \
     rm -rf /var/lib/apt/lists/*
 
+# User-owned npm prefix: npm-based AI CLIs can upgrade themselves as vscode.
+ENV NPM_CONFIG_PREFIX="/home/vscode/.local"
+ENV PATH="/home/vscode/.local/bin:${PATH}"
+
 COPY build/tool-artifacts-staging /tmp/tool-artifacts-staging
 
 # Neovim and NvChad are shipped from upstream GitHub releases/tags.
@@ -194,6 +198,7 @@ RUN set -euo pipefail; \
         exit 1; \
     fi; \
     ln -sfn "${nvim_root}/bin/nvim" /usr/local/bin/nvim; \
+    install -D -m 0644 "${nvim_root}/share/man/man1/nvim.1" /usr/local/share/man/man1/nvim.1; \
     mkdir -p /tmp/nvchad-extract; \
     tar -C /tmp/nvchad-extract -xzf "${nvchad_archive}"; \
     nvchad_root="$(find /tmp/nvchad-extract -mindepth 1 -maxdepth 1 -type d | head -1)"; \
@@ -245,6 +250,7 @@ RUN set -euo pipefail; \
     install -m 0644 /tmp/customization/aliases.sh.example "${share_dir}/aliases.sh.example"; \
     install -m 0644 /tmp/customization/ai.env.example "${share_dir}/ai.env.example"; \
     install -m 0644 /tmp/customization/shell.env "${share_dir}/shell.env"; \
+    install -m 0644 /tmp/customization/zshrc "${share_dir}/zshrc"; \
     install -m 0644 /tmp/customization/htoprc "${share_dir}/htoprc"; \
     install -m 0644 /tmp/customization/mc.ini "${share_dir}/mc.ini"; \
     install -m 0644 /tmp/customization/nanorc "${share_dir}/nanorc"; \
@@ -253,6 +259,7 @@ RUN set -euo pipefail; \
     cp -f /tmp/customization/aliases.sh.example "${user_customization_dir}/aliases.sh.example"; \
     cp -f /tmp/customization/ai.env.example "${user_customization_dir}/ai.env.example"; \
     cp -f /tmp/customization/shell.env "${user_customization_dir}/shell.env"; \
+    cp -f /tmp/customization/zshrc "${user_customization_dir}/zshrc"; \
     cp -f /tmp/customization/htoprc "${user_customization_dir}/htoprc"; \
     cp -f /tmp/customization/mc.ini "${user_customization_dir}/mc.ini"; \
     cp -f /tmp/customization/nanorc "${user_customization_dir}/nanorc"; \
@@ -265,6 +272,21 @@ RUN set -euo pipefail; \
     install -d -m 0755 /etc/profile.d; \
     printf '%s\n' '#!/bin/sh' '# shellcheck source=/dev/null' '. /usr/local/share/modern-debian-tools-python-debug/profile.sh' > /etc/profile.d/50-modern-debian-tools.sh; \
     chmod 0644 /etc/profile.d/50-modern-debian-tools.sh
+
+# Install a common zsh configuration in both image families.  The VSC base
+# image already supplies ~/.zshrc through its common-utils setup, so append a
+# guarded source line there; the plain/native image gets a complete minimal
+# ~/.zshrc.  This leaves prompt ownership with Oh My Zsh (when present).
+RUN set -euo pipefail; \
+    zshrc_source='source "$HOME/.config/modern-debian-tools-python-debug/zshrc"'; \
+    if [ -f /home/vscode/.zshrc ]; then \
+        if ! grep -Fqx "$zshrc_source" /home/vscode/.zshrc; then \
+            printf '\n# Modern Debian Tools interactive zsh defaults.\n%s\n' "$zshrc_source" >> /home/vscode/.zshrc; \
+        fi; \
+    else \
+        printf '%s\n' '# Modern Debian Tools interactive zsh defaults.' "$zshrc_source" > /home/vscode/.zshrc; \
+    fi; \
+    chown vscode:vscode /home/vscode/.zshrc
 
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
@@ -340,6 +362,30 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
         fi; \
         install -m 755 "${bin_path}" "/usr/local/bin/${bin_name}"; \
     }; \
+    install_manpage_from_tree() { \
+        local tree="$1"; \
+        local man_name="$2"; \
+        local destination="$3"; \
+        local man_path=""; \
+        man_path="$(find "${tree}" -type f -name "${man_name}" -print -quit)"; \
+        if [ -z "${man_path}" ]; then \
+            echo "[ERROR] Missing expected manpage ${man_name} in ${tree}" >&2; \
+            exit 1; \
+        fi; \
+        install -D -m 0644 "${man_path}" "${destination}"; \
+    }; \
+    install_shell_completion() { \
+        local tree="$1"; \
+        local source_name="$2"; \
+        local destination="$3"; \
+        local completion_path=""; \
+        completion_path="$(find "${tree}" -type f -name "${source_name}" -print -quit)"; \
+        if [ -z "${completion_path}" ]; then \
+            echo "[ERROR] Missing expected shell completion ${source_name} in ${tree}" >&2; \
+            exit 1; \
+        fi; \
+        install -D -m 0644 "${completion_path}" "${destination}"; \
+    }; \
     build_htop_from_source() { \
         local tarball="$1"; \
         local workdir="/tmp/htop-build"; \
@@ -372,10 +418,27 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     require_file "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz"; \
     require_file "${DOWNLOADS_DIR}/ripgrep-${RIPGREP_VER}.tar.gz"; \
     install_from_tar "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz" bat /tmp/bat-extract; \
+    install_manpage_from_tree /tmp/bat-extract bat.1 /usr/local/share/man/man1/bat.1; \
+    install_shell_completion /tmp/bat-extract bat.bash /usr/share/bash-completion/completions/bat; \
+    install_shell_completion /tmp/bat-extract bat.fish /usr/share/fish/vendor_completions.d/bat.fish; \
+    install_shell_completion /tmp/bat-extract bat.zsh /usr/share/zsh/vendor-completions/_bat; \
     install_from_tar "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz" delta /tmp/delta-extract; \
     install_from_tar "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz" fd /tmp/fd-extract; \
+    install_manpage_from_tree /tmp/fd-extract fd.1 /usr/local/share/man/man1/fd.1; \
+    ln -sfn fd /usr/local/bin/fdfind; \
+    ln -sfn fd.1 /usr/local/share/man/man1/fdfind.1; \
+    install_shell_completion /tmp/fd-extract fd.bash /usr/share/bash-completion/completions/fd; \
+    install_shell_completion /tmp/fd-extract fd.fish /usr/share/fish/vendor_completions.d/fd.fish; \
+    install_shell_completion /tmp/fd-extract _fd /usr/share/zsh/vendor-completions/_fd; \
     install_from_tar "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz" rga /tmp/rga-extract; \
+    install_from_tar "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz" rga-fzf /tmp/rga-extract; \
+    install_from_tar "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz" rga-fzf-open /tmp/rga-extract; \
+    install_from_tar "${DOWNLOADS_DIR}/rga-${RGA_VER}.tar.gz" rga-preproc /tmp/rga-extract; \
     install_from_tar "${DOWNLOADS_DIR}/ripgrep-${RIPGREP_VER}.tar.gz" rg /tmp/ripgrep-extract; \
+    install_manpage_from_tree /tmp/ripgrep-extract rg.1 /usr/local/share/man/man1/rg.1; \
+    install_shell_completion /tmp/ripgrep-extract rg.bash /usr/share/bash-completion/completions/rg; \
+    install_shell_completion /tmp/ripgrep-extract rg.fish /usr/share/fish/vendor_completions.d/rg.fish; \
+    install_shell_completion /tmp/ripgrep-extract _rg /usr/share/zsh/vendor-completions/_rg; \
     require_file "${DOWNLOADS_DIR}/htop-${HTOP_VER}.tar.gz"; \
     build_htop_from_source "${DOWNLOADS_DIR}/htop-${HTOP_VER}.tar.gz"; \
     require_file "${DOWNLOADS_DIR}/shellcheck-${SHELLCHECK_VER}.tar.xz"; \
@@ -389,6 +452,8 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     require_file "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz"; \
     tar -xzf "${DOWNLOADS_DIR}/gh-${GH_VER}.tar.gz" -C /tmp; \
     install -m 755 "/tmp/gh_${GH_VER}_linux_amd64/bin/gh" /usr/local/bin/gh; \
+    install -d -m 0755 /usr/local/share/man; \
+    cp -a "/tmp/gh_${GH_VER}_linux_amd64/share/man/." /usr/local/share/man/; \
     require_file "${DOWNLOADS_DIR}/grpcurl-${GRPCURL_VER}.tar.gz"; \
     install_from_tar "${DOWNLOADS_DIR}/grpcurl-${GRPCURL_VER}.tar.gz" grpcurl /tmp/grpcurl-extract; \
     require_file "${DOWNLOADS_DIR}/consul_${CONSUL_VER}_SHA256SUMS"; \
@@ -476,9 +541,10 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     echo "${EXPECTED_CDEBUG_SHA256}  ${DOWNLOADS_DIR}/cdebug-${CDEBUG_VER}.tar.gz" | sha256sum -c -; \
     install_from_tar "${DOWNLOADS_DIR}/cdebug-${CDEBUG_VER}.tar.gz" cdebug /tmp/cdebug-extract; \
     cdebug --version; \
+    mandb -q; \
+    cp "${STAGE_DIR}/tool-versions.env" /tmp/ai-tool-versions.env; \
     python3 /tmp/install_ai_cli_tools.py root; \
     rm -rf \
-        /tmp/codex-extract \
         /tmp/bat-extract \
         /tmp/grpcurl-extract \
         /tmp/delta-extract \
@@ -541,6 +607,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Installed into /home/vscode/.venv using the base-image Python.
 # Consumer-facing list: see README.md § "Primary Venv Packages".
 USER vscode
+RUN --mount=type=cache,target=/home/vscode/.npm,uid=1000,gid=1000,sharing=locked \
+    set -euo pipefail; \
+    set -a; . /tmp/ai-tool-versions.env; set +a; \
+    python3 /tmp/install_ai_cli_tools.py user; \
+    rm -f /tmp/ai-tool-versions.env
 RUN --mount=type=cache,target=/home/vscode/.cache/pip,uid=1000,gid=1000,sharing=locked \
     set -euo pipefail; \
     python3 -m venv /home/vscode/.venv; \

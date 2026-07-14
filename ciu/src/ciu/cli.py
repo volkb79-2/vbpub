@@ -32,6 +32,8 @@ Uses: ciu.global.toml + ciu.env
     clean                                remove containers and volumes
     health [--profile NAME]              health gate check
     health --preflight [--strict]        probe images for missing healthcheck tools
+    diagnose [--project NAME] [--logs N] [--json]
+                                explain common container failures (read-only)
 
   PROVISIONING (requires/provides graph)
     check [--profile NAME] [--live]      validate the dependency graph (no deploy)
@@ -131,6 +133,16 @@ ciu health --preflight [--strict]
   --profile NAME   restrict to the named host profile (default: active profile)
   --preflight      probe rendered compose images for missing healthcheck tools
   --strict         (with --preflight) treat missing tools as an error
+""",
+    "diagnose": """\
+ciu diagnose [--project NAME] [--logs N] [--json]
+  Read-only scan of CIU-labelled containers. Correlates Docker state, OOM and
+  exit evidence, restart counts, health history, memory/swap configuration,
+  and bounded recent logs with known failure signatures.
+
+  --project NAME   restrict to one Compose/CIU project label
+  --logs N         recent log lines per container to scan (default: 100)
+  --json           machine-readable findings
 """,
     "bake": """\
 ciu bake [targets ...] [--no-cache]
@@ -422,6 +434,19 @@ def main() -> None:
             extra = [r for r in rest if r != "--preflight"]
             raise SystemExit(deploy_main(["--preflight"] + extra))
         raise SystemExit(deploy_main(["--healthcheck"] + rest))
+
+    elif verb == "diagnose":
+        import argparse as _ap
+        from .diagnose import run as diagnose_run
+        p = _ap.ArgumentParser(prog="ciu diagnose", add_help=False)
+        p.add_argument("--project", default=None)
+        p.add_argument("--logs", type=int, default=100)
+        p.add_argument("--json", dest="json_output", action="store_true")
+        opts = p.parse_args(rest)
+        if opts.logs < 0 or opts.logs > 10_000:
+            print("ciu diagnose: --logs must be between 0 and 10000.", file=sys.stderr)
+            raise SystemExit(2)
+        raise SystemExit(diagnose_run(project=opts.project, log_lines=opts.logs, json_output=opts.json_output))
 
     elif verb == "bake":
         no_cache = "--no-cache" in rest

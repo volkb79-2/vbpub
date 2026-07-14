@@ -61,4 +61,19 @@ case "$PWMCP_BROWSER_MODE" in
     ;;
 esac
 
+for name in PWMCP_RUN_SERVER_PORT PWMCP_RUN_SERVER_UPSTREAM_PORT PWMCP_RUN_SERVER_ADMIN_PORT \
+            PWMCP_RUN_SERVER_DEFAULT_LEASE_S PWMCP_RUN_SERVER_MAX_LEASE_S PWMCP_RUN_SERVER_MAX_CLIENTS \
+            PWMCP_RUN_SERVER_IDLE_RECYCLE_S; do
+  eval "value=\${$name}"
+  case "$value" in
+    ''|*[!0-9]*|0) echo "FATAL: $name must be a positive integer" >&2; exit 1 ;;
+  esac
+done
+if [ "$PWMCP_RUN_SERVER_DEFAULT_LEASE_S" -gt "$PWMCP_RUN_SERVER_MAX_LEASE_S" ]; then
+  echo "FATAL: PWMCP_RUN_SERVER_DEFAULT_LEASE_S exceeds PWMCP_RUN_SERVER_MAX_LEASE_S" >&2
+  exit 1
+fi
+PWMCP_SUPERVISOR_CONF="$SUPERVISOR_CONF"
+export PWMCP_SUPERVISOR_CONF
+
 exec supervisord -c "$SUPERVISOR_CONF" --nodaemon "$@"

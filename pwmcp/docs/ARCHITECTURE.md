@@ -6,7 +6,20 @@ PWMCP is a thin ciu packaging of the **official Microsoft Playwright unified ima
 
 ## Unified Image (Only Supported Mode)
 
+Port 3000 terminates at a small Node standard-library gateway, not directly at
+Playwright. It relays WebSocket bytes to a loopback-only run-server on port
+3001 while enforcing concurrency and absolute leases. Supervisord runs both
+in process groups. Once the last connection closes, a configurable idle
+recycle restarts only the run-server group; this removes Chromium descendants
+left behind by a crashed or hung consumer without disrupting the MCP services.
+
 The unified image bundles the Playwright `run-server`, `@playwright/mcp`, `chrome-devtools-mcp`, and `lighthouse-mcp` into a **single container** under a **single hostname**. This is the only deployment mode.
+
+The service exposes both automation planes: native Playwright WebSocket for
+test suites, and MCP surfaces for Playwright, Chrome DevTools/CDP tracing, and
+Lighthouse audits. The later **Shared Persistent Browser Mode** section details
+the opt-in cross-tool CDP topology and loopback-only CDP control; Lighthouse
+remains isolated and launches its own browser per audit.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -16,7 +29,7 @@ The unified image bundles the Playwright `run-server`, `@playwright/mcp`, `chrom
 │  │  pwmcp  (unified image: ghcr.io/volkb79-2/pwmcp:<version>)                                 │  │
 │  │                                                                                             │  │
 │  │  ┌─────────────────────────┐  ┌──────────────────────────┐  ┌──────────────┐ ┌───────────┐ │  │
-│  │  │  playwright run-server  │  │  @playwright/mcp         │  │  mcp-proxy   │ │ mcp-proxy │ │  │
+│  │  │ lease gateway→run-server│  │  @playwright/mcp         │  │  mcp-proxy   │ │ mcp-proxy │ │  │
 │  │  │  (supervisord program)  │  │  (supervisord program)   │  │  (supervisor)│ │(supervisor)│ │  │
 │  │  │                         │  │                          │  │  ↓           │ │  ↓         │ │  │
 │  │  │  :3000 WebSocket        │  │  :8931 HTTP/SSE at /mcp  │  │  chrome-     │ │ lighthouse-│ │  │
@@ -47,7 +60,7 @@ The unified image bundles the Playwright `run-server`, `@playwright/mcp`, `chrom
   - `lighthouse-mcp` vendored server at `/opt/pwmcp/lighthouse-mcp/` (in-repo, ~200 lines)
   - `supervisor` (apt) — PID-1 process manager
   - `/etc/pwmcp-chromium-path.txt` — baked chromium binary path (see below)
-- **Process manager**: `supervisord --nodaemon` as PID 1; manages four programs (`run-server`, `mcp`, `devtools-mcp`, `lighthouse-mcp`)
+- **Process manager**: `supervisord --nodaemon` as PID 1; manages the gateway, loopback run-server, `mcp`, `devtools-mcp`, and `lighthouse-mcp`
 - **Entrypoint**: `/usr/local/bin/pwmcp-entrypoint.sh` — exports `PWMCP_CHROMIUM_PATH` then execs supervisord
 - **Ports**: 3000 (WebSocket) + 8931 (HTTP/SSE @playwright/mcp) + 8932 (HTTP/SSE chrome-devtools-mcp via mcp-proxy) + 8933 (HTTP/SSE lighthouse-mcp via mcp-proxy)
 - **Built from**: `containers/pwmcp/Dockerfile`

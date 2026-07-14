@@ -50,7 +50,7 @@ cwd       = "ciu"
 strategy = "scm"
 bump     = "conventional"
 [project.ciu.env]
-CIU_RELEASE_NOTES = "## CIU CLI wheel\nConfig-inheritance + Docker Compose stack orchestrator (render, up/down, health, bake, dev).\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+CIU_RELEASE_NOTES = "## CIU CLI wheel\nConfig-inheritance + Docker Compose stack orchestrator (render, up/down, health, diagnose, bake, dev). `ciu diagnose` provides read-only OOM/exit/health/resource/log correlation with actionable and JSON output.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
 [project.ciu.steps.run-tests]
 commands = [
   { label = "CIU: run tests", argv = ["python3", "run-ciu-tests.py"], cwd = "ciu" },

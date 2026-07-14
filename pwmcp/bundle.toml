@@ -17,6 +17,7 @@ files = [
   "ciu.defaults.toml.j2",
   "ciu.global.defaults.toml.j2",
   "ciu.global.toml.j2",
+  "pwmcp.contract.json",
   "README.md",
 ]
-dirs = ["docs"]
+dirs = ["docs", "client"]

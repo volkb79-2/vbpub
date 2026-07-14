@@ -40,6 +40,21 @@ ciu -d .
 
 The unified container comes up as `<project>-<env>-pwmcp` on the project network, serving all ports.
 
+Run-server policy is config-driven:
+
+```toml
+[pwmcp.run_server]
+default_lease_s = 1800
+max_lease_s = 7200
+max_clients = 2
+idle_recycle_s = 30
+```
+
+Raise `max_lease_s` only for an intentional long-running suite. A client may
+request any shorter value. The idle recycle restarts the run-server process
+group after its final client disconnects and is the automatic orphan-Chromium
+remedy.
+
 To expose ports to the host for local debugging, set `pwmcp.unified.expose = true` in `ciu.toml.j2` (overrides file) and re-run `ciu -d .`. Exposed ports bind to `127.0.0.1` only (3000, 8931, 8932, 8933).
 
 ### `PWMCP_MCP_ALLOWED_HOSTS` and the HTTP 403 on container-name access
@@ -150,7 +165,11 @@ git tag -a pwmcp-v1.61.0-r1 -m "pwmcp 1.61.0-r1"
 git push origin pwmcp-v1.61.0-r1
 ```
 
-Notify consumers: they must update `pip install playwright==<new-version>` to match the new `playwright_version` in their extracted bundle's `ciu.defaults.toml.j2`. Then redeploy: `ciu --generate-env -d . && ciu -d .`
+Development consumers should follow `pwmcp-latest/latest.json`, verify its
+bundle checksum, and rebuild their test-only layer from the bundled `client/`
+and `pwmcp.contract.json`. They do not edit a Playwright pin manually.
+Production deployments may deliberately retain a versioned release/digest
+when reproducibility matters more than tracking latest.
 
 ## Bundle Verification
 

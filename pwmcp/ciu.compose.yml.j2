@@ -16,6 +16,7 @@ services:
     # chrome-devtools-mcp via mcp-proxy (:{{ pwmcp.unified.devtools_port }}) +
     # lighthouse-mcp via mcp-proxy (:{{ pwmcp.unified.lighthouse_port }}) in one container.
     image: {{ pwmcp.unified.image.registry }}/{{ pwmcp.unified.image.namespace }}/{{ pwmcp.unified.image.name }}:{{ pwmcp.unified.image.tag }}
+    pull_policy: always
     container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}
     # No command override — supervisord is the ENTRYPOINT; it manages all services.
     user: "{{ pwmcp.hardening.run_as_uid }}:{{ pwmcp.hardening.run_as_gid }}"
@@ -35,14 +36,14 @@ services:
       # The two values below are always correct for sibling-container access:
       #   short service alias (compose DNS)     : {{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}
       #   full container name (Docker hostname) : {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}
-      PWMCP_MCP_ALLOWED_HOSTS: "{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}{% if pwmcp.unified.extra_args %},{{ pwmcp.unified.extra_args }}{% endif %}"
+      PWMCP_MCP_ALLOWED_HOSTS: "{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}{% for alias in pwmcp.consumer.aliases %},{{ alias }}:{{ pwmcp.unified.mcp_port }}{% endfor %}{% if pwmcp.unified.extra_args %},{{ pwmcp.unified.extra_args }}{% endif %}"
       # Parallel allowed-hosts for chrome-devtools-mcp (port 8932 via mcp-proxy).
       # mcp-proxy does not have native --allowed-hosts; this var is for documentation
       # and external-mode Traefik rules.
-      PWMCP_DEVTOOLS_ALLOWED_HOSTS: "{{ pwmcp.unified.name }}:{{ pwmcp.unified.devtools_port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.devtools_port }}{% if pwmcp.unified.devtools_extra_args %},{{ pwmcp.unified.devtools_extra_args }}{% endif %}"
+      PWMCP_DEVTOOLS_ALLOWED_HOSTS: "{{ pwmcp.unified.name }}:{{ pwmcp.unified.devtools_port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.devtools_port }}{% for alias in pwmcp.consumer.aliases %},{{ alias }}:{{ pwmcp.unified.devtools_port }}{% endfor %}{% if pwmcp.unified.devtools_extra_args %},{{ pwmcp.unified.devtools_extra_args }}{% endif %}"
       # Parallel allowed-hosts for lighthouse-mcp (port 8933 via mcp-proxy).
       # Same mcp-proxy allowlist gap as devtools.
-      PWMCP_LIGHTHOUSE_ALLOWED_HOSTS: "{{ pwmcp.unified.name }}:{{ pwmcp.unified.lighthouse_port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.lighthouse_port }}{% if pwmcp.unified.lighthouse_extra_args %},{{ pwmcp.unified.lighthouse_extra_args }}{% endif %}"
+      PWMCP_LIGHTHOUSE_ALLOWED_HOSTS: "{{ pwmcp.unified.name }}:{{ pwmcp.unified.lighthouse_port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.lighthouse_port }}{% for alias in pwmcp.consumer.aliases %},{{ alias }}:{{ pwmcp.unified.lighthouse_port }}{% endfor %}{% if pwmcp.unified.lighthouse_extra_args %},{{ pwmcp.unified.lighthouse_extra_args }}{% endif %}"
       # P03 opt-in shared persistent browser mode. "per-session" (default)
       # renders byte-identical container behavior to pre-P03; "shared" runs
       # one persistent Chromium the MCP servers attach to over CDP. Validation
@@ -50,6 +51,13 @@ services:
       # happens in the container entrypoint (entrypoint.sh), which is the
       # single source of truth for this check -- not duplicated here.
       PWMCP_BROWSER_MODE: "{{ pwmcp.unified.browser_mode }}"
+      PWMCP_RUN_SERVER_PORT: "{{ pwmcp.unified.ws_port }}"
+      PWMCP_RUN_SERVER_UPSTREAM_PORT: "{{ pwmcp.run_server.upstream_port }}"
+      PWMCP_RUN_SERVER_ADMIN_PORT: "{{ pwmcp.run_server.admin_port }}"
+      PWMCP_RUN_SERVER_DEFAULT_LEASE_S: "{{ pwmcp.run_server.default_lease_s }}"
+      PWMCP_RUN_SERVER_MAX_LEASE_S: "{{ pwmcp.run_server.max_lease_s }}"
+      PWMCP_RUN_SERVER_MAX_CLIENTS: "{{ pwmcp.run_server.max_clients }}"
+      PWMCP_RUN_SERVER_IDLE_RECYCLE_S: "{{ pwmcp.run_server.idle_recycle_s }}"
       {% if pwmcp.unified.browser_mode == "shared" %}
       # Admin API port is internal-network-only: injected into the container
       # environment but deliberately NEVER added to `ports:` and NEVER given
@@ -65,10 +73,23 @@ services:
       - "127.0.0.1:{{ pwmcp.unified.host_devtools_port }}:{{ pwmcp.unified.devtools_port }}"
       - "127.0.0.1:{{ pwmcp.unified.host_lighthouse_port }}:{{ pwmcp.unified.lighthouse_port }}"
     {% endif %}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:{{ pwmcp.unified.ws_port }}/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: {{ pwmcp.health.interval }}
+      timeout: {{ pwmcp.health.timeout }}
+      retries: {{ pwmcp.health.retries }}
+      start_period: {{ pwmcp.health.start_period }}
     networks:
-      - default
+      default: {}
+      {% if pwmcp.consumer.network %}
+      consumer:
+        aliases:
+          {% for alias in pwmcp.consumer.aliases %}
+          - {{ alias }}
+          {% endfor %}
+      {% endif %}
       {% if pwmcp.external.enabled and pwmcp.external.unified_host %}
-      - ingress
+      ingress: {}
       {% endif %}
     {% if pwmcp.external.enabled and pwmcp.external.unified_host %}
     labels:
@@ -118,6 +139,11 @@ services:
 networks:
   default:
     name: {{ deploy.network_name }}
+  {% if pwmcp.consumer.network %}
+  consumer:
+    name: {{ pwmcp.consumer.network }}
+    external: true
+  {% endif %}
   {% if pwmcp.external.enabled %}
   ingress:
     name: {{ pwmcp.network.ingress_network }}

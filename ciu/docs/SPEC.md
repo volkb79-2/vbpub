@@ -787,6 +787,17 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   (S14) is accepted on `up`, `down`, `health`, and `render`; `--thin` is reserved
   on `up --host` (not yet implemented, exits 1 with a clear message).
   A sub-subcommand with its own parser (`env generate`) keeps its argparse help.
+- **S10.5** `ciu diagnose [--project NAME] [--logs N] [--json]` is a strictly
+  read-only Docker diagnostic. It selects CIU-labelled containers (optionally
+  one project), inspects state without restart/remediation, and correlates:
+  `.State.OOMKilled`, exit 137, unhealthy history, restart count,
+  RAM/memory+swap limits, and at most `N` recent log lines per container.
+  Known signatures include Redis Pub/Sub channel ACL denial, memory
+  exhaustion, full storage, and native crashes. It MUST print a concrete
+  remedy per finding and MUST NOT print container environment or secret
+  values. Exit `0` means no error-severity findings, `1` means findings were
+  reported, and `2` means Docker/argument/decoding failure. `--json` emits a
+  stable list of `{severity,container,code,summary,remedy}` objects.
 
 ## S11 — Validation catalog (static, pre-execution)
 

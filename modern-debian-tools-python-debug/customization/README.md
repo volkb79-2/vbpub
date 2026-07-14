@@ -7,6 +7,8 @@ These files are the shipped defaults that land under the visible user customizat
 - `aliases.sh` holds shell aliases and helper functions.
 - `shell.env` holds exported shell defaults such as pager and editor behavior;
   when Neovim is present it prefers `nvim` as the editor.
+- `zshrc` holds shared interactive zsh defaults: fzf key bindings, Ctrl-R
+  history search, zsh completions, autosuggestions, and syntax highlighting.
 - `htoprc`, `mc.ini`, and `nanorc` hold the tool defaults.
 - `lesspipe.sh` is the syntax-highlighting preprocessor used by `less`.
 - `profile.sh` is the login-shell bootstrap (installed at

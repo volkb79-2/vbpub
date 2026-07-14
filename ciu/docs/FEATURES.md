@@ -34,6 +34,7 @@ now verbs (`ciu up/down/clean/health`).
 | **Hooks** | `pre_secrets` / `pre_compose` / `post_compose` with a context object: `ctx.secret_file()`, structured `apply_to_config`/`persist:"state"` returns. | S9.1–S9.4 |
 | **Hook readiness helpers** | `ctx.wait_healthy(service)` / `ctx.wait_tcp(host, port)` so a `post_compose` hook waits for a service instead of racing `compose up`. | S9.3 |
 | **Fail-fast validation** | Static catalog (S11) + typed exit codes; vault-backed stack aborts if no token resolves. | S10.3, S11, S7.6 |
+| **Read-only runtime diagnosis** | `ciu diagnose` correlates OOM/exit/restart/health evidence, memory+swap configuration, and bounded logs into actionable findings without reading environment/secrets or changing containers. | S10.5 |
 | **DooD path correctness** | Physical bind paths computed so a stack runs identically in devcontainer / native / CI. | S1.4, S1.9 |
 | **Declarative provisioning graph** | Stacks declare `requires`/`provides` typed refs in their root-key table; CIU lints the graph up-front and probes live state per-phase during `ciu up`. Purely opt-in: stacks without these keys are unaffected. | S13 |
 | **`ciu check` — graph validation** | Validates the requires/provides dependency graph without deploying: static lint + optional `--live` probe. Safe to run in CI. | S13.4 |
@@ -61,6 +62,7 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu clean` | **Complete** teardown: containers (any state) + volumes + `vol-*` + rendered; enforces post-clean invariant (exit 1 on survivors) | `--profile NAME`, `-y`, `--ignore-errors` |
 | `ciu health` | Health gate over the selection | `--profile NAME`, `--host NAME` |
 | `ciu health --preflight` | Probe images for missing healthcheck tools | `--strict` |
+| `ciu diagnose` | Explain common container failures without changing state | `--project NAME`, `--logs N`, `--json` |
 | `ciu bake` | `docker buildx bake --load` (production image) | `[targets …]`, `--no-cache` |
 | `ciu dev <stack>` | Run the stack's `[<root>.dev]` dev loop (S5a) | `--profile NAME`, `--no-prebuild`, `--define-root PATH` |
 | `ciu secrets list` | List materialised secret names | `-d PATH` |
@@ -103,6 +105,7 @@ ciu dev applications/webapp-ui  # fetch:openapi → gen:api → vite dev, HMR on
 # Inspect secrets and health
 ciu secrets list -d infra/vault
 ciu health --preflight --strict
+ciu diagnose --project myproject
 
 # Tear everything down to a clean slate (disposable greenfield)
 ciu clean -y      # exits non-zero if any project container/volume survives (S6.4)

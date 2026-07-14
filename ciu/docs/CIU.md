@@ -53,6 +53,7 @@ common verbs are:
 | `ciu down` | stop containers (volumes preserved) |
 | `ciu clean` | complete teardown (S6.4 invariant) |
 | `ciu health [--preflight]` | health gate / image tool probe |
+| `ciu diagnose` | read-only OOM/exit/health/log diagnosis (S10.5) |
 | `ciu bake` · `ciu dev <stack>` | build prod image · run the dev loop (S5a) |
 | `ciu secrets list\|reset` | inspect / delete secret store files |
 
@@ -107,6 +108,26 @@ ciu -d <stack> secrets reset --name X  # single secret
 | `1` | Runtime failure (compose, health, hooks, Vault I/O) |
 | `2` | Configuration / validation error (static checks: S3/S4/S11, argparse) |
 | `3` | Environment / bootstrap error (missing env keys, DooD preflight, S1/S2) |
+
+### Runtime diagnosis [S10.5]
+
+`ciu diagnose` complements the health gate: health says whether the stack is
+ready; diagnosis explains common reasons it is not. It reads Docker metadata,
+health history, resource limits, and only a bounded log tail. It never reads
+container environment variables, restarts a service, or applies a remedy.
+
+```bash
+ciu diagnose                         # all CIU-labelled containers
+ciu diagnose --project myapp --logs 200
+ciu diagnose --project myapp --json # automation/report attachment
+```
+
+Findings include definitive Docker OOM flags, probable SIGKILL/137 cases,
+unhealthy commands and their latest output, restart loops, swap-disabled
+container limits, Redis channel-ACL mistakes, disk exhaustion, and segfaults.
+The command intentionally distinguishes evidence from inference; for example,
+exit 137 is reported as a probable OOM only when Docker did not retain a
+definitive `OOMKilled=true` flag.
 
 ---
 

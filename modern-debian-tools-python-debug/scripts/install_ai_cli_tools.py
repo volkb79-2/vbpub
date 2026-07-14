@@ -3,17 +3,16 @@
 
 The build pipeline stages release artifacts into /tmp/tool-artifacts-staging and
 describes the desired tool set in /tmp/ai-cli-tools.list. This helper applies
-the requested subset for the current install mode ("root" or "venv").
+the requested subset for the current install mode ("root", "user", or "venv").
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
+import shlex
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,33 +86,6 @@ def run_command(argv: list[str]) -> None:
         raise InstallerError(f"Command failed with exit code {exc.returncode}: {rendered}") from exc
 
 
-def sha256_hex(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def read_checksum_entry(path: Path, expected_name: str) -> str:
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        parts = line.split(maxsplit=1)
-        if len(parts) < 2:
-            continue
-        checksum, name = parts[0].lower(), parts[1].lstrip("*")
-        if name == expected_name:
-            return checksum
-    raise InstallerError(
-        f"Missing checksum entry for {expected_name} in {path}"
-    )
-
-
 def copy_binary(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
@@ -125,24 +97,6 @@ def find_binary(root: Path, binary_name: str) -> Path:
         if candidate.is_file() and (candidate.stat().st_mode & 0o111):
             return candidate
     raise InstallerError(f"Failed to locate {binary_name} in extracted archive")
-
-
-def archive_missing_binaries(archive: Path, *binary_names: str) -> list[str]:
-    """Return subset of *binary_names* not found inside *archive*.
-
-    Uses ``tarfile`` so no extraction is needed.  Only works for tar-based
-    archives; callers must handle other formats via extraction first.
-    """
-    missing: list[str] = []
-    try:
-        with tarfile.open(str(archive), "r:*") as tf:
-            names = {m.name for m in tf.getmembers() if m.isfile() and (m.mode & 0o111)}
-            for name in binary_names:
-                if not any(n.endswith(f"/{name}") or n == name for n in names):
-                    missing.append(name)
-    except (OSError, tarfile.TarError) as exc:
-        raise InstallerError(f"Failed to inspect archive: {archive}") from exc
-    return missing
 
 
 def install_binary_from_archive(archive: Path, binary_name: str, destination: Path) -> None:
@@ -175,35 +129,18 @@ def install_codex(ctx: InstallerContext) -> None:
         return
 
     version = env_value("CODEX_VER", "CODEX_VERSION", default="latest")
-    archive = ctx.downloads_dir / f"codex-{version}.tar.gz"
-    checksums = ctx.downloads_dir / f"codex-{version}-SHA256SUMS"
-
-    require_file(archive, "staged Codex archive")
-    require_file(checksums, "staged Codex checksums")
-
-    expected_sha = read_checksum_entry(
-        checksums,
-        "codex-package-x86_64-unknown-linux-musl.tar.gz",
+    install_dir = env_value(
+        "CODEX_INSTALL_DIR", default="/home/vscode/.local/bin"
     )
-    actual_sha = sha256_hex(archive)
-    if actual_sha != expected_sha:
-        raise InstallerError(
-            f"Codex checksum mismatch: expected {expected_sha}, got {actual_sha}"
-        )
-
-    # Check that both required binaries are present in the archive.
-    missing = archive_missing_binaries(archive, "codex", "codex-code-mode-host")
-    if missing:
-        raise InstallerError(
-            f"Codex archive {archive.name!r} is missing required "
-            f"binary/binaries: {', '.join(sorted(missing))}"
-        )
-
-    install_binaries_from_archive(
-        archive,
-        ("codex", Path("/usr/local/bin/codex")),
-        ("codex-code-mode-host", Path("/usr/local/bin/codex-code-mode-host")),
+    # The standalone installer creates the package metadata used by
+    # `codex update`; a copied release binary cannot identify its installer.
+    command = (
+        "curl -fsSL https://chatgpt.com/codex/install.sh | "
+        "CODEX_NON_INTERACTIVE=1 "
+        f"CODEX_RELEASE={shlex.quote(version)} "
+        f"CODEX_INSTALL_DIR={shlex.quote(install_dir)} sh"
     )
+    run_command(["sh", "-c", command])
 
 
 def install_claude(ctx: InstallerContext) -> None:
@@ -337,8 +274,16 @@ def install_tool(tool: str, ctx: InstallerContext) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Install optional AI CLI tools")
-    parser.add_argument("mode", choices=("root", "venv"))
+    parser.add_argument("mode", choices=("root", "user", "venv"))
     args = parser.parse_args(argv)
+
+    if args.mode == "user":
+        # npm's global prefix is intentionally user-owned so npm-based CLIs
+        # can replace themselves without sudo after the image is built.
+        npm_prefix = os.environ.setdefault(
+            "NPM_CONFIG_PREFIX", "/home/vscode/.local"
+        )
+        os.environ["PATH"] = f"{npm_prefix}/bin:{os.environ.get('PATH', '')}"
 
     ctx = InstallerContext(
         tools_file=env_path("TOOLS_FILE", DEFAULT_TOOLS_FILE),

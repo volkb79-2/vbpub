@@ -130,11 +130,22 @@ def test_builtin_step_command_unknown_step_is_none(tmp_path):
     assert cli._builtin_step_command(proj, "run-tests", tmp_path) is None
 
 
-def test_builtin_step_command_oci_has_no_wheel_default(tmp_path):
+def test_builtin_step_command_oci_uses_oci_defaults(tmp_path):
     proj = cli.ProjectConfig(name="img", env={}, steps={}, prefix="img-v",
                              cwd="img", artifacts=("oci-image",), mint_tag=False)
-    assert cli._builtin_step_command(proj, "build", tmp_path) is None
-    assert cli._builtin_step_command(proj, "push", tmp_path) is None
+    build = cli._builtin_step_command(proj, "build", tmp_path)
+    push = cli._builtin_step_command(proj, "push", tmp_path)
+
+    assert build.argv[1:] == [
+        str(cli._HANDLERS_PY), "oci-image-build",
+        "--cwd", str((tmp_path / "img").resolve()),
+        "--bake-file", "docker-bake.hcl", "--target", "img",
+    ]
+    assert push.argv[1:] == [
+        str(cli._HANDLERS_PY), "oci-image-push",
+        "--cwd", str((tmp_path / "img").resolve()),
+        "--bake-file", "docker-bake.hcl", "--target", "img",
+    ]
 
 
 # ─── load_config relaxation ──────────────────────────────────────────────────
@@ -172,7 +183,7 @@ strategy = "scm"
     assert cli._builtin_step_command(projects["p"], "build", tmp_path) is not None
 
 
-def test_oci_project_without_steps_rejected(tmp_path):
+def test_oci_project_without_steps_loads(tmp_path):
     cfg = tmp_path / "cmru.toml"
     cfg.write_text(_BASE + """
 [project.p]
@@ -182,8 +193,11 @@ cwd = "p"
 [project.p.version]
 strategy = "none"
 """)
-    with pytest.raises(ValueError, match="define \\[steps"):
-        cli.load_config(cfg)
+    _, projects, *_ = cli.load_config(cfg)
+    assert projects["p"].steps == {}
+    assert projects["p"].artifacts == ("oci-image",)
+    assert cli._builtin_step_command(projects["p"], "build", tmp_path) is not None
+    assert cli._builtin_step_command(projects["p"], "push", tmp_path) is not None
 
 
 # ─── find_artifact (generic discovery) ───────────────────────────────────────

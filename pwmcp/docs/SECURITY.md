@@ -28,6 +28,11 @@ In internal mode the Docker network is the access control boundary. Services are
 
 Do not expose `pwmcp` ports to `0.0.0.0` in internal mode.
 
+The run-server recovery/admin endpoint (default 8940) is intentionally absent
+from Compose `ports` and Traefik routes. Anyone on the internal network can
+close sessions or restart the run-server, so it must remain inside that trust
+boundary. Client-requested leases cannot raise the server-configured maximum.
+
 ## External Mode Access Control
 
 In external mode, access is controlled by:

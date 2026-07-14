@@ -6,6 +6,7 @@ console entrypoint, **`ciu`**, a flat verb dispatcher:
 
 - single stack: `ciu up --dir <stack>`, `ciu render`, `ciu dev <stack>`
 - multi-stack / multi-host: `ciu up`, `ciu down`, `ciu clean`, `ciu health` (by host profile)
+- failure explanation: `ciu diagnose [--project NAME] [--json]` (read-only)
 
 (The former separate `ciu-deploy` script is withdrawn — its actions are now
 verbs.) The canonical feature list and CLI surface is **[docs/FEATURES.md](docs/FEATURES.md)**;

@@ -10,6 +10,10 @@
 # netcat-openbsd (available on bookworm and trixie), so the list is now unconditional.
 
 bash-completion    # interactive shell tab-completion
+zsh                # interactive shell, also used by the VSC terminal profile
+zsh-common         # shared zsh functions and completion support
+zsh-autosuggestions # fish-like inline history suggestions
+zsh-syntax-highlighting # command syntax highlighting
 ca-certificates    # TLS trust roots for HTTPS
 locales            # generate the en_US.UTF-8 locale
 curl               # HTTP client / artifact downloads

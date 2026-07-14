@@ -67,6 +67,17 @@ ENV PWMCP_DEVTOOLS_ALLOWED_HOSTS="localhost:8932,127.0.0.1:8932"
 # Same mcp-proxy allowlist gap as devtools-mcp (informational only).
 ENV PWMCP_LIGHTHOUSE_ALLOWED_HOSTS="localhost:8933,127.0.0.1:8933"
 
+# Native run-server gateway defaults. Consumers override these through the
+# CIU config, but standalone image execution remains safe and bounded.
+ENV PWMCP_RUN_SERVER_PORT=3000 \
+    PWMCP_RUN_SERVER_UPSTREAM_PORT=3001 \
+    PWMCP_RUN_SERVER_ADMIN_PORT=8940 \
+    PWMCP_RUN_SERVER_DEFAULT_LEASE_S=1800 \
+    PWMCP_RUN_SERVER_MAX_LEASE_S=7200 \
+    PWMCP_RUN_SERVER_MAX_CLIENTS=2 \
+    PWMCP_RUN_SERVER_IDLE_RECYCLE_S=30 \
+    PWMCP_CONTRACT_PATH=/opt/pwmcp/contract.json
+
 # Run-as-uid–agnostic cache/home. The image's default USER is 1000:1000 (home
 # /home/ubuntu, writable by 1000), but consumers commonly OVERRIDE `user:` to a
 # hardened uid (e.g. 10001 + cap_drop=ALL). For that uid the base image's home is
@@ -116,6 +127,11 @@ COPY containers/pwmcp/supervisord.shared.conf /etc/supervisor/conf.d/pwmcp-share
 COPY containers/pwmcp/entrypoint.sh /usr/local/bin/pwmcp-entrypoint.sh
 COPY containers/pwmcp/wait-for-cdp.sh /usr/local/bin/wait-for-cdp.sh
 RUN chmod +x /usr/local/bin/pwmcp-entrypoint.sh /usr/local/bin/wait-for-cdp.sh
+
+# Native Playwright traffic passes through a stdlib-only absolute-lease and
+# concurrency gateway. The actual run-server is loopback-only on port 3001.
+COPY containers/pwmcp/run-server-gateway/ /opt/pwmcp/run-server-gateway/
+COPY pwmcp.contract.json /opt/pwmcp/contract.json
 
 # Shared-mode admin API (Node stdlib http only -- no new framework dependency).
 COPY containers/pwmcp/admin-server/ /opt/pwmcp/admin-server/

@@ -4,6 +4,7 @@ Uses mocks and temp paths; never reaches the network or installs packages.
 """
 from __future__ import annotations
 
+import os
 import sys
 import tarfile
 import tempfile
@@ -15,11 +16,11 @@ import stage_tool_artifacts as stage
 from install_ai_cli_tools import (
     InstallerContext,
     InstallerError,
-    archive_missing_binaries,
     env_value,
     install_binaries_from_archive,
     install_codex,
     install_opencode,
+    main,
     is_enabled,
     parse_tool_entries,
 )
@@ -59,34 +60,6 @@ def _make_tar_with_binaries(path: Path, *names: str) -> None:
 
 def _make_checksums(path: Path, archive_name: str, sha256_digest: str) -> None:
     path.write_text(f"{sha256_digest}  {archive_name}\n", encoding="utf-8")
-
-
-# archive_missing_binaries
-
-
-class TestArchiveMissingBinaries:
-    def test_both_present(self, tmp_path: Path) -> None:
-        archive = tmp_path / "pkg.tar.gz"
-        _make_tar_with_binaries(archive, "codex", "codex-code-mode-host")
-        assert archive_missing_binaries(archive, "codex", "codex-code-mode-host") == []
-
-    def test_one_missing(self, tmp_path: Path) -> None:
-        archive = tmp_path / "pkg.tar.gz"
-        _make_tar_with_binaries(archive, "codex")
-        missing = archive_missing_binaries(archive, "codex", "codex-code-mode-host")
-        assert missing == ["codex-code-mode-host"]
-
-    def test_all_missing(self, tmp_path: Path) -> None:
-        archive = tmp_path / "pkg.tar.gz"
-        _make_tar_with_binaries(archive)  # empty archive
-        missing = archive_missing_binaries(archive, "codex", "codex-code-mode-host")
-        assert sorted(missing) == ["codex", "codex-code-mode-host"]
-
-    def test_non_tar_archive_raises(self, tmp_path: Path) -> None:
-        archive = tmp_path / "not-a-tar.gz"
-        archive.write_text("garbage", encoding="utf-8")
-        with pytest.raises(InstallerError, match="Failed to inspect archive"):
-            archive_missing_binaries(archive, "codex")
 
 
 # install_binaries_from_archive
@@ -129,81 +102,19 @@ class TestInstallCodex:
         # Should not raise even though files are absent.
         install_codex(ctx)
 
-    def test_missing_archive_raises(self, tmp_path: Path) -> None:
-        ctx = _fake_ctx(tmp_path)
-        monkeypatch = pytest.MonkeyPatch()
+    def test_uses_official_user_installer(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CODEX_VER", "0.144.0")
-        with pytest.raises(InstallerError, match="Missing staged Codex archive"):
-            install_codex(ctx)
-        monkeypatch.undo()
-
-    def test_checksum_mismatch_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        ctx = _fake_ctx(tmp_path)
-        monkeypatch.setenv("CODEX_VER", "0.144.0")
-        archive = ctx.downloads_dir / "codex-0.144.0.tar.gz"
-        sums = ctx.downloads_dir / "codex-0.144.0-SHA256SUMS"
-        ctx.downloads_dir.mkdir(parents=True, exist_ok=True)
-        archive.write_text("garbage", encoding="utf-8")
-        _make_checksums(sums, "codex-package-x86_64-unknown-linux-musl.tar.gz", "00" * 32)
-        with pytest.raises(InstallerError, match="Codex checksum mismatch"):
-            install_codex(ctx)
-        monkeypatch.undo()
-
-    def test_missing_companion_host_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Archive has codex but not codex-code-mode-host; installation should fail."""
-        ctx = _fake_ctx(tmp_path)
-        monkeypatch.setenv("CODEX_VER", "0.144.0")
-        ctx.downloads_dir.mkdir(parents=True, exist_ok=True)
-        archive = ctx.downloads_dir / "codex-0.144.0.tar.gz"
-        _make_tar_with_binaries(archive, "codex")  # missing codex-code-mode-host
-
-        sums = ctx.downloads_dir / "codex-0.144.0-SHA256SUMS"
-        import hashlib
-        actual_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
-        _make_checksums(sums, "codex-package-x86_64-unknown-linux-musl.tar.gz", actual_sha)
-
-        with pytest.raises(InstallerError, match="missing required.*codex-code-mode-host"):
-            install_codex(ctx)
-        monkeypatch.undo()
-
-    def test_successful_two_binary_install(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Both codex and codex-code-mode-host are extracted and placed in /usr/local/bin."""
-        ctx = _fake_ctx(tmp_path)
-        monkeypatch.setenv("CODEX_VER", "0.144.0")
-        ctx.downloads_dir.mkdir(parents=True, exist_ok=True)
-        archive = ctx.downloads_dir / "codex-0.144.0.tar.gz"
-        _make_tar_with_binaries(archive, "codex", "codex-code-mode-host")
-
-        sums = ctx.downloads_dir / "codex-0.144.0-SHA256SUMS"
-        import hashlib
-        actual_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
-        _make_checksums(sums, "codex-package-x86_64-unknown-linux-musl.tar.gz", actual_sha)
-
-        # Redirect binary installation to a temp location.
-        dest_root = tmp_path / "installed"
-
-        def tracking_copy(source: Path, destination: Path) -> None:
-            rel_dest = destination.relative_to(Path("/")) if destination.is_absolute() else destination
-            real_dest = dest_root / str(rel_dest).lstrip("/")
-            real_dest.parent.mkdir(parents=True, exist_ok=True)
-            import shutil
-            shutil.copy2(source, real_dest)
-            real_dest.chmod(0o755)
-
-        import install_ai_cli_tools as mod
-        original_copy = mod.copy_binary
-        try:
-            mod.copy_binary = tracking_copy
-            install_codex(ctx)
-        finally:
-            mod.copy_binary = original_copy
-
-        codex_dest = dest_root / "usr/local/bin/codex"
-        host_dest = dest_root / "usr/local/bin/codex-code-mode-host"
-        assert codex_dest.is_file(), f"codex not found at {codex_dest}"
-        assert host_dest.is_file(), f"codex-code-mode-host not found at {host_dest}"
-        assert oct(codex_dest.stat().st_mode)[-3:] == "755"
-        assert oct(host_dest.stat().st_mode)[-3:] == "755"
+        recorded: list[list[str]] = []
+        monkeypatch.setattr(
+            "install_ai_cli_tools.run_command", lambda argv: recorded.append(argv)
+        )
+        install_codex(_fake_ctx(Path("/tmp")))
+        assert recorded == [[
+            "sh", "-c",
+            "curl -fsSL https://chatgpt.com/codex/install.sh | "
+            "CODEX_NON_INTERACTIVE=1 CODEX_RELEASE=0.144.0 "
+            "CODEX_INSTALL_DIR=/home/vscode/.local/bin sh",
+        ]]
 
 
 # install_opencode
@@ -262,6 +173,20 @@ class TestInstallOpencode:
         assert recorded[0] == ["npm", "install", "-g", "opencode-ai@2.0.0"]
 
 
+def test_user_mode_sets_user_owned_npm_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools_file = tmp_path / "tools"
+    tools_file.write_text("", encoding="utf-8")
+    monkeypatch.setenv("TOOLS_FILE", str(tools_file))
+    monkeypatch.delenv("NPM_CONFIG_PREFIX", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    assert main(["user"]) == 0
+    assert os.environ["NPM_CONFIG_PREFIX"] == "/home/vscode/.local"
+    assert os.environ["PATH"].startswith("/home/vscode/.local/bin:")
+
+
 # parse_tool_entries
 
 
@@ -274,10 +199,10 @@ class TestParseToolEntries:
 
     def test_comment_and_blank_lines(self, tmp_path: Path) -> None:
         f = tmp_path / "list"
-        f.write_text("# comment\n\ncodex|root\n  \nopencode|root\n", encoding="utf-8")
+        f.write_text("# comment\n\ncodex|user\n  \nopencode|user\n", encoding="utf-8")
         entries = parse_tool_entries(f)
-        assert ("codex", "root") in entries
-        assert ("opencode", "root") in entries
+        assert ("codex", "user") in entries
+        assert ("opencode", "user") in entries
 
 
 # env / toggle helpers

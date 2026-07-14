@@ -49,6 +49,7 @@ DEFAULTS_FILE = PWMCP_DIR / "ciu.defaults.toml.j2"
 TOML_OVERRIDE_FILE = PWMCP_DIR / "ciu.toml.j2"
 BAKE_FILE = PWMCP_DIR / "docker-bake.hcl"
 RELEASE_VARS_FILE = PWMCP_DIR / "cmru.vars"
+CONTRACT_FILE = PWMCP_DIR / "pwmcp.contract.json"
 
 
 def log(msg: str) -> None:
@@ -187,6 +188,14 @@ def update_bake_hcl(
     path.write_text(content, encoding="utf-8")
 
 
+def update_contract(path: Path, *, release: str, playwright_version: str) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["release"] = release
+    payload["playwright"]["python"] = playwright_version
+    payload["playwright"]["protocol"] = ".".join(playwright_version.split(".")[:2])
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
 # Non-auto-updated package pins: read from bake file to preserve current values.
 def _read_bake_var(name: str) -> str:
     """Read a single variable default from docker-bake.hcl."""
@@ -262,6 +271,9 @@ def main() -> None:
 
     log(f"Updating {BAKE_FILE.name}...")
     update_bake_hcl(BAKE_FILE, npm_version, pypi_version, pwmcp_version_npm, pwmcp_version_pypi)
+
+    log(f"Updating {CONTRACT_FILE.name}...")
+    update_contract(CONTRACT_FILE, release=pwmcp_version_pypi, playwright_version=pypi_version)
 
     log(f"Writing {RELEASE_VARS_FILE.name}...")
     pw_mcp_ver = _read_bake_var("PLAYWRIGHT_MCP_VERSION")

@@ -1,0 +1,25 @@
+# Shared interactive zsh defaults for both image families.
+# This file is sourced from ~/.zshrc and deliberately does not own the prompt:
+# the VSC base image may provide Oh My Zsh, while the native image does not.
+
+# Keep the familiar emacs-style editing mode and make Ctrl-R useful even when
+# fzf is unavailable or its integration is disabled.
+bindkey -e
+bindkey '^R' history-incremental-search-backward
+
+# Debian packages provide these without requiring a framework such as Oh My Zsh.
+if [[ -r /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
+    source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+fi
+
+# fzf is shipped as a standalone binary.  Its generated zsh integration adds
+# fuzzy Ctrl-R history search plus Ctrl-T and Alt-C, and supersedes the basic
+# Ctrl-R binding above when available.
+if (( $+commands[fzf] )); then
+    eval "$(fzf --zsh)"
+fi
+
+# Syntax highlighting must be loaded after widgets and other integrations.
+if [[ -r /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then
+    source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+fi

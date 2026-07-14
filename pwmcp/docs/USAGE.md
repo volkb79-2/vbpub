@@ -6,12 +6,14 @@ The Playwright wire protocol is **version-strict**: the client library version y
 must exactly match the Playwright version baked into the running `pwmcp` image.
 A version mismatch causes protocol errors at connect time.
 
-**How to read the required version from the bundle:**
+**Preferred GitHub-only client installation:** verify the release bundle using
+`pwmcp-latest/latest.json`, extract `bundle/client` and
+`bundle/pwmcp.contract.json`, then install the bundled source and exact
+contract version:
 
 ```bash
-grep 'playwright_version' ciu.defaults.toml.j2
-# playwright_version = "1.61.0"
-pip install playwright==1.61.0   # use that exact value — do not omit the pin
+PW_VER=$(python -c 'import json; print(json.load(open("pwmcp.contract.json"))["playwright"]["python"])')
+pip install "playwright==$PW_VER" ./client
 ```
 
 Do **not** run `playwright install` — browser binaries belong in the pwmcp container,
@@ -29,6 +31,29 @@ The unified image exposes three endpoints from the single service alias `pwmcp`:
 | lighthouse-mcp | `http://pwmcp:8933/mcp` | Lighthouse audit scores + opportunities |
 
 ## Playwright `connect()` — Test Suites
+
+Use `pwmcp_client.BrowserLease` for Python gates. It validates the live
+contract, supplies lease headers, and owns both browser and driver cleanup:
+
+```python
+from pwmcp_client import BrowserLease
+
+with BrowserLease.connect(lease_seconds=1800, label="consumer-gate") as lease:
+    page = lease.browser.new_page()
+    page.goto("https://example.com")
+```
+
+Configuration: `PWMCP_CONTRACT_URL`, `DSTDNS_PWMCP_WS`,
+`PWMCP_LEASE_SECONDS`, and `PWMCP_SESSION_LABEL`. Requested leases are clamped
+to `[pwmcp.run_server].max_lease_s`; operators can deliberately raise that
+ceiling for a long suite. Do not use `chromium.launch()`, run `playwright
+install`, or leave `sync_playwright().start()` unmanaged.
+
+The internal run-server admin surface provides `GET /sessions`,
+`POST /sessions/close`, and `POST /run-server/restart` on port 8940 by default.
+It is never host-published or routed through tls-edge. After the final client
+disconnects, the run-server process group is recycled after
+`idle_recycle_s`, removing leaked Chromium descendants.
 
 The `pwmcp` service exposes the native Playwright remote server protocol on port 3000. Test suites connect to it with `chromium.connect()` (or `firefox.connect()`, `webkit.connect()`) and get the **full Playwright API**.
 
@@ -199,7 +224,7 @@ For `--caps` or other playwright-mcp flags, they cannot be passed directly via t
 ## Multiple Consumers
 
 All services support multiple simultaneous consumers:
-- `run-server` (port 3000): each `browser.connect()` call creates an independent browser session; isolate further by using separate browser contexts or pages
+- `run-server` (port 3000): bounded by configurable `max_clients`; each accepted connection has an absolute lease
 - `@playwright/mcp` (port 8931): the MCP server handles concurrent MCP clients
 - `chrome-devtools-mcp` (port 8932): served via mcp-proxy, which handles concurrent MCP clients; all sessions share a single chrome-devtools-mcp process (stdio child)
 - `lighthouse-mcp` (port 8933): served via mcp-proxy; each audit launches a fresh browser instance (per-audit launch, not shared)
