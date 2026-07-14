@@ -1,0 +1,8 @@
+[builder]
+name = "pwmcp-governed-v1"
+memory = "4g"
+# Docker's memory-swap value is the combined RAM + swap allowance.
+memory_swap = "12g"
+cpu_shares = 128
+cpu_quota = 400000
+cpu_period = 100000

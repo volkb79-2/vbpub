@@ -128,18 +128,37 @@ The basicAuth guard is applied per-route at Traefik level. The consumer includes
 The unified `pwmcp` image must be built before deploying.
 
 ```bash
-# Build unified image locally
-docker buildx bake pwmcp --load
+# Build both the PyPI-compatible and npm-latest tracks locally
+python3 build-push.py --build
 
 # Push to GHCR
-GITHUB_USERNAME=<user> GITHUB_PUSH_PAT=<token> docker buildx bake pwmcp --push
+GITHUB_USERNAME=<user> GITHUB_PUSH_PAT=<token> python3 build-push.py --push
 ```
 
-Or via the ciu build runner (uses `build-push.toml`):
+`build-push.py` reads `[builder]` from `build-push.toml`, creates or repairs the
+named `docker-container` BuildKit builder, verifies the applied Docker limits,
+and passes that builder explicitly to Bake. The defaults permit 4 GiB RAM,
+12 GiB combined RAM+swap (therefore up to 8 GiB swap), and four CPUs. Edit the
+TOML when the build needs different limits; do not bypass the wrapper for a
+release.
+
+The Docker CLI and `dockerd` remain in `system.slice`, while the expensive
+executor work is charged to the `buildx_buildkit_<builder>0` container's cgroup.
+Accordingly, some `dockerd` CPU in `top` is normal coordination, registry, and
+snapshotter work. Attribute the actual build with:
 
 ```bash
-ciu-build -d . build-images
-ciu-build -d . push-images
+docker stats buildx_buildkit_pwmcp-governed-v10
+docker inspect buildx_buildkit_pwmcp-governed-v10 \
+  --format '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.CpuQuota}}/{{.HostConfig.CpuPeriod}}'
+systemd-cgtop system.slice
+```
+
+Or invoke the same wrapper through the release runner:
+
+```bash
+./cmru.build.sh --project pwmcp
+./cmru.publish.sh --project pwmcp
 ```
 
 The bake file reads `PLAYWRIGHT_VERSION`, `PLAYWRIGHT_DISTRO`, and `PWMCP_VERSION` from environment; defaults match `ciu.defaults.toml.j2` and `cmru.vars`.
@@ -160,10 +179,14 @@ The script updates `ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`, 
 ./cmru.build.sh   --project pwmcp
 ./cmru.publish.sh --project pwmcp
 
-# After publish-bundle.py runs, create the git tag it prints:
-git tag -a pwmcp-v1.61.0-r1 -m "pwmcp 1.61.0-r1"
-git push origin pwmcp-v1.61.0-r1
+# Or perform the complete delegated release in one operation:
+./cmru.release.sh --project pwmcp
 ```
+
+The one-shot release commits and pushes resolver-updated PWMCP inputs before
+publishing. Publication must stop if that source push cannot fast-forward;
+otherwise GitHub would create the immutable release tag from an older remote
+tree.
 
 Development consumers should follow `pwmcp-latest/latest.json`, verify its
 bundle checksum, and rebuild their test-only layer from the bundled `client/`

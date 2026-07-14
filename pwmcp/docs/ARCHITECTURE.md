@@ -100,6 +100,21 @@ See [SECURITY.md](SECURITY.md) for the host-allowlist gap analysis.
 
 ## Release Model
 
+### Build execution boundary
+
+The release plane is separate from the runtime container. `build-push.py`
+selects the named BuildKit `docker-container` builder from `build-push.toml` and
+verifies its memory, combined memory+swap, CPU-share, and CPU-quota settings
+before Bake runs. Build executors therefore appear as descendants of the
+`buildx_buildkit_pwmcp-governed-v10` container cgroup under `system.slice`.
+`docker.service` is a sibling: CPU shown against `dockerd` is expected control,
+content-store, networking, and snapshotter work and is not evidence that the
+executor escaped its limits.
+
+The builder is intentionally persistent so BuildKit can reuse its cache. The
+limits govern concurrent build work; the published PWMCP service has its own
+Compose runtime limits and lease/session policy.
+
 Versioned bundles are published to GitHub Releases following the monorepo-wide scheme:
 
 - **Immutable versioned release**: `pwmcp-v<version>` — carries the bundle artifact plus a `.sha256` sidecar. The SHA256 is also recorded in the release notes for verification without downloading the sidecar. This is the source of truth.
