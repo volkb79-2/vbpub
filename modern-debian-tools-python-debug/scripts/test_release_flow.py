@@ -44,9 +44,12 @@ class ReleaseFlowTests(unittest.TestCase):
     def test_active_repack_path_is_oci_native(self) -> None:
         bake = (ROOT / "scripts/release-bake.sh").read_text()
         repack = (ROOT / "scripts/release-repack.sh").read_text()
+        push_dockerfile = (ROOT / "scripts/repack-push.Dockerfile").read_text()
         self.assertIn("type=oci", bake)
         self.assertIn("unique_by([.digest", bake)
         self.assertIn("oci-layout://", repack)
+        self.assertIn("--target manifest", repack)
+        self.assertIn("FROM scratch AS manifest", push_dockerfile)
         self.assertNotIn("run_low_priority skopeo", repack)
         self.assertNotIn("docker-daemon:", repack)
 

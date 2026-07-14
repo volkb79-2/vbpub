@@ -158,7 +158,9 @@ are rebuilt before pushing.
 When `RELEASE_IMAGE_FLOW=repack`, the push step becomes a no-op because the
 repack happens during the build phase. `docker-repack` changes digests, so the
 release flow must always push the repacked OCI layout, not the unrepacked
-BuildKit output.
+BuildKit output. The canonical in-image manifest is exported directly from the
+repacked OCI layout; it is not obtained by pulling the published image back
+into Docker's local image store.
 
 Ensure you are logged in to the registry (e.g., `docker login ghcr.io`) and that
 `GITHUB_USERNAME` matches your org/user. If `GITHUB_PUSH_PAT` and

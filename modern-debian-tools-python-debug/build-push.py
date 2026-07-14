@@ -373,10 +373,8 @@ _MANIFEST_PATH = "/usr/local/share/modern-debian-tools-python-debug/manifest.md"
 def extract_manifests(build_date: str, env_vars: dict[str, str]) -> None:
     """Extract canonical manifests from freshly built images.
 
-    Runs ``docker run --rm <image> cat <manifest_path>`` for each target in the
-    bake matrix and writes the result to ``package-manifests-versioned/``.
-    Only works when images are loaded into the local Docker daemon
-    (RELEASE_IMAGE_FLOW=load or repack).
+    In repack mode, the release worker exports only the manifest from the
+    repacked OCI layout. Other modes read it from their local daemon image.
     """
     username = os.environ.get("GITHUB_USERNAME") or env_vars.get("GITHUB_USERNAME", "volkb79-2")
     repo = os.environ.get("GITHUB_REPO") or env_vars.get("GITHUB_REPO", "vbpub")
@@ -402,6 +400,14 @@ def extract_manifests(build_date: str, env_vars: dict[str, str]) -> None:
     targets = bake.get("target") or {}
 
     manifests_root = ROOT / "package-manifests-versioned"
+    release_flow = (env_vars.get("RELEASE_IMAGE_FLOW") or "load").strip().lower()
+    repack_work = Path(
+        os.environ.get("REPACK_WORK_DIR")
+        or _read_cmru_env_default("REPACK_WORK_DIR")
+        or "build/repack"
+    )
+    if not repack_work.is_absolute():
+        repack_work = ROOT / repack_work
     extracted: list[str] = []
     failed: list[str] = []
 
@@ -413,21 +419,32 @@ def extract_manifests(build_date: str, env_vars: dict[str, str]) -> None:
             continue
         first_tag = str(tags[0])
 
-        # Extract canonical manifest from the local image.
-        try:
-            manifest_content = subprocess.run(
-                ["docker", "run", "--rm", first_tag, "cat", _MANIFEST_PATH],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=60,
-            ).stdout
-        except (subprocess.CalledProcessError, OSError) as exc:
-            sys.stderr.write(
-                f"[WARN] Failed to extract manifest from {first_tag}: {exc}\n"
-            )
-            failed.append(name)
-            continue
+        if release_flow == "repack":
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+            manifest_file = repack_work / "manifests" / safe_name / "manifest.md"
+            try:
+                manifest_content = manifest_file.read_text(encoding="utf-8")
+            except OSError as exc:
+                sys.stderr.write(
+                    f"[WARN] Failed to read repacked manifest {manifest_file}: {exc}\n"
+                )
+                failed.append(name)
+                continue
+        else:
+            try:
+                manifest_content = subprocess.run(
+                    ["docker", "run", "--rm", first_tag, "cat", _MANIFEST_PATH],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=60,
+                ).stdout
+            except (subprocess.CalledProcessError, OSError) as exc:
+                sys.stderr.write(
+                    f"[WARN] Failed to extract manifest from {first_tag}: {exc}\n"
+                )
+                failed.append(name)
+                continue
 
         # Derive package name and tag for the output path.
         debian = args.get("DEBIAN_VERSION") or ""

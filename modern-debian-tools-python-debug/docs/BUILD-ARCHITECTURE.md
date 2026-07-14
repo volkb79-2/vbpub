@@ -41,8 +41,9 @@ The phases are:
    target. Repacking deduplicates filesystem content, changes the layer graph
    and image digest, and produces the artifact that must be published.
 5. A minimal BuildKit invocation imports each repacked OCI layout as an OCI
-   build context and publishes all tags for that target. It does not rebuild
-   the image.
+   build context. A scratch stage exports only the canonical in-image manifest
+   to release scratch, then the publish stage pushes all tags for the target.
+   Neither operation rebuilds or loads the image into the daemon store.
 
 The source and repacked layouts are temporary release scratch. Do not place
 `REPACK_WORK_DIR` on tmpfs: two large targets can require many GiB while source

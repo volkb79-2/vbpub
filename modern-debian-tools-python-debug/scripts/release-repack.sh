@@ -45,8 +45,8 @@ run_low_priority() {
 worker_target() {
     set -euo pipefail
 
-    local target="$1" src_oci="$2" dst_oci="$3" rc_file="$4" tmp_dir="$5"
-    shift 5
+    local target="$1" src_oci="$2" dst_oci="$3" rc_file="$4" tmp_dir="$5" manifest_dir="$6"
+    shift 6
     local -a tags=("$@")
     local -a push_args
 
@@ -67,9 +67,23 @@ worker_target() {
         --concurrency "${REPACK_CONCURRENCY}" \
         "oci://${src_oci}" "oci://${dst_oci}"
 
+    rm -rf "${manifest_dir}"
+    echo "[INFO]     extract canonical manifest from repacked OCI layout"
+    run_low_priority docker buildx build \
+        --file scripts/repack-push.Dockerfile \
+        --target manifest \
+        --build-context "repacked=oci-layout://${dst_oci}" \
+        --output "type=local,dest=${manifest_dir}" \
+        .
+    [[ -s "${manifest_dir}/manifest.md" ]] || {
+        echo "[ERROR] Repacked target ${target} did not export its canonical manifest." >&2
+        exit 1
+    }
+
     push_args=(
         docker buildx build
         --file scripts/repack-push.Dockerfile
+        --target publish
         --build-context "repacked=oci-layout://${dst_oci}"
         --provenance=false
         --sbom=false
@@ -92,7 +106,7 @@ if [[ "${#TARGETS[@]}" -eq 0 ]]; then
     exit 1
 fi
 
-mkdir -p "${WORK}/logs" "${WORK}/tmp"
+mkdir -p "${WORK}/logs" "${WORK}/tmp" "${WORK}/manifests"
 declare -A LOG_FILES=() RC_FILES=() TAG_COUNTS=() TARGET_RCS=()
 declare -a PENDING=() FAILED=()
 running=0
@@ -136,6 +150,7 @@ for target in "${TARGETS[@]}"; do
     log="${WORK}/logs/${safe}.log"
     rc="${WORK}/logs/${safe}.rc"
     tmp="${WORK}/tmp/${safe}"
+    manifest_dir="${WORK}/manifests/${safe}"
     rm -f "${rc}"
 
     LOG_FILES["${target}"]="${log}"
@@ -143,7 +158,7 @@ for target in "${TARGETS[@]}"; do
     TAG_COUNTS["${target}"]="${#TAGS[@]}"
     PENDING+=("${target}")
     echo "[INFO] target ${target} started"
-    (worker_target "${target}" "${src}" "${dst}" "${rc}" "${tmp}" "${TAGS[@]}") >"${log}" 2>&1 &
+    (worker_target "${target}" "${src}" "${dst}" "${rc}" "${tmp}" "${manifest_dir}" "${TAGS[@]}") >"${log}" 2>&1 &
     running=$((running + 1))
     [[ "${running}" -lt "${REPACK_JOBS}" ]] || collect_one
 done
