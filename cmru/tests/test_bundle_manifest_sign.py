@@ -36,6 +36,7 @@ import pytest
 from cmru.bundle import (
     BundleMember,
     collect_allowlist_members,
+    run_bundle,
     write_deterministic_tar,
     _is_excluded,
 )
@@ -209,12 +210,60 @@ class TestAllowlistAndExcludes:
         assert _is_excluded("ciu.env") is True
         assert _is_excluded("app.log") is True
         assert _is_excluded("docker-compose.toml") is True
+        assert _is_excluded("client/pyproject.toml") is False
         # minisign.key must be excluded (secret).
         assert _is_excluded("minisign.key") is True
         # normal source files must NOT be excluded.
         assert _is_excluded("src/app.py") is False
         assert _is_excluded("README.md") is False
         assert _is_excluded("install.sh") is False
+
+    def test_run_bundle_uses_excludes_and_deterministic_xztar(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        client = project / "client"
+        package = client / "src" / "example"
+        package.mkdir(parents=True)
+        (project / "README.md").write_text("consumer docs\n", encoding="utf-8")
+        (client / "pyproject.toml").write_text("[project]\nname='example'\n", encoding="utf-8")
+        (package / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
+        (package / "__pycache__").mkdir()
+        (package / "__pycache__" / "init.pyc").write_bytes(b"cache")
+        (client / ".pytest_cache").mkdir()
+        (client / ".pytest_cache" / "README.md").write_text("cache", encoding="utf-8")
+        (client / "test.log").write_text("runtime", encoding="utf-8")
+
+        config = project / "bundle.toml"
+        config.write_text(
+            """project_root = "."
+dist_dir = "dist"
+bundle_dir = "bundle"
+[archive]
+name_template = "example-{version}.tar.xz"
+format = "xztar"
+version_env = "TEST_BUNDLE_VERSION"
+[copy]
+files = ["README.md"]
+dirs = ["client"]
+""",
+            encoding="utf-8",
+        )
+
+        env = {"SOURCE_DATE_EPOCH": "1700000000", "TEST_BUNDLE_VERSION": "1.0"}
+        with mock.patch.dict(os.environ, env, clear=False):
+            first = run_bundle(config)
+            digest = _sha256_path(first)
+            with tarfile.open(first, "r:xz") as tf:
+                names = {member.name for member in tf.getmembers()}
+                assert all(member.mtime == 1700000000 for member in tf.getmembers())
+
+            second = run_bundle(config)
+
+        assert digest == _sha256_path(second)
+        assert "bundle/client/pyproject.toml" in names
+        assert "bundle/client/src/example/__init__.py" in names
+        assert not any("__pycache__" in name for name in names)
+        assert not any(".pytest_cache" in name for name in names)
+        assert not any(name.endswith((".pyc", ".log")) for name in names)
 
     def test_nonexistent_allowlist_entry_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError, match="does not exist"):

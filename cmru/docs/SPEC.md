@@ -493,6 +493,10 @@ cmru uses a four-value exit code scheme identical to CIU S10.3:
 - Compression: `tarfile` with `mode="w:xz"` (fixed format; no timestamp in container).
 - Hard excludes applied belt-and-suspenders: `.git`, `.ciu`, rendered `*.toml`, `ciu.env`,
   `minisign.key`, `__pycache__`, `*.pyc`, `*.log`, `*.pem/.key/.crt` and similar.
+  The source-package metadata file `pyproject.toml` is the deliberate exception when
+  its parent path is explicitly allowlisted (for example, a bundled companion client).
+- The production `run_bundle()` path MUST use this normalized writer for `xztar`; it
+  must not bypass membership filtering through `copytree`/`make_archive`.
 - A **build-twice gate** in the test suite asserts identical sha256 across two builds from
   the same `SOURCE_DATE_EPOCH`; flipping the epoch asserts the digest changes.
 

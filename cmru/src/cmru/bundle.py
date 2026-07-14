@@ -74,6 +74,10 @@ def _is_excluded(rel_path: str) -> bool:
         if part in _HARD_EXCLUDE_EXACT:
             return True
     name = Path(rel_path).name
+    # A bundled source client must retain its build metadata.  This is an
+    # explicitly allowlisted source file, not a rendered runtime config.
+    if name == "pyproject.toml":
+        return False
     if name in _HARD_EXCLUDE_EXACT:
         return True
     for suffix in _HARD_EXCLUDE_SUFFIXES:
@@ -337,20 +341,39 @@ def build_wheel(config: BundleConfig) -> None:
 
 
 def copy_sources(config: BundleConfig) -> None:
+    def ignore_excluded(directory: str, names: list[str]) -> set[str]:
+        ignored: set[str] = set()
+        base = Path(directory)
+        for name in names:
+            candidate = base / name
+            try:
+                rel = candidate.relative_to(config.project_root).as_posix()
+            except ValueError:
+                rel = candidate.name
+            if _is_excluded(rel):
+                ignored.add(name)
+        return ignored
+
     for file_path in config.copy_files:
         source = resolve_path(config.project_root, file_path)
         if not source.exists():
             raise FileNotFoundError(f"Bundle source file not found: {source}")
+        if _is_excluded(file_path):
+            continue
         shutil.copy2(source, config.bundle_dir / source.name)
 
     for dir_path in config.copy_dirs:
         source = resolve_path(config.project_root, dir_path)
         if not source.exists():
             raise FileNotFoundError(f"Bundle source dir not found: {source}")
-        shutil.copytree(source, config.bundle_dir / source.name)
+        shutil.copytree(source, config.bundle_dir / source.name, ignore=ignore_excluded)
 
     if config.client_dir.exists():
-        shutil.copytree(config.client_dir, config.bundle_dir / config.client_dir.name)
+        shutil.copytree(
+            config.client_dir,
+            config.bundle_dir / config.client_dir.name,
+            ignore=ignore_excluded,
+        )
 
 
 def create_archive(config: BundleConfig) -> Path:
@@ -366,6 +389,14 @@ def create_archive(config: BundleConfig) -> Path:
     tarball_path = config.dist_dir / tarball_name
 
     log_info(f"Creating archive {tarball_path}")
+    if config.archive_format == "xztar":
+        members = collect_allowlist_members(
+            config.dist_dir,
+            [config.bundle_dir.name],
+            archive_prefix="",
+        )
+        return write_deterministic_tar(members, tarball_path)
+
     shutil.make_archive(
         tarball_path.with_suffix("").with_suffix(""),
         config.archive_format,
