@@ -19,6 +19,8 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertEqual(self.env["RELEASE_IMAGE_FLOW"], "repack")
         source = (ROOT / "build-push.py").read_text()
         self.assertIn('or "repack"', source)
+        self.assertIn("if explicit_build_date:", source)
+        self.assertIn("build_date = explicit_build_date", source)
 
     def test_builder_and_repack_limits_are_configured(self) -> None:
         self.assertTrue(self.env["BUILDX_BUILDER"])

@@ -79,6 +79,9 @@ If you run multiple builds on the same day, `BUILD_DATE` automatically appends a
 `-N` suffix starting at `-2` (e.g. `20260604-2`, `20260604-3`). Counter file:
 `logs/build-counter-YYYYMMDD.txt`.
 
+An explicitly exported `BUILD_DATE` is authoritative and bypasses the local
+counter. Use that to retry a failed release under the same immutable coordinate.
+
 Environment configuration:
 - Copy `.env.sample` to `.env` and adjust values as needed.
 

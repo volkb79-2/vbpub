@@ -312,9 +312,15 @@ def do_build(ignore_new_releases: bool) -> None:
             f"[ERROR] RELEASE_IMAGE_FLOW must be 'load', 'push', or 'repack', got: {release_image_flow!r}"
         )
 
-    # Compute BUILD_DATE first (resolver depends on it)
-    base_date = os.getenv("BUILD_DATE") or datetime.now(timezone.utc).strftime("%Y%m%d")
-    build_date = compute_build_date_with_counter(base_date)
+    # Compute BUILD_DATE first (resolver depends on it). An explicit coordinate
+    # is authoritative so a failed release can be retried without inventing a
+    # nested counter suffix. Only an implicit date uses the local build counter.
+    explicit_build_date = os.getenv("BUILD_DATE")
+    if explicit_build_date:
+        build_date = explicit_build_date
+    else:
+        base_date = datetime.now(timezone.utc).strftime("%Y%m%d")
+        build_date = compute_build_date_with_counter(base_date)
     os.environ["BUILD_DATE"] = build_date
     sys.stderr.write(f"[INFO] BUILD_DATE={build_date}\n")
 
