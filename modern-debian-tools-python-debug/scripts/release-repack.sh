@@ -15,10 +15,12 @@ REPACK_JOBS="${REPACK_JOBS:?REPACK_JOBS must be configured}"
 REPACK_COMPRESSION_LEVEL="${REPACK_COMPRESSION_LEVEL:?REPACK_COMPRESSION_LEVEL must be configured}"
 REPACK_CONCURRENCY="${REPACK_CONCURRENCY:?REPACK_CONCURRENCY must be configured}"
 REPACK_VMEM_KB="${REPACK_VMEM_KB:?REPACK_VMEM_KB must be configured}"
+REPACK_KEEP_FAILED="${REPACK_KEEP_FAILED:?REPACK_KEEP_FAILED must be configured}"
 DOCKER_REPACK_BIN="${DOCKER_REPACK_BIN:-docker-repack}"
 DOCKER_REPACK_LOG="${DOCKER_REPACK_LOG:?DOCKER_REPACK_LOG must be configured}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
-for bin in docker jq "${DOCKER_REPACK_BIN}"; do
+for bin in docker jq "${DOCKER_REPACK_BIN}" "${PYTHON_BIN}"; do
     command -v "${bin}" >/dev/null 2>&1 || {
         echo "[ERROR] '${bin}' is required by the OCI-layout repack flow." >&2
         exit 3
@@ -35,6 +37,10 @@ for value_name in REPACK_JOBS REPACK_CONCURRENCY; do
 done
 if [[ "${REPACK_VMEM_KB}" != "unlimited" && ! "${REPACK_VMEM_KB}" =~ ^[1-9][0-9]*$ ]]; then
     echo "[ERROR] REPACK_VMEM_KB must be 'unlimited' or a positive integer." >&2
+    exit 2
+fi
+if [[ "${REPACK_KEEP_FAILED}" != "true" && "${REPACK_KEEP_FAILED}" != "false" ]]; then
+    echo "[ERROR] REPACK_KEEP_FAILED must be 'true' or 'false'." >&2
     exit 2
 fi
 
@@ -54,7 +60,18 @@ worker_target() {
     local -a tags=("$@")
     local -a push_args
 
-    trap 'rc=$?; set +e; printf "%s\n" "$rc" >"$rc_file"; rm -rf "$src_oci" "$dst_oci" "$tmp_dir"' EXIT
+    cleanup_worker() {
+        local worker_rc=$?
+        set +e
+        printf "%s\n" "${worker_rc}" >"${rc_file}"
+        rm -rf "${tmp_dir}"
+        if [[ "${worker_rc}" -eq 0 || "${REPACK_KEEP_FAILED}" != "true" ]]; then
+            rm -rf "${src_oci}" "${dst_oci}"
+        else
+            echo "[WARN] Preserved failed OCI layouts: ${src_oci} ${dst_oci}" >&2
+        fi
+    }
+    trap cleanup_worker EXIT
     if [[ "${REPACK_VMEM_KB}" != "unlimited" ]]; then
         ulimit -v "${REPACK_VMEM_KB}"
     fi
@@ -72,6 +89,9 @@ worker_target() {
         --compression-level "${REPACK_COMPRESSION_LEVEL}" \
         --concurrency "${REPACK_CONCURRENCY}" \
         "oci://${src_oci}" "oci://${dst_oci}"
+
+    echo "[INFO]     validate candidate OCI layer structure"
+    run_low_priority "${PYTHON_BIN}" scripts/validate-oci-layout.py "${dst_oci}"
 
     rm -rf "${manifest_dir}"
     echo "[INFO]     extract canonical manifest from repacked OCI layout"

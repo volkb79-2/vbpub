@@ -9,8 +9,8 @@ Build all variants:
 ```
 
 This runs the environment resolver (MCR check, tool version resolution, artifact
-staging), saves the resolved state to `.build-env.json`, then exports one OCI
-layout per release target through the governed builder.
+staging), saves the resolved state to `.build-env.json`, then builds and
+publishes the release targets through the governed builder.
 
 For the end-to-end data path, cgroup and slice boundaries, resource defaults,
 and guidance for attributing load in `top`, Docker stats, and systemd, read
@@ -18,14 +18,15 @@ and guidance for attributing load in `top`, Docker stats, and systemd, read
 
 `RELEASE_IMAGE_FLOW` controls the release path:
 
-- `repack` is the default release mode. It builds directly to OCI tar streams,
+- `push` is the default release mode. It publishes the governed BuildKit output
+  directly without loading it into dockerd's image store.
+- `repack` is an optional compression experiment. It builds to OCI tar streams,
   extracts those into disk-backed layouts, repacks at `REPACK_TARGET_SIZE`
   (default `2GB`), validates the candidate by importing it through BuildKit,
   and only then publishes it. It does not load the original image into dockerd
   and does not use `skopeo`. The affected image currently fails this gate due
   to the repacker defect recorded in the architecture guide.
 - `load` keeps the daemon-first split for local-only validation.
-- `push` pushes the unrepacked BuildKit output directly.
 
 The release config toggle is `RELEASE_IMAGE_FLOW`; `REPACK_TARGET_SIZE`
 controls the slice size used by the repack flow.
@@ -88,11 +89,13 @@ An explicitly exported `BUILD_DATE` is authoritative and bypasses the local
 counter. Use that to retry a failed release under the same immutable coordinate.
 
 Environment configuration:
+
 - Copy `.env.sample` to `.env` and adjust values as needed.
 
 Optional overrides (environment variables):
+
 - `REGISTRY`, `GITHUB_USERNAME`, `BUILD_DATE`, `BACKPORTS_URI`, `CIU_INSTALL_REQUIRED`
-- `RELEASE_IMAGE_FLOW` (`repack` is the default, `load` keeps the current daemon-first split, `push` pushes during build)
+- `RELEASE_IMAGE_FLOW` (`push` is the default, `repack` is the validated optional compression lane, `load` is daemon-first local compatibility mode)
 - `REPACK_TARGET_SIZE` (`2GB` by default for the repack flow)
 - `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `ANTIGRAVITY_VERSION`, `AIDER_VERSION`
 - `REASONIX_VERSION`, `OPENCLAW_VERSION`, `OPENCODE_VERSION`
@@ -155,19 +158,18 @@ To do both in one command:
 ./build-push.py --rebuild
 ```
 
-When `RELEASE_IMAGE_FLOW=repack`, the push step becomes a no-op because the
-repack and publication happen during the build phase. `docker-repack` changes
-digests, so release evidence must refer to the artifact that was actually
-published. The canonical in-image manifest is exported during the BuildKit
-validation import; it is not obtained by pulling the published image back into
-Docker's local image store. If repack validation fails, use the explicit
-unrepacked `push` recovery lane and record the exception rather than copying an
-invalid OCI layout to the registry.
+When `RELEASE_IMAGE_FLOW=push` or `repack`, the push step becomes a no-op because
+publication happens during the build phase. The canonical in-image manifest is
+exported through the governed builder; it is not loaded into Docker's local
+image store. `docker-repack` changes digests, so evidence from an optional
+repack run must refer to the artifact that was actually published. If its
+validation fails, retain the default `push` lane rather than copying an invalid
+OCI layout to the registry.
 
 In the non-release `load` mode, the later push is a second Bake invocation.
 BuildKit checks its cache, but changed inputs can rebuild layers and the result
-is unrepacked. In the explicit `push` mode, publication already happens during
-the build phase and its later push step is also a no-op.
+is unrepacked. In the default `push` mode, publication already happens during
+the build phase.
 
 Ensure you are logged in to the registry (e.g., `docker login ghcr.io`) and that
 `GITHUB_USERNAME` matches your org/user. If `GITHUB_PUSH_PAT` and

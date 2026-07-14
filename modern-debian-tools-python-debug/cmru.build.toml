@@ -3,7 +3,7 @@ log_dir = "logs"
 release_config = "../cmru.toml"
 
 [env]
-RELEASE_IMAGE_FLOW = "repack"
+RELEASE_IMAGE_FLOW = "push"
 BUILDX_BUILDER = "mdt-governed-v1"
 MDT_BUILDER_MEMORY = "4g"
 MDT_BUILDER_MEMORY_SWAP = "12g"
@@ -16,6 +16,7 @@ REPACK_COMPRESSION_LEVEL = "9"
 REPACK_JOBS = "1"
 REPACK_CONCURRENCY = "2"
 REPACK_VMEM_KB = "unlimited"
+REPACK_KEEP_FAILED = "true"
 DOCKER_REPACK_LOG = "warn"
 OCI_VENDOR = "Volker Badziong"
 OCI_DESCRIPTION = """Modern Debian Tools + Python Debug image family.

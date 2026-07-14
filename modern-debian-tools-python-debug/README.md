@@ -530,7 +530,7 @@ Use PAT with package scopes (classic token):
 Configured via environment (for example `.env` loaded by your release tooling).
 The release pipeline mirrors each GHCR package's visibility to the source repository after push, so new releases should not need a manual package-settings toggle.
 
-The canonical OCI-layout release path publishes through BuildKit and does not
+The canonical direct-push release path publishes through BuildKit and does not
 call `skopeo`. The historical local compression benchmark still uses `skopeo`
 to import an image from Docker's local image store; if you run that benchmark,
 `REGISTRY_AUTH_FILE` may point at a workspace-local file such as
@@ -666,7 +666,7 @@ Interpretation:
 
 - `docker-repack` is the bigger compression win because it deduplicates and re-slices layers.
 - `zstd` is the lower-risk optimization if you want to keep the same layer topology.
-- The repack result changes layer hashes and image digest, so release evidence must identify whether the validated repacked artifact or the explicit unrepacked recovery lane was published.
+- The repack result changes layer hashes and image digest, so evidence from an optional run must identify the validated repacked artifact rather than the default unrepacked release.
 - The benchmark now covers `50MB`, `100MB`, `200MB`, `500MB`, `1GB`, `2GB`, and `4GB`; the larger slices mostly trade layer count for essentially the same compressed size on this image.
 - For this image, `2GB` is the balanced release target: it gets the repacked image down to 3 layers with no size penalty versus `1GB`, while `4GB` only saves another MiB and collapses the topology to 2 layers.
 
@@ -680,13 +680,13 @@ For this image family, the benchmark script is:
 
 It is intentionally benchmark-only. The release flow uses the same repack logic via `RELEASE_IMAGE_FLOW=repack` and `REPACK_TARGET_SIZE=2GB`.
 
-The release path is OCI-layout-native: Bake writes one OCI tar per target,
+The optional repack path is OCI-layout-native: Bake writes one OCI tar per target,
 the tar is extracted into disk-backed scratch, `docker-repack` writes a second
 OCI layout, and the governed BuildKit builder validates that layout by importing
 and unpacking it before registry publication. No daemon image round-trip or
 `skopeo` copy is involved. The affected image currently triggers the fail-closed
 gate because of the repacker defect recorded in the architecture guide; use the
-explicit unrepacked `push` recovery lane, not a raw copy of the invalid layout.
+default unrepacked `push` release lane, not a raw copy of the invalid layout.
 See [MDT build and release architecture](docs/BUILD-ARCHITECTURE.md) for the
 resource model, cgroup/slice boundaries, and live load-attribution commands.
 

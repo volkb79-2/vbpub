@@ -8,7 +8,7 @@ Usage:
   ./build-push.py --build        # Resolve env, build images, save state
   ./build-push.py --push         # Load saved state, push images (skips resolver)
   ./build-push.py --rebuild      # Build then push sequentially
-                                 # (RELEASE_IMAGE_FLOW=repack keeps the push step as a no-op)
+                                 # (push/repack publish during build; their push step is a no-op)
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -305,7 +306,7 @@ def do_build(ignore_new_releases: bool) -> None:
     release_image_flow = (
         os.getenv("RELEASE_IMAGE_FLOW")
         or _read_cmru_env_default("RELEASE_IMAGE_FLOW")
-        or "repack"
+        or "push"
     ).strip().lower()
     if release_image_flow not in {"load", "push", "repack"}:
         raise SystemExit(
@@ -374,7 +375,8 @@ def extract_manifests(build_date: str, env_vars: dict[str, str]) -> None:
     """Extract canonical manifests from freshly built images.
 
     In repack mode, the release worker exports only the manifest from the
-    repacked OCI layout. Other modes read it from their local daemon image.
+    repacked OCI layout. Other modes use the governed builder to export it from
+    the published registry image without loading it into dockerd's image store.
     """
     username = os.environ.get("GITHUB_USERNAME") or env_vars.get("GITHUB_USERNAME", "volkb79-2")
     repo = os.environ.get("GITHUB_REPO") or env_vars.get("GITHUB_REPO", "vbpub")
@@ -432,13 +434,31 @@ def extract_manifests(build_date: str, env_vars: dict[str, str]) -> None:
                 continue
         else:
             try:
-                manifest_content = subprocess.run(
-                    ["docker", "run", "--rm", first_tag, "cat", _MANIFEST_PATH],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    timeout=60,
-                ).stdout
+                with tempfile.TemporaryDirectory(prefix="mdt-manifest-") as temp_dir:
+                    subprocess.run(
+                        [
+                            "docker",
+                            "buildx",
+                            "build",
+                            "--file",
+                            "scripts/repack-push.Dockerfile",
+                            "--target",
+                            "manifest",
+                            "--build-context",
+                            f"repacked=docker-image://{first_tag}",
+                            "--output",
+                            f"type=local,dest={temp_dir}",
+                            ".",
+                        ],
+                        cwd=str(ROOT),
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=180,
+                    )
+                    manifest_content = (Path(temp_dir) / "manifest.md").read_text(
+                        encoding="utf-8"
+                    )
             except (subprocess.CalledProcessError, OSError) as exc:
                 sys.stderr.write(
                     f"[WARN] Failed to extract manifest from {first_tag}: {exc}\n"

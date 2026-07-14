@@ -6,24 +6,19 @@ CPU, memory, swap, and I/O. The release configuration is code: defaults and
 limits live in [`cmru.build.toml`](../cmru.build.toml), not in an operator's
 shell history.
 
-## Intended canonical release path
+## Canonical release path
 
-`RELEASE_IMAGE_FLOW=repack` is the configured release path. It deliberately
-avoids a Docker daemon image-store round-trip and does not require `skopeo`.
-Every derived artifact must pass validation before publication; repacking is an
-optimization, not permission to publish a malformed image.
+`RELEASE_IMAGE_FLOW=push` is the configured release path. The governed BuildKit
+worker publishes its build result directly to GHCR, without loading it into the
+Docker daemon image store and without requiring `skopeo`.
 
 ```mermaid
 flowchart LR
     A[build-push.py / CMRU] --> B[resolve upstream versions]
     B --> C[stage pinned artifacts and wheels]
     C --> D[Buildx Bake group: all]
-    D -->|one OCI tar per target| E[disk-backed OCI source layouts]
-    E --> F[bounded docker-repack workers]
-    F --> G[candidate repacked OCI layouts]
-    G --> V[BuildKit unpack and manifest validation]
-    V -->|valid| H[GHCR immutable and floating tags]
-    V -->|invalid| X[fail closed; preserve diagnostics]
+    D --> E[BuildKit registry export]
+    E --> H[GHCR immutable and floating tags]
     H --> I[visibility sync and release metadata]
 ```
 
@@ -35,21 +30,27 @@ The phases are:
    set of inputs.
 2. `docker-bake.hcl` defines the target graph. The `all` group is the release
    matrix; `everything` is a broader local-development matrix.
-3. `scripts/release-bake.sh` selects the governed named builder and overrides
-   each release target's output to a separate OCI tar. Those tars are extracted
-   under the disk-backed `REPACK_WORK_DIR`; they are not loaded into Docker's
-   image store. BuildKit can emit one OCI index descriptor per tag even when
-   every descriptor points to the same image; the wrapper deduplicates those
-   aliases by digest and platform before repacking.
-4. `scripts/release-repack.sh` runs a bounded `docker-repack` worker for each
-   target. Repacking deduplicates filesystem content and changes the layer
-   graph and image digest. Its output is a candidate, not yet a releasable
-   artifact.
-5. A minimal BuildKit invocation imports each repacked OCI layout as an OCI
-   build context. This forces BuildKit to unpack the filesystem and exports the
-   canonical in-image manifest to release scratch. Publication only follows a
-   successful import. Neither operation loads the image into Docker's daemon
-   image store.
+3. `scripts/release-bake.sh` selects the governed named builder and runs the
+   release matrix with `--push`. BuildKit performs Dockerfile execution, cache
+   lookup, layer compression, and registry export inside its limited worker.
+4. `build-push.py` extracts the canonical in-image manifests, records release
+   metadata, and the later CMRU push step becomes a no-op because publication
+   already occurred during the build step.
+
+### Optional OCI-layout repack lane
+
+`RELEASE_IMAGE_FLOW=repack` remains available for compression experiments. It
+overrides each target's output to a separate OCI tar, extracts those tars under
+the disk-backed `REPACK_WORK_DIR`, and runs bounded `docker-repack` workers.
+BuildKit can emit one index descriptor per tag even when every descriptor
+points to the same image; the wrapper deduplicates those aliases by digest and
+platform before repacking.
+
+Repacker output is only a candidate. `scripts/validate-oci-layout.py` first
+checks each layer for structurally impossible file/descendant collisions. A
+minimal BuildKit import then forces a real unpack and exports the canonical
+in-image manifest. Publication only follows both checks. Neither operation
+loads the image into Docker's daemon image store.
 
 An OCI layout is an on-disk image format, not a registry upload protocol.
 BuildKit can consume a local layout as a build context, while tools such as
@@ -59,16 +60,16 @@ former, so it has no `skopeo` prerequisite. Merely having `index.json` and
 blobs: that command normally composes manifests from content the destination
 registry can already resolve.
 
-### Current repack validation status
+#### Current repack validation status
 
 The 2026-07-14 transition run caught a `docker-repack` output layer containing
 a regular file and descendants below that same path. BuildKit correctly
 rejected it during the validation import, before any tag was pushed. Until the
 repacker defect is fixed and covered by an automated structural regression
-test, the configured `repack` lane is expected to fail closed for the affected
+test, the optional `repack` lane is expected to fail closed for the affected
 image. Do not bypass this check with a raw OCI-layout copy: that would upload
-the invalid layer rather than repair it. The explicit `push` lane remains the
-unrepacked recovery path when a release is required.
+the invalid layer rather than repair it. The default `push` lane is the safe
+unrepacked release path.
 
 The source and repacked layouts are temporary release scratch. Do not place
 `REPACK_WORK_DIR` on tmpfs: two large targets can require many GiB while source
@@ -124,7 +125,7 @@ devcontainer's `interactive.slice`.
 
 | Work | Process/container to inspect | Governance |
 | --- | --- | --- |
-| Dockerfile steps, cache, layer compression, OCI export and OCI-context publication | `buildx_buildkit_mdt-governed-v10` | Docker hard limits created from `MDT_BUILDER_*`: 4 GiB RAM, 12 GiB combined RAM+swap, four-core quota, CPU shares 128 |
+| Dockerfile steps, cache, layer compression, registry export, optional OCI export/import | `buildx_buildkit_mdt-governed-v10` | Docker hard limits created from `MDT_BUILDER_*`: 4 GiB RAM, 12 GiB combined RAM+swap, four-core quota, CPU shares 128 |
 | Resolver, Bake client, artifact staging, OCI export streaming, tar extraction, release orchestration | `build-push.py`, `docker-buildx`, resolver scripts, `tar` | Inherits the caller's cgroup; from the MDT devcontainer this is normally `interactive.slice` |
 | Filesystem deduplication and zstd compression | `docker-repack` | Inherits the caller's cgroup, plus low CPU/I/O scheduling priority, configured worker count and compression concurrency; an optional diagnostic virtual-memory ceiling is disabled by default |
 | Docker API, container lifecycle, layer/accounting and registry coordination | `dockerd` in `system.slice/docker.service` | Host Docker service policy; CPU here is daemon work and is not evidence that Dockerfile commands escaped the governed builder |
@@ -316,13 +317,13 @@ while `top` configuration can display either per-CPU or whole-machine values.
 
 | `RELEASE_IMAGE_FLOW` | Behavior | Intended use |
 | --- | --- | --- |
-| `repack` | Bake to OCI layouts, repack, validate by importing, then publish; later push step is a no-op | Intended canonical release and fail-closed gate; currently blocked for the affected image by the known repacker defect above |
+| `repack` | Bake to OCI layouts, repack, validate structurally and by importing, then publish; later push step is a no-op | Optional compression experiment; currently blocked for the affected image by the known repacker defect above |
 | `load` | Build with `--load`; a later push performs a separate unrepacked registry build | Local compatibility/debugging only, not a release gate |
-| `push` | Build and publish unrepacked BuildKit output directly | Explicit diagnostic/fallback lane |
+| `push` | Build and publish unrepacked BuildKit output directly; later push step is a no-op | Canonical release lane |
 
-`load` exists only to troubleshoot compatibility. `push` does not produce the
-optimized repacked artifact, but it is the explicit safe recovery lane while
-repack validation is blocked; record that exception in the release evidence.
+`load` exists only to troubleshoot compatibility. `push` retains the original
+BuildKit layer topology; that smaller optimization scope is the safety tradeoff
+while repack validation is blocked.
 
 ## Configuration and prerequisites
 
@@ -333,14 +334,16 @@ The governed defaults are in the `[env]` table of
 - `REPACK_WORK_DIR`, `REPACK_TARGET_SIZE`, `REPACK_JOBS`,
   `REPACK_CONCURRENCY`, `REPACK_COMPRESSION_LEVEL`, and `REPACK_VMEM_KB`
   control repack. `REPACK_VMEM_KB` accepts `unlimited` or a positive numeric
-  diagnostic override. `DOCKER_REPACK_LOG` controls library verbosity without
+  diagnostic override. `REPACK_KEEP_FAILED` retains failed source and candidate
+  layouts for analysis. `DOCKER_REPACK_LOG` controls library verbosity without
   hiding the wrapper's target-level progress.
 - `RELEASE_IMAGE_FLOW` selects the architecture above.
 
-Required tools are Docker with Buildx/Bake, `jq`, `tar`, and `docker-repack`.
-Install `docker-repack` from its official GitHub release, or set
-`DOCKER_REPACK_BIN` to a verified binary. The canonical path does **not** check
-for or call `skopeo`. The separate historical benchmark script still uses
+The canonical path requires Docker with Buildx/Bake. The optional repack lane
+also requires `jq`, `tar`, Python 3.14 or later, and `docker-repack`. Install
+`docker-repack` from its official GitHub release, or set `DOCKER_REPACK_BIN` to
+a verified binary. The canonical path does **not** check for or call `skopeo`.
+The separate historical benchmark script still uses
 `skopeo` to import an already-loaded local daemon image; that does not describe
 the release architecture.
 
@@ -355,8 +358,10 @@ the release architecture.
   BuildKit before its publish command runs. The current import gate caught the
   known file/descendant collision; a raw registry copier is not a substitute
   for validation.
-- Each repack worker records its exit code and cleans its target scratch. Any
-  worker failure fails the release.
+- Each repack worker records its exit code and cleans successful target scratch.
+  With `REPACK_KEEP_FAILED=true`, failed source and candidate layouts remain
+  under `REPACK_WORK_DIR` until the next run so the reported path can be
+  inspected. Any worker failure fails the optional lane.
 - The repacked artifact has different digests from the Bake source. Signing,
   provenance, manifest verification, and release metadata must refer to the
   published repacked digest, never the transient source layout.
