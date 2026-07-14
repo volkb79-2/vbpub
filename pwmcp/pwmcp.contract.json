@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release": "1.61.0-r5",
+  "release": "1.61.0-r6",
   "playwright": {
     "python": "1.61.0",
     "protocol": "1.61"

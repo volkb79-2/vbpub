@@ -45,12 +45,12 @@ variable "LIGHTHOUSE_VERSION" {
 
 // pwmcp release tag for the PyPI-based build (e.g. 1.60.0-r1).
 variable "PWMCP_VERSION_PYPI" {
-  default = "1.61.0-r5"
+  default = "1.61.0-r6"
 }
 
 // pwmcp release tag for the npm-based build (e.g. 1.61.0-r1).
 variable "PWMCP_VERSION_NPM" {
-  default = "1.61.1-r1"
+  default = "1.61.1-r2"
 }
 
 variable "OCI_SOURCE" {
