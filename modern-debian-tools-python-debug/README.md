@@ -666,7 +666,7 @@ Interpretation:
 
 - `docker-repack` is the bigger compression win because it deduplicates and re-slices layers.
 - `zstd` is the lower-risk optimization if you want to keep the same layer topology.
-- The repack result changes layer hashes and image digest, so the release path pushes the repacked OCI layout instead of the unrepacked BuildKit output.
+- The repack result changes layer hashes and image digest, so release evidence must identify whether the validated repacked artifact or the explicit unrepacked recovery lane was published.
 - The benchmark now covers `50MB`, `100MB`, `200MB`, `500MB`, `1GB`, `2GB`, and `4GB`; the larger slices mostly trade layer count for essentially the same compressed size on this image.
 - For this image, `2GB` is the balanced release target: it gets the repacked image down to 3 layers with no size penalty versus `1GB`, while `4GB` only saves another MiB and collapses the topology to 2 layers.
 
@@ -682,8 +682,11 @@ It is intentionally benchmark-only. The release flow uses the same repack logic 
 
 The release path is OCI-layout-native: Bake writes one OCI tar per target,
 the tar is extracted into disk-backed scratch, `docker-repack` writes a second
-OCI layout, and the governed BuildKit builder imports that layout for registry
-publication. No daemon image round-trip or `skopeo` copy is involved.
+OCI layout, and the governed BuildKit builder validates that layout by importing
+and unpacking it before registry publication. No daemon image round-trip or
+`skopeo` copy is involved. The affected image currently triggers the fail-closed
+gate because of the repacker defect recorded in the architecture guide; use the
+explicit unrepacked `push` recovery lane, not a raw copy of the invalid layout.
 See [MDT build and release architecture](docs/BUILD-ARCHITECTURE.md) for the
 resource model, cgroup/slice boundaries, and live load-attribution commands.
 

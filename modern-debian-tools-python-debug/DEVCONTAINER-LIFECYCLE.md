@@ -159,8 +159,8 @@ lets you see at a glance whether you're on a governed host, it cannot change pla
 The above covers the devcontainer *itself*. Release builds run through `docker buildx bake` /
 `scripts/release-bake.sh`, which use their own BuildKit builder container. See
 [MDT build and release architecture](docs/BUILD-ARCHITECTURE.md) for its hard limits, why its host
-cgroup path can still appear beneath `docker.service`, and how the local repack workers inherit the
-caller's slice.
+cgroup normally appears as a separate scope in `system.slice`, and how the local repack workers
+inherit the caller's slice.
 
 ## Adopting the consolidation in a consuming repo
 

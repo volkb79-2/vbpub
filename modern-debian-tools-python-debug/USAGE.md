@@ -17,10 +17,13 @@ and guidance for attributing load in `top`, Docker stats, and systemd, read
 [MDT build and release architecture](docs/BUILD-ARCHITECTURE.md).
 
 `RELEASE_IMAGE_FLOW` controls the release path:
+
 - `repack` is the default release mode. It builds directly to OCI tar streams,
   extracts those into disk-backed layouts, repacks at `REPACK_TARGET_SIZE`
-  (default `2GB`), and publishes from the repacked layouts through BuildKit.
-  It does not load the original image into dockerd and does not use `skopeo`.
+  (default `2GB`), validates the candidate by importing it through BuildKit,
+  and only then publishes it. It does not load the original image into dockerd
+  and does not use `skopeo`. The affected image currently fails this gate due
+  to the repacker defect recorded in the architecture guide.
 - `load` keeps the daemon-first split for local-only validation.
 - `push` pushes the unrepacked BuildKit output directly.
 
@@ -153,11 +156,13 @@ To do both in one command:
 ```
 
 When `RELEASE_IMAGE_FLOW=repack`, the push step becomes a no-op because the
-repack happens during the build phase. `docker-repack` changes digests, so the
-release flow must always push the repacked OCI layout, not the unrepacked
-BuildKit output. The canonical in-image manifest is exported directly from the
-repacked OCI layout; it is not obtained by pulling the published image back
-into Docker's local image store.
+repack and publication happen during the build phase. `docker-repack` changes
+digests, so release evidence must refer to the artifact that was actually
+published. The canonical in-image manifest is exported during the BuildKit
+validation import; it is not obtained by pulling the published image back into
+Docker's local image store. If repack validation fails, use the explicit
+unrepacked `push` recovery lane and record the exception rather than copying an
+invalid OCI layout to the registry.
 
 In the non-release `load` mode, the later push is a second Bake invocation.
 BuildKit checks its cache, but changed inputs can rebuild layers and the result

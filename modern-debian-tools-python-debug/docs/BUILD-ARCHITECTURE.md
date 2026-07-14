@@ -6,10 +6,12 @@ CPU, memory, swap, and I/O. The release configuration is code: defaults and
 limits live in [`cmru.build.toml`](../cmru.build.toml), not in an operator's
 shell history.
 
-## Canonical release path
+## Intended canonical release path
 
-`RELEASE_IMAGE_FLOW=repack` is the release path. It deliberately avoids a
-daemon image round-trip and does not require `skopeo`.
+`RELEASE_IMAGE_FLOW=repack` is the configured release path. It deliberately
+avoids a Docker daemon image-store round-trip and does not require `skopeo`.
+Every derived artifact must pass validation before publication; repacking is an
+optimization, not permission to publish a malformed image.
 
 ```mermaid
 flowchart LR
@@ -18,8 +20,10 @@ flowchart LR
     C --> D[Buildx Bake group: all]
     D -->|one OCI tar per target| E[disk-backed OCI source layouts]
     E --> F[bounded docker-repack workers]
-    F --> G[repacked OCI layouts]
-    G -->|BuildKit OCI context| H[GHCR immutable and floating tags]
+    F --> G[candidate repacked OCI layouts]
+    G --> V[BuildKit unpack and manifest validation]
+    V -->|valid| H[GHCR immutable and floating tags]
+    V -->|invalid| X[fail closed; preserve diagnostics]
     H --> I[visibility sync and release metadata]
 ```
 
@@ -38,12 +42,33 @@ The phases are:
    every descriptor points to the same image; the wrapper deduplicates those
    aliases by digest and platform before repacking.
 4. `scripts/release-repack.sh` runs a bounded `docker-repack` worker for each
-   target. Repacking deduplicates filesystem content, changes the layer graph
-   and image digest, and produces the artifact that must be published.
+   target. Repacking deduplicates filesystem content and changes the layer
+   graph and image digest. Its output is a candidate, not yet a releasable
+   artifact.
 5. A minimal BuildKit invocation imports each repacked OCI layout as an OCI
-   build context. A scratch stage exports only the canonical in-image manifest
-   to release scratch, then the publish stage pushes all tags for the target.
-   Neither operation rebuilds or loads the image into the daemon store.
+   build context. This forces BuildKit to unpack the filesystem and exports the
+   canonical in-image manifest to release scratch. Publication only follows a
+   successful import. Neither operation loads the image into Docker's daemon
+   image store.
+
+An OCI layout is an on-disk image format, not a registry upload protocol.
+BuildKit can consume a local layout as a build context, while tools such as
+`skopeo` can copy one directly to a registry. This implementation uses the
+former, so it has no `skopeo` prerequisite. Merely having `index.json` and
+`blobs/` does not mean `docker buildx imagetools create` can upload the local
+blobs: that command normally composes manifests from content the destination
+registry can already resolve.
+
+### Current repack validation status
+
+The 2026-07-14 transition run caught a `docker-repack` output layer containing
+a regular file and descendants below that same path. BuildKit correctly
+rejected it during the validation import, before any tag was pushed. Until the
+repacker defect is fixed and covered by an automated structural regression
+test, the configured `repack` lane is expected to fail closed for the affected
+image. Do not bypass this check with a raw OCI-layout copy: that would upload
+the invalid layer rather than repair it. The explicit `push` lane remains the
+unrepacked recovery path when a release is required.
 
 The source and repacked layouts are temporary release scratch. Do not place
 `REPACK_WORK_DIR` on tmpfs: two large targets can require many GiB while source
@@ -71,14 +96,37 @@ mirror, CPU, and disk load.
 
 ## Resource-governance boundaries
 
-There are two distinct execution boundaries. They intentionally do not depend
-on a single global `dockerd` limit.
+There are three accounting domains: the BuildKit container leaf, release
+processes in the caller's container, and the host Docker daemon. They
+intentionally do not depend on a single global `dockerd` limit.
+
+On the intended systemd/cgroup-v2 host, the relationship is typically:
+
+```mermaid
+flowchart TD
+    R[cgroup root] --> S[system.slice]
+    R --> I[interactive.slice]
+    R --> B[besteffort.slice]
+    S --> D[docker.service / dockerd]
+    S --> K[BuildKit docker scope<br/>4 GiB RAM, 12 GiB RAM+swap, 4 CPU quota]
+    I --> V[MDT devcontainer]
+    V --> C[build-push / docker-buildx / tar]
+    V --> P[docker-repack<br/>one target, concurrency 2]
+    B --> T[dstdns stacks and test-runner]
+```
+
+The exact Docker scope name is runtime-generated. With systemd's cgroup driver,
+the builder is normally a separate `docker-<id>.scope` under `system.slice`, a
+sibling of `docker.service`, even though `dockerd` is its process-level parent.
+Its hard leaf limits still apply. `besteffort.slice` is shown for context: the
+dstdns stack uses it, while local release processes inherit the invoking
+devcontainer's `interactive.slice`.
 
 | Work | Process/container to inspect | Governance |
 | --- | --- | --- |
 | Dockerfile steps, cache, layer compression, OCI export and OCI-context publication | `buildx_buildkit_mdt-governed-v10` | Docker hard limits created from `MDT_BUILDER_*`: 4 GiB RAM, 12 GiB combined RAM+swap, four-core quota, CPU shares 128 |
 | Resolver, Bake client, artifact staging, OCI export streaming, tar extraction, release orchestration | `build-push.py`, `docker-buildx`, resolver scripts, `tar` | Inherits the caller's cgroup; from the MDT devcontainer this is normally `interactive.slice` |
-| Filesystem deduplication and zstd compression | `docker-repack` | Inherits the caller's cgroup, plus low CPU/I/O scheduling priority, configured worker count, compression concurrency, and a per-worker virtual-memory ceiling |
+| Filesystem deduplication and zstd compression | `docker-repack` | Inherits the caller's cgroup, plus low CPU/I/O scheduling priority, configured worker count and compression concurrency; an optional diagnostic virtual-memory ceiling is disabled by default |
 | Docker API, container lifecycle, layer/accounting and registry coordination | `dockerd` in `system.slice/docker.service` | Host Docker service policy; CPU here is daemon work and is not evidence that Dockerfile commands escaped the governed builder |
 | Registry upload | BuildKit worker, `dockerd`, network stack | Builder limits still apply; host networking and Docker service work remain outside the builder leaf |
 
@@ -93,8 +141,8 @@ important distinction is:
   normally request `besteffort.slice`. Slice policy is installed and owned by
   the host.
 - A Docker **container cgroup leaf** can enforce hard memory and CPU limits even
-  when its cgroup path is displayed beneath `system.slice/docker.service`.
-  That is how the governed BuildKit worker is bounded.
+  though its scope is in `system.slice`. That is how the governed BuildKit
+  worker is bounded; `dockerd` itself is not given the builder's 4 GiB cap.
 - `cgroup-parent` is not used for the Buildx container. With Docker's systemd
   cgroup driver, Buildx's `cgroup-parent` driver option is not reliable. True
   placement of buildkitd in `besteffort.slice` would require a host-managed
@@ -104,15 +152,22 @@ important distinction is:
   `buildx_buildkit_*` containers and apply leaf I/O controls. That is an
   optional host policy, not something this repository silently assumes.
 
-The default limits are deliberately layered. The BuildKit worker's hard cgroup
-limits contain a runaway build. Repack is a local process, so
-`REPACK_JOBS=1`, `REPACK_CONCURRENCY=2`, `nice`, idle-class `ionice`, and
-the caller's cgroup bound its pressure. One target at a time prevents two large
-merged filesystems from competing inside the default 7 GiB interactive tier.
+The default controls are deliberately layered. The BuildKit worker's hard
+cgroup limits contain a runaway build. Repack is a local process: worker count
+and compression concurrency constrain its parallelism, `nice` and idle-class
+`ionice` lower its priority, and the caller's cgroup supplies its hard boundary.
+One target at a time prevents two large merged filesystems from competing
+inside the default 7 GiB interactive tier.
 `REPACK_VMEM_KB=unlimited` is intentional: `docker-repack` maps a large merged
 filesystem, and virtual address space is not resident RAM. A numeric override
 is available for diagnosis, but a low address-space limit causes false
 allocation failures before the cgroup is under memory pressure.
+
+The distinction between priority and a limit matters: `nice`, `ionice`, CPU
+shares/weight, and I/O weight let more important work win under contention, but
+do not stop MDT from using otherwise-idle capacity. The builder's CPU quota and
+memory settings are hard leaf limits. Local repack has no extra hard CPU quota;
+its hard boundary is whatever the caller and ancestor slice impose.
 
 `memory-swap=12g` is Docker's combined RAM-plus-swap ceiling, not a prohibition
 on swap. Paired with `memory=4g`, it permits up to 8 GiB of swap for the builder.
@@ -180,7 +235,8 @@ attribute it:
   compression threads.
 - High CPU in `dockerd` is real daemon overhead such as API work, snapshots,
   container lifecycle, or data transfer. Its location in `system.slice` is
-  normal. It does not mean the BuildKit worker lacks its own child cgroup.
+  normal. It does not mean the BuildKit worker lacks its own limited sibling
+  scope.
 - High I/O in `tar` is the transition from OCI tar output to directory layout.
   This runs in the caller's cgroup, not inside BuildKit.
 - A quiet release client does not imply a stalled build. The long-running work
@@ -209,6 +265,12 @@ systemctl show interactive.slice besteffort.slice \
   -p MemorySwapCurrent -p MemorySwapMax -p CPUWeight -p IOWeight
 ```
 
+Run the `ps` and `systemctl` checks on the host. A container commonly has a
+private PID and cgroup namespace, so host PIDs from `docker inspect` may not
+exist in its `/proc`, and `/proc/self/cgroup` may only show `0::/`. That view is
+deliberately insufficient for proving the host-side parent slice. `docker inspect`
+still reports the leaf limits requested through Docker.
+
 Inside a cgroup-v2 container, effective leaf limits are visible without host
 privileges:
 
@@ -223,6 +285,25 @@ cat /sys/fs/cgroup/cpu.weight
 cat /sys/fs/cgroup/io.max
 ```
 
+For pressure and failure attribution, sample counters before and after the
+phase instead of relying only on instantaneous percentages:
+
+```bash
+cat /sys/fs/cgroup/cpu.stat       # usage and quota-throttling totals
+cat /sys/fs/cgroup/memory.peak    # high-water mark since cgroup creation
+cat /sys/fs/cgroup/memory.events  # high/max/OOM/OOM-kill counters
+cat /sys/fs/cgroup/memory.pressure
+cat /sys/fs/cgroup/io.stat        # cumulative bytes and operations by device
+cat /sys/fs/cgroup/io.pressure
+```
+
+The host-wide PSI files under `/proc/pressure/` reveal global contention, while
+the cgroup files above attribute it to a workload. Zswap is also host-wide
+kernel policy rather than an MDT or Docker allocation. On hosts with debugfs
+mounted, `/sys/kernel/debug/zswap/` exposes its stored-page, pool-size, reject,
+and writeback counters. Compare samples; cumulative writeback or I/O totals do
+not describe the current rate.
+
 `docker stats` Block I/O counters are cumulative for the lifetime of the named
 builder container. Compare samples or use host I/O telemetry when you need a
 rate; a large single value does not mean that throughput is happening now.
@@ -235,12 +316,13 @@ while `top` configuration can display either per-CPU or whole-machine values.
 
 | `RELEASE_IMAGE_FLOW` | Behavior | Intended use |
 | --- | --- | --- |
-| `repack` | Bake to OCI layouts, repack, publish repacked layouts; later push step is a no-op | Canonical release and gate |
+| `repack` | Bake to OCI layouts, repack, validate by importing, then publish; later push step is a no-op | Intended canonical release and fail-closed gate; currently blocked for the affected image by the known repacker defect above |
 | `load` | Build with `--load`; a later push performs a separate unrepacked registry build | Local compatibility/debugging only, not a release gate |
 | `push` | Build and publish unrepacked BuildKit output directly | Explicit diagnostic/fallback lane |
 
-`load` and `push` exist to troubleshoot build behavior. They do not produce the
-canonical repacked artifact and must not be used for an MDT release.
+`load` exists only to troubleshoot compatibility. `push` does not produce the
+optimized repacked artifact, but it is the explicit safe recovery lane while
+repack validation is blocked; record that exception in the release evidence.
 
 ## Configuration and prerequisites
 
@@ -269,6 +351,10 @@ the release architecture.
   does not apply the requested limits, the release fails closed.
 - If a Bake target has no tags or OCI source layout, publication stops before a
   partial target can be reported as successful.
+- A candidate repacked layout must be successfully imported and unpacked by
+  BuildKit before its publish command runs. The current import gate caught the
+  known file/descendant collision; a raw registry copier is not a substitute
+  for validation.
 - Each repack worker records its exit code and cleans its target scratch. Any
   worker failure fails the release.
 - The repacked artifact has different digests from the Bake source. Signing,
