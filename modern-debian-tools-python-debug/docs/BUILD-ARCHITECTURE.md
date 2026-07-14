@@ -57,6 +57,12 @@ different builder recently built the same Dockerfile; later releases reuse its
 layers and cache mounts. Recreating the builder to correct configuration drift
 also discards that builder-local cache.
 
+Volatile OCI labels such as revision, creation time, and release version are
+applied after all filesystem instructions in the Dockerfile. Changing release
+metadata therefore invalidates only the final metadata step, not apt, Node,
+tool, or Python environment layers. Keep new volatile labels in that final
+block.
+
 Large context-transfer and Block I/O totals can include staged tool downloads
 and prior cache activity. `.dockerignore` must keep `REPACK_WORK_DIR`, logs, and
 other generated scratch out of the context. Use an explicit no-cache build only

@@ -82,20 +82,6 @@ ARG OPENCODE_VERSION="latest"
 ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
 ENV BACKPORTS_URI="${BACKPORTS_URI}"
 
-# OCI image metadata (https://github.com/opencontainers/image-spec/blob/main/annotations.md)
-LABEL org.opencontainers.image.title="${OCI_TITLE}" \
-    org.opencontainers.image.description="${OCI_DESCRIPTION}" \
-    org.opencontainers.image.source="${OCI_SOURCE}" \
-    org.opencontainers.image.documentation="${OCI_DOCUMENTATION}" \
-    org.opencontainers.image.url="${OCI_URL}" \
-    org.opencontainers.image.licenses="${OCI_LICENSES}" \
-    org.opencontainers.image.vendor="${OCI_VENDOR}" \
-    org.opencontainers.image.version="${OCI_VERSION}" \
-    org.opencontainers.image.revision="${OCI_REVISION}" \
-    org.opencontainers.image.created="${OCI_CREATED}" \
-    net.volkb79.base-devcontainers-release="${DEVCONTAINERS_RELEASE}" \
-    net.volkb79.base-devcontainers-version="${DEVCONTAINERS_VERSION}"
-
 ENV DEBIAN_FRONTEND=noninteractive
 
 USER root
@@ -607,6 +593,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Installed into /home/vscode/.venv using the base-image Python.
 # Consumer-facing list: see README.md § "Primary Venv Packages".
 USER vscode
+
 RUN --mount=type=cache,target=/home/vscode/.npm,uid=1000,gid=1000,sharing=locked \
     set -euo pipefail; \
     set -a; . /tmp/ai-tool-versions.env; set +a; \
@@ -898,3 +885,18 @@ RUN set -euo pipefail; \
     printf '\nIMAGE_MANIFEST=%s\nINVENTORY_MANIFEST=%s\n' "${canonical_manifest}" "${inventory_manifest}" >> /etc/os-release
 
 USER vscode
+
+# Keep volatile release metadata after every filesystem instruction. A new
+# revision/date must not invalidate apt, tool, or venv layers.
+LABEL org.opencontainers.image.title="${OCI_TITLE}" \
+    org.opencontainers.image.description="${OCI_DESCRIPTION}" \
+    org.opencontainers.image.source="${OCI_SOURCE}" \
+    org.opencontainers.image.documentation="${OCI_DOCUMENTATION}" \
+    org.opencontainers.image.url="${OCI_URL}" \
+    org.opencontainers.image.licenses="${OCI_LICENSES}" \
+    org.opencontainers.image.vendor="${OCI_VENDOR}" \
+    org.opencontainers.image.version="${OCI_VERSION}" \
+    org.opencontainers.image.revision="${OCI_REVISION}" \
+    org.opencontainers.image.created="${OCI_CREATED}" \
+    net.volkb79.base-devcontainers-release="${DEVCONTAINERS_RELEASE}" \
+    net.volkb79.base-devcontainers-version="${DEVCONTAINERS_VERSION}"

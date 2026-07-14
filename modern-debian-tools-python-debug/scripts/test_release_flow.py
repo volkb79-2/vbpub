@@ -53,6 +53,13 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertNotIn("run_low_priority skopeo", repack)
         self.assertNotIn("docker-daemon:", repack)
 
+    def test_volatile_oci_labels_follow_filesystem_work(self) -> None:
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertGreater(
+            dockerfile.rfind("LABEL org.opencontainers.image.title"),
+            dockerfile.rfind("\nRUN "),
+        )
+
     def test_release_shell_scripts_parse(self) -> None:
         scripts = [
             ROOT / "scripts/ensure-release-builder.sh",
