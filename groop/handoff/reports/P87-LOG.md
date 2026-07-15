@@ -65,10 +65,10 @@ Environment: fresh venv in the worktree, `.venv/bin/pip install -e './groop[dev]
 - Focused (P87 + the P46/P72/P78 action suites, to prove they pass unmodified):
   `pytest groop/tests/test_p87_owner_safety.py groop/tests/test_actions.py
   groop/tests/test_p72_kill_update.py groop/tests/test_p78_action_kernel.py
-  -q -W error -p no:schemathesis` -> `381 passed in 2.63s`.
+  -q -W error -p no:schemathesis` -> `388 passed in 1.83s`.
 - Full zero-skip suite:
   `timeout 900 ... pytest groop/tests -q -W error -p no:schemathesis` ->
-  `1509 passed in 176.57s (0:02:56)` (zero skips, zero failures).
+  `1516 passed in 193.67s (0:03:13)` (zero skips, zero failures).
 - `py_compile` on owner_safety.py, execute.py, cli.py, test_p87_owner_safety.py: clean.
 - `git diff --check`: clean.
 - CLI smoke: `action execute --kind docker-restart ... ` refuses at the root

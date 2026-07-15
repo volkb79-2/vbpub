@@ -127,11 +127,11 @@ controller's clean rerun decides.
 $ pytest groop/tests/test_p87_owner_safety.py groop/tests/test_actions.py \
     groop/tests/test_p72_kill_update.py groop/tests/test_p78_action_kernel.py \
     -q -W error -p no:schemathesis
-381 passed in 2.63s
+388 passed in 1.83s
 
 $ timeout 900 env PYTHONPATH=groop/src .venv/bin/python -m pytest groop/tests \
     -q -W error -p no:schemathesis
-1509 passed in 176.57s (0:02:56)
+1516 passed in 193.67s (0:03:13)
 ```
 
 Zero skips (P84 gate did not fire). `py_compile` clean on the four changed/new
