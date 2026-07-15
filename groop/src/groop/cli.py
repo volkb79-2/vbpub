@@ -520,6 +520,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_inspect_files(raw_argv[1:])
     if raw_argv[:1] == ["report"]:
         return _main_report(raw_argv[1:])
+    if raw_argv[:1] == ["query"]:
+        return _main_query(raw_argv[1:])
     if raw_argv[:1] == ["squeeze"]:
         return _main_squeeze(raw_argv[1:])
     args = parse_args(raw_argv)
@@ -1139,6 +1141,134 @@ def _main_report(argv: list[str]) -> int:
         for r in assertion_results:
             if not r.passed:
                 return 1
+    return 0
+
+
+def parse_query_args(argv: list[str]) -> argparse.Namespace:
+    """Parse ``groop query FILE`` — the executable surface over the P88 engine.
+
+    Reads a P2 recording through the unified ``FrameSource`` and emits one
+    deterministic JSON result (current | raw | summary).
+    """
+    parser = argparse.ArgumentParser(prog="groop query")
+    parser.add_argument("file", type=Path, help="JSONL or JSONL.zst recording to query")
+    parser.add_argument(
+        "--shape", choices=["current", "raw", "summary"], default="summary",
+        help="result shape (default: summary)",
+    )
+    parser.add_argument(
+        "--metric", action="append", dest="metrics", default=None, metavar="NAME[:SEMANTIC]",
+        help="metric to include, optionally with a value semantic (repeatable, required)",
+    )
+    parser.add_argument(
+        "--window", default="all", help="time window: 'all' or 'last:Ns' (default: all)",
+    )
+    parser.add_argument(
+        "--entities", action="append", dest="globs", default=None, metavar="GLOB",
+        help="select entities whose key matches a glob (repeatable)",
+    )
+    parser.add_argument(
+        "--select", action="append", dest="select_keys", default=None, metavar="KEY",
+        help="select an exact entity key (repeatable)",
+    )
+    parser.add_argument("--slice", default=None, help="select an entity subtree by slice key")
+    parser.add_argument(
+        "--projection", choices=["hierarchy", "flat"], default="flat",
+        help="row projection (default: flat)",
+    )
+    parser.add_argument(
+        "--visibility", choices=["all", "available"], default="all",
+        help="metric visibility (default: all)",
+    )
+    parser.add_argument(
+        "--sort", default=None, metavar="METRIC[:STAT][:asc|desc]",
+        help="ranking key for current/summary shapes",
+    )
+    parser.add_argument("--max-rows", type=int, default=None, dest="max_rows")
+    parser.add_argument("--max-points", type=int, default=None, dest="max_points")
+    parser.add_argument("--max-bytes", type=int, default=None, dest="max_bytes")
+    parser.add_argument(
+        "--on-exceed", choices=["error", "truncate"], default="error", dest="on_exceed",
+        help="behaviour when a hard bound is exceeded (default: error)",
+    )
+    parser.add_argument("--json", action="store_true", required=True, help="emit JSON result (required)")
+    parser.add_argument("--pretty", action="store_true", help="pretty-print the JSON result")
+    return parser.parse_args(argv)
+
+
+def _main_query(argv: list[str]) -> int:
+    """Implement groop query — load a recording, run the P88 engine, emit JSON."""
+    try:
+        args = parse_query_args(argv)
+    except SystemExit as exc:
+        return int(str(exc.code)) if exc.code is not None else 2
+
+    from groop.query import (
+        Caps,
+        MetricRef,
+        Query,
+        QueryError,
+        Selector,
+        format_result,
+        run_query,
+    )
+    from groop.query.engine import (
+        DEFAULT_MAX_BYTES,
+        DEFAULT_MAX_POINTS,
+        DEFAULT_MAX_ROWS,
+        _parse_metric_token,
+        _parse_sort_token,
+    )
+    from groop.query.source import RecordingFrameSource
+
+    if not args.metrics:
+        print("groop query requires at least one --metric", file=sys.stderr)
+        return 2
+
+    caps = Caps(
+        max_rows=args.max_rows if args.max_rows is not None else DEFAULT_MAX_ROWS,
+        max_points=args.max_points if args.max_points is not None else DEFAULT_MAX_POINTS,
+        max_bytes=args.max_bytes if args.max_bytes is not None else DEFAULT_MAX_BYTES,
+        on_exceed=args.on_exceed,
+    )
+    query = Query(
+        shape=args.shape,
+        metrics=tuple(_parse_metric_token(m) for m in args.metrics),
+        window_spec=args.window,
+        selector=Selector(
+            keys=tuple(args.select_keys or ()),
+            globs=tuple(args.globs or ()),
+            slice=args.slice,
+        ),
+        projection=args.projection,
+        visibility=args.visibility,
+        sort=_parse_sort_token(args.sort) if args.sort is not None else None,
+        caps=caps,
+    )
+
+    try:
+        result = run_query(RecordingFrameSource(args.file), query)
+    except QueryError as exc:
+        # Typed engine error (bad field, incompatible combo, bound exceeded).
+        print(str(exc), file=sys.stderr)
+        return 2
+    except FileNotFoundError:
+        print(f"file not found: {args.file}", file=sys.stderr)
+        return 2
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"error reading {args.file}: {exc.strerror}", file=sys.stderr)
+        return 2
+    except Exception:
+        print(f"unexpected error querying {args.file}", file=sys.stderr)
+        return 2
+
+    print(format_result(result, pretty=args.pretty))
     return 0
 
 
