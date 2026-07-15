@@ -10,9 +10,17 @@ INTERFACE CONTRACT (frozen):
   {task_id}, {handoff}, {model}. render_argv() substitutes them INSIDE list
   elements (str.format_map with missing keys -> AdapterError).
 - build_dispatch composes the CLI-specific base invocation:
-    claude:   [cli, '-p', prompt, '--output-format', 'json',
-               '--model', model] (+ ['--effort', effort] if set)
+    claude:   [cli, '-p', prompt, '--output-format', 'stream-json',
+               '--verbose', '--model', model] (+ ['--effort', effort] if set)
                (+ dispatch_extra)
+               (P14 2026-07-15: `-p --output-format json` writes its ENTIRE
+               output at process exit -- the log's mtime is structurally
+               dead as a liveness signal until the CLI is already done.
+               stream-json emits incremental JSONL lines as the turn
+               progresses, so the log's mtime IS a real heartbeat and a
+               live dashboard tail works. extract_usage below still finds
+               the final `result` line by the same "last json-parsing
+               brace-line with usage/total_cost_usd" rule.)
     codex:    [cli, 'exec', '--sandbox', sandbox or 'workspace-write',
                '--cd', worktree, prompt] (+ model via ['-m', model])
     opencode: [cli, 'run', '--model', model, '--dir', worktree]
@@ -130,8 +138,11 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
 
     # Build CLI-specific argv
     if route.cli == "claude":
-        argv = [route.cli, "-p", prompt, "--output-format", "json",
-                "--model", route.model]
+        # P14 2026-07-15: stream-json + --verbose replaces the buffered
+        # `json` format so the log gets incremental JSONL writes (a real
+        # heartbeat) instead of one giant write at process exit.
+        argv = [route.cli, "-p", prompt, "--output-format", "stream-json",
+                "--verbose", "--model", route.model]
         if route.effort:
             argv.extend(["--effort", route.effort])
         argv.extend(render_argv(route.dispatch_extra, mapping))

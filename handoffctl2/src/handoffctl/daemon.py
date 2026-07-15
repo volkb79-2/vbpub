@@ -27,9 +27,20 @@ INTERFACE CONTRACT (frozen):
        provider_ok via adapters.probe MEMOIZED for probe_ttl_seconds (600)
        in daemon memory (a restart just re-probes), log_quiet_seconds /
        pid_alive / receipts by scanning attempt dirs of non-terminal
-       attempts, stall_confirmed from _confirm_stall() (tier 2: pid alive
-       AND log quiet AND /proc/<pid>/stat unchanged CPU over two passes —
-       keep the two-pass cache in daemon memory), budget_remaining from
+       attempts (P14 2026-07-15 item 5 belt-and-braces: when the recorded
+       attempt.pid looks dead, also check attempt_dir/wrapper.pid -- a
+       resumed attempt's freshest wrapper pid on disk -- before declaring
+       the attempt dead; a stale statefile pid must never hide a live
+       process), stall_confirmed from _confirm_stall() (tier 2, P14
+       2026-07-15 item 3 made REAL: pid alive AND log quiet AND
+       /proc/<pid>/stat unchanged utime+stime over two consecutive passes
+       AND no CPU-active descendant either -- a best-effort /proc walk from
+       pid via ppid matching, since a CLI that forks a busy child while its
+       own top-level process idles must NOT be confirmed stalled -- keep
+       the two-pass cache in daemon memory; a declared-long-gate exemption
+       per v2 §5.4 is NOT implemented -- the wrapper does not run gates yet
+       (receipt.oracles stays [], see wrapper.py), so there is no
+       gate-running marker to exempt against), budget_remaining from
        policy.max_cost minus summed attempt usage costs (same currency
        only), merge_history/carve_outcomes/rejections from recent events
        (iter_events tail).
@@ -41,7 +52,11 @@ INTERFACE CONTRACT (frozen):
 - EXECUTION MAP (all storage writes via append_and_apply, actor
   Actor(TICK, 'handoffd')):
     CreateTask -> TASK_CREATED (statefile CARVED, handoff_path set)
-    Transition -> TASK_TRANSITIONED (payload from/to/notes)
+    Transition -> TASK_TRANSITIONED (payload from/to/notes); P14 2026-07-15
+      item 4: when action.to is BLOCKED and action.blocker is set, emits
+      TASK_BLOCKED (payload from/blocker/notes) instead -- the typed-blocker
+      path for an INTERRUPTED attempt with no resume handle or an exhausted
+      attempt budget (silent-dead-end fix).
     DispatchImplementer -> create worktree if missing (git worktree add -b
       feat/<task_id> <worktree_root>/feat/<task_id> <default_branch>; if
       branch exists, add without -b), build Attempt record (types.new_id
@@ -51,10 +66,26 @@ INTERFACE CONTRACT (frozen):
       PREFLIGHTING, pid=wrapper pid). Task ACTIVE via Transition.
     ResumeAttempt -> adapters.build_resume argv -> new WrapperSpec into the
       SAME attempt dir (suffix .resume-N) -> launch; ATTEMPT_RESUMED
-      (state RUNNING).
-    InterruptAttempt -> SIGTERM to attempt pgid (from child.pid; ESRCH is
-      fine); the WRAPPER emits the interrupted event, not the daemon.
+      (state RUNNING, pid=NEW wrapper pid, log_path=the resume-N log path --
+      P14 2026-07-15 item 5: both are refreshed on the attempt record at
+      resume time rather than left stale until the wrapper's own later
+      ATTEMPT_STARTED catches up).
+    InterruptAttempt -> SIGTERM to the WRAPPER's own pid (attempt_dir/
+      wrapper.pid; P14 2026-07-15: NOT child.pid's pgid directly -- that
+      bypasses the wrapper's own signal handler, which is what forwards to
+      the child AND classifies the exit as 'interrupted'; falls back to
+      signaling child.pid's pgid directly only if wrapper.pid is missing/
+      dead, i.e. the wrapper already crashed); the WRAPPER emits the
+      interrupted event, not the daemon. Fires both for tier-2-confirmed
+      stalls (attempt already STALLED) and for the P14 item 6 wall-clock
+      cap (attempt running longer than fm.budget.max_wall_seconds or the
+      default, regardless of liveness).
     MarkInterrupted -> ATTEMPT_INTERRUPTED (state INTERRUPTED, ended=now).
+    MarkStalled -> ATTEMPT_STALLED (state STALLED only; NOT ended -- the
+      process is still running, just confirmed unresponsive). P14
+      2026-07-15 item 2: makes a tier-2-confirmed stall visible BEFORE the
+      next pass's InterruptAttempt; ATTEMPT_STALLED is a default notify
+      push class (config.py NotifyConfig.push_classes).
     StallCheck -> feed _confirm_stall cache only (no event).
     EmitAttemptExit -> idempotent healing (amended 2026-07-15): if the
       attempt is not yet EXITED (wrapper died before writing its event but
@@ -337,6 +368,16 @@ class Daemon:
         merge_history, carve_outcomes, review_rejections_by_area, blocked_underspecified_count = \
             self._history(project)
         ratchet_already_open = self._ratchet_already_open(project)
+        # P14 2026-07-15 item 6: config.Policy is frozen for this package
+        # (only NotifyConfig.push_classes may be edited), so
+        # attempt_max_wall_seconds is NOT a Policy field here -- getattr
+        # falls back to reconcile's own default, but forward-compatibly
+        # picks up a future Policy field with zero code change if one is
+        # ever added.
+        attempt_max_wall_seconds = (
+            getattr(cfg.policy, "attempt_max_wall_seconds", None)
+            or reconcile.DEFAULT_ATTEMPT_MAX_WALL_SECONDS
+        )
 
         return reconcile.ReconcileInput(
             now=utc_now(),
@@ -360,6 +401,7 @@ class Daemon:
             carve_outcomes=carve_outcomes,
             review_rejections_by_area=review_rejections_by_area,
             blocked_underspecified_count=blocked_underspecified_count,
+            attempt_max_wall_seconds=attempt_max_wall_seconds,
         )
 
     def _merged_branches(self, cfg: ProjectConfig, states: dict[str, TaskStateFile]) -> set[str]:
@@ -443,7 +485,22 @@ class Daemon:
                         receipts[att.attempt_id] = None
                 else:
                     receipts[att.attempt_id] = None
-                pid_alive[att.attempt_id] = _pid_alive(att.pid)
+                alive = _pid_alive(att.pid)
+                if not alive:
+                    # P14 2026-07-15 item 5 belt-and-braces: the statefile's
+                    # recorded pid may be stale (a resume that hasn't been
+                    # bookkept yet, or any other drift) -- cross-check the
+                    # freshest wrapper.pid file actually on disk before
+                    # declaring the attempt dead.
+                    wpid_file = attempt_dir / "wrapper.pid"
+                    if wpid_file.exists():
+                        try:
+                            wpid = int(wpid_file.read_text(encoding="utf-8").strip())
+                        except (ValueError, OSError):
+                            wpid = None
+                        if wpid is not None and wpid != att.pid and _pid_alive(wpid):
+                            alive = True
+                pid_alive[att.attempt_id] = alive
                 log_path = Path(att.log_path) if att.log_path else (attempt_dir / "attempt.log")
                 if log_path.exists():
                     log_quiet[att.attempt_id] = max(0.0, now - log_path.stat().st_mtime)
@@ -453,6 +510,19 @@ class Daemon:
 
     def _confirm_stall(self, states: dict[str, TaskStateFile], log_quiet_seconds, pid_alive,
                         cfg: ProjectConfig) -> dict[str, bool]:
+        """Tier-2 confirmation (P14 2026-07-15 item 3, made REAL): pid alive
+        AND log quiet over the policy threshold AND the combined CPU
+        signature (this pid PLUS every descendant found via a best-effort
+        /proc walk) is unchanged across two consecutive passes. A CLI that
+        forks a busy child while its own top-level process idles (the
+        oracle-2 negative case) must NOT be confirmed -- the child's rising
+        utime/stime changes the composite signature each pass.
+
+        A declared-long-gate exemption (v2 §5.4) is intentionally NOT
+        implemented: the wrapper does not run gates yet (receipt.oracles
+        stays [], see wrapper.py's own contract), so there is no
+        gate-running marker to exempt against.
+        """
         out: dict[str, bool] = {}
         for tsf in states.values():
             for att in tsf.attempts:
@@ -465,7 +535,7 @@ class Daemon:
                     self._stall_cache.pop(aid, None)
                     out[aid] = False
                     continue
-                cpu = self._read_proc_cpu(att.pid)
+                cpu = self._proc_cpu_snapshot(att.pid)
                 prev = self._stall_cache.get(aid)
                 out[aid] = prev is not None and cpu is not None and prev == cpu
                 self._stall_cache[aid] = cpu
@@ -481,6 +551,52 @@ class Daemon:
             return f"{parts[13]}:{parts[14]}"
         except Exception:
             return None
+
+    @classmethod
+    def _proc_children_map(cls) -> dict[int, list[int]]:
+        """Best-effort single /proc walk: parent pid -> [child pids]."""
+        by_parent: dict[int, list[int]] = {}
+        try:
+            entries = list(Path("/proc").iterdir())
+        except OSError:
+            return by_parent
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                stat = (entry / "stat").read_text(encoding="utf-8")
+                parts = stat.split()
+                cpid, ppid = int(parts[0]), int(parts[3])
+            except (OSError, ValueError, IndexError):
+                continue
+            by_parent.setdefault(ppid, []).append(cpid)
+        return by_parent
+
+    @classmethod
+    def _proc_cpu_snapshot(cls, pid: int | None) -> str | None:
+        """Combined utime+stime signature for pid PLUS all its descendants
+        (cheap best-effort /proc walk, ppid matching); None if pid itself is
+        unreadable (process gone)."""
+        if not pid:
+            return None
+        own = cls._read_proc_cpu(pid)
+        if own is None:
+            return None
+        by_parent = cls._proc_children_map()
+        parts_sig = [f"{pid}:{own}"]
+        frontier = [pid]
+        visited = {pid}
+        while frontier:
+            cur = frontier.pop()
+            for child in by_parent.get(cur, []):
+                if child in visited:
+                    continue
+                visited.add(child)
+                child_cpu = cls._read_proc_cpu(child)
+                if child_cpu is not None:
+                    parts_sig.append(f"{child}:{child_cpu}")
+                frontier.append(child)
+        return "|".join(sorted(parts_sig))
 
     def _budget_remaining(self, cfg: ProjectConfig, states: dict[str, TaskStateFile]) -> float | None:
         if cfg.policy.max_cost is None:
@@ -627,7 +743,17 @@ class Daemon:
                                            {"statefile": tsf.to_dict()}, task_id=action.task_id))
 
         elif isinstance(action, reconcile.Transition):
-            events.append(self._transition(project, cfg, states, action.task_id, action.to, action.notes))
+            if action.to is TaskState.BLOCKED and action.blocker is not None:
+                # P14 2026-07-15 item 4: a typed-blocker BLOCKED transition
+                # (the INTERRUPTED silent-dead-end fix) emits TASK_BLOCKED,
+                # not a plain TASK_TRANSITIONED, so tsf.blocker gets set.
+                frm = states[action.task_id].state
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.TASK_BLOCKED,
+                    {"from": frm.value, "blocker": action.blocker.to_dict(), "notes": action.notes},
+                    task_id=action.task_id))
+            else:
+                events.append(self._transition(project, cfg, states, action.task_id, action.to, action.notes))
 
         elif isinstance(action, reconcile.DispatchImplementer):
             task_id = action.task_id
@@ -693,6 +819,12 @@ class Daemon:
             pid = wrapper.launch_detached(spec)
             attempt.state = AttemptState.RUNNING
             attempt.pid = pid
+            # P14 2026-07-15 item 5 (resume bookkeeping drift): refresh the
+            # log path to the NEW resume log right here, rather than leaving
+            # it stale until the wrapper's own later ATTEMPT_STARTED lands --
+            # a stale log_path made log_quiet_seconds watch a dead file
+            # while the live resumed process went unwatched.
+            attempt.log_path = spec.log_path
             events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_RESUMED,
                                            {"attempt": attempt.to_dict()}, task_id=task_id,
                                            attempt_id=action.attempt_id))
@@ -700,14 +832,38 @@ class Daemon:
         elif isinstance(action, reconcile.InterruptAttempt):
             tsf = states[action.task_id]
             attempt_dir = paths.attempt_dir(project, action.attempt_id)
-            child_pid_file = attempt_dir / "child.pid"
-            if child_pid_file.exists():
+            # P14 2026-07-15 (discovered building the oracle-1 end-to-end
+            # hang-detection test): signal the WRAPPER itself first -- its
+            # own installed handler forwards SIGTERM to the child's process
+            # group AND classifies the resulting exit as 'interrupted' (see
+            # wrapper.py's contract and its own real-signal tests, which
+            # signal wrapper_pid directly). Signaling child.pid's pgid
+            # alone bypasses the wrapper's handler entirely: the child dies
+            # from an unforwarded signal the wrapper never observed, so it
+            # falls through to plain log-tail classification and reports
+            # 'error', not 'interrupted' -- the confirmed-stall pipeline
+            # would then silently retry instead of ever reaching INTERRUPTED.
+            signaled = False
+            wrapper_pid_file = attempt_dir / "wrapper.pid"
+            if wrapper_pid_file.exists():
                 try:
-                    child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
-                    pgid = os.getpgid(child_pid)
-                    os.killpg(pgid, signal.SIGTERM)
+                    wpid = int(wrapper_pid_file.read_text(encoding="utf-8").strip())
+                    os.kill(wpid, signal.SIGTERM)
+                    signaled = True
                 except (ValueError, ProcessLookupError, OSError):
                     pass
+            if not signaled:
+                # Belt and braces: the wrapper may already be gone (crashed)
+                # while the child it spawned is still alive -- kill the
+                # child's process group directly as a fallback.
+                child_pid_file = attempt_dir / "child.pid"
+                if child_pid_file.exists():
+                    try:
+                        child_pid = int(child_pid_file.read_text(encoding="utf-8").strip())
+                        pgid = os.getpgid(child_pid)
+                        os.killpg(pgid, signal.SIGTERM)
+                    except (ValueError, ProcessLookupError, OSError):
+                        pass
             # No event: the wrapper emits ATTEMPT_INTERRUPTED itself on exit.
 
         elif isinstance(action, reconcile.MarkInterrupted):
@@ -716,6 +872,16 @@ class Daemon:
             attempt.state = AttemptState.INTERRUPTED
             attempt.ended = utc_now()
             events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_INTERRUPTED,
+                                           {"attempt": attempt.to_dict()}, task_id=action.task_id,
+                                           attempt_id=action.attempt_id))
+
+        elif isinstance(action, reconcile.MarkStalled):
+            # P14 2026-07-15 item 2: make a tier-2-confirmed stall visible.
+            # The process is still running (not ended) -- just flagged.
+            tsf = states[action.task_id]
+            attempt = tsf.attempt_by_id(action.attempt_id)
+            attempt.state = AttemptState.STALLED
+            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_STALLED,
                                            {"attempt": attempt.to_dict()}, task_id=action.task_id,
                                            attempt_id=action.attempt_id))
 

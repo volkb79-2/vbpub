@@ -12,6 +12,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import signal
 import socket
 import subprocess
 import threading
@@ -187,6 +188,20 @@ def _set_ephemeral_http_port(cfg):
         ptoml.write_text(text, encoding="utf-8")
 
 
+def _drive_until(d, project, predicate, timeout=15.0, pass_gap=0.4):
+    """P14 2026-07-15: repeatedly call run_pass (no background daemon
+    thread/loop -- the 'monkeypatched pass cadence' the P14 handoff asks
+    for) until predicate() is True or timeout elapses. Returns the final
+    predicate() result."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        d.run_pass(project)
+        if predicate():
+            return True
+        time.sleep(pass_gap)
+    return predicate()
+
+
 # --------------------------------------------------------------------------
 # Oracle 1: CreateTask/Transition
 
@@ -216,6 +231,57 @@ def test_create_task_and_transition(tmp_state, sample_project, patch_siblings, m
     types = [e.type for e in storage.iter_events("demo")]
     assert EventType.TASK_CREATED in types
     assert EventType.TASK_TRANSITIONED in types
+
+
+def test_transition_to_blocked_emits_task_blocked_with_typed_blocker(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """P14 2026-07-15 item 4 (daemon side of the INTERRUPTED silent-dead-end
+    fix): a Transition(to=BLOCKED, blocker=...) action emits TASK_BLOCKED --
+    not a plain TASK_TRANSITIONED -- so tsf.blocker actually gets set."""
+    task_id, attempt_id = "t-dead-end", "att-dead-end"
+    _seed_running_attempt("demo", task_id, attempt_id)
+    tsf = storage.load_state("demo", task_id)
+    att = tsf.attempt_by_id(attempt_id)
+    att.state = AttemptState.INTERRUPTED
+    storage.save_state(tsf)
+
+    blocker = Blocker(type=BlockerType.ENVIRONMENT, unblock_condition="operator: inspect attempts",
+                       detail="interrupted attempt has no resume handle or attempts are exhausted")
+    _scripted(monkeypatch, [[reconcile.Transition(task_id=task_id, to=TaskState.BLOCKED,
+                                                   notes="interrupted-dead-end", blocker=blocker)]])
+    d = daemon.Daemon({"demo": sample_project.root})
+    d.run_pass("demo")
+
+    tsf2 = storage.load_state("demo", task_id)
+    assert tsf2.state is TaskState.BLOCKED
+    assert tsf2.blocker is not None
+    assert tsf2.blocker.type is BlockerType.ENVIRONMENT
+    assert tsf2.blocker.unblock_condition == "operator: inspect attempts"
+
+    types = [e.type for e in storage.iter_events("demo")]
+    assert EventType.TASK_BLOCKED in types
+    assert EventType.TASK_TRANSITIONED not in types
+
+
+def test_mark_stalled_emits_attempt_stalled_not_ended(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """P14 2026-07-15 item 2 (daemon side): MarkStalled emits ATTEMPT_STALLED
+    with state STALLED; the attempt is NOT ended (the process is still
+    running, only flagged as unresponsive) -- a confirmed stall must be
+    VISIBLE, not silently interrupted with zero event trace."""
+    task_id, attempt_id = "t-stall", "att-stall"
+    _seed_running_attempt("demo", task_id, attempt_id)
+
+    _scripted(monkeypatch, [[reconcile.MarkStalled(task_id=task_id, attempt_id=attempt_id)]])
+    d = daemon.Daemon({"demo": sample_project.root})
+    d.run_pass("demo")
+
+    types = [e.type for e in storage.iter_events("demo")]
+    assert EventType.ATTEMPT_STALLED in types
+    tsf = storage.load_state("demo", task_id)
+    att = tsf.attempt_by_id(attempt_id)
+    assert att.state is AttemptState.STALLED
+    assert att.ended is None
 
 
 # --------------------------------------------------------------------------
@@ -398,6 +464,14 @@ def test_mark_interrupted_and_resume(tmp_state, sample_project, patch_siblings, 
     assert att2.state is AttemptState.RUNNING
     assert patch_siblings["build_resume"][-1]["session"] == "sess-1"
 
+    # P14 2026-07-15 item 5 (resume bookkeeping drift): pid AND log_path
+    # must both be refreshed to the resumed process's own values at resume
+    # time, not left stale pointing at the original attempt's pid/log.
+    assert att2.pid == 4242  # patch_siblings' fake_launch_detached pid
+    attempt_dir = paths.attempt_dir("demo", attempt_id)
+    assert att2.log_path == str(attempt_dir / "attempt.resume-1.log")
+    assert att2.log_path != str(attempt_dir / "attempt.log")
+
 
 def test_interrupt_attempt_signals_pgid(tmp_state, sample_project, patch_siblings, monkeypatch):
     task_id, attempt_id = "t-kill", "att-kill"
@@ -419,6 +493,97 @@ def test_interrupt_attempt_signals_pgid(tmp_state, sample_project, patch_sibling
     (attempt_dir / "child.pid").write_text("999999", encoding="utf-8")
     _scripted(monkeypatch, [[reconcile.InterruptAttempt(task_id=task_id, attempt_id=attempt_id)]])
     d.run_pass("demo")  # no exception
+
+
+def test_hang_detection_full_pipeline_real(tmp_state, sample_project, monkeypatch):
+    """P14 2026-07-15 HEADLINE oracle 1: a real detached CLI that writes one
+    line then hangs (sleep 600) is detected as stalled -- ATTEMPT_STALLED
+    is VISIBLE before any interrupt (item 2) -- then interrupted (real
+    SIGTERM, real wrapper self-report), and, since no resume handle was
+    captured, the task lands BLOCKED with a typed environment blocker
+    (item 4). Real reconcile.plan_project (NOT monkeypatched via
+    _scripted/patch_siblings), real wrapper.launch_detached, shrunk
+    stall_log_quiet_seconds, driven via repeated run_pass calls (the
+    'monkeypatched pass cadence' the handoff asks for -- no background
+    daemon thread)."""
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+    monkeypatch.setattr(wrapper, "SESSION_CAPTURE_DELAY", 0)
+
+    cfg = sample_project
+    # Remove the fixture's own sample handoff: with the REAL (unmonkeypatched)
+    # planner running here, it would otherwise get auto-CreateTask'd ->
+    # QUEUED -> dispatched through the literal "fake" cli (not a real
+    # executable) -- unrelated async noise this test doesn't need.
+    (cfg.root / "handoff" / "demo-P01-sample.md").unlink()
+
+    ptoml = cfg.root / ".handoffctl" / "project.toml"
+    text = ptoml.read_text(encoding="utf-8")
+    text = text.replace("[policy]\n", "[policy]\nstall_log_quiet_seconds = 1\n", 1)
+    ptoml.write_text(text, encoding="utf-8")
+
+    project = "demo"
+    task_id, attempt_id = "hang-task", "att-hang"
+    # No matching handoff file (deliberately -- keeps the wall-clock cap at
+    # its huge default so only the stall path is exercised here; the cap
+    # itself has its own dedicated planner tests).
+    _seed_running_attempt(project, task_id, attempt_id)
+
+    script = cfg.root / "hang.sh"
+    script.write_text("#!/bin/sh\necho starting\nsleep 600\n")
+    script.chmod(0o755)
+
+    attempt_dir = paths.attempt_dir(project, attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    spec = wrapper.WrapperSpec(
+        project=project, task_id=task_id, attempt_id=attempt_id,
+        argv=[str(script)], cwd=str(cfg.root),
+        log_path=str(attempt_dir / "attempt.log"),
+        receipt_path=str(attempt_dir / "receipt.json"),
+        attempt_dir=str(attempt_dir),
+        route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+        term_grace_seconds=2,
+    )
+    wrapper_pid = wrapper.launch_detached(spec)
+
+    def _running():
+        t = storage.load_state(project, task_id)
+        a = t.attempt_by_id(attempt_id)
+        return a.state is AttemptState.RUNNING and a.pid
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not _running():
+        time.sleep(0.1)
+    assert _running(), "wrapper never reported RUNNING"
+
+    d = daemon.Daemon({project: cfg.root})
+
+    def _stalled_seen():
+        return any(e.type is EventType.ATTEMPT_STALLED for e in storage.iter_events(project))
+
+    try:
+        assert _drive_until(d, project, _stalled_seen, timeout=15.0), \
+            "ATTEMPT_STALLED never observed"
+        tsf_stalled = storage.load_state(project, task_id)
+        assert tsf_stalled.attempt_by_id(attempt_id).state is AttemptState.STALLED
+
+        def _interrupted_seen():
+            return any(e.type is EventType.ATTEMPT_INTERRUPTED for e in storage.iter_events(project))
+
+        assert _drive_until(d, project, _interrupted_seen, timeout=15.0), \
+            "ATTEMPT_INTERRUPTED never observed"
+
+        def _blocked():
+            return storage.load_state(project, task_id).state is TaskState.BLOCKED
+
+        assert _drive_until(d, project, _blocked, timeout=10.0), "task never reached BLOCKED"
+        tsf_final = storage.load_state(project, task_id)
+        assert tsf_final.blocker is not None
+        assert tsf_final.blocker.type is BlockerType.ENVIRONMENT
+    finally:
+        try:
+            os.kill(wrapper_pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
 
 
 # --------------------------------------------------------------------------
@@ -530,6 +695,119 @@ def test_input_building(tmp_state, sample_project, monkeypatch):
     assert isinstance(inp.receipts[att_running], dict)
     assert inp.pid_alive[att_dead] is False
     assert inp.decisions_open == {"D-002"}
+
+
+# --------------------------------------------------------------------------
+# P14 2026-07-15 item 5: _attempt_scan belt-and-braces wrapper.pid fallback
+
+def test_attempt_scan_wrapper_pid_fallback_recovers_liveness(tmp_state, sample_project):
+    """A stale attempt.pid (e.g. from bookkeeping drift across a resume)
+    must not hide a genuinely live process: when the recorded pid looks
+    dead, _attempt_scan cross-checks the freshest wrapper.pid file on disk
+    and recovers liveness from it."""
+    project = "demo"
+    task_id, attempt_id = "t-fallback", "att-fallback"
+    tsf = _seed_running_attempt(project, task_id, attempt_id)
+    att = tsf.attempt_by_id(attempt_id)
+    att.pid = 999999  # definitely dead
+    storage.save_state(tsf)
+
+    attempt_dir = paths.attempt_dir(project, attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    (attempt_dir / "wrapper.pid").write_text(str(os.getpid()), encoding="utf-8")
+
+    d = daemon.Daemon({project: sample_project.root})
+    _log_quiet, pid_alive, _receipts = d._attempt_scan(project, storage.list_states(project))
+    assert pid_alive[attempt_id] is True
+
+
+def test_attempt_scan_wrapper_pid_fallback_stays_dead(tmp_state, sample_project):
+    """Negative: both the recorded pid AND the wrapper.pid file are dead ->
+    the fallback must not manufacture liveness."""
+    project = "demo"
+    task_id, attempt_id = "t-fallback2", "att-fallback2"
+    tsf = _seed_running_attempt(project, task_id, attempt_id)
+    att = tsf.attempt_by_id(attempt_id)
+    att.pid = 999999
+    storage.save_state(tsf)
+
+    attempt_dir = paths.attempt_dir(project, attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    (attempt_dir / "wrapper.pid").write_text("999998", encoding="utf-8")
+
+    d = daemon.Daemon({project: sample_project.root})
+    _log_quiet, pid_alive, _receipts = d._attempt_scan(project, storage.list_states(project))
+    assert pid_alive[attempt_id] is False
+
+
+# --------------------------------------------------------------------------
+# P14 2026-07-15 item 3: _confirm_stall made REAL (CPU-descendant-aware)
+
+def test_confirm_stall_idle_process_confirmed_after_two_reads(tmp_state, sample_project):
+    """Positive: a genuinely idle child process (sleep, no children) with a
+    quiet log is confirmed stalled once its CPU signature is unchanged
+    across two consecutive _confirm_stall reads."""
+    project = "demo"
+    task_id, attempt_id = "t-idle", "att-idle"
+    tsf = _seed_running_attempt(project, task_id, attempt_id)
+    child = subprocess.Popen(["sleep", "5"], start_new_session=True)
+    try:
+        att = tsf.attempt_by_id(attempt_id)
+        att.pid = child.pid
+        storage.save_state(tsf)
+
+        cfg = sample_project
+        d = daemon.Daemon({project: cfg.root})
+        log_quiet = {attempt_id: 400.0}   # over the default 300s threshold
+        pid_alive = {attempt_id: True}
+
+        out1 = d._confirm_stall(storage.list_states(project), log_quiet, pid_alive, cfg)
+        assert out1[attempt_id] is False  # no prior baseline yet on read 1
+
+        time.sleep(0.3)
+        out2 = d._confirm_stall(storage.list_states(project), log_quiet, pid_alive, cfg)
+        assert out2[attempt_id] is True  # unchanged CPU across two reads
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+
+def test_confirm_stall_cpu_active_child_not_confirmed(tmp_state, sample_project):
+    """P14 headline oracle 2 (tier-2 negative): a process whose own
+    top-level CPU stays idle but that has spawned a BUSY child (tight loop,
+    no output) must NOT be confirmed stalled -- the child's rising
+    utime/stime must be part of the composite tier-2 signature. Regression
+    for the pre-P14 bug where only the top-level pid's own /proc/<pid>/stat
+    was checked, so a busy grandchild went completely unnoticed."""
+    project = "demo"
+    task_id, attempt_id = "t-busy-child", "att-busy-child"
+    tsf = _seed_running_attempt(project, task_id, attempt_id)
+
+    # Parent shell idles (sleep) while its background child burns CPU.
+    parent = subprocess.Popen(
+        ["sh", "-c", "( while true; do :; done ) & sleep 10"],
+        start_new_session=True,
+    )
+    try:
+        att = tsf.attempt_by_id(attempt_id)
+        att.pid = parent.pid
+        storage.save_state(tsf)
+
+        cfg = sample_project
+        d = daemon.Daemon({project: cfg.root})
+        log_quiet = {attempt_id: 400.0}
+        pid_alive = {attempt_id: True}
+
+        d._confirm_stall(storage.list_states(project), log_quiet, pid_alive, cfg)
+        time.sleep(0.5)  # let the busy child accumulate CPU ticks
+        out2 = d._confirm_stall(storage.list_states(project), log_quiet, pid_alive, cfg)
+        assert out2[attempt_id] is False
+    finally:
+        try:
+            os.killpg(parent.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+        parent.wait(timeout=5)
 
 
 # --------------------------------------------------------------------------

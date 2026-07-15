@@ -81,7 +81,7 @@ class NotifyConfig:
     push_classes: list[str] = field(default_factory=lambda: [
         "DECISION_OPENED", "TASK_BLOCKED", "PROVIDER_STATE_CHANGED",
         "BUDGET_WARNING", "BUDGET_EXHAUSTED", "SPEC_ATTENTION",
-        "NEEDS_OPERATOR", "WAVE_CLOSED",
+        "NEEDS_OPERATOR", "WAVE_CLOSED", "ATTEMPT_STALLED",
     ])
     digest_classes: list[str] = field(default_factory=lambda: [
         "MERGE_RECORDED", "TASK_TRANSITIONED",
@@ -99,6 +99,9 @@ class Policy:
     cost_currency: str | None = None
     max_consecutive_zero_progress_merges: int = 3
     stall_log_quiet_seconds: int = 300     # v2 §5.4 tier-1 threshold
+    # Absolute per-attempt wall-clock backstop (P14): interrupt regardless
+    # of liveness once exceeded; fm.budget.max_wall_seconds overrides.
+    attempt_max_wall_seconds: int = 10800
     reconcile_interval_seconds: int = 30
     wave_max_diffs: int = 3
     http_port: int = 8942           # loopback only

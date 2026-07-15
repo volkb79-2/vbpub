@@ -10,13 +10,14 @@ import pytest
 from handoffctl.config import MutexDef, Policy, ProjectConfig, Routes, RouteDef
 from handoffctl.reconcile import (
     Action, CreateTask, DispatchImplementer, EmitAttemptExit, InterruptAttempt,
-    LaunchReview, MarkInterrupted, OpenWave, ProviderPause, ReconcileInput,
-    ResumeAttempt, SpecAttention, StallCheck, Transition, dispatch_eligible,
-    plan_project,
+    LaunchReview, MarkInterrupted, MarkStalled, OpenWave, ProviderPause,
+    ReconcileInput, ResumeAttempt, SpecAttention, StallCheck, Transition,
+    dispatch_eligible, plan_project,
 )
 from handoffctl.types import (
-    Attempt, AttemptState, Base, Budget, Basis, Frontmatter, Oracle, Receipt,
-    ReceiptResult, Role, Route, Scope, Source, TaskState, TaskStateFile, Usage,
+    Attempt, AttemptState, Base, Blocker, BlockerType, Budget, Basis,
+    Frontmatter, Oracle, Receipt, ReceiptResult, Role, Route, Scope, Source,
+    TaskState, TaskStateFile, Usage,
 )
 
 
@@ -55,6 +56,7 @@ def make_frontmatter(
     depends_on: list[str] | None = None,
     stack: str = "none",
     mutexes: list[str] | None = None,
+    budget: Budget | None = None,
 ) -> Frontmatter:
     """Create a minimal Frontmatter."""
     return Frontmatter(
@@ -72,6 +74,7 @@ def make_frontmatter(
         depends_on=depends_on or [],
         stack=stack,
         mutexes=mutexes or [],
+        budget=budget,
     )
 
 
@@ -816,6 +819,88 @@ def test_receipt_interrupted_with_session_handle_resume():
     assert len(resumes) == 1
 
 
+def test_interrupted_no_resume_handle_blocks_task():
+    """P14 2026-07-15 item 4 (silent-dead-end fix): INTERRUPTED with NO
+    session_handle used to silently do nothing ('fresh dispatch handled in
+    lifecycle' was never true -- lifecycle only ever dispatches QUEUED
+    tasks) leaving the task ACTIVE forever with zero events. Now ->
+    Transition to BLOCKED with a typed environment blocker."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    assert att.session_handle is None
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+    )
+
+    actions = plan_project(inp)
+    resumes = [a for a in actions if isinstance(a, ResumeAttempt)]
+    assert len(resumes) == 0
+    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert len(transitions) == 1
+    t = transitions[0]
+    assert t.to == TaskState.BLOCKED
+    assert t.blocker is not None
+    assert t.blocker.type == BlockerType.ENVIRONMENT
+    assert t.blocker.unblock_condition == "operator: inspect attempts"
+
+
+def test_interrupted_attempts_exhausted_blocks_task_even_with_handle():
+    """P14 item 4: attempts budget exhausted -> BLOCKED even though a
+    session_handle IS present (the budget check gates ResumeAttempt first)."""
+    cfg = make_config(max_attempts_per_task=1)
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    prior = make_attempt(
+        attempt_id="att-0", state=AttemptState.EXITED,
+        receipt=Receipt(result=ReceiptResult.ERROR, exit_code=1),
+    )
+    att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    att.session_handle = "sess-xyz"
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[prior, att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+    )
+
+    actions = plan_project(inp)
+    resumes = [a for a in actions if isinstance(a, ResumeAttempt)]
+    assert len(resumes) == 0
+    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert len(transitions) == 1
+    assert transitions[0].to == TaskState.BLOCKED
+    assert transitions[0].blocker.type == BlockerType.ENVIRONMENT
+
+
 # ============================================================================
 # ORACLE 8: stall
 # ============================================================================
@@ -850,8 +935,12 @@ def test_stall_check_log_quiet_over_threshold():
     assert len(checks) == 1
 
 
-def test_stall_confirmed_interrupt():
-    """Oracle 8: stall_confirmed True -> InterruptAttempt (no StallCheck)."""
+def test_stall_confirmed_marks_stalled_first():
+    """P14 2026-07-15 item 2 (amended from the old 'stall_confirmed ->
+    InterruptAttempt directly' design): a tier-2-confirmed RUNNING attempt
+    must first be made VISIBLE via MarkStalled (-> ATTEMPT_STALLED, state
+    STALLED) -- NOT interrupted immediately. The old design silently
+    interrupted a confirmed stall with zero event ever recorded."""
     cfg = make_config()
     routes = make_routes()
     fm = make_frontmatter(id="P01")
@@ -877,10 +966,78 @@ def test_stall_confirmed_interrupt():
     )
 
     actions = plan_project(inp)
+    marks = [a for a in actions if isinstance(a, MarkStalled) and a.attempt_id == "att-1"]
     interrupts = [a for a in actions if isinstance(a, InterruptAttempt) and a.attempt_id == "att-1"]
     checks = [a for a in actions if isinstance(a, StallCheck) and a.attempt_id == "att-1"]
-    assert len(interrupts) == 1
+    assert len(marks) == 1
+    assert len(interrupts) == 0
     assert len(checks) == 0
+
+
+def test_stalled_attempt_then_interrupted():
+    """P14 2026-07-15 item 2 (second half): once the attempt's PERSISTED
+    state is actually STALLED (a later pass observing the ATTEMPT_STALLED
+    from the prior pass), and it's still alive with no receipt ->
+    InterruptAttempt. No re-confirmation needed at this point."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-1", state=AttemptState.STALLED, receipt=None)
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={"att-1": 400.0},
+        pid_alive={"att-1": True},
+        receipts={},
+    )
+
+    actions = plan_project(inp)
+    interrupts = [a for a in actions if isinstance(a, InterruptAttempt) and a.attempt_id == "att-1"]
+    assert len(interrupts) == 1
+
+
+def test_stalled_attempt_pid_dead_mark_interrupted():
+    """Oracle 8 (negative, STALLED variant): a STALLED attempt whose pid
+    has since died -> MarkInterrupted, not a pointless InterruptAttempt."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-1", state=AttemptState.STALLED, receipt=None)
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={"att-1": 400.0},
+        pid_alive={"att-1": False},
+        receipts={},
+    )
+
+    actions = plan_project(inp)
+    marked = [a for a in actions if isinstance(a, MarkInterrupted) and a.attempt_id == "att-1"]
+    interrupts = [a for a in actions if isinstance(a, InterruptAttempt) and a.attempt_id == "att-1"]
+    assert len(marked) == 1
+    assert len(interrupts) == 0
 
 
 def test_stall_quiet_below_threshold():
@@ -912,6 +1069,154 @@ def test_stall_quiet_below_threshold():
     checks = [a for a in actions if isinstance(a, StallCheck) and a.attempt_id == "att-1"]
     interrupts = [a for a in actions if isinstance(a, InterruptAttempt) and a.attempt_id == "att-1"]
     assert len(checks) == 0
+    assert len(interrupts) == 0
+
+
+# ============================================================================
+# ORACLE 13 (P14 2026-07-15 item 6): wall-clock cap
+# ============================================================================
+
+def test_wall_clock_cap_exceeded_interrupts_even_with_fresh_log():
+    """P14 headline oracle 4: attempt started long before the default cap
+    -> InterruptAttempt EVEN WITH a fresh (non-quiet) log and no stall
+    confirmation -- the wall-clock cap bypasses the log-quiet gate
+    entirely. Uses a small attempt_max_wall_seconds so the test doesn't
+    depend on the real 10800s default."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")  # no budget override -> uses inp default
+    att = make_attempt(attempt_id="att-1", state=AttemptState.RUNNING, receipt=None)
+    att.started = utc(2026, 7, 15, 0, 0)
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15, 1, 0),  # 3600s elapsed
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={"att-1": 0.0},  # log is FRESH
+        pid_alive={"att-1": True},
+        receipts={},
+        attempt_max_wall_seconds=100,  # far below the 3600s elapsed
+    )
+
+    actions = plan_project(inp)
+    interrupts = [a for a in actions if isinstance(a, InterruptAttempt) and a.attempt_id == "att-1"]
+    checks = [a for a in actions if isinstance(a, StallCheck) and a.attempt_id == "att-1"]
+    assert len(interrupts) == 1
+    assert len(checks) == 0
+
+
+def test_wall_clock_cap_per_task_budget_override():
+    """P14 item 6: fm.budget.max_wall_seconds overrides the input default
+    (smaller here) -- still triggers InterruptAttempt at 60s elapsed even
+    though the default cap (attempt_max_wall_seconds=100000) is nowhere
+    close to exceeded."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01", budget=Budget(max_wall_seconds=50))
+    att = make_attempt(attempt_id="att-1", state=AttemptState.RUNNING, receipt=None)
+    att.started = utc(2026, 7, 15, 0, 0)
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15, 0, 1),  # 60s elapsed
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={"att-1": 0.0},
+        pid_alive={"att-1": True},
+        receipts={},
+        attempt_max_wall_seconds=100000,
+    )
+
+    actions = plan_project(inp)
+    interrupts = [a for a in actions if isinstance(a, InterruptAttempt) and a.attempt_id == "att-1"]
+    assert len(interrupts) == 1
+
+
+def test_wall_clock_cap_not_exceeded_no_interrupt():
+    """Oracle 4 (negative): elapsed well under the cap -> no InterruptAttempt
+    from the wall-clock path (fresh log also means no StallCheck)."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-1", state=AttemptState.RUNNING, receipt=None)
+    att.started = utc(2026, 7, 15, 0, 0)
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15, 0, 1),  # 60s elapsed
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={"att-1": 0.0},
+        pid_alive={"att-1": True},
+        receipts={},
+        attempt_max_wall_seconds=10800,
+    )
+
+    actions = plan_project(inp)
+    interrupts = [a for a in actions if isinstance(a, InterruptAttempt) and a.attempt_id == "att-1"]
+    checks = [a for a in actions if isinstance(a, StallCheck) and a.attempt_id == "att-1"]
+    assert len(interrupts) == 0
+    assert len(checks) == 0
+
+
+def test_wall_clock_cap_pid_dead_prefers_mark_interrupted():
+    """Wall-clock cap exceeded AND pid already dead -> MarkInterrupted (a
+    definitive signal) takes priority over a pointless InterruptAttempt
+    against a pid that no longer exists."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-1", state=AttemptState.RUNNING, receipt=None)
+    att.started = utc(2026, 7, 15, 0, 0)
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15, 1, 0),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={"att-1": 0.0},
+        pid_alive={"att-1": False},
+        receipts={},
+        attempt_max_wall_seconds=100,
+    )
+
+    actions = plan_project(inp)
+    marked = [a for a in actions if isinstance(a, MarkInterrupted) and a.attempt_id == "att-1"]
+    interrupts = [a for a in actions if isinstance(a, InterruptAttempt) and a.attempt_id == "att-1"]
+    assert len(marked) == 1
     assert len(interrupts) == 0
 
 

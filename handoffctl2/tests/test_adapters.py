@@ -79,7 +79,11 @@ def test_render_argv_empty_template():
 
 # Oracle 2: build_dispatch exact argv assertions
 def test_build_dispatch_claude():
-    """Oracle 2: claude route constructs correct argv."""
+    """Oracle 2 (amended P14 2026-07-15 -- buffered-CLI-blindness fix):
+    claude route argv uses stream-json + --verbose, NOT buffered `json`.
+    The old assertion (`"json" in argv`) tested the exact defect P14 item 1
+    fixes: `-p --output-format json` writes its entire output at process
+    exit, so log mtime is structurally dead as a liveness signal."""
     route = RouteDef(
         route_id="claude-test",
         cli="claude",
@@ -99,7 +103,9 @@ def test_build_dispatch_claude():
     assert argv[0] == "claude"
     assert "-p" in argv
     assert "--output-format" in argv
-    assert "json" in argv
+    assert "stream-json" in argv
+    assert "json" not in argv  # bare "json" must NOT appear (buffered mode)
+    assert "--verbose" in argv
     assert "--model" in argv
     assert "sonnet" in argv
     assert "--effort" in argv
@@ -656,6 +662,53 @@ def test_extract_usage_deepseek():
     assert usage.tokens_in == 100
     assert usage.tokens_out == 50
     assert usage.cost is None
+
+
+def test_extract_usage_stream_json_fixture():
+    """P14 item 1/oracle 3: extract_usage parses a REALISTIC stream-json
+    (NDJSON) log -- one JSON object per line as claude -p --output-format
+    stream-json --verbose emits -- to ACTUAL usage from the final `result`
+    line. Earlier lines have no top-level 'usage'/'total_cost_usd' key
+    (usage is nested under "message" there) so they must be skipped."""
+    log = "\n".join([
+        '{"type": "system", "subtype": "init", "cwd": "/tmp/wt"}',
+        '{"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}], '
+        '"usage": {"input_tokens": 5, "output_tokens": 2}}}',
+        '{"type": "result", "subtype": "success", "is_error": false, '
+        '"duration_ms": 1234, "usage": {"input_tokens": 200, "output_tokens": 90, '
+        '"cache_read_input_tokens": 150}, "total_cost_usd": 0.045}',
+    ]) + "\n"
+    route = RouteDef(
+        route_id="test",
+        cli="claude",
+        model="sonnet",
+        usage_source="output-format-json",
+    )
+    usage = adapters.extract_usage(route, Path("/tmp"), log)
+    assert usage.basis == Basis.ACTUAL
+    assert usage.tokens_in == 200
+    assert usage.tokens_out == 90
+    assert usage.cached_in == 150
+    assert usage.cost == 0.045
+    assert usage.currency == "USD"
+
+
+def test_build_dispatch_claude_argv_stream_json_exact_position():
+    """P14 item 1: --output-format is immediately followed by stream-json
+    (not the buffered 'json')."""
+    route = RouteDef(route_id="claude-test", cli="claude", model="sonnet")
+    argv, _prompt = adapters.build_dispatch(
+        route,
+        handoff_path="h.md",
+        worktree="/tmp/wt",
+        branch="feat-x",
+        task_id="T-123",
+        gate_hint="pytest-q",
+        receipt_path="/tmp/receipt.json",
+    )
+    idx = argv.index("--output-format")
+    assert argv[idx + 1] == "stream-json"
+    assert "--verbose" in argv
 
 
 def test_extract_usage_garbage_log():

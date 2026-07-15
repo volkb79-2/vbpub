@@ -34,15 +34,29 @@ INTERFACE CONTRACT (frozen). Semantics:
      limit -> QUEUED (attempt does not count toward max_attempts; also
      ProviderPause(route_id)); error -> QUEUED if attempts remain else
      BLOCKED (environment)).
-   - no receipt, pid dead, attempt RUNNING or PREFLIGHTING ->
+   - no receipt, pid dead, attempt RUNNING/PREFLIGHTING/STALLED ->
      MarkInterrupted (daemon emits ATTEMPT_INTERRUPTED)
      then next pass ResumeAttempt (INTERRUPTED attempts with attempts-budget
-     left and a resume handle -> ResumeAttempt; without handle -> fresh
-     DispatchImplementer counting a new attempt).
-   - no receipt, pid alive, log quiet > policy.stall_log_quiet_seconds ->
-     StallCheck (tier 2 evidence gathering is the daemon's job; the planner
-     only flags QUIET). If stall_confirmed[attempt_id] is True ->
-     InterruptAttempt (daemon kills pgid; wrapper writes interrupted receipt).
+     left AND a resume handle -> ResumeAttempt; P14 2026-07-15 fix -- no
+     handle, OR attempts exhausted -> Transition(task, BLOCKED) with a typed
+     environment blocker (unblock 'operator: inspect attempts'); the prior
+     "fresh DispatchImplementer counting a new attempt" wording was never
+     actually implemented and left the task ACTIVE forever with zero
+     events -- a live-incident silent dead-end).
+   - no receipt, pid alive, elapsed since attempt.started exceeds the
+     wall-clock cap (fm.budget.max_wall_seconds if set, else
+     inp.attempt_max_wall_seconds, P14 2026-07-15 item 6) -> InterruptAttempt
+     UNCONDITIONALLY -- bypasses the log-quiet/stall-confirm gate below
+     entirely (an attempt can run forever with a perfectly fresh, chatty log
+     and still needs a hard cap).
+   - no receipt, pid alive, under the wall-clock cap, log quiet >
+     policy.stall_log_quiet_seconds -> StallCheck (tier 2 evidence gathering
+     is the daemon's job; the planner only flags QUIET). If
+     stall_confirmed[attempt_id] is True -> MarkStalled (P14 2026-07-15 item
+     2: daemon appends ATTEMPT_STALLED, state STALLED -- a confirmed stall
+     must be VISIBLE, not just interrupted silently); once the attempt is
+     STALLED (a later pass observes the persisted state) -> InterruptAttempt
+     (daemon kills pgid; wrapper writes interrupted receipt).
 5. REVIEW WAVES (SPEC §7): tasks AWAITING_REVIEW with wave_id None, batch in
    sorted order into OpenWave(task_ids up to policy.wave_max_diffs); a wave
    opens when >= wave_max_diffs are waiting OR the oldest has waited >
@@ -70,9 +84,18 @@ from typing import Any
 
 from .config import ProjectConfig, RouteDef, Routes
 from .types import (
-    Frontmatter, TaskState, TaskStateFile, AttemptState,
+    Blocker, BlockerType, Frontmatter, TaskState, TaskStateFile, AttemptState,
     ReceiptResult, Role, TERMINAL_ATTEMPT_STATES
 )
+
+# P14 2026-07-15 item 6: per-attempt wall-clock cap default (3h). Policy is
+# frozen for this package (only the NotifyConfig.push_classes entry may be
+# edited -- see handoff/P14-stall-hardening.md rules), so this lives here as
+# a ReconcileInput field/module default rather than config.Policy; the
+# daemon reads cfg.policy.attempt_max_wall_seconds via getattr with this as
+# the fallback, so a future Policy field (if config.py is ever unfrozen for
+# it) would take effect with zero code change here.
+DEFAULT_ATTEMPT_MAX_WALL_SECONDS = 10800
 
 
 # --- actions (daemon executes; tests assert on these) ----------------------
@@ -92,6 +115,11 @@ class CreateTask(Action):
 class Transition(Action):
     to: TaskState | None = None
     notes: str | None = None
+    # P14 2026-07-15 item 4: set only for to=BLOCKED transitions that need a
+    # typed blocker (the daemon emits TASK_BLOCKED instead of a plain
+    # TASK_TRANSITIONED when this is not None). Enum + short fixed strings
+    # only -- never handoff-body prose (payload injection rule).
+    blocker: Blocker | None = None
 
 
 @dataclass
@@ -116,6 +144,16 @@ class MarkInterrupted(Action):
 
 @dataclass
 class StallCheck(Action):
+    attempt_id: str | None = None
+
+
+@dataclass
+class MarkStalled(Action):
+    """P14 2026-07-15 item 2: tier-2 confirmed a stall -- make it VISIBLE
+    (ATTEMPT_STALLED, state STALLED) before ever interrupting. The prior
+    behaviour fed stall_confirmed straight into InterruptAttempt with no
+    event in between; a confirmed stall was invisible until the wrapper's
+    own ATTEMPT_INTERRUPTED landed."""
     attempt_id: str | None = None
 
 
@@ -172,6 +210,9 @@ class ReconcileInput:
     carve_outcomes: list[dict] = field(default_factory=list)
     review_rejections_by_area: dict[str, int] = field(default_factory=dict)
     blocked_underspecified_count: int = 0
+    # P14 2026-07-15 item 6: default per-attempt wall-clock cap (seconds);
+    # a task's own fm.budget.max_wall_seconds overrides this when set.
+    attempt_max_wall_seconds: int = DEFAULT_ATTEMPT_MAX_WALL_SECONDS
 
 
 def plan_project(inp: ReconcileInput) -> list[Action]:
@@ -252,13 +293,21 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
 
     # === Attempt actions (no specific sort within category) ===
     attempt_actions: list[Action] = []
+    _INTERRUPTIBLE_STATES = (AttemptState.RUNNING, AttemptState.PREFLIGHTING, AttemptState.STALLED)
 
     for task_id, tsf in inp.states.items():
+        fm_entry = inp.frontmatters.get(task_id)
+        fm_for_task = fm_entry[0] if fm_entry is not None else None
+
         for attempt in tsf.attempts:
-            # Receipt handling: RUNNING with receipt -> EmitAttemptExit
-            if (inp.receipts.get(attempt.attempt_id) is not None
-                    and (attempt.state in (AttemptState.RUNNING, AttemptState.PREFLIGHTING,
-                                           AttemptState.STALLED)
+            has_receipt = inp.receipts.get(attempt.attempt_id) is not None
+            alive = inp.pid_alive.get(attempt.attempt_id, False)
+
+            # Receipt handling: RUNNING/PREFLIGHTING/STALLED with receipt (or
+            # an already-EXITED attempt whose task transition is pending) ->
+            # EmitAttemptExit.
+            if (has_receipt
+                    and (attempt.state in _INTERRUPTIBLE_STATES
                          or (attempt.state == AttemptState.EXITED
                              and tsf.state == TaskState.ACTIVE
                              and attempt.role == Role.IMPLEMENTER)
@@ -276,32 +325,57 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                 attempt_actions.append(EmitAttemptExit(task_id=task_id, attempt_id=attempt.attempt_id))
 
             # No receipt, pid dead -> MarkInterrupted
-            elif (attempt.state in (AttemptState.RUNNING, AttemptState.PREFLIGHTING)
-                  and not inp.pid_alive.get(attempt.attempt_id, False)):
-                if inp.receipts.get(attempt.attempt_id) is None:
-                    attempt_actions.append(MarkInterrupted(task_id=task_id, attempt_id=attempt.attempt_id))
+            elif attempt.state in _INTERRUPTIBLE_STATES and not alive:
+                attempt_actions.append(MarkInterrupted(task_id=task_id, attempt_id=attempt.attempt_id))
+
+            # P14 2026-07-15 item 6: no receipt, pid alive, but the attempt
+            # has been running longer than its wall-clock cap -> interrupt
+            # UNCONDITIONALLY, regardless of log activity (bypasses the
+            # log-quiet/stall-confirm gate below entirely).
+            elif (attempt.state in _INTERRUPTIBLE_STATES and alive
+                  and _wall_clock_cap_exceeded(attempt, fm_for_task, inp)):
+                attempt_actions.append(InterruptAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
+
+            # Already tier-2-confirmed stalled (ATTEMPT_STALLED already
+            # emitted a prior pass) and still no receipt -> interrupt now.
+            elif attempt.state == AttemptState.STALLED:
+                attempt_actions.append(InterruptAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
 
             # Stall handling: no receipt, pid alive, log quiet > threshold
-            elif attempt.state == AttemptState.RUNNING and inp.pid_alive.get(attempt.attempt_id, False):
-                if inp.receipts.get(attempt.attempt_id) is None:
-                    log_quiet = inp.log_quiet_seconds.get(attempt.attempt_id)
-                    if log_quiet is not None and log_quiet > inp.cfg.policy.stall_log_quiet_seconds:
-                        if inp.stall_confirmed.get(attempt.attempt_id, False):
-                            attempt_actions.append(InterruptAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
-                        else:
-                            attempt_actions.append(StallCheck(task_id=task_id, attempt_id=attempt.attempt_id))
+            elif attempt.state == AttemptState.RUNNING and alive:
+                log_quiet = inp.log_quiet_seconds.get(attempt.attempt_id)
+                if log_quiet is not None and log_quiet > inp.cfg.policy.stall_log_quiet_seconds:
+                    if inp.stall_confirmed.get(attempt.attempt_id, False):
+                        # P14 2026-07-15 item 2: make the confirmed stall
+                        # VISIBLE (ATTEMPT_STALLED) before ever interrupting;
+                        # InterruptAttempt now only fires once the attempt's
+                        # persisted state is actually STALLED (branch above).
+                        attempt_actions.append(MarkStalled(task_id=task_id, attempt_id=attempt.attempt_id))
+                    else:
+                        attempt_actions.append(StallCheck(task_id=task_id, attempt_id=attempt.attempt_id))
 
             # INTERRUPTED attempt handling
             elif attempt.state == AttemptState.INTERRUPTED:
                 # Attempts budget left?
                 attempts_count = sum(1 for a in tsf.attempts if a.state in TERMINAL_ATTEMPT_STATES
                                     and a.receipt and a.receipt.result != ReceiptResult.LIMIT)
-                if attempts_count < inp.cfg.policy.max_attempts_per_task:
-                    if attempt.session_handle:
-                        attempt_actions.append(ResumeAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
-                    else:
-                        # Fresh dispatch (handled in lifecycle)
-                        pass
+                if attempts_count < inp.cfg.policy.max_attempts_per_task and attempt.session_handle:
+                    attempt_actions.append(ResumeAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
+                else:
+                    # P14 2026-07-15 item 4 (silent-dead-end fix): no resume
+                    # handle, or the attempt budget is exhausted -- either
+                    # way there is no path forward. The prior code silently
+                    # did nothing here ("handled in lifecycle" was never
+                    # true: lifecycle only dispatches QUEUED tasks, and
+                    # nothing ever requeued this one) leaving the task
+                    # ACTIVE forever with zero events. Surface it.
+                    blocker = Blocker(
+                        type=BlockerType.ENVIRONMENT,
+                        unblock_condition="operator: inspect attempts",
+                        detail="interrupted attempt has no resume handle or attempts are exhausted",
+                    )
+                    attempt_actions.append(Transition(task_id=task_id, to=TaskState.BLOCKED,
+                                                       notes="interrupted-dead-end", blocker=blocker))
 
     # === Waves ===
     wave_actions: list[Action] = []
@@ -395,6 +469,16 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     actions.extend(spec_actions)
 
     return actions
+
+
+def _wall_clock_cap_exceeded(attempt, fm: Frontmatter | None, inp: ReconcileInput) -> bool:
+    """P14 2026-07-15 item 6: per-attempt wall-clock cap = fm.budget.
+    max_wall_seconds if set, else inp.attempt_max_wall_seconds."""
+    cap = inp.attempt_max_wall_seconds
+    if fm is not None and fm.budget is not None and fm.budget.max_wall_seconds:
+        cap = fm.budget.max_wall_seconds
+    elapsed = (inp.now - attempt.started).total_seconds()
+    return elapsed > cap
 
 
 def dispatch_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) -> tuple[bool, str]:

@@ -55,6 +55,13 @@ INTERFACE CONTRACT (frozen):
 - Oracles: the wrapper does NOT run gates (the reviewer/gate adapter does);
   receipt.oracles stays [] at this layer — receipt.result reflects process
   outcome plus log classification only.
+  (P14 2026-07-15: v2 §5.4 exempts an attempt from tier-2 stall-confirmation
+  while it is inside a declared long gate run, approximated via a
+  gate-running marker file the wrapper would touch around gate execution.
+  Since gates are not wired into the wrapper at all yet (this bullet), that
+  exemption is intentionally NOT implemented here — see daemon.py's
+  _confirm_stall docstring for the equivalent decision on the reconciler
+  side. Add the marker file once gate execution actually lands here.)
 - Events: use storage.append_and_apply with actor Actor(WRAPPER,
   f'wrapper-{attempt_id}'); statefile loaded fresh via storage.load_state
   right before each event (the daemon may have written between steps).
