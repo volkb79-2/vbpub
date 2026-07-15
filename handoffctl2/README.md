@@ -6,10 +6,29 @@ supervision, cheap implementers behind an independent review gate, durable
 provenance, typed stop conditions, a zero-AI dashboard — with **storage and
 delivery inverted**. Why: [REVIEW-OF-DRAFT1.md](REVIEW-OF-DRAFT1.md).
 
-> **Status: design / pilot.** Docs and schemas only; no code yet. Draft 1's
-> state model, stop outcomes, review invariants, and security boundary are
-> inherited (largely verbatim) — this draft changes *how the system is stored,
-> built, and adopted*, not what it guarantees.
+> **Status: accepted 2026-07-15 · implementation in progress** (`src/`,
+> `handoff/` packages). Draft 1's state model, stop outcomes, review
+> invariants, and security boundary are inherited (largely verbatim) — this
+> draft changes *how the system is stored, built, and adopted*, not what it
+> guarantees.
+
+## Deciding log
+
+- 2026-07-15 · **Accepted by user, with one amendment: the daemon from the
+  start.** `handoffd` is built in the first implementation wave as a resident
+  reconciler: it runs the same idempotent reconcile pass on an internal
+  interval, disk stays authoritative (restart = rescan + replay; killing the
+  daemon loses nothing), attempt wrappers stay detached processes that survive
+  daemon restarts, and leases stay flock-based. What residency buys now rather
+  than at graduation: immediate exit collection, in-process scheduling, and a
+  read-only HTTP/SSE surface serving the rendered dashboard and live log
+  tails. `handoffctl tick --once` is retained as the degraded/debug mode.
+  ARCHITECTURE §2's cron/timer scheduling and §9's graduation criteria are
+  amended accordingly; ROADMAP M2 builds the daemon, M5's daemon item is moot.
+- 2026-07-15 · Implementation carved as file-disjoint packages
+  (`handoff/P01…P11`) against frontier-written frozen contracts
+  (`src/handoffctl/` core + stub docstrings); cheap-tier agents implement,
+  frontier reviews. Dogfood rule SPEC §14.6 applies from P01 onward.
 
 ## The three inversions
 

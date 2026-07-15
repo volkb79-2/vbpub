@@ -1,9 +1,16 @@
 # handoffctl2 architecture
 
-Status: **design / pilot**. Inherits draft 1's planes (product / control /
-execution / evidence) and its security boundary; this document specifies the
-draft-2 realization. Deltas from draft 1 are justified in
-[../REVIEW-OF-DRAFT1.md](../REVIEW-OF-DRAFT1.md) (referenced as F1…F12).
+Status: **accepted 2026-07-15, amended: daemon from the start** (see README
+deciding log). §2 below describes the reconcile pass itself — unchanged — but
+it now runs inside the resident `handoffd` (internal interval + child-watch)
+rather than from cron; §9's tick-vs-daemon graduation is decided in the
+daemon's favor. All invariants stand: disk authoritative, idempotent pass,
+detached wrappers, flock leases, zero AI in the control path.
+
+Inherits draft 1's planes (product / control / execution / evidence) and its
+security boundary; this document specifies the draft-2 realization. Deltas
+from draft 1 are justified in [../REVIEW-OF-DRAFT1.md](../REVIEW-OF-DRAFT1.md)
+(referenced as F1…F12).
 
 ## 1. Files are the database (F1, F4)
 
