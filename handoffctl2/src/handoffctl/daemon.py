@@ -974,7 +974,9 @@ class Daemon:
             return
 
         if path == "/api/stream":
-            project = qs.get("project", [None])[0]
+            # No ?project= (e.g. live.html's bare EventSource): default to
+            # the first registered project instead of closing the stream.
+            project = qs.get("project", [None])[0] or next(iter(sorted(self.registry)), None)
             self._serve_sse(handler, project)
             return
 

@@ -99,7 +99,12 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         f"Worktree: {worktree}\n"
         f"Branch: {branch}\n"
         f"Gate: {gate_hint}\n"
-        f"Receipt: {receipt_path}"
+        f"Receipt: {receipt_path}\n"
+        # 2026-07-15 (live P64 lesson): the first real dispatch produced a
+        # full implementation but never committed it, and the review packet
+        # diffs main...HEAD — uncommitted work is invisible to review.
+        "You MUST `git add` and `git commit` ALL your work on the branch "
+        "before finishing; uncommitted work is discarded."
     )
 
     # Append incremental-write hint if present
@@ -266,6 +271,23 @@ def extract_usage(route: RouteDef, attempt_dir: Path, log_text: str) -> Usage:
                         )
                 except (json.JSONDecodeError, ValueError):
                     continue
+        # Fallback (2026-07-15): newer claude CLI -p --output-format json
+        # emits a result ARRAY whose summary carries modelUsage{...costUSD}.
+        # Regex the tail rather than parsing the (possibly huge) array.
+        tail = log_text[-8192:]
+        m_cost = re.findall(r'"costUSD":\s*([0-9.]+)', tail)
+        m_in = re.findall(r'"inputTokens":\s*(\d+)', tail)
+        m_out = re.findall(r'"outputTokens":\s*(\d+)', tail)
+        m_cache = re.findall(r'"cacheReadInputTokens":\s*(\d+)', tail)
+        if m_cost:
+            return Usage(
+                basis=Basis.ACTUAL,
+                tokens_in=int(m_in[-1]) if m_in else None,
+                tokens_out=int(m_out[-1]) if m_out else None,
+                cached_in=int(m_cache[-1]) if m_cache else None,
+                cost=round(sum(float(c) for c in m_cost), 6),
+                currency="USD",
+            )
         return Usage(basis=Basis.UNKNOWN)
 
     elif route.usage_source == "exec-output-footer":
