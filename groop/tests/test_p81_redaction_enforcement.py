@@ -331,6 +331,45 @@ def test_unrecognized_value_bearing_field_is_failed_closed() -> None:
     assert payload["entity"]["kind"] == "service"
 
 
+def test_unrecognized_field_passes_at_the_explicit_sensitive_ceiling() -> None:
+    # Review fix: the unknown-field branch classifies the whole field
+    # ``sensitive`` and then compares against the ceiling. A principal whose
+    # configured ceiling IS ``sensitive`` (the top of the closed enum) is
+    # entitled to it — redacting it anyway would make the top ceiling
+    # unreachable and silently strip governance/network/damon/host_meta from
+    # the one principal class allowed to see them.
+    governance = {"limits": {"mem_min": {"live_value": 1073741824}}}
+    payload = {
+        "entity": {"key": ENTITY_KEY, "kind": "service", "parent": "system.slice"},
+        "metrics": {},
+        "findings": [],
+        "governance": governance,
+    }
+    redaction.redact_payload(
+        payload, shape=PayloadShape.ENTITY_FRAME, metrics_meta={}, ceiling=Sensitivity.SENSITIVE
+    )
+    assert payload["governance"] == governance
+
+    frame_payload = {
+        "schema_version": 1,
+        "ts": 1000.0,
+        "interval_s": 5.0,
+        "host": {},
+        "entities": {},
+        "host_meta": {"zram_devices": [{"name": "zram0"}]},
+    }
+    redaction.redact_payload(
+        frame_payload, shape=PayloadShape.FRAME, metrics_meta={}, ceiling=Sensitivity.SENSITIVE
+    )
+    assert frame_payload["host_meta"] == {"zram_devices": [{"name": "zram0"}]}
+
+    # And the same field is still failed closed one step below the top.
+    redaction.redact_payload(
+        frame_payload, shape=PayloadShape.FRAME, metrics_meta={}, ceiling=Sensitivity.OPERATIONAL
+    )
+    assert frame_payload["host_meta"] == {"redacted": True, "sensitivity": "sensitive"}
+
+
 def test_unregistered_shape_fails_closed() -> None:
     with pytest.raises(redaction.RedactionError):
         redaction.redact_payload({}, shape="not-a-shape", metrics_meta={}, ceiling=Sensitivity.PUBLIC)  # type: ignore[arg-type]

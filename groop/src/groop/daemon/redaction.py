@@ -167,8 +167,11 @@ def _visit_entity_frame(
                         _redact_finding(finding, metrics_meta, ceiling)
             continue
         # governance / network / damon / any future value-bearing container:
-        # no typed visitor classifies its internals, so fail closed.
-        entity_frame[field] = redaction_marker(Sensitivity.SENSITIVE)
+        # no typed visitor classifies its internals, so classify the whole
+        # field ``sensitive`` and redact it below that ceiling. A principal
+        # whose configured ceiling IS ``sensitive`` is entitled to it.
+        if _above(Sensitivity.SENSITIVE, ceiling):
+            entity_frame[field] = redaction_marker(Sensitivity.SENSITIVE)
 
 
 def _visit_frame(
@@ -188,8 +191,10 @@ def _visit_frame(
                     if isinstance(entity_frame, dict):
                         _visit_entity_frame(entity_frame, metrics_meta, ceiling)
             continue
-        # host_meta or any future top-level value-bearing field: fail closed.
-        frame[field] = redaction_marker(Sensitivity.SENSITIVE)
+        # host_meta or any future top-level value-bearing field: classified
+        # ``sensitive`` as a whole; redacted below that ceiling only.
+        if _above(Sensitivity.SENSITIVE, ceiling):
+            frame[field] = redaction_marker(Sensitivity.SENSITIVE)
 
 
 def _visit_mcp_overview(
