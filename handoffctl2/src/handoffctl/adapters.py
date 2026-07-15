@@ -333,23 +333,42 @@ def extract_usage(route: RouteDef, attempt_dir: Path, log_text: str) -> Usage:
 
 
 def classify_log_tail(text: str) -> str | None:
-    """Classify last 200 lines for blocked/limit indicators."""
+    """Classify the log tail for blocked/limit indicators.
+
+    2026-07-15 false-positive fix (groop-P91 "persistent capped history"):
+    a real provider limit TERMINATES the process, so its phrase lands in the
+    final lines — whereas a package about rate/quota/caps says "limit",
+    "quota", "capped" throughout its own reasoning and tests. Matching
+    limit phrases over the last 200 lines misread P91's domain vocabulary as
+    a rate-limit hit and looped it back to re-dispatch (v2 §5.2: never infer
+    a limit from free text — require a limit-SHAPED terminal signal).
+
+    - BLOCKED: still recognized anywhere in the last 200 lines (the agent
+      writes it as a deliberate final marker; a line-start match is
+      unambiguous).
+    - limit phrases only count in the last LIMIT_TAIL_LINES lines AND only
+      when the line looks like a CLI/error surface (starts with a known
+      error prefix or contains 'error'/'exceeded'/HTTP 429), not arbitrary
+      prose. 'blocked' still beats 'limit'.
+    """
     lines = text.split("\n")
-    # Take at most last 200 lines
-    tail = lines[-200:] if len(lines) > 200 else lines
+    tail200 = lines[-200:] if len(lines) > 200 else lines
+    tail_lim = lines[-LIMIT_TAIL_LINES:] if len(lines) > LIMIT_TAIL_LINES else lines
 
-    has_blocked = False
-    has_limit = False
-
-    for line in tail:
-        if line.startswith("BLOCKED:"):
-            has_blocked = True
-        if re.search(r"(?i)(session limit|usage limit|rate limit exceeded|quota|plan limit)", line):
-            has_limit = True
-
-    if has_blocked:
+    if any(line.startswith("BLOCKED:") for line in tail200):
         return "blocked"
-    if has_limit:
+
+    # Specific limit phrases only (never bare 'limit'/'quota'/'capped' — that
+    # is domain vocabulary), and only in the terminal tail where a real
+    # provider limit that ended the process would land.
+    limit_phrase = re.compile(
+        r"(?i)(session limit|usage limit|rate limit (exceeded|reached|hit)|"
+        r"quota (exceeded|reached)|plan limit|429 too many requests|"
+        r"too many requests|limit reached)")
+    if any(limit_phrase.search(line) for line in tail_lim):
         return "limit"
 
     return None
+
+
+LIMIT_TAIL_LINES = 25

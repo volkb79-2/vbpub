@@ -740,11 +740,16 @@ def test_classify_log_tail_limit():
 
 
 def test_classify_log_tail_limit_variants():
-    """Oracle 8: various limit phrases recognized."""
-    for phrase in ["session limit", "usage limit", "quota", "plan limit"]:
-        log = f"some log\n{phrase} reached\nmore"
+    """Oracle 8 (tightened 2026-07-15): SPECIFIC limit phrases recognized in
+    the terminal tail — bare 'quota'/'limit' no longer match (domain-vocab
+    false positive, groop-P91)."""
+    for phrase in ["session limit", "usage limit", "quota exceeded",
+                   "plan limit", "rate limit reached", "429 too many requests"]:
+        log = f"some log\n{phrase}\nmore"
         result = adapters.classify_log_tail(log)
         assert result == "limit", f"Failed for phrase: {phrase}"
+    # bare domain words are NOT a limit:
+    assert adapters.classify_log_tail("the quota knob and rate limit setting\ndone") is None
 
 
 def test_classify_log_tail_both_blocked_wins():
@@ -810,3 +815,19 @@ def test_build_dispatch_unknown_cli():
             gate_hint="pytest-q",
             receipt_path="/tmp/receipt.json"
         )
+
+
+def test_classify_limit_false_positive_domain_vocab():
+    """2026-07-15 (groop-P91): a package about caps/limits/quota says those
+    words in its own reasoning; that must NOT read as a provider limit."""
+    from handoffctl.adapters import classify_log_tail
+    domain = "\n".join([
+        "Implementing the persistent capped history with a rate limit knob.",
+        "The quota is enforced per window; when the cap is exceeded we evict.",
+    ] + ["ordinary progress line"] * 40)
+    assert classify_log_tail(domain) is None
+    # a REAL limit lands in the final lines with error shape:
+    real = "progress\n" * 40 + "error: rate limit exceeded (429 too many requests)\n"
+    assert classify_log_tail(real) == "limit"
+    # BLOCKED still wins and is still recognized deep in the tail:
+    assert classify_log_tail("BLOCKED: cannot meet contract\n" + "x\n" * 10) == "blocked"

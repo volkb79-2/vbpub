@@ -102,7 +102,7 @@ from typing import Any
 from .config import ProjectConfig, RouteDef, Routes
 from .types import (
     Blocker, BlockerType, Frontmatter, TaskState, TaskStateFile, AttemptState,
-    ReceiptResult, Role, TERMINAL_ATTEMPT_STATES
+    ReceiptResult, Role, TERMINAL_ATTEMPT_STATES, TERMINAL_TASK_STATES
 )
 
 # P14 2026-07-15 item 6: per-attempt wall-clock cap default (3h). Policy is
@@ -320,6 +320,13 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     _INTERRUPTIBLE_STATES = (AttemptState.RUNNING, AttemptState.PREFLIGHTING, AttemptState.STALLED)
 
     for task_id, tsf in inp.states.items():
+        # 2026-07-15: never apply attempt lifecycle logic (stall, dead-end
+        # BLOCKED, wall-clock cap) to a terminal task — a lingering
+        # INTERRUPTED attempt on a COMPLETED task was emitting a
+        # COMPLETED->BLOCKED transition every pass (guard rejects it, but
+        # it spammed TICK_ERROR).
+        if tsf.state in TERMINAL_TASK_STATES:
+            continue
         fm_entry = inp.frontmatters.get(task_id)
         fm_for_task = fm_entry[0] if fm_entry is not None else None
 
