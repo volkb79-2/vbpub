@@ -6,11 +6,15 @@
 
 revision = "2026-07-15"
 
+# 2026-07-15 (user): implementation tiers TEMPORARILY route to sonnet-high;
+# restore the deepseek lists below when switching back.
 [tiers.flash-high]
-routes = ["opencode-deepseek-high", "reasonix-deepseek-high"]
+routes = ["claude-sonnet5-high"]
+# routes = ["opencode-deepseek-high", "reasonix-deepseek-high"]   # original
 
 [tiers.flash-max]
-routes = ["opencode-deepseek-max", "reasonix-deepseek-max"]
+routes = ["claude-sonnet5-high"]
+# routes = ["opencode-deepseek-max", "reasonix-deepseek-max"]     # original
 
 [tiers.terra-med]
 routes = ["codex-terra-med"]
