@@ -7,6 +7,16 @@ ARG PYTHON_VERSION="3.14"
 ARG DEBIAN_VERSION="trixie"
 ARG BASE_IMAGE="mcr.microsoft.com/devcontainers/python:${PYTHON_VERSION}-${DEBIAN_VERSION}"
 # BASE_IMAGE is set by `docker-bake.hcl` during build
+
+# ── KSM opt-in shim (throwaway build stage) ──────────────────────────────────
+# Compiles customization/ksm-optin.c; the main stage copies the .so and sets
+# a global LD_PRELOAD so every process opts into KSM (PR_SET_MEMORY_MERGE).
+# Host prerequisite: /sys/kernel/mm/ksm/run=1 (this host: enabled, tuned).
+FROM ${BASE_IMAGE} AS ksm-build
+COPY customization/ksm-optin.c /tmp/ksm-optin.c
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && gcc -shared -fPIC -O2 -o /tmp/ksm-optin.so /tmp/ksm-optin.c
+
 FROM ${BASE_IMAGE}
 
 SHELL ["/bin/bash", "-c"]
@@ -914,6 +924,14 @@ RUN set -euo pipefail; \
     printf '\nIMAGE_MANIFEST="%s"\nINVENTORY_MANIFEST="%s"\nMDT_IMAGE_TAG="%s"\nMDT_IMAGE_REF="%s"\nMDT_IMAGE_VERSION="%s"\nMDT_IMAGE_BUILT_AT="%s"\nMDT_IMAGE_CREATED="%s"\nMDT_IMAGE_REVISION="%s"\n' \
         "${canonical_manifest}" "${inventory_manifest}" "${_image_tag}" "${_image_ref}" \
         "${OCI_VERSION}" "${BUILD_TIMESTAMP}" "${OCI_CREATED}" "${OCI_REVISION}" >> /etc/os-release
+
+# ── KSM opt-in: every process in mdt-based containers becomes KSM-mergeable.
+# Silent by default (KSM_OPTIN_VERBOSE=1 to log); per-command opt-out via
+# `LD_PRELOAD= <cmd>`. Decided 2026-07-15: this host trades ksmd CPU for RAM.
+# NOTE for tooling that manipulates LD_PRELOAD (sanitizers, valgrind): compose
+# their preloads as "theirs:ours" or unset ours for that run.
+COPY --from=ksm-build /tmp/ksm-optin.so /usr/local/lib/ksm-optin.so
+ENV LD_PRELOAD=/usr/local/lib/ksm-optin.so
 
 USER vscode
 
