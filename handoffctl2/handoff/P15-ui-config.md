@@ -60,6 +60,33 @@ structurally impossible here (config files never contain secret values).
   visible hint on the page: "tracked copy handoffctl2/routes.host.toml may
   now differ — sync it in git when satisfied".
 
+## Factory-state control (added 2026-07-15, user directive)
+
+4. **Pause MODES** replace the boolean pause. The project pause flag file's
+   CONTENT becomes the mode; semantics enforced in reconcile.plan_project:
+   - absent flag = `run`: everything dispatches.
+   - `drain-handoffs` (mode 2; also the meaning of a legacy EMPTY flag
+     file — today's behavior): no NEW task leaves QUEUED, but in-flight
+     handoffs proceed through their FULL pipeline — resumes, stall
+     restarts, and review launches still happen until reviews finish.
+   - `drain-agents` (mode 1): no new agent process of ANY kind starts —
+     no dispatch, no ResumeAttempt, no LaunchReview; running processes
+     finish and the factory comes to rest (tasks parked in
+     AWAITING_REVIEW/INTERRUPTED as they land).
+   UI: per-project buttons Run / Drain handoffs / Drain agents with the
+   current mode displayed; POST /api/config/pause gains {mode:
+   "run"|"drain-handoffs"|"drain-agents"}. Events: PAUSE_SET payload
+   {"mode": ...} / PAUSE_CLEARED. CLI `pause <project> [agents|handoffs]`
+   and the ntfy command verb `pause <project> [agents|handoffs]` accept
+   the optional mode (default handoffs); `unpause` = run. commands.py may
+   be touched ONLY for this verb-arg extension (strict regex widened to
+   `^(help|status|pause|unpause|digest)( [a-z][a-z0-9-]{0,30}){0,2}$`).
+5. **'last activity' column per agent**: index.html active-tasks table and
+   task-page attempts table gain a last-activity age (from the newest
+   attempt log's mtime at render time — paths.attempt_dir; '-' when no
+   log). Human units (e.g. '3m', '2h05m'). This is the operator's
+   at-a-glance liveness view; keep it cheap (one stat per attempt).
+
 ## Oracles
 
 1. POST policy change -> project.toml line updated in place (comments
@@ -73,6 +100,13 @@ structurally impossible here (config files never contain secret values).
    inline secrets (assert token strings absent) and no innerHTML use.
 6. Traversal/method safety: GET on POST endpoints -> 405/404; unknown
    project -> 404. Full suite green.
+7. Pause modes (planner tests): drain-handoffs -> QUEUED stays put while a
+   waiting wave still yields LaunchReview and an INTERRUPTED-with-handle
+   attempt still yields ResumeAttempt; drain-agents -> none of the three;
+   run -> all. Legacy empty flag file behaves as drain-handoffs. UI/CLI/
+   ntfy verb each set the mode file + event (one test per surface).
+8. last-activity: seeded attempt log with known mtime renders the expected
+   age string in both tables.
 
 ## Rules
 
