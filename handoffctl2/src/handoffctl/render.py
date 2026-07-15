@@ -90,11 +90,11 @@ COLORS = {
 
 CSS = f"""
 <style>
-body {{ font-family: sans-serif; margin: 20px; }}
+body {{ font-family: sans-serif; margin: 20px; background: #14171a; color: #d6dde3; }}
 table {{ border-collapse: collapse; margin: 20px 0; }}
-th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
-th {{ background: #eee; }}
-a {{ color: #0066ff; }}
+th, td {{ border: 1px solid #333a41; padding: 8px; text-align: left; }}
+th {{ background: #1d2126; }}
+a {{ color: #6ab0ff; }}
 .state-DRAFT {{ background: #cccccc; }}
 .state-NEEDS_DECISION {{ background: #ff9900; }}
 .state-READY_TO_CARVE {{ background: #ffcc00; }}
@@ -110,12 +110,14 @@ a {{ color: #0066ff; }}
 .state-BLOCKED {{ background: #ff0000; }}
 .state-SUPERSEDED {{ background: #999999; }}
 .state-CANCELLED {{ background: #666666; }}
-nav {{ background: #f5f5f5; padding: 10px; margin: -20px -20px 20px -20px; }}
+nav {{ background: #1b1f24; padding: 10px; margin: -20px -20px 20px -20px; }}
 nav a {{ margin: 0 10px; }}
-#pause-banner {{ background: #ffcccc; border: 2px solid #ff0000; padding: 10px; margin: 10px 0; }}
-.lane {{ margin: 20px 0; padding: 10px; border: 1px solid #ccc; }}
-.bar {{ display: inline-block; margin: 0 2px; padding: 2px; background: #0099ff; color: white; }}
-#log-excerpt {{ background: #f9f9f9; padding: 10px; border: 1px solid #ccc; overflow-x: auto; }}
+#pause-banner {{ background: #3a1214; border: 2px solid #c0392b; padding: 10px; margin: 10px 0; }}
+.lane {{ margin: 20px 0; padding: 10px; border: 1px solid #333a41; }}
+.bar {{ display: inline-block; margin: 0 2px; padding: 2px; background: #2f6fb3; color: #eaf2fa; }}
+#log-excerpt {{ background: #0e1114; padding: 10px; border: 1px solid #333a41; overflow-x: auto; color: #b8c4cc; }}
+[class^="state-"], [class*=" state-"] {{ color: #101214; }}
+pre {{ color: #b8c4cc; }}
 </style>
 """
 

@@ -72,6 +72,11 @@ class NotifyConfig:
     # Env var holding the ntfy access token (deny-all servers need it).
     # The TOKEN VALUE never appears in config files — only the var name.
     token_env: str = "NTFY_TOKEN"
+    # Optional inbound command topic (operator -> daemon; e.g. 'handoffctl-cmd').
+    # Read with a SEPARATE read-only identity: the publisher token above is
+    # write-only and must never be able to read commands.
+    cmd_topic: str | None = None
+    cmd_token_env: str = "NTFY_CMD_TOKEN"
     webhook_url: str | None = None
     push_classes: list[str] = field(default_factory=lambda: [
         "DECISION_OPENED", "TASK_BLOCKED", "PROVIDER_STATE_CHANGED",

@@ -48,3 +48,4 @@ ntfy_url = "https://ntfy.gstammtisch.dchive.de"
 ntfy_topic = "handoffctl-groop"
 # token: NTFY_TOKEN env on the daemon process (deny-all server) — value in
 # handoffctl2/ntfy/.secrets/handoffctl-token, never in this file.
+cmd_topic = "handoffctl-cmd"
