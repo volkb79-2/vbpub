@@ -64,11 +64,14 @@ INTERFACE CONTRACT (frozen):
 
 from __future__ import annotations
 
-from datetime import datetime
+import json
+import re
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import RouteDef
-from .types import Usage
+from .types import Basis, Usage
 
 
 class AdapterError(Exception):
@@ -76,33 +79,244 @@ class AdapterError(Exception):
 
 
 def render_argv(template: list[str], mapping: dict[str, str]) -> list[str]:
-    raise NotImplementedError
+    """Substitute placeholders in list elements; missing keys raise AdapterError."""
+    result = []
+    for elem in template:
+        try:
+            result.append(elem.format_map(mapping))
+        except KeyError as e:
+            raise AdapterError(f"missing placeholder {e}")
+    return result
 
 
 def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
                    branch: str, task_id: str, gate_hint: str,
                    receipt_path: str) -> tuple[list[str], str]:
     """Returns (argv, prompt). See module contract for per-CLI shapes."""
-    raise NotImplementedError
+    # Construct the prompt (short, names handoff, worktree, branch, gate, receipt)
+    prompt = (
+        f"Handoff: {handoff_path}\n"
+        f"Worktree: {worktree}\n"
+        f"Branch: {branch}\n"
+        f"Gate: {gate_hint}\n"
+        f"Receipt: {receipt_path}"
+    )
+
+    # Append incremental-write hint if present
+    if "incremental-write" in route.prompt_hints:
+        prompt += "\nFor large writes, batch in ~80-line chunks."
+
+    # Check prompt length
+    argv_max = route.argv_max or 1500
+    if len(prompt) > argv_max:
+        raise AdapterError(
+            f"rendered prompt exceeds argv_max ({len(prompt)} > {argv_max})"
+        )
+
+    # Mapping for placeholder substitution in dispatch_extra
+    mapping = {
+        "session": "",
+        "worktree": worktree,
+        "prompt": prompt,
+        "task_id": task_id,
+        "handoff": handoff_path,
+        "model": route.model,
+    }
+
+    # Build CLI-specific argv
+    if route.cli == "claude":
+        argv = [route.cli, "-p", prompt, "--output-format", "json",
+                "--model", route.model]
+        if route.effort:
+            argv.extend(["--effort", route.effort])
+        argv.extend(render_argv(route.dispatch_extra, mapping))
+    elif route.cli == "codex":
+        sandbox = route.sandbox or "workspace-write"
+        argv = [route.cli, "exec", "--sandbox", sandbox,
+                "--cd", worktree, prompt, "-m", route.model]
+    elif route.cli == "opencode":
+        argv = [route.cli, "run", "--model", route.model, "--dir", worktree]
+        if route.variant:
+            argv.extend(["--variant", route.variant])
+        argv.extend(render_argv(route.dispatch_extra, mapping))
+        argv.append(prompt)
+    elif route.cli == "reasonix":
+        argv = [route.cli, "run", "-dir", worktree, prompt]
+    elif route.cli == "fake":
+        argv = [route.cli]
+        argv.extend(render_argv(route.dispatch_extra, mapping))
+        argv.append(prompt)
+    else:
+        raise AdapterError(f"unknown cli: {route.cli}")
+
+    return (argv, prompt)
 
 
 def build_resume(route: RouteDef, *, session: str | None, worktree: str,
                  prompt: str) -> list[str]:
-    raise NotImplementedError
+    """Build resume command from template."""
+    if not route.resume:
+        raise AdapterError("empty resume template")
+
+    # Check if session is required but missing
+    template_str = "".join(route.resume)
+    if "{session}" in template_str and session is None:
+        raise AdapterError("session required but not provided")
+
+    # Render the template
+    mapping = {"session": session or "", "worktree": worktree, "prompt": prompt}
+    return render_argv(route.resume, mapping)
 
 
 def probe(route: RouteDef) -> tuple[bool, str]:
-    raise NotImplementedError
+    """Test route liveness via probe."""
+    if route.probe is None:
+        return (True, "no-probe")
+
+    # Handle named builtins
+    if route.probe == "one-token-ping" or route.probe == "session-limit-check":
+        probe_argv = [route.cli, "--version"]
+    else:
+        probe_argv = route.probe
+
+    try:
+        result = subprocess.run(probe_argv, capture_output=True, text=True,
+                              timeout=60)
+        if result.returncode == 0:
+            return (True, "ok")
+        else:
+            return (False, f"exit code {result.returncode}")
+    except subprocess.TimeoutExpired:
+        return (False, "timeout after 60s")
+    except FileNotFoundError:
+        return (False, f"command not found: {probe_argv[0]}")
+    except Exception as e:
+        return (False, str(e))
 
 
 def capture_session(route: RouteDef, *, attempt_dir: Path, worktree: str,
                     launched_at: datetime) -> str | None:
-    raise NotImplementedError
+    """Capture session ID from latest session file."""
+    if route.session_capture == "newest-jsonl":
+        # Build the slug: replace '/' with '-', keep leading '-'
+        slug = worktree.replace("/", "-")
+        if not slug.startswith("-"):
+            slug = "-" + slug
+
+        projects_dir = Path.home() / ".claude" / "projects" / slug.lstrip("-")
+        if not projects_dir.exists():
+            return None
+
+        # Find newest .jsonl modified after launched_at
+        jsonl_files = sorted(
+            projects_dir.glob("*.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True
+        )
+
+        for jf in jsonl_files:
+            mtime = datetime.fromtimestamp(jf.stat().st_mtime, tz=timezone.utc)
+            if mtime > launched_at:
+                return jf.stem
+
+        return None
+
+    elif route.session_discover:
+        # Run session discovery command
+        try:
+            result = subprocess.run(route.session_discover, capture_output=True,
+                                  text=True, timeout=30)
+            if result.returncode != 0:
+                return None
+
+            sessions = json.loads(result.stdout)
+            if not isinstance(sessions, list):
+                return None
+
+            for session in sessions:
+                if session.get("dir") == worktree or session.get("title") == worktree:
+                    return session.get("id")
+
+            return None
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
+            return None
+
+    return None
 
 
 def extract_usage(route: RouteDef, attempt_dir: Path, log_text: str) -> Usage:
-    raise NotImplementedError
+    """Extract usage from logs based on usage_source."""
+    if route.usage_source == "output-format-json":
+        # Find LAST '{'-starting line (trimmed) that parses as JSON
+        lines = log_text.split("\n")
+        for line in reversed(lines):
+            stripped = line.strip()
+            if stripped.startswith("{"):
+                try:
+                    data = json.loads(stripped)
+                    if "usage" in data or "total_cost_usd" in data:
+                        usage_obj = data.get("usage", {})
+                        return Usage(
+                            basis=Basis.ACTUAL,
+                            tokens_in=usage_obj.get("input_tokens"),
+                            tokens_out=usage_obj.get("output_tokens"),
+                            cached_in=usage_obj.get("cache_read_input_tokens"),
+                            cost=data.get("total_cost_usd"),
+                            currency="USD"
+                        )
+                except (json.JSONDecodeError, ValueError):
+                    continue
+        return Usage(basis=Basis.UNKNOWN)
+
+    elif route.usage_source == "exec-output-footer":
+        # Regex: tokens used
+        match = re.search(r"tokens\s+used[:\s]+([0-9,]+)", log_text,
+                         re.IGNORECASE)
+        if match:
+            tokens = int(match.group(1).replace(",", ""))
+            return Usage(basis=Basis.ESTIMATED, tokens_out=tokens)
+        return Usage(basis=Basis.UNKNOWN)
+
+    elif route.usage_source == "session-json" or route.usage_source == "run-log-deepseek-usage":
+        # Regex for input and output tokens
+        tokens_in_match = re.search(
+            r'"(?:prompt|input)_tokens"\s*:\s*(\d+)',
+            log_text
+        )
+        tokens_out_match = re.search(
+            r'"(?:completion|output)_tokens"\s*:\s*(\d+)',
+            log_text
+        )
+
+        if tokens_in_match and tokens_out_match:
+            return Usage(
+                basis=Basis.ACTUAL,
+                tokens_in=int(tokens_in_match.group(1)),
+                tokens_out=int(tokens_out_match.group(1))
+            )
+        return Usage(basis=Basis.UNKNOWN)
+
+    return Usage(basis=Basis.UNKNOWN)
 
 
 def classify_log_tail(text: str) -> str | None:
-    raise NotImplementedError
+    """Classify last 200 lines for blocked/limit indicators."""
+    lines = text.split("\n")
+    # Take at most last 200 lines
+    tail = lines[-200:] if len(lines) > 200 else lines
+
+    has_blocked = False
+    has_limit = False
+
+    for line in tail:
+        if line.startswith("BLOCKED:"):
+            has_blocked = True
+        if re.search(r"(?i)(session limit|usage limit|rate limit exceeded|quota|plan limit)", line):
+            has_limit = True
+
+    if has_blocked:
+        return "blocked"
+    if has_limit:
+        return "limit"
+
+    return None

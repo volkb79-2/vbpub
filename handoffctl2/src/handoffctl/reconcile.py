@@ -64,7 +64,10 @@ from pathlib import Path
 from typing import Any
 
 from .config import ProjectConfig, RouteDef, Routes
-from .types import Frontmatter, TaskState, TaskStateFile
+from .types import (
+    Frontmatter, TaskState, TaskStateFile, AttemptState,
+    ReceiptResult, Role, TERMINAL_ATTEMPT_STATES
+)
 
 
 # --- actions (daemon executes; tests assert on these) ----------------------
@@ -172,7 +175,192 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     Output order: task lifecycle actions (sorted by task id), then attempt
     actions, then waves, then SpecAttention — so tests can assert exactly.
     """
-    raise NotImplementedError
+    # === Task lifecycle actions (sorted by task_id) ===
+    lifecycle_by_id: dict[str, list[Action]] = {}
+
+    # 1. NEW HANDOFFS: frontmatter id absent from states -> CreateTask
+    for fm_id, (fm, handoff_path) in inp.frontmatters.items():
+        if fm_id not in inp.states:
+            lifecycle_by_id.setdefault(fm_id, []).append(
+                CreateTask(task_id=fm_id, fm=fm, handoff_path=handoff_path)
+            )
+
+    # 2. Existing tasks: process state transitions
+    for fm_id, (fm, handoff_path) in inp.frontmatters.items():
+        if fm_id not in inp.states:
+            continue
+
+        tsf = inp.states[fm_id]
+        task_actions: list[Action] = lifecycle_by_id.setdefault(fm_id, [])
+
+        # CARVED -> QUEUED transition: check lint_clean
+        if tsf.state == TaskState.CARVED and inp.lint_clean.get(fm_id, False):
+            task_actions.append(Transition(task_id=fm_id, to=TaskState.QUEUED, notes=None))
+
+        # Decision hold logic
+        d_deps = fm.decision_deps()
+        open_d_deps = [d for d in d_deps if d in inp.decisions_open]
+
+        if tsf.state == TaskState.QUEUED and open_d_deps:
+            # Transition to NEEDS_DECISION
+            notes = ", ".join(open_d_deps)
+            task_actions.append(Transition(task_id=fm_id, to=TaskState.NEEDS_DECISION, notes=notes))
+        elif tsf.state == TaskState.NEEDS_DECISION and not open_d_deps:
+            # Transition back to QUEUED
+            task_actions.append(Transition(task_id=fm_id, to=TaskState.QUEUED, notes=None))
+
+    # 3. Dispatch eligible QUEUED tasks (with capacity limit)
+    # Count current active tasks
+    active_count = sum(
+        1 for tsf in inp.states.values()
+        if tsf.state in (TaskState.ACTIVE, TaskState.AWAITING_REVIEW)
+    )
+    dispatch_capacity = inp.cfg.policy.max_active_tasks - active_count
+
+    # Find all eligible QUEUED tasks, sorted by task_id
+    queued_tasks = []
+    for fm_id, (fm, handoff_path) in inp.frontmatters.items():
+        if fm_id not in inp.states:
+            continue
+        tsf = inp.states[fm_id]
+        if tsf.state == TaskState.QUEUED:
+            queued_tasks.append((fm_id, fm, tsf))
+    queued_tasks.sort(key=lambda x: x[0])  # Sort by task_id
+
+    # Dispatch up to capacity
+    dispatched = 0
+    for fm_id, fm, tsf in queued_tasks:
+        if dispatched >= dispatch_capacity:
+            break
+
+        eligible, reason = dispatch_eligible(fm, tsf, inp)
+        if eligible:
+            # Find first healthy route
+            routes_for_tier = inp.routes.for_tier(fm.tier)
+            for route_def in routes_for_tier:
+                if inp.provider_ok.get(route_def.route_id, False):
+                    lifecycle_by_id[fm_id].append(
+                        DispatchImplementer(task_id=fm_id, route_id=route_def.route_id)
+                    )
+                    dispatched += 1
+                    break
+
+    # === Attempt actions (no specific sort within category) ===
+    attempt_actions: list[Action] = []
+
+    for task_id, tsf in inp.states.items():
+        for attempt in tsf.attempts:
+            # Receipt handling: RUNNING with receipt -> EmitAttemptExit
+            if attempt.state == AttemptState.RUNNING and inp.receipts.get(attempt.attempt_id) is not None:
+                attempt_actions.append(EmitAttemptExit(task_id=task_id, attempt_id=attempt.attempt_id))
+
+            # No receipt, pid dead -> MarkInterrupted
+            elif attempt.state == AttemptState.RUNNING and not inp.pid_alive.get(attempt.attempt_id, False):
+                if inp.receipts.get(attempt.attempt_id) is None:
+                    attempt_actions.append(MarkInterrupted(task_id=task_id, attempt_id=attempt.attempt_id))
+
+            # Stall handling: no receipt, pid alive, log quiet > threshold
+            elif attempt.state == AttemptState.RUNNING and inp.pid_alive.get(attempt.attempt_id, False):
+                if inp.receipts.get(attempt.attempt_id) is None:
+                    log_quiet = inp.log_quiet_seconds.get(attempt.attempt_id)
+                    if log_quiet is not None and log_quiet > inp.cfg.policy.stall_log_quiet_seconds:
+                        if inp.stall_confirmed.get(attempt.attempt_id, False):
+                            attempt_actions.append(InterruptAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
+                        else:
+                            attempt_actions.append(StallCheck(task_id=task_id, attempt_id=attempt.attempt_id))
+
+            # INTERRUPTED attempt handling
+            elif attempt.state == AttemptState.INTERRUPTED:
+                # Attempts budget left?
+                attempts_count = sum(1 for a in tsf.attempts if a.state in TERMINAL_ATTEMPT_STATES
+                                    and a.receipt and a.receipt.result != ReceiptResult.LIMIT)
+                if attempts_count < inp.cfg.policy.max_attempts_per_task:
+                    if attempt.session_handle:
+                        attempt_actions.append(ResumeAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
+                    else:
+                        # Fresh dispatch (handled in lifecycle)
+                        pass
+
+    # === Waves ===
+    wave_actions: list[Action] = []
+    awaiting_review = [
+        (task_id, tsf) for task_id, tsf in inp.states.items()
+        if tsf.state == TaskState.AWAITING_REVIEW and tsf.wave_id is None
+    ]
+    awaiting_review.sort(key=lambda x: x[0])  # Sort by task_id
+
+    if awaiting_review:
+        # Batch into waves
+        wave_max = inp.cfg.policy.wave_max_diffs
+        task_ids_to_batch = [tid for tid, _ in awaiting_review]
+        now_timestamp = inp.now.timestamp()
+
+        # Check if we should open a wave
+        should_open = len(task_ids_to_batch) >= wave_max
+        if not should_open and task_ids_to_batch:
+            oldest_task_id = task_ids_to_batch[0]
+            oldest_since = inp.states[oldest_task_id].since.timestamp()
+            age = now_timestamp - oldest_since
+            if age > inp.wave_open_after_seconds:
+                should_open = True
+
+        if should_open:
+            batched = task_ids_to_batch[:wave_max]
+            wave_actions.append(OpenWave(task_ids=batched))
+
+    # Check for LaunchReview for already-open waves
+    for task_id, tsf in inp.states.items():
+        if tsf.state == TaskState.AWAITING_REVIEW and tsf.wave_id is not None:
+            # Check if there's a FRONTIER_REVIEW attempt RUNNING
+            has_running_review = any(
+                a.state == AttemptState.RUNNING and a.role == Role.FRONTIER_REVIEW
+                for a in tsf.attempts
+            )
+            if not has_running_review:
+                wave_actions.append(LaunchReview(wave_id=tsf.wave_id, task_ids=[task_id]))
+
+    # === Spec attention ===
+    spec_actions: list[Action] = []
+
+    # Ratchet check
+    if not inp.ratchet_already_open and inp.merge_history:
+        # Get last N merges where N = max_consecutive_zero_progress_merges
+        n = inp.cfg.policy.max_consecutive_zero_progress_merges
+        recent_merges = inp.merge_history[:n]
+        if len(recent_merges) == n:
+            all_zero_review = all(
+                units == 0 and source == 'review'
+                for _, units, source in recent_merges
+            )
+            if all_zero_review:
+                spec_actions.append(SpecAttention(reason='ratchet', detail=None))
+
+    # Spec health: carve outcomes
+    for outcome in inp.carve_outcomes:
+        outcome_type = outcome.get('outcome')
+        if outcome_type == 'SPEC_GAP':
+            spec_actions.append(SpecAttention(reason='carve-outcome', detail=None))
+            break
+
+    # Spec health: review rejections
+    for area, count in inp.review_rejections_by_area.items():
+        if count >= 2:
+            spec_actions.append(SpecAttention(reason='rejections', detail=None))
+            break
+
+    # Spec health: blocked underspecified
+    if inp.blocked_underspecified_count >= 3:
+        spec_actions.append(SpecAttention(reason='blocked-underspecified', detail=None))
+
+    # === Combine results in order ===
+    actions = []
+    for task_id in sorted(lifecycle_by_id.keys()):
+        actions.extend(lifecycle_by_id[task_id])
+    actions.extend(attempt_actions)
+    actions.extend(wave_actions)
+    actions.extend(spec_actions)
+
+    return actions
 
 
 def dispatch_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) -> tuple[bool, str]:
@@ -180,4 +368,59 @@ def dispatch_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) 
     'paused', 'deps-unmerged:<id>', 'decision-hold:<D-id>', 'wip-cap',
     'attempts-exhausted', 'budget-exhausted', 'lease-unavailable:<name>',
     'no-healthy-route'. First failing check wins (checked in that order)."""
-    raise NotImplementedError
+
+    # 1. paused check (task or project)
+    if tsf.paused or inp.project_paused:
+        return (False, 'paused')
+
+    # 2. deps check
+    task_deps = fm.task_deps()
+    for dep_id in task_deps:
+        dep_tsf = inp.states.get(dep_id)
+        if dep_tsf is None:
+            return (False, f'deps-unmerged:{dep_id}')
+        if dep_tsf.state != TaskState.COMPLETED:
+            # Check if branch is merged
+            if dep_id not in inp.merged_branches and dep_tsf.state != TaskState.COMPLETED:
+                return (False, f'deps-unmerged:{dep_id}')
+
+    # 3. decision-hold check
+    d_deps = fm.decision_deps()
+    for d_id in d_deps:
+        if d_id in inp.decisions_open:
+            return (False, f'decision-hold:{d_id}')
+
+    # 4. wip-cap check
+    active_count = sum(
+        1 for tid, st in inp.states.items()
+        if st.state in (TaskState.ACTIVE, TaskState.AWAITING_REVIEW)
+    )
+    if active_count >= inp.cfg.policy.max_active_tasks:
+        return (False, 'wip-cap')
+
+    # 5. attempts-exhausted check (exclude limit attempts)
+    attempts_count = sum(
+        1 for a in tsf.attempts
+        if a.receipt and a.receipt.result != ReceiptResult.LIMIT
+    )
+    if attempts_count >= inp.cfg.policy.max_attempts_per_task:
+        return (False, 'attempts-exhausted')
+
+    # 6. budget-exhausted check
+    if inp.budget_remaining is not None and inp.budget_remaining <= 0.0:
+        return (False, 'budget-exhausted')
+
+    # 7. lease-unavailable check
+    for mutex_name in fm.effective_mutexes():
+        if mutex_name in inp.cfg.mutexes:
+            lease_name = inp.cfg.mutexes[mutex_name].lease_name(inp.cfg.project_id)
+            if not inp.leases_free.get(lease_name, True):
+                return (False, f'lease-unavailable:{lease_name}')
+
+    # 8. no-healthy-route check
+    routes_for_tier = inp.routes.for_tier(fm.tier)
+    has_healthy = any(inp.provider_ok.get(r.route_id, False) for r in routes_for_tier)
+    if not has_healthy:
+        return (False, 'no-healthy-route')
+
+    return (True, '')
