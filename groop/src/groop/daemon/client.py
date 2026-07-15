@@ -122,6 +122,36 @@ class DaemonHello:
 
 
 @dataclass(frozen=True)
+class DaemonVersionedHealthResult:
+    """Typed result for the versioned ``health`` envelope op (P66).
+
+    Wraps the P47 :class:`HealthSnapshot`, decoded and validated through the
+    exact same per-field parsing the legacy :meth:`DaemonClient.request_health`
+    path uses (:meth:`DaemonClient._parse_health_payload`). Deliberately a
+    distinct type from ``HealthSnapshot`` so it never collides with the
+    legacy result.
+    """
+
+    snapshot: HealthSnapshot
+
+    @property
+    def overall_ok(self) -> bool:
+        """True iff no component reports DEGRADED or FAILED.
+
+        Mirrors ``ComponentHealthRegistry``'s own failed-attempt
+        classification (see ``ComponentHealthRegistry.set_state``): DEGRADED
+        and FAILED are the two states the registry itself treats as a failed
+        attempt. DISABLED/STARTING/HEALTHY/STOPPING/STOPPED are all "not
+        currently broken" and never flip this to False. Computed, not
+        stored, so it can never drift from ``snapshot``.
+        """
+        return all(
+            component.state not in (ComponentState.DEGRADED, ComponentState.FAILED)
+            for component in self.snapshot.snapshots
+        )
+
+
+@dataclass(frozen=True)
 class DaemonClient:
     socket_path: Path
     timeout_s: float | None = 5.0
@@ -684,6 +714,31 @@ class DaemonClient:
             ) from exc
         metrics_meta = self._validate_metrics_meta(result.get("metrics_meta"))
         return DaemonEntityResult(seq=seq, entity=entity, metrics_meta=metrics_meta)
+
+    def request_health_versioned(self) -> DaemonVersionedHealthResult:
+        """Call the versioned ``health`` envelope op (P66).
+
+        Reuses ``_request_envelope("health")`` -- the same AF_UNIX/envelope
+        transport as hello/current/history/entity; this does not open a
+        second transport. The result dict is decoded through the same
+        validated per-field parsing as the legacy ``request_health`` path
+        (``_parse_health_payload``): unknown component names/order, missing
+        or invalid fields, and an incompatible ``schema_version``/
+        ``capability`` all raise ``DaemonProtocolError``, exactly as they do
+        for the legacy protocol. The legacy ``request_health()`` method and
+        its ``_read_health``/``_parse_health_payload`` helpers are unchanged.
+
+        Raises:
+            DaemonResponseError: If the daemon returns an ok:false envelope
+                (e.g. health not available), with ``.code`` set to the P52
+                ``ErrorCode`` value.
+            DaemonProtocolError: If the response is malformed or the health
+                payload is incompatible.
+            DaemonConnectError: On connection failure.
+        """
+        result = self._request_envelope("health")
+        snapshot = self._parse_health_payload(result)
+        return DaemonVersionedHealthResult(snapshot=snapshot)
 
     # -- validation helpers (shared with versioned methods) --
 
