@@ -22,15 +22,20 @@ INTERFACE CONTRACT (frozen). Semantics:
    skipping provider_ok[route_id] is False) -> DispatchImplementer with the
    first healthy route. Emit at most (max_active - active) dispatches per
    pass, in sorted task-id order (determinism).
-4. RUNNING ATTEMPTS:
-   - receipt file present (receipts[attempt_id] not None) -> EmitAttemptExit
+4. ATTEMPT RECEIPTS (amended 2026-07-15 after the E2E smoke found the
+   original RUNNING-only wording left tasks stuck ACTIVE when the wrapper
+   emitted its own ATTEMPT_EXITED): a receipt (receipts[attempt_id] not
+   None) triggers EmitAttemptExit when the attempt is RUNNING/PREFLIGHTING/
+   STALLED, or when it is already EXITED but the task is still ACTIVE (only
+   the task transition remains; the daemon's execution is idempotent) ->
      (daemon appends ATTEMPT_EXITED with the receipt/usage merged in and
      transitions the task: receipt.result done -> AWAITING_REVIEW; blocked ->
      BLOCKED (blocker type contract, unblock 'triage BLOCKED reason');
      limit -> QUEUED (attempt does not count toward max_attempts; also
      ProviderPause(route_id)); error -> QUEUED if attempts remain else
      BLOCKED (environment)).
-   - no receipt, pid dead -> MarkInterrupted (daemon emits ATTEMPT_INTERRUPTED)
+   - no receipt, pid dead, attempt RUNNING or PREFLIGHTING ->
+     MarkInterrupted (daemon emits ATTEMPT_INTERRUPTED)
      then next pass ResumeAttempt (INTERRUPTED attempts with attempts-budget
      left and a resume handle -> ResumeAttempt; without handle -> fresh
      DispatchImplementer counting a new attempt).
@@ -251,11 +256,19 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     for task_id, tsf in inp.states.items():
         for attempt in tsf.attempts:
             # Receipt handling: RUNNING with receipt -> EmitAttemptExit
-            if attempt.state == AttemptState.RUNNING and inp.receipts.get(attempt.attempt_id) is not None:
+            if (inp.receipts.get(attempt.attempt_id) is not None
+                    and (attempt.state in (AttemptState.RUNNING, AttemptState.PREFLIGHTING,
+                                           AttemptState.STALLED)
+                         or (attempt.state == AttemptState.EXITED
+                             and tsf.state == TaskState.ACTIVE))):
+                # Receipt present and either the attempt record hasn't caught
+                # up (wrapper died pre-event, or an event race) or the wrapper
+                # emitted EXITED itself and only the TASK transition remains.
                 attempt_actions.append(EmitAttemptExit(task_id=task_id, attempt_id=attempt.attempt_id))
 
             # No receipt, pid dead -> MarkInterrupted
-            elif attempt.state == AttemptState.RUNNING and not inp.pid_alive.get(attempt.attempt_id, False):
+            elif (attempt.state in (AttemptState.RUNNING, AttemptState.PREFLIGHTING)
+                  and not inp.pid_alive.get(attempt.attempt_id, False)):
                 if inp.receipts.get(attempt.attempt_id) is None:
                     attempt_actions.append(MarkInterrupted(task_id=task_id, attempt_id=attempt.attempt_id))
 

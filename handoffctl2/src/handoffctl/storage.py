@@ -38,11 +38,25 @@ from typing import Any, Iterator
 
 from . import paths
 from .types import (
-    ActorKind, Actor, Attempt, Event, EventType, GateResult, Blocker,
-    TaskState, TaskStateFile, check_task_transition, iso, parse_iso, utc_now,
+    ActorKind, Actor, Attempt, AttemptState, Event, EventType, GateResult,
+    Blocker, TERMINAL_ATTEMPT_STATES, TaskState, TaskStateFile,
+    check_task_transition, iso, parse_iso, utc_now,
 )
 
 SCHEMA_VERSION = 1
+
+_EARLY_ATTEMPT_STATES = frozenset({AttemptState.CREATED, AttemptState.PREFLIGHTING})
+
+
+def _attempt_regression(current: AttemptState, incoming: AttemptState) -> bool:
+    """True when applying `incoming` over `current` would move an attempt
+    backwards in its lifecycle: out of a terminal state, or from a
+    post-launch state (RUNNING/STALLED/INTERRUPTED) back to CREATED/
+    PREFLIGHTING. Legitimate backward edges (STALLED->RUNNING,
+    INTERRUPTED->RUNNING) are NOT regressions."""
+    if current in TERMINAL_ATTEMPT_STATES:
+        return incoming is not current
+    return current not in _EARLY_ATTEMPT_STATES and incoming in _EARLY_ATTEMPT_STATES
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +222,11 @@ def apply_event(states: dict[str, TaskStateFile], ev: Event) -> list[str]:
         existing = tsf.attempt_by_id(att.attempt_id)
         if existing is None:
             tsf.attempts.append(att)
+        elif _attempt_regression(existing.state, att.state):
+            # Monotonic guard: a late-arriving event (e.g. the daemon's
+            # PREFLIGHTED racing the wrapper's STARTED/EXITED) must never
+            # regress an attempt that already progressed. Ignore it.
+            pass
         else:
             tsf.attempts[tsf.attempts.index(existing)] = att
         affected.append(tsf.task_id)
