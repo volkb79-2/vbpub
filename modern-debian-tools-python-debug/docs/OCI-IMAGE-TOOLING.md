@@ -46,6 +46,38 @@ adopted is explicit digest evidence:
 - use standard OCI labels for source, revision, version, documentation and
   licenses in MDT and dstdns images.
 
+### SBOM, provenance and in-image identity
+
+The OCI graph supplies routing and integrity, not a curated software inventory.
+MDT release targets therefore also request BuildKit
+`provenance,mode=max` and an SPDX SBOM attestation. Provenance records build
+inputs and execution metadata; the SBOM records packages found in the final
+filesystem. They complement rather than replace the Markdown manifest.
+
+```bash
+docker buildx imagetools inspect IMAGE:TAG
+docker buildx imagetools inspect IMAGE:TAG --format '{{ json .SBOM }}' | jq .
+docker buildx imagetools inspect IMAGE:TAG --format '{{ json .Provenance }}' | jq .
+```
+
+The image exposes its build-declared tag and timestamps locally through vendor
+extensions without changing Debian's standard identity fields:
+
+```bash
+. /etc/os-release
+printf '%s\n' "$MDT_IMAGE_REF" "$MDT_IMAGE_BUILT_AT" \
+  "$MDT_IMAGE_CREATED" "$MDT_IMAGE_REVISION"
+```
+
+`MDT_IMAGE_BUILT_AT` is the wall-clock UTC build time. `MDT_IMAGE_CREATED` is
+the reproducible, commit-derived OCI creation timestamp. `MDT_IMAGE_REF` is the
+configured registry tag, not an immutable digest; resolve and record the
+registry digest when exact artifact identity is required.
+
+Any operation that changes the image layers, including repack, changes the
+subject digest. Provenance, SBOMs and signatures must be regenerated for the
+final published digest rather than copied from the source image.
+
 dstdns app images do not need copies of MDT's large Markdown inventory unless a
 consumer actually needs an in-image bill of materials. Their minimum useful
 contract is OCI labels, immutable-digest release evidence, an SBOM/referrer and
@@ -62,7 +94,7 @@ The tools overlap, but they are not interchangeable:
 | Skopeo | Daemonless copy/sync across registry, daemon and OCI transports; useful for mirroring and manual diagnostics | Keep as an operator tool; not a canonical MDT release dependency |
 | crane | Small, script-friendly manifest, digest, tag and copy operations | Included as the everyday registry inspection/scripting client |
 | regctl | Deep manifest/blob/referrer inspection and controlled image mutation | Included as the advanced OCI debugging client |
-| ORAS | Push/pull/attach/discover non-image OCI artifacts and referrers | Defer until CMRU publishes SBOMs, attestations or bundles as first-class OCI artifacts |
+| ORAS | Push/pull/attach/discover non-image OCI artifacts and referrers | Defer until CMRU must publish artifacts beyond BuildKit's native SBOM/provenance path, such as signed bundles |
 | cosign | Sign and verify final image/artifact digests | Supply-chain capability, complementary to the clients above |
 
 Crane and regctl enter through MDT's existing staged-artifact mechanism, not
@@ -216,6 +248,9 @@ corpus makes that ownership cheaper and safer than maintaining the dependency.
 - [OCI image manifest specification](https://github.com/opencontainers/image-spec/blob/main/manifest.md)
 - [OCI image layout specification](https://github.com/opencontainers/image-spec/blob/main/image-layout.md)
 - [Docker OverlayFS storage driver](https://docs.docker.com/engine/storage/drivers/overlayfs-driver/)
+- [Docker Build attestations](https://docs.docker.com/build/metadata/attestations/)
+- [Docker Build SBOM attestations](https://docs.docker.com/build/metadata/attestations/sbom/)
+- [Docker Build exporter compression](https://docs.docker.com/build/exporters/)
 - [Docker container CPU constraints](https://docs.docker.com/engine/containers/resource_constraints/)
 - [crane documentation](https://github.com/google/go-containerregistry/blob/main/cmd/crane/README.md)
 - [regctl documentation](https://regclient.org/cli/regctl/)

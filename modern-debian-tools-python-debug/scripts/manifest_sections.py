@@ -422,7 +422,10 @@ def render_installed_manifest(
     python_packages: Sequence[str],
     system_packages: Sequence[str],
     artifact_map: Mapping[str, dict] | None = None,
+    built_at: str = "",
+    variant: str = "",
 ) -> str:
+    variant_part = f"-{variant.strip()}" if variant.strip() else ""
     lines = [
         "# Image Manifest",
         "",
@@ -430,8 +433,11 @@ def render_installed_manifest(
         f"- Debian: {debian_version}",
         f"- Python: {python_version}",
         f"- Image version: {image_version}",
-        f"- Image tag: {debian_version}-py{python_version}-{image_version}",
+        f"- Image tag: {debian_version}-py{python_version}{variant_part}-{image_version}",
     ]
+
+    if built_at.strip():
+        lines.append(f"- Built at (UTC): {built_at.strip()}")
 
     release_value = devcontainers_release.strip()
     version_value = devcontainers_version.strip()
@@ -590,7 +596,7 @@ def render_unified_manifest(
     When ``source_manifest_content`` is provided, sections are passed through
     from it. Otherwise, sections are generated from the CLI arguments.
     ``args_extra`` carries optional metadata (description, target, variant,
-    package_name, username, repo, install_php, php_extensions_file) for
+    package_name, username, repo, built_at, install_php, php_extensions_file) for
     standalone use without a source manifest.
 
     Structure:
@@ -623,6 +629,8 @@ def render_unified_manifest(
             "## Release", "",
             f"- Build date: `{image_version}`",
         ]
+        if args_extra and args_extra.get("built_at"):
+            release_lines.append(f"- Built at (UTC): `{args_extra['built_at']}`")
         if args_extra and args_extra.get("target"):
             release_lines.append(f"- Target: `{args_extra['target']}`")
         release_lines.extend([
@@ -882,6 +890,8 @@ def _parse_args() -> argparse.Namespace:
     installed.add_argument("--python-packages-file", required=True)
     installed.add_argument("--system-packages-file", required=True)
     installed.add_argument("--artifact-metadata", default="", help="Path to artifact metadata.json for digests")
+    installed.add_argument("--built-at", default="", help="Wall-clock image build timestamp in UTC")
+    installed.add_argument("--variant", default="", help="Tag variant (for example php8.5)")
 
     unified = subparsers.add_parser("unified", help="Render unified devcontainer manifest")
     unified.add_argument("--output", required=True, help="Output markdown file path")
@@ -895,6 +905,7 @@ def _parse_args() -> argparse.Namespace:
     unified.add_argument("--python-packages-file", required=True)
     unified.add_argument("--system-packages-file", required=True)
     unified.add_argument("--artifact-metadata", default="", help="Path to artifact metadata.json for digests")
+    unified.add_argument("--built-at", default="", help="Wall-clock image build timestamp in UTC")
     # New args for standalone manifest generation (no source manifest needed).
     unified.add_argument("--description", default="", help="OCI description text (replaces Purpose section)")
     unified.add_argument("--target", default="", help="Bake target name (e.g. trixie-py314-vsc)")
@@ -925,6 +936,8 @@ def _run_installed(args: argparse.Namespace) -> int:
         python_packages=python_packages,
         system_packages=system_packages,
         artifact_map=artifact_map,
+        built_at=args.built_at,
+        variant=args.variant,
     )
 
     output_path.write_text(rendered, encoding="utf-8")
@@ -957,6 +970,8 @@ def _run_unified(args: argparse.Namespace) -> int:
         args_extra["username"] = args.username
     if args.repo:
         args_extra["repo"] = args.repo
+    if args.built_at:
+        args_extra["built_at"] = args.built_at
     args_extra["install_php"] = (args.install_php or "false").lower() == "true"
     if args.php_extensions_file:
         args_extra["php_extensions_file"] = args.php_extensions_file

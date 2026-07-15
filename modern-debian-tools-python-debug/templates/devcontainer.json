@@ -30,8 +30,9 @@
   "initializeCommand": "python3 .devcontainer/initialize_container_environment.py",
 
   // ─── 3. Container image ────────────────────────────────────────────────────────
-  // Pin a concrete tag (e.g. :trixie-py3.14-<date>) rather than :latest.
-  "image": "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:latest",
+  // Track the newest PHP development image. Use a dated tag only when a
+  // consumer needs a reproducible compatibility lane.
+  "image": "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest",
 
   // ─── 4. Container features ─────────────────────────────────────────────────────
   "features": {

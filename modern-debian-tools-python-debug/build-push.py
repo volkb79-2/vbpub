@@ -325,6 +325,15 @@ def do_build(ignore_new_releases: bool) -> None:
     os.environ["BUILD_DATE"] = build_date
     sys.stderr.write(f"[INFO] BUILD_DATE={build_date}\n")
 
+    build_timestamp = os.getenv("BUILD_TIMESTAMP") or (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    os.environ["BUILD_TIMESTAMP"] = build_timestamp
+    sys.stderr.write(f"[INFO] BUILD_TIMESTAMP={build_timestamp}\n")
+
     sys.stderr.write(
         "[INFO] Step 1/3: Resolving environment "
         "(MCR check, tool versions, CIU coordinates)...\n"
@@ -341,6 +350,7 @@ def do_build(ignore_new_releases: bool) -> None:
 
     # Include BUILD_DATE in saved state
     env_vars["BUILD_DATE"] = build_date
+    env_vars["BUILD_TIMESTAMP"] = build_timestamp
     env_vars["RELEASE_IMAGE_FLOW"] = release_image_flow
     save_build_env(env_vars)
 

@@ -6,6 +6,13 @@ CPU, memory, swap, and I/O. The release configuration is code: defaults and
 limits live in [`cmru.build.toml`](../cmru.build.toml), not in an operator's
 shell history.
 
+Current registry publication uses OCI media types and forced native zstd level
+3 compression. BuildKit preserves the normal layer topology and attaches max
+provenance plus an SPDX SBOM. These settings live in `cmru.build.toml`. See
+[Image delivery benchmarks](IMAGE-DELIVERY-BENCHMARKS.md) for cold-pull
+evidence and [OCI image tooling](OCI-IMAGE-TOOLING.md) for the distinction
+between OCI manifests, attestations and MDT's human manifest.
+
 ## Canonical release path
 
 `RELEASE_IMAGE_FLOW=push` is the configured release path. The governed BuildKit

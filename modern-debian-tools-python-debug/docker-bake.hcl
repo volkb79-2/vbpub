@@ -59,6 +59,12 @@ variable "BUILD_DATE" {
   default = "19700101"
 }
 
+// Wall-clock UTC timestamp for this concrete image build. Unlike OCI_CREATED,
+// this is not commit-derived reproducibility metadata.
+variable "BUILD_TIMESTAMP" {
+  default = "unknown"
+}
+
 // Mirror used for backports installs; callers override only when they need a different mirror.
 variable "BACKPORTS_URI" {
   default = "http://debian.anexia.at/debian"
@@ -474,6 +480,7 @@ target "base" {
   context = "."
   dockerfile = "Dockerfile"
   args = {
+    REGISTRY = "${REGISTRY}"
     BACKPORTS_URI = "${BACKPORTS_URI}"
     AWSCLI_VERSION = "${AWSCLI_VERSION}"
     B2_VERSION = "${B2_VERSION}"
@@ -511,6 +518,7 @@ target "base" {
     OCI_VERSION = "${OCI_VERSION}"
     OCI_REVISION = "${OCI_REVISION}"
     OCI_CREATED = "${OCI_CREATED}"
+    BUILD_TIMESTAMP = "${BUILD_TIMESTAMP}"
     POSTGRESQL_CLIENT_VERSION = "${POSTGRESQL_CLIENT_VERSION}"
     REDIS_TOOLS_VERSION = "${REDIS_TOOLS_VERSION}"
     RIPGREP_VERSION = "${RIPGREP_VERSION}"

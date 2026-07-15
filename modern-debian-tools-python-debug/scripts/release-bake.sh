@@ -15,6 +15,39 @@ run_low_priority() {
     fi
 }
 
+registry_bake() {
+    : "${IMAGE_COMPRESSION:?IMAGE_COMPRESSION must be configured}"
+    : "${IMAGE_COMPRESSION_LEVEL:?IMAGE_COMPRESSION_LEVEL must be configured}"
+    : "${IMAGE_FORCE_COMPRESSION:?IMAGE_FORCE_COMPRESSION must be configured}"
+    : "${IMAGE_OCI_MEDIA_TYPES:?IMAGE_OCI_MEDIA_TYPES must be configured}"
+    : "${IMAGE_PROVENANCE_MODE:?IMAGE_PROVENANCE_MODE must be configured}"
+    : "${IMAGE_SBOM:?IMAGE_SBOM must be configured}"
+    [[ "${IMAGE_SBOM}" == "true" || "${IMAGE_SBOM}" == "false" ]] || {
+        echo "[ERROR] IMAGE_SBOM must be true or false." >&2
+        return 2
+    }
+
+    local bake_json target output
+    local -a targets bake_args
+    bake_json="$(docker buildx bake -f docker-bake.hcl all --print)"
+    mapfile -t targets < <(jq -r '.group.all.targets[]?' <<<"${bake_json}")
+    [[ "${#targets[@]}" -gt 0 ]] || {
+        echo "[ERROR] Bake group 'all' contains no targets." >&2
+        return 1
+    }
+
+    output="type=registry,compression=${IMAGE_COMPRESSION},compression-level=${IMAGE_COMPRESSION_LEVEL},force-compression=${IMAGE_FORCE_COMPRESSION},oci-mediatypes=${IMAGE_OCI_MEDIA_TYPES}"
+    bake_args=(docker buildx bake -f docker-bake.hcl all)
+    for target in "${targets[@]}"; do
+        bake_args+=(--set "${target}.output=${output}")
+        bake_args+=(--set "${target}.attest=type=provenance,mode=${IMAGE_PROVENANCE_MODE}")
+        if [[ "${IMAGE_SBOM}" == "true" ]]; then
+            bake_args+=(--set "${target}.attest+=type=sbom")
+        fi
+    done
+    run_low_priority "${bake_args[@]}"
+}
+
 if [[ "${ACTION}" != "build" && "${ACTION}" != "push" ]]; then
     echo "[ERROR] Usage: $0 <build|push>" >&2
     exit 2
@@ -25,11 +58,11 @@ bash scripts/ensure-release-builder.sh
 case "${FLOW}" in
     load)
         [[ "${ACTION}" == "build" ]] && run_low_priority docker buildx bake -f docker-bake.hcl all --load
-        [[ "${ACTION}" == "push" ]] && run_low_priority docker buildx bake -f docker-bake.hcl all --push
+        [[ "${ACTION}" == "push" ]] && registry_bake
         ;;
     push)
         if [[ "${ACTION}" == "build" ]]; then
-            run_low_priority docker buildx bake -f docker-bake.hcl all --push
+            registry_bake
         else
             echo "[INFO] RELEASE_IMAGE_FLOW=push: build already published the images."
         fi

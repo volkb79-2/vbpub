@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "evidence_kind": "manually normalized controlled-session results",
+  "raw_per_run_artifacts_retained": false,
+  "normalization_note": "Durations and sampled peaks were transcribed from the controlled DinD console runs. The checked-in harness emits direct per-run JSON and TSV for future repetitions; raw files from this exploratory run were not retained.",
+  "measured_at": "2026-07-15T03:14:01Z",
+  "host": {
+    "docker_engine": "29.6.1",
+    "containerd": "2.2.5",
+    "kernel": "7.0.12",
+    "cpus": 8,
+    "memory_gib": 16,
+    "filesystem": "ext4"
+  },
+  "method": {
+    "daemon": "disposable docker:29.6.1-dind with an empty named volume",
+    "limits": {"cpus": 6, "memory_gib": 8, "memory_plus_swap_gib": 12},
+    "samples": 1,
+    "scope": "cold pull/unpack through first exec and tool probes; not full VS Code attach"
+  },
+  "images": {
+    "gzip": {
+      "ref": "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer@sha256:2f2d9aecde48cb6bd713e1811bcd919dd8bc3af4944caf2baf8290e1701207c2",
+      "config_digest": "sha256:5f8f26894379686705835dce0abf791ed1cfaa161e07acec9e3fbcd6742a0c7c",
+      "compressed_bytes": 2994071731,
+      "layers": 55,
+      "compression": "gzip"
+    },
+    "zstd3": {
+      "ref": "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:benchmark-trixie-py3.14-php8.5-20260715-2-zstd3",
+      "digest": "sha256:16a482ce9a176e4853b5625077aeafec33ee9dcbc76900672e5d5eb470fb077d",
+      "config_digest": "sha256:5f8f26894379686705835dce0abf791ed1cfaa161e07acec9e3fbcd6742a0c7c",
+      "compressed_bytes": 2816460673,
+      "layers": 55,
+      "compression": "zstd level 3, forced"
+    },
+    "repacked": {
+      "ref": "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-20260708-2",
+      "compressed_bytes": 2160392058,
+      "layers": 3,
+      "compression": "docker-repack zstd level 9, 2GB target",
+      "caveat": "historical image; not byte-identical to the 20260715-2 gzip/zstd pair"
+    },
+    "repacked100m_rejected": {
+      "source": "gzip",
+      "target_size": "100MB",
+      "compression": "zstd level 9",
+      "concurrency": 2,
+      "repack_duration_s": 306,
+      "compressed_bytes": 2260031999,
+      "layers": 25,
+      "max_layer_bytes": 175515123,
+      "peak_observed_rss_mib": 2627,
+      "observed_swap_mib": 247,
+      "status": "rejected before publication",
+      "reason": "non-directory path has descendants in the same layer: home/vscode/.local/lib/node_modules/openclaw/node_modules/@mistralai/mistralai/esm/models/operations"
+    }
+  },
+  "results": [
+    {"store": "containerd", "image": "gzip", "pull_unpack_s": 77.010609144, "create_s": 1.161785142, "start_s": 0.433598899, "first_exec_s": 0.157019953, "tool_probes_s": 0.517564828, "post_pull_s": 2.269968822, "peak_cpu_percent": 257.23, "peak_memory_mib": 562.1},
+    {"store": "containerd", "image": "zstd3", "pull_unpack_s": 57.874193030, "create_s": 1.200827682, "start_s": 0.382843823, "first_exec_s": 0.163841416, "tool_probes_s": 0.502211924, "post_pull_s": 2.249724845, "peak_cpu_percent": 420.25, "peak_memory_mib": 497.2},
+    {"store": "containerd", "image": "repacked", "pull_unpack_s": 103.030490992, "create_s": 1.081389754, "start_s": 0.336293664, "first_exec_s": 0.161006162, "tool_probes_s": 0.511702242, "post_pull_s": 2.090391822, "peak_cpu_percent": 140.59, "peak_memory_mib": 1489.9},
+    {"store": "overlay2", "image": "gzip", "pull_unpack_s": 85.815432498, "create_s": 1.888704697, "start_s": 0.341892541, "first_exec_s": 0.194203820, "tool_probes_s": 0.621665841, "post_pull_s": 3.046466899, "peak_cpu_percent": 200.73, "peak_memory_mib": 236.8},
+    {"store": "overlay2", "image": "zstd3", "pull_unpack_s": 77.664445397, "create_s": 1.056104930, "start_s": 0.386715866, "first_exec_s": 0.152571260, "tool_probes_s": 0.536272347, "post_pull_s": 2.131664403, "peak_cpu_percent": 159.22, "peak_memory_mib": 343.7},
+    {"store": "overlay2", "image": "repacked", "pull_unpack_s": 123.879354151, "create_s": 0.875500834, "start_s": 0.348702687, "first_exec_s": 0.152020864, "tool_probes_s": 0.517501617, "post_pull_s": 1.893726002, "peak_cpu_percent": 147.38, "peak_memory_mib": 714.2}
+  ]
+}

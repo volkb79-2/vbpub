@@ -634,51 +634,21 @@ you need it. See `USAGE.md` for details on switching modes.
 
 ### docker buildx/bake (BuildKit)
 
-docker buildx/bake (BuildKit) defaults to compression=gzip at the gzip library default (~level 6).
+BuildKit's generic registry exporter defaults to gzip. MDT overrides that in
+`cmru.build.toml`: release publication uses OCI media types, forced zstd level
+3 and the original layer topology. The level is intentionally modest because
+cold time-to-connect and governed export cost matter more than minimizing the
+last few compressed bytes.
 
-Cheaper alternative if you only want the gzip→zstd win without re-layering: build mdt with `docker buildx build --output type=image,compression=zstd,compression-level=14,force-compression=true ....` That re-compresses every layer to zstd-14 in the build itself, with the same layer topology.
+### Compression and time-to-connect benchmarks
 
-### Compression benchmark
-
-Measured on `ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-20260627-2`.
-
-Baseline gzip export from the local daemon to OCI:
-
-- compressed size: `2,776,489,762` bytes
-- layer count: `48`
-
-BuildKit-style zstd-only export of the same image structure:
-
-- compressed size: `2,308,920,317` bytes
-- layer count: `48`
-- reduction vs gzip baseline: `16.8%`
-
-`docker-repack` on the same image with `--target-size 500MB`:
-
-- compressed size: `1,946,927,625` bytes
-- layer count: `6`
-- reduction vs gzip baseline: `29.9%`
-- additional win vs zstd-only export: `15.7%`
-
-`docker-repack` sweep of larger target sizes on the same image:
-
-| target size | compressed size | layer count |
-| --- | ---: | ---: |
-| `50MB` | `1,883 MiB` | `36` |
-| `100MB` | `1,872 MiB` | `22` |
-| `200MB` | `1,868 MiB` | `12` |
-| `500MB` | `1,857 MiB` | `6` |
-| `1GB` | `1,857 MiB` | `4` |
-| `2GB` | `1,857 MiB` | `3` |
-| `4GB` | `1,856 MiB` | `2` |
-
-Interpretation:
-
-- `docker-repack` is the bigger compression win because it deduplicates and re-slices layers.
-- `zstd` is the lower-risk optimization if you want to keep the same layer topology.
-- The repack result changes layer hashes and image digest, so evidence from an optional run must identify the validated repacked artifact rather than the default unrepacked release.
-- The benchmark now covers `50MB`, `100MB`, `200MB`, `500MB`, `1GB`, `2GB`, and `4GB`; the larger slices mostly trade layer count for essentially the same compressed size on this image.
-- For this image, `2GB` is the balanced release target: it gets the repacked image down to 3 layers with no size penalty versus `1GB`, while `4GB` only saves another MiB and collapses the topology to 2 layers.
+The canonical measurements, methodology, historical target-size sweep and
+policy decision now live in
+[Image delivery and time-to-connect benchmarks](docs/IMAGE-DELIVERY-BENCHMARKS.md).
+Cold tests on both Docker stores showed native zstd level 3 faster than gzip,
+while the three-layer 2 GB repack was substantially slower despite its smaller
+download. Release publication therefore uses native zstd and keeps the normal
+layer topology; repack remains experimental.
 
 ### `docker-repack`
 
@@ -688,7 +658,9 @@ For this image family, the benchmark script is:
 
 `scripts/benchmark-docker-repack.sh`
 
-It is intentionally benchmark-only. The release flow uses the same repack logic via `RELEASE_IMAGE_FLOW=repack` and `REPACK_TARGET_SIZE=2GB`.
+It is intentionally benchmark-only. The optional release code can exercise the
+same transformation via `RELEASE_IMAGE_FLOW=repack`; its target size is
+configured independently. The canonical release flow does not repack.
 
 The optional repack path is OCI-layout-native: Bake writes one OCI tar per target,
 the tar is extracted into disk-backed scratch, `docker-repack` writes a second

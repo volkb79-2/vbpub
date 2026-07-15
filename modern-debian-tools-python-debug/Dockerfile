@@ -13,6 +13,7 @@ SHELL ["/bin/bash", "-c"]
 
 ARG PYTHON_VERSION
 ARG DEBIAN_VERSION
+ARG REGISTRY=""
 
 ARG BACKPORTS_URI
 ARG OCI_TITLE=""
@@ -25,6 +26,7 @@ ARG OCI_VENDOR=""
 ARG OCI_VERSION=""
 ARG OCI_REVISION=""
 ARG OCI_CREATED=""
+ARG BUILD_TIMESTAMP=""
 ARG TARGET=""
 ARG IMAGE_VARIANT=""
 ARG AWSCLI_VERSION
@@ -873,6 +875,7 @@ RUN set -euo pipefail; \
         --debian-version "${DEBIAN_VERSION}" \
         --python-version "${PYTHON_VERSION}" \
         --image-version "${OCI_VERSION}" \
+        --built-at "${BUILD_TIMESTAMP}" \
         --devcontainers-release "${DEVCONTAINERS_RELEASE}" \
         --devcontainers-version "${DEVCONTAINERS_VERSION}" \
         --custom-tooling-file "${custom_tooling_file}" \
@@ -892,6 +895,8 @@ RUN set -euo pipefail; \
         --debian-version "${DEBIAN_VERSION}" \
         --python-version "${PYTHON_VERSION}" \
         --image-version "${OCI_VERSION}" \
+        --built-at "${BUILD_TIMESTAMP}" \
+        --variant "${IMAGE_VARIANT:-}" \
         --devcontainers-release "${DEVCONTAINERS_RELEASE}" \
         --devcontainers-version "${DEVCONTAINERS_VERSION}" \
         --custom-tooling-file "${custom_tooling_file}" \
@@ -903,7 +908,12 @@ RUN set -euo pipefail; \
     rm -f /tmp/manifest_sections.py; \
     chown vscode:vscode "${canonical_manifest}" "${inventory_manifest}" "${user_manifest}"; \
     chmod 644 "${canonical_manifest}" "${inventory_manifest}"; \
-    printf '\nIMAGE_MANIFEST=%s\nINVENTORY_MANIFEST=%s\n' "${canonical_manifest}" "${inventory_manifest}" >> /etc/os-release
+    _image_tag="${DEBIAN_VERSION}-py${PYTHON_VERSION}${IMAGE_VARIANT:+-${IMAGE_VARIANT}}-${OCI_VERSION}"; \
+    _registry="${REGISTRY:-unpublished.local}"; \
+    _image_ref="${_registry}/${GITHUB_USERNAME}/${_pkg_name}:${_image_tag}"; \
+    printf '\nIMAGE_MANIFEST="%s"\nINVENTORY_MANIFEST="%s"\nMDT_IMAGE_TAG="%s"\nMDT_IMAGE_REF="%s"\nMDT_IMAGE_VERSION="%s"\nMDT_IMAGE_BUILT_AT="%s"\nMDT_IMAGE_CREATED="%s"\nMDT_IMAGE_REVISION="%s"\n' \
+        "${canonical_manifest}" "${inventory_manifest}" "${_image_tag}" "${_image_ref}" \
+        "${OCI_VERSION}" "${BUILD_TIMESTAMP}" "${OCI_CREATED}" "${OCI_REVISION}" >> /etc/os-release
 
 USER vscode
 

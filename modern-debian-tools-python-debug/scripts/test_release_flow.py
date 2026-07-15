@@ -30,6 +30,18 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("if explicit_build_date:", source)
         self.assertIn("build_date = explicit_build_date", source)
 
+    def test_registry_release_uses_native_zstd_and_standard_attestations(self) -> None:
+        self.assertEqual(self.env["IMAGE_COMPRESSION"], "zstd")
+        self.assertEqual(self.env["IMAGE_COMPRESSION_LEVEL"], "3")
+        self.assertEqual(self.env["IMAGE_FORCE_COMPRESSION"], "true")
+        self.assertEqual(self.env["IMAGE_OCI_MEDIA_TYPES"], "true")
+        self.assertEqual(self.env["IMAGE_PROVENANCE_MODE"], "max")
+        self.assertEqual(self.env["IMAGE_SBOM"], "true")
+        wrapper = (ROOT / "scripts/release-bake.sh").read_text()
+        self.assertIn("type=registry,compression=${IMAGE_COMPRESSION}", wrapper)
+        self.assertIn("attest=type=provenance,mode=${IMAGE_PROVENANCE_MODE}", wrapper)
+        self.assertIn("attest+=type=sbom", wrapper)
+
     def test_builder_and_repack_limits_are_configured(self) -> None:
         self.assertTrue(self.env["BUILDX_BUILDER"])
         for key in (
@@ -104,6 +116,7 @@ class ReleaseFlowTests(unittest.TestCase):
                 "package_name": "modern-debian-tools-python-debug",
                 "username": "example",
                 "repo": "repo",
+                "built_at": "2026-07-15T03:00:00Z",
             },
         )
         self.assertIn("# Image Manifest — trixie-py3.14-php8.5-20260715", rendered)
@@ -111,6 +124,38 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("docker pull ghcr.io/example/modern-debian-tools-python-debug:trixie-py3.14-php8.5-20260715", rendered)
         self.assertNotIn("Target: `unknown`", rendered)
         self.assertNotIn("Devcontainers release: unknown", rendered)
+        self.assertIn("Built at (UTC): `2026-07-15T03:00:00Z`", rendered)
+
+    def test_image_identity_is_exposed_in_os_release(self) -> None:
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        build_push = (ROOT / "build-push.py").read_text()
+        self.assertIn('MDT_IMAGE_TAG="%s"', dockerfile)
+        self.assertIn('MDT_IMAGE_REF="%s"', dockerfile)
+        self.assertIn('MDT_IMAGE_CREATED="%s"', dockerfile)
+        self.assertIn('MDT_IMAGE_BUILT_AT="%s"', dockerfile)
+        self.assertIn('_image_ref="${_registry}/', dockerfile)
+        self.assertIn('env_vars["BUILD_TIMESTAMP"] = build_timestamp', build_push)
+        self.assertIn('--built-at "${BUILD_TIMESTAMP}"', dockerfile)
+
+    def test_installed_manifest_uses_variant_tag(self) -> None:
+        rendered = manifest_sections.render_installed_manifest(
+            debian_version="trixie",
+            python_version="3.14",
+            image_version="20260715",
+            devcontainers_release="",
+            devcontainers_version="",
+            custom_tooling={},
+            python_packages=[],
+            system_packages=[],
+            built_at="2026-07-15T03:00:00Z",
+            variant="php8.5",
+        )
+        self.assertIn("Image tag: trixie-py3.14-php8.5-20260715", rendered)
+        self.assertIn("Built at (UTC): 2026-07-15T03:00:00Z", rendered)
+
+    def test_template_tracks_php_development_lane(self) -> None:
+        template = (ROOT / "templates/devcontainer.json").read_text()
+        self.assertIn(":trixie-py3.14-php8.5-latest", template)
 
     def test_human_manifest_labels_vsc_package_as_devcontainer(self) -> None:
         rendered = manifest_sections.render_unified_manifest(

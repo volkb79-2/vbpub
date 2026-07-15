@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vbpub.invalid/handoffctl/schemas/event.schema.json",
+  "title": "handoffctl event",
+  "description": "Draft append-only normalized workflow event.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "sequence",
+    "timestamp",
+    "project_id",
+    "run_id",
+    "actor",
+    "type",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "project_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,62}$"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_id": {
+      "type": ["string", "null"]
+    },
+    "attempt_id": {
+      "type": ["string", "null"]
+    },
+    "correlation_id": {
+      "type": ["string", "null"]
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "enum": ["daemon", "operator", "agent-adapter", "project-adapter", "gate", "importer", "notifier"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "type": {
+      "enum": [
+        "PROJECT_REGISTERED",
+        "IMPORT_FINDING",
+        "TASK_CREATED",
+        "TASK_TRANSITIONED",
+        "TASK_BLOCKED",
+        "TASK_SUPERSEDED",
+        "TASK_CANCELLED",
+        "CARVE_OUTCOME",
+        "DECISION_OPENED",
+        "DECISION_RESOLVED",
+        "ATTEMPT_CREATED",
+        "ATTEMPT_PREFLIGHTED",
+        "ATTEMPT_STARTED",
+        "ATTEMPT_PROGRESS",
+        "ATTEMPT_STALLED",
+        "ATTEMPT_INTERRUPTED",
+        "ATTEMPT_RESUMED",
+        "ATTEMPT_EXITED",
+        "ATTEMPT_FAILED",
+        "PROVIDER_STATE_CHANGED",
+        "LEASE_REQUESTED",
+        "LEASE_ACQUIRED",
+        "LEASE_RENEWED",
+        "LEASE_RELEASED",
+        "LEASE_EXPIRED",
+        "GATE_STARTED",
+        "GATE_FINISHED",
+        "EVIDENCE_RECORDED",
+        "REVIEW_RECORDED",
+        "MERGE_RECORDED",
+        "NOTIFICATION_REQUESTED",
+        "NOTIFICATION_DELIVERED",
+        "NOTIFICATION_FAILED",
+        "BUDGET_WARNING",
+        "ARTIFACT_REGISTERED"
+      ]
+    },
+    "payload": {
+      "type": "object",
+      "description": "Versioned, bounded, redacted type-specific payload.",
+      "additionalProperties": true
+    },
+    "source": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["native", "imported", "inferred"]
+        },
+        "path": {
+          "type": ["string", "null"]
+        },
+        "digest": {
+          "type": ["string", "null"],
+          "pattern": "^(sha256:[0-9a-f]{64})?$"
+        }
+      }
+    }
+  }
+}
