@@ -26,6 +26,24 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               decisions.decide(authority=$USER) +
                               DECISION_RESOLVED event (decision_id set).
   discuss <project> <D-id>    prints decisions.discuss command string.
+  reject <project> <task> [--note TEXT]
+                              P17 2026-07-15: merge-gate rejection.
+                              MERGE_READY -> REVIEW_REJECTED via
+                              TASK_TRANSITIONED (actor OPERATOR $USER); the
+                              task not being MERGE_READY -> error, no event
+                              written. Lets a merge authority (human or a
+                              future auto-gate) that rejects AT the gate
+                              route the task back to rework (re-enters
+                              QUEUED the normal REVIEW_REJECTED way) without
+                              a SUPERSEDE + statefile reset.
+  merge <project> <task> [--commit SHA]
+                              P17 2026-07-15: records a manual merge (SPEC
+                              §7: auto-merge disabled). MERGE_READY ->
+                              MERGED + MERGE_RECORDED{merge_commit}; commit
+                              defaults to `git rev-parse HEAD` of the
+                              project root (the REAL merge commit) rather
+                              than a hand-padded placeholder. Prints the
+                              recorded commit.
   pause <project> [task]      touch pause flag + PAUSE_SET event;
   unpause <project> [task]    remove + PAUSE_CLEARED. (Project-level pause
                               writes the flag file; task-level also flows
@@ -343,6 +361,99 @@ def cmd_discuss(args) -> int:
         return 1
 
 
+def cmd_reject(args) -> int:
+    """reject <project> <task> [--note TEXT]"""
+    from . import storage
+    from .types import (
+        Actor, ActorKind, EventType, TaskState, TransitionError,
+        check_task_transition,
+    )
+
+    _cfg(args.project)  # raises if the project isn't registered
+
+    states = storage.list_states(args.project)
+    tsf = states.get(args.task)
+    if tsf is None:
+        print(f"error: unknown task: {args.task}", file=sys.stderr)
+        return 1
+
+    from_state = tsf.state
+    try:
+        check_task_transition(from_state, TaskState.REVIEW_REJECTED)
+    except TransitionError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    note = getattr(args, "note", None) or "merge-gate rejection"
+    actor = Actor(kind=ActorKind.OPERATOR, id=os.environ.get("USER", "operator"))
+    storage.append_and_apply(
+        args.project,
+        states,
+        actor=actor,
+        type=EventType.TASK_TRANSITIONED,
+        payload={"from": from_state.value, "to": TaskState.REVIEW_REJECTED.value, "notes": note},
+        task_id=args.task,
+    )
+    return 0
+
+
+def cmd_merge(args) -> int:
+    """merge <project> <task> [--commit SHA]"""
+    import subprocess
+
+    from . import storage
+    from .types import (
+        Actor, ActorKind, EventType, TaskState, TransitionError,
+        check_task_transition,
+    )
+
+    cfg = _cfg(args.project)
+
+    states = storage.list_states(args.project)
+    tsf = states.get(args.task)
+    if tsf is None:
+        print(f"error: unknown task: {args.task}", file=sys.stderr)
+        return 1
+
+    from_state = tsf.state
+    try:
+        check_task_transition(from_state, TaskState.MERGED)
+    except TransitionError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    commit = getattr(args, "commit", None)
+    if not commit:
+        result = subprocess.run(
+            ["git", "-C", str(cfg.root), "rev-parse", "HEAD"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"error: git rev-parse HEAD failed: {result.stderr.strip()}", file=sys.stderr)
+            return 1
+        commit = result.stdout.strip()
+
+    actor = Actor(kind=ActorKind.OPERATOR, id=os.environ.get("USER", "operator"))
+    storage.append_and_apply(
+        args.project,
+        states,
+        actor=actor,
+        type=EventType.TASK_TRANSITIONED,
+        payload={"from": from_state.value, "to": TaskState.MERGED.value, "notes": None},
+        task_id=args.task,
+    )
+    storage.append_and_apply(
+        args.project,
+        states,
+        actor=actor,
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": commit},
+        task_id=args.task,
+    )
+    print(commit)
+    return 0
+
+
 def cmd_pause(args) -> int:
     """pause <project> [task]"""
     from . import paths, storage
@@ -553,6 +664,18 @@ def main(argv: list[str] | None = None) -> int:
     discuss_parser.add_argument("project", help="Project ID")
     discuss_parser.add_argument("decision_id", help="Decision ID")
 
+    # reject
+    reject_parser = subparsers.add_parser("reject")
+    reject_parser.add_argument("project", help="Project ID")
+    reject_parser.add_argument("task", help="Task ID")
+    reject_parser.add_argument("--note", help="Rejection reason (optional)")
+
+    # merge
+    merge_parser = subparsers.add_parser("merge")
+    merge_parser.add_argument("project", help="Project ID")
+    merge_parser.add_argument("task", help="Task ID")
+    merge_parser.add_argument("--commit", help="Merge commit SHA (optional; default: git rev-parse HEAD)")
+
     # pause
     pause_parser = subparsers.add_parser("pause")
     pause_parser.add_argument("project", help="Project ID")
@@ -614,6 +737,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_decide(args)
         elif args.cmd == "discuss":
             return cmd_discuss(args)
+        elif args.cmd == "reject":
+            return cmd_reject(args)
+        elif args.cmd == "merge":
+            return cmd_merge(args)
         elif args.cmd == "pause":
             return cmd_pause(args)
         elif args.cmd == "unpause":

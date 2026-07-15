@@ -40,10 +40,26 @@ INTERFACE CONTRACT (frozen):
 - build_resume(route, session, worktree, prompt) -> argv from route.resume
   template; AdapterError if template empty or session required but None
   ('{session}' present in template).
-- capture_session(route, attempt_dir, worktree, launched_at) -> str | None:
-    session_capture == 'newest-jsonl': newest *.jsonl under
-      ~/.claude/projects/<slug(worktree)>/ modified after launched_at, where
-      slug replaces '/' with '-' (leading '-' kept: /a/b -> -a-b).
+- capture_session(route, attempt_dir, worktree, launched_at, log_path=None)
+  -> str | None:
+    P17 2026-07-15: route.cli == 'claude' -- the FIRST line the CLI ever
+      writes under --output-format stream-json (P14) is a JSON object
+      carrying `session_id` (json.loads(line).get('session_id')). Read it
+      straight from the attempt log (log_path if the caller passes it --
+      the wrapper always knows the exact log file for the CURRENT run, both
+      on first dispatch and on resume; else <attempt_dir>/attempt.log) --
+      no subprocess, no directory scan. This REPLACES newest-jsonl for
+      claude routes: scanning ~/.claude/projects/<slug>/ for the newest
+      file modified after launched_at is now both unnecessary (the id is
+      already in hand) and unreliable (concurrent claude processes / a
+      missing or lagging project dir raced None in production). A missing
+      log file, empty first line, non-JSON first line, or a first line
+      lacking a non-empty string `session_id` all degrade to None (never
+      raises) -- no newest-jsonl fallback for claude routes.
+    session_capture == 'newest-jsonl' (non-claude routes only, now): newest
+      *.jsonl under ~/.claude/projects/<slug(worktree)>/ modified after
+      launched_at, where slug replaces '/' with '-' (leading '-' kept:
+      /a/b -> -a-b).
     session_discover argv set: run it (timeout 30), parse JSON list, return
       the id field of the entry whose title/dir matches worktree.
     else None.
@@ -210,9 +226,41 @@ def probe(route: RouteDef) -> tuple[bool, str]:
         return (False, str(e))
 
 
+def _stream_json_session_id(log_path: Path) -> str | None:
+    """Read the FIRST line of a stream-json attempt log and pull out its
+    `session_id` field. Degrades to None on any I/O or parse problem --
+    this is a best-effort early capture, never a hard requirement."""
+    try:
+        with log_path.open("r", encoding="utf-8") as f:
+            first_line = f.readline()
+    except OSError:
+        return None
+    first_line = first_line.strip()
+    if not first_line:
+        return None
+    try:
+        data = json.loads(first_line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    session_id = data.get("session_id")
+    return session_id if isinstance(session_id, str) and session_id else None
+
+
 def capture_session(route: RouteDef, *, attempt_dir: Path, worktree: str,
-                    launched_at: datetime) -> str | None:
-    """Capture session ID from latest session file."""
+                    launched_at: datetime, log_path: str | Path | None = None) -> str | None:
+    """Capture session ID (see module contract)."""
+    if route.cli == "claude":
+        # P17 2026-07-15: stream-json's first line carries session_id --
+        # read it directly instead of guessing via the newest-jsonl scan
+        # (unreliable for claude routes, see module contract). `log_path`
+        # names the CURRENT run's exact log file (the wrapper always knows
+        # it); fall back to the conventional first-dispatch path only when
+        # the caller omits it.
+        lp = Path(log_path) if log_path is not None else Path(attempt_dir) / "attempt.log"
+        return _stream_json_session_id(lp)
+
     if route.session_capture == "newest-jsonl":
         # Build the slug: replace '/' with '-', keep leading '-'
         slug = worktree.replace("/", "-")

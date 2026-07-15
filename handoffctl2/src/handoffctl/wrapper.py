@@ -29,10 +29,13 @@ INTERFACE CONTRACT (frozen):
        env, stdout=log fd (append, line-buffered), stderr=STDOUT,
        start_new_session=True). Write child pid to <attempt_dir>/child.pid.
     5. After launch, try adapters.capture_session(route via spec.route_def
-       raw dict -> RouteDef) once after a 5s delay; on success append
-       ATTEMPT_STARTED again with session_handle merged (upsert semantics
-       make the re-emit safe) — the resume handle is captured EARLY (v2
-       §5.2), not at exit.
+       raw dict -> RouteDef, log_path=spec.log_path) once after a 5s delay;
+       on success append ATTEMPT_STARTED again with session_handle merged
+       (upsert semantics make the re-emit safe) — the resume handle is
+       captured EARLY (v2 §5.2), not at exit. (P17 2026-07-15: passing
+       spec.log_path lets capture_session read a claude route's stream-json
+       first line directly for the CURRENT run's actual log file — correct
+       on both first dispatch and resume, where the log path differs.)
     6. Install SIGTERM/SIGINT handler: forward SIGTERM to the child's
        process group, wait up to spec.term_grace_seconds (default 30), then
        SIGKILL the group; classify as interrupted.
@@ -321,6 +324,7 @@ def wrapper_main(spec_path: str) -> int:
                         attempt_dir=Path(spec.attempt_dir),
                         worktree=spec.cwd,
                         launched_at=datetime.fromisoformat(attempt.started.isoformat()),
+                        log_path=spec.log_path,
                     )
                     if session_handle:
                         state = storage.load_state(spec.project, spec.task_id)

@@ -6,6 +6,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -173,6 +174,131 @@ class TestHappyPath:
         assert attempt.pgid is not None
         assert attempt.log_path == str(log_path)
         assert attempt.session_handle == "sess-42"
+
+
+class TestStreamJsonSessionCapture:
+    """P17 2026-07-15 (Gap 1) regression: a claude route's stream-json first
+    log line carries session_id -- the wrapper must record it on
+    ATTEMPT_STARTED via the REAL adapters.capture_session (not mocked),
+    proving the wrapper -> adapters wiring, not just the adapters unit.
+
+    A plain `/bin/sh` script (as `fake_cli` builds) risks a genuine race
+    against the wrapper's fixed capture-delay read: shell stdout redirected
+    to a regular file is block-buffered, so the first `echo` is not
+    guaranteed to have hit disk yet at an arbitrarily small delay. These
+    local fixtures use an UNBUFFERED (`-u`) Python child that flushes the
+    first line immediately, then sleeps well past the (small, non-zero)
+    capture delay before producing more output/exiting -- deterministic
+    ordering instead of a timing gamble."""
+
+    CAPTURE_DELAY = 0.2   # must fire only after the child's first flush
+    CHILD_HOLD_SECONDS = 1.0  # child stays alive well past CAPTURE_DELAY
+
+    @staticmethod
+    def _claude_stream_script(tmp_path, first_line: str, hold_seconds: float) -> list[str]:
+        """A `python3 -u` child: prints `first_line`, flushes, sleeps
+        `hold_seconds`, prints a second line, exits 0. `-u` guarantees the
+        first print reaches the log file with no libc buffering delay."""
+        script = tmp_path / "claude_stream.py"
+        script.write_text(
+            "import sys, time\n"
+            f"print({first_line!r})\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({hold_seconds})\n"
+            "print('{\"type\": \"assistant\"}')\n"
+        )
+        return [sys.executable, "-u", str(script)]
+
+    def test_wrapper_records_session_handle_from_stream_json(self, tmp_state, tmp_path):
+        project = "demo"
+        task_id = "demo-P01-sample"
+        attempt_id = "att-1"
+        seed(project, task_id, attempt_id)
+
+        # A fake "claude" CLI: first line is a stream-json system event
+        # carrying session_id, exactly as the real CLI's --output-format
+        # stream-json does.
+        argv = self._claude_stream_script(
+            tmp_path,
+            '{"type":"system","subtype":"init","session_id":"live-sess-99"}',
+            self.CHILD_HOLD_SECONDS,
+        )
+
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir(parents=True)
+        log_path = attempt_dir / "attempt.log"
+        receipt_path = attempt_dir / "receipt.json"
+
+        spec = WrapperSpec(
+            project=project,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            argv=argv,
+            cwd=str(tmp_path),
+            log_path=str(log_path),
+            receipt_path=str(receipt_path),
+            attempt_dir=str(attempt_dir),
+            # cli="claude" -- the real adapters.capture_session branches on
+            # this to read the stream-json first line instead of scanning
+            # ~/.claude/projects/.
+            route_def={"route_id": "claude-test", "cli": "claude", "model": "sonnet"},
+        )
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+        # adapters itself is NOT mocked here -- this exercises the real
+        # capture_session implementation end to end. extract_usage/
+        # classify_log_tail also run for real but are irrelevant to this
+        # oracle (route.usage_source is unset -> Usage(UNKNOWN); no
+        # BLOCKED/limit phrase in the log -> classify_log_tail None).
+        with patch("handoffctl.wrapper.SESSION_CAPTURE_DELAY", self.CAPTURE_DELAY):
+            exit_code = wrapper_main(str(spec_path))
+
+        assert exit_code == 0
+        state = storage.load_state(project, task_id)
+        attempt = state.attempt_by_id(attempt_id)
+        assert attempt.state == AttemptState.EXITED
+        assert attempt.session_handle == "live-sess-99"
+
+    def test_wrapper_session_handle_none_on_malformed_first_line(self, tmp_state, tmp_path):
+        """Negative case: a first line that isn't valid stream-json JSON
+        leaves session_handle unset (None), never raises out of the
+        wrapper."""
+        project = "demo"
+        task_id = "demo-P01-sample"
+        attempt_id = "att-1"
+        seed(project, task_id, attempt_id)
+
+        argv = self._claude_stream_script(
+            tmp_path, "not stream-json at all", self.CHILD_HOLD_SECONDS,
+        )
+
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir(parents=True)
+        log_path = attempt_dir / "attempt.log"
+        receipt_path = attempt_dir / "receipt.json"
+
+        spec = WrapperSpec(
+            project=project,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            argv=argv,
+            cwd=str(tmp_path),
+            log_path=str(log_path),
+            receipt_path=str(receipt_path),
+            attempt_dir=str(attempt_dir),
+            route_def={"route_id": "claude-test", "cli": "claude", "model": "sonnet"},
+        )
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+        with patch("handoffctl.wrapper.SESSION_CAPTURE_DELAY", self.CAPTURE_DELAY):
+            exit_code = wrapper_main(str(spec_path))
+
+        assert exit_code == 0
+        state = storage.load_state(project, task_id)
+        attempt = state.attempt_by_id(attempt_id)
+        assert attempt.session_handle is None
 
 
 class TestBlocked:

@@ -590,6 +590,106 @@ def test_capture_session_discover_by_title(tmp_path, monkeypatch, emit_script):
     assert result == "sess-1"
 
 
+# P17 2026-07-15: capture_session extracts session_id from a claude route's
+# stream-json FIRST log line, instead of the newest-jsonl heuristic.
+def test_capture_session_claude_stream_json_first_line(tmp_path):
+    """Regression (Gap 1): a stream-json fixture log -> capture_session
+    returns the embedded session_id, read via the explicit log_path."""
+    log_path = tmp_path / "attempt.log"
+    log_path.write_text(
+        '{"type":"system","subtype":"init","session_id":"abc-123-def"}\n'
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n',
+        encoding="utf-8",
+    )
+
+    route = RouteDef(
+        route_id="claude-test",
+        cli="claude",
+        model="sonnet",
+        session_capture="newest-jsonl",  # must NOT be consulted for claude
+    )
+
+    result = adapters.capture_session(
+        route,
+        attempt_dir=tmp_path,
+        worktree="/tmp/wt",
+        launched_at=datetime.now(tz=timezone.utc),
+        log_path=str(log_path),
+    )
+    assert result == "abc-123-def"
+
+
+def test_capture_session_claude_stream_json_defaults_to_attempt_log(tmp_path):
+    """log_path omitted -> falls back to <attempt_dir>/attempt.log."""
+    attempt_dir = tmp_path / "att"
+    attempt_dir.mkdir()
+    (attempt_dir / "attempt.log").write_text(
+        '{"session_id":"fallback-sess"}\n', encoding="utf-8",
+    )
+
+    route = RouteDef(route_id="claude-test", cli="claude", model="sonnet")
+
+    result = adapters.capture_session(
+        route,
+        attempt_dir=attempt_dir,
+        worktree="/tmp/wt",
+        launched_at=datetime.now(tz=timezone.utc),
+    )
+    assert result == "fallback-sess"
+
+
+def test_capture_session_claude_stream_json_malformed_first_line(tmp_path):
+    """Negative case: a non-JSON first line degrades to None (never raises),
+    and does NOT fall back to newest-jsonl for a claude route."""
+    log_path = tmp_path / "attempt.log"
+    log_path.write_text("not json at all\n", encoding="utf-8")
+
+    route = RouteDef(
+        route_id="claude-test", cli="claude", model="sonnet",
+        session_capture="newest-jsonl",
+    )
+
+    result = adapters.capture_session(
+        route,
+        attempt_dir=tmp_path,
+        worktree="/tmp/wt",
+        launched_at=datetime.now(tz=timezone.utc),
+        log_path=str(log_path),
+    )
+    assert result is None
+
+
+def test_capture_session_claude_stream_json_missing_session_id(tmp_path):
+    """Negative case: valid JSON first line with no session_id -> None."""
+    log_path = tmp_path / "attempt.log"
+    log_path.write_text('{"type":"system","subtype":"init"}\n', encoding="utf-8")
+
+    route = RouteDef(route_id="claude-test", cli="claude", model="sonnet")
+
+    result = adapters.capture_session(
+        route,
+        attempt_dir=tmp_path,
+        worktree="/tmp/wt",
+        launched_at=datetime.now(tz=timezone.utc),
+        log_path=str(log_path),
+    )
+    assert result is None
+
+
+def test_capture_session_claude_stream_json_missing_log_file(tmp_path):
+    """Negative case: log file doesn't exist yet -> None, no exception."""
+    route = RouteDef(route_id="claude-test", cli="claude", model="sonnet")
+
+    result = adapters.capture_session(
+        route,
+        attempt_dir=tmp_path,
+        worktree="/tmp/wt",
+        launched_at=datetime.now(tz=timezone.utc),
+        log_path=str(tmp_path / "does-not-exist.log"),
+    )
+    assert result is None
+
+
 # Oracle 7: extract_usage
 def test_extract_usage_output_format_json():
     """Oracle 7: output-format-json extracts from LAST json line."""

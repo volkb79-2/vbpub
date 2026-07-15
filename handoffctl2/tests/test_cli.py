@@ -336,6 +336,154 @@ def test_discuss(sample_project, tmp_state, capsys, monkeypatch):
     assert cmd_str in out
 
 
+def test_reject_success(sample_project, tmp_state, capsys, make_statefile):
+    """P17 Gap 2: reject transitions MERGE_READY -> REVIEW_REJECTED via a
+    TASK_TRANSITIONED event; the task's statefile reflects the new state."""
+    from handoffctl import storage
+
+    tsf = make_statefile(state=TaskState.MERGE_READY)
+    storage.save_state(tsf)
+
+    exit_code = cli.main(["reject", "demo", "demo-P01-test", "--note", "gate re-run failed"])
+    assert exit_code == 0
+
+    events = list(storage.iter_events("demo"))
+    trans = [e for e in events if e.type == EventType.TASK_TRANSITIONED]
+    assert len(trans) == 1
+    assert trans[0].payload["from"] == "MERGE_READY"
+    assert trans[0].payload["to"] == "REVIEW_REJECTED"
+    assert trans[0].payload["notes"] == "gate re-run failed"
+    assert trans[0].actor.kind == ActorKind.OPERATOR
+
+    states = storage.list_states("demo")
+    assert states["demo-P01-test"].state == TaskState.REVIEW_REJECTED
+
+
+def test_reject_then_requeue(sample_project, tmp_state, make_statefile):
+    """Regression (Gap 2): a rejected MERGE_READY task can re-enter QUEUED
+    -- the REVIEW_REJECTED -> QUEUED edge already existed; this proves the
+    full round trip works once the new MERGE_READY -> REVIEW_REJECTED edge
+    is in place."""
+    from handoffctl import storage
+    from handoffctl.types import Actor, ActorKind
+
+    tsf = make_statefile(state=TaskState.MERGE_READY)
+    storage.save_state(tsf)
+
+    assert cli.main(["reject", "demo", "demo-P01-test"]) == 0
+
+    states = storage.list_states("demo")
+    assert states["demo-P01-test"].state == TaskState.REVIEW_REJECTED
+
+    storage.append_and_apply(
+        "demo", states, actor=Actor(ActorKind.OPERATOR, "op"),
+        type=EventType.TASK_TRANSITIONED,
+        payload={"from": "REVIEW_REJECTED", "to": "QUEUED", "notes": "requeued for rework"},
+        task_id="demo-P01-test",
+    )
+    assert states["demo-P01-test"].state == TaskState.QUEUED
+
+
+def test_reject_wrong_state_rejected(sample_project, tmp_state, capsys, make_statefile):
+    """A task not in MERGE_READY -> reject exits 1, no event written."""
+    from handoffctl import storage
+
+    tsf = make_statefile(state=TaskState.QUEUED)
+    storage.save_state(tsf)
+
+    exit_code = cli.main(["reject", "demo", "demo-P01-test"])
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+
+    events = list(storage.iter_events("demo"))
+    assert not [e for e in events if e.type == EventType.TASK_TRANSITIONED]
+    states = storage.list_states("demo")
+    assert states["demo-P01-test"].state == TaskState.QUEUED
+
+
+def test_reject_unknown_task(sample_project, tmp_state, capsys):
+    """Unknown task -> reject exits 1 with a clear error, no event."""
+    from handoffctl import storage
+
+    exit_code = cli.main(["reject", "demo", "nonexistent-task"])
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "nonexistent-task" in err
+
+    events = list(storage.iter_events("demo"))
+    assert not [e for e in events if e.type == EventType.TASK_TRANSITIONED]
+
+
+def test_merge_success_records_real_commit(sample_project, tmp_state, capsys, make_statefile):
+    """P17 fold-in: merge records the REAL `git rev-parse HEAD` of the
+    project root, not a hand-padded placeholder."""
+    import subprocess
+
+    from handoffctl import storage
+
+    tsf = make_statefile(state=TaskState.MERGE_READY)
+    storage.save_state(tsf)
+
+    real_head = subprocess.run(
+        ["git", "-C", str(sample_project.root), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    exit_code = cli.main(["merge", "demo", "demo-P01-test"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert real_head in out
+
+    events = list(storage.iter_events("demo"))
+    trans = [e for e in events if e.type == EventType.TASK_TRANSITIONED]
+    merged = [e for e in events if e.type == EventType.MERGE_RECORDED]
+    assert len(trans) == 1
+    assert trans[0].payload["to"] == "MERGED"
+    assert len(merged) == 1
+    assert merged[0].payload["merge_commit"] == real_head
+    assert merged[0].payload["merge_commit"] != "0" * 40
+
+    states = storage.list_states("demo")
+    assert states["demo-P01-test"].state == TaskState.MERGED
+    assert states["demo-P01-test"].merge_commit == real_head
+
+
+def test_merge_explicit_commit_override(sample_project, tmp_state, capsys, make_statefile):
+    """--commit overrides the git rev-parse HEAD default."""
+    from handoffctl import storage
+
+    tsf = make_statefile(state=TaskState.MERGE_READY)
+    storage.save_state(tsf)
+
+    explicit = "a" * 40
+    exit_code = cli.main(["merge", "demo", "demo-P01-test", "--commit", explicit])
+    assert exit_code == 0
+
+    states = storage.list_states("demo")
+    assert states["demo-P01-test"].merge_commit == explicit
+
+
+def test_merge_wrong_state_rejected(sample_project, tmp_state, capsys, make_statefile):
+    """A task not in MERGE_READY -> merge exits 1, no event written."""
+    from handoffctl import storage
+
+    tsf = make_statefile(state=TaskState.QUEUED)
+    storage.save_state(tsf)
+
+    exit_code = cli.main(["merge", "demo", "demo-P01-test"])
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+
+    events = list(storage.iter_events("demo"))
+    assert not [e for e in events if e.type in (EventType.TASK_TRANSITIONED, EventType.MERGE_RECORDED)]
+    states = storage.list_states("demo")
+    assert states["demo-P01-test"].state == TaskState.QUEUED
+    assert states["demo-P01-test"].merge_commit is None
+
+
 def test_pause_project(sample_project, tmp_state, capsys, monkeypatch):
     """Oracle 9: pause <project> creates flag + PAUSE_SET event."""
     from handoffctl import paths, storage
