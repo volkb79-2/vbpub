@@ -57,6 +57,16 @@ Worktree stack profile (`ciu.toml.j2` override rendered per worktree):
   / analytics / MinIO omitted unless the package needs them.
 - **Own internal network**: ciu's per-instance `<project>-<instance>-network`
   already isolates east-west; no cross-talk with the main landscape.
+- **One suffix scheme, everywhere (flat).** The same `<project>-<instance>`
+  ciu identity that names containers and the internal network is ALSO the
+  FQDN suffix if/when a worktree stack ever gets a human-facing edge route:
+  `<project>-<instance>.<public_fqdn>` (e.g. `dstdns-p11.gstammtisch.dchive.de`).
+  Keep it FLAT (one hyphenated label, per dstdns D-006) — not nested
+  `<instance>.<project>.<public_fqdn>` — so container name, network name, and
+  hostname all derive from one suffix AND the existing
+  `*.gstammtisch.dchive.de` wildcard covers every instance with no new cert.
+  The main landscape is just the zero-suffix case: `<project>.<public_fqdn>`
+  (infra-P24's `{{ project_name }}.{{ public_fqdn }}` template).
 - Singleton safety: each worktree stack has its OWN vault/consul/postgres
   with isolated volumes (fine — separate data), so "singletons never run
   twice" becomes "singletons never run twice ON THE SAME instance id",
