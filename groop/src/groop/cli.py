@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 from groop import __version__
 from groop.bpf_gate import report_to_jsonable, render_report, run_bpf_gate
@@ -522,6 +523,8 @@ def main(argv: list[str] | None = None) -> int:
         return _main_report(raw_argv[1:])
     if raw_argv[:1] == ["query"]:
         return _main_query(raw_argv[1:])
+    if raw_argv[:1] == ["compare"]:
+        return _main_compare(raw_argv[1:])
     if raw_argv[:1] == ["squeeze"]:
         return _main_squeeze(raw_argv[1:])
     args = parse_args(raw_argv)
@@ -1269,6 +1272,84 @@ def _main_query(argv: list[str]) -> int:
         return 2
 
     print(format_result(result, pretty=args.pretty))
+    return 0
+
+
+def parse_compare_args(argv: list[str]) -> argparse.Namespace:
+    """Parse ``groop compare CURRENT BASELINE`` — informational P88 summary diff (P64).
+
+    Reads two ``groop query --shape summary --json`` result files and computes
+    deterministic per-(key, metric) deltas. Never reads a recording; D-007
+    makes this comparison informational, not a release gate.
+    """
+    parser = argparse.ArgumentParser(prog="groop compare")
+    parser.add_argument(
+        "current", type=Path, help="current P88 summary JSON result (groop query --shape summary --json)"
+    )
+    parser.add_argument("baseline", type=Path, help="baseline P88 summary JSON result")
+    parser.add_argument(
+        "--metric", action="append", dest="metrics", default=None, metavar="NAME",
+        help="restrict comparison to this metric (repeatable; default: every metric present)",
+    )
+    parser.add_argument(
+        "--assert", action="append", type=str, default=None, dest="assert_specs",
+        help="baseline threshold assertion KEY:METRIC:delta<=VALUE or KEY:METRIC:pct>=VALUE (repeatable)",
+    )
+    parser.add_argument("--json", action="store_true", required=True, help="emit JSON result (required)")
+    parser.add_argument("--pretty", action="store_true", help="pretty-print the JSON result")
+    return parser.parse_args(argv)
+
+
+def _main_compare(argv: list[str]) -> int:
+    """Implement groop compare — diff two P88 summary results (P64, informational)."""
+    try:
+        args = parse_compare_args(argv)
+    except SystemExit as exc:
+        return int(str(exc.code)) if exc.code is not None else 2
+
+    from groop.compare import (
+        CompareError,
+        compare_exit_code,
+        compare_summaries,
+        evaluate_compare_rules,
+        format_compare,
+        parse_compare_rule,
+    )
+
+    def _load(path: Path, label: str) -> Any:
+        try:
+            text = path.read_text()
+        except FileNotFoundError:
+            raise CompareError(f"file not found: {path}") from None
+        except OSError as exc:
+            raise CompareError(f"error reading {path}: {exc.strerror}") from None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise CompareError(f"{label} ({path}) is not valid JSON: {exc}") from None
+
+    try:
+        current = _load(args.current, "current")
+        baseline = _load(args.baseline, "baseline")
+        deltas = compare_summaries(current, baseline, metrics=tuple(args.metrics) if args.metrics else None)
+    except CompareError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    rules = []
+    if args.assert_specs:
+        for spec in args.assert_specs:
+            try:
+                rules.append(parse_compare_rule(spec))
+            except CompareError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+
+    assertion_results = evaluate_compare_rules(deltas, rules) if rules else None
+    print(format_compare(deltas, assertions=assertion_results, pretty=args.pretty))
+
+    if assertion_results:
+        return compare_exit_code(assertion_results)
     return 0
 
 
