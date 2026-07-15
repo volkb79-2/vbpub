@@ -317,11 +317,97 @@ def _detect_governance_read_iops() -> tuple[str, str]:
     return str(value), note
 
 
+# Contract 1 (P-physical-root-mount-table): this process's own mount table.
+# Overridable per-call for tests; referenced as a bare module global (not a
+# function-default) inside _physical_root_from_mountinfo so monkeypatching
+# `ciu.workspace_env._MOUNTINFO_PATH` takes effect without needing to thread
+# the path through every caller.
+_MOUNTINFO_PATH = Path("/proc/self/mountinfo")
+
+
+def _parse_mountinfo(text: str) -> list[tuple[Path, Path]]:
+    """Parse ``/proc/self/mountinfo`` into ``(mount_point, mount_root)`` pairs.
+
+    Format (``man 5 proc``): each line's fixed fields before the literal
+    ``" - "`` separator are ``mount_id parent_id major:minor root mount_point
+    mount_opts``, followed by zero or more optional ``tag:value`` fields.
+    ``root`` and ``mount_point`` sit at fixed indices (3, 4) regardless of how
+    many optional fields trail them, so this is safe without locating the
+    separator for those two fields.
+
+    For a bind mount, ``root`` is the sub-path of the underlying filesystem
+    exposed at ``mount_point`` — e.g. a devcontainer bind-mounting
+    ``/home/vb/volkb79-2/vbpub`` (host) at ``/workspaces/vbpub`` (container)
+    reports ``root=/home/vb/volkb79-2/vbpub mount_point=/workspaces/vbpub``.
+    That ``root`` value is exactly the physical (host) path we want.
+
+    The root mount itself (``mount_point == "/"``) is skipped: it carries no
+    per-repo bind-mount signal (its ``root`` is meaningless overlay/rootfs
+    plumbing, not a host path), so it must never win a longest-match contest.
+    """
+    entries: list[tuple[Path, Path]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        left = line.split(" - ", 1)[0]
+        fields = left.split()
+        if len(fields) < 5:
+            continue
+        mount_root, mount_point = fields[3], fields[4]
+        if mount_point == "/":
+            continue
+        entries.append((Path(mount_point), Path(mount_root)))
+    return entries
+
+
+def _physical_root_from_mountinfo(repo_root: Path) -> Optional[Path]:
+    """Contract 1 — longest mount-destination-prefix match via mountinfo.
+
+    Ports the longest-match algorithm from tls-edge's ``physical_path()``
+    (``tls-edge/scripts/render_standalone.py``): for *repo_root*, find the
+    mount whose destination is the LONGEST prefix of ``repo_root.resolve()``
+    and map through its source. The port reads THIS process's own mount table
+    (``/proc/self/mountinfo``) instead of shelling out to ``docker inspect``
+    for another container's Mounts — tls-edge inspects a named sibling
+    container; here we only ever need our own view.
+
+    Returns ``None`` when mountinfo is unreadable or yields no match, so the
+    caller can fall through to the next candidate (Contract 2).
+    """
+    try:
+        text = _MOUNTINFO_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    resolved = repo_root.resolve()
+    best_dest: Optional[Path] = None
+    best_root: Optional[Path] = None
+    for dest, root in _parse_mountinfo(text):
+        if (dest == resolved or dest in resolved.parents) and (
+            best_dest is None or len(dest.parts) > len(best_dest.parts)
+        ):
+            best_dest, best_root = dest, root
+
+    if best_dest is None or best_root is None:
+        return None
+    return best_root / resolved.relative_to(best_dest)
+
+
 def _detect_physical_repo_root(repo_root: Path) -> Path:
     physical_root = os.environ.get("PHYSICAL_REPO_ROOT")
     if physical_root:
         return Path(physical_root).resolve()
 
+    via_mountinfo = _physical_root_from_mountinfo(repo_root)
+    if via_mountinfo is not None:
+        return via_mountinfo
+
+    # Contract 2 fallback (mountinfo yielded nothing): existing
+    # devcontainer-origin behavior. NOTE: this label reflects the CONTAINER's
+    # own origin, not necessarily repo_root — it is a same-value-for-every-
+    # repo_root fallback, kept only for parity with pre-existing behavior
+    # when mountinfo is unavailable (e.g. not readable, non-Linux).
     try:
         result = subprocess.run(
             ["docker", "ps", "--format", "{{.Label \"devcontainer.local_folder\"}}"],
@@ -336,7 +422,7 @@ def _detect_physical_repo_root(repo_root: Path) -> Path:
     except FileNotFoundError:
         pass
 
-    # S1.9: on native host PHYSICAL_REPO_ROOT == REPO_ROOT
+    # Contract 2 final fallback / S1.9: on native host PHYSICAL_REPO_ROOT == REPO_ROOT
     return repo_root.resolve()
 
 

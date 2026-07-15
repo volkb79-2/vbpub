@@ -122,7 +122,7 @@ requirements are marked *(withdrawn)*.
   | Key | Detection (when not pre-set) |
   |---|---|
   | `REPO_ROOT` | resolved per S1.1 |
-  | `PHYSICAL_REPO_ROOT` | `devcontainer.local_folder` label via `docker ps`; native host: `= REPO_ROOT` |
+  | `PHYSICAL_REPO_ROOT` | env override; else per-repo longest-prefix match of `REPO_ROOT` in `/proc/self/mountinfo` (correct for multi-repo devcontainers, 2026-07-15); else `devcontainer.local_folder` label via `docker ps` (container-origin fallback); native host: `= REPO_ROOT` |
   | `DOCKER_GID` | `stat` of `/var/run/docker-host.sock` or `/var/run/docker.sock`, else `getent group docker` |
   | `CONTAINER_UID` / `CONTAINER_GID` | current user UID / `DOCKER_GID` |
   | `DOCKER_NETWORK_INTERNAL` | `<repo-name>-<instance-id>-network` (instance-id = path hash) |
