@@ -181,6 +181,16 @@ variable "BAT_VERSION" {
   default = "latest"
 }
 
+// Version pin for crane; "latest" resolves the newest official GitHub release during staging.
+variable "CRANE_VERSION" {
+  default = "latest"
+}
+
+// Version pin for regctl; "latest" resolves the newest official GitHub release during staging.
+variable "REGCTL_VERSION" {
+  default = "latest"
+}
+
 // Tool versions stay explicit even when defaulting to "latest" so the release
 // pipeline can override, record, and reproduce the exact staged artifact set.
 
@@ -468,6 +478,8 @@ target "base" {
     AWSCLI_VERSION = "${AWSCLI_VERSION}"
     B2_VERSION = "${B2_VERSION}"
     BAT_VERSION = "${BAT_VERSION}"
+    CRANE_VERSION = "${CRANE_VERSION}"
+    REGCTL_VERSION = "${REGCTL_VERSION}"
     CONSUL_VERSION = "${CONSUL_VERSION}"
     DELTA_VERSION = "${DELTA_VERSION}"
     FD_VERSION = "${FD_VERSION}"
@@ -658,6 +670,7 @@ target "trixie-py314-php85" {
     DEBIAN_VERSION = "trixie"
     PHP_VERSION = "8.5"
     INSTALL_PHP = "true"
+    IMAGE_VARIANT = "php8.5"
     OCI_DESCRIPTION = description_with_manifest_docs_variant("Modern Debian Tools + Python Debug + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and the common PHP extensions needed for web debugging.", "modern-debian-tools-python-debug", "trixie", "3.14", "php8.5")
     OCI_DOCUMENTATION = package_manifest_url_variant("modern-debian-tools-python-debug", "trixie", "3.14", "php8.5")
     OCI_URL = package_latest_url("modern-debian-tools-python-debug")
@@ -677,6 +690,7 @@ target "trixie-py314-php85-vsc" {
     DEBIAN_VERSION = "trixie"
     PHP_VERSION = "8.5"
     INSTALL_PHP = "true"
+    IMAGE_VARIANT = "php8.5"
     OCI_DESCRIPTION = description_with_manifest_docs_variant("Modern Debian Tools + Python Debug + PHP 8.5 VS Code devcontainer image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and the common PHP extensions needed for web debugging.", "modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14", "php8.5")
     OCI_DOCUMENTATION = package_manifest_url_variant("modern-debian-tools-python-debug-vsc-devcontainer", "trixie", "3.14", "php8.5")
     OCI_URL = package_latest_url("modern-debian-tools-python-debug-vsc-devcontainer")

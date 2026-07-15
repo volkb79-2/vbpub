@@ -11,6 +11,8 @@ import tomllib
 import unittest
 from pathlib import Path
 
+from scripts import manifest_sections
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -72,6 +74,61 @@ class ReleaseFlowTests(unittest.TestCase):
             dockerfile.rfind("LABEL org.opencontainers.image.title"),
             dockerfile.rfind("\nRUN "),
         )
+
+    def test_agent_inventory_template_is_in_image_context(self) -> None:
+        dockerignore = (ROOT / ".dockerignore").read_text()
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        template = (ROOT / "templates/AGENTS.md").read_text()
+        self.assertIn("!templates/AGENTS.md", dockerignore)
+        self.assertIn(
+            "COPY templates/AGENTS.md "
+            "/usr/local/share/modern-debian-tools-python-debug/AGENTS.md.example",
+            dockerfile,
+        )
+        self.assertIn("IMAGE_MANIFEST", template)
+        self.assertIn("installed-tools-manifest.md", template)
+
+    def test_human_manifest_uses_variant_tags_and_image_kind(self) -> None:
+        rendered = manifest_sections.render_unified_manifest(
+            source_manifest_content="",
+            debian_version="trixie",
+            python_version="3.14",
+            image_version="20260715",
+            devcontainers_release="",
+            devcontainers_version="",
+            custom_tooling={},
+            python_packages=[],
+            system_packages=[],
+            args_extra={
+                "variant": "php8.5",
+                "package_name": "modern-debian-tools-python-debug",
+                "username": "example",
+                "repo": "repo",
+            },
+        )
+        self.assertIn("# Image Manifest — trixie-py3.14-php8.5-20260715", rendered)
+        self.assertIn("trixie-py3.14-php8.5-latest", rendered)
+        self.assertIn("docker pull ghcr.io/example/modern-debian-tools-python-debug:trixie-py3.14-php8.5-20260715", rendered)
+        self.assertNotIn("Target: `unknown`", rendered)
+        self.assertNotIn("Devcontainers release: unknown", rendered)
+
+    def test_human_manifest_labels_vsc_package_as_devcontainer(self) -> None:
+        rendered = manifest_sections.render_unified_manifest(
+            source_manifest_content="",
+            debian_version="trixie",
+            python_version="3.14",
+            image_version="20260715",
+            devcontainers_release="v1",
+            devcontainers_version="2",
+            custom_tooling={},
+            python_packages=[],
+            system_packages=[],
+            args_extra={
+                "package_name": "modern-debian-tools-python-debug-vsc-devcontainer"
+            },
+        )
+        self.assertIn("# Devcontainer Manifest — trixie-py3.14-20260715", rendered)
+        self.assertIn("Devcontainers release: v1", rendered)
 
     def test_release_shell_scripts_parse(self) -> None:
         scripts = [

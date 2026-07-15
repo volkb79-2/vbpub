@@ -18,7 +18,15 @@ PACKAGE_LIST_FILE = Path(__file__).resolve().parent.parent / "apt" / "packages.l
 
 FIRST_PARTY_WHEEL_NAMES = ("CIU", "cmru")
 AI_CLI_TOOL_NAMES = ("aider", "antigravity", "claude", "codex", "copilot", "openclaw", "opencode", "reasonix")
-CONTAINER_INSPECTION_TOOL_NAMES = ("dive", "dtop", "glances", "lazydocker", "syft")
+CONTAINER_INSPECTION_TOOL_NAMES = (
+    "crane",
+    "dive",
+    "dtop",
+    "glances",
+    "lazydocker",
+    "regctl",
+    "syft",
+)
 SECURITY_DEBUG_TOOL_NAMES = ("cdebug", "grype", "hadolint")
 # Node and npm are rendered in their own ## Node Runtime section.
 NODE_RUNTIME_NAMES = ("node", "npm")
@@ -93,6 +101,7 @@ PROJECT_HOMES = {
     "b2": "https://github.com/Backblaze/B2_Command_Line_Tool",
     "bat": "https://github.com/sharkdp/bat",
     "consul": "https://github.com/hashicorp/consul",
+    "crane": "https://github.com/google/go-containerregistry",
     "cdebug": "https://github.com/iximiuz/cdebug",
     "delta": "https://github.com/dandavison/delta",
     "dive": "https://github.com/wagoodman/dive",
@@ -109,6 +118,7 @@ PROJECT_HOMES = {
     "nvchad": "https://github.com/NvChad/NvChad",
     "nvim": "https://github.com/neovim/neovim",
     "rga": "https://github.com/phiresky/ripgrep-all",
+    "regctl": "https://github.com/regclient/regclient",
     "ripgrep": "https://github.com/BurntSushi/ripgrep",
     "shellcheck": "https://github.com/koalaman/shellcheck",
     "skopeo": "https://github.com/containers/skopeo",
@@ -239,7 +249,7 @@ def render_tool_table(
     exclude: Sequence[str] = (),
     artifact_map: Mapping[str, dict] | None = None,
 ) -> list[str]:
-    """Render a tool table with columns: Tool, Version, Policy, Project Home, Package digest.
+    """Render a tool table with version, policy, project, and immutable artifact evidence.
 
     Artifact metadata (digest, source URL) can be provided via artifact_map, keyed by tool name.
     """
@@ -255,7 +265,7 @@ def render_tool_table(
         return ["(none)", ""]
 
     lines = [
-        "| Tool | Version | Policy | Project Home | Package digest |",
+        "| Tool | Version | Policy | Project Home | Package digest / source |",
         "|---|---|---|---|---|",
     ]
     for name, version in items:
@@ -264,8 +274,11 @@ def render_tool_table(
         digest = ""
         if artifact_map and name in artifact_map:
             dig = artifact_map[name].get("sha256", "")
+            source_url = artifact_map[name].get("source_url", "")
             if dig:
                 digest = f"`sha256:{dig[:24]}…`"
+            if source_url:
+                digest = f"[{digest or 'source'}]({source_url})"
         version_cell = f"`{version}`"
         name_cell = f"`{name}`" if name else "-"
         line = f"| {name_cell} | {version_cell} | {policy} | {project_home} | {digest} |"
@@ -593,24 +606,33 @@ def render_unified_manifest(
     10. System Packages
     11. Rich Documentation Links / Notes
     """
-    tag = f"{debian_version}-py{python_version}-{image_version}"
+    variant = (args_extra or {}).get("variant", "").strip()
+    variant_part = f"-{variant}" if variant else ""
+    tag = f"{debian_version}-py{python_version}{variant_part}-{image_version}"
+    floating_tag = f"{debian_version}-py{python_version}{variant_part}-latest"
     src = parse_source_manifest_sections(source_manifest_content) if source_manifest_content else {}
 
-    lines: list[str] = [f"# Devcontainer Manifest — {tag}", ""]
+    package_name = (args_extra or {}).get("package_name", "")
+    manifest_kind = "Devcontainer Manifest" if "vsc-devcontainer" in package_name else "Image Manifest"
+    lines: list[str] = [f"# {manifest_kind} — {tag}", ""]
 
     if "Release" in src:
         lines.extend(_section_block("Release", src["Release"]))
     else:
-        lines.extend([
+        release_lines = [
             "## Release", "",
             f"- Build date: `{image_version}`",
-            f"- Target: `{args_extra.get('target', 'unknown') if args_extra else 'unknown'}`",
+        ]
+        if args_extra and args_extra.get("target"):
+            release_lines.append(f"- Target: `{args_extra['target']}`")
+        release_lines.extend([
             f"- Debian: `{debian_version}`",
             f"- Python: `{python_version}`",
             f"- Immutable image tag: `{tag}`",
-            f"- Floating image tag: `{debian_version}-py{python_version}-latest`",
+            f"- Floating image tag: `{floating_tag}`",
             "",
         ])
+        lines.extend(release_lines)
 
     if "Pull" in src:
         lines.extend(_section_block("Pull", src["Pull"]))
@@ -629,16 +651,19 @@ def render_unified_manifest(
     if "Base" in src:
         lines.extend(_section_block("Base", src["Base"]))
     else:
-        lines.extend([
+        base_lines = [
             "## Base", "",
             f"- Debian: {debian_version}",
             f"- Python: {python_version}",
             f"- Image version: {image_version}",
             f"- Image tag: {tag}",
-            f"- Devcontainers release: {devcontainers_release.strip() or 'unknown'}",
-            f"- Devcontainers image version: {devcontainers_version.strip() or 'unknown'}",
-            "",
-        ])
+        ]
+        if devcontainers_release.strip():
+            base_lines.append(f"- Devcontainers release: {devcontainers_release.strip()}")
+        if devcontainers_version.strip():
+            base_lines.append(f"- Devcontainers image version: {devcontainers_version.strip()}")
+        base_lines.append("")
+        lines.extend(base_lines)
 
     # Purpose section — from source manifest or description arg.
     if "Purpose" in src:
@@ -766,8 +791,6 @@ def render_unified_manifest(
         _user = args_extra.get("username", "")
         _repo = args_extra.get("repo", "")
         _pkg = args_extra.get("package_name", "")
-        _variant = args_extra.get("variant", "")
-        _variant_part = f"-{_variant}" if _variant else ""
         _family_readme_url = (
             f"https://github.com/{_user}/{_repo}/blob/main/"
             f"modern-debian-tools-python-debug/package-manifests-versioned/"
@@ -794,7 +817,7 @@ def render_unified_manifest(
     if "In-Image File" not in src:
         lines.extend([
             "## In-Image File", "",
-            "- Devcontainer manifest: "
+            "- Image manifest: "
             "`/usr/local/share/modern-debian-tools-python-debug/manifest.md`",
             "",
         ])

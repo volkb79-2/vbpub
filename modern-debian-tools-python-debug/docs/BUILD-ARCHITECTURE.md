@@ -60,6 +60,13 @@ former, so it has no `skopeo` prerequisite. Merely having `index.json` and
 blobs: that command normally composes manifests from content the destination
 registry can already resolve.
 
+The layout's JSON `index.json` and image manifests are protocol metadata and
+must not be confused with MDT's human-readable in-image `manifest.md`. The
+former links content-addressed configs/layers and platforms; the latter
+documents installed tools and release policy. See
+[OCI image tooling and repack design](OCI-IMAGE-TOOLING.md) for the complete
+terminology, registry-client decision and dstdns adoption guidance.
+
 #### Current repack validation status
 
 The 2026-07-14 transition run caught a `docker-repack` output layer containing
@@ -169,6 +176,13 @@ inside the default 7 GiB interactive tier.
 filesystem, and virtual address space is not resident RAM. A numeric override
 is available for diagnosis, but a low address-space limit causes false
 allocation failures before the cgroup is under memory pressure.
+
+`REPACK_JOBS` and `REPACK_CONCURRENCY` are parallelism controls, not CPU limits:
+the former selects concurrent image targets and the latter sizes the repacker's
+Rayon worker pool. Two workers do not imply a two-core cgroup quota. Conversely,
+raising concurrency cannot exceed a tighter ancestor/leaf quota and increases
+memory and I/O pressure. Benchmark concurrency 2/4/6 with CPU and I/O PSI before
+raising the configured default.
 
 The distinction between priority and a limit matters: `nice`, `ionice`, CPU
 shares/weight, and I/O weight let more important work win under contention, but
@@ -409,6 +423,15 @@ a verified binary. The canonical path does **not** check for or call `skopeo`.
 The separate historical benchmark script still uses
 `skopeo` to import an already-loaded local daemon image; that does not describe
 the release architecture.
+
+Counts below `/var/lib/docker/overlay2` are not a reliable image-layer or
+performance metric: they combine snapshots and writable layers across Docker's
+local store, while the named BuildKit worker has its own cache. Use `docker
+system df -v` and `docker buildx du --builder "$builder"` to attribute storage.
+Flattening a release does not garbage-collect either store and can reduce layer
+reuse; use the benchmark and retention guidance in
+[OCI image tooling and repack design](OCI-IMAGE-TOOLING.md) before changing
+layer topology.
 
 ## Failure boundaries
 

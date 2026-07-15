@@ -229,6 +229,18 @@ An internal inventory snapshot is also written at:
 
 That snapshot includes tool versions, pip package list, and selected Debian package versions.
 
+An example repository instruction file is shipped at:
+
+```
+/usr/local/share/modern-debian-tools-python-debug/AGENTS.md.example
+```
+
+Copy and adapt it as the consumer repo's `AGENTS.md`; for Claude Code, use a
+small `CLAUDE.md` containing `@AGENTS.md`. See
+[AI agent tool discovery](docs/AI-AGENT-TOOL-DISCOVERY.md). For the distinction
+between this human inventory and registry OCI manifests/digests, see
+[OCI image tooling and repack design](docs/OCI-IMAGE-TOOLING.md).
+
 ## Persisting Agent State
 
 To keep tool state across rebuilds, persist the workspace mount plus these home directories:

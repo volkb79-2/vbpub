@@ -26,9 +26,12 @@ ARG OCI_VERSION=""
 ARG OCI_REVISION=""
 ARG OCI_CREATED=""
 ARG TARGET=""
+ARG IMAGE_VARIANT=""
 ARG AWSCLI_VERSION
 ARG B2_VERSION
 ARG BAT_VERSION
+ARG CRANE_VERSION
+ARG REGCTL_VERSION
 ARG CODEX_VERSION
 ARG CLAUDE_CODE_VERSION
 ARG ANTIGRAVITY_VERSION
@@ -398,6 +401,15 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     EXPECTED_B2_SHA256="$(grep '^sha256' "${DOWNLOADS_DIR}/b2-${B2_VER}-linux_hashes.txt" | awk '{print $2}')"; \
     echo "${EXPECTED_B2_SHA256}  ${DOWNLOADS_DIR}/b2-${B2_VER}-linux" | sha256sum -c -; \
     install -m 755 "${DOWNLOADS_DIR}/b2-${B2_VER}-linux" /usr/local/bin/b2; \
+    require_file "${DOWNLOADS_DIR}/crane-${CRANE_VER}-checksums.txt"; \
+    require_file "${DOWNLOADS_DIR}/crane-${CRANE_VER}.tar.gz"; \
+    EXPECTED_CRANE_SHA256="$(grep 'go-containerregistry_Linux_x86_64.tar.gz$' "${DOWNLOADS_DIR}/crane-${CRANE_VER}-checksums.txt" | awk '{print $1}')"; \
+    echo "${EXPECTED_CRANE_SHA256}  ${DOWNLOADS_DIR}/crane-${CRANE_VER}.tar.gz" | sha256sum -c -; \
+    install_from_tar "${DOWNLOADS_DIR}/crane-${CRANE_VER}.tar.gz" crane /tmp/crane-extract; \
+    require_file "${DOWNLOADS_DIR}/regctl-${REGCTL_VER}.sha256"; \
+    require_file "${DOWNLOADS_DIR}/regctl-${REGCTL_VER}-linux-amd64"; \
+    (cd "${DOWNLOADS_DIR}" && sha256sum -c "regctl-${REGCTL_VER}.sha256"); \
+    install -m 755 "${DOWNLOADS_DIR}/regctl-${REGCTL_VER}-linux-amd64" /usr/local/bin/regctl; \
     require_file "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz"; \
     require_file "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz"; \
     require_file "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz"; \
@@ -532,6 +544,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     python3 /tmp/install_ai_cli_tools.py root; \
     rm -rf \
         /tmp/bat-extract \
+        /tmp/crane-extract \
         /tmp/grpcurl-extract \
         /tmp/delta-extract \
         /tmp/fd-extract \
@@ -675,6 +688,11 @@ USER root
 COPY scripts/finalize_container_environment.py /usr/local/bin/finalize_container_environment.py
 RUN chmod 0755 /usr/local/bin/finalize_container_environment.py
 
+# Repo-owned consumer template: agents do not auto-discover files under
+# /usr/local/share, so projects explicitly copy/adapt this as AGENTS.md and use
+# a one-line CLAUDE.md adapter. Exact versions remain in the generated manifest.
+COPY templates/AGENTS.md /usr/local/share/modern-debian-tools-python-debug/AGENTS.md.example
+
 # Copy staged-artifact metadata for manifest generation (digests, source URLs).
 # Note: this is a separate COPY because build/tool-artifacts-staging/ is cleaned
 # up in an earlier RUN layer.
@@ -800,6 +818,8 @@ RUN set -euo pipefail; \
         echo "awscli=$(aws --version 2>&1)"; \
         echo "b2=${b2_version_output}"; \
         echo "bat=$(bat --version 2>&1 | head -1)"; \
+        echo "crane=$(crane version 2>&1 | head -1)"; \
+        echo "regctl=$(regctl version 2>&1 | head -1)"; \
         if command -v claude >/dev/null 2>&1; then \
             echo "claude=$(claude --version 2>&1 | head -1)"; \
         else \
@@ -831,7 +851,7 @@ RUN set -euo pipefail; \
         if [ "${INSTALL_PHP}" = "true" ]; then \
             echo "php=$(php --version 2>&1 | head -1)"; \
             if command -v composer >/dev/null 2>&1; then \
-                echo "composer=$(composer --version 2>&1 | head -1)"; \
+                echo "composer=$(composer --version 2>/dev/null | head -1)"; \
             fi; \
         fi; \
     } > "${custom_tooling_file}"; \
@@ -861,6 +881,7 @@ RUN set -euo pipefail; \
         --artifact-metadata "/tmp/tool-artifacts-metadata.json" \
         --description "${OCI_DESCRIPTION_BASE:-${OCI_DESCRIPTION:-}}" \
         --target "${TARGET:-}" \
+        --variant "${IMAGE_VARIANT:-}" \
         --package-name "${_pkg_name}" \
         --username "${GITHUB_USERNAME}" \
         --repo "${GITHUB_REPO}" \

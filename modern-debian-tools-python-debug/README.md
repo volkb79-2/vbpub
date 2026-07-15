@@ -114,6 +114,9 @@ The docker images use date-based tags (`trixie-py3.14-20260616`, `20260616-2` fo
   by `BUILDX_BUILDER`; limits are defined in `cmru.build.toml`. See
   [the build architecture](docs/BUILD-ARCHITECTURE.md) for the complete
   build/repack/publication flow, cgroup boundaries, and load-attribution guide.
+  See [OCI image tooling and repack design](docs/OCI-IMAGE-TOOLING.md) for the
+  human-manifest/OCI-manifest distinction, registry-client choices, layer
+  trade-offs, and the CMRU reuse boundary.
 
 Helper functions:
 
@@ -450,6 +453,12 @@ This means one component can appear in both sections without being duplicated.
 The manifest now splits first-party wheels and AI CLI tools into their own sections so the
 release inventory reads the same way as the image build pipeline.
 
+For AI CLI startup guidance, use the shipped
+`/usr/local/share/modern-debian-tools-python-debug/AGENTS.md.example` as a
+consumer-repository starting point. The cross-CLI adapter pattern and why exact
+versions stay in the generated inventory are documented in
+[AI agent tool discovery](docs/AI-AGENT-TOOL-DISCOVERY.md).
+
 Example:
 - `aider` in `Custom Tooling` is the resolved release version from `aider --version`.
 - `postgresql-client=...` in `System packages` is the Debian package that provides `psql`.
@@ -607,6 +616,7 @@ Secondary manifest variants: 10 (https://raw.githubusercontent.com/devcontainers
 
 - Upstream devcontainers images: https://github.com/devcontainers/images
 - Python manifest: https://raw.githubusercontent.com/devcontainers/images/main/src/python/manifest.json
+- OCI image/registry tool design: [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md)
 - Awesome Tools List for Docker ecosystem: https://github.com/veggiemonk/awesome-docker/blob/master/README.md
 
 ### Critical freshness behavior

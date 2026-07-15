@@ -420,6 +420,30 @@ def _parse_claude_sha256(manifest: dict, platform: str) -> str:
     return checksum
 
 
+def _parse_github_asset_sha256(release: dict, expected_asset_name: str) -> str:
+    """Return the GitHub-computed digest for one immutable release asset."""
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        raise StageError("GitHub release payload missing 'assets' list")
+
+    for asset in assets:
+        if not isinstance(asset, dict) or asset.get("name") != expected_asset_name:
+            continue
+        digest = str(asset.get("digest") or "").strip().lower()
+        if not digest.startswith("sha256:"):
+            raise StageError(
+                f"GitHub release asset {expected_asset_name} has no sha256 digest"
+            )
+        checksum = digest.removeprefix("sha256:")
+        if not re.fullmatch(r"[0-9a-f]{64}", checksum):
+            raise StageError(
+                f"GitHub release asset {expected_asset_name} has invalid digest {digest!r}"
+            )
+        return checksum
+
+    raise StageError(f"GitHub release does not contain asset {expected_asset_name}")
+
+
 def _parse_antigravity_manifest(payload: dict) -> tuple[str, str, str]:
     version = str(payload.get("version") or "").strip()
     url = str(payload.get("url") or "").strip()
@@ -722,6 +746,90 @@ def _stage_antigravity(requested: str, records: list[StagedArtifact]) -> str:
     return version
 
 
+def _stage_crane(version: str, records: list[StagedArtifact]) -> None:
+    archive_name = "go-containerregistry_Linux_x86_64.tar.gz"
+    base_url = (
+        "https://github.com/google/go-containerregistry/releases/download/"
+        f"v{version}"
+    )
+    archive_url = f"{base_url}/{archive_name}"
+    checksums_url = f"{base_url}/checksums.txt"
+    archive_path = DOWNLOADS_DIR / f"crane-{version}.tar.gz"
+    checksums_path = DOWNLOADS_DIR / f"crane-{version}-checksums.txt"
+
+    checksums_final_url = _download(checksums_url, checksums_path)
+    archive_final_url = _download(archive_url, archive_path)
+    expected_sha256 = _parse_hashicorp_sha256(checksums_path, archive_name)
+    actual_sha256 = _sha256(archive_path)
+    if expected_sha256 != actual_sha256:
+        raise StageError(
+            f"crane checksum mismatch: expected {expected_sha256}, got {actual_sha256}"
+        )
+    if not _tar_contains_binary(archive_path, "crane"):
+        raise StageError("Downloaded go-containerregistry archive does not contain crane")
+
+    _record_artifact(
+        records,
+        tool="crane",
+        version=version,
+        source_url=archive_url,
+        final_url=archive_final_url,
+        path=archive_path,
+        kind="tar.gz",
+        verification="sha256 from upstream checksums.txt + archive contains crane",
+    )
+    _record_artifact(
+        records,
+        tool="crane-checksums",
+        version=version,
+        source_url=checksums_url,
+        final_url=checksums_final_url,
+        path=checksums_path,
+        kind="checksum-file",
+        verification="downloaded",
+    )
+
+
+def _stage_regctl(version: str, records: list[StagedArtifact]) -> None:
+    asset_name = "regctl-linux-amd64"
+    base_url = f"https://github.com/regclient/regclient/releases/download/v{version}"
+    binary_url = f"{base_url}/{asset_name}"
+    binary_path = DOWNLOADS_DIR / f"regctl-{version}-linux-amd64"
+    checksum_path = DOWNLOADS_DIR / f"regctl-{version}.sha256"
+
+    release_url = (
+        "https://api.github.com/repos/regclient/regclient/releases/tags/"
+        f"v{version}"
+    )
+    release = _fetch_json(release_url, headers=_github_api_headers())
+    expected_sha256 = _parse_github_asset_sha256(release, asset_name)
+    binary_final_url = _download(binary_url, binary_path)
+    actual_sha256 = _sha256(binary_path)
+    if expected_sha256 != actual_sha256:
+        raise StageError(
+            f"regctl checksum mismatch: expected {expected_sha256}, got {actual_sha256}"
+        )
+
+    # regclient does not publish a checksum-file release asset. Preserve the
+    # GitHub-computed asset digest as a sidecar so the Dockerfile can repeat the
+    # check without network access after the staging gate has succeeded.
+    checksum_path.write_text(
+        f"{expected_sha256}  {binary_path.name}\n",
+        encoding="utf-8",
+    )
+
+    _record_artifact(
+        records,
+        tool="regctl",
+        version=version,
+        source_url=binary_url,
+        final_url=binary_final_url,
+        path=binary_path,
+        kind="binary",
+        verification="sha256 from GitHub release asset digest",
+    )
+
+
 def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     records: list[StagedArtifact] = []
 
@@ -729,6 +837,8 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     resolved["ANTIGRAVITY_VER"] = _stage_antigravity(resolved["ANTIGRAVITY_VER"], records)
 
     _stage_b2(resolved["B2_VER"], records)
+    _stage_crane(resolved["CRANE_VER"], records)
+    _stage_regctl(resolved["REGCTL_VER"], records)
 
     _stage_tarball_tool(
         tool="bat",
@@ -1374,6 +1484,10 @@ def _resolve_versions() -> dict[str, str]:
         "HADOLINT_VER": _resolve_version(os.getenv("HADOLINT_VERSION"), "hadolint/hadolint"),
         "GRYPE_VER": _resolve_version(os.getenv("GRYPE_VERSION"), "anchore/grype"),
         "CDEBUG_VER": _resolve_version(os.getenv("CDEBUG_VERSION"), "iximiuz/cdebug"),
+        "CRANE_VER": _resolve_version(
+            os.getenv("CRANE_VERSION"), "google/go-containerregistry"
+        ),
+        "REGCTL_VER": _resolve_version(os.getenv("REGCTL_VERSION"), "regclient/regclient"),
         "B2_VER": _resolve_version(os.getenv("B2_VERSION"), "Backblaze/B2_Command_Line_Tool"),
         "BAT_VER": _resolve_version(os.getenv("BAT_VERSION"), "sharkdp/bat"),
         "FD_VER": _resolve_version(os.getenv("FD_VERSION"), "sharkdp/fd"),
