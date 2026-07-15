@@ -692,9 +692,38 @@ def test_input_building(tmp_state, sample_project, monkeypatch):
     assert "demo-P01-sample" in inp.frontmatters
     assert inp.lint_clean.get("demo-P01-sample") is True
     assert inp.project_paused is True
+    # P15 2026-07-15: a legacy EMPTY pause flag file (touch(), no content --
+    # exactly what this test writes above) means 'drain-handoffs', the
+    # pre-P15 boolean-pause behaviour (dispatch blocked only).
+    assert inp.pause_mode == "drain-handoffs"
     assert isinstance(inp.receipts[att_running], dict)
     assert inp.pid_alive[att_dead] is False
     assert inp.decisions_open == {"D-002"}
+
+
+# --------------------------------------------------------------------------
+# P15 2026-07-15: factory-state pause MODE reading (Daemon._pause_mode)
+
+def test_pause_mode_absent_flag_is_run(tmp_state, sample_project):
+    assert not paths.pause_flag("demo").exists()
+    d = daemon.Daemon({"demo": sample_project.root})
+    assert d._pause_mode("demo") == "run"
+
+
+def test_pause_mode_explicit_drain_agents_content(tmp_state, sample_project):
+    flag = paths.pause_flag("demo")
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.write_text("drain-agents", encoding="utf-8")
+    d = daemon.Daemon({"demo": sample_project.root})
+    assert d._pause_mode("demo") == "drain-agents"
+
+
+def test_pause_mode_explicit_drain_handoffs_content(tmp_state, sample_project):
+    flag = paths.pause_flag("demo")
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.write_text("drain-handoffs", encoding="utf-8")
+    d = daemon.Daemon({"demo": sample_project.root})
+    assert d._pause_mode("demo") == "drain-handoffs"
 
 
 # --------------------------------------------------------------------------

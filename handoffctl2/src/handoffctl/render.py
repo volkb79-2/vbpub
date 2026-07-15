@@ -17,8 +17,12 @@ INTERFACE CONTRACT (frozen):
                     attempt route_id, started, minutes since statefile
                     'since', cost-so-far as '<sum> <CCY> (<basis-mix>)'
                     where basis-mix is 'actual'/'estimated'/'mixed'/'unknown',
-                    leases_held, notes. Plus id="pause-banner" div when any
-                    project pause flag exists; id="decisions-open" count;
+                    leases_held, notes, last-activity age (P15 2026-07-15:
+                    from the newest of the task's attempt logs' mtime at
+                    render time; '-' when no log — see _format_age /
+                    _newest_attempt_log_age). Plus id="pause-banner" div
+                    when any project pause flag exists (now shows each
+                    paused project's mode too); id="decisions-open" count;
                     id="budget" summary per project.
     history.html    id="history" table of terminal + MERGED/VALIDATING
                     tasks: task, final state, merge_commit, progress_units,
@@ -53,10 +57,25 @@ INTERFACE CONTRACT (frozen):
                     frontmatter table (every field), the handoff body
                     rendered as <pre> (NO markdown rendering — injection
                     surface), attempts table (route, state, started/ended,
-                    session_handle, receipt result, usage incl. basis),
+                    session_handle, receipt result, usage incl. basis,
+                    last-activity age — P15 2026-07-15, see below),
                     gate results, id="log-excerpt" <pre> with the REDACTED
                     last 64KB of the newest attempt log, decisions
                     referenced, events tail (last 50 for this task).
+    config.html     P15 2026-07-15 (spec amendment, user directive): per-
+                    project policy form (current values for the 7 editable
+                    Policy keys; one fetch POST /api/config/policy per Save
+                    click, plain vanilla JS, page reload on success), Run /
+                    Drain handoffs / Drain agents buttons per project
+                    showing the current pause mode (fetch POST /api/config/
+                    pause), and a routing tiers table (current tier ->
+                    routes, editable, fetch POST /api/config/tier) followed
+                    by a READ-ONLY route-definitions table (cli/model/
+                    variant/effort/status). No inline secrets, no innerHTML
+                    (fetch + textContent-safe static markup only). Carries a
+                    visible hint that a routes.toml edit only changes the
+                    LIVE state file, not the tracked handoffctl2/routes.
+                    host.toml copy.
     live.html       SSE client: JS EventSource('/api/stream') (no project
                     param — the server defaults to the first registered
                     project) parses each event and appends one row built
@@ -175,9 +194,58 @@ NAV = """
   <a href="dag.html">DAG</a> |
   <a href="timeline.html">Timeline</a> |
   <a href="quality.html">Quality</a> |
-  <a href="live.html">Live</a>
+  <a href="live.html">Live</a> |
+  <a href="config.html">Config</a>
 </nav>
 """
+
+# P15 2026-07-15: factory-state pause modes (mirrors daemon.Daemon._pause_mode
+# and reconcile.py's pause-mode contract). Duplicated here in miniature
+# rather than imported from daemon.py to avoid a render<->daemon import
+# cycle (daemon.py already imports render); paths.py/config.py are frozen
+# so there is no shared home for this three-line mapping.
+def _pause_mode_for(project: str) -> str:
+    p = paths.pause_flag(project)
+    if not p.exists():
+        return "run"
+    try:
+        content = p.read_text(encoding="utf-8").strip()
+    except OSError:
+        content = ""
+    return "drain-agents" if content == "drain-agents" else "drain-handoffs"
+
+
+def _format_age(seconds: float | None) -> str:
+    """Human units per the P15 handoff's examples: '3m', '2h05m'; '-' when
+    seconds is None (no log file found)."""
+    if seconds is None:
+        return "-"
+    total_minutes = int(max(0.0, seconds) // 60)
+    hours, minutes = divmod(total_minutes, 60)
+    if hours > 0:
+        return f"{hours}h{minutes:02d}m"
+    return f"{minutes}m"
+
+
+def _attempt_log_age_seconds(project: str, att: Any, now_ts: float) -> float | None:
+    """Age (seconds) of one attempt's own log file mtime; None if the log
+    doesn't exist. Mirrors daemon.Daemon._attempt_scan's log-path fallback
+    (att.log_path if set, else attempt_dir/'attempt.log') so both surfaces
+    agree on which file represents an attempt's activity."""
+    attempt_dir = paths.attempt_dir(project, att.attempt_id)
+    log_path = Path(att.log_path) if att.log_path else (attempt_dir / "attempt.log")
+    if not log_path.exists():
+        return None
+    return max(0.0, now_ts - log_path.stat().st_mtime)
+
+
+def _newest_attempt_log_age(project: str, attempts: list[Any], now_ts: float) -> float | None:
+    """Per-task last-activity: the FRESHEST (smallest age) log mtime across
+    all of the task's attempts; None if none of them have a log file yet."""
+    ages = [a for a in (
+        _attempt_log_age_seconds(project, att, now_ts) for att in attempts
+    ) if a is not None]
+    return min(ages) if ages else None
 
 
 def _html_head(title: str) -> str:
@@ -268,6 +336,9 @@ def render_all(registry: dict[str, Path]) -> Path:
     # Render quality.html
     _render_quality(www, registry, all_states)
 
+    # Render config.html (P15 2026-07-15)
+    _render_config(www, registry)
+
     # Render task pages
     for project in registry.keys():
         states = all_states.get(project, {})
@@ -292,12 +363,14 @@ def render_after_event(registry: dict[str, Path]) -> Path:
 def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, dict[str, TaskStateFile]]) -> None:
     """Render index.html with active tasks and pause banner."""
     rows = []
-    all_paused = set()
+    all_paused: dict[str, str] = {}   # project -> pause mode
 
     # Check if any project has a pause flag
     for project in registry.keys():
         if paths.pause_flag(project).exists():
-            all_paused.add(project)
+            all_paused[project] = _pause_mode_for(project)
+
+    now_ts = datetime.now(timezone.utc).timestamp()
 
     for project in sorted(registry.keys()):
         states = all_states.get(project, {})
@@ -323,6 +396,10 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
                 # Notes
                 notes = tsf.notes or "—"
 
+                # P15 2026-07-15: per-agent last-activity age (newest of the
+                # task's attempt logs' mtime at render time).
+                last_activity = _format_age(_newest_attempt_log_age(project, tsf.attempts, now_ts))
+
                 rows.append(f"""
                   <tr>
                     <td>{html.escape(project)}</td>
@@ -334,12 +411,14 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
                     <td>{html.escape(cost_str)} ({html.escape(basis_mix)})</td>
                     <td>{html.escape(leases)}</td>
                     <td>{html.escape(notes)}</td>
+                    <td>{html.escape(last_activity)}</td>
                   </tr>
                 """)
 
     pause_banner = ""
     if all_paused:
-        pause_banner = f'<div id="pause-banner">Paused: {html.escape(", ".join(sorted(all_paused)))}</div>'
+        parts = [f"{project} ({mode})" for project, mode in sorted(all_paused.items())]
+        pause_banner = f'<div id="pause-banner">Paused: {html.escape(", ".join(parts))}</div>'
 
     content = f"""
     {pause_banner}
@@ -355,10 +434,11 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
           <th>Cost</th>
           <th>Leases</th>
           <th>Notes</th>
+          <th>Last Activity</th>
         </tr>
       </thead>
       <tbody>
-        {"".join(rows) if rows else '<tr><td colspan="9">No active tasks</td></tr>'}
+        {"".join(rows) if rows else '<tr><td colspan="10">No active tasks</td></tr>'}
       </tbody>
     </table>
     """
@@ -828,6 +908,160 @@ def _render_quality(www: Path, registry: dict[str, Path], all_states: dict[str, 
     (www / "quality.html").write_text(html_content, encoding="utf-8")
 
 
+# P15 2026-07-15: the 7 Policy keys the UI is allowed to edit (mirrors
+# daemon._POLICY_BOUNDS' key set; render.py has no import on daemon.py, so
+# this is the render-side copy of the same editable-key list — bounds
+# themselves are validated server-side, never trusted from this page).
+_EDITABLE_POLICY_KEYS = [
+    "max_active_tasks", "ready_queue_target", "max_attempts_per_task",
+    "wave_max_diffs", "stall_log_quiet_seconds", "attempt_max_wall_seconds",
+    "reconcile_interval_seconds",
+]
+
+_CONFIG_JS = """
+<script>
+function postJSON(url, body, onDone) {
+    fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    }).then(function(resp) {
+        if (resp.ok) {
+            window.location.reload();
+            return;
+        }
+        resp.json().then(function(data) {
+            onDone(data.error || ('http ' + resp.status));
+        }).catch(function() {
+            onDone('http ' + resp.status);
+        });
+    }).catch(function(err) {
+        onDone(String(err));
+    });
+}
+
+function savePolicy(project, key) {
+    var input = document.getElementById('policy-' + project + '-' + key);
+    var value = parseInt(input.value, 10);
+    postJSON('/api/config/policy', {project: project, key: key, value: value}, function(err) {
+        alert('policy update failed: ' + err);
+    });
+}
+
+function setPauseMode(project, mode) {
+    postJSON('/api/config/pause', {project: project, mode: mode}, function(err) {
+        alert('pause update failed: ' + err);
+    });
+}
+
+function saveTier(tier) {
+    var input = document.getElementById('tier-' + tier);
+    var routes = input.value.split(',').map(function(s) { return s.trim(); })
+        .filter(function(s) { return s.length > 0; });
+    postJSON('/api/config/tier', {tier: tier, routes: routes}, function(err) {
+        alert('tier update failed: ' + err);
+    });
+}
+</script>
+"""
+
+
+def _render_config(www: Path, registry: dict[str, Path]) -> None:
+    """Render config.html: per-project policy form + pause-mode buttons,
+    plus a global routing-tiers editor and a read-only route-definitions
+    table (P15 2026-07-15 spec amendment)."""
+    project_sections = []
+    for project in sorted(registry.keys()):
+        root = registry[project]
+        try:
+            cfg = config.ProjectConfig.load(root)
+        except Exception:
+            continue
+
+        policy_rows = []
+        for key in _EDITABLE_POLICY_KEYS:
+            value = getattr(cfg.policy, key, None)
+            if value is None:
+                continue
+            input_id = f"policy-{project}-{key}"
+            policy_rows.append(f"""
+              <tr>
+                <td>{html.escape(key)}</td>
+                <td><input type="number" id="{html.escape(input_id)}" value="{html.escape(str(value))}"></td>
+                <td><button type="button" onclick="savePolicy('{html.escape(project)}', '{html.escape(key)}')">Save</button></td>
+              </tr>
+            """)
+
+        mode = _pause_mode_for(project)
+        project_sections.append(f"""
+          <div class="config-project" data-project="{html.escape(project)}">
+            <h2>{html.escape(project)}</h2>
+            <p>Factory state: <strong>{html.escape(mode)}</strong></p>
+            <p>
+              <button type="button" onclick="setPauseMode('{html.escape(project)}', 'run')">Run</button>
+              <button type="button" onclick="setPauseMode('{html.escape(project)}', 'drain-handoffs')">Drain handoffs</button>
+              <button type="button" onclick="setPauseMode('{html.escape(project)}', 'drain-agents')">Drain agents</button>
+            </p>
+            <table>
+              <thead><tr><th>Policy key</th><th>Value</th><th></th></tr></thead>
+              <tbody>{"".join(policy_rows) if policy_rows else '<tr><td colspan="3">No editable keys</td></tr>'}</tbody>
+            </table>
+          </div>
+        """)
+
+    try:
+        routes_obj = config.Routes.load()
+    except Exception:
+        routes_obj = None
+
+    tier_rows = []
+    route_def_rows = []
+    if routes_obj is not None:
+        for tier in sorted(routes_obj.tiers.keys()):
+            route_ids = routes_obj.tiers[tier]
+            joined = ", ".join(route_ids)
+            tier_rows.append(f"""
+              <tr>
+                <td>{html.escape(tier)}</td>
+                <td><input type="text" id="tier-{html.escape(tier)}" size="60" value="{html.escape(joined)}"></td>
+                <td><button type="button" onclick="saveTier('{html.escape(tier)}')">Save</button></td>
+              </tr>
+            """)
+        for route_id in sorted(routes_obj.routes.keys()):
+            r = routes_obj.routes[route_id]
+            route_def_rows.append(f"""
+              <tr>
+                <td>{html.escape(route_id)}</td>
+                <td>{html.escape(r.cli)}</td>
+                <td>{html.escape(r.model)}</td>
+                <td>{html.escape(r.variant or "—")}</td>
+                <td>{html.escape(r.effort or "—")}</td>
+                <td>{html.escape(r.status or "—")}</td>
+              </tr>
+            """)
+
+    content = f"""
+    {"".join(project_sections) if project_sections else '<p>No registered projects.</p>'}
+    <h2>Routing tiers</h2>
+    <table id="tiers-table">
+      <thead><tr><th>Tier</th><th>Routes (comma-separated route ids)</th><th></th></tr></thead>
+      <tbody>{"".join(tier_rows) if tier_rows else '<tr><td colspan="3">No tiers</td></tr>'}</tbody>
+    </table>
+    <h2>Route definitions (read-only)</h2>
+    <table id="route-defs">
+      <thead><tr><th>Route</th><th>CLI</th><th>Model</th><th>Variant</th><th>Effort</th><th>Status</th></tr></thead>
+      <tbody>{"".join(route_def_rows) if route_def_rows else '<tr><td colspan="6">No routes</td></tr>'}</tbody>
+    </table>
+    <p><em>Note: routing edits above change ONLY the live state file
+    (routes.toml) — the tracked copy handoffctl2/routes.host.toml may now
+    differ; sync it in git when satisfied.</em></p>
+    {_CONFIG_JS}
+    """
+
+    html_content = _html_head("Config") + content + _html_foot()
+    (www / "config.html").write_text(html_content, encoding="utf-8")
+
+
 def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -> None:
     """Render a task/<project>/<task_id>.html page."""
     task_dir = www / "task" / project
@@ -869,10 +1103,14 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -
                 handoff_body = "Error reading handoff file"
 
     # Attempts table
+    now_ts = datetime.now(timezone.utc).timestamp()
     attempts_rows = []
     for att in tsf.attempts:
         receipt_result = att.receipt.result.value if att.receipt else "—"
         usage_str = f"{att.usage.basis.value}" if att.usage else "—"
+        # P15 2026-07-15: per-attempt last-activity age (own log's mtime;
+        # cheap -- one stat per attempt).
+        last_activity = _format_age(_attempt_log_age_seconds(project, att, now_ts))
 
         attempts_rows.append(f"""
           <tr>
@@ -883,6 +1121,7 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -
             <td>{html.escape(att.session_handle or "—")}</td>
             <td>{html.escape(receipt_result)}</td>
             <td>{html.escape(usage_str)}</td>
+            <td>{html.escape(last_activity)}</td>
           </tr>
         """)
 
@@ -918,10 +1157,11 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -
           <th>Session</th>
           <th>Receipt</th>
           <th>Basis</th>
+          <th>Last Activity</th>
         </tr>
       </thead>
       <tbody>
-        {"".join(attempts_rows) if attempts_rows else '<tr><td colspan="7">No attempts</td></tr>'}
+        {"".join(attempts_rows) if attempts_rows else '<tr><td colspan="8">No attempts</td></tr>'}
       </tbody>
     </table>
     <h2>Log</h2>

@@ -42,7 +42,12 @@ INTERFACE CONTRACT (frozen). Semantics:
      environment blocker (unblock 'operator: inspect attempts'); the prior
      "fresh DispatchImplementer counting a new attempt" wording was never
      actually implemented and left the task ACTIVE forever with zero
-     events -- a live-incident silent dead-end).
+     events -- a live-incident silent dead-end). P15 2026-07-15: when
+     inp.pause_mode == "drain-agents", ResumeAttempt (a new agent process)
+     is skipped entirely for this pass -- the attempt is left parked
+     INTERRUPTED (NOT transitioned to BLOCKED; that would misrepresent a
+     temporary drain as a dead end) until a later pass observes run or
+     drain-handoffs.
    - no receipt, pid alive, elapsed since attempt.started exceeds the
      wall-clock cap (fm.budget.max_wall_seconds if set, else
      inp.attempt_max_wall_seconds, P14 2026-07-15 item 6) -> InterruptAttempt
@@ -62,6 +67,18 @@ INTERFACE CONTRACT (frozen). Semantics:
    opens when >= wave_max_diffs are waiting OR the oldest has waited >
    wave_open_after_seconds (input field). For an open wave whose review
    attempt is not yet running -> LaunchReview(wave_id, task_ids).
+
+   P15 2026-07-15 (factory-state pause MODES, user directive): inp.pause_mode
+   is "run" (default; everything below unaffected), "drain-handoffs", or
+   "drain-agents". `project_paused` (unchanged, still gates DISPATCH inside
+   dispatch_eligible only) is True for BOTH drain modes -- new dispatch
+   never starts under either. The distinction only matters for the two
+   OTHER "new agent process" starts: ResumeAttempt (item 4 below) and
+   LaunchReview (this item) are additionally skipped when pause_mode is
+   "drain-agents" (no new agent process of ANY kind); they still fire under
+   "drain-handoffs" (in-flight handoffs run their full pipeline to
+   completion) exactly as under "run". OpenWave itself is pure bookkeeping
+   (no process start) and is never gated.
 6. PROGRESS RATCHET (SPEC §8): if the last
    policy.max_consecutive_zero_progress_merges merges (merge_history, most
    recent first: list of (task_id, progress_unit_count, source_kind)) all
@@ -213,6 +230,13 @@ class ReconcileInput:
     # P14 2026-07-15 item 6: default per-attempt wall-clock cap (seconds);
     # a task's own fm.budget.max_wall_seconds overrides this when set.
     attempt_max_wall_seconds: int = DEFAULT_ATTEMPT_MAX_WALL_SECONDS
+    # P15 2026-07-15: factory-state pause MODE ("run"|"drain-handoffs"|
+    # "drain-agents"). Purely additive -- `project_paused` above is left
+    # untouched (still True for either drain mode; dispatch_eligible's
+    # 'paused' check is unchanged) so every pre-existing test that only sets
+    # project_paused keeps its old semantics (no gate on resume/review) via
+    # this field's "run" default. Only ResumeAttempt/LaunchReview consult it.
+    pause_mode: str = "run"
 
 
 def plan_project(inp: ReconcileInput) -> list[Action]:
@@ -355,6 +379,15 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                         attempt_actions.append(StallCheck(task_id=task_id, attempt_id=attempt.attempt_id))
 
             # INTERRUPTED attempt handling
+            elif attempt.state == AttemptState.INTERRUPTED and inp.pause_mode == "drain-agents":
+                # P15 2026-07-15: draining agents -- no NEW agent process may
+                # start (a resume IS a new process). Leave the attempt
+                # parked INTERRUPTED; do not transition to BLOCKED either,
+                # since that would misrepresent a temporary drain as a
+                # genuine dead end. A later pass (run/drain-handoffs)
+                # re-evaluates normally.
+                pass
+
             elif attempt.state == AttemptState.INTERRUPTED:
                 # Attempts budget left?
                 attempts_count = sum(1 for a in tsf.attempts if a.state in TERMINAL_ATTEMPT_STATES
@@ -413,6 +446,11 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     # so it too must not trigger a duplicate cold launch here.
     for task_id, tsf in inp.states.items():
         if tsf.state == TaskState.AWAITING_REVIEW and tsf.wave_id is not None:
+            if inp.pause_mode == "drain-agents":
+                # P15 2026-07-15: no new agent process (a review launch IS
+                # one) while draining agents; the task stays parked
+                # AWAITING_REVIEW until a later pass sees run/drain-handoffs.
+                continue
             has_review_in_flight = any(
                 a.role == Role.FRONTIER_REVIEW
                 and (

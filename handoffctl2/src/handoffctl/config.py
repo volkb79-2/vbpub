@@ -161,6 +161,104 @@ class ProjectConfig:
         return redact(text, self.redact_patterns)
 
 
+# ---------------------------------------------------------------------------
+# P15 2026-07-15: UI config mutation (the two functions this package is
+# allowed to add to this otherwise-frozen module — see handoff/
+# P15-ui-config.md). Both are SURGICAL line edits: only the matched
+# anchor line(s) change, every other byte (including comments) is
+# preserved, and the whole file is rewritten in one shot only after every
+# requested key has been located (never a partial write). Callers
+# (daemon.py) are responsible for validating keys/bounds/route-ids BEFORE
+# calling — these two functions raise ValueError when an anchor cannot be
+# found, which the caller turns into a 400 with no write performed.
+
+def update_project_policy(root: Path, changes: dict[str, int]) -> None:
+    """Rewrite ONLY the named `<key> = <value>` lines inside the [policy]
+    section of `<root>/.handoffctl/project.toml`. `changes` maps policy key
+    -> new int value. Raises ValueError (no write at all) if the [policy]
+    section, or any requested key's anchor line inside it, is not found."""
+    p = root / ".handoffctl" / "project.toml"
+    text = p.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+
+    section_start: int | None = None
+    section_end = len(lines)
+    for i, raw in enumerate(lines):
+        stripped = raw.strip()
+        if stripped == "[policy]":
+            section_start = i
+        elif section_start is not None and i > section_start and stripped.startswith("[") and stripped.endswith("]"):
+            section_end = i
+            break
+    if section_start is None:
+        raise ValueError("no [policy] section found in project.toml")
+
+    remaining = dict(changes)
+    key_line_re = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)([^#]*?)(\s*(?:#.*)?)$")
+    for i in range(section_start + 1, section_end):
+        raw = lines[i]
+        body = raw[:-1] if raw.endswith("\n") else raw
+        m = key_line_re.match(body)
+        if not m:
+            continue
+        indent, key, eq, _old_val, trail = m.groups()
+        if key in remaining:
+            newline_suffix = "\n" if raw.endswith("\n") else ""
+            lines[i] = f"{indent}{key}{eq}{remaining.pop(key)}{trail}{newline_suffix}"
+
+    if remaining:
+        raise ValueError(f"policy key(s) not found in [policy] section: {sorted(remaining)}")
+
+    p.write_text("".join(lines), encoding="utf-8")
+
+
+def update_routes(changes: dict[str, list[str]]) -> None:
+    """Rewrite ONLY the `routes = [...]` line under each named
+    `[tiers.<tier>]` header in the LIVE routes state file
+    (paths.routes_path()) — `changes` maps tier name -> new ordered list of
+    route ids. Never touches [routes.*] definitions (v1 only remaps which
+    already-DEFINED routes a tier points at). Raises ValueError (no write
+    at all) if a tier's section, or its `routes = [...]` line inside it, is
+    not found."""
+    p = paths.routes_path()
+    text = p.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+
+    remaining = dict(changes)
+    routes_line_re = re.compile(r"^(\s*routes\s*=\s*)\[[^\]]*\](.*)$")
+    for tier in list(remaining):
+        header = f"[tiers.{tier}]"
+        start = None
+        for i, raw in enumerate(lines):
+            if raw.strip() == header:
+                start = i
+                break
+        if start is None:
+            continue
+        end = len(lines)
+        for i in range(start + 1, len(lines)):
+            s = lines[i].strip()
+            if s.startswith("[") and s.endswith("]"):
+                end = i
+                break
+        for i in range(start + 1, end):
+            raw = lines[i]
+            body = raw[:-1] if raw.endswith("\n") else raw
+            m = routes_line_re.match(body)
+            if m:
+                prefix, trail = m.groups()
+                rendered = ", ".join(f'"{r}"' for r in remaining[tier])
+                newline_suffix = "\n" if raw.endswith("\n") else ""
+                lines[i] = f"{prefix}[{rendered}]{trail}{newline_suffix}"
+                del remaining[tier]
+                break
+
+    if remaining:
+        raise ValueError(f"tier(s) not found or missing routes= line: {sorted(remaining)}")
+
+    p.write_text("".join(lines), encoding="utf-8")
+
+
 _DEFAULT_REDACT = [
     r"(?i)(api[_-]?key|token|secret|password|authorization)\s*[=:]\s*\S+",
     r"sk-[A-Za-z0-9_-]{16,}",

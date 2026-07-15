@@ -1685,3 +1685,110 @@ def test_waves_no_duplicate_review_launch_while_preflighting():
         )
         launches = [a for a in plan_project(inp) if isinstance(a, LaunchReview)]
         assert bool(launches) == expect_launch, f"{state} handle={handle}"
+
+
+# ============================================================================
+# P15 2026-07-15: factory-state pause MODES (reconcile.py's ownership share
+# of the P15-ui-config.md handoff, oracle 7). `pause_mode` is purely
+# additive to ReconcileInput (default "run"), so every pre-existing test
+# above that only sets `project_paused` keeps its old semantics unchanged.
+# ============================================================================
+
+def _pause_mode_composite_input(pause_mode: str):
+    """One QUEUED task (dispatch candidate), one INTERRUPTED-with-handle
+    attempt (resume candidate), one open-wave AWAITING_REVIEW task with no
+    review in flight (launch-review candidate) -- the exact three 'new
+    agent process' actions oracle 7 asks about, all in one ReconcileInput
+    so a single plan_project() call answers all three for a given mode.
+
+    max_active_tasks=5: R1 (ACTIVE) and W1 (AWAITING_REVIEW) already count
+    toward the wip-cap (dispatch_eligible item 4), so the cap must leave
+    room for Q1's dispatch too, independent of pause-mode gating."""
+    cfg = make_config(max_active_tasks=5)
+    routes = make_routes()
+
+    fm_queued = make_frontmatter(id="Q1")
+    tsf_queued = make_tsf(task_id="Q1", state=TaskState.QUEUED)
+
+    fm_resume = make_frontmatter(id="R1")
+    att_resume = make_attempt(attempt_id="att-resume", state=AttemptState.INTERRUPTED, receipt=None)
+    att_resume.session_handle = "sess-resume"
+    tsf_resume = make_tsf(task_id="R1", state=TaskState.ACTIVE, attempts=[att_resume])
+
+    fm_review = make_frontmatter(id="W1")
+    tsf_review = make_tsf(task_id="W1", state=TaskState.AWAITING_REVIEW)
+    tsf_review.wave_id = "wave-p15"
+
+    return ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"Q1": tsf_queued, "R1": tsf_resume, "W1": tsf_review},
+        frontmatters={"Q1": (fm_queued, "h.md"), "R1": (fm_resume, "h.md"), "W1": (fm_review, "h.md")},
+        lint_clean={},
+        project_paused=(pause_mode != "run"),
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        pause_mode=pause_mode,
+    )
+
+
+def test_pause_mode_run_allows_all_three():
+    """Oracle 7: mode 'run' -> dispatch, resume, AND launch-review all fire."""
+    inp = _pause_mode_composite_input("run")
+    actions = plan_project(inp)
+    assert any(isinstance(a, DispatchImplementer) and a.task_id == "Q1" for a in actions)
+    assert any(isinstance(a, ResumeAttempt) and a.attempt_id == "att-resume" for a in actions)
+    assert any(isinstance(a, LaunchReview) and a.wave_id == "wave-p15" for a in actions)
+
+
+def test_pause_mode_drain_handoffs_blocks_dispatch_only():
+    """Oracle 7: 'drain-handoffs' -> QUEUED stays put (no dispatch) while a
+    waiting wave still yields LaunchReview and an INTERRUPTED-with-handle
+    attempt still yields ResumeAttempt."""
+    inp = _pause_mode_composite_input("drain-handoffs")
+    actions = plan_project(inp)
+    assert not any(isinstance(a, DispatchImplementer) for a in actions)
+    assert any(isinstance(a, ResumeAttempt) and a.attempt_id == "att-resume" for a in actions)
+    assert any(isinstance(a, LaunchReview) and a.wave_id == "wave-p15" for a in actions)
+
+
+def test_pause_mode_drain_agents_blocks_all_three():
+    """Oracle 7: 'drain-agents' -> none of dispatch/resume/launch-review
+    fire; the INTERRUPTED attempt is left parked (no BLOCKED transition
+    either -- a drain is temporary, not a dead end)."""
+    inp = _pause_mode_composite_input("drain-agents")
+    actions = plan_project(inp)
+    assert not any(isinstance(a, DispatchImplementer) for a in actions)
+    assert not any(isinstance(a, ResumeAttempt) for a in actions)
+    assert not any(isinstance(a, LaunchReview) for a in actions)
+    assert not any(isinstance(a, Transition) and a.task_id == "R1" for a in actions)
+
+
+def test_pause_mode_default_is_run_when_unset():
+    """pause_mode is purely additive: omitting it (as every pre-P15 test in
+    this file does) defaults to 'run' -- ResumeAttempt/LaunchReview are
+    never gated by omission alone."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    att.session_handle = "sess-1"
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15), cfg=cfg, routes=routes,
+        states={"P01": tsf}, frontmatters={"P01": (fm, "h.md")},
+        lint_clean={}, project_paused=False, decisions_open=set(),
+        merged_branches=set(), leases_free={}, provider_ok={},
+        log_quiet_seconds={}, pid_alive={}, receipts={},
+        # pause_mode intentionally omitted
+    )
+    assert inp.pause_mode == "run"
+    resumes = [a for a in plan_project(inp) if isinstance(a, ResumeAttempt)]
+    assert len(resumes) == 1

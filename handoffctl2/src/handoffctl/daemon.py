@@ -119,7 +119,32 @@ INTERFACE CONTRACT (frozen):
     GET /api/stream?project= -> text/event-stream: poll events.jsonl every
         2s, emit new events as `data: <json>\n\n` (heartbeat comment line
         every 15s); connection ends when client disconnects.
-  All responses read-only; no mutation endpoints exist.
+  P15 2026-07-15 (spec amendment, user directive): CONFIG mutations are now
+  allowed through audited loopback endpoints (workflow-STATE mutations
+  remain CLI-only). All three are POST, JSON in/out, 400 on validation
+  failure with NO write performed, 404 for an unknown project/tier, 405 for
+  GET on these paths:
+    POST /api/config/policy {project, key, value} -> config.
+        update_project_policy surgical edit of <root>/.handoffctl/
+        project.toml's [policy] section; key must be one of the seven
+        editable Policy fields, value an int within that key's sane bounds
+        (see daemon._POLICY_BOUNDS); appends CONFIG_CHANGED {scope:
+        "policy", key, old, new} and re-renders.
+    POST /api/config/pause {project, mode: "run"|"drain-handoffs"|
+        "drain-agents"} -> writes/removes paths.pause_flag(project) with
+        the mode as its CONTENT (see reconcile.py's pause-mode semantics
+        and Daemon._pause_mode); appends PAUSE_SET {"mode": mode} (mode !=
+        "run") or PAUSE_CLEARED (mode == "run"), actor OPERATOR 'ui' — the
+        SAME event shape the CLI/ntfy surfaces use, so all three pause
+        surfaces are audited identically; re-renders.
+    POST /api/config/tier {tier, routes: [route_id, ...]} -> config.
+        update_routes surgical edit of the LIVE routes.toml's
+        `[tiers.<tier>] routes = [...]` line (route ids must already be
+        DEFINED — v1 never creates new route definitions from the UI);
+        appends CONFIG_CHANGED {scope: "routes", key: tier, old, new} to
+        EVERY registered project's event log (routes.toml is shared, not
+        project-scoped) and re-renders.
+  Every other GET endpoint above remains read-only.
 - stop(): set the loop flag false and shut the HTTP server down (used by
   tests; signal handlers call it).
 """
@@ -154,6 +179,31 @@ SSE_POLL_SECONDS = 0.5
 SSE_HEARTBEAT_SECONDS = 15.0
 DEFAULT_HTTP_PORT = 8942
 DEFAULT_RECONCILE_INTERVAL = 30.0
+
+# P15 2026-07-15: UI config endpoints (POST-only; GET on these -> 405).
+_CONFIG_POST_PATHS = frozenset({
+    "/api/config/policy", "/api/config/pause", "/api/config/tier",
+})
+
+# Sane per-key int bounds for POST /api/config/policy. The handoff spells
+# out "(1..64, interval 5..600)" for the count-like knobs and the reconcile
+# interval respectively; the two duration knobs (quiet/wall-clock seconds)
+# aren't literally bounded by the same tiny range in the handoff text (their
+# real-world defaults, 300s and 10800s, would themselves be "out of bounds"
+# under 1..64) so this package picks generous but sane second-denominated
+# ceilings for them instead — flagged as an assumption in the P15 REPORT.
+_POLICY_BOUNDS: dict[str, tuple[int, int]] = {
+    "max_active_tasks": (1, 64),
+    "ready_queue_target": (1, 64),
+    "max_attempts_per_task": (1, 64),
+    "wave_max_diffs": (1, 64),
+    "stall_log_quiet_seconds": (1, 86400),
+    "attempt_max_wall_seconds": (1, 604800),
+    "reconcile_interval_seconds": (5, 600),
+}
+
+# P15 2026-07-15: factory-state pause modes accepted by POST /api/config/pause.
+_PAUSE_MODES = frozenset({"run", "drain-handoffs", "drain-agents"})
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -354,7 +404,8 @@ class Daemon:
             f = findings.get(relpath, [])
             lint_clean[fm_id] = not lint.has_blocking(f)
 
-        project_paused = paths.pause_flag(project).exists()
+        pause_mode = self._pause_mode(project)
+        project_paused = pause_mode != "run"
         try:
             decisions_open = decisions.open_ids(cfg)
         except Exception:
@@ -402,7 +453,26 @@ class Daemon:
             review_rejections_by_area=review_rejections_by_area,
             blocked_underspecified_count=blocked_underspecified_count,
             attempt_max_wall_seconds=attempt_max_wall_seconds,
+            pause_mode=pause_mode,
         )
+
+    def _pause_mode(self, project: str) -> str:
+        """P15 2026-07-15 (factory-state pause MODES): the project pause
+        flag file's CONTENT is now the mode. Absent -> 'run'. An explicit
+        'drain-agents' content selects that mode; anything else (including
+        the legacy EMPTY flag file — today's pre-P15 behaviour) is
+        'drain-handoffs', since that mode is exactly what a bare boolean
+        pause flag always meant (block new dispatch only)."""
+        p = paths.pause_flag(project)
+        if not p.exists():
+            return "run"
+        try:
+            content = p.read_text(encoding="utf-8").strip()
+        except OSError:
+            content = ""
+        if content == "drain-agents":
+            return "drain-agents"
+        return "drain-handoffs"
 
     def _merged_branches(self, cfg: ProjectConfig, states: dict[str, TaskStateFile]) -> set[str]:
         out: set[str] = set()
@@ -1093,6 +1163,22 @@ class Daemon:
                     except Exception:
                         pass
 
+            def do_POST(self) -> None:  # noqa: N802
+                try:
+                    daemon._handle_post(self)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                except Exception as exc:
+                    try:
+                        body = str(exc).encode("utf-8")
+                        self.send_response(500)
+                        self.send_header("Content-Type", "text/plain")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                    except Exception:
+                        pass
+
         httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
         httpd.daemon_threads = True
         self._httpd = httpd
@@ -1133,6 +1219,10 @@ class Daemon:
             handler.send_response(302)
             handler.send_header("Location", "/www/index.html")
             handler.end_headers()
+            return
+
+        if path in _CONFIG_POST_PATHS:
+            self._send_json(handler, 405, b'{"error":"method not allowed"}')
             return
 
         if path.startswith("/www/"):
@@ -1195,6 +1285,183 @@ class Daemon:
             return
 
         self._send_json(handler, 404, b'{"error":"not found"}')
+
+    # -- HTTP config mutation endpoints (P15 2026-07-15) -----------------
+
+    def _append_ui_event(self, project: str, cfg: ProjectConfig | None,
+                          states: dict[str, TaskStateFile], ev_type: EventType,
+                          payload: dict[str, Any], **kw) -> Event:
+        """Same append+apply+notify shape as `_append_ev`, but with actor
+        OPERATOR 'ui' — the audited identity for every HTTP config-mutation
+        endpoint (module docstring's P15 CONFIG-mutation amendment).
+        `_append_ev` is deliberately NOT reused here: it hardcodes actor
+        TICK/'handoffd', which is correct for reconcile-pass-triggered
+        events but wrong for operator-initiated UI writes."""
+        ev = storage.append_and_apply(
+            project, states, actor=Actor(ActorKind.OPERATOR, "ui"), type=ev_type,
+            payload=payload, **kw,
+        )
+        if cfg is not None:
+            try:
+                notify.notify_event(cfg, states, ev)
+            except Exception:
+                pass
+        return ev
+
+    def _read_json_body(self, handler: http.server.BaseHTTPRequestHandler) -> dict | None:
+        """Read+parse the request body; None (caller sends 400) on any
+        malformed input, including a non-object JSON value."""
+        try:
+            length = int(handler.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            length = 0
+        raw = handler.rfile.read(length) if length > 0 else b""
+        if not raw:
+            return {}
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        return body if isinstance(body, dict) else None
+
+    def _handle_post(self, handler: http.server.BaseHTTPRequestHandler) -> None:
+        parsed = urllib.parse.urlparse(handler.path)
+        path = parsed.path
+        body = self._read_json_body(handler)
+        if body is None:
+            self._send_json(handler, 400, b'{"error":"malformed json body"}')
+            return
+
+        if path == "/api/config/policy":
+            self._post_config_policy(handler, body)
+            return
+        if path == "/api/config/pause":
+            self._post_config_pause(handler, body)
+            return
+        if path == "/api/config/tier":
+            self._post_config_tier(handler, body)
+            return
+
+        self._send_json(handler, 404, b'{"error":"not found"}')
+
+    def _post_config_policy(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
+        project = body.get("project")
+        key = body.get("key")
+        value = body.get("value")
+
+        if project not in self.registry:
+            self._send_json(handler, 404, b'{"error":"not found"}')
+            return
+        if key not in _POLICY_BOUNDS:
+            self._send_json(handler, 400,
+                             json.dumps({"error": f"unknown policy key: {key!r}"}).encode("utf-8"))
+            return
+        if not isinstance(value, int) or isinstance(value, bool):
+            self._send_json(handler, 400, b'{"error":"value must be an integer"}')
+            return
+        lo, hi = _POLICY_BOUNDS[key]
+        if not (lo <= value <= hi):
+            self._send_json(handler, 400, json.dumps(
+                {"error": f"{key} must be within [{lo}, {hi}]"}).encode("utf-8"))
+            return
+
+        root = self.registry[project]
+        try:
+            cfg = config.ProjectConfig.load(root)
+        except Exception:
+            self._send_json(handler, 404, b'{"error":"not found"}')
+            return
+        old_value = getattr(cfg.policy, key)
+
+        try:
+            config.update_project_policy(root, {key: value})
+        except ValueError as exc:
+            self._send_json(handler, 400, json.dumps({"error": str(exc)}).encode("utf-8"))
+            return
+
+        states = storage.list_states(project)
+        self._append_ui_event(project, cfg, states, EventType.CONFIG_CHANGED,
+                               {"scope": "policy", "key": key, "old": old_value, "new": value})
+        render.render_after_event(self.registry)
+        self._send_json(handler, 200, json.dumps({"ok": True}).encode("utf-8"))
+
+    def _post_config_pause(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
+        project = body.get("project")
+        mode = body.get("mode")
+
+        if project not in self.registry:
+            self._send_json(handler, 404, b'{"error":"not found"}')
+            return
+        if mode not in _PAUSE_MODES:
+            self._send_json(handler, 400,
+                             json.dumps({"error": f"unknown mode: {mode!r}"}).encode("utf-8"))
+            return
+
+        try:
+            cfg: ProjectConfig | None = config.ProjectConfig.load(self.registry[project])
+        except Exception:
+            cfg = None
+        states = storage.list_states(project)
+        flag = paths.pause_flag(project)
+
+        if mode == "run":
+            flag.unlink(missing_ok=True)
+            self._append_ui_event(project, cfg, states, EventType.PAUSE_CLEARED, {})
+        else:
+            flag.parent.mkdir(parents=True, exist_ok=True)
+            flag.write_text(mode, encoding="utf-8")
+            self._append_ui_event(project, cfg, states, EventType.PAUSE_SET, {"mode": mode})
+
+        render.render_after_event(self.registry)
+        self._send_json(handler, 200, json.dumps({"ok": True, "mode": mode}).encode("utf-8"))
+
+    def _post_config_tier(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
+        tier = body.get("tier")
+        route_ids = body.get("routes")
+
+        if not isinstance(tier, str) or not tier:
+            self._send_json(handler, 400, b'{"error":"missing tier"}')
+            return
+        if not isinstance(route_ids, list) or not all(isinstance(r, str) for r in route_ids):
+            self._send_json(handler, 400, b'{"error":"routes must be a list of strings"}')
+            return
+
+        try:
+            routes_obj = config.Routes.load()
+        except Exception:
+            self._send_json(handler, 404, b'{"error":"not found"}')
+            return
+        if tier not in routes_obj.tiers:
+            self._send_json(handler, 404,
+                             json.dumps({"error": f"unknown tier: {tier}"}).encode("utf-8"))
+            return
+        unknown = [r for r in route_ids if r not in routes_obj.routes]
+        if unknown:
+            self._send_json(handler, 400,
+                             json.dumps({"error": f"unknown route id(s): {unknown}"}).encode("utf-8"))
+            return
+
+        old_routes = list(routes_obj.tiers.get(tier, []))
+        try:
+            config.update_routes({tier: route_ids})
+        except ValueError as exc:
+            self._send_json(handler, 400, json.dumps({"error": str(exc)}).encode("utf-8"))
+            return
+
+        # routes.toml is a single shared state file (not project-scoped), so
+        # the audit trail is appended to EVERY registered project's own
+        # event log -- each project can see routing changes that affect it.
+        for project, root in self.registry.items():
+            try:
+                cfg: ProjectConfig | None = config.ProjectConfig.load(root)
+            except Exception:
+                cfg = None
+            states = storage.list_states(project)
+            self._append_ui_event(project, cfg, states, EventType.CONFIG_CHANGED,
+                                   {"scope": "routes", "key": tier, "old": old_routes, "new": route_ids})
+
+        render.render_after_event(self.registry)
+        self._send_json(handler, 200, json.dumps({"ok": True}).encode("utf-8"))
 
     def _api_projects(self) -> list[dict]:
         out = []

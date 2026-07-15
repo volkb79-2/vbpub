@@ -14,13 +14,19 @@ SECURITY MODEL (non-negotiable, see handoff/P12-ntfy-command-listener.md):
   tag is ignored -- ntfy exposes no sender identity, so tag-based loop
   prevention is the only guard against the listener replying to itself.
 - Verb allowlist, strict parse: only
-  ``^(help|status|pause|unpause|digest)( [a-z][a-z0-9-]{0,30})?$`` on the
-  TRIMMED message body is accepted. Anything else -> a fixed
-  "unknown command" reply. There is no shell, no eval, and no free-text
-  interpolation into replies: only typed/validated fields (the matched
-  verb, the validated [a-z0-9-] project token, and numbers/enum values read
-  from storage) are ever placed into a reply, always through fixed
-  templates -- the same injection boundary as notify.py, applied to
+  ``^(help|status|pause|unpause|digest)( [a-z][a-z0-9-]{0,30}){0,2}$`` on the
+  TRIMMED message body is accepted (P15 2026-07-15: widened from one
+  optional arg to two, to carry `pause`'s optional mode word -- the
+  compiled pattern uses two explicit capture groups rather than a single
+  repeated one, since Python `re` cannot recover more than the LAST match
+  of a repeated capturing group; the accepted SHAPE -- up to two
+  ``[a-z][a-z0-9-]{0,30}`` tokens, space-separated, same bounds -- is
+  unchanged). Anything else -> a fixed "unknown command" reply. There is no
+  shell, no eval, and no free-text interpolation into replies: only typed/
+  validated fields (the matched verb, the validated [a-z0-9-] project
+  token, the validated {agents,handoffs} mode word, and numbers/enum
+  values read from storage) are ever placed into a reply, always through
+  fixed templates -- the same injection boundary as notify.py, applied to
   replies too.
 - Every executed verb (pause/unpause) appends an audited event via
   storage.append_event with actor Actor(OPERATOR, "ntfy-cmd"). status/
@@ -56,19 +62,30 @@ REPLY_TAG = "handoffd-reply"
 
 # Strict, anchored verb allowlist. No case-insensitivity, no punctuation,
 # no shell metacharacters can ever reach a handler: anything that doesn't
-# fully match this pattern falls through to UNKNOWN_REPLY.
-_VERB_RE = re.compile(r"^(help|status|pause|unpause|digest)( [a-z][a-z0-9-]{0,30})?$")
+# fully match this pattern falls through to UNKNOWN_REPLY. P15 2026-07-15:
+# widened to two optional trailing tokens (project, then pause's optional
+# mode word) -- see module docstring.
+_VERB_RE = re.compile(
+    r"^(help|status|pause|unpause|digest)"
+    r"(?: ([a-z][a-z0-9-]{0,30}))?(?: ([a-z][a-z0-9-]{0,30}))?$"
+)
 
 UNKNOWN_REPLY = "unknown command \u2014 send: help"
 
 HELP_TEXT = "\n".join([
     "handoffctl commands:",
-    "help              - this message",
-    "status <project>  - per-state task counts",
-    "pause <project>   - pause the project",
-    "unpause <project> - resume the project",
-    "digest <project>  - recent activity summary",
+    "help                        - this message",
+    "status <project>            - per-state task counts",
+    "pause <project> [mode]      - pause; mode is agents|handoffs (default handoffs)",
+    "unpause <project>           - resume the project (mode: run)",
+    "digest <project>            - recent activity summary",
 ])
+
+# P15 2026-07-15: ntfy/CLI shorthand mode words -> the flag-file/event mode
+# strings reconcile.py and daemon.py use. `pause <project>` with no mode word
+# defaults to "handoffs" (drain-handoffs) -- unchanged legacy meaning of a
+# bare pause.
+_MODE_WORD_TO_MODE = {"agents": "drain-agents", "handoffs": "drain-handoffs"}
 
 DIGEST_MAX_CHARS = 1500
 
@@ -114,8 +131,8 @@ class CommandListener:
             return UNKNOWN_REPLY
 
         verb = m.group(1)
-        arg = m.group(2)
-        project = arg.strip() if arg else None
+        project = m.group(2)
+        mode_word = m.group(3)
 
         if verb == "help":
             return HELP_TEXT
@@ -128,7 +145,7 @@ class CommandListener:
         if verb == "status":
             return self._cmd_status(project)
         if verb == "pause":
-            return self._cmd_pause(project)
+            return self._cmd_pause(project, mode_word)
         if verb == "unpause":
             return self._cmd_unpause(project)
         if verb == "digest":
@@ -158,15 +175,23 @@ class CommandListener:
             line += " (paused)"
         return line
 
-    def _cmd_pause(self, project: str) -> str:
+    def _cmd_pause(self, project: str, mode_word: str | None) -> str:
+        """P15 2026-07-15: `pause <project> [agents|handoffs]` -- default
+        'handoffs' (drain-handoffs), the legacy meaning of a bare pause. The
+        flag file's CONTENT becomes the mode (reconcile.py/daemon.py's
+        pause-mode contract); PAUSE_SET carries {"mode": ...}."""
+        if mode_word is not None and mode_word not in _MODE_WORD_TO_MODE:
+            return f"unknown mode: {mode_word} (use agents|handoffs)"
+        mode = _MODE_WORD_TO_MODE.get(mode_word, "drain-handoffs")
+
         flag_path = paths.pause_flag(project)
         flag_path.parent.mkdir(parents=True, exist_ok=True)
-        flag_path.touch()
+        flag_path.write_text(mode, encoding="utf-8")
         storage.append_event(
             project, actor=Actor(ActorKind.OPERATOR, "ntfy-cmd"),
-            type=EventType.PAUSE_SET, payload={},
+            type=EventType.PAUSE_SET, payload={"mode": mode},
         )
-        return f"paused: {project}"
+        return f"paused ({mode}): {project}"
 
     def _cmd_unpause(self, project: str) -> str:
         flag_path = paths.pause_flag(project)

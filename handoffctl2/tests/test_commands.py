@@ -70,11 +70,54 @@ def test_pause_sets_flag_and_appends_set_event(tmp_state, sample_project):
 
     assert "paused" in reply
     assert flag.exists()
+    # P15 2026-07-15: default (no mode word) is 'handoffs' -> drain-handoffs,
+    # the legacy meaning of a bare pause; the flag's CONTENT is now the mode.
+    assert flag.read_text(encoding="utf-8") == "drain-handoffs"
     events = list(storage.iter_events("demo"))
     set_evs = [e for e in events if e.type is EventType.PAUSE_SET]
     assert len(set_evs) == 1
     assert set_evs[0].actor.id == "ntfy-cmd"
     assert set_evs[0].actor.kind is ActorKind.OPERATOR
+    assert set_evs[0].payload == {"mode": "drain-handoffs"}
+
+
+# =========================================================================
+# P15 2026-07-15: factory-state pause MODES -- ntfy verb surface (oracle 7:
+# "UI/CLI/ntfy verb each set the mode file + event").
+# =========================================================================
+
+def test_pause_agents_mode_sets_flag_content_and_event(tmp_state, sample_project):
+    flag = paths.pause_flag("demo")
+    cl = CommandListener(load_registry())
+    reply = cl.handle_message("pause demo agents", [])
+
+    assert "drain-agents" in reply
+    assert flag.read_text(encoding="utf-8") == "drain-agents"
+    set_evs = [e for e in storage.iter_events("demo") if e.type is EventType.PAUSE_SET]
+    assert len(set_evs) == 1
+    assert set_evs[0].payload == {"mode": "drain-agents"}
+
+
+def test_pause_handoffs_mode_explicit(tmp_state, sample_project):
+    flag = paths.pause_flag("demo")
+    cl = CommandListener(load_registry())
+    reply = cl.handle_message("pause demo handoffs", [])
+
+    assert "drain-handoffs" in reply
+    assert flag.read_text(encoding="utf-8") == "drain-handoffs"
+    set_evs = [e for e in storage.iter_events("demo") if e.type is EventType.PAUSE_SET]
+    assert set_evs[0].payload == {"mode": "drain-handoffs"}
+
+
+def test_pause_unknown_mode_rejected_no_flag_no_event(tmp_state, sample_project):
+    flag = paths.pause_flag("demo")
+    assert not flag.exists()
+    cl = CommandListener(load_registry())
+    reply = cl.handle_message("pause demo bogus", [])
+
+    assert "unknown mode" in reply
+    assert not flag.exists()
+    assert not any(e.type is EventType.PAUSE_SET for e in storage.iter_events("demo"))
 
 
 # =========================================================================
