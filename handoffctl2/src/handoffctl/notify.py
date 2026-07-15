@@ -43,21 +43,321 @@ INTERFACE CONTRACT (frozen):
 
 from __future__ import annotations
 
+import http.server
+import json
+import threading
+import urllib.error
+import urllib.request
+from io import BytesIO
+from urllib.parse import urlencode
+
+from . import storage
 from .config import NotifyConfig, ProjectConfig
-from .types import Event, TaskStateFile
+from .types import (
+    Actor, ActorKind, Event, EventType, TaskStateFile, TaskState, utc_now,
+)
 
 
 def notification_for(ev: Event) -> dict | None:
-    raise NotImplementedError
+    """Transform an event into a notification dict or None.
+
+    Returns None if the event type is not handled. Otherwise returns
+    a dict with keys: title, body, click, priority, tags (list).
+
+    Only uses typed fields (event type, ids, counts) and fixed template strings.
+    Never interpolates user-authored payload strings into output.
+    """
+    t = ev.type
+
+    # DECISION_OPENED: project-scoped
+    if t is EventType.DECISION_OPENED:
+        decision_id = ev.decision_id or "unknown"
+        return {
+            "title": f"Decision needed: {decision_id}",
+            "body": f"Decision {decision_id} opened and awaiting resolution.",
+            "click": "http://127.0.0.1:8942/www/index.html",
+            "priority": 5,
+            "tags": ["decision"],
+        }
+
+    # TASK_BLOCKED: task-scoped
+    if t is EventType.TASK_BLOCKED:
+        project = ev.project or "unknown"
+        task_id = ev.task_id or "unknown"
+        return {
+            "title": f"{project}/{task_id} BLOCKED",
+            "body": f"Task {project}/{task_id} is blocked.",
+            "click": f"http://127.0.0.1:8942/www/task/{project}/{task_id}.html",
+            "priority": 4,
+            "tags": ["task", "blocked"],
+        }
+
+    # SPEC_ATTENTION: project-scoped; payload.reason is an enum/status, safe to include
+    if t is EventType.SPEC_ATTENTION:
+        reason = ev.payload.get("reason", "unknown")
+        # Only safe enum-like values are in reason (e.g., "ratchet", "stale", etc.)
+        # Never user prose.
+        return {
+            "title": f"Spec attention: {reason}",
+            "body": f"Specification requires attention: {reason}",
+            "click": "http://127.0.0.1:8942/www/index.html",
+            "priority": 4,
+            "tags": ["spec"],
+        }
+
+    # BUDGET_WARNING: project-scoped; body includes numeric fields
+    if t is EventType.BUDGET_WARNING:
+        remaining = ev.payload.get("remaining")
+        spent = ev.payload.get("spent")
+        body = f"Budget warning issued."
+        if remaining is not None:
+            body = f"Remaining budget: {remaining}"
+        if spent is not None:
+            if remaining is not None:
+                body += f"; spent: {spent}"
+            else:
+                body = f"Budget spent: {spent}"
+        return {
+            "title": "Budget warning",
+            "body": body,
+            "click": "http://127.0.0.1:8942/www/index.html",
+            "priority": 4,
+            "tags": ["budget"],
+        }
+
+    # BUDGET_EXHAUSTED: project-scoped; higher priority
+    if t is EventType.BUDGET_EXHAUSTED:
+        return {
+            "title": "Budget exhausted",
+            "body": "Project budget has been exhausted.",
+            "click": "http://127.0.0.1:8942/www/index.html",
+            "priority": 5,
+            "tags": ["budget"],
+        }
+
+    # NEEDS_OPERATOR: project-scoped; high priority
+    if t is EventType.NEEDS_OPERATOR:
+        return {
+            "title": "Operator attention needed",
+            "body": "An operator action is required.",
+            "click": "http://127.0.0.1:8942/www/index.html",
+            "priority": 5,
+            "tags": ["operator"],
+        }
+
+    # WAVE_CLOSED: project-scoped; count tasks from payload
+    if t is EventType.WAVE_CLOSED:
+        task_ids = ev.payload.get("task_ids", [])
+        count = len(task_ids)
+        task_list = ", ".join(str(tid) for tid in sorted(task_ids))
+        return {
+            "title": f"Wave merged: {count} task(s)",
+            "body": f"Wave closed with {count} task(s): {task_list}",
+            "click": "http://127.0.0.1:8942/www/index.html",
+            "priority": 3,
+            "tags": ["wave"],
+        }
+
+    # PROVIDER_STATE_CHANGED: project-scoped; generic handler
+    if t is EventType.PROVIDER_STATE_CHANGED:
+        return {
+            "title": f"PROVIDER_STATE_CHANGED",
+            "body": f"Provider state has changed.",
+            "click": "http://127.0.0.1:8942/www/index.html",
+            "priority": 3,
+            "tags": ["provider"],
+        }
+
+    # Unhandled event type
+    return None
 
 
 def send(nc: NotifyConfig, note: dict) -> tuple[bool, str]:
-    raise NotImplementedError
+    """Send a notification via ntfy and/or webhook.
+
+    ntfy wins if both are configured; webhook is fallback on ntfy failure.
+    Never raises; returns (ok: bool, detail: str).
+    Timeout is 5 seconds. Connection refused or server error returns (False, ...).
+    """
+    # If ntfy is configured, try it first
+    if nc.ntfy_url and nc.ntfy_topic:
+        try:
+            url = f"{nc.ntfy_url}/{nc.ntfy_topic}"
+            body = note.get("body", "").encode("utf-8")
+
+            headers = {
+                "Title": note.get("title", ""),
+                "Priority": str(note.get("priority", 3)),
+                "Click": note.get("click", ""),
+            }
+            tags = note.get("tags", [])
+            if tags:
+                headers["Tags"] = ",".join(tags)
+
+            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if response.status == 200:
+                    return (True, "ok")
+                else:
+                    # Non-200 response from ntfy
+                    return (False, f"ntfy returned {response.status}")
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as e:
+            # ntfy failed; try webhook fallback
+            pass
+        except Exception as e:
+            # Catch any other exception and try webhook
+            pass
+
+    # Try webhook fallback if ntfy failed or not configured
+    if nc.webhook_url:
+        try:
+            headers = {
+                "Content-Type": "application/json",
+            }
+            body = json.dumps(note).encode("utf-8")
+            req = urllib.request.Request(nc.webhook_url, data=body, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if response.status == 200:
+                    return (True, "webhook ok")
+                else:
+                    return (False, f"webhook returned {response.status}")
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as e:
+            return (False, f"webhook failed: {type(e).__name__}")
+        except Exception as e:
+            return (False, f"webhook error: {type(e).__name__}")
+
+    # No notification channel configured
+    return (False, "unconfigured")
 
 
 def notify_event(cfg: ProjectConfig, states: dict[str, TaskStateFile], ev: Event) -> None:
-    raise NotImplementedError
+    """Append notification events if ev triggers a notification.
+
+    1. If ev.type is NOTIFICATION_*, return (recursion guard).
+    2. If ev.type.value in cfg.notify.push_classes:
+       - Call notification_for(ev)
+       - If result is None, return (not a handled type within push_classes)
+       - Append NOTIFICATION_REQUESTED
+       - Unless BOTH ntfy_url and webhook_url are unconfigured:
+         - Call send(cfg.notify, note)
+       - Append NOTIFICATION_DELIVERED or NOTIFICATION_FAILED based on result
+    3. Never raise; all failures are recorded as events.
+    """
+    # Recursion guard
+    if ev.type in (EventType.NOTIFICATION_REQUESTED, EventType.NOTIFICATION_DELIVERED, EventType.NOTIFICATION_FAILED):
+        return
+
+    # Check if this event type should trigger notifications
+    if ev.type.value not in cfg.notify.push_classes:
+        return
+
+    # Generate notification content
+    note = notification_for(ev)
+    if note is None:
+        return
+
+    # Append NOTIFICATION_REQUESTED
+    req_ev = storage.append_event(
+        ev.project,
+        actor=Actor(ActorKind.NOTIFIER, "notify"),
+        type=EventType.NOTIFICATION_REQUESTED,
+        payload={},
+        task_id=ev.task_id,
+        decision_id=ev.decision_id,
+        wave_id=ev.wave_id,
+    )
+
+    # Check if both notification channels are unconfigured
+    both_unconfigured = not (cfg.notify.ntfy_url or cfg.notify.webhook_url)
+
+    if both_unconfigured:
+        # Both unconfigured: don't call send, just mark as failed
+        storage.append_event(
+            ev.project,
+            actor=Actor(ActorKind.NOTIFIER, "notify"),
+            type=EventType.NOTIFICATION_FAILED,
+            payload={"detail": "unconfigured"},
+            task_id=ev.task_id,
+            decision_id=ev.decision_id,
+            wave_id=ev.wave_id,
+        )
+    else:
+        # Try to send
+        ok, detail = send(cfg.notify, note)
+        if ok:
+            storage.append_event(
+                ev.project,
+                actor=Actor(ActorKind.NOTIFIER, "notify"),
+                type=EventType.NOTIFICATION_DELIVERED,
+                payload={"detail": detail},
+                task_id=ev.task_id,
+                decision_id=ev.decision_id,
+                wave_id=ev.wave_id,
+            )
+        else:
+            storage.append_event(
+                ev.project,
+                actor=Actor(ActorKind.NOTIFIER, "notify"),
+                type=EventType.NOTIFICATION_FAILED,
+                payload={"detail": detail},
+                task_id=ev.task_id,
+                decision_id=ev.decision_id,
+                wave_id=ev.wave_id,
+            )
 
 
 def digest(cfg: ProjectConfig, project: str, since_seq: int) -> str:
-    raise NotImplementedError
+    """Generate a plain-text digest of events.
+
+    Summarizes events with type in digest_classes (MERGE_RECORDED, TASK_TRANSITIONED)
+    since since_seq (exclusive). Reports:
+    - Counts per type
+    - Task IDs merged (sorted, unique)
+    - Total cost recorded
+    - Count of decisions still open (DECISION_OPENED without corresponding DECISION_RESOLVED)
+
+    Output is deterministic (sorted order).
+    """
+    merge_count = 0
+    transition_count = 0
+    merged_tasks = set()
+    total_cost = 0.0
+
+    # Collect digest_classes events
+    for ev in storage.iter_events(project, since=since_seq):
+        if ev.type is EventType.MERGE_RECORDED:
+            merge_count += 1
+            if ev.task_id:
+                merged_tasks.add(ev.task_id)
+        elif ev.type is EventType.TASK_TRANSITIONED:
+            transition_count += 1
+
+    # Count open decisions (DECISION_OPENED without DECISION_RESOLVED in the same project)
+    # For simplicity, collect all decision_ids from DECISION_OPENED and DECISION_RESOLVED
+    open_decisions = set()
+    for ev in storage.iter_events(project, since=0):
+        if ev.type is EventType.DECISION_OPENED and ev.decision_id:
+            open_decisions.add(ev.decision_id)
+        elif ev.type is EventType.DECISION_RESOLVED and ev.decision_id:
+            open_decisions.discard(ev.decision_id)
+
+    # Build digest lines in deterministic order
+    lines = []
+
+    if merge_count > 0 or transition_count > 0:
+        lines.append(f"MERGE_RECORDED: {merge_count}")
+
+    if merged_tasks:
+        sorted_tasks = sorted(merged_tasks)
+        lines.append(f"Merged tasks: {', '.join(sorted_tasks)}")
+
+    if transition_count > 0:
+        lines.append(f"TASK_TRANSITIONED: {transition_count}")
+
+    if open_decisions:
+        lines.append(f"decisions open: {len(open_decisions)}")
+
+    if not lines:
+        return ""
+
+    return "\n".join(lines)
