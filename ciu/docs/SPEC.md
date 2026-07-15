@@ -559,10 +559,15 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   **numeric** order. Any other key under `[deploy.phases]`, or non-string
   group/profile entries, = abort at validation (kills the v1 lexicographic
   sort and `.startswith` int crash by design).
-- **S7.2** `services = [{ path, name, enabled, profiles?, env_overrides? }]`.
-  `enabled` MUST be a boolean or the **name** of a flag in
+- **S7.2** `services = [{ path, name, enabled, health?, shipped?, profiles?,
+  env_overrides? }]`.
+  `name` is a human-readable stack label for logs and summaries; it MUST NOT
+  be interpreted as a Compose service or container identity. `enabled` MUST
+  be a boolean or the **name** of a flag in
   `[deploy.control]` (string). Unknown flag name = abort. Expressions are
-  forbidden (v1 `eval()` is withdrawn).
+  forbidden (v1 `eval()` is withdrawn). Optional `health` MUST be a boolean
+  and defaults to `true`; `false` excludes an intentionally ephemeral stack
+  from orchestration health target resolution without disabling deployment.
 - **S7.3** A failed stack start (non-zero compose exit, timeout, missing
   dir) MUST mark the phase failed: remaining services in that phase and all
   later phases are skipped, exit code 1, and the summary lists
@@ -635,9 +640,18 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   source MUST NOT be treated as executable names; `--strict` exits 1 only for
   a genuinely missing probed executable. A direct executable declared as a
   distroless image's entrypoint counts as present even when the image has no
-  shell with which to run `command -v`.
-- **S7.8** Container lookups MUST use anchored name/label filters
-  (`^<project>-<env>-<name>$` or label equality), never substring matches.
+  shell with which to run `command -v`. For orchestration health, each
+  selected stack's rendered Compose model is authoritative: CIU checks every
+  active `services.*.container_name`, applying the same entry-level and
+  host-level Compose profiles as deployment. CIU MUST NOT derive runtime
+  identity from the phase service's display `name`. Missing rendered Compose
+  and active services without a concrete `container_name` are authoring errors;
+  a missing expected container fails the gate. A phase service with
+  `health = false` contributes no targets. If every selected service is so
+  excluded, CIU reports that no health-enabled containers were selected and
+  the gate passes without invoking an empty poll.
+- **S7.8** Container lookups MUST use exact names or anchored name/label filters,
+  never substring matches.
 
 ### Registry
 

@@ -571,13 +571,128 @@ def run_health_gate(
     """
     names = {name: container_name(config, name) for name in service_names}
 
+    return run_container_health_gate(
+        list(names.values()), timeout_s=timeout_s, interval_s=interval_s
+    )
+
+
+def run_container_health_gate(
+    container_names: list[str],
+    *,
+    timeout_s: float,
+    interval_s: float = 5.0,
+) -> tuple[bool, dict]:
+    """Poll exact Docker *container_names* and return the S7.7 gate result.
+
+    Orchestration actions resolve these names from the rendered Compose model;
+    they must not infer a runtime identity from a phase's human-readable
+    ``name``.  ``run_health_gate`` remains the small service-suffix adapter
+    used by callers that already have an unambiguous CIU service identity.
+    """
+
     def check_fn() -> dict[str, str]:
         statuses: dict[str, str] = {}
-        for svc, cname in names.items():
+        for cname in container_names:
             statuses[cname] = health_pkg.classify(_inspect_state(cname))
         return statuses
 
     return health_pkg.wait_for_gate(check_fn, timeout_s=timeout_s, interval_s=interval_s)
+
+
+def resolve_selection_health_containers(
+    repo_root: Path,
+    profile: profiles_pkg.Profile,
+    selection: list[dict],
+) -> list[str]:
+    """Resolve exact health-gate targets from selected stacks' Compose models.
+
+    A phase service ``name`` is presentation text for operator output, not a
+    container identifier.  One phase entry may also deploy several Compose
+    services.  The only authoritative static identities are therefore the
+    ``services.*.container_name`` values in the rendered Compose file.
+
+    Services guarded by Compose ``profiles`` are included only when their
+    profile intersects the profiles active for that phase entry.  Ambiguous or
+    missing identities fail closed with an authoring error instead of polling
+    a fabricated container name until timeout.
+    """
+    import yaml
+
+    from .config_constants import CIU_COMPOSE_OUTPUT, SHIPPED_COMPOSE
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+
+    for entry in selection:
+        stack_dir = (repo_root / entry["path"]).resolve()
+        service_cfg = entry["service"]
+        if not phases_pkg.service_health_enabled(service_cfg):
+            continue
+        shipped = phases_pkg.service_shipped(service_cfg)
+        compose_name = SHIPPED_COMPOSE if shipped else CIU_COMPOSE_OUTPUT
+        compose_path = stack_dir / compose_name
+        if not compose_path.is_file():
+            source_kind = "shipped" if shipped else "rendered"
+            raise ValueError(
+                f"[S7.7] Cannot resolve health targets for stack '{entry['path']}': "
+                f"no {source_kind} {compose_name}"
+                + ". Run 'ciu render' (or deploy the stack) first."
+            )
+
+        try:
+            compose = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            raise ValueError(
+                f"[S7.7] Cannot read Compose model for stack '{entry['path']}': {exc}"
+            ) from exc
+
+        services = compose.get("services")
+        if not isinstance(services, dict) or not services:
+            raise ValueError(
+                f"[S7.7] Compose model for stack '{entry['path']}' has no services."
+            )
+
+        active_profiles = set(profile.compose_profiles)
+        active_profiles.update(service_cfg.get("profiles") or [])
+        active_count = 0
+        for compose_service, definition in services.items():
+            if not isinstance(definition, dict):
+                raise ValueError(
+                    f"[S7.7] Compose service '{compose_service}' in stack "
+                    f"'{entry['path']}' must be a mapping."
+                )
+            declared_profiles = definition.get("profiles")
+            if declared_profiles is not None:
+                if not isinstance(declared_profiles, list) or not all(
+                    isinstance(value, str) for value in declared_profiles
+                ):
+                    raise ValueError(
+                        f"[S7.7] Compose service '{compose_service}' in stack "
+                        f"'{entry['path']}' has invalid profiles; expected a list of strings."
+                    )
+                if not active_profiles.intersection(declared_profiles):
+                    continue
+
+            active_count += 1
+            cname = definition.get("container_name")
+            if not isinstance(cname, str) or not cname.strip() or "$" in cname:
+                raise ValueError(
+                    f"[S7.7] Cannot resolve an exact health target for Compose service "
+                    f"'{compose_service}' in stack '{entry['path']}': set a concrete "
+                    "container_name in the rendered Compose model."
+                )
+            cname = cname.strip()
+            if cname not in seen:
+                seen.add(cname)
+                resolved.append(cname)
+
+        if active_count == 0:
+            raise ValueError(
+                f"[S7.7] Stack '{entry['path']}' has no services active for Compose "
+                f"profiles {sorted(active_profiles)}."
+            )
+
+    return resolved
 
 
 def _print_health_summary(summary: dict) -> None:
@@ -732,10 +847,24 @@ def action_deploy(
 
         # Health gate after a successfully-started phase (S7.7).
         if health_after_phase and started_in_phase and not dry_run and not phase_failed:
-            svc_names = [e["name"] for e in started_in_phase]
-            info(f">>> Health gate for phase {phase_key} ({len(svc_names)} service(s))")
-            passed, summary = run_health_gate(profile.config, svc_names, timeout_s=timeout_s)
-            _print_health_summary(summary)
+            container_names = resolve_selection_health_containers(
+                repo_root, profile, started_in_phase
+            )
+            if not container_names:
+                info(
+                    f">>> Health gate for phase {phase_key}: no health-enabled "
+                    "containers selected; passing"
+                )
+                passed = True
+            else:
+                info(
+                    f">>> Health gate for phase {phase_key} "
+                    f"({len(container_names)} container(s))"
+                )
+                passed, summary = run_container_health_gate(
+                    container_names, timeout_s=timeout_s
+                )
+                _print_health_summary(summary)
             if not passed:
                 error(f"[S7.7] health gate FAILED for phase {phase_key}")
                 had_failure = True
@@ -832,6 +961,7 @@ def _print_deploy_summary(deployed: list[str], failed: list[str], skipped: list[
 
 
 def action_healthcheck(
+    repo_root: Path,
     profile: profiles_pkg.Profile,
     selection: list[dict],
 ) -> int:
@@ -839,13 +969,20 @@ def action_healthcheck(
     info("=" * 60)
     info("HEALTHCHECK: gating all selected services (S7.7)")
     info("=" * 60)
-    svc_names = [e["name"] for e in selection]
-    if not svc_names:
+    if not selection:
         warn("No services selected to check")
+        return 0
+    container_names = resolve_selection_health_containers(
+        repo_root, profile, selection
+    )
+    if not container_names:
+        info("No health-enabled containers selected; health gate passes")
         return 0
     health_cfg = profile.config.get("deploy", {}).get("health", {})
     timeout_s = _seconds(health_cfg.get("timeout", "30s"))
-    passed, summary = run_health_gate(profile.config, svc_names, timeout_s=timeout_s)
+    passed, summary = run_container_health_gate(
+        container_names, timeout_s=timeout_s
+    )
     _print_health_summary(summary)
     if passed:
         success("health gate passed")
@@ -1571,7 +1708,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         elif action == "clean":
             ac = action_clean(repo_root, profile, selection, ignore_errors=args.ignore_errors)
         elif action == "healthcheck":
-            ac = action_healthcheck(profile, selection)
+            ac = action_healthcheck(repo_root, profile, selection)
         elif action == "preflight":
             ac = action_healthcheck_preflight(
                 repo_root, profile, selection,

@@ -90,7 +90,9 @@ internal_port = 8200
 
 # ============================================================================
 # Deployment phases (S7.1) — executed in NUMERIC order (phase_2 < phase_10).
-# Each service: { path, name, enabled }. `enabled` is a bool or a
+# Each service: { path, name, enabled, health? }. `name` is an operator-facing
+# display label, not a container identity. `health` is a strict bool (default
+# true); false is for ephemeral one-shots. `enabled` is a bool or a
 # [deploy.control] flag name (S7.2); expressions are forbidden (v1 eval gone).
 # ============================================================================
 

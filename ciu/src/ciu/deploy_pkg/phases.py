@@ -110,6 +110,23 @@ def service_shipped(service: dict) -> bool:
     )
 
 
+def service_health_enabled(service: dict) -> bool:
+    """Return whether a phase service participates in orchestration health.
+
+    ``health`` defaults to ``True``.  Authors may set it to ``False`` for an
+    intentionally ephemeral one-shot stack whose successful deployment is
+    already enforced by Compose/CIU but which is not expected to remain as a
+    container for later bare-health checks.  As with ``shipped``, this is a
+    strict boolean toggle, not a control expression (S7.2/S7.7).
+    """
+    raw = service.get("health", True)
+    if isinstance(raw, bool):
+        return raw
+    raise ValueError(
+        f"[S7.2] service 'health' must be a bool; got {type(raw).__name__} {raw!r}."
+    )
+
+
 # ---------------------------------------------------------------------------
 # S7.1/S7.2 — iter_enabled_services
 # ---------------------------------------------------------------------------
@@ -131,6 +148,10 @@ def iter_enabled_services(
         for svc in phase_data.get("services", []):
             if not service_enabled(svc, control):
                 continue
+            # Validate the orthogonal health-participation toggle during
+            # selection even when the current command is not a health action.
+            # ``False`` excludes only health targets; it never excludes deploy.
+            service_health_enabled(svc)
             path = svc.get("path", "")
             if not path:
                 continue

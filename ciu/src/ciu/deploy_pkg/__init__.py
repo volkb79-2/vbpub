@@ -5,7 +5,7 @@ Public API re-exported from sub-modules:
 
   http_util:  http_get_json
   phases:     PHASE_KEY_RE, ordered_phases, service_enabled,
-              iter_enabled_services, parse_env_overrides
+              service_health_enabled, iter_enabled_services, parse_env_overrides
   profiles:   Profile, resolve_profiles, resolve_profile (shim), reject_groups,
               dedupe_keep_order
   health:     classify, evaluate_gate, wait_for_gate, anchored_name_filter
@@ -26,6 +26,7 @@ from .phases import (
     ordered_phases,
     parse_env_overrides,
     service_enabled,
+    service_health_enabled,
 )
 from .profiles import (
     Profile,
@@ -43,6 +44,7 @@ __all__ = [
     "PHASE_KEY_RE",
     "ordered_phases",
     "service_enabled",
+    "service_health_enabled",
     "iter_enabled_services",
     "parse_env_overrides",
     # profiles

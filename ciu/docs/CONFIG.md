@@ -132,6 +132,14 @@ Subsections:
 | `[deploy.profiles.<name>]` | Host profiles: which phases/stacks run on this host | S7.4 |
 | `[deploy.profiles.<name>.topology_overrides]` | Deep-merged over `[topology.*]` while profile is active | S7.4 |
 
+Each `[[deploy.phases.phase_N.services]]` entry identifies a stack with `path`;
+its `name` is display text only. The orchestration health gate discovers exact
+container identities from active `services.*.container_name` values in that
+stack's rendered Compose model, not from the display label. Optional
+`health = false` excludes an ephemeral stack from orchestration health while
+still deploying it; the field is a strict boolean and defaults to `true`
+[S7.2, S7.7].
+
 `[deploy.groups]` is **rejected** by the v2 validator [S7.5] — see
 [MIGRATION-V2.md §6](MIGRATION-V2.md#6-groups--host-profiles-s74s75).
 

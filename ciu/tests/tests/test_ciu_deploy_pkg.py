@@ -41,9 +41,45 @@ from ciu.deploy_pkg import (  # noqa: E402
     resolve_profile,
     resolve_profiles,
     service_enabled,
+    service_health_enabled,
     wait_for_gate,
 )
 from ciu.deploy_pkg.health import _parse_cmd_shell_tools, probe_image_tools  # noqa: E402
+
+
+class TestServiceHealthEnabled:
+    def test_absent_defaults_true(self):
+        assert service_health_enabled({"path": "infra/api"}) is True
+
+    def test_false_excludes_one_shot(self):
+        assert service_health_enabled({"health": False}) is False
+
+    @pytest.mark.parametrize("bad", ["false", 0, [], {"enabled": False}])
+    def test_non_bool_aborts(self, bad):
+        with pytest.raises(ValueError, match=r"\[S7.2\].*health.*bool"):
+            service_health_enabled({"health": bad})
+
+    def test_false_still_participates_in_deployment_selection(self):
+        configured = {
+            "phase_1": {
+                "services": [
+                    {"path": "jobs/schema-init", "health": False, "enabled": True}
+                ]
+            }
+        }
+        selected = list(iter_enabled_services(configured, control={}))
+        assert [service["path"] for _, _, service in selected] == ["jobs/schema-init"]
+
+    def test_invalid_value_fails_during_general_selection(self):
+        configured = {
+            "phase_1": {
+                "services": [
+                    {"path": "jobs/schema-init", "health": "false", "enabled": True}
+                ]
+            }
+        }
+        with pytest.raises(ValueError, match=r"\[S7.2\].*health.*bool"):
+            list(iter_enabled_services(configured, control={}))
 
 
 # ===========================================================================

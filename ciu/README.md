@@ -119,6 +119,12 @@ The only ciu-owned release helper is `run-ciu-tests.py` (the pytest suite). The 
 directory keeps `cleanup-legacy-releases.sh` / `cleanup-and-validate.sh` for one-off
 maintenance.
 
+`run-ciu-tests.py` also enforces a ratcheted total line-coverage floor (75% as
+of 2026-07-15). Coverage is increased by testing high-risk orchestration,
+diagnosis, configuration and failure branches rather than optimizing only for
+the aggregate percentage; after the measured baseline gains safe margin, the
+floor moves upward and is never lowered to accommodate a change.
+
 ### Release scheme
 
 The built-in handler routes through the shared `cmru` release host

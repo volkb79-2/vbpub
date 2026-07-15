@@ -143,29 +143,43 @@ Phase tables MUST be named `phase_<uint>` and are executed in **numeric** order
 [deploy.phases.phase_1]
 name = "Vault"
 services = [
-  { path = "infra/vault", name = "vault", enabled = true },
+  { path = "infra/vault", name = "Vault secrets management", enabled = true },
 ]
 
 [deploy.phases.phase_2]
 name = "Data"
 services = [
-  { path = "infra/redis-core", name = "redis",    enabled = true },
-  { path = "infra/db-core",    name = "postgres",  enabled = true },
+  { path = "infra/redis-core", name = "Redis cache", enabled = true },
+  { path = "infra/db-core", name = "Database core (Postgres and MinIO)", enabled = true },
 ]
 
 [deploy.phases.phase_3]
 name = "Apps"
 services = [
-  { path = "applications/app-config", name = "app-config", enabled = "enable_app" },
+  { path = "applications/app-config", name = "Application configuration", enabled = "enable_app" },
 ]
 ```
 
+`name` is an operator-facing display label. It can contain spaces and does not
+identify a Compose service or container. `path` identifies the stack.
 `enabled` is a `bool` or the **name** of a flag in `[deploy.control]`. Unknown
 flag name = abort. Expressions are forbidden (v1 `eval()` withdrawn) [S7.2]:
 
 ```toml
 [deploy.control]
 enable_app = true   # flip to false to disable phase_3's service
+```
+
+An intentionally ephemeral one-shot stack can opt out of later orchestration
+health checks without opting out of deployment. `health` is a strict boolean
+and defaults to `true`:
+
+```toml
+[[deploy.phases.phase_3.services]]
+path = "jobs/schema-init"
+name = "Apply database schema"
+enabled = true
+health = false  # deploy and enforce its run, but do not expect it to persist
 ```
 
 ### Shipped services [S8.6]
@@ -225,10 +239,22 @@ service's Docker health status until `--health-timeout` or all services are
 | `unhealthy` | Immediate fail |
 | No healthcheck | Reported as `no-healthcheck` (warning), not silently passing |
 
-Container lookups use anchored name/label filters (`^<project>-<env>-<name>$`)
-to avoid substring matches [S7.8]. The gate looks up containers as
-`<project>-<env>-<NAME>` where NAME is the phase entry's `name` field, which
-MUST equal the stack TOML's service `name` used in `container_name`.
+The gate reads every selected stack's rendered `ciu.compose.yml` (or its
+shipped `docker-compose.yml`) and checks the exact `container_name` of every
+active Compose service. Compose `profiles` are filtered using the same
+entry-level and host-profile selections as deployment. This is important for
+stacks such as a database core that deploy several containers from one phase
+entry. The human-readable phase service `name` is never converted into a
+container name.
+
+Entries marked `health = false` contribute no targets. When that excludes the
+entire selection, CIU prints a clear informational result and passes without
+starting an empty polling loop.
+
+CIU fails with an authoring error rather than guessing when the rendered model
+is absent or an active service has no concrete `container_name`; run
+`ciu render` first and give every health-gated service an explicit identity.
+Expected containers are inspected by exact name, never substring [S7.8].
 
 ---
 

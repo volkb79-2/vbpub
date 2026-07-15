@@ -18,6 +18,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu import deploy  # noqa: E402
@@ -98,6 +100,234 @@ def test_group_by_phase_groups_consecutive_entries():
 
     assert [key for key, _ in grouped] == ["phase_1", "phase_2"]
     assert [len(entries) for _, entries in grouped] == [2, 1]
+
+
+# ---------------------------------------------------------------------------
+# Health target resolution (S7.7) — Compose identities, never display labels
+# ---------------------------------------------------------------------------
+
+
+def _write_compose(stack_dir: Path, text: str) -> None:
+    stack_dir.mkdir(parents=True)
+    (stack_dir / "ciu.compose.yml").write_text(text, encoding="utf-8")
+
+
+def test_health_targets_come_from_all_compose_services_not_phase_display_name(tmp_path):
+    _write_compose(
+        tmp_path / "infra/db-core",
+        """\
+services:
+  postgres:
+    container_name: p-t-postgres
+  minio:
+    container_name: p-t-minio
+""",
+    )
+    config = _config_with_phases(
+        {
+            "phase_2": {
+                "services": [
+                    {
+                        "path": "infra/db-core",
+                        "name": "Database Core (Postgres and MinIO)",
+                        "enabled": True,
+                    }
+                ]
+            }
+        }
+    )
+    profile = Profile(name=None, phase_keys=None, config=config)
+
+    targets = deploy.resolve_selection_health_containers(
+        tmp_path, profile, deploy.build_selection(profile)
+    )
+
+    assert targets == ["p-t-postgres", "p-t-minio"]
+    assert all("Database Core" not in target for target in targets)
+
+
+def test_health_targets_honor_entry_and_host_compose_profiles(tmp_path):
+    _write_compose(
+        tmp_path / "tools/admin",
+        """\
+services:
+  always:
+    container_name: p-t-always
+  debug:
+    container_name: p-t-debug
+    profiles: [debug]
+  metrics:
+    container_name: p-t-metrics
+    profiles: [metrics]
+  dormant:
+    container_name: p-t-dormant
+    profiles: [not-active]
+""",
+    )
+    config = _config_with_phases(
+        {
+            "phase_1": {
+                "services": [
+                    {
+                        "path": "tools/admin",
+                        "name": "Administration tools",
+                        "enabled": True,
+                        "profiles": ["debug"],
+                    }
+                ]
+            }
+        }
+    )
+    profile = Profile(
+        name="ops",
+        phase_keys=None,
+        compose_profiles=["metrics"],
+        config=config,
+    )
+
+    targets = deploy.resolve_selection_health_containers(
+        tmp_path, profile, deploy.build_selection(profile)
+    )
+
+    assert targets == ["p-t-always", "p-t-debug", "p-t-metrics"]
+
+
+def test_health_target_resolution_fails_for_ambiguous_compose_identity(tmp_path):
+    _write_compose(
+        tmp_path / "infra/cache",
+        """\
+services:
+  redis:
+    image: redis:latest
+""",
+    )
+    config = _config_with_phases(
+        {
+            "phase_1": {
+                "services": [
+                    {"path": "infra/cache", "name": "Redis cache", "enabled": True}
+                ]
+            }
+        }
+    )
+    profile = Profile(name=None, phase_keys=None, config=config)
+
+    with pytest.raises(ValueError, match="set a concrete container_name") as exc:
+        deploy.resolve_selection_health_containers(
+            tmp_path, profile, deploy.build_selection(profile)
+        )
+
+    assert "infra/cache" in str(exc.value)
+    assert "redis" in str(exc.value)
+
+
+def test_bare_health_action_gates_compose_target_not_display_name(monkeypatch, tmp_path):
+    _write_compose(
+        tmp_path / "infra/cache",
+        "services:\n  redis:\n    container_name: p-t-redis\n",
+    )
+    config = _config_with_phases(
+        {
+            "phase_1": {
+                "services": [
+                    {"path": "infra/cache", "name": "Friendly Redis", "enabled": True}
+                ]
+            }
+        }
+    )
+    profile = Profile(name=None, phase_keys=None, config=config)
+    checked: list[str] = []
+
+    def fake_gate(container_names, **kwargs):
+        checked.extend(container_names)
+        return True, {
+            "healthy": list(container_names),
+            "pending": [],
+            "unhealthy": [],
+            "no_healthcheck": [],
+            "not_found": [],
+        }
+
+    monkeypatch.setattr(deploy, "run_container_health_gate", fake_gate)
+
+    rc = deploy.action_healthcheck(
+        tmp_path, profile, deploy.build_selection(profile)
+    )
+
+    assert rc == 0
+    assert checked == ["p-t-redis"]
+
+
+def test_bare_health_passes_without_calling_gate_when_all_entries_excluded(
+    monkeypatch, tmp_path, capsys
+):
+    config = _config_with_phases(
+        {
+            "phase_1": {
+                "services": [
+                    {
+                        "path": "jobs/schema-init",
+                        "name": "Schema initialization",
+                        "enabled": True,
+                        "health": False,
+                    }
+                ]
+            }
+        }
+    )
+    profile = Profile(name=None, phase_keys=None, config=config)
+    monkeypatch.setattr(
+        deploy,
+        "run_container_health_gate",
+        lambda *args, **kwargs: pytest.fail("empty health gate must not be called"),
+    )
+
+    rc = deploy.action_healthcheck(
+        tmp_path, profile, deploy.build_selection(profile)
+    )
+
+    assert rc == 0
+    assert "No health-enabled containers selected; health gate passes" in capsys.readouterr().out
+
+
+def test_post_deploy_health_passes_without_gate_for_excluded_one_shot(
+    monkeypatch, tmp_path
+):
+    config = _config_with_phases(
+        {
+            "phase_1": {
+                "services": [
+                    {
+                        "path": "jobs/schema-init",
+                        "name": "Schema initialization",
+                        "enabled": True,
+                        "health": False,
+                    }
+                ]
+            }
+        }
+    )
+    profile = Profile(name=None, phase_keys=None, config=config)
+    stub = _StubEngine(fail_for=set())
+    _patch_engine(monkeypatch, stub)
+    monkeypatch.setattr(
+        deploy,
+        "run_container_health_gate",
+        lambda *args, **kwargs: pytest.fail("empty health gate must not be called"),
+    )
+
+    rc = deploy.action_deploy(
+        tmp_path,
+        profile,
+        deploy.build_selection(profile),
+        dry_run=False,
+        ignore_errors=False,
+        health_after_phase=True,
+        update_cert_permission=False,
+    )
+
+    assert rc == 0
+    assert [call["name"] for call in stub.calls] == ["schema-init"]
 
 
 # ---------------------------------------------------------------------------

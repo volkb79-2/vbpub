@@ -18,10 +18,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
-# Total-line-coverage floor. Measured baseline 2026-06-23: 73.9% (706 tests).
-# Ratcheted 2026-06-23: 73.48% (791 tests, +85 spec-contract tests for 4.2 features).
-# Do not lower; raise it as cli.py / deploy.py coverage improves.
-COV_FAIL_UNDER = "73"
+# Total-line-coverage floor. Ratcheted 2026-07-15 after the Compose-derived
+# orchestration-health work: 914 tests measured 75.55%. Keep a small margin for
+# platform-specific branches; raise it as cli.py / deploy.py coverage improves.
+COV_FAIL_UNDER = "75"
 
 
 def main() -> None:
