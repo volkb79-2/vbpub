@@ -143,6 +143,27 @@ REGISTRY: dict[str, MetricSpec] = {
     "host_gpu_vram_used": _m("host_gpu_vram_used", "bytes", "gauge", "local", "n/a", False, ("/sys/class/drm/card*/device/mem_info_vram_used",), "Host GPU VRAM currently in use summed across all amdgpu cards. Only available on amdgpu; other drivers report unavail_kernel."),
     "host_gpu_busy_pct": _m("host_gpu_busy_pct", "%", "gauge", "local", "n/a", False, ("/sys/class/drm/card*/device/gpu_busy_percent",), "Host GPU busy percent: the maximum GPU engine busy percentage across all amdgpu cards. A max (not a mean) is used because one pegged GPU is the condition an operator needs to see. Only available on amdgpu; other drivers report unavail_kernel."),
     "host_gpu_count": _m("host_gpu_count", "count", "gauge", "local", "n/a", False, ("/sys/class/drm/card*",), "Number of DRM render cards (cardN nodes) detected under /sys/class/drm. Connector nodes (e.g. card0-DP-1) are not counted. A host that exposes the DRM tree with no cards in it reports 0; a host with no /sys/class/drm at all reports unavail_kernel, because a count could not be read (an unreadable count is never fabricated as 0). A card whose driver exposes no VRAM/busy files is still counted here, which is what separates 'no GPU' from 'a GPU I cannot read'."),
+    # P90 process model (D-013/D-019). These metrics only ever appear on
+    # "process"-kind entities in the separate bounded process Frame stream the
+    # sampler produces (never on cgroup entities in the main collector Frame),
+    # so their `local_only`/non-aggregatable policy cannot duplicate or feed
+    # into any cgroup subtree total.
+    "proc_cpu_pct": _m("proc_cpu_pct", "%", "derived", "local", "local_only", False, ("/proc/PID/stat:utime", "/proc/PID/stat:stime"), "Process CPU consumption over the sample interval, normalized so 100% is one logical CPU (D-013); may exceed 100 for a multi-threaded process."),
+    "proc_cpu_host_pct": _m("proc_cpu_host_pct", "%", "derived", "local", "local_only", False, ("/proc/PID/stat:utime", "/proc/PID/stat:stime"), "Process CPU consumption normalized to whole-host capacity (proc_cpu_pct divided by the logical CPU count), so 100% means the process is saturating every logical CPU on the host."),
+    "proc_rss": _m("proc_rss", "bytes", "gauge", "local", "local_only", False, ("/proc/PID/status:VmRSS",), "Process resident set size."),
+    "proc_vsz": _m("proc_vsz", "bytes", "gauge", "local", "local_only", False, ("/proc/PID/status:VmSize",), "Process virtual memory size."),
+    "proc_swap": _m("proc_swap", "bytes", "gauge", "local", "local_only", False, ("/proc/PID/status:VmSwap",), "Process swapped-out memory."),
+    "proc_io_r_bps": _m("proc_io_r_bps", "bytes/s", "derived", "local", "local_only", False, ("/proc/PID/io:read_bytes",), "Process storage read bandwidth from /proc/PID/io deltas. Total per process, not attributed to an exact device."),
+    "proc_io_w_bps": _m("proc_io_w_bps", "bytes/s", "derived", "local", "local_only", False, ("/proc/PID/io:write_bytes",), "Process storage write bandwidth from /proc/PID/io deltas. Total per process, not attributed to an exact device."),
+    "proc_io_cancelled_w_bps": _m("proc_io_cancelled_w_bps", "bytes/s", "derived", "local", "local_only", False, ("/proc/PID/io:cancelled_write_bytes",), "Process cancelled (truncated/deleted before writeback) write bandwidth from /proc/PID/io deltas."),
+    "proc_io_delay_per_s": _m("proc_io_delay_per_s", "/s", "derived", "local", "local_only", False, ("/proc/PID/stat:delayacct_blkio_ticks",), "Process block-I/O delay rate (fraction of wall time blocked on I/O) where the kernel exposes delayacct_blkio_ticks; unavail_kernel on kernels/configs that do not."),
+    "proc_minflt_per_s": _m("proc_minflt_per_s", "/s", "derived", "local", "local_only", False, ("/proc/PID/stat:minflt",), "Process minor page fault rate."),
+    "proc_majflt_per_s": _m("proc_majflt_per_s", "/s", "derived", "local", "local_only", False, ("/proc/PID/stat:majflt",), "Process major page fault rate."),
+    "proc_ctxt_vol_per_s": _m("proc_ctxt_vol_per_s", "/s", "derived", "local", "local_only", False, ("/proc/PID/status:voluntary_ctxt_switches",), "Process voluntary context switch rate."),
+    "proc_ctxt_invol_per_s": _m("proc_ctxt_invol_per_s", "/s", "derived", "local", "local_only", False, ("/proc/PID/status:nonvoluntary_ctxt_switches",), "Process involuntary context switch rate."),
+    "proc_threads": _m("proc_threads", "count", "gauge", "local", "local_only", False, ("/proc/PID/stat:num_threads",), "Process thread count."),
+    "proc_elapsed_s": _m("proc_elapsed_s", "count", "gauge", "local", "local_only", False, ("/proc/PID/stat:starttime",), "Seconds elapsed since the process started, derived from its /proc/PID/stat start time and host boot time."),
+    "proc_present": _m("proc_present", "count", "gauge", "local", "local_only", False, ("/proc/PID",), "Whether the process directory still exists this tick (1) or the PID has vanished (0). Distinct from read success: a present process can still have unavail_perm/unavail_kernel fields."),
 }
 
 assert all(name == spec.name for name, spec in REGISTRY.items())
@@ -192,6 +213,12 @@ METRIC_GROUPS["damon"] = (
 )
 METRIC_GROUPS["governance"] = (
     "governance_origin", "governance_drift", "effective_memory_min",
+)
+METRIC_GROUPS["process"] = (
+    "proc_cpu_pct", "proc_cpu_host_pct", "proc_rss", "proc_vsz", "proc_swap",
+    "proc_io_r_bps", "proc_io_w_bps", "proc_io_cancelled_w_bps", "proc_io_delay_per_s",
+    "proc_minflt_per_s", "proc_majflt_per_s", "proc_ctxt_vol_per_s", "proc_ctxt_invol_per_s",
+    "proc_threads", "proc_elapsed_s", "proc_present",
 )
 
 # Mapping from family token (as used in --metrics field-list) to the structured

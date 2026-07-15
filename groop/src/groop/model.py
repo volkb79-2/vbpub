@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 EntityKey = str
-EntityKind = Literal["root", "slice", "scope", "service", "other"]
+EntityKind = Literal["root", "slice", "scope", "service", "other", "process"]
 MetricSource = Literal["exact", "derived", "netns", "bpf", "host", "unlimited", "unavail_perm", "unavail_kernel"]
 
 
@@ -82,6 +82,13 @@ class EntityFrame:
     governance: dict[str, object] | None = None
     network: dict[str, object] | None = None
     damon: dict[str, object] | None = None
+    process: dict[str, object] | None = None
+    """P90 process identity/owner-provenance block (comm, cmdline, ppid, user,
+    state, cgroup/unit/slice/docker/ciu owner join). Only ever populated on
+    "process"-kind EntityFrames in the separate process Frame stream; a cgroup
+    EntityFrame never sets this. Not in P81's explicit visitor set, so it fails
+    closed to the ``sensitive`` marker like any other unrecognized value-bearing
+    field until a future frontend registers a typed visitor for it."""
 
 
 @dataclass
@@ -222,6 +229,8 @@ def entity_frame_to_jsonable(frame: EntityFrame) -> dict[str, Any]:
         out["network"] = frame.network
     if frame.damon is not None:
         out["damon"] = frame.damon
+    if frame.process is not None:
+        out["process"] = frame.process
     return out
 
 
@@ -233,6 +242,7 @@ def entity_frame_from_jsonable(value: Any) -> EntityFrame:
         governance=value.get("governance"),
         network=value.get("network"),
         damon=value.get("damon"),
+        process=value.get("process"),
     )
 
 

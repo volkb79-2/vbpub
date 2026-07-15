@@ -121,6 +121,52 @@ class BpfSnapshotConfig:
     state_dir: Path = Path("/run/groop/bpf")  # directory for snapshot.json output
 
 
+class ProcessConfigError(ValueError):
+    """A D-019 process-sampler config field or relationship is invalid."""
+
+
+@dataclass(frozen=True)
+class ProcessConfig:
+    """D-019 bounded process candidate/enrichment budget.
+
+    The candidate union is top ``top_cpu`` CPU-hot plus top ``top_io`` I/O-hot
+    plus selected/pinned (capped at ``pinned_cap``) plus processes hot within
+    the last ``recently_hot_grace_seconds``, capped overall at ``hard_cap``.
+    All fields are strictly validated (D-019: "invalid relationships such as a
+    hard cap below the selected/pinned allowance fail configuration
+    validation").
+    """
+
+    top_cpu: int = 20
+    top_io: int = 20
+    pinned_cap: int = 16
+    recently_hot_grace_seconds: float = 60.0
+    hard_cap: int = 64
+
+    def __post_init__(self) -> None:
+        errors = validate_process_config(self)
+        if errors:
+            raise ProcessConfigError("; ".join(errors))
+
+
+def validate_process_config(cfg: ProcessConfig) -> list[str]:
+    """Return a list of validation error strings (empty when valid)."""
+    errors: list[str] = []
+    if cfg.top_cpu < 0:
+        errors.append("top_cpu must be >= 0")
+    if cfg.top_io < 0:
+        errors.append("top_io must be >= 0")
+    if cfg.pinned_cap < 0:
+        errors.append("pinned_cap must be >= 0")
+    if cfg.recently_hot_grace_seconds < 0:
+        errors.append("recently_hot_grace_seconds must be >= 0")
+    if cfg.hard_cap < 1:
+        errors.append("hard_cap must be >= 1")
+    if cfg.hard_cap < cfg.pinned_cap:
+        errors.append("hard_cap must be >= pinned_cap")
+    return errors
+
+
 @dataclass(frozen=True)
 class CiuConfig:
     """CIU stack metadata configuration.
@@ -160,6 +206,7 @@ class GroopConfig:
     damon: DamonConfig = field(default_factory=DamonConfig)
     ciu: CiuConfig = field(default_factory=CiuConfig)
     bpf_snapshot: BpfSnapshotConfig = field(default_factory=BpfSnapshotConfig)
+    processes: ProcessConfig = field(default_factory=ProcessConfig)
 
     def to_primitive(self) -> dict[str, Any]:
         return {
@@ -218,6 +265,13 @@ class GroopConfig:
                 "interval": self.bpf_snapshot.interval,
                 "map_name": self.bpf_snapshot.map_name,
                 "state_dir": str(self.bpf_snapshot.state_dir),
+            },
+            "processes": {
+                "top_cpu": self.processes.top_cpu,
+                "top_io": self.processes.top_io,
+                "pinned_cap": self.processes.pinned_cap,
+                "recently_hot_grace_seconds": self.processes.recently_hot_grace_seconds,
+                "hard_cap": self.processes.hard_cap,
             },
         }
 
@@ -335,6 +389,7 @@ def load(path: Path | None = None) -> GroopConfig:
     damon_data = data.get("damon", {})
     ciu_data = data.get("ciu", {})
     bpf_snapshot_data = data.get("bpf_snapshot", {})
+    process_data = data.get("processes", {})
     thresholds = dict(data.get("thresholds", {}) or {})
     tiers = {
         str(name): [str(prefix) for prefix in prefixes]
@@ -403,5 +458,12 @@ def load(path: Path | None = None) -> GroopConfig:
             interval=float(bpf_snapshot_data.get("interval", 30.0)),
             map_name=str(bpf_snapshot_data.get("map_name", "groop_cgroup_skb")),
             state_dir=Path(bpf_snapshot_data["state_dir"]) if isinstance(bpf_snapshot_data.get("state_dir"), str) else BpfSnapshotConfig.state_dir,
+        ),
+        processes=ProcessConfig(
+            top_cpu=int(_coerce_float(process_data.get("top_cpu"), 20)),
+            top_io=int(_coerce_float(process_data.get("top_io"), 20)),
+            pinned_cap=int(_coerce_float(process_data.get("pinned_cap"), 16)),
+            recently_hot_grace_seconds=_coerce_float(process_data.get("recently_hot_grace_seconds"), 60.0),
+            hard_cap=int(_coerce_float(process_data.get("hard_cap"), 64)),
         ),
     )
