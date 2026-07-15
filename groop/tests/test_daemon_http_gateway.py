@@ -168,10 +168,11 @@ def test_server_side_redaction_preserves_key_and_metadata(tmp_path: Path) -> Non
 def test_frame_routes_redact_server_side_above_the_ceiling(tmp_path: Path, target: str) -> None:
     """The frame walker must redact too, not just the single-entity route.
 
-    ``_redact_frame`` traverses a shape (``host`` map plus ``entities`` map)
-    that ``_redact_metrics`` never sees, so a shape drift in
-    ``frame_to_jsonable`` would silently disarm redaction on exactly the two
-    routes that carry the most telemetry while every other oracle stayed green.
+    The shared enforcement point's ``FRAME`` visitor traverses a shape (``host``
+    map plus ``entities`` map) the ``ENTITY_FRAME`` visitor never sees, so a
+    shape drift in ``frame_to_jsonable`` would silently disarm redaction on
+    exactly the two routes that carry the most telemetry while every other
+    oracle stayed green.
     """
     with _live_gateway(tmp_path) as gateway:
         status, _headers, body = _request(gateway, "GET", target)
