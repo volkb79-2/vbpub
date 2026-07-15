@@ -1,5 +1,12 @@
 # Web UI scoping
 
+**Historical analysis, reconciled 2026-07-15.** D-001 through D-019 supersede
+the assumptions and successor recommendations below. P68 was deleted; projected
+polling is the accepted initial transport. P92 now owns capability-token auth,
+same-origin serving and bounded P88 routes; revised P73/P77 own
+Overview/Explore and Entity/Incidents/Compare. Use those handoffs and
+`docs/ROADMAP.md`, not this document, for dispatch.
+
 **Scope:** a read-only browser frontend over P67's HTTP adapter.  It is not a
 browser control plane: no DAMON, actions, configuration, Docker, systemd, BPF,
 or squeeze mutation is in scope.  Those flows require the existing
@@ -13,10 +20,11 @@ The response-size budget is P53's live finding: a pretty-printed full frame
 with 89 entities is about 447 KB [P53 handoff:91-96].  It is a planning budget,
 not a claim that every compact HTTP response has exactly that byte size.
 
-Until product decisions D-001--D-003 below are made, the carve assumption is:
+The original pre-decision carve assumption was:
 one trusted local operator, a loopback-only authenticated gateway, and a
 dependency-free static browser client shipped as an optional extra.  The UI
-must work with polling; P68 may improve its transport later.
+must work with polling. The later decision retained polling but rejected P68's
+full-frame subscribe shape.
 
 ## Read-surface gap analysis
 

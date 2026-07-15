@@ -68,6 +68,9 @@ other frontend emit it.
   treated as `sensitive` (the gateway already does this -- preserve it). A payload
   field the enforcement point does not recognize must not be emitted above the
   ceiling by default.
+- The enforcement boundary is reusable for P88 query results and future process,
+  lifecycle, incident and evidence payloads. Add typed visitors/registrations as
+  those shapes land; do not allow a frontend to opt out or add a local walker.
 - **`findings[]` is covered.** A finding whose `source_metrics` includes a metric
   above the ceiling has its `message` and `remedy` replaced by a typed marker; the
   `rule_id`, `severity`, and `source_metrics` list stay (they are `operational`
@@ -115,8 +118,6 @@ python3 -m py_compile <changed files>
 git diff --check
 ```
 
-State the environment for each result. Write P81-LOG.md / P81-REPORT.md.
-
-Note: `groop/tests/test_report.py::TestReportCLI::test_zst_without_zstandard_exits_2`
-currently fails on unmodified `main` (P82 owns the repair). Do not attribute it to
-this package, and do not "fix" it here.
+State the environment for each result. Build the P84 dependency-complete `[dev]`
+environment; the authoritative full gate permits zero skips. Write P81-LOG.md /
+P81-REPORT.md.

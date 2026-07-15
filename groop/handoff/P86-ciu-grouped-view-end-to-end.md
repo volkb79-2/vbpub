@@ -3,18 +3,16 @@
 <!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
 > **Tier:** flash-high
 > **Depends-on:** P83 (merged), P76 (merged)
-> **Base:** main after P83 merge
+> **Base:** main
 > **Session-hint:** fresh
 > **Serialize-with:** none
 > **Escalate-if:** driving the view through Textual reveals that a synthetic row key (`__group__*`, `__ungrouped__`, `__empty__`) can actually be drilled into, selected as an entity, or crashes the app. That is a product bug in P83, not a test gap - say so in the REPORT and fix it in `src/`, do not work around it in the test.
 
 <!--
 CARVE SOURCE (controller-workflow-v2 §8): **backlog-derived** (B-004, filed by the
-P83 frontier review). Priority: ranked above the remaining report-polish packages
-(P64/P65) because a wired-but-untested view is one refactor away from silently
-breaking, and P83's review already had to fix two defects in this exact surface -
-the area has a demonstrated defect density. Ranked below P73 (standing product
-goal), which stays the top of the queue.
+P83 frontier review). Revalidated 2026-07-15: this remains an independent,
+low-risk coverage package. It is useful but ranks below P81, P87 and the P88
+query-core prerequisite chain.
 -->
 
 ## Goal

@@ -4,7 +4,7 @@
 **Base:** `bc09212` (docs: controller workflow v2 — role-separated orchestration)
 **Date:** 2026-07-12
 
-**Merged to main:** (not merged — feature branch only, per handoff)
+**Merged to main:** yes (`78e83c` is an ancestor of current `main`; corrected 2026-07-15)
 
 ## What Was Built
 

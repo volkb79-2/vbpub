@@ -16,7 +16,26 @@ Approximate status:
 | v0 collector proof | 100% | high | Collector/model/registry/`--once --json` are implemented and tested. |
 | v1 read-only TUI | 90-95% | medium | Core daily triage works. P33/P35/P38 provide rootless acceptance harnesses and P39 adds the canonical readiness document. P40 restores the green full suite under the managed Textual 8 environment. P41 automates strict rendered replay fidelity (383 passing tests plus one optional skip). P43 replaces the obsolete pre-1.0 resolver ceiling with textual>=8.2.8. Isolated local-artifact pipx/no-config acceptance now passes. Strict live performance and non-root gates remain. |
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
-| v2 daemon/BPF/admin actions | 80-85% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd start/stop/restart execution, BPF gate/provider/snapshot bridge, bounded Docker/cgroup/journald inspect-files reads, daemon-owned paddr lifecycle, guided memory.high squeeze, systemd memory.high governance, and CIU stack metadata (detection + frame fields) exist. Live BPF load/attach, broader actions, GPU/ZFS plugins, and CIU grouping/actions remain. |
+| v2 daemon/BPF/admin actions | 80-85% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd actions, BPF gate/provider/snapshot bridge, bounded Docker/cgroup/journald reads, daemon-owned paddr lifecycle, guided memory.high squeeze, host ZFS/GPU facts, and CIU metadata/grouping exist. The accepted owner-chain, query/history/process and web product remain; live BPF stays optional and measurement-gated. |
+
+## 2026-07-15 reconciliation and executable frontier
+
+- D-001 through D-019 are all decided. The completed discussion is archived as
+  provenance; `docs/ROADMAP.md` contains the dispatch order.
+- No completed unmerged Groop branch should be integrated. Rejected/superseded
+  tips and already-absorbed docs branches are listed in
+  `docs/BRANCH-DISPOSITION.md`.
+- P68, P80 and P82 were removed. P64/P65 were revised as P88 consumers; P73/P77
+  were rewritten around the accepted same-origin projected web product; P81,
+  P66 and P86 remain valid.
+- New work is carved as P87-P95: urgent Docker owner/protected-ID safety, the
+  shared frame query, visible source/backfill, bounded CPU-hot + I/O-hot process
+  projection, persistent capped history, loopback token web transport and the
+  lifecycle owner protocol, shared detail leases and stable lifecycle incidents.
+- Groop now owns a pinned PWMCP 1.61.0-r6 test deployment under `groop/pwmcp`,
+  generated/started with CIU 4.6.0. The healthy container has no published host
+  ports and is reachable from this workspace at `http://pwmcp:3000`; it is test
+  infrastructure, not a Groop production dependency.
 
 P44 adds the daemon-owned paddr lifecycle — `[damon] paddr_enabled = true` starts
 or adopts one groop-owned whole-host paddr session. Sessions created by the
@@ -66,12 +85,11 @@ client, exposing exactly bounded health, overview, entity, and history tools.
 It uses P57 docker selectors, P52 sensitivity redaction, typed safe errors,
 and an enforced 4 MiB aggregate result cap.
 
-P53 and P54 are queued, spec-only recording follow-ups: P53 adds a headless
-`groop --record FILE --headless` driver reusing the existing P2
-`RecordWriter`/frame stream with no `textual` import, and P54 adds `groop
-report FILE --json` to compute a steady-state percentile/rate profile from a
-P2-format recording. Until P53/P54 merge, unattended recording and
-machine-readable steady-state profiles remain prototype-only claims.
+P53 and P54 are done. P53 adds a headless `groop --record FILE --headless`
+driver reusing the existing P2 `RecordWriter`/frame stream with no `textual`
+import. P54 adds `groop report FILE --json` to compute a steady-state
+percentile/rate profile from a P2-format recording; P61/P62 add threshold gates
+and automatic steady-state suffix selection.
 
 P55 adds `--entities GLOB`/`--slice NAME`/`--metrics compact` collection-time
 filtering and is **done** (see implemented section). P56 (``groop squeeze``)
@@ -111,12 +129,19 @@ core workflows, not yet production-certified.**
   legacy disk-swap estimate.
 - Process drill-down from `cgroup.procs` and `/proc/<pid>`.
 - Record/replay using headered JSONL, plus optional zstd when available.
+- Headless bounded recording (`--record FILE --headless` with interval and
+  duration/frame limits) and recording reports with percentile/rate profiles,
+  automatic steady-state selection, and threshold exit-code gates.
 - Fixed-capacity numeric history ring.
 - Network provider abstraction with host truth and netns approximation.
 - Origin/drift detection for systemd-managed values versus live cgroup files.
 - Pressure score and rule-based findings.
 - Textual TUI with tree/container views, profiles, sorting, filtering, banner,
   entity drill-down, glossary, snapshot hotkey, and host-memory screen.
+- CIU stack metadata detection and the `ciu-grouped` TUI projection, preserving
+  label/inference provenance and numeric phase ordering.
+- Host ZFS ARC and DRM GPU facts where their kernel sources exist. GPU data is
+  host-level only; per-process/container attribution is not claimed.
 - Passive DAMON vaddr attribution and paddr host-session detection.
 - Controlled DAMON vaddr and paddr start APIs/CLI with root guards, typed
   confirmation, ownership markers, and audit logs.
@@ -300,16 +325,28 @@ core workflows, not yet production-certified.**
 ## Not Implemented
 
 - Production daemon installation execution and service hardening beyond the
-  packaged operator templates plus safe P25 install plan.
+  packaged operator templates plus P25's non-executable plan. P80 was deleted:
+  a successor first needs normalized argv-only steps, activation semantics,
+  non-root verification and rollback/recovery contracts.
 - Live BPF ownership lifecycle (daemon/helper attach, pin, detach).
 - Web UI.
-- GPU optional plugins (P74 adds host-level VRAM/count/busy metrics from DRM sysfs; no per-cgroup GPU claim).
-- CIU stack grouping/actions.
-- paddr auto-start / persistent daemon-owned paddr mode.
-- Headless (non-Textual) `--record` driver and `groop report` steady-state
-  profile command (queued: P53, P54).
-- Guided stepped `memory.high` squeeze measurement (`groop squeeze`)
-  (queued: P56).
+- D-016 lifecycle owner-chain protocol and owner-routed actions. Current action
+  verbs target Docker/systemd directly; CIU/Wings/Compose/Podman/Kubernetes
+  adapters do not exist.
+- Per-process/container GPU attribution.
+- Persistent daemon history and immediate daemon-history window summaries.
+- Process projection, per-process rates, and remote/daemon process detail.
+- `mpstat`-class per-CPU history/imbalance findings and D-019's configurable
+  CPU-hot/I/O-hot process candidate union.
+- Configured provider activation modes and shared expiring detail-observation
+  leases; current provider enablement is static rather than view-leased.
+- Stable workload/incarnation lifecycle joins and Previous instance/Recent exit
+  history links.
+- Separately provenanced policy tags/rules; current tiers remain path/config
+  presentation data without D-015's structured conflict model.
+- Routine scenario gaps added by D-010: mount byte/inode/read-only capacity,
+  host file-table pressure, bounded FD/blocked-task detail, and the complete
+  versioned operator-scenario acceptance suite.
 
 ## Acceptance Status
 
@@ -400,13 +437,22 @@ Also validated (earlier waves):
 - P51 focused daemon/client/health tests: `20 passed`.
 - P47 focused component health tests: `49 passed`.
 
-### Known gap carried by this wave
+### Planning and PWMCP validation — 2026-07-15
 
-`--window auto` detection is `O(frames^2 x entities)`. Measured on the review
-host: 0.98 s at 480 frames, scaling cleanly quadratic — roughly 35 s at the 4 h /
-5 s default recording profile (2880 frames, 20 entities), ~90 s at 50 entities,
-and tens of minutes for a 24 h capture. The result is correct and deterministic;
-it is the cost that is wrong, on exactly the long recordings the feature exists
-for. Carved as **P70** (`handoff/P70-report-detector-performance.md`), whose
-acceptance oracle is identical window selections on every existing P62 test plus a
-2880-frame recording detected in under 2 s.
+No Groop source code changed in this reconciliation, so the 2026-07-13 full-suite
+result above remains the most recent source gate. The new consumer deployment was
+validated separately:
+
+```text
+ciu env generate --define-root .                    -> rendered from pinned inputs
+ciu up --dir . --dry-run                            -> all 17 steps valid
+ciu up --dir .                                      -> groop-ui-test-pwmcp healthy
+GET http://pwmcp:3000/health                        -> status=ok, active_sessions=0
+GET http://pwmcp:3000/contract                      -> release=1.61.0-r6, Playwright=1.61
+docker published ports                              -> none
+networks                                            -> groop-ui-test + workspace consumer
+```
+
+P70 already repaired the historical auto-window performance gap. Remaining
+implementation gaps are the `Not Implemented` list and the executable frontier,
+not that superseded note.

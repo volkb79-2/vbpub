@@ -1,0 +1,151 @@
+# PWMCP — Playwright-as-a-Service. Rendered by ciu from ciu.defaults.toml.j2
+# (+ optional ciu.toml.j2 overrides). See that file for the full mode docs.
+#
+# UNIFIED MODE (only supported mode):
+#   One container "pwmcp" exposes four endpoints under a single hostname:
+#     ws://{{ pwmcp.unified.name }}:{{ pwmcp.unified.ws_port }}/    — Playwright connect()
+#     http://{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}/mcp  — @playwright/mcp
+#     http://{{ pwmcp.unified.name }}:{{ pwmcp.unified.devtools_port }}/mcp  — chrome-devtools-mcp
+#     http://{{ pwmcp.unified.name }}:{{ pwmcp.unified.lighthouse_port }}/mcp  — lighthouse-mcp
+
+services:
+  # ── Unified single-image service ──────────────────────────────────────────
+  {{ pwmcp.unified.name }}:
+    # Unified image: Playwright run-server (:{{ pwmcp.unified.ws_port }}) +
+    # @playwright/mcp HTTP/SSE (:{{ pwmcp.unified.mcp_port }}) +
+    # chrome-devtools-mcp via mcp-proxy (:{{ pwmcp.unified.devtools_port }}) +
+    # lighthouse-mcp via mcp-proxy (:{{ pwmcp.unified.lighthouse_port }}) in one container.
+    image: {{ pwmcp.unified.image.registry }}/{{ pwmcp.unified.image.namespace }}/{{ pwmcp.unified.image.name }}:{{ pwmcp.unified.image.tag }}
+    pull_policy: always
+    container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}
+    # No command override — supervisord is the ENTRYPOINT; it manages all services.
+    user: "{{ pwmcp.hardening.run_as_uid }}:{{ pwmcp.hardening.run_as_gid }}"
+    {% if pwmcp.hardening.drop_all_caps %}
+    cap_drop:
+      - ALL
+    {% endif %}
+    {% if pwmcp.hardening.no_new_privileges %}
+    security_opt:
+      - no-new-privileges:true
+    {% endif %}
+    shm_size: "{{ pwmcp.hardening.shm_size }}"
+    restart: unless-stopped
+    environment:
+      # Inject the deployment-specific allowed-hosts for the MCP server.
+      # supervisord reads %(ENV_PWMCP_MCP_ALLOWED_HOSTS)s and passes it to playwright-mcp.
+      # The two values below are always correct for sibling-container access:
+      #   short service alias (compose DNS)     : {{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}
+      #   full container name (Docker hostname) : {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}
+      PWMCP_MCP_ALLOWED_HOSTS: "{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.mcp_port }}{% for alias in pwmcp.consumer.aliases %},{{ alias }}:{{ pwmcp.unified.mcp_port }}{% endfor %}{% if pwmcp.unified.extra_args %},{{ pwmcp.unified.extra_args }}{% endif %}"
+      # Parallel allowed-hosts for chrome-devtools-mcp (port 8932 via mcp-proxy).
+      # mcp-proxy does not have native --allowed-hosts; this var is for documentation
+      # and external-mode Traefik rules.
+      PWMCP_DEVTOOLS_ALLOWED_HOSTS: "{{ pwmcp.unified.name }}:{{ pwmcp.unified.devtools_port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.devtools_port }}{% for alias in pwmcp.consumer.aliases %},{{ alias }}:{{ pwmcp.unified.devtools_port }}{% endfor %}{% if pwmcp.unified.devtools_extra_args %},{{ pwmcp.unified.devtools_extra_args }}{% endif %}"
+      # Parallel allowed-hosts for lighthouse-mcp (port 8933 via mcp-proxy).
+      # Same mcp-proxy allowlist gap as devtools.
+      PWMCP_LIGHTHOUSE_ALLOWED_HOSTS: "{{ pwmcp.unified.name }}:{{ pwmcp.unified.lighthouse_port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.lighthouse_port }}{% for alias in pwmcp.consumer.aliases %},{{ alias }}:{{ pwmcp.unified.lighthouse_port }}{% endfor %}{% if pwmcp.unified.lighthouse_extra_args %},{{ pwmcp.unified.lighthouse_extra_args }}{% endif %}"
+      # P03 opt-in shared persistent browser mode. "per-session" (default)
+      # renders byte-identical container behavior to pre-P03; "shared" runs
+      # one persistent Chromium the MCP servers attach to over CDP. Validation
+      # of the value itself (reject anything else fatally, no silent clamp)
+      # happens in the container entrypoint (entrypoint.sh), which is the
+      # single source of truth for this check -- not duplicated here.
+      PWMCP_BROWSER_MODE: "{{ pwmcp.unified.browser_mode }}"
+      PWMCP_RUN_SERVER_PORT: "{{ pwmcp.unified.ws_port }}"
+      PWMCP_RUN_SERVER_UPSTREAM_PORT: "{{ pwmcp.run_server.upstream_port }}"
+      PWMCP_RUN_SERVER_ADMIN_PORT: "{{ pwmcp.run_server.admin_port }}"
+      PWMCP_RUN_SERVER_DEFAULT_LEASE_S: "{{ pwmcp.run_server.default_lease_s }}"
+      PWMCP_RUN_SERVER_MAX_LEASE_S: "{{ pwmcp.run_server.max_lease_s }}"
+      PWMCP_RUN_SERVER_MAX_CLIENTS: "{{ pwmcp.run_server.max_clients }}"
+      PWMCP_RUN_SERVER_IDLE_RECYCLE_S: "{{ pwmcp.run_server.idle_recycle_s }}"
+      {% if pwmcp.unified.browser_mode == "shared" %}
+      # Admin API port is internal-network-only: injected into the container
+      # environment but deliberately NEVER added to `ports:` and NEVER given
+      # a Traefik router below, in either deployment mode (safeguard 5 /
+      # "CDP never leaves the container" applies equally to the admin port).
+      PWMCP_ADMIN_PORT: "{{ pwmcp.unified.admin_port }}"
+      PWMCP_BROWSER_MAX_IDLE_S: "{{ pwmcp.unified.browser_max_idle_s }}"
+      {% endif %}
+    {% if pwmcp.unified.expose %}
+    ports:
+      - "127.0.0.1:{{ pwmcp.unified.host_ws_port }}:{{ pwmcp.unified.ws_port }}"
+      - "127.0.0.1:{{ pwmcp.unified.host_mcp_port }}:{{ pwmcp.unified.mcp_port }}"
+      - "127.0.0.1:{{ pwmcp.unified.host_devtools_port }}:{{ pwmcp.unified.devtools_port }}"
+      - "127.0.0.1:{{ pwmcp.unified.host_lighthouse_port }}:{{ pwmcp.unified.lighthouse_port }}"
+    {% endif %}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:{{ pwmcp.unified.ws_port }}/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: {{ pwmcp.health.interval }}
+      timeout: {{ pwmcp.health.timeout }}
+      retries: {{ pwmcp.health.retries }}
+      start_period: {{ pwmcp.health.start_period }}
+    networks:
+      default: {}
+      {% if pwmcp.consumer.network %}
+      consumer:
+        aliases:
+          {% for alias in pwmcp.consumer.aliases %}
+          - {{ alias }}
+          {% endfor %}
+      {% endif %}
+      {% if pwmcp.external.enabled and pwmcp.external.unified_host %}
+      ingress: {}
+      {% endif %}
+    {% if pwmcp.external.enabled and pwmcp.external.unified_host %}
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network={{ pwmcp.network.ingress_network }}
+      # MCP endpoint: route by hostname to port {{ pwmcp.unified.mcp_port }}
+      - traefik.http.routers.{{ pwmcp.unified.name }}-mcp.rule=Host(`{{ pwmcp.external.unified_host }}`) && PathPrefix(`/mcp`)
+      - traefik.http.routers.{{ pwmcp.unified.name }}-mcp.entrypoints=websecure
+      - traefik.http.routers.{{ pwmcp.unified.name }}-mcp.tls=true
+      - traefik.http.services.{{ pwmcp.unified.name }}-mcp.loadbalancer.server.port={{ pwmcp.unified.mcp_port }}
+      # WebSocket run-server: route by hostname to port {{ pwmcp.unified.ws_port }}
+      - traefik.http.routers.{{ pwmcp.unified.name }}-ws.rule=Host(`{{ pwmcp.external.unified_host }}`)
+      - traefik.http.routers.{{ pwmcp.unified.name }}-ws.entrypoints=websecure
+      - traefik.http.routers.{{ pwmcp.unified.name }}-ws.tls=true
+      - traefik.http.services.{{ pwmcp.unified.name }}-ws.loadbalancer.server.port={{ pwmcp.unified.ws_port }}
+      # DevTools MCP endpoint: route by hostname to port {{ pwmcp.unified.devtools_port }}
+      # Path prefix /devtools is stripped so the backend sees /mcp (mcp-proxy endpoint).
+      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.rule=Host(`{{ pwmcp.external.unified_host }}`) && PathPrefix(`/devtools`)
+      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.entrypoints=websecure
+      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.tls=true
+      - traefik.http.services.{{ pwmcp.unified.name }}-devtools.loadbalancer.server.port={{ pwmcp.unified.devtools_port }}
+      - traefik.http.middlewares.{{ pwmcp.unified.name }}-devtools-strip.stripprefix.prefixes=/devtools
+      {% if pwmcp.external.guard_enabled %}
+      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.middlewares={{ pwmcp.unified.name }}-devtools-strip,{{ pwmcp.unified.name }}-guard
+      {% else %}
+      - traefik.http.routers.{{ pwmcp.unified.name }}-devtools.middlewares={{ pwmcp.unified.name }}-devtools-strip
+      {% endif %}
+      # Lighthouse MCP endpoint: route by hostname to port {{ pwmcp.unified.lighthouse_port }}
+      # Path prefix /lighthouse is stripped so the backend sees /mcp (mcp-proxy endpoint).
+      - traefik.http.routers.{{ pwmcp.unified.name }}-lighthouse.rule=Host(`{{ pwmcp.external.unified_host }}`) && PathPrefix(`/lighthouse`)
+      - traefik.http.routers.{{ pwmcp.unified.name }}-lighthouse.entrypoints=websecure
+      - traefik.http.routers.{{ pwmcp.unified.name }}-lighthouse.tls=true
+      - traefik.http.services.{{ pwmcp.unified.name }}-lighthouse.loadbalancer.server.port={{ pwmcp.unified.lighthouse_port }}
+      - traefik.http.middlewares.{{ pwmcp.unified.name }}-lighthouse-strip.stripprefix.prefixes=/lighthouse
+      {% if pwmcp.external.guard_enabled %}
+      - traefik.http.routers.{{ pwmcp.unified.name }}-lighthouse.middlewares={{ pwmcp.unified.name }}-lighthouse-strip,{{ pwmcp.unified.name }}-guard
+      {% else %}
+      - traefik.http.routers.{{ pwmcp.unified.name }}-lighthouse.middlewares={{ pwmcp.unified.name }}-lighthouse-strip
+      {% endif %}
+      {% if pwmcp.external.guard_enabled %}
+      - traefik.http.routers.{{ pwmcp.unified.name }}-mcp.middlewares={{ pwmcp.unified.name }}-guard
+      - traefik.http.routers.{{ pwmcp.unified.name }}-ws.middlewares={{ pwmcp.unified.name }}-guard
+      - traefik.http.middlewares.{{ pwmcp.unified.name }}-guard.basicauth.users={{ pwmcp.external.guard_user }}:{{ pwmcp.external.guard_htpasswd | replace("$", "$$") }}
+      {% endif %}
+    {% endif %}
+
+networks:
+  default:
+    name: {{ deploy.network_name }}
+  {% if pwmcp.consumer.network %}
+  consumer:
+    name: {{ pwmcp.consumer.network }}
+    external: true
+  {% endif %}
+  {% if pwmcp.external.enabled %}
+  ingress:
+    name: {{ pwmcp.network.ingress_network }}
+    external: true
+  {% endif %}

@@ -4,7 +4,7 @@
 **Base:** `7f1065a` (docs(pwmcp): P01 handoff - chrome-devtools-mcp sibling server)
 **Date:** 2026-07-12
 
-**Merged to main:** (not merged — feature branch only, per handoff)
+**Merged to main:** yes (`5ef42bc` is an ancestor of current `main`; corrected 2026-07-15)
 
 ## What Was Built
 

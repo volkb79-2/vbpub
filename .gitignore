@@ -166,6 +166,8 @@ venv.bak/
 # *rendered* ciu.toml / ciu.global.toml are gitignored.
 ciu.global.toml
 **/ciu.toml
+**/ciu.compose.yml
+**/.ciu/
 **/docker-compose.yml
 
 # Spyder project settings

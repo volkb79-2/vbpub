@@ -6,21 +6,99 @@ measure the current product before adding privileged infrastructure.
 
 ## Direction
 
-1. **Certify v1/v1.5 before expanding scope.**
-   The current code is a strong prototype, but release claims still need live
-   acceptance evidence and UX hardening.
-2. **Make compressed swap backend-aware before more tuning advice.**
-   ZRAM, zswap, disk swap, and mixed setups need explicit labels so formulas and
-   findings do not imply disk IO where the host is using RAM-backed swap.
-3. **Keep root-owned state out of the ephemeral TUI.**
-   DAMON control currently works from CLI/API, but BPF, root-only reads, and
-   long-lived paddr should be daemon-owned before becoming defaults.
-4. **Make every data source explainable.**
-   Source labels, registry metadata, and drill-down explanations are part of the
-   product, not decoration.
-5. **Prefer additive provider interfaces.**
-   BPF, GPU, ZFS, daemon attach, and future web UI should reuse the frame/model
-   boundary instead of creating parallel schemas.
+1. **Close safety boundaries before adding actions.** P81 redaction, P87 owner
+   refusal and P93 owner routing precede new externally reachable or mutating
+   surfaces.
+2. **Build one bounded query/history core.** CLI, TUI, MCP and web consume the
+   same registry-backed semantics, projections, coverage, gaps and resets.
+3. **Make source, cost and permission visible.** Daemon/local fallback,
+   persistence, process coverage and detail-provider leases never hide
+   degradation or warm-up.
+4. **Optimize for named operator investigations.** Process, per-CPU, lifecycle,
+   device and incident work is admitted by `docs/OPERATOR-QUESTIONS.md`, not by
+   provider novelty.
+5. **Keep root-owned state in the daemon and owner actions with the owner.** The
+   TUI/browser remain clients; unsupported or ambiguous lifecycle ownership is
+   a typed refusal, never a raw-runtime fallback.
+
+## Operator-console product convergence — 2026-07-15
+
+The **operator-console** milestone must optimize for a coherent operator product
+rather than continuing provider breadth. Historical v0/v1/v1.5/v2/v3 labels
+are capability eras; package SemVer is assigned independently. Accepted
+direction and all closed product calls are in
+`TUI-SPEC.md` §0.2 and `docs/DECISIONS-INBOX.md`; the measurable use-case set is
+`docs/OPERATOR-QUESTIONS.md`.
+
+Recommended dependency order:
+
+1. Reconcile documentation/current-state authority and close the product calls
+   that alter public contracts.
+2. Build one frame query engine over recordings and daemon history, with
+   gauge/rate/delta/integral semantics and explicit coverage/gap/reset metadata.
+3. Make zero-argument source auto-selection and daemon backfill visible and
+   testable; add daemon storage/status telemetry.
+4. Separate projection, visibility, and profile; preserve sibling-local tree
+   sorting, permit only approved subtree aggregates, and make any global rank
+   an explicit flat projection with labelled scope. Add separately provenanced
+   policy/tags without changing observed identity, totals or authorization.
+5. Add the bounded process model/projection. Candidate selection is the union
+   of CPU-hot, I/O-hot, selected/pinned and recently-hot processes, using cheap
+   broad counter baselines plus bounded expensive enrichment and history. Cover
+   `pidstat`-class CPU, faults, I/O and context switches plus
+   cgroup/container/CIU ownership. Implement D-019's configurable 20+20/16/
+   60-second/hard-64 defaults, validation and coverage telemetry.
+6. Add `mpstat`-class per-CPU history and imbalance findings plus cheap routine
+   host-capacity gaps from D-010: mount byte/inode/read-only state and host PID/
+   file-table pressure.
+7. Add D-009's visible, expiring detail-observation leases, then bounded
+   listener/file-descriptor/blocked-process ownership. Safe detail providers may
+   auto-lease; privileged providers require explicit manual activation.
+8. Add lifecycle facts, stable workload/incarnation identity, derived Previous
+   instance/Recent exit links, and bounded findings-driven event/log evidence.
+9. Add persistent daemon history only with simultaneous age/byte caps,
+   measured write amplification, corruption recovery, permissions, and
+   observable coverage.
+10. Re-carve the React web surface to D-003/D-011's accepted same-origin,
+   projected-history, redaction, and executable frontend-test contracts; dispatch
+   only with D-002's trusted-operator loopback-token boundary and after
+   P81/shared-query prerequisites are explicit. SSH/tunnel lifecycle remains
+   outside Groop. Implement D-018's Overview/Explore/Entity/Incidents routes,
+   persistent observation status, truthful visual semantics and bounded three-
+   entity comparison instead of a free-form dashboard.
+11. Run D-010's versioned sysadmin/DevOps scenario suite as the release oracle;
+    close projection/provider gaps without cloning unbounded specialist tools.
+12. Broaden BPF/socket/device/GPU providers only when a named operator scenario
+    cannot be satisfied by the preceding work.
+
+P73/P77 were re-carved on 2026-07-15 to the accepted D-002/D-003/D-011/D-018
+contracts and are intentionally dependency-blocked. Do not implement a second
+aggregation engine in MCP, HTTP, or the browser.
+
+Lifecycle mutation remains a separate safety track under decided D-016. Its
+urgent P87 stopgap first closes the full-ID protected-service bypass and refuses
+raw Docker mutations for recognized owner-managed workloads. P93 then freezes
+and fixture-tests `docs/LIFECYCLE-ADAPTERS.md`'s owner-chain protocol and migrates
+existing actions; it may not grow Docker into a generic recreate fallback.
+Finish systemd/Compose/CIU/Wings routing before scenario-driven Podman/Quadlet
+and later adapters.
+
+### Executable frontier
+
+| Order | Packages | Dispatch rule |
+|---|---|---|
+| 1 | **P81**, **P87**, P66, P86 | Independent. P81 redaction and P87 action safety outrank the two small client/UI coverage packages. |
+| 2 | **P88** | Shared query core; blocks all new observation frontends. |
+| 3 | **P89**, **P90**, **P91** | Parallel after P88: visible source/backfill, CPU+I/O process union, and capped persistence. |
+| 4 | **P93**, **P94** | Owner-chain protocol after P87; shared detail leases/providers after P88/P90. These tracks are independent. |
+| 5 | **P92**, **P95** | Web transport after P66/P81/P88/P91; lifecycle identity/incidents after P88/P91/P93. |
+| 6 | **P73** | After P89/P92; React Overview and Explore. |
+| 7 | **P77** | After P73/P90/P91/P94/P95; Entity, Incidents and three-entity Compare. |
+| Later | P64/P65 | Optional informational baseline and text rendering after P88; not release blockers. |
+
+P68 (full-frame subscribe), P80 (install execution from a non-executable P25
+plan) and P82 (superseded red-gate repair) were deleted. Their old branches are
+not merge candidates; see `docs/BRANCH-DISPOSITION.md`.
 
 ## Proposed Slices
 
@@ -81,37 +159,50 @@ flowchart TD
     P54 --> P61[P61 report threshold gating :done:]
     P54 --> P62[P62 report steady-state auto-detect :done:]
     P61 -.-> P62
-    P61 --> P64[P64 report baseline regression gate]
-    P61 --> P65[P65 report table rendering]
+    P88 --> P64[P64 informational baseline comparison]
+    P88 --> P65[P65 query/report table rendering]
     P62 --> P70[P70 detector performance :done:]
     P63[P63 Daemon client versioned read methods :done:] --> P66[P66 Daemon client versioned health]
     P63 --> P67[P67 Versioned read HTTP/WebSocket gateway]
     P52 --> P67
-    P63 --> P68[P68 Versioned current subscribe client]
     P69[P69 Web UI scoping + analysis :done:] -.-> P67
-    P67 --> P73[P73 Read-only web UI shell]
-    P69 --> P73
     P3 --> P71[P71 ZFS ARC host provider :done:]
     P71 --> P74[P74 GPU host provider :done:]
     P46 --> P72[P72 Admin action kill/update verbs :done:]
     P49 --> P72
     P58[P58 Daemon MCP frontend :done:] --> P75[P75 MCP live acceptance leg :done:]
     P57 --> P76[P76 CIU stack metadata]
-    P73 --> P77[P77 Web UI entity detail + history]
-    P67 --> P77
     P72 --> P78[P78 Action kernel gate-chain extraction]
     P54 --> P79[P79 Corrupt recording inputs are typed errors]
-    P25 --> P80[P80 Daemon install execution]
-    P22 --> P80
+    P72 --> P87[P87 Docker owner/action safety]
+    P54 --> P88[P88 Unified frame query core]
+    P63 --> P88
+    P88 --> P89[P89 Source auto + backfill]
+    P88 --> P90[P90 CPU + IO process projection]
+    P88 --> P91[P91 Persistent capped history]
+    P87 --> P93[P93 Lifecycle owner protocol]
+    P90 --> P94[P94 Detail observation leases]
+    P88 --> P94
+    P91 --> P95[P95 Lifecycle identity + incidents]
+    P93 --> P95
+    P88 --> P95
+    P66 --> P92[P92 Loopback web transport]
+    P81[P81 Shared redaction] --> P92
+    P88 --> P92
+    P91 --> P92
+    P89 --> P73[P73 Overview + Explore]
+    P92 --> P73
+    P73 --> P77[P77 Entity + Incidents + Compare]
+    P90 --> P77
+    P91 --> P77
+    P94 --> P77
+    P95 --> P77
 ```
 
-P69 is the **scoping** package for the web-UI product goal, not the UI itself: the
-area is unscoped (framework, page inventory, auth/redaction UX all undecided), so
-per controller-workflow-v2 §8 the first carve is a small analysis package whose
-output is the input to the real implementation carves. It reads the merged
-P52/P63 read surface and P67's *carved handoff* — it does not need P67 merged, and
-one of its jobs is to tell us whether P67's handoff is sufficient before P67 is
-dispatched (dashed edge). The implementation successors depend on P67 landing.
+P69 was the historical **scoping** package for the web-UI goal, not the UI
+itself. Its questions are now closed; D-001 through D-019 and P88/P92/P73/P77
+supersede its draft successors. The dashed edge remains only as package-history
+provenance.
 
 P61 and P62 are the carved successors of the P54 steady-state-report slice,
 both consumers P54 explicitly deferred: P61 (done) adds `--assert GROUP:METRIC:STAT`
@@ -123,15 +214,10 @@ rather than changing it, are fixture-testable, and share `cli.py`
 P61 is flash-high; P62 is terra-med because its stability criterion is a design
 decision that must be pinned to a deterministic oracle.
 
-P64 and P65 are the further carved successors of the report slice, both
-consumers P61 explicitly deferred in its Out-Of-Scope: P64 adds
-`--baseline` + `--assert-delta` regression gating (pct/abs deltas of the
-current profile vs a baseline profile, exit 1 on regression) — the multi-run
-comparison P61 left out; P65 adds `--format table`, a deterministic fixed-width
-ASCII rendering of the same already-computed profile + P61 assertion results.
-Both consume already-computed profiles rather than changing `compute_profile`,
-are flash-high and fixture-testable, and share `report.py` + `parse_report_args`
-with P62, so P62/P64/P65 all carry `Serialize-with:` each other.
+P64 and P65 remain low-priority P88 consumers. P64 is an optional informational
+baseline comparison and is not part of release certification (D-007). P65
+renders canonical P88/query figures, coverage and typed value states without
+recomputation. Both are dependency-blocked on P88.
 
 P59 (done) wires P57's `--container` resolver into P55's collection-path
 `--entities`/`--slice` selectors (deferred by P57 while P55 was unmerged). P60
@@ -147,20 +233,18 @@ After P43, the roadmap is mostly in three buckets:
 | Bucket | Estimated packages | Notes |
 |---|---:|---|
 | v1/v1.5 release confidence and UI polish | 0 | P43 removes the obsolete Textual `<1` resolver ceiling and closes the last planned v1/v1.5 release-confidence package. Manual live-host acceptance evidence remains. |
-| v2 privileged daemon/BPF/admin/file work | 4-6 | P46 (admin action execution kernel) is complete; **P72 closed the verb set** (kill/update, merged 2026-07-13). P44-P45 cover paddr daemon ownership and the first bounded inspect-files content slice. **Install execution is now carved as P80** (2026-07-13) — the bucket item that had been named but never carved. BPF lifecycle, remaining inspect-files content modes, and service hardening remain. The kernel's own structural debt (four transcribed copies of the gate chain) is carved as **P78**. |
-| Optional plugins / future surfaces | 2-3 | GPU, ZFS, CIU grouping/actions. **ZFS landed as P71** (merged 2026-07-13) — the first package ever drawn from this bucket, which had gone un-carved for the project's whole life (the exact review-children-only drift controller-workflow-v2 §8 exists to stop). **GPU is carved as P74** (2026-07-13), following P71's exemplar. **CIU's metadata slice is now carved as P76** (2026-07-13) — the bucket's last un-carved item, grounded in the existing TUI-SPEC §4.3 spec; its TUI-grouping and ciu-gated-action successors remain, and are the bucket's residue. Web UI over daemon API is promoted out of this bucket — see P69 below (product-goal-driven, standing user priority as of 2026-07-13). |
+| Privileged daemon/admin work | safety track carved | P46/P72/P78 provide the existing kernel/verbs. P87 closes the immediate owner/protected-ID gap; P93 defines owner routing. The contradictory P80 install-execution carve was deleted pending a normalized executable plan/rollback contract. Live BPF remains scenario- and measurement-gated. |
+| Optional plugins / future surfaces | scenario-driven | P71 ZFS ARC, P74 host GPU facts, P76 CIU metadata, and P83 CIU grouping are implemented. CIU-gated actions and per-process/container GPU remain optional. New providers are admitted only for a named `docs/OPERATOR-QUESTIONS.md` gap. |
 
 ### P69 — Web UI over daemon API (product-goal-driven)
 
 Standing priority set by the user (2026-07-13): a browser-based frontend over
-the daemon's read surface, consuming P67's HTTP/WebSocket gateway (which in
-turn consumes P63's typed `DaemonClient` over P52's versioned envelope) rather
-than talking to the daemon socket directly. Blocked on P67 landing; not yet
-scoped in detail (framework choice, page inventory, auth/redaction UX) — the
-first carved package here should be a small scoping/analysis package per the
-controller-workflow-v2 §8 carve-source-blend rule ("if the area is too
-unknown to carve confidently, carve a small scoping/analysis package for it
-instead of skipping it"), not a full implementation handoff sight-unseen.
+the daemon's read surface rather than direct daemon-socket access. P67 and the
+P69 scoping analysis
+are merged. P92 now owns the accepted loopback capability-token, same-origin,
+projected-query and PWMCP boundary; P94/P95 own detail observation and lifecycle
+facts; revised P73/P77 own the four product routes. All remain intentionally
+dependency-blocked by the executable frontier above.
 
 **Carved 2026-07-13** as `handoff/P69-web-ui-scoping.md` (product-goal-driven,
 sonnet5-high, docs-only). It produces `docs/WEB-UI-SCOPING.md` — read-surface gap
@@ -174,33 +258,23 @@ implementation packages and `DECISIONS-INBOX.md` entries for the product calls
 in parallel with P67, and its verdict on P67's handoff lands *before* P67 is
 dispatched.
 
-**Standing user decision (2026-07-13): React, tested via pwmcp.** The
-framework choice for the web UI is React — already decided, not open for
-P69's scoping analysis to re-litigate; P69's framework-recommendation output
-should be read as confirmation/packaging-consequence analysis against that
-choice, not a fresh pick. For browser-level testing/access of the groop web
-UI once it exists, adopt **pwmcp** (the Playwright-MCP-based browser-testing
-surface already used actively in the `dstdns` project) rather than building
-new ad hoc browser tooling for groop. Two deployment options, either
-acceptable — the implementation carve should pick one and record which:
-(a) reuse the running dstdns pwmcp instance cross-repo (unclean, but the
-resource-constrained pragmatic choice), or (b) deploy a fresh pwmcp instance
-scoped to vbpub/groop. If a stack needs to be started for either option, use
-CIU (groop's own container-inspection/orchestration surface) to start it
-rather than a bespoke script. This decision supersedes any contrary framework
-or test-tooling recommendation an earlier P69 draft may have produced, and
-should be reflected in the implementation packages carved after P69 merges.
+**Standing decisions (closed 2026-07-15): React, same-origin Groop hosting,
+capability-token loopback auth and PWMCP browser gates.** Groop now owns a pinned
+PWMCP 1.61.0-r6 consumer deployment in `groop/pwmcp`; CIU 4.6.0 starts it on a
+dedicated internal network plus the workspace consumer network with no published
+ports. Production Groop remains loopback-only. A browser fixture may bind to the
+consumer network only in tests and must retain the token and every production
+security check. SSH connection and port forwarding are supplied by the system
+and operator.
 
-**P69's draft successors, and where they landed.** `docs/WEB-UI-SCOPING.md`
-proposed four: P69a (hardened gateway) was carved as the **P67 re-carve**; P69b
-(read-only shell) as **P73**; P69c (entity detail + bounded recent history) as
-**P77** (carved 2026-07-13, blocked on P73). P69d (live subscribe updates) is
-deliberately **not** carved: it depends on P68, the scoping doc marks it optional,
-and polling is the committed fallback — carving it now would be speculative. That
-closes the scoping package's output; the web-UI goal is now fully carved through
-its first diagnostic surface.
+**P69 successor disposition.** P67 remains useful typed read-gateway code but
+its proxy-principal auth is provisional. P92 replaces that boundary and adds
+bounded P88 routes plus the browser fixture. P73 is revised to Overview/Explore;
+P77 is revised to Entity/Incidents/Compare. P68 was deleted: polling projected
+queries is accepted initially, and a full-frame subscription would encode the
+wrong API. Any later push transport must carry the same bounded query results.
 
-### P75-P77 - Carved 2026-07-13 (post-P58 carve cycle)
+### P75-P77 - Historical carve, reconciled 2026-07-15
 
 Three packages, one per carve source, per controller-workflow-v2 §8:
 
@@ -215,11 +289,10 @@ Three packages, one per carve source, per controller-workflow-v2 §8:
   detection, the label schema, and the numeric-phase rule, and it extends a
   `Config.Labels` parse `dockerjoin` already performs. The TUI-grouping and
   ciu-gated-action successors remain as the bucket's residue.
-- **P77 - Web UI entity detail + bounded history** (*product-goal-driven*, the
-  standing "launch the product with the new UI" priority, which §8 ranks above
-  both other sources). = P69c above.
+- **P77 - Web Entity, Incidents and Compare** was rewritten around P88/P90/P91,
+  shared redaction, detail leases, lifecycle evidence and the three-entity cap.
 
-### P81-P83 - Carved 2026-07-13 (post-P67/P75/P76 carve cycle)
+### P81-P83 - Historical carve, reconciled 2026-07-15
 
 Three packages, blended per controller-workflow-v2 §8:
 
@@ -230,23 +303,18 @@ Three packages, blended per controller-workflow-v2 §8:
   ships free-text messages that can carry the very values the ceiling exists to
   hide. Latent today (no current rule interpolates a sensitive value into a
   message), which is luck and a small rule set rather than a boundary.
-- **P82 - Repair the red gate on main** (*review-derived*, hygiene).
-  `test_zst_without_zstandard_exits_2` fails on unmodified `main` because the
-  venv *has* `zstandard`, so the "without zstandard" branch cannot be reached.
-  Every package in this wave had to hand-prove the failure was pre-existing
-  before its own gate could be read -- the precise erosion that lets a real
-  regression hide behind a familiar failure.
+- **P82** is superseded by merged P79/P84 and was deleted. Its feature branch is
+  explicitly rejected in `docs/BRANCH-DISPOSITION.md`.
 - **P83 - CIU stack grouping in the TUI** (*roadmap-driven*, the Optional-plugins
   bucket residue named directly above). P76 shipped detection only; this is its
   first real consumer. The carve names the numeric-phase trap explicitly, because
   P76's own grouping "oracles" grouped and sorted with lambdas defined inside the
   tests and so passed against an implementation that did not exist.
 
-Pragmatic estimate from the current state: a shippable v1/v1.5 release
-candidate needs **0 remaining packages** after P41 plus live-host acceptance
-evidence. Implementing the broader roadmap end-to-end still looks like **9-13
-small packages**, depending on whether "fully completed" includes optional
-plugins and web UI.
+The historical v1/v1.5 release-confidence work remains complete apart from
+live-host evidence. The operator-console milestone is governed by the concrete
+frontier table above and D-010's versioned scenario oracle, not an old package
+count estimate.
 
 ## Near Term
 
@@ -724,11 +792,12 @@ Handoff: `handoff/P21-admin-action-gating-skeleton.md`.
 - Web UI over daemon API — see P69 (product-goal-driven, promoted from
   "Optional plugins" 2026-07-13).
 
-## Open Product Decisions
+## Product Decisions
 
-- Is v1.5 allowed to ship with CLI-only DAMON start and TUI notices, or must the
-  full modal land before a release tag?
-- How important is exact BPF network accounting compared with improving
-  diagnostics, snapshots, and UI usability?
-- Should `groop` target a local package release first (`pipx` from wheel), or
-  remain a repo-local tool until daemon/BPF work starts?
+`docs/DECISIONS-INBOX.md` is authoritative. D-001 through D-019 are all decided
+and cover framework, browser trust/release boundary, source fallback, history,
+projection/sort, lifecycle, provider/detail activation, scenario acceptance,
+process/per-CPU semantics and budgets, policy classification, owner-routed
+actions and release naming. The completed interview is retained as provenance in
+`handoff/GROOP-OBSERVABILITY-DISCUSSION.md`; agents must not restart it or infer
+different answers from older roadmap prose.

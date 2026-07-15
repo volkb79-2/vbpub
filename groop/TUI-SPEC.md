@@ -1,9 +1,9 @@
 # TUI-SPEC — `groop`: a host pressure inspector and cgroup forensics TUI
 
-Status: **SPEC ONLY** — nothing implemented. Authored 2026-07-07 for hand-off to a
-developer who has not seen the design discussion. Every section is meant to stand on
-its own; where a decision depends on this host's specific setup, the concrete file
-paths and live values are given so the spec is checkable against reality.
+Status: **product specification; partially implemented**. Authored 2026-07-07
+for hand-off to a developer who has not seen the design discussion. Every
+section is meant to stand on its own; `docs/STATUS.md` is authoritative for what
+exists today, and this document defines accepted target behavior.
 
 Revision note: **2026-07-08: folded external review + operator interview —
 name groop; v0/v1/v1.5/v2 release cut; v1 read-only; Python+Textual; metric
@@ -71,7 +71,11 @@ background daemon and web UI attach to the same core without a rewrite (§4.5,
 
 ---
 
-## 0.1 Release cut — v0/v1/v1.5/v2
+## 0.1 Historical capability eras — v0/v1/v1.5/v2
+
+These labels preserve the original sequencing vocabulary; they are not package
+SemVer promises. §0.2's **operator-console** milestone governs the next product
+acceptance scope.
 
 **v0 — collector proof.** Framework-free Python, stdlib only. Goal: prove that
 the data model is correct before investing in UI polish.
@@ -129,7 +133,91 @@ blind spots behind explicit privilege boundaries.
 - `paddr` DAMON auto-start (`[damon] paddr_enabled` persistent kdamond; the
   MANUAL paddr host session is v1.5, §3.6d).
 - GPU (§3.11) and ZFS (§3.12) plugins.
-- Web UI stays v3 (§4.6).
+- Web UI was originally placed in v3 (§4.6); §0.2 and D-003 now govern its
+  release placement.
+
+## 0.2 Product-direction addendum — 2026-07-15 discussion
+
+This addendum records the current product session and supersedes conflicting
+release-placement or information-architecture text below. It does not claim
+unimplemented behavior. `docs/STATUS.md` remains the implementation authority,
+and the closed calls D-001 through D-019 stay in `docs/DECISIONS-INBOX.md`.
+
+Accepted direction:
+
+- the next internal acceptance milestone is **operator-console**. It includes
+  the shared query/persistent-history foundation, CPU/I/O process and per-CPU
+  observation, lifecycle incidents, the trusted-loopback React product and the
+  versioned operator scenario suite. Package SemVer is assigned independently
+  when an acceptance scope closes;
+- the cgroup entity/tree remains the canonical accounting model;
+- projections, visibility filters, and metric profiles are independent;
+- processes appear both as expandable hierarchy children and as a globally
+  ranked flat projection, backed by one bounded process model. Its candidate
+  set is the union of CPU-hot, I/O-hot, selected/pinned, and recently-hot
+  processes. Cheap `/proc/PID/stat` and `/proc/PID/io` counters are sampled
+  broadly enough to identify bursts; expensive enrichment is bounded to that
+  union. Bounded history preserves who performed I/O and when;
+- containers decorate their cgroup node in hierarchy mode and become rows in
+  the flat container projection; no duplicate accounting identity is created;
+- hierarchy sorting stays within real parents and uses only approved subtree
+  aggregates; every label states its scope. A global rank is an explicit flat
+  projection with ownership/path columns, never a visually rearranged tree;
+- zero-argument `groop` prefers a compatible daemon and visibly falls back to
+  permission-aware `LOCAL-DEGRADED` collection on any daemon failure. Explicit
+  `--source daemon` fails closed; explicit `--source local` never probes;
+- current, streaming, historical window summary, raw history, and findings
+  gate are release-critical machine surfaces; baseline regression remains a
+  benchmark/CI feature, not a first-triage release gate;
+- health includes service/container lifecycle and bounded recent event/log
+  evidence. Exited/recreated workloads require stable logical identity and
+  derived Previous instance/Recent exit links so current totals remain honest;
+  lifecycle facts share the persistent history store and retention caps rather
+  than a second store;
+- expensive providers are capability/config controlled and off by default.
+  User presets may explicitly enable them. Each optional provider declares
+  `disabled`, `manual`, `detail`, or `always` activation. Safe bounded detail
+  reads may acquire a visible, expiring observation lease; privileged eBPF and
+  broad log evidence never start merely because a page was opened. Detail UI
+  exposes provider state, warm-up, source, coverage/cost and a Start detailed
+  observation hotkey/button where manual activation is permitted;
+- process coverage includes the recurring `ps`/`pidstat` questions, while the
+  host CPU surface also covers `mpstat`-style per-CPU/iowait/steal/IRQ/softirq
+  imbalance. Process-union defaults are top 20 CPU, top 20 I/O, at most 16
+  selected/pinned, 60 seconds recently-hot grace, and hard cap 64; every value
+  is configurable and its effective value/coverage is observable;
+- observed cgroup, unit and orchestrator ownership remains factual and separate
+  from configurable policy/tags. Structured rules may affect thresholds,
+  findings, colors and presets, but never identity, accounting or authorization;
+  primary-policy priority conflicts are configuration errors;
+- lifecycle mutation follows a proven, configured owner chain. Core owner
+  families are systemd, Compose, CIU and Wings; Podman/Quadlet is next, while
+  Kubernetes/k3s starts read-only and later families are scenario-driven.
+  Unsupported or ambiguous ownership is a typed refusal, never reconstruction
+  of a raw runtime command. See `docs/LIFECYCLE-ADAPTERS.md`;
+- listening-port ownership is required on demand. Per-port traffic is a later
+  optional privileged-provider feature, not a procfs-derived promise;
+- React and pwmcp remain decided for the web client. Groop owns same-origin
+  static assets and projected read/history routes over loopback HTTP; P81 shared
+  redaction is a prerequisite. TLS, if needed, terminates outside Groop. The
+  next product milestone requires overview, exploration, detail/history, status,
+  and lifecycle incidents. The first mode is for one trusted operator and uses
+  a capability token; that operator may see sensitive diagnostic identity.
+  SSH access and port forwarding are system/operator responsibilities, not
+  Groop features. A future shared mode requires an external authenticated TLS
+  proxy and explicit roles with an operational default sensitivity ceiling;
+- the web information architecture has four workflows: Overview, Explore,
+  Entity detail and Incidents. They share a persistent source/freshness/coverage
+  strip, selection and time range. Filters/projection/selection/window are deep-
+  linkable without credentials. A comparison tray is capped at three entities
+  on one metric/scale/window. Icicle sizing is limited to registry-approved
+  additive subtree aggregates; time series expose gaps/resets without
+  interpolation, and memory stocks use stacked composition rather than implied
+  flow. Chart dependencies follow fixture-proven accessibility/bundle/browser
+  behavior, not the other way around;
+
+The operational meaning of the aspirational "95%" goal and its named acceptance
+scenarios live in `docs/OPERATOR-QUESTIONS.md`.
 
 ---
 
@@ -806,16 +894,16 @@ the reference deployment in examples and appendices.
 
 ### 3.5 History: ring buffer, sparklines, chart overlays
 
-**Configurable local history**, cost bounded by
-`entities × tracked_metrics × samples`. Retention, sampling interval,
-downsampling, and memory-vs-disk behavior are configurable. The shipped v1
-default is a 4-hour in-memory profile at the 5s sampling interval, with
-downsampling available for longer views.
+**Configurable bounded history**, cost bounded in both tiers. D-005 supersedes
+the original four-hour in-memory proposal: the target default is five minutes
+of full-resolution samples at five seconds in RAM, plus daemon-owned compressed
+persistence capped simultaneously at 24 hours and 256 MiB. Retention, sampling,
+downsampling and persistence are configurable and observable.
 
 | Tier | Resolution | Retention | Samples/series |
 |---|---|---|---|
-| Full | sampling interval (default 5s) | 4 h | 2880 |
-| Downsampled | configurable rollup (mean; max kept alongside for spike visibility) | configurable | configurable |
+| Fast in-memory | sampling interval (default 5s) | 5 min | 60 |
+| Persistent/downsampled | configurable rollup (mean; max kept alongside for spike visibility) | default 24 h **and** 256 MiB cap | bounded by both caps |
 
 **Tracked metrics for history** (24 numeric series per entity — a deliberate
 subset of §3.2's full column set; static/limit columns like `mem_max` or
@@ -825,26 +913,22 @@ psi_mem_some, psi_mem_full, psi_io_some, psi_io_full, psi_cpu_some, io_r_bps,
 io_w_bps, io_r_iops, io_w_iops, net_tx_bps, net_rx_bps, pids_current,
 headroom_mem_pct, hot_pct` (last one DAMON-conditional, blank series when inactive).
 
-**Memory budget** (review + operator interview, 2026-07-08): with 40 entities,
-24 tracked series, 4 hours at 5s sampling, stored as **fixed-size `float32`
-arrays** (`array.array('f')` or equivalent numeric arrays — explicitly NOT Python
-lists of floats, whose per-element object overhead would be far larger):
+**Memory budget:** with 40 entities, 24 tracked series and five minutes at 5s,
+stored as fixed-size `float32` arrays (not Python float objects):
 
 ```
-4 h * 3600 / 5 = 2880 samples per series
-40 entities * 24 metrics * 2880 samples * 4 bytes ~= 11.1 MB raw samples
+5 min * 60 / 5 = 60 samples per series
+40 entities * 24 metrics * 60 samples * 4 bytes ~= 0.22 MB raw samples
 ```
 
-Allowing for ring-buffer structure, entity indexes, timestamps, and Python object
-overhead, a realistic in-memory budget is roughly **20-40 MB beyond the TUI
-baseline** if implemented carefully with numeric arrays rather than Python float
-lists.
+Ring structures, entity indexes, timestamps and Python objects dominate the raw
+sample bytes; measure the complete daemon/TUI RSS rather than assuming a large
+four-hour allowance.
 
-Plain full-frame JSONL on disk is much larger. A rough order-of-magnitude for 40
-entities is 60-120 KB per frame, or about **170-350 MB for 4 hours** at 5-second
-sampling. Streaming zstd should compress that heavily, likely into tens of MB,
-because keys and shapes repeat. Compressed recording is an early follow-up after
-v1, not a v1 gate.
+Plain full-frame JSONL remains available for explicit recordings. Automatic
+daemon history uses batched compressed segments with corruption recovery,
+permissions, write-amplification measurements and simultaneous age/byte caps;
+an estimate is not evidence for enabling it.
 
 **Sparklines in table cells:** each row renders a compact sparkline (Textual's
 sparkline widget or an equivalent Unicode-block renderer) for `rf_d/s` by default
@@ -1007,15 +1091,26 @@ worked example in §7. Sections:
   `damon`, `default`, `wide`, `minimal`, custom lists), and the tier-priority
   table from §3.3 (overridable, in case an operator's terminal/SSH setup needs
   different breakpoints than the shipped defaults).
+- `[process]` — the D-019 CPU-hot/I/O-hot candidate counts, selected/pinned cap,
+  recently-hot grace and enriched-union hard cap. These are collection/history
+  budgets, independent of whether the process projection is visible.
+- `[providers]` and `[providers.<name>]` — shared detail-lease duration/target
+  cap plus per-provider `disabled`/`manual`/`detail`/`always` activation and
+  provider-specific budgets. A `detail` provider is leased only while an
+  eligible process/container detail consumer is active; rate providers expose
+  warm-up rather than fabricating a first delta.
+- `[[policies.rules]]` — additive tags and optional primary policy matched from
+  observed structured identity. Rules carry explicit priority and provenance;
+  conflicting primary policies at the highest priority fail validation.
 - `[damon]` — `hot_rate`, `warm_rate`, `cold_age`, `idle_age` defaults (mirroring
   `analyze_process.py`'s CLI defaults exactly), `max_concurrent_targets`, and the
   whole-system `paddr_enabled`/`paddr_interval_us`/`paddr_aggr_us` toggle feeding
   the banner's hot/warm/cold bar (§3.6d).
 - `[gpu]` — v2 plugin enable mode (`auto`/`on`/`off`, §3.11).
 - `[zfs]` — v2 plugin enable mode (`auto`/`on`/`off`, §3.12).
-- `[history]` — full-resolution window seconds, downsample interval, downsample
-  retention hours (the configurable scheme from §3.5, overridable) — the v1
-  in-process TUI ring buffer only; default profile is 4h at 5s.
+- `[history]` — full-resolution window seconds, downsample interval and
+  downsample retention (the scheme from §3.5); target default is five minutes
+  at 5s, not the historical four-hour in-memory proposal.
 - `[history.daemon]` — v2/v3 background daemon only (§4.5): `max_size_mb` and
   `max_age_days` retention caps (both apply simultaneously) and the
   `compression` toggle (`none` today, `zstd` planned).
@@ -1241,44 +1336,42 @@ gated-action pattern (§2.3). §4.6 is v3. The daemon's collector/history side i
 read-only, and any mutating action it exposes reuses the identical
 §4.1–§4.4/§4.7 gating, just fronted by a different transport.
 
-### 4.1 Update container — pull/update flow
+### 4.1 Owner-routed update / pull / redeploy flow
 
-Two flows, mapped by whether the container belongs to a detected compose/ciu
-stack (§4.3) or not — which bucket an as-yet-unclassified container falls into
-is still tracked as open (§10 item 7), but for a container that's
-unambiguously one or the other, the flow is:
+D-016 and `docs/LIFECYCLE-ADAPTERS.md` supersede the former two-bucket
+Compose-versus-reconstructed-`docker run` design. Groop discovers an owner chain
+and asks the highest proven, configured authoritative adapter for a bounded,
+side-effect-free plan. The plan names the logical workload, current/desired
+revision, affected replicas/dependencies, rollout behavior, required authority,
+expected replacement identities and verification oracle. Confirmation and
+execution reuse the existing protected-workload/admin/audit kernel.
 
-- **Compose/ciu-managed** — the `stop → pull → up` cycle through the stack's
-  own orchestration rather than a bare `docker run` reconstruction: `docker
-  compose -f <file> stop <service> && docker compose -f <file> pull <service>
-  && docker compose -f <file> up -d <service>`, or, when the container is
-  ciu-gated (§4.3), the equivalent `ciu` invocation for that stack/phase so
-  ciu's own hooks (`pre_compose`/`post_compose`, secret re-materialization)
-  run instead of being bypassed — shown for confirmation exactly as it will
-  execute, service name and all.
-- **Unmanaged (bare `docker run`, e.g. Wings-launched Soulmask containers)** —
-  shows the exact `docker pull <image> && docker stop <cid> && docker run
-  <reconstructed args>…` sequence for confirmation; reconstructing `run` args
-  from `docker inspect` faithfully (including `cgroup_parent`, mounts, env,
-  restart policy) is the hard part — this tool has no compose file to fall
-  back to for a Wings-managed container the way it does for a ciu stack, which
-  is exactly why §10 item 7 stays open rather than being closed by this
-  section.
+- systemd, Compose, CIU and Wings are the initial owner families;
+- Podman/Quadlet is the next general-purpose adapter;
+- Kubernetes/k3s begins with read-only ownership and treats mutation as a
+  separate cluster-security project;
+- unsupported, ambiguous, stale or externally reconciled ownership refuses;
+- raw `docker run`, Podman, `runc`/`crun`, containerd or CRI-O reconstruction is
+  never a fallback behind an owner.
 
-Detection of which flow applies reuses §4.3's stack/phase detection rather
-than duplicating it.
+The existing narrow `docker update --memory/--cpus` action may remain as an
+explicit runtime-only capability, but its plan must state that the owner may
+overwrite it on reconciliation/recreation. Persistent resource changes route
+through the owner's source configuration and adapter.
 
 ### 4.2 Start / stop / restart / kill
 
-- **Start / stop / restart** a container or a systemd-managed slice/service —
-  `docker start|stop|restart <cid>` or `systemctl start|stop|restart <unit>`,
-  shown before running, same confirmation pattern.
+- **Start / stop / restart** routes through the same authoritative owner adapter
+  as §4.1. Direct Docker lifecycle is permitted only when standalone Docker is
+  explicitly configured and proven as the authority for that object.
 - **Kill** (the `k` hotkey reserved-but-unbound in v1, §3.9/§8) — becomes live
   under `--admin`, following the identical show-command-then-confirm
   discipline as every other action in this section; no exception is carved
   out for kill just because it's destructive — the pattern *is* the safety
-  mechanism, not a hotkey-specific gate. Two distinct commands depending on
-  entity kind, and the dialog names which one it's about to run rather than
+  mechanism, not a hotkey-specific gate. This is explicitly an emergency
+  signal to the concrete incarnation, not a desired-state lifecycle operation;
+  the dialog warns when an owner may replace it. Two distinct commands depend
+  on entity kind, and the dialog names which one it's about to run rather than
   presenting a single vague "kill":
   - Container: `docker kill <cid>` (SIGKILL, immediate — distinguished in the
     dialog from `docker stop <cid>` above, which is SIGTERM + grace period;
@@ -1740,7 +1833,8 @@ promise a distro compatibility matrix before v2.
 
 ```toml
 # groop config — $XDG_CONFIG_HOME/groop/config.toml
-# All values shown are the shipped defaults; delete a key to fall back to it.
+# Values in product-convergence sections are accepted target defaults; see
+# docs/STATUS.md for which fields the current release implements.
 
 [general]
 interval = 5.0                # seconds between collector sweeps
@@ -1797,6 +1891,42 @@ list = ["name", "ram", "rf_d", "psi_mem_full", "cpu_pct"]   # fixed list, ignore
 [columns.profiles.pak_focus]
 list = ["name", "ram", "z_pool", "z_eq", "hot_pct", "warm_pct", "cold_pct"]
 
+[process]
+top_cpu = 20
+top_io = 20
+max_selected_pinned = 16
+recently_hot_grace_seconds = 60
+max_enriched = 64
+
+[providers]
+detail_lease_seconds = 30
+max_detail_targets = 4
+
+[providers.process_memory]
+activation = "detail"       # "disabled" | "manual" | "detail" | "always"
+
+[providers.listeners]
+activation = "detail"       # bounded ownership/queue inventory
+
+[providers.pid_device_io]
+activation = "manual"       # optional privileged exact-attribution provider
+
+[providers.port_traffic]
+activation = "manual"       # optional privileged provider; not procfs inference
+
+[providers.log_evidence]
+activation = "manual"       # findings may offer activation; navigation cannot
+
+[[policies.rules]]
+name = "latency-critical"
+priority = 100
+tags = ["production", "latency-critical"]
+primary = true
+cgroup_prefixes = ["/protected.slice/"]
+units = ["soulmask-server.service"]
+compose_services = ["game/soulmask"]
+ciu_services = ["soulmask/prod/server"]
+
 [damon]
 hot_rate = 50.0          # percent access frequency
 warm_rate = 5.0
@@ -1815,16 +1945,16 @@ enabled = "auto"    # "auto" | "on" | "off" — §3.11; auto = NVML importable A
 enabled = "auto"    # "auto" | "on" | "off" — §3.12; auto = /proc/spl/kstat/zfs present
 
 [history]
-full_resolution_seconds = 14400    # 4 h ring, at [general].interval granularity
+full_resolution_seconds = 300     # accepted D-005 in-memory target: 5 min at 5 s
 downsample_interval_seconds = 60  # 1-minute rollup buckets
-downsample_retention_hours = 4
+downsample_retention_hours = 24
 
 [history.daemon]
 # v2/v3 background daemon only (§4.5) — no effect on the standalone v1 TUI's
 # in-process ring buffer above, which stays seconds/hours-bounded as-is.
-max_size_mb = 2048          # prune oldest downsampled frames once the on-disk store exceeds this
-max_age_days = 30           # ...or once a frame is older than this — whichever triggers first
-compression = "none"        # "none" | "zstd" (planned, not implemented — §4.5)
+max_size_mb = 256           # D-005 target; byte and age caps both apply
+max_age_days = 1
+compression = "zstd"       # planned batched compressed segments; not implemented yet
 
 [hotkeys]
 profile = "groop"       # "groop" | "htop" | "top" | "custom"
@@ -1882,10 +2012,10 @@ add/remove an *action*):
    over a 5-minute steady-state run (`pidstat -p $(pgrep -f groop) 5` or
    equivalent), on hardware comparable to this host (8 vCPU, thin-provisioned
    virtio disk). v1 has no controlled DAMON targets and no BPF state.
-2. **Memory:** total process RSS stays **under ~60 MB** at 40 entities with default
-   history settings if the implementation keeps only the table plus compact recent
-   history; with the full 4h numeric-array profile enabled, the accepted budget is
-   the Textual/Python baseline plus §3.5's realistic **20-40 MB** history overhead.
+2. **Memory:** total process RSS stays **under ~60 MB** at 40 entities with the
+   default five-minute fast tier. Persistent-store memory stays bounded
+   independently of its 24-hour/256-MiB disk caps; record measured RSS, store
+   bytes and write amplification.
 3. **Correctness — reset handling:** killing and restarting a monitored container
    mid-run produces exactly one `—`/blank-rate sample for that entity, then a
    silent resync to correct rates — never a negative or absurdly large rate
@@ -2028,12 +2158,12 @@ add/remove an *action*):
    Streaming zstd compression is an early follow-up after v1 if unattended
    recording or daemon storage needs it; see §3.5 cost math. Decision source:
    review + operator interview 2026-07-08.
-7. **v2 "update container" command reconstruction** (§4): reconstruct a bare
-   `docker run` from `docker inspect`, or shell out to `docker compose`/the
-   repo's `ciu` tool when a compose file is the source of truth for that
-   container? No decision — depends entirely on which containers an operator
-   actually wants this action for (Soulmask via Wings never goes through
-   compose; the dstdns stack always does).
+7. **RESOLVED — owner-routed lifecycle actions:** never reconstruct a bare
+   runtime command behind an orchestrator. Route through the highest proven,
+   configured owner adapter and refuse unsupported/ambiguous ownership. Core
+   families and future priority are defined by D-016 and
+   `docs/LIFECYCLE-ADAPTERS.md`. Decision source: product observability session
+   2026-07-15.
 8. **Go/Rust port trigger condition:** §6.4 deliberately avoids committing to
    *when* to port, or which layer first. Suggest revisiting only once `--record`
    from real v1 usage shows where CPU/memory actually goes — don't pre-optimize.

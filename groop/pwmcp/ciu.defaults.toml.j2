@@ -1,0 +1,158 @@
+# ==========================================================================
+# PWMCP — Playwright-as-a-Service (official Microsoft images), ciu stack
+# ==========================================================================
+#
+# pwmcp is a thin, hardened ciu packaging of the OFFICIAL Playwright unified
+# image. It runs a single container that hosts all services so a project never
+# installs a browser into its own devcontainer / CI runner:
+#
+#   ws://pwmcp:3000/              — native Playwright connect() endpoint (FULL API)
+#   http://pwmcp:8931/mcp         — @playwright/mcp MCP surface (HTTP/SSE)
+#   http://pwmcp:8932/mcp         — chrome-devtools-mcp (CDP profiling via mcp-proxy)
+#   http://pwmcp:8933/mcp         — lighthouse-mcp (Lighthouse audits via mcp-proxy)
+#
+# Deployment modes
+# ----------------
+#   internal (default): the service joins the project Docker network with NO
+#       TLS and NO auth. Sibling containers (the test runner / devcontainer)
+#       reach both endpoints BY CONTAINER NAME on the shared network — never
+#       via localhost. The network boundary is the control; this is correct for
+#       dev + CI.
+#
+#   external (external.enabled = true): front with a running tls-edge (Traefik).
+#       The route is TLS-terminated and (by default) protected by a per-route
+#       basicAuth guard — a secret the consumer defines — so the public URL is
+#       not usable without it. See pwmcp.external below + tls-edge guard docs.
+#
+# Browser isolation hardening (non-root, dropped caps, no-new-privileges) is
+# applied in both modes — that is the whole reason the browser is offloaded.
+
+[pwmcp]
+# The single source of truth for the Playwright version. It pins:
+#   - the base image tag (mcr.microsoft.com/playwright:v<version>-<distro>),
+#   - the playwright JS package baked into the unified image, and
+#   - the version connect() consumers must install (`pip install playwright==<version>`).
+playwright_version = "1.61.0"
+image_distro = "noble"            # -> mcr.microsoft.com/playwright:v<version>-<distro>
+
+[pwmcp.network]
+ingress_network = "ingress_public"   # shared tls-edge network (external mode only)
+
+# ============================================================
+# Unified single-image deployment (the only supported mode)
+# ============================================================
+# The unified image (ghcr.io/volkb79-2/pwmcp) bundles the Playwright
+# run-server (port 3000), @playwright/mcp (port 8931), AND
+# chrome-devtools-mcp via mcp-proxy (port 8932) AND lighthouse-mcp via mcp-proxy (port 8933)
+# in a single container
+# under a single hostname "pwmcp". This is the only deployment mode.
+#
+# Consumers on the shared Docker network:
+#   ws://pwmcp:3000/              — Playwright connect() (full API, test suites)
+#   http://pwmcp:8931/mcp         — @playwright/mcp (AI clients, VS Code Copilot, etc.)
+#   http://pwmcp:8932/mcp         — chrome-devtools-mcp (performance tracing, CDP tools)
+#   http://pwmcp:8933/mcp         — lighthouse-mcp (Lighthouse audit scores + opportunities)
+#
+# --allowed-hosts note (MCP DNS-rebinding protection):
+# @playwright/mcp rejects requests whose Host header does not match its allowlist.
+# The ciu compose injects PWMCP_MCP_ALLOWED_HOSTS at container start with the two
+# ciu-derived names for this container:
+#   <name>:<mcp_port>                              (short service alias)
+#   <project>-<env>-<name>:<mcp_port>              (full ciu container name)
+# This pins the allowlist to known internal names (secure; avoids "*").
+# To add extra hosts, append them via extra_args: extra_args = "my-alias:8931"
+
+[pwmcp.unified]
+name = "pwmcp"
+ws_port = 3000                    # Playwright run-server (connect() WebSocket)
+mcp_port = 8931                   # @playwright/mcp HTTP/SSE surface
+devtools_port = 8932              # chrome-devtools-mcp (via mcp-proxy)
+lighthouse_port = 8933            # lighthouse-mcp (via mcp-proxy)
+browser = "chromium"
+extra_args = ""                   # comma-separated extra allowed-hosts entries, e.g. "my-alias:8931"
+devtools_extra_args = ""           # comma-separated extra allowed-hosts for devtools, e.g. "my-alias:8932"
+lighthouse_extra_args = ""         # comma-separated extra allowed-hosts for lighthouse, e.g. "my-alias:8933"
+expose = false                    # publish to host 127.0.0.1 (dev convenience only)
+host_ws_port = 3000
+host_mcp_port = 8931
+host_devtools_port = 8932
+host_lighthouse_port = 8933
+
+# ---- P03: opt-in shared persistent browser mode -----------------------
+# browser_mode = "per-session" (default, byte-identical to pre-P03 behavior:
+# @playwright/mcp and chrome-devtools-mcp each launch their own Chromium) or
+# "shared" (one persistent Chromium; both attach over CDP). Any other value
+# is a fatal entrypoint error (no silent fallback). Lighthouse is NOT wired
+# to the shared browser in either mode (see P03 handoff "Out Of Scope").
+browser_mode = "per-session"
+# Admin HTTP API port (shared mode only) -- internal Docker network only,
+# NEVER published, NEVER routed through Traefik (see [pwmcp.external] below
+# and docs/SECURITY.md). POST /browser/reset, POST /browser/restart,
+# GET /browser/health.
+admin_port = 8939
+# Optional idle recycle (shared mode only): 0 disables it (default). When
+# > 0, the admin-server restarts the shared browser after this many seconds
+# with zero open CDP targets. Must be a non-negative integer -- the
+# entrypoint rejects nonsense values fatally, not by clamping.
+browser_max_idle_s = 0
+
+# Native Playwright run-server policy. Port 3000 is the lease gateway; the
+# actual Playwright server is loopback-only on upstream_port. Clients may ask
+# for a lease through X-PWMCP-Lease-Seconds, clamped to max_lease_s.
+[pwmcp.run_server]
+upstream_port = 3001
+admin_port = 8940
+default_lease_s = 1800
+max_lease_s = 7200
+max_clients = 2
+idle_recycle_s = 30
+
+[pwmcp.health]
+interval = "30s"
+timeout = "5s"
+retries = 5
+start_period = "30s"
+
+# Optional consumer network. Set this in a consumer's override when pwmcp is
+# rendered separately from the application stack but must be reachable there.
+[pwmcp.consumer]
+network = ""
+aliases = ["pwmcp", "pwmcp-mcp", "pwmcp-playwright"]
+
+[pwmcp.unified.image]
+registry = "ghcr.io"
+namespace = "volkb79-2"
+name = "pwmcp"
+tag = "1.61.0-r6"
+
+[pwmcp.hardening]
+# Applied in both internal and external modes.
+run_as_uid = 1000                 # official image ships a non-root user at 1000
+run_as_gid = 1000
+no_new_privileges = true
+drop_all_caps = true
+shm_size = "2gb"                  # Chromium needs shared memory
+
+[pwmcp.external]
+# External exposure via a running tls-edge. Leave disabled for dev/CI.
+enabled = false
+# Unified mode: single host fronts BOTH ports (Traefik routes by path/port).
+unified_host = ""                 # e.g. "pw.example.com"
+# Per-route access guard (Traefik basicAuth). The consumer defines the secret;
+# supply the htpasswd hash (generate once: `htpasswd -nbB <user> <secret>`).
+# A bare "$" is fine here — the compose template escapes it to "$$".
+# Default empty: fill it in your gitignored override (ciu.toml.j2) when you
+# enable external+guard, or wire a ciu-managed secret via [pwmcp.secrets] below.
+guard_enabled = true
+guard_user = "pwmcp"
+guard_htpasswd = ""
+
+# ciu secrets table. Empty by default — the standalone renderer rejects active
+# ASK_EXTERNAL/ASK_VAULT entries in committed defaults. For ciu-managed injection
+# of the guard hash, declare it in your override (ciu.toml.j2):
+#   [pwmcp.secrets]
+#   guard_htpasswd = "ASK_EXTERNAL:PWMCP_GUARD_HTPASSWD"   # or ASK_VAULT:<path>
+[pwmcp.secrets]
+
+[state]
+initialized = false

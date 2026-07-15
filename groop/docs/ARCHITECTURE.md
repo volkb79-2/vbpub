@@ -32,6 +32,12 @@ flowchart LR
     Replay --> UI
     Frame --> UI[Textual UI]
     Frame --> Snapshot[Incident snapshot bundle]
+    Frame --> Broker[Daemon FrameBroker]
+    Broker --> UnixApi[Versioned Unix read API]
+    UnixApi --> Attach[Attached TUI / CLI]
+    UnixApi --> Mcp[MCP frontend]
+    UnixApi --> Http[Loopback HTTP gateway]
+    Http --> Web[Future React client]
 ```
 
 ## Module Map
@@ -41,11 +47,7 @@ flowchart LR
 | `model.py` | Dataclasses and canonical JSON serialization. |
 | `registry.py` | Metric definitions, source semantics, help/glossary source. |
 | `config.py` | TOML parsing and defaults. |
-<<<<<<< HEAD
-| `collect/` | cgroup, host (including ZFS ARC and GPU DRM), docker, process, and collector orchestration. |
-=======
-| `collect/` | cgroup, host (including ZFS ARC), docker (including CIU stack metadata detection), process, and collector orchestration. |
->>>>>>> feat/groop-p76-ciu-stack-metadata
+| `collect/` | cgroup, host (including ZFS ARC and GPU DRM), Docker (including CIU stack metadata detection), process, and collector orchestration. |
 | `providers/` | Network provider abstraction and current host/netns providers. |
 | `drift/` | systemd/live-origin classification and governance drift. |
 | `diag/` | pressure score and findings rules. |
@@ -95,7 +97,7 @@ stateDiagram-v2
     ReplayDriver --> UI
 ```
 
-## Future Daemon Boundary
+## Daemon Boundary
 
 P51 introduces a request-independent background producer: the daemon starts a
 producer thread before serving requests and stops it deterministically after the
@@ -118,7 +120,10 @@ flowchart LR
     RootDaemon --> Socket[Unix socket 0660 group groop]
     Store --> Socket
     Socket --> TUI[groop --attach]
-    Socket --> FutureWeb[future web UI]
+    Socket --> AttachClient[attached TUI / CLI]
+    Socket --> MCP[MCP frontend]
+    Socket --> Gateway[loopback HTTP gateway]
+    Gateway --> FutureWeb[future React UI]
     RootDaemon --> BPF[BPF maps/programs]
     RootDaemon --> DamonState[DAMON ownership]
 ```
@@ -131,3 +136,39 @@ flowchart LR
 - Daemon frames carry sensitivity metadata (closed enum: public,
   operational, sensitive) in `metrics_meta` for non-root consumers; the
   metric compact form is unchanged.
+
+## Product Convergence Boundaries (planned, not implemented)
+
+- One shared frame-query engine will accept bounded recording frames or daemon
+  history and own window coverage, gaps, resets, statistics, counter deltas and
+  integrals. MCP, HTTP, TUI and CLI must adapt its result rather than implement
+  parallel aggregation.
+- Process sampling will add an incarnation-safe bounded process model. Its
+  candidate set is the union of CPU-hot, I/O-hot, selected/pinned and
+  recently-hot processes. Cheap broad counter baselines identify bursts;
+  expensive enrichment and stored rows remain bounded. Process rows join to
+  canonical cgroup entities; they do not become a second resource-accounting
+  tree.
+- Optional provider work is governed by configured activation modes. Bounded
+  safe detail collection uses reference-counted/TTL observation leases shared
+  across clients; privileged or unusually costly collection requires explicit
+  manual activation and never starts from navigation alone.
+- Observed cgroup/unit/orchestrator ownership is immutable model provenance.
+  Configured policy/tags are a separate projection input and cannot alter
+  accounting identity or authorization.
+- Lifecycle facts use a stable logical workload identity plus concrete
+  container/cgroup incarnations. Exited incarnations are discoverable through
+  derived Previous instance/Recent exit links and never contribute to current
+  frame totals.
+- Lifecycle mutation models an owner chain above concrete runtime objects.
+  Actions route through a configured, capability-declaring authoritative owner
+  adapter and refuse ambiguity or unsupported operations; raw container/runtime
+  fallback is forbidden. See `docs/LIFECYCLE-ADAPTERS.md`.
+- Persistent daemon history sits behind the broker semantics and enforces age
+  and byte caps simultaneously. The current broker remains an in-memory ring
+  until D-005 and its storage contract are implemented.
+- Browser delivery remains a separate frontend. It consumes projected,
+  redacted read contracts and never gains direct daemon-socket, Docker, file,
+  or mutation access. The trusted-operator mode is capability-token protected
+  on loopback. SSH connections and forwarding are external operator/system
+  concerns, not part of Groop's authentication or lifecycle model.

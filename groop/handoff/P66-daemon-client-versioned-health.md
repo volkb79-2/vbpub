@@ -3,7 +3,7 @@
 <!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
 > **Tier:** flash-high
 > **Depends-on:** P63 (merged, reviewed), P52 (merged), P47 (component health, merged)
-> **Base:** main
+> **Base:** main (dependency-complete `[dev]` gate)
 > **Session-hint:** fresh
 > **Escalate-if:** the P52 `DaemonApi._op_health` result shape cannot be expressed as a frozen typed result without touching `api.py`; or completing the versioned health method would require changing any legacy method (`request_health` legacy-protocol path must stay byte-for-byte identical).
 
@@ -67,9 +67,9 @@ python3 -m py_compile <changed files>
 git diff --check
 ```
 
-State the environment for each result. `-p no:schemathesis` and textual-absent
-skips are known environment artifacts (see P52/P63 REPORT env notes), not
-failures. Update `docs/DAEMON.md` (client section) and the P66 LOG/REPORT.
+State the environment for each result. Build the P84 `[dev]` environment; the
+authoritative full gate permits zero skips. Update `docs/DAEMON.md` (client
+section) and the P66 LOG/REPORT.
 
 ## Out Of Scope
 

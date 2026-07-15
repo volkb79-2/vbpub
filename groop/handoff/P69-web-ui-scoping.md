@@ -1,5 +1,9 @@
 # P69 - Web UI over daemon API: scoping and analysis
 
+Status: completed historical analysis. Its decisions/successors were reconciled
+on 2026-07-15 into D-001 through D-019 and P88/P92/P73/P77. P68 was deleted;
+do not redispatch this handoff.
+
 <!-- controller-workflow-v2 header: parsed by the controller; see docs/controller-workflow-v2.md §7 -->
 > **Tier:** sonnet5-high
 > **Depends-on:** P52 (merged), P63 (merged)   <!-- reads the merged read-API surface; does NOT need P67 merged, it reads P67's handoff -->

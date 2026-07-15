@@ -1,6 +1,6 @@
 # groop observability product discussion handoff
 
-Status: discussion context, not an implementation package
+Status: completed decision provenance; implementation sequence carved 2026-07-15
 
 Prepared: 2026-07-15
 
@@ -9,6 +9,10 @@ architecture, process/container/cgroup unification, rates and windows, health
 assessment, and replacement of common operator command chains.
 
 ## Resume prompt
+
+This prompt is retained for audit history. Do not restart the interview: all
+questions were answered and recorded as D-001 through D-019 in
+`docs/DECISIONS-INBOX.md`.
 
 > Read `groop/handoff/GROOP-OBSERVABILITY-DISCUSSION.md`. Reconcile the
 > evidence warnings first, then interview me on the decisions in “Questions for
@@ -353,4 +357,3 @@ Unmerged content sitting in worktrees
 Anything else
 
 - DECISIONS-INBOX.md: D-002, D-003 still open (auth posture, release sequencing) — these are the live blockers on P73/P77, independent of the backlog issue.
-

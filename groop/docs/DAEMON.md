@@ -175,7 +175,6 @@ typed code.
 DaemonCurrentResult, DaemonHistoryResult, DaemonEntityResult,
 DaemonHello``.
 
-<<<<<<< HEAD
 ## MCP frontend (P58)
 
 `groop mcp serve` is the stdio-only, read-only MCP frontend for local AI CLI
@@ -196,8 +195,28 @@ series, not a selector error.
 Selectors use exact EntityKeys or P57's docker name/prefix resolver. Use
 `--redact-above public|operational|sensitive` to replace values above the
 chosen P52 sensitivity with a typed `__redacted__` marker.
-=======
+
+### Acceptance leg (P75)
+
+Run the live-daemon MCP acceptance harness:
+
+```bash
+python -m groop.acceptance mcp-smoke [--socket PATH] [--timeout-s FLOAT] [--json] [--pretty-json]
+```
+
+The leg starts a real daemon on a temp socket, connects `groop mcp serve` via
+the MCP SDK's stdio client, drives all four tools, records the largest response
+size, verifies daemon-loss yields a typed error, and verifies a bogus selector
+yields `invalid-selector`. Rootless, self-contained lifecycle, skip when the
+`groop[mcp]` extra is absent.
+
 ## Hardened Versioned Read HTTP Gateway (P67)
+
+Implementation note (2026-07-15): P67 is the current code, but its trusted-
+proxy principal header is **not** the accepted browser deployment boundary.
+P92 replaces it with D-002's random per-start capability token, same-origin
+assets and bounded P88 projections. Do not launch the future React product by
+copying the provisional header example below.
 
 `groop gateway serve` is a separate, read-only HTTP process over the typed P63
 client. It never opens or speaks the Unix socket protocol itself; every route
@@ -278,21 +297,6 @@ Typed daemon errors map deterministically: `not_found` to `404`,
 A daemon connection or protocol failure maps to `502`. Error bodies contain a
 short code only; they never include socket paths, exception text, or stack
 traces.
->>>>>>> feat/groop-p67-versioned-read-http-gateway-v2
-
-### Acceptance leg (P75)
-
-Run the live-daemon MCP acceptance harness:
-
-```bash
-python -m groop.acceptance mcp-smoke [--socket PATH] [--timeout-s FLOAT] [--json] [--pretty-json]
-```
-
-The leg starts a real daemon on a temp socket, connects `groop mcp serve` via
-the MCP SDK's stdio client, drives all four tools, records the largest response
-size, verifies daemon-loss yields a typed error, and verifies a bogus selector
-yields `invalid-selector`. Rootless, self-contained lifecycle, skip when the
-`groop[mcp]` extra is absent.
 
 ## Background Producer
 
@@ -522,6 +526,11 @@ separate `--admin` model, exact previews, confirmation, and audit logging.
 
 ## Retention
 
-The P16 prototype uses bounded in-memory history, defaulting to 120 frames.
-Future production retention should bound both age and bytes and should make any
-on-disk store opt-in with explicit permissions.
+The current broker uses bounded in-memory history, defaulting to 120 frames.
+There is no automatic on-disk daemon store today. Product decision D-005 sets
+the target contract: five minutes at five-second resolution in memory plus a
+batched compressed persistent tier capped simultaneously at 24 hours and
+256 MiB. Lifecycle facts share that store. The implementation must measure real
+compression/bytes written/write amplification, use explicit permissions, report
+coverage and wear-relevant statistics, recover safely from corruption, and
+never silently enlarge either cap.

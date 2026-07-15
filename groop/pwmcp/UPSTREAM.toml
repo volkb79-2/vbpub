@@ -1,0 +1,21 @@
+schema_version = 1
+
+[pwmcp]
+project = "vbpub/pwmcp"
+release = "1.61.0-r6"
+tag = "pwmcp-v1.61.0-r6"
+bundle = "pwmcp-1.61.0-r6.tar.xz"
+sha256 = "590983bf62de333a2f01544ad344193ebc0654187dd7a415cca5da4067f99cbb"
+manifest_url = "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-latest/latest.json"
+
+[ciu]
+project = "vbpub/ciu"
+required_version = "4.6.0"
+
+[vendored]
+files = [
+  "ciu.compose.yml.j2",
+  "ciu.defaults.toml.j2",
+  "ciu.global.defaults.toml.j2",
+  "pwmcp.contract.json",
+]

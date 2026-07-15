@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "release": "1.61.0-r6",
+  "playwright": {
+    "python": "1.61.0",
+    "protocol": "1.61"
+  },
+  "client": {
+    "distribution": "pwmcp-client",
+    "version": "0.1.0",
+    "source": "bundle/client"
+  },
+  "endpoints": {
+    "playwright_ws": "ws://pwmcp:3000/",
+    "health": "http://pwmcp:3000/health",
+    "contract": "http://pwmcp:3000/contract",
+    "admin": "http://pwmcp:8940"
+  },
+  "run_server": {
+    "limits": {
+      "default_lease_seconds": 1800,
+      "max_lease_seconds": 7200,
+      "max_clients": 2,
+      "idle_recycle_seconds": 30
+    }
+  }
+}
