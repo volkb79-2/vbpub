@@ -69,6 +69,9 @@ class MutexDef:
 class NotifyConfig:
     ntfy_url: str | None = None     # e.g. https://ntfy.sh or self-hosted
     ntfy_topic: str | None = None
+    # Env var holding the ntfy access token (deny-all servers need it).
+    # The TOKEN VALUE never appears in config files — only the var name.
+    token_env: str = "NTFY_TOKEN"
     webhook_url: str | None = None
     push_classes: list[str] = field(default_factory=lambda: [
         "DECISION_OPENED", "TASK_BLOCKED", "PROVIDER_STATE_CHANGED",

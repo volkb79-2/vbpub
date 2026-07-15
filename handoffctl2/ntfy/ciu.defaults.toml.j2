@@ -35,3 +35,11 @@ start_period = "10s"
 [ntfy.logging]
 max_size = "10m"
 max_file = "3"
+
+# ciu S5 configfile overlay: renders server.yml and mounts it with correct
+# PHYSICAL paths under DooD (a raw `./server.yml` volume line would be
+# resolved by docker compose to the LOGICAL devcontainer path, which the
+# host daemon turns into an empty directory — observed 2026-07-15).
+[ntfy.ntfy.configfile.server]
+template = "server.yml"
+target = "/etc/ntfy/server.yml"

@@ -24,7 +24,9 @@ services:
     environment:
       TZ: "UTC"
     volumes:
-      - ./server.yml:/etc/ntfy/server.yml:ro
+      # server.yml arrives via the ciu configfile overlay (see defaults toml);
+      # plain-compose deploys use the pre-rendered docker-compose.yml, which
+      # carries the absolute physical bind instead.
       - ntfy-data:/var/lib/ntfy
     expose:
       - "{{ ntfy.port }}"
@@ -53,4 +55,10 @@ networks:
     name: {{ ntfy.ingress_network }}
 
 volumes:
+  # External on purpose: auth.db (users/tokens) and cache live here; the
+  # volume predates ciu adoption (compose project handoffctl-ntfy) and must
+  # survive `ciu --reset`. Created once via `docker volume create` on fresh
+  # hosts.
   ntfy-data:
+    external: true
+    name: handoffctl-ntfy_ntfy-data

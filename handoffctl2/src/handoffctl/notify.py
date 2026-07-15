@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import os
 import threading
 import urllib.error
 import urllib.request
@@ -188,6 +189,11 @@ def send(nc: NotifyConfig, note: dict) -> tuple[bool, str]:
             headers = {
                 "Title": note.get("title", ""),
                 "Priority": str(note.get("priority", 3)),
+            }
+            token = os.environ.get(nc.token_env or "", "")
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            headers |= {
                 "Click": note.get("click", ""),
             }
             tags = note.get("tags", [])

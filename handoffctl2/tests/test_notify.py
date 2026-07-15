@@ -649,3 +649,35 @@ def test_notification_for_budget_exhausted():
     assert note is not None
     assert note["priority"] == 5
     assert note["title"] == "Budget exhausted"
+
+
+class TestTokenAuth:
+    def test_bearer_token_header_from_env(self, monkeypatch):
+        """Deny-all ntfy servers need the token; value comes from env only."""
+        import http.server, threading, json as _json
+        from handoffctl.config import NotifyConfig
+        from handoffctl import notify
+
+        captured = {}
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                captured["auth"] = self.headers.get("Authorization")
+                self.send_response(200); self.end_headers()
+            def log_message(self, *a): pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        t = threading.Thread(target=srv.serve_forever, daemon=True); t.start()
+        try:
+            nc = NotifyConfig(ntfy_url=f"http://127.0.0.1:{srv.server_port}",
+                              ntfy_topic="t")
+            monkeypatch.setenv("NTFY_TOKEN", "tk_secret123")
+            ok, _ = notify.send(nc, {"title": "x", "body": "y", "click": "",
+                                     "priority": 3, "tags": []})
+            assert ok and captured["auth"] == "Bearer tk_secret123"
+            monkeypatch.delenv("NTFY_TOKEN")
+            notify.send(nc, {"title": "x", "body": "y", "click": "",
+                             "priority": 3, "tags": []})
+            assert captured["auth"] is None
+        finally:
+            srv.shutdown()

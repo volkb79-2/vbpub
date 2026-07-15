@@ -1,0 +1,24 @@
+# ==========================================================================
+# Global CIU defaults for the handoffctl ntfy stack (standalone-root)
+# Modeled on pwmcp's standalone pattern: ntfy never terminates TLS
+# (tls-edge does, via ingress_public) and needs no certs/FQDN of its own.
+# ==========================================================================
+
+[deploy]
+project_name = "handoffctl"
+environment_tag = "prod"
+network_name = "handoffctl"
+log_level = "INFO"
+
+# Hostdir ownership values (ciu S6/S7), expanded from ciu.env. The ntfy data
+# volume is a named docker volume (external), but ciu requires these keys.
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+CONTAINER_GID = "$DOCKER_GID"
+DOCKER_GID = "$DOCKER_GID"
+
+[ciu]
+standalone_root = true
+require_certs = false
+require_fqdn = false
+auto_connect_network = false
