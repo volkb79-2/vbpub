@@ -130,6 +130,26 @@ class TestTypedValueStates:
         text = render_query(result)
         assert "permission-denied" in text
 
+    def test_unsupported_and_permission_denied_stay_distinct_under_available(self):
+        """O2: --visibility available must not collapse unavail_kernel (an
+        unsupported stat) and unavail_perm (a permissions failure) into the
+        same 'permission-denied' spelling — the true typed state survives the
+        visibility filter exactly as it does under --visibility all."""
+        frames = [_frame(100.0, {
+            "k.scope": (None, {"ram": MetricValue(v=None, src="unavail_kernel")}),
+            "p.scope": (None, {"ram": MetricValue(v=None, src="unavail_perm")}),
+        })]
+        result = _run("current", frames, (MetricRef("ram"),), visibility="available")
+        # The engine keeps the true src and only flags the cell hidden.
+        cells = {row["key"]: row["metrics"]["ram"] for row in result["rows"]}
+        assert cells["k.scope"]["src"] == "unavail_kernel" and cells["k.scope"].get("hidden")
+        assert cells["p.scope"]["src"] == "unavail_perm" and cells["p.scope"].get("hidden")
+        text = render_query(result)
+        k_line = next(l for l in text.splitlines() if l.startswith("k.scope"))
+        p_line = next(l for l in text.splitlines() if l.startswith("p.scope"))
+        assert "unsupported" in k_line and "permission-denied" not in k_line
+        assert "permission-denied" in p_line and "unsupported" not in p_line
+
     def test_warming_when_derived_cold(self):
         frames = [_frame(100.0, {"a.scope": (None, {"io_r_bps": MetricValue(v=None, src="derived", raw=42)})})]
         result = _run("current", frames, (MetricRef("io_r_bps"),))

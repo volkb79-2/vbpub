@@ -84,12 +84,17 @@ def _is_redacted_marker(value: Any) -> bool:
     return isinstance(value, dict) and value.get("redacted") is True
 
 
-def _format_src_value(value: Any, src: Any, *, hidden: bool = False) -> str:
-    """Format one typed (value, src) pair using the closed vocabulary."""
+def _format_src_value(value: Any, src: Any) -> str:
+    """Format one typed (value, src) pair using the closed vocabulary.
+
+    A cell suppressed under ``--visibility available`` (``hidden`` in the JSON)
+    still carries its true ``src``, so it classifies exactly as it would under
+    ``--visibility all`` — an ``unavail_kernel`` value reads ``unsupported`` and
+    an ``unavail_perm`` value reads ``permission-denied`` regardless of
+    visibility, never collapsing those two distinct states together.
+    """
     if _is_redacted_marker(value):
         return "redacted"
-    if hidden:
-        return "permission-denied" if isinstance(src, str) and src.startswith("unavail") else "hidden"
     if src == "absent":
         return "missing"
     if src == "unavail_perm":
@@ -231,7 +236,7 @@ def _render_current_rows(rows: list[dict[str, Any]]) -> list[str]:
     table_rows = []
     for row in rows:
         cells = [_row_key_column(row, hierarchy)]
-        cells.extend(_format_src_value(cell.get("value"), cell.get("src"), hidden=cell.get("hidden", False))
+        cells.extend(_format_src_value(cell.get("value"), cell.get("src"))
                      for cell in (row["metrics"][name] for name in metric_names))
         if has_subtree:
             subtree_value = row["subtree"]["value"]
