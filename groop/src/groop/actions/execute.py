@@ -18,7 +18,7 @@ import selectors
 import stat
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import TextIO
 
@@ -553,6 +553,42 @@ class _GateRefusal:
 Gate = Callable[[], _GateRefusal | None]
 
 
+def _make_owner_safety_gate(
+    kind: str,
+    target: str,
+    owner_inspect: Callable[[str], object] | None,
+    owner_protected_services: Collection[str] | None,
+) -> Gate:
+    """Build the P87 owner / protected-ID post-audit gate for one Docker verb.
+
+    A no-op when no ``owner_inspect`` seam is engaged (the legacy P46/P72
+    path), so the existing start/stop/restart/kill/update contract is
+    preserved. Once engaged the underlying evaluator is fail-closed: a single
+    ``docker inspect`` resolves the canonical identity and labels, and any
+    owner-managed / owner-ambiguous / protected / inspect-failure verdict is a
+    typed, audited refusal.
+    """
+
+    def gate() -> _GateRefusal | None:
+        if owner_inspect is None:
+            return None
+        from groop.actions import owner_safety
+
+        services = (
+            owner_protected_services
+            if owner_protected_services is not None
+            else owner_safety.default_protected_services()
+        )
+        refusal = owner_safety.evaluate(
+            kind, target, inspect=owner_inspect, protected_services=services
+        )
+        if refusal is None:
+            return None
+        return _GateRefusal(refusal.message)
+
+    return gate
+
+
 def _execute_gated(
     initial_kind: str,
     initial_target: str,
@@ -755,12 +791,19 @@ def execute_plan(
     root_check: Callable[[], bool] | None = None,
     timeout: float = 30.0,
     plan: ActionPlan | None = None,
+    owner_inspect: Callable[[str], object] | None = None,
+    owner_protected_services: Collection[str] | None = None,
 ) -> ExecuteResult:
     """Execute one immutable catalog plan through the production gates.
 
     The optional fixture parameters are intentionally API-only.  The
     production CLI supplies no audit path, runner, identity, clock, or root
     override and therefore uses the fixed root-owned policy.
+
+    ``owner_inspect`` (P87) engages the Docker owner / protected-ID safety gate
+    for the ``docker-start``/``docker-stop``/``docker-restart`` kinds. When it
+    is ``None`` the gate is a no-op and the legacy P46 behavior is preserved;
+    the production CLI wires it to a real ``docker inspect`` resolver.
     """
     action_kind: ActionKind | None = None
     current_plan: ActionPlan | None = None
@@ -813,7 +856,12 @@ def execute_plan(
         timeout=timeout,
         build_spec=build_spec,
         pre_audit_gates=(action_kind_gate, plan_gate),
-        post_audit_gates=(target_revalidation_gate,),
+        post_audit_gates=(
+            target_revalidation_gate,
+            _make_owner_safety_gate(
+                kind, target, owner_inspect, owner_protected_services
+            ),
+        ),
     )
 
 
@@ -1028,12 +1076,18 @@ def execute_kill(
     root_check: Callable[[], bool] | None = None,
     timeout: float = 30.0,
     protected_check: Callable[[str, str], bool] | None = None,
+    owner_inspect: Callable[[str], object] | None = None,
+    owner_protected_services: Collection[str] | None = None,
 ) -> ExecuteResult:
     """Execute a kill action through the P46 gates.
 
     Reuses the P46 root/admin/typed-confirmation, absolute argv, timeout,
     result bounds, and fail-closed audit contract.  Additionally validates
     the signal (closed allowlist) and checks protected entities.
+
+    ``owner_inspect`` (P87) engages the Docker owner / protected-ID safety gate
+    for the ``docker-kill`` kind (``systemd-kill`` is unaffected). When it is
+    ``None`` the gate is a no-op and the legacy P72 behavior is preserved.
 
     ``confirm`` must be ``"KILL"`` (per-verb token — distinct from
     ``"EXECUTE"`` used by start/stop/restart).
@@ -1109,7 +1163,12 @@ def execute_kill(
         timeout=timeout,
         build_spec=build_spec,
         pre_audit_gates=(signal_gate, force_gate, protected_gate, action_kind_gate),
-        post_audit_gates=(target_revalidation_gate,),
+        post_audit_gates=(
+            target_revalidation_gate,
+            _make_owner_safety_gate(
+                kind, target, owner_inspect, owner_protected_services
+            ),
+        ),
     )
 
 
@@ -1133,12 +1192,20 @@ def execute_update(
     root_check: Callable[[], bool] | None = None,
     timeout: float = 30.0,
     current_memory_reader: Callable[[str], int | None] | None = None,
+    owner_inspect: Callable[[str], object] | None = None,
+    owner_protected_services: Collection[str] | None = None,
 ) -> ExecuteResult:
     """Execute a docker-update action through the P46 gates.
 
     Reuses the P46 root/admin/typed-confirmation, absolute argv, timeout,
     result bounds, and fail-closed audit contract.  Additionally validates
     memory/CPU limits and checks current memory usage.
+
+    ``owner_inspect`` (P87) engages the Docker owner / protected-ID safety gate.
+    A durable ``docker update`` is refused for any owner-managed container; a
+    runtime-only update remains available only when the inspected object is
+    demonstrably standalone. When ``owner_inspect`` is ``None`` the gate is a
+    no-op and the legacy P72 behavior is preserved.
 
     ``confirm`` must be ``"UPDATE"`` (per-verb token — distinct from
     ``"EXECUTE"`` and ``"KILL"``).
@@ -1243,5 +1310,10 @@ def execute_update(
             systemd_target_gate,
             current_memory_gate,
         ),
-        post_audit_gates=(target_revalidation_gate,),
+        post_audit_gates=(
+            target_revalidation_gate,
+            _make_owner_safety_gate(
+                "docker-update", target, owner_inspect, owner_protected_services
+            ),
+        ),
     )

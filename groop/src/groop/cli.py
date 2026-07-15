@@ -954,6 +954,7 @@ def _main_action(argv: list[str]) -> int:
             )
         elif args.kind in ("docker-kill", "systemd-kill"):
             from groop.actions.execute import execute_kill
+            from groop.actions import owner_safety
             result = execute_kill(
                 args.kind,
                 resolved_target,
@@ -962,9 +963,11 @@ def _main_action(argv: list[str]) -> int:
                 admin=args.admin,
                 confirm=args.confirm,
                 timeout=args.timeout,
+                owner_inspect=owner_safety.default_owner_inspect,
             )
         elif args.kind == "docker-update":
             from groop.actions.execute import execute_update
+            from groop.actions import owner_safety
             result = execute_update(
                 resolved_target,
                 memory=args.memory,
@@ -973,14 +976,17 @@ def _main_action(argv: list[str]) -> int:
                 admin=args.admin,
                 confirm=args.confirm,
                 timeout=args.timeout,
+                owner_inspect=owner_safety.default_owner_inspect,
             )
         else:
+            from groop.actions import owner_safety
             result = execute_plan(
                 args.kind,
                 resolved_target,
                 admin=args.admin,
                 confirm=args.confirm,
                 timeout=args.timeout,
+                owner_inspect=owner_safety.default_owner_inspect,
             )
 
         if args.json:
