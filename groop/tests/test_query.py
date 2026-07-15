@@ -996,3 +996,80 @@ class TestPerformance:
         assert len(res.rows) == n_entities
         assert encoded > 0
         print(f"\n[P88-PERF] entities={n_entities} frames=30 wall={elapsed:.3f}s bytes={encoded}")
+
+
+# ---------------------------------------------------------------------------
+# Frontier review fixes (pass #2) — each test fails against the pre-review code.
+# ---------------------------------------------------------------------------
+
+class TestReviewFixes:
+    def test_integral_over_rate_with_reset_pairs_samples_with_their_own_ts(self):
+        # raw 0,1000,2000,50,1050 at 5s spacing: the 2000->50 reset yields no
+        # sample at ts=115, and the post-reset sample belongs to ts=120. The
+        # pre-review positional re-pairing assigned the surviving samples to
+        # the timestamps 100/105/110 (integral 2000 over span 10); the correct
+        # pairing is 105/110/120 (integral 3000 over span 15).
+        raws = [0, 1000, 2000, 50, 1050]
+        frames = [
+            _frame(100.0 + i * 5, {"x.scope": (None, {"io_r_bps": _rr(r)})})
+            for i, r in enumerate(raws)
+        ]
+        res = run_query(
+            _daemon(frames),
+            Query(shape="summary", metrics=(MetricRef("io_r_bps", semantic="integral"),)),
+        )
+        cell = res.rows[0]["metrics"]["io_r_bps"]
+        assert cell["semantic"] == "integral"
+        assert cell["resets"] == 1
+        assert cell["integral"] == 3000.0
+        assert cell["span_s"] == 15.0
+
+    def test_raw_shape_enforces_max_rows_as_series_error(self):
+        frames = [
+            _frame(100.0, {f"e{i}.scope": (None, {"ram": _g(float(i))}) for i in range(5)})
+        ]
+        with pytest.raises(BoundExceededError) as exc:
+            run_query(
+                _daemon(frames),
+                Query(shape="raw", metrics=(MetricRef("ram"),), caps=Caps(max_rows=2)),
+            )
+        assert exc.value.bound == "max_rows"
+        assert exc.value.observed == 5
+
+    def test_raw_shape_truncates_series_at_max_rows(self):
+        frames = [
+            _frame(100.0, {f"e{i}.scope": (None, {"ram": _g(float(i))}) for i in range(5)})
+        ]
+        res = run_query(
+            _daemon(frames),
+            Query(
+                shape="raw",
+                metrics=(MetricRef("ram"),),
+                caps=Caps(max_rows=2, on_exceed="truncate"),
+            ),
+        )
+        assert len(res.rows) == 2
+        trunc = res.meta["truncation"]
+        assert trunc["truncated"] is True
+        assert trunc["reason"] == "max_rows"
+        assert trunc["total_series"] == 5
+        assert trunc["emitted_series"] == 2
+
+    def test_bounded_tail_read_is_not_eviction(self):
+        # oldest_seq BEHIND our first entry means older frames still exist in
+        # the ring (an ordinary limit-bounded tail read) — nothing was lost.
+        frames = _one_entity_gauge([1.0, 2.0, 3.0])
+        src = _daemon(frames, gap=False, start_seq=5, oldest_seq=0)
+        res = run_query(src, Query(shape="summary", metrics=(MetricRef("ram"),)))
+        assert res.meta["eviction"] == {"occurred": False}
+        assert res.meta["coverage"]["complete"] is True
+        assert res.meta["gaps"] == []
+
+    def test_oldest_seq_ahead_of_held_frames_is_eviction(self):
+        # oldest_seq AHEAD of our first entry: frames we hold were dropped
+        # from the ring after the fetch — that IS eviction.
+        frames = _one_entity_gauge([1.0, 2.0, 3.0])
+        src = _daemon(frames, gap=False, start_seq=5, oldest_seq=7)
+        res = run_query(src, Query(shape="summary", metrics=(MetricRef("ram"),)))
+        assert res.meta["eviction"] == {"occurred": True}
+        assert res.meta["coverage"]["complete"] is False

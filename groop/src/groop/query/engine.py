@@ -817,6 +817,20 @@ def _run_raw(
     frames = windowed.frames
     caps = query.caps
     series_specs = [(k, rm) for k in keys for rm in resolved]
+    total_series = len(series_specs)
+    row_capped = False
+    if total_series > caps.max_rows:
+        # Contract 6: the row bound applies to every shape. For raw, a row is
+        # one (entity, metric) series.
+        if caps.on_exceed == "error":
+            raise BoundExceededError(
+                f"raw result would hold {total_series} series, exceeding max_rows={caps.max_rows}",
+                bound="max_rows",
+                limit=caps.max_rows,
+                observed=total_series,
+            )
+        series_specs = series_specs[: caps.max_rows]
+        row_capped = True
     upper = len(frames) * len(series_specs)
     if upper > caps.max_points and caps.on_exceed == "error":
         raise BoundExceededError(
@@ -856,14 +870,16 @@ def _run_raw(
             rows.append({"key": key, "metric": rm.name, "semantic": rm.semantic.value, "points": pts})
             emitted_series += 1
 
-    if truncated:
+    if truncated or row_capped:
         truncation = {
             "truncated": True,
             "policy": "truncate",
-            "reason": "max_points",
+            "reason": "max_points" if truncated else "max_rows",
             "emitted_series": emitted_series,
-            "total_series": len(series_specs),
+            "total_series": total_series,
         }
+        if truncated and row_capped:
+            truncation["also"] = "max_rows"
     else:
         truncation = _no_truncation(caps.on_exceed)
     return _finish(query, windowed, rows, reset_count=0, precomputed_truncation=truncation)

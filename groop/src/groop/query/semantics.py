@@ -195,19 +195,25 @@ def _gauge_stats(values: list[float]) -> dict[str, object]:
     }
 
 
-def _rate_samples(points: list[_Point]) -> tuple[list[float], int]:
-    """Reset-aware per-interval rate samples, mirroring report._derive_rate.
+def _rate_pairs(points: list[_Point]) -> tuple[list[tuple[float, float]], int]:
+    """Reset-aware per-interval (ts, rate) pairs, mirroring report._derive_rate.
 
     A live ``v`` is used directly.  Otherwise a ``src=='derived'`` point with a
     raw counter is derived as ``delta(raw)/delta(ts)`` against the nearest
     earlier point that carries a raw counter; a negative raw delta is a counter
-    reset — the interval yields no sample and increments the reset count.
+    reset — the interval yields no pair and increments the reset count.  Each
+    emitted pair carries the timestamp of the point that produced it, so
+    consumers that need positions (the integral reducer) never re-pair samples
+    with points positionally.
+
+    For a pure gauge series (every ``v`` present) this degenerates to the
+    ``(ts, v)`` observations themselves with zero resets.
     """
-    samples: list[float] = []
+    pairs: list[tuple[float, float]] = []
     resets = 0
     for idx, point in enumerate(points):
         if point.v is not None:
-            samples.append(point.v)
+            pairs.append((point.ts, point.v))
             continue
         if point.src != "derived" or point.raw is None:
             continue
@@ -222,9 +228,15 @@ def _rate_samples(points: list[_Point]) -> tuple[list[float], int]:
                 break
             if ts_delta <= 0:
                 break
-            samples.append(raw_delta / ts_delta)
+            pairs.append((point.ts, raw_delta / ts_delta))
             break
-    return samples, resets
+    return pairs, resets
+
+
+def _rate_samples(points: list[_Point]) -> tuple[list[float], int]:
+    """Reset-aware per-interval rate samples (values of :func:`_rate_pairs`)."""
+    pairs, resets = _rate_pairs(points)
+    return [value for _, value in pairs], resets
 
 
 def _counter_total(points: list[_Point]) -> tuple[float, int, int]:
@@ -295,24 +307,11 @@ def summarize(points: list[_Point], semantic: ValueSemantic) -> Summary:
 
     if semantic == ValueSemantic.INTEGRAL:
         # Integrate the natural per-frame magnitude: a gauge integrates its
-        # value; a rate integrates its reset-aware interval rate.
-        canon_values: list[tuple[float, float]]
-        resets = 0
-        rate_samples, resets = _rate_samples(points)
-        if rate_samples and any(p.v is None for p in points):
-            # Rate metric: pair each derived rate with its point timestamp.
-            paired: list[tuple[float, float]] = []
-            si = 0
-            for p in points:
-                if p.v is not None:
-                    paired.append((p.ts, p.v))
-                elif p.src == "derived" and p.raw is not None and si < len(rate_samples):
-                    paired.append((p.ts, rate_samples[si]))
-                    si += 1
-            canon_values = paired
-        else:
-            canon_values = [(p.ts, p.v) for p in points if p.v is not None]
-            resets = 0
+        # value; a rate integrates its reset-aware interval rate. _rate_pairs
+        # carries each sample's own timestamp (and degenerates to the (ts, v)
+        # observations for a pure gauge series), so no positional re-pairing
+        # can misalign a sample with another point's timestamp.
+        canon_values, resets = _rate_pairs(points)
         integral, span = _integral_of_series(canon_values)
         stats = {
             "integral": _round(integral),

@@ -34,7 +34,7 @@ Append newest entries at the bottom.
 - Action: implemented groop.query (errors, source, semantics, engine,
   __init__) + `groop query` CLI subcommand; wrote groop/tests/test_query.py
   (62 tests, all numbered oracles O1-O14 + contract oracles). Removed unused
-  SelectorError (dead code). Added docs/BACKLOG.md B-039/B-040.
+  SelectorError (dead code). Added docs/BACKLOG.md B-041/B-042 (renumbered at merge; B-039/B-040 were claimed by the P87 review).
 - Commands:
   PYTHONPATH=groop/src .venv/bin/python -m pytest groop/tests/test_query.py -q -W error -p no:schemathesis  -> 62 passed
   focused query+report+daemon(P63/P52)                                                                     -> 262 passed
@@ -87,5 +87,5 @@ git diff --check  # clean
 - [x] Report file written.
 - [x] Log file current.
 - [x] Tests/compile/smoke recorded.
-- [x] Known gaps documented (BACKLOG B-039/B-040 + REPORT).
+- [x] Known gaps documented (BACKLOG B-041/B-042 (renumbered at merge; B-039/B-040 were claimed by the P87 review) + REPORT).
 - [x] Feature branch committed.

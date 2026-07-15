@@ -142,12 +142,16 @@ class DaemonHistoryFrameSource(FrameSource):
             kind="daemon-history", detail=dict(detail or {})
         )
         # Evicted when the ring reported a gap, or when the oldest retained
-        # sequence is ahead of the first entry we hold (older frames dropped).
+        # sequence is ahead of the first entry we hold (our oldest frames were
+        # dropped from the ring after the fetch). The opposite ordering —
+        # oldest_seq BEHIND our first entry — is an ordinary limit-bounded
+        # tail read: older frames still exist in the ring, nothing was lost,
+        # so it must not claim eviction.
         first_seq = self._entries[0][0] if self._entries else None
         self.evicted = self._gap or (
             oldest_seq is not None
             and first_seq is not None
-            and oldest_seq < first_seq
+            and oldest_seq > first_seq
         )
 
     @classmethod
