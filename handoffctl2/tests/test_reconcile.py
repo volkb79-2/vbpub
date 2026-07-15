@@ -1021,13 +1021,18 @@ def test_waves_fresh_single_no_open():
 
 
 def test_waves_launch_review_no_running_attempt():
-    """Oracle 9: open wave with no FRONTIER_REVIEW RUNNING -> LaunchReview."""
+    """Oracle 9 (amended 2026-07-15 after the duplicate-Opus-launch
+    incident): an open wave launches review ONLY when no frontier-review
+    attempt is in flight. A CREATED one IS in flight — the original
+    assertion (relaunch unless RUNNING) spawned five duplicate reviews.
+    Here: a FAILED review attempt (terminal, non-resumable) does not block
+    a fresh launch."""
     cfg = make_config()
     routes = make_routes()
     fm = make_frontmatter(id="P01")
     att = make_attempt(
         attempt_id="att-1",
-        state=AttemptState.CREATED,
+        state=AttemptState.FAILED,
         role=Role.FRONTIER_REVIEW,
     )
     tsf = make_tsf(task_id="P01", state=TaskState.AWAITING_REVIEW, attempts=[att])
@@ -1342,3 +1347,36 @@ def test_determinism_composite_input():
     lifecycle_actions = [a for a in actions1 if isinstance(a, (CreateTask, Transition, DispatchImplementer))]
     task_ids = [a.task_id for a in lifecycle_actions if a.task_id]
     assert task_ids == sorted(task_ids), f"Lifecycle not sorted: {task_ids}"
+
+
+def test_waves_no_duplicate_review_launch_while_preflighting():
+    """Regression (2026-07-15 live): CREATED/PREFLIGHTING/INTERRUPTED-with-
+    handle frontier-review attempts mean the review is in flight — no
+    duplicate LaunchReview."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    for state, handle, expect_launch in [
+        (AttemptState.CREATED, None, False),
+        (AttemptState.PREFLIGHTING, None, False),
+        (AttemptState.RUNNING, None, False),
+        (AttemptState.EXITED, None, False),
+        (AttemptState.INTERRUPTED, "sess-1", False),
+        (AttemptState.INTERRUPTED, None, True),
+        (AttemptState.FAILED, None, True),
+    ]:
+        att = make_attempt(attempt_id="att-1", state=state,
+                           role=Role.FRONTIER_REVIEW)
+        att.session_handle = handle
+        tsf = make_tsf(task_id="P01", state=TaskState.AWAITING_REVIEW,
+                       attempts=[att])
+        tsf.wave_id = "wave-001"
+        inp = ReconcileInput(
+            now=utc(2026, 7, 15), cfg=cfg, routes=routes,
+            states={"P01": tsf}, frontmatters={"P01": (fm, "h.md")},
+            lint_clean={}, project_paused=False, decisions_open=set(),
+            merged_branches=set(), leases_free={}, provider_ok={},
+            log_quiet_seconds={}, pid_alive={}, receipts={},
+        )
+        launches = [a for a in plan_project(inp) if isinstance(a, LaunchReview)]
+        assert bool(launches) == expect_launch, f"{state} handle={handle}"

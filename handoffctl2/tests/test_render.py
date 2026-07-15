@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from handoffctl import paths, storage, render
 from handoffctl.types import (
     TaskStateFile, Attempt, Route, Usage, Basis, AttemptState,
     Receipt, ReceiptResult, TaskState, Actor, ActorKind, Event,
-    EventType, Frontmatter, Source, Scope, Oracle,
+    EventType, Frontmatter, Source, Scope, Oracle, Role,
 )
 from handoffctl.config import ProjectConfig
 
@@ -26,7 +27,7 @@ def seed_data(sample_project, tmp_state):
     p01_started = datetime(2026, 7, 15, 10, 0, 0, tzinfo=timezone.utc)
     p01_attempt = Attempt(
         attempt_id="att-001",
-        role=__import__("handoffctl.types", fromlist=["Role"]).Role.IMPLEMENTER,
+        role=Role.IMPLEMENTER,
         state=AttemptState.RUNNING,
         route=Route(route_id="fake-cli", cli="fake", model="fake-model"),
         started=p01_started,
@@ -57,7 +58,7 @@ def seed_data(sample_project, tmp_state):
     p02_ended = datetime(2026, 7, 14, 16, 0, 0, tzinfo=timezone.utc)
     p02_attempt = Attempt(
         attempt_id="att-002",
-        role=__import__("handoffctl.types", fromlist=["Role"]).Role.IMPLEMENTER,
+        role=Role.IMPLEMENTER,
         state=AttemptState.EXITED,
         route=Route(route_id="fake-cli", cli="fake", model="fake-model"),
         started=p02_started,
@@ -294,3 +295,229 @@ def test_render_after_event_is_alias(seed_data, sample_project):
     result = render.render_after_event(registry)
     assert result == paths.www_dir()
     assert (paths.www_dir() / "index.html").exists()
+
+
+# ---------------------------------------------------------------------------
+# P13: real DAG (bug fix + SVG layout), auto-fit timeline, readable live page
+
+
+def _write_handoff(root: Path, task_id: str, *, depends_on=None, mutexes=None,
+                    stack: str = "none") -> str:
+    """Write a minimal schema-valid handoff file for `task_id`.
+
+    Returns its path relative to `root` (matching the sample project's
+    handoff_globs = ["handoff/*.md"]).
+    """
+    lines = [
+        "---",
+        "schema_version: 1",
+        f"id: {task_id}",
+        "project: demo",
+        f"title: \"{task_id} title\"",
+        "tier: flash-high",
+        'input_revision: "0000000"',
+        "source: {kind: roadmap}",
+        "scope:",
+        '  touch: ["src/demo/thing.py"]',
+        "oracles:",
+        "  - id: O1",
+        "    observable: x",
+        "    negative: y",
+        "    gate: pytest-q",
+        "gates: [pytest-q]",
+        'escalate_if: ["x"]',
+    ]
+    if stack != "none":
+        lines.append(f"stack: {stack}")
+    if mutexes:
+        lines.append("mutexes: [" + ", ".join(mutexes) + "]")
+    if depends_on:
+        lines.append("depends_on: [" + ", ".join(depends_on) + "]")
+    lines += ["---", "", f"# {task_id}", "", "Body."]
+    text = "\n".join(lines) + "\n"
+
+    rel = f"handoff/{task_id}.md"
+    (root / rel).write_text(text, encoding="utf-8")
+    return rel
+
+
+@pytest.fixture()
+def dag_data(sample_project, tmp_state):
+    """Two tasks whose HANDOFF FILES (not statefiles) carry the dependency:
+    demo-P10-taska depends_on demo-P11-taskb and shares mutex 'shared'."""
+    project_id = "demo"
+    root = sample_project.root
+
+    rel_a = _write_handoff(root, "demo-P10-taska",
+                           depends_on=["demo-P11-taskb"], mutexes=["shared"])
+    rel_b = _write_handoff(root, "demo-P11-taskb")
+
+    now = datetime.now(timezone.utc)
+    storage.save_state(TaskStateFile(
+        schema_version=1, task_id="demo-P10-taska", project=project_id,
+        state=TaskState.ACTIVE, since=now, handoff_path=rel_a,
+    ))
+    storage.save_state(TaskStateFile(
+        schema_version=1, task_id="demo-P11-taskb", project=project_id,
+        state=TaskState.QUEUED, since=now, handoff_path=rel_b,
+    ))
+    return root
+
+
+def test_dag_edges_from_frontmatter(dag_data, sample_project):
+    """Oracle 1: edge extraction reads each task's OWN handoff frontmatter
+    (depends_on + effective_mutexes) — the statefile carries no deps, so
+    this is the confirmed "No edges" bug fix. Asserts an <svg>, an
+    edge-dep marker, and edges-table rows for both the dep and mutex."""
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+
+    content = (paths.www_dir() / "dag.html").read_text(encoding="utf-8")
+
+    assert "<svg" in content
+    assert content.count('class="edge-dep"') >= 1
+    assert content.count('class="edge-mutex"') >= 1
+    assert re.search(
+        r"<td>demo-P10-taska</td>\s*<td>demo-P11-taskb</td>\s*<td>dep</td>",
+        content,
+    ), "dep edge row missing from edges table"
+    assert re.search(
+        r"<td>demo-P10-taska</td>\s*<td>demo\.shared</td>\s*<td>mutex</td>",
+        content,
+    ), "mutex edge row missing from edges table"
+
+
+def test_dag_unparseable_handoff_negative(sample_project, tmp_state):
+    """Negative (oracle 1): a task whose handoff file fails to parse must
+    not crash render_all; its node still renders (with no edges)."""
+    project_id = "demo"
+    root = sample_project.root
+    bad_rel = "handoff/demo-P12-broken.md"
+    (root / bad_rel).write_text("not frontmatter at all, no leading '---'\n", encoding="utf-8")
+
+    storage.save_state(TaskStateFile(
+        schema_version=1, task_id="demo-P12-broken", project=project_id,
+        state=TaskState.ACTIVE, since=datetime.now(timezone.utc),
+        handoff_path=bad_rel,
+    ))
+
+    registry = {"demo": root}
+    www = render.render_all(registry)  # must not raise
+
+    content = (www / "dag.html").read_text(encoding="utf-8")
+    assert 'data-node="demo-P12-broken"' in content
+    assert ">demo-P12-broken<" in content
+
+
+def test_dag_layout_places_dependency_left(dag_data, sample_project):
+    """Oracle 2: for an A->B edge (A's handoff depends_on B), A's <rect>
+    x is strictly less than B's."""
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "dag.html").read_text(encoding="utf-8")
+
+    def rect_x(node_id: str) -> float:
+        m = re.search(rf'data-node="{re.escape(node_id)}"[^>]*\sx="([0-9.]+)"', content)
+        assert m, f"no <rect> found for node {node_id!r}"
+        return float(m.group(1))
+
+    assert rect_x("demo-P10-taska") < rect_x("demo-P11-taskb")
+
+
+def test_dag_cycle_does_not_hang_and_marks_edge_red(sample_project, tmp_state):
+    """Finding 2 (cycles): a mutual dependency must not hang the layout; the
+    cycle-breaking edge is reported with class edge-broken."""
+    project_id = "demo"
+    root = sample_project.root
+
+    rel_a = _write_handoff(root, "demo-P13-cyclea", depends_on=["demo-P14-cycleb"])
+    rel_b = _write_handoff(root, "demo-P14-cycleb", depends_on=["demo-P13-cyclea"])
+
+    now = datetime.now(timezone.utc)
+    storage.save_state(TaskStateFile(
+        schema_version=1, task_id="demo-P13-cyclea", project=project_id,
+        state=TaskState.ACTIVE, since=now, handoff_path=rel_a,
+    ))
+    storage.save_state(TaskStateFile(
+        schema_version=1, task_id="demo-P14-cycleb", project=project_id,
+        state=TaskState.ACTIVE, since=now, handoff_path=rel_b,
+    ))
+
+    registry = {"demo": root}
+    www = render.render_all(registry)  # must terminate promptly, never hang
+
+    content = (www / "dag.html").read_text(encoding="utf-8")
+    assert "demo-P13-cyclea" in content
+    assert "demo-P14-cycleb" in content
+    assert "edge-broken" in content
+
+
+@pytest.fixture()
+def timeline_data(sample_project, tmp_state):
+    """demo-P20-recent has an attempt that started 10 minutes ago and is
+    still running; demo-P21-idle has zero attempts (empty-window lane)."""
+    project_id = "demo"
+    started = datetime.now(timezone.utc) - timedelta(minutes=10)
+    att = Attempt(
+        attempt_id="att-recent",
+        role=Role.IMPLEMENTER,
+        state=AttemptState.RUNNING,
+        route=Route(route_id="fake-cli", cli="fake", model="fake-model"),
+        started=started,
+    )
+    storage.save_state(TaskStateFile(
+        schema_version=1, task_id="demo-P20-recent", project=project_id,
+        state=TaskState.ACTIVE, since=started, attempts=[att],
+    ))
+    storage.save_state(TaskStateFile(
+        schema_version=1, task_id="demo-P21-idle", project=project_id,
+        state=TaskState.QUEUED, since=datetime.now(timezone.utc),
+    ))
+    return project_id
+
+
+def test_timeline_autofit_bar_width_and_ticks(timeline_data, sample_project):
+    """Oracle 3: a bar for an attempt started 10 minutes ago has width
+    >= 6px (MIN_BAR_WIDTH_PX), and the axis row carries >= 4 tick labels."""
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "timeline.html").read_text(encoding="utf-8")
+
+    assert 'id="timeline"' in content
+    assert content.count('class="tick"') >= 4
+
+    m = re.search(r'class="bar" style="left: [0-9.]+px; width: ([0-9.]+)px;"', content)
+    assert m, "no attempt bar found in timeline.html"
+    assert float(m.group(1)) >= render.MIN_BAR_WIDTH_PX
+
+
+def test_timeline_empty_window_note(timeline_data, sample_project):
+    """Oracle 3: a lane with no attempts in the window shows the
+    "No activity in window" note instead of an empty track."""
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "timeline.html").read_text(encoding="utf-8")
+
+    assert "demo-P21-idle" in content
+    assert "No activity in window" in content
+
+
+def test_live_html_parsed_renderer(seed_data, sample_project):
+    """Oracle 4: live.html parses each SSE event client-side, builds rows
+    via textContent only (never innerHTML), colors by type, offers a raw
+    toggle, and keeps the project-less EventSource URL."""
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "live.html").read_text(encoding="utf-8")
+
+    assert "textContent" in content
+    assert "innerHTML" not in content
+    assert 'id="raw-toggle"' in content
+    assert "new EventSource('/api/stream')" in content
+    assert "?project=" not in content
+    assert "TICK_ERROR" in content
+    assert "TASK_TRANSITIONED" in content
+    assert "ATTEMPT_" in content
+    assert "evt-tick-error" in content
+    assert "evt-task-transitioned" in content
+    assert "evt-attempt" in content

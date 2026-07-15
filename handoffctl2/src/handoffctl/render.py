@@ -23,17 +23,29 @@ INTERFACE CONTRACT (frozen):
     history.html    id="history" table of terminal + MERGED/VALIDATING
                     tasks: task, final state, merge_commit, progress_units,
                     total cost.
-    dag.html        id="dag" — dependency edges rendered as an HTML nested
-                    list per project: each task li carries class
-                    'state-<STATE>' and lists 'depends on: <ids>' and
-                    'mutex: <names>'; plus an edges table (from, to, kind
-                    in {dep, mutex, decision}). (No graphviz/mermaid — CSS
-                    coloring by state class is the visualization.)
+    dag.html        id="dag" — inline SVG dependency graph (pure-python
+                    Kahn-level layout; no graphviz/JS libs): task nodes as
+                    rounded <rect data-node="<id>"> colored by COLORS,
+                    carrying class 'state-<STATE>' (dark text); dependency
+                    and mutex-resource edges drawn as arrowed <line>
+                    elements (class 'edge-dep' solid / 'edge-mutex' dashed;
+                    an edge broken to resolve a cycle also gets class
+                    'edge-broken' and red stroke). Edges are parsed per
+                    task via frontmatter.parse_handoff(root / handoff_path)
+                    (root = registry[project]); a task whose handoff file
+                    fails to parse is skipped for edges but its node still
+                    renders. An edges table (from, to, kind in {dep, mutex,
+                    decision}) follows the SVG.
     timeline.html   id="timeline" — one div.lane per task with div.bar
-                    children per attempt, width proportional to duration,
-                    title attribute '<attempt_id> <route> <state>'; CSS
-                    grid over a time axis of the last 48h (configurable
-                    constant HOURS=48).
+                    children per attempt, absolutely positioned/sized over
+                    a shared auto-fit axis (window = min(earliest attempt
+                    start, now-1h) to now, padded 5%; TIMELINE_WIDTH_PX
+                    wide with tick labels HH:MM). Bar width is floored at
+                    MIN_BAR_WIDTH_PX; title attribute '<attempt_id> <route>
+                    <state>'; the route id is also rendered inside the bar
+                    once it is wider than 60px. A lane with no attempts in
+                    the window shows a "No activity in window" note instead
+                    of an empty track.
     quality.html    id="quality" table per (tier, route_id): attempts,
                     exited-done, blocked, limit, error, interrupted counts,
                     total + mean cost. Data from all projects' statefiles.
@@ -45,8 +57,15 @@ INTERFACE CONTRACT (frozen):
                     gate results, id="log-excerpt" <pre> with the REDACTED
                     last 64KB of the newest attempt log, decisions
                     referenced, events tail (last 50 for this task).
-    live.html       minimal SSE client: JS EventSource('/api/stream?...')
-                    appending events to a <pre>; degrade gracefully when
+    live.html       SSE client: JS EventSource('/api/stream') (no project
+                    param — the server defaults to the first registered
+                    project) parses each event and appends one row built
+                    via textContent (never innerHTML): 'HH:MM:SS TYPE
+                    task_id key-detail'. TICK_ERROR rows are red,
+                    TASK_TRANSITIONED green, ATTEMPT_* blue. A raw toggle
+                    reveals the original JSON line alongside the parsed
+                    row. The view auto-scrolls to the newest event unless
+                    the user has scrolled up. Degrades gracefully when
                     served from file:// (show note).
 - All pages share one inline CSS block (COLORS constant maps TaskState ->
   color) and a nav header; valid HTML5; every dynamic string passes
@@ -59,16 +78,26 @@ INTERFACE CONTRACT (frozen):
 from __future__ import annotations
 
 import html
-from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
-from . import paths, storage, config
-from .types import TaskState, TaskStateFile, AttemptState, Basis
+from . import paths, storage, config, frontmatter
+from .types import TaskState, TaskStateFile, AttemptState, Basis, Frontmatter
 
 
-HOURS = 48
+# --- timeline layout constants ---
+TIMELINE_WIDTH_PX = 960
+MIN_BAR_WIDTH_PX = 6
+TIMELINE_TICKS = 5
+
+# --- DAG layout constants ---
+NODE_W = 160
+NODE_H = 36
+H_GAP = 70
+V_GAP = 50
+DAG_MARGIN = 20
 
 COLORS = {
     TaskState.DRAFT: "#cccccc",
@@ -114,10 +143,28 @@ nav {{ background: #1b1f24; padding: 10px; margin: -20px -20px 20px -20px; }}
 nav a {{ margin: 0 10px; }}
 #pause-banner {{ background: #3a1214; border: 2px solid #c0392b; padding: 10px; margin: 10px 0; }}
 .lane {{ margin: 20px 0; padding: 10px; border: 1px solid #333a41; }}
-.bar {{ display: inline-block; margin: 0 2px; padding: 2px; background: #2f6fb3; color: #eaf2fa; }}
+.lane-track {{ background: #1a1e22; }}
+.bar {{ position: absolute; top: 2px; height: 20px; min-width: 6px; padding: 2px;
+       background: #2f6fb3; color: #eaf2fa; box-sizing: border-box; overflow: hidden;
+       white-space: nowrap; font-size: 11px; }}
+.bar-label {{ pointer-events: none; }}
+.no-activity {{ color: #7a8894; font-style: italic; margin: 4px 0; }}
+.axis {{ font-size: 11px; color: #8a98a5; margin-bottom: 6px; }}
+.tick {{ white-space: nowrap; }}
 #log-excerpt {{ background: #0e1114; padding: 10px; border: 1px solid #333a41; overflow-x: auto; color: #b8c4cc; }}
 [class^="state-"], [class*=" state-"] {{ color: #101214; }}
 pre {{ color: #b8c4cc; }}
+svg .mutex-node {{ fill: #3a3f45; stroke: #14171a; }}
+svg text {{ font-family: sans-serif; }}
+#events {{ font-family: monospace; font-size: 12px; background: #0e1114; border: 1px solid #333a41;
+          padding: 10px; height: 480px; overflow-y: auto; white-space: pre-wrap; }}
+.evt-row {{ display: block; }}
+.evt-tick-error {{ color: #ff5555; }}
+.evt-task-transitioned {{ color: #4caf50; }}
+.evt-attempt {{ color: #6ab0ff; }}
+.evt-raw {{ display: none; color: #7a8894; }}
+#events.show-raw .evt-fmt {{ display: none; }}
+#events.show-raw .evt-raw {{ display: inline; }}
 </style>
 """
 
@@ -366,53 +413,202 @@ def _render_history(www: Path, all_states: dict[str, dict[str, TaskStateFile]]) 
     (www / "history.html").write_text(html_content, encoding="utf-8")
 
 
+def _load_frontmatter(root: Path, tsf: TaskStateFile) -> Frontmatter | None:
+    """Parse a task's handoff frontmatter (root = registry[project]).
+
+    Returns None (never raises) when handoff_path is unset, the file is
+    missing, or it fails to parse — callers must still render the task's
+    node without deps/mutexes in that case.
+    """
+    if not tsf.handoff_path:
+        return None
+    handoff_file = root / tsf.handoff_path
+    if not handoff_file.exists():
+        return None
+    try:
+        fm, _body = frontmatter.parse_handoff(handoff_file)
+        return fm
+    except Exception:
+        return None
+
+
+def _dag_levels(
+    nodes: set[str], edges: list[tuple[str, str]]
+) -> tuple[dict[str, int], set[tuple[str, str]]]:
+    """Kahn-style layered topological levels for a from->to edge list.
+
+    `from` is placed at a level strictly less than `to`. Terminates in
+    O(V+E) regardless of cycles: any node left unreached once the queue
+    drains is part of a cycle, is pinned to level 0, and each of its
+    inbound edges is reported in the returned `broken` set (render red;
+    the cycle must never hang the layout).
+    """
+    succ: dict[str, list[str]] = defaultdict(list)
+    indeg: dict[str, int] = {n: 0 for n in nodes}
+    real_edges: list[tuple[str, str]] = []
+    for f, t in edges:
+        if f not in nodes or t not in nodes or f == t:
+            continue
+        succ[f].append(t)
+        indeg[t] += 1
+        real_edges.append((f, t))
+
+    level: dict[str, int] = {n: 0 for n in nodes}
+    remaining = dict(indeg)
+    queue: deque[str] = deque(sorted(n for n in nodes if remaining[n] == 0))
+    visited = set(queue)
+
+    while queue:
+        n = queue.popleft()
+        for s in succ[n]:
+            if level[s] < level[n] + 1:
+                level[s] = level[n] + 1
+            remaining[s] -= 1
+            if remaining[s] == 0 and s not in visited:
+                visited.add(s)
+                queue.append(s)
+
+    broken: set[tuple[str, str]] = set()
+    if len(visited) < len(nodes):
+        for n in sorted(nodes - visited):
+            level[n] = 0
+            for f, t in real_edges:
+                if t == n:
+                    broken.add((f, t))
+
+    return level, broken
+
+
+def _render_dag_svg(
+    nodes: set[str],
+    node_state: dict[str, TaskState],
+    mutex_nodes: set[str],
+    edges: list[tuple[str, str, str]],
+    levels: dict[str, int],
+    broken: set[tuple[str, str]],
+) -> str:
+    """Layered SVG: rounded-rect nodes, arrowed edges (dep solid/mutex
+    dashed; cycle-broken edges red)."""
+    if not nodes:
+        return "<p>No tasks.</p>"
+
+    by_level: dict[int, list[str]] = defaultdict(list)
+    for n in nodes:
+        by_level[levels.get(n, 0)].append(n)
+    for names in by_level.values():
+        names.sort()
+
+    max_level = max(by_level)
+    max_rows = max(len(v) for v in by_level.values())
+
+    width = DAG_MARGIN * 2 + (max_level + 1) * NODE_W + max_level * H_GAP
+    height = DAG_MARGIN * 2 + max_rows * NODE_H + max(0, max_rows - 1) * V_GAP
+
+    pos: dict[str, tuple[int, int]] = {}
+    for lvl, names in by_level.items():
+        x = DAG_MARGIN + lvl * (NODE_W + H_GAP)
+        for row, name in enumerate(names):
+            y = DAG_MARGIN + row * (NODE_H + V_GAP)
+            pos[name] = (x, y)
+
+    parts = [f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">']
+    parts.append(
+        '<defs>'
+        '<marker id="dag-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" '
+        'markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" '
+        'fill="#6ab0ff"></path></marker>'
+        '<marker id="dag-arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" '
+        'markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" '
+        'fill="#ff5555"></path></marker>'
+        '</defs>'
+    )
+
+    # Edges first so nodes draw on top.
+    for f, t, kind in edges:
+        if f not in pos or t not in pos:
+            continue
+        x1, y1 = pos[f]
+        x2, y2 = pos[t]
+        x1c, y1c = x1 + NODE_W, y1 + NODE_H / 2
+        x2c, y2c = x2, y2 + NODE_H / 2
+        is_broken = (f, t) in broken
+        stroke = "#ff5555" if is_broken else "#6ab0ff"
+        marker = "dag-arrow-red" if is_broken else "dag-arrow"
+        dash = ' stroke-dasharray="6,4"' if kind == "mutex" else ""
+        css_class = "edge-mutex" if kind == "mutex" else "edge-dep"
+        if is_broken:
+            css_class += " edge-broken"
+        parts.append(
+            f'<line class="{css_class}" x1="{x1c:.1f}" y1="{y1c:.1f}" '
+            f'x2="{x2c:.1f}" y2="{y2c:.1f}" stroke="{stroke}" stroke-width="2"{dash} '
+            f'marker-end="url(#{marker})"></line>'
+        )
+
+    for n in sorted(nodes):
+        x, y = pos[n]
+        if n in mutex_nodes:
+            fill = "#3a3f45"
+            state_class = "mutex-node"
+            text_color = "#d6dde3"
+        elif n in node_state:
+            state = node_state[n]
+            fill = COLORS.get(state, "#888888")
+            state_class = f"state-{state.value}"
+            text_color = "#101214"
+        else:
+            fill = "#555555"
+            state_class = "external-node"
+            text_color = "#d6dde3"
+        label = html.escape(n)
+        parts.append(
+            f'<rect data-node="{html.escape(n)}" class="{state_class}" x="{x}" y="{y}" '
+            f'width="{NODE_W}" height="{NODE_H}" rx="8" ry="8" fill="{fill}" '
+            f'stroke="#14171a"></rect>'
+        )
+        parts.append(
+            f'<text x="{x + NODE_W / 2:.1f}" y="{y + NODE_H / 2 + 4:.1f}" '
+            f'text-anchor="middle" font-size="12" fill="{text_color}">{label}</text>'
+        )
+
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
 def _render_dag(www: Path, registry: dict[str, Path], all_states: dict[str, dict[str, TaskStateFile]]) -> None:
-    """Render dag.html with dependency graph and edges."""
-    # Collect all edges
-    edges = []
+    """Render dag.html: SVG dependency graph (layered layout) + edges table.
+
+    Edges come from each task's OWN handoff frontmatter (parsed via
+    frontmatter.parse_handoff), never from the statefile, which carries no
+    dependency data.
+    """
+    edges: list[tuple[str, str, str]] = []
+    node_state: dict[str, TaskState] = {}
+    mutex_nodes: set[str] = set()
 
     for project in sorted(registry.keys()):
+        root = registry[project]
         states = all_states.get(project, {})
         for task_id in sorted(states.keys()):
             tsf = states[task_id]
-            # Add dependency edges
-            for dep in tsf.frontmatter.task_deps() if hasattr(tsf, 'frontmatter') else []:
+            node_state[task_id] = tsf.state
+
+            fm = _load_frontmatter(root, tsf)
+            if fm is None:
+                continue
+            for dep in fm.task_deps():
                 edges.append((task_id, dep, "dep"))
-            # Add mutex edges
-            for mutex_name in (tsf.frontmatter.effective_mutexes() if hasattr(tsf, 'frontmatter') else []):
-                edges.append((task_id, f"{project}.{mutex_name}", "mutex"))
+            for mutex_name in fm.effective_mutexes():
+                mutex_node = f"{project}.{mutex_name}"
+                mutex_nodes.add(mutex_node)
+                edges.append((task_id, mutex_node, "mutex"))
 
-    # Build DAG tree
-    dag_html = ""
-    for project in sorted(all_states.keys()):
-        states = all_states[project]
-        dag_html += f"<h2>{html.escape(project)}</h2>\n<ul>\n"
+    dep_targets = {t for _, t, kind in edges if kind == "dep"}
+    external_nodes = dep_targets - set(node_state) - mutex_nodes
+    all_nodes = set(node_state) | mutex_nodes | external_nodes
 
-        for task_id in sorted(states.keys()):
-            tsf = states[task_id]
-            state_class = f"state-{tsf.state.value}"
+    levels, broken = _dag_levels(all_nodes, [(f, t) for f, t, _kind in edges])
+    svg = _render_dag_svg(all_nodes, node_state, mutex_nodes, edges, levels, broken)
 
-            # Get dependencies
-            deps = []
-            mutexes = []
-            if hasattr(tsf, 'frontmatter'):
-                deps = tsf.frontmatter.task_deps()
-                mutexes = tsf.frontmatter.effective_mutexes()
-
-            deps_str = ", ".join(deps) if deps else ""
-            mutexes_str = ", ".join(mutexes) if mutexes else ""
-
-            detail = ""
-            if deps_str:
-                detail += f"; depends on: {html.escape(deps_str)}"
-            if mutexes_str:
-                detail += f"; mutex: {html.escape(mutexes_str)}"
-
-            dag_html += f'<li class="{state_class}">{html.escape(task_id)}{detail}</li>\n'
-
-        dag_html += "</ul>\n"
-
-    # Edges table
     edges_rows = []
     for from_id, to_id, kind in sorted(edges):
         edges_rows.append(f"""
@@ -425,7 +621,7 @@ def _render_dag(www: Path, registry: dict[str, Path], all_states: dict[str, dict
 
     content = f"""
     <div id="dag">
-      {dag_html}
+      {svg}
       <h2>Edges</h2>
       <table>
         <thead>
@@ -446,11 +642,55 @@ def _render_dag(www: Path, registry: dict[str, Path], all_states: dict[str, dict
     (www / "dag.html").write_text(html_content, encoding="utf-8")
 
 
+def _timeline_axis(all_states: dict[str, dict[str, TaskStateFile]], now: datetime) -> tuple[datetime, datetime]:
+    """Auto-fit axis window: min(earliest attempt start, now-1h) to now,
+    padded 5% on both ends. Never inverted, even with a clock-skewed or
+    empty statefile set."""
+    earliest: datetime | None = None
+    for states in all_states.values():
+        for tsf in states.values():
+            for att in tsf.attempts:
+                if earliest is None or att.started < earliest:
+                    earliest = att.started
+
+    floor = now - timedelta(hours=1)
+    axis_start_raw = min(earliest, floor) if earliest is not None else floor
+    if axis_start_raw > now:
+        axis_start_raw = floor
+
+    span = (now - axis_start_raw).total_seconds()
+    if span <= 0:
+        span = 3600.0
+    pad = span * 0.05
+
+    return axis_start_raw - timedelta(seconds=pad), now + timedelta(seconds=pad)
+
+
 def _render_timeline(www: Path, all_states: dict[str, dict[str, TaskStateFile]]) -> None:
-    """Render timeline.html with task attempt bars."""
-    # Determine time window (last HOURS hours)
+    """Render timeline.html: one lane per task, attempt bars absolutely
+    positioned over a shared auto-fit axis (see _timeline_axis)."""
     now = datetime.now(timezone.utc)
-    time_start = now - timedelta(hours=HOURS)
+    axis_start, axis_end = _timeline_axis(all_states, now)
+    axis_span = (axis_end - axis_start).total_seconds()
+
+    def px(dt: datetime) -> float:
+        frac = (dt - axis_start).total_seconds() / axis_span
+        frac = max(0.0, min(1.0, frac))
+        return frac * TIMELINE_WIDTH_PX
+
+    ticks = []
+    for i in range(TIMELINE_TICKS):
+        frac = i / (TIMELINE_TICKS - 1)
+        tick_dt = axis_start + timedelta(seconds=frac * axis_span)
+        tick_px = frac * TIMELINE_WIDTH_PX
+        ticks.append(
+            f'<span class="tick" style="position: absolute; left: {tick_px:.1f}px;">'
+            f'{html.escape(tick_dt.strftime("%H:%M"))}</span>'
+        )
+    axis_row = (
+        f'<div class="axis" style="position: relative; height: 20px; '
+        f'width: {TIMELINE_WIDTH_PX}px;">{"".join(ticks)}</div>'
+    )
 
     lanes = []
     for project in sorted(all_states.keys()):
@@ -460,32 +700,44 @@ def _render_timeline(www: Path, all_states: dict[str, dict[str, TaskStateFile]])
 
             bars = []
             for att in tsf.attempts:
-                if att.started < time_start:
+                end = att.ended or now
+                if end < axis_start or att.started > axis_end:
                     continue
 
-                start = att.started
-                end = att.ended or now
-
-                # Duration as percentage of window
-                window_seconds = (now - time_start).total_seconds()
-                start_offset = (start - time_start).total_seconds() / window_seconds * 100
-                duration = (end - start).total_seconds() / window_seconds * 100
+                start_px = px(att.started)
+                end_px = px(end)
+                width_px = max(float(MIN_BAR_WIDTH_PX), end_px - start_px)
 
                 title = f"{att.attempt_id} {att.route.route_id} {att.state.value}"
-                bars.append(f'<div class="bar" style="width: {max(1, duration)}%; margin-left: {start_offset}%;" title="{html.escape(title)}"></div>')
+                label = ""
+                if width_px > 60:
+                    label = f'<span class="bar-label">{html.escape(att.route.route_id)}</span>'
+
+                bars.append(
+                    f'<div class="bar" style="left: {start_px:.1f}px; '
+                    f'width: {width_px:.1f}px;" title="{html.escape(title)}">{label}</div>'
+                )
 
             if bars:
-                lanes.append(f"""
-                  <div class="lane">
-                    <strong>{html.escape(task_id)}</strong>
-                    {"".join(bars)}
-                  </div>
-                """)
+                track_body = "".join(bars)
+            else:
+                track_body = '<p class="no-activity">No activity in window</p>'
+
+            lanes.append(f"""
+              <div class="lane">
+                <strong>{html.escape(task_id)}</strong>
+                <div class="lane-track" style="position: relative; height: 24px; width: {TIMELINE_WIDTH_PX}px;">
+                  {track_body}
+                </div>
+              </div>
+            """)
 
     content = f"""
     <div id="timeline">
-      <p>Last {HOURS} hours</p>
-      {"".join(lanes) if lanes else '<p>No attempts</p>'}
+      <p>Window: {html.escape(axis_start.strftime("%Y-%m-%d %H:%M"))} to
+         {html.escape(axis_end.strftime("%Y-%m-%d %H:%M"))} UTC</p>
+      {axis_row}
+      {"".join(lanes) if lanes else '<p>No tasks</p>'}
     </div>
     """
 
@@ -581,19 +833,24 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -
     task_dir = www / "task" / project
     task_dir.mkdir(parents=True, exist_ok=True)
 
-    # Frontmatter table
-    frontmatter = ""
-    if hasattr(tsf, 'frontmatter'):
-        fm_rows = []
-        for key in ['id', 'project', 'title', 'tier', 'state']:
-            val = getattr(tsf, key, None) or getattr(tsf.frontmatter, key, "")
-            fm_rows.append(f"<tr><td>{html.escape(key)}</td><td>{html.escape(str(val))}</td></tr>")
-        frontmatter = f"""
+    # Frontmatter table (P13 review-fix: TaskStateFile never had a
+    # .frontmatter attribute — parse the handoff file like dag.html does).
+    frontmatter_html = ""
+    if tsf.handoff_path:
+        try:
+            fm, _body = frontmatter.parse_handoff(root / tsf.handoff_path)
+            fm_rows = [
+                f"<tr><td>{html.escape(str(k))}</td><td>{html.escape(str(v))}</td></tr>"
+                for k, v in fm.to_dict().items()
+            ]
+            frontmatter_html = f"""
         <h2>Frontmatter</h2>
         <table>
           {"".join(fm_rows)}
         </table>
         """
+        except Exception:
+            frontmatter_html = "<p><em>handoff frontmatter unavailable</em></p>"
 
     # Handoff body (read from handoff_path if available)
     handoff_body = "Handoff file missing"
@@ -647,7 +904,7 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -
                 pass
 
     content = f"""
-    {frontmatter}
+    {frontmatter_html}
     <h2>Handoff</h2>
     <pre>{html.escape(handoff_body)}</pre>
     <h2>Attempts</h2>
@@ -676,24 +933,103 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -
 
 
 def _render_live(www: Path) -> None:
-    """Render live.html with SSE client."""
+    """Render live.html: SSE client that parses each event into one
+    human-readable row (never innerHTML) plus a raw-JSON toggle."""
     content = """
     <h2>Live Stream</h2>
     <p>This page streams events from the handoffctl daemon via Server-Sent Events (SSE).</p>
-    <pre id="events"></pre>
+    <p><label><input type="checkbox" id="raw-toggle"> Show raw JSON</label></p>
+    <div id="events"></div>
     <script>
+    function fmtTime(iso) {
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) { return String(iso); }
+        function pad(n) { return (n < 10 ? '0' : '') + n; }
+        return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
+    }
+
+    function keyDetail(ev) {
+        var payload = ev.payload || {};
+        if (ev.type === 'TASK_TRANSITIONED') {
+            return payload.to || '';
+        }
+        if (typeof ev.type === 'string' && ev.type.indexOf('ATTEMPT_') === 0) {
+            var attempt = payload.attempt || {};
+            return attempt.state || '';
+        }
+        if (ev.type === 'SPEC_ATTENTION') {
+            return payload.reason || '';
+        }
+        if (ev.type === 'TICK_ERROR') {
+            var err = payload.error || '';
+            return err.length > 80 ? err.slice(0, 80) : err;
+        }
+        return '';
+    }
+
+    function rowClass(type) {
+        if (type === 'TICK_ERROR') { return 'evt-tick-error'; }
+        if (type === 'TASK_TRANSITIONED') { return 'evt-task-transitioned'; }
+        if (typeof type === 'string' && type.indexOf('ATTEMPT_') === 0) { return 'evt-attempt'; }
+        return '';
+    }
+
+    function appendEvent(raw) {
+        var container = document.getElementById('events');
+        var pinned = (container.scrollTop + container.clientHeight) >= (container.scrollHeight - 4);
+
+        var ev = null;
+        try {
+            ev = JSON.parse(raw);
+        } catch (e) {
+            ev = null;
+        }
+
+        var row = document.createElement('div');
+        row.className = 'evt-row ' + rowClass(ev ? ev.type : undefined);
+
+        var fmt = document.createElement('span');
+        fmt.className = 'evt-fmt';
+        if (ev) {
+            fmt.textContent = fmtTime(ev.timestamp) + '  ' + ev.type + '  ' +
+                (ev.task_id || '') + '  ' + keyDetail(ev);
+        } else {
+            fmt.textContent = raw;
+        }
+
+        var rawSpan = document.createElement('span');
+        rawSpan.className = 'evt-raw';
+        rawSpan.textContent = raw;
+
+        row.appendChild(fmt);
+        row.appendChild(rawSpan);
+        container.appendChild(row);
+
+        if (pinned) {
+            container.scrollTop = container.scrollHeight;
+        }
+    }
+
     if (window.location.protocol === 'file:') {
-        document.getElementById('events').textContent = 'Note: This page must be served over HTTP to receive live events.';
+        var note = document.createElement('p');
+        note.textContent = 'Note: This page must be served over HTTP to receive live events.';
+        document.getElementById('events').appendChild(note);
     } else {
-        const eventSource = new EventSource('/api/stream');
+        var eventSource = new EventSource('/api/stream');
         eventSource.onmessage = function(event) {
-            document.getElementById('events').textContent += event.data + '\\n';
-            document.getElementById('events').scrollTop = document.getElementById('events').scrollHeight;
+            appendEvent(event.data);
         };
         eventSource.onerror = function() {
-            document.getElementById('events').textContent += '\\n[Connection closed]\\n';
+            var row = document.createElement('div');
+            row.className = 'evt-row';
+            row.textContent = '[Connection closed]';
+            document.getElementById('events').appendChild(row);
         };
     }
+
+    document.getElementById('raw-toggle').addEventListener('change', function() {
+        document.getElementById('events').classList.toggle('show-raw', this.checked);
+    });
     </script>
     """
 

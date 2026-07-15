@@ -321,15 +321,27 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
             batched = task_ids_to_batch[:wave_max]
             wave_actions.append(OpenWave(task_ids=batched))
 
-    # Check for LaunchReview for already-open waves
+    # Check for LaunchReview for already-open waves.
+    # 2026-07-15 live incident: checking only RUNNING re-launched the review
+    # every pass while the fresh attempt sat in CREATED/PREFLIGHTING (five
+    # duplicate Opus launches in three minutes). ANY non-terminal
+    # frontier-review attempt means the wave's review is in flight; a
+    # terminal-but-INTERRUPTED one is retried via the normal resume path,
+    # so it too must not trigger a duplicate cold launch here.
     for task_id, tsf in inp.states.items():
         if tsf.state == TaskState.AWAITING_REVIEW and tsf.wave_id is not None:
-            # Check if there's a FRONTIER_REVIEW attempt RUNNING
-            has_running_review = any(
-                a.state == AttemptState.RUNNING and a.role == Role.FRONTIER_REVIEW
+            has_review_in_flight = any(
+                a.role == Role.FRONTIER_REVIEW
+                and (
+                    a.state in (AttemptState.CREATED, AttemptState.PREFLIGHTING,
+                                AttemptState.RUNNING, AttemptState.STALLED,
+                                AttemptState.EXITED)
+                    or (a.state == AttemptState.INTERRUPTED
+                        and a.session_handle is not None)
+                )
                 for a in tsf.attempts
             )
-            if not has_running_review:
+            if not has_review_in_flight:
                 wave_actions.append(LaunchReview(wave_id=tsf.wave_id, task_ids=[task_id]))
 
     # === Spec attention ===
