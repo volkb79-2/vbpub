@@ -1011,10 +1011,15 @@ def _main_action(argv: list[str]) -> int:
 
 
 def parse_report_args(argv: list[str]) -> argparse.Namespace:
-    """Parse groop report [--window last:Ns|all|auto] [--group-by slice|entity] --json FILE.
+    """Parse groop report [--window last:Ns|all|auto] [--group-by slice|entity] FILE.
+
+    Emits a human-readable ASCII table by default; ``--json`` emits the
+    machine-readable JSON contract instead (``--json``/``--table`` are
+    mutually exclusive; requesting both is a usage error, exit 2).
 
     Also accepts repeatable ``--assert GROUP:METRIC:STAT<=VALUE`` (or ``>=``)
-    for threshold gating (P61).
+    for threshold gating (P61), whose exit code (1 on breach) does not depend
+    on the chosen presentation.
     """
     parser = argparse.ArgumentParser(prog="groop report")
     parser.add_argument("file", type=Path, help="JSONL or JSONL.zst recording to analyze")
@@ -1038,9 +1043,14 @@ def parse_report_args(argv: list[str]) -> argparse.Namespace:
         "--group-by", type=str, default="entity", choices=["slice", "entity"],
         help="aggregation grain: 'entity' (per-EntityKey) or 'slice' (per-*.slice ancestor)",
     )
-    parser.add_argument(
-        "--json", action="store_true", required=True,
-        help="emit JSON report (required)",
+    fmt_group = parser.add_mutually_exclusive_group()
+    fmt_group.add_argument(
+        "--json", action="store_true",
+        help="emit machine-readable JSON (default: human-readable ASCII table)",
+    )
+    fmt_group.add_argument(
+        "--table", action="store_true",
+        help="emit human-readable ASCII table (default; explicit form conflicts with --json)",
     )
     parser.add_argument(
         "--assert", action="append", type=str, default=None,
@@ -1057,6 +1067,7 @@ def _main_report(argv: list[str]) -> int:
     except SystemExit as exc:
         return int(str(exc.code)) if exc.code is not None else 2
 
+    from groop.render import render_report
     from groop.report import (
         Assertion,
         AssertionResult,
@@ -1064,6 +1075,7 @@ def _main_report(argv: list[str]) -> int:
         evaluate_assertions,
         format_report,
         parse_assert_spec,
+        report_to_jsonable,
     )
 
     try:
@@ -1128,13 +1140,24 @@ def _main_report(argv: list[str]) -> int:
     if assertions:
         assertion_results = evaluate_assertions(profiles, assertions)
 
-    print(
-        format_report(
-            profiles,
-            assertions=assertion_results,
-            window_selection=computation.window_selection,
+    if args.json:
+        print(
+            format_report(
+                profiles,
+                assertions=assertion_results,
+                window_selection=computation.window_selection,
+            )
         )
-    )
+    else:
+        print(
+            render_report(
+                report_to_jsonable(
+                    profiles,
+                    assertions=assertion_results,
+                    window_selection=computation.window_selection,
+                )
+            )
+        )
 
     # Exit code: 1 when any assertion is breached
     if assertion_results:
@@ -1148,7 +1171,9 @@ def parse_query_args(argv: list[str]) -> argparse.Namespace:
     """Parse ``groop query FILE`` — the executable surface over the P88 engine.
 
     Reads a P2 recording through the unified ``FrameSource`` and emits one
-    deterministic JSON result (current | raw | summary).
+    deterministic result (current | raw | summary) as a human-readable ASCII
+    table by default, or as JSON with ``--json`` (``--json``/``--table`` are
+    mutually exclusive; requesting both is a usage error, exit 2).
     """
     parser = argparse.ArgumentParser(prog="groop query")
     parser.add_argument("file", type=Path, help="JSONL or JSONL.zst recording to query")
@@ -1191,18 +1216,27 @@ def parse_query_args(argv: list[str]) -> argparse.Namespace:
         "--on-exceed", choices=["error", "truncate"], default="error", dest="on_exceed",
         help="behaviour when a hard bound is exceeded (default: error)",
     )
-    parser.add_argument("--json", action="store_true", required=True, help="emit JSON result (required)")
+    fmt_group = parser.add_mutually_exclusive_group()
+    fmt_group.add_argument(
+        "--json", action="store_true",
+        help="emit machine-readable JSON (default: human-readable ASCII table)",
+    )
+    fmt_group.add_argument(
+        "--table", action="store_true",
+        help="emit human-readable ASCII table (default; explicit form conflicts with --json)",
+    )
     parser.add_argument("--pretty", action="store_true", help="pretty-print the JSON result")
     return parser.parse_args(argv)
 
 
 def _main_query(argv: list[str]) -> int:
-    """Implement groop query — load a recording, run the P88 engine, emit JSON."""
+    """Implement groop query — load a recording, run the P88 engine, emit a result."""
     try:
         args = parse_query_args(argv)
     except SystemExit as exc:
         return int(str(exc.code)) if exc.code is not None else 2
 
+    from groop.render import render_query
     from groop.query import (
         Caps,
         MetricRef,
@@ -1268,7 +1302,10 @@ def _main_query(argv: list[str]) -> int:
         print(f"unexpected error querying {args.file}", file=sys.stderr)
         return 2
 
-    print(format_result(result, pretty=args.pretty))
+    if args.json:
+        print(format_result(result, pretty=args.pretty))
+    else:
+        print(render_query(result.to_jsonable()))
     return 0
 
 

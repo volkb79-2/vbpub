@@ -1054,16 +1054,32 @@ class TestJsonSerialization:
 
 class TestReportCLI:
 
-    def test_no_json_flag_exits_2(self):
+    def test_no_json_flag_renders_table_by_default(self):
+        """P65: omitting --json is no longer a usage error — it renders text."""
         src_root = Path(__file__).resolve().parents[1] / "src"
+        fixture = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "frames" / "gstammtisch-once.jsonl"
         result = subprocess.run(
-            [sys.executable, "-m", "groop.cli", "report", "some_file.jsonl"],
+            [sys.executable, "-m", "groop.cli", "report", str(fixture)],
             capture_output=True, text=True,
-            cwd=str(Path(__file__).resolve().parents[1] / "src"),
+            cwd=str(src_root),
+            env={"PYTHONPATH": str(src_root)},
+        )
+        assert result.returncode == 0
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(result.stdout)
+        assert "profiles:" in result.stdout
+
+    def test_json_and_table_conflict_exits_2(self):
+        """P65 O6: requesting both --json and --table is a format conflict."""
+        src_root = Path(__file__).resolve().parents[1] / "src"
+        fixture = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "frames" / "gstammtisch-once.jsonl"
+        result = subprocess.run(
+            [sys.executable, "-m", "groop.cli", "report", str(fixture), "--json", "--table"],
+            capture_output=True, text=True,
+            cwd=str(src_root),
             env={"PYTHONPATH": str(src_root)},
         )
         assert result.returncode == 2
-        assert "required" in result.stderr.lower()
 
     def test_bad_window_spec_exits_2(self, tmp_path):
         """Malformed --window spec exits 2."""

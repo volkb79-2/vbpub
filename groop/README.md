@@ -53,10 +53,10 @@ groop --once --json
 groop
 groop --replay groop/tests/fixtures/frames/gstammtisch-once.jsonl --step
 groop snapshot inspect /path/to/groop-incident-*.tar
-groop report groop/tests/fixtures/frames/gstammtisch-once.jsonl --json
+groop report groop/tests/fixtures/frames/gstammtisch-once.jsonl
 groop report groop/tests/fixtures/frames/gstammtisch-once.jsonl --json --window last:60s --group-by slice
 groop report recording.jsonl --json --window auto
-groop query recording.jsonl --shape summary --metric ram --metric psi_mem_some_avg10 --sort ram:p95:desc --json
+groop query recording.jsonl --shape summary --metric ram --metric psi_mem_some_avg10 --sort ram:p95:desc
 groop query recording.jsonl --shape raw --metric io_r_bps --window last:60s --json
 groop squeeze --target /sys/fs/cgroup/system.slice/app.service --admin --confirm SQUEEZE
 groop action preview --kind docker-kill --target my-container --admin --signal TERM --json
@@ -92,16 +92,29 @@ read-only tools have stated item limits and an enforced 4 MiB aggregate result
 cap; use `groop mcp serve --redact-above operational` when sensitive metric
 values should be replaced by typed redaction markers.
 
-Use `groop report FILE --json` to compute a machine-readable steady-state
-profile from a P2-format recording (JSONL or JSONL.zst). Per-entity p50/p95/max
-for key memory/PSI gauges are computed, with derived rates from embedded raw
-counters when the recorded live rate is ``None``. Use ``--window last:Ns`` to
-restrict to the last N seconds of a recording, or ``--window auto`` to choose
-the longest stable trailing window (the busiest entity's primary gauge has
-population CoV <= 0.05; ``ram`` and three frames by default). ``--group-by slice``
-rolls entities up under their owning ``*.slice`` ancestor. This is the
-steady-state profile input for the gstammtisch stack measurement program
+Use `groop report FILE` to compute a steady-state profile from a P2-format
+recording (JSONL or JSONL.zst). Per-entity p50/p95/max for key memory/PSI
+gauges are computed, with derived rates from embedded raw counters when the
+recorded live rate is ``None``. Use ``--window last:Ns`` to restrict to the
+last N seconds of a recording, or ``--window auto`` to choose the longest
+stable trailing window (the busiest entity's primary gauge has population
+CoV <= 0.05; ``ram`` and three frames by default). ``--group-by slice`` rolls
+entities up under their owning ``*.slice`` ancestor. This is the steady-state
+profile input for the gstammtisch stack measurement program
 (``scripts/gstammtisch-guide/plan-stack-resource-tuning.md`` PKG-3).
+
+By default `groop report` and `groop query` print a deterministic, pipe-safe
+ASCII table (P65) — no color, no paging, fixed column widths, safe to diff or
+pipe. Pass `--json` for the machine-readable contract instead; `--json` and
+the explicit `--table` form are mutually exclusive (requesting both exits 2).
+The table renderer only ever formats the same already-computed figures the
+JSON would show — it never recomputes, rounds a raw float, or reads a file
+itself. Six typed value states get distinct, unambiguous ASCII spellings
+(``missing``, ``redacted``, ``warming``, ``stale``, ``permission-denied``,
+``truncated``); a real `0` always renders as `0`, never blank or a dash. A
+`--projection hierarchy` query indents children under their parent in
+ancestry/sibling order; `--projection flat` (the default) is always labelled
+`flat` in the table header, since it is a global rank, not a tree.
 
 Use ``--assert GROUP:METRIC:STAT<=VALUE`` (or ``>=``) repeatably to add
 threshold gating: exit code 1 when a bound is breached (genuine gate
@@ -237,7 +250,7 @@ extras still imports and runs ``groop report`` on a plain ``.jsonl`` file.
 | P62 | Done | Steady-state window auto-detection | v1.5 recording | Add `--window auto` to `groop report`: select the longest trailing window whose primary gauge coefficient-of-variation is within a pinned bound, then profile it via the existing P54 math. Serialize-with P61. Handoff: `handoff/P62-report-steady-state-autodetect.md`. Report: `handoff/reports/P62-REPORT.md`. |
 | P63 | Done | Daemon client versioned read methods | v2/v3 API | Extend P52's typed `DaemonClient` with typed/validated `entity`/`history`/`current`/`hello` methods so the P58 MCP frontend consumes the P52 read API exclusively through the typed client (re-carved from the P58 BLOCKED architecture violation). Handoff: `handoff/P63-daemon-client-versioned-read-methods.md`. Report: `handoff/reports/P63-REPORT.md`. |
 | P64 | Ready (P88 merged); optional | Informational baseline comparison | operator-console tooling | Compare two canonical P88 summaries with explicit coverage/semantic mismatch outcomes. D-007 says this is not a release blocker. Handoff: `handoff/P64-report-baseline-regression-gate.md`. |
-| P65 | Ready (P88 merged) | Human-readable query/report rendering | operator-console tooling | Deterministic ASCII output of P88 figures, scope, source, coverage and typed value states without recomputation. Handoff: `handoff/P65-report-human-readable-render.md`. |
+| P65 | Done | Human-readable query/report rendering | operator-console tooling | `src/groop/render.py`: a pure renderer over the already-computed P88 `Result.to_jsonable()` / `report_to_jsonable()` dicts — `groop query`/`groop report` emit a deterministic ASCII table by default now, with `--json` kept for the machine contract (`--json`/`--table` mutually exclusive, exit 2 on conflict). Closed vocabulary (`missing`/`redacted`/`warming`/`stale`/`permission-denied`/`truncated`) covers every typed value state; zero always renders as `0`; hierarchy output preserves ancestry/sibling order and `flat` is always labelled explicitly. Handoff: `handoff/groop-P65-report-human-readable-render.md`. Report: `handoff/reports/P65-REPORT.md`. |
 | P66 | Done | Daemon client versioned health | v2/v3 API | `request_health_versioned()` completes the P63 typed envelope surface: reuses `_request_envelope` + the legacy health parser (shape identical via `build_health_response`), frozen `DaemonVersionedHealthResult` with derived `overall_ok`; legacy methods byte-unchanged. Handoff: `handoff/P66-daemon-client-versioned-health.md`. Report: `handoff/reports/P66-REPORT.md`. |
 | P67 | Done; provisional browser auth | Versioned read HTTP gateway | v2/v3 API | Loopback-default typed read gateway with no mutation/CORS routes. Its proxy-principal header is current implementation, not D-002's accepted browser boundary; P92 replaces it with a per-start capability token and projected routes. Report: `handoff/reports/P67-REPORT.md`. |
 | P69 | Done | Web UI over daemon API — scoping & analysis | v2/v3 product | Docs-only scoping package for the standing web-UI product goal: read-surface gap analysis, page inventory, sensitivity/redaction UX, trust boundary vs P67, framework recommendation, and DECISIONS-INBOX entries. No source changes; output feeds the implementation carves. Headline finding: P67 was NOT dispatchable as carved (auth out of scope on an HTTP boundary) - re-carved this wave. Reviewer-adopted DECISIONS-INBOX D-001..D-003. Carve source: **product-goal-driven**. Report: `handoff/reports/P69-REPORT.md`. Review: `handoff/reports/P69-REVIEW.md`. |
