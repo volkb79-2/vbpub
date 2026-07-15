@@ -87,9 +87,9 @@ and later adapters.
 
 | Order | Packages | Dispatch rule |
 |---|---|---|
-| 1 | **P81**, **P87**, P66, P86 | Independent. P81 redaction and P87 action safety outrank the two small client/UI coverage packages. |
-| 2 | **P88** | Shared query core; blocks all new observation frontends. |
-| 3 | **P89**, **P90**, **P91** | Parallel after P88: visible source/backfill, CPU+I/O process union, and capped persistence. |
+| 1 | ~~P81, P87, P66, P86~~ | **Merged 2026-07-15** (frontier-reviewed, review-fixed, validated from `main`). |
+| 2 | ~~P88~~ | **Merged 2026-07-15** (three review-fixes: integral pairing, raw row cap, eviction inversion). |
+| 3 | **P89**, **P90**, **P91** | The current frontier. Parallel after P88: visible source/backfill, CPU+I/O process union, and capped persistence. |
 | 4 | **P93**, **P94** | Owner-chain protocol after P87; shared detail leases/providers after P88/P90. These tracks are independent. |
 | 5 | **P92**, **P95** | Web transport after P66/P81/P88/P91; lifecycle identity/incidents after P88/P91/P93. |
 | 6 | **P73** | After P89/P92; React Overview and Explore. |

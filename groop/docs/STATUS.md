@@ -18,6 +18,34 @@ Approximate status:
 | v1.5 DAMON/snapshots/backend awareness | 90-95% | medium | Passive/control APIs, CLI paths, TUI typed-confirmation modals, snapshots, and ZRAM/swap-backend awareness with per-device drill-down exist with fixture tests. Real-root acceptance still needs a deliberate test host. |
 | v2 daemon/BPF/admin actions | 80-85% | low | Provider abstractions, a read-only Unix-socket daemon, attach/deployment/status tooling, preview planning, validated Docker/systemd actions, BPF gate/provider/snapshot bridge, bounded Docker/cgroup/journald reads, daemon-owned paddr lifecycle, guided memory.high squeeze, host ZFS/GPU facts, and CIU metadata/grouping exist. The accepted owner-chain, query/history/process and web product remain; live BPF stays optional and measurement-gated. |
 
+## 2026-07-15 wave: P66 + P86 + P81 + P87 + P88 merged
+
+Five packages were implemented in parallel worktrees, frontier-reviewed,
+review-fixed where needed, merged `--no-ff`, and each validated from `main`
+with the dependency-complete `[dev]` zero-skip gate:
+
+| Package | Review outcome | Main validation after merge |
+|---|---|---|
+| P66 versioned health client | approved as-is | 1465 passed |
+| P86 ciu-grouped end-to-end gate | approved as-is (no P83 defect surfaced) | 1472 passed |
+| P81 shared fail-closed redaction | 1 review-fix: unknown-field branch ignored the ceiling (top-`sensitive` principals lost host_meta/governance/network/damon) | 1483 passed |
+| P87 Docker owner/protected-ID safety | 2 review-fixes: CLI wiring unpinned (3 wiring tests added); `BaseException` catch narrowed | 1551 passed |
+| P88 unified frame query core | 3 review-fixes: integral rate/timestamp misalignment under resets; raw shape missing `max_rows`; eviction comparison inverted (bounded tail reads claimed eviction) | **1618 passed in 192.39s, zero skips** |
+
+Live CLI verification from `main` (post-merge):
+
+```
+groop query REC --shape summary --metric ram --metric psi_mem_some_avg10 --sort ram:p95:desc --json
+  -> full meta contract (coverage/gaps/eviction/resets/freshness/source/truncation), exit 0
+groop query REC --shape summary --metric bogus --json  -> "unknown metric: 'bogus'", exit 2
+groop action execute (docker verbs)  -> owner gate wired via owner_inspect=default_owner_inspect (pinned by tests)
+```
+
+New review-filed backlog entries: B-039 (owner seam fail-closed-by-default once
+non-CLI callers exist), B-040 (canonical-ID argv vs preview parity, P93),
+B-041/B-042 (P88 performance/rollup follow-ups). The executable frontier is now
+P89/P90/P91 (parallel) and P93; P92 additionally awaits P91, P94 awaits P90.
+
 ## 2026-07-15 reconciliation and executable frontier
 
 - D-001 through D-019 are all decided. The completed discussion is archived as
@@ -270,6 +298,26 @@ core workflows, not yet production-certified.**
   (`--runtime` for `.scope`, persistent for service/slice), CLI
   `--property`/`--value`/`--mode` args, and 200 focused tests.
 
+- Unified bounded frame query core (P88, `src/groop/query/`): one typed
+  `FrameSource` over recordings and P63 daemon history, strict `Query`
+  object, six declared value semantics reusing P54/P70 math, registry-policy
+  subtree aggregation, coverage/gap/eviction/reset truth, pre-materialization
+  row/point/byte bounds, byte-identical cross-source payloads, `groop query
+  --json` CLI.
+- Shared fail-closed redaction enforcement point (P81,
+  `src/groop/daemon/redaction.py`): one typed marker dialect across the HTTP
+  gateway and MCP frontends, findings prose covered via `source_metrics`,
+  unclassified metrics and unrecognized value-bearing fields fail closed
+  below the explicit `sensitive` ceiling.
+- Docker action owner/protected-ID safety stopgap (P87,
+  `src/groop/actions/owner_safety.py`): canonical full/short/name protection
+  matching from one authorizing inspect; typed audited refusals for
+  Compose/CIU/Wings-owned containers; `owner-ambiguous` and inspect-failure
+  fail closed; CLI wiring pinned by tests.
+- Versioned daemon client `health` op (P66) completing the P63 typed envelope
+  surface, and app-level ciu-grouped view coverage (P86) proving synthetic
+  group rows inert through real Textual keypresses.
+
 ## Partially Implemented
 
 - **System banner / trend surface:** host verdict, pressure summary, paddr heat,
@@ -330,9 +378,12 @@ core workflows, not yet production-certified.**
   non-root verification and rollback/recovery contracts.
 - Live BPF ownership lifecycle (daemon/helper attach, pin, detach).
 - Web UI.
-- D-016 lifecycle owner-chain protocol and owner-routed actions. Current action
-  verbs target Docker/systemd directly; CIU/Wings/Compose/Podman/Kubernetes
-  adapters do not exist.
+- D-016 lifecycle owner-chain protocol and owner-routed actions (P93). Current
+  action verbs target Docker/systemd directly and CIU/Wings/Compose/Podman/
+  Kubernetes adapters do not exist; since P87, raw Docker mutation of an
+  owner-managed (Compose/CIU/Wings) or protected container is a typed, audited
+  refusal resolved from one canonical `docker inspect`, so the missing
+  protocol fails closed instead of open.
 - Per-process/container GPU attribution.
 - Persistent daemon history and immediate daemon-history window summaries.
 - Process projection, per-process rates, and remote/daemon process detail.
