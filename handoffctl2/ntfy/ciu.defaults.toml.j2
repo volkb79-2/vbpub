@@ -1,0 +1,37 @@
+# ─── ntfy stack configuration — handoffctl2 notification channel ─────────────
+# ciu v2 stack package. A pre-rendered docker-compose.yml ships alongside
+# (tls-edge dual-mode pattern) so the stack also deploys with plain compose
+# while the vbpub workspace ciu.env is stale (its PHYSICAL_REPO_ROOT points
+# at the dstdns checkout — regenerate with `ciu --generate-env` before
+# switching to ciu-managed deploys).
+#
+# Override via a ciu.toml.j2 next to this file (tracked; non-secret only).
+
+[ntfy]
+name = "ntfy"
+# Pinned image; verify tag exists before bumping (docker manifest inspect).
+image = "binwiederhier/ntfy"
+image_tag = "v2.14.0"
+container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}handoffctl{% endif %}"
+# Public hostname routed by tls-edge (must resolve to this host; wildcard A).
+public_host = "ntfy.gstammtisch.dchive.de"
+# In-container HTTP port (non-root bindable); never published on the host.
+port = 8080
+# tls-edge shared ingress network (external).
+ingress_network = "ingress_public"
+
+[ntfy.runtime]
+# systemd slice for the handoffctl2 service family.
+cgroup_parent = "handoffctl.slice"
+run_as_uid = 1003
+run_as_gid = 1003
+
+[ntfy.health]
+interval = "10s"
+timeout = "5s"
+retries = 5
+start_period = "10s"
+
+[ntfy.logging]
+max_size = "10m"
+max_file = "3"

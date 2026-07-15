@@ -1,0 +1,56 @@
+# ─── ntfy — handoffctl2 notification channel (template) ──────────────────────
+# Rendered by ciu; the sibling docker-compose.yml is the pre-rendered copy for
+# plain-compose deploys (keep both in sync: edit HERE, re-render or hand-sync).
+# Consumer of tls-edge (Pattern A): joins ingress_public, four router labels,
+# no host ports. Governance lives in server.yml (deny-all auth, no attachments).
+
+services:
+  ntfy:
+    image: {{ ntfy.image }}:{{ ntfy.image_tag }}
+    container_name: {{ ntfy.container_prefix }}-ntfy
+    command: serve
+    restart: unless-stopped
+{% if ntfy.runtime.cgroup_parent %}
+    cgroup_parent: {{ ntfy.runtime.cgroup_parent }}
+{% endif %}
+    user: "{{ ntfy.runtime.run_as_uid }}:{{ ntfy.runtime.run_as_gid }}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: "UTC"
+    volumes:
+      - ./server.yml:/etc/ntfy/server.yml:ro
+      - ntfy-data:/var/lib/ntfy
+    expose:
+      - "{{ ntfy.port }}"
+    networks:
+      - ingress
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:{{ ntfy.port }}/v1/health | grep -q '\"healthy\":true'"]
+      interval: {{ ntfy.health.interval }}
+      timeout: {{ ntfy.health.timeout }}
+      retries: {{ ntfy.health.retries }}
+      start_period: {{ ntfy.health.start_period }}
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.handoffctl-ntfy.rule: "Host(`{{ ntfy.public_host }}`)"
+      traefik.http.routers.handoffctl-ntfy.entrypoints: "websecure"
+      traefik.http.services.handoffctl-ntfy.loadbalancer.server.port: "{{ ntfy.port }}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ ntfy.logging.max_size }}"
+        max-file: "{{ ntfy.logging.max_file }}"
+
+networks:
+  ingress:
+    external: true
+    name: {{ ntfy.ingress_network }}
+
+volumes:
+  ntfy-data:

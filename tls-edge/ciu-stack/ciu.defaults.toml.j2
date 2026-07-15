@@ -67,6 +67,14 @@ https_alt = 8443
 # "acme-http" (HTTP-01 challenge).
 expose_http = false
 
+[tls_edge.runtime]
+# systemd slice (cgroup parent) for both containers, e.g. "edge.slice".
+# With the systemd cgroup driver Docker creates the slice on demand, so no
+# host unit file is required; resource limits can then be applied host-side
+# (systemctl set-property edge.slice MemoryMax=... CPUWeight=...).
+# Empty = Docker default cgroup parent.
+cgroup_parent = ""
+
 [tls_edge.health]
 interval = "10s"
 timeout = "5s"

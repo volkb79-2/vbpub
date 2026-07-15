@@ -21,6 +21,9 @@ services:
     image: {{ tls_edge.dockerproxy.image }}
     container_name: {{ tls_edge.container_prefix }}-dockerproxy
     restart: unless-stopped
+{% if tls_edge.runtime.cgroup_parent %}
+    cgroup_parent: {{ tls_edge.runtime.cgroup_parent }}
+{% endif %}
     environment:
       CONTAINERS: 1   # read container inspect/list
       NETWORKS:   1   # read network info for service discovery
@@ -54,6 +57,9 @@ services:
     image: {{ tls_edge.traefik.image }}
     container_name: {{ tls_edge.container_prefix }}-traefik
     restart: unless-stopped
+{% if tls_edge.runtime.cgroup_parent %}
+    cgroup_parent: {{ tls_edge.runtime.cgroup_parent }}
+{% endif %}
     depends_on:
       dockerproxy:
         condition: service_healthy

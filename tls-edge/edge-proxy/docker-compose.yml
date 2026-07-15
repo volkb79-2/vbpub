@@ -19,6 +19,9 @@ services:
     image: tecnativa/docker-socket-proxy:v0.4.2
     container_name: edge-dockerproxy
     restart: unless-stopped
+
+    cgroup_parent: edge.slice
+
     environment:
       CONTAINERS: 1   # read container inspect/list
       NETWORKS:   1   # read network info for service discovery
@@ -52,34 +55,37 @@ services:
     image: traefik:v3.7
     container_name: edge-traefik
     restart: unless-stopped
+
+    cgroup_parent: edge.slice
+
     depends_on:
       dockerproxy:
         condition: service_healthy
 
     ports:
 
-      # Port 80 is OFF (TLS-only edge; no HTTP->HTTPS redirect).  To enable it,
-      # set [tls_edge.ports] expose_http = true in ciu.toml.j2 and re-render
-      # (scripts/render.sh), or run scripts/install.sh --enable-port-80.
+      # HTTP: received and immediately redirected to HTTPS by Traefik.
+      - "80:80"
 
       # Primary HTTPS: subdomain-based routing (preferred).
       - "443:443"
       # Alternative HTTPS: port-based routing fallback.
-      - "8443:8443"
+      - "9443:8443"
 
     volumes:
 
       # Static Traefik config — re-render + restart container on change.
-      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - /home/vb/volkb79-2/vbpub/tls-edge/edge-proxy/traefik.yml:/etc/traefik/traefik.yml:ro
       # Dynamic config — Traefik hot-reloads changes via inotify.  :ro blocks
       # writes from INSIDE the container only; host-side writes still propagate
       # and trigger the reload (this is how cert renewal works in static mode).
-      - ./conf.d:/etc/traefik/conf.d:ro
+      - /home/vb/volkb79-2/vbpub/tls-edge/edge-proxy/conf.d:/etc/traefik/conf.d:ro
 
-      # ACME account + issued certificates (acme.json, created 0600 by traefik).
-      # NOTE: `docker compose down -v` / `ciu --reset` destroys this volume and
-      # forces re-issuance on next start (mind Let's Encrypt rate limits).
-      - acme-data:/etc/traefik/acme
+      # Host certificate tree.  BOTH live/ and archive/ parents are mounted so
+      # certbot's RELATIVE symlinks (live/<d>/x.pem -> ../../archive/<d>/xN.pem)
+      # resolve inside the container.  Never mount live/<domain> directly.
+      - /etc/letsencrypt/live:/certs/live:ro
+      - /etc/letsencrypt/archive:/certs/archive:ro
 
     networks:
       - ingress
@@ -121,9 +127,4 @@ networks:
     name: traefik_internal
     driver: bridge
     internal: true
-
-# ─── Volumes ──────────────────────────────────────────────────────────────────
-volumes:
-
-  acme-data:
 

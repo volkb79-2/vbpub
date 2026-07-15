@@ -1,7 +1,22 @@
 # ─── Static certificate store (dynamic config, hot-reloaded) ──────────────────
 # GENERATED from ciu-stack/conf.d/certs.yml.j2 — re-render to change.
 
-# ACME mode (acme-tls): certificates are issued and stored by
-# Traefik itself (acme-data volume).  This file intentionally defines none.
+# Certificates are provided as files (mode: static) and
+# mounted under /certs (live/ + archive/ parents, symlink-safe).
+#
+# Renewal: the certbot deploy hook rewrites the "rendered:" stamp at the
+# bottom of this file ON THE HOST; the bind mount propagates the change and
+# Traefik's file watcher reloads the certificates with zero downtime.
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/live/gstammtisch.dchive.de/fullchain.pem
+        keyFile:  /certs/live/gstammtisch.dchive.de/privkey.pem
+
+  certificates:
+
+    - certFile: /certs/live/gstammtisch.dchive.de/fullchain.pem
+      keyFile:  /certs/live/gstammtisch.dchive.de/privkey.pem
 
 # rendered: -
