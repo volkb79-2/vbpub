@@ -296,7 +296,7 @@ def evaluate(
 
     try:
         raw = inspect(target)
-    except BaseException:
+    except Exception:
         return OwnerSafetyRefusal(
             reason="inspect-failed",
             message=(

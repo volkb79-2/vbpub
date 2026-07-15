@@ -546,3 +546,68 @@ class TestSystemdKindsUnaffected:
         assert result.outcome == "success"
         assert calls == []
         assert len(run_calls) == 1
+
+
+class TestCliProductionWiring:
+    """Review-fix: pin the production engagement of the gate.
+
+    The owner gate is opt-in at the executor API (``owner_inspect=None`` is
+    the legacy no-op path, required so P46/P72 tests pass unmodified), which
+    makes ``cli.py``'s three ``owner_inspect=owner_safety.default_owner_inspect``
+    keyword arguments the ONLY thing standing between production and a silently
+    inert safety package. If a refactor drops one of them, every other test in
+    this file stays green. These three go red.
+    """
+
+    @staticmethod
+    def _capture(monkeypatch, name: str):
+        from groop.actions import execute as execute_module
+
+        captured: dict[str, object] = {}
+
+        def fake(*args, **kwargs):
+            captured.update(kwargs)
+            captured["__args__"] = args
+            return ExecuteResult(
+                kind="docker-stop", target="c1", argv=("docker", "stop", "c1"),
+                returncode=0, stdout="", stderr="", outcome="success", duration_s=0.0,
+            )
+
+        monkeypatch.setattr(execute_module, name, fake)
+        return captured
+
+    def test_cli_execute_plan_engages_the_owner_gate(self, monkeypatch) -> None:
+        from groop.actions import owner_safety
+        from groop.cli import _main_action
+
+        captured = self._capture(monkeypatch, "execute_plan")
+        code = _main_action(
+            ["execute", "--kind", "docker-stop", "--target", "c1",
+             "--admin", "--confirm", "EXECUTE", "--json"]
+        )
+        assert code == 0
+        assert captured["owner_inspect"] is owner_safety.default_owner_inspect
+
+    def test_cli_execute_kill_engages_the_owner_gate(self, monkeypatch) -> None:
+        from groop.actions import owner_safety
+        from groop.cli import _main_action
+
+        captured = self._capture(monkeypatch, "execute_kill")
+        code = _main_action(
+            ["execute", "--kind", "docker-kill", "--target", "c1",
+             "--signal", "TERM", "--admin", "--confirm", "KILL", "--json"]
+        )
+        assert code == 0
+        assert captured["owner_inspect"] is owner_safety.default_owner_inspect
+
+    def test_cli_execute_update_engages_the_owner_gate(self, monkeypatch) -> None:
+        from groop.actions import owner_safety
+        from groop.cli import _main_action
+
+        captured = self._capture(monkeypatch, "execute_update")
+        code = _main_action(
+            ["execute", "--kind", "docker-update", "--target", "c1",
+             "--memory", "512M", "--admin", "--confirm", "UPDATE", "--json"]
+        )
+        assert code == 0
+        assert captured["owner_inspect"] is owner_safety.default_owner_inspect
