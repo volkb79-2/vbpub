@@ -201,6 +201,7 @@ class EventType(enum.Enum):
     DAEMON_STARTED = "DAEMON_STARTED"
     DAEMON_STOPPED = "DAEMON_STOPPED"
     TICK_ERROR = "TICK_ERROR"
+    CONFIG_CHANGED = "CONFIG_CHANGED"
 
 
 class ActorKind(enum.Enum):
