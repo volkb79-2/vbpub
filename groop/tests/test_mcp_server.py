@@ -20,6 +20,7 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402
 from mcp.shared.memory import create_connected_server_and_client_session  # noqa: E402
 
 from groop.daemon.api import DEFAULT_MAX_RESPONSE_BYTES, Sensitivity, metric_sensitivity
+from groop.daemon.redaction import classify_metric
 from groop.daemon.client import (
     DaemonConnectError,
     DaemonCurrentResult,
@@ -29,7 +30,7 @@ from groop.daemon.client import (
     DaemonResponseError,
 )
 from groop.daemon.component_health import ComponentSnapshot, ComponentState, HealthSnapshot
-from groop.mcp.server import MAX_HISTORY_LIMIT, MAX_OVERVIEW_LIMIT, McpServer, _sensitivity
+from groop.mcp.server import MAX_HISTORY_LIMIT, MAX_OVERVIEW_LIMIT, McpServer
 from groop.model import DockerMeta, Entity, EntityFrame, EntityKey, Frame, MetricValue
 from groop.registry import REGISTRY
 
@@ -121,6 +122,7 @@ class FakeClient:
                         "rule_id": "huge",
                         "severity": "warn",
                         "message": "x" * (DEFAULT_MAX_RESPONSE_BYTES + 1),
+                        "source_metrics": (),
                     })()
                 ],
             )
@@ -213,10 +215,14 @@ def test_discovered_descriptions_state_only_enforced_contracts() -> None:
     assert all("1000" not in description for description in descriptions.values())
 
 
-def test_sensitivity_fallback_matches_daemon_classifier_for_entire_registry() -> None:
-    actual = {name: _sensitivity(None, name) for name in REGISTRY}
-    expected = {name: metric_sensitivity(name) for name in REGISTRY}
-    assert actual == expected
+def test_classification_fails_closed_without_metadata_but_trusts_it_when_present() -> None:
+    # P81: absent metadata means "unclassified", which fails closed to sensitive
+    # in the shared enforcement point (oracle #4), for every registry metric.
+    assert all(classify_metric(name, {}) is Sensitivity.SENSITIVE for name in REGISTRY)
+    # When the daemon supplies metadata, the enforcement point trusts it verbatim,
+    # so a public/operational metric is not over-redacted.
+    meta = {name: {"sensitivity": metric_sensitivity(name).value} for name in REGISTRY}
+    assert all(classify_metric(name, meta) is metric_sensitivity(name) for name in REGISTRY)
 
 
 def test_overview_validation_is_typed_at_the_mcp_boundary() -> None:
@@ -250,11 +256,14 @@ def test_redaction_uses_sensitivity_metadata_without_changing_rank_order() -> No
     _, overview = call(server, "groop_overview", sort_by="ram", limit=2)
     rows = overview["data"]["rows"]  # type: ignore[index]
     assert [row["key"] for row in rows] == [DOCKER_KEY, SERVICE_KEY]
-    assert all(row["value"] == "__redacted__" for row in rows)
+    # P81: one marker dialect -- the gateway's typed object, not the old
+    # "__redacted__" string. ram is operational, redacted at a public ceiling.
+    assert all(row["value"] == {"redacted": True, "sensitivity": "operational"} for row in rows)
 
     _, entity = call(server, "groop_entity", selector=DOCKER_KEY)
     metrics = entity["data"]["metrics"]  # type: ignore[index]
-    assert metrics["ram"]["value"] == "__redacted__"
+    assert metrics["ram"]["value"] == {"redacted": True, "sensitivity": "operational"}
+    assert metrics["cgroup_procs"]["value"] == {"redacted": True, "sensitivity": "sensitive"}
     assert metrics["cgroup_procs"]["sensitivity"] == "sensitive"
 
 

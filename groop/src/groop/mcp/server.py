@@ -18,7 +18,9 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from groop.collect.dockerjoin import ContainerResolveError, resolve_container_key
-from groop.daemon.api import DEFAULT_MAX_RESPONSE_BYTES, Sensitivity, metric_sensitivity
+from groop.daemon import redaction
+from groop.daemon.api import DEFAULT_MAX_RESPONSE_BYTES, Sensitivity
+from groop.daemon.redaction import PayloadShape, classify_metric
 from groop.daemon.client import (
     DaemonClient,
     DaemonClientError,
@@ -49,7 +51,6 @@ SORT_KEY_MAP: dict[str, str] = {
     "ram": "ram",
     "rf_z_per_s": "rf_z_per_s",
 }
-_REDACTED_MARKER = "__redacted__"
 
 
 class DaemonReadClient(Protocol):
@@ -96,25 +97,6 @@ def _ok(data: dict[str, object]) -> dict[str, object]:
 
 def _is_error(value: object) -> bool:
     return isinstance(value, dict) and "error" in value
-
-
-def _sensitivity(meta: dict[str, object] | None, metric: str) -> Sensitivity:
-    """Use daemon metadata when present; otherwise use the daemon's canonical classifier."""
-    if meta is not None:
-        raw = meta.get("sensitivity")
-        try:
-            return Sensitivity(raw)
-        except (TypeError, ValueError):
-            pass
-    return metric_sensitivity(metric)
-
-
-def _redact(value: object, sensitivity: Sensitivity, threshold: Sensitivity | None) -> object:
-    if threshold is None:
-        return value
-    if tuple(Sensitivity).index(sensitivity) > tuple(Sensitivity).index(threshold):
-        return _REDACTED_MARKER
-    return value
 
 
 class McpServer:
@@ -264,18 +246,24 @@ class McpServer:
             value = entity_frame.metrics.get(metric)
             if value is None or value.v is None:
                 continue
-            sensitivity = _sensitivity(current.metrics_meta.get(metric), metric)
             row: dict[str, object] = {
                 "key": str(key),
                 "metric": metric,
-                "value": _redact(value.v, sensitivity, self._redact_above),
-                "sensitivity": sensitivity.value,
+                "value": value.v,
+                "sensitivity": classify_metric(metric, current.metrics_meta).value,
             }
             if entity_frame.entity.docker is not None and entity_frame.entity.docker.name:
                 row["docker_name"] = entity_frame.entity.docker.name
             rows.append((value.v, row))
         rows.sort(key=lambda pair: pair[0], reverse=True)
-        return _ok({"sort_by": sort_by, "rows": [row for _, row in rows[:limit]]})
+        data: dict[str, object] = {"sort_by": sort_by, "rows": [row for _, row in rows[:limit]]}
+        redaction.redact_payload(
+            data,
+            shape=PayloadShape.MCP_OVERVIEW,
+            metrics_meta=current.metrics_meta,
+            ceiling=self._redact_above,
+        )
+        return _ok(data)
 
     def _resolve_in_entities(
         self, selector: str, entities: dict[EntityKey, EntityFrame]
@@ -327,12 +315,11 @@ class McpServer:
             if value.v is None:
                 continue
             meta = result.metrics_meta.get(name)
-            sensitivity = _sensitivity(meta, name)
             metric_result: dict[str, object] = {
-                "value": _redact(value.v, sensitivity, self._redact_above),
-                "sensitivity": sensitivity.value,
+                "value": value.v,
+                "sensitivity": classify_metric(name, result.metrics_meta).value,
             }
-            if meta is not None and isinstance(meta.get("unit"), str):
+            if isinstance(meta, dict) and isinstance(meta.get("unit"), str):
                 metric_result["unit"] = meta["unit"]
             metrics[name] = metric_result
 
@@ -343,12 +330,23 @@ class McpServer:
             "tier": entity.entity.tier,
             "metrics": metrics,
             "findings": [
-                {"rule_id": finding.rule_id, "severity": finding.severity, "message": finding.message}
+                {
+                    "rule_id": finding.rule_id,
+                    "severity": finding.severity,
+                    "message": finding.message,
+                    "source_metrics": list(finding.source_metrics),
+                }
                 for finding in entity.findings
             ],
         }
         if entity.entity.docker is not None and entity.entity.docker.name:
             data["docker_name"] = entity.entity.docker.name
+        redaction.redact_payload(
+            data,
+            shape=PayloadShape.MCP_ENTITY,
+            metrics_meta=result.metrics_meta,
+            ceiling=self._redact_above,
+        )
         return _ok(data)
 
     def _history_selector(
@@ -413,7 +411,7 @@ class McpServer:
         if isinstance(resolved, dict):
             return resolved
 
-        sensitivity = _sensitivity(result.metrics_meta.get(metric), metric)
+        sensitivity = classify_metric(metric, result.metrics_meta)
         series: list[list[object]] = []
         for _, frame in result.entries:
             row = frame.entities.get(EntityKey(resolved))
@@ -422,16 +420,21 @@ class McpServer:
             value = row.metrics.get(metric)
             if value is None or value.v is None:
                 continue
-            series.append([frame.ts, _redact(value.v, sensitivity, self._redact_above)])
-        return _ok(
-            {
-                "entity_key": resolved,
-                "metric": metric,
-                "sensitivity": sensitivity.value,
-                "series": series,
-                "count": len(series),
-            }
+            series.append([frame.ts, value.v])
+        data: dict[str, object] = {
+            "entity_key": resolved,
+            "metric": metric,
+            "sensitivity": sensitivity.value,
+            "series": series,
+            "count": len(series),
+        }
+        redaction.redact_payload(
+            data,
+            shape=PayloadShape.MCP_HISTORY,
+            metrics_meta=result.metrics_meta,
+            ceiling=self._redact_above,
         )
+        return _ok(data)
 
 
 def run_server(

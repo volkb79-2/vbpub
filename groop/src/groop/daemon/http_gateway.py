@@ -18,9 +18,9 @@ from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
+from groop.daemon import redaction
 from groop.daemon.api import Sensitivity
 from groop.daemon.client import (
     DaemonClient,
@@ -28,17 +28,13 @@ from groop.daemon.client import (
     DaemonProtocolError,
     DaemonResponseError,
 )
+from groop.daemon.redaction import PayloadShape
 from groop.model import entity_frame_to_jsonable, frame_to_jsonable
 
 
 IDENTITY_HEADER = "X-Groop-Principal"
 MAX_HTTP_PATH_BYTES = 8 * 1024
 _PRINCIPAL_RE = re.compile(r"[A-Za-z0-9._-]{1,128}\Z")
-_SENSITIVITY_RANK = {
-    Sensitivity.PUBLIC.value: 0,
-    Sensitivity.OPERATIONAL.value: 1,
-    Sensitivity.SENSITIVE.value: 2,
-}
 _PUBLIC_DAEMON_CODES = frozenset(
     {
         "bad_request",
@@ -157,34 +153,6 @@ def _principal_for_peer(
     if not isinstance(ceiling, Sensitivity):
         return None
     return principal, ceiling
-
-
-def _redaction_marker(sensitivity: str) -> dict[str, object]:
-    return {"redacted": True, "sensitivity": sensitivity}
-
-
-def _redact_metrics(
-    metrics: dict[str, Any], metrics_meta: Mapping[str, Mapping[str, object]], ceiling: Sensitivity
-) -> None:
-    ceiling_rank = _SENSITIVITY_RANK[ceiling.value]
-    for metric_name in list(metrics):
-        metadata = metrics_meta.get(metric_name)
-        raw_sensitivity = metadata.get("sensitivity") if isinstance(metadata, Mapping) else None
-        sensitivity = raw_sensitivity if raw_sensitivity in _SENSITIVITY_RANK else Sensitivity.SENSITIVE.value
-        if _SENSITIVITY_RANK[sensitivity] > ceiling_rank:
-            metrics[metric_name] = _redaction_marker(sensitivity)
-
-
-def _redact_frame(frame: dict[str, Any], metrics_meta: Mapping[str, Mapping[str, object]], ceiling: Sensitivity) -> None:
-    host = frame.get("host")
-    if isinstance(host, dict):
-        _redact_metrics(host, metrics_meta, ceiling)
-    entities = frame.get("entities")
-    if not isinstance(entities, dict):
-        return
-    for entity_frame in entities.values():
-        if isinstance(entity_frame, dict) and isinstance(entity_frame.get("metrics"), dict):
-            _redact_metrics(entity_frame["metrics"], metrics_meta, ceiling)
 
 
 def _parse_query(path: str) -> tuple[str, dict[str, str]]:
@@ -343,7 +311,9 @@ class VersionedReadHttpGateway:
                 raise ValueError("current takes no query fields")
             current = self.client.request_current()
             frame = frame_to_jsonable(current.frame)
-            _redact_frame(frame, current.metrics_meta, ceiling)
+            redaction.redact_payload(
+                frame, shape=PayloadShape.FRAME, metrics_meta=current.metrics_meta, ceiling=ceiling
+            )
             return {"frame": frame, "metrics_meta": current.metrics_meta, "seq": current.seq}
         if path == "/v1/history":
             allowed = {"limit", "cursor", "since_ts", "until_ts"}
@@ -361,7 +331,9 @@ class VersionedReadHttpGateway:
             entries: list[dict[str, object]] = []
             for seq, entry_frame in history.entries:
                 frame = frame_to_jsonable(entry_frame)
-                _redact_frame(frame, history.metrics_meta, ceiling)
+                redaction.redact_payload(
+                    frame, shape=PayloadShape.FRAME, metrics_meta=history.metrics_meta, ceiling=ceiling
+                )
                 entries.append({"frame": frame, "seq": seq})
             return {
                 "frames": entries,
@@ -376,9 +348,12 @@ class VersionedReadHttpGateway:
                 raise ValueError("entity requires exactly one key query field")
             entity = self.client.request_entity(query["key"])
             entity_payload = entity_frame_to_jsonable(entity.entity)
-            metrics = entity_payload.get("metrics")
-            if isinstance(metrics, dict):
-                _redact_metrics(metrics, entity.metrics_meta, ceiling)
+            redaction.redact_payload(
+                entity_payload,
+                shape=PayloadShape.ENTITY_FRAME,
+                metrics_meta=entity.metrics_meta,
+                ceiling=ceiling,
+            )
             return {"entity": entity_payload, "metrics_meta": entity.metrics_meta, "seq": entity.seq}
         raise _RouteNotFound("unknown route")
 
