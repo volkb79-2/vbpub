@@ -819,7 +819,7 @@ RUN set -euo pipefail; \
         echo "b2=${b2_version_output}"; \
         echo "bat=$(bat --version 2>&1 | head -1)"; \
         echo "crane=$(crane version 2>&1 | head -1)"; \
-        echo "regctl=$(regctl version 2>&1 | head -1)"; \
+        echo "regctl=$(regctl version 2>&1 | awk '/^VCSTag:/ { sub(/^v/, "", $2); print $2; exit }')"; \
         if command -v claude >/dev/null 2>&1; then \
             echo "claude=$(claude --version 2>&1 | head -1)"; \
         else \

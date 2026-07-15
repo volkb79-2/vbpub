@@ -119,6 +119,12 @@ class OciToolStagingTests(unittest.TestCase):
             for step in ("build-images", "push-images"):
                 self.assertIn(requested, config["steps"][step]["bake_set_vars"])
 
+        self.assertIn(
+            "regctl version 2>&1 | awk '/^VCSTag:/ "
+            "{ sub(/^v/, \"\", $2); print $2; exit }'",
+            dockerfile,
+        )
+
     def test_generated_manifest_links_digest_to_immutable_source(self) -> None:
         digest = "1" * 64
         source = (
