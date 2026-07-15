@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vbpub.invalid/handoffctl2/schemas/statefile.schema.json",
+  "title": "handoffctl2 task statefile",
+  "description": "Working projection for one task under $XDG_STATE_HOME/handoffctl/<project>/state/. Rebuildable from events.jsonl (replay determinism is a release gate). Never committed to the repo.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "task_id", "project", "state", "since"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "project": {"type": "string", "minLength": 1},
+    "state": {
+      "enum": [
+        "DRAFT", "NEEDS_DECISION", "READY_TO_CARVE", "CARVED", "QUEUED",
+        "ACTIVE", "AWAITING_REVIEW", "REVIEW_REJECTED", "MERGE_READY",
+        "MERGED", "VALIDATING", "COMPLETED", "BLOCKED", "SUPERSEDED",
+        "CANCELLED"
+      ],
+      "description": "Draft 1 task states, inherited unchanged."
+    },
+    "since": {"type": "string", "format": "date-time"},
+    "handoff_path": {"type": "string", "description": "Repo-relative path of the single-source handoff md"},
+    "wave_id": {"type": ["string", "null"], "default": null},
+    "paused": {"type": "boolean", "default": false},
+    "blocker": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["type", "unblock_condition"],
+      "properties": {
+        "type": {"enum": ["contract", "environment", "provider", "decision", "external", "budget"]},
+        "unblock_condition": {"type": "string", "minLength": 1},
+        "detail": {"type": ["string", "null"]}
+      }
+    },
+    "attempts": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["attempt_id", "role", "state", "route", "started"],
+        "properties": {
+          "attempt_id": {"type": "string", "minLength": 1},
+          "role": {"enum": ["implementer", "self-review", "frontier-review", "carver"]},
+          "state": {
+            "enum": ["CREATED", "PREFLIGHTING", "RUNNING", "STALLED", "INTERRUPTED", "EXITED", "FAILED", "ABANDONED"],
+            "description": "Draft 1 attempt states, inherited unchanged."
+          },
+          "route": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["route_id", "cli", "model"],
+            "properties": {
+              "route_id": {"type": "string"},
+              "cli": {"type": "string"},
+              "model": {"type": "string"},
+              "variant": {"type": ["string", "null"]},
+              "effort": {"type": ["string", "null"]},
+              "routes_rev": {"type": ["string", "null"], "description": "routes.toml revision snapshotted at dispatch"}
+            }
+          },
+          "worktree": {"type": ["string", "null"]},
+          "branch": {"type": ["string", "null"]},
+          "base_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{7,64}$"},
+          "pid": {"type": ["integer", "null"]},
+          "pgid": {"type": ["integer", "null"]},
+          "log_path": {"type": ["string", "null"]},
+          "session_handle": {
+            "type": ["string", "null"],
+            "description": "Resume handle captured at launch (claude session id / codex worktree / opencode session id / reasonix dir)."
+          },
+          "started": {"type": "string", "format": "date-time"},
+          "ended": {"type": ["string", "null"], "format": "date-time"},
+          "receipt": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["result", "exit_code"],
+            "properties": {
+              "result": {"enum": ["done", "blocked", "limit", "error"]},
+              "exit_code": {"type": "integer"},
+              "oracles": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id", "result"],
+                  "properties": {
+                    "id": {"type": "string"},
+                    "result": {"enum": ["pass", "fail", "not-run"]}
+                  }
+                }
+              },
+              "blocked_reason": {"type": ["string", "null"]},
+              "files_touched": {"type": "array", "items": {"type": "string"}},
+              "head_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{7,64}$"}
+            }
+          },
+          "usage": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["basis"],
+            "properties": {
+              "tokens_in": {"type": ["integer", "null"], "minimum": 0},
+              "tokens_out": {"type": ["integer", "null"], "minimum": 0},
+              "cached_in": {"type": ["integer", "null"], "minimum": 0},
+              "cost": {"type": ["number", "null"], "minimum": 0},
+              "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"},
+              "basis": {"enum": ["actual", "estimated", "unknown"]},
+              "price_rev": {"type": ["string", "null"]}
+            }
+          }
+        }
+      }
+    },
+    "gate_results": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["gate_id", "phase", "commit", "exit_code", "started", "ended"],
+        "properties": {
+          "gate_id": {"type": "string"},
+          "phase": {"enum": ["implementation", "review", "pre-merge", "post-merge"]},
+          "commit": {"type": "string", "pattern": "^[0-9a-f]{7,64}$"},
+          "environment": {"type": ["string", "null"], "description": "Environment fingerprint (e.g. test-runner image digest)"},
+          "exit_code": {"type": "integer"},
+          "started": {"type": "string", "format": "date-time"},
+          "ended": {"type": "string", "format": "date-time"},
+          "artifacts": {"type": "array", "items": {"type": "string"}, "default": []}
+        }
+      }
+    },
+    "leases_held": {"type": "array", "items": {"type": "string"}, "default": []},
+    "progress_units": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": [],
+      "description": "Criterion ids from frontmatter `advances` confirmed by the reviewer at merge — ratchet input."
+    },
+    "merge_commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{7,64}$"},
+    "notes": {"type": ["string", "null"], "description": "Latest human-relevant one-liner (receipt summary / BLOCKED reason) for the dashboard row."}
+  }
+}

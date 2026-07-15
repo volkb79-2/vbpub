@@ -1,0 +1,96 @@
+# handoffctl2 routes.toml — EXAMPLE (lives at $XDG_STATE_HOME/handoffctl/routes.toml)
+#
+# The single live routing matrix: everything volatile from
+# ai-cli-controller-guide.md as configuration. Handoffs carry `tier` only;
+# the tick resolves tier -> first healthy route (probe) and SNAPSHOTS the
+# resolved route onto the attempt event, so history never depends on this
+# file's later state. Dated dispatch docs are retired by this file.
+# Values below mirror the matrix as of 2026-07-13 (v2 §5) — verify before use.
+
+revision = "2026-07-15"
+
+[tiers.flash-high]
+routes = ["opencode-deepseek-high", "reasonix-deepseek-high"]  # preference order
+
+[tiers.flash-max]
+routes = ["opencode-deepseek-max", "reasonix-deepseek-max"]
+
+[tiers.luna-med]
+routes = ["codex-luna-med"]            # native codex only; OpenRouter cannot route it
+
+[tiers.terra-med]
+routes = ["codex-terra-med"]
+
+[tiers.sol-med]
+routes = ["codex-sol-med"]
+
+[tiers.sonnet5-high]
+routes = ["claude-sonnet5-high"]
+
+[tiers.frontier-review]
+routes = ["claude-opus-high"]
+
+# ---------------------------------------------------------------------------
+
+[routes.opencode-deepseek-high]
+cli = "opencode"
+model = "openrouter/deepseek/deepseek-v4-flash"
+variant = "high"
+argv_max = 1500                         # long-argv wedge: substance stays in the handoff file
+prompt_hints = ["incremental-write"]    # OpenRouter 504 mitigation: ~80-line batches
+probe = ["opencode", "run", "--model", "openrouter/deepseek/deepseek-v4-flash", "ALIAS_OK"]
+dispatch_extra = ["--auto", "--title", "{task_id}"]
+resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/deepseek/deepseek-v4-flash", "--variant", "high", "--dir", "{worktree}", "{prompt}"]
+session_discover = ["opencode", "session", "list", "--dir", "{worktree}", "--format", "json"]
+usage_source = "session-json"           # M1 task: verify fields, else basis=estimated
+
+[routes.opencode-deepseek-max]
+inherit = "opencode-deepseek-high"
+variant = "max"
+
+[routes.reasonix-deepseek-high]
+cli = "reasonix"
+model = "deepseek-flash-high/deepseek-v4-flash"
+status = "fallback-only"                # deprioritized 2026-07-13: complete_step stalls, third venv
+probe = ["reasonix", "run", "ALIAS_OK"]
+resume = ["reasonix", "run", "-c", "-dir", "{worktree}", "{prompt}"]
+usage_source = "run-log-deepseek-usage"
+
+[routes.reasonix-deepseek-max]
+inherit = "reasonix-deepseek-high"
+model = "deepseek-flash-max/deepseek-v4-flash"
+
+[routes.codex-terra-med]
+cli = "codex"
+model = "gpt-5.6-terra"
+effort = "medium"
+sandbox = "danger-full-access"          # MANDATORY for worktree commits + docker gate access (2026-07-13 incident)
+probe = "session-limit-check"           # scripts/check-frontier-limits.sh pattern
+resume = ["codex", "exec", "--sandbox", "danger-full-access", "--cd", "{worktree}", "resume", "--last", "{prompt}"]
+usage_source = "exec-output-footer"
+
+[routes.codex-luna-med]
+inherit = "codex-terra-med"
+model = "gpt-5.6-luna"
+
+[routes.codex-sol-med]
+inherit = "codex-terra-med"
+model = "gpt-5.6-sol"
+
+[routes.claude-sonnet5-high]
+cli = "claude"
+model = "sonnet"
+effort = "high"
+dispatch_extra = ["--dangerously-skip-permissions"]   # trusted-worktree rule
+probe = "one-token-ping"
+session_capture = "newest-jsonl"        # ~/.claude/projects/<cwd-slug>/, ls -t right after launch
+resume = ["claude", "--resume", "{session}", "--model", "sonnet", "--effort", "high", "-p", "{prompt}"]
+usage_source = "output-format-json"     # -p --output-format json: usage + total_cost_usd
+
+[routes.claude-opus-high]
+inherit = "claude-sonnet5-high"
+model = "opus"
+role_default = "frontier-review"
+
+# Experimental (probe before first use — unprobed as of 2026-07-12):
+# [routes.claude-deepseek-direct]  # scripts/claude-deepseek.sh — best harness, cheapest model

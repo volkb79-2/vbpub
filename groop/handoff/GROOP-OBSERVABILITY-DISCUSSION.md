@@ -313,6 +313,23 @@ groop would have been more helpful if one command had immediately returned:
 9. What is the success metric for “95%”: fewer commands during incident triage,
    time to identify owner, or a named checklist of operator questions?
 
+## Answers to Questions for the product session
+
+1: groop client should start without arguemnts just like `top`, provide a complete glance of the running host, but extended to missing core information (e.g. from iostat device intensity, active swapping behaviour. active zswap actity, total refaults. total network usage, bandwidth and packages.). auto-detect a running daemon to connect to and use it if possible. if not, work without it, provide the data/metrics possible (we might lack rights to access some when runnning non-root, correct?)
+
+2: yes, daemon history and resolution should be configurable (like whatever else to be set). i suggest 5min history at 5 sec intervals. groop client should provide daemon-stats (e.g. the current history size kept). we need to weigh keep history completely in memory (ring buffer?)  vs persisting on disk (wear on storage?)
+3: both. 
+4: decorated as recommended. 
+5: all except baseline regression - anything that AI CLI would want (next to the MCP), could be also something else. how would "baseline regression" work in the first place?
+6: include service/container lifecycle and bounded log evidence, but limited to recent events (see history. e.g. a reboot loop would remain visible as ongoing event. oom container wouldnt be visible if the container isnt active in the list. but thats a general question how to handle information/display when a container stops and starts and thus is gone "sometimes"). otherwise e.g. flag exhaustive swapping or perma 100% CPU hoggong. 
+7: opt-in meaning optional, not on by default? all. use a config file to define presets and user-defined defaults e.g. to enable io monitoring by default. we missed the desired feature to display open listening (server) ports (per interface-column). on drill-down the traffic per port would be great ( can we do that ?)
+8: needs examples, pros/cons. maybe can we support several behaviour/display modes?
+9: its a marketing target. and a guess from your side, what the sysadmin's or AI CLI's use cases are involving all competitor tools, so that groop can answer it faster, more wholistically, easier to comprehend. 
+
+i think i had longer session(s) (claude/codex) on investigating dstdns authentik oom and on the host gstammtisch sizing cgroup squeeze tests. maybe you can find old session data to etract tool calls? also check the documenation created in `vbpub/scripts/gstammtisch-guide`, what kind of queries and information was gathered, how groop could/should be usable for those use cases.
+
+goals and requirements and thus the tech-stack for the web-UI need to be discussed. nice diagrams and drilldown should work. run on localhost only over HTTP, no HTTPS via groop, rely on external TLS termination. web login via SSH key possible?
+
 ## Suggested first discussion agenda
 
 1. Approve the canonical entity/projection model.
@@ -322,3 +339,18 @@ groop would have been more helpful if one command had immediately returned:
 5. Define the health boundary and log posture.
 6. Prioritize the implementation sequence and carve packages only after those
    decisions are recorded.
+
+## Latest summary of current state to be folded in
+
+Unmerged content sitting in worktrees
+
+1. feat/groop-backlog-backfill (commit bfa8c60) — yes, still unmerged. And it's now stale in a worse way than just "pending": the frontier reviewer who just landed the P78/P83/P84/P85 wave edited BACKLOG.md on main independently — closing B-001 and adding its own B-002/B-003/B-004 (different content: _wait_for_frame helper, mcp-smoke skip regression, the ciu-grouped view gap it carved as P86). The backfill branch's B-002–B-028 (the 27-entry historical sweep) were authored against the old BACKLOG.md and will collide on ID with main's new B-002–B-004 when merged. This needs a real merge/renumber, not a fast-forward.
+2. feat/groop-web-ui-arch-reflection (2 commits) — the architecture reflection doc, still awaiting your read of D-002 (browser auth posture) and D-003 (release sequencing), which are confirmed still OPEN in DECISIONS-INBOX.md. This is likely why P73 hasn't been dispatched yet — it depends on those being resolved to avoid repeating P78's escalation pattern.
+3. feat/groop-p82-repair-red-gate (1 commit) — explicitly superseded by P79, reviewer recommended abandoning rather than merging. Just needs deletion once you confirm, not review.
+4. feat/groop-p58-daemon-mcp-frontend-v3 (2 commits) — superseded by v4 (which merged). Likely dead, same as above.
+5. feat/groop-p51-pro-high-replay, feat/reasonix-dotworktree-probe, feat/reasonix-worktree-probe (1 commit each) — old benchmark/probe branches from earlier sessions, pre-existing, not something I created this session; probably safe to leave or prune but not urgent.
+
+Anything else
+
+- DECISIONS-INBOX.md: D-002, D-003 still open (auth posture, release sequencing) — these are the live blockers on P73/P77, independent of the backlog issue.
+
