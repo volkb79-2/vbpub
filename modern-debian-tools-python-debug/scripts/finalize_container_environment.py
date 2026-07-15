@@ -78,6 +78,7 @@ CUSTOMIZATION_HTOPRC = CUSTOMIZATION_ROOT / "htoprc"
 CUSTOMIZATION_MC_INI = CUSTOMIZATION_ROOT / "mc.ini"
 CUSTOMIZATION_NANORC = CUSTOMIZATION_ROOT / "nanorc"
 CUSTOMIZATION_LESSPIPE = CUSTOMIZATION_ROOT / "lesspipe.sh"
+CUSTOMIZATION_ZSHRC = CUSTOMIZATION_ROOT / "zshrc"
 
 # Tool-local env files that should resolve back to the central ai.env.
 TOOL_ENV_LINKS = {
@@ -225,6 +226,7 @@ def setup_customization_root() -> None:
         "mc.ini": CUSTOMIZATION_MC_INI,
         "nanorc": CUSTOMIZATION_NANORC,
         "lesspipe.sh": CUSTOMIZATION_LESSPIPE,
+        "zshrc": CUSTOMIZATION_ZSHRC,
     }.items():
         _ensure_copy(SHARED_CUSTOMIZATION_ROOT / name, destination)
 

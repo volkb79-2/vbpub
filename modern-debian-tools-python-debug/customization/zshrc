@@ -2,6 +2,13 @@
 # This file is sourced from ~/.zshrc and deliberately does not own the prompt:
 # the VSC base image may provide Oh My Zsh, while the native image does not.
 
+# Same env/aliases/cgroup-banner profile that ~/.bashrc sources for bash — zsh
+# otherwise never picks up ai.env / shell.env / aliases.sh (this file only
+# covers zsh-specific interactive niceties below).
+if [ -r /usr/local/share/modern-debian-tools-python-debug/profile.sh ]; then
+    . /usr/local/share/modern-debian-tools-python-debug/profile.sh
+fi
+
 # Keep the familiar emacs-style editing mode and make Ctrl-R useful even when
 # fzf is unavailable or its integration is disabled.
 bindkey -e
