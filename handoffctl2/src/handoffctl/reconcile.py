@@ -395,7 +395,11 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                 # re-evaluates normally.
                 pass
 
-            elif attempt.state == AttemptState.INTERRUPTED:
+            elif attempt.state == AttemptState.INTERRUPTED and tsf.state != TaskState.BLOCKED:
+                # (2026-07-15) the `!= BLOCKED` guard: once a dead-end has
+                # already blocked the task, don't re-emit BLOCKED->BLOCKED
+                # every pass (TICK_ERROR spam). A BLOCKED task leaves via the
+                # QUEUED re-dispatch path, not here.
                 # Attempts budget left?
                 attempts_count = sum(1 for a in tsf.attempts if a.state in TERMINAL_ATTEMPT_STATES
                                     and a.receipt and a.receipt.result != ReceiptResult.LIMIT)
