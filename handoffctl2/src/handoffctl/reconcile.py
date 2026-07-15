@@ -260,7 +260,16 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                     and (attempt.state in (AttemptState.RUNNING, AttemptState.PREFLIGHTING,
                                            AttemptState.STALLED)
                          or (attempt.state == AttemptState.EXITED
-                             and tsf.state == TaskState.ACTIVE))):
+                             and tsf.state == TaskState.ACTIVE
+                             and attempt.role == Role.IMPLEMENTER)
+                         # 2026-07-15 live deadlock: a FINISHED frontier
+                         # review receipt was never consumed (only
+                         # implementer receipts were mapped) — the task sat
+                         # in AWAITING_REVIEW forever while the wave guard
+                         # correctly refused to relaunch.
+                         or (attempt.state == AttemptState.EXITED
+                             and tsf.state == TaskState.AWAITING_REVIEW
+                             and attempt.role == Role.FRONTIER_REVIEW))):
                 # Receipt present and either the attempt record hasn't caught
                 # up (wrapper died pre-event, or an event race) or the wrapper
                 # emitted EXITED itself and only the TASK transition remains.

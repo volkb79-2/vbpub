@@ -424,11 +424,15 @@ class Daemon:
         for tsf in states.values():
             for att in tsf.attempts:
                 if att.state in TERMINAL_ATTEMPT_STATES:
-                    # EXITED with the task still ACTIVE: the wrapper emitted
-                    # its own exit event but the TASK transition hasn't run
-                    # yet — the planner needs the receipt to schedule it.
+                    # EXITED attempts whose receipt still needs consuming:
+                    # implementer exit while task ACTIVE, or (2026-07-15
+                    # deadlock fix) frontier-review exit while task is still
+                    # AWAITING_REVIEW — the planner needs both receipts.
                     if not (att.state == AttemptState.EXITED
-                            and tsf.state == TaskState.ACTIVE):
+                            and ((tsf.state == TaskState.ACTIVE
+                                  and att.role == Role.IMPLEMENTER)
+                                 or (tsf.state == TaskState.AWAITING_REVIEW
+                                     and att.role == Role.FRONTIER_REVIEW))):
                         continue
                 attempt_dir = paths.attempt_dir(project, att.attempt_id)
                 receipt_path = attempt_dir / "receipt.json"
@@ -737,6 +741,24 @@ class Daemon:
             # transition below remains (idempotent healing).
 
             result = receipt.result
+
+            if attempt.role == Role.FRONTIER_REVIEW:
+                # 2026-07-15: consume the REVIEW receipt (was unmapped —
+                # live deadlock). merge_mode=manual: MERGE_READY is declared,
+                # never auto-merged (SPEC §7).
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.REVIEW_RECORDED,
+                    {"result": result.value}, task_id=task_id,
+                    attempt_id=action.attempt_id, wave_id=attempt.wave_id))
+                if result is ReceiptResult.DONE:
+                    events.append(self._transition(project, cfg, states, task_id,
+                                                    TaskState.MERGE_READY, None))
+                else:
+                    events.append(self._transition(project, cfg, states, task_id,
+                                                    TaskState.REVIEW_REJECTED,
+                                                    f"review receipt: {result.value}"))
+                return events
+
             if result is ReceiptResult.DONE:
                 events.append(self._transition(project, cfg, states, task_id,
                                                 TaskState.AWAITING_REVIEW, None))
@@ -778,7 +800,33 @@ class Daemon:
             attempt_dir = paths.attempt_dir(project, attempt_id)
             packet_dir = attempt_dir / "packet"
             packet_dir.mkdir(parents=True, exist_ok=True)
-            packet_lines = ["# Review packet", ""]
+            packet_lines = [
+                "# Review packet",
+                "",
+                "## Your role: INDEPENDENT FRONTIER REVIEWER (merge gate)",
+                "",
+                "You are reviewing another agent's committed work — you did",
+                "not write it. For each task below (2026-07-15 role contract;",
+                "the first live review wrote implementer artifacts instead):",
+                "1. Read the handoff contract, then the diff (<task>.diff",
+                "   here, or `git diff main...feat/<task>` in the repo).",
+                "2. Adversarially verify against the handoff's oracles:",
+                "   hollow tests, overclaimed evidence, missing handoff",
+                "   requirements, edge-case gaps, env-specific claims.",
+                "3. Re-run the handoff's declared gate yourself; never trust",
+                "   a report's pasted output.",
+                "4. Small defects: fix them YOURSELF, commit to the task's",
+                "   feat/ branch. Large/architectural defects: REJECT.",
+                "5. Write groop/handoff/reports/<task>-REVIEW.md: findings,",
+                "   what you fixed, verdict + reasoning. Commit it to the",
+                "   feat/ branch (NOT main). Do NOT merge. Do NOT write the",
+                "   implementer's LOG/REPORT.",
+                "6. VERDICT signalling (drives the pipeline): if EVERY task",
+                "   here is approved, finish normally. If ANY task must be",
+                "   rejected, make your FINAL output line exactly:",
+                "   `BLOCKED: rejected — <task ids and one-line reasons>`.",
+                "",
+            ]
             for t in action.task_ids:
                 tsf_t = states.get(t)
                 branch = f"feat/{t}"
