@@ -86,11 +86,14 @@ one; the lease just bounds how many run at once). Handoffctl side:
 
 1. tls-edge for worktree stacks: the no-host-ports rule means the spike
    needs NO tls-edge integration. Routing a worktree stack's UI to a human
-   (e.g. `p11.dstdns.gstammtisch.dchive.de`) is a SEPARATE nice-to-have —
-   worth doing for the MAIN landscape (move its reverse-proxy TLS to
-   tls-edge, join ingress_public) but that's a change to production infra,
-   arguably its own handoff (infra-P11 is already about authentik/stack
-   stability — could fold in). Decouple from the spike?
+   (e.g. `dstdns-p11.gstammtisch.dchive.de` — FLAT/one-label, per D-006, so
+   the existing `*.gstammtisch.dchive.de` wildcard covers it; the nested
+   `p11.dstdns.gstammtisch.dchive.de` form would NOT be covered and would
+   need a new per-project wildcard cert) is a SEPARATE nice-to-have — worth
+   doing for the MAIN landscape (infra-P24 already moves its reverse-proxy
+   TLS to tls-edge with host `dstdns.gstammtisch.dchive.de` derived from ciu
+   `project_name`; worktree hosts extend that same template with the ciu
+   instance id). Decouple from the spike?
 2. Reduced-profile is the pragmatic answer to 2 GB; do you also want the
    full-clone path proven (needs more RAM than this host has — would need a
    bigger host or aggressive KSM), or is reduced-profile sufficient?
