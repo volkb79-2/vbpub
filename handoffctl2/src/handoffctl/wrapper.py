@@ -62,10 +62,26 @@ INTERFACE CONTRACT (frozen):
 
 from __future__ import annotations
 
+import json
+import os
+import re
+import signal
+import subprocess
 import sys
-from dataclasses import dataclass, field
+import time
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from . import adapters, leases, paths, storage
+from .config import RouteDef
+from .types import (
+    Actor, ActorKind, AttemptState, EventType, Receipt, ReceiptResult,
+    utc_now,
+)
+
+SESSION_CAPTURE_DELAY = 5.0
 
 
 @dataclass
@@ -84,7 +100,6 @@ class WrapperSpec:
     term_grace_seconds: int = 30
 
     def to_dict(self) -> dict[str, Any]:
-        from dataclasses import asdict
         return asdict(self)
 
     @classmethod
@@ -94,12 +109,359 @@ class WrapperSpec:
 
 def launch_detached(spec: WrapperSpec) -> int:
     """Write spec.json, double-fork the wrapper, return its pid (see contract)."""
-    raise NotImplementedError
+    spec_dir = Path(spec.attempt_dir)
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    spec_path = spec_dir / "spec.json"
+    spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+    # Double-fork pattern for detachment
+    pid = os.fork()
+    if pid == 0:
+        # First child
+        os.setsid()  # Become session leader
+        pid2 = os.fork()
+        if pid2 == 0:
+            # Second child (grandchild) - this becomes the wrapper.
+            # The wrapper's OWN stdout/stderr go to <attempt_dir>/wrapper.log
+            # (the CLI child's output goes to spec.log_path separately).
+            wlog = Path(spec.attempt_dir) / "wrapper.log"
+            wlog.parent.mkdir(parents=True, exist_ok=True)
+            with wlog.open("ab") as log_fd:
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os.dup2(log_fd.fileno(), 1)
+                os.dup2(log_fd.fileno(), 2)
+                try:
+                    rc = wrapper_main(str(spec_path))
+                except BaseException:
+                    import traceback
+                    traceback.print_exc()
+                    rc = 70
+                os._exit(rc)
+        else:
+            # First child writes the grandchild pid and exits
+            pid_file = Path(spec.attempt_dir) / "wrapper.pid"
+            pid_file.write_text(str(pid2), encoding="utf-8")
+            os._exit(0)
+    else:
+        # Parent waits for the pid file to appear
+        pid_file = Path(spec.attempt_dir) / "wrapper.pid"
+        start = time.monotonic()
+        while time.monotonic() - start < 10:
+            if pid_file.exists():
+                wrapper_pid = int(pid_file.read_text(encoding="utf-8").strip())
+                os.waitpid(pid, 0)  # Reap the intermediate child
+                return wrapper_pid
+            time.sleep(0.05)
+        # Timeout
+        os.waitpid(pid, 0)
+        raise TimeoutError(f"wrapper.pid not created within 10s")
 
 
 def wrapper_main(spec_path: str) -> int:
     """The wrapper process body (see contract). Returns process exit code."""
-    raise NotImplementedError
+    spec_json = Path(spec_path).read_text(encoding="utf-8")
+    spec = WrapperSpec.from_dict(json.loads(spec_json))
+
+    # Step 1: Load spec, statefile, find attempt
+    paths.ensure_layout(spec.project)
+    state = storage.load_state(spec.project, spec.task_id)
+    if state is None:
+        return 1
+    attempt = state.attempt_by_id(spec.attempt_id)
+    if attempt is None:
+        return 1
+
+    held_leases: list[leases.Lease] = []
+
+    try:
+        # Step 2: Acquire leases
+        for lease_spec in spec.leases:
+            lease = leases.acquire(
+                lease_spec["name"],
+                owner=f"attempt-{spec.attempt_id}",
+                purpose="wrapper",
+                capacity=lease_spec.get("capacity", 1),
+            )
+            if lease is None:
+                # Release acquired leases
+                for held in held_leases:
+                    held.release()
+                # Write receipt
+                receipt = Receipt(
+                    result=ReceiptResult.ERROR,
+                    exit_code=75,
+                    blocked_reason="lease-lost-race",
+                )
+                Path(spec.receipt_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(spec.receipt_path).write_text(
+                    json.dumps(receipt.to_dict()), encoding="utf-8"
+                )
+                # Append ATTEMPT_FAILED
+                state = storage.load_state(spec.project, spec.task_id)
+                attempt = state.attempt_by_id(spec.attempt_id)
+                attempt.state = AttemptState.FAILED
+                attempt.receipt = receipt
+                storage.append_and_apply(
+                    spec.project,
+                    {spec.task_id: state},
+                    actor=Actor(ActorKind.WRAPPER, f"wrapper-{spec.attempt_id}"),
+                    type=EventType.ATTEMPT_FAILED,
+                    payload={"attempt": attempt.to_dict()},
+                    task_id=spec.task_id,
+                    attempt_id=spec.attempt_id,
+                )
+                return 75
+            held_leases.append(lease)
+
+        # Append LEASE_ACQUIRED for each lease
+        for lease_spec in spec.leases:
+            state = storage.load_state(spec.project, spec.task_id)
+            storage.append_and_apply(
+                spec.project,
+                {spec.task_id: state},
+                actor=Actor(ActorKind.WRAPPER, f"wrapper-{spec.attempt_id}"),
+                type=EventType.LEASE_ACQUIRED,
+                payload={"lease": lease_spec["name"]},
+                task_id=spec.task_id,
+                attempt_id=spec.attempt_id,
+            )
+
+        # Step 3: Append ATTEMPT_STARTED
+        state = storage.load_state(spec.project, spec.task_id)
+        attempt = state.attempt_by_id(spec.attempt_id)
+
+        # Step 6 (installed early, before the spawn and the session-capture
+        # delay): a SIGTERM arriving at any point after the child exists must
+        # be forwarded to the child's process group and classified as
+        # interrupted. Installing after the 5s capture delay would leave a
+        # window where SIGTERM kills the wrapper with the default action
+        # (no receipt) — the detached signal tests exercise exactly that.
+        child = None
+        interrupted = False
+
+        def sigterm_handler(signum, frame):
+            nonlocal interrupted
+            interrupted = True
+            if child is not None:
+                try:
+                    os.killpg(os.getpgid(child.pid), signal.SIGTERM)
+                except OSError:
+                    pass
+
+        old_sigterm = signal.signal(signal.SIGTERM, sigterm_handler)
+        old_sigint = signal.signal(signal.SIGINT, sigterm_handler)
+
+        try:
+            # Step 4: Spawn CLI
+            log_path = Path(spec.log_path)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            env = os.environ.copy()
+            env.update(spec.env_overrides)
+
+            with log_path.open("ab") as log_fd:
+                child = subprocess.Popen(
+                    spec.argv,
+                    cwd=spec.cwd,
+                    env=env,
+                    stdout=log_fd,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+
+                # Write child.pid
+                Path(spec.attempt_dir, "child.pid").write_text(
+                    str(child.pid), encoding="utf-8"
+                )
+
+                # Update attempt with pid/pgid and log_path
+                attempt.pid = child.pid
+                attempt.pgid = os.getpgid(child.pid)
+                attempt.log_path = spec.log_path
+                attempt.state = AttemptState.RUNNING
+                state = storage.load_state(spec.project, spec.task_id)
+                state.attempts = [
+                    a if a.attempt_id != attempt.attempt_id else attempt
+                    for a in state.attempts
+                ]
+                storage.append_and_apply(
+                    spec.project,
+                    {spec.task_id: state},
+                    actor=Actor(ActorKind.WRAPPER, f"wrapper-{spec.attempt_id}"),
+                    type=EventType.ATTEMPT_STARTED,
+                    payload={"attempt": attempt.to_dict()},
+                    task_id=spec.task_id,
+                    attempt_id=spec.attempt_id,
+                )
+
+            # If the signal landed between spawn and now, forward it (the
+            # handler saw child=None and could not).
+            if interrupted:
+                try:
+                    os.killpg(os.getpgid(child.pid), signal.SIGTERM)
+                except OSError:
+                    pass
+
+            # Step 5: Capture session after delay (interruptible)
+            capture_deadline = time.monotonic() + SESSION_CAPTURE_DELAY
+            while not interrupted and time.monotonic() < capture_deadline:
+                time.sleep(0.05)
+            if not interrupted:
+                try:
+                    route_def = RouteDef(**spec.route_def)
+                    session_handle = adapters.capture_session(
+                        route_def,
+                        attempt_dir=Path(spec.attempt_dir),
+                        worktree=spec.cwd,
+                        launched_at=datetime.fromisoformat(attempt.started.isoformat()),
+                    )
+                    if session_handle:
+                        state = storage.load_state(spec.project, spec.task_id)
+                        attempt = state.attempt_by_id(spec.attempt_id)
+                        attempt.session_handle = session_handle
+                        state.attempts = [
+                            a if a.attempt_id != attempt.attempt_id else attempt
+                            for a in state.attempts
+                        ]
+                        storage.append_and_apply(
+                            spec.project,
+                            {spec.task_id: state},
+                            actor=Actor(ActorKind.WRAPPER, f"wrapper-{spec.attempt_id}"),
+                            type=EventType.ATTEMPT_STARTED,
+                            payload={"attempt": attempt.to_dict()},
+                            task_id=spec.task_id,
+                            attempt_id=spec.attempt_id,
+                        )
+                except Exception:
+                    pass  # Non-critical
+            # Wait for child, handling interruption with grace period
+            grace_end = None
+            child_exit_code = -1
+
+            while True:
+                try:
+                    _, status = os.waitpid(child.pid, os.WNOHANG)
+                    if _ != 0:
+                        # Child exited
+                        child_exit_code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else -1
+                        break
+                except OSError:
+                    # Child already reaped or doesn't exist
+                    child_exit_code = -1
+                    break
+
+                # If interrupted by signal and grace period set, check if we need to SIGKILL
+                if interrupted and grace_end is None:
+                    grace_end = time.monotonic() + spec.term_grace_seconds
+
+                if interrupted and grace_end is not None and time.monotonic() > grace_end:
+                    # Grace period expired, send SIGKILL
+                    try:
+                        os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+                    except OSError:
+                        pass
+                    # Continue waiting for child to be reaped
+                    grace_end = time.monotonic() + 5  # Extended grace for SIGKILL
+
+                time.sleep(0.05)
+        finally:
+            signal.signal(signal.SIGTERM, old_sigterm)
+            signal.signal(signal.SIGINT, old_sigint)
+
+        # Step 7: Classify result
+        log_text = log_path.read_text(encoding="utf-8")
+        log_tail = "\n".join(log_text.split("\n")[-200:])
+
+        if interrupted:
+            result = ReceiptResult.ERROR
+            blocked_reason = "interrupted"
+            event_type = EventType.ATTEMPT_INTERRUPTED
+            attempt_state = AttemptState.INTERRUPTED
+        else:
+            classification = adapters.classify_log_tail(log_tail)
+            if classification == "blocked":
+                result = ReceiptResult.BLOCKED
+                blocked_match = re.search(r"^BLOCKED: (.+)$", log_tail, re.MULTILINE)
+                blocked_reason = blocked_match.group(1) if blocked_match else "unknown"
+                event_type = EventType.ATTEMPT_EXITED
+                attempt_state = AttemptState.EXITED
+            elif classification == "limit":
+                result = ReceiptResult.LIMIT
+                blocked_reason = None
+                event_type = EventType.ATTEMPT_EXITED
+                attempt_state = AttemptState.EXITED
+            elif child_exit_code == 0:
+                result = ReceiptResult.DONE
+                blocked_reason = None
+                event_type = EventType.ATTEMPT_EXITED
+                attempt_state = AttemptState.EXITED
+            else:
+                result = ReceiptResult.ERROR
+                blocked_reason = None
+                event_type = EventType.ATTEMPT_EXITED
+                attempt_state = AttemptState.EXITED
+
+        # Step 8: Extract usage
+        route_def = RouteDef(**spec.route_def)
+        usage = adapters.extract_usage(route_def, Path(spec.attempt_dir), log_text)
+        from .config import Prices
+        prices = Prices.load()
+        usage = prices.price_tokens(route_def.model, usage)
+
+        # Step 9: Write receipt and append event
+        receipt = Receipt(
+            result=result,
+            exit_code=child_exit_code,
+            blocked_reason=blocked_reason,
+        )
+
+        # Atomic write
+        receipt_path = Path(spec.receipt_path)
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = receipt_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(receipt.to_dict()), encoding="utf-8")
+        os.replace(tmp_path, receipt_path)
+
+        # Append event
+        state = storage.load_state(spec.project, spec.task_id)
+        attempt = state.attempt_by_id(spec.attempt_id)
+        attempt.state = attempt_state
+        attempt.ended = utc_now()
+        attempt.receipt = receipt
+        attempt.usage = usage
+        storage.append_and_apply(
+            spec.project,
+            {spec.task_id: state},
+            actor=Actor(ActorKind.WRAPPER, f"wrapper-{spec.attempt_id}"),
+            type=event_type,
+            payload={"attempt": attempt.to_dict()},
+            task_id=spec.task_id,
+            attempt_id=spec.attempt_id,
+        )
+
+        # Step 10: Release leases
+        for lease_spec in spec.leases:
+            state = storage.load_state(spec.project, spec.task_id)
+            storage.append_and_apply(
+                spec.project,
+                {spec.task_id: state},
+                actor=Actor(ActorKind.WRAPPER, f"wrapper-{spec.attempt_id}"),
+                type=EventType.LEASE_RELEASED,
+                payload={"lease": lease_spec["name"]},
+                task_id=spec.task_id,
+                attempt_id=spec.attempt_id,
+            )
+
+        for lease in held_leases:
+            lease.release()
+
+        return child_exit_code
+
+    except Exception:
+        # On crash, release leases
+        for lease in held_leases:
+            lease.release()
+        raise
 
 
 if __name__ == "__main__":  # pragma: no cover
