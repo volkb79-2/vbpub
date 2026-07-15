@@ -271,3 +271,4 @@ core
 .venv-1/
 /logs/
 **/logs/
+handoffctl2/ntfy/.secrets/

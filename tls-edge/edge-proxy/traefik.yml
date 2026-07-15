@@ -47,7 +47,8 @@ entryPoints:
       middlewares:
         - secure-headers@file
 
-      tls: {}
+      tls:
+        certResolver: letsencrypt
 
   # Alternative HTTPS entrypoint — port-based routing fallback.
   websecure-alt:
@@ -57,7 +58,24 @@ entryPoints:
       middlewares:
         - secure-headers@file
 
-      tls: {}
+      tls:
+        certResolver: letsencrypt
+
+# ─── ACME (Let's Encrypt) ─────────────────────────────────────────────────────
+# Certificates are issued automatically for every Host() a consumer router
+# declares (or one wildcard cert in acme-dns mode with wildcard_main set).
+# Renewal is automatic and zero-downtime; state lives in the acme-data volume.
+certificatesResolvers:
+  letsencrypt:
+    acme:
+
+      email: "development@richtfest.tech"
+
+      storage: /etc/traefik/acme/acme.json
+      caServer: "https://acme-v02.api.letsencrypt.org/directory"
+
+      # TLS-ALPN-01: the whole challenge happens on :443 — no port 80 needed.
+      tlsChallenge: {}
 
 # ─── Providers ────────────────────────────────────────────────────────────────
 providers:

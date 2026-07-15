@@ -81,11 +81,10 @@ services:
       # and trigger the reload (this is how cert renewal works in static mode).
       - /home/vb/volkb79-2/vbpub/tls-edge/edge-proxy/conf.d:/etc/traefik/conf.d:ro
 
-      # Host certificate tree.  BOTH live/ and archive/ parents are mounted so
-      # certbot's RELATIVE symlinks (live/<d>/x.pem -> ../../archive/<d>/xN.pem)
-      # resolve inside the container.  Never mount live/<domain> directly.
-      - /etc/letsencrypt/live:/certs/live:ro
-      - /etc/letsencrypt/archive:/certs/archive:ro
+      # ACME account + issued certificates (acme.json, created 0600 by traefik).
+      # NOTE: `docker compose down -v` / `ciu --reset` destroys this volume and
+      # forces re-issuance on next start (mind Let's Encrypt rate limits).
+      - acme-data:/etc/traefik/acme
 
     networks:
       - ingress
@@ -127,4 +126,9 @@ networks:
     name: traefik_internal
     driver: bridge
     internal: true
+
+# ─── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+
+  acme-data:
 
