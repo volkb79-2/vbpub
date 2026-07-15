@@ -139,7 +139,7 @@ both the accepted (legacy) and rejected (envelope-with-bad-version) forms.
 An envelope request with an unsupported `v` is rejected with
 `protocol_version`; its message names the supported version(s).
 
-### Typed Versioned Client (P63)
+### Typed Versioned Client (P63/P66)
 
 `DaemonClient` (``groop/src/groop/daemon/client.py``) provides typed,
 validated Python methods for the versioned envelope ops. These methods are
@@ -150,7 +150,9 @@ versioned-envelope round trip: ``AF_UNIX`` connect, ``json.dumps`` with
 sorted keys and compact separators, ``SHUT_WR``, single-line response read via
 ``makefile`` bounded at ``DEFAULT_MAX_RESPONSE_BYTES`` (4 MB), envelope
 wrapper decode, and ``id`` echo assertion. A mismatch raises
-``DaemonProtocolError``.
+``DaemonProtocolError``. Every typed method below, including P66's
+``request_health_versioned()``, goes through this one helper — there is no
+per-op transport.
 
 **Error codes:** ``DaemonResponseError`` carries a ``.code`` attribute
 with the P52 ``ErrorCode`` string (``not_found``, ``invalid_type``,
@@ -165,6 +167,7 @@ typed code.
 | ``request_current()`` | ``DaemonCurrentResult`` | Latest ``(seq, Frame)`` + ``metrics_meta`` |
 | ``request_history(*, limit, cursor, since_ts, until_ts)`` | ``DaemonHistoryResult`` | Ordered ``(seq, Frame)`` entries, history bounds, ``metrics_meta``; fast-fail ``ValueError`` if cursor + time window both set |
 | ``request_entity(key)`` | ``DaemonEntityResult`` | One entity's frame + ``metrics_meta`` |
+| ``request_health_versioned()`` | ``DaemonVersionedHealthResult`` | P47 ``HealthSnapshot`` decoded through the versioned envelope, plus a derived ``overall_ok`` property |
 
 ``metrics_meta`` is validated as a dict-of-dicts with every entry's
 ``sensitivity`` belonging to the closed ``Sensitivity`` enum
@@ -173,7 +176,28 @@ typed code.
 
 **Import:** add ``from groop.daemon import DaemonClient,
 DaemonCurrentResult, DaemonHistoryResult, DaemonEntityResult,
-DaemonHello``.
+DaemonHello, DaemonVersionedHealthResult``.
+
+**``request_health_versioned()`` (P66):** completes the versioned read
+surface with the one op P63 left out (``health``) so a frontend that
+negotiated the envelope via ``request_hello()`` never has to fall back to
+the legacy, non-versioned ``request_health()`` socket path to read
+component health. It decodes the ``health`` envelope's ``result`` dict
+through the exact same per-field parsing the legacy path uses
+(``DaemonClient._parse_health_payload``) — unknown component names/order,
+missing/invalid fields, and an incompatible ``schema_version``/
+``capability`` all raise ``DaemonProtocolError`` identically for both
+methods, and both methods stay independently callable (there is no
+transport or decode change to the legacy method). ``DaemonVersionedHealthResult``
+wraps the decoded ``HealthSnapshot`` under ``.snapshot`` and exposes a
+computed ``.overall_ok`` property: ``True`` iff no component reports
+``DEGRADED`` or ``FAILED`` — the same two states
+``ComponentHealthRegistry.set_state`` itself classifies as a failed
+attempt. ``.overall_ok`` is derived on read, never stored, so it cannot
+drift from ``.snapshot``. The legacy ``request_health()`` (single-line,
+non-versioned protocol) and ``HealthSnapshot`` are unchanged; the two
+result types are deliberately distinct so callers can't confuse a
+versioned-envelope health read with a legacy one.
 
 ## MCP frontend (P58)
 
