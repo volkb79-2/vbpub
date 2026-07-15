@@ -54,7 +54,7 @@ class ValueSemantic(str, Enum):
 
 
 _RATE_SUFFIXES = ("_per_s", "_bps", "_pps", "_iops")
-_EXPLICIT_RATES = frozenset({"cpu_pct"})
+_EXPLICIT_RATES = frozenset({"cpu_pct", "proc_cpu_pct", "proc_cpu_host_pct"})
 
 
 def canonical_semantic(name: str) -> ValueSemantic:
