@@ -233,6 +233,33 @@ def test_create_task_and_transition(tmp_state, sample_project, patch_siblings, m
     assert EventType.TASK_TRANSITIONED in types
 
 
+def test_transition_noop_when_from_equals_to_is_silent(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Regression: a Transition whose target equals the current state is a
+    race-tolerant NO-OP, not a QUEUED->QUEUED TransitionError surfacing as a
+    TICK_ERROR. This arises when two planning passes both planned the same
+    edge from a shared snapshot under a transient double-dispatcher (the
+    observed production symptom: recurring 'task transition QUEUED -> QUEUED
+    not allowed' TICK_ERRORs). The guard lives in Daemon._execute; root
+    singleton enforcement is P19 (ciu-managed container)."""
+    cfg = sample_project
+    task_id = "demo-P01-sample"
+    _seed_task("demo", task_id, TaskState.QUEUED,
+               handoff_path="handoff/demo-P01-sample.md")
+
+    # plan a QUEUED->QUEUED edge (from == to): must be a silent no-op
+    _scripted(monkeypatch, [[reconcile.Transition(task_id=task_id, to=TaskState.QUEUED, notes=None)]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")  # must not raise
+
+    tsf = storage.load_state("demo", task_id)
+    assert tsf.state is TaskState.QUEUED  # unchanged
+
+    types = [e.type for e in storage.iter_events("demo")]
+    assert EventType.TICK_ERROR not in types          # no error surfaced
+    assert EventType.TASK_TRANSITIONED not in types   # no spurious transition emitted
+
+
 def test_transition_to_blocked_emits_task_blocked_with_typed_blocker(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     """P14 2026-07-15 item 4 (daemon side of the INTERRUPTED silent-dead-end

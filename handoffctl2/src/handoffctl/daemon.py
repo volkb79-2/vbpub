@@ -822,6 +822,19 @@ class Daemon:
                     project, cfg, states, EventType.TASK_BLOCKED,
                     {"from": frm.value, "blocker": action.blocker.to_dict(), "notes": action.notes},
                     task_id=action.task_id))
+            elif states[action.task_id].state is action.to:
+                # Race-tolerant no-op guard: a transition whose target
+                # equals the current state is a no-op, not an error. This
+                # arises when two planning passes computed the same edge
+                # from a shared snapshot (e.g. both saw CARVED and planned
+                # CARVED->QUEUED) and the first already applied it — the
+                # classic symptom being the QUEUED->QUEUED TICK_ERROR under
+                # a transient double-dispatcher. Skip silently rather than
+                # letting check_task_transition raise (which surfaces as a
+                # TICK_ERROR and pollutes the event log). Root singleton
+                # enforcement is P19 (ciu-managed container); this keeps the
+                # planner idempotent regardless.
+                pass
             else:
                 events.append(self._transition(project, cfg, states, action.task_id, action.to, action.notes))
 
