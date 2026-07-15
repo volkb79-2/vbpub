@@ -161,6 +161,42 @@ class TestDetectOwner:
         assert d.owner is None and not d.ambiguous
 
 
+class TestEvaluateTypedReasons:
+    """evaluate() returns typed refusal reasons (contract 4: refusals are typed)."""
+
+    def _eval(self, kind, target, *, labels=None, protected=(), inspect=None):
+        from groop.actions.owner_safety import evaluate
+        if inspect is None:
+            inspect = _inspect(labels=labels or {})
+        return evaluate(kind, target, inspect=inspect, protected_services=protected)
+
+    def test_owner_managed_reason(self) -> None:
+        r = self._eval("docker-start", NAME, labels=COMPOSE_LABELS)
+        assert r is not None and r.reason == "owner-managed"
+
+    def test_owner_ambiguous_reason(self) -> None:
+        r = self._eval("docker-kill", NAME, labels={"ciu.managed": "maybe"})
+        assert r is not None and r.reason == "owner-ambiguous"
+
+    def test_protected_reason(self) -> None:
+        r = self._eval("docker-update", FULL_ID, labels={}, protected=(NAME,))
+        assert r is not None and r.reason == "protected"
+
+    def test_inspect_failed_reason(self) -> None:
+        r = self._eval("docker-start", NAME, inspect=lambda ref: None)
+        assert r is not None and r.reason == "inspect-failed"
+
+    def test_standalone_allows(self) -> None:
+        assert self._eval("docker-restart", NAME, labels={}) is None
+
+    def test_non_guarded_kind_is_noop(self) -> None:
+        assert self._eval("systemd-restart", "nginx.service", labels=COMPOSE_LABELS) is None
+
+    def test_no_inspect_seam_is_noop(self) -> None:
+        from groop.actions.owner_safety import evaluate
+        assert evaluate("docker-start", NAME, inspect=None) is None
+
+
 class TestResolveIdentity:
     def test_valid(self) -> None:
         from groop.actions.owner_safety import resolve_identity
