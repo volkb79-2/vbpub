@@ -189,7 +189,23 @@ def cmd_tarball_validate(args: argparse.Namespace) -> None:
 
 # ─── OCI image profile ───────────────────────────────────────────────────────
 
-def _check_prerequisites(repack: bool) -> None:
+_OCI_REPACK_DISABLED = (
+    "cmru built-in OCI repack is experimental and not production-ready; "
+    "the path is disabled until the S14.3 production-equivalence requirements are met"
+)
+
+
+def _reject_experimental_repack(repack: bool) -> None:
+    """Fail closed before auth, Docker, or filesystem state can be mutated."""
+    if not repack:
+        return
+    from cmru import exit_codes
+
+    print(f"[ERROR] {_OCI_REPACK_DISABLED}", file=sys.stderr)
+    raise SystemExit(exit_codes.CONFIG_ERROR)
+
+
+def _check_prerequisites() -> None:
     """Check that required CLI tools are available. Exit 3 (PREREQ_MISSING) if not."""
     import shutil
     from cmru import exit_codes
@@ -207,15 +223,6 @@ def _check_prerequisites(repack: bool) -> None:
     except (subprocess.CalledProcessError, FileNotFoundError):
         print("[ERROR] docker buildx is required but not available", file=sys.stderr)
         raise SystemExit(exit_codes.PREREQ_MISSING)
-
-    if repack:
-        if shutil.which("docker-repack") is None:
-            print(
-                "[ERROR] docker-repack is required (repack enabled) but not found in PATH",
-                file=sys.stderr,
-            )
-            raise SystemExit(exit_codes.PREREQ_MISSING)
-
 
 def _docker_login() -> None:
     """Login to the container registry using GITHUB_USERNAME / GITHUB_PUSH_PAT / REGISTRY env."""
@@ -238,33 +245,18 @@ def cmd_oci_image_build(args: argparse.Namespace) -> None:
     target = args.target
     repack = args.repack
 
+    _reject_experimental_repack(repack)
+
     print(f"[INFO] cmru built-in: building OCI image in {cwd}")
     print(f"[INFO]   bake_file={bake_file}  target={target}  repack={repack}")
 
-    _check_prerequisites(repack)
+    _check_prerequisites()
     _docker_login()
 
-    if repack:
-        # Step a: produce OCI layout directly
-        oci_src = "/tmp/oci-src"
-        subprocess.run(
-            ["docker", "buildx", "bake", "-f", bake_file, target,
-             "--set", "*.output=type=oci,dest=" + oci_src],
-            cwd=str(cwd), check=True,
-        )
-        # Step b: repack the OCI layout
-        oci_dst = "/tmp/oci-dst"
-        repack_cmd = ["docker-repack", "--target-size", args.repack_target_size]
-        if args.repack_compression is not None:
-            repack_cmd.extend(["--compression", str(args.repack_compression)])
-        repack_cmd.extend(["oci://" + oci_src, "oci://" + oci_dst])
-        subprocess.run(repack_cmd, cwd=str(cwd), check=True)
-        # Step c: push happens in the separate push step (cmd_oci_image_push).
-    else:
-        subprocess.run(
-            ["docker", "buildx", "bake", "-f", bake_file, target, "--load"],
-            cwd=str(cwd), check=True,
-        )
+    subprocess.run(
+        ["docker", "buildx", "bake", "-f", bake_file, target, "--load"],
+        cwd=str(cwd), check=True,
+    )
 
     print("[INFO] OCI image build complete")
 
@@ -276,22 +268,15 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
     bake_file = args.bake_file
     target = args.target
 
+    _reject_experimental_repack(args.repack)
+
     print(f"[INFO] cmru built-in: pushing OCI image in {cwd}")
     _docker_login()
 
-    oci_dst = Path("/tmp/oci-dst")
-    if args.repack and oci_dst.is_dir():
-        # Repack mode: push the OCI layout produced by the build step.
-        subprocess.run(
-            ["docker", "buildx", "build", "--push", f"oci://{oci_dst}"],
-            cwd=str(cwd), check=True,
-        )
-    else:
-        # Non-repack mode: bake and push directly.
-        subprocess.run(
-            ["docker", "buildx", "bake", "-f", bake_file, target, "--push"],
-            cwd=str(cwd), check=True,
-        )
+    subprocess.run(
+        ["docker", "buildx", "bake", "-f", bake_file, target, "--push"],
+        cwd=str(cwd), check=True,
+    )
     print("[INFO] OCI image push complete")
 
 

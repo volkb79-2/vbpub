@@ -50,7 +50,7 @@ class OCIConfig:
     """OCI build configuration (``[project.<name>.oci]`` section)."""
     bake_file: str                     # path to docker-bake.hcl (relative to project cwd)
     target: str                        # bake target name
-    repack: bool = False               # enable docker-repack after build
+    repack: bool = False               # reserved; built-in repack is fail-closed (S14.3)
     repack_target_size: str = "2GB"    # target size per layer (e.g. "100MB", "2GB")
     repack_compression: int = 9       # zstd compression level (1-22)
 
@@ -392,6 +392,10 @@ _PROFILE_BUILTIN_STEPS = {
     "tarball":   ("push", "validate"),          # build stays project-owned
     "oci-image": ("build", "push"),
 }
+_OCI_REPACK_DISABLED = (
+    "cmru built-in OCI repack is experimental and not production-ready; "
+    "repack=true is disabled until the S14.3 production-equivalence requirements are met"
+)
 # Absolute path so the step works whether cmru is pip-installed or run from a checkout
 # (a bare `-m cmru.handlers` would fail in a subprocess that didn't inherit sys.path).
 _HANDLERS_PY = Path(__file__).resolve().parent / "handlers.py"
@@ -454,19 +458,16 @@ def _builtin_step_command(
             bake_file = oci_cfg.bake_file if oci_cfg else "docker-bake.hcl"
             target = oci_cfg.target if oci_cfg else project.name
             repack = oci_cfg.repack if oci_cfg else False
+            if repack:
+                # Defence in depth for callers that construct ProjectConfig directly
+                # instead of going through load_config(), which rejects this setting.
+                raise ValueError(f"project.{project.name}.oci.repack: {_OCI_REPACK_DISABLED}")
             if step_name == "build":
                 argv = base + ["oci-image-build", "--cwd", str(cwd_abs),
                                "--bake-file", bake_file, "--target", target]
-                if repack:
-                    argv.append("--repack")
-                    argv.extend(["--repack-target-size", oci_cfg.repack_target_size])
-                    if oci_cfg.repack_compression is not None:
-                        argv.extend(["--repack-compression", str(oci_cfg.repack_compression)])
             else:  # push
                 argv = base + ["oci-image-push", "--cwd", str(cwd_abs),
                                "--bake-file", bake_file, "--target", target]
-                if repack:
-                    argv.append("--repack")
             return Command(
                 label=f"{project.name}: oci-image {step_name} (cmru built-in)",
                 argv=argv, cwd=cwd_abs,
@@ -595,6 +596,8 @@ def load_config(
                 repack_target_size=repack_target_size,
                 repack_compression=repack_compression,
             )
+            if repack:
+                raise ValueError(f"project.{name}.oci.repack: {_OCI_REPACK_DISABLED}")
 
         projects[name] = ProjectConfig(
             name=name, env=project_env, steps=steps,

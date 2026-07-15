@@ -70,6 +70,11 @@ Before building, cmru requires the project's tracked source to be **clean** — 
 
 For a standard `wheel` project, declaring the profile is enough — cmru runs its own `build`/`push`/`validate` (see `cmru/handlers.py`), so the project needs **no release scripts**. cmru itself is the dogfood (`[project.cmru]` has `artifacts = ["wheel"]` and zero `[steps.*]`; only a `CMRU_RELEASE_NOTES` string). The single project-specific input is the release-notes text. An explicit `[project.X.steps.<step>]` always overrides the built-in — the escape hatch for multi-wheel repos, bespoke validation, or extra assets.
 
+The built-in `oci-image` profile supports the normal Buildx bake load/push flow. Its
+`[project.X.oci].repack = true` switch is currently **experimental and fail-closed**:
+cmru rejects it before authentication or Docker work. The complete safety and
+production-equivalence requirements are tracked in [SPEC S14.3](docs/SPEC.md#s143--repack-flow-experimental-fail-closed).
+
 ## Differentiators
 
 1. **N products, one Releases page** via per-product `prefix` (`ciu-v…`, `pwmcp-v…`).

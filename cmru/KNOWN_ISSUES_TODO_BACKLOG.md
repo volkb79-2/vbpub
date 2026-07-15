@@ -12,6 +12,21 @@
 
 ## Known Issues
 
+### KI-02 — Built-in OCI repack is disabled pending production equivalence — *fail-closed*
+**Status:** guarded; do not enable for production releases.
+**SPEC:** `S14.3`, `V21`.
+**Symptom:** the prototype used shared `/tmp/oci-src` and `/tmp/oci-dst` paths, blurred
+OCI layout-directory and archive/build-context semantics, and its push branch could
+fall back to a second bake rather than proving that the validated repacked artifact
+was the object published.
+**Guard:** `[project.X.oci].repack = true` and direct built-in `--repack` invocations
+fail with exit 2 before authentication, Docker execution, or scratch mutation. Normal
+non-repack OCI builds and pushes are unaffected.
+**Enablement gate:** unique scratch lifecycle; explicit OCI tar/layout handling;
+governed builder resources and concurrency; structural plus runtime validation; final
+registry digest verification; and ideally a single-build flow. See `S14.3` for the
+normative definition of done.
+
 ### KI-01 — GHCR package visibility cannot be set via API (platform limitation) — *worked around*
 **Status:** worked around (cmru no longer fails the release); full automation is upstream-blocked.
 **SPEC:** `S4.7` (amended MUST → best-effort).

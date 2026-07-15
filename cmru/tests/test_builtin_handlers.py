@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from cmru import cli, release
+from cmru import cli, handlers, release
 
 
 # ─── reusable wheel glue (cmru.release) ──────────────────────────────────────
@@ -148,6 +148,73 @@ def test_builtin_step_command_oci_uses_oci_defaults(tmp_path):
     ]
 
 
+def test_builtin_step_command_oci_repack_fails_closed(tmp_path):
+    proj = cli.ProjectConfig(
+        name="img", env={}, steps={}, prefix="img-v", cwd="img",
+        artifacts=("oci-image",), mint_tag=False,
+        oci=cli.OCIConfig(bake_file="docker-bake.hcl", target="img", repack=True),
+    )
+
+    with pytest.raises(ValueError, match="experimental and not production-ready"):
+        cli._builtin_step_command(proj, "build", tmp_path)
+
+
+@pytest.mark.parametrize("command", [handlers.cmd_oci_image_build, handlers.cmd_oci_image_push])
+def test_direct_oci_repack_handler_fails_before_side_effects(command, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(handlers.subprocess, "run", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(handlers, "_docker_login", lambda: calls.append("login"))
+    args = type("Args", (), {
+        "cwd": str(tmp_path),
+        "bake_file": "docker-bake.hcl",
+        "target": "img",
+        "repack": True,
+        "repack_target_size": "2GB",
+        "repack_compression": 9,
+    })()
+
+    with pytest.raises(SystemExit) as exc:
+        command(args)
+
+    assert exc.value.code == 2
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("command", "terminal_flag"),
+    [
+        (handlers.cmd_oci_image_build, "--load"),
+        (handlers.cmd_oci_image_push, "--push"),
+    ],
+)
+def test_direct_oci_non_repack_handler_keeps_standard_bake_flow(
+    command, terminal_flag, tmp_path, monkeypatch
+):
+    calls = []
+    monkeypatch.setattr(handlers, "_check_prerequisites", lambda: None)
+    monkeypatch.setattr(handlers, "_docker_login", lambda: calls.append("login"))
+    monkeypatch.setattr(
+        handlers.subprocess,
+        "run",
+        lambda argv, **kwargs: calls.append((argv, kwargs)),
+    )
+    args = type("Args", (), {
+        "cwd": str(tmp_path),
+        "bake_file": "docker-bake.hcl",
+        "target": "img",
+        "repack": False,
+    })()
+
+    command(args)
+
+    assert calls[0] == "login"
+    argv, kwargs = calls[1]
+    assert argv == [
+        "docker", "buildx", "bake", "-f", "docker-bake.hcl", "img", terminal_flag,
+    ]
+    assert kwargs == {"cwd": str(tmp_path), "check": True}
+
+
 # ─── load_config relaxation ──────────────────────────────────────────────────
 _BASE = """
 [github]
@@ -198,6 +265,25 @@ strategy = "none"
     assert projects["p"].artifacts == ("oci-image",)
     assert cli._builtin_step_command(projects["p"], "build", tmp_path) is not None
     assert cli._builtin_step_command(projects["p"], "push", tmp_path) is not None
+
+
+def test_oci_project_repack_config_fails_closed(tmp_path):
+    cfg = tmp_path / "cmru.toml"
+    cfg.write_text(_BASE + """
+[project.p]
+prefix = "p-v"
+artifacts = ["oci-image"]
+cwd = "p"
+[project.p.version]
+strategy = "none"
+[project.p.oci]
+repack = true
+repack_target_size = "2GB"
+repack_compression = 9
+""")
+
+    with pytest.raises(ValueError, match="experimental and not production-ready"):
+        cli.load_config(cfg)
 
 
 # ─── find_artifact (generic discovery) ───────────────────────────────────────

@@ -609,15 +609,30 @@ When a project declares `artifacts = ["oci-image"]`, cmru's built-in handler tak
 2. Run `docker buildx bake -f docker-bake.hcl <target> --load` (or to OCI layout output directly).
 3. No skopeo needed — the image is in the Docker daemon (or exported to OCI layout).
 
-### S14.3 — Build Flow (with optional repack)
+### S14.3 — Repack Flow (experimental, fail closed)
 
-1. Same docker login as S14.2.
-2. Run `docker buildx bake -f docker-bake.hcl <target> --set "*.output=type=oci,dest=..."` to produce an OCI layout directly, **bypassing the Docker daemon entirely**. This eliminates the need for the first `skopeo copy` call (the docker-daemon → OCI bridge).
-3. If `[project.X.oci].repack = true`, run `docker-repack` on the OCI layout:
-   ```
-   docker-repack --target-size <size> --compression-level <level> oci://<src> oci://<dst>
-   ```
-4. docker-repack produces a new OCI layout at a well-known path (`/tmp/oci-dst`). **Push does NOT happen here** — it is performed by the separate `push` step (S14.7), which reads the OCI layout and pushes it to the registry. This separation keeps the build step focused on artifact production only.
+The built-in repack flow is **not production-ready and MUST NOT run**. A configuration
+with `[project.X.oci].repack = true`, or a direct built-in handler invocation with
+`--repack`, MUST fail with exit 2 before login, Docker execution, or scratch-path
+mutation. Project-owned explicit steps remain the escape hatch for experiments, but
+are not claimed to be equivalent to cmru's production OCI publish path.
+
+The built-in path may be enabled only after it meets all of this definition of done:
+
+1. Every invocation owns unique, automatically-cleaned scratch storage; no global
+   `/tmp/oci-src` or `/tmp/oci-dst` can leak state between projects or runs.
+2. BuildKit output and repacker input/output formats are proven compatible. OCI image
+   layout directories and OCI tar archives MUST be distinguished and converted
+   deliberately rather than treated as interchangeable paths.
+3. The build/repack/push work runs through the governed builder and resource policy,
+   including configured CPU, memory, I/O priority, and bounded repack concurrency.
+4. The result passes structural OCI validation and runtime smoke validation, including
+   expected platform, config, labels, entrypoint, filesystem semantics, and startup.
+5. After push, cmru resolves the registry reference and verifies the final manifest
+   digest against the validated local repacked artifact.
+6. The design SHOULD build the image only once. If tooling forces a second build, that
+   cost and the equivalence proof MUST be explicit; a silent build-on-push fallback is
+   forbidden.
 
 ### S14.4 — Auth Flow (no more .ghcr-auth.json)
 
@@ -636,7 +651,7 @@ Before the build step runs, the handler MUST validate:
 |---|---|---|
 | `docker` | on PATH | exit 3, "docker not found" |
 | `docker buildx` | `docker buildx version` succeeds | exit 3, "buildx not available" |
-| `docker-repack` | on PATH (only if `repack = true`) | exit 3, "docker-repack not found (required by repack config)" |
+| `docker-repack` | reserved for a future enabled repack flow | `repack = true` currently fails earlier with exit 2 (S14.3) |
 | GitHub token | resolved (S2.4) | exit 3 (V10) |
 
 These checks happen in `runner.py` or a new `prerequisites` step.
@@ -647,23 +662,23 @@ Add these optional keys under `[project.<name>.oci]`:
 
 ```toml
 [project.<name>.oci]
-repack              = false       # enable docker-repack layer optimization
+repack              = false       # reserved; true is rejected while S14.3 is experimental
 repack_target_size  = "2GB"       # --target-size for docker-repack
 repack_compression  = 9           # zstd compression level (1-22, default 9)
 ```
 
-When `repack` is true, the build step runs the repack flow (S14.3); otherwise the simple bake flow (S14.2).
+`repack = false` selects the supported simple bake flow (S14.2). `repack = true` is
+accepted as a documented schema key but rejected by validation until the S14.3
+production-equivalence definition of done is met.
 
 ### S14.7 — Push Step (separate from build)
 
 Push is a **separate step** from build, executed by `cmd_oci_image_push()`:
 
 - **Non-repack mode**: runs `docker buildx bake -f <bake_file> <target> --push` — the standard bake push.
-- **Repack mode**: reads the OCI layout produced by the build step at `/tmp/oci-dst` and pushes it via:
-  ```
-  docker buildx build --push oci:///tmp/oci-dst
-  ```
-  This pushes all tags (immutable + floating) defined in the bake config to each registry in `[targets].registry`. The Docker credential store is used for auth (no `.ghcr-auth.json` needed).
+- **Repack mode**: disabled and fail-closed as specified by S14.3. It MUST NOT
+  reinterpret a local OCI path as a Docker build context, silently fall back to a
+  non-repack bake push, or perform a second unvalidated build.
 
 Tags pushed:
 - Immutable tag: `<debian>-py<python>-<image_version>` (from build args, not git).
@@ -680,6 +695,7 @@ Add to the validation catalog (S10):
 | V18 | `[project.<name>.oci].repack_target_size` must be a valid size string (e.g. "2GB", "500MB") when `repack = true` | 2 |
 | V19 | `[project.<name>.oci].repack_compression` must be 1-22 when `repack = true` | 2 |
 | V20 | No legacy `.ghcr-auth.json` or `REGISTRY_AUTH_FILE` references in new projects | 2 |
+| V21 | Built-in `[project.<name>.oci].repack = true` is rejected while S14.3 remains experimental | 2 |
 
 ### S14.9 — Migration Path
 

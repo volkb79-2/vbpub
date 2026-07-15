@@ -50,7 +50,7 @@ cwd       = "ciu"
 strategy = "scm"
 bump     = "conventional"
 [project.ciu.env]
-CIU_RELEASE_NOTES = "## CIU CLI wheel\nConfig-inheritance + Docker Compose stack orchestrator (render, up/down, health, diagnose, bake, dev). `ciu diagnose` provides read-only OOM/exit/health/resource/log correlation with actionable and JSON output.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+CIU_RELEASE_NOTES = "## CIU CLI wheel\nOrchestration health now resolves every active exact `container_name` from each rendered Compose stack; phase-entry `name` remains display-only. Ephemeral one-shot stacks can opt out with strict `health = false`. The suite coverage floor is ratcheted to 75%.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
 [project.ciu.steps.run-tests]
 commands = [
   { label = "CIU: run tests", argv = ["python3", "run-ciu-tests.py"], cwd = "ciu" },
@@ -70,7 +70,7 @@ cwd       = "cmru"
 strategy = "scm"
 bump     = "conventional"
 [project.cmru.env]
-CMRU_RELEASE_NOTES = "## cmru wheel\nBuild, publish, and release orchestration for CIU-family monorepos.\n\n**Install**\n```bash\npipx install cmru-*.whl\n```"
+CMRU_RELEASE_NOTES = "## cmru wheel\nBuild, publish, and release orchestration for CIU-family monorepos. The incomplete built-in OCI repack prototype now fails closed before auth/Docker work; standard Buildx load/push remains supported while the production-equivalence requirements are implemented.\n\n**Install**\n```bash\npipx install cmru-*.whl\n```"
 
 # ─── modern-debian-tools-python-debug — OCI images ────────────────────────────
 # Deliverable is the ghcr image(s) only — NOT a GitHub Release. So: no semver git tag
@@ -83,9 +83,10 @@ artifacts = ["oci-image"]
 cwd       = "modern-debian-tools-python-debug"
 [project.modern-debian-tools-python-debug.oci]
 target = "all"
-repack = true
-repack_target_size = "2GB"
-repack_compression = 9
+# Explicit project steps below own MDT's guarded push/repack flow. Keep the
+# generic handler disabled until CMRU's built-in OCI path reaches equivalent
+# scratch isolation, validation, resource controls, and final-digest evidence.
+repack = false
 [project.modern-debian-tools-python-debug.version]
 strategy = "none"          # OCI images aren't git-tagged
 [project.modern-debian-tools-python-debug.release]
