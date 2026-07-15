@@ -108,7 +108,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import adapters, config, decisions, frontmatter, leases, lint, notify, paths, reconcile, render, storage, wrapper
+from . import adapters, commands, config, decisions, frontmatter, leases, lint, notify, paths, reconcile, render, storage, wrapper
 from .config import ProjectConfig
 from .types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, Event,
@@ -146,6 +146,7 @@ class Daemon:
         self._stop_event = threading.Event()
         self._httpd: http.server.ThreadingHTTPServer | None = None
         self._http_thread: threading.Thread | None = None
+        self._cmd_listener: commands.CommandListener | None = None
         # Daemon memory: disposable, rebuilt on restart.
         self._probe_memo: dict[str, tuple[float, bool, str]] = {}
         self._stall_cache: dict[str, str | None] = {}
@@ -170,12 +171,14 @@ class Daemon:
             for project in self.registry:
                 self._emit_lifecycle(project, EventType.DAEMON_STARTED)
             self._start_http()
+            self._start_cmd_listener()
             try:
                 while not self._stop_event.is_set():
                     for project in list(self.registry):
                         self.run_pass(project)
                     self._stop_event.wait(self._min_interval())
             finally:
+                self._stop_cmd_listener()
                 self._stop_http()
                 for project in self.registry:
                     self._emit_lifecycle(project, EventType.DAEMON_STOPPED)
@@ -187,7 +190,25 @@ class Daemon:
 
     def stop(self) -> None:
         self._stop_event.set()
+        self._stop_cmd_listener()
         self._stop_http()
+
+    def _start_cmd_listener(self) -> None:
+        """P12: start the ntfy command listener if any project wants one."""
+        for project, root in self.registry.items():
+            try:
+                cfg = config.ProjectConfig.load(root)
+            except Exception:
+                continue
+            if cfg.notify.cmd_topic and os.environ.get(cfg.notify.cmd_token_env):
+                self._cmd_listener = commands.CommandListener(self.registry)
+                self._cmd_listener.start()
+                return
+
+    def _stop_cmd_listener(self) -> None:
+        if self._cmd_listener is not None:
+            self._cmd_listener.stop()
+            self._cmd_listener = None
 
     def _install_signal_handlers(self) -> None:
         try:
