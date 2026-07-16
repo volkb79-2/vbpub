@@ -1,0 +1,309 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import threading
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
+from pathlib import Path
+
+from conftest import fixture_frame, fixture_root
+from topos.daemon import FrameBroker, serve_unix_socket
+from topos.model import frame_to_jsonable
+
+
+def _start_broker(socket_path: Path) -> object:
+    server = serve_unix_socket(socket_path, FrameBroker([fixture_frame()]))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+def _cli_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"/tmp/topos-pytest:{fixture_root().parents[1] / 'src'}"
+    return env
+
+
+def test_attach_once_json_returns_canonical_frame(tmp_path: Path) -> None:
+    socket_path = tmp_path / "topos.sock"
+    server = _start_broker(socket_path)
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "topos.cli",
+                "--attach",
+                str(socket_path),
+                "--once",
+                "--json",
+            ],
+            check=True,
+            cwd=fixture_root().parents[1],
+            env=_cli_env(),
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        assert json.loads(proc.stdout) == frame_to_jsonable(fixture_frame())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_attach_ui_smoke_works_against_fixture_broker(tmp_path: Path) -> None:
+    socket_path = tmp_path / "topos.sock"
+    server = _start_broker(socket_path)
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "topos.cli",
+                "--attach",
+                str(socket_path),
+                "--ui-smoke",
+            ],
+            check=True,
+            cwd=fixture_root().parents[1],
+            env=_cli_env(),
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        assert proc.stdout.strip() == "ui smoke ok frames=1 view=tree profile=auto"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_attach_rejects_ambiguous_combinations(tmp_path: Path) -> None:
+    socket_path = tmp_path / "topos.sock"
+    server = _start_broker(socket_path)
+    try:
+        scenarios = [
+            (
+                [
+                    sys.executable,
+                    "-m",
+                    "topos.cli",
+                    "--attach",
+                    str(socket_path),
+                    "--cgroup-root",
+                    str(tmp_path / "cg"),
+                    "--once",
+                    "--json",
+                ],
+                "--attach does not accept --cgroup-root",
+            ),
+            (
+                [
+                    sys.executable,
+                    "-m",
+                    "topos.cli",
+                    "--attach",
+                    str(socket_path),
+                    "--replay",
+                    str(fixture_root() / "frames" / "gstammtisch-once.jsonl"),
+                ],
+                "choose either --attach or --replay",
+            ),
+            (
+                [
+                    sys.executable,
+                    "-m",
+                    "topos.cli",
+                    "--attach",
+                    str(socket_path),
+                    "--step",
+                ],
+                "--attach does not accept replay pacing flags",
+            ),
+            (
+                [
+                    sys.executable,
+                    "-m",
+                    "topos.cli",
+                    "--attach",
+                    str(socket_path),
+                    "--speed",
+                    "2.0",
+                ],
+                "--attach does not accept replay pacing flags",
+            ),
+        ]
+        for argv, expected in scenarios:
+            proc = subprocess.run(
+                argv,
+                cwd=fixture_root().parents[1],
+                env=_cli_env(),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            assert proc.returncode == 2
+            assert expected in proc.stderr
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+# ── Default-socket attach (P30) tests ─────────────────────────────────────
+
+
+def test_attach_default_socket_parse_bare_flag(tmp_path: Path) -> None:
+    """--attach with no path parses as DEFAULT_DAEMON_SOCKET via argparse."""
+    from topos.cli import parse_args
+    from topos.daemon.deploy import DEFAULT_DAEMON_SOCKET
+
+    args = parse_args(["--attach", "--once", "--json"])
+    assert args.attach == DEFAULT_DAEMON_SOCKET
+    assert args.once is True
+    assert args.json is True
+
+
+def test_attach_default_socket_works_with_fixture_broker(tmp_path: Path, monkeypatch) -> None:
+    """--attach with no path uses DEFAULT_DAEMON_SOCKET in main()."""
+    socket_path = tmp_path / "topos.sock"
+    server = _start_broker(socket_path)
+    try:
+        from topos import cli
+
+        monkeypatch.setattr(cli, "DEFAULT_DAEMON_SOCKET", socket_path)
+        output = StringIO()
+        with redirect_stdout(output):
+            code = cli.main(["--attach", "--once", "--json"])
+        assert code == 0
+        assert json.loads(output.getvalue()) == frame_to_jsonable(fixture_frame())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_attach_custom_socket_still_works(tmp_path: Path) -> None:
+    """--attach /custom.sock --once --json still works (backward compat)."""
+    socket_path = tmp_path / "topos.sock"
+    server = _start_broker(socket_path)
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "topos.cli",
+                "--attach",
+                str(socket_path),
+                "--once",
+                "--json",
+            ],
+            check=True,
+            cwd=fixture_root().parents[1],
+            env=_cli_env(),
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        assert json.loads(proc.stdout) == frame_to_jsonable(fixture_frame())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_attach_default_socket_with_ui_smoke(tmp_path: Path) -> None:
+    """--attach (bare) + --ui-smoke parses and runs against default socket."""
+    from topos.cli import parse_args
+    from topos.daemon.deploy import DEFAULT_DAEMON_SOCKET
+
+    args = parse_args(["--attach", "--ui-smoke"])
+    assert args.attach == DEFAULT_DAEMON_SOCKET
+    assert args.ui_smoke is True
+
+
+# ── Daemon error guidance (P31) tests ─────────────────────────────────────
+
+
+def test_default_socket_attach_error_guidance(tmp_path: Path) -> None:
+    """Default-socket attach missing socket prints original error and
+    preflight/install-plan guidance."""
+    from topos.cli import _format_daemon_error
+    from topos.daemon.client import DaemonConnectError
+    from topos.daemon.deploy import DEFAULT_DAEMON_SOCKET
+
+    exc = DaemonConnectError("cannot connect to /run/topos/topos.sock: No such file or directory")
+    msg = _format_daemon_error(exc, DEFAULT_DAEMON_SOCKET)
+    assert "cannot connect to /run/topos/topos.sock" in msg
+    assert "Try: topos daemon preflight" in msg
+    assert "topos daemon install-plan" in msg
+
+
+def test_custom_socket_attach_error_guidance(tmp_path: Path) -> None:
+    """Custom-socket attach error suggests preflight with that socket."""
+    from topos.cli import _format_daemon_error
+    from topos.daemon.client import DaemonConnectError
+    from pathlib import Path
+
+    custom = Path("/tmp/my-custom.sock")
+    exc = DaemonConnectError(f"cannot connect to {custom}: Connection refused")
+    msg = _format_daemon_error(exc, custom)
+    assert "cannot connect to /tmp/my-custom.sock" in msg
+    assert "Try: topos daemon preflight --socket /tmp/my-custom.sock" in msg
+    assert "install-plan" not in msg
+
+
+def test_protocol_error_guidance(tmp_path: Path) -> None:
+    """Protocol error guidance mentions compatible daemon and logs."""
+    from topos.cli import _format_daemon_error
+    from topos.daemon.client import DaemonProtocolError
+    from topos.daemon.deploy import DEFAULT_DAEMON_SOCKET
+
+    exc = DaemonProtocolError("daemon at /run/topos/topos.sock returned malformed JSON on line 1")
+    msg = _format_daemon_error(exc, DEFAULT_DAEMON_SOCKET)
+    assert "compatible topos daemon" in msg
+    assert "daemon logs" in msg
+    assert "malformed JSON" in msg
+
+
+def test_response_error_guidance(tmp_path: Path) -> None:
+    """Response error guidance mentions compatible daemon and logs."""
+    from topos.cli import _format_daemon_error
+    from topos.daemon.client import DaemonResponseError
+    from topos.daemon.deploy import DEFAULT_DAEMON_SOCKET
+
+    exc = DaemonResponseError("daemon at /run/topos/topos.sock returned an error: denied")
+    msg = _format_daemon_error(exc, DEFAULT_DAEMON_SOCKET)
+    assert "compatible topos daemon" in msg
+    assert "daemon logs" in msg
+    assert "denied" in msg
+
+
+def test_attach_missing_socket_returns_guidance_via_cli(tmp_path: Path) -> None:
+    """CLI --attach against a missing socket prints original error + guidance
+    and exits 2 without live-collection fallback."""
+    import topos.cli as cli_mod
+
+    missing = tmp_path / "nonexistent.sock"
+    output = StringIO()
+    err = StringIO()
+    with redirect_stdout(output), redirect_stderr(err):
+        code = cli_mod.main(["--attach", str(missing), "--once", "--json"])
+    assert code == 2
+    assert "cannot connect" in err.getvalue().lower() or "no such" in err.getvalue().lower()
+    assert "Try: topos daemon preflight --socket" in err.getvalue()
+    assert output.getvalue() == ""  # No live fallback
+
+
+def test_attach_default_missing_socket_guidance_via_cli(tmp_path: Path, monkeypatch) -> None:
+    """Bare --attach default-socket failure suggests default preflight and install-plan."""
+    import topos.cli as cli_mod
+
+    missing_default = tmp_path / "missing-default.sock"
+    monkeypatch.setattr(cli_mod, "DEFAULT_DAEMON_SOCKET", missing_default)
+    output = StringIO()
+    err = StringIO()
+    with redirect_stdout(output), redirect_stderr(err):
+        code = cli_mod.main(["--attach", "--once", "--json"])
+    stderr = err.getvalue()
+    assert code == 2
+    assert f"cannot connect to {missing_default}" in stderr
+    assert "Try: topos daemon preflight" in stderr
+    assert "topos daemon install-plan" in stderr
+    assert output.getvalue() == ""

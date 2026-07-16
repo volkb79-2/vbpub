@@ -26,7 +26,7 @@ USER root
 # these baked copies only seed the dependency closure, not the code under test.
 COPY ciu/         /src/ciu/
 COPY cmru/        /src/cmru/
-COPY groop/       /src/groop/
+COPY topos/       /src/topos/
 COPY nyxloom/ /src/nyxloom/
 
 # One COPIES venv on python 3.14 under /opt (a real interpreter binary, so a
@@ -38,9 +38,14 @@ RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
  && /opt/tester-venv/bin/pip install --no-cache-dir \
       "/src/ciu[ssh,test]" \
       "/src/cmru[test]" \
-      "/src/groop[dev]" \
+      "/src/topos[dev]" \
       "/src/nyxloom[test]" \
  && /opt/tester-venv/bin/python -c "import pytest, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko; print('tester-unified closure OK')"
+
+# Some suites (e.g. topos daemon-status) call pwd.getpwuid(euid). The container
+# runs as uid 1003 (to match the host-owned bind mounts), which the base image
+# has no /etc/passwd entry for -> getpwuid(1003) raises KeyError. Add one.
+RUN echo "tester:x:1003:994:tester:/home/vscode:/bin/bash" >> /etc/passwd
 
 USER 1003
 ENV TESTER_VENV=/opt/tester-venv

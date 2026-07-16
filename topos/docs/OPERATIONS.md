@@ -1,0 +1,445 @@
+# topos Operations
+
+This is the practical runbook for the current implementation.
+
+## Install
+
+From the repository root:
+
+```bash
+pip install -e topos/
+topos --version
+```
+
+For test/dev without installing:
+
+```bash
+PYTHONPATH=topos/src python3 -m topos.cli --once --json
+```
+
+## Common Commands
+
+Collect one frame as JSON:
+
+```bash
+topos --once --json
+```
+
+Open the live TUI:
+
+```bash
+topos
+```
+
+Record while viewing:
+
+```bash
+topos --record /tmp/topos-live.jsonl
+```
+
+Replay:
+
+```bash
+topos --replay /tmp/topos-live.jsonl --step
+```
+
+Use a fixture cgroup root:
+
+```bash
+topos --once --json --cgroup-root topos/tests/fixtures/cgroupfs/gstammtisch
+```
+
+Run a release smoke (rootless safe-path evidence):
+
+```bash
+PYTHONPATH=topos/src python3 -m topos.acceptance smoke \
+  --cgroup-root topos/tests/fixtures/cgroupfs/gstammtisch \
+  --replay topos/tests/fixtures/frames/gstammtisch-once.jsonl \
+  --pretty-json
+```
+
+Run a steady-state collector loop (release confidence, rootless):
+
+```bash
+PYTHONPATH=topos/src python3 -m topos.acceptance steady \
+  --cgroup-root topos/tests/fixtures/cgroupfs/gstammtisch \
+  --samples 5 --interval-s 0 --pretty-json
+```
+
+Run a TUI smoke release evidence (rootless, subprocess-based):
+
+```bash
+PYTHONPATH=topos/src python3 -m topos.acceptance tui-smoke \
+  --replay topos/tests/fixtures/frames/gstammtisch-once.jsonl \
+  --pretty-json
+```
+
+Run with a custom profile:
+
+```bash
+PYTHONPATH=topos/src python3 -m topos.acceptance tui-smoke \
+  --replay topos/tests/fixtures/frames/gstammtisch-once.jsonl \
+  --profile minimal --json
+```
+
+Inspect an incident snapshot:
+
+```bash
+topos snapshot inspect /path/to/topos-incident-*.tar
+```
+
+Compute a steady-state profile from a recording:
+
+```bash
+topos report recording.jsonl --json
+topos report recording.jsonl --json --window last:300s --group-by slice
+topos report recording.jsonl --json --window auto
+topos report recording.jsonl --json --assert ':ram:max<=4294967296'              # pass/fail gate
+topos report recording.jsonl --json --window last:300s --group-by slice \
+  --assert 'system.slice:ram:p95<=8589934592' \
+  --assert ':psi_mem_some_avg10:max<=5.0'                                        # multiple ANDed asserts
+```
+
+`--window auto` profiles the longest stable trailing frame window. Stability is
+the population coefficient of variation (standard deviation / mean) for the
+busiest eligible entity's `ram` gauge, at most 0.05 across at least three
+frames. Use `--stability-gauge`, `--stability-cov`, and `--min-frames` to
+override those defaults.
+
+A damaged recording (corrupt, truncated, empty, or non-P2 format) produces a
+typed error on stderr and exits 2 — never a raw traceback, and never a report
+computed from the part that happened to survive. A truncated `.jsonl.zst` in
+particular is rejected rather than decoded up to the cut: a report built from
+half a recording would look entirely healthy.
+
+Plan a read-only file inspection (no content reads):
+
+```bash
+topos inspect-files plan --kind docker-json-log --target my-container --inspect-files --admin
+```
+
+Read bounded file/content (requires full 64-hex container ID for Docker):
+
+```bash
+topos inspect-files read --kind docker-json-log --target <64hex> --inspect-files --admin
+topos inspect-files read --kind cgroup-files --target system.slice/ssh.service --inspect-files --admin --json
+```
+
+Check daemon deployment and protocol status (non-root, read-only):
+
+```bash
+topos daemon status                              # default socket and group
+topos daemon status --json                       # JSON output
+topos daemon status --pretty-json                # indented JSON
+topos daemon status --socket /custom/path.sock --group mygroup
+```
+
+Retrieve daemon component health snapshot:
+
+```bash
+topos daemon health                              # JSON output (default)
+topos daemon health --pretty-json                # indented JSON
+topos daemon health --socket /custom/path.sock   # custom socket
+```
+
+Health output uses the strict `health-v1` capability and schema. Incompatible
+or malformed daemon responses fail with compatible-daemon guidance. Detail and
+error fields are single-line, redacted, and byte-bounded; collector health only
+becomes healthy after a frame is collected successfully.
+
+Retrieve one canonical frame from the daemon socket:
+
+```bash
+topos daemon current                             # default socket
+topos daemon current --socket /custom/path.sock --pretty-json
+```
+
+Attach to a running daemon (interactive TUI or one-shot):
+
+```bash
+topos --attach                                   # default socket, interactive UI
+topos --attach --once --json                     # default socket, one frame
+topos --attach /run/topos/topos.sock             # explicit socket
+```
+
+Run the daemon deployment preflight check:
+
+```bash
+topos daemon preflight                           # default socket
+topos daemon preflight --socket /custom/path.sock --json
+```
+
+View the safe install plan for the packaged daemon templates:
+
+```bash
+topos daemon install-plan                        # text plan
+topos daemon install-plan --json                 # JSON plan
+```
+
+Snapshots are written to `[snapshots].dir` when configured, otherwise
+`$XDG_STATE_HOME/topos/incidents` or `~/.local/state/topos/incidents`.
+They include bounded frame history, selected cgroup files, provider status,
+fresh `systemctl show` output when the selected row maps to a systemd unit, and
+a redacted Docker inspect summary when the selected row is Docker-backed.
+Set `[snapshots] redact = true` to remove Docker environment variables and
+labels from the bundle.
+
+Stop topos-owned DAMON sessions:
+
+```bash
+sudo topos damon stop --all-mine
+```
+
+Start a manual paddr host heat session from CLI:
+
+```bash
+sudo topos damon paddr start --confirm START
+```
+
+## Mouse Interactions (P50)
+
+The entity table is a Textual-native interactive ``DataTable``. Mouse support
+requires a terminal that sends mouse events (most modern terminals do; SSH
+with ``-o ForwardX11=no`` also works).
+
+| Mouse action | Effect |
+|---|---|
+| Click a column header | Sort by that column. Default direction: name ascending, numeric descending. Repeated click toggles direction. |
+| Click a row | Select that row and open its entity drill-down screen. |
+| Click on a placeholder row ("no container rows", "no rows") | No-op — drill-down is never opened for empty placeholders. |
+
+Column headers show ``^`` (ascending) or ``v`` (descending) on the active sort
+column. The status line also shows the current sort key and direction.
+
+All keyboard bindings continue to work when no mouse is available: Up/Down,
+Enter, Left/Right for tree collapse/expand, Home/End for replay jump,
+PageUp/PageDown for scrolling, and all function keys.
+
+## TUI Keys
+
+| Key | Action |
+|---|---|
+| `F5`, `t` | Toggle tree/container view. |
+| `Tab`, `p` | Cycle column profile. |
+| `F6`, `s` | Cycle sort. |
+| `/` | Filter rows. |
+| `Left`, `h` | Collapse selected tree branch or move to parent. |
+| `Right`, `l` | Expand selected tree branch. |
+| `Up`, `Down` | Move selection (or click rows). |
+| `Enter` | Entity drill-down (the same action as a single row click). |
+| `d` | From entity drill-down: open DAMON vaddr typed-confirmation start modal. |
+| `p` | From host-memory screen: open DAMON paddr typed-confirmation start modal. |
+| `s` | From DAMON drill/host-memory screens: stop topos-owned DAMON sessions only. |
+| `Space` | Play/pause replay while in `--replay`. |
+| `,`, `.` | Step replay backward/forward one frame. |
+| `+`, `-` | Change replay speed while in `--replay`. |
+| `x` | Save incident snapshot for selected entity. |
+| `m` | Host-memory / paddr DAMON status. |
+| `b` | Collapse/expand banner. |
+| `k` | Reserved v2 admin action; the TUI mutation binding remains disabled. |
+| `F1`, `?` | Metric glossary/help. |
+| `q` | Quit. |
+
+## Safety Model
+
+- Normal collection is read-only.
+- `--once --json` and replay paths should not import Textual.
+- DAMON control writes are the only current mutating feature. They require root,
+  typed `START`, topos ownership markers, and audit logs.
+- `topos damon stop --all-mine` only stops sessions with topos markers.
+- TUI DAMON start modals show the planned sysfs writes and require exact
+  `START`. Foreign DAMON sessions remain read-only; the TUI cleanup path calls
+  the same topos-owned marker logic as the CLI.
+- Incident snapshots write only under the configured snapshot directory or the
+  XDG state fallback. They do not collect arbitrary file/log content.
+- File/log/content browsing and executable Docker/systemd admin actions are
+  separately gated. The P46 CLI requires `--admin`, typed `--confirm EXECUTE`,
+  root, strict target validation, and a fail-closed mandatory audit-first
+  execution kernel. See Safety Model below for the full gate chain.
+- Pressing a reserved v2 admin key in the TUI reports that the action is
+  unavailable in the current build instead of failing silently.
+- `topos action preview --kind docker-restart --target NAME --admin --json`
+  prints an exact argv preview and never executes it. Omit `--admin` to verify
+  that the preview is denied. Use `--audit-log PATH` to append an explicit
+  preview-only JSONL record.
+- `topos inspect-files read` provides bounded, confined, read-only content
+  reads for allowlisted Docker JSON logs and cgroup files. Requires both
+  `--inspect-files` and `--admin`. Reads are bounded by `--max-bytes`
+  (default 65536) and `--max-lines` (default 5000). Every path component is
+  traversed descriptor-relatively with `O_NOFOLLOW`; leaves are stat-verified
+  regular files. The module never imports `subprocess` and never writes files.
+- `topos action execute --kind docker-restart --target NAME --admin
+  --confirm EXECUTE` runs the validated Docker/systemd start/stop/restart
+  command through root, admin, typed confirmation, timeout, immutable-plan,
+  execution-allowlist, strict target, fixed-absolute-argv, fail-closed
+  mandatory audit, bounded argv-only runner, and post-audit gates. The
+  production audit is fixed at `/var/log/topos/actions.jsonl`; execute does not
+  accept `--audit-log`. Any pre-mutation gate failure produces a refusal and
+  executes nothing. API fixture paths are not CLI inputs.
+- Tests inject a fake runner and prove every gate without real Docker or
+  systemd calls. Post-audit failure is reported as a typed partial/audit
+  failure while preserving the action outcome.
+- `topos action preview --kind systemd-set-property --target UNIT --property
+  memory.high --value max|BYTES --admin [--mode runtime|persistent] [--json]`
+  generates a structured set-property plan and validates the property/value
+  against `memory.high`-only rules with overflow/range checks. `--mode runtime`
+  is the default for `.scope` units; `--mode persistent` is the default for
+  service/slice units. Stale detection re-reads the current `memory.high` value
+  before execution and refuses if it has changed since planning.
+- `topos action execute --kind systemd-set-property --target UNIT --property
+  memory.high --value 2G --admin --confirm EXECUTE [--mode persistent]`
+  executes the validated plan through the P46 kernel with durable audit. The
+  full gate chain (root, `--admin`, typed confirmation, bounded timeout,
+  immutable plan, fail-closed audit) applies identically to Docker/systemd
+  start/stop/restart actions.
+- `topos action execute --kind docker-kill|systemd-kill --target NAME --admin
+  --confirm KILL [--signal SIGNAL] [--force]` sends one signal from a closed
+  allowlist (TERM, INT, HUP, KILL, QUIT, USR1, USR2) to a Docker container or a
+  systemd unit, through the same P46 gate chain. Signals are bare names: `9`,
+  `SIGKILL` and anything outside the allowlist are refused, never defaulted to
+  TERM. **Data-loss gate:** `--signal KILL` additionally requires `--force`,
+  because it is the one verb in the surface that guarantees data loss — prefer
+  TERM and let the workload shut down. **Protected entities:** a target listed in
+  the config's `[tiers] protected_services` is refused at plan time even with
+  `--admin` and a correct token; if that check cannot be answered at all (e.g. an
+  unreadable config), the kill is refused rather than allowed. Protected
+  containers must be listed by the name you address them with — a container
+  addressed by its 64-hex id is not matched against a name entry.
+- `topos action execute --kind docker-update --target NAME --admin --confirm
+  UPDATE [--memory LIMIT] [--cpus COUNT] [--below-current]` applies `--memory`
+  and/or `--cpus` to a running Docker container (no other `docker update` fields,
+  and no systemd targets — those are `set-property`'s surface, and passing one
+  refuses with that pointer). Memory accepts suffixes (`512M`, `2G`) or bare
+  bytes. **OOM gate:** `docker update --memory` below the container's current
+  usage OOM-kills it on the spot, so topos reads the container's current
+  `memory.current` at plan time and refuses a limit under it. The check is
+  fail-closed: if current usage *cannot be established* (container not resolvable
+  to a cgroup, cgroupfs unreadable), the update is refused too — `--below-current`
+  is the single override for both cases, and it means "apply it anyway, accepting
+  the container may be OOM-killed". Do not make `--below-current` a habit: it
+  turns the only guard between a typo and a dead workload into a formality.
+- Neither kill nor update is reachable through the generic
+  `--confirm EXECUTE` path: both carry validated arguments and their own gates, so
+  they are deliberately excluded from the execution allowlist and are routed to
+  their own entry points (as `systemd-set-property` already was). The generic path
+  still executes only start/stop/restart.
+- `topos squeeze --target CGROUP_PATH --admin --confirm SQUEEZE [options]`
+  performs a guided, stepped `memory.high` squeeze that measures a cgroup's real
+  (hot+warm) working set under pressure. Requires root, `--admin`, and typed
+  `--confirm SQUEEZE` matching the P46 gate pattern. Directly writes
+  `memory.high` to cgroupfs (not through `systemctl set-property`), so each
+  step is fast and the full session produces only two audit records (start/end)
+  rather than one per step. **Hard safety requirement:** `memory.high` is always
+  restored on exit, including Ctrl-C / SIGINT, via a `try/finally` + signal
+  handler restore guard.
+
+  Default options (drawn from `container-mempress.sh` proven values):
+  `--step 256M`, `--delay 15` (PSI avg10 window is 10s; values below ~10s
+  degrade signal quality), `--floor 1G`, `--start` (auto: current `memory.current`
+  rounded up to `--step`), `--relax-to max`, `--psi-some-limit 10`,
+  `--psi-full-limit 5`, `--rf-limit 200`.
+
+  Stop conditions: PSI `some avg10` > `--psi-some-limit`, PSI `full avg10` >
+  `--psi-full-limit`, anon refaults/s > `--rf-limit`, or `memory.high` would go
+  below `--floor`. The last non-pressure `memory.high` is recorded as the
+  squeeze point (≈ hot+warm working set).
+
+  **Two-run stratification pattern (recommended workflow):** A first run with
+  default thresholds finds the warm boundary (where refaults or PSI first become
+  measurable). A second, tighter run (e.g. `--psi-some-limit 5 --psi-full-limit 2
+  --rf-limit 100`) finds the hot floor — the point where the working set
+  genuinely cannot shrink further without heavy thrashing. Live validation on
+  gstammtisch 2026-07-10 found a warm boundary ≈ 1.8 GB (refaults 375/s at
+  1536M) and a hot floor ≈ 1.5 GB (5810 refaults/s cliff at 1280M).
+
+  The per-step JSONL log is written to `/var/log/topos/squeeze/squeeze-<leaf>-<ts>.jsonl`
+  by default. The log schema is compatible with the P2 header+frame JSONL
+  convention so `topos report` (P54) or a future replay path can consume it.
+  Targets with `memory.min > 0` are refused unless `--force` is given (same
+  "protected/prod workload" refusal as the reference script).
+
+  Example:
+  ```bash
+  sudo topos squeeze --target /sys/fs/cgroup/system.slice/my.scope --admin --confirm SQUEEZE
+  # Two-run pattern:
+  sudo topos squeeze --target /sys/fs/cgroup/system.slice/my.scope --admin --confirm SQUEEZE --log /tmp/warm.jsonl
+  sudo topos squeeze --target /sys/fs/cgroup/system.slice/my.scope --admin --confirm SQUEEZE --psi-some-limit 5 --psi-full-limit 2 --rf-limit 100 --log /tmp/hot.jsonl
+  ```
+
+## Compressed Swap Interpretation
+
+Current builds expose zswap metrics, host-level zram metrics, and active
+swap-backend classification. The per-cgroup `swap_disk` name is still a legacy
+compatibility label: on zram-only hosts it represents logical non-zswap swap
+usage, not physical disk IO; on mixed hosts the kernel does not expose
+per-cgroup backend attribution. See `docs/COMPRESSED-SWAP.md`.
+
+## Configuration
+
+Default config path:
+
+```text
+$XDG_CONFIG_HOME/topos/config.toml
+```
+
+Everything is optional. Useful current sections:
+
+```toml
+[general]
+interval = 5.0
+default_view = "tree"
+default_column_profile = "auto"
+
+[history]
+full_resolution_seconds = 14400
+entity_grace_seconds = 30.0
+
+[record]
+flush_every_frames = 1
+fsync = false
+
+[snapshots]
+frames = 60
+redact = false
+
+[damon]
+hot_rate = 50.0
+warm_rate = 5.0
+cold_age = 30.0
+idle_age = 120.0
+vaddr_sample_us = 100000
+vaddr_aggr_us = 2000000
+vaddr_update_us = 1000000
+paddr_sample_us = 400000
+paddr_aggr_us = 8000000
+paddr_update_us = 1000000
+max_concurrent_targets = 4
+# paddr_enabled = false   # disabled by default; enable for daemon-owned paddr
+
+[bpf_snapshot]
+# Disabled by default. Enable only when bpftool is installed and BPF maps are
+# already pinned under the configured root.
+enabled = false
+root = "/sys/fs/bpf/topos"
+interval = 30.0
+map_name = "topos_cgroup_skb"
+state_dir = "/run/topos/bpf" # regular runtime state; never place JSON in bpffs
+```
+
+## What To Check Before A Release Claim
+
+See the canonical release readiness document at `docs/RELEASE-READINESS.md`
+for the full checklist mapping `TUI-SPEC.md` §9 gates to evidence sources,
+rootless automated check commands, live-host evidence templates, and explicit
+non-claims.
+
+Quick reference (see `docs/RELEASE-READINESS.md` for the exact commands):
+
+- Full test suite.
+- `py_compile` over `src/topos`.
+- `--once --json` on a real host and fixture root.
+- Replay UI smoke.
+- Acceptance smoke/steady/tui-smoke (P33/P35/P38).
+- Editable install and wheel/sdist/pipx packaging.
+- `MEASUREMENTS.md` CPU/RSS evidence.
+- Live-root DAMON acceptance if claiming controlled DAMON support.

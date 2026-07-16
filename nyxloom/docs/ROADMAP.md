@@ -16,7 +16,7 @@ implementers under the existing protocol (dogfood rule, SPEC §14.6).
 - `nyxloom doctor`: read-only drift audit over in-place files (draft 1's
   importer findings list, minus the import).
 
-Exit: current groop + dstdns open handoffs lint clean (or produce accepted
+Exit: current topos + dstdns open handoffs lint clean (or produce accepted
 findings); a deliberately broken carve is rejected.
 **Benefit realized: carve-quality regression protection for the manual
 workflow, before any automation exists.**
@@ -64,7 +64,7 @@ get push + one-command resolution instead of "check the file occasionally."**
 
 ## M4 — multi-project + dstdns resources
 
-- Project registry (groop, pwmcp, dstdns on one tick); host fairness caps.
+- Project registry (topos, pwmcp, dstdns on one tick); host fairness caps.
 - dstdns adapter: test-runner gate declaration, stack mutex as flock (retire
   `.STACK_LOCK`/`.CARVE_LOCK`), infra-glob auto-exclusive rule (lint L9),
   pwmcp resource declaration.

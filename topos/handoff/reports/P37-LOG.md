@@ -1,0 +1,105 @@
+# P37 Network Loss Diagnostics - Work Log
+
+## Context
+
+- Branch: feat/topos-p37-network-loss-diagnostics
+- Worktree: .worktrees/-topos-p37-network-loss-diagnostics
+- Base commit: 55daa25
+- Package: P37 - Network loss diagnostics
+- Current objective: Add host/interface-level network drop/error visibility via host_meta, banner line, and host-scoped diagnostics.
+
+## Timeline
+
+```text
+2026-07-10 CEST
+- Action: Created branch and worktree from main.
+- Commands: git worktree add -b feat/topos-p37-network-loss-diagnostics .worktrees/-topos-p37-network-loss-diagnostics main
+- Files changed: (none)
+- Result: Worktree ready at 55daa25.
+- Follow-up: Implement changes.
+
+2026-07-10 CEST
+- Action: Extended _net_dev_counters() to parse rx_errors, rx_drop, tx_errors, tx_drop.
+- Files changed: topos/src/topos/collect/host.py
+- Result: Raw counters now include drop/error fields.
+- Follow-up: Extended rate computation.
+
+2026-07-10 CEST
+- Action: Extended _apply_host_device_rates() for drop/error rate computation.
+- Files changed: topos/src/topos/collect/collector.py
+- Result: rx_errors_s, rx_drops_s, tx_errors_s, tx_drops_s computed from deltas.
+
+2026-07-10 CEST
+- Action: Updated _net_device_line() banner with LOSS annotation for non-zero drops/errors.
+- Files changed: topos/src/topos/ui/banner.py
+- Result: NET line shows loss info when non-zero.
+
+2026-07-10 CEST
+- Action: Added _annotate_host_network_loss() in diag/__init__.py.
+- Files changed: topos/src/topos/diag/__init__.py
+- Result: Host-scoped finding on root entity when drops/errors detected.
+
+2026-07-10 CEST
+- Action: Added 9 new tests + updated existing tests for new fields.
+- Files changed: topos/tests/test_host_device.py, topos/tests/test_ui_banner.py, topos/tests/test_diag.py
+- Result: All tests pass.
+
+2026-07-10 CEST
+- Action: Updated golden fixture for new net_devices shape.
+- Files changed: topos/tests/fixtures/frames/gstammtisch-once.jsonl
+- Result: Golden frame matches collector output.
+
+2026-07-10 CEST
+- Action: Updated STATUS.md diagnostics notes.
+- Files changed: topos/docs/STATUS.md
+- Result: Diagnostics input gap noted as partially closed.
+
+2026-07-10 CEST
+- Action: Full test suite 345 passed (up from 344), py_compile clean.
+- Commands: PYTHONPATH=topos/src python3 -m pytest topos/tests -q
+- Result: 345 passed in 39.28s.
+
+2026-07-10 CEST
+- Action: Report and log finalized. Focus commit made.
+- Files changed: topos/handoff/reports/P37-REPORT.md, topos/handoff/reports/P37-LOG.md
+- Result: Package ready for review and merge.
+
+2026-07-10 CEST (controller review)
+- Action: Hardened host_network_loss annotation to replace its own existing finding, preserve replay findings when host_meta is absent, tolerate malformed host_meta rates, and avoid banner crashes on malformed replay metadata.
+- Files changed: topos/src/topos/diag/__init__.py, topos/src/topos/ui/banner.py, topos/tests/test_diag.py, topos/tests/test_ui_banner.py, topos/handoff/reports/P37-REPORT.md, topos/handoff/reports/P37-LOG.md
+- Validation: PYTHONPATH=topos/src /tmp/p25-venv/bin/python -m pytest topos/tests/test_host_device.py topos/tests/test_ui_banner.py topos/tests/test_diag.py -q -> 52 passed in 0.35s
+- Validation: PYTHONPATH=topos/src /tmp/p25-venv/bin/python -m py_compile topos/src/topos/collect/host.py topos/src/topos/collect/collector.py topos/src/topos/ui/banner.py topos/src/topos/diag/__init__.py topos/tests/test_host_device.py topos/tests/test_ui_banner.py topos/tests/test_diag.py -> clean
+- Validation: PYTHONPATH=topos/src /tmp/p25-venv/bin/python -m pytest topos/tests -q -> 349 passed in 40.95s
+- Follow-up: Commit controller review patch and merge
+```
+
+## Decisions
+
+- Decision: Extend _net_dev_counters() with rx_drop, rx_errs, tx_drop, tx_errs.
+  Reason: These fields are already in /proc/net/dev; P34 only parsed byte/packet counters.
+  Impact: Net device dicts grow by 4 fields, rates get 4 new computed fields.
+- Decision: Show drop/error rates in the NET banner line only when non-zero.
+  Reason: Handoff requires "concise host-scope banner/status line only when loss/error rates are non-zero".
+  Impact: Clean banner when healthy; informative when degraded.
+- Decision: Add host-network-loss diagnostic Finding on root entity.
+  Reason: No host-level findings slot exists on Frame; root entity is the canonical host-level cgroup entity.
+  Impact: Diagnostics appear in the root entity findings list.
+
+## Blockers
+
+None.
+
+## Validation
+
+```text
+Initial agent validation: 345 passed in 39.28s.
+Controller review validation: 349 passed in 40.95s.
+```
+
+## Handoff Checklist
+
+- [x] Report file written.
+- [x] Log file current.
+- [x] Tests/compile/smoke recorded.
+- [x] Known gaps documented.
+- [x] Feature branch committed.

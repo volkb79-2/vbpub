@@ -97,7 +97,7 @@ contract): `test_digest_verb_uses_notify_digest`,
    `"<project>: <n> QUEUED, <n> ACTIVE[, <n> OTHER_STATE ...] [(paused)]"`
    -- QUEUED and ACTIVE are always shown (even at 0) as the two
    operationally interesting buckets; any other state is appended only if
-   its count is non-zero. The handoff's example (`"groop: 11 QUEUED, 0
+   its count is non-zero. The handoff's example (`"topos: 11 QUEUED, 0
    ACTIVE (paused)"`) is consistent with this but doesn't fully pin down
    the format for states beyond those two, or what "active-attempt count"
    (as opposed to the ACTIVE task-state count) was meant to mean --
@@ -114,7 +114,7 @@ contract): `test_digest_verb_uses_notify_digest`,
    `UNKNOWN_REPLY`. Worth confirming this is the desired UX.
 3. **Test project id**: I used the `sample_project` fixture's `"demo"`
    project (matching this repo's existing test convention) rather than
-   the handoff's illustrative `"groop"` name; the transport test registers
+   the handoff's illustrative `"topos"` name; the transport test registers
    its own throwaway `"cmdproj"` project directly (via a local
    `_register_cmd_project` helper) since it needs a real `[notify]`
    section with `ntfy_url` pointed at the fake server's ephemeral port,
@@ -147,4 +147,4 @@ contract): `test_digest_verb_uses_notify_digest`,
   chat-ops with distinct cmd topics per project is ever wanted, this will
   need revisiting (current design assumes one shared ntfy command topic
   across all projects, consistent with the "operator sends `unpause
-  groop`" phrasing in the handoff).
+  topos`" phrasing in the handoff).

@@ -20,7 +20,7 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
 - **B4 — dashboard reads project.toml + archive UX.** Show each project's gate,
   channels, folders. Keep last `archive_keep_visible` (10) completed visible;
   older behind an **Archive** button. (Pairs with P22 legend/drilldown.)
-- **B5 — migrate groop + dstdns to nyxloom-trove.** One deliberate pass each
+- **B5 — migrate topos + dstdns to nyxloom-trove.** One deliberate pass each
   (`git mv handoff nyxloom-trove/handoffs`, repoint config).
 - **B6 — self-host activation.** Frontmatter-convert nyxloom's NOT-YET-
   IMPLEMENTED handoffs (P16 carver, P18 decision-chat, P22 dashboard), then add

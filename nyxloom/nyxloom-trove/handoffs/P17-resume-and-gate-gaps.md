@@ -29,7 +29,7 @@ ATTEMPT_STARTED.
 The task state machine has no `MERGE_READY -> REVIEW_REJECTED` edge, so a
 merge authority (human or a future auto-gate) that rejects at the gate —
 e.g. the controller's own post-review gate re-run fails, or a pre-contract
-review's verdict was in its CONTENT while the process exited 0 (groop-P89,
+review's verdict was in its CONTENT while the process exited 0 (topos-P89,
 2026-07-15) — cannot route the task back to rework without SUPERSEDE +
 statefile reset (what was hand-done for P89). Add the transition
 `MERGE_READY -> REVIEW_REJECTED` to types.TASK_TRANSITIONS (this touches

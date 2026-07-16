@@ -5,7 +5,7 @@ parses it, reconciles status changes into events, and provides the CLI verbs.
 It NEVER rewrites entry prose — decide() only appends a decision record
 block and flips the status token on the entry's heading line.
 
-ENTRY FORMAT (existing convention, dstdns/groop):
+ENTRY FORMAT (existing convention, dstdns/topos):
     ## D-001 · 2026-07-13 · gap-analysis session · DECIDED 2026-07-13
     **Question:** ...
     **Why it matters:** ...

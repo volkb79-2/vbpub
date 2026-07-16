@@ -1,8 +1,8 @@
 # Container memory profiles — dstdns stack on gstammtisch
 
 **Status:** living measurement record · started 2026-07-10 (first-ever full-stack deploy)
-**Method:** groop one-shot frames (`/root/groop-venv/bin/groop --once --json`, recorder unit
-`groop-recorder.service` → `/var/log/groop/rec-<date>.jsonl`), DAMON
+**Method:** topos one-shot frames (`/root/topos-venv/bin/topos --once --json`, recorder unit
+`topos-recorder.service` → `/var/log/topos/rec-<date>.jsonl`), DAMON
 `timeseries-container` (400 ms / 8 s sampling per `damon-analysis/DAMON-GUIDE.md` §11 —
 defaults produce all-cold garbage), and `container-mempress.sh` stepped `memory.high`
 squeezes. Companion decisions: `plan-stack-resource-tuning.md` (D1–D5).
@@ -112,14 +112,14 @@ lands in besteffort.
   overrides (today: blanket `mem_limit=2g`, `mem_reservation=256m` — already generous
   vs. the measured ~50 M apps tier; the interesting overrides are OAP reservation up,
   and possibly authentik-worker)
-- recorder `groop-recorder.service` dialed to 300 s cadence 2026-07-10 after the
-  measurement window (~130 MB/day; stop it or rotate `/var/log/groop/` when done)
+- recorder `topos-recorder.service` dialed to 300 s cadence 2026-07-10 after the
+  measurement window (~130 MB/day; stop it or rotate `/var/log/topos/` when done)
 
 ## Reproduction crib
 
 ```
 # one-shot frame                      # continuous recording (60 s)
-/root/groop-venv/bin/groop --once --json    systemctl status groop-recorder
+/root/topos-venv/bin/topos --once --json    systemctl status topos-recorder
 # DAMON profile of one container (root, damon_stat must be off)
 HOME=/root PATH=/root/damon-venv/bin:$PATH \
   /root/damon-venv/bin/python3 /home/vb/volkb79-2/vbpub/scripts/damon-analysis/damon_cli.py \

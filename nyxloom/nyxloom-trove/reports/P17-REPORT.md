@@ -169,7 +169,7 @@ I switched to `-v` for the authoritative tail pasted here.)
   frontier-review rejection path (`daemon.py`, `EmitAttemptExit` for
   `Role.FRONTIER_REVIEW`) already left a rejected task there with no
   automatic recovery (this is the exact "SUPERSEDE + statefile reset"
-  workaround the handoff cites for groop-P89). This package does not add
+  workaround the handoff cites for topos-P89). This package does not add
   that automation either — out of scope for a "small, same area" fold-in
   and not requested. The regression test (`test_reject_then_requeue`)
   demonstrates the *edge* works by performing the follow-on
@@ -238,5 +238,5 @@ I switched to `-v` for the authoritative tail pasted here.)
 - `REVIEW_REJECTED` (both the pre-existing frontier-review path and this
   package's new merge-gate path) still has no automatic forward motion in
   `reconcile.py` — worth a dedicated future package if the "SUPERSEDE +
-  statefile reset" manual workaround (groop-P89) keeps recurring in
+  statefile reset" manual workaround (topos-P89) keeps recurring in
   production.

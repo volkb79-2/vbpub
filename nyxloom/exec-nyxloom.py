@@ -3,7 +3,7 @@
 
 Usage:
     ./exec-nyxloom.py                 # defaults to `status`
-    ./exec-nyxloom.py status --project groop
+    ./exec-nyxloom.py status --project topos
     ./exec-nyxloom.py doctor
     ./exec-nyxloom.py <any nyxloom.cli subcommand> [args...]
 

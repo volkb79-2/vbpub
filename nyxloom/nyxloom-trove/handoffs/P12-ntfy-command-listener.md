@@ -8,7 +8,7 @@
 ## Objective
 
 A daemon-side listener on an ntfy command topic so the operator can send
-`unpause groop` (etc.) from the phone app. Outbound notifications stay
+`unpause topos` (etc.) from the phone app. Outbound notifications stay
 untouched. Security model is non-negotiable:
 
 - The listener reads the topic via the READ-ONLY identity: token from env
@@ -61,7 +61,7 @@ Verbs (project arg required where shown; unknown project -> reply
 "unknown project: <name>" using only the validated `[a-z0-9-]` string):
 - `help` -> fixed multi-line list of verbs with one-line descriptions.
 - `status <project>` -> per-state counts + active-attempt count (from
-  storage.list_states; e.g. "groop: 11 QUEUED, 0 ACTIVE (paused)").
+  storage.list_states; e.g. "topos: 11 QUEUED, 0 ACTIVE (paused)").
 - `pause <project>` / `unpause <project>` -> same effect as the CLI verbs
   (flag file + PAUSE_SET/PAUSE_CLEARED event, actor ntfy-cmd), reply
   confirms new state.
@@ -73,10 +73,10 @@ prepared JSON lines, then hanging until closed)
 1. handle_message('help', []) returns text listing all five verbs;
    handle_message('rm -rf /', []) returns the unknown-command reply;
    handle_message('unpause; rm x', []) -> unknown-command (strict regex).
-2. handle_message('unpause groop', []) on a registered tmp project with the
+2. handle_message('unpause topos', []) on a registered tmp project with the
    pause flag set: flag removed, PAUSE_CLEARED event with actor id
    'ntfy-cmd', reply contains 'unpaused'. pause symmetric.
-3. handle_message('status groop', []) reflects seeded statefiles.
+3. handle_message('status topos', []) reflects seeded statefiles.
 4. handle_message(anything, ['nyxloomd-reply']) -> None (loop guard).
 5. Transport: fake server streams one command message then blocks; listener
    thread issues the reply POST to the cmd topic (capture it: assert

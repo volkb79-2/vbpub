@@ -1,0 +1,19 @@
+[Unit]
+Description=topos read-only daemon
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=topos
+UMask=0007
+RuntimeDirectory=topos
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/env topos daemon serve --socket /run/topos/topos.sock
+Restart=on-failure
+
+# Create the topos group and add approved users before enabling this unit.
+# The daemon remains read-only; clients attach over the group-readable socket.
+
+[Install]
+WantedBy=multi-user.target

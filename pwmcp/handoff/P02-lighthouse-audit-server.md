@@ -71,7 +71,7 @@ exactly, via the P01 templated-ARG mechanism.
    timing metrics (LCP, CLS, TBT, FCP, SI, TTI) with values and scores; the
    cheap call for "did the page get slower".
 
-### Response bounds (token budget — same posture as groop P58)
+### Response bounds (token budget — same posture as topos P58)
 
 A raw Lighthouse LHR is hundreds of KB and must NEVER be returned. Cap every
 tool result (items AND total bytes; state both caps in the tool

@@ -130,7 +130,7 @@ wrapper (or by `nyxloom lease run <resource> -- <cmd>` for manual work):
 - **Crash release is kernel-guaranteed** — the failure mode of `.STACK_LOCK` /
   `.CARVE_LOCK` (stale files needing age heuristics) does not exist.
 - Cross-project by construction: one shared lease directory; project.toml maps
-  local resource names to global lease names (dstdns `stack` ≠ groop's).
+  local resource names to global lease names (dstdns `stack` ≠ topos's).
 
 `Stack: none|readonly|exclusive` becomes sugar for mutex declarations in
 frontmatter (`mutexes: [stack]` for exclusive; readonly = counted reader slots

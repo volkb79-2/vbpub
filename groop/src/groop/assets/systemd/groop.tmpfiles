@@ -1,3 +1,0 @@
-# Create the daemon runtime directory with root ownership and group-read access.
-# Create the groop group and add approved users before enabling the daemon.
-d /run/groop 0750 root groop -

@@ -59,7 +59,7 @@ NOT kill in-flight agent wrappers, matching today's restart-safe behavior).
    root global; container `nyxloom-<env>-controller` reaches healthy.
 2. Inside the controller container: `docker ps` works (sock reachable),
    `git -C /workspaces/dstdns status` works (repo mounted), `claude --version`
-   works (CLI+auth present), and `nyxloom status --project groop` reads
+   works (CLI+auth present), and `nyxloom status --project topos` reads
    the persisted state (state volume mounted).
 3. Restart the controller container: state intact (events/statefiles), an
    in-flight agent wrapper started before the restart is STILL running after

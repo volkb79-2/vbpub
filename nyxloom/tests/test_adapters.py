@@ -862,7 +862,7 @@ def test_classify_log_tail_limit():
 def test_classify_log_tail_limit_variants():
     """Oracle 8 (tightened 2026-07-15): SPECIFIC limit phrases recognized in
     the terminal tail — bare 'quota'/'limit' no longer match (domain-vocab
-    false positive, groop-P91)."""
+    false positive, topos-P91)."""
     for phrase in ["session limit", "usage limit", "quota exceeded",
                    "plan limit", "rate limit reached", "429 too many requests"]:
         log = f"some log\n{phrase}\nmore"
@@ -938,7 +938,7 @@ def test_build_dispatch_unknown_cli():
 
 
 def test_classify_limit_false_positive_domain_vocab():
-    """2026-07-15 (groop-P91): a package about caps/limits/quota says those
+    """2026-07-15 (topos-P91): a package about caps/limits/quota says those
     words in its own reasoning; that must NOT read as a provider limit."""
     from nyxloom.adapters import classify_log_tail
     domain = "\n".join([

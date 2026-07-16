@@ -127,7 +127,7 @@ Full suite (`tests/`):
 - The handoff's "A->B dependency places A left of B" phrasing is taken
   literally as "edge source (the task with `depends_on`) renders left of the
   edge target" — this is a rendering-order convention, not a claim about real
-  execution order (the target/dependency itself, e.g. groop-P91, must
+  execution order (the target/dependency itself, e.g. topos-P91, must
   actually complete first at runtime; the DAG's left-to-right axis mirrors
   the handoff's own worked examples, not wall-clock sequencing).
 - Mutex-resource nodes (`<project>.<mutexname>`) and cross-project/stale

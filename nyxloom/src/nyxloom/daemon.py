@@ -1110,7 +1110,7 @@ class Daemon:
                 "   a report's pasted output.",
                 "5. Small defects: fix them YOURSELF, commit to the task's",
                 "   feat/ branch. Large/architectural defects: REJECT.",
-                "6. Write groop/handoff/reports/<task>-REVIEW.md: findings,",
+                "6. Write topos/handoff/reports/<task>-REVIEW.md: findings,",
                 "   what you fixed, verdict + reasoning. Commit it to the",
                 "   feat/ branch (NOT main). Do NOT merge. Do NOT write the",
                 "   implementer's LOG/REPORT.",

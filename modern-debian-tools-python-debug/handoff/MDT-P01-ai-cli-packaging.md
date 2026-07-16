@@ -62,7 +62,7 @@ package and add OpenCode as a first-class, reproducibly pinned AI CLI tool.
 - Work only inside `/workspaces/vbpub/.worktrees/-mdt-ai-cli-packaging` on
   branch `feat/mdt-ai-cli-packaging`.
 - Do not edit the main checkout.
-- Avoid unrelated cleanup and do not modify `groop/**`.
+- Avoid unrelated cleanup and do not modify `topos/**`.
 - Do not regenerate release logs, staged binary artifacts, or historical
   package manifests solely to reflect this source change.
 - Use ASCII unless an edited file already requires otherwise.

@@ -6,8 +6,8 @@
 
 ## Findings to fix (all confirmed live)
 
-1. **BUG — DAG shows "No edges"** while groop has real dependencies
-   (groop-P92→P91, P94→P90, P95→P91+P93, P77→P73). Root-cause first: the
+1. **BUG — DAG shows "No edges"** while topos has real dependencies
+   (topos-P92→P91, P94→P90, P95→P91+P93, P77→P73). Root-cause first: the
    edge builder almost certainly reads statefiles (which carry no deps)
    instead of parsing each task's frontmatter via
    statefile.handoff_path + the project root from the registry

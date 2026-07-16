@@ -50,7 +50,7 @@ package and includes OpenCode as a pinned, optional npm-based AI CLI.
 ## Files
 
 Implementation and tests are confined to `modern-debian-tools-python-debug/**`.
-No `groop/**`, staged binary artifacts, historical build logs, or versioned
+No `topos/**`, staged binary artifacts, historical build logs, or versioned
 release manifests were changed.
 
 ## Blockers

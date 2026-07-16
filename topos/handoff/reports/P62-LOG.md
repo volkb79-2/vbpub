@@ -1,0 +1,117 @@
+# P62 Work Log
+
+## Context
+
+- Branch: `feat/topos-p62-report-steady-state-autodetect`
+- Worktree: `.worktrees/topos-p62-report-steady-state-autodetect`
+- Base commit: `86c444f` (local `main`, after P54 and P61)
+- Package: P62 -- Steady-State Window Auto-Detection
+- Current objective: add deterministic `topos report --window auto` selection.
+
+## Timeline
+
+Append newest entries at the bottom.
+
+```text
+2026-07-13 UTC
+- Action: Read P62 handoff, topos workflow/CONTRACTS, report/CLI implementation,
+  report tests, existing P61 artifacts, and operator documentation.
+- Commands: rg, sed, git status/log.
+- Files changed: this log.
+- Result: P61 assertion support is already merged into the base; P62 can pass
+  detected frames through the existing profile and assertion paths.
+- Follow-up: implement the pure detector, CLI options/output metadata, and
+  fixture-free frame oracle tests.
+
+2026-07-13 UTC
+- Action: Implemented the auto-window detector and resolved-window plumbing;
+  added CLI flags, JSON metadata, docs, report tests, and this package report.
+- Commands: apply_patch; py_compile; focused pytest; manual report and --once
+  CLI smoke commands.
+- Files changed: src/topos/report.py, src/topos/cli.py, tests/test_report.py,
+  README.md, docs/OPERATIONS.md, handoff/reports/P62-REPORT.md.
+- Result: focused report suite passed 105 tests under -W error with only the
+  unrelated global Schemathesis plugin disabled; compilation and both CLI
+  smokes passed. Full-suite timeout gate completed; its pytest lastfailed cache
+  is empty.
+- Follow-up: inspect final diff, then commit.
+
+2026-07-13 UTC
+- Action: Ran final hygiene check and reviewed the package diff.
+- Commands: timeout 300 pytest topos/tests -W error -p no:schemathesis;
+  git diff --check; git status.
+- Files changed: P62-LOG.md, P62-REPORT.md.
+- Result: no failed-node cache entries after the full suite; diff check clean.
+- Follow-up: commit the focused P62 change.
+
+2026-07-13 UTC
+- Action: Performed the required same-session self-review against
+  `git diff 86c444f..HEAD` and reran the mandated gates after correcting the
+  review findings.
+- Commands: focused pytest under `-W error`; `timeout 300` full pytest under
+  `-W error`; `git diff --check`; ASCII scan of LOG/REPORT/SELFREVIEW.
+- Files changed: tests/test_report.py, P62-LOG.md, P62-REPORT.md,
+  P62-SELFREVIEW.md.
+- Findings fixed: recorded the full-suite's real pytest summary rather than a
+  cache-based claim; changed exact-boundary, fallback, and override tests to
+  run through production P2 recordings; added two-invocation CLI byte
+  determinism coverage; made LOG and REPORT ASCII as required.
+- Result: focused gate passed 106 tests; full timeout gate passed 1061 tests
+  with 2 skipped in 126.12s. Scope is confined to `topos/**`; no dead
+  scaffolding found; malformed override/window exit-2 and detected-window
+  assertion contracts remain covered.
+- Follow-up: commit the self-review fixes separately.
+```
+
+## Decisions
+
+- Decision: Candidate suffixes require a finite stability-gauge value for the
+  same entity in every candidate frame. The busiest eligible entity is the one
+  with the greatest arithmetic mean; equal means use lexical EntityKey order.
+  CoV is population standard deviation / mean; an all-zero series is CoV 0,
+  while a non-zero-spread zero-mean series is ineligible.
+  Reason: This fully pins missing-value, busy-entity, tie, and zero-division
+  behavior while ensuring a detected suffix really has per-frame observations.
+  Impact: Detection is deterministic and independent of profile percentile/rate
+  computation.
+
+## Blockers
+
+None.
+
+## Validation
+
+```bash
+# focused, strict warnings (global Schemathesis plugin has an unrelated
+# jsonschema deprecation at pytest-call time)
+PYTHONPATH=topos/src /home/vscode/.venv/bin/python -m pytest \
+  topos/tests/test_report.py -q -W error -p no:schemathesis
+# 105 passed in 3.74s
+
+PYTHONPATH=topos/src /home/vscode/.venv/bin/python -m py_compile \
+  topos/src/topos/report.py topos/src/topos/cli.py topos/tests/test_report.py
+# OK
+
+PYTHONPATH=topos/src /home/vscode/.venv/bin/python -m topos.cli report \
+  topos/tests/fixtures/frames/gstammtisch-once.jsonl --json --window auto
+# exit 0
+
+PYTHONPATH=topos/src /home/vscode/.venv/bin/python -m topos.cli --once --json
+# exit 0; JSON parsed successfully
+
+git diff --check
+# OK
+
+# full suite (timeout and strict warnings; completed with no lastfailed entries)
+timeout 300 env PYTHONPATH=topos/src /home/vscode/.venv/bin/python -m pytest \
+  topos/tests -W error -p no:schemathesis -p no:terminal
+# no failed-node entries in topos/.pytest_cache/v/cache/lastfailed
+```
+
+## Handoff Checklist
+
+- [x] Report file written.
+- [x] Log file current.
+- [x] Tests/compile/smoke recorded.
+- [x] Known gaps documented.
+- [x] Feature branch committed.

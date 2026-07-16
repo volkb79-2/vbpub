@@ -16,15 +16,15 @@ program.
 | D2 | besteffort disk IO | Dynamic slice-level caps from `io-baseline.env` at `BE_IO_CAP_PCT` (default **40%**) of measured ceilings, applied by `setup-cgroups.sh` (replaces the static 31M/100/400 as the operative values; unit statics remain only as boot-window fallback). At the 2026-07-08 baseline: rbps 859614221, wbps 206510649, riops 36069, wiops 23478. |
 | D3 | Soulmask `min` 6144→5500M | **Hold.** Not needed yet; revisit only if measured stack demand requires it. `high` stays ≥6G per operator (below causes rf_z/rf_d in game). |
 | D4 | devcontainer / interactive.slice | Measure **in place first** (no rebuild yet): stepped `memory.high` squeeze on the running devcontainer scope via `container-mempress.sh` (operator runs as root), size the slice from the squeeze point, then do the `--cgroup-parent=interactive.slice` runArgs change + rebuild once with final numbers. |
-| D5 | Recording tooling | groop verified working on host (see below). Interim recorder = looped `groop --once --json`; file headless-record + report **feature specs into groop's package queue** (spec-first, groop's own P-workflow implements). |
+| D5 | Recording tooling | topos verified working on host (see below). Interim recorder = looped `topos --once --json`; file headless-record + report **feature specs into topos's package queue** (spec-first, topos's own P-workflow implements). |
 
 ## Live state (2026-07-10)
 
 - **Applied on host as `systemctl set-property --runtime besteffort.slice`** (reverts on reboot;
   PKG-1 persists): `MemoryHigh=8G MemoryMax=12G MemorySwapMax=24G`, `IO*Max` at 40% of baseline
   (values above). Verified in systemd + cgroupfs.
-- **groop smoke test (host, root, venv at `/root/groop-venv`, editable install from
-  `/home/vb/volkb79-2/vbpub/groop`)**: `groop --once --json` works; 447KB frame, 89 entities
+- **topos smoke test (host, root, venv at `/root/topos-venv`, editable install from
+  `/home/vb/volkb79-2/vbpub/topos`)**: `topos --once --json` works; 447KB frame, 89 entities
   including `besteffort.slice` children (docker-name join intact), the devcontainer and Soulmask
   scopes in `system.slice`. Per-entity metrics include `rf_z/rf_d/rf_f_per_s`, `z_pool`, `z_eq`,
   `swap_disk`, per-cgroup PSI, `mem_events_*_per_s`, `cpu_throttled_pct`, io/net rates, headroom,
@@ -40,7 +40,7 @@ program.
 - **PKG-1 merged + applied on host** (vbpub `a037a47`): unit-persisted D1 values, dynamic
   D2 IO caps live via `setup-cgroups.sh` (verified 36069r/23478w IOPS applied), interactive
   zswap-writeback gap closed, both slices enabled in install.sh.
-- **PKG-2 merged** (`6caa818`): groop P53/P54 queued; amended same day with live findings
+- **PKG-2 merged** (`6caa818`): topos P53/P54 queued; amended same day with live findings
   (447KB/frame → filtering/zst requirements, `569d3ce`); P55–P57 carve in flight.
 - **Squeeze run done (operator)** — D4 CLOSED: warm boundary ~1.8G, hot floor ~1.5G
   (5810 rf/s cliff at 1280M). Staged interactive.slice values (2G/5G/7G) confirmed correct
@@ -55,7 +55,7 @@ program.
   regression test. 892 ciu tests pass.
 - **Prod-safety fix** (`c616521`): `soulmask_running_cids` no longer false-matches
   `--pid=host` admin containers (watcher could have applied game knobs to them).
-- Recorder `groop-recorder.service` running (60s cadence); DAMON profiles: skywalking-oap
+- Recorder `topos-recorder.service` running (60s cadence); DAMON profiles: skywalking-oap
   done, postgres running, controller/workers queued.
 
 ## Packages
@@ -74,22 +74,22 @@ program.
 - Gate: `bash -n` all touched scripts (+ shellcheck if available). No live host application —
   controller applies post-review.
 
-### PKG-2 `[Sonnet, vbpub/groop]` — spec headless record + report packages (spec-only)
-- Following groop's handoff package format (see `handoff/P48-*.md`, `P49-*.md`; verify next free
+### PKG-2 `[Sonnet, vbpub/topos]` — spec headless record + report packages (spec-only)
+- Following topos's handoff package format (see `handoff/P48-*.md`, `P49-*.md`; verify next free
   P-numbers), add two queued specs + README/ROADMAP/STATUS table entries:
-  1. **Headless record driver**: `groop --record FILE --headless [--interval N]
+  1. **Headless record driver**: `topos --record FILE --headless [--interval N]
      [--duration S | --frames K]` — drive the existing collector loop + `RecordWriter` without
      importing textual; clean SIGINT/SIGTERM finalization; note that in-process consecutive
      sweeps make `_per_s` fields live from frame 1 (unlike a `--once` loop).
-  2. **`groop report FILE [--window last:Ns|all] [--group-by slice|entity] --json`**: per-entity
+  2. **`topos report FILE [--window last:Ns|all] [--group-by slice|entity] --json`**: per-entity
      p50/p95/max for key gauges (ram, anon, z_pool, z_eq, swap_disk, psi_*), deriving `_per_s`
      rates from embedded raw counters across frames when the live rate is None. This is the
      "steady-state profile" consumer for the measurement program below.
 - No implementation in this package.
 
 ### PKG-3 `[supervised]` — Phase B measurement program (after PKG-1 review + squeeze run)
-1. Interim recorder on host: systemd service looping `/root/groop-venv/bin/groop --once --json`
-   every 10s → `/var/log/groop/rec-<date>.jsonl` (retire once groop headless-record lands).
+1. Interim recorder on host: systemd service looping `/root/topos-venv/bin/topos --once --json`
+   every 10s → `/var/log/topos/rec-<date>.jsonl` (retire once topos headless-record lands).
 2. Game-impact watch running concurrently: `soulmask-zswap-monitor.py --json` + `rcon_probe.py`
    (gates: game `rf_d` < 100/s sustained, RCON RTT p95 stable).
 3. Bring dstdns stack up tier-by-tier as `ciu up` would (infra → apps → observability), ≥60s
@@ -117,4 +117,4 @@ no ManagedOOM) as a follow-up package.
 ## Out of scope (tracked elsewhere)
 - CIU-9 (`reset_service` DooD cleanup no-op) — `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`.
 - ciu post-compose hook 10s timeouts — re-evaluate after D2; if still failing, file against ciu.
-- groop P49 systemd memory governance (the *apply* side) — groop's own queue.
+- topos P49 systemd memory governance (the *apply* side) — topos's own queue.

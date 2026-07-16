@@ -389,7 +389,7 @@ def extract_usage(route: RouteDef, attempt_dir: Path, log_text: str) -> Usage:
 def classify_log_tail(text: str) -> str | None:
     """Classify the log tail for blocked/limit indicators.
 
-    2026-07-15 false-positive fix (groop-P91 "persistent capped history"):
+    2026-07-15 false-positive fix (topos-P91 "persistent capped history"):
     a real provider limit TERMINATES the process, so its phrase lands in the
     final lines — whereas a package about rate/quota/caps says "limit",
     "quota", "capped" throughout its own reasoning and tests. Matching

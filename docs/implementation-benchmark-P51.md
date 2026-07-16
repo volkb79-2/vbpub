@@ -2,9 +2,9 @@
 
 ## Scope and question
 
-P51 (`groop/handoff/P51-daemon-sampling-fanout.md`) is used here as a small,
+P51 (`topos/handoff/P51-daemon-sampling-fanout.md`) is used here as a small,
 repository-local implementation benchmark. The benchmark asks whether an AI CLI
-agent can turn Groop's request-driven Unix-socket `FrameBroker` into one
+agent can turn Topos's request-driven Unix-socket `FrameBroker` into one
 daemon-owned, continuously advancing producer with bounded, non-consuming
 fan-out, then integrate, test, document, and commit it.
 
@@ -33,11 +33,11 @@ remaining wrong under a blocked `next()`, a source released after stop, an
 evicted cursor, a concurrent publication, or a secret-bearing exception. Those
 failures require runtime experiments and adversarial assertions, not just code
 generation. P51 therefore exercises the same investigation, implementation,
-test-writing, refactoring, and terminal discipline that Groop handoffs require.
+test-writing, refactoring, and terminal discipline that Topos handoffs require.
 
 ## Why P51 is harder than most earlier handoffs
 
-Most prior Groop packages were bounded additions: parse a kernel file, add a
+Most prior Topos packages were bounded additions: parse a kernel file, add a
 metric, render an existing value, add a CLI command, or improve documentation
 and acceptance evidence. Their correctness was largely local and synchronous,
 and deterministic fixtures could cover the main behavior directly.
@@ -56,13 +56,13 @@ P51 closer to a subsystem refactor than a normal feature slice.
 
 All original-task variants start from commit `b5ba9af`, before any P51
 implementation. Each runs in a separate worktree and branch and may touch only
-`groop/**`. No implementation is merged.
+`topos/**`. No implementation is merged.
 
 The exact original Reasonix prompt was recovered from its persisted session:
 
 ```text
-Implement Groop P51 from groop/handoff/P51-daemon-sampling-fanout.md. Work only
-in <WORKTREE> on branch <BRANCH>; touch only groop/**. Follow
+Implement Topos P51 from topos/handoff/P51-daemon-sampling-fanout.md. Work only
+in <WORKTREE> on branch <BRANCH>; touch only topos/**. Follow
 docs/reasonix-controller-guide.md and the handoff exactly. Ensure one
 request-independent producer, fresh non-consuming current/history, bounded
 fan-out/backpressure, deterministic shutdown, and strong concurrency tests.
@@ -92,8 +92,8 @@ The original branches are retained for audit:
 
 | Variant | Branch / commit |
 | --- | --- |
-| DeepSeek V4 Flash High + Reasonix | `feat/groop-p51-daemon-sampling-fanout` / `f9bcf67` (initial agent result) |
-| DeepSeek V4 Pro High + Reasonix | `feat/groop-p51-pro-high-replay` / `f829d17` |
+| DeepSeek V4 Flash High + Reasonix | `feat/topos-p51-daemon-sampling-fanout` / `f9bcf67` (initial agent result) |
+| DeepSeek V4 Pro High + Reasonix | `feat/topos-p51-pro-high-replay` / `f829d17` |
 | GPT-5.6 Luna Medium + Codex CLI | `bench/p51-luna-medium` / `26474c9` |
 | Claude Sonnet 5 Medium + Claude Code | `bench/p51-sonnet5-medium` / `034c54b` |
 
@@ -234,7 +234,7 @@ raw exceptions, and protocol fields the client ignored—unless the acceptance
 oracle was explicit.
 
 The optimized handoff is
-`groop/handoff/P51-daemon-sampling-fanout-optimized-benchmark.md`. It improves
+`topos/handoff/P51-daemon-sampling-fanout-optimized-benchmark.md`. It improves
 fulfilment by:
 
 - defining lifecycle and terminal-state invariants rather than only methods;
@@ -336,7 +336,7 @@ Recommended policy:
 ## Addendum 2026-07-12 — P52 / GLM-5.2 High / OpenCode (different task)
 
 **This is NOT a P51 data point.** P52 (versioned daemon read API,
-`groop/handoff/P52-versioned-daemon-read-api.md`) is a different, adjacent
+`topos/handoff/P52-versioned-daemon-read-api.md`) is a different, adjacent
 protocol/privilege-boundary package — but it is the first package whose
 handoff was written contract-rich FROM THE CARVE (the optimized-P51 handoff
 was a retrofit), so this run tests the codified authoring guide and a new
@@ -388,9 +388,9 @@ any original P51 variant.
 - **Title sub-agent noise**: every run attempts `google/gemini-3.5-flash` for
   titling and fails with "No allowed providers" on this account — harmless but
   a wasted call and a red herring in the logs.
-- **Controller-side false-red trap**: gating groop with the dstdns
+- **Controller-side false-red trap**: gating topos with the dstdns
   devcontainer venv python turns a schemathesis `DeprecationWarning` into 55
-  instant failures under `-W error`. Groop gates require a clean venv.
+  instant failures under `-W error`. Topos gates require a clean venv.
 
 ## Addendum 2026-07-13 — pwmcp P03 shared-browser-mode (3-way, different task)
 

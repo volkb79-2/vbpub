@@ -1,1 +1,0 @@
-"""Collection backends for groop."""
