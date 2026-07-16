@@ -2208,6 +2208,119 @@ def test_spec_health_blocked_underspecified():
 
 
 # ============================================================================
+# ORACLE 11b (P44 2026-07-16, anti-runaway self-correction): dedup flags
+# -- rejections_already_open / carve_outcome_already_open /
+# blocked_underspecified_already_open. Before this fix these three branches
+# had NO dedup (unlike ratchet_already_open above) and re-planned
+# SpecAttention on EVERY call for a persistent condition -- the actual
+# notification-storm root cause (Oracle 2 in the P44 handoff).
+# ============================================================================
+
+def _rejections_base_kwargs(**overrides) -> dict:
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01")
+    base = dict(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        review_rejections_by_area={"ui": 2},
+    )
+    base.update(overrides)
+    return base
+
+
+def test_rejections_plans_once_while_persistent_condition_holds():
+    """Oracle 2: a persistent 'rejections' condition (count stays >= 2)
+    plans SpecAttention('rejections') on the FIRST call
+    (rejections_already_open=False)..."""
+    inp = ReconcileInput(**_rejections_base_kwargs(rejections_already_open=False))
+    actions = plan_project(inp)
+    spec_attns = [a for a in actions if isinstance(a, SpecAttention) and a.reason == "rejections"]
+    assert len(spec_attns) == 1
+
+
+def test_rejections_deduped_once_flag_open():
+    """...but NOT again once the daemon reports the flag already open (the
+    SAME persistent condition, second/Nth call) -- today (pre-fix) this
+    branch has no such guard and re-plans it every single call."""
+    inp = ReconcileInput(**_rejections_base_kwargs(rejections_already_open=True))
+    actions = plan_project(inp)
+    spec_attns = [a for a in actions if isinstance(a, SpecAttention) and a.reason == "rejections"]
+    assert spec_attns == []
+
+
+def test_carve_outcome_deduped_once_flag_open():
+    """Oracle 2 (companion): carve-outcome branch likewise dedups."""
+    inp = ReconcileInput(**_rejections_base_kwargs(
+        review_rejections_by_area={},
+        carve_outcomes=[{"outcome": "SPEC_GAP"}],
+        carve_outcome_already_open=True,
+    ))
+    actions = plan_project(inp)
+    spec_attns = [a for a in actions if isinstance(a, SpecAttention) and a.reason == "carve-outcome"]
+    assert spec_attns == []
+
+
+def test_carve_outcome_plans_when_flag_not_open():
+    inp = ReconcileInput(**_rejections_base_kwargs(
+        review_rejections_by_area={},
+        carve_outcomes=[{"outcome": "SPEC_GAP"}],
+        carve_outcome_already_open=False,
+    ))
+    actions = plan_project(inp)
+    spec_attns = [a for a in actions if isinstance(a, SpecAttention) and a.reason == "carve-outcome"]
+    assert len(spec_attns) == 1
+
+
+def test_blocked_underspecified_deduped_once_flag_open():
+    """Oracle 2 (companion): blocked-underspecified branch likewise dedups."""
+    inp = ReconcileInput(**_rejections_base_kwargs(
+        review_rejections_by_area={},
+        blocked_underspecified_count=3,
+        blocked_underspecified_already_open=True,
+    ))
+    actions = plan_project(inp)
+    spec_attns = [a for a in actions
+                  if isinstance(a, SpecAttention) and a.reason == "blocked-underspecified"]
+    assert spec_attns == []
+
+
+def test_blocked_underspecified_plans_when_flag_not_open():
+    inp = ReconcileInput(**_rejections_base_kwargs(
+        review_rejections_by_area={},
+        blocked_underspecified_count=3,
+        blocked_underspecified_already_open=False,
+    ))
+    actions = plan_project(inp)
+    spec_attns = [a for a in actions
+                  if isinstance(a, SpecAttention) and a.reason == "blocked-underspecified"]
+    assert len(spec_attns) == 1
+
+
+def test_dedup_flags_default_false_preserves_prior_behavior():
+    """ReconcileInput's new fields default to False, so any pre-existing
+    caller that omits them (like test_spec_health_review_rejections above)
+    keeps planning SpecAttention -- only an explicit True suppresses it."""
+    inp = ReconcileInput(**_rejections_base_kwargs())
+    assert inp.rejections_already_open is False
+    assert inp.carve_outcome_already_open is False
+    assert inp.blocked_underspecified_already_open is False
+
+
+# ============================================================================
 # ORACLE 12: determinism
 # ============================================================================
 

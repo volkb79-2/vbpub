@@ -48,6 +48,15 @@ INTERFACE CONTRACT (frozen):
        of its attempt.resume-N.log files older than
        policy.resume_progress_grace_seconds, i.e. failed resume attempts.
     2. actions = reconcile.plan_project(inp)
+    2.5. actions = self._apply_watchdog(project, cfg, states, actions) (P44
+       2026-07-16, anti-runaway self-correction): watchdog.detect_runaways
+       over the recent event window; a detected RunawaySignal escalates
+       ONCE (NEEDS_OPERATOR{reason:'runaway',...}, recent-window deduped),
+       ALWAYS drops the matching repeating action(s) from THIS pass, and
+       once the same signal.key has persisted for
+       RUNAWAY_PERSIST_AFTER_CYCLES consecutive passes (in-memory streak,
+       disposable), auto-pauses the project ('drain-agents') — see
+       _apply_watchdog's own docstring for the full contract.
     3. execute(project, action) for each — see EXECUTION MAP below.
     4. render.render_all(...) if any event was appended this pass.
     5. Wrap the whole pass in try/except: append TICK_ERROR (bounded repr)
@@ -263,7 +272,7 @@ from typing import Any
 
 from . import (
     adapters, commands, config, decision_chat, decisions, frontmatter, intake_chat,
-    leases, lint, notify, paths, reconcile, render, storage, wrapper,
+    leases, lint, notify, paths, reconcile, render, storage, watchdog, wrapper,
 )
 from .config import ProjectConfig
 from .types import (
@@ -280,6 +289,22 @@ SSE_HEARTBEAT_SECONDS = 15.0
 DEFAULT_HTTP_PORT = 8942
 DEFAULT_HTTP_BIND = "127.0.0.1"
 DEFAULT_RECONCILE_INTERVAL = 30.0
+# P44 2026-07-16 (anti-runaway self-correction): trailing window for
+# _history's review_rejections_by_area count (module constant, not
+# config.Policy -- Policy is frozen for this package, same reasoning as
+# DEFAULT_ATTEMPT_MAX_WALL_SECONDS in reconcile.py). 7 days is long enough
+# that a genuinely active rejection streak still counts, short enough that
+# a one-off rejection from weeks ago can no longer keep a project's
+# SpecAttention('rejections') condition artificially open forever.
+HISTORY_REJECTION_WINDOW_SECONDS = 7 * 24 * 3600
+# P44 2026-07-16: how many CONSECUTIVE reconcile passes the identical
+# RunawaySignal.key must re-fire before the watchdog escalates its remedy
+# from "suppress the repeating action" to "auto-pause the project" (see
+# Daemon._apply_watchdog). Disposable in-memory streak (rebuilt on
+# restart, same convention as _stall_cache's two-pass CPU cache) -- a
+# restart resetting the streak just costs a few extra graduated cycles,
+# never a wrong-direction outcome.
+RUNAWAY_PERSIST_AFTER_CYCLES = 3
 
 # P15 2026-07-15: UI config endpoints (POST-only; GET on these -> 405).
 # P18 2026-07-16: /api/decision/reply joins this POST-only set (not a config
@@ -406,6 +431,13 @@ class Daemon:
         self._stall_cache: dict[str, str | None] = {}
         self._provider_paused: dict[str, float] = {}
         self._decisions_seen: dict[str, dict[str, str]] = {}
+        # P44 2026-07-16 (anti-runaway self-correction): consecutive-pass
+        # streak per "{project}:{RunawaySignal.key}" -- disposable, same
+        # convention as _stall_cache's two-pass CPU cache above. Drives the
+        # graduated remedy (see _apply_watchdog); the human-facing
+        # escalation itself is deduped via the persisted event log instead
+        # (restart-safe), not via this dict.
+        self._runaway_streak: dict[str, int] = {}
 
     # -- lifecycle ------------------------------------------------------
 
@@ -526,6 +558,8 @@ class Daemon:
 
             inp = self._build_input(project, cfg, states)
             actions = reconcile.plan_project(inp)
+            actions, watchdog_events = self._apply_watchdog(project, cfg, states, actions)
+            appended.extend(watchdog_events)
             for action in actions:
                 appended.extend(self._execute(project, cfg, states, action))
             if appended:
@@ -619,6 +653,16 @@ class Daemon:
             self._history(project)
         ratchet_already_open = self._ratchet_already_open(project)
         roadmap_exhausted_open = self._roadmap_exhausted_open(project)
+        # P44 2026-07-16 (anti-runaway self-correction): reuse the existing
+        # _spec_attention_recently_emitted debounce backstop as the SOURCE of
+        # these three dedup flags (it already implements exactly
+        # _ratchet_already_open's convention, generalized by reason) -- it
+        # remains a belt-and-braces backstop at emission time too (see
+        # _execute's SpecAttention branch), but is no longer the ONLY guard.
+        rejections_already_open = self._spec_attention_recently_emitted(project, "rejections")
+        carve_outcome_already_open = self._spec_attention_recently_emitted(project, "carve-outcome")
+        blocked_underspecified_already_open = self._spec_attention_recently_emitted(
+            project, "blocked-underspecified")
         # P14 2026-07-15 item 6: config.Policy is frozen for this package
         # (only NotifyConfig.push_classes may be edited), so
         # attempt_max_wall_seconds is NOT a Policy field here -- getattr
@@ -656,6 +700,9 @@ class Daemon:
             attempt_max_wall_seconds=attempt_max_wall_seconds,
             pause_mode=pause_mode,
             roadmap_exhausted_open=roadmap_exhausted_open,
+            rejections_already_open=rejections_already_open,
+            carve_outcome_already_open=carve_outcome_already_open,
+            blocked_underspecified_already_open=blocked_underspecified_already_open,
         )
 
     def _pause_mode(self, project: str) -> str:
@@ -913,6 +960,17 @@ class Daemon:
         return cfg.policy.max_cost - spent
 
     def _history(self, project: str):
+        """P44 2026-07-16 (anti-runaway self-correction): review_rejections_by_area
+        is now WINDOWED (only rejections within HISTORY_REJECTION_WINDOW_SECONDS of
+        'now' count) -- the root cause of the 2026-07-16 notification storm. Before
+        this fix it counted rejections over the ENTIRE event log and only ever
+        increased, so a project that once hit 2 rejections in some area stayed
+        >= 2 forever, even if every rejection was months old and long since
+        resolved. A time window (not an event-count window like the
+        `*_already_open` flags below) is the right shape here: an aged, resolved
+        rejection should age OUT regardless of how much OTHER unrelated event
+        traffic has or hasn't happened since. merge_history / carve_outcomes /
+        blocked_underspecified_count are UNCHANGED (still full-log, then sliced)."""
         merge_history: list[tuple[str, int, str]] = []
         carve_outcomes: list[dict] = []
         review_rejections_by_area: dict[str, int] = {}
@@ -921,6 +979,7 @@ class Daemon:
             events = list(storage.iter_events(project))
         except Exception:
             events = []
+        now = utc_now()
         for ev in events:
             if ev.type is EventType.MERGE_RECORDED and ev.task_id:
                 units = len(ev.payload.get("progress_units", []) or [])
@@ -929,8 +988,10 @@ class Daemon:
             elif ev.type is EventType.CARVE_OUTCOME:
                 carve_outcomes.append(ev.payload)
             elif ev.type is EventType.REVIEW_RECORDED and ev.payload.get("result") == "rejected":
-                area = ev.payload.get("area", "unknown")
-                review_rejections_by_area[area] = review_rejections_by_area.get(area, 0) + 1
+                age_seconds = (now - ev.timestamp).total_seconds()
+                if age_seconds <= HISTORY_REJECTION_WINDOW_SECONDS:
+                    area = ev.payload.get("area", "unknown")
+                    review_rejections_by_area[area] = review_rejections_by_area.get(area, 0) + 1
             elif ev.type is EventType.TASK_BLOCKED:
                 blocker = ev.payload.get("blocker") or {}
                 if blocker.get("type") == "contract":
@@ -969,14 +1030,146 @@ class Daemon:
         reconcile 'rejections'/'carve-outcome'/'blocked-underspecified' branches
         (unlike 'ratchet'/'roadmap-exhausted') have no dedup flag -- so 2 rejects
         stormed ntfy at 1/cycle. Mirrors _ratchet_already_open's convention and
-        covers ALL reasons as a general backstop. The durable fix is the runaway
-        watchdog + windowed counts + the reject-loop (F6 self-correction)."""
+        covers ALL reasons as a general backstop. P44 2026-07-16: this is now
+        ALSO the source of ReconcileInput.rejections_already_open /
+        carve_outcome_already_open / blocked_underspecified_already_open (see
+        _build_input) -- the durable fix -- so it is no longer the only guard,
+        just a belt-and-braces backstop at emission time too. See watchdog.py
+        for the general runaway backstop (not tied to any specific reason)."""
         try:
             recent = list(storage.iter_events(project))[-500:]
         except Exception:
             return False
         return any(ev.type is EventType.SPEC_ATTENTION and ev.payload.get("reason") == reason
                    for ev in recent)
+
+    # -- runaway watchdog (P44 2026-07-16) ------------------------------
+
+    def _apply_watchdog(self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
+                        actions: list[reconcile.Action]) -> tuple[list[reconcile.Action], list[Event]]:
+        """Run watchdog.detect_runaways over the recent event window BEFORE
+        this pass's actions execute. For each detected RunawaySignal:
+          (i)  escalate ONCE -- a NEEDS_OPERATOR{reason:'runaway', pattern,
+               key, detail} event, deduped via a recent-window scan (see
+               _runaway_recently_escalated) exactly like
+               _spec_attention_recently_emitted -- persisted, restart-safe.
+          (ii) suppress the matching repeating action(s) from THIS pass's
+               action list, ALWAYS (never silently repeat a harmful action,
+               even once more, regardless of whether (i) already fired).
+         (iii) track an in-memory per-(project, signal.key) consecutive-pass
+               streak (disposable, rebuilt on restart -- same convention as
+               _stall_cache); once it reaches RUNAWAY_PERSIST_AFTER_CYCLES,
+               grade the remedy up from suppress-only to auto-pausing the
+               whole project ('drain-agents' -- blocks every new agent
+               process: dispatch, resume, AND review launch) via
+               paths.pause_flag(project), so a persistent runaway stops
+               rather than merely slows down. A no-op if already paused
+               (human or an earlier runaway already handled it).
+        Returns (filtered_actions, new_events) -- both empty/unchanged when
+        no runaway is detected (the overwhelmingly common case)."""
+        try:
+            recent_events = list(storage.iter_events(project))[-500:]
+        except Exception:
+            recent_events = []
+        try:
+            signals = watchdog.detect_runaways(recent_events, watchdog.WatchdogConfig())
+        except Exception:
+            signals = []
+        if not signals:
+            return actions, []
+
+        filtered = list(actions)
+        new_events: list[Event] = []
+        for sig in signals:
+            streak_key = f"{project}:{sig.key}"
+            streak = self._runaway_streak.get(streak_key, 0) + 1
+            self._runaway_streak[streak_key] = streak
+
+            if not self._runaway_recently_escalated(project, sig.key):
+                new_events.append(self._append_ev(
+                    project, cfg, states, EventType.NEEDS_OPERATOR,
+                    {"reason": "runaway", "pattern": sig.pattern, "key": sig.key,
+                     "detail": sig.detail},
+                ))
+
+            filtered = self._suppress_runaway_action(filtered, sig)
+
+            if streak >= RUNAWAY_PERSIST_AFTER_CYCLES:
+                pause_ev = self._auto_pause_for_runaway(project, cfg, states, sig)
+                if pause_ev is not None:
+                    new_events.append(pause_ev)
+
+        return filtered, new_events
+
+    def _runaway_recently_escalated(self, project: str, key: str) -> bool:
+        """Same recent-window convention as _spec_attention_recently_emitted,
+        keyed on RunawaySignal.key (not just pattern -- multiple distinct
+        conditions can share one pattern, e.g. two different
+        'reconcile-thrash:<reason>' keys)."""
+        try:
+            recent = list(storage.iter_events(project))[-500:]
+        except Exception:
+            return False
+        return any(
+            ev.type is EventType.NEEDS_OPERATOR
+            and ev.payload.get("reason") == "runaway"
+            and ev.payload.get("key") == key
+            for ev in recent
+        )
+
+    def _suppress_runaway_action(self, actions: list[reconcile.Action],
+                                  sig: watchdog.RunawaySignal) -> list[reconcile.Action]:
+        """Drop the specific repeating action(s) this pass's plan would
+        otherwise (re-)execute for a detected runaway. Deliberately narrow
+        (matches only the action shape the signal itself proves is
+        repeating) rather than blanket-suppressing the whole pass."""
+        if sig.pattern == "reconcile-thrash":
+            reason = sig.key.split(":", 1)[1] if ":" in sig.key else None
+            return [a for a in actions
+                    if not (isinstance(a, reconcile.SpecAttention) and a.reason == reason)]
+
+        if sig.pattern == "notification-storm":
+            parts = sig.key.split(":")
+            if len(parts) == 2:
+                # 'notification-storm:total' -- blunt fallback: no single
+                # reason dominates, so suppress every SpecAttention this pass.
+                return [a for a in actions if not isinstance(a, reconcile.SpecAttention)]
+            _, type_val, reason = parts
+            if type_val == EventType.SPEC_ATTENTION.value:
+                return [a for a in actions
+                        if not (isinstance(a, reconcile.SpecAttention) and a.reason == reason)]
+            # A NEEDS_OPERATOR reason storm isn't a reconcile.Action the
+            # planner emits (it's a daemon-internal escalation, e.g.
+            # carve-ready) -- nothing to filter here; the streak-graded
+            # auto-pause below is the remedy instead.
+            return actions
+
+        if sig.pattern == "attempt-loop":
+            task_id = sig.key.split(":", 1)[1] if ":" in sig.key else None
+            return [a for a in actions
+                    if not (isinstance(a, (reconcile.DispatchImplementer, reconcile.ResumeAttempt))
+                            and a.task_id == task_id)]
+
+        return actions
+
+    def _auto_pause_for_runaway(self, project: str, cfg: ProjectConfig,
+                                 states: dict[str, TaskStateFile],
+                                 sig: watchdog.RunawaySignal) -> Event | None:
+        """Graduated remedy for a PERSISTENT runaway: 'drain-agents' blocks
+        every new agent process (dispatch, resume, review launch -- the
+        strongest pause mode, see reconcile.py module contract item 5/P15),
+        so the repeating action structurally cannot recur. A no-op (returns
+        None, no event) if the project is already paused by anything --
+        never downgrades an existing pause, never double-pauses."""
+        flag = paths.pause_flag(project)
+        if flag.exists():
+            return None
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.write_text("drain-agents", encoding="utf-8")
+        return self._append_ev(
+            project, cfg, states, EventType.PAUSE_SET,
+            {"mode": "drain-agents", "reason": "runaway", "pattern": sig.pattern, "key": sig.key},
+        )
 
     # -- event helpers -------------------------------------------------
 
