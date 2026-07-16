@@ -5,7 +5,13 @@ Usage:
     ./exec-nyxloom.py                 # defaults to `status`
     ./exec-nyxloom.py status --project topos
     ./exec-nyxloom.py doctor
+    ./exec-nyxloom.py init <project_folder>   # scaffold a nyxloom-trove/
     ./exec-nyxloom.py <any nyxloom.cli subcommand> [args...]
+
+`init` is not special-cased below -- it rides the same generic argv
+forwarding as every other subcommand (docker exec into the controller when
+running, host fallback otherwise), which also proves the target instance can
+reach <project_folder> (a built-in access check; see nyxloom-trove/STANDARD.md).
 
 Routing (transition-safe across the P19 containerization):
   1. If a running controller container is found (name contains both
