@@ -839,11 +839,18 @@ def test_frontier_review_missing_report_fails_safe_to_rejected(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
     """Oracle O3 (missing): a DONE receipt whose <task>-REVIEW.md was never
-    committed must fail safe to REVIEW_REJECTED, never MERGE_READY."""
+    committed must fail safe to REVIEW_REJECTED, never MERGE_READY.
+
+    SELF-CORRECT 2026-07-16 (bug 1 fix): the REVIEW_RECORDED payload value
+    for this exact scenario changed from the bare "rejected" string to the
+    distinguishing "missing" signal -- NO review artifact exists anywhere
+    for this task (a review-LEG failure), which must never be conflated
+    with a reviewer's genuine REJECTED verdict downstream. The task-STATE
+    fail-safe (REVIEW_REJECTED, never MERGE_READY) is unchanged."""
     cfg = sample_project
     task_id, attempt_id = "t-rev-missing", "att-rev-missing"
     _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
-    # deliberately: no REVIEW.md committed onto feat/<task_id>
+    # deliberately: no REVIEW.md of any name committed onto feat/<task_id>
     _seed_review_attempt("demo", task_id, attempt_id)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
     _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
@@ -854,7 +861,7 @@ def test_frontier_review_missing_report_fails_safe_to_rejected(
     tsf = storage.load_state("demo", task_id)
     assert tsf.state is TaskState.REVIEW_REJECTED
     recorded = next(e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED)
-    assert recorded.payload["result"] == "rejected"
+    assert recorded.payload["result"] == "missing"
 
 
 def test_frontier_review_ambiguous_report_fails_safe_to_rejected(
@@ -992,7 +999,87 @@ def test_parse_review_verdict_when_project_root_is_a_repo_subdir(tmp_state, tmp_
     # and the fail-safe still discriminates under the same layout.
     _commit_report("t-nested-rejected", "# Review\n\nVERDICT: REJECTED — nope\n")
     assert d._parse_review_verdict(cfg, "t-nested-rejected") == "rejected"
-    assert d._parse_review_verdict(cfg, "t-nested-never-written") == "rejected"
+    # SELF-CORRECT 2026-07-16 (bug 1 fix): no branch/artifact for this task
+    # was ever created -- the distinguishing "missing" signal, not the bare
+    # "rejected" this returned before the fix (see the two tests below for
+    # the full O1 contract under the normal, non-nested layout).
+    assert d._parse_review_verdict(cfg, "t-nested-never-written") == "missing"
+
+
+# --------------------------------------------------------------------------
+# SELF-CORRECT 2026-07-16: robust review-verdict derivation (bug 1) + the
+# REVIEW_REJECTED reject-loop (bug 2). See daemon.py's _parse_review_verdict
+# docstring and reconcile.py's module-contract item 10 for the full design
+# rationale (including the documented, out-of-scope BLOCKED gap).
+
+def test_parse_review_verdict_misnamed_file_still_found_and_approves(
+    tmp_state, sample_project
+):
+    """O1 (bug 1, the live incident this package fixes): a reviewer who
+    commits `P42-REVIEW.md` instead of the documented `<task_id>-REVIEW.md`
+    must still have their APPROVED verdict found -- before this fix, the
+    rigid single-path lookup missed it entirely and fail-safed a
+    genuinely-APPROVED task to REJECTED."""
+    cfg = sample_project
+    task_id = "proj-P42"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    branch = f"feat/{task_id}"
+    subprocess.run(["git", "-C", str(cfg.root), "checkout", branch],
+                    check=True, capture_output=True)
+    report_dir = cfg.root / cfg.reports_dir
+    report_dir.mkdir(parents=True, exist_ok=True)
+    # Misnamed: "P42-REVIEW.md", NOT the documented "proj-P42-REVIEW.md" --
+    # but the content names the full task_id, as a reviewer's own write-up
+    # naturally would.
+    (report_dir / "P42-REVIEW.md").write_text(
+        f"# Review for {task_id}\n\nFindings: none.\n\nVERDICT: APPROVED\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(cfg.root),
+                    "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(cfg.root),
+                    "commit", "-qm", "review (misnamed)"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(cfg.root), "checkout", "main"],
+                    check=True, capture_output=True)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    assert d._parse_review_verdict(cfg, task_id) == "approved"
+
+
+def test_parse_review_verdict_file_present_no_verdict_line_still_rejected(
+    tmp_state, sample_project
+):
+    """O1 (fail-safe preserved): a review file exists (correctly named) but
+    never writes a VERDICT line at all -- a malformed review, not an absent
+    one -- must still fail safe to "rejected", exactly as before this
+    package. Distinct from the "missing" signal (see the next test), which
+    is reserved for NO review artifact existing anywhere."""
+    cfg = sample_project
+    task_id = "t-no-verdict-line"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        "# Review\n\nFindings: looks fine, forgot to write a verdict line.\n",
+    )
+    d = daemon.Daemon({"demo": cfg.root})
+    assert d._parse_review_verdict(cfg, task_id) == "rejected"
+
+
+def test_parse_review_verdict_no_artifact_anywhere_returns_missing(
+    tmp_state, sample_project
+):
+    """O1 (bug 1 fix): when NO review artifact for this task exists
+    anywhere on the branch (the reviewer never produced any output at all
+    -- a review-LEG failure), the return value is the distinguishing
+    "missing" signal, NOT the same "rejected" string a genuine reviewer
+    REJECTED verdict returns -- so a future reconcile pass or operator can
+    tell "nobody reviewed this" apart from "a reviewer rejected this"."""
+    cfg = sample_project
+    task_id = "t-no-artifact-anywhere"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    # deliberately: no REVIEW.md of any name committed onto feat/<task_id>
+    d = daemon.Daemon({"demo": cfg.root})
+    assert d._parse_review_verdict(cfg, task_id) == "missing"
 
 
 # --------------------------------------------------------------------------
