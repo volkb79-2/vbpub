@@ -47,6 +47,7 @@ services:
       - /home/vb/mdt--mounted-folders:/home/vscode          # home: auth + .local (state)
       - /home/vb/volkb79-2/vbpub:/workspaces/vbpub          # repo + nyxloom src
       - /home/vb/volkb79-2/dstdns:/workspaces/dstdns        # repo (registered project)
+      - /home/vb/volkb79-2/netcup-api-filter:/workspaces/netcup-api-filter  # repo (registered project)
       - /var/run/docker.sock:/var/run/docker.sock           # agent dispatch gates
     healthcheck:
       test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/{{ nyxloomd.dashboard_port }}' 2>/dev/null || exit 1"]

@@ -842,3 +842,60 @@ def test_render_drilldown_page_is_readonly_and_escaped():
     assert "<button" not in page.lower()
     assert "fetch(" not in page
     assert 'http-equiv="refresh"' in page
+
+
+# Oracle O2 (P27): nyxloomd compose template / pre-rendered sibling mount parity
+def _compose_volume_sources(path: Path) -> set[str]:
+    """Bind-mount SOURCE paths from a compose file's `volumes:` list.
+
+    ciu.compose.yml.j2 is not valid YAML as-is (Jinja `{{ }}` placeholders
+    in scalar values like `image:`/`container_name:` break yaml.safe_load —
+    see the ParserError a naive full parse hits), so this walks the
+    `volumes:` block by indentation instead of parsing the whole document.
+    The list items themselves (`SOURCE:TARGET  # comment`) are plain
+    strings in both files, Jinja-free, so this is exact for the thing the
+    oracle cares about: the set of bind sources.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    sources = set()
+    in_volumes = False
+    volumes_indent = None
+    for line in lines:
+        stripped = line.strip()
+        if not in_volumes:
+            if stripped == "volumes:":
+                in_volumes = True
+                volumes_indent = len(line) - len(line.lstrip(" "))
+            continue
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent <= volumes_indent:
+            break
+        if stripped.startswith("- "):
+            item = stripped[2:].split("#", 1)[0].strip()
+            sources.add(item.split(":", 1)[0])
+    return sources
+
+
+NYXLOOMD_DIR = Path(__file__).resolve().parent.parent / "nyxloomd"
+
+
+def test_nyxloomd_compose_template_and_sibling_mounts_agree():
+    """Oracle O2: the .j2 template and its pre-rendered docker-compose.yml
+    sibling bind the SAME set of volume sources -- drift between them means
+    which projects the daemon can see depends on which file was deployed."""
+    template_sources = _compose_volume_sources(NYXLOOMD_DIR / "ciu.compose.yml.j2")
+    rendered_sources = _compose_volume_sources(NYXLOOMD_DIR / "docker-compose.yml")
+
+    assert template_sources, "expected at least one volume source in the template"
+    assert template_sources == rendered_sources
+
+
+def test_nyxloomd_compose_mounts_netcup_api_filter():
+    """Oracle O2: netcup-api-filter is mounted at the same physical-path
+    convention as the other registered projects, in both files."""
+    netcup_source = "/home/vb/volkb79-2/netcup-api-filter"
+    for fname in ("ciu.compose.yml.j2", "docker-compose.yml"):
+        sources = _compose_volume_sources(NYXLOOMD_DIR / fname)
+        assert netcup_source in sources, f"{fname} missing netcup-api-filter bind"

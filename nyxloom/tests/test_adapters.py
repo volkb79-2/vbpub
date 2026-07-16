@@ -937,6 +937,77 @@ def test_build_dispatch_unknown_cli():
         )
 
 
+# Oracle O1 (P27): find_controller_container
+def _fake_docker_ps(names):
+    """A subprocess.run stand-in returning `docker ps --format {{.Names}}`-shaped output."""
+    class Result:
+        stdout = "\n".join(names) + ("\n" if names else "")
+    def _run(argv, **kwargs):
+        return Result()
+    return _run
+
+
+def test_find_controller_container_matches_prod_nyxloomd():
+    """O1: the real container `nyxloom-prod-nyxloomd` is found with no
+    container_prefix given (generic '-nyxloomd' suffix match)."""
+    from unittest.mock import patch
+    with patch("nyxloom.adapters.shutil.which", return_value="/usr/bin/docker"), \
+         patch("nyxloom.adapters.subprocess.run",
+               side_effect=_fake_docker_ps(["nyxloom-prod-nyxloomd", "unrelated"])):
+        assert adapters.find_controller_container() == "nyxloom-prod-nyxloomd"
+
+
+def test_find_controller_container_matches_given_prefix():
+    """O1: an explicit container_prefix (the ciu.toml value) matches exactly
+    '<prefix>-nyxloomd' and rejects a differing prefix."""
+    from unittest.mock import patch
+    with patch("nyxloom.adapters.shutil.which", return_value="/usr/bin/docker"), \
+         patch("nyxloom.adapters.subprocess.run",
+               side_effect=_fake_docker_ps(["nyxloom-staging-nyxloomd"])):
+        assert adapters.find_controller_container(
+            container_prefix="nyxloom-staging") == "nyxloom-staging-nyxloomd"
+        assert adapters.find_controller_container(
+            container_prefix="nyxloom-prod") is None
+
+
+def test_find_controller_container_old_controller_pattern_no_longer_required():
+    """Negative (O1): the pre-P27 bug required 'nyxloom' AND 'controller' in
+    the name. The real container has neither substring pairing ('nyxloomd'
+    has no 'controller'), so the fixed resolver must not depend on it --
+    and a container that merely mentions 'controller' but isn't the daemon
+    must NOT match."""
+    from unittest.mock import patch
+    with patch("nyxloom.adapters.shutil.which", return_value="/usr/bin/docker"), \
+         patch("nyxloom.adapters.subprocess.run",
+               side_effect=_fake_docker_ps(["nyxloom-controller-unrelated"])):
+        assert adapters.find_controller_container() is None
+
+
+def test_find_controller_container_env_override_wins():
+    """O1: $NYXLOOM_CONTAINER wins outright when it names a running container."""
+    from unittest.mock import patch
+    with patch("nyxloom.adapters.shutil.which", return_value="/usr/bin/docker"), \
+         patch("nyxloom.adapters.subprocess.run",
+               side_effect=_fake_docker_ps(["nyxloom-prod-nyxloomd", "my-dev-override"])):
+        assert adapters.find_controller_container(
+            env={"NYXLOOM_CONTAINER": "my-dev-override"}) == "my-dev-override"
+
+
+def test_find_controller_container_no_candidate_running():
+    """O1: returns None (host fallback) when nothing running matches."""
+    from unittest.mock import patch
+    with patch("nyxloom.adapters.shutil.which", return_value="/usr/bin/docker"), \
+         patch("nyxloom.adapters.subprocess.run", side_effect=_fake_docker_ps([])):
+        assert adapters.find_controller_container() is None
+
+
+def test_find_controller_container_no_docker_binary():
+    """O1: docker missing degrades to None, never raises."""
+    from unittest.mock import patch
+    with patch("nyxloom.adapters.shutil.which", return_value=None):
+        assert adapters.find_controller_container() is None
+
+
 def test_classify_limit_false_positive_domain_vocab():
     """2026-07-15 (topos-P91): a package about caps/limits/quota says those
     words in its own reasoning; that must NOT read as a provider limit."""
