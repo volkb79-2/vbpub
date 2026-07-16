@@ -170,6 +170,59 @@ def has_blocking(findings: list[LintFinding]) -> bool:
     return any(f.severity == "error" for f in findings)
 
 
+# ----- project resolution (PACKAGE P35) -----
+
+def resolve_project_for_path(path: Path, registry: dict[str, Path]) -> ProjectConfig | None:
+    """Map a path (e.g. a handoff to lint) to its OWNING project's config.
+
+    Primary: walk the path's ancestors for the nearest
+    `nyxloom-trove/nyxloom.toml` (or legacy `.nyxloom/project.toml`) -- this
+    is what makes an unregistered checkout resolve, and it naturally makes a
+    nested checkout resolve to the innermost project (the nearest ancestor
+    wins, since the walk moves outward from the path).
+
+    Fallback: the registered project root that contains the path, deepest
+    match wins -- so which project happens to be first in `registry`'s
+    iteration order never decides the outcome.
+
+    Returns None when neither resolves; callers must not fall back to an
+    arbitrary project's config (see unresolved_project_finding)."""
+    abs_path = path.resolve()
+    search_start = abs_path if abs_path.is_dir() else abs_path.parent
+    for ancestor in (search_start, *search_start.parents):
+        if (ancestor / "nyxloom-trove" / "nyxloom.toml").exists() or \
+           (ancestor / ".nyxloom" / "project.toml").exists():
+            return ProjectConfig.load(ancestor)
+
+    best_root: Path | None = None
+    for root in registry.values():
+        resolved_root = root.resolve()
+        try:
+            abs_path.relative_to(resolved_root)
+        except ValueError:
+            continue
+        if best_root is None or len(resolved_root.parts) > len(best_root.parts):
+            best_root = resolved_root
+
+    return ProjectConfig.load(best_root) if best_root is not None else None
+
+
+def unresolved_project_finding(path: Path) -> LintFinding:
+    """Typed diagnostic for a path with no owning project (O3): a caller
+    must report this instead of silently linting against an arbitrary
+    project's config, and instead of raising an unhandled exception."""
+    return LintFinding(
+        rule="L0",
+        severity="error",
+        message=(
+            f"no owning project found for '{path}' -- no registered project "
+            "root contains it and no nyxloom-trove/nyxloom.toml (or legacy "
+            ".nyxloom/project.toml) was found walking its ancestors"
+        ),
+        path=str(path),
+    )
+
+
 # ----- config (PACKAGE P24) -----
 
 def _locate_config_path(cfg: ProjectConfig) -> Path | None:
@@ -264,6 +317,36 @@ def lint_backlog(cfg: ProjectConfig) -> list[LintFinding]:
     return backlog_items.validate(items, path=str(backlog_path))
 
 
+def _resolve_dep_handoff(cfg: ProjectConfig, dep_id: str) -> Path | None:
+    """Resolve a depends_on task ref to its handoff file: the project's
+    CONFIGURED handoff location(s) (cfg.handoff_globs), then its archive_dir
+    (a merged dep's handoff lands there on merge) -- not the legacy
+    hardcoded `handoff/<id>.md`, which a trove-standard project (nyxloom)
+    doesn't even have (O5)."""
+    candidates = [cfg.root / Path(glob_pattern).parent / f"{dep_id}.md"
+                  for glob_pattern in cfg.handoff_globs]
+    archive_dir = _archive_dir(cfg)
+    if archive_dir:
+        candidates.append(cfg.root / archive_dir / f"{dep_id}.md")
+    return next((c for c in candidates if c.exists()), None)
+
+
+def _archive_dir(cfg: ProjectConfig) -> str | None:
+    """Project's configured archive_dir straight off the raw nyxloom.toml
+    (mirrors render.py's `_trove_project_extras` -- archive_dir is
+    deliberately not on ProjectConfig; config.py is frozen for this
+    package)."""
+    config_path = _locate_config_path(cfg)
+    if config_path is None:
+        return None
+    try:
+        raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    value = raw.get("project", {}).get("archive_dir")
+    return value if isinstance(value, str) and value else None
+
+
 # ----- L1 -----
 def _check_l1(findings: list[LintFinding], path: Path, fm, body: str, cfg: ProjectConfig) -> None:
     """Check: id matches filename, project matches cfg, deps resolve, no stale dates."""
@@ -292,10 +375,11 @@ def _check_l1(findings: list[LintFinding], path: Path, fm, body: str, cfg: Proje
         if dep_id.startswith("D-"):
             # Decision refs are not resolvable here, skip
             continue
-        # Task refs should resolve to a handoff or statefile
-        dep_file = cfg.root / f"handoff/{dep_id}.md"
+        # Task refs should resolve to a handoff (at the project's configured
+        # location, or its archive_dir if merged) or a statefile
+        dep_file = _resolve_dep_handoff(cfg, dep_id)
         dep_state = state_dir / f"{dep_id}.json" if state_dir.exists() else None
-        if not dep_file.exists() and (not dep_state or not dep_state.exists()):
+        if dep_file is None and (not dep_state or not dep_state.exists()):
             findings.append(LintFinding(
                 rule="L1",
                 severity="error",
@@ -520,11 +604,16 @@ def _check_l7(findings: list[LintFinding], path: Path, fm, body: str, cfg: Proje
         _check_path_resolution(findings, path, fm.source.ref.split("#")[0], cfg, is_touch=False)
 
     # Check body for markdown links/inline code
-    # Look for /paths starting with ../ or /workspaces/<other-repo>
-    other_repo_pattern = r"/workspaces/(?!dstdns)[a-z0-9_-]+"
+    # Look for /paths starting with ../ or /workspaces/<other-repo>. The
+    # exempted "own repo" segment is derived from the project being linted
+    # (O4), not hardcoded to one project.
+    other_repo_pattern = r"/workspaces/([a-z0-9_-]+)"
+    own_segment = _own_repo_segment(cfg.root)
     relative_up_pattern = r"\.\./[a-z0-9/_.-]+"
 
     for match in re.finditer(other_repo_pattern, body):
+        if match.group(1) == own_segment:
+            continue
         findings.append(LintFinding(
             rule="L7",
             severity="warning",
@@ -539,6 +628,19 @@ def _check_l7(findings: list[LintFinding], path: Path, fm, body: str, cfg: Proje
             message=f"relative-up path '{match.group()}' may escape repo",
             path=str(path)
         ))
+
+
+def _own_repo_segment(root: Path) -> str | None:
+    """The path component immediately following '/workspaces/' in the
+    project's root (e.g. 'vbpub' for /workspaces/vbpub/nyxloom) -- the
+    segment L7's cross-repo check exempts as 'this repo', derived from the
+    project being linted instead of a hardcoded name (O4). None when root
+    isn't under a '/workspaces/<segment>/...' path."""
+    parts = root.resolve().parts
+    for i, part in enumerate(parts[:-1]):
+        if part == "workspaces":
+            return parts[i + 1]
+    return None
 
 
 def _check_path_resolution(findings: list[LintFinding], path: Path, check_path: str, cfg: ProjectConfig, is_touch: bool) -> None:

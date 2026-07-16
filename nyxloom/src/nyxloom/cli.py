@@ -212,16 +212,16 @@ def cmd_lint(args) -> int:
     all_findings = {}
 
     if args.path:
-        # Lint specific paths - call lint_file directly
+        # Lint specific paths - each against ITS OWN owning project's config
         for path_str in args.path:
             path = Path(path_str)
-            # Use the first available project config (they're all the same for lint purposes)
-            if registry:
-                root = next(iter(registry.values()))
-                cfg = config.ProjectConfig.load(root)
-                findings = lint.lint_file(path, cfg)
-                if findings:
-                    all_findings[path_str] = findings
+            cfg = lint.resolve_project_for_path(path, registry)
+            if cfg is None:
+                all_findings[path_str] = [lint.unresolved_project_finding(path)]
+                continue
+            findings = lint.lint_file(path, cfg)
+            if findings:
+                all_findings[path_str] = findings
     else:
         # Lint all registered projects
         for pid, root in registry.items():
