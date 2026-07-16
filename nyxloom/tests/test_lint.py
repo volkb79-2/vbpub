@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import config, frontmatter, lint
+from nyxloom import cli, config, frontmatter, lint, paths
 
 
 class TestL1SchemaAndResolution:
@@ -975,3 +975,254 @@ class TestConfigLintFoldedIntoProject:
         key = "nyxloom-trove/nyxloom.toml"
         assert key in results
         assert results[key] == []
+
+
+# ---------------------------------------------------------------------------
+# P35: lint path resolution -- owning project (O1-O3), project-driven L7
+# cross-repo check (O4), trove-location depends_on resolution (O5). Fixtures
+# use the TROVE layout (nyxloom-trove/nyxloom.toml + nyxloom-trove/handoffs/),
+# unlike sample_project's legacy .nyxloom/project.toml + handoff/, because the
+# bug this package fixes is specific to the trove layout nyxloom itself uses.
+
+def _write_trove_project(tmp_path: Path, dirname: str, project_id: str,
+                          gate_id: str = "tester-unified",
+                          archive_dir: str | None = None) -> Path:
+    """A trove-layout project root: nyxloom-trove/nyxloom.toml +
+    nyxloom-trove/handoffs/ dir."""
+    root = tmp_path / dirname
+    (root / "nyxloom-trove" / "handoffs").mkdir(parents=True)
+    archive_line = f'\narchive_dir = "{archive_dir}"' if archive_dir else ""
+    (root / "nyxloom-trove" / "nyxloom.toml").write_text(textwrap.dedent(f"""\
+        [project]
+        id = "{project_id}"
+        handoff_globs = ["nyxloom-trove/handoffs/*.md"]{archive_line}
+
+        [gates.{gate_id}]
+        argv = ["true"]
+        phase = "implementation"
+        timeout_seconds = 60
+
+        [policy]
+        max_active_tasks = 2
+        """))
+    return root
+
+
+def _write_real_handoff(root: Path, project_id: str, handoff_id: str, *,
+                         touch: tuple[str, ...] = ("src/thing.py",),
+                         forbid: tuple[str, ...] = (),
+                         gate_id: str = "tester-unified",
+                         depends_on: tuple[str, ...] = ()) -> Path:
+    """A schema-valid, otherwise-clean handoff under root's configured
+    handoff dir (mirrors conftest.SAMPLE_HANDOFF, parameterized by project)."""
+    lines = [
+        "---",
+        "schema_version: 1",
+        f"id: {handoff_id}",
+        f"project: {project_id}",
+        "title: Real thing",
+        "tier: flash-high",
+        'input_revision: "0000000"',
+        "source: {kind: roadmap}",
+        "scope:",
+        "  touch: [" + ", ".join(f'"{t}"' for t in touch) + "]",
+    ]
+    if forbid:
+        lines.append("  forbid: [" + ", ".join(f'"{f}"' for f in forbid) + "]")
+    if depends_on:
+        lines.append("depends_on: [" + ", ".join(f'"{d}"' for d in depends_on) + "]")
+    lines += [
+        "oracles:",
+        "  - id: O1",
+        '    observable: "pytest passes"',
+        '    negative: "a violation raises"',
+        f"    gate: {gate_id}",
+        f"gates: [{gate_id}]",
+        'escalate_if: ["a named contract cannot be met as specified"]',
+        "---",
+        "",
+        "# Body",
+        "",
+        "worktree branch out of scope read first context to read",
+        "",
+        "BLOCKED: nothing to block on.",
+        "",
+    ]
+    path = root / "nyxloom-trove" / "handoffs" / f"{handoff_id}.md"
+    path.write_text("\n".join(lines))
+    return path
+
+
+class TestResolveProjectForPath:
+    """O1: a resolver maps a path to its OWNING project's config by walking
+    ancestors for the nearest nyxloom.toml / matching registered roots --
+    never by registry iteration order."""
+
+    def test_each_handoff_resolves_to_its_own_project(self, tmp_path):
+        root_a = _write_trove_project(tmp_path, "proj-a", "proja")
+        root_b = _write_trove_project(tmp_path, "proj-b", "projb")
+        handoff_a = _write_real_handoff(root_a, "proja", "proja-P01-real")
+        handoff_b = _write_real_handoff(root_b, "projb", "projb-P01-real")
+
+        # projb listed FIRST -- the accident cli.py used to depend on.
+        registry = {"projb": root_b, "proja": root_a}
+
+        cfg_a = lint.resolve_project_for_path(handoff_a, registry)
+        cfg_b = lint.resolve_project_for_path(handoff_b, registry)
+
+        assert cfg_a is not None and cfg_a.project_id == "proja"
+        assert cfg_b is not None and cfg_b.project_id == "projb"
+
+    def test_unregistered_checkout_resolves_via_ancestor_walk(self, tmp_path):
+        """A checkout with its own nyxloom.toml but absent from the registry
+        still resolves -- the fallback alone (registry-only) can't do this."""
+        root = _write_trove_project(tmp_path, "unregistered", "orphan-proj")
+        handoff = _write_real_handoff(root, "orphan-proj", "orphan-proj-P01-real")
+
+        cfg = lint.resolve_project_for_path(handoff, {})
+        assert cfg is not None and cfg.project_id == "orphan-proj"
+
+
+class TestCmdLintResolvesOwnProject:
+    """O2: cmd_lint lints each path arg against its OWN resolved project,
+    not whichever project happens to be first in the registry dict."""
+
+    def test_known_good_handoff_lints_clean_with_different_project_first(
+        self, tmp_path, tmp_state, monkeypatch, capsys
+    ):
+        root_other = _write_trove_project(tmp_path, "other-repo", "other", gate_id="other-gate")
+        root_mine = _write_trove_project(tmp_path, "mine-repo", "mine", gate_id="tester-unified")
+        # A file that exists in "mine" but not in "other" -- reproduces the
+        # live bug's L7 wall when scope.forbid resolves against the wrong root.
+        (root_mine / "src").mkdir()
+        (root_mine / "src" / "other.py").write_text("# stub\n")
+        handoff = _write_real_handoff(
+            root_mine, "mine", "mine-P01-real",
+            forbid=("src/other.py",),
+        )
+
+        registry = {"other": root_other, "mine": root_mine}  # "other" first
+        monkeypatch.setattr("nyxloom.config.load_registry", lambda: registry)
+
+        exit_code = cli.main(["lint", str(handoff)])
+        out = capsys.readouterr().out
+
+        assert "does not match config" not in out
+        assert "not declared in project.toml" not in out
+        assert "does not exist" not in out
+        assert exit_code == 0
+
+
+class TestCmdLintUnresolvedPath:
+    """O3: a path with no owning project gets a typed diagnostic naming the
+    path and a non-zero exit -- never lints against an arbitrary project's
+    config, and never crashes."""
+
+    def test_orphan_path_gets_diagnostic_not_wrong_project_findings(
+        self, tmp_path, tmp_state, monkeypatch, capsys
+    ):
+        root_other = _write_trove_project(tmp_path, "other-repo", "other")
+        registry = {"other": root_other}
+        monkeypatch.setattr("nyxloom.config.load_registry", lambda: registry)
+
+        orphan = tmp_path / "orphan-dir" / "orphan.md"
+        orphan.parent.mkdir()
+        orphan.write_text("not even a valid handoff\n")
+
+        exit_code = cli.main(["lint", str(orphan)])
+        out = capsys.readouterr().out
+
+        assert exit_code != 0
+        assert str(orphan) in out
+        # Never silently linted against "other"'s config.
+        assert "does not match config" not in out
+        assert "not declared in project.toml" not in out
+
+
+class TestL7CrossRepoProjectDriven:
+    """O4: the cross-repo body check exempts the PROJECT'S OWN /workspaces/
+    segment (derived from cfg.root), not a hardcoded name."""
+
+    def test_own_repo_reference_clean_foreign_repo_still_warns(self, tmp_path):
+        root = tmp_path / "workspaces" / "myrepo" / "proj"
+        (root / "nyxloom-trove" / "handoffs").mkdir(parents=True)
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(textwrap.dedent("""\
+            [project]
+            id = "proj"
+            handoff_globs = ["nyxloom-trove/handoffs/*.md"]
+
+            [gates.tester-unified]
+            argv = ["true"]
+            phase = "implementation"
+            timeout_seconds = 60
+            """))
+        cfg = config.ProjectConfig.load(root)
+
+        handoff = _write_real_handoff(root, "proj", "proj-P01-real")
+        text = handoff.read_text()
+        text += (
+            "\nGate lives at `/workspaces/myrepo/proj` -- this repo's own path.\n"
+            "See also `/workspaces/otherrepo/docs/spec.md` for unrelated context.\n"
+        )
+        handoff.write_text(text)
+
+        findings = lint.lint_file(handoff, cfg)
+        messages = [f.message for f in findings if f.rule == "L7" and f.severity == "warning"]
+
+        assert not any("myrepo" in m for m in messages)
+        assert any("otherrepo" in m for m in messages)
+
+
+class TestL1DependsOnTroveResolution:
+    """O5: depends_on resolves against the project's CONFIGURED handoff
+    location (and archive_dir), not the hardcoded legacy handoff/<id>.md
+    that a trove-standard project like nyxloom doesn't even have."""
+
+    def test_dep_only_under_trove_handoffs_resolves_with_no_statefile(
+        self, tmp_path, tmp_state
+    ):
+        root = _write_trove_project(tmp_path, "trove-only", "troveproj")
+        _write_real_handoff(root, "troveproj", "troveproj-P01-dep")
+        dependent = _write_real_handoff(
+            root, "troveproj", "troveproj-P02-real",
+            depends_on=("troveproj-P01-dep",),
+        )
+        cfg = config.ProjectConfig.load(root)
+
+        assert not paths.state_dir(cfg.project_id).exists()
+
+        findings = lint.lint_file(dependent, cfg)
+        l1_dep_errors = [f for f in findings if f.rule == "L1" and "depends_on" in f.message]
+        assert l1_dep_errors == []
+
+    def test_dep_resolvable_nowhere_still_errors(self, tmp_path, tmp_state):
+        root = _write_trove_project(tmp_path, "trove-ghost", "ghostproj")
+        dependent = _write_real_handoff(
+            root, "ghostproj", "ghostproj-P02-real",
+            depends_on=("ghostproj-P99-ghost",),
+        )
+        cfg = config.ProjectConfig.load(root)
+
+        findings = lint.lint_file(dependent, cfg)
+        l1_dep_errors = [f for f in findings if f.rule == "L1" and "depends_on" in f.message]
+        assert l1_dep_errors != []
+
+    def test_dep_archived_on_merge_resolves(self, tmp_path, tmp_state):
+        root = _write_trove_project(tmp_path, "trove-archived", "archproj",
+                                     archive_dir="nyxloom-trove/archive")
+        archive_dir = root / "nyxloom-trove" / "archive"
+        archive_dir.mkdir()
+
+        dep_handoff = _write_real_handoff(root, "archproj", "archproj-P01-dep")
+        archive_dir.joinpath("archproj-P01-dep.md").write_text(dep_handoff.read_text())
+        dep_handoff.unlink()
+
+        dependent = _write_real_handoff(
+            root, "archproj", "archproj-P02-real",
+            depends_on=("archproj-P01-dep",),
+        )
+        cfg = config.ProjectConfig.load(root)
+
+        findings = lint.lint_file(dependent, cfg)
+        l1_dep_errors = [f for f in findings if f.rule == "L1" and "depends_on" in f.message]
+        assert l1_dep_errors == []
