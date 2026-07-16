@@ -1,0 +1,80 @@
+# ─── handoffctl controller (handoffd daemon) — containerized (P19) ───────────
+# Runs the resident reconciler daemon + dashboard + ntfy command listener in a
+# ciu-owned container instead of a hand-managed host process. This dissolves
+# the singleton/ghost/double-spawn class of bugs: ciu owns one container
+# identity, so a second dispatcher cannot start.
+#
+# Design (proven 2026-07-15 via direct docker run):
+#   * Base = the mdt devcontainer image (binary-compatible with the host tools
+#     the daemon dispatches: claude/codex/opencode/reasonix all run from the
+#     bind-mounted host installs + auth).
+#   * Runs as uid 1003:1003 (the host owner of the bind-mounted home/state/repos)
+#     + group 994 (docker gid) for docker.sock access (agent dispatch gates).
+#   * HOME <- the real host home (mdt--mounted-folders): gives .claude/.codex/
+#     .config(opencode)/.reasonix auth + .local (claude install/bin + the
+#     handoffd XDG state dir — so state is on the host bind and SURVIVES
+#     container restart, no docker volume needed).
+#   * Repos bound at matching paths so worktree/PHYSICAL_REPO_ROOT resolve.
+#   * network_mode: host -> dashboard on the host's 127.0.0.1:8942 (loopback).
+#
+# Bind SOURCES are absolute HOST-physical paths (DooD: the host daemon renders
+# these; devcontainer-logical paths would resolve to empty dirs).
+#
+# Secrets: NTFY_TOKEN / NTFY_CMD_TOKEN via controller/.env (gitignored;
+# generated from ntfy/.secrets/* by `make-controller-env.sh` / the README).
+
+# Explicit project name — NEVER rely on the directory basename ("controller"),
+# which collides with the dstdns app's per-service compose project of the same
+# name (observed 2026-07-16: a bare `docker compose up` here recreated
+# dstdns-98535c-controller). Unique project + unique service name isolate us.
+name: handoffctl-controller
+
+services:
+  handoffd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: handoffctl-controller:local
+    container_name: handoffctl-prod-controller
+    restart: unless-stopped
+    user: "1003:1003"
+    group_add:
+      - "994"            # docker gid — sock access for agent dispatch gates
+    network_mode: host   # dashboard binds host 127.0.0.1:8942 (loopback-only)
+    working_dir: /workspaces/vbpub/handoffctl2
+    env_file:
+      - .env             # NTFY_TOKEN, NTFY_CMD_TOKEN (gitignored)
+    environment:
+      HOME: /home/vscode
+      TZ: UTC
+      PYTHONPATH: /workspaces/vbpub/handoffctl2/src
+      PATH: /home/vscode/.local/bin:/usr/local/bin:/usr/bin:/bin
+    # Clear the stale pidfile before starting: the pid-liveness singleton guard
+    # is meaningless in a container (the daemon is always pid 1, so a pidfile
+    # holding "1" always reads as "already running"). Docker/ciu is the real
+    # singleton here — one container, restart: unless-stopped — so clearing it
+    # on each (re)start is correct. (Proper fix: make the daemon container-aware
+    # / use flock; tracked as a P19 follow-up.)
+    command:
+      - bash
+      - -c
+      - "rm -f /home/vscode/.local/state/handoffctl/daemon/handoffd.pid; exec /opt/handoffctl-venv/bin/python -m handoffctl.cli daemon"
+    volumes:
+      - /home/vb/mdt--mounted-folders:/home/vscode          # home: auth + .local (state)
+      - /home/vb/volkb79-2/vbpub:/workspaces/vbpub          # repo + venv + handoffctl2 src
+      - /home/vb/volkb79-2/dstdns:/workspaces/dstdns        # repo (registered project)
+      - /var/run/docker.sock:/var/run/docker.sock           # agent dispatch gates
+    healthcheck:
+      # TCP-connect probe (bash /dev/tcp) — robust vs. HTTP-response timing and
+      # avoids depending on curl in the image. Succeeds once the dashboard
+      # ThreadingHTTPServer is listening on the host loopback.
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/8942' 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
