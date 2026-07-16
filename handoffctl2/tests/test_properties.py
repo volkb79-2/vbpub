@@ -549,8 +549,16 @@ def test_sequence_integrity_under_concurrency(tmp_state):
     paths.ensure_layout(project)
     n_procs, n_each = 4, 25
 
+    # Python 3.14 changed the default multiprocessing start method to
+    # "forkserver", under which children do NOT inherit this test's tmp_state
+    # monkeypatch (they are spawned from a forkserver process started earlier,
+    # possibly by another test, with a torn-down tmpdir) -> FileNotFoundError
+    # on a stale state path. These workers are thread-free, so an explicit
+    # "fork" context is safe and deterministically restores the
+    # inherit-parent-state behavior on both 3.13 and 3.14.
+    mp = multiprocessing.get_context("fork")
     procs = [
-        multiprocessing.Process(target=_append_worker, args=(project, n_each, f"w{i}"))
+        mp.Process(target=_append_worker, args=(project, n_each, f"w{i}"))
         for i in range(n_procs)
     ]
     for p in procs:
