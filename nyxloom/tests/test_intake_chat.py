@@ -137,6 +137,31 @@ def test_first_turn_launches_readonly_redacted_session_with_context_refs(
     assert "nyxloom-trove/handoffs" in recorded
     assert "nyxloom.toml" in recorded
 
+    # ...and it carries the operator's actual request. The first turn is the
+    # ONLY place it ever appears (build_dispatch has no free-prose prompt
+    # param, and unlike a D-entry there is no on-disk copy to read back), so
+    # without this the agent is asked to confirm a request it never saw.
+    assert "I want a dark mode toggle" in recorded
+
+
+def test_first_turn_request_survives_shell_metacharacters(sample_project, tmp_path, monkeypatch):
+    """The request is operator prose, not a typed field: it must reach the
+    agent verbatim as a single argv element, quoting/newlines and all."""
+    cfg = sample_project
+    _use_review_routes()
+    record_file = _stub_turn(tmp_path, monkeypatch, "Understood.", tag="meta")
+
+    request = "add a \"dark mode\" toggle; it's $HOME-scoped\nand persists per-user"
+    intake_chat.advance_intake(cfg, "demo", "INTAKE-7", request)
+
+    prompt = intake_chat._first_turn_system_prompt(cfg, "demo", "INTAKE-7", request)
+    assert request in prompt
+    # The recorded argv is `echo "$@"`, which flattens newlines to spaces --
+    # assert on the distinctive fragments rather than the raw string.
+    recorded = record_file.read_text(encoding="utf-8")
+    assert '"dark mode"' in recorded
+    assert "$HOME-scoped" in recorded
+
 
 def test_no_review_route_configured_degrades_to_typed_reply(sample_project, monkeypatch):
     """Negative: no 'frontier-review' route -> a fixed, typed reply, no
@@ -204,6 +229,61 @@ def test_brief_persists_structured_backlog_item(sample_project, tmp_path, monkey
     backlog_text = backlog_items.resolve_path(cfg).read_text(encoding="utf-8")
     assert "reduce eye strain" in backlog_text
     assert "settings-page toggle" in backlog_text
+
+
+def test_brief_past_the_reply_cap_still_finalizes(sample_project, tmp_path, monkeypatch):
+    """A finalize turn recaps the interview and THEN emits BRIEF:, so the
+    block naturally lands past MAX_REPLY_CHARS. Parsing must see the full
+    redacted reply; the cap bounds only what is stored/echoed."""
+    cfg = sample_project
+    _use_review_routes()
+
+    preamble = ("Thanks -- here is my full understanding of the request "
+                "before I finalize it into a brief. ") * 15
+    brief_reply = (
+        preamble + "\n\n"
+        "BRIEF: Add dark mode toggle\n"
+        "Priority: 2\n"
+        "Detail:\n"
+        "Purpose: reduce eye strain for night users.\n"
+    )
+    assert len(brief_reply) > intake_chat.MAX_REPLY_CHARS  # guard the premise
+    _stub_turn(tmp_path, monkeypatch, brief_reply, tag="longbrief")
+
+    reply = intake_chat.advance_intake(cfg, "demo", "INTAKE-8", "I want dark mode")
+
+    chat = intake_chat.load_chat("demo", "INTAKE-8")
+    assert chat.brief_id is not None
+    items = backlog_items.parse(backlog_items.resolve_path(cfg))
+    item = next(it for it in items if it.id == chat.brief_id)
+    assert item.status == "open"
+    assert item.priority == 2
+    assert "reduce eye strain" in backlog_items.resolve_path(cfg).read_text(encoding="utf-8")
+
+    # The stored/echoed reply is still capped.
+    assert len(reply) == intake_chat.MAX_REPLY_CHARS
+    assert len(chat.transcript[-1].text) == intake_chat.MAX_REPLY_CHARS
+
+
+def test_product_call_past_the_reply_cap_still_files_decision(sample_project, tmp_path, monkeypatch):
+    """Same cap hazard on the PRODUCT_CALL: path -- a product call raised at
+    the end of a long turn must not be silently swallowed."""
+    cfg = sample_project
+    _use_review_routes()
+
+    reply_text = (
+        ("Here is the context I gathered from the roadmap and backlog. " * 20) + "\n"
+        "PRODUCT_CALL: Should SSO be mandatory at launch? | Discuss SSO enforcement.\n"
+    )
+    assert len(reply_text) > intake_chat.MAX_REPLY_CHARS
+    _stub_turn(tmp_path, monkeypatch, reply_text, tag="longcall")
+
+    intake_chat.advance_intake(cfg, "demo", "INTAKE-10", "we need SSO")
+
+    chat = intake_chat.load_chat("demo", "INTAKE-10")
+    assert chat.opened_decisions == ["D-001"]
+    parsed = decisions.parse_inbox((cfg.root / cfg.decisions_inbox).read_text(encoding="utf-8"))
+    assert any(d.id == "D-001" and d.status == "OPEN" for d in parsed)
 
 
 # ==========================================================================

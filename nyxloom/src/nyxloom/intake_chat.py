@@ -178,13 +178,21 @@ def _pick_route(routes_obj: Routes) -> RouteDef | None:
 # ---------------------------------------------------------------------------
 # prompt construction (names the context sources; never raw file prose)
 
-def _first_turn_system_prompt(cfg: ProjectConfig, project: str, intake_id: str) -> str:
+def _first_turn_system_prompt(cfg: ProjectConfig, project: str, intake_id: str,
+                              user_text: str) -> str:
     backlog_path = backlog_items.resolve_path(cfg)
     parts = [
         f"You are conducting a feature-intake interview ({intake_id}) with "
         f"the operator for project '{project}' over a chat bridge (nyxloom "
         "intake-chat, P29). Your job: turn a rough feature request into a "
         "carve-ready structured brief.",
+        # The request itself only ever arrives as the first turn's user_text:
+        # unlike decision_chat (whose subject is a D-entry the agent can read
+        # back from the inbox), intake has no on-disk source for it, and
+        # build_dispatch's frozen contract has no free-prose prompt parameter.
+        # It therefore has to ride in on the system prompt, or step (1) below
+        # asks the agent to confirm a request it was never shown.
+        f"The operator's request, verbatim:\n{user_text}",
         "Before asking anything, Read the project context you will need: "
         f"the [refs] docs declared in {cfg.root / TROVE_CONFIG_RELPATH}, "
         f"the roadmap ({cfg.root / ROADMAP_RELPATH}), the backlog "
@@ -366,7 +374,7 @@ def advance_intake(cfg: ProjectConfig, project: str, intake_id: str, user_text: 
     worktree = str(cfg.root)
 
     if chat.session_id is None:
-        system_prompt = _first_turn_system_prompt(cfg, project, intake_id)
+        system_prompt = _first_turn_system_prompt(cfg, project, intake_id, user_text)
         argv, _prompt = adapters.build_dispatch(
             route, handoff_path=backlog_items.DEFAULT_RELPATH, worktree=worktree,
             branch=cfg.default_branch, task_id=f"intake-{intake_id}",
@@ -379,17 +387,27 @@ def advance_intake(cfg: ProjectConfig, project: str, intake_id: str, user_text: 
 
     reply_raw, new_session = _run_subprocess_turn(
         argv, route, worktree=worktree, log_path=log_path, prior_session=chat.session_id)
-    reply = cfg.redact(reply_raw)[:MAX_REPLY_CHARS]
+    # Redact first (the security invariant), then PARSE THE FULL redacted
+    # reply and cap only what is stored/echoed. Parsing the capped text
+    # instead would silently drop a PRODUCT_CALL:/BRIEF: block that happens
+    # to sit past MAX_REPLY_CHARS -- and the finalize block is by
+    # construction at the END of a long recap turn, i.e. exactly where the
+    # cap bites. decision_chat caps before parsing because its cap is an
+    # ntfy message-length bound on text it POSTS; this module posts nothing,
+    # so here the cap is purely a storage/echo bound and must not gate
+    # persistence.
+    reply_full = cfg.redact(reply_raw)
+    reply = reply_full[:MAX_REPLY_CHARS]
 
     chat.session_id = new_session
     chat.route_id = route.route_id
     chat.transcript.append(IntakeChatMessage(role="agent", text=reply, ts=utc_now().isoformat()))
 
-    for question, resume_prompt in _parse_product_calls(reply):
+    for question, resume_prompt in _parse_product_calls(reply_full):
         chat.opened_decisions.append(decisions.open_decision(cfg, question, resume_prompt))
 
     if chat.brief_id is None:
-        parsed_brief = _parse_brief(reply)
+        parsed_brief = _parse_brief(reply_full)
         if parsed_brief is not None:
             chat.brief_id = _finalize_brief(cfg, chat, parsed_brief)
 
