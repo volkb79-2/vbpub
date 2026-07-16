@@ -1,4 +1,10 @@
-"""Tests for P39 ntfy URL single-source resolution (config.NotifyConfig)."""
+"""Tests for P39 ntfy URL single-source resolution (config.NotifyConfig).
+
+The NTFY_URL env var is authoritative over the TOML source: the ntfy server
+owns its own URL (a deployment fact), so no project's nyxloom.toml has to
+re-hardcode it. Resolution happens at config load, so a caller constructing
+NotifyConfig(...) directly still keeps the url it passes.
+"""
 
 from __future__ import annotations
 
@@ -8,30 +14,97 @@ from nyxloom.config import NotifyConfig, ProjectConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+_PROJECT_TOML = """\
+[project]
+id = "p39proj"
+default_branch = "main"
+worktree_root = ".worktrees"
+handoff_globs = ["handoff/*.md"]
+
+[policy]
+
+[notify]
+{notify_lines}
+"""
+
+
+def _write_project(root: Path, notify_lines: str = "") -> Path:
+    """Write a minimal nyxloom-trove/nyxloom.toml and return the repo root."""
+    trove = root / "nyxloom-trove"
+    trove.mkdir(parents=True, exist_ok=True)
+    (trove / "nyxloom.toml").write_text(
+        _PROJECT_TOML.format(notify_lines=notify_lines), encoding="utf-8"
+    )
+    return root
+
 
 # =========================================================================
 # Oracle O1: NTFY_URL env overrides a project's [notify] ntfy_url in toml
 # =========================================================================
 
-def test_ntfy_url_env_overrides_toml(monkeypatch):
+def test_ntfy_url_env_overrides_toml(tmp_path, monkeypatch):
     monkeypatch.setenv("NTFY_URL", "https://env-wins.example")
-    nc = NotifyConfig(ntfy_url="https://toml-value.example")
-    assert nc.ntfy_url == "https://env-wins.example"
+    root = _write_project(tmp_path, 'ntfy_url = "https://toml-value.example"\n')
+
+    cfg = ProjectConfig.load(root)
+
+    assert cfg.notify.ntfy_url == "https://env-wins.example"
 
 
 # =========================================================================
 # Oracle O2: fallback chain env -> toml -> None
 # =========================================================================
 
-def test_ntfy_url_falls_back_to_toml_without_env(monkeypatch):
+def test_ntfy_url_falls_back_to_toml_without_env(tmp_path, monkeypatch):
     monkeypatch.delenv("NTFY_URL", raising=False)
-    nc = NotifyConfig(ntfy_url="https://toml-value.example")
-    assert nc.ntfy_url == "https://toml-value.example"
+    root = _write_project(tmp_path, 'ntfy_url = "https://toml-value.example"\n')
+
+    cfg = ProjectConfig.load(root)
+
+    assert cfg.notify.ntfy_url == "https://toml-value.example"
 
 
-def test_ntfy_url_none_without_env_or_toml(monkeypatch):
+def test_ntfy_url_none_without_env_or_toml(tmp_path, monkeypatch):
     monkeypatch.delenv("NTFY_URL", raising=False)
-    nc = NotifyConfig()
+    root = _write_project(tmp_path)
+
+    cfg = ProjectConfig.load(root)
+
+    assert cfg.notify.ntfy_url is None
+
+
+def test_empty_ntfy_url_env_does_not_shadow_toml(tmp_path, monkeypatch):
+    """An empty/blank NTFY_URL is treated as unset, not as a url that
+    disables notifications by pointing them at ''."""
+    monkeypatch.setenv("NTFY_URL", "")
+    root = _write_project(tmp_path, 'ntfy_url = "https://toml-value.example"\n')
+
+    cfg = ProjectConfig.load(root)
+
+    assert cfg.notify.ntfy_url == "https://toml-value.example"
+
+
+# =========================================================================
+# The env is authoritative over the TOML source ONLY. Direct construction
+# keeps the url the caller passes -- otherwise NotifyConfig(ntfy_url=None)
+# could not express "notifications disabled", and callers aiming at a
+# specific endpoint (a local stub, a closed port) would be silently
+# retargeted at the deployment server whenever NTFY_URL happened to be set.
+# =========================================================================
+
+def test_direct_construction_is_not_overridden_by_env(monkeypatch):
+    monkeypatch.setenv("NTFY_URL", "https://deployment.example")
+
+    nc = NotifyConfig(ntfy_url="http://127.0.0.1:8099")
+
+    assert nc.ntfy_url == "http://127.0.0.1:8099"
+
+
+def test_direct_construction_can_express_disabled_under_env(monkeypatch):
+    monkeypatch.setenv("NTFY_URL", "https://deployment.example")
+
+    nc = NotifyConfig(ntfy_url=None)
+
     assert nc.ntfy_url is None
 
 

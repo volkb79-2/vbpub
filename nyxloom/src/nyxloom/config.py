@@ -88,16 +88,6 @@ class NotifyConfig:
         "MERGE_RECORDED", "TASK_TRANSITIONED",
     ])
 
-    def __post_init__(self) -> None:
-        # P39: the ntfy server (not each project) is authoritative for its
-        # own URL — it's a deployment fact (tls-edge/PUBLIC_FQDN), so the
-        # NTFY_URL env var always wins over a project's toml value. This
-        # keeps every project's nyxloom.toml from re-hardcoding + drifting
-        # on the FQDN. Chain: env -> toml -> None (notifications disabled).
-        env_url = os.environ.get("NTFY_URL")
-        if env_url:
-            self.ntfy_url = env_url
-
 
 @dataclass
 class Policy:
@@ -174,6 +164,19 @@ class ProjectConfig:
             notify_data["ntfy_topic"] = notify_data.pop("notifications_topic")
         if "feedback_topic" in notify_data:
             notify_data["cmd_topic"] = notify_data.pop("feedback_topic")
+        # P39: the ntfy server (not each project) is authoritative for its own
+        # URL — it's a deployment fact (tls-edge/PUBLIC_FQDN), so NTFY_URL wins
+        # over a project's toml value, keeping every project's nyxloom.toml from
+        # re-hardcoding + drifting on the FQDN. Chain: env -> toml -> None
+        # (notifications disabled). Resolved HERE, at config load, rather than in
+        # NotifyConfig.__post_init__: the env is authoritative over the TOML
+        # source only. A caller constructing NotifyConfig(...) directly keeps the
+        # url it passes — otherwise an explicit NotifyConfig(ntfy_url=None) could
+        # not express "disabled", and callers aiming at a specific endpoint would
+        # be silently retargeted at the deployment server.
+        env_url = os.environ.get("NTFY_URL")
+        if env_url:
+            notify_data["ntfy_url"] = env_url
         noti = NotifyConfig(**notify_data)
         return cls(
             project_id=data["project"]["id"],

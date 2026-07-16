@@ -275,6 +275,9 @@ def _register_cmd_project(tmp_path, port: int):
 
 
 def test_transport_reply_and_reconnect_carries_since(tmp_state, tmp_path, monkeypatch):
+    # NTFY_URL (P39) is authoritative over this fixture's toml ntfy_url, so an
+    # ambient one would point the listener at the real server, not _FakeNtfyServer.
+    monkeypatch.delenv("NTFY_URL", raising=False)
     monkeypatch.setenv("NTFY_CMD_TOKEN", "read-tok")
     monkeypatch.setenv("NTFY_TOKEN", "write-tok")
 
