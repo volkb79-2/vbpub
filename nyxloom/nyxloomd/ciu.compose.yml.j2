@@ -9,6 +9,16 @@
 # physical paths (DooD); network_mode: host -> dashboard on 127.0.0.1:8942;
 # state on the host bind, survives restart.
 #
+# Process model (P37, docs/runtime-process-model.md §2): tini (init: true) is
+# container PID 1; the daemon runs under a supervisor loop (`command`, no
+# `exec`), NOT as PID 1. A daemon crash or restart therefore never tears down
+# the container -- its wrapper children (agent processes) reparent to tini and
+# keep running, the loop respawns the daemon, and the daemon re-adopts the
+# still-live wrappers from their on-disk pid/wrapper.pid. Without this, any
+# daemon fault (or a routine code-update restart) killed every in-flight
+# agent. ciu/docker remains the container-level singleton (one container,
+# `restart: unless-stopped`); tini + the loop add crash-safety *within* it.
+#
 # Secrets: NTFY_TOKEN / NTFY_CMD_TOKEN via controller/.env (gitignored).
 
 # Explicit compose project name — NEVER let it default to the dir basename
@@ -25,6 +35,11 @@ services:
     image: {{ nyxloomd.image }}
     container_name: {{ nyxloomd.container_prefix }}-nyxloomd
     restart: unless-stopped
+    init: true                                   # tini as PID 1: reaps zombies, forwards
+                                                   # signals, and -- critically -- means the
+                                                   # daemon (below) is NOT PID 1, so its
+                                                   # crash/restart never tears down the
+                                                   # container (docs/runtime-process-model.md §2)
     user: "{{ nyxloomd.runtime.run_as_uid }}:{{ nyxloomd.runtime.run_as_gid }}"
     group_add:
       - "{{ nyxloomd.runtime.docker_gid }}"    # docker gid — sock access for agent gates
@@ -37,12 +52,18 @@ services:
       TZ: UTC
       PYTHONPATH: /workspaces/vbpub/nyxloom/src
       PATH: /home/vscode/.local/bin:/usr/local/bin:/usr/bin:/bin
-    # Clear the stale pidfile on start: the pid-liveness singleton guard is moot
-    # in a container (daemon is always pid 1); ciu/docker is the singleton.
+    # tini (PID 1, via init: true above) supervises this shell, which is a
+    # SUPERVISOR LOOP for the daemon, not the daemon itself -- no `exec`, so
+    # bash stays the daemon's parent and respawns it 2s after every exit
+    # (crash OR clean restart). A daemon crash reparents its still-live
+    # wrapper children to tini; the respawned daemon re-adopts them via their
+    # on-disk pid/wrapper.pid (the belt-and-braces liveness check daemon.py
+    # already implements -- see docs/runtime-process-model.md §2). The stale
+    # pidfile is cleared once up front, same as before.
     command:
       - bash
       - -c
-      - "rm -f /home/vscode/.local/state/nyxloom/daemon/nyxloomd.pid; exec /opt/nyxloom-venv/bin/python -m nyxloom.cli daemon"
+      - "rm -f /home/vscode/.local/state/nyxloom/daemon/nyxloomd.pid; while true; do /opt/nyxloom-venv/bin/python -m nyxloom.cli daemon; sleep 2; done"
     volumes:
       - /home/vb/mdt--mounted-folders:/home/vscode          # home: auth + .local (state)
       - /home/vb/volkb79-2/vbpub:/workspaces/vbpub          # repo + nyxloom src

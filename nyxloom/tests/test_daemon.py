@@ -12,6 +12,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -200,6 +201,36 @@ def _drive_until(d, project, predicate, timeout=15.0, pass_gap=0.4):
             return True
         time.sleep(pass_gap)
     return predicate()
+
+
+# --------------------------------------------------------------------------
+# P37 2026-07-16 Oracle 1: nyxloomd runs under tini + a supervisor loop, not
+# as container PID 1 -- see docs/runtime-process-model.md §2. Mirrors the
+# P27 sibling-file-parity pattern in test_render.py (NYXLOOMD_DIR / a
+# line-level read, since ciu.compose.yml.j2 is not valid YAML as-is).
+
+NYXLOOMD_DIR = Path(__file__).resolve().parent.parent / "nyxloomd"
+
+# `init: true` must match a real service DIRECTIVE (indentation, then the key),
+# not the several prose mentions of it in these files' header comments -- a
+# plain `"init: true" in text` is satisfied by the comments alone and stays
+# green with tini actually removed, i.e. blind to the very regression this
+# test exists to catch.
+_INIT_DIRECTIVE = re.compile(r"^[ \t]*init:[ \t]*true\b", re.M)
+
+
+def test_nyxloomd_compose_runs_daemon_under_tini_supervisor_not_pid1():
+    """Both the .j2 template and its pre-rendered docker-compose.yml sibling
+    set `init: true` (tini as container PID 1) and run the daemon through a
+    `while` supervisor loop with NO `exec` -- an `exec`'d daemon would still
+    be PID 1, and its crash or restart would tear down the whole container,
+    killing every in-flight agent (the P37 hazard)."""
+    for fname in ("ciu.compose.yml.j2", "docker-compose.yml"):
+        text = (NYXLOOMD_DIR / fname).read_text(encoding="utf-8")
+        assert _INIT_DIRECTIVE.search(text), f"{fname} missing `init: true` (tini as PID 1)"
+        assert "while true" in text, f"{fname} missing the supervisor loop"
+        assert "exec " not in text, f"{fname} still execs the daemon (would be PID 1)"
+        assert "nyxloom.cli daemon" in text
 
 
 # --------------------------------------------------------------------------
@@ -1326,6 +1357,51 @@ def test_attempt_scan_wrapper_pid_fallback_stays_dead(tmp_state, sample_project)
     d = daemon.Daemon({project: sample_project.root})
     _log_quiet, pid_alive, _receipts = d._attempt_scan(project, storage.list_states(project))
     assert pid_alive[attempt_id] is False
+
+
+# --------------------------------------------------------------------------
+# P37 2026-07-16: orphan re-adoption under tini (daemon crash + respawn)
+
+def test_reconcile_pass_treats_orphaned_live_wrapper_as_alive_not_interrupted(
+        tmp_state, sample_project, monkeypatch):
+    """Under the tini+supervisor model (docs/runtime-process-model.md §2), a
+    freshly respawned daemon (post-crash) finds still-live wrapper processes
+    it did NOT spawn -- reparented to tini, not to this daemon instance. The
+    pid liveness check (_attempt_scan / os.kill(pid, 0)) is process-identity
+    agnostic, so a REAL reconcile pass over an attempt whose recorded pid is
+    a real process this test spawned directly (never a child of the Daemon
+    object below) must treat it as alive: no MarkInterrupted action, no
+    ATTEMPT_INTERRUPTED event, the attempt stays RUNNING. Regression for the
+    respawn-then-interrupt failure mode that would defeat crash-safety --
+    agents surviving the crash only to be killed by the supervisor's
+    respawn."""
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+    cfg = sample_project
+    # Real (unmonkeypatched) reconcile.plan_project runs here; drop the
+    # fixture's own sample handoff so it isn't auto-CreateTask'd/dispatched
+    # through the non-executable "fake" cli -- unrelated async noise.
+    (cfg.root / "handoff" / "demo-P01-sample.md").unlink()
+
+    project = "demo"
+    task_id, attempt_id = "orphan-task", "att-orphan"
+    tsf = _seed_running_attempt(project, task_id, attempt_id)
+
+    orphan = subprocess.Popen(["sleep", "300"])
+    try:
+        att = tsf.attempt_by_id(attempt_id)
+        att.pid = orphan.pid
+        storage.save_state(tsf)
+
+        d = daemon.Daemon({project: cfg.root})
+        d.run_pass(project)
+
+        tsf_after = storage.load_state(project, task_id)
+        assert tsf_after.attempt_by_id(attempt_id).state is AttemptState.RUNNING
+        assert not any(e.type is EventType.ATTEMPT_INTERRUPTED for e in storage.iter_events(project))
+        assert not any(e.type is EventType.TICK_ERROR for e in storage.iter_events(project))
+    finally:
+        orphan.terminate()
+        orphan.wait(timeout=5)
 
 
 # --------------------------------------------------------------------------
