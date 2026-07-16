@@ -900,6 +900,41 @@ class TestConfigLintRefs:
         findings = lint.lint_config(cfg)
         assert [f for f in findings if f.rule == "CFG3"] == []
 
+    def test_absolute_ref_outside_root_is_blocking_cfg3(self, tmp_path):
+        """An absolute ref exists on disk but is not under the project root:
+        existence alone must not clear CFG3 (handoff: 'resolves under cfg.root')."""
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        outside = tmp_path / "outside.md"
+        outside.write_text("x\n")
+        bad = VALID_CONFIG_TOML.replace(
+            'spec = "docs/SPEC.md"', f'spec = "{outside}"'
+        )
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(cfg)
+        cfg3 = [f for f in findings if f.rule == "CFG3"]
+        assert cfg3, findings
+        assert all(f.severity == "error" for f in cfg3)
+        assert "spec" in cfg3[0].message
+        assert lint.has_blocking(findings)
+
+    def test_parent_escaping_ref_is_blocking_cfg3(self, tmp_path):
+        """A '..'-escaping ref that resolves to a real file outside the root."""
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        (tmp_path / "outside.md").write_text("x\n")
+        bad = VALID_CONFIG_TOML.replace(
+            'spec = "docs/SPEC.md"', 'spec = "../outside.md"'
+        )
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(cfg)
+        cfg3 = [f for f in findings if f.rule == "CFG3"]
+        assert cfg3, findings
+        assert "../outside.md" in cfg3[0].message
+        assert lint.has_blocking(findings)
+
 
 class TestConfigLintWorktreeRoot:
     """CFG2: [project].worktree_root, when present, must be non-empty."""

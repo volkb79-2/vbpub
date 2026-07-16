@@ -220,16 +220,25 @@ def lint_config(cfg: ProjectConfig) -> list[LintFinding]:
                 path=str(config_path),
             ))
 
+    root_resolved = cfg.root.resolve()
     for ref_name, ref_path in raw.get("refs", {}).items():
         if not isinstance(ref_path, str):
             continue
-        if not (cfg.root / ref_path).exists():
-            findings.append(LintFinding(
-                rule="CFG3",
-                severity="error",
-                message=f"refs.{ref_name} path '{ref_path}' does not resolve under project root",
-                path=str(config_path),
-            ))
+        # An absolute or '..'-escaping ref can exist while still living outside
+        # the project — resolve before testing containment, not just existence.
+        target = (cfg.root / ref_path).resolve()
+        if not target.is_relative_to(root_resolved):
+            reason = "escapes the project root"
+        elif not target.exists():
+            reason = "does not exist"
+        else:
+            continue
+        findings.append(LintFinding(
+            rule="CFG3",
+            severity="error",
+            message=f"refs.{ref_name} path '{ref_path}' {reason}; must resolve under project root",
+            path=str(config_path),
+        ))
 
     return findings
 
