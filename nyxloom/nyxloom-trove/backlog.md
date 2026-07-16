@@ -173,3 +173,16 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
   windows with no admission), so branch-authority doesn't drive over-production.
   Interim lever used 2026-07-16: `carve_ahead_target = 0` during the rebuild
   drain. Not urgent (gated + mitigated), but a real efficiency/robustness gap.
+- **B-intake-over-ntfy — user-initiated feature-intake chat over the feedback channel.**
+  Today the ntfy `feedback` channel is bidirectional for DECISIONS (decision_chat P18)
+  + cmd verbs. Extend it so the USER can start a feature-intake discussion from ntfy
+  (phone/chat) and converse with the intake agent (P29/P30) — a chatbot surface for the
+  factory's front door, sibling of decision-chat. Mechanism: the feedback-message router
+  (decision_chat.wrap_command_handler / handle_feedback_message) recognizes a new
+  intake-start/continue message (e.g. an `intake:`/`feature:` prefix) and drives
+  intake_chat.advance_intake over the channel — the agent posts questions back, the user
+  replies from their phone, and on satisfaction it persists a pre-carve brief (P29). This
+  is the ntfy twin of P30 (the dashboard intake tab). Same read-only+redacted posture as
+  decision_chat; disambiguation is the only real design work (intake-start vs decision
+  reply vs cmd verb — a keyword/prefix convention). Depends on P29 (merged) + the feedback
+  transport. Post-rebuild feature; not part of the current convergence.
