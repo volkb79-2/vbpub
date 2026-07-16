@@ -36,6 +36,14 @@ INTERFACE CONTRACT (frozen):
   other line in the file, is left byte-identical), and return True. No
   match (including an un-headered/unlinked backlog, or a missing file) ->
   no write, return False.
+- create(path, title, detail, priority=None, decisions=None) -> str: PACKAGE
+  P29 (feature-intake agent) addition -- appends a brand-new, ALWAYS-headered
+  item (status=open) in the same bullet+header-comment shape as above,
+  allocates the next B<N> id (max existing + 1, B1 if none yet), and returns
+  it. `detail` is prose (embedded newlines are re-indented as bullet
+  continuation lines, never a new `- **B<N>` line). Creates the file (with a
+  minimal title line) if it does not exist yet. Never touches any other
+  item's line.
 """
 
 from __future__ import annotations
@@ -224,3 +232,34 @@ def tick_merged(path: Path, task_id: str, commit: str) -> bool:
     with path.open("w", encoding="utf-8", newline="") as fh:
         fh.write("".join(lines))
     return True
+
+
+def create(path: Path, title: str, detail: str, *, priority: int | None = None,
+           decisions: list[str] | None = None) -> str:
+    """Append a brand-new, headered item (status=open); return its B<N> id.
+
+    Allocates the next id (max existing B<N> + 1, B1 if the file is empty
+    or missing). `detail` prose is re-indented onto continuation lines so it
+    can never itself be mistaken for a new item's bullet line."""
+    items = parse(path) if path.exists() else []
+    existing_ns = [int(it.id[1:]) for it in items if it.id[1:].isdigit()]
+    new_id = f"B{max(existing_ns, default=0) + 1}"
+
+    tokens = [f"id={new_id}", "status=open"]
+    if priority is not None:
+        tokens.append(f"priority={priority}")
+    if decisions:
+        tokens.append(f"decisions={','.join(decisions)}")
+
+    detail_indented = detail.strip().replace("\n", "\n  ")
+    block = (
+        f"- **{new_id} — {title}.** {detail_indented}\n"
+        f"  <!-- nyxloom:backlog {' '.join(tokens)} -->\n"
+    )
+
+    text = path.read_text(encoding="utf-8") if path.exists() else "# backlog\n"
+    text = text.rstrip("\n") + "\n\n" + block
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return new_id

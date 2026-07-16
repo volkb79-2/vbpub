@@ -44,6 +44,15 @@ INTERFACE CONTRACT (frozen):
       claude --append-system-prompt '<resume prompt + entry heading +
       inbox path>' (single-quoted, quote-escaped)
   Raises DecisionError when the entry has no resume prompt.
+- open_decision(cfg, question, resume_prompt, raised_by='intake-agent') ->
+  str: the inverse of decide() -- appends a brand-new OPEN entry (next
+  D-<NNN>, zero-padded 3 digits) with **Question:**/**Resume prompt:**
+  paragraphs, and returns the allocated id. PACKAGE P29 (feature-intake
+  agent): lets the intake interview file a product call for the operator
+  without guessing. File-write only, like decide() -- event emission (if
+  any) is the caller's job; in practice the next daemon reconcile tick
+  picks up the new OPEN entry and emits DECISION_OPENED itself via
+  reconcile_decisions, so no double-write here.
 """
 
 from __future__ import annotations
@@ -355,3 +364,39 @@ def discuss(cfg: ProjectConfig, decision_id: str) -> str:
     cmd = f"claude --append-system-prompt {quoted_prompt}"
 
     return cmd
+
+
+def open_decision(cfg: ProjectConfig, question: str, resume_prompt: str,
+                  raised_by: str = "intake-agent") -> str:
+    """Append a brand-new OPEN decision entry (the inverse of decide()).
+
+    Allocates the next D-<NNN> id (max existing + 1, zero-padded 3 digits;
+    D-001 if the inbox has none yet), appends a well-formed entry carrying
+    **Question:**/**Resume prompt:** paragraphs, and returns the new id.
+    Creates the inbox file (with a minimal header) if it does not exist yet.
+    """
+    inbox_path = cfg.root / cfg.decisions_inbox
+
+    existing = []
+    if inbox_path.exists():
+        existing = parse_inbox(inbox_path.read_text(encoding="utf-8"))
+
+    next_n = max((int(d.id[2:]) for d in existing if d.id[2:].isdigit()), default=0) + 1
+    new_id = f"D-{next_n:03d}"
+    today = utc_now().date().isoformat()
+
+    entry = (
+        f"## {new_id} · {today} · {raised_by} · OPEN\n\n"
+        f"**Question:** {question}\n\n"
+        f'**Resume prompt:** "{resume_prompt}"\n'
+    )
+
+    if inbox_path.exists():
+        text = inbox_path.read_text(encoding="utf-8")
+    else:
+        inbox_path.parent.mkdir(parents=True, exist_ok=True)
+        text = "# decisions inbox — product calls awaiting the user (D-<NNN>).\n"
+
+    text = text.rstrip("\n") + "\n\n" + entry
+    inbox_path.write_text(text, encoding="utf-8")
+    return new_id

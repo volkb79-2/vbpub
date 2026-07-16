@@ -26,6 +26,14 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               decisions.decide(authority=$USER) +
                               DECISION_RESOLVED event (decision_id set).
   discuss <project> <D-id>    prints decisions.discuss command string.
+  intake <project> <intake_id> <message>
+                              P29 2026-07-16: feature-intake chat verb,
+                              parallel to `discuss` -- advances one
+                              intake_chat.advance_intake turn (launches on
+                              the first call for a given intake_id, resumes
+                              on subsequent calls) and prints the agent's
+                              reply. The programmatic entry point P30's UI
+                              calls.
   reject <project> <task> [--note TEXT]
                               P17 2026-07-15: merge-gate rejection.
                               MERGE_READY -> REVIEW_REJECTED via
@@ -427,6 +435,16 @@ def cmd_discuss(args) -> int:
         return 1
 
 
+def cmd_intake(args) -> int:
+    """intake <project> <intake_id> <message>"""
+    from . import intake_chat
+
+    cfg = _cfg(args.project)
+    reply = intake_chat.advance_intake(cfg, args.project, args.intake_id, args.message)
+    print(reply)
+    return 0
+
+
 def cmd_reject(args) -> int:
     """reject <project> <task> [--note TEXT]"""
     from . import storage
@@ -789,6 +807,12 @@ def main(argv: list[str] | None = None) -> int:
     discuss_parser.add_argument("project", help="Project ID")
     discuss_parser.add_argument("decision_id", help="Decision ID")
 
+    # intake
+    intake_parser = subparsers.add_parser("intake")
+    intake_parser.add_argument("project", help="Project ID")
+    intake_parser.add_argument("intake_id", help="Intake ID")
+    intake_parser.add_argument("message", help="Message to the intake agent")
+
     # reject
     reject_parser = subparsers.add_parser("reject")
     reject_parser.add_argument("project", help="Project ID")
@@ -866,6 +890,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_decide(args)
         elif args.cmd == "discuss":
             return cmd_discuss(args)
+        elif args.cmd == "intake":
+            return cmd_intake(args)
         elif args.cmd == "reject":
             return cmd_reject(args)
         elif args.cmd == "merge":
