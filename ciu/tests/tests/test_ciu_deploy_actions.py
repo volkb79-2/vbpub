@@ -80,7 +80,28 @@ def test_build_selection_appends_profile_extra_stacks_last():
     selection = deploy.build_selection(profile)
     # Numbered phase first, then the profile's extra stack (documented ordering).
     assert [e["path"] for e in selection] == ["infra/a", "tools/x"]
-    assert selection[-1]["phase_key"] == deploy.EXTRA_STACKS_KEY
+    assert selection[-1]["phase_key"].startswith(deploy.EXTRA_STACKS_KEY)
+
+
+def test_extra_stacks_each_form_own_pseudo_phase():
+    """S7.4: each profile stack is its OWN pseudo-phase so the deploy loop's
+    per-phase provisioning probe runs just-in-time per stack (a shared
+    pseudo-phase probed every extra stack's requires before any deployed —
+    greenfield cross-stack requirements could never pass)."""
+    profile = Profile(
+        name="p", phase_keys=set(),
+        extra_stacks=["infra/vault", "infra/db-core", "infra/db-init"],
+        config={"deploy": {"phases": {}, "control": {}}},
+    )
+    selection = deploy.build_selection(profile)
+    keys = [e["phase_key"] for e in selection]
+    assert len(set(keys)) == 3  # all distinct
+    groups = deploy.group_by_phase(selection)
+    assert [(k, [e["path"] for e in es]) for k, es in groups] == [
+        (keys[0], ["infra/vault"]),
+        (keys[1], ["infra/db-core"]),
+        (keys[2], ["infra/db-init"]),
+    ]
 
 
 def test_group_by_phase_groups_consecutive_entries():
