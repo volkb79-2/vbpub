@@ -10,8 +10,16 @@ Usage:
 
 `init` is not special-cased below -- it rides the same generic argv
 forwarding as every other subcommand (docker exec into the controller when
-running, host fallback otherwise), which also proves the target instance can
-reach <project_folder> (a built-in access check; see nyxloom-trove/STANDARD.md).
+running, host fallback otherwise).
+
+STANDARD.md frames that forwarding as an access check: routing `init` through
+the running instance proves that instance can reach <project_folder>. Today
+that only holds on the host-fallback leg -- the docker exec leg cannot run ANY
+subcommand yet, because the controller image supplies nyxloom via PYTHONPATH
+over the bind-mounted src/ and installs no `nyxloom` entrypoint, so
+`docker exec <container> nyxloom ...` exits 127. Pre-existing and not specific
+to `init` (`version` fails the same way); the access check becomes real once
+the image exposes a `nyxloom` executable.
 
 Routing (transition-safe across the P19 containerization):
   1. If a running controller container is found (name contains both

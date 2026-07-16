@@ -706,6 +706,25 @@ def test_init_scaffolds_trove(tmp_path, capsys):
     assert str(trove) in out
 
 
+def test_init_scaffolds_a_loadable_trove(tmp_path):
+    """Review (P23): the scaffolded nyxloom.toml is not merely valid TOML --
+    nyxloom itself must be able to load it, or `init` hands the operator a
+    trove the tool cannot read. The REPORT claimed this was verified by hand;
+    this pins it. Gates/[refs] are deliberately left empty for the operator,
+    so an empty gate map is the expected outcome, not a failure."""
+    project_folder = tmp_path / "loadable"
+    assert cli.main(["init", str(project_folder)]) == 0
+
+    cfg = ProjectConfig.load(project_folder)
+
+    assert cfg.project_id == "loadable"
+    assert cfg.default_branch == "main"
+    assert cfg.handoff_globs == ["nyxloom-trove/handoffs/*.md"]
+    assert cfg.reports_dir == "nyxloom-trove/reports"
+    assert cfg.decisions_inbox == "nyxloom-trove/decisions.md"
+    assert cfg.gates == {}
+
+
 def test_init_refuses_existing_trove(tmp_path, capsys):
     """Oracle O1-negative: init into a dir that already has a nyxloom-trove/
     exits non-zero WITHOUT overwriting existing files (idempotent-safe)."""
@@ -732,6 +751,10 @@ def test_init_missing_project_folder_exits_2(capsys):
     usage message."""
     exit_code = cli.main(["init"])
     assert exit_code == 2
+
+    err = capsys.readouterr().err
+    assert "usage:" in err
+    assert "project_folder" in err
 
 
 def test_decide_debug_reraises(sample_project, tmp_state, monkeypatch):
