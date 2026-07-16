@@ -125,6 +125,19 @@ decision. Additions:
   proportional to diff size and labelled `basis: estimated`.
 - The reviewer MAY carve in-session post-merge (`carve_affinity` hint, v2 §2);
   carve outputs are still individually lint-gated.
+- **Verdict signalling is explicit and FAIL-SAFE (P33, 2026-07-16).** A review's
+  verdict MUST NOT be inferred from process exit — a clean exit means the
+  reviewer *finished*, not that it *approved*. Each reviewed task carries an
+  explicit, machine-readable verdict in its durable `<task>-REVIEW.md`
+  (`VERDICT: APPROVED | REJECTED — <reason>`); the daemon derives MERGE_READY
+  vs REVIEW_REJECTED from THAT. The gate **fails safe**: a missing, unreadable,
+  or ambiguous verdict is treated as **REJECTED**, never MERGE_READY — a
+  forgotten signal can never approve-by-accident. (Live incident: a correct
+  REJECTED report exited clean → `done` → MERGE_READY and nearly merged buggy
+  daemon-core code.) This generalizes to a project invariant: **every gate
+  derived from an agent's own self-report must fail safe**, because models are
+  unreliable at mechanical self-signalling (the same load-bearing lesson as the
+  mechanical BLOCKED escape hatch in AUTHORING).
 
 ## 8. Stop policy: outcomes, admission, ratchet
 
