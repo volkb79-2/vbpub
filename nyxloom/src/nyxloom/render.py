@@ -102,7 +102,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import paths, storage, config, frontmatter
+from . import decision_chat, decisions, paths, storage, config, frontmatter
 from .types import TaskState, TaskStateFile, AttemptState, Basis, Frontmatter
 
 
@@ -195,7 +195,8 @@ NAV = """
   <a href="timeline.html">Timeline</a> |
   <a href="quality.html">Quality</a> |
   <a href="live.html">Live</a> |
-  <a href="config.html">Config</a>
+  <a href="config.html">Config</a> |
+  <a href="decisions.html">Decisions</a>
 </nav>
 """
 
@@ -338,6 +339,9 @@ def render_all(registry: dict[str, Path]) -> Path:
 
     # Render config.html (P15 2026-07-15)
     _render_config(www, registry)
+
+    # Render decisions.html (P18 2026-07-16: decision-chat bridge)
+    _render_decisions(www, registry)
 
     # Render task pages
     for project in registry.keys():
@@ -1060,6 +1064,96 @@ def _render_config(www: Path, registry: dict[str, Path]) -> None:
 
     html_content = _html_head("Config") + content + _html_foot()
     (www / "config.html").write_text(html_content, encoding="utf-8")
+
+
+_DECISION_JS = """
+<script>
+function sendDecisionReply(decisionId) {
+    var input = document.getElementById('reply-' + decisionId);
+    var text = input.value;
+    if (!text) { return; }
+    fetch('/api/decision/reply', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({decision_id: decisionId, text: text})
+    }).then(function(resp) {
+        if (resp.ok) {
+            window.location.reload();
+            return;
+        }
+        resp.json().then(function(data) {
+            alert('reply failed: ' + (data.error || ('http ' + resp.status)));
+        }).catch(function() {
+            alert('reply failed: http ' + resp.status);
+        });
+    }).catch(function(err) {
+        alert('reply failed: ' + String(err));
+    });
+}
+</script>
+"""
+
+
+def _render_decisions(www: Path, registry: dict[str, Path]) -> None:
+    """Render decisions.html (P18 2026-07-16): every OPEN/DISCUSSING
+    decision across all registered projects, its chat transcript (if a
+    decision-chat has started -- decision_chat.load_chat), and an answer
+    box driving POST /api/decision/reply. Server-rendered (html.escape),
+    so the transcript is inherently safe -- no client-side innerHTML is
+    ever needed to display it (unlike live.html's dynamically-appended
+    rows)."""
+    sections = []
+    for project in sorted(registry.keys()):
+        root = registry[project]
+        try:
+            cfg = config.ProjectConfig.load(root)
+        except Exception:
+            continue
+        inbox_path = cfg.root / cfg.decisions_inbox
+        if not inbox_path.exists():
+            continue
+        try:
+            parsed = decisions.parse_inbox(inbox_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        for d in sorted(parsed, key=lambda x: x.id):
+            if d.status not in ("OPEN", "DISCUSSING"):
+                continue
+
+            chat = decision_chat.load_chat(project, d.id)
+            msg_rows = []
+            if chat is not None:
+                for msg in chat.transcript:
+                    msg_rows.append(
+                        f'<div class="chat-msg chat-{html.escape(msg.role)}">'
+                        f'<strong>{html.escape(msg.role)}:</strong> '
+                        f'<span>{html.escape(msg.text)}</span></div>'
+                    )
+            transcript_html = "".join(msg_rows) if msg_rows else "<p><em>No messages yet.</em></p>"
+
+            sections.append(f"""
+              <div class="decision-card" data-decision="{html.escape(d.id)}">
+                <h2>{html.escape(d.id)} <small>({html.escape(project)})</small></h2>
+                <p><strong>Question:</strong> {html.escape(d.question)}</p>
+                <div class="chat-transcript" id="transcript-{html.escape(d.id)}">{transcript_html}</div>
+                <p>
+                  <input type="text" id="reply-{html.escape(d.id)}" size="60"
+                         placeholder="Reply, or state a decision...">
+                  <button type="button" onclick="sendDecisionReply('{html.escape(d.id)}')">Send</button>
+                </p>
+              </div>
+            """)
+
+    content = f"""
+    <div id="decisions">
+      {"".join(sections) if sections else "<p>No open decisions.</p>"}
+    </div>
+    {_DECISION_JS}
+    """
+
+    html_content = _html_head("Decisions") + content + _html_foot()
+    (www / "decisions.html").write_text(html_content, encoding="utf-8")
 
 
 def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -> None:
