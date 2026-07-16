@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vbpub.invalid/nyxloom/schemas/nyxloom-config.schema.json",
+  "title": "nyxloom project config (nyxloom.toml)",
+  "description": "Structural validation for a project's nyxloom.toml (or legacy .nyxloom/project.toml). Cross-file checks (refs resolution, gate id cross-references) are done by lint.lint_config, not this schema.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["project"],
+  "properties": {
+    "project": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "handoff_globs"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "default_branch": {"type": "string", "minLength": 1},
+        "worktree_root": {"type": "string"},
+        "handoff_globs": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+        "infra_globs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "trove": {"type": "string", "minLength": 1},
+        "reports_dir": {"type": "string", "minLength": 1},
+        "decisions_inbox": {"type": "string", "minLength": 1},
+        "roadmap": {"type": "string", "minLength": 1},
+        "backlog": {"type": "string", "minLength": 1},
+        "archive_dir": {"type": "string", "minLength": 1},
+        "archive_keep_visible": {"type": "integer", "minimum": 0},
+        "agent_logs": {"type": "string", "minLength": 1}
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["argv", "phase", "timeout_seconds"],
+        "properties": {
+          "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+          "phase": {"enum": ["implementation", "review", "pre-merge", "post-merge"]},
+          "timeout_seconds": {"type": "integer", "minimum": 1},
+          "environment": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "mutexes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scope": {"enum": ["project", "host"]},
+          "capacity": {"type": "integer", "minimum": 1},
+          "global_alias": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_active_tasks": {"type": "integer", "minimum": 0},
+        "ready_queue_target": {"type": "integer", "minimum": 0},
+        "max_attempts_per_task": {"type": "integer", "minimum": 0},
+        "merge_mode": {"enum": ["manual", "guarded-automatic"]},
+        "retention_days": {"type": "integer", "minimum": 0},
+        "max_cost": {"type": ["number", "null"]},
+        "cost_currency": {"type": ["string", "null"]},
+        "max_consecutive_zero_progress_merges": {"type": "integer", "minimum": 0},
+        "stall_log_quiet_seconds": {"type": "integer", "minimum": 0},
+        "attempt_max_wall_seconds": {"type": "integer", "minimum": 0},
+        "reconcile_interval_seconds": {"type": "integer", "minimum": 0},
+        "wave_max_diffs": {"type": "integer", "minimum": 0},
+        "http_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "carve_ahead_target": {"type": "integer", "minimum": 0},
+        "carve_authority": {"enum": ["branch", "main", "files"]},
+        "headroom_warn": {"type": "integer", "minimum": 0}
+      }
+    },
+    "notify": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ntfy_url": {"type": ["string", "null"]},
+        "ntfy_topic": {"type": ["string", "null"]},
+        "notifications_topic": {"type": "string"},
+        "token_env": {"type": "string", "minLength": 1},
+        "cmd_topic": {"type": ["string", "null"]},
+        "feedback_topic": {"type": "string"},
+        "cmd_token_env": {"type": "string", "minLength": 1},
+        "webhook_url": {"type": ["string", "null"]},
+        "push_classes": {"type": "array", "items": {"type": "string"}},
+        "digest_classes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "refs": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "redact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "patterns": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}
