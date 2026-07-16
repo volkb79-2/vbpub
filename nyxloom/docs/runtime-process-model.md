@@ -1,6 +1,10 @@
 # nyxloom runtime process model & operability
 
-> Status: design note · captured 2026-07-16 from live dogfood findings.
+> Status: **§2 (tini+supervisor) and §3 (bridge dashboard) are now DEPLOYED**
+> (2026-07-16 rebuild: PID1=tini, daemon a supervised grandchild, dashboard on
+> the `nyxloom-prod-nyxloomd-net` ciu bridge, `NTFY_URL` single-source). §1
+> below describes the *superseded* host-net / daemon-as-PID-1 layout that the
+> rebuild replaced — kept as the rationale record.
 > Concerns the *running* daemon (container, PID tree, restart/crash behaviour,
 > dashboard reachability) and the review merge-gate contract. Distinct from
 > `SPEC.md` (the behavioural contract) and `ARCHITECTURE.md` (the module map).
@@ -191,9 +195,14 @@ should be amended to state the verdict mechanism + the fail-safe rule explicitly
 
 ## Open follow-ups (backlog)
 
-- tini + supervisor for crash/restart-without-consequence (§2). Daemon-core +
-  stack change.
-- Dashboard on a shared bridge network for VS Code forwarding (§3/§4). Stack
-  change + security decision (token?).
-- JSON/SSE API + static bundle serving for a React UI (§4).
-- P33 (verdict fail-safe, §5) — in flight; amend SPEC §7 to match.
+- ~~tini + supervisor for crash/restart-without-consequence (§2)~~ — **DONE**
+  (P37, deployed 2026-07-16; PID1=tini, daemon supervised grandchild).
+- ~~Dashboard on a shared bridge network for VS Code forwarding (§3/§4)~~ —
+  **DONE** (P38, deployed 2026-07-16; bridge `nyxloom-prod-nyxloomd-net`, 0.0.0.0
+  bind, no token — trust the docker net). *Remaining nicety:* a devcontainer-side
+  localhost:8942→nyxloomd:8942 proxy so VS Code auto-forwards it to a browser.
+- ~~P33 (verdict fail-safe, §5)~~ — **DONE** (merged; SPEC §7 amended).
+- JSON/SSE API + static bundle serving for a React UI (§4) — still open.
+- Harden `append_and_apply` to validate-before-append + make doctor's
+  replay-divergence check compare `.state` not the full lossy object (roots out
+  the spurious illegal-transition events + the in-flight-carve divergence noise).
