@@ -91,6 +91,8 @@ http_port = 8942
 # --- notifications: two-channel model (nyxloom.<fqdn>, project tagged in the
 #     message body, not per-project topics) — same as dstdns's migration.
 [notify]
-ntfy_url = "https://nyxloom.gstammtisch.dchive.de"
+# ntfy_url is NOT set here (P39): the ntfy server is deployment-authoritative for
+# its own URL via the NTFY_URL env var (set alongside NTFY_TOKEN in the nyxloomd
+# deployment env). A per-project hardcode drifts when the server FQDN changes.
 notifications_topic = "notifications"   # any progress update (write-only token)
 feedback_topic = "feedback"              # decisions + escalation Q&A, bidirectional (rw token)
