@@ -251,9 +251,11 @@ def cmd_doctor(args) -> int:
     else:
         projects = list(registry.keys())
 
+    http_ports = []
     for pid in projects:
         root = registry[pid]
         cfg = config.ProjectConfig.load(root)
+        http_ports.append(cfg.policy.http_port)
         findings = doctor.doctor_project(cfg)
         all_findings.extend(findings)
 
@@ -283,6 +285,16 @@ def cmd_doctor(args) -> int:
 
     if rows:
         print(_format_table(rows, ["kind", "severity", "message", "project", "refs"]))
+
+    # Dashboard URL. The daemon serves the read-only HTTP/SSE surface
+    # loopback-only, on the daemon host, at min(policy.http_port) over
+    # registered projects (see daemon.py). The nyxloomd container runs
+    # host-network, so this is reachable at 127.0.0.1:<port> ON THE DAEMON
+    # HOST — NOT from a separate network namespace (e.g. a devcontainer),
+    # where you must go via `docker exec <container> curl ...` instead.
+    if http_ports:
+        print(f"\ndashboard: http://127.0.0.1:{min(http_ports)}  "
+              "(read-only; loopback on the daemon host)")
 
     has_critical_or_error = any(f.severity in ("critical", "error") for f in all_findings)
     return 1 if has_critical_or_error else 0
