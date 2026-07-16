@@ -53,6 +53,35 @@ from .config import ProjectConfig, load_registry
 from .types import DoctorFinding, TaskStateFile, TaskState, AttemptState, TERMINAL_TASK_STATES, TERMINAL_ATTEMPT_STATES
 
 
+_LOSSY_ATTEMPT_FIELDS = ("usage", "receipt", "session_handle")
+
+
+def _replayable_projection(tsf: TaskStateFile) -> dict:
+    """The subset of a TaskStateFile's to_dict() that storage.replay() can
+    genuinely reconstruct from the event log, for divergence comparison.
+
+    replay() rebuilds attempts via ATTEMPT_* upsert-by-attempt_id (see
+    storage.apply_event) and CANNOT faithfully reconstruct certain rich
+    per-attempt fields in every history: usage/cost, receipt, and
+    session_handle. A task with a complex or duplicate-TASK_CREATED history
+    (a second TASK_CREATED replaces the whole projected statefile, per
+    storage.apply_event) or an in-flight synthetic carve task (ACTIVE state
+    the daemon sets directly on TASK_CREATED) can transiently show a
+    replayed attempt with these fields unset/stale even though the task's
+    actual state (and everything else replay derives) matches on-disk
+    exactly. Comparing the full to_dict() therefore raises false positives
+    on these fields alone; strip them before comparing so only a genuine
+    divergence (starting with `.state`, but including every other field
+    replay is expected to derive precisely) is ever flagged.
+    """
+    d = tsf.to_dict()
+    d["attempts"] = [
+        {k: v for k, v in att.items() if k not in _LOSSY_ATTEMPT_FIELDS}
+        for att in (d.get("attempts") or [])
+    ]
+    return d
+
+
 def doctor_project(cfg: ProjectConfig) -> list[DoctorFinding]:
     """Run all 11 checks on a project config, degrading on NotImplementedError
     (check-unavailable); check 1 (replay-divergence) additionally degrades any
@@ -67,7 +96,8 @@ def doctor_project(cfg: ProjectConfig) -> list[DoctorFinding]:
         diverged = []
         for task_id, disk_state in on_disk.items():
             replayed_state = replayed.get(task_id)
-            if replayed_state is None or replayed_state.to_dict() != disk_state.to_dict():
+            if (replayed_state is None
+                    or _replayable_projection(replayed_state) != _replayable_projection(disk_state)):
                 diverged.append(task_id)
         if diverged:
             findings.append(DoctorFinding(
