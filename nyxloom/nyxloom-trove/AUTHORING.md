@@ -1,5 +1,9 @@
 # Writing a nyxloom handoff — the authoring guide
 
+> **Revision:** 2026-07-16-r1 · (bump on every substantive change; `nyxloom init`
+> copies carry this line so a project can detect a stale copy against the
+> canonical `nyxloom/nyxloom-trove/AUTHORING.md`.)
+
 Point an implementation agent (or yourself) here when a feature/fix comes out of
 a discussion and needs to become a **handoff** — a self-contained work package.
 A good handoff is the single biggest lever on whether a cheap agent finishes
