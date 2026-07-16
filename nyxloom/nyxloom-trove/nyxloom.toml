@@ -53,6 +53,11 @@ environment = "tester-unified"
 [policy]
 max_active_tasks = 3
 ready_queue_target = 5
+# 2026-07-16 (user: "stop scheduling" for the convergence/rebuild): pin carve
+# to 0 so the carver stops generating candidates while the known backlog
+# (P30-P37) drains to a quiet window for the tini rebuild. RESTORE to 5 (or
+# the Policy default) after the rebuild to resume autonomous carving.
+carve_ahead_target = 0
 max_attempts_per_task = 3
 merge_mode = "manual"
 retention_days = 60
