@@ -45,3 +45,31 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
   budget is gone. Inactivity (tier-1/2 stall + wall-clock cap) already exists;
   this only adds the resume-failure→fresh-start decision in `reconcile.py`.
   Daemon-core: gate + rebuild after merge. Depends on B2/P24 (config schema).
+- **B9 — feature-intake exploration agent (the factory's front door).** A new
+  UI tab + conversational agent (SIBLING of `decision_chat.py` P18: reuse its
+  ntfy/UI transport, resumable read-only redacted claude session, and confirm-
+  to-finalize pattern). User starts with a ROUGH feature request; the agent (1)
+  reads project/product context (`[refs]` docs + roadmap + recent handoffs),
+  (2) interviews the user to confirm SHARED understanding (purpose/scope), (3)
+  elicits the details needed to build the right thing, (4) surfaces product +
+  technical consequences and files any genuine product calls as **`D-NNN`
+  decisions** (wiring `depends_on: [D-NNN]` into the eventual handoff), (5)
+  estimates blockers / prior work / competing roadmap items over the
+  `depends_on` graph + headroom signal, (6) asks desired PRIORITY and slots it
+  in, (7) on user satisfaction persists a structured **pre-carve brief**
+  (aligned purpose, elicited detail, consequences, linked decisions, priority)
+  as an enriched backlog item — carry the brief into the P16 carver as seed
+  context so "direct carve" loses NO context. Phases: P-α schema+auto-tick
+  (=B10), P-β intake agent backend, P-γ UI tab, P-δ direct-carve-from-brief.
+  Open D-calls: brief = new doc vs enriched backlog item (lean: enriched
+  backlog); does `priority` drive dispatch order (scheduler change). Depends on
+  B10.
+- **B10 — roadmap/backlog light schema + daemon auto-tick on merge.** Give
+  roadmap/backlog items a parseable structure (id, status, priority, links to
+  carved handoffs / D-decisions) like `decisions.md` has, schema-validated
+  (extends P24). Then the daemon writes ONE typed, mechanical update: on
+  handoff merge, tick/annotate the linked roadmap/backlog item (the same reflex
+  that archives handoffs) — making the roadmap self-updating and fixing the
+  "Status: line lies" problem at its root. STRICTLY typed writes only; the
+  daemon never free-authors roadmap prose (injection-boundary + typed-fields-
+  only doctrine). Prerequisite for B9. Daemon-core: gate + rebuild after merge.
