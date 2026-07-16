@@ -99,6 +99,12 @@ class Policy:
     cost_currency: str | None = None
     max_consecutive_zero_progress_merges: int = 3
     stall_log_quiet_seconds: int = 300     # v2 §5.4 tier-1 threshold
+    # P34 2026-07-16 (resume-safety re-cut): a poisoned session_handle that
+    # keeps failing resumes is fresh-started rather than resumed forever
+    # once its aged resume-log count reaches this threshold; the grace
+    # window below is only a race guard against a just-launched resume.
+    max_resume_failures: int = 2
+    resume_progress_grace_seconds: int = 120
     # Absolute per-attempt wall-clock backstop (P14): interrupt regardless
     # of liveness once exceeded; fm.budget.max_wall_seconds overrides.
     attempt_max_wall_seconds: int = 10800

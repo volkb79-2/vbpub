@@ -43,7 +43,10 @@ INTERFACE CONTRACT (frozen):
        gate-running marker to exempt against), budget_remaining from
        policy.max_cost minus summed attempt usage costs (same currency
        only), merge_history/carve_outcomes/rejections from recent events
-       (iter_events tail).
+       (iter_events tail), resume_failures (P34 2026-07-16) from
+       _resume_failures() -- per receiptless INTERRUPTED attempt, the count
+       of its attempt.resume-N.log files older than
+       policy.resume_progress_grace_seconds, i.e. failed resume attempts.
     2. actions = reconcile.plan_project(inp)
     3. execute(project, action) for each — see EXECUTION MAP below.
     4. render.render_all(...) if any event was appended this pass.
@@ -597,6 +600,7 @@ class Daemon:
         provider_ok = self._provider_ok(routes)
         log_quiet_seconds, pid_alive, receipts = self._attempt_scan(project, states)
         stall_confirmed = self._confirm_stall(states, log_quiet_seconds, pid_alive, cfg)
+        resume_failures = self._resume_failures(project, states, cfg.policy.resume_progress_grace_seconds)
         budget_remaining = self._budget_remaining(cfg, states)
         merge_history, carve_outcomes, review_rejections_by_area, blocked_underspecified_count = \
             self._history(project)
@@ -629,6 +633,7 @@ class Daemon:
             pid_alive=pid_alive,
             receipts=receipts,
             stall_confirmed=stall_confirmed,
+            resume_failures=resume_failures,
             budget_remaining=budget_remaining,
             merge_history=merge_history,
             ratchet_already_open=ratchet_already_open,
@@ -761,6 +766,37 @@ class Daemon:
                 else:
                     log_quiet[att.attempt_id] = None
         return log_quiet, pid_alive, receipts
+
+    def _resume_failures(self, project: str, states: dict[str, TaskStateFile],
+                          grace_seconds: int) -> dict[str, int]:
+        """P34 2026-07-16 (resume-safety re-cut): attempt_id -> count of
+        aged attempt.resume-N.log files for each receiptless INTERRUPTED
+        attempt. A resume that worked leaves the attempt RUNNING or
+        EXITED-with-receipt, so an attempt sitting INTERRUPTED with N aged
+        resume logs has had N failed resumes by construction -- do NOT
+        score progress by log size (the P26 bug this replaces scored a
+        noisily-dying session, stack traces and retry spam, as progress).
+        The grace window is only a race guard so a just-launched resume
+        whose ATTEMPT_RESUMED has not landed is not miscounted."""
+        out: dict[str, int] = {}
+        now = time.time()
+        for tsf in states.values():
+            for att in tsf.attempts:
+                if att.state != AttemptState.INTERRUPTED:
+                    continue
+                attempt_dir = paths.attempt_dir(project, att.attempt_id)
+                if (attempt_dir / "receipt.json").exists():
+                    continue
+                count = 0
+                for log_path in attempt_dir.glob("attempt.resume-*.log"):
+                    try:
+                        mtime = log_path.stat().st_mtime
+                    except OSError:
+                        continue
+                    if now - mtime > grace_seconds:
+                        count += 1
+                out[att.attempt_id] = count
+        return out
 
     def _confirm_stall(self, states: dict[str, TaskStateFile], log_quiet_seconds, pid_alive,
                         cfg: ProjectConfig) -> dict[str, bool]:
