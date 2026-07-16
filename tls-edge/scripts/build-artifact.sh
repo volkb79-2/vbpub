@@ -48,6 +48,11 @@ info "Building artifact: ${TAG}.tar.xz  (VERSION=${VERSION})"
 # ─── Ensure dist/ exists ─────────────────────────────────────────────────────
 mkdir -p "$DIST_DIR"
 
+# The publisher accepts exactly one versioned tarball.  Remove earlier generated
+# artifacts before building so a normal release rerun cannot accidentally select
+# or be blocked by a stale release payload.
+rm -f "$DIST_DIR"/tls-edge-v*.tar.xz "$DIST_DIR"/tls-edge-v*.tar.xz.sha256
+
 # ─── Build file list ─────────────────────────────────────────────────────────
 # We build an explicit include list so nothing slips in from gitignored files.
 # All paths are relative to TLS_EDGE_ROOT.
