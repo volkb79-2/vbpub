@@ -623,6 +623,12 @@ def test_apply_event_task_transitioned_violating_graph_raises():
 @given(cur=st.sampled_from(list(TaskState)), to=st.sampled_from(list(TaskState)))
 @settings(max_examples=50, deadline=None)
 def test_apply_event_task_transition_enforces_graph(cur, to):
+    # P20: cur == to is never an edge in TASK_TRANSITIONS (the graph stays
+    # pure -- no X->X self-edges), but it is no longer an error at the
+    # apply_event layer either: it is an application-level idempotent
+    # no-op (see test_apply_event_task_transition_from_equals_to_is_noop
+    # below). This test now covers genuinely invalid, non-identity edges.
+    assume(cur != to)
     assume(to not in TASK_TRANSITIONS[cur])
     states: dict[str, TaskStateFile] = {
         "t1": TaskStateFile(schema_version=1, task_id="t1", project="p", state=cur, since=utc_now()),
@@ -634,3 +640,23 @@ def test_apply_event_task_transition_enforces_graph(cur, to):
     )
     with pytest.raises(TransitionError):
         storage.apply_event(states, ev)
+
+
+@given(cur=st.sampled_from(list(TaskState)))
+@settings(max_examples=50, deadline=None)
+def test_apply_event_task_transition_from_equals_to_is_noop(cur):
+    """P20 companion assertion for the graph-shape invariant above: a
+    TASK_TRANSITIONED event with from==to is an application-level no-op for
+    EVERY TaskState (not a relaxed graph edge) -- it never raises, and the
+    statefile is left untouched (no task reported as affected)."""
+    states: dict[str, TaskStateFile] = {
+        "t1": TaskStateFile(schema_version=1, task_id="t1", project="p", state=cur, since=utc_now()),
+    }
+    ev = Event(
+        schema_version=1, sequence=1, timestamp=utc_now(), project="p",
+        actor=Actor(kind=ActorKind.TICK, id="t"), type=EventType.TASK_TRANSITIONED,
+        payload={"from": cur.value, "to": cur.value}, task_id="t1",
+    )
+    affected = storage.apply_event(states, ev)  # must not raise
+    assert affected == []
+    assert states["t1"].state is cur
