@@ -697,7 +697,20 @@ def reset_service(
     # without it an exited *-init sidecar lingers and pins the project's named
     # volumes through teardown (CIU-3, S6.4).
     print("[INFO]   Step 1/4: Stopping containers and removing volumes...", flush=True)
-    down_cmd = ["docker", "compose", "-f", CIU_COMPOSE_OUTPUT]
+    # S8.7: down under the scoped project (matches what `up` created). Falls
+    # back to the legacy dir-derived project when the config lacks the naming
+    # pair (reset's minimal-config contract). Legacy containers are still
+    # caught by Step 4's project-independent component-label cleanup.
+    try:
+        down_project_args = ["-p", compose_project_name(config, stack_dir)]
+    except ValueError:
+        down_project_args = []
+        print(
+            "[WARN] [S8.7] deploy.project_name/environment_tag not set — "
+            "compose down uses the legacy directory-derived project",
+            flush=True,
+        )
+    down_cmd = ["docker", "compose", *down_project_args, "-f", CIU_COMPOSE_OUTPUT]
     if overlay_path.exists():
         down_cmd += ["-f", f"{MACHINE_DIR}/{OVERLAY_NAME}"]
     down_cmd += ["down", "-v", "--remove-orphans"]
@@ -826,16 +839,105 @@ def _dood_preflight(physical_stack_dir: Path) -> None:
 # ===========================================================================
 
 
+def compose_project_name(config: dict, stack_dir: Path) -> str:
+    """Instance-scoped compose project: ``{project}-{env_tag}-{stack}`` (S8.7).
+
+    Without an explicit ``-p``, docker compose derives the project from the
+    stack directory BASENAME — identical for every checkout/worktree of the
+    repo, so a second instance's ``compose up`` ADOPTS the first instance's
+    containers (same project + service, changed container_name) and removes
+    them. Scoping the project with the same ``deploy.project_name`` /
+    ``deploy.environment_tag`` pair that already scopes container names
+    (S7.7/S7.8) makes compose reconciliation per-instance.
+    """
+    deploy_cfg = config.get("deploy", {})
+    project = deploy_cfg.get("project_name")
+    env_tag = deploy_cfg.get("environment_tag")
+    if not project or not env_tag:
+        raise ValueError(
+            "[S8.7] deploy.project_name and deploy.environment_tag are required "
+            "to derive the compose project name"
+        )
+    return f"{project}-{env_tag}-{Path(stack_dir).name}"
+
+
+def legacy_project_containers(stack_dir: Path, expected_project: str) -> list[str]:
+    """Containers of THIS instance still under the legacy compose project (S8.7).
+
+    Legacy = the pre-S8.7 default project (the stack dir basename). Returns
+    the names of containers that carry the legacy project label AND belong to
+    this instance (name starts with ``{project}-{env_tag}-``) — exactly the
+    set that would collide on ``container_name`` under the scoped project.
+    Containers of OTHER instances under the legacy label are left alone.
+    """
+    legacy_project = Path(stack_dir).name
+    if legacy_project == expected_project:
+        return []
+    # expected_project = f"{project}-{env_tag}-{stack}"; the instance's
+    # container-name prefix is f"{project}-{env_tag}-" (S7.7/S7.8).
+    name_prefix = expected_project[: -len(Path(stack_dir).name)]
+    result = procutil.run_cmd(
+        [
+            "docker", "ps", "-a",
+            "--filter", f"label=com.docker.compose.project={legacy_project}",
+            "--format", "{{.Names}}",
+        ],
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    return [
+        n.strip()
+        for n in result.stdout.splitlines()
+        if n.strip() and n.strip().startswith(name_prefix)
+    ]
+
+
+def guard_legacy_compose_project(stack_dir: Path, expected_project: str) -> None:
+    """Fail (or migrate, with CIU_ADOPT_LEGACY_PROJECT=1) on legacy containers (S8.7).
+
+    The first scoped-project ``up`` on a stack deployed by a pre-S8.7 CIU
+    would hit ``container_name`` conflicts mid-deploy. Detect the legacy
+    containers up front: with ``CIU_ADOPT_LEGACY_PROJECT=1`` remove them
+    (bind-mounted state survives container removal; compose recreates them
+    under the scoped project), otherwise abort with the one-time migration
+    instructions.
+    """
+    legacy = legacy_project_containers(stack_dir, expected_project)
+    if not legacy:
+        return
+    if os.environ.get("CIU_ADOPT_LEGACY_PROJECT") == "1":
+        print(
+            f"[S8.7] CIU_ADOPT_LEGACY_PROJECT=1 — removing {len(legacy)} legacy-project "
+            f"container(s) before scoped-project up: {', '.join(legacy)}",
+            flush=True,
+        )
+        procutil.run_cmd(["docker", "rm", "-f", *legacy], check=False)
+        return
+    raise ComposeError(
+        f"[S8.7] {len(legacy)} container(s) of this instance still belong to the "
+        f"legacy compose project '{Path(stack_dir).name}': {', '.join(legacy)}. "
+        f"One-time migration: re-run with CIU_ADOPT_LEGACY_PROJECT=1 (removes and "
+        f"recreates them under project '{expected_project}'; bind-mounted state "
+        f"survives), or run 'ciu clean' for this stack first."
+    )
+
+
 def execute_docker_compose_with_logs(
-    file_args: list[str], *, cwd: Path, env: Optional[dict] = None
+    file_args: list[str], *, cwd: Path, env: Optional[dict] = None,
+    project: Optional[str] = None,
 ) -> dict:
     """Run ``docker compose <file_args> up -d`` with live log streaming.
+
+    *project* (S8.7) is passed as ``-p`` so compose reconciliation is
+    instance-scoped; ``None`` preserves the legacy cwd-derived project.
 
     Returns ``{'status': 'success'|'error'|'interrupted', 'message', 'stdout'}``.
     """
     result = {"status": "success", "message": "", "stdout": ""}
     print("[INFO] Executing docker compose up...", flush=True)
-    cmd = ["docker", "compose", *file_args, "up", "-d"]
+    project_args = ["-p", project] if project else []
+    cmd = ["docker", "compose", *project_args, *file_args, "up", "-d"]
 
     proc = None
     try:
@@ -1225,7 +1327,11 @@ def main_execution(
                 specs, materialized, compose_profiles=compose_profiles
             )
             file_args = composefile.compose_file_args(working_dir, overlay_path)
-            docker_result = execute_docker_compose_with_logs(file_args, cwd=working_dir, env=compose_env)
+            project = compose_project_name(global_config, working_dir)
+            guard_legacy_compose_project(working_dir, project)
+            docker_result = execute_docker_compose_with_logs(
+                file_args, cwd=working_dir, env=compose_env, project=project
+            )
             if docker_result["status"] == "error":
                 raise ComposeError(docker_result["message"])
             if docker_result["status"] == "interrupted":
@@ -1334,8 +1440,22 @@ def run_shipped(
             return result
 
         print(f"[SHIPPED 3/4] Starting shipped stack (docker compose -f {compose_file} up -d)...", flush=True)
+        try:
+            shipped_project: Optional[str] = compose_project_name(global_config, working_dir)
+        except ValueError:
+            # Shipped mode does not require a full deploy config (S8.5); fall
+            # back to the legacy cwd-derived project rather than failing.
+            shipped_project = None
+            print(
+                "[WARN] [S8.7] deploy.project_name/environment_tag not set — "
+                "shipped stack uses the legacy directory-derived compose project",
+                flush=True,
+            )
+        if shipped_project is not None:
+            guard_legacy_compose_project(working_dir, shipped_project)
         docker_result = execute_docker_compose_with_logs(
-            ["-f", compose_file], cwd=working_dir, env=compose_env
+            ["-f", compose_file], cwd=working_dir, env=compose_env,
+            project=shipped_project,
         )
         if docker_result["status"] == "error":
             raise ComposeError(docker_result["message"])

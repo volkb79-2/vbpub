@@ -1108,3 +1108,54 @@ class TestResolveProfilesAllPhasesAbsorb:
         cfg = _mp_cfg(profiles=profiles)
         p = resolve_profiles(cfg, ["all_phases", "specific"], env={})
         assert p.phase_keys is None
+
+
+class TestStacksOnlyProfileNarrows:
+    """S7.5 narrowing: stacks-only profiles contribute ZERO phases.
+
+    Regression for the 2026-07-16 dstdns multi-stack incident:
+    `CIU_SERVICES_PROFILE=core,db ciu up` deployed the FULL phase set plus
+    the core/db stacks, because a missing 'phases' key resolved to None
+    (= all phases) and the empty union was coerced back to None.
+    """
+
+    def _profiles(self):
+        return {
+            "core": {"stacks": ["infra/vault", "infra/redis-core"]},
+            "db": {"stacks": ["infra/db-core", "infra/db-init"]},
+            "worker": {"phases": ["phase_5"]},
+            "overrides_only": {},  # pure override profile → still "all phases"
+        }
+
+    def test_single_stacks_only_profile_has_no_phases(self):
+        cfg = _mp_cfg(profiles=self._profiles())
+        p = resolve_profiles(cfg, ["core"], env={})
+        assert p.phase_keys == set()
+        assert p.extra_stacks == ["infra/vault", "infra/redis-core"]
+
+    def test_two_stacks_only_profiles_union_stays_empty(self):
+        cfg = _mp_cfg(profiles=self._profiles())
+        p = resolve_profiles(cfg, ["core", "db"], env={})
+        assert p.phase_keys == set()
+        assert p.extra_stacks == [
+            "infra/vault", "infra/redis-core", "infra/db-core", "infra/db-init",
+        ]
+
+    def test_stacks_only_plus_phases_profile_unions_phases(self):
+        cfg = _mp_cfg(profiles=self._profiles())
+        p = resolve_profiles(cfg, ["core", "worker"], env={})
+        assert p.phase_keys == {"phase_5"}
+        assert p.extra_stacks == ["infra/vault", "infra/redis-core"]
+
+    def test_pure_override_profile_still_absorbs_to_all(self):
+        cfg = _mp_cfg(profiles=self._profiles())
+        p = resolve_profiles(cfg, ["core", "overrides_only"], env={})
+        assert p.phase_keys is None  # {} has neither phases nor stacks
+
+    def test_env_var_narrowing_end_to_end(self, monkeypatch):
+        cfg = _mp_cfg(profiles=self._profiles())
+        p = resolve_profiles(cfg, None, env={"CIU_SERVICES_PROFILE": "core,db"})
+        assert p.phase_keys == set()
+        assert p.extra_stacks == [
+            "infra/vault", "infra/redis-core", "infra/db-core", "infra/db-init",
+        ]

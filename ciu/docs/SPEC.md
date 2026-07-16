@@ -597,6 +597,13 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
     `compose_profiles` from all selected profiles are unioned preserving
     first-seen order and deduplicating repeats. Phase execution order
     remains numeric (S7.1 `ordered_phases`).
+  - **Narrowing:** a profile with `stacks` but no `phases` key contributes
+    ZERO phases — selecting only stacks-only profiles deploys exactly their
+    stacks (e.g. `--profile core,db` per S7.5a), never the full phase set.
+    Only a profile with NEITHER key (a pure env/topology override profile)
+    means "all phases", and it absorbs the union. An empty phase union
+    stays empty; consumers MUST distinguish `None` (unrestricted) from an
+    empty set (no phases) — falsy checks silently widen the selection.
   - **Override merge + conflict:** `env_overrides` and `topology_overrides`
     from all selected profiles are deep-merged in list order. If two profiles
     set the same key to **different** values → CIU MUST fail before any
@@ -741,6 +748,22 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `shipped` key in `[deploy.phases.*].services` (default `false`; non-bool =
   abort, S7.2); a `shipped` service participates in phases and the health
   gate exactly like a native stack.
+- **S8.7** *Instance-scoped compose project.* Every compose lifecycle
+  invocation (`up` — native and shipped — and the reset/down path) MUST pass
+  `-p {deploy.project_name}-{deploy.environment_tag}-{stack_dirname}`. Without
+  it, docker compose derives the project from the stack directory BASENAME,
+  which is identical for every checkout/worktree of a repo — so a second
+  instance's `up` ADOPTS the first instance's containers (same project +
+  service, changed `container_name`) and removes them (2026-07-16 dstdns
+  multi-stack incident). The scoping pair is the same one that already scopes
+  container names (S7.7/S7.8). Shipped mode and the reset/down path fall
+  back to the legacy cwd-derived project (with a warning) when the config
+  does not define the pair; the native `up` path REQUIRES it. **Migration guard:** before `up`, CIU MUST detect containers of
+  THIS instance (name-prefix `{project}-{env_tag}-`) still carrying the
+  legacy dir-derived project label and abort with one-time migration
+  instructions; `CIU_ADOPT_LEGACY_PROJECT=1` instead removes them (bind-
+  mounted state survives) and proceeds. Reset's Step-4 component-label
+  cleanup remains project-independent and also clears legacy containers.
 
 ## S9 — Hooks
 

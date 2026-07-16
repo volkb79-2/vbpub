@@ -1778,8 +1778,13 @@ def _other_actions_requested(args: argparse.Namespace) -> bool:
 def filter_deployment_phases(
     deployment_phases: list[dict], selected_phase_keys: Optional[set[str]]
 ) -> list[dict]:
-    """Filter phase dicts by selected phase keys (each dict has a 'key')."""
-    if not selected_phase_keys:
+    """Filter phase dicts by selected phase keys (each dict has a 'key').
+
+    ``None`` means unrestricted; an EMPTY set means no phases (S7.5 narrowing
+    — a stacks-only profile selects zero phases, so falsy-checking the set
+    would wrongly widen it back to all).
+    """
+    if selected_phase_keys is None:
         return deployment_phases
     return [p for p in deployment_phases if p.get("key") in selected_phase_keys]
 
