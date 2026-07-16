@@ -20,6 +20,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -2031,3 +2032,152 @@ def test_sse_stream_and_stop(tmp_state, sample_project, monkeypatch):
     t.join(timeout=5)
     assert not t.is_alive()
     assert time.monotonic() - start < 5
+
+
+# --------------------------------------------------------------------------
+# P44 2026-07-16 (anti-runaway self-correction) Oracle 1: _history's
+# review_rejections_by_area is now WINDOWED (HISTORY_REJECTION_WINDOW_SECONDS)
+# -- before this fix it counted rejections over the ENTIRE event log and
+# only ever increased, so a project that once hit >= 2 rejections in one
+# area stayed >= 2 forever, even with every rejection long resolved. Real
+# event fixtures with explicit timestamps (storage.append_and_apply's
+# `timestamp` kwarg) prove the window actually ages old ones out.
+
+def test_history_windowed_rejection_count_ages_out_old_rejections(tmp_state, sample_project):
+    """Oracle 1: 3 rejections OLDER than the window + 1 rejection INSIDE
+    the window, same area -- review_rejections_by_area drops to just the
+    1 recent one (below the SpecAttention('rejections') threshold of 2).
+    Pre-fix, this would read 4 (whole-log count, never drops)."""
+    project = "demo"
+    now = utc_now()
+    old_ts = now - timedelta(seconds=daemon.HISTORY_REJECTION_WINDOW_SECONDS + 3600)
+    recent_ts = now - timedelta(seconds=60)
+
+    for _ in range(3):
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.REVIEW_RECORDED, payload={"result": "rejected", "area": "ui"},
+            timestamp=old_ts,
+        )
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.REVIEW_RECORDED, payload={"result": "rejected", "area": "ui"},
+        timestamp=recent_ts,
+    )
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    _merge_history, _carve_outcomes, review_rejections_by_area, _blocked = d._history(project)
+
+    assert review_rejections_by_area.get("ui", 0) == 1
+
+
+def test_history_windowed_rejection_count_within_window_all_count(tmp_state, sample_project):
+    """Companion (no regression): rejections that ARE within the window
+    still count normally -- preserves the pre-fix >= 2 threshold behavior
+    for a genuinely CURRENT rejection streak."""
+    project = "demo"
+    recent_ts = utc_now() - timedelta(seconds=60)
+
+    for _ in range(2):
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.REVIEW_RECORDED, payload={"result": "rejected", "area": "ui"},
+            timestamp=recent_ts,
+        )
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    _merge_history, _carve_outcomes, review_rejections_by_area, _blocked = d._history(project)
+
+    assert review_rejections_by_area.get("ui", 0) == 2
+
+
+# --------------------------------------------------------------------------
+# P44 2026-07-16 Oracle 3 (integration half): a PERSISTENT runaway
+# auto-pauses the project and emits exactly ONE escalation, not
+# one-per-cycle. (The pure-function half of Oracle 3 -- detect_runaways on
+# synthetic event streams -- lives in test_watchdog.py.)
+
+def test_watchdog_persistent_runaway_auto_pauses_project_single_escalation(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Seed 7 ATTEMPT_CREATED events for one task_id (> watchdog's default
+    attempt_loop_count=5) with NO progress event -- an 'attempt-loop'
+    RunawaySignal that keeps re-detecting identically on every pass (the
+    event log doesn't change between passes here: plan_project is
+    monkeypatched to [] so nothing else gets appended). After
+    RUNAWAY_PERSIST_AFTER_CYCLES consecutive passes: the project is
+    auto-paused ('drain-agents'), but only ONE NEEDS_OPERATOR{reason:
+    'runaway'} escalation exists in the whole event log -- not one per
+    pass."""
+    project = "demo"
+    task_id = "demo-attempt-loop-task"
+    now = utc_now()
+    for i in range(7):
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.ATTEMPT_CREATED, payload={}, task_id=task_id,
+            timestamp=now - timedelta(seconds=(7 - i)),
+        )
+
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    assert not paths.pause_flag(project).exists()
+
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES):
+        d.run_pass(project)
+
+    assert paths.pause_flag(project).exists()
+    assert paths.pause_flag(project).read_text(encoding="utf-8").strip() == "drain-agents"
+
+    runaway_escalations = [
+        e for e in storage.iter_events(project)
+        if e.type is EventType.NEEDS_OPERATOR and e.payload.get("reason") == "runaway"
+    ]
+    assert len(runaway_escalations) == 1
+    assert runaway_escalations[0].payload["pattern"] == "attempt-loop"
+    assert runaway_escalations[0].payload["key"] == f"attempt-loop:{task_id}"
+
+    pause_events = [e for e in storage.iter_events(project) if e.type is EventType.PAUSE_SET]
+    assert len(pause_events) == 1
+    assert pause_events[0].payload["reason"] == "runaway"
+
+
+def test_watchdog_transient_signal_suppresses_action_without_pausing(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """A SINGLE pass with a runaway condition suppresses the matching
+    repeating action and escalates, but does NOT yet auto-pause (the
+    streak has only reached 1, below RUNAWAY_PERSIST_AFTER_CYCLES). 6
+    consecutive SPEC_ATTENTION(reason='rejections') events trip BOTH the
+    'reconcile-thrash' detector (a same-reason run > 5) AND the
+    'notification-storm' per-reason detector (> 5 SPEC_ATTENTION events
+    sharing one reason within the window) -- two DISTINCT signals from one
+    underlying condition, each escalating independently (proving the
+    single-escalation-per-CONDITION oracle does not collapse distinct
+    conditions into one)."""
+    project = "demo"
+    now = utc_now()
+    for i in range(6):
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.SPEC_ATTENTION, payload={"reason": "rejections", "detail": None},
+            timestamp=now - timedelta(seconds=(6 - i)),
+        )
+
+    _scripted(monkeypatch, [[reconcile.SpecAttention(reason="rejections", detail=None)]])
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    n = d.run_pass(project)
+
+    # The freshly-planned SpecAttention('rejections') was suppressed by the
+    # watchdog (both signals match its reason) -- zero actions actually
+    # executed this pass, even though plan_project returned one.
+    assert n == 0
+    assert not paths.pause_flag(project).exists()
+
+    runaway_escalations = [
+        e for e in storage.iter_events(project)
+        if e.type is EventType.NEEDS_OPERATOR and e.payload.get("reason") == "runaway"
+    ]
+    assert len(runaway_escalations) == 2
+    patterns = {e.payload["pattern"] for e in runaway_escalations}
+    assert patterns == {"reconcile-thrash", "notification-storm"}

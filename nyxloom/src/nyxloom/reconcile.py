@@ -97,9 +97,23 @@ INTERFACE CONTRACT (frozen). Semantics:
    have 0 units AND all have source_kind 'review' -> SpecAttention('ratchet',
    ...) once (dedupe via ratchet_already_open flag in input).
 7. SPEC HEALTH (SPEC §9 triggers 1-3): carve_outcomes input carries recent
-   CARVE_OUTCOME payloads -> SpecAttention for SPEC_GAP/DECISION_REQUIRED;
-   review_rejections_by_area counts -> SpecAttention when >=2 in one area;
-   blocked_underspecified_count >= 3 in window -> SpecAttention.
+   CARVE_OUTCOME payloads -> SpecAttention for SPEC_GAP/DECISION_REQUIRED
+   (dedupe via carve_outcome_already_open); review_rejections_by_area
+   counts -> SpecAttention when >=2 in one area (dedupe via
+   rejections_already_open); blocked_underspecified_count >= 3 in window ->
+   SpecAttention (dedupe via blocked_underspecified_already_open). P44
+   2026-07-16 (anti-runaway self-correction): these three flags follow the
+   SAME "already open in the recent window" convention as
+   ratchet_already_open/roadmap_exhausted_open above -- before this fix
+   they had no dedup at all, so a PERSISTENT condition (e.g.
+   review_rejections_by_area staying >= 2 forever, since that count itself
+   never used to decrease either) re-emitted SpecAttention every single
+   reconcile pass, storming notifications (the 2026-07-16 prod incident).
+   The daemon computes each flag the same way as ratchet_already_open: a
+   recent-window scan for a SPEC_ATTENTION event already carrying that
+   reason (see daemon.py _spec_attention_recently_emitted, which doubles as
+   both the source of these flags now AND a belt-and-braces backstop at
+   emission time).
 8. Actions NEVER embed prose from handoff bodies (payload injection rule) —
    only ids, enum values, and short fixed strings.
 9. CARVE TRIGGER (P16 2026-07-15, v2 §8 stop policy): count admissible ready
@@ -309,6 +323,14 @@ class ReconcileInput:
     # arrives as a precomputed bool rather than being derived from events
     # here. See module contract item 9 (carve trigger).
     roadmap_exhausted_open: bool = False
+    # P44 2026-07-16 (anti-runaway self-correction): "already open in the
+    # recent window" dedup flags for the three SpecAttention branches that,
+    # unlike ratchet_already_open/roadmap_exhausted_open above, previously
+    # had none -- see module contract item 7. Defaults False so every
+    # pre-existing test that omits them keeps today's (now-fixed) semantics.
+    rejections_already_open: bool = False
+    carve_outcome_already_open: bool = False
+    blocked_underspecified_already_open: bool = False
 
 
 def plan_project(inp: ReconcileInput) -> list[Action]:
@@ -667,21 +689,28 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
             if all_zero_review:
                 spec_actions.append(SpecAttention(reason='ratchet', detail=None))
 
-    # Spec health: carve outcomes
-    for outcome in inp.carve_outcomes:
-        outcome_type = outcome.get('outcome')
-        if outcome_type == 'SPEC_GAP':
-            spec_actions.append(SpecAttention(reason='carve-outcome', detail=None))
-            break
+    # Spec health: carve outcomes (P44 2026-07-16: dedup via
+    # carve_outcome_already_open -- see module contract item 7)
+    if not inp.carve_outcome_already_open:
+        for outcome in inp.carve_outcomes:
+            outcome_type = outcome.get('outcome')
+            if outcome_type == 'SPEC_GAP':
+                spec_actions.append(SpecAttention(reason='carve-outcome', detail=None))
+                break
 
-    # Spec health: review rejections
-    for area, count in inp.review_rejections_by_area.items():
-        if count >= 2:
-            spec_actions.append(SpecAttention(reason='rejections', detail=None))
-            break
+    # Spec health: review rejections (P44 2026-07-16: dedup via
+    # rejections_already_open -- this was the actual notification-storm
+    # root cause: review_rejections_by_area never decreased AND this
+    # branch never deduped, so 2 rejections re-emitted every pass forever)
+    if not inp.rejections_already_open:
+        for area, count in inp.review_rejections_by_area.items():
+            if count >= 2:
+                spec_actions.append(SpecAttention(reason='rejections', detail=None))
+                break
 
-    # Spec health: blocked underspecified
-    if inp.blocked_underspecified_count >= 3:
+    # Spec health: blocked underspecified (P44 2026-07-16: dedup via
+    # blocked_underspecified_already_open -- see module contract item 7)
+    if not inp.blocked_underspecified_already_open and inp.blocked_underspecified_count >= 3:
         spec_actions.append(SpecAttention(reason='blocked-underspecified', detail=None))
 
     # === Carve dispatch (P16 2026-07-15, module contract item 9) ===
