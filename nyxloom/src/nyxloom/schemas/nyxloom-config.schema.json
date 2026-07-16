@@ -67,6 +67,8 @@
         "max_consecutive_zero_progress_merges": {"type": "integer", "minimum": 0},
         "stall_log_quiet_seconds": {"type": "integer", "minimum": 0},
         "attempt_max_wall_seconds": {"type": "integer", "minimum": 0},
+        "max_resume_failures": {"type": "integer", "minimum": 0},
+        "resume_progress_grace_seconds": {"type": "integer", "minimum": 0},
         "reconcile_interval_seconds": {"type": "integer", "minimum": 0},
         "wave_max_diffs": {"type": "integer", "minimum": 0},
         "http_port": {"type": "integer", "minimum": 1, "maximum": 65535},

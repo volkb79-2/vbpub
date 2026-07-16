@@ -34,6 +34,8 @@ def make_config(
     carve_ahead_target: int = 5,
     carve_authority: str = "branch",
     headroom_warn: int = 5,
+    max_resume_failures: int = 2,
+    resume_progress_grace_seconds: int = 120,
 ) -> ProjectConfig:
     """Create a minimal ProjectConfig for testing."""
     return ProjectConfig(
@@ -52,6 +54,8 @@ def make_config(
             carve_ahead_target=carve_ahead_target,
             carve_authority=carve_authority,
             headroom_warn=headroom_warn,
+            max_resume_failures=max_resume_failures,
+            resume_progress_grace_seconds=resume_progress_grace_seconds,
         ),
     )
 
@@ -1060,6 +1064,478 @@ def test_interrupted_attempts_exhausted_blocks_task_even_with_handle():
     transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
     assert len(transitions) == 1
     assert transitions[0].to == TaskState.BLOCKED
+    assert transitions[0].blocker.type == BlockerType.ENVIRONMENT
+
+
+# ============================================================================
+# P34: resume-safety re-cut (poisoned resumes fresh-start through the
+# dispatch guards -- see nyxloom-trove/handoffs/nyxloom-P34-resume-safety-
+# guarded.md). Oracles O1-O6.
+# ============================================================================
+
+def test_o1_poisoned_latest_active_clear_guards_fresh_dispatch():
+    """O1: a poisoned (resume_failures >= max_resume_failures), latest,
+    ACTIVE attempt with budget and guards clear -> exactly one
+    DispatchImplementer, zero ResumeAttempt."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    # The poisoned attempt MUST carry a session_handle: it is the handle that
+    # today's planner would resume forever (O1's negative). Without one the
+    # "zero ResumeAttempt" assertion below is vacuous, since ResumeAttempt is
+    # unreachable for a handle-less attempt whether or not it is poisoned.
+    att.session_handle = "sess-poisoned"
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        resume_failures={"att-1": 2},
+    )
+
+    actions = plan_project(inp)
+    dispatches = [a for a in actions if isinstance(a, DispatchImplementer) and a.task_id == "P01"]
+    assert len(dispatches) == 1
+    resumes = [a for a in actions if isinstance(a, ResumeAttempt)]
+    assert len(resumes) == 0
+
+
+def test_o2_below_threshold_still_resumes():
+    """O2: healthy path unchanged -- resume_failures below
+    max_resume_failures still yields ResumeAttempt, no DispatchImplementer."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    att.session_handle = "sess-1"
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        resume_failures={"att-1": 1},
+    )
+
+    actions = plan_project(inp)
+    resumes = [a for a in actions if isinstance(a, ResumeAttempt) and a.attempt_id == "att-1"]
+    assert len(resumes) == 1
+    dispatches = [a for a in actions if isinstance(a, DispatchImplementer)]
+    assert len(dispatches) == 0
+
+
+class TestO3PolicyResumeConfig:
+    """O3: Policy.max_resume_failures / resume_progress_grace_seconds
+    defaults + override; schema permits both new [policy] keys."""
+
+    def test_defaults(self):
+        pol = Policy()
+        assert pol.max_resume_failures == 2
+        assert pol.resume_progress_grace_seconds == 120
+
+    def test_override(self):
+        pol = Policy(max_resume_failures=5, resume_progress_grace_seconds=30)
+        assert pol.max_resume_failures == 5
+        assert pol.resume_progress_grace_seconds == 30
+
+    def test_schema_permits_both_keys(self):
+        import importlib.resources
+        import json as _json
+
+        import jsonschema
+
+        schema_text = importlib.resources.files("nyxloom.schemas").joinpath(
+            "nyxloom-config.schema.json"
+        ).read_text(encoding="utf-8")
+        schema = _json.loads(schema_text)
+        validator = jsonschema.Draft202012Validator(schema)
+        doc = {
+            "project": {"id": "demo", "handoff_globs": ["handoff/*.md"]},
+            "policy": {"max_resume_failures": 5, "resume_progress_grace_seconds": 30},
+        }
+        errors = list(validator.iter_errors(doc))
+        assert errors == [], errors
+
+
+class TestO4GuardMatrix:
+    """O4: the fresh-start dispatch is refused in every one of six states."""
+
+    def test_case1_not_latest_attempt_is_parked(self):
+        cfg = make_config()
+        routes = make_routes()
+        fm = make_frontmatter(id="P01")
+        old_att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+        new_att = make_attempt(attempt_id="att-2", state=AttemptState.RUNNING, receipt=None)
+        tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[old_att, new_att])
+
+        inp = ReconcileInput(
+            now=utc(2026, 7, 15),
+            cfg=cfg,
+            routes=routes,
+            states={"P01": tsf},
+            frontmatters={"P01": (fm, "h.md")},
+            lint_clean={},
+            project_paused=False,
+            decisions_open=set(),
+            merged_branches=set(),
+            leases_free={},
+            provider_ok={"route-1": True, "route-2": True},
+            log_quiet_seconds={},
+            pid_alive={"att-2": True},
+            receipts={},
+            resume_failures={"att-1": 2},
+        )
+
+        actions = plan_project(inp)
+        assert not any(isinstance(a, DispatchImplementer) and a.task_id == "P01" for a in actions)
+        assert not any(isinstance(a, ResumeAttempt) and a.attempt_id == "att-1" for a in actions)
+        assert not any(isinstance(a, Transition) and a.task_id == "P01" for a in actions)
+
+    def test_case2_awaiting_review_is_parked(self):
+        cfg = make_config()
+        routes = make_routes()
+        fm = make_frontmatter(id="P01")
+        att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+        tsf = make_tsf(task_id="P01", state=TaskState.AWAITING_REVIEW, attempts=[att])
+
+        inp = ReconcileInput(
+            now=utc(2026, 7, 15),
+            cfg=cfg,
+            routes=routes,
+            states={"P01": tsf},
+            frontmatters={"P01": (fm, "h.md")},
+            lint_clean={},
+            project_paused=False,
+            decisions_open=set(),
+            merged_branches=set(),
+            leases_free={},
+            provider_ok={"route-1": True, "route-2": True},
+            log_quiet_seconds={},
+            pid_alive={},
+            receipts={},
+            resume_failures={"att-1": 2},
+        )
+
+        actions = plan_project(inp)
+        assert not any(isinstance(a, DispatchImplementer) and a.task_id == "P01" for a in actions)
+        assert not any(isinstance(a, ResumeAttempt) and a.attempt_id == "att-1" for a in actions)
+        assert not any(isinstance(a, Transition) and a.task_id == "P01" for a in actions)
+
+    def test_case3_project_paused_is_parked(self):
+        cfg = make_config()
+        routes = make_routes()
+        fm = make_frontmatter(id="P01")
+        att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+        tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+        inp = ReconcileInput(
+            now=utc(2026, 7, 15),
+            cfg=cfg,
+            routes=routes,
+            states={"P01": tsf},
+            frontmatters={"P01": (fm, "h.md")},
+            lint_clean={},
+            project_paused=True,
+            decisions_open=set(),
+            merged_branches=set(),
+            leases_free={},
+            provider_ok={"route-1": True, "route-2": True},
+            log_quiet_seconds={},
+            pid_alive={},
+            receipts={},
+            resume_failures={"att-1": 2},
+        )
+
+        actions = plan_project(inp)
+        assert not any(isinstance(a, DispatchImplementer) and a.task_id == "P01" for a in actions)
+        assert not any(isinstance(a, Transition) and a.task_id == "P01" for a in actions)
+
+    def test_case4_task_paused_is_parked(self):
+        cfg = make_config()
+        routes = make_routes()
+        fm = make_frontmatter(id="P01")
+        att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+        tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, paused=True, attempts=[att])
+
+        inp = ReconcileInput(
+            now=utc(2026, 7, 15),
+            cfg=cfg,
+            routes=routes,
+            states={"P01": tsf},
+            frontmatters={"P01": (fm, "h.md")},
+            lint_clean={},
+            project_paused=False,
+            decisions_open=set(),
+            merged_branches=set(),
+            leases_free={},
+            provider_ok={"route-1": True, "route-2": True},
+            log_quiet_seconds={},
+            pid_alive={},
+            receipts={},
+            resume_failures={"att-1": 2},
+        )
+
+        actions = plan_project(inp)
+        assert not any(isinstance(a, DispatchImplementer) and a.task_id == "P01" for a in actions)
+        assert not any(isinstance(a, Transition) and a.task_id == "P01" for a in actions)
+
+    def test_case5_budget_exhausted_is_parked(self):
+        cfg = make_config()
+        routes = make_routes()
+        fm = make_frontmatter(id="P01")
+        att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+        tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+        inp = ReconcileInput(
+            now=utc(2026, 7, 15),
+            cfg=cfg,
+            routes=routes,
+            states={"P01": tsf},
+            frontmatters={"P01": (fm, "h.md")},
+            lint_clean={},
+            project_paused=False,
+            decisions_open=set(),
+            merged_branches=set(),
+            leases_free={},
+            provider_ok={"route-1": True, "route-2": True},
+            log_quiet_seconds={},
+            pid_alive={},
+            receipts={},
+            resume_failures={"att-1": 2},
+            budget_remaining=0.0,
+        )
+
+        actions = plan_project(inp)
+        assert not any(isinstance(a, DispatchImplementer) and a.task_id == "P01" for a in actions)
+        assert not any(isinstance(a, Transition) and a.task_id == "P01" for a in actions)
+
+    def test_case6_lease_held_is_parked(self):
+        cfg = make_config()
+        routes = make_routes()
+        fm = make_frontmatter(id="P01", stack="exclusive")
+        att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+        tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+        inp = ReconcileInput(
+            now=utc(2026, 7, 15),
+            cfg=cfg,
+            routes=routes,
+            states={"P01": tsf},
+            frontmatters={"P01": (fm, "h.md")},
+            lint_clean={},
+            project_paused=False,
+            decisions_open=set(),
+            merged_branches=set(),
+            leases_free={"demo.stack": False},
+            provider_ok={"route-1": True, "route-2": True},
+            log_quiet_seconds={},
+            pid_alive={},
+            receipts={},
+            resume_failures={"att-1": 2},
+        )
+
+        actions = plan_project(inp)
+        assert not any(isinstance(a, DispatchImplementer) and a.task_id == "P01" for a in actions)
+        assert not any(isinstance(a, Transition) and a.task_id == "P01" for a in actions)
+
+
+def test_o5_multi_pass_convergence_second_pass_no_dispatch():
+    """O5: apply the fresh DispatchImplementer to the state (append the new
+    attempt record as RUNNING, as daemon.py's handler does), then plan a
+    SECOND pass over the mutated state -- zero DispatchImplementer, since
+    the poisoned record is no longer tsf.attempts[-1]."""
+    cfg = make_config(max_attempts_per_task=3)
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att1 = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    att1.session_handle = "sess-poisoned"
+    tsf1 = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att1])
+
+    inp1 = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf1},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        resume_failures={"att-1": 2},
+    )
+
+    actions1 = plan_project(inp1)
+    dispatches1 = [a for a in actions1 if isinstance(a, DispatchImplementer) and a.task_id == "P01"]
+    assert len(dispatches1) == 1
+
+    # Apply: append the new attempt record as RUNNING, exactly as
+    # daemon.py's DispatchImplementer handler does.
+    att2 = make_attempt(attempt_id="att-2", state=AttemptState.RUNNING, receipt=None)
+    tsf2 = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att1, att2])
+
+    inp2 = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf2},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        log_quiet_seconds={},
+        pid_alive={"att-2": True},
+        receipts={},
+        resume_failures={"att-1": 2},
+    )
+
+    actions2 = plan_project(inp2)
+    dispatches2 = [a for a in actions2 if isinstance(a, DispatchImplementer) and a.task_id == "P01"]
+    assert len(dispatches2) == 0
+
+
+def test_o5_fresh_start_sequence_terminates_at_record_budget():
+    """O5, exhaustion clause: "repeated to exhaustion, the sequence
+    terminates -- after max_attempts_per_task distinct IMPLEMENTER records
+    the planner emits the typed BLOCKED of O6, never another dispatch".
+
+    Drives real plan/apply cycles in the worst case the oracle is about --
+    every fresh start dies poisoned the same way -- rather than a single
+    pass. The unbounded re-dispatch that got P26 reverted (a new agent
+    process every reconcile interval into one worktree) is a non-terminating
+    loop here, so only iterating to a fixed point can exclude it."""
+    max_records = 2
+    cfg = make_config(max_attempts_per_task=max_records)
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+
+    att1 = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    att1.session_handle = "sess-poisoned"
+    attempts = [att1]
+    resume_failures = {"att-1": 2}
+
+    dispatch_total = 0
+    blocked = False
+    for _ in range(10):  # generous bound; termination must happen well inside it
+        tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=list(attempts))
+        inp = ReconcileInput(
+            now=utc(2026, 7, 15),
+            cfg=cfg,
+            routes=routes,
+            states={"P01": tsf},
+            frontmatters={"P01": (fm, "h.md")},
+            lint_clean={},
+            project_paused=False,
+            decisions_open=set(),
+            merged_branches=set(),
+            leases_free={},
+            provider_ok={"route-1": True, "route-2": True},
+            log_quiet_seconds={},
+            pid_alive={},
+            receipts={},
+            resume_failures=dict(resume_failures),
+        )
+        actions = plan_project(inp)
+        dispatches = [a for a in actions if isinstance(a, DispatchImplementer) and a.task_id == "P01"]
+        blocks = [a for a in actions if isinstance(a, Transition)
+                  and a.task_id == "P01" and a.to == TaskState.BLOCKED]
+        assert not any(isinstance(a, ResumeAttempt) for a in actions)
+        if blocks:
+            assert not dispatches, "dispatched into a task it blocked in the same pass"
+            assert blocks[0].blocker is not None
+            assert blocks[0].blocker.type == BlockerType.ENVIRONMENT
+            blocked = True
+            break
+        assert len(dispatches) == 1
+        dispatch_total += 1
+        # Apply the dispatch as daemon.py's handler does (append the new
+        # attempt record), then poison it too.
+        new_id = f"att-{len(attempts) + 1}"
+        new_att = make_attempt(attempt_id=new_id, state=AttemptState.INTERRUPTED, receipt=None)
+        new_att.session_handle = f"sess-{new_id}"
+        attempts.append(new_att)
+        resume_failures[new_id] = 2
+
+    assert blocked, "sequence never terminated: the planner kept re-dispatching"
+    # Exactly one fresh start per unused record slot, then the typed dead-end.
+    assert dispatch_total == max_records - 1
+
+
+def test_o6_record_budget_gone_types_blocked():
+    """O6: distinct-record budget gone (IMPLEMENTER attempt RECORDS >=
+    max_attempts_per_task) with the latest attempt poisoned -> typed
+    BLOCKED via the existing dead-end path, never left silently ACTIVE."""
+    cfg = make_config(max_attempts_per_task=1)
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    # The session_handle is what makes this test discriminate the RECORD-budget
+    # dead-end from P14's pre-existing no-handle dead-end: both emit the same
+    # BLOCKED/ENVIRONMENT transition, so a handle-less fixture asserts nothing
+    # about P34 (it passes with poison detection disabled entirely). With a
+    # handle, the pre-P34 planner would emit ResumeAttempt here instead --
+    # attempts_count is 0 because a receiptless record is invisible to it.
+    att.session_handle = "sess-poisoned"
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        resume_failures={"att-1": 2},
+    )
+
+    actions = plan_project(inp)
+    dispatches = [a for a in actions if isinstance(a, DispatchImplementer) and a.task_id == "P01"]
+    assert len(dispatches) == 0
+    # A poisoned attempt never resumes, even on the dead-end path.
+    assert not any(isinstance(a, ResumeAttempt) for a in actions)
+    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert len(transitions) == 1
+    assert transitions[0].to == TaskState.BLOCKED
+    assert transitions[0].blocker is not None
     assert transitions[0].blocker.type == BlockerType.ENVIRONMENT
 
 

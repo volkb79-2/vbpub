@@ -36,18 +36,30 @@ INTERFACE CONTRACT (frozen). Semantics:
      BLOCKED (environment)).
    - no receipt, pid dead, attempt RUNNING/PREFLIGHTING/STALLED ->
      MarkInterrupted (daemon emits ATTEMPT_INTERRUPTED)
-     then next pass ResumeAttempt (INTERRUPTED attempts with attempts-budget
-     left AND a resume handle -> ResumeAttempt; P14 2026-07-15 fix -- no
-     handle, OR attempts exhausted -> Transition(task, BLOCKED) with a typed
-     environment blocker (unblock 'operator: inspect attempts'); the prior
-     "fresh DispatchImplementer counting a new attempt" wording was never
-     actually implemented and left the task ACTIVE forever with zero
-     events -- a live-incident silent dead-end). P15 2026-07-15: when
-     inp.pause_mode == "drain-agents", ResumeAttempt (a new agent process)
-     is skipped entirely for this pass -- the attempt is left parked
-     INTERRUPTED (NOT transitioned to BLOCKED; that would misrepresent a
-     temporary drain as a dead end) until a later pass observes run or
-     drain-handoffs.
+     then next pass, for a NOT-poisoned INTERRUPTED attempt (unchanged
+     since P14): attempts-budget left AND a resume handle -> ResumeAttempt;
+     no handle, OR attempts exhausted -> Transition(task, BLOCKED) with a
+     typed environment blocker (unblock 'operator: inspect attempts'). P15
+     2026-07-15: when inp.pause_mode == "drain-agents", ResumeAttempt (a new
+     agent process) is skipped entirely for this pass -- the attempt is left
+     parked INTERRUPTED (NOT transitioned to BLOCKED; that would
+     misrepresent a temporary drain as a dead end) until a later pass
+     observes run or drain-handoffs.
+     P34 2026-07-16 (resume-safety re-cut, replaces P26 which was reverted):
+     an INTERRUPTED attempt is "poisoned" once inp.resume_failures for it
+     is >= policy.max_resume_failures (a resumed session that keeps dying,
+     detected by the daemon counting aged attempt.resume-N.log files -- see
+     daemon.py). A poisoned attempt NEVER resumes again. It is: parked (no
+     action) if a newer attempt already exists (tsf.attempts[-1] differs)
+     or the task is not ACTIVE (a review or newer dispatch already
+     supersedes it); typed BLOCKED (the same dead-end as above) once the
+     distinct-record budget (implementer_record_count -- attempt RECORDS,
+     not receipts, so a receiptless poisoned record still counts) reaches
+     max_attempts_per_task; parked if a transient dispatch guard
+     (paused/budget/lease/no-healthy-route -- see fresh_start_eligible)
+     currently refuses; otherwise a fresh DispatchImplementer with NO
+     session_handle carried, consuming one unit of that record budget so
+     the sequence terminates.
    - no receipt, pid alive, elapsed since attempt.started exceeds the
      wall-clock cap (fm.budget.max_wall_seconds if set, else
      inp.attempt_max_wall_seconds, P14 2026-07-15 item 6) -> InterruptAttempt
@@ -253,6 +265,13 @@ class ReconcileInput:
     pid_alive: dict[str, bool]
     receipts: dict[str, dict | None]                    # attempt_id -> receipt dict
     stall_confirmed: dict[str, bool] = field(default_factory=dict)
+    # P34 2026-07-16 (resume-safety re-cut): attempt_id -> count of aged
+    # (older than policy.resume_progress_grace_seconds) attempt.resume-N.log
+    # files for that attempt, computed by the daemon from disk. An
+    # INTERRUPTED attempt is "poisoned" once this reaches
+    # policy.max_resume_failures. Missing entries default to 0 (not
+    # poisoned) so existing tests that omit this still build.
+    resume_failures: dict[str, int] = field(default_factory=dict)
     budget_remaining: float | None = None
     wave_open_after_seconds: int = 1800
     merge_history: list[tuple[str, int, str]] = field(default_factory=list)
@@ -438,11 +457,11 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
             # INTERRUPTED attempt handling
             elif attempt.state == AttemptState.INTERRUPTED and inp.pause_mode == "drain-agents":
                 # P15 2026-07-15: draining agents -- no NEW agent process may
-                # start (a resume IS a new process). Leave the attempt
-                # parked INTERRUPTED; do not transition to BLOCKED either,
-                # since that would misrepresent a temporary drain as a
-                # genuine dead end. A later pass (run/drain-handoffs)
-                # re-evaluates normally.
+                # start (a resume IS a new process, and so is the P34
+                # fresh-start below). Leave the attempt parked INTERRUPTED;
+                # do not transition to BLOCKED either, since that would
+                # misrepresent a temporary drain as a genuine dead end. A
+                # later pass (run/drain-handoffs) re-evaluates normally.
                 pass
 
             elif attempt.state == AttemptState.INTERRUPTED and tsf.state != TaskState.BLOCKED:
@@ -450,26 +469,74 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                 # already blocked the task, don't re-emit BLOCKED->BLOCKED
                 # every pass (TICK_ERROR spam). A BLOCKED task leaves via the
                 # QUEUED re-dispatch path, not here.
-                # Attempts budget left?
-                attempts_count = sum(1 for a in tsf.attempts if a.state in TERMINAL_ATTEMPT_STATES
-                                    and a.receipt and a.receipt.result != ReceiptResult.LIMIT)
-                if attempts_count < inp.cfg.policy.max_attempts_per_task and attempt.session_handle:
-                    attempt_actions.append(ResumeAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
+                #
+                # P34 2026-07-16 (resume-safety re-cut, decision table in
+                # nyxloom-trove/handoffs/nyxloom-P34-resume-safety-guarded.md):
+                # a "poisoned" attempt (resume_failures at/over
+                # max_resume_failures) never resumes again -- it is either
+                # parked, typed-BLOCKED on a spent record budget, or
+                # fresh-started through the ordinary dispatch guards.
+                poisoned = (inp.resume_failures.get(attempt.attempt_id, 0)
+                            >= inp.cfg.policy.max_resume_failures)
+                if not poisoned:
+                    # unchanged (O2): today's ResumeAttempt-or-BLOCKED branch.
+                    attempts_count = sum(1 for a in tsf.attempts if a.state in TERMINAL_ATTEMPT_STATES
+                                        and a.receipt and a.receipt.result != ReceiptResult.LIMIT)
+                    if attempts_count < inp.cfg.policy.max_attempts_per_task and attempt.session_handle:
+                        attempt_actions.append(ResumeAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
+                    else:
+                        # P14 2026-07-15 item 4 (silent-dead-end fix): no resume
+                        # handle, or the attempt budget is exhausted -- either
+                        # way there is no path forward. The prior code silently
+                        # did nothing here ("handled in lifecycle" was never
+                        # true: lifecycle only dispatches QUEUED tasks, and
+                        # nothing ever requeued this one) leaving the task
+                        # ACTIVE forever with zero events. Surface it.
+                        blocker = Blocker(
+                            type=BlockerType.ENVIRONMENT,
+                            unblock_condition="operator: inspect attempts",
+                            detail="interrupted attempt has no resume handle or attempts are exhausted",
+                        )
+                        attempt_actions.append(Transition(task_id=task_id, to=TaskState.BLOCKED,
+                                                           notes="interrupted-dead-end", blocker=blocker))
                 else:
-                    # P14 2026-07-15 item 4 (silent-dead-end fix): no resume
-                    # handle, or the attempt budget is exhausted -- either
-                    # way there is no path forward. The prior code silently
-                    # did nothing here ("handled in lifecycle" was never
-                    # true: lifecycle only dispatches QUEUED tasks, and
-                    # nothing ever requeued this one) leaving the task
-                    # ACTIVE forever with zero events. Surface it.
-                    blocker = Blocker(
-                        type=BlockerType.ENVIRONMENT,
-                        unblock_condition="operator: inspect attempts",
-                        detail="interrupted attempt has no resume handle or attempts are exhausted",
-                    )
-                    attempt_actions.append(Transition(task_id=task_id, to=TaskState.BLOCKED,
-                                                       notes="interrupted-dead-end", blocker=blocker))
+                    is_latest = bool(tsf.attempts) and tsf.attempts[-1].attempt_id == attempt.attempt_id
+                    if not is_latest:
+                        # park -- a newer attempt already supersedes this one
+                        pass
+                    elif tsf.state != TaskState.ACTIVE:
+                        # park -- e.g. AWAITING_REVIEW: a review is in flight
+                        pass
+                    elif implementer_record_count(tsf) >= inp.cfg.policy.max_attempts_per_task:
+                        # distinct-record budget gone -- the same typed
+                        # dead-end as the non-poisoned branch above (O6).
+                        blocker = Blocker(
+                            type=BlockerType.ENVIRONMENT,
+                            unblock_condition="operator: inspect attempts",
+                            detail="resume-poisoned attempt has no attempts budget remaining",
+                        )
+                        attempt_actions.append(Transition(task_id=task_id, to=TaskState.BLOCKED,
+                                                           notes="interrupted-dead-end", blocker=blocker))
+                    elif fm_for_task is None:
+                        # park -- no frontmatter to dispatch from; retry next pass
+                        pass
+                    else:
+                        eligible, _reason = fresh_start_eligible(fm_for_task, tsf, inp)
+                        if not eligible:
+                            # park -- a transient guard (paused/budget/lease/
+                            # route) refused; retry next pass.
+                            pass
+                        else:
+                            # fresh DispatchImplementer, no session_handle
+                            # carried -- mirrors the lifecycle dispatch's
+                            # "first healthy route" selection (item 3 above).
+                            routes_for_tier = inp.routes.for_tier(fm_for_task.tier)
+                            for route_def in routes_for_tier:
+                                if inp.provider_ok.get(route_def.route_id, False):
+                                    attempt_actions.append(
+                                        DispatchImplementer(task_id=task_id, route_id=route_def.route_id)
+                                    )
+                                    break
 
     # === Waves ===
     wave_actions: list[Action] = []
@@ -617,6 +684,35 @@ def _wall_clock_cap_exceeded(attempt, fm: Frontmatter | None, inp: ReconcileInpu
     return elapsed > cap
 
 
+def _check_paused(tsf: TaskStateFile, inp: ReconcileInput) -> tuple[bool, str]:
+    if tsf.paused or inp.project_paused:
+        return (False, 'paused')
+    return (True, '')
+
+
+def _check_budget(inp: ReconcileInput) -> tuple[bool, str]:
+    if inp.budget_remaining is not None and inp.budget_remaining <= 0.0:
+        return (False, 'budget-exhausted')
+    return (True, '')
+
+
+def _check_lease(fm: Frontmatter, inp: ReconcileInput) -> tuple[bool, str]:
+    for mutex_name in fm.effective_mutexes():
+        if mutex_name in inp.cfg.mutexes:
+            lease_name = inp.cfg.mutexes[mutex_name].lease_name(inp.cfg.project_id)
+            if not inp.leases_free.get(lease_name, True):
+                return (False, f'lease-unavailable:{lease_name}')
+    return (True, '')
+
+
+def _check_healthy_route(fm: Frontmatter, inp: ReconcileInput) -> tuple[bool, str]:
+    routes_for_tier = inp.routes.for_tier(fm.tier)
+    has_healthy = any(inp.provider_ok.get(r.route_id, False) for r in routes_for_tier)
+    if not has_healthy:
+        return (False, 'no-healthy-route')
+    return (True, '')
+
+
 def dispatch_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) -> tuple[bool, str]:
     """(eligible, reason-if-not). Reasons are short fixed strings:
     'paused', 'deps-unmerged:<id>', 'decision-hold:<D-id>', 'wip-cap',
@@ -624,8 +720,9 @@ def dispatch_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) 
     'no-healthy-route'. First failing check wins (checked in that order)."""
 
     # 1. paused check (task or project)
-    if tsf.paused or inp.project_paused:
-        return (False, 'paused')
+    ok, reason = _check_paused(tsf, inp)
+    if not ok:
+        return (ok, reason)
 
     # 2. deps check
     task_deps = fm.task_deps()
@@ -661,20 +758,51 @@ def dispatch_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) 
         return (False, 'attempts-exhausted')
 
     # 6. budget-exhausted check
-    if inp.budget_remaining is not None and inp.budget_remaining <= 0.0:
-        return (False, 'budget-exhausted')
+    ok, reason = _check_budget(inp)
+    if not ok:
+        return (ok, reason)
 
     # 7. lease-unavailable check
-    for mutex_name in fm.effective_mutexes():
-        if mutex_name in inp.cfg.mutexes:
-            lease_name = inp.cfg.mutexes[mutex_name].lease_name(inp.cfg.project_id)
-            if not inp.leases_free.get(lease_name, True):
-                return (False, f'lease-unavailable:{lease_name}')
+    ok, reason = _check_lease(fm, inp)
+    if not ok:
+        return (ok, reason)
 
     # 8. no-healthy-route check
-    routes_for_tier = inp.routes.for_tier(fm.tier)
-    has_healthy = any(inp.provider_ok.get(r.route_id, False) for r in routes_for_tier)
-    if not has_healthy:
-        return (False, 'no-healthy-route')
+    ok, reason = _check_healthy_route(fm, inp)
+    if not ok:
+        return (ok, reason)
 
     return (True, '')
+
+
+def fresh_start_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) -> tuple[bool, str]:
+    """(eligible, reason-if-not) for re-cutting a poisoned INTERRUPTED
+    attempt as a fresh DispatchImplementer (P34 2026-07-16). Reuses
+    dispatch_eligible's checks 1 (paused), 6 (budget), 7 (lease) and 8
+    (healthy route) -- these are the transient conditions the decision
+    table's 'park, retry next pass' row exists for. Deliberately EXCLUDES
+    check 4 (wip-cap: the task's own ACTIVE state already trips it) and
+    check 5 (attempts-exhausted: replaced by the caller's distinct-record
+    budget, which counts receiptless records this check cannot see)."""
+    ok, reason = _check_paused(tsf, inp)
+    if not ok:
+        return (ok, reason)
+    ok, reason = _check_budget(inp)
+    if not ok:
+        return (ok, reason)
+    ok, reason = _check_lease(fm, inp)
+    if not ok:
+        return (ok, reason)
+    ok, reason = _check_healthy_route(fm, inp)
+    if not ok:
+        return (ok, reason)
+    return (True, '')
+
+
+def implementer_record_count(tsf: TaskStateFile) -> int:
+    """Distinct-record budget (P34 2026-07-16): count of role==IMPLEMENTER
+    attempt RECORDS in tsf.attempts, unlike the receipt-based
+    attempts_count above -- a poisoned INTERRUPTED record has no receipt
+    but still consumes one fresh-start's worth of budget, so this must
+    count it (else the fresh-start sequence never terminates, O5)."""
+    return sum(1 for a in tsf.attempts if a.role == Role.IMPLEMENTER)
