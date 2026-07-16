@@ -161,3 +161,15 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
   Daemon-core. NOTE: P26 (resume-safety, B8) was reverted for a real defect
   (fresh-start dispatch bypasses every dispatch guard) — it needs re-carving
   with the guard-respecting contract (a P34).
+- **B-carve-backpressure — carve trigger ignores un-admitted candidates.** The
+  zombie bug itself is fixed (P32). But the carve TRIGGER (reconcile.py:584,
+  `ready_count < carve_ahead_target`) counts only the dispatchable ready queue —
+  NOT candidates already sitting un-admitted on carve branches. Under
+  `carve_authority = "branch"` (candidates await human admission), the ready
+  queue stays low while candidates pile up, so the carver re-fires every window,
+  producing increasingly-marginal/duplicate candidates (carve-2/3/4 observed:
+  each cost an opus leg + a manual finalize). Fix: the carve trigger should
+  count pending un-admitted carve outputs toward the target (or back off after N
+  windows with no admission), so branch-authority doesn't drive over-production.
+  Interim lever used 2026-07-16: `carve_ahead_target = 0` during the rebuild
+  drain. Not urgent (gated + mitigated), but a real efficiency/robustness gap.
