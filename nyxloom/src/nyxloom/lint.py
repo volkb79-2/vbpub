@@ -3,7 +3,10 @@
 INTERFACE CONTRACT (frozen):
 
 - lint_file(path, cfg) -> list[LintFinding]; lint_project(cfg) ->
-  dict[str(relpath), list[LintFinding]].
+  dict[str(relpath), list[LintFinding]]. lint_project folds in the project's
+  own nyxloom.toml under its root-relative path (see lint_config, PACKAGE
+  P24, rule namespace CFG1-CFG3 — schema/semantic checks on the raw config,
+  independent of the handoff rules L1-L12 above).
 - A parse/schema failure IS finding L1 (severity error) and short-circuits
   the other rules for that file.
 - severity: 'error' blocks the carve (exit 1 in CLI); 'warning' reports only.
@@ -68,9 +71,14 @@ L12 error   body must contain the BLOCKED rule marker 'BLOCKED:' and must
 from __future__ import annotations
 
 import fnmatch
+import importlib.resources
+import json
 import re
+import tomllib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import jsonschema
 
 from . import frontmatter, paths
 from .config import ProjectConfig
@@ -141,16 +149,89 @@ def lint_file(path: Path, cfg: ProjectConfig) -> list[LintFinding]:
 
 
 def lint_project(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
-    """relpath -> findings for every discovered handoff (frontmatter.discover_handoffs)."""
+    """relpath -> findings for every discovered handoff (frontmatter.discover_handoffs),
+    plus one extra entry for the project's own config file (see lint_config)."""
     results = {}
     for handoff_path in frontmatter.discover_handoffs(cfg):
         rel_path = str(handoff_path.relative_to(cfg.root))
         results[rel_path] = lint_file(handoff_path, cfg)
+    config_path = _locate_config_path(cfg)
+    if config_path is not None:
+        results[str(config_path.relative_to(cfg.root))] = lint_config(cfg)
     return results
 
 
 def has_blocking(findings: list[LintFinding]) -> bool:
     return any(f.severity == "error" for f in findings)
+
+
+# ----- config (PACKAGE P24) -----
+
+def _locate_config_path(cfg: ProjectConfig) -> Path | None:
+    """Same two-path lookup as ProjectConfig.load (config.py, READ only)."""
+    p = cfg.root / "nyxloom-trove" / "nyxloom.toml"
+    if not p.exists():
+        p = cfg.root / ".nyxloom" / "project.toml"
+    return p if p.exists() else None
+
+
+def lint_config(cfg: ProjectConfig) -> list[LintFinding]:
+    """Findings for the project's raw nyxloom.toml (schema + semantic checks).
+
+    Rule namespace CFG1-CFG3 (separate from the handoff rules L1-L12):
+    CFG1 schema violation against schemas/nyxloom-config.schema.json (covers
+         missing/empty [gates.*].argv, [project] missing id/handoff_globs,
+         wrong-typed [policy] values, etc).
+    CFG2 [project].worktree_root, when present, must be a non-empty string
+         (absence is fine — ProjectConfig.load defaults it).
+    CFG3 every [refs] path must resolve under cfg.root ([refs] is dropped by
+         ProjectConfig.load, so this reads the raw TOML directly).
+    """
+    findings: list[LintFinding] = []
+    config_path = _locate_config_path(cfg)
+    if config_path is None:
+        return findings
+
+    raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+    schema_text = importlib.resources.files("nyxloom.schemas").joinpath(
+        "nyxloom-config.schema.json"
+    ).read_text(encoding="utf-8")
+    schema = json.loads(schema_text)
+    validator = jsonschema.Draft202012Validator(schema)
+    for error in sorted(validator.iter_errors(raw), key=lambda e: list(e.absolute_path)):
+        path_parts = list(error.absolute_path)
+        json_path = ".".join(str(p) for p in path_parts) if path_parts else "$"
+        findings.append(LintFinding(
+            rule="CFG1",
+            severity="error",
+            message=f"{json_path}: {error.message}",
+            path=str(config_path),
+        ))
+
+    project_section = raw.get("project", {})
+    if "worktree_root" in project_section:
+        worktree_root = project_section["worktree_root"]
+        if not isinstance(worktree_root, str) or not worktree_root.strip():
+            findings.append(LintFinding(
+                rule="CFG2",
+                severity="error",
+                message="project.worktree_root must be a non-empty string when specified",
+                path=str(config_path),
+            ))
+
+    for ref_name, ref_path in raw.get("refs", {}).items():
+        if not isinstance(ref_path, str):
+            continue
+        if not (cfg.root / ref_path).exists():
+            findings.append(LintFinding(
+                rule="CFG3",
+                severity="error",
+                message=f"refs.{ref_name} path '{ref_path}' does not resolve under project root",
+                path=str(config_path),
+            ))
+
+    return findings
 
 
 # ----- L1 -----

@@ -1,4 +1,4 @@
-"""Tests for lint rules L1-L12."""
+"""Tests for lint rules L1-L12, plus config lint rules CFG1-CFG3 (P24)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import frontmatter, lint
+from nyxloom import config, frontmatter, lint
 
 
 class TestL1SchemaAndResolution:
@@ -754,3 +754,189 @@ class TestGoldenCorpus:
                 if f.severity == "error" and f.rule != expected_rule
             ]
             assert len(other_errors) == 0, f"Unexpected errors in {fixture_name}: {other_errors}"
+
+
+# ---------------------------------------------------------------------------
+# CFG1-CFG3: nyxloom.toml schema + semantic config lint (P24). Fixtures are
+# built fresh under tmp_path (not the repo tree) mirroring the sections the
+# repo's own nyxloom-trove/nyxloom.toml uses: [project], [refs], [gates.*],
+# [policy], [notify], [mutexes.*].
+
+VALID_CONFIG_TOML = """\
+[project]
+id = "demo"
+default_branch = "main"
+handoff_globs = ["nyxloom-trove/handoffs/*.md"]
+worktree_root = "../.worktrees"
+
+[refs]
+spec = "docs/SPEC.md"
+
+[gates.tester-unified]
+argv = ["true"]
+phase = "implementation"
+timeout_seconds = 60
+
+[policy]
+max_active_tasks = 3
+
+[notify]
+ntfy_url = "https://example.invalid"
+
+[mutexes.stack]
+scope = "project"
+capacity = 1
+"""
+
+
+def _write_config_project(tmp_path: Path, toml_text: str, *, ref_stubs: tuple[str, ...] = ("docs/SPEC.md",)):
+    """A project root with nyxloom-trove/nyxloom.toml = toml_text, plus any
+    files referenced by [refs] the caller wants to actually resolve."""
+    root = tmp_path / "cfgproj"
+    (root / "nyxloom-trove").mkdir(parents=True)
+    (root / "nyxloom-trove" / "nyxloom.toml").write_text(toml_text)
+    for rel in ref_stubs:
+        stub = root / rel
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text("stub\n")
+    return root
+
+
+class TestConfigLintSchema:
+    """O1: schema violations -> blocking CFG1 finding; valid config -> none."""
+
+    def test_valid_config_no_findings(self, tmp_path):
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        assert lint.lint_config(cfg) == []
+
+    def test_repos_own_config_no_findings(self, tmp_path):
+        """The repo's own nyxloom-trove/nyxloom.toml (O1: 'the repo's own'),
+        copied under tmp_path with its [refs] targets stubbed out."""
+        repo_toml = Path(__file__).resolve().parent.parent / "nyxloom-trove" / "nyxloom.toml"
+        root = _write_config_project(
+            tmp_path,
+            repo_toml.read_text(encoding="utf-8"),
+            ref_stubs=(
+                "docs/SPEC.md",
+                "docs/ARCHITECTURE.md",
+                "docs/ROADMAP.md",
+                "docs/EVOLUTION.md",
+            ),
+        )
+        cfg = config.ProjectConfig.load(root)
+        assert lint.lint_config(cfg) == []
+
+    def test_empty_gate_argv_is_blocking_cfg1(self, tmp_path):
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        bad = VALID_CONFIG_TOML.replace('argv = ["true"]', "argv = []")
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(cfg)
+        cfg1 = [f for f in findings if f.rule == "CFG1"]
+        assert cfg1, findings
+        assert all(f.severity == "error" for f in cfg1)
+        assert lint.has_blocking(findings)
+
+    def test_missing_project_id_is_blocking_cfg1(self, tmp_path):
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        bad = VALID_CONFIG_TOML.replace('id = "demo"\n', "")
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(cfg)
+        assert any(f.rule == "CFG1" and f.severity == "error" for f in findings)
+        assert lint.has_blocking(findings)
+
+    def test_missing_handoff_globs_is_blocking_cfg1(self, tmp_path):
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        bad = VALID_CONFIG_TOML.replace(
+            'handoff_globs = ["nyxloom-trove/handoffs/*.md"]\n', ""
+        )
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(cfg)
+        assert any(f.rule == "CFG1" and f.severity == "error" for f in findings)
+        assert lint.has_blocking(findings)
+
+    def test_policy_wrong_type_is_blocking_cfg1(self, tmp_path):
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        bad = VALID_CONFIG_TOML.replace(
+            "max_active_tasks = 3", 'max_active_tasks = "three"'
+        )
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(cfg)
+        assert any(f.rule == "CFG1" and f.severity == "error" for f in findings)
+        assert lint.has_blocking(findings)
+
+
+class TestConfigLintRefs:
+    """O2: an unresolved [refs] path is flagged (CFG3), naming the ref;
+    all-resolving [refs] lints clean."""
+
+    def test_unresolved_ref_is_blocking_cfg3(self, tmp_path):
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        bad = VALID_CONFIG_TOML.replace(
+            'spec = "docs/SPEC.md"', 'spec = "docs/MISSING.md"'
+        )
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(cfg)
+        cfg3 = [f for f in findings if f.rule == "CFG3"]
+        assert cfg3, findings
+        assert all(f.severity == "error" for f in cfg3)
+        assert "spec" in cfg3[0].message
+        assert "docs/MISSING.md" in cfg3[0].message
+        assert lint.has_blocking(findings)
+
+    def test_resolving_refs_lint_clean(self, tmp_path):
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        findings = lint.lint_config(cfg)
+        assert [f for f in findings if f.rule == "CFG3"] == []
+
+
+class TestConfigLintWorktreeRoot:
+    """CFG2: [project].worktree_root, when present, must be non-empty."""
+
+    def test_empty_worktree_root_is_blocking_cfg2(self, tmp_path):
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        bad = VALID_CONFIG_TOML.replace('worktree_root = "../.worktrees"', 'worktree_root = ""')
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        findings = lint.lint_config(cfg)
+        cfg2 = [f for f in findings if f.rule == "CFG2"]
+        assert cfg2, findings
+        assert all(f.severity == "error" for f in cfg2)
+        assert lint.has_blocking(findings)
+
+
+class TestConfigLintFoldedIntoProject:
+    """lint_project(cfg) surfaces config findings under the config's
+    root-relative path key, alongside handoff findings."""
+
+    def test_invalid_config_appears_in_lint_project(self, tmp_path):
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+        bad = VALID_CONFIG_TOML.replace('argv = ["true"]', "argv = []")
+        (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+
+        results = lint.lint_project(cfg)
+        key = "nyxloom-trove/nyxloom.toml"
+        assert key in results
+        assert any(f.rule == "CFG1" for f in results[key])
+
+    def test_valid_config_appears_clean_in_lint_project(self, tmp_path):
+        root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+        cfg = config.ProjectConfig.load(root)
+
+        results = lint.lint_project(cfg)
+        key = "nyxloom-trove/nyxloom.toml"
+        assert key in results
+        assert results[key] == []
