@@ -255,12 +255,17 @@ def build_selection(
             }
         )
 
-    # profile.stacks → pseudo-phase appended last (S7.4 ordering).
-    for stack_path in profile.extra_stacks:
+    # profile.stacks → appended last, ONE pseudo-phase PER STACK in list order
+    # (S7.4). Distinct phase keys make the deploy loop's per-phase provisioning
+    # probe run just-in-time for each stack — a shared pseudo-phase probed all
+    # extra stacks' requires up-front, which can never pass when one profile
+    # stack provides what a later one requires (e.g. db-core → db-init on a
+    # greenfield up). Profile stack ORDER is therefore meaningful.
+    for idx, stack_path in enumerate(profile.extra_stacks):
         selection.append(
             {
                 "phase_num": float("inf"),
-                "phase_key": EXTRA_STACKS_KEY,
+                "phase_key": f"{EXTRA_STACKS_KEY}:{idx}",
                 "path": stack_path,
                 "name": Path(stack_path).name,
                 "service": {"path": stack_path, "name": Path(stack_path).name, "enabled": True},

@@ -597,6 +597,12 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
     `compose_profiles` from all selected profiles are unioned preserving
     first-seen order and deduplicating repeats. Phase execution order
     remains numeric (S7.1 `ordered_phases`).
+  - **Per-stack pseudo-phases:** profile `stacks` append after the numbered
+    phases as ONE pseudo-phase PER STACK (`profile_extra_stacks:<n>`), in
+    list order — so the deploy loop's per-phase provisioning probe runs
+    just-in-time for each stack and cross-stack `provides`→`requires`
+    chains inside one profile (e.g. db-core → db-init) work on a
+    greenfield `up`. Profile stack order is therefore meaningful.
   - **Narrowing:** a profile with `stacks` but no `phases` key contributes
     ZERO phases — selecting only stacks-only profiles deploys exactly their
     stacks (e.g. `--profile core,db` per S7.5a), never the full phase set.
