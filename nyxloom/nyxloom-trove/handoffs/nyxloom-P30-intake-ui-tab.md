@@ -15,7 +15,6 @@ scope:
     - "tests/test_intake_ui.py"
   forbid:
     - "src/nyxloom/reconcile.py"
-    - "src/nyxloom/intake_chat.py"
 oracles:
   - id: O1
     observable: "The dashboard renders a new **Intake** tab (via render.py) that (a) lists open intake conversations and (b) offers a form to start one from a rough feature request. A render test asserts the tab + form appear in the produced HTML for a state containing an intake session."

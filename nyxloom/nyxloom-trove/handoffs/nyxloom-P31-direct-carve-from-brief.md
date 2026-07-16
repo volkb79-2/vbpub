@@ -15,7 +15,6 @@ scope:
     - "tests/test_carve_from_brief.py"
   forbid:
     - "src/nyxloom/reconcile.py"
-    - "src/nyxloom/intake_chat.py"
 oracles:
   - id: O1
     observable: "When the carver assembles its carve-source notes (daemon.py `_carve_source_note_lines`) for a backlog item that carries an intake brief (P29's structured detail), the brief's pre-carve detail (aligned purpose, elicited detail, linked `D-NNN` decisions, priority) is INCLUDED in the source notes the carver reads — so a carve of a briefed item loses no interview context. A test asserts the assembled source notes contain the brief's detail for a briefed item, and fall back to the plain backlog line for an un-briefed one."

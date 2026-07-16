@@ -85,3 +85,33 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
   "Status: line lies" problem at its root. STRICTLY typed writes only; the
   daemon never free-authors roadmap prose (injection-boundary + typed-fields-
   only doctrine). Prerequisite for B9. Daemon-core: gate + rebuild after merge.
+- **B12 — lint L7 forbid-existence vs. chained handoffs.** L7 errors when a
+  `forbid` path does not exist on the base branch, but a chained handoff often
+  forbids a file a NOT-YET-MERGED predecessor phase creates (e.g. P30/P31
+  forbidding `intake_chat.py` that P29 introduces) — a false stick at carve
+  time, since the file exists by the phase's actual dispatch time. Fix: when a
+  forbidden path is listed in the `scope.touch` of a `depends_on` handoff (or
+  simply: forbid-non-existence is a WARNING, not an error, mirroring how L7
+  already treats non-existent `touch` paths). Discovered dogfooding the B9/B10
+  carve. Small `lint.py` change + test.
+- **B11 — `doctor` crashes on already-BLOCKED tasks (`BLOCKED -> BLOCKED not
+  allowed`).** Observed 2026-07-16 against dstdns while three tasks sat BLOCKED
+  `interrupted-dead-end`: `exec-nyxloom.py doctor` exits with the TransitionError
+  instead of a report — the one health surface an operator reaches for when tasks
+  are blocked is the one that dies on them. Doctor must be read-only (never
+  attempt transitions) or guard the re-block path the way reconcile's
+  `!= BLOCKED` guard does. (Related TICK_ERROR spam existed in dstdns events
+  seq 91-137 before the guard landed.)
+- **B12 — lint L7 asymmetry: `scope.forbid` entries are checked as literal
+  paths while `scope.touch` entries glob.** Observed 2026-07-16 (dstdns
+  infra-P24): `forbid: ["infra/authentik/**"]` errored "path does not exist"
+  though the dir exists and the same glob in `touch` passes. Either glob both
+  or document that forbid takes literal prefixes; today authors discover it by
+  lint error archaeology.
+- **B13 — stale pause files are silently inert after the flag-format change.**
+  dstdns carried an EMPTY `pause.agents` file (set 2026-07-15 by the pre-rename
+  daemon); the current daemon reads the pause MODE from file CONTENT, treated it
+  as no-pause, and dispatched — the operator believed the project was paused
+  while agents ran. Migration/lint should flag (or refuse) a pause flag whose
+  content is not a known mode; `status` should render the effective pause mode
+  per project so operator belief and daemon behavior can't diverge silently.
