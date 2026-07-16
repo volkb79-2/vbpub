@@ -850,6 +850,65 @@ def test_launch_review_packet_requires_machine_readable_verdict_line(
     assert "VERDICT: REJECTED" in packet_md
     assert "BLOCKED: rejected" in packet_md
 
+    # REVIEW-FIX 2026-07-16: the packet must name the SAME file
+    # _parse_review_verdict reads, or the reviewer writes a verdict the
+    # daemon never sees and the review fail-safes to rejected. The path was
+    # hardcoded to a stale `topos/handoff/reports/` matching no project.
+    assert f"{cfg.reports_dir}/<task>-REVIEW.md" in packet_md
+    assert "topos/handoff/reports" not in packet_md
+
+
+def test_parse_review_verdict_when_project_root_is_a_repo_subdir(tmp_state, tmp_path):
+    """REVIEW-FIX 2026-07-16 regression (O2 in the REAL layout): nyxloom
+    self-hosts with the project root NESTED under the git repo root
+    (nyxloom.toml: worktree_root = "../.worktrees", "vbpub is the git repo;
+    nyxloom is a subdir"). `git show <rev>:<path>` resolves a bare <path>
+    from the REPO ROOT and ignores `-C`, so the APPROVED report was
+    unreadable -> every review, approvals included, fail-safed to rejected
+    and no task could reach MERGE_READY. Every other test git-inits AT
+    cfg.root, so this layout was unexercised and the bug shipped green."""
+    from conftest import SAMPLE_PROJECT_TOML
+    from nyxloom.config import ProjectConfig
+
+    repo = tmp_path / "outer-repo"
+    proj = repo / "proj"                      # cfg.root != git repo root
+    (proj / ".nyxloom").mkdir(parents=True)
+    (proj / "handoff" / "reports").mkdir(parents=True)
+    (proj / ".nyxloom" / "project.toml").write_text(SAMPLE_PROJECT_TOML)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "init"], cwd=repo, check=True)
+
+    cfg = ProjectConfig.load(proj)
+    assert cfg.root == proj
+    assert cfg.reports_dir == "handoff/reports"   # relative to cfg.root, not the repo root
+
+    d = daemon.Daemon({"demo": proj})
+
+    def _commit_report(task_id, body):
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-b", f"feat/{task_id}", "main"],
+                        check=True, capture_output=True)
+        # git tracks no empty dirs, so reports/ vanishes on checkout back to main
+        (proj / "handoff" / "reports").mkdir(parents=True, exist_ok=True)
+        (proj / "handoff" / "reports" / f"{task_id}-REVIEW.md").write_text(body, encoding="utf-8")
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(repo),
+                        "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(repo),
+                        "commit", "-qm", f"review {task_id}"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", "main"], check=True, capture_output=True)
+
+    # the regression: an APPROVED report under a nested root must be READ,
+    # not silently missed and fail-safed to rejected.
+    _commit_report("t-nested-approved", "# Review\n\nVERDICT: APPROVED\n")
+    assert d._parse_review_verdict(cfg, "t-nested-approved") == "approved"
+
+    # and the fail-safe still discriminates under the same layout.
+    _commit_report("t-nested-rejected", "# Review\n\nVERDICT: REJECTED — nope\n")
+    assert d._parse_review_verdict(cfg, "t-nested-rejected") == "rejected"
+    assert d._parse_review_verdict(cfg, "t-nested-never-written") == "rejected"
+
 
 # --------------------------------------------------------------------------
 # Oracle 4: MarkInterrupted/ResumeAttempt/InterruptAttempt

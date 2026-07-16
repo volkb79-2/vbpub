@@ -1336,11 +1336,20 @@ class Daemon:
         branch (git show, read-only) and extracts a `VERDICT: APPROVED` or
         `VERDICT: REJECTED` line. FAIL SAFE to "rejected" on anything other
         than an unambiguous single APPROVED verdict: missing file, unreadable
-        git object, no VERDICT line, or conflicting VERDICT lines."""
+        git object, no VERDICT line, or conflicting VERDICT lines.
+
+        REVIEW-FIX 2026-07-16: the `./` prefix is load-bearing. `git show
+        <rev>:<path>` resolves a bare <path> from the REPO ROOT, ignoring
+        `-C`; only a `./`-prefixed path is read relative to `-C`. reports_dir
+        is relative to cfg.root, which is NOT always the repo root -- nyxloom
+        self-hosts with cfg.root=<repo>/nyxloom (nyxloom.toml: "vbpub is the
+        git repo; nyxloom is a subdir"). Without `./`, every lookup missed,
+        so every review -- including genuine APPROVALS -- fail-safed to
+        rejected and no task could ever reach MERGE_READY."""
         branch = f"feat/{task_id}"
         rel_path = f"{cfg.reports_dir}/{task_id}-REVIEW.md"
         show_res = subprocess.run(
-            ["git", "-C", str(cfg.root), "show", f"{branch}:{rel_path}"],
+            ["git", "-C", str(cfg.root), "show", f"{branch}:./{rel_path}"],
             capture_output=True, text=True,
         )
         if show_res.returncode != 0:
@@ -1660,7 +1669,15 @@ class Daemon:
                 "   a report's pasted output.",
                 "5. Small defects: fix them YOURSELF, commit to the task's",
                 "   feat/ branch. Large/architectural defects: REJECT.",
-                "6. Write topos/handoff/reports/<task>-REVIEW.md: findings,",
+                # REVIEW-FIX 2026-07-16: this path was hardcoded to a stale
+                # `topos/handoff/reports/` that matches no nyxloom project
+                # (nyxloom's reports_dir is `nyxloom-trove/reports`). Harmless
+                # while the verdict came from the receipt; load-bearing now
+                # that _parse_review_verdict reads THIS file -- a reviewer
+                # obeying the old literal path wrote where the daemon never
+                # looks, fail-safing every review to rejected. Derived from
+                # cfg.reports_dir so prompt and parser cannot drift apart.
+                f"6. Write {cfg.reports_dir}/<task>-REVIEW.md: findings,",
                 "   what you fixed, verdict + reasoning. Commit it to the",
                 "   feat/ branch (NOT main). Do NOT merge. Do NOT write the",
                 "   implementer's LOG/REPORT. REQUIRED: this file MUST contain",
