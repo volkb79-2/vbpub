@@ -15,10 +15,20 @@
 #     nyxloomd XDG state dir — so state is on the host bind and SURVIVES
 #     container restart, no docker volume needed).
 #   * Repos bound at matching paths so worktree/PHYSICAL_REPO_ROOT resolve.
-#   * network_mode: host -> dashboard on the host's 127.0.0.1:8942 (loopback).
 #
 # Bind SOURCES are absolute HOST-physical paths (DooD: the host daemon renders
 # these; devcontainer-logical paths would resolve to empty dirs).
+#
+# Network (P38, docs/runtime-process-model.md §3): a ciu-owned bridge network,
+# NOT host-network -- host-net left the dashboard reachable only from the
+# daemon's own netns (127.0.0.1 on the docker host), invisible to the
+# devcontainer, so VS Code could never auto-forward it. On the bridge the
+# dashboard binds 0.0.0.0 (private to this network, still off the LAN) under
+# the stable alias "nyxloomd"; a co-networked container (e.g. the devcontainer,
+# once it joins this network -- see the REPORT for that join step) reaches it
+# at http://nyxloomd:8942. docker.sock + the physical repo binds are
+# unaffected by the network mode (DooD/repo access is NOT host-net-dependent
+# -- verified in the doc above).
 #
 # Process model (P37, docs/runtime-process-model.md §2): tini (init: true) is
 # container PID 1; the daemon runs under a supervisor loop (`command`, no
@@ -55,7 +65,6 @@ services:
     user: "1003:1003"
     group_add:
       - "994"            # docker gid — sock access for agent dispatch gates
-    network_mode: host   # dashboard binds host 127.0.0.1:8942 (loopback-only)
     working_dir: /workspaces/vbpub/nyxloom
     env_file:
       - .env             # NTFY_TOKEN, NTFY_CMD_TOKEN (gitignored)
@@ -64,6 +73,8 @@ services:
       TZ: UTC
       PYTHONPATH: /workspaces/vbpub/nyxloom/src
       PATH: /home/vscode/.local/bin:/usr/local/bin:/usr/bin:/bin
+      NYXLOOM_HTTP_BIND: "0.0.0.0"   # P38: safe here -- a private ciu bridge
+                                      # network, never host-net
     # tini (PID 1, via init: true above) supervises this shell, which is a
     # SUPERVISOR LOOP for the daemon, not the daemon itself -- no `exec`, so
     # bash stays the daemon's parent and respawns it 2s after every exit
@@ -82,11 +93,16 @@ services:
       - /home/vb/volkb79-2/dstdns:/workspaces/dstdns        # repo (registered project)
       - /home/vb/volkb79-2/netcup-api-filter:/workspaces/netcup-api-filter  # repo (registered project)
       - /var/run/docker.sock:/var/run/docker.sock           # agent dispatch gates
+    networks:
+      nyxloomd-net:
+        aliases:
+          - nyxloomd                                # stable alias -- see REPORT for
+                                                      # the devcontainer-side join step
     healthcheck:
       # TCP-connect probe (bash /dev/tcp) — robust vs. HTTP-response timing and
       # avoids depending on curl in the image. Succeeds once the dashboard
-      # ThreadingHTTPServer is listening on the host loopback.
-      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/8942' 2>/dev/null || exit 1"]
+      # ThreadingHTTPServer is listening on its bind (0.0.0.0, this network).
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/0.0.0.0/8942' 2>/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -96,3 +112,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+networks:
+  nyxloomd-net:
+    name: nyxloom-prod-nyxloomd-net   # ciu bridge network (P38); stable name the
+                                       # devcontainer joins as external to reach
+                                       # the "nyxloomd" alias

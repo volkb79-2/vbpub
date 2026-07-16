@@ -259,11 +259,11 @@ def cmd_doctor(args) -> int:
     else:
         projects = list(registry.keys())
 
-    http_ports = []
+    http_entries = []
     for pid in projects:
         root = registry[pid]
         cfg = config.ProjectConfig.load(root)
-        http_ports.append(cfg.policy.http_port)
+        http_entries.append((cfg.policy.http_port, cfg.policy.http_bind))
         findings = doctor.doctor_project(cfg)
         all_findings.extend(findings)
 
@@ -294,15 +294,22 @@ def cmd_doctor(args) -> int:
     if rows:
         print(_format_table(rows, ["kind", "severity", "message", "project", "refs"]))
 
-    # Dashboard URL. The daemon serves the read-only HTTP/SSE surface
-    # loopback-only, on the daemon host, at min(policy.http_port) over
-    # registered projects (see daemon.py). The nyxloomd container runs
-    # host-network, so this is reachable at 127.0.0.1:<port> ON THE DAEMON
-    # HOST — NOT from a separate network namespace (e.g. a devcontainer),
-    # where you must go via `docker exec <container> curl ...` instead.
-    if http_ports:
-        print(f"\ndashboard: http://127.0.0.1:{min(http_ports)}  "
-              "(read-only; loopback on the daemon host)")
+    # Dashboard URL. The daemon serves the read-only HTTP/SSE surface at the
+    # (port, bind) of the registered project with the lowest policy.http_port
+    # (see daemon.py Daemon._chosen_http). P38 2026-07-16: on a private ciu
+    # bridge network (docs/runtime-process-model.md §3) the bind is 0.0.0.0,
+    # reachable from any co-networked container (e.g. the devcontainer) via
+    # the "nyxloomd" alias every nyxloomd compose sets, in ADDITION to the
+    # loopback address on the daemon host itself. A loopback bind (127.0.0.1,
+    # the default) is reachable only on the daemon host.
+    if http_entries:
+        port, bind = min(http_entries, key=lambda pb: pb[0])
+        if bind in ("0.0.0.0", "::"):
+            print(f"\ndashboard: http://127.0.0.1:{port}  (on the daemon host) "
+                  f"or http://nyxloomd:{port}  (bridge alias, from a co-networked "
+                  "container e.g. the devcontainer) -- read-only")
+        else:
+            print(f"\ndashboard: http://{bind}:{port}  (read-only; loopback on the daemon host)")
 
     has_critical_or_error = any(f.severity in ("critical", "error") for f in all_findings)
     return 1 if has_critical_or_error else 0
