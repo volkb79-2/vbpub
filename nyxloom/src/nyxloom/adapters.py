@@ -84,12 +84,27 @@ INTERFACE CONTRACT (frozen):
   v2 §5.2 limit phrases (case-insens.: 'session limit', 'usage limit',
   'rate limit exceeded', 'quota', 'plan limit') -> 'limit'; else None.
   'blocked' beats 'limit' when both appear.
+- find_controller_container(container_prefix=None, env=None) -> str | None:
+  P27 2026-07-16: resolves the running nyxloomd daemon container so
+  exec-nyxloom.py can dispatch into it instead of silently falling back to
+  host mode. env['NYXLOOM_CONTAINER'] (default os.environ) wins outright
+  when it names a running container. Otherwise, if container_prefix is
+  given (the ciu.toml `container_prefix` value, e.g. "nyxloom-prod"),
+  matches the exact name `<container_prefix>-nyxloomd` -- the literal
+  container_name the compose template renders. Without a prefix, matches
+  any running name ending in "-nyxloomd" (the fixed service-name suffix
+  every ciu.toml container_prefix produces), so a caller that has not
+  resolved a prefix still finds the daemon without hardcoding one. `docker`
+  missing, `docker ps` failing, or no match all degrade to None (never
+  raises) -- host fallback must still work.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,6 +115,31 @@ from .types import Basis, Usage
 
 class AdapterError(Exception):
     pass
+
+
+def find_controller_container(container_prefix: str | None = None,
+                              env: dict | None = None) -> str | None:
+    """Resolve the running nyxloomd daemon container name (see module contract)."""
+    env = env if env is not None else os.environ
+    override = env.get("NYXLOOM_CONTAINER")
+    if not shutil.which("docker"):
+        return None
+    try:
+        names = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.split()
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if override and override in names:
+        return override
+    if container_prefix:
+        target = f"{container_prefix}-nyxloomd"
+        return target if target in names else None
+    for name in names:
+        if name.endswith("-nyxloomd"):
+            return name
+    return None
 
 
 def render_argv(template: list[str], mapping: dict[str, str]) -> list[str]:

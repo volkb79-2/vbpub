@@ -22,10 +22,13 @@ to `init` (`version` fails the same way); the access check becomes real once
 the image exposes a `nyxloom` executable.
 
 Routing (transition-safe across the P19 containerization):
-  1. If a running controller container is found (name contains both
-     "nyxloom" and "controller", or $NYXLOOM_CONTAINER), the args are
-     forwarded via `docker exec <container> nyxloom ...` — the containerized
-     daemon owns the authoritative state volume.
+  1. If a running daemon container is found (name ending "-nyxloomd" — the
+     ciu.toml `container_prefix` produces `<prefix>-nyxloomd` — or
+     $NYXLOOM_CONTAINER), the args are forwarded via `docker exec <container>
+     /opt/nyxloom-venv/bin/python -m nyxloom.cli ...` — the containerized
+     daemon owns the authoritative state volume. (The image has no `nyxloom`
+     entrypoint on PATH; the venv interpreter is what the daemon's own CMD
+     uses.)
   2. Otherwise it runs host-side against THIS checkout's src/ and the live
      XDG state dir (works today, before P19 lands).
 
@@ -33,31 +36,21 @@ Exit code is the wrapped command's exit code (os.exec* replaces this process).
 Read-only for `status`/`doctor`; it changes nothing itself.
 """
 import os
-import shutil
-import subprocess
 import sys
 
 REPO = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(REPO, "src")
 
+# P27: the resolver lives in nyxloom.adapters (importable + unit-tested) --
+# this hyphenated script cannot itself be imported, so put SRC on sys.path
+# ahead of importing it. This runs before the host-fallback PYTHONPATH env
+# below is even relevant (that env only affects the exec'd subprocess).
+if SRC not in sys.path:
+    sys.path.insert(0, SRC)
 
-def _find_controller_container() -> str | None:
-    override = os.environ.get("NYXLOOM_CONTAINER")
-    if not shutil.which("docker"):
-        return None
-    try:
-        out = subprocess.run(
-            ["docker", "ps", "--format", "{{.Names}}"],
-            capture_output=True, text=True, timeout=5,
-        ).stdout.split()
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if override and override in out:
-        return override
-    for name in out:
-        if "nyxloom" in name and "controller" in name:
-            return name
-    return None
+from nyxloom.adapters import find_controller_container  # noqa: E402
+
+CONTROLLER_PYTHON = "/opt/nyxloom-venv/bin/python"
 
 
 def _host_python() -> str:
@@ -75,10 +68,12 @@ def _host_python() -> str:
 def main(argv: list[str]) -> None:
     args = argv[1:] or ["status"]
 
-    container = _find_controller_container()
+    container = find_controller_container()
     if container is not None:
-        # P19+: the daemon runs in a ciu-managed container; exec into it.
-        os.execvp("docker", ["docker", "exec", container, "nyxloom", *args])
+        # P19+: the daemon runs in a ciu-managed container; exec into it via
+        # the venv interpreter (no `nyxloom` entrypoint on the image's PATH).
+        os.execvp("docker", ["docker", "exec", container, CONTROLLER_PYTHON,
+                             "-m", "nyxloom.cli", *args])
 
     # Host fallback (pre-P19): run the CLI directly against src/ + live state.
     env = dict(os.environ)

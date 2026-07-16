@@ -63,6 +63,7 @@ services:
       - /home/vb/mdt--mounted-folders:/home/vscode          # home: auth + .local (state)
       - /home/vb/volkb79-2/vbpub:/workspaces/vbpub          # repo + venv + nyxloom src
       - /home/vb/volkb79-2/dstdns:/workspaces/dstdns        # repo (registered project)
+      - /home/vb/volkb79-2/netcup-api-filter:/workspaces/netcup-api-filter  # repo (registered project)
       - /var/run/docker.sock:/var/run/docker.sock           # agent dispatch gates
     healthcheck:
       # TCP-connect probe (bash /dev/tcp) — robust vs. HTTP-response timing and
