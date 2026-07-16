@@ -1,0 +1,28 @@
+# ==========================================================================
+# nyxloom — CIU ROOT global (multi-stack). nyxloom is a ciu root; its stacks
+# (ntfy, controller) live in subdirectories and inherit this global.
+# ntfy never terminates TLS (tls-edge does, via ingress_public) and the
+# controller is a loopback/host-network admin daemon — neither needs certs
+# or an FQDN of its own.
+# ==========================================================================
+
+[deploy]
+project_name = "nyxloom"
+environment_tag = "prod"
+network_name = "nyxloom"
+log_level = "INFO"
+
+# Hostdir ownership values (ciu S6/S7), expanded from ciu.env.
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+CONTAINER_GID = "$DOCKER_GID"
+DOCKER_GID = "$DOCKER_GID"
+
+# The stacks under this root. `ciu up` (default profile) brings up both.
+[deploy.profiles.default]
+stacks = ["ntfy", "controller"]
+
+[ciu]
+require_certs = false
+require_fqdn = false
+auto_connect_network = false

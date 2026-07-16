@@ -1,0 +1,21 @@
+[nyxloomd]
+name = "controller"
+image = "nyxloom-controller:local"
+container_prefix = "nyxloom-prod"
+dashboard_port = 8942
+
+[nyxloomd.runtime]
+cgroup_parent = "nyxloom.slice"
+run_as_uid = 1003
+run_as_gid = 1003
+docker_gid = 994
+
+[nyxloomd.health]
+interval = "15s"
+timeout = "5s"
+retries = 5
+start_period = "40s"
+
+[nyxloomd.logging]
+max_size = "10m"
+max_file = "3"

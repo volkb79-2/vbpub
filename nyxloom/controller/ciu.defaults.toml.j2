@@ -1,0 +1,30 @@
+# ─── nyxloom controller (nyxloomd) — ciu stack config ────────────────────
+# The resident nyxloomd daemon + dashboard + ntfy command listener,
+# containerized. A pre-rendered docker-compose.yml ships alongside (dual-mode)
+# so the stack also deploys with plain `docker compose`; this is the ciu
+# template. Built locally from ./Dockerfile (mdt base + a /opt venv) — NOT an
+# image pull. network_mode: host so the dashboard binds the host loopback.
+[nyxloomd]
+name = "controller"
+image = "nyxloom-controller:local"
+container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}nyxloom{% endif %}"
+# Loopback-only dashboard port (host netns).
+dashboard_port = 8942
+
+[nyxloomd.runtime]
+# systemd slice for the nyxloom service family (shared with ntfy).
+cgroup_parent = "nyxloom.slice"
+run_as_uid = 1003
+run_as_gid = 1003
+# docker gid — group_add so the daemon can reach docker.sock for agent gates.
+docker_gid = 994
+
+[nyxloomd.health]
+interval = "15s"
+timeout = "5s"
+retries = 5
+start_period = "40s"
+
+[nyxloomd.logging]
+max_size = "10m"
+max_file = "3"
