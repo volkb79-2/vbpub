@@ -1008,13 +1008,13 @@ def _write_trove_project(tmp_path: Path, dirname: str, project_id: str,
     return root
 
 
-def _write_real_handoff(root: Path, project_id: str, handoff_id: str, *,
-                         touch: tuple[str, ...] = ("src/thing.py",),
-                         forbid: tuple[str, ...] = (),
-                         gate_id: str = "tester-unified",
-                         depends_on: tuple[str, ...] = ()) -> Path:
-    """A schema-valid, otherwise-clean handoff under root's configured
-    handoff dir (mirrors conftest.SAMPLE_HANDOFF, parameterized by project)."""
+def _handoff_text(project_id: str, handoff_id: str, *,
+                   touch: tuple[str, ...] = ("src/thing.py",),
+                   forbid: tuple[str, ...] = (),
+                   gate_id: str = "tester-unified",
+                   depends_on: tuple[str, ...] = ()) -> str:
+    """A schema-valid, otherwise-clean handoff's text (mirrors
+    conftest.SAMPLE_HANDOFF, parameterized by project)."""
     lines = [
         "---",
         "schema_version: 1",
@@ -1048,8 +1048,15 @@ def _write_real_handoff(root: Path, project_id: str, handoff_id: str, *,
         "BLOCKED: nothing to block on.",
         "",
     ]
+    return "\n".join(lines)
+
+
+def _write_real_handoff(root: Path, project_id: str, handoff_id: str,
+                         **kwargs) -> Path:
+    """Write a schema-valid, otherwise-clean handoff under root's configured
+    handoff dir."""
     path = root / "nyxloom-trove" / "handoffs" / f"{handoff_id}.md"
-    path.write_text("\n".join(lines))
+    path.write_text(_handoff_text(project_id, handoff_id, **kwargs))
     return path
 
 
@@ -1125,15 +1132,22 @@ class TestCmdLintUnresolvedPath:
         registry = {"other": root_other}
         monkeypatch.setattr("nyxloom.config.load_registry", lambda: registry)
 
-        orphan = tmp_path / "orphan-dir" / "orphan.md"
+        # A SCHEMA-VALID handoff for an unregistered project, outside every
+        # project root. It must be valid and name its own project: a garbage
+        # file has no `project` field to mismatch, so it cannot distinguish
+        # the typed diagnostic from the old bug's wrong-config findings.
+        orphan = tmp_path / "orphan-dir" / "orphanproj-P01-real.md"
         orphan.parent.mkdir()
-        orphan.write_text("not even a valid handoff\n")
+        orphan.write_text(_handoff_text("orphanproj", "orphanproj-P01-real"))
 
         exit_code = cli.main(["lint", str(orphan)])
         out = capsys.readouterr().out
 
         assert exit_code != 0
         assert str(orphan) in out
+        # The typed, actionable diagnostic -- not an arbitrary project's findings.
+        assert "L0" in out
+        assert "no owning project" in out
         # Never silently linted against "other"'s config.
         assert "does not match config" not in out
         assert "not declared in project.toml" not in out
