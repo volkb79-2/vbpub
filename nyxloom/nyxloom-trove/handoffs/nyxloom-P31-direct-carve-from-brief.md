@@ -3,22 +3,30 @@ schema_version: 1
 id: nyxloom-P31-direct-carve-from-brief
 project: nyxloom
 title: "Seed the carver with an intake brief (direct carve, no context loss)"
-tier: haiku-low
-input_revision: "e329de2"
+tier: sonnet5-high
+input_revision: "685e8b7"
 depends_on: [nyxloom-P28-backlog-schema-autotick, nyxloom-P29-intake-agent-backend]
 session: fresh
 source: {kind: backlog, ref: nyxloom-trove/backlog.md}
+# RE-AUTHORED 2026-07-16 after the first attempt was REJECTED. Root cause was a
+# handoff DEFECT, not just the implementer: reconcile.py was FORBIDDEN, but O2
+# (targeted carve) genuinely needs the carve-dispatch control flow that lives in
+# reconcile.py — so the task should have BLOCKED, but a cheap pass improvised a
+# no-op for briefed items + a hollow test (515 green, opposite of the oracle on
+# real data). Fixes: reconcile.py is now IN SCOPE; re-tiered to sonnet; O1
+# tightened so a no-op cannot pass.
 scope:
   touch:
     - "src/nyxloom/daemon.py"
+    - "src/nyxloom/reconcile.py"
     - "src/nyxloom/backlog_items.py"
     - "tests/test_carve_from_brief.py"
   forbid:
-    - "src/nyxloom/reconcile.py"
+    - "src/nyxloom/wrapper.py"
 oracles:
   - id: O1
-    observable: "When the carver assembles its carve-source notes (daemon.py `_carve_source_note_lines`) for a backlog item that carries an intake brief (P29's structured detail), the brief's pre-carve detail (aligned purpose, elicited detail, linked `D-NNN` decisions, priority) is INCLUDED in the source notes the carver reads — so a carve of a briefed item loses no interview context. A test asserts the assembled source notes contain the brief's detail for a briefed item, and fall back to the plain backlog line for an un-briefed one."
-    negative: "the carver sees only the terse backlog title for a briefed item and re-derives everything from scratch — the 'loss of context' this phase exists to prevent"
+    observable: "When the carver assembles its carve-source notes (daemon.py `_carve_source_note_lines`) for a backlog item that carries an intake brief (P29's structured detail), the brief's pre-carve detail (aligned purpose, elicited detail, linked `D-NNN` decisions, priority) is INCLUDED in the source notes the carver reads — so a carve of a briefed item loses no interview context. The test MUST use a GENUINELY briefed item (a backlog item whose brief carries distinctive, unique content strings via P28/P29's structured detail) and assert those SPECIFIC strings appear in the assembled source notes; AND assert that the SAME item WITHOUT a brief yields source notes that do NOT contain them (so an implementation that ignores the brief — a no-op — fails). Do NOT test with an empty/placeholder brief. (First attempt was rejected precisely for being a no-op on real briefed items while passing a hollow test.)"
+    negative: "the carver sees only the terse backlog title for a briefed item and re-derives everything from scratch — the 'loss of context' this phase exists to prevent; OR the phase is a no-op that inlines unrelated/legacy prose rather than the item's actual brief (the rejected first-attempt failure mode)"
     gate: tester-unified
   - id: O2
     observable: "A briefed item can be carved on demand (a targeted-carve entry — CLI verb or flag — that dispatches a carver leg seeded with that specific item's brief), distinct from the untargeted headroom-refill carve. A test asserts the targeted carve's spec/source references the chosen brief."
@@ -26,7 +34,7 @@ oracles:
     gate: tester-unified
 gates: [tester-unified]
 escalate_if:
-  - "seeding the carve requires changing the carve-dispatch control flow in reconcile.py (forbidden — propose it as a D-decision)"
+  - "the targeted-carve (O2) requires a change OUTSIDE scope.touch (wrapper.py, or a NEW event/state type) — then BLOCKED; do NOT improvise a no-op (the first-attempt failure mode)"
   - "the brief detail cannot be surfaced to the carver without a new event-schema field"
 ---
 
@@ -50,9 +58,10 @@ under `.worktrees/` (branch `feat/nyxloom-P31-direct-carve-from-brief` from
   trove-aware) and `CarveDispatch` execution (the FRONTIER carver leg, role
   CARVER, `carve-<project>-<seq>` task). Read both. You EXTEND
   `_carve_source_note_lines` to append a briefed item's detail; you add a
-  targeted-carve entry that seeds a carve with one item's brief. Do NOT change
-  the carve-dispatch control flow itself (that lives partly in reconcile.py,
-  forbidden).
+  targeted-carve entry that seeds a carve with one item's brief. O2's targeted
+  carve WILL require touching the carve-dispatch control flow in `reconcile.py`
+  (`CarveDispatch` planning / the carve trigger at reconcile.py ~584) — that IS
+  in scope now; implement it properly, do NOT stub or no-op it.
 - `src/nyxloom/backlog_items.py` (P28/P29) — the structured item + brief detail
   accessor. Add a `brief_detail(item) -> str | None` if not already exposed.
 - `nyxloom-trove/backlog.md` — items with vs. without a brief (the two cases
@@ -71,14 +80,19 @@ under `.worktrees/` (branch `feat/nyxloom-P31-direct-carve-from-brief` from
 
 ## Scope / forbid
 
-Touch ONLY the three files in `scope.touch`. Do NOT change carve-dispatch
-control flow in `reconcile.py` (forbidden) or edit `intake_chat.py` (P29's).
+Touch ONLY the four files in `scope.touch` — `reconcile.py`'s carve-dispatch
+control flow IS in scope now (O2's targeted carve needs it). Do NOT edit
+`wrapper.py` or `intake_chat.py` (P29's). If the contract genuinely needs a file
+outside `scope.touch`, BLOCK — do NOT improvise a no-op to make a hollow test
+pass (that is exactly why the first attempt was rejected).
 
 ## BLOCKED rule
 
-If seeding the carve requires reconcile.py control-flow changes or a new
-event-schema field, STOP — write `BLOCKED: <reason>` to the LOG, commit, exit;
-raise it as a `D-<NNN>`.
+If the contract genuinely cannot be met without a file OUTSIDE `scope.touch`
+(e.g. `wrapper.py`, or a NEW event/state type), STOP — write `BLOCKED: <reason>`
+to the LOG, commit, exit; raise it as a `D-<NNN>`. NOTE: `reconcile.py` IS in
+scope — changing its carve-dispatch flow is NOT a BLOCKED trigger. Never
+improvise a no-op to make a hollow test pass (the first-attempt failure).
 
 ## Gate
 
