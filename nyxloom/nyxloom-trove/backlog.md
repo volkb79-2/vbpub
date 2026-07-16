@@ -115,3 +115,13 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
   while agents ran. Migration/lint should flag (or refuse) a pause flag whose
   content is not a known mode; `status` should render the effective pause mode
   per project so operator belief and daemon behavior can't diverge silently.
+- **B13 — carve-task exit re-scan gap (carved as P32).** The reconcile
+  EmitAttemptExit re-scan finalizes an EXITED attempt of an ACTIVE task only for
+  `role` IMPLEMENTER / FRONTIER_REVIEW — NOT CARVER. So a carve whose live
+  exit-processing pass is missed (a daemon restart landing on the carver's exit)
+  is never retired to SUPERSEDED and its synthetic task stays ACTIVE forever,
+  permanently eating a wip slot. Observed 2026-07-16: `carve-nyxloom-1` stuck
+  ACTIVE ~2h, throttling the factory to 2/3 capacity (manually superseded to
+  unblock). Fix = add the CARVER branch to the trigger (reconcile.py); the
+  daemon.py `_consume_carve_exit` handler already exists. Depends on P26
+  (co-edits reconcile.py). Daemon-core: gate + rebuild after merge.
