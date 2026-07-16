@@ -53,6 +53,14 @@ INTERFACE CONTRACT (frozen) — subcommands:
   digest <project> [--since SEQ]   prints notify.digest.
   events <project> [--since SEQ] [--type T]   raw event lines (debug).
   version                     nyxloom.__version__.
+  init <project_folder>       PACKAGE P23. Scaffold nyxloom-trove/ into
+                              <project_folder> from this package's bundled
+                              templates (STANDARD.md + AUTHORING.md copied
+                              verbatim, a fresh nyxloom.toml with [project]
+                              id = basename(<project_folder>)). Refuses
+                              (exit 1) if <project_folder>/nyxloom-trove/
+                              already exists -- never overwrites. Missing
+                              <project_folder> -> exit 2 (argparse usage).
 
 main(argv=None) -> int. Import module functions lazily inside handlers so
 `nyxloom version` works even if an optional module is broken; handlers
@@ -66,6 +74,52 @@ import argparse
 import os
 import sys
 from pathlib import Path
+
+# PACKAGE P23: fresh nyxloom.toml written by `nyxloom init`. Deliberately
+# minimal (no gates, empty [refs]) -- the operator fills those in per
+# STANDARD.md; a full worked example lives in this repo's own
+# nyxloom-trove/nyxloom.toml.
+_INIT_NYXLOOM_TOML = '''\
+[project]
+id = "{project_id}"
+default_branch = "main"
+
+trove = "nyxloom-trove"
+
+handoff_globs   = ["nyxloom-trove/handoffs/*.md"]
+reports_dir     = "nyxloom-trove/reports"
+decisions_inbox = "nyxloom-trove/decisions.md"
+roadmap         = "nyxloom-trove/roadmap.md"
+backlog         = "nyxloom-trove/backlog.md"
+archive_dir     = "nyxloom-trove/archive"
+archive_keep_visible = 10
+agent_logs      = "nyxloom-trove/agent-logs"
+
+worktree_root = "../.worktrees"
+
+# Docs nyxloom READS but does not manage (live in this project's own tree).
+# Fill in as needed -- see nyxloom-trove/STANDARD.md "declaration model".
+[refs]
+
+# Declare the project's real gate(s) here -- NEVER the devcontainer (cockpit
+# doctrine). See nyxloom-trove/STANDARD.md.
+# [gates.<name>]
+# argv = ["bash", "-c", "..."]
+# phase = "implementation"
+# timeout_seconds = 1800
+# environment = "..."
+
+[policy]
+max_active_tasks = 3
+ready_queue_target = 5
+max_attempts_per_task = 3
+merge_mode = "manual"
+retention_days = 60
+reconcile_interval_seconds = 30
+http_port = 8942
+
+[notify]
+'''
 
 
 def _cfg(project: str):
@@ -604,6 +658,56 @@ def cmd_events(args) -> int:
     return 0
 
 
+def cmd_init(args) -> int:
+    """init <project_folder>"""
+    import shutil
+
+    project_folder = Path(args.project_folder)
+    trove_dir = project_folder / "nyxloom-trove"
+    if trove_dir.exists():
+        print(f"error: {trove_dir} already exists", file=sys.stderr)
+        return 1
+
+    # This package's own canonical trove ships STANDARD.md/AUTHORING.md;
+    # src/nyxloom/cli.py -> src/ -> nyxloom/ (repo root of this package).
+    template_dir = Path(__file__).resolve().parent.parent.parent / "nyxloom-trove"
+    standard_src = template_dir / "STANDARD.md"
+    authoring_src = template_dir / "AUTHORING.md"
+    if not standard_src.exists() or not authoring_src.exists():
+        print(f"error: bundled trove templates not found under {template_dir}", file=sys.stderr)
+        return 1
+
+    trove_dir.mkdir(parents=True)
+    shutil.copyfile(standard_src, trove_dir / "STANDARD.md")
+    shutil.copyfile(authoring_src, trove_dir / "AUTHORING.md")
+
+    project_id = project_folder.resolve().name
+    (trove_dir / "nyxloom.toml").write_text(
+        _INIT_NYXLOOM_TOML.format(project_id=project_id), encoding="utf-8"
+    )
+
+    (trove_dir / "handoffs").mkdir()
+    (trove_dir / "reports").mkdir()
+    (trove_dir / "archive").mkdir()
+    (trove_dir / "archive" / ".gitkeep").touch()
+    (trove_dir / "agent-logs").mkdir()
+    (trove_dir / "agent-logs" / ".gitkeep").touch()
+    (trove_dir / "decisions.md").write_text(
+        f"# {project_id} dev decisions inbox — product calls awaiting the user (D-<NNN>).\n",
+        encoding="utf-8",
+    )
+    (trove_dir / "roadmap.md").write_text(
+        f"# {project_id} dev roadmap\n", encoding="utf-8"
+    )
+    (trove_dir / "backlog.md").write_text(
+        f"# {project_id} dev backlog — un-carved ideas\n", encoding="utf-8"
+    )
+    (trove_dir / ".gitignore").write_text("agent-logs/\n", encoding="utf-8")
+
+    print(str(trove_dir))
+    return 0
+
+
 def cmd_version(args) -> int:
     """version"""
     from . import __version__
@@ -703,6 +807,10 @@ def main(argv: list[str] | None = None) -> int:
     # version
     version_parser = subparsers.add_parser("version")
 
+    # init
+    init_parser = subparsers.add_parser("init")
+    init_parser.add_argument("project_folder", help="Target project folder to scaffold a trove into")
+
     try:
         args = parser.parse_args(argv)
     except (SystemExit, argparse.ArgumentError) as e:
@@ -753,6 +861,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_events(args)
         elif args.cmd == "version":
             return cmd_version(args)
+        elif args.cmd == "init":
+            return cmd_init(args)
         else:
             parser.print_help(sys.stderr)
             return 2

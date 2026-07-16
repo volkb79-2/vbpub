@@ -669,6 +669,94 @@ def test_unknown_subcommand(capsys):
     assert exit_code == 2
 
 
+def test_init_scaffolds_trove(tmp_path, capsys):
+    """Oracle O1: `init <dir>` creates <dir>/nyxloom-trove/ with the full
+    STANDARD.md tree, scaffolded from the bundled templates; nyxloom.toml
+    is valid TOML with a [project] id."""
+    import tomllib
+
+    project_folder = tmp_path / "myproj"
+
+    exit_code = cli.main(["init", str(project_folder)])
+    assert exit_code == 0
+
+    trove = project_folder / "nyxloom-trove"
+    assert trove.is_dir()
+
+    for name in ("nyxloom.toml", "STANDARD.md", "AUTHORING.md", "decisions.md",
+                 "roadmap.md", "backlog.md", ".gitignore"):
+        assert (trove / name).is_file(), name
+
+    for name in ("handoffs", "reports", "archive", "agent-logs"):
+        assert (trove / name).is_dir(), name
+
+    assert (trove / "archive" / ".gitkeep").is_file()
+    assert (trove / "agent-logs" / ".gitkeep").is_file()
+    assert "agent-logs/" in (trove / ".gitignore").read_text()
+
+    data = tomllib.loads((trove / "nyxloom.toml").read_text())
+    assert data["project"]["id"] == "myproj"
+
+    # STANDARD.md/AUTHORING.md copied verbatim from the repo's canonical trove
+    canonical = Path(__file__).resolve().parent.parent / "nyxloom-trove"
+    assert (trove / "STANDARD.md").read_text() == (canonical / "STANDARD.md").read_text()
+    assert (trove / "AUTHORING.md").read_text() == (canonical / "AUTHORING.md").read_text()
+
+    out = capsys.readouterr().out
+    assert str(trove) in out
+
+
+def test_init_scaffolds_a_loadable_trove(tmp_path):
+    """Review (P23): the scaffolded nyxloom.toml is not merely valid TOML --
+    nyxloom itself must be able to load it, or `init` hands the operator a
+    trove the tool cannot read. The REPORT claimed this was verified by hand;
+    this pins it. Gates/[refs] are deliberately left empty for the operator,
+    so an empty gate map is the expected outcome, not a failure."""
+    project_folder = tmp_path / "loadable"
+    assert cli.main(["init", str(project_folder)]) == 0
+
+    cfg = ProjectConfig.load(project_folder)
+
+    assert cfg.project_id == "loadable"
+    assert cfg.default_branch == "main"
+    assert cfg.handoff_globs == ["nyxloom-trove/handoffs/*.md"]
+    assert cfg.reports_dir == "nyxloom-trove/reports"
+    assert cfg.decisions_inbox == "nyxloom-trove/decisions.md"
+    assert cfg.gates == {}
+
+
+def test_init_refuses_existing_trove(tmp_path, capsys):
+    """Oracle O1-negative: init into a dir that already has a nyxloom-trove/
+    exits non-zero WITHOUT overwriting existing files (idempotent-safe)."""
+    project_folder = tmp_path / "myproj"
+    trove = project_folder / "nyxloom-trove"
+    trove.mkdir(parents=True)
+    marker = trove / "marker.txt"
+    marker.write_text("do not touch")
+
+    exit_code = cli.main(["init", str(project_folder)])
+    assert exit_code != 0
+
+    err = capsys.readouterr().err
+    assert "error:" in err
+
+    # untouched: no scaffolded files, marker survives
+    assert marker.read_text() == "do not touch"
+    assert not (trove / "nyxloom.toml").exists()
+    assert not (trove / "STANDARD.md").exists()
+
+
+def test_init_missing_project_folder_exits_2(capsys):
+    """Oracle O2-negative: init with no <project_folder> arg exits 2 with a
+    usage message."""
+    exit_code = cli.main(["init"])
+    assert exit_code == 2
+
+    err = capsys.readouterr().err
+    assert "usage:" in err
+    assert "project_folder" in err
+
+
 def test_decide_debug_reraises(sample_project, tmp_state, monkeypatch):
     """Guidance: --debug flag re-raises exceptions."""
     from nyxloom import decisions
