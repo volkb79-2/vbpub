@@ -504,6 +504,15 @@ def cmd_merge(args) -> int:
         payload={"merge_commit": commit},
         task_id=args.task,
     )
+
+    # Best-effort: the merge is already durably recorded above, so a backlog
+    # that cannot be read/written must warn, not sink the whole command.
+    from . import backlog_items
+    try:
+        backlog_items.tick_merged(backlog_items.resolve_path(cfg), args.task, commit)
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"warning: backlog auto-tick skipped: {e}", file=sys.stderr)
+
     print(commit)
     return 0
 
