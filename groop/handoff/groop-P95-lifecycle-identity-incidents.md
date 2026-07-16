@@ -112,11 +112,11 @@ Focused lifecycle/owner/store/query tests, zero-skip full suite, compile checks,
 `git diff --check` and bounded event-volume/recovery measurements. Write
 P95-LOG.md and P95-REPORT.md.
 
-## Conversion addendum (handoffctl2 execution notes)
+## Conversion addendum (nyxloom execution notes)
 
 - **Worktree:** create a git worktree for branch `feat/groop-p95-lifecycle-identity-incidents`
   at `.worktrees/groop-p95-lifecycle-identity-incidents` (repo-root-relative, per
-  `worktree_root` in `groop/.handoffctl/project.toml`) from `main`; do all
+  `worktree_root` in `groop/.nyxloom/project.toml`) from `main`; do all
   implementation work there, never in the primary checkout.
 - **Branch:** `feat/groop-p95-lifecycle-identity-incidents`
 - **Context to read first:** the Goal, Required contracts, Acceptance oracles and Out

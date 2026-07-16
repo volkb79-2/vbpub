@@ -2,7 +2,7 @@
 
 Status: legacy CLI invocation evidence retained during migration. The
 project-neutral architecture, typed state model and deterministic scheduler are
-defined under [`handoffctl`](../handoffctl/README.md). Do not copy this file as
+defined under [`nyxloom`](../nyxloom/README.md). Do not copy this file as
 the controller architecture for another project.
 
 This guide records the controller workflow used for `groop` handoff packages

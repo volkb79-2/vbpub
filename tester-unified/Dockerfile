@@ -10,7 +10,7 @@
 # project's pyproject and it flows to the gate on the next image rebuild — no
 # second list to sync.
 #
-# Runtime = python 3.14 (matches the handoffd controller image). The one test
+# Runtime = python 3.14 (matches the nyxloomd controller image). The one test
 # that relied on the pre-3.14 multiprocessing "fork" default is now explicitly
 # fork-scoped, so 3.14 is green.
 #
@@ -27,7 +27,7 @@ USER root
 COPY ciu/         /src/ciu/
 COPY cmru/        /src/cmru/
 COPY groop/       /src/groop/
-COPY handoffctl2/ /src/handoffctl2/
+COPY nyxloom/ /src/nyxloom/
 
 # One COPIES venv on python 3.14 under /opt (a real interpreter binary, so a
 # runtime home bind at /home/vscode cannot shadow it). Each install pulls that
@@ -39,7 +39,7 @@ RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
       "/src/ciu[ssh,test]" \
       "/src/cmru[test]" \
       "/src/groop[dev]" \
-      "/src/handoffctl2[test]" \
+      "/src/nyxloom[test]" \
  && /opt/tester-venv/bin/python -c "import pytest, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko; print('tester-unified closure OK')"
 
 USER 1003

@@ -12,7 +12,7 @@ one config, one CLI, all release files named `cmru.*`.
 | **ciu** | [`ciu/`](ciu/) | Python wheel | cmru — `ciu-v*` |
 | **modern-debian-tools-python-debug** | [`modern-debian-tools-python-debug/`](modern-debian-tools-python-debug/) | OCI images | cmru — `modern-debian-tools-python-debug-v*` |
 | **pwmcp** (Playwright-MCP service) | [`pwmcp/`](pwmcp/) | OCI image + stack bundle | cmru *(delegated)* — `pwmcp-v<playwright>-r<N>` |
-| **handoffctl** (design/pilot) | [`handoffctl/`](handoffctl/) | Deterministic multi-project agent workflow control plane | not released yet |
+| **nyxloom** (design/pilot) | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane | not released yet |
 | **tls-edge** | [`tls-edge/`](tls-edge/) | tarball | cmru *(delegated, on-demand)* — `tls-edge-v*` |
 | **empyrion-translation** | [`game_stuff/empyrion/`](game_stuff/empyrion/) | tarball | *(delegated, on-demand)* — date-tagged |
 | plesk-mailbox-create | [`plesk-mailbox-create/`](plesk-mailbox-create/) | script tool | n/a |
@@ -57,7 +57,7 @@ set -o pipefail
 ```
 cmru/            cmru source (CLI, runner, hosts), SPEC, tests
 ciu/ pwmcp/ tls-edge/ modern-debian-tools-python-debug/ game_stuff/   products
-handoffctl/      project-neutral workflow control-plane design/pilot
+nyxloom/      project-neutral workflow control-plane design/pilot
 scripts/         shared ops scripts (netcup, debian-install, …; needs requirements.txt)
 docs/            release tooling, versioning, plans
 cmru.toml  cmru.*.sh  cmru.py        the release toolchain entry points

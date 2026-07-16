@@ -128,11 +128,11 @@ suite, wheel install/build checks, `git diff --check` and live PWMCP checks.
 Write P77-LOG.md/P77-REPORT.md and update `docs/WEB-UI.md`, `CONTRACTS.md`,
 `docs/ROADMAP.md` and `docs/STATUS.md`.
 
-## Conversion addendum (handoffctl2 execution notes)
+## Conversion addendum (nyxloom execution notes)
 
 - **Worktree:** create a git worktree for branch `feat/groop-p77-web-ui-entity-detail`
   at `.worktrees/groop-p77-web-ui-entity-detail` (repo-root-relative, per
-  `worktree_root` in `groop/.handoffctl/project.toml`) from `main`; do all
+  `worktree_root` in `groop/.nyxloom/project.toml`) from `main`; do all
   implementation work there, never in the primary checkout.
 - **Branch:** `feat/groop-p77-web-ui-entity-detail`
 - **Context to read first:** the Goal, Required contracts, Acceptance oracles and Out

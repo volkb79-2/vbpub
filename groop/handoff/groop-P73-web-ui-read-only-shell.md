@@ -124,11 +124,11 @@ dependency-complete zero-skip full suite, built-wheel install without Node,
 exact CIU invocation and screenshots/accessible assertions in P73-REPORT.md;
 write P73-LOG.md and update `docs/WEB-UI.md`.
 
-## Conversion addendum (handoffctl2 execution notes)
+## Conversion addendum (nyxloom execution notes)
 
 - **Worktree:** create a git worktree for branch `feat/groop-p73-web-ui-read-only-shell`
   at `.worktrees/groop-p73-web-ui-read-only-shell` (repo-root-relative, per
-  `worktree_root` in `groop/.handoffctl/project.toml`) from `main`; do all
+  `worktree_root` in `groop/.nyxloom/project.toml`) from `main`; do all
   implementation work there, never in the primary checkout.
 - **Branch:** `feat/groop-p73-web-ui-read-only-shell`
 - **Context to read first:** the Goal, Required contracts, Test layers and Out of

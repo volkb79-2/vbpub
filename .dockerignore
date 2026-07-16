@@ -7,7 +7,7 @@
 !ciu
 !cmru
 !groop
-!handoffctl2
+!nyxloom
 
 # Drop heavy/generated content within the whitelisted projects.
 **/.git

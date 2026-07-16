@@ -1,0 +1,30 @@
+[project]
+name = "nyxloom"
+version = "0.1.0a0"
+description = "Files-first, daemon-supervised control plane for role-separated AI-assisted development"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6", "jsonschema>=4"]
+
+[project.optional-dependencies]
+# tester-unified SoT: nyxloom's test closure lives HERE (not duplicated in
+# a hand-maintained requirements file). The vbpub test container installs this
+# extra, so a dep change here flows to the gate on the next image rebuild.
+test = ["pytest>=8", "hypothesis>=6"]
+
+[project.scripts]
+nyxloom = "nyxloom.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nyxloom = ["schemas/*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"

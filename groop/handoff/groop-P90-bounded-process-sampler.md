@@ -109,11 +109,11 @@ Focused proc/query/config tests, zero-skip full suite, compile checks,
 `git diff --check`, and CPU/RSS/proc-read measurements at the configured cap.
 Write P90-LOG.md and P90-REPORT.md.
 
-## Conversion addendum (handoffctl2 execution notes)
+## Conversion addendum (nyxloom execution notes)
 
 - **Worktree:** create a git worktree for branch `feat/groop-p90-bounded-process-sampler`
   at `.worktrees/groop-p90-bounded-process-sampler` (repo-root-relative, per
-  `worktree_root` in `groop/.handoffctl/project.toml`) from `main`; do all
+  `worktree_root` in `groop/.nyxloom/project.toml`) from `main`; do all
   implementation work there, never in the primary checkout.
 - **Branch:** `feat/groop-p90-bounded-process-sampler`
 - **Context to read first:** the Goal, Required contracts, Acceptance oracles and Out

@@ -1,7 +1,7 @@
 # Controller dispatch — wave of 2026-07-12 (vbpub)
 
 Status: historical run snapshot. It is not live routing configuration. The
-reusable workflow is being migrated to [`handoffctl`](../handoffctl/README.md).
+reusable workflow is being migrated to [`nyxloom`](../nyxloom/README.md).
 
 You are the **controller** under `docs/controller-workflow-v2.md`. Read that
 doc once at start; it is the protocol. Your model is Sonnet low on purpose:

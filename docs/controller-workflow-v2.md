@@ -1,9 +1,9 @@
 # Controller Workflow v2 — role-separated multi-agent orchestration
 
 Status: legacy pilot protocol · adopted 2026-07-12 · retained during migration
-to the project-neutral [`handoffctl`](../handoffctl/README.md) architecture.
+to the project-neutral [`nyxloom`](../nyxloom/README.md) architecture.
 This document remains evidence for existing groop runs, but new cross-project
-control-plane contracts belong under `handoffctl/`.
+control-plane contracts belong under `nyxloom/`.
 Companion: `docs/ai-cli-controller-guide.md` (per-CLI invocation reference — still
 authoritative for exact commands, flags, metrics, and CLI-specific pitfalls).
 Evidence base: `docs/implementation-benchmark-P51.md` (P51 four-model benchmark +

@@ -112,11 +112,11 @@ Focused security/gateway/query tests, zero-skip full suite, compile checks,
 `git diff --check`, PWMCP browser evidence and built-wheel package-data checks.
 Write P92-LOG.md, P92-REPORT.md and `docs/WEB-UI.md`.
 
-## Conversion addendum (handoffctl2 execution notes)
+## Conversion addendum (nyxloom execution notes)
 
 - **Worktree:** create a git worktree for branch `feat/groop-p92-loopback-web-transport`
   at `.worktrees/groop-p92-loopback-web-transport` (repo-root-relative, per
-  `worktree_root` in `groop/.handoffctl/project.toml`) from `main`; do all
+  `worktree_root` in `groop/.nyxloom/project.toml`) from `main`; do all
   implementation work there, never in the primary checkout.
 - **Branch:** `feat/groop-p92-loopback-web-transport`
 - **Context to read first:** the Goal, Required contracts, Acceptance oracles and Out

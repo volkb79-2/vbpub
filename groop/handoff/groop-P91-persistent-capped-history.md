@@ -114,11 +114,11 @@ Focused store/query/daemon tests, zero-skip full suite, compile checks,
 `git diff --check`, crash-recovery tests and recorded resource measurements.
 Write P91-LOG.md and P91-REPORT.md.
 
-## Conversion addendum (handoffctl2 execution notes)
+## Conversion addendum (nyxloom execution notes)
 
 - **Worktree:** create a git worktree for branch `feat/groop-p91-persistent-capped-history`
   at `.worktrees/groop-p91-persistent-capped-history` (repo-root-relative, per
-  `worktree_root` in `groop/.handoffctl/project.toml`) from `main`; do all
+  `worktree_root` in `groop/.nyxloom/project.toml`) from `main`; do all
   implementation work there, never in the primary checkout.
 - **Branch:** `feat/groop-p91-persistent-capped-history`
 - **Context to read first:** the Goal, Required contracts, Acceptance oracles and Out

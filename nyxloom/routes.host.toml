@@ -1,0 +1,77 @@
+# nyxloom LIVE routing matrix for this host — tracked copy.
+# Deployed to $XDG_STATE_HOME/nyxloom/routes.toml (keep in sync; the
+# attempt events snapshot the resolved route + this revision at dispatch).
+# Values from controller-workflow-v2 §5 as of 2026-07-13/15; probe before
+# trusting a route that hasn't run recently.
+
+revision = "2026-07-15"
+
+# 2026-07-15 (user): implementation tiers TEMPORARILY route to sonnet-high;
+# restore the deepseek lists below when switching back.
+[tiers.flash-high]
+routes = ["claude-sonnet5-high"]
+# routes = ["opencode-deepseek-high", "reasonix-deepseek-high"]   # original
+
+[tiers.flash-max]
+routes = ["claude-sonnet5-high"]
+# routes = ["opencode-deepseek-max", "reasonix-deepseek-max"]     # original
+
+[tiers.terra-med]
+routes = ["codex-terra-med"]
+
+[tiers.sonnet5-high]
+routes = ["claude-sonnet5-high"]
+
+[tiers.frontier-review]
+routes = ["claude-opus-high"]
+
+[routes.opencode-deepseek-high]
+cli = "opencode"
+model = "openrouter/deepseek/deepseek-v4-flash"
+variant = "high"
+argv_max = 1500
+prompt_hints = ["incremental-write"]
+probe = ["opencode", "--version"]
+dispatch_extra = ["--auto"]
+resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/deepseek/deepseek-v4-flash", "--variant", "high", "--dir", "{worktree}", "{prompt}"]
+session_discover = ["opencode", "session", "list", "--dir", "{worktree}", "--format", "json"]
+usage_source = "session-json"
+
+[routes.opencode-deepseek-max]
+inherit = "opencode-deepseek-high"
+variant = "max"
+
+[routes.reasonix-deepseek-high]
+cli = "reasonix"
+model = "deepseek-flash-high/deepseek-v4-flash"
+status = "fallback-only"
+probe = ["reasonix", "--version"]
+resume = ["reasonix", "run", "-c", "-dir", "{worktree}", "{prompt}"]
+usage_source = "run-log-deepseek-usage"
+
+[routes.reasonix-deepseek-max]
+inherit = "reasonix-deepseek-high"
+model = "deepseek-flash-max/deepseek-v4-flash"
+
+[routes.codex-terra-med]
+cli = "codex"
+model = "gpt-5.6-terra"
+effort = "medium"
+sandbox = "danger-full-access"
+probe = ["codex", "--version"]
+resume = ["codex", "exec", "--sandbox", "danger-full-access", "--cd", "{worktree}", "resume", "--last", "{prompt}"]
+usage_source = "exec-output-footer"
+
+[routes.claude-sonnet5-high]
+cli = "claude"
+model = "sonnet"
+effort = "high"
+dispatch_extra = ["--dangerously-skip-permissions"]
+probe = ["claude", "--version"]
+session_capture = "newest-jsonl"
+resume = ["claude", "--resume", "{session}", "--model", "sonnet", "--effort", "high", "-p", "{prompt}"]
+usage_source = "output-format-json"
+
+[routes.claude-opus-high]
+inherit = "claude-sonnet5-high"
+model = "opus"

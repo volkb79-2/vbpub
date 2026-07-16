@@ -123,11 +123,11 @@ Focused lifecycle/action tests, zero-skip full suite, compile checks and
 `git diff --check`. Write P93-LOG.md and P93-REPORT.md; update
 `docs/LIFECYCLE-ADAPTERS.md` only where executable contracts require precision.
 
-## Conversion addendum (handoffctl2 execution notes)
+## Conversion addendum (nyxloom execution notes)
 
 - **Worktree:** create a git worktree for branch `feat/groop-p93-lifecycle-owner-protocol`
   at `.worktrees/groop-p93-lifecycle-owner-protocol` (repo-root-relative, per
-  `worktree_root` in `groop/.handoffctl/project.toml`) from `main`; do all
+  `worktree_root` in `groop/.nyxloom/project.toml`) from `main`; do all
   implementation work there, never in the primary checkout.
 - **Branch:** `feat/groop-p93-lifecycle-owner-protocol`
 - **Context to read first:** the Goal, Required contracts, Acceptance oracles and Out

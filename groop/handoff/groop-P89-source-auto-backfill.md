@@ -96,11 +96,11 @@ provider activation leases.
 Focused daemon/client/CLI/TUI tests, zero-skip full suite, compile checks and
 `git diff --check`. Write P89-LOG.md and P89-REPORT.md.
 
-## Conversion addendum (handoffctl2 execution notes)
+## Conversion addendum (nyxloom execution notes)
 
 - **Worktree:** create a git worktree for branch `feat/groop-p89-source-auto-backfill`
   at `.worktrees/groop-p89-source-auto-backfill` (repo-root-relative, per
-  `worktree_root` in `groop/.handoffctl/project.toml`) from `main`; do all
+  `worktree_root` in `groop/.nyxloom/project.toml`) from `main`; do all
   implementation work there, never in the primary checkout.
 - **Branch:** `feat/groop-p89-source-auto-backfill`
 - **Context to read first:** the Goal, Required contracts, Acceptance oracles and Out

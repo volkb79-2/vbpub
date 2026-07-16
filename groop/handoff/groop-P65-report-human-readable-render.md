@@ -96,11 +96,11 @@ aggregation.
 Focused report/query/CLI tests, zero-skip full suite, compile checks and
 `git diff --check`. Write P65-LOG.md/P65-REPORT.md and update operator docs.
 
-## Conversion addendum (handoffctl2 execution notes)
+## Conversion addendum (nyxloom execution notes)
 
 - **Worktree:** create a git worktree for branch `feat/groop-p65-report-human-readable-render`
   at `.worktrees/groop-p65-report-human-readable-render` (repo-root-relative, per
-  `worktree_root` in `groop/.handoffctl/project.toml`) from `main`; do all
+  `worktree_root` in `groop/.nyxloom/project.toml`) from `main`; do all
   implementation work there, never in the primary checkout.
 - **Branch:** `feat/groop-p65-report-human-readable-render`
 - **Context to read first:** the Goal, Required contracts, Acceptance oracles and Out

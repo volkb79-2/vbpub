@@ -1,6 +1,6 @@
-# Frontmatter conversion report — groop OPEN handoffs → handoffctl2
+# Frontmatter conversion report — groop OPEN handoffs → nyxloom
 
-Converted the 11 named OPEN groop handoff files to handoffctl2 YAML frontmatter.
+Converted the 11 named OPEN groop handoff files to nyxloom YAML frontmatter.
 No other handoff file was touched (merged history stays as-is). No commit was made.
 
 ## Naming deviation (read this first)
@@ -15,14 +15,14 @@ the schema's `id` pattern:
 
 which requires a literal **uppercase `P`** after the lowercase area-prefix hyphen
 (verified empirically with `re.match` against both the schema string and the
-actual `handoffctl.cli lint` tool — `p89-source-auto-backfill` fails, while
+actual `nyxloom.cli lint` tool — `p89-source-auto-backfill` fails, while
 `groop-P89-source-auto-backfill` passes and also satisfies L1's
 `id == filename stem` check). Since the task's hard gate requirement ("zero error
 lines … iterate until clean") is a stronger, directly-testable constraint than the
 paraphrased resolution hint, I renamed files to `groop-P<NN>-<slug>` (project id as
 the lowercase area prefix, keeping the `P<NN>` segment's original case) — matching
 the only existing precedent in the codebase, the `demo-P01-sample` id used in
-`handoffctl2/tests/conftest.py`'s `SAMPLE_HANDOFF`/fixtures. This is flagged here
+`nyxloom/tests/conftest.py`'s `SAMPLE_HANDOFF`/fixtures. This is flagged here
 explicitly as a deviation from the literal brief text, resolved in favor of the
 literal, hard, verifiable gate requirement.
 
@@ -36,7 +36,7 @@ reordered. However, rule L11 (worktree/branch/context-to-read mention) and L12
 written (confirmed empirically before doing the full conversion — a plain
 frontmatter+original-body-only trial file failed both). Since the brief also
 requires a zero-error lint gate, I appended one new, clearly-labelled
-`## Conversion addendum (handoffctl2 execution notes)` section **after** the
+`## Conversion addendum (nyxloom execution notes)` section **after** the
 original (unmodified) body in each file, supplying exactly the missing mechanical
 content (branch name, worktree path, context-to-read pointer, `BLOCKED:` rule).
 Nothing before that heading was changed.
@@ -89,7 +89,7 @@ Notes on `depends_on`:
   (P89 → `resume P88 if warm`, P77 → `resume P73 if warm`); all others are `fresh`.
 - `mutexes` was left unset (schema default) — the legacy `Serialize-with:` hints
   (e.g. P92/P73/P77 sharing web routes/assets, P64/P65 sharing the report CLI) have
-  no corresponding named mutex declared in `groop/.handoffctl/project.toml` (only
+  no corresponding named mutex declared in `groop/.nyxloom/project.toml` (only
   `merge-lane` exists), and the brief did not ask for `mutexes` to be populated —
   so no mutex name was invented.
 - `scope.touch` fell back to `["groop/**"]` / `forbid: []` uniformly. None of the
@@ -109,7 +109,7 @@ Notes on `depends_on`:
 ## Lint gate result
 
 ```
-cd /workspaces/vbpub/handoffctl2 && env PYTHONPATH=src /workspaces/vbpub/.venv/bin/python -m handoffctl.cli lint
+cd /workspaces/vbpub/nyxloom && env PYTHONPATH=src /workspaces/vbpub/.venv/bin/python -m nyxloom.cli lint
 ```
 
 Result for all 11 converted files, individually and as part of the full project
@@ -120,7 +120,7 @@ files because it assumes an all-lowercase filename (`p89-...`); with the actual
 (schema-required) `groop-P89-...` filenames, the equivalent check is:
 
 ```
-env PYTHONPATH=src /workspaces/vbpub/.venv/bin/python -m handoffctl.cli lint \
+env PYTHONPATH=src /workspaces/vbpub/.venv/bin/python -m nyxloom.cli lint \
   ../groop/handoff/groop-P{89,90,91,92,93,94,95,73,77,64,65}-*.md
 ```
 
@@ -135,12 +135,12 @@ for this task; not one of them references any of our 11 new filenames
 ## `tick --project groop` result
 
 ```
-cd /workspaces/vbpub/handoffctl2 && env PYTHONPATH=src /workspaces/vbpub/.venv/bin/python -m handoffctl.cli tick --project groop
+cd /workspaces/vbpub/nyxloom && env PYTHONPATH=src /workspaces/vbpub/.venv/bin/python -m nyxloom.cli tick --project groop
 ```
 
 Output: `11` — one action per converted file. Confirmed via
-`handoffctl.cli status --project groop` and
-`~/.local/state/handoffctl/projects/groop/events.jsonl`: all 11 new task ids
+`nyxloom.cli status --project groop` and
+`~/.local/state/nyxloom/projects/groop/events.jsonl`: all 11 new task ids
 (matching the new file stems) were created with a `TASK_CREATED` event and now
 sit in state `CARVED`. No dispatch/attempt activity was recorded for any of them
 (consistent with the project being paused).

@@ -103,11 +103,11 @@ release certification and client-side comparison.
 Focused report/query tests, zero-skip full suite, compile checks and
 `git diff --check`. Write P64-LOG.md/P64-REPORT.md.
 
-## Conversion addendum (handoffctl2 execution notes)
+## Conversion addendum (nyxloom execution notes)
 
 - **Worktree:** create a git worktree for branch `feat/groop-p64-report-baseline-regression-gate`
   at `.worktrees/groop-p64-report-baseline-regression-gate` (repo-root-relative, per
-  `worktree_root` in `groop/.handoffctl/project.toml`) from `main`; do all
+  `worktree_root` in `groop/.nyxloom/project.toml`) from `main`; do all
   implementation work there, never in the primary checkout.
 - **Branch:** `feat/groop-p64-report-baseline-regression-gate`
 - **Context to read first:** the Goal, Required contracts, Acceptance oracles and Out
