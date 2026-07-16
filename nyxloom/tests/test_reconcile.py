@@ -760,6 +760,162 @@ def test_receipt_running_with_receipt_emits_exit():
     assert len(exits) == 1
 
 
+def test_carver_exited_active_task_emits_exit():
+    """P32 Oracle O1: a CARVER attempt already EXITED (wrapper recorded its
+    own exit) whose synthetic carve task is still ACTIVE and has a receipt
+    -> EmitAttemptExit, so daemon.py's CARVER branch runs
+    _consume_carve_exit and retires the carve to SUPERSEDED. Regression
+    guard: previously only IMPLEMENTER/FRONTIER_REVIEW re-fired here, so a
+    carve whose live exit-pass was missed stayed ACTIVE forever."""
+    cfg = make_config()
+    routes = make_routes()
+    att = make_attempt(
+        attempt_id="att-carve-1",
+        state=AttemptState.EXITED,
+        role=Role.CARVER,
+        receipt=Receipt(result=ReceiptResult.DONE, exit_code=0),
+    )
+    tsf = make_tsf(task_id="carve-demo-1", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"carve-demo-1": tsf},
+        frontmatters={},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={"att-carve-1": {"result": "done"}},
+    )
+
+    actions = plan_project(inp)
+    exits = [a for a in actions if isinstance(a, EmitAttemptExit) and a.attempt_id == "att-carve-1"]
+    assert len(exits) == 1
+
+
+def test_carver_exited_superseded_task_no_refire():
+    """P32 Oracle O2: once the carve task has been finalized to SUPERSEDED,
+    the EXITED CARVER attempt must not re-fire EmitAttemptExit on later
+    passes (idempotent — no event spam).
+
+    NOTE (P32 review): this asserts the end-state contract, but it does NOT
+    on its own pin the CARVER branch's own guards — a SUPERSEDED task is
+    terminal, so the TERMINAL_TASK_STATES skip at the top of the attempt loop
+    returns before the branch is ever evaluated. This test therefore still
+    passes with the whole CARVER branch deleted. The branch's `tsf.state ==
+    ACTIVE` bound is pinned by test_carver_exited_non_active_task_no_exit and
+    its role bound by test_non_carver_exited_active_task_no_exit."""
+    cfg = make_config()
+    routes = make_routes()
+    att = make_attempt(
+        attempt_id="att-carve-1",
+        state=AttemptState.EXITED,
+        role=Role.CARVER,
+        receipt=Receipt(result=ReceiptResult.DONE, exit_code=0),
+    )
+    tsf = make_tsf(task_id="carve-demo-1", state=TaskState.SUPERSEDED, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"carve-demo-1": tsf},
+        frontmatters={},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={"att-carve-1": {"result": "done"}},
+    )
+
+    actions = plan_project(inp)
+    exits = [a for a in actions if isinstance(a, EmitAttemptExit)]
+    assert len(exits) == 0
+
+
+def test_carver_exited_non_active_task_no_exit():
+    """P32 Oracle O2 (bound): the CARVER branch fires ONLY for an ACTIVE task,
+    exactly like the IMPLEMENTER/FRONTIER_REVIEW branches it mirrors.
+
+    Uses NON-terminal, non-ACTIVE task states so the TERMINAL_TASK_STATES skip
+    cannot be what makes this pass — this fails if `tsf.state == ACTIVE` is
+    dropped from the branch, which the SUPERSEDED test cannot catch."""
+    for task_state in (TaskState.QUEUED, TaskState.AWAITING_REVIEW):
+        att = make_attempt(
+            attempt_id="att-carve-1",
+            state=AttemptState.EXITED,
+            role=Role.CARVER,
+            receipt=Receipt(result=ReceiptResult.DONE, exit_code=0),
+        )
+        tsf = make_tsf(task_id="carve-demo-1", state=task_state, attempts=[att])
+
+        inp = ReconcileInput(
+            now=utc(2026, 7, 15),
+            cfg=make_config(),
+            routes=make_routes(),
+            states={"carve-demo-1": tsf},
+            frontmatters={},
+            lint_clean={},
+            project_paused=False,
+            decisions_open=set(),
+            merged_branches=set(),
+            leases_free={},
+            provider_ok={},
+            log_quiet_seconds={},
+            pid_alive={},
+            receipts={"att-carve-1": {"result": "done"}},
+        )
+
+        actions = plan_project(inp)
+        exits = [a for a in actions if isinstance(a, EmitAttemptExit)]
+        assert exits == [], f"carve task in {task_state.value} must not emit EmitAttemptExit"
+
+
+def test_non_carver_exited_active_task_no_exit():
+    """P32 Oracle O2 (negative): the branch keys on role == CARVER and must not
+    fire for a non-carve role on an ACTIVE task. SELF_REVIEW has no exit
+    re-scan branch, so an EXITED SELF_REVIEW attempt with a receipt stays
+    unconsumed rather than being routed to daemon's _consume_carve_exit."""
+    att = make_attempt(
+        attempt_id="att-sr-1",
+        state=AttemptState.EXITED,
+        role=Role.SELF_REVIEW,
+        receipt=Receipt(result=ReceiptResult.DONE, exit_code=0),
+    )
+    tsf = make_tsf(task_id="demo-P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=make_config(),
+        routes=make_routes(),
+        states={"demo-P01": tsf},
+        frontmatters={},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={"att-sr-1": {"result": "done"}},
+    )
+
+    actions = plan_project(inp)
+    exits = [a for a in actions if isinstance(a, EmitAttemptExit)]
+    assert exits == []
+
+
 def test_receipt_pid_dead_no_receipt_mark_interrupted():
     """Oracle 7: no receipt, pid dead -> MarkInterrupted."""
     cfg = make_config()
