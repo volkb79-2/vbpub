@@ -186,3 +186,12 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
   decision_chat; disambiguation is the only real design work (intake-start vs decision
   reply vs cmd verb — a keyword/prefix convention). Depends on P29 (merged) + the feedback
   transport. Post-rebuild feature; not part of the current convergence.
+- **B-self-review-leg — wire the SELF_REVIEW leg (reserved, not dispatched).**
+  `Role.SELF_REVIEW` is defined in the enum + statefile schema but intentionally
+  reserved (not dispatched) as of 2026-07-16 (P43): an independent self-review
+  attempt between IMPLEMENTER and FRONTIER_REVIEW, distinct from P40's
+  prompt-level implementer self-review step. Wiring it means a dispatch site in
+  daemon.py, a state-machine leg in reconcile.py, and a decision on whether it
+  consumes a WIP slot or runs inline — or, alternatively, deleting the role as
+  YAGNI. Tracked here so it doesn't sit as a silent stub again; see
+  `src/nyxloom/types.py`'s `RESERVED_ROLES`, guarded by `tests/test_types.py`.
