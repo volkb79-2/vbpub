@@ -19,7 +19,7 @@ project home (the tool's own source tree).
   nyxloom-trove/
     nyxloom.toml     # config — schema-validated by `nyxloom lint`
     STANDARD.md      # this spec, copied per project
-    handoffs/        # work packages: P<NN>-<slug>.md, YAML frontmatter, lint-gated
+    handoffs/        # work packages: <id>.md (stem == frontmatter id, lint L1), YAML frontmatter, lint-gated
     reports/         # P<NN>-LOG.md (during) / P<NN>-REPORT.md (after)
     decisions.md     # decisions inbox — product calls (D-<NNN>)
     roadmap.md       # self-dev milestones
@@ -66,7 +66,10 @@ schema-validation) flags a `[refs]` path that doesn't resolve.
 
 ## Document conventions ("managed" = enforced, not aspirational)
 
-- **Naming:** `P<NN>-<kebab-slug>.md`, `<NN>` a zero-padded ordinal unique per project.
+- **Naming:** the filename stem MUST equal the frontmatter `id` (enforced by
+  lint L1) — i.e. `<id>.md`, where `id` is `<project>-P<NN>-<kebab-slug>` and
+  `<NN>` is a zero-padded ordinal unique per project. (A short `P<NN>-<slug>.md`
+  filename with a project-prefixed id fails L1 — see nyxloom-P23's own fix.)
 - **Frontmatter mandatory + schema-validated** against
   `schemas/handoff-frontmatter.schema.json`. `nyxloom lint` rejects a handoff
   with missing/invalid frontmatter — that lint IS the managed-folder guard.

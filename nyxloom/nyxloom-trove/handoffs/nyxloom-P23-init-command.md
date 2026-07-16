@@ -28,9 +28,11 @@ escalate_if:
 
 # P23 — `exec-nyxloom init <project_folder>`
 
-> Tier: sonnet5-high · Base: main. First self-hosted nyxloom package (dogfood).
-> This scaffolds the trove standard into a new project. See
-> `nyxloom-trove/AUTHORING.md` and `STANDARD.md` for the target layout.
+> Tier: sonnet5-high · Base branch: main. First self-hosted nyxloom package (dogfood).
+> The daemon runs this on a dedicated implement branch in its own git worktree
+> under `.worktrees/`; commit all work on that branch. This scaffolds the trove
+> standard into a new project. See `nyxloom-trove/AUTHORING.md` and `STANDARD.md`
+> for the target layout.
 
 ## Context to read first (read ONLY these)
 - `nyxloom-trove/STANDARD.md` — the exact trove directory structure to scaffold.

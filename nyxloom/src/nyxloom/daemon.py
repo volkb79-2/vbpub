@@ -1031,19 +1031,28 @@ class Daemon:
 
     def _carve_source_note_lines(self, cfg: ProjectConfig) -> list[str]:
         """Carve sources #2/#3 (backlog, roadmap/gap-analysis): name the
-        conventional file paths under cfg.root/docs if they exist -- the
-        carver reads them itself (same economy as the review packet's
-        diff-only embedding: point, don't slurp). ProjectConfig has no
-        'product_sources' field today (config.py is frozen beyond the P16-
-        authorized Policy fields), so this probes fixed conventional paths
-        rather than a configured list."""
+        conventional file paths the carver reads itself (same economy as the
+        review packet's diff-only embedding: point, don't slurp). ProjectConfig
+        has no 'product_sources' field today (config.py is frozen beyond the
+        P16-authorized Policy fields), so this probes fixed conventional paths.
+        B2 2026-07-16: prefer the nyxloom-trove layout (backlog.md/roadmap.md
+        under the managed trove) and fall back to the legacy docs/ convention
+        for un-migrated projects -- mirroring config.load()'s own trove-first/
+        legacy-fallback resolution of nyxloom.toml."""
         lines = []
-        backlog = cfg.root / "docs" / "BACKLOG.md"
+        # Backlog: trove-first, then legacy docs/BACKLOG.md.
+        backlog = cfg.root / "nyxloom-trove" / "backlog.md"
+        if not backlog.exists():
+            backlog = cfg.root / "docs" / "BACKLOG.md"
         lines.append(
             f"- backlog: {backlog.relative_to(cfg.root)}"
-            if backlog.exists() else "- backlog: none found at docs/BACKLOG.md"
+            if backlog.exists()
+            else "- backlog: none found (nyxloom-trove/backlog.md, docs/BACKLOG.md)"
         )
-        roadmap = cfg.root / "docs" / "ROADMAP.md"
+        # Roadmap: trove-first, then legacy docs/ROADMAP.md.
+        roadmap = cfg.root / "nyxloom-trove" / "roadmap.md"
+        if not roadmap.exists():
+            roadmap = cfg.root / "docs" / "ROADMAP.md"
         if roadmap.exists():
             lines.append(f"- roadmap: {roadmap.relative_to(cfg.root)}")
         gap_files = sorted((cfg.root / "docs").glob("gap-*.md")) if (cfg.root / "docs").exists() else []
@@ -1051,7 +1060,10 @@ class Daemon:
             lines.append("- gap analysis: " + ", ".join(
                 str(p.relative_to(cfg.root)) for p in gap_files))
         if not roadmap.exists() and not gap_files:
-            lines.append("- roadmap/gap analysis: none found under docs/")
+            lines.append(
+                "- roadmap/gap analysis: none found "
+                "(nyxloom-trove/roadmap.md, docs/ROADMAP.md, docs/gap-*.md)"
+            )
         return lines
 
     def _build_carve_packet(self, cfg: ProjectConfig, project: str, seq: int,
@@ -1085,7 +1097,8 @@ class Daemon:
         lines.extend(f"   {line}" for line in self._carve_source_note_lines(cfg))
         lines.append(
             "4. Standing product goal: read this project's own README/"
-            "CLAUDE.md/.nyxloom/project.toml for its product intent."
+            "CLAUDE.md and its nyxloom-trove/nyxloom.toml (or legacy "
+            ".nyxloom/project.toml) for its product intent."
         )
         lines.append("")
         lines.append("## Current queue")

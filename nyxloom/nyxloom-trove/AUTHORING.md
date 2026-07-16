@@ -1,6 +1,6 @@
 # Writing a nyxloom handoff — the authoring guide
 
-> **Revision:** 2026-07-16-r1 · (bump on every substantive change; `nyxloom init`
+> **Revision:** 2026-07-16-r2 · (bump on every substantive change; `nyxloom init`
 > copies carry this line so a project can detect a stale copy against the
 > canonical `nyxloom/nyxloom-trove/AUTHORING.md`.)
 
@@ -147,5 +147,7 @@ escalate_if:
 - `gate` on each oracle + top-level `gates` must reference a `[gates.*]` id
   declared in the project's `nyxloom.toml`.
 
-Naming + lifecycle live in `STANDARD.md`; the folder layout there tells you
-where this file goes (`nyxloom-trove/handoffs/P<NN>-<slug>.md`).
+Naming + lifecycle live in `STANDARD.md`; this file goes to
+`nyxloom-trove/handoffs/<id>.md` — the filename stem MUST equal the frontmatter
+`id` (lint L1), i.e. `<project>-P<NN>-<slug>.md`. A short `P<NN>-<slug>.md`
+filename paired with a project-prefixed `id` fails L1.
