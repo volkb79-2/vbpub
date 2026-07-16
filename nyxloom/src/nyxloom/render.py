@@ -43,7 +43,15 @@ INTERFACE CONTRACT (frozen):
                     (html-escaped), headroom estimate, outcome.
     history.html    id="history" table of terminal + MERGED/VALIDATING
                     tasks: task, final state, merge_commit, progress_units,
-                    total cost.
+                    total cost. P25 2026-07-16: rows are ordered newest-
+                    completed-first per project and capped at that
+                    project's archive_keep_visible (read directly off
+                    nyxloom.toml, default 10, see _trove_project_extras);
+                    the remainder still renders (class="archive-row") but
+                    is hidden by default via CSS, revealed by an
+                    id="archive-toggle" checkbox — same hidden-by-default/
+                    toggle-reveal mechanism as index.html's carve-toggle,
+                    never client-side innerHTML.
     dag.html        id="dag" — inline SVG dependency graph (pure-python
                     Kahn-level layout; no graphviz/JS libs): task nodes as
                     rounded <rect data-node="<id>"> colored by COLORS,
@@ -97,7 +105,14 @@ INTERFACE CONTRACT (frozen):
                     (fetch + textContent-safe static markup only). Carries a
                     visible hint that a routes.toml edit only changes the
                     LIVE state file, not the tracked nyxloom/routes.
-                    host.toml copy.
+                    host.toml copy. P25 2026-07-16: each project section
+                    also gets a read-only summary (no new JS/API) of its
+                    gate id(s) + html.escape'd argv, notify channels (ntfy_
+                    url + notifications/feedback topic names), and trove
+                    folder paths (trove root, handoff glob(s), reports_dir,
+                    archive_dir) — the latter two read straight off the raw
+                    nyxloom.toml [project] table (_trove_project_extras),
+                    NOT added to ProjectConfig (config.py stays untouched).
     live.html       SSE client: JS EventSource('/api/stream') (no project
                     param — the server defaults to the first registered
                     project) parses each event and appends one row built
@@ -147,6 +162,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import tomllib
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -213,6 +229,8 @@ nav a {{ margin: 0 10px; }}
 #pause-banner {{ background: #3a1214; border: 2px solid #c0392b; padding: 10px; margin: 10px 0; }}
 .carve-row {{ display: none; background: #1f2a1a; }}
 #active-tasks.show-carves .carve-row {{ display: table-row; }}
+.archive-row {{ display: none; }}
+#history.show-archive .archive-row {{ display: table-row; }}
 .lane {{ margin: 20px 0; padding: 10px; border: 1px solid #333a41; }}
 .lane-track {{ background: #1a1e22; }}
 .bar {{ position: absolute; top: 2px; height: 20px; min-width: 6px; padding: 2px;
@@ -523,7 +541,7 @@ def render_all(registry: dict[str, Path]) -> Path:
     _render_index(www, registry, all_states)
 
     # Render history.html
-    _render_history(www, all_states)
+    _render_history(www, registry, all_states)
 
     # Render dag.html
     _render_dag(www, registry, all_states)
@@ -745,32 +763,60 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
     (www / "index.html").write_text(html_content, encoding="utf-8")
 
 
-def _render_history(www: Path, all_states: dict[str, dict[str, TaskStateFile]]) -> None:
-    """Render history.html with terminal and validating tasks."""
-    rows = []
+def _completed_at(tsf: TaskStateFile) -> datetime:
+    """Best proxy for a completed package's finish time: the newest
+    attempt's 'ended' timestamp, falling back to 'since' (task creation)
+    when no attempt has ended yet (e.g. a MERGED task with no receipt)."""
+    ended = [a.ended for a in tsf.attempts if a.ended is not None]
+    return max(ended) if ended else tsf.since
 
-    for project in sorted(all_states.keys()):
-        states = all_states[project]
-        for task_id in sorted(states.keys()):
-            tsf = states[task_id]
+
+def _render_history(www: Path, registry: dict[str, Path],
+                     all_states: dict[str, dict[str, TaskStateFile]]) -> None:
+    """Render history.html with terminal and validating tasks.
+
+    P25 2026-07-16: caps each project's inline listing at its
+    archive_keep_visible most-recently-completed packages (newest first);
+    the remainder is still emitted (class="archive-row") but hidden by
+    default via CSS, mirroring the carve-toggle pattern -- revealed by an
+    Archive checkbox, never client-side innerHTML."""
+    entries = []   # (project, task_id, tsf, completed_at)
+    for project in all_states.keys():
+        for task_id, tsf in all_states[project].items():
             if _is_terminal_or_validating(tsf.state):
-                merge_commit = tsf.merge_commit or "—"
-                if merge_commit != "—":
-                    merge_commit = merge_commit[:7]
-                progress_units = ", ".join(tsf.progress_units) if tsf.progress_units else "—"
-                cost_str, _ = _cost_string(tsf.attempts)
+                entries.append((project, task_id, tsf, _completed_at(tsf)))
 
-                rows.append(f"""
-                  <tr>
-                    <td>{html.escape(project)}/{html.escape(task_id)}</td>
-                    <td>{html.escape(tsf.state.value)}</td>
-                    <td>{html.escape(merge_commit)}</td>
-                    <td>{html.escape(progress_units)}</td>
-                    <td>{html.escape(cost_str)}</td>
-                  </tr>
-                """)
+    entries.sort(key=lambda e: e[3], reverse=True)
+
+    keep_visible = {
+        project: _trove_project_extras(root)[2] for project, root in registry.items()
+    }
+    visible_count: dict[str, int] = defaultdict(int)
+    rows = []
+    for project, task_id, tsf, _completed in entries:
+        cap = keep_visible.get(project, 10)
+        archived = visible_count[project] >= cap
+        visible_count[project] += 1
+
+        merge_commit = tsf.merge_commit or "—"
+        if merge_commit != "—":
+            merge_commit = merge_commit[:7]
+        progress_units = ", ".join(tsf.progress_units) if tsf.progress_units else "—"
+        cost_str, _ = _cost_string(tsf.attempts)
+
+        row_class = ' class="archive-row"' if archived else ""
+        rows.append(f"""
+          <tr{row_class}>
+            <td>{html.escape(project)}/{html.escape(task_id)}</td>
+            <td>{html.escape(tsf.state.value)}</td>
+            <td>{html.escape(merge_commit)}</td>
+            <td>{html.escape(progress_units)}</td>
+            <td>{html.escape(cost_str)}</td>
+          </tr>
+        """)
 
     content = f"""
+    <p><label><input type="checkbox" id="archive-toggle"> Show archive</label></p>
     <table id="history">
       <thead>
         <tr>
@@ -785,6 +831,11 @@ def _render_history(www: Path, all_states: dict[str, dict[str, TaskStateFile]]) 
         {"".join(rows) if rows else '<tr><td colspan="5">No history</td></tr>'}
       </tbody>
     </table>
+    <script>
+    document.getElementById('archive-toggle').addEventListener('change', function() {{
+        document.getElementById('history').classList.toggle('show-archive', this.checked);
+    }});
+    </script>
     """
 
     html_content = _html_head("History") + content + _html_foot()
@@ -1278,6 +1329,34 @@ function saveTier(tier) {
 """
 
 
+def _trove_project_extras(root: Path) -> tuple[str | None, str | None, int]:
+    """Read (trove, archive_dir, archive_keep_visible) straight off the raw
+    `[project]` table of nyxloom.toml (trove-first, legacy .nyxloom/
+    project.toml fallback -- mirrors config.ProjectConfig.load()'s own file
+    resolution). These three are dashboard-display-only (P25) and are
+    deliberately NOT added to ProjectConfig -- config.py is frozen for this
+    package. Tolerant of a missing/unparsable file, and of a non-numeric
+    archive_keep_visible: falls back to (None, None, 10) / 10. That
+    tolerance matters because ProjectConfig.load() simply ignores these
+    unknown [project] keys, so a bad value must not be able to take the
+    whole dashboard down from here."""
+    p = root / "nyxloom-trove" / "nyxloom.toml"
+    if not p.exists():
+        p = root / ".nyxloom" / "project.toml"
+    if not p.exists():
+        return None, None, 10
+    try:
+        data = tomllib.loads(p.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None, None, 10
+    proj = data.get("project", {})
+    try:
+        keep_visible = int(proj.get("archive_keep_visible", 10))
+    except (TypeError, ValueError):
+        keep_visible = 10
+    return proj.get("trove"), proj.get("archive_dir"), keep_visible
+
+
 def _render_config(www: Path, registry: dict[str, Path]) -> None:
     """Render config.html: per-project policy form + pause-mode buttons,
     plus a global routing-tiers editor and a read-only route-definitions
@@ -1312,6 +1391,31 @@ def _render_config(www: Path, registry: dict[str, Path]) -> None:
             + f'>{html.escape(a)}</option>'
             for a in _CARVE_AUTHORITIES
         )
+
+        # P25 2026-07-16: read-only per-project summary -- gate id(s) +
+        # argv, notify channels, trove folder paths. Display-only, no new
+        # JS/API; archive_dir/archive_keep_visible come straight off the
+        # raw toml (see _trove_project_extras), everything else off cfg.
+        gate_rows = "".join(
+            f"<li><code>{html.escape(gid)}</code>: "
+            f"<code>{html.escape(' '.join(g.argv))}</code></li>"
+            for gid, g in sorted(cfg.gates.items())
+        ) or "<li>No gates configured</li>"
+        notify_items = [
+            f"ntfy: {html.escape(cfg.notify.ntfy_url)}" if cfg.notify.ntfy_url else None,
+            f"notifications topic: {html.escape(cfg.notify.ntfy_topic)}" if cfg.notify.ntfy_topic else None,
+            f"feedback topic: {html.escape(cfg.notify.cmd_topic)}" if cfg.notify.cmd_topic else None,
+        ]
+        notify_rows = "".join(f"<li>{item}</li>" for item in notify_items if item) or "<li>No notify channels configured</li>"
+        trove_name, archive_dir, _archive_keep_visible = _trove_project_extras(cfg.root)
+        folder_items = [
+            f"trove: <code>{html.escape(trove_name)}</code>" if trove_name else None,
+            "handoff globs: " + ", ".join(f"<code>{html.escape(g)}</code>" for g in cfg.handoff_globs),
+            f"reports dir: <code>{html.escape(cfg.reports_dir)}</code>",
+            f"archive dir: <code>{html.escape(archive_dir)}</code>" if archive_dir else None,
+        ]
+        folder_rows = "".join(f"<li>{item}</li>" for item in folder_items if item)
+
         project_sections.append(f"""
           <div class="config-project" data-project="{html.escape(project)}">
             <h2>{html.escape(project)}</h2>
@@ -1325,6 +1429,14 @@ def _render_config(www: Path, registry: dict[str, Path]) -> None:
               <select id="carve-authority-{html.escape(project)}">{authority_options}</select>
               <button type="button" onclick="saveCarveAuthority('{html.escape(project)}')">Save</button>
             </p>
+            <div class="project-info">
+              <p>Gates:</p>
+              <ul>{gate_rows}</ul>
+              <p>Notify channels:</p>
+              <ul>{notify_rows}</ul>
+              <p>Trove folders:</p>
+              <ul>{folder_rows}</ul>
+            </div>
             <table>
               <thead><tr><th>Policy key</th><th>Value</th><th></th></tr></thead>
               <tbody>{"".join(policy_rows) if policy_rows else '<tr><td colspan="3">No editable keys</td></tr>'}</tbody>
