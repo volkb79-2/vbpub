@@ -32,6 +32,7 @@ from ciu.composefile import (  # noqa: E402
     render_configfiles,
     validate_consumption,
 )
+from ciu import config_model  # noqa: E402
 from ciu import governance as governance_mod  # noqa: E402
 from ciu.config_model import render_jinja2_text  # noqa: E402
 from ciu.secrets.directives import SecretSpec, discover  # noqa: E402
@@ -1090,6 +1091,49 @@ class TestRenderCompose:
         guarded = guard_config(config, discover("app", config))
         out = render_compose(tmpl, guarded)
         assert "image: myimage" in out
+
+    def test_render_compose_host_label_composes_from_env_public_fqdn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Host() router label built from a `public_host` key that is itself
+        composed as `<sub>.{{ env.PUBLIC_FQDN }}` in the TOML defaults must
+        track PUBLIC_FQDN dynamically end-to-end, not bake in a fixed value.
+
+        Regression for the nyxloom/ntfy hardcode: a prior `sed` had baked
+        `nyxloom.gstammtisch.dchive.de` directly into ciu.defaults.toml.j2
+        instead of composing it from `env.PUBLIC_FQDN`, so the Host() label
+        (and the ntfy server.yml base-url) stayed fixed regardless of
+        PUBLIC_FQDN. This exercises the same two-stage pipeline ntfy uses:
+        render_toml_template resolves `public_host` from env at the TOML
+        step, then render_compose reads the resolved value into the
+        Traefik label.
+        """
+        toml_tmpl = tmp_path / "ciu.defaults.toml.j2"
+        toml_tmpl.write_text(
+            '[app]\npublic_host = "sub.{{ env.PUBLIC_FQDN }}"\n', encoding="utf-8"
+        )
+        compose_tmpl = tmp_path / "ciu.compose.yml.j2"
+        compose_tmpl.write_text(
+            "services:\n"
+            "  api:\n"
+            "    labels:\n"
+            '      traefik.http.routers.api.rule: "Host(`{{ app.public_host }}`)"\n',
+            encoding="utf-8",
+        )
+
+        def render_for(fqdn: str) -> str:
+            monkeypatch.setenv("PUBLIC_FQDN", fqdn)
+            stack_config = config_model.render_toml_template(
+                toml_tmpl, config_model._make_render_context({})
+            )
+            return render_compose(compose_tmpl, stack_config)
+
+        out_a = render_for("gstammtisch.dchive.de")
+        assert "Host(`sub.gstammtisch.dchive.de`)" in out_a
+
+        out_b = render_for("example.test")
+        assert "Host(`sub.example.test`)" in out_b
+        assert "gstammtisch.dchive.de" not in out_b
 
 
 # ---------------------------------------------------------------------------

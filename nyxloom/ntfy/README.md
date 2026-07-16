@@ -1,7 +1,7 @@
 # ntfy — nyxloom notification channel
 
 Self-hosted ntfy behind [tls-edge](../../tls-edge/) at
-`https://ntfy.gstammtisch.dchive.de` (decided 2026-07-15). Safe-governance
+`https://nyxloom.gstammtisch.dchive.de` (decided 2026-07-15). Safe-governance
 baseline: **deny-all auth** (every publish/subscribe needs a user or token),
 no signup, no attachments, bounded cache, conservative visitor limits — see
 `server.yml`. Payloads are typed-fields-only per nyxloom SPEC §13.
@@ -49,12 +49,12 @@ Auth state lives in the `ntfy-data` volume (`auth.db`) — never in files here.
 
 ```toml
 [notify]
-ntfy_url = "https://ntfy.gstammtisch.dchive.de"
+ntfy_url = "https://nyxloom.gstammtisch.dchive.de"
 ntfy_topic = "nyxloom-<project>"
 # token: NTFY_TOKEN env for the daemon (Authorization: Bearer) — never commit.
 ```
 
-Phone: install the ntfy app → add server `https://ntfy.gstammtisch.dchive.de`
+Phone: install the ntfy app → add server `https://nyxloom.gstammtisch.dchive.de`
 → log in (admin) → subscribe to `nyxloom-*` topics. iOS instant push needs
 `upstream-base-url` (commented in server.yml; metadata-only relay to ntfy.sh).
 
