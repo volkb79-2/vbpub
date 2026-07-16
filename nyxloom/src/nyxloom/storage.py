@@ -172,6 +172,27 @@ def list_states(project: str) -> dict[str, TaskStateFile]:
 # ---------------------------------------------------------------------------
 # projection
 
+_TRANSITION_EVENT_TYPES = (
+    EventType.TASK_TRANSITIONED, EventType.TASK_BLOCKED,
+    EventType.TASK_SUPERSEDED, EventType.TASK_CANCELLED,
+)
+
+
+def _transition_target(t: EventType, payload: dict[str, Any]) -> TaskState | None:
+    """Resolve the destination TaskState for a transition-shaped event type,
+    or None if `t` carries no transition semantics. Shared by apply_event
+    (live/replay projection) and append_and_apply's pre-append validation
+    guard so the two never drift apart on what counts as "the target"."""
+    resolvers = {
+        EventType.TASK_TRANSITIONED: lambda: TaskState(payload["to"]),
+        EventType.TASK_BLOCKED: lambda: TaskState.BLOCKED,
+        EventType.TASK_SUPERSEDED: lambda: TaskState.SUPERSEDED,
+        EventType.TASK_CANCELLED: lambda: TaskState.CANCELLED,
+    }
+    resolver = resolvers.get(t)
+    return resolver() if resolver else None
+
+
 def apply_event(states: dict[str, TaskStateFile], ev: Event) -> list[str]:
     """Apply one event to the projection map. Returns affected task_ids.
 
@@ -198,14 +219,8 @@ def apply_event(states: dict[str, TaskStateFile], ev: Event) -> list[str]:
         return affected
     tsf = states[ev.task_id]
 
-    if t in (EventType.TASK_TRANSITIONED, EventType.TASK_BLOCKED,
-             EventType.TASK_SUPERSEDED, EventType.TASK_CANCELLED):
-        to = {
-            EventType.TASK_TRANSITIONED: lambda: TaskState(ev.payload["to"]),
-            EventType.TASK_BLOCKED: lambda: TaskState.BLOCKED,
-            EventType.TASK_SUPERSEDED: lambda: TaskState.SUPERSEDED,
-            EventType.TASK_CANCELLED: lambda: TaskState.CANCELLED,
-        }[t]()
+    if t in _TRANSITION_EVENT_TYPES:
+        to = _transition_target(t, ev.payload)
         if tsf.state == to:
             # P20/P36: application-level idempotency, not a graph edge. Two
             # planning passes racing off a shared state snapshot can both
@@ -295,15 +310,52 @@ def apply_event(states: dict[str, TaskStateFile], ev: Event) -> list[str]:
     return affected
 
 
+def _validate_before_append(states: dict[str, TaskStateFile], **kwargs: Any) -> None:
+    """Pre-append guard for the canonical mutation path.
+
+    Validate a TASK_TRANSITIONED/BLOCKED/SUPERSEDED/CANCELLED transition
+    against the CURRENT projected state BEFORE the event is written to the
+    log, so a genuinely illegal transition never lands in events.jsonl.
+
+    Pre-P36 bug this replaces: append_and_apply appended the event first and
+    only THEN validated it (inside apply_event); when the transition was
+    illegal, apply_event raised after the append already happened, leaving a
+    spurious rejected-transition event permanently in the log (8 such events
+    had to be migrated out of dstdns/topos by hand). Validating here, before
+    `append_event` is ever called, means an illegal transition raises with
+    zero side effects on the log.
+
+    Mirrors apply_event's own from==to idempotency exactly (same
+    `_transition_target` resolver) so a legal or no-op (from==to)
+    transition is never blocked here -- only a genuinely illegal from!=to
+    edge raises. Events with no transition semantics, or whose task_id
+    isn't present in the caller's `states` map (mirrors apply_event's own
+    tolerant skip for genuinely task-less/unknown-task events), are passed
+    through unchecked -- there is nothing to validate against.
+    """
+    to = _transition_target(kwargs.get("type"), kwargs.get("payload") or {})
+    if to is None:
+        return
+    task_id = kwargs.get("task_id")
+    if task_id is None or task_id not in states:
+        return
+    tsf = states[task_id]
+    if tsf.state == to:
+        return
+    check_task_transition(tsf.state, to)
+
+
 def append_and_apply(
     project: str,
     states: dict[str, TaskStateFile],
     **kwargs: Any,
 ) -> Event:
-    """THE canonical mutation: append event -> apply -> save affected.
+    """THE canonical mutation: validate -> append event -> apply -> save
+    affected.
 
     kwargs are `append_event`'s keyword arguments.
     """
+    _validate_before_append(states, **kwargs)
     ev = append_event(project, **kwargs)
     for tid in apply_event(states, ev):
         save_state(states[tid])

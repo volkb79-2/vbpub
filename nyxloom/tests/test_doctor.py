@@ -104,6 +104,111 @@ def test_doctor_replay_divergence(sample_project, demo_statefile):
         assert 'demo-P01-sample' in divergence_findings[0].refs
 
 
+# ---------------------------------------------------------------------------
+# Oracle O2 (append-doctor-hardening handoff): replay-divergence must
+# compare only the REPLAYABLE projection, not the full/rich TaskStateFile
+# dict -- so a task diverging ONLY on lossy attempt fields (usage/cost,
+# receipt, session_handle) that replay cannot faithfully reconstruct in
+# every history (e.g. an in-flight synthetic carve task, or a
+# duplicate-TASK_CREATED history) is NOT flagged, while a task whose
+# actual `.state` genuinely diverges STILL is.
+
+@pytest.mark.parametrize("field_name,disk_value", [
+    ("usage", Usage(basis=Basis.ACTUAL, tokens_in=999, tokens_out=999, cost=999.99)),
+    ("receipt", Receipt(result=ReceiptResult.DONE, exit_code=0)),
+    ("session_handle", "some-other-session-handle"),
+])
+def test_doctor_ignores_divergence_on_lossy_attempt_fields(sample_project, field_name, disk_value):
+    """Negative: a statefile differing from replay ONLY in a lossy
+    per-attempt field (usage/cost, receipt, or session_handle) must NOT
+    surface as replay-divergence."""
+    task_id = "demo-P07-lossy"
+    attempt = Attempt(
+        attempt_id=new_id("att"),
+        role=Role.IMPLEMENTER,
+        state=AttemptState.EXITED,
+        route=Route(route_id="fake-cli", cli="fake", model="fake-model"),
+        started=utc_now(),
+        ended=utc_now(),
+    )
+    tsf = TaskStateFile(
+        schema_version=1,
+        task_id=task_id,
+        project=sample_project.project_id,
+        state=TaskState.AWAITING_REVIEW,
+        since=utc_now(),
+        attempts=[attempt],
+    )
+
+    save_demo_state(sample_project, tsf)
+
+    actor = Actor(kind=ActorKind.OPERATOR, id='test-op')
+    storage.append_event(
+        sample_project.project_id,
+        actor=actor,
+        type=EventType.TASK_CREATED,
+        payload={'statefile': tsf.to_dict()},
+    )
+
+    # replay() reconstructs the statefile exactly as created above (no
+    # usage/receipt/session_handle set); now hand-edit ONLY the on-disk
+    # attempt's lossy field to diverge from what replay derives -- `.state`
+    # (and everything else replay derives) stays equal to the replayed
+    # projection.
+    saved = storage.load_state(sample_project.project_id, task_id)
+    setattr(saved.attempts[0], field_name, disk_value)
+    storage.save_state(saved)
+
+    with patch('nyxloom.doctor.frontmatter.discover_handoffs') as mock_discover, \
+         patch('nyxloom.doctor.lint.lint_project') as mock_lint, \
+         patch('nyxloom.doctor.decisions.open_ids') as mock_decisions:
+
+        mock_discover.return_value = []
+        mock_lint.return_value = {}
+        mock_decisions.return_value = set()
+
+        findings = doctor_project(sample_project)
+        divergence = [f for f in findings if f.kind == 'replay-divergence' and task_id in f.refs]
+        assert divergence == [], f"lossy field {field_name!r} falsely flagged divergence: {divergence}"
+
+
+def test_doctor_still_flags_genuine_state_divergence(sample_project, demo_statefile):
+    """Positive control: a REAL `.state` mismatch between replay and
+    on-disk (not a lossy-field difference) must still be flagged critical
+    -- the lossy-field allowance must not become a blanket suppression."""
+    save_demo_state(sample_project, demo_statefile)  # on-disk: COMPLETED
+
+    actor = Actor(kind=ActorKind.OPERATOR, id='test-op')
+    queued_variant = TaskStateFile(
+        schema_version=1,
+        task_id=demo_statefile.task_id,
+        project=sample_project.project_id,
+        state=TaskState.QUEUED,
+        since=utc_now(),
+        handoff_path=demo_statefile.handoff_path,
+    )
+    storage.append_event(
+        sample_project.project_id,
+        actor=actor,
+        type=EventType.TASK_CREATED,
+        payload={'statefile': queued_variant.to_dict()},
+    )
+
+    with patch('nyxloom.doctor.frontmatter.discover_handoffs') as mock_discover, \
+         patch('nyxloom.doctor.lint.lint_project') as mock_lint, \
+         patch('nyxloom.doctor.decisions.open_ids') as mock_decisions:
+
+        mock_discover.return_value = []
+        mock_lint.return_value = {}
+        mock_decisions.return_value = set()
+
+        findings = doctor_project(sample_project)
+        divergence = [f for f in findings if f.kind == 'replay-divergence']
+        assert len(divergence) > 0
+        assert divergence[0].severity == 'critical'
+        assert demo_statefile.task_id in divergence[0].refs
+
+
 # P36 Oracle O3: check 1 degrades broadly, other checks keep running
 def test_doctor_replay_check_failure_degrades_and_other_checks_still_run(sample_project, demo_statefile):
     """The live incident this package fixes: replay raising (e.g. a

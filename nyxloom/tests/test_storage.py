@@ -244,3 +244,85 @@ def test_superseded_cancelled_reassert_apply_is_silent_noop(tmp_state, event_typ
 
     assert affected == []
     assert states[task_id].state is target
+
+
+# ---------------------------------------------------------------------------
+# Oracle O1 (append-doctor-hardening handoff): append_and_apply MUST validate
+# a TASK_TRANSITIONED transition BEFORE appending, so an illegal transition
+# never leaves a spurious rejected-transition event in the log.
+#
+# Pre-P36-hardening bug this guards against: append_and_apply used to call
+# append_event() (writing the line to events.jsonl) FIRST, and only THEN
+# apply_event() -- which is where check_task_transition() actually lived.
+# When the transition was illegal, apply_event raised, but the event had
+# ALREADY been appended: the log gained a permanent spurious entry for a
+# transition that was never actually valid (8 such events had to be migrated
+# out of dstdns/topos by hand). Validating in append_and_apply itself, before
+# append_event is ever called, means the illegal-transition case has zero
+# side effects on the log.
+
+def test_illegal_transition_via_append_and_apply_appends_no_event(tmp_state):
+    project = "p-validate-before-append-illegal"
+    task_id = "t-illegal"
+    states = _seed(project, task_id, TaskState.QUEUED)
+
+    before = [e.type for e in storage.iter_events(project)]
+    assert before == [EventType.TASK_CREATED]
+
+    with pytest.raises(TransitionError):
+        storage.append_and_apply(
+            project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+            payload={"from": "QUEUED", "to": "MERGED", "notes": None}, task_id=task_id,
+        )
+
+    # No spurious event was appended by the rejected attempt: the log is
+    # byte-for-byte the same length as before, still just TASK_CREATED.
+    after = [e.type for e in storage.iter_events(project)]
+    assert after == before
+
+    # Neither the in-memory projection nor the on-disk statefile moved.
+    assert states[task_id].state is TaskState.QUEUED
+    assert storage.load_state(project, task_id).state is TaskState.QUEUED
+
+
+def test_legal_transition_via_append_and_apply_still_appends_normally(tmp_state):
+    """The validate-before-append guard must not interfere with the legal
+    path: a valid transition still appends exactly one event and updates
+    both the projection and the on-disk statefile."""
+    project = "p-validate-before-append-legal"
+    task_id = "t-legal"
+    states = _seed(project, task_id, TaskState.QUEUED)
+
+    ev = storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "QUEUED", "to": "ACTIVE", "notes": None}, task_id=task_id,
+    )
+
+    assert ev.type is EventType.TASK_TRANSITIONED
+    types = [e.type for e in storage.iter_events(project)]
+    assert types == [EventType.TASK_CREATED, EventType.TASK_TRANSITIONED]
+
+    assert states[task_id].state is TaskState.ACTIVE
+    assert storage.load_state(project, task_id).state is TaskState.ACTIVE
+
+
+def test_illegal_fixed_target_transition_via_append_and_apply_appends_no_event(tmp_state):
+    """Same validate-before-append guarantee for the fixed-target event
+    types (TASK_BLOCKED/SUPERSEDED/CANCELLED), not just TASK_TRANSITIONED."""
+    project = "p-validate-before-append-fixed"
+    task_id = "t-fixed"
+    states = _seed(project, task_id, TaskState.COMPLETED)  # terminal: no outgoing edges
+
+    before = [e.type for e in storage.iter_events(project)]
+
+    with pytest.raises(TransitionError):
+        storage.append_and_apply(
+            project, states, actor=ACTOR, type=EventType.TASK_BLOCKED,
+            payload={"from": "COMPLETED", "blocker": _blocker("x").to_dict(), "notes": None},
+            task_id=task_id,
+        )
+
+    after = [e.type for e in storage.iter_events(project)]
+    assert after == before
+    assert states[task_id].state is TaskState.COMPLETED
+    assert storage.load_state(project, task_id).state is TaskState.COMPLETED
