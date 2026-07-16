@@ -92,18 +92,46 @@ INTERFACE CONTRACT (frozen):
 - render_after_event(registry) — cheap alias for render_all (the daemon
   calls it after passes with events; full regeneration IS the design at
   pilot scale).
+
+P22 2026-07-16 (dashboard legend + attempt liveness + read-only drilldown;
+zero new AI/token use, no state mutation):
+- index.html gained an always-visible id="state-legend" block (see
+  _render_legend_html): one row per TaskState (STATE_LEGEND — a single
+  dict keyed by the enum so it cannot silently drift out of sync) plus
+  short glossaries of BlockerType categories and the common free-text
+  blocker/notes reasons (BLOCKER_REASON_LEGEND), spelling out
+  'interrupted-dead-end' in plain language.
+- index.html's active-tasks rows now ALSO show attempt-level liveness
+  (_attempt_is_live): a task whose statefile state may be lagging (e.g. a
+  lost QUEUED->ACTIVE write) still gets a linked "● running (<attempt
+  id>)" indicator in its State cell when it has an attempt with no
+  receipt.json yet whose pid (or the freshest wrapper.pid on disk) is
+  alive, or whose own persisted state is already RUNNING/PREFLIGHTING.
+- render_transcript(raw_text) -> str: turns a claude route's stream-json
+  attempt.log into a readable, html.escape()'d transcript (assistant text
+  deltas + tool names, never raw JSON). render_drilldown_page(project,
+  attempt_id, transcript_text) -> str wraps an ALREADY-rendered,
+  ALREADY-redacted transcript in a small auto-refreshing
+  (<meta http-equiv="refresh">, no JS/websocket) read-only page.
+  daemon.py's GET /api/drilldown/<project>/<attempt_id> endpoint is the
+  only caller; it tails the log, calls render_transcript, THEN cfg.redacts
+  the rendered text (never the raw stream-json — see
+  render_drilldown_page's docstring for why), then calls
+  render_drilldown_page. No control on the page mutates state.
 """
 
 from __future__ import annotations
 
 import html
+import json
+import os
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from . import paths, storage, config, frontmatter
-from .types import TaskState, TaskStateFile, AttemptState, Basis, Frontmatter
+from .types import TaskState, TaskStateFile, AttemptState, Basis, Frontmatter, BlockerType
 
 
 # --- timeline layout constants ---
@@ -184,6 +212,11 @@ svg text {{ font-family: sans-serif; }}
 .evt-raw {{ display: none; color: #7a8894; }}
 #events.show-raw .evt-fmt {{ display: none; }}
 #events.show-raw .evt-raw {{ display: inline; }}
+#state-legend {{ background: #1a1e22; border: 1px solid #333a41; padding: 10px; margin: 10px 0; }}
+#state-legend table {{ margin: 10px 0; }}
+.live-indicator {{ color: #00ff00; font-weight: bold; text-decoration: none; }}
+.live-indicator:hover {{ text-decoration: underline; }}
+#drilldown-transcript {{ background: #0e1114; padding: 10px; border: 1px solid #333a41; overflow-x: auto; color: #b8c4cc; white-space: pre-wrap; }}
 </style>
 """
 
@@ -204,6 +237,103 @@ NAV = """
 # rather than imported from daemon.py to avoid a render<->daemon import
 # cycle (daemon.py already imports render); paths.py/config.py are frozen
 # so there is no shared home for this three-line mapping.
+# --- P22 2026-07-16: dashboard state legend (handoff item 1) ------------
+# Single source of truth, keyed by the enum member itself (not .value) so
+# a future TaskState addition without a matching entry raises a clear
+# KeyError from _render_legend_html rather than silently rendering a blank
+# row — this is what "stays in sync with the enum" means in practice.
+STATE_LEGEND: dict[TaskState, str] = {
+    TaskState.DRAFT: "Freshly authored idea; not yet triaged into a task.",
+    TaskState.NEEDS_DECISION: "Blocked on an open item in DECISIONS-INBOX.md before it can be carved.",
+    TaskState.READY_TO_CARVE: "Its decisions are resolved; waiting to become a real task (CARVED).",
+    TaskState.CARVED: "A task file exists for this handoff; not yet queued for dispatch.",
+    TaskState.QUEUED: "Waiting for a free dispatch slot (budget, leases, or provider gating).",
+    TaskState.ACTIVE: "An implementer attempt has been dispatched and should be running now.",
+    TaskState.AWAITING_REVIEW: "The implementer finished (receipt DONE); waiting for a review wave to pick it up.",
+    TaskState.REVIEW_REJECTED: "A reviewer rejected the work; it needs another implementer attempt.",
+    TaskState.MERGE_READY: "A reviewer approved the work. Merge is a MANUAL operator step, never automatic.",
+    TaskState.MERGED: "The feature branch has been merged into the default branch.",
+    TaskState.VALIDATING: "Merged; awaiting post-merge validation before COMPLETED.",
+    TaskState.COMPLETED: "Done: merged and validated. Terminal — no further transitions.",
+    TaskState.BLOCKED: (
+        "Stuck on something an operator must resolve by hand — see its "
+        "blocker/notes below for why (e.g. interrupted-dead-end)."
+    ),
+    TaskState.SUPERSEDED: "No longer needed — superseded by another task or a spec change. Terminal.",
+    TaskState.CANCELLED: "Deliberately abandoned by an operator. Terminal.",
+}
+
+# Common attempt/blocker "reasons" (tsf.notes / blocker.detail free-text
+# strings) that are otherwise cryptic internal shorthand — plain-language
+# glosses. Not enum-backed (these are free text, not a closed set): an
+# unrecognized reason simply gets no legend row, it still renders verbatim
+# wherever tsf.notes/blocker.detail are shown.
+BLOCKER_REASON_LEGEND: dict[str, str] = {
+    "interrupted-dead-end": (
+        "The agent's CLI leg was interrupted mid-run and could not be "
+        "resumed (no session handle, or its attempt budget is exhausted), "
+        "so the task dead-ended straight to BLOCKED. This needs a manual "
+        "resume or reset by an operator — it will not resolve itself on a "
+        "later reconcile pass. (A pre-P17 stream-json capture gap was one "
+        "historical cause of a missing session handle.)"
+    ),
+    "attempts exhausted": (
+        "Every attempt allowed for this task by policy.max_attempts_per_task "
+        "ended in error. An operator must inspect the attempts and either "
+        "raise the budget, fix the underlying problem, or cancel the task."
+    ),
+}
+
+# BlockerType categories (tsf.blocker.type), plain-language — same
+# enum-keyed-dict pattern as STATE_LEGEND above.
+BLOCKER_TYPE_LEGEND: dict[BlockerType, str] = {
+    BlockerType.CONTRACT: "The agent itself reported BLOCKED: its handoff's contract could not be met as specified.",
+    BlockerType.ENVIRONMENT: "Something about the run environment (process, resume handle, attempt budget) failed, independent of the handoff's contract.",
+    BlockerType.PROVIDER: "The CLI/model provider is rate-limited or otherwise unavailable.",
+    BlockerType.DECISION: "Waiting on an operator decision (DECISIONS-INBOX.md).",
+    BlockerType.EXTERNAL: "Waiting on something outside nyxloom's control (another team, an external system).",
+    BlockerType.BUDGET: "The project's cost budget would be exceeded.",
+}
+
+
+def _render_legend_html() -> str:
+    """Always-visible state/blocker legend (handoff item 1). Table rows are
+    generated straight from STATE_LEGEND / BLOCKER_TYPE_LEGEND /
+    BLOCKER_REASON_LEGEND above so the rendered text can never drift from
+    those dicts. A plain <div> (not <details>) — "always-visible" means
+    always in the page, not one click away."""
+    state_rows = "".join(
+        f'<tr><td class="state-{html.escape(state.value)}">{html.escape(state.value)}</td>'
+        f"<td>{html.escape(text)}</td></tr>"
+        for state, text in STATE_LEGEND.items()
+    )
+    type_rows = "".join(
+        f"<tr><td>{html.escape(btype.value)}</td><td>{html.escape(text)}</td></tr>"
+        for btype, text in BLOCKER_TYPE_LEGEND.items()
+    )
+    reason_rows = "".join(
+        f"<tr><td>{html.escape(reason)}</td><td>{html.escape(text)}</td></tr>"
+        for reason, text in BLOCKER_REASON_LEGEND.items()
+    )
+    return f"""
+    <div id="state-legend">
+      <h2>State &amp; blocker legend</h2>
+      <table>
+        <thead><tr><th>Task state</th><th>Meaning</th></tr></thead>
+        <tbody>{state_rows}</tbody>
+      </table>
+      <table>
+        <thead><tr><th>Blocker type</th><th>Meaning</th></tr></thead>
+        <tbody>{type_rows}</tbody>
+      </table>
+      <table>
+        <thead><tr><th>Common blocker/notes reason</th><th>Meaning</th></tr></thead>
+        <tbody>{reason_rows}</tbody>
+      </table>
+    </div>
+    """
+
+
 def _pause_mode_for(project: str) -> str:
     p = paths.pause_flag(project)
     if not p.exists():
@@ -246,6 +376,49 @@ def _newest_attempt_log_age(project: str, attempts: list[Any], now_ts: float) ->
         _attempt_log_age_seconds(project, att, now_ts) for att in attempts
     ) if a is not None]
     return min(ages) if ages else None
+
+
+def _pid_alive(pid: int | None) -> bool:
+    """P22 2026-07-16: duplicated from daemon.py's identical helper (same
+    render<->daemon import-cycle reason documented above _pause_mode_for —
+    daemon.py already imports render). os.kill(pid, 0) liveness probe."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _attempt_is_live(project: str, att: Any) -> bool:
+    """P22 2026-07-16: attempt-level liveness, independent of a possibly
+    lagging task statefile state (handoff item 2, the "nothing running"
+    fix — a lost QUEUED->ACTIVE write must not hide a genuinely live
+    attempt). An attempt counts as live when its receipt has not landed on
+    disk yet AND either its own recorded pid — or, belt-and-braces like
+    daemon.py's _attempt_scan, the freshest wrapper.pid file on disk — is
+    alive, or its own persisted state is already RUNNING/PREFLIGHTING
+    (covers the case where the pid write itself lagged but the
+    attempt-state event already landed)."""
+    attempt_dir = paths.attempt_dir(project, att.attempt_id)
+    if (attempt_dir / "receipt.json").exists():
+        return False
+    if _pid_alive(getattr(att, "pid", None)):
+        return True
+    wpid_file = attempt_dir / "wrapper.pid"
+    if wpid_file.exists():
+        try:
+            wpid = int(wpid_file.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            wpid = None
+        if wpid is not None and wpid != att.pid and _pid_alive(wpid):
+            return True
+    return att.state in (AttemptState.RUNNING, AttemptState.PREFLIGHTING)
 
 
 def _html_head(title: str) -> str:
@@ -400,11 +573,28 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
                 # task's attempt logs' mtime at render time).
                 last_activity = _format_age(_newest_attempt_log_age(project, tsf.attempts, now_ts))
 
+                # P22 2026-07-16: attempt-level liveness, independent of a
+                # possibly-lagging tsf.state (handoff item 2). Newest-first
+                # scan (mirrors TaskStateFile.current_attempt()) so a task
+                # with several attempts shows its most recent live one.
+                live_attempt_id = None
+                for cand in reversed(tsf.attempts):
+                    if _attempt_is_live(project, cand):
+                        live_attempt_id = cand.attempt_id
+                        break
+                state_cell = html.escape(tsf.state.value)
+                if live_attempt_id:
+                    href = f"/api/drilldown/{html.escape(project)}/{html.escape(live_attempt_id)}"
+                    state_cell += (
+                        f' <a class="live-indicator" href="{href}">'
+                        f"● running ({html.escape(live_attempt_id)})</a>"
+                    )
+
                 rows.append(f"""
                   <tr>
                     <td>{html.escape(project)}</td>
                     <td><a href="task/{html.escape(project)}/{html.escape(task_id)}.html">{html.escape(task_id)}</a></td>
-                    <td>{html.escape(tsf.state.value)}</td>
+                    <td>{state_cell}</td>
                     <td>{html.escape(route_id)}</td>
                     <td>{html.escape(started)}</td>
                     <td>{minutes}</td>
@@ -420,7 +610,11 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
         parts = [f"{project} ({mode})" for project, mode in sorted(all_paused.items())]
         pause_banner = f'<div id="pause-banner">Paused: {html.escape(", ".join(parts))}</div>'
 
+    # P22 2026-07-16: always-visible state/blocker legend (handoff item 1).
+    legend_html = _render_legend_html()
+
     content = f"""
+    {legend_html}
     {pause_banner}
     <table id="active-tasks">
       <thead>
@@ -1112,6 +1306,12 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -
         # cheap -- one stat per attempt).
         last_activity = _format_age(_attempt_log_age_seconds(project, att, now_ts))
 
+        # P22 2026-07-16: read-only agent drilldown link (handoff item 3)
+        # — every attempt gets one, not only currently-live ones ("recent
+        # attempt" per the handoff), pointing at daemon.py's
+        # GET /api/drilldown/<project>/<attempt_id>.
+        drilldown_href = f"/api/drilldown/{html.escape(project)}/{html.escape(att.attempt_id)}"
+
         attempts_rows.append(f"""
           <tr>
             <td>{html.escape(att.route.route_id)}</td>
@@ -1122,6 +1322,7 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -
             <td>{html.escape(receipt_result)}</td>
             <td>{html.escape(usage_str)}</td>
             <td>{html.escape(last_activity)}</td>
+            <td><a href="{drilldown_href}">drilldown</a></td>
           </tr>
         """)
 
@@ -1158,10 +1359,11 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -
           <th>Receipt</th>
           <th>Basis</th>
           <th>Last Activity</th>
+          <th>Drilldown</th>
         </tr>
       </thead>
       <tbody>
-        {"".join(attempts_rows) if attempts_rows else '<tr><td colspan="8">No attempts</td></tr>'}
+        {"".join(attempts_rows) if attempts_rows else '<tr><td colspan="9">No attempts</td></tr>'}
       </tbody>
     </table>
     <h2>Log</h2>
@@ -1275,6 +1477,97 @@ def _render_live(www: Path) -> None:
 
     html_content = _html_head("Live") + content + _html_foot()
     (www / "live.html").write_text(html_content, encoding="utf-8")
+
+
+# --- P22 2026-07-16: read-only agent drilldown (handoff item 3) ---------
+
+def render_transcript(raw_text: str, *, max_lines: int | None = None) -> str:
+    """Turn a claude route's stream-json attempt.log into a readable,
+    ALREADY html.escape()'d transcript: one line per assistant text delta
+    or tool_use call, in file order (oldest first, newest last — matches a
+    tailed log). Every line that fails to json.loads, or that parses but
+    has none of the recognized shapes, is silently skipped: a log still
+    being written very often ends on a partial last line, and skipping it
+    (rather than raising) is exactly what read-only "live attach" tailing
+    needs. Never returns raw JSON — every fragment is html.escape()'d
+    before being joined (untrusted CLI output)."""
+    lines: list[str] = []
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        msg_type = obj.get("type")
+        if msg_type == "assistant":
+            message = obj.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    text = block.get("text")
+                    if isinstance(text, str) and text.strip():
+                        lines.append(html.escape(text.strip()))
+                elif btype == "tool_use":
+                    name = block.get("name")
+                    if isinstance(name, str) and name:
+                        lines.append(f"[tool: {html.escape(name)}]")
+        elif msg_type == "result":
+            result_text = obj.get("result")
+            if isinstance(result_text, str) and result_text.strip():
+                subtype = obj.get("subtype")
+                tag = f"[result:{html.escape(str(subtype))}]" if subtype else "[result]"
+                lines.append(f"{tag} {html.escape(result_text.strip())}")
+    if max_lines is not None and len(lines) > max_lines:
+        lines = lines[-max_lines:]
+    if not lines:
+        return "(no readable transcript content yet)"
+    return "\n".join(lines)
+
+
+def render_drilldown_page(project: str, attempt_id: str, transcript_text: str) -> str:
+    """The read-only agent drilldown page (handoff item 3). transcript_text
+    is an ALREADY-rendered, ALREADY-redacted transcript (daemon.py's
+    _serve_drilldown calls render_transcript() then cfg.redact() on the
+    RENDERED text — deliberately NOT redact-then-render: redacting the raw
+    stream-json first can splice '[REDACTED]' across a JSON string's
+    closing quote/braces, corrupting that line's JSON and silently
+    dropping it — including its tool name — from the transcript entirely.
+    Redacting the human-readable output instead is safe and lossless: a
+    plain "password=<value>" pattern in prose is unaffected by having
+    already been through html.escape()). This function only assembles the
+    page around that text. Plain <meta http-equiv="refresh"> auto-poll: no
+    JS, no websocket, since a periodically-tailed read-only view needs
+    nothing more. No control on this page mutates state (READ-ONLY
+    dashboard)."""
+    content = f"""
+    <p>Project: <strong>{html.escape(project)}</strong> &middot;
+       Attempt: <strong>{html.escape(attempt_id)}</strong></p>
+    <p><em>Read-only live attach: this page has no controls that affect the
+       agent, it only tails its log. Auto-refreshes every 5s.</em></p>
+    <pre id="drilldown-transcript">{transcript_text}</pre>
+    """
+    head = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="refresh" content="5">
+  <title>{html.escape(f"Drilldown: {attempt_id}")}</title>
+  {CSS}
+</head>
+<body>
+{NAV}
+<h1>Agent drilldown: {html.escape(attempt_id)}</h1>
+"""
+    return head + content + _html_foot()
 
 
 def _clean_stale_pages(www: Path, all_states: dict[str, dict[str, TaskStateFile]]) -> None:
