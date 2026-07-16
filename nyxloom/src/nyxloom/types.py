@@ -323,6 +323,7 @@ class Frontmatter(_Serde):
     advances: list[str] = field(default_factory=list)
     budget: Budget | None = None
     carve_affinity: str | None = None
+    component: str | None = None
 
     _FIELD_TYPES = {
         "source": Source.from_dict,
