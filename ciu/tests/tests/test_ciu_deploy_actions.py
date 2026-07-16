@@ -816,3 +816,19 @@ class TestDeployParseArgsProfileSeam4:
         out = capsys.readouterr().out
         assert "CIU_SERVICES_PROFILE" in out
         assert "CIU_HOST_PROFILE" not in out
+
+
+class TestFilterDeploymentPhasesNarrowing:
+    """S7.5: filter_deployment_phases must distinguish None from empty set."""
+
+    _PHASES = [{"key": "phase_1"}, {"key": "phase_2"}]
+
+    def test_none_means_unrestricted(self):
+        assert deploy.filter_deployment_phases(self._PHASES, None) == self._PHASES
+
+    def test_empty_set_means_no_phases(self):
+        assert deploy.filter_deployment_phases(self._PHASES, set()) == []
+
+    def test_subset_filters(self):
+        out = deploy.filter_deployment_phases(self._PHASES, {"phase_2"})
+        assert out == [{"key": "phase_2"}]

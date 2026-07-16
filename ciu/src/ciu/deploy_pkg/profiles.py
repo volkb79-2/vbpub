@@ -171,6 +171,14 @@ def _resolve_one(
     # --- stacks ---
     extra_stacks: list[str] = list(pdata.get("stacks", []))
 
+    # S7.5 narrowing: a stacks-only profile (no 'phases' key, 'stacks' given)
+    # contributes NO phases — selecting it deploys just its stacks. Only a
+    # profile with NEITHER key (a pure env/topology override profile) keeps
+    # the "all phases" meaning. This matches S7.5a's multi-host example
+    # (`--profile core,db` deploys core+db, not the whole phase set).
+    if phase_keys is None and extra_stacks:
+        phase_keys = set()
+
     # --- compose_profiles ---
     compose_profiles: list[str] = list(pdata.get("compose_profiles", []))
 
@@ -267,9 +275,10 @@ def resolve_profiles(
             break
         assert combined_phase_keys is not None
         combined_phase_keys.update(phase_keys)
-    if isinstance(combined_phase_keys, set) and len(combined_phase_keys) == 0:
-        # No phases were specified by any profile → treat as all
-        combined_phase_keys = None
+    # S7.5 narrowing: an empty union stays EMPTY (stacks-only profiles deploy
+    # only their stacks). The former empty→all coercion made stacks-only
+    # profiles deploy every phase PLUS their stacks — the destructive surprise
+    # behind the 2026-07-16 dstdns multi-stack incident.
 
     # --- Compose: extra_stacks + compose_profiles (order-preserving dedup) ---
     all_stacks: list[str] = []
