@@ -70,6 +70,18 @@ schema-validation) flags a `[refs]` path that doesn't resolve.
   lint L1) — i.e. `<id>.md`, where `id` is `<project>-P<NN>-<kebab-slug>` and
   `<NN>` is a zero-padded ordinal unique per project. (A short `P<NN>-<slug>.md`
   filename with a project-prefixed id fails L1 — see nyxloom-P23's own fix.)
+  - **Component / category convention:** the id regex
+    (`^[a-z][a-z0-9]*-P[0-9]{2,4}(-[a-z0-9-]+)?$`) allows only ONE hyphen-free
+    token before `-P<NN>` — that token is the **real project id**, NOT a
+    component. A project with components/categories encodes the component as the
+    **first slug segment**: `<project>-P<NN>-<component>-<slug>` (e.g.
+    `dstdns-P32-lifecycle-cancel-semantics` → project `dstdns`, component
+    `lifecycle`). Do NOT make the component the pre-`P<NN>` token
+    (`ui-P10`, `infra-P11`): that makes each component look like a *separate
+    project* to the daemon (its own statefile namespace, registry entry, event
+    log). For grouping/filtering by component, an optional first-class
+    `component:` frontmatter field is preferred over parsing the slug
+    (added by nyxloom-P42; until then the slug convention is the only signal).
 - **Frontmatter mandatory + schema-validated** against
   `schemas/handoff-frontmatter.schema.json`. `nyxloom lint` rejects a handoff
   with missing/invalid frontmatter — that lint IS the managed-folder guard.
