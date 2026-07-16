@@ -133,7 +133,11 @@ class ProjectConfig:
 
     @classmethod
     def load(cls, root: Path) -> "ProjectConfig":
-        p = root / ".nyxloom" / "project.toml"
+        # B2 2026-07-16: prefer the nyxloom-trove layout; fall back to the
+        # legacy .nyxloom/project.toml for un-migrated projects.
+        p = root / "nyxloom-trove" / "nyxloom.toml"
+        if not p.exists():
+            p = root / ".nyxloom" / "project.toml"
         data = tomllib.loads(p.read_text(encoding="utf-8"))
         gates = {
             gid: GateDef(gate_id=gid, argv=list(g["argv"]), phase=g["phase"],
@@ -148,7 +152,18 @@ class ProjectConfig:
             for name, m in data.get("mutexes", {}).items()
         }
         pol = Policy(**data.get("policy", {}))
-        noti = NotifyConfig(**data.get("notify", {}))
+        # B2 2026-07-16: accept the two-channel names (notifications_topic /
+        # feedback_topic) from the nyxloom-trove layout, mapping them onto the
+        # internal ntfy_topic / cmd_topic fields (new names win; legacy names
+        # still honoured). Also drop unknown [project]/[refs] keys the trove
+        # adds — tomllib already isolates sections, and only [notify] flows
+        # into NotifyConfig(**), so the extra trove fields are simply not read.
+        notify_data = dict(data.get("notify", {}))
+        if "notifications_topic" in notify_data:
+            notify_data["ntfy_topic"] = notify_data.pop("notifications_topic")
+        if "feedback_topic" in notify_data:
+            notify_data["cmd_topic"] = notify_data.pop("feedback_topic")
+        noti = NotifyConfig(**notify_data)
         return cls(
             project_id=data["project"]["id"],
             root=root,
@@ -185,7 +200,9 @@ def update_project_policy(root: Path, changes: dict[str, int]) -> None:
     section of `<root>/.nyxloom/project.toml`. `changes` maps policy key
     -> new int value. Raises ValueError (no write at all) if the [policy]
     section, or any requested key's anchor line inside it, is not found."""
-    p = root / ".nyxloom" / "project.toml"
+    p = root / "nyxloom-trove" / "nyxloom.toml"
+    if not p.exists():
+        p = root / ".nyxloom" / "project.toml"
     text = p.read_text(encoding="utf-8")
     lines = text.splitlines(keepends=True)
 
