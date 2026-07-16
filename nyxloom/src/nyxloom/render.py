@@ -262,6 +262,8 @@ svg text {{ font-family: sans-serif; }}
 #state-legend table {{ margin: 10px 0; }}
 .live-indicator {{ color: #00ff00; font-weight: bold; text-decoration: none; }}
 .live-indicator:hover {{ text-decoration: underline; }}
+.component-tag {{ background: #263140; color: #9fb4cc; padding: 1px 6px;
+                 border-radius: 3px; font-size: 11px; white-space: nowrap; }}
 #drilldown-transcript {{ background: #0e1114; padding: 10px; border: 1px solid #333a41; overflow-x: auto; color: #b8c4cc; white-space: pre-wrap; }}
 </style>
 """
