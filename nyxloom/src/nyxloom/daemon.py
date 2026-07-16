@@ -1327,6 +1327,33 @@ class Daemon:
         if branch_sha and branch_sha != default_res.stdout.strip():
             receipt.head_commit = branch_sha
 
+    def _parse_review_verdict(self, cfg: ProjectConfig, task_id: str) -> str:
+        """P33 2026-07-16: the merge gate must reflect the reviewer's actual
+        verdict, not just process exit (live P26 incident -- a correct
+        REJECTED review report + clean process exit -> receipt DONE ->
+        rubber-stamped MERGE_READY). Reads the committed
+        `<reports_dir>/<task_id>-REVIEW.md` from the task's OWN feat/<task_id>
+        branch (git show, read-only) and extracts a `VERDICT: APPROVED` or
+        `VERDICT: REJECTED` line. FAIL SAFE to "rejected" on anything other
+        than an unambiguous single APPROVED verdict: missing file, unreadable
+        git object, no VERDICT line, or conflicting VERDICT lines."""
+        branch = f"feat/{task_id}"
+        rel_path = f"{cfg.reports_dir}/{task_id}-REVIEW.md"
+        show_res = subprocess.run(
+            ["git", "-C", str(cfg.root), "show", f"{branch}:{rel_path}"],
+            capture_output=True, text=True,
+        )
+        if show_res.returncode != 0:
+            return "rejected"
+        verdicts = {
+            m.group(1).upper()
+            for m in re.finditer(r"^\s*VERDICT:\s*(APPROVED|REJECTED)\b", show_res.stdout,
+                                  re.IGNORECASE | re.MULTILINE)
+        }
+        if verdicts == {"APPROVED"}:
+            return "approved"
+        return "rejected"
+
     def _next_resume_n(self, attempt_dir: Path) -> int:
         n = 1
         while (attempt_dir / f"attempt.resume-{n}.log").exists() or (attempt_dir / f"spec.resume-{n}.json").exists():
@@ -1541,17 +1568,28 @@ class Daemon:
                 # 2026-07-15: consume the REVIEW receipt (was unmapped —
                 # live deadlock). merge_mode=manual: MERGE_READY is declared,
                 # never auto-merged (SPEC §7).
+                # P33 2026-07-16: the receipt only reflects PROCESS exit
+                # (wrapper.py infers DONE on any clean exit) -- it is never
+                # the review's actual verdict (live P26 incident: a REJECTED
+                # review report + clean exit rubber-stamped MERGE_READY).
+                # The non-DONE receipt states (BLOCKED/LIMIT/ERROR) stay a
+                # defense-in-depth fail-safe below WITHOUT reading the
+                # report; only a DONE receipt's verdict is worth parsing.
+                if result is ReceiptResult.DONE:
+                    verdict = self._parse_review_verdict(cfg, task_id)
+                else:
+                    verdict = "rejected"
                 events.append(self._append_ev(
                     project, cfg, states, EventType.REVIEW_RECORDED,
-                    {"result": result.value}, task_id=task_id,
+                    {"result": verdict}, task_id=task_id,
                     attempt_id=action.attempt_id, wave_id=attempt.wave_id))
-                if result is ReceiptResult.DONE:
+                if verdict == "approved":
                     events.append(self._transition(project, cfg, states, task_id,
                                                     TaskState.MERGE_READY, None))
                 else:
                     events.append(self._transition(project, cfg, states, task_id,
                                                     TaskState.REVIEW_REJECTED,
-                                                    f"review receipt: {result.value}"))
+                                                    f"review verdict: {verdict} (receipt: {result.value})"))
                 return events
 
             if result is ReceiptResult.DONE:
@@ -1625,11 +1663,18 @@ class Daemon:
                 "6. Write topos/handoff/reports/<task>-REVIEW.md: findings,",
                 "   what you fixed, verdict + reasoning. Commit it to the",
                 "   feat/ branch (NOT main). Do NOT merge. Do NOT write the",
-                "   implementer's LOG/REPORT.",
+                "   implementer's LOG/REPORT. REQUIRED: this file MUST contain",
+                "   a machine-readable verdict line, exactly one of:",
+                "   `VERDICT: APPROVED` or `VERDICT: REJECTED — <reason>`.",
+                "   The pipeline derives the merge decision from THIS line —",
+                "   a missing or ambiguous VERDICT line fails safe to rejected,",
+                "   even if your prose reasoning above it reads as approved.",
                 "7. VERDICT signalling (drives the pipeline): if EVERY task",
                 "   here is approved, finish normally. If ANY task must be",
                 "   rejected, make your FINAL output line exactly:",
                 "   `BLOCKED: rejected — <task ids and one-line reasons>`.",
+                "   (kept as a second, defense-in-depth signal alongside the",
+                "   per-task VERDICT: line in each REVIEW.md.)",
                 "",
             ]
             for t in action.task_ids:

@@ -659,6 +659,199 @@ def test_emit_attempt_exit_head_commit_receipt_trusted_when_present(
 
 
 # --------------------------------------------------------------------------
+# P33 2026-07-16: robust review verdict -- derive the FRONTIER_REVIEW merge
+# decision from the committed <task>-REVIEW.md verdict, never from bare
+# process exit (live P26 incident: a REJECTED review report + clean process
+# exit -> receipt DONE -> rubber-stamped MERGE_READY).
+
+def _seed_review_attempt(project, task_id, attempt_id, wave_id="wave-1"):
+    tsf = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
+        state=TaskState.AWAITING_REVIEW, since=utc_now(), handoff_path=None, wave_id=wave_id,
+    )
+    route = Route(route_id="fake-cli", cli="fake", model="fake-model", routes_rev="test-rev")
+    attempt = Attempt(attempt_id=attempt_id, role=Role.FRONTIER_REVIEW, state=AttemptState.RUNNING,
+                       route=route, started=utc_now(), wave_id=wave_id)
+    tsf.attempts.append(attempt)
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.TASK_CREATED, payload={"statefile": tsf.to_dict()}, task_id=task_id,
+    )
+    return storage.load_state(project, task_id)
+
+
+def _commit_review_report(root, task_id, reports_dir, content):
+    """Commit `<reports_dir>/<task_id>-REVIEW.md` onto feat/<task_id> --
+    that branch must already exist (see _make_feature_branch)."""
+    branch = f"feat/{task_id}"
+    subprocess.run(["git", "-C", str(root), "checkout", branch], check=True, capture_output=True)
+    report_dir = root / reports_dir
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / f"{task_id}-REVIEW.md").write_text(content, encoding="utf-8")
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(root), "add", "-A"],
+                    check=True, capture_output=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(root), "commit",
+                    "-qm", f"review {task_id}"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "checkout", "main"], check=True, capture_output=True)
+
+
+def test_frontier_review_done_receipt_rejected_report_yields_review_rejected(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """Oracle O1: reproduces the live P26 incident exactly -- a clean
+    process exit (receipt DONE) whose committed REVIEW.md verdict is
+    REJECTED must transition the task to REVIEW_REJECTED, NOT MERGE_READY,
+    and REVIEW_RECORDED's payload result must read 'rejected'."""
+    cfg = sample_project
+    task_id, attempt_id = "t-rev-rejected", "att-rev-rejected"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        "# Review\n\nFindings: the daemon-core change is unsafe.\n\n"
+        "VERDICT: REJECTED — daemon-core change is unsafe\n",
+    )
+    _seed_review_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf = storage.load_state("demo", task_id)
+    assert tsf.state is TaskState.REVIEW_REJECTED
+
+    recorded = next(e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED)
+    assert recorded.payload["result"] == "rejected"
+
+
+def test_frontier_review_done_receipt_approved_report_yields_merge_ready(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """Oracle O2: the approval path is preserved -- a DONE receipt whose
+    committed REVIEW.md verdict is APPROVED still reaches MERGE_READY."""
+    cfg = sample_project
+    task_id, attempt_id = "t-rev-approved", "att-rev-approved"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        "# Review\n\nFindings: none. Looks good.\n\nVERDICT: APPROVED\n",
+    )
+    _seed_review_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf = storage.load_state("demo", task_id)
+    assert tsf.state is TaskState.MERGE_READY
+
+    recorded = next(e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED)
+    assert recorded.payload["result"] == "approved"
+
+
+def test_frontier_review_missing_report_fails_safe_to_rejected(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """Oracle O3 (missing): a DONE receipt whose <task>-REVIEW.md was never
+    committed must fail safe to REVIEW_REJECTED, never MERGE_READY."""
+    cfg = sample_project
+    task_id, attempt_id = "t-rev-missing", "att-rev-missing"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    # deliberately: no REVIEW.md committed onto feat/<task_id>
+    _seed_review_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf = storage.load_state("demo", task_id)
+    assert tsf.state is TaskState.REVIEW_REJECTED
+    recorded = next(e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED)
+    assert recorded.payload["result"] == "rejected"
+
+
+def test_frontier_review_ambiguous_report_fails_safe_to_rejected(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """Oracle O3 (ambiguous): a REVIEW.md with conflicting VERDICT lines (no
+    unambiguous single APPROVED) must also fail safe to REVIEW_REJECTED."""
+    cfg = sample_project
+    task_id, attempt_id = "t-rev-ambiguous", "att-rev-ambiguous"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        "# Review\n\nVERDICT: APPROVED\n\nOn reflection:\nVERDICT: REJECTED — actually no\n",
+    )
+    _seed_review_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf = storage.load_state("demo", task_id)
+    assert tsf.state is TaskState.REVIEW_REJECTED
+
+
+def test_frontier_review_nondone_receipt_is_defense_in_depth_rejected(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """Non-DONE receipt (BLOCKED/nonzero) stays REVIEW_REJECTED regardless
+    of the report -- defense-in-depth kept even if a REVIEW.md APPROVED
+    verdict was somehow committed."""
+    cfg = sample_project
+    task_id, attempt_id = "t-rev-blocked-receipt", "att-rev-blocked-receipt"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        "# Review\n\nVERDICT: APPROVED\n",
+    )
+    _seed_review_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.BLOCKED, exit_code=1,
+                    blocked_reason="reviewer crashed mid-run")
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf = storage.load_state("demo", task_id)
+    assert tsf.state is TaskState.REVIEW_REJECTED
+
+
+def test_launch_review_packet_requires_machine_readable_verdict_line(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """Oracle O4: the review packet instructs the reviewer to write an
+    unambiguous `VERDICT: APPROVED|REJECTED` line into <task>-REVIEW.md,
+    in addition to the existing BLOCKED: rejected final-line signal."""
+    cfg = sample_project
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+    )
+    _seed_task("demo", "t1", TaskState.AWAITING_REVIEW, handoff_path=None)
+    _make_feature_branch(cfg.root, "t1", "t1.py", "# t1\n")
+
+    _scripted(monkeypatch, [[reconcile.OpenWave(task_ids=["t1"])]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+    wave_id = next(e for e in storage.iter_events("demo") if e.type is EventType.WAVE_OPENED).wave_id
+
+    _scripted(monkeypatch, [[reconcile.LaunchReview(wave_id=wave_id, task_ids=["t1"])]])
+    d.run_pass("demo")
+
+    created = next(e for e in storage.iter_events("demo")
+                    if e.type is EventType.ATTEMPT_CREATED and e.wave_id == wave_id)
+    packet_md = (paths.attempt_dir("demo", created.attempt_id) / "packet" / "packet.md").read_text(
+        encoding="utf-8")
+
+    assert "VERDICT: APPROVED" in packet_md
+    assert "VERDICT: REJECTED" in packet_md
+    assert "BLOCKED: rejected" in packet_md
+
+
+# --------------------------------------------------------------------------
 # Oracle 4: MarkInterrupted/ResumeAttempt/InterruptAttempt
 
 def test_mark_interrupted_and_resume(tmp_state, sample_project, patch_siblings, monkeypatch):
