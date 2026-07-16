@@ -960,6 +960,24 @@ class Daemon:
         return any(ev.type is EventType.SPEC_ATTENTION and ev.payload.get("reason") == "roadmap-exhausted"
                    for ev in recent)
 
+    def _spec_attention_recently_emitted(self, project: str, reason: str | None) -> bool:
+        """Debounce backstop (prod-bleed fix 2026-07-16). Suppress re-emitting a
+        SPEC_ATTENTION whose reason already appears in the recent window --
+        otherwise a PERSISTENT condition re-emits + notifies EVERY reconcile
+        cycle forever. Root case: `review_rejections_by_area` (_history) counts
+        rejections over the WHOLE event log and never decreases, and the
+        reconcile 'rejections'/'carve-outcome'/'blocked-underspecified' branches
+        (unlike 'ratchet'/'roadmap-exhausted') have no dedup flag -- so 2 rejects
+        stormed ntfy at 1/cycle. Mirrors _ratchet_already_open's convention and
+        covers ALL reasons as a general backstop. The durable fix is the runaway
+        watchdog + windowed counts + the reject-loop (F6 self-correction)."""
+        try:
+            recent = list(storage.iter_events(project))[-500:]
+        except Exception:
+            return False
+        return any(ev.type is EventType.SPEC_ATTENTION and ev.payload.get("reason") == reason
+                   for ev in recent)
+
     # -- event helpers -------------------------------------------------
 
     def _append_ev(self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
@@ -1834,9 +1852,12 @@ class Daemon:
                                            attempt_id=attempt_id, wave_id=wave_id))
 
         elif isinstance(action, reconcile.SpecAttention):
-            events.append(self._append_ev(project, cfg, states, EventType.SPEC_ATTENTION,
-                                           {"reason": action.reason, "detail": action.detail},
-                                           task_id=action.task_id))
+            # Debounce backstop: do not re-emit (and re-notify) the same
+            # spec-attention reason every cycle for a persistent condition.
+            if not self._spec_attention_recently_emitted(project, action.reason):
+                events.append(self._append_ev(project, cfg, states, EventType.SPEC_ATTENTION,
+                                               {"reason": action.reason, "detail": action.detail},
+                                               task_id=action.task_id))
 
         elif isinstance(action, reconcile.CarveDispatch):
             events.extend(self._execute_carve_dispatch(project, cfg, states, action))
