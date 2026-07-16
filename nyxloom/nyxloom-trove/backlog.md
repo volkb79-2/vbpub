@@ -35,3 +35,13 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
   dir → the project trove), the nyxloomd ciu stack (add the volume, set the env,
   drop the home-bind reliance for STATE — keep it only for CLI auth), + a
   one-shot migration of existing state. Daemon-core: gate + rebuild after merge.
+- **B8 — daemon resume-safety (carved as P26).** Replace the manual "DON'T
+  restart the daemon needlessly" operator rule with automatic detection: a
+  resumed session that keeps dying is currently resumed forever (resumes reuse
+  one attempt record, so `attempts_count` never trips `max_attempts_per_task`).
+  Detect repeated failed resumes → stop resuming that session → fresh-start a
+  new attempt (new session) under configurable `max_resume_failures` /
+  `resume_progress_grace_seconds`, or BLOCK cleanly when the fresh-attempt
+  budget is gone. Inactivity (tier-1/2 stall + wall-clock cap) already exists;
+  this only adds the resume-failure→fresh-start decision in `reconcile.py`.
+  Daemon-core: gate + rebuild after merge. Depends on B2/P24 (config schema).
