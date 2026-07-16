@@ -68,8 +68,10 @@ http_port = 8942
 #     so channels are simple + shared across projects, tagged by project in the
 #     message body (NOT per-project topics). `feedback` is bidirectional and
 #     unifies the old cmd topic + the decision-chat escalation loop.
+#     ntfy_url is NOT set here (P39): the ntfy server is deployment-
+#     authoritative for its own URL via the NTFY_URL env var (set alongside
+#     NTFY_TOKEN in the nyxloomd deployment env).
 [notify]
-ntfy_url = "https://nyxloom.gstammtisch.dchive.de"
 notifications_topic = "notifications"   # any progress update (write-only token)
 feedback_topic = "feedback"             # decisions + escalation Q&A, bidirectional (rw token)
 
