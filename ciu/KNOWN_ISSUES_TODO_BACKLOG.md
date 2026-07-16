@@ -9,7 +9,7 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-07-10.
+Last updated: 2026-07-16.
 
 ## How issues get here
 
@@ -26,6 +26,7 @@ verbatim, then distil it into a structured issue below: mechanism, a live repro,
 | # | Title | Severity | Status |
 |---|---|---|---|
 | CIU-9 | `reset_service` volume cleanup silently no-ops in DooD when the operator can write the logical path | High | FIXED |
+| CIU-10 | Pre-set `PHYSICAL_REPO_ROOT` contamination from a sibling repo's sourced `ciu.env` corrupts `ciu env generate` for a nested repo | High | FIXED |
 
 ## Resolved / not-a-gap
 
@@ -146,6 +147,54 @@ DooD routes through the physical path unconditionally even when a local rmtree w
 native-host behaviour). `tests/tests/test_ciu_hostdir_creation.py` → `TestCIU9HostdirRewriteFeedsRender`
 (1 new end-to-end test, described above). Full suite: `python run-ciu-tests.py` — 892 passed,
 coverage 74.75% (floor 73%).
+
+---
+
+### CIU-10 detail: pre-set `PHYSICAL_REPO_ROOT` contamination across sibling repos
+
+**Mechanism (confirmed):** `_detect_physical_repo_root` (`src/ciu/workspace_env.py`) treated a
+pre-set `PHYSICAL_REPO_ROOT` environment variable as winning **unconditionally**, before even
+consulting `/proc/self/mountinfo` (the 2026-07-15 mountinfo longest-prefix-match fix, otherwise
+correct — see S2.7). This is a legitimate manual-override mechanism, but it is also a contamination
+vector: a devcontainer's login shell auto-`source`s its **primary** workspace's `ciu.env` (e.g.
+`~/.bashrc`'s `if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/ciu.env" ]]; then source
+"$REPO_ROOT/ciu.env"; fi` hook), which exports `PHYSICAL_REPO_ROOT` into every subsequent shell in
+that devcontainer. Running `ciu env generate` (or anything that calls `generate_ciu_env`) for an
+**unrelated, nested** repo from that same shell then inherited the primary workspace's
+`PHYSICAL_REPO_ROOT` unconditionally, corrupting the nested repo's `PHYSICAL_REPO_ROOT` /
+`REPO_NAME` / `INSTANCE_ID` / `DOCKER_NETWORK_INTERNAL` — and, downstream, its bind-mount sources
+(materializing empty directories at the wrong host path) and its Docker network attachment.
+
+**Live repro (2026-07-16):** `/workspaces/vbpub/nyxloom/ciu.env` (nyxloom = a ciu root nested
+inside `vbpub`, itself a sibling of the devcontainer's primary `dstdns` workspace) showed
+`REPO_ROOT="/workspaces/vbpub/nyxloom"` (correct) but `PHYSICAL_REPO_ROOT="/home/vb/volkb79-2/dstdns"`,
+`REPO_NAME="dstdns"`, `INSTANCE_ID="98535c"` — dstdns's own identity, byte-for-byte, leaked into
+nyxloom's generated env. Confirmed via direct repro: with `PHYSICAL_REPO_ROOT` unset,
+`_detect_physical_repo_root(Path("/workspaces/vbpub/nyxloom"))` correctly returns
+`/home/vb/volkb79-2/vbpub/nyxloom` via mountinfo (nyxloom has no dedicated bind mount of its own —
+it's nested under the `/workspaces/vbpub` bind, so longest-prefix-match resolves it through that
+bind plus the relative offset); with `PHYSICAL_REPO_ROOT=/home/vb/volkb79-2/dstdns` pre-set (as it
+is in the live devcontainer, per the `.bashrc` mechanism above), the old code returned that stale
+dstdns value unconditionally, reproducing the exact live bug.
+
+**Fix:** `_detect_physical_repo_root` now checks a pre-set `PHYSICAL_REPO_ROOT` against the
+mountinfo-derived value for `repo_root` before honoring it. The pre-set value wins only when (a) it
+agrees with mountinfo, or (b) mountinfo yields no match at all (nothing to check against — the
+legitimate native-host / mountinfo-unavailable manual-override case is preserved unchanged). When
+mountinfo yields a *different* value, the mountinfo-derived value wins instead and a warning is
+printed to stderr naming the ignored pre-set value and repo_root. SPEC (`docs/SPEC.md` S2.7),
+`docs/CIU.md`, and `docs/CONFIG.md` updated to document the consistency check alongside the
+existing precedence table.
+
+**Tests:** `tests/tests/test_physical_root_mount_table.py` — `TestFallbackWhenMountinfoYieldsNothing
+::test_preset_env_still_wins_over_mountinfo` reconciled to the refined contract (now exercises the
+"mountinfo has no entry" sub-case); new `TestPresetEnvConsistency` class adds
+`test_preset_env_wins_when_consistent_with_mountinfo` (manual-override preserved) and
+`test_preset_env_ignored_when_inconsistent_with_repo_root` (the exact contamination regression, incl.
+asserting the stderr warning); new `TestRegressionBoundNestedPresetEnvContamination` class exercises
+`generate_ciu_env` end-to-end for a nyxloom-shaped nested layout with a contaminating dstdns preset,
+asserting the generated `ciu.env` carries nyxloom's own identity, not dstdns's. Full suite:
+`PYTHONPATH=src python -m pytest tests -q` — 931 passed.
 
 ---
 

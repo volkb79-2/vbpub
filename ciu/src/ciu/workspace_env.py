@@ -395,11 +395,47 @@ def _physical_root_from_mountinfo(repo_root: Path) -> Optional[Path]:
 
 
 def _detect_physical_repo_root(repo_root: Path) -> Path:
+    """Contract precedence (SPEC.md S2.7): pre-set env (when consistent) ->
+    mountinfo -> docker-ps devcontainer-origin label -> identity.
+
+    A pre-set ``PHYSICAL_REPO_ROOT`` is a legitimate manual-override
+    mechanism (native host, mountinfo unreadable, deliberate remap) — but it
+    is ALSO an inherited-shell-state contamination vector: a devcontainer's
+    login shell may `source` one repo's ``ciu.env`` (e.g. via a
+    ``REPO_ROOT``-triggered ``.bashrc`` hook for the devcontainer's primary
+    workspace) and leave a stale ``PHYSICAL_REPO_ROOT`` in the environment
+    when the same shell later operates on an unrelated, nested repo (2026-07
+    live bug: dstdns's ``PHYSICAL_REPO_ROOT`` leaking into a
+    ``ciu env generate`` run for ``vbpub/nyxloom``, corrupting its
+    ``PHYSICAL_REPO_ROOT`` / ``REPO_NAME`` / network identity).
+
+    Refined contract: the pre-set value wins ONLY when it is CONSISTENT with
+    this process's own mountinfo-derived physical root for *repo_root* (or
+    when mountinfo yields nothing to check against — mountinfo is our only
+    independent signal, so absent it we have no basis to override the
+    explicit env). When mountinfo yields a DIFFERENT physical root, that
+    mountinfo value is trusted instead (it reflects an actual bind mount for
+    THIS repo_root, not inherited shell state) and a warning is emitted.
+    """
     physical_root = os.environ.get("PHYSICAL_REPO_ROOT")
-    if physical_root:
-        return Path(physical_root).resolve()
+    preset_path = Path(physical_root).resolve() if physical_root else None
 
     via_mountinfo = _physical_root_from_mountinfo(repo_root)
+
+    if preset_path is not None:
+        if via_mountinfo is None or via_mountinfo == preset_path:
+            return preset_path
+        print(
+            f"ciu: ignoring pre-set PHYSICAL_REPO_ROOT={preset_path} for "
+            f"repo_root={repo_root} — inconsistent with the mountinfo-derived "
+            f"physical root {via_mountinfo}. Using the mountinfo-derived value "
+            "(the pre-set env is likely stale/cross-repo shell state, e.g. "
+            "inherited from a different repo's sourced ciu.env). Unset "
+            "PHYSICAL_REPO_ROOT or update it if this override is intentional.",
+            file=sys.stderr,
+        )
+        return via_mountinfo
+
     if via_mountinfo is not None:
         return via_mountinfo
 

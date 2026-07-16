@@ -540,13 +540,24 @@ Always-required keys [S2.2]:
 | Key | Detected from |
 |---|---|
 | `REPO_ROOT` | `--define-root` → `REPO_ROOT` env → walk-up to `ciu.global.defaults.toml.j2` |
-| `PHYSICAL_REPO_ROOT` | `devcontainer.local_folder` label (DooD); native: `= REPO_ROOT` |
+| `PHYSICAL_REPO_ROOT` | pre-set env (only if consistent with mountinfo, or mountinfo absent) → per-repo longest-prefix match of `REPO_ROOT` in `/proc/self/mountinfo` → `devcontainer.local_folder` label via `docker ps` (container-origin fallback) → native: `= REPO_ROOT` |
 | `DOCKER_NETWORK_INTERNAL` | `<repo-name>-<instance-id>-network` |
 | `CONTAINER_UID` / `CONTAINER_GID` | current user UID / `DOCKER_GID` |
 | `DOCKER_GID` | `stat /var/run/docker-host.sock`; fallback `getent group docker` |
 
 `PUBLIC_FQDN` and `PUBLIC_TLS_*` are required **only** when
 `ciu.require_fqdn` / `ciu.require_certs` is true (both default false) [S2.3].
+
+**Pre-set `PHYSICAL_REPO_ROOT` consistency check (2026-07-16):** a pre-set
+`PHYSICAL_REPO_ROOT` is a legitimate manual override, but a devcontainer's
+login shell may also `source` one repo's `ciu.env` (e.g. via a
+`REPO_ROOT`-triggered `.bashrc` hook for the primary workspace) and leave a
+stale `PHYSICAL_REPO_ROOT` in the environment when later operating on an
+unrelated, nested repo. To guard against this, the pre-set value wins only
+when it agrees with this process's own mountinfo-derived physical root for
+`REPO_ROOT`, or when mountinfo yields no match at all (nothing to check
+against). When mountinfo yields a *different* value, CIU trusts mountinfo
+instead and prints a warning to stderr naming the ignored pre-set value.
 
 Add to `.gitignore`:
 
