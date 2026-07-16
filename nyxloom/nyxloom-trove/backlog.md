@@ -76,6 +76,30 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
   `project add` (or `doctor`) should FAIL when the root is not visible from inside
   the container, instead of registering a project that silently never dispatches.
   Depends on P27 landing the tactical fix first.
+- **B15 — `nyxloom lint <path>` resolves against the WRONG project config.** Any
+  path-form lint picks `dstdns`'s config regardless of the file's project or the
+  cwd, so a nyxloom handoff reports `L1 project 'nyxloom' does not match config
+  'dstdns'`, `L2 gate id 'tester-unified' not declared`, and a wall of `L7 path
+  does not exist` (paths resolved from dstdns's root). Reproduce — a known-good,
+  live handoff lints dirty:
+  `docker exec -w /workspaces/vbpub/nyxloom nyxloom-prod-nyxloomd python -m
+  nyxloom.cli lint nyxloom-trove/handoffs/nyxloom-P24-config-schema-lint.md`.
+  Effect: CLI lint is unusable as a pre-flight signal — the only way to read it
+  today is to diff findings against another handoff and ignore the shared noise.
+  (The daemon's per-project `lint_project` path is fine, which is why this went
+  unnoticed.) Fix: resolve the owning project from the path (walk up to the nearest
+  `nyxloom-trove/nyxloom.toml`, or match against registered project roots) instead
+  of defaulting to one project. Test: lint a handoff from EACH registered project,
+  assert no cross-project findings. Discovered adopting netcup-api-filter.
+- **B16 — backlog ids collide under concurrent carving.** As of 2026-07-16 this file
+  has TWO `B11`s, TWO `B12`s and TWO `B13`s, added by separate in-flight carves
+  (593a585, 8ccb8ad, and P27's — since renumbered to B14). Ids are the handle
+  `depends_on` and prose cross-references use, so a duplicate silently makes
+  "depends on B12" ambiguous. This is the same gap **B10** names (no parseable
+  id/status structure): with no schema and no allocator, two concurrent authors pick
+  the same next integer. Fix with B10 (typed ids, uniqueness validated by lint); a
+  cheaper interim is allocating from a monotonic counter or using the carve's task id
+  as the stem. Until then: grep before numbering.
 - **B10 — roadmap/backlog light schema + daemon auto-tick on merge.** Give
   roadmap/backlog items a parseable structure (id, status, priority, links to
   carved handoffs / D-decisions) like `decisions.md` has, schema-validated
