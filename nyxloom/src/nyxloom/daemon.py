@@ -40,16 +40,10 @@ INTERFACE CONTRACT (frozen):
        the two-pass cache in daemon memory; a declared-long-gate exemption
        per v2 §5.4 is NOT implemented -- the wrapper does not run gates yet
        (receipt.oracles stays [], see wrapper.py), so there is no
-       gate-running marker to exempt against), resume_failures from
-       _resume_failures_scan() (P26 2026-07-16: for each INTERRUPTED
-       attempt, count consecutive `.resume-N` logs, most recent first, that
-       sat at/below RESUME_NO_PROGRESS_LOG_BYTES for at least policy.
-       resume_progress_grace_seconds without growing -- a resume that died
-       without making real progress; the planner stops resuming a session
-       once this reaches policy.max_resume_failures and fresh-starts
-       instead), budget_remaining from policy.max_cost minus summed attempt
-       usage costs (same currency only), merge_history/carve_outcomes/
-       rejections from recent events (iter_events tail).
+       gate-running marker to exempt against), budget_remaining from
+       policy.max_cost minus summed attempt usage costs (same currency
+       only), merge_history/carve_outcomes/rejections from recent events
+       (iter_events tail).
     2. actions = reconcile.plan_project(inp)
     3. execute(project, action) for each — see EXECUTION MAP below.
     4. render.render_all(...) if any event was appended this pass.
@@ -280,10 +274,6 @@ SSE_POLL_SECONDS = 0.5
 SSE_HEARTBEAT_SECONDS = 15.0
 DEFAULT_HTTP_PORT = 8942
 DEFAULT_RECONCILE_INTERVAL = 30.0
-# P26 2026-07-16: a resume log at or below this size is treated as "no
-# progress" (banner/prompt only, no real work output) once it has sat
-# unwritten for policy.resume_progress_grace_seconds.
-RESUME_NO_PROGRESS_LOG_BYTES = 200
 
 # P15 2026-07-15: UI config endpoints (POST-only; GET on these -> 405).
 # P18 2026-07-16: /api/decision/reply joins this POST-only set (not a config
@@ -607,8 +597,6 @@ class Daemon:
         provider_ok = self._provider_ok(routes)
         log_quiet_seconds, pid_alive, receipts = self._attempt_scan(project, states)
         stall_confirmed = self._confirm_stall(states, log_quiet_seconds, pid_alive, cfg)
-        resume_failures = self._resume_failures_scan(
-            project, states, cfg.policy.resume_progress_grace_seconds)
         budget_remaining = self._budget_remaining(cfg, states)
         merge_history, carve_outcomes, review_rejections_by_area, blocked_underspecified_count = \
             self._history(project)
@@ -641,7 +629,6 @@ class Daemon:
             pid_alive=pid_alive,
             receipts=receipts,
             stall_confirmed=stall_confirmed,
-            resume_failures=resume_failures,
             budget_remaining=budget_remaining,
             merge_history=merge_history,
             ratchet_already_open=ratchet_already_open,
@@ -774,44 +761,6 @@ class Daemon:
                 else:
                     log_quiet[att.attempt_id] = None
         return log_quiet, pid_alive, receipts
-
-    def _resume_failures_scan(self, project: str, states: dict[str, TaskStateFile],
-                               grace_seconds: int) -> dict[str, int]:
-        """P26 2026-07-16: attempt_id -> count of consecutive `.resume-N`
-        logs (most recent first) that sat at/below RESUME_NO_PROGRESS_
-        LOG_BYTES for at least grace_seconds without growing -- i.e. a
-        resume that produced no real progress before dying. Only computed
-        for INTERRUPTED attempts (the ones reconcile.plan_project actually
-        consults this for); stops counting at the first resume that shows
-        real progress or is still too fresh to judge."""
-        now = time.time()
-        out: dict[str, int] = {}
-        for tsf in states.values():
-            for att in tsf.attempts:
-                if att.state != AttemptState.INTERRUPTED:
-                    continue
-                attempt_dir = paths.attempt_dir(project, att.attempt_id)
-                resume_logs = []
-                n = 1
-                while True:
-                    log_path = attempt_dir / f"attempt.resume-{n}.log"
-                    if not log_path.exists():
-                        break
-                    resume_logs.append(log_path)
-                    n += 1
-                failures = 0
-                for log_path in reversed(resume_logs):
-                    try:
-                        st = log_path.stat()
-                    except OSError:
-                        break
-                    age = now - st.st_mtime
-                    if st.st_size <= RESUME_NO_PROGRESS_LOG_BYTES and age >= grace_seconds:
-                        failures += 1
-                    else:
-                        break
-                out[att.attempt_id] = failures
-        return out
 
     def _confirm_stall(self, states: dict[str, TaskStateFile], log_quiet_seconds, pid_alive,
                         cfg: ProjectConfig) -> dict[str, bool]:

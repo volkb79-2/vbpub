@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import importlib.resources
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-import jsonschema
 import pytest
 
 from nyxloom.config import MutexDef, Policy, ProjectConfig, Routes, RouteDef
@@ -37,8 +34,6 @@ def make_config(
     carve_ahead_target: int = 5,
     carve_authority: str = "branch",
     headroom_warn: int = 5,
-    max_resume_failures: int = 2,
-    resume_progress_grace_seconds: int = 120,
 ) -> ProjectConfig:
     """Create a minimal ProjectConfig for testing."""
     return ProjectConfig(
@@ -57,8 +52,6 @@ def make_config(
             carve_ahead_target=carve_ahead_target,
             carve_authority=carve_authority,
             headroom_warn=headroom_warn,
-            max_resume_failures=max_resume_failures,
-            resume_progress_grace_seconds=resume_progress_grace_seconds,
         ),
     )
 
@@ -912,162 +905,6 @@ def test_interrupted_attempts_exhausted_blocks_task_even_with_handle():
     assert len(transitions) == 1
     assert transitions[0].to == TaskState.BLOCKED
     assert transitions[0].blocker.type == BlockerType.ENVIRONMENT
-
-
-# ============================================================================
-# P26: daemon resume-safety -- poisoned resumes fresh-start instead of
-# looping forever on the same session.
-# ============================================================================
-
-def test_resume_failures_at_threshold_fresh_starts_instead_of_resuming():
-    """O1: an INTERRUPTED attempt whose resume_failures count is >=
-    policy.max_resume_failures no longer yields ResumeAttempt -- instead a
-    fresh DispatchImplementer (new attempt, no session_handle) is planned,
-    given remaining attempts budget."""
-    cfg = make_config(max_resume_failures=2, max_attempts_per_task=3)
-    routes = make_routes(tier="flash-high")
-    fm = make_frontmatter(id="P01", tier="flash-high")
-    att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
-    att.session_handle = "sess-poisoned"
-    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
-
-    inp = ReconcileInput(
-        now=utc(2026, 7, 15),
-        cfg=cfg,
-        routes=routes,
-        states={"P01": tsf},
-        frontmatters={"P01": (fm, "h.md")},
-        lint_clean={},
-        project_paused=False,
-        decisions_open=set(),
-        merged_branches=set(),
-        leases_free={},
-        provider_ok={"route-1": True},
-        log_quiet_seconds={},
-        pid_alive={},
-        receipts={},
-        resume_failures={"att-1": 2},
-    )
-
-    actions = plan_project(inp)
-    resumes = [a for a in actions if isinstance(a, ResumeAttempt) and a.attempt_id == "att-1"]
-    assert len(resumes) == 0
-    dispatches = [a for a in actions if isinstance(a, DispatchImplementer) and a.task_id == "P01"]
-    assert len(dispatches) == 1
-    assert dispatches[0].route_id == "route-1"
-
-
-def test_resume_failures_below_threshold_still_resumes():
-    """O2: a resume that made progress does not trip the fallback -- when
-    resume_failures < max_resume_failures, an INTERRUPTED attempt with a
-    session_handle and remaining budget still yields ResumeAttempt (the
-    unchanged healthy path), not a fresh DispatchImplementer."""
-    cfg = make_config(max_resume_failures=2, max_attempts_per_task=3)
-    routes = make_routes(tier="flash-high")
-    fm = make_frontmatter(id="P01", tier="flash-high")
-    att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
-    att.session_handle = "sess-healthy"
-    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
-
-    inp = ReconcileInput(
-        now=utc(2026, 7, 15),
-        cfg=cfg,
-        routes=routes,
-        states={"P01": tsf},
-        frontmatters={"P01": (fm, "h.md")},
-        lint_clean={},
-        project_paused=False,
-        decisions_open=set(),
-        merged_branches=set(),
-        leases_free={},
-        provider_ok={"route-1": True},
-        log_quiet_seconds={},
-        pid_alive={},
-        receipts={},
-        resume_failures={"att-1": 1},
-    )
-
-    actions = plan_project(inp)
-    resumes = [a for a in actions if isinstance(a, ResumeAttempt) and a.attempt_id == "att-1"]
-    assert len(resumes) == 1
-    dispatches = [a for a in actions if isinstance(a, DispatchImplementer) and a.task_id == "P01"]
-    assert len(dispatches) == 0
-
-
-def test_resume_failures_at_threshold_no_budget_blocks_task():
-    """O4: when the fresh-attempt budget is also exhausted (no distinct
-    attempt records left), a resume-poisoned task transitions to BLOCKED
-    with a typed ENVIRONMENT blocker -- never left silently ACTIVE, and
-    never fresh-dispatched past its budget."""
-    cfg = make_config(max_resume_failures=2, max_attempts_per_task=1)
-    routes = make_routes(tier="flash-high")
-    fm = make_frontmatter(id="P01", tier="flash-high")
-    prior = make_attempt(
-        attempt_id="att-0", state=AttemptState.EXITED,
-        receipt=Receipt(result=ReceiptResult.ERROR, exit_code=1),
-    )
-    att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
-    att.session_handle = "sess-poisoned"
-    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[prior, att])
-
-    inp = ReconcileInput(
-        now=utc(2026, 7, 15),
-        cfg=cfg,
-        routes=routes,
-        states={"P01": tsf},
-        frontmatters={"P01": (fm, "h.md")},
-        lint_clean={},
-        project_paused=False,
-        decisions_open=set(),
-        merged_branches=set(),
-        leases_free={},
-        provider_ok={"route-1": True},
-        log_quiet_seconds={},
-        pid_alive={},
-        receipts={},
-        resume_failures={"att-1": 2},
-    )
-
-    actions = plan_project(inp)
-    resumes = [a for a in actions if isinstance(a, ResumeAttempt)]
-    assert len(resumes) == 0
-    dispatches = [a for a in actions if isinstance(a, DispatchImplementer) and a.task_id == "P01"]
-    assert len(dispatches) == 0
-    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
-    assert len(transitions) == 1
-    assert transitions[0].to == TaskState.BLOCKED
-    assert transitions[0].blocker is not None
-    assert transitions[0].blocker.type == BlockerType.ENVIRONMENT
-
-
-def test_resume_failures_policy_defaults():
-    """O3: policy.max_resume_failures (default 2) and policy.
-    resume_progress_grace_seconds (default 120) exist with those defaults;
-    an override replaces them."""
-    pol = Policy()
-    assert pol.max_resume_failures == 2
-    assert pol.resume_progress_grace_seconds == 120
-
-    overridden = Policy(max_resume_failures=5, resume_progress_grace_seconds=30)
-    assert overridden.max_resume_failures == 5
-    assert overridden.resume_progress_grace_seconds == 30
-
-
-def test_resume_failures_schema_accepts_new_policy_keys():
-    """O3: schemas/nyxloom-config.schema.json permits the two new [policy]
-    keys (extends P24's schema)."""
-    schema_text = importlib.resources.files("nyxloom.schemas").joinpath(
-        "nyxloom-config.schema.json"
-    ).read_text(encoding="utf-8")
-    schema = json.loads(schema_text)
-    validator = jsonschema.Draft202012Validator(schema)
-
-    raw = {
-        "project": {"id": "demo", "handoff_globs": ["handoff/*.md"]},
-        "policy": {"max_resume_failures": 4, "resume_progress_grace_seconds": 60},
-    }
-    errors = list(validator.iter_errors(raw))
-    assert errors == []
 
 
 # ============================================================================
