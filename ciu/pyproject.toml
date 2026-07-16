@@ -19,6 +19,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# tester-unified SoT: ciu's test closure (runtime deps above + pytest)
+test = ["pytest>=8"]
 ssh = ["paramiko>=5.0"]
 
 [tool.setuptools.packages.find]

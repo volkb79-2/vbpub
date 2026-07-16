@@ -5,6 +5,12 @@ description = "Files-first, daemon-supervised control plane for role-separated A
 requires-python = ">=3.11"
 dependencies = ["PyYAML>=6", "jsonschema>=4"]
 
+[project.optional-dependencies]
+# tester-unified SoT: handoffctl2's test closure lives HERE (not duplicated in
+# a hand-maintained requirements file). The vbpub test container installs this
+# extra, so a dep change here flows to the gate on the next image rebuild.
+test = ["pytest>=8", "hypothesis>=6"]
+
 [project.scripts]
 handoffctl = "handoffctl.cli:main"
 

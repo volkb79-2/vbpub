@@ -13,6 +13,10 @@ license = "MIT"
 authors = [{name = "Volker Badziong"}]
 dependencies = []
 
+[project.optional-dependencies]
+# tester-unified SoT: cmru's test closure (stdlib-only project + pytest)
+test = ["pytest>=8"]
+
 [project.scripts]
 cmru            = "cmru.cli:main"            # existing
 cmru-agent      = "cmru.agent.cli:main"      # new (spec G §4)

@@ -1,0 +1,21 @@
+# Scoped for the tester-unified build (docker build -f tester-unified/Dockerfile .
+# from the repo root). Whitelist ONLY the Python projects it COPYs, so the build
+# context stays tiny — everything else (.git, .worktrees, logs, other stacks) is
+# excluded. NOTE: this whitelist means a repo-root `docker build` sees only these
+# four dirs; other stacks build from their own subdirectory contexts, not here.
+*
+!ciu
+!cmru
+!groop
+!handoffctl2
+
+# Drop heavy/generated content within the whitelisted projects.
+**/.git
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.hypothesis
+**/.mypy_cache
+**/node_modules
+**/.worktrees
