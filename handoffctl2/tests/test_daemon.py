@@ -460,6 +460,81 @@ def test_emit_attempt_exit_error_exhausted(tmp_state, sample_project, patch_sibl
 
 
 # --------------------------------------------------------------------------
+# P21 oracle 3: receipt head_commit crosscheck against real git state
+
+def test_emit_attempt_exit_head_commit_crosscheck_branch_ahead(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """A done-receipt with head_commit=null on a branch that has a real
+    commit ahead of default must record the REAL commit -- a receipt has
+    been observed lying null even when the branch held real work (live
+    P93 lesson); a lying null must never read as "no work done"."""
+    cfg = sample_project
+    task_id, attempt_id = "t-head-ahead", "att-head-ahead"
+    _seed_running_attempt("demo", task_id, attempt_id)
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    real_head = subprocess.run(
+        ["git", "-C", str(cfg.root), "rev-parse", f"feat/{task_id}"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert real_head
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    exited = next(e for e in storage.iter_events("demo") if e.type is EventType.ATTEMPT_EXITED)
+    assert exited.payload["attempt"]["receipt"]["head_commit"] == real_head
+
+    tsf = storage.load_state("demo", task_id)
+    att = tsf.attempt_by_id(attempt_id)
+    assert att.receipt.head_commit == real_head
+
+
+def test_emit_attempt_exit_head_commit_crosscheck_no_commits_ahead(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """Negative case: a branch that exists but has NO commits ahead of
+    default still records null/none -- the crosscheck is defensive, not a
+    fabrication; it must not invent a commit when there genuinely is none."""
+    cfg = sample_project
+    task_id, attempt_id = "t-head-none", "att-head-none"
+    _seed_running_attempt("demo", task_id, attempt_id)
+    subprocess.run(["git", "-C", str(cfg.root), "branch", f"feat/{task_id}"],
+                    check=True, capture_output=True)
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    exited = next(e for e in storage.iter_events("demo") if e.type is EventType.ATTEMPT_EXITED)
+    assert exited.payload["attempt"]["receipt"]["head_commit"] is None
+
+
+def test_emit_attempt_exit_head_commit_receipt_trusted_when_present(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """A receipt that already reports a head_commit is trusted as-is (no
+    crosscheck override) even though no matching branch exists."""
+    cfg = sample_project
+    task_id, attempt_id = "t-head-trusted", "att-head-trusted"
+    _seed_running_attempt("demo", task_id, attempt_id)
+    d0 = paths.attempt_dir("demo", attempt_id)
+    d0.mkdir(parents=True, exist_ok=True)
+    receipt = Receipt(result=ReceiptResult.DONE, exit_code=0, head_commit="deadbeef")
+    (d0 / "receipt.json").write_text(json.dumps(receipt.to_dict()), encoding="utf-8")
+
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    exited = next(e for e in storage.iter_events("demo") if e.type is EventType.ATTEMPT_EXITED)
+    assert exited.payload["attempt"]["receipt"]["head_commit"] == "deadbeef"
+
+
+# --------------------------------------------------------------------------
 # Oracle 4: MarkInterrupted/ResumeAttempt/InterruptAttempt
 
 def test_mark_interrupted_and_resume(tmp_state, sample_project, patch_siblings, monkeypatch):
@@ -653,6 +728,87 @@ def test_open_wave_and_launch_review(tmp_state, sample_project, patch_siblings, 
     assert diff1.exists() and diff1.stat().st_size > 0
     packet_md = (packet_dir / "packet.md").read_text(encoding="utf-8")
     assert "t1" in packet_md and "t2" in packet_md
+
+
+# --------------------------------------------------------------------------
+# P21 oracles 1+2: review packet git-truth (uncommitted state + reviewer text)
+
+def test_launch_review_packet_captures_uncommitted_worktree(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """P21 oracle 1: a task whose worktree holds an uncommitted change gets
+    that change surfaced under an UNCOMMITTED heading in packet.md (not
+    just the COMMITTED default...branch diff) -- "experience shows the
+    commit requirement is often not honored" (user directive). A task
+    whose worktree is already torn down gets an explicit absent-note
+    rather than a silent omission."""
+    cfg = sample_project
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+    )
+
+    for tid in ("t1", "t2"):
+        _seed_task("demo", tid, TaskState.AWAITING_REVIEW, handoff_path=None)
+        _make_feature_branch(cfg.root, tid, f"{tid}.py", f"# {tid}\n")
+
+    d = daemon.Daemon({"demo": cfg.root})
+
+    # t1: a real worktree with an uncommitted (unstaged) edit sitting in it.
+    wt1 = cfg.root / ".worktrees" / "feat/t1"
+    d._ensure_worktree(cfg.root, "feat/t1", wt1, cfg.default_branch)
+    (wt1 / "t1.py").write_text("# t1\nUNCOMMITTED_MARKER_LINE\n", encoding="utf-8")
+    # t2: deliberately NO worktree (simulates already-torn-down teardown).
+
+    _scripted(monkeypatch, [[reconcile.OpenWave(task_ids=["t1", "t2"])]])
+    d.run_pass("demo")
+    wave_id = next(e for e in storage.iter_events("demo") if e.type is EventType.WAVE_OPENED).wave_id
+
+    _scripted(monkeypatch, [[reconcile.LaunchReview(wave_id=wave_id, task_ids=["t1", "t2"])]])
+    d.run_pass("demo")
+
+    created = next(e for e in storage.iter_events("demo")
+                    if e.type is EventType.ATTEMPT_CREATED and e.wave_id == wave_id)
+    packet_md = (paths.attempt_dir("demo", created.attempt_id) / "packet" / "packet.md").read_text(
+        encoding="utf-8")
+
+    assert "### COMMITTED" in packet_md
+    assert "### UNCOMMITTED" in packet_md
+    assert "UNCOMMITTED_MARKER_LINE" in packet_md
+    assert "is absent (already torn down)" in packet_md
+
+
+def test_launch_review_packet_reviewer_text_has_git_truth_clause(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """P21 oracle 2: the reviewer role text tells the reviewer to verify
+    real git state and NOT trust the receipt's head_commit/files_touched/
+    oracles fields (live P93 lesson: they were observed null/empty even
+    when real work was committed)."""
+    cfg = sample_project
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+    )
+    _seed_task("demo", "t1", TaskState.AWAITING_REVIEW, handoff_path=None)
+    _make_feature_branch(cfg.root, "t1", "t1.py", "# t1\n")
+
+    _scripted(monkeypatch, [[reconcile.OpenWave(task_ids=["t1"])]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+    wave_id = next(e for e in storage.iter_events("demo") if e.type is EventType.WAVE_OPENED).wave_id
+
+    _scripted(monkeypatch, [[reconcile.LaunchReview(wave_id=wave_id, task_ids=["t1"])]])
+    d.run_pass("demo")
+
+    created = next(e for e in storage.iter_events("demo")
+                    if e.type is EventType.ATTEMPT_CREATED and e.wave_id == wave_id)
+    packet_md = (paths.attempt_dir("demo", created.attempt_id) / "packet" / "packet.md").read_text(
+        encoding="utf-8")
+
+    assert "git state is truth, receipts" in packet_md
+    assert "git log" in packet_md and "git status" in packet_md
+    assert "Do NOT trust the receipt's" in packet_md
+    assert "head_commit" in packet_md and "files_touched" in packet_md and "oracles" in packet_md
+    assert "do not treat uncommitted" in packet_md.lower()
 
 
 # --------------------------------------------------------------------------

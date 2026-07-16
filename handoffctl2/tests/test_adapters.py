@@ -275,6 +275,26 @@ def test_build_dispatch_prompt_contains_required_info():
     assert "/tmp/receipt.json" in prompt
 
 
+def test_build_dispatch_prompt_commit_instruction_is_truthful():
+    """P21 oracle 4: the implementer prompt no longer asserts the falsehood
+    "uncommitted work is discarded" (P21 live P93 lesson: uncommitted work
+    is now surfaced to review, not discarded) -- it still tells the
+    implementer to commit, just without the lie."""
+    route = RouteDef(route_id="test", cli="fake", model="fake-model")
+    _argv, prompt = adapters.build_dispatch(
+        route,
+        handoff_path="handoff/P21.md",
+        worktree="/workspace/.worktrees/feat-x",
+        branch="feat-x",
+        task_id="T-999",
+        gate_hint="pytest-q",
+        receipt_path="/tmp/receipt.json",
+    )
+    assert "uncommitted work is discarded" not in prompt
+    assert "git commit" in prompt
+    assert "surfaced to review" in prompt
+
+
 # Oracle 3: Prompt-length guard
 def test_build_dispatch_prompt_too_long():
     """Oracle 3: long prompt raises AdapterError."""

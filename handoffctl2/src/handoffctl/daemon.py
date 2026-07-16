@@ -794,6 +794,35 @@ class Daemon:
                 check=True, capture_output=True, text=True,
             )
 
+    def _crosscheck_head_commit(self, cfg: ProjectConfig, task_id: str, receipt: Receipt) -> None:
+        """P21 2026-07-16: never let a lying null head_commit read as "no
+        work done" (live P93 lesson: a receipt claimed head_commit=null
+        while feat/<task> actually held a real commit). If the receipt
+        already reports a commit, trust it -- only a null/empty value gets
+        cross-checked. Compares feat/<task_id> against cfg.default_branch
+        in cfg.root (read-only: rev-parse only, never a write to the
+        branch); a branch that is ahead of default gets its real HEAD
+        recorded; a branch with no commits ahead, or that does not exist,
+        still records null/none."""
+        if receipt.head_commit:
+            return
+        branch = f"feat/{task_id}"
+        branch_res = subprocess.run(
+            ["git", "-C", str(cfg.root), "rev-parse", "--verify", branch],
+            capture_output=True, text=True,
+        )
+        if branch_res.returncode != 0:
+            return  # no such branch -- leave null/none
+        default_res = subprocess.run(
+            ["git", "-C", str(cfg.root), "rev-parse", "--verify", cfg.default_branch],
+            capture_output=True, text=True,
+        )
+        if default_res.returncode != 0:
+            return
+        branch_sha = branch_res.stdout.strip()
+        if branch_sha and branch_sha != default_res.stdout.strip():
+            receipt.head_commit = branch_sha
+
     def _next_resume_n(self, attempt_dir: Path) -> int:
         n = 1
         while (attempt_dir / f"attempt.resume-{n}.log").exists() or (attempt_dir / f"spec.resume-{n}.json").exists():
@@ -978,6 +1007,11 @@ class Daemon:
             attempt_dir = paths.attempt_dir(project, action.attempt_id)
             receipt_data = json.loads((attempt_dir / "receipt.json").read_text(encoding="utf-8"))
             receipt = Receipt.from_dict(receipt_data)
+            # P21 2026-07-16: git state is truth, receipts lie (live P93
+            # lesson -- a receipt reported head_commit=null/files_touched=[]
+            # while the branch actually held a real commit). Cross-check
+            # before the receipt is used/logged below.
+            self._crosscheck_head_commit(cfg, task_id, receipt)
             if attempt.state != AttemptState.EXITED:
                 # Wrapper died before emitting its own exit event — heal it.
                 attempt.state = AttemptState.EXITED
@@ -1059,18 +1093,28 @@ class Daemon:
                 "the first live review wrote implementer artifacts instead):",
                 "1. Read the handoff contract, then the diff (<task>.diff",
                 "   here, or `git diff main...feat/<task>` in the repo).",
-                "2. Adversarially verify against the handoff's oracles:",
+                "2. Verify actual git state — git state is truth, receipts",
+                f"   lie: run `git log {cfg.default_branch}..feat/<task>` and",
+                "   `git status` in the worktree. Do NOT trust the receipt's",
+                "   `head_commit` / `files_touched` / `oracles` fields: they",
+                "   have been observed null/empty even when real work was",
+                "   committed (live P93 lesson). If the worktree holds",
+                "   UNCOMMITTED changes (see the UNCOMMITTED section below,",
+                "   per task), review them too — the implementer's commit",
+                "   discipline is not guaranteed; do not treat uncommitted",
+                "   work as nonexistent.",
+                "3. Adversarially verify against the handoff's oracles:",
                 "   hollow tests, overclaimed evidence, missing handoff",
                 "   requirements, edge-case gaps, env-specific claims.",
-                "3. Re-run the handoff's declared gate yourself; never trust",
+                "4. Re-run the handoff's declared gate yourself; never trust",
                 "   a report's pasted output.",
-                "4. Small defects: fix them YOURSELF, commit to the task's",
+                "5. Small defects: fix them YOURSELF, commit to the task's",
                 "   feat/ branch. Large/architectural defects: REJECT.",
-                "5. Write groop/handoff/reports/<task>-REVIEW.md: findings,",
+                "6. Write groop/handoff/reports/<task>-REVIEW.md: findings,",
                 "   what you fixed, verdict + reasoning. Commit it to the",
                 "   feat/ branch (NOT main). Do NOT merge. Do NOT write the",
                 "   implementer's LOG/REPORT.",
-                "6. VERDICT signalling (drives the pipeline): if EVERY task",
+                "7. VERDICT signalling (drives the pipeline): if EVERY task",
                 "   here is approved, finish normally. If ANY task must be",
                 "   rejected, make your FINAL output line exactly:",
                 "   `BLOCKED: rejected — <task ids and one-line reasons>`.",
@@ -1091,7 +1135,45 @@ class Daemon:
                 packet_lines.append(f"## {t}")
                 if tsf_t is not None and tsf_t.handoff_path:
                     packet_lines.append(f"- handoff: {tsf_t.handoff_path}")
+                packet_lines.append(f"### COMMITTED ({cfg.default_branch}...{branch})")
                 packet_lines.append(f"- diff stat:\n{stat_res.stdout}")
+                packet_lines.append("")
+
+                # P21 2026-07-16: also capture UNCOMMITTED worktree state --
+                # "experience shows the commit requirement is often not
+                # honored" (user directive), so a committed-only diff misses
+                # real work still sitting in the task's worktree. Same
+                # worktree derivation DispatchImplementer uses (~845):
+                # cfg.root / cfg.worktree_root / feat/<task>.
+                worktree_path = cfg.root / cfg.worktree_root / branch
+                packet_lines.append(
+                    "### UNCOMMITTED (worktree — may be lost on teardown; REVIEW IT)"
+                )
+                if not worktree_path.exists():
+                    packet_lines.append(
+                        f"- worktree {worktree_path} is absent (already torn down); "
+                        "no uncommitted state could be captured."
+                    )
+                else:
+                    status_res = subprocess.run(
+                        ["git", "-C", str(worktree_path), "status", "--porcelain"],
+                        capture_output=True, text=True,
+                    )
+                    unstaged_res = subprocess.run(
+                        ["git", "-C", str(worktree_path), "diff"],
+                        capture_output=True, text=True,
+                    )
+                    staged_res = subprocess.run(
+                        ["git", "-C", str(worktree_path), "diff", "--cached"],
+                        capture_output=True, text=True,
+                    )
+                    if not (status_res.stdout.strip() or unstaged_res.stdout.strip()
+                            or staged_res.stdout.strip()):
+                        packet_lines.append("- clean: no uncommitted changes in the worktree.")
+                    else:
+                        packet_lines.append(f"- git status --porcelain:\n{status_res.stdout}")
+                        packet_lines.append(f"- unstaged diff:\n{unstaged_res.stdout}")
+                        packet_lines.append(f"- staged diff (--cached):\n{staged_res.stdout}")
                 packet_lines.append("")
             (packet_dir / "packet.md").write_text("\n".join(packet_lines), encoding="utf-8")
 
