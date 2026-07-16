@@ -2581,3 +2581,101 @@ def test_carve_trigger_milestone_gate_active_task_overrides_roadmap_exhausted():
     ))
     dispatches = [a for a in plan_project(inp) if isinstance(a, CarveDispatch)]
     assert len(dispatches) == 1
+
+
+# ============================================================================
+# SELF-CORRECT 2026-07-16: REVIEW_REJECTED reject-loop (module contract item
+# 10). Paired with daemon.py's robust _parse_review_verdict (bug 1); see
+# item 10's docstring for the documented, out-of-scope BLOCKED gap on the
+# exhausted-budget half of this contract.
+# ============================================================================
+
+def test_review_rejected_with_budget_remaining_requeues():
+    """O2 (bug 2 fix): a REVIEW_REJECTED task with attempts remaining
+    (below max_attempts_per_task) must plan a REVIEW_REJECTED->QUEUED
+    Transition -- before this fix, REVIEW_REJECTED had NO handler at all
+    and the task stranded forever (zero planned actions, requiring a
+    manual operator re-queue)."""
+    cfg = make_config(max_attempts_per_task=3)
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att1 = make_attempt(
+        attempt_id="att-1", state=AttemptState.EXITED,
+        receipt=Receipt(result=ReceiptResult.DONE, exit_code=0),
+    )
+    tsf = make_tsf(task_id="P01", state=TaskState.REVIEW_REJECTED, attempts=[att1])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+    )
+
+    actions = plan_project(inp)
+    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert len(transitions) == 1
+    t = transitions[0]
+    assert t.to == TaskState.QUEUED
+    assert t.blocker is None
+    assert "review rejected" in (t.notes or "").lower()
+
+    # The negative this fixes: never left with zero planned progress.
+    assert len(actions) >= 1
+
+
+def test_review_rejected_attempts_exhausted_documents_known_gap():
+    """O2 (documented gap, NOT a silent no-op): the handoff's contract asked
+    for REVIEW_REJECTED->BLOCKED once attempts are exhausted (mirroring the
+    INTERRUPTED-exhausted typed-blocker path elsewhere in this module).
+    That transition is illegal per types.py's
+    TASK_TRANSITIONS[REVIEW_REJECTED] (BLOCKED is absent from that
+    frozenset -- see reconcile.py module-contract item 10) and types.py is
+    FROZEN CORE / out of scope for this package (scope.touch forbids
+    editing it), so planning the transition would crash the daemon with
+    TransitionError the moment it executed (check_task_transition runs for
+    every TASK_TRANSITIONED/TASK_BLOCKED event, no bypass).
+
+    This test pins the CURRENT, honest behavior -- no action planned for
+    the exhausted case -- so a future package that adds BLOCKED to that
+    frozenset has an explicit failing test to flip, instead of this
+    residual strand silently regressing further unnoticed."""
+    cfg = make_config(max_attempts_per_task=1)
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att1 = make_attempt(
+        attempt_id="att-1", state=AttemptState.EXITED,
+        receipt=Receipt(result=ReceiptResult.DONE, exit_code=0),
+    )
+    tsf = make_tsf(task_id="P01", state=TaskState.REVIEW_REJECTED, attempts=[att1])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+    )
+
+    actions = plan_project(inp)
+    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert transitions == []

@@ -123,6 +123,19 @@ INTERFACE CONTRACT (frozen). Semantics:
    most one per pass (the in-flight check makes this self-limiting pass
    over pass too). Appended LAST in the returned action list (after
    SpecAttention).
+10. REJECT LOOP (self-correct package, 2026-07-16): REVIEW_REJECTED with
+    attempts remaining (same accounting as dispatch_eligible check 5:
+    receipted attempts excluding 'limit' results, < policy.
+    max_attempts_per_task) -> Transition to QUEUED (re-work). Self-limiting
+    like item 2's CARVED->QUEUED (the transition moves the task out of
+    REVIEW_REJECTED, so it does not refire next pass). Attempts exhausted:
+    NO action is planned -- REVIEW_REJECTED->BLOCKED would be the
+    escalation, mirroring item 4's INTERRUPTED-exhausted typed-blocker path,
+    but that edge is absent from types.py's TASK_TRANSITIONS[REVIEW_REJECTED]
+    (a FROZEN CORE table, out of scope for this package) -- planning it
+    would raise TransitionError when the daemon executes it. Documented gap,
+    not a silent no-op: see reconcile.py's REVIEW_REJECTED block and the
+    P-selfcorrect handoff LOG/REPORT.
 """
 
 from __future__ import annotations
@@ -337,6 +350,51 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
         elif tsf.state == TaskState.NEEDS_DECISION and not open_d_deps:
             # Transition back to QUEUED
             task_actions.append(Transition(task_id=fm_id, to=TaskState.QUEUED, notes=None))
+
+        # SELF-CORRECT 2026-07-16 (bug 2 of the review-verdict + reject-loop
+        # package): REVIEW_REJECTED had NO handler at all. The state machine
+        # permits REVIEW_REJECTED->QUEUED (types.py TASK_TRANSITIONS) and the
+        # reject CLI/UI imply re-work, but nothing here ever planned it, so a
+        # rejected task STRANDED forever (required a manual re-queue by an
+        # operator). Mirrors the attempts-budget accounting dispatch_eligible
+        # already uses below (exclude LIMIT receipts, same formula as the
+        # daemon's own ERROR-path count) -- attempts remaining -> re-queue
+        # for another implementer pass; this is self-limiting the same way
+        # CARVED->QUEUED above is: once applied, tsf.state is QUEUED and this
+        # branch no longer matches on the next pass, so it fires once per
+        # rejection, not every tick.
+        #
+        # KNOWN GAP (documented, not silently dropped -- see P-selfcorrect
+        # LOG/REPORT): the exhausted-budget half of this handoff's contract
+        # asked for REVIEW_REJECTED -> BLOCKED with a typed blocker
+        # (mirroring the INTERRUPTED-exhausted typed-blocker path elsewhere
+        # in this module). That specific transition is NOT legal today:
+        # types.py's TASK_TRANSITIONS[REVIEW_REJECTED] is {QUEUED,
+        # READY_TO_CARVE, NEEDS_DECISION, SUPERSEDED, CANCELLED} -- BLOCKED
+        # is absent -- so planning it would produce an action that raises
+        # TransitionError the moment the daemon executes it (check_task_
+        # transition runs for BOTH TASK_TRANSITIONED and TASK_BLOCKED
+        # events -- storage.apply_event, no bypass; verified empirically).
+        # types.py is FROZEN CORE and out of scope for this handoff (scope.
+        # touch forbids editing it, on the -- here inaccurate -- premise
+        # that "the transition table is already correct"). Rather than plan
+        # an action that would crash the daemon in real use, or silently
+        # substitute an unauthorized state the handoff never asked for, the
+        # exhausted case is deliberately left unhandled here pending a
+        # follow-up types.py edit (adding BLOCKED to that frozenset) that is
+        # outside this package's authorized scope.
+        if tsf.state == TaskState.REVIEW_REJECTED:
+            rejected_attempts_count = sum(
+                1 for a in tsf.attempts
+                if a.receipt is not None and a.receipt.result != ReceiptResult.LIMIT
+            )
+            if rejected_attempts_count < inp.cfg.policy.max_attempts_per_task:
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.QUEUED,
+                    notes="review rejected -- re-queued for re-work (attempt budget remains)",
+                ))
+            # else: attempts exhausted -- see KNOWN GAP above; no action
+            # planned (types.py edit required, out of scope).
 
     # 3. Dispatch eligible QUEUED tasks (with capacity limit)
     # Count current active tasks

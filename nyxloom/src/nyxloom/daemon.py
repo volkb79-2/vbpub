@@ -1398,37 +1398,115 @@ class Daemon:
         """P33 2026-07-16: the merge gate must reflect the reviewer's actual
         verdict, not just process exit (live P26 incident -- a correct
         REJECTED review report + clean process exit -> receipt DONE ->
-        rubber-stamped MERGE_READY). Reads the committed
-        `<reports_dir>/<task_id>-REVIEW.md` from the task's OWN feat/<task_id>
-        branch (git show, read-only) and extracts a `VERDICT: APPROVED` or
-        `VERDICT: REJECTED` line. FAIL SAFE to "rejected" on anything other
-        than an unambiguous single APPROVED verdict: missing file, unreadable
-        git object, no VERDICT line, or conflicting VERDICT lines.
+        rubber-stamped MERGE_READY). Reads review artifacts committed to the
+        task's OWN feat/<task_id> branch (git show, read-only) and extracts
+        a `VERDICT: APPROVED` or `VERDICT: REJECTED` line.
 
-        REVIEW-FIX 2026-07-16: the `./` prefix is load-bearing. `git show
-        <rev>:<path>` resolves a bare <path> from the REPO ROOT, ignoring
-        `-C`; only a `./`-prefixed path is read relative to `-C`. reports_dir
-        is relative to cfg.root, which is NOT always the repo root -- nyxloom
-        self-hosts with cfg.root=<repo>/nyxloom (nyxloom.toml: "vbpub is the
-        git repo; nyxloom is a subdir"). Without `./`, every lookup missed,
-        so every review -- including genuine APPROVALS -- fail-safed to
-        rejected and no task could ever reach MERGE_READY."""
+        SELF-CORRECT 2026-07-16 (bug 1 of the review-verdict + reject-loop
+        package): a live incident had a reviewer commit `P42-REVIEW.md`
+        instead of the documented `<task_id>-REVIEW.md` -- the old rigid
+        single-path lookup found nothing and fail-safed a genuinely-APPROVED
+        task to REJECTED, which then had nowhere to go (bug 2: no reconcile
+        handling for REVIEW_REJECTED) and STRANDED forever. Lookup is now
+        two-step:
+          1. the documented `<task_id>-REVIEW.md` path (preferred, as
+             before -- cheapest, single git-show, matches the common case).
+          2. only if that yields no VERDICT line (absent file, or present
+             but silent), broaden to every `*REVIEW*.md` under reports_dir
+             on the SAME branch, and treat any whose filename OR content
+             mentions task_id as a candidate for this task -- catches a
+             misnamed file like the live incident without depending on the
+             reviewer following the naming convention.
+        Verdicts from all matched candidates are pooled before classifying,
+        so a real APPROVED anywhere for this task is found regardless of
+        which file it landed in.
+
+        Return values (a plain str; the FRONTIER_REVIEW call site only ever
+        compares `== "approved"`, so any non-"approved" value already takes
+        the existing fail-safe REVIEW_REJECTED path unchanged):
+          "approved" -- exactly one unambiguous APPROVED verdict pooled
+                        across all candidates for this task.
+          "rejected" -- an explicit REJECTED verdict, OR conflicting/
+                        ambiguous verdicts (two disagreeing VERDICT lines --
+                        still fails safe to rejected), OR at least one
+                        review artifact for this task exists but carries no
+                        VERDICT line at all (a malformed review -- fail
+                        safe exactly as before this fix).
+          "missing"  -- NO review artifact referencing this task exists
+                        ANYWHERE on the branch. This is a review-LEG
+                        failure (the reviewer never produced any output),
+                        distinct from a reviewer's genuine REJECTED verdict
+                        -- it is NOT "approved", so the task still lands in
+                        REVIEW_REJECTED either way (fail-safe preserved);
+                        this is purely a distinguishing signal (visible in
+                        the REVIEW_RECORDED event / transition notes) so a
+                        missing verdict is never silently conflated with a
+                        real rejection downstream.
+
+        REVIEW-FIX 2026-07-16: the `./` prefix on `git show <rev>:<path>` is
+        load-bearing under `-C` (bare paths resolve from the REPO ROOT,
+        ignoring `-C`; reports_dir is relative to cfg.root, which is NOT
+        always the repo root -- nyxloom self-hosts with cfg.root=<repo>/
+        nyxloom). `git ls-tree -- <path>` pathspecs are cwd/-C relative
+        regardless of a `./` prefix (verified empirically); `./` is kept
+        below purely for visual consistency with the show calls."""
         branch = f"feat/{task_id}"
+
+        def _verdicts_in(content: str) -> set[str]:
+            return {
+                m.group(1).upper()
+                for m in re.finditer(r"^\s*VERDICT:\s*(APPROVED|REJECTED)\b", content,
+                                      re.IGNORECASE | re.MULTILINE)
+            }
+
         rel_path = f"{cfg.reports_dir}/{task_id}-REVIEW.md"
         show_res = subprocess.run(
             ["git", "-C", str(cfg.root), "show", f"{branch}:./{rel_path}"],
             capture_output=True, text=True,
         )
-        if show_res.returncode != 0:
+        any_candidate_found = False
+        all_verdicts: set[str] = set()
+        if show_res.returncode == 0:
+            any_candidate_found = True
+            all_verdicts |= _verdicts_in(show_res.stdout)
+
+        if not all_verdicts:
+            # The documented path was absent or silent -- broaden the
+            # search (bug 1 fix: a misnamed review file still counts).
+            ls_res = subprocess.run(
+                ["git", "-C", str(cfg.root), "ls-tree", "-r", "--name-only", branch,
+                 "--", f"./{cfg.reports_dir}"],
+                capture_output=True, text=True,
+            )
+            if ls_res.returncode == 0:
+                for path in ls_res.stdout.splitlines():
+                    path = path.strip()
+                    if not path or path == rel_path:
+                        continue  # already handled above
+                    name = path.rsplit("/", 1)[-1]
+                    if "REVIEW" not in name.upper() or not name.upper().endswith(".MD"):
+                        continue
+                    show2 = subprocess.run(
+                        ["git", "-C", str(cfg.root), "show", f"{branch}:./{path}"],
+                        capture_output=True, text=True,
+                    )
+                    if show2.returncode != 0:
+                        continue
+                    content = show2.stdout
+                    if task_id not in content and task_id not in name:
+                        continue  # doesn't reference this task
+                    any_candidate_found = True
+                    all_verdicts |= _verdicts_in(content)
+
+        if all_verdicts:
+            return "approved" if all_verdicts == {"APPROVED"} else "rejected"
+        if any_candidate_found:
+            # A review artifact for this task exists but never carries a
+            # VERDICT line -- malformed, fail safe exactly as before.
             return "rejected"
-        verdicts = {
-            m.group(1).upper()
-            for m in re.finditer(r"^\s*VERDICT:\s*(APPROVED|REJECTED)\b", show_res.stdout,
-                                  re.IGNORECASE | re.MULTILINE)
-        }
-        if verdicts == {"APPROVED"}:
-            return "approved"
-        return "rejected"
+        # No review artifact referencing this task exists anywhere on the
+        # branch -- a review-LEG failure, not a genuine reject verdict.
+        return "missing"
 
     def _next_resume_n(self, attempt_dir: Path) -> int:
         n = 1
