@@ -116,6 +116,20 @@ INTERFACE CONTRACT (frozen):
     GET /api/events?project=&since=   -> [event dicts] (cap 500)
     GET /api/log/<project>/<attempt_id>?tail=65536 -> text/plain, LAST n
         bytes of the attempt log passed through cfg.redact
+    P22 2026-07-16 (read-only agent drilldown, live attach): GET
+      /api/drilldown/<project>/<attempt_id>?tail=65536 -> text/html: the
+      LAST n bytes of the attempt log, rendered via
+      render.render_transcript (assistant text deltas + tool names, never
+      raw JSON) and ONLY THEN passed through cfg.redact — redacting the
+      raw stream-json first (i.e. /api/log's order) can splice
+      '[REDACTED]' across a JSON string's closing quote/braces and
+      silently drop that whole line (including its tool name) from the
+      transcript; redacting the human-readable rendering instead is safe
+      and lossless. render.render_drilldown_page wraps the redacted
+      transcript in a small auto-refreshing (<meta http-equiv="refresh">,
+      no JS/websocket) page. This surfaces a running OR recent attempt's
+      live output/reasoning; it is READ-ONLY like every GET here — no
+      control on the page mutates state.
     GET /api/stream?project= -> text/event-stream: poll events.jsonl every
         2s, emit new events as `data: <json>\n\n` (heartbeat comment line
         every 15s); connection ends when client disconnects.
@@ -1358,6 +1372,16 @@ class Daemon:
             self._serve_log(handler, project, attempt_id, tail)
             return
 
+        m = re.match(r"^/api/drilldown/([^/]+)/([^/]+)$", path)
+        if m:
+            project, attempt_id = m.group(1), m.group(2)
+            try:
+                tail = int(qs.get("tail", ["65536"])[0])
+            except ValueError:
+                tail = 65536
+            self._serve_drilldown(handler, project, attempt_id, tail)
+            return
+
         if path == "/api/events":
             project = qs.get("project", [None])[0]
             try:
@@ -1606,6 +1630,41 @@ class Daemon:
         body = redacted.encode("utf-8")
         handler.send_response(200)
         handler.send_header("Content-Type", "text/plain; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+
+    def _serve_drilldown(self, handler: http.server.BaseHTTPRequestHandler, project: str,
+                          attempt_id: str, tail: int) -> None:
+        """P22 2026-07-16: read-only agent drilldown (live attach). Tail
+        the raw log, RENDER it (render.render_transcript — assistant text
+        deltas + tool names, never raw JSON), and ONLY THEN redact the
+        rendered text (see render.render_drilldown_page's docstring for
+        why this order, not /api/log's redact-then-serve order, is
+        required) — READ-ONLY, no mutating control anywhere on the
+        returned page."""
+        if project not in self.registry:
+            self._send_json(handler, 404, b'{"error":"not found"}')
+            return
+        try:
+            cfg = config.ProjectConfig.load(self.registry[project])
+        except Exception:
+            self._send_json(handler, 404, b'{"error":"not found"}')
+            return
+        log_path = paths.attempt_dir(project, attempt_id) / "attempt.log"
+        if not log_path.exists():
+            self._send_json(handler, 404, b'{"error":"not found"}')
+            return
+        data = log_path.read_bytes()
+        if tail > 0 and len(data) > tail:
+            data = data[-tail:]
+        text = data.decode("utf-8", errors="replace")
+        transcript = render.render_transcript(text)
+        redacted = cfg.redact(transcript)
+        page = render.render_drilldown_page(project, attempt_id, redacted)
+        body = page.encode("utf-8")
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
         handler.send_header("Content-Length", str(len(body)))
         handler.end_headers()
         handler.wfile.write(body)

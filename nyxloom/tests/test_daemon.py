@@ -1138,6 +1138,61 @@ def test_http_endpoints(http_daemon):
     assert exc2.value.code == 404
 
 
+# --------------------------------------------------------------------------
+# P22: GET /api/drilldown/<project>/<attempt_id> — read-only agent drilldown
+
+def test_drilldown_endpoint_renders_transcript_readonly_and_redacted(http_daemon):
+    """Oracle 3: the endpoint returns the human-readable rendering of an
+    attempt's stream-json log (assistant text + tool names), never raw
+    JSON, redacted like the raw log endpoint, and with no mutating
+    control anywhere on the page."""
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+
+    attempt_id = "att-drill-1"
+    log_dir = paths.attempt_dir("demo", attempt_id)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "attempt.log").write_text(
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"text","text":"Investigating the failing test, password=supersecret in the fixture."}]}}\n'
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"tool_use","name":"Bash","input":{"command":"pytest -q"}}]}}\n',
+        encoding="utf-8",
+    )
+
+    resp = urllib.request.urlopen(f"{base}/api/drilldown/demo/{attempt_id}", timeout=5)
+    assert resp.headers.get("Content-Type", "").startswith("text/html")
+    body = resp.read().decode("utf-8")
+
+    assert "Investigating the failing test" in body
+    assert "[tool: Bash]" in body
+    assert '"type":"assistant"' not in body   # never raw JSON
+    assert '"tool_use"' not in body
+    assert "supersecret" not in body          # redacted
+    assert "[REDACTED]" in body
+    assert "<form" not in body.lower()        # READ-ONLY: no mutating control
+    assert "<button" not in body.lower()
+    assert 'http-equiv="refresh"' in body
+
+
+def test_drilldown_endpoint_404_for_missing_attempt(http_daemon):
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"{base}/api/drilldown/demo/does-not-exist", timeout=5)
+    assert exc_info.value.code == 404
+
+
+def test_drilldown_endpoint_404_for_unknown_project(http_daemon):
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"{base}/api/drilldown/no-such-project/att-x", timeout=5)
+    assert exc_info.value.code == 404
+
+
 def test_sse_stream_and_stop(tmp_state, sample_project, monkeypatch):
     monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
     monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -520,4 +521,193 @@ def test_live_html_parsed_renderer(seed_data, sample_project):
     assert "ATTEMPT_" in content
     assert "evt-tick-error" in content
     assert "evt-task-transitioned" in content
-    assert "evt-attempt" in content
+
+
+# ---------------------------------------------------------------------------
+# P22: dashboard state legend + attempt liveness + read-only drilldown
+
+
+def test_state_legend_present_and_explains_interrupted_dead_end(seed_data, sample_project):
+    """Oracle 1: index.html carries an always-visible legend entry for
+    every TaskState (sourced from render.STATE_LEGEND, so it cannot drift
+    from the enum) and explains 'interrupted-dead-end' in plain language."""
+    tmp_state, project_id = seed_data
+    registry = {"demo": sample_project.root}
+
+    render.render_all(registry)
+    content = (paths.www_dir() / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="state-legend"' in content
+    # every TaskState value appears (single-dict-sourced -> can't drift)
+    for state in TaskState:
+        assert f">{state.value}<" in content, f"{state.value} missing from legend"
+    # the specific reason called out by the handoff, WITH explanatory text
+    assert "interrupted-dead-end" in content
+    assert "could not be" in content and "resumed" in content
+    # the other states the handoff specifically names
+    for state in (TaskState.AWAITING_REVIEW, TaskState.MERGE_READY,
+                  TaskState.REVIEW_REJECTED, TaskState.NEEDS_DECISION, TaskState.BLOCKED):
+        assert state.value in content
+
+
+def test_index_html_marks_attempt_running_despite_stale_queued_state(sample_project, tmp_state):
+    """Oracle 2: a task whose STATEFILE state is QUEUED (lagging) but whose
+    attempt is RUNNING with no receipt.json yet is still marked running —
+    this is the literal 'nothing running' bug from the handoff."""
+    project_id = "demo"
+    now = datetime.now(timezone.utc)
+    att = Attempt(
+        attempt_id="att-live-001", role=Role.IMPLEMENTER, state=AttemptState.RUNNING,
+        route=Route(route_id="fake-cli", cli="fake", model="fake-model"), started=now, pid=None,
+    )
+    storage.save_state(TaskStateFile(
+        schema_version=1, task_id="demo-P30-lagging", project=project_id,
+        state=TaskState.QUEUED, since=now, attempts=[att],
+    ))
+
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "index.html").read_text(encoding="utf-8")
+
+    assert "demo-P30-lagging" in content
+    assert "● running (att-live-001)" in content
+    assert 'href="/api/drilldown/demo/att-live-001"' in content
+
+
+def test_index_html_does_not_mark_running_once_receipt_has_landed(sample_project, tmp_state):
+    """Negative (oracle 2): once receipt.json exists on disk the wrapper
+    has already finished, even if the statefile's attempt.state write
+    (RUNNING -> EXITED) itself lagged -- must NOT be shown as running."""
+    project_id = "demo"
+    now = datetime.now(timezone.utc)
+    att = Attempt(
+        attempt_id="att-done-002", role=Role.IMPLEMENTER, state=AttemptState.RUNNING,
+        route=Route(route_id="fake-cli", cli="fake", model="fake-model"), started=now, pid=None,
+    )
+    storage.save_state(TaskStateFile(
+        schema_version=1, task_id="demo-P31-stalereceipt", project=project_id,
+        state=TaskState.QUEUED, since=now, attempts=[att],
+    ))
+    receipt_dir = paths.attempt_dir(project_id, "att-done-002")
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    (receipt_dir / "receipt.json").write_text("{}", encoding="utf-8")
+
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "index.html").read_text(encoding="utf-8")
+
+    assert "demo-P31-stalereceipt" in content
+    assert "att-done-002" not in content  # no live indicator/link on index.html
+
+
+def test_index_html_pid_alive_overrides_non_running_attempt_state(sample_project, tmp_state):
+    """Oracle 2 (belt-and-braces): an attempt whose recorded pid is a REAL
+    alive process (this test process itself) counts as running even when
+    its persisted state is STALLED (not RUNNING/PREFLIGHTING) and it has
+    no receipt yet -- the pid check stands on its own, independent of the
+    persisted attempt state."""
+    project_id = "demo"
+    now = datetime.now(timezone.utc)
+    att = Attempt(
+        attempt_id="att-stalled-003", role=Role.IMPLEMENTER, state=AttemptState.STALLED,
+        route=Route(route_id="fake-cli", cli="fake", model="fake-model"), started=now,
+        pid=os.getpid(),
+    )
+    storage.save_state(TaskStateFile(
+        schema_version=1, task_id="demo-P32-stalledpid", project=project_id,
+        state=TaskState.ACTIVE, since=now, attempts=[att],
+    ))
+
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "index.html").read_text(encoding="utf-8")
+
+    assert "● running (att-stalled-003)" in content
+
+
+def test_task_page_has_drilldown_link(seed_data, sample_project):
+    """Oracle 3: the task page links every attempt to the read-only
+    drilldown endpoint (not only the currently-live ones -- 'recent
+    attempt' per the handoff)."""
+    tmp_state, project_id = seed_data
+    registry = {"demo": sample_project.root}
+
+    render.render_all(registry)
+    content = (paths.www_dir() / "task" / "demo" / "demo-P01-sample.html").read_text(encoding="utf-8")
+
+    assert 'href="/api/drilldown/demo/att-001"' in content
+
+
+def test_render_transcript_extracts_assistant_text_and_tool_names():
+    """Oracle 3: assistant text deltas + tool names render as readable
+    prose, in file order, never as raw JSON."""
+    raw = (
+        '{"type":"system","subtype":"init","session_id":"sess-1"}\n'
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"text","text":"Reading the spec now."}]}}\n'
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"tool_use","name":"Read","input":{"file_path":"x.py"}}]}}\n'
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"text","text":"Looks good, implementing."}]}}\n'
+        '{"type":"result","subtype":"success","result":"Done."}\n'
+    )
+    out = render.render_transcript(raw)
+
+    assert "Reading the spec now." in out
+    assert "[tool: Read]" in out
+    assert "Looks good, implementing." in out
+    assert "Done." in out
+    assert '"type":"assistant"' not in out   # never raw JSON
+    assert '"content"' not in out
+    # newest last: the second assistant text line comes after the first
+    assert out.index("Reading the spec now.") < out.index("Looks good, implementing.")
+
+
+def test_render_transcript_skips_unparseable_and_partial_lines():
+    """Negative (oracle 3): a live tail's last line is very often a
+    partial, still-being-written JSON object -- it must be silently
+    skipped, never raise, and never corrupt the rest of the rendering."""
+    raw = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"first"}]}}\n'
+        "not json at all\n"
+        '{"type":"assistant","message":{"content":[{"type":"text"'  # truncated
+    )
+    out = render.render_transcript(raw)  # must not raise
+
+    assert "first" in out
+    assert "not json at all" not in out
+
+
+def test_render_transcript_empty_input_has_placeholder():
+    """A brand-new/empty attempt log renders a placeholder, not an error
+    or an empty string (the page must always show something readable)."""
+    assert render.render_transcript("") == "(no readable transcript content yet)"
+
+
+def test_render_transcript_html_escapes_agent_text():
+    """Untrusted CLI output must never inject markup into the dashboard
+    page (STANDING.md / handoff Rules)."""
+    raw = '{"type":"assistant","message":{"content":[{"type":"text","text":"<script>alert(1)</script>"}]}}\n'
+    out = render.render_transcript(raw)
+
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
+
+
+def test_render_drilldown_page_is_readonly_and_escaped():
+    """Oracle 3: the drilldown page never exposes a mutating control and
+    keeps agent text HTML-escaped end to end."""
+    transcript = render.render_transcript(
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"text","text":"<img src=x onerror=alert(1)>"}]}}\n'
+    )
+    page = render.render_drilldown_page("demo", "att-xss", transcript)
+
+    assert "<img src=x" not in page
+    assert "&lt;img" in page
+    assert "att-xss" in page
+    assert "demo" in page
+    assert "<form" not in page.lower()
+    assert "<button" not in page.lower()
+    assert "fetch(" not in page
+    assert 'http-equiv="refresh"' in page
