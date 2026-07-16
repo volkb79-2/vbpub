@@ -1,0 +1,96 @@
+# nyxloom project config — topos.
+# Migrated 2026-07-16 from `.nyxloom/project.toml` into the standard visible
+# trove layout (see STANDARD.md — the spec, copied verbatim from nyxloom's
+# own trove). Adopted 2026-07-15 (user go after the manual wave landed
+# main@f77727e clean, 1618 tests green); this migration follows the dstdns
+# nyxloom-trove precedent (dstdns@39e4715d).
+
+[project]
+id = "topos"
+default_branch = "main"
+
+# --- the managed folder (visible, tracked, tool-named) -----------------------
+# EVERYTHING nyxloom durably manages lives under here.
+trove = "nyxloom-trove"
+
+# topos is a subdir of the vbpub monorepo (git ops resolve upward to vbpub).
+worktree_root = "../.worktrees"
+
+# Durable docs (paths relative to the project root, i.e. topos/). Each is
+# either UNDER the trove (managed, explicit) or declared in [refs] below
+# (read-only, external).
+handoff_globs         = ["nyxloom-trove/handoffs/*.md"]   # work packages (frontmatter, lint-gated)
+reports_dir           = "nyxloom-trove/reports"            # P<NN>-LOG.md / P<NN>-REPORT.md / P<NN>-REVIEW.md / P<NN>-SELFREVIEW.md
+decisions_inbox       = "nyxloom-trove/decisions.md"       # product calls (D-<NNN>)
+roadmap               = "nyxloom-trove/roadmap.md"          # self-dev milestones (pointer doc)
+backlog               = "nyxloom-trove/backlog.md"          # un-carved ideas (pointer doc)
+archive_dir           = "nyxloom-trove/archive"             # merged handoffs+reports land here
+archive_keep_visible  = 10                                  # dashboard shows last N completed; rest behind an Archive button
+agent_logs            = "nyxloom-trove/agent-logs"          # per-attempt transcripts; gitignored by default
+
+# --- [refs]: docs nyxloom READS but does not manage (live in the project's
+#     own tree). Declaring them makes the document surface explicit;
+#     `nyxloom lint` flags a [refs] path that doesn't resolve. Paths verified
+#     to exist as of the 2026-07-16 migration. `docs/DECISIONS-INBOX.md` is
+#     intentionally absent — it moved to the managed `decisions_inbox` above.
+[refs]
+contracts        = "CONTRACTS.md"
+measurements      = "MEASUREMENTS.md"
+readme            = "README.md"
+tui_spec          = "TUI-SPEC.md"
+tui_spec_review   = "TUI-SPEC-REVIEW.md"
+roadmap_product   = "docs/ROADMAP.md"
+backlog_product   = "docs/BACKLOG.md"
+architecture      = "docs/ARCHITECTURE.md"
+status            = "docs/STATUS.md"
+docs_dir          = "docs/*"
+
+# --- THE gate: tester-unified container (dstdns-style test-runner doctrine —
+# cockpit greens are never a ship signal), run from the vbpub REPO ROOT
+# because topos tests invoke CLI subprocesses with repo-root-relative paths.
+# This is the VALIDATED command (topos: 1717 passed in tester-unified) — kept
+# byte-identical to what was proven. Gate id kept as `topos-suite` (NOT
+# renamed to `tester-unified`) so the 11 outstanding handoffs' existing
+# `gates:`/`oracle.gate: topos-suite` frontmatter references stay valid
+# across this underlying-mechanism swap — same continuity principle dstdns
+# applied to its own `test-runner` gate id.
+# KNOWN LIMITATION: this argv has no {worktree} substitution — it always
+# tests the live vbpub checkout at the fixed host bind-mount path, not a
+# per-attempt worktree. Acceptable for the single-project-checkout topology
+# validated here; revisit if/when topos gains worktree-parallel dispatch.
+[gates.topos-suite]
+argv = ["bash", "-c", "docker run --rm -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'cd /workspaces/vbpub && PYTHONPATH=topos/src /opt/tester-venv/bin/python -m pytest topos/tests -q'"]
+phase = "implementation"
+timeout_seconds = 1800
+environment = "tester-unified"
+
+# Kept byte-identical from the old .nyxloom/project.toml — a fast local
+# syntax check, still referenced by the same outstanding handoffs' `gates:`.
+[gates.py-compile]
+argv = ["bash", "-c", "cd {worktree} && python3 -m py_compile $(git diff --name-only main...HEAD -- '*.py' | tr '\\n' ' ')"]
+phase = "implementation"
+timeout_seconds = 120
+environment = "local"
+
+[mutexes.merge-lane]
+scope = "project"
+capacity = 1
+
+[policy]
+max_active_tasks = 4
+ready_queue_target = 5
+max_attempts_per_task = 3
+merge_mode = "manual"
+retention_days = 60
+max_consecutive_zero_progress_merges = 3
+stall_log_quiet_seconds = 300
+reconcile_interval_seconds = 30
+wave_max_diffs = 3
+http_port = 8942
+
+# --- notifications: two-channel model (nyxloom.<fqdn>, project tagged in the
+#     message body, not per-project topics) — same as dstdns's migration.
+[notify]
+ntfy_url = "https://nyxloom.gstammtisch.dchive.de"
+notifications_topic = "notifications"   # any progress update (write-only token)
+feedback_topic = "feedback"              # decisions + escalation Q&A, bidirectional (rw token)

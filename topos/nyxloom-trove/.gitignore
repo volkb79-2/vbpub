@@ -1,0 +1,7 @@
+# nyxloom-trove — what NOT to commit by default.
+#
+# Agent logs: per-attempt transcripts (spec.json, receipt.json, attempt.log).
+# Kept in the repo for locality, but NOT committed by default (churny,
+# regenerable). To keep FULL traceability, delete the line below (or force-add
+# specific runs: `git add -f agent-logs/<att-id>`).
+agent-logs/
