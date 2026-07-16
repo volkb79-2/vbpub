@@ -504,6 +504,10 @@ def cmd_merge(args) -> int:
         payload={"merge_commit": commit},
         task_id=args.task,
     )
+
+    from . import backlog_items
+    backlog_items.tick_merged(backlog_items.resolve_path(cfg), args.task, commit)
+
     print(commit)
     return 0
 

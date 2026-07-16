@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vbpub.invalid/nyxloom/schemas/backlog-item.schema.json",
+  "title": "nyxloom backlog item header",
+  "description": "Structural validation for the OPTIONAL machine-readable header embedded per backlog.md item (an HTML comment following the item's bullet line). Un-headered legacy items default to status=open and are not schema-checked (see backlog_items.py).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "status"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^B[0-9]+$"},
+    "status": {"enum": ["open", "carved", "merged"]},
+    "priority": {"type": "integer"},
+    "carved_handoff": {"type": "string", "minLength": 1},
+    "decisions": {"type": "array", "items": {"type": "string", "pattern": "^D-[0-9]+$"}},
+    "merge_commit": {"type": "string", "minLength": 1}
+  }
+}

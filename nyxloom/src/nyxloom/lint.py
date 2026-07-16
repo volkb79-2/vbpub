@@ -80,7 +80,7 @@ from pathlib import Path
 
 import jsonschema
 
-from . import frontmatter, paths
+from . import backlog_items, frontmatter, paths
 from .config import ProjectConfig
 from .types import LintFinding, utc_now
 
@@ -150,7 +150,9 @@ def lint_file(path: Path, cfg: ProjectConfig) -> list[LintFinding]:
 
 def lint_project(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
     """relpath -> findings for every discovered handoff (frontmatter.discover_handoffs),
-    plus one extra entry for the project's own config file (see lint_config)."""
+    plus one extra entry for the project's own config file (see lint_config),
+    plus one extra entry for the project's backlog.md, when present (see
+    lint_backlog, PACKAGE P28, rule namespace BLG1)."""
     results = {}
     for handoff_path in frontmatter.discover_handoffs(cfg):
         rel_path = str(handoff_path.relative_to(cfg.root))
@@ -158,6 +160,9 @@ def lint_project(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
     config_path = _locate_config_path(cfg)
     if config_path is not None:
         results[str(config_path.relative_to(cfg.root))] = lint_config(cfg)
+    backlog_path = backlog_items.resolve_path(cfg)
+    if backlog_path.exists():
+        results[str(backlog_path.relative_to(cfg.root))] = lint_backlog(cfg)
     return results
 
 
@@ -241,6 +246,22 @@ def lint_config(cfg: ProjectConfig) -> list[LintFinding]:
         ))
 
     return findings
+
+
+# ----- backlog (PACKAGE P28) -----
+
+def lint_backlog(cfg: ProjectConfig) -> list[LintFinding]:
+    """Findings for the project's nyxloom-trove/backlog.md item headers.
+
+    Rule namespace BLG1 (separate from L1-L12/CFG1-CFG3): schema violation
+    on a PRESENT item header (schemas/backlog-item.schema.json) — missing
+    id, status outside {open,carved,merged}, non-int priority, etc.
+    Un-headered legacy items (status defaults to open) are not checked."""
+    backlog_path = backlog_items.resolve_path(cfg)
+    if not backlog_path.exists():
+        return []
+    items = backlog_items.parse(backlog_path)
+    return backlog_items.validate(items, path=str(backlog_path))
 
 
 # ----- L1 -----
