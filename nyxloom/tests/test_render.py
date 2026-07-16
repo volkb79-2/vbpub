@@ -290,6 +290,118 @@ def test_history_html(seed_data, sample_project):
     assert "0.10 USD" in content  # cost (estimated)
 
 
+# --------------------------------------------------------------------------
+# P25 2026-07-16: dashboard project-info summary + archive-collapse UX
+# (nyxloom-trove/handoffs/nyxloom-P25-dashboard-project-info-archive.md)
+
+def _write_project_toml_extra(root, extra_project_lines: str = "", notify_lines: str = "") -> None:
+    """Append lines inside the sample project's existing [project]/[notify]
+    tables (legacy .nyxloom/project.toml layout) -- archive_dir/
+    archive_keep_visible/notify topics aren't part of ProjectConfig's
+    dataclass fields the sample fixture normally sets, so tests that need
+    them write them straight into the toml text (config.py itself, and the
+    frozen conftest fixture, are untouched)."""
+    project_toml = root / ".nyxloom" / "project.toml"
+    text = project_toml.read_text()
+    if extra_project_lines:
+        text = text.replace(
+            'infra_globs = ["infra/**"]\n',
+            'infra_globs = ["infra/**"]\n' + extra_project_lines,
+        )
+    if notify_lines:
+        text = text.replace("[notify]\n", "[notify]\n" + notify_lines)
+    project_toml.write_text(text)
+
+
+def _make_completed(project_id: str, task_id: str, ended: datetime) -> None:
+    """Persist a COMPLETED task whose single attempt ended at `ended` --
+    the timestamp _render_history's archive cap orders/caps by."""
+    started = ended - timedelta(hours=1)
+    attempt = Attempt(
+        attempt_id=f"att-{task_id}",
+        role=Role.IMPLEMENTER,
+        state=AttemptState.EXITED,
+        route=Route(route_id="fake-cli", cli="fake", model="fake-model"),
+        started=started,
+        ended=ended,
+        receipt=Receipt(result=ReceiptResult.DONE, exit_code=0),
+        usage=Usage(basis=Basis.ACTUAL, cost=0.01, currency="USD"),
+    )
+    tsf = TaskStateFile(
+        schema_version=1,
+        task_id=task_id,
+        project=project_id,
+        state=TaskState.COMPLETED,
+        since=started,
+        attempts=[attempt],
+    )
+    storage.save_state(tsf)
+
+
+def test_config_html_renders_project_info_summary(sample_project, tmp_state):
+    """O1: config.html surfaces, per registered project, the gate id(s)
+    with rendered argv, the notify channels (ntfy_url + both topic names),
+    and the trove folder paths (handoff glob, reports_dir, archive_dir) --
+    all read from ProjectConfig / the raw nyxloom.toml [project] table, no
+    config.py schema change."""
+    _write_project_toml_extra(
+        sample_project.root,
+        extra_project_lines='archive_dir = "archive"\narchive_keep_visible = 5\n',
+        notify_lines=(
+            'ntfy_url = "https://ntfy.example"\n'
+            'ntfy_topic = "notifications"\n'
+            'cmd_topic = "feedback"\n'
+        ),
+    )
+
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "config.html").read_text(encoding="utf-8")
+
+    assert "<code>pytest-q</code>" in content
+    assert "<code>true</code>" in content  # gate argv
+    assert "notifications topic: notifications" in content
+    assert "feedback topic: feedback" in content
+    assert "<code>handoff/*.md</code>" in content  # handoff glob
+    assert "<code>handoff/reports</code>" in content  # default reports_dir
+    assert "<code>archive</code>" in content  # archive_dir
+    assert "innerHTML" not in content
+
+
+def test_history_archive_toggle_caps_completed_by_project(sample_project, tmp_state):
+    """O2: history.html renders at most archive_keep_visible (here: 2)
+    most-recently-completed packages inline per project; the older
+    remainder still renders (class="archive-row") but is hidden by default
+    via CSS, revealed by an id="archive-toggle" checkbox mirroring the
+    carve-toggle pattern."""
+    _write_project_toml_extra(sample_project.root, extra_project_lines="archive_keep_visible = 2\n")
+
+    base = datetime(2026, 7, 10, 12, 0, 0, tzinfo=timezone.utc)
+    for i in range(4):
+        _make_completed("demo", f"demo-PC{i}-done", base + timedelta(hours=i))
+
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "history.html").read_text(encoding="utf-8")
+
+    assert 'id="archive-toggle"' in content
+    checkbox_tag = content.split('id="archive-toggle"', 1)[1].split(">", 1)[0]
+    assert "checked" not in checkbox_tag
+    assert ".archive-row" in content and "display: none" in content
+    assert "show-archive" in content
+
+    def row_tag_for(task_id: str) -> str:
+        idx = content.index(task_id)
+        row_start = content.rindex("<tr", 0, idx)
+        return content[row_start:content.index(">", row_start) + 1]
+
+    for visible_id in ("demo-PC3-done", "demo-PC2-done"):
+        assert "archive-row" not in row_tag_for(visible_id)
+
+    for archived_id in ("demo-PC1-done", "demo-PC0-done"):
+        assert "archive-row" in row_tag_for(archived_id)
+
+
 def test_task_page_redaction(seed_data, sample_project):
     """Oracle 5: task page has log-excerpt with redaction."""
     tmp_state, project_id = seed_data
