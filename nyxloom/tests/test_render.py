@@ -368,6 +368,76 @@ def test_config_html_renders_project_info_summary(sample_project, tmp_state):
     assert "innerHTML" not in content
 
 
+def test_config_html_project_info_reads_trove_layout(sample_project, tmp_state):
+    """O1, trove layout: production projects config via
+    nyxloom-trove/nyxloom.toml (the .nyxloom/project.toml the fixture writes
+    is only the legacy fallback), so cover the trove-first branch of
+    _trove_project_extras and the `trove:` folder line -- neither of which
+    the legacy-layout sample fixture ever reaches."""
+    trove = sample_project.root / "nyxloom-trove"
+    trove.mkdir()
+    (trove / "nyxloom.toml").write_text(
+        '[project]\n'
+        'id = "demo"\n'
+        'default_branch = "main"\n'
+        'worktree_root = ".worktrees"\n'
+        'trove = "nyxloom-trove"\n'
+        'handoff_globs = ["nyxloom-trove/handoffs/*.md"]\n'
+        'reports_dir = "nyxloom-trove/reports"\n'
+        'archive_dir = "nyxloom-trove/archive"\n'
+        'archive_keep_visible = 3\n'
+        '\n'
+        '[gates.trove-gate]\n'
+        'argv = ["pytest", "-q"]\n'
+        'phase = "implementation"\n'
+        'timeout_seconds = 60\n'
+        'environment = "local"\n'
+        '\n'
+        '[policy]\n'
+        'max_active_tasks = 2\n'
+        '\n'
+        '[notify]\n'
+        'ntfy_url = "https://ntfy.example"\n'
+        'notifications_topic = "trove-notify"\n'
+        'feedback_topic = "trove-feedback"\n'
+    )
+
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "config.html").read_text(encoding="utf-8")
+
+    # trove-first resolution wins over the legacy .nyxloom/project.toml, for
+    # both ProjectConfig.load (gates/notify) and _trove_project_extras (folders)
+    assert "<code>trove-gate</code>" in content
+    assert "<code>pytest -q</code>" in content
+    assert "<code>pytest-q</code>" not in content  # the legacy gate id is NOT used
+    assert "notifications topic: trove-notify" in content
+    assert "feedback topic: trove-feedback" in content
+    # the four folder paths of O1, including the `trove:` line
+    assert "<code>nyxloom-trove</code>" in content            # trove root
+    assert "<code>nyxloom-trove/handoffs/*.md</code>" in content
+    assert "<code>nyxloom-trove/reports</code>" in content
+    assert "<code>nyxloom-trove/archive</code>" in content
+
+
+def test_config_html_tolerates_non_numeric_archive_keep_visible(sample_project, tmp_state):
+    """REVIEW fix: a non-numeric archive_keep_visible must not take the whole
+    dashboard down. ProjectConfig.load() ignores these unknown [project]
+    keys, so _trove_project_extras is the only reader -- an unguarded int()
+    there would raise straight through render_all(), failing every page for
+    every project. Falls back to the default cap of 10 instead."""
+    _write_project_toml_extra(
+        sample_project.root, extra_project_lines='archive_keep_visible = "lots"\n'
+    )
+
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)  # must not raise
+
+    content = (paths.www_dir() / "history.html").read_text(encoding="utf-8")
+    assert 'id="archive-toggle"' in content
+    assert render._trove_project_extras(sample_project.root)[2] == 10
+
+
 def test_history_archive_toggle_caps_completed_by_project(sample_project, tmp_state):
     """O2: history.html renders at most archive_keep_visible (here: 2)
     most-recently-completed packages inline per project; the older

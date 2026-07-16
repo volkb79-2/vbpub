@@ -1335,7 +1335,11 @@ def _trove_project_extras(root: Path) -> tuple[str | None, str | None, int]:
     project.toml fallback -- mirrors config.ProjectConfig.load()'s own file
     resolution). These three are dashboard-display-only (P25) and are
     deliberately NOT added to ProjectConfig -- config.py is frozen for this
-    package. Tolerant of a missing/unparsable file: (None, None, 10)."""
+    package. Tolerant of a missing/unparsable file, and of a non-numeric
+    archive_keep_visible: falls back to (None, None, 10) / 10. That
+    tolerance matters because ProjectConfig.load() simply ignores these
+    unknown [project] keys, so a bad value must not be able to take the
+    whole dashboard down from here."""
     p = root / "nyxloom-trove" / "nyxloom.toml"
     if not p.exists():
         p = root / ".nyxloom" / "project.toml"
@@ -1346,7 +1350,11 @@ def _trove_project_extras(root: Path) -> tuple[str | None, str | None, int]:
     except (OSError, tomllib.TOMLDecodeError):
         return None, None, 10
     proj = data.get("project", {})
-    return proj.get("trove"), proj.get("archive_dir"), int(proj.get("archive_keep_visible", 10))
+    try:
+        keep_visible = int(proj.get("archive_keep_visible", 10))
+    except (TypeError, ValueError):
+        keep_visible = 10
+    return proj.get("trove"), proj.get("archive_dir"), keep_visible
 
 
 def _render_config(www: Path, registry: dict[str, Path]) -> None:
