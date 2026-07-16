@@ -206,6 +206,23 @@ def apply_event(states: dict[str, TaskStateFile], ev: Event) -> list[str]:
             EventType.TASK_SUPERSEDED: lambda: TaskState.SUPERSEDED,
             EventType.TASK_CANCELLED: lambda: TaskState.CANCELLED,
         }[t]()
+        if t is EventType.TASK_TRANSITIONED and tsf.state == to:
+            # P20: application-level idempotency, not a graph edge. Two
+            # planning passes racing off a shared state snapshot can both
+            # compute the same from==to edge (e.g. both see CARVED and plan
+            # CARVED->QUEUED after the first already applied it), and the
+            # same from==to event can also already sit in a replayed log.
+            # TASK_TRANSITIONED is the only branch here whose target is a
+            # free parameter (BLOCKED/SUPERSEDED/CANCELLED targets are fixed
+            # by the event type itself), so from==to only arises for this
+            # one. Treat it as a silent no-op: skip validation, raise
+            # nothing, leave the statefile untouched (no save needed). This
+            # is the authoritative chokepoint for both live apply and
+            # replay; a cheap belt-and-suspenders guard also exists at the
+            # daemon layer (Daemon._execute, commit fdff733) that skips
+            # constructing the event in the first place — kept intentionally
+            # duplicated, not stale.
+            return affected
         check_task_transition(tsf.state, to)
         tsf.state = to
         tsf.since = ev.timestamp
