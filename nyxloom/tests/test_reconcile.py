@@ -1081,6 +1081,11 @@ def test_o1_poisoned_latest_active_clear_guards_fresh_dispatch():
     routes = make_routes()
     fm = make_frontmatter(id="P01")
     att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    # The poisoned attempt MUST carry a session_handle: it is the handle that
+    # today's planner would resume forever (O1's negative). Without one the
+    # "zero ResumeAttempt" assertion below is vacuous, since ResumeAttempt is
+    # unreachable for a handle-less attempt whether or not it is poisoned.
+    att.session_handle = "sess-poisoned"
     tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
 
     inp = ReconcileInput(
@@ -1367,6 +1372,7 @@ def test_o5_multi_pass_convergence_second_pass_no_dispatch():
     routes = make_routes()
     fm = make_frontmatter(id="P01")
     att1 = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    att1.session_handle = "sess-poisoned"
     tsf1 = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att1])
 
     inp1 = ReconcileInput(
@@ -1419,6 +1425,73 @@ def test_o5_multi_pass_convergence_second_pass_no_dispatch():
     assert len(dispatches2) == 0
 
 
+def test_o5_fresh_start_sequence_terminates_at_record_budget():
+    """O5, exhaustion clause: "repeated to exhaustion, the sequence
+    terminates -- after max_attempts_per_task distinct IMPLEMENTER records
+    the planner emits the typed BLOCKED of O6, never another dispatch".
+
+    Drives real plan/apply cycles in the worst case the oracle is about --
+    every fresh start dies poisoned the same way -- rather than a single
+    pass. The unbounded re-dispatch that got P26 reverted (a new agent
+    process every reconcile interval into one worktree) is a non-terminating
+    loop here, so only iterating to a fixed point can exclude it."""
+    max_records = 2
+    cfg = make_config(max_attempts_per_task=max_records)
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+
+    att1 = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    att1.session_handle = "sess-poisoned"
+    attempts = [att1]
+    resume_failures = {"att-1": 2}
+
+    dispatch_total = 0
+    blocked = False
+    for _ in range(10):  # generous bound; termination must happen well inside it
+        tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=list(attempts))
+        inp = ReconcileInput(
+            now=utc(2026, 7, 15),
+            cfg=cfg,
+            routes=routes,
+            states={"P01": tsf},
+            frontmatters={"P01": (fm, "h.md")},
+            lint_clean={},
+            project_paused=False,
+            decisions_open=set(),
+            merged_branches=set(),
+            leases_free={},
+            provider_ok={"route-1": True, "route-2": True},
+            log_quiet_seconds={},
+            pid_alive={},
+            receipts={},
+            resume_failures=dict(resume_failures),
+        )
+        actions = plan_project(inp)
+        dispatches = [a for a in actions if isinstance(a, DispatchImplementer) and a.task_id == "P01"]
+        blocks = [a for a in actions if isinstance(a, Transition)
+                  and a.task_id == "P01" and a.to == TaskState.BLOCKED]
+        assert not any(isinstance(a, ResumeAttempt) for a in actions)
+        if blocks:
+            assert not dispatches, "dispatched into a task it blocked in the same pass"
+            assert blocks[0].blocker is not None
+            assert blocks[0].blocker.type == BlockerType.ENVIRONMENT
+            blocked = True
+            break
+        assert len(dispatches) == 1
+        dispatch_total += 1
+        # Apply the dispatch as daemon.py's handler does (append the new
+        # attempt record), then poison it too.
+        new_id = f"att-{len(attempts) + 1}"
+        new_att = make_attempt(attempt_id=new_id, state=AttemptState.INTERRUPTED, receipt=None)
+        new_att.session_handle = f"sess-{new_id}"
+        attempts.append(new_att)
+        resume_failures[new_id] = 2
+
+    assert blocked, "sequence never terminated: the planner kept re-dispatching"
+    # Exactly one fresh start per unused record slot, then the typed dead-end.
+    assert dispatch_total == max_records - 1
+
+
 def test_o6_record_budget_gone_types_blocked():
     """O6: distinct-record budget gone (IMPLEMENTER attempt RECORDS >=
     max_attempts_per_task) with the latest attempt poisoned -> typed
@@ -1427,6 +1500,13 @@ def test_o6_record_budget_gone_types_blocked():
     routes = make_routes()
     fm = make_frontmatter(id="P01")
     att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    # The session_handle is what makes this test discriminate the RECORD-budget
+    # dead-end from P14's pre-existing no-handle dead-end: both emit the same
+    # BLOCKED/ENVIRONMENT transition, so a handle-less fixture asserts nothing
+    # about P34 (it passes with poison detection disabled entirely). With a
+    # handle, the pre-P34 planner would emit ResumeAttempt here instead --
+    # attempts_count is 0 because a receiptless record is invisible to it.
+    att.session_handle = "sess-poisoned"
     tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
 
     inp = ReconcileInput(
@@ -1450,6 +1530,8 @@ def test_o6_record_budget_gone_types_blocked():
     actions = plan_project(inp)
     dispatches = [a for a in actions if isinstance(a, DispatchImplementer) and a.task_id == "P01"]
     assert len(dispatches) == 0
+    # A poisoned attempt never resumes, even on the dead-end path.
+    assert not any(isinstance(a, ResumeAttempt) for a in actions)
     transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
     assert len(transitions) == 1
     assert transitions[0].to == TaskState.BLOCKED
