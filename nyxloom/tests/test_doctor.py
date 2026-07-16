@@ -104,6 +104,42 @@ def test_doctor_replay_divergence(sample_project, demo_statefile):
         assert 'demo-P01-sample' in divergence_findings[0].refs
 
 
+# P36 Oracle O3: check 1 degrades broadly, other checks keep running
+def test_doctor_replay_check_failure_degrades_and_other_checks_still_run(sample_project, demo_statefile):
+    """The live incident this package fixes: replay raising (e.g. a
+    TransitionError from a stale event log) must not kill doctor_project --
+    check 1 degrades to a finding and checks 2-11 still contribute theirs."""
+    save_demo_state(sample_project, demo_statefile)
+
+    with patch('nyxloom.doctor.storage.replay') as mock_replay, \
+         patch('nyxloom.doctor.frontmatter.discover_handoffs') as mock_discover, \
+         patch('nyxloom.doctor.frontmatter.parse_handoff') as mock_parse, \
+         patch('nyxloom.doctor.lint.lint_project') as mock_lint, \
+         patch('nyxloom.doctor.decisions.open_ids') as mock_decisions:
+
+        mock_replay.side_effect = RuntimeError('boom: stale event log')
+        mock_discover.return_value = [sample_project.root / 'handoff' / 'demo-P01-sample.md']
+        mock_parse.return_value = (MagicMock(task_deps=lambda: []), 'body')
+        from nyxloom.types import LintFinding
+        mock_lint.return_value = {
+            'handoff/demo-P01-sample.md': [
+                LintFinding(rule='L1', severity='error', message='test', path='handoff/demo-P01-sample.md')
+            ]
+        }
+        mock_decisions.return_value = set()
+
+        findings = doctor_project(sample_project)  # must not raise
+
+        failed = [f for f in findings if f.kind == 'replay-check-failed']
+        assert len(failed) == 1
+        assert failed[0].severity == 'critical'
+        assert 'boom: stale event log' in failed[0].message
+
+        # check 2 (handoff-lint) still ran and contributed its finding
+        lint_findings = [f for f in findings if f.kind == 'handoff-lint']
+        assert len(lint_findings) > 0
+
+
 # Oracle 3: handoff-lint
 def test_doctor_handoff_lint(sample_project, demo_statefile):
     """Oracle 3: handoff lint error surfaces as DoctorFinding."""

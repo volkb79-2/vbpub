@@ -16,11 +16,15 @@ import pytest
 
 from nyxloom import storage
 from nyxloom.types import (
-    Actor, ActorKind, EventType, TaskState, TaskStateFile, TransitionError,
-    utc_now,
+    Actor, ActorKind, Blocker, BlockerType, EventType, TaskState, TaskStateFile,
+    TransitionError, utc_now,
 )
 
 ACTOR = Actor(kind=ActorKind.TICK, id="test")
+
+
+def _blocker(reason: str) -> Blocker:
+    return Blocker(type=BlockerType.EXTERNAL, unblock_condition=reason)
 
 
 def _seed(project: str, task_id: str, state: TaskState) -> dict:
@@ -135,3 +139,108 @@ def test_invalid_transition_still_raises_on_replay(tmp_state):
 
     with pytest.raises(TransitionError):
         storage.replay(project)
+
+
+# ---------------------------------------------------------------------------
+# P36 oracles: fixed-target events (BLOCKED/SUPERSEDED/CANCELLED) get the
+# same from==to idempotency as TASK_TRANSITIONED, since their target can
+# equal the current state whenever the task is already there.
+
+# Oracle O1: a duplicate TASK_BLOCKED for an already-BLOCKED task is a
+# silent no-op -- no exception, state stays BLOCKED, no task_id affected.
+
+def test_blocked_reassert_apply_is_silent_noop(tmp_state):
+    project = "p36-blocked-noop"
+    task_id = "t-blocked-noop"
+    states = _seed(project, task_id, TaskState.QUEUED)
+
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=EventType.TASK_BLOCKED,
+        payload={"from": "QUEUED", "blocker": _blocker("first").to_dict(), "notes": None},
+        task_id=task_id,
+    )
+    assert states[task_id].state is TaskState.BLOCKED
+
+    ev = storage.append_event(
+        project, actor=ACTOR, type=EventType.TASK_BLOCKED,
+        payload={"from": "BLOCKED", "blocker": _blocker("second").to_dict(), "notes": None},
+        task_id=task_id,
+    )
+    affected = storage.apply_event(states, ev)  # must not raise
+
+    assert affected == []
+    assert states[task_id].state is TaskState.BLOCKED
+
+
+# Oracle O2: replay() over a log with a duplicate TASK_BLOCKED for an
+# already-BLOCKED task completes and the projection carries the LATEST
+# blocker payload.
+
+def test_replay_tolerates_duplicate_blocked_and_keeps_latest_blocker(tmp_state):
+    project = "p36-blocked-replay"
+    task_id = "t-blocked-replay"
+    _seed(project, task_id, TaskState.QUEUED)
+
+    storage.append_event(
+        project, actor=ACTOR, type=EventType.TASK_BLOCKED,
+        payload={"from": "QUEUED", "blocker": _blocker("first").to_dict(), "notes": None},
+        task_id=task_id,
+    )
+    storage.append_event(
+        project, actor=ACTOR, type=EventType.TASK_BLOCKED,
+        payload={"from": "BLOCKED", "blocker": _blocker("second").to_dict(), "notes": None},
+        task_id=task_id,
+    )
+
+    replayed = storage.replay(project)  # must not raise
+
+    assert replayed[task_id].state is TaskState.BLOCKED
+    assert replayed[task_id].blocker.unblock_condition == "second"
+
+
+# Oracle O4: this relaxation is scoped to from==to only -- a genuinely
+# illegal fixed-target transition (distinct from/to) still raises.
+
+def test_invalid_fixed_target_transition_still_raises(tmp_state):
+    project = "p36-invalid-fixed"
+    task_id = "t-invalid-fixed"
+    states = _seed(project, task_id, TaskState.COMPLETED)
+
+    with pytest.raises(TransitionError):
+        storage.append_and_apply(
+            project, states, actor=ACTOR, type=EventType.TASK_BLOCKED,
+            payload={"from": "COMPLETED", "blocker": _blocker("x").to_dict(), "notes": None},
+            task_id=task_id,
+        )
+
+    # state must not have moved
+    assert states[task_id].state is TaskState.COMPLETED
+    assert storage.load_state(project, task_id).state is TaskState.COMPLETED
+
+
+# The same no-op scoping also applies to TASK_SUPERSEDED / TASK_CANCELLED
+# (fixed targets, no blocker payload to refresh).
+
+@pytest.mark.parametrize("event_type,target", [
+    (EventType.TASK_SUPERSEDED, TaskState.SUPERSEDED),
+    (EventType.TASK_CANCELLED, TaskState.CANCELLED),
+])
+def test_superseded_cancelled_reassert_apply_is_silent_noop(tmp_state, event_type, target):
+    project = f"p36-{target.value.lower()}-noop"
+    task_id = "t-noop"
+    states = _seed(project, task_id, TaskState.QUEUED)
+
+    storage.append_and_apply(
+        project, states, actor=ACTOR, type=event_type,
+        payload={"from": "QUEUED", "notes": None}, task_id=task_id,
+    )
+    assert states[task_id].state is target
+
+    ev = storage.append_event(
+        project, actor=ACTOR, type=event_type,
+        payload={"from": target.value, "notes": None}, task_id=task_id,
+    )
+    affected = storage.apply_event(states, ev)  # must not raise
+
+    assert affected == []
+    assert states[task_id].state is target
