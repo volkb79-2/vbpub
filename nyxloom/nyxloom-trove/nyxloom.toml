@@ -1,0 +1,73 @@
+# =============================================================================
+# nyxloom project config — nyxloom itself (self-hosted / dogfooding).
+# Also the BEST-PRACTICE TEMPLATE. Lives in the VISIBLE managed folder
+# `nyxloom-trove/` (see STANDARD.md — the spec). Copy the folder into a new
+# project with `exec-nyxloom init <project_folder>` and adjust marked values.
+# =============================================================================
+
+[project]
+id = "nyxloom"
+default_branch = "main"
+
+# --- the managed folder (visible, tracked, tool-named) -----------------------
+# EVERYTHING nyxloom durably manages lives under here, so it is unmistakably a
+# managed resources folder (not `nyxloom/` the project home, not a hidden dir).
+trove = "nyxloom-trove"
+
+# Durable docs (paths relative to the project root). Each is either UNDER the
+# trove (managed, explicit) or declared in [refs] below (read-only, external).
+handoff_globs   = ["nyxloom-trove/handoffs/*.md"]   # work packages (frontmatter, lint-gated)
+reports_dir     = "nyxloom-trove/reports"            # P<NN>-LOG.md / P<NN>-REPORT.md
+decisions_inbox = "nyxloom-trove/decisions.md"       # product calls (D-<NNN>)
+roadmap         = "nyxloom-trove/roadmap.md"          # self-dev milestones
+backlog         = "nyxloom-trove/backlog.md"          # un-carved ideas
+archive_dir     = "nyxloom-trove/archive"             # merged handoffs+reports land here
+archive_keep_visible = 10                             # dashboard shows last N completed; rest behind an Archive button
+agent_logs      = "nyxloom-trove/agent-logs"          # per-attempt transcripts (spec/receipt/attempt.log); gitignored by default, committable for traceability
+
+worktree_root = "../.worktrees"                       # vbpub is the git repo; nyxloom is a subdir
+
+# The daemon's SOURCE OF TRUTH (event log, statefiles, registry, routes, leases,
+# pidfile) does NOT live in a project doc — it lives in the persistent
+# `nyxloom-state` docker volume mounted into the nyxloomd container (see
+# STANDARD.md "trove vs state volume" + backlog B7). Only agent-log TRANSCRIPTS
+# come back into the trove (above), for locality + optional traceability.
+
+# --- [refs]: docs nyxloom READS but does not manage (live in the project tree).
+# Declaring them makes the full document surface nyxloom depends on explicit.
+[refs]
+spec         = "docs/SPEC.md"
+architecture = "docs/ARCHITECTURE.md"
+roadmap_tool = "docs/ROADMAP.md"
+evolution    = "docs/EVOLUTION.md"
+
+# --- the gate: NEVER the devcontainer (cockpit doctrine). tester-unified
+#     container, same python (3.14) the nyxloomd runtime uses. {worktree} = the
+#     attempt checkout; the nyxloom package is at {worktree}/nyxloom.
+[gates.tester-unified]
+argv = ["bash", "-c", "docker run --rm -v /home/vb/volkb79-2/vbpub:/workspaces/vbpub tester-unified:local bash -c 'cd {worktree}/nyxloom && PYTHONPATH=src /opt/tester-venv/bin/python -m pytest tests -q'"]
+phase = "implementation"
+timeout_seconds = 1800
+environment = "tester-unified"
+
+[policy]
+max_active_tasks = 3
+ready_queue_target = 5
+max_attempts_per_task = 3
+merge_mode = "manual"
+retention_days = 60
+reconcile_interval_seconds = 30
+http_port = 8942
+
+# --- notifications: the hostname (nyxloom.<fqdn>) scopes everything to nyxloom,
+#     so channels are simple + shared across projects, tagged by project in the
+#     message body (NOT per-project topics). `feedback` is bidirectional and
+#     unifies the old cmd topic + the decision-chat escalation loop.
+[notify]
+ntfy_url = "https://nyxloom.gstammtisch.dchive.de"
+notifications_topic = "notifications"   # any progress update (write-only token)
+feedback_topic = "feedback"             # decisions + escalation Q&A, bidirectional (rw token)
+
+# --- SELF-HOSTING CAVEAT: worktree isolation + manual merge keep the RUNNING
+#     nyxloomd safe from an in-flight change, but a merge to daemon-core code
+#     needs a container rebuild (`ciu up --dir nyxloom/nyxloomd`) to take effect.
