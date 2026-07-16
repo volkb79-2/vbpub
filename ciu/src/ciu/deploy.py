@@ -264,7 +264,11 @@ def build_selection(
     for idx, stack_path in enumerate(profile.extra_stacks):
         selection.append(
             {
-                "phase_num": float("inf"),
+                # Large increasing ints (not a shared float('inf')): they sort
+                # after every numbered phase AND stay strictly ordered among
+                # themselves, so the S7.6 vault-ordering check ("vault in an
+                # EARLIER phase") works inside a stacks-only profile too.
+                "phase_num": 1_000_000 + idx,
                 "phase_key": f"{EXTRA_STACKS_KEY}:{idx}",
                 "path": stack_path,
                 "name": Path(stack_path).name,
