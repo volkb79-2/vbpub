@@ -64,7 +64,7 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
   Open D-calls: brief = new doc vs enriched backlog item (lean: enriched
   backlog); does `priority` drive dispatch order (scheduler change). Depends on
   B10.
-- **B11 — daemon project mounts derived from the registry.** The nyxloomd stack
+- **B14 — daemon project mounts derived from the registry.** The nyxloomd stack
   hardcodes its project binds (`ciu.compose.yml.j2` volumes: vbpub + dstdns),
   duplicated into the pre-rendered `docker-compose.yml` and kept in sync only by
   a comment. The registry already knows every project root, so a project can be
@@ -125,3 +125,15 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
   unblock). Fix = add the CARVER branch to the trigger (reconcile.py); the
   daemon.py `_consume_carve_exit` handler already exists. Depends on P26
   (co-edits reconcile.py). Daemon-core: gate + rebuild after merge.
+- **B14 — review verdict rubber-stamp (carved as P33).** The merge gate maps
+  `receipt.result==DONE -> MERGE_READY`, but `result` reflects only PROCESS exit
+  (wrapper: clean exit -> done), NOT the review verdict. The packet asks a
+  rejecting reviewer to emit a `BLOCKED: rejected` FINAL line — a mechanical
+  self-signal models miss. Live incident 2026-07-16: P26's reviewer wrote a
+  correct REJECTED report but exited clean -> done -> MERGE_READY -> buggy
+  daemon-core nearly merged (caught + reverted at merge review). Fix (P33):
+  derive the verdict from the durable `<task>-REVIEW.md` and FAIL SAFE to
+  REJECTED on any ambiguity; require a machine-readable `VERDICT:` line.
+  Daemon-core. NOTE: P26 (resume-safety, B8) was reverted for a real defect
+  (fresh-start dispatch bypasses every dispatch guard) — it needs re-carving
+  with the guard-respecting contract (a P34).
