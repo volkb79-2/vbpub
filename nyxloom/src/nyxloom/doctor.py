@@ -54,7 +54,10 @@ from .types import DoctorFinding, TaskStateFile, TaskState, AttemptState, TERMIN
 
 
 def doctor_project(cfg: ProjectConfig) -> list[DoctorFinding]:
-    """Run all 11 checks on a project config, degrading on NotImplementedError."""
+    """Run all 11 checks on a project config, degrading on NotImplementedError
+    (check-unavailable); check 1 (replay-divergence) additionally degrades any
+    other exception to a replay-check-failed finding so a broken event log
+    cannot take out the other ten checks."""
     findings: list[DoctorFinding] = []
 
     # 1. replay-divergence
@@ -79,6 +82,17 @@ def doctor_project(cfg: ProjectConfig) -> list[DoctorFinding]:
             kind='check-unavailable',
             severity='info',
             message='check unavailable',
+            project=cfg.project_id,
+            refs=['storage'],
+        ))
+    except Exception as exc:
+        # P36: doctor is the surface an operator reaches for precisely when
+        # something (e.g. a stale event log) is broken -- it must degrade to
+        # a finding, not die and take the other ten checks down with it.
+        findings.append(DoctorFinding(
+            kind='replay-check-failed',
+            severity='critical',
+            message=f'replay-divergence check failed: {type(exc).__name__}: {exc}',
             project=cfg.project_id,
             refs=['storage'],
         ))

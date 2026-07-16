@@ -206,22 +206,34 @@ def apply_event(states: dict[str, TaskStateFile], ev: Event) -> list[str]:
             EventType.TASK_SUPERSEDED: lambda: TaskState.SUPERSEDED,
             EventType.TASK_CANCELLED: lambda: TaskState.CANCELLED,
         }[t]()
-        if t is EventType.TASK_TRANSITIONED and tsf.state == to:
-            # P20: application-level idempotency, not a graph edge. Two
+        if tsf.state == to:
+            # P20/P36: application-level idempotency, not a graph edge. Two
             # planning passes racing off a shared state snapshot can both
             # compute the same from==to edge (e.g. both see CARVED and plan
             # CARVED->QUEUED after the first already applied it), and the
             # same from==to event can also already sit in a replayed log.
-            # TASK_TRANSITIONED is the only branch here whose target is a
-            # free parameter (BLOCKED/SUPERSEDED/CANCELLED targets are fixed
-            # by the event type itself), so from==to only arises for this
-            # one. Treat it as a silent no-op: skip validation, raise
-            # nothing, leave the statefile untouched (no save needed). This
-            # is the authoritative chokepoint for both live apply and
+            # This is not scoped to TASK_TRANSITIONED's free-parameter target:
+            # a fixed-target event (TASK_BLOCKED/SUPERSEDED/CANCELLED) hits
+            # from==to just as easily when the task is *already* in that
+            # state -- e.g. a second TASK_BLOCKED for an already-BLOCKED task,
+            # which an append-only log can contain from before reconcile's
+            # `!= BLOCKED` re-emit guard existed (P36). Treat it as a silent
+            # no-op: skip validation, raise nothing, and do not report the
+            # task_id as affected (it is a re-assertion, not a transition).
+            # This is the authoritative chokepoint for both live apply and
             # replay; a cheap belt-and-suspenders guard also exists at the
             # daemon layer (Daemon._execute, commit fdff733) that skips
             # constructing the event in the first place — kept intentionally
             # duplicated, not stale.
+            #
+            # A re-asserted TASK_BLOCKED still refreshes the blocker/notes
+            # payload in place (mutating the statefile object already held
+            # by the caller's `states` map) so a newer blocker reason wins on
+            # replay, even though this no-op does not itself trigger a save.
+            if t is EventType.TASK_BLOCKED:
+                tsf.blocker = Blocker.from_dict(ev.payload["blocker"])
+                if ev.payload.get("notes"):
+                    tsf.notes = ev.payload["notes"]
             return affected
         check_task_transition(tsf.state, to)
         tsf.state = to
