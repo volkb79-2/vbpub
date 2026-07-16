@@ -54,7 +54,7 @@ escalate_if:
    coming, but the mount list does not follow it. A project can therefore be *registered
    and unreachable* — the failure mode this package closes for netcup. (Generalising
    mounts from the registry is the principled fix and is **out of scope**: see backlog
-   **B11**. This package hardcodes one more line and adds the drift test.)
+   **B17**. This package hardcodes one more line and adds the drift test.)
 2. **`exec-nyxloom.py` cannot find the daemon.** `_find_controller_container()` matches
    `"nyxloom" in name and "controller" in name`. The container is
    `nyxloom-prod-nyxloomd` — no "controller" — so the wrapper always falls through to the

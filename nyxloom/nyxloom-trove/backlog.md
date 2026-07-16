@@ -64,7 +64,7 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
   Open D-calls: brief = new doc vs enriched backlog item (lean: enriched
   backlog); does `priority` drive dispatch order (scheduler change). Depends on
   B10.
-- **B14 — daemon project mounts derived from the registry.** The nyxloomd stack
+- **B17 — daemon project mounts derived from the registry.** The nyxloomd stack
   hardcodes its project binds (`ciu.compose.yml.j2` volumes: vbpub + dstdns),
   duplicated into the pre-rendered `docker-compose.yml` and kept in sync only by
   a comment. The registry already knows every project root, so a project can be
