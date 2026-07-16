@@ -108,7 +108,9 @@ INTERFACE CONTRACT (frozen):
       like an implementer with the packet path in the prompt.
     SpecAttention -> SPEC_ATTENTION event.
     After every event append: notify.notify_event(cfg, states, ev).
-- HTTP (loopback only, port = min over projects' policy.http_port):
+- HTTP (bind/port from the registered project with min policy.http_port --
+  P38: its policy.http_bind travels with it, default "127.0.0.1" loopback-only,
+  "0.0.0.0" on a private ciu bridge network, never on host-network):
   thread with http.server.ThreadingHTTPServer.
     GET /                    -> 302 /www/index.html
     GET /www/<path>          -> serve paths.www_dir() files (no traversal:
@@ -276,6 +278,7 @@ PROVIDER_PAUSE_SECONDS = 3600
 SSE_POLL_SECONDS = 0.5
 SSE_HEARTBEAT_SECONDS = 15.0
 DEFAULT_HTTP_PORT = 8942
+DEFAULT_HTTP_BIND = "127.0.0.1"
 DEFAULT_RECONCILE_INTERVAL = 30.0
 
 # P15 2026-07-15: UI config endpoints (POST-only; GET on these -> 405).
@@ -393,6 +396,7 @@ class Daemon:
     def __init__(self, registry: dict[str, Path]):
         self.registry = registry
         self.http_port: int = 0
+        self.http_bind: str = ""
         self._stop_event = threading.Event()
         self._httpd: http.server.ThreadingHTTPServer | None = None
         self._http_thread: threading.Thread | None = None
@@ -1844,18 +1848,24 @@ class Daemon:
 
     # -- HTTP / SSE --------------------------------------------------------
 
-    def _chosen_port(self) -> int:
-        ports = []
+    def _chosen_http(self) -> tuple[int, str]:
+        """(port, bind) from the registered project with the lowest configured
+        http_port (P38: that project's http_bind travels with it -- one HTTP
+        server serves every project, so its bind is a single choice too)."""
+        best: config.ProjectConfig | None = None
         for root in self.registry.values():
             try:
                 cfg = config.ProjectConfig.load(root)
-                ports.append(cfg.policy.http_port)
             except Exception:
                 continue
-        return min(ports) if ports else DEFAULT_HTTP_PORT
+            if best is None or cfg.policy.http_port < best.policy.http_port:
+                best = cfg
+        if best is None:
+            return DEFAULT_HTTP_PORT, DEFAULT_HTTP_BIND
+        return best.policy.http_port, best.policy.http_bind
 
     def _start_http(self) -> None:
-        port = self._chosen_port()
+        port, bind = self._chosen_http()
         daemon = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -1896,10 +1906,11 @@ class Daemon:
                     except Exception:
                         pass
 
-        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        httpd = http.server.ThreadingHTTPServer((bind, port), Handler)
         httpd.daemon_threads = True
         self._httpd = httpd
         self.http_port = httpd.server_address[1]
+        self.http_bind = httpd.server_address[0]
         t = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
         t.start()
         self._http_thread = t

@@ -7,6 +7,7 @@ executable (SPEC §3, security boundary).
 
 from __future__ import annotations
 
+import os
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -111,6 +112,14 @@ class Policy:
     reconcile_interval_seconds: int = 30
     wave_max_diffs: int = 3
     http_port: int = 8942           # loopback only
+    # P38 2026-07-16 (dashboard bridge network): HTTP bind address, loopback
+    # by default (safe). A containerized nyxloomd on a private ciu bridge
+    # network sets this to "0.0.0.0" so the devcontainer can reach it --
+    # NEVER on host-network, where 0.0.0.0 would expose it to the LAN. The
+    # NYXLOOM_HTTP_BIND env var (see ProjectConfig.load) overrides the toml
+    # value, since nyxloom.toml is bind-mounted and shared verbatim between
+    # host and container runs -- it can't itself differ per target.
+    http_bind: str = "127.0.0.1"
     # P16 2026-07-15 (carver automation): queue-refill target, carve
     # execution/admission mode, and the headroom threshold below which the
     # tick flags SPEC_ATTENTION('headroom-low'). See reconcile.py's (carve
@@ -158,6 +167,13 @@ class ProjectConfig:
             for name, m in data.get("mutexes", {}).items()
         }
         pol = Policy(**data.get("policy", {}))
+        # P38 2026-07-16: env override for the bind address (see Policy.http_bind
+        # docstring above) -- lets a ciu compose file flip the containerized
+        # daemon onto its private bridge (0.0.0.0) without editing the toml
+        # that the host process shares via the same bind mount.
+        env_bind = os.environ.get("NYXLOOM_HTTP_BIND")
+        if env_bind:
+            pol.http_bind = env_bind
         # B2 2026-07-16: accept the two-channel names (notifications_topic /
         # feedback_topic) from the nyxloom-trove layout, mapping them onto the
         # internal ntfy_topic / cmd_topic fields (new names win; legacy names

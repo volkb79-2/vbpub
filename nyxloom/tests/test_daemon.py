@@ -26,7 +26,10 @@ import pytest
 
 from conftest import SAMPLE_ROUTES_TOML
 
-from nyxloom import adapters, daemon, decision_chat, decisions, lint, notify, paths, reconcile, render, storage, wrapper
+from nyxloom import (
+    adapters, cli, daemon, decision_chat, decisions, doctor, lint, notify, paths,
+    reconcile, render, storage, wrapper,
+)
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, EventType,
     Receipt, ReceiptResult, Role, Route, TaskState, TaskStateFile, utc_now,
@@ -189,6 +192,15 @@ def _set_ephemeral_http_port(cfg):
         ptoml.write_text(text, encoding="utf-8")
 
 
+def _set_http_bind(cfg, bind):
+    """P38: override policy.http_bind in the project's toml."""
+    ptoml = cfg.root / ".nyxloom" / "project.toml"
+    text = ptoml.read_text(encoding="utf-8")
+    if "http_bind" not in text:
+        text = text.replace("[policy]\n", f'[policy]\nhttp_bind = "{bind}"\n', 1)
+        ptoml.write_text(text, encoding="utf-8")
+
+
 def _drive_until(d, project, predicate, timeout=15.0, pass_gap=0.4):
     """P14 2026-07-15: repeatedly call run_pass (no background daemon
     thread/loop -- the 'monkeypatched pass cadence' the P14 handoff asks
@@ -231,6 +243,36 @@ def test_nyxloomd_compose_runs_daemon_under_tini_supervisor_not_pid1():
         assert "while true" in text, f"{fname} missing the supervisor loop"
         assert "exec " not in text, f"{fname} still execs the daemon (would be PID 1)"
         assert "nyxloom.cli daemon" in text
+
+
+# --------------------------------------------------------------------------
+# P38 2026-07-16 Oracle 2: nyxloomd moves off host-networking onto a ciu-owned
+# bridge network and binds the dashboard on it -- docs/runtime-process-model.md
+# §3: host-net left the dashboard reachable only in the daemon's own netns
+# (127.0.0.1 on the docker host), invisible to the devcontainer, so VS Code
+# could never auto-forward it. The bind change and the bridge move are
+# inseparable: 0.0.0.0 must NEVER ship while still on host-networking.
+
+_NETWORK_MODE_HOST = re.compile(r"^[ \t]*network_mode:[ \t]*host\b", re.M)
+_HTTP_BIND_ALL = re.compile(r"NYXLOOM_HTTP_BIND:\s*\"?0\.0\.0\.0\"?")
+
+
+def test_nyxloomd_compose_drops_host_network_and_binds_bridge_address():
+    """Both compose files: no `network_mode: host`, the daemon's http_bind is
+    set to 0.0.0.0 (safe -- private bridge network, not host), the service
+    joins an explicit bridge network under a stable alias, and DooD
+    (docker.sock) + the physical repo binds survive the move."""
+    for fname in ("ciu.compose.yml.j2", "docker-compose.yml"):
+        text = (NYXLOOMD_DIR / fname).read_text(encoding="utf-8")
+        assert not _NETWORK_MODE_HOST.search(text), f"{fname} still on host networking"
+        assert _HTTP_BIND_ALL.search(text), f"{fname} missing the 0.0.0.0 bridge bind"
+        assert "networks:" in text, f"{fname} missing an explicit bridge network join"
+        assert re.search(r"^[ \t]*-[ \t]*nyxloomd\b", text, re.M), \
+            f"{fname} missing the stable 'nyxloomd' network alias"
+        assert "/var/run/docker.sock:/var/run/docker.sock" in text, \
+            f"{fname} lost the docker.sock mount (DooD) in the network move"
+        assert "/home/vb/volkb79-2/vbpub:/workspaces/vbpub" in text, \
+            f"{fname} lost the physical repo bind in the network move"
 
 
 # --------------------------------------------------------------------------
@@ -1536,6 +1578,93 @@ def http_daemon(tmp_state, sample_project, monkeypatch):
     finally:
         d.stop()
         t.join(timeout=5)
+
+
+# --------------------------------------------------------------------------
+# P38 2026-07-16 Oracle 1: the HTTP bind address is configurable via
+# policy.http_bind (config.Policy, default "127.0.0.1" -- safe/loopback by
+# default); daemon.py binds ThreadingHTTPServer on it instead of a hardcoded
+# "127.0.0.1", carried from the min-http_port project (mirrors the existing
+# http_port selection). See docs/runtime-process-model.md §3.
+
+def test_http_bind_defaults_to_loopback(http_daemon):
+    """With no http_bind configured, the server binds 127.0.0.1 (safe default)."""
+    d = http_daemon
+    assert d.http_bind == "127.0.0.1"
+    assert d._httpd.server_address[0] == "127.0.0.1"
+
+
+def test_http_bind_overridable_to_bridge_address(tmp_state, sample_project, patch_siblings, monkeypatch):
+    """policy.http_bind = "0.0.0.0" makes the server bind all interfaces --
+    used on a private ciu bridge network, never on host-network."""
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    _set_ephemeral_http_port(sample_project)
+    _set_http_bind(sample_project, "0.0.0.0")
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    t = threading.Thread(target=d.run, daemon=True)
+    t.start()
+    deadline = time.monotonic() + 5
+    while d.http_port == 0 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    try:
+        assert d.http_port != 0
+        assert d.http_bind == "0.0.0.0"
+        assert d._httpd.server_address[0] == "0.0.0.0"
+    finally:
+        d.stop()
+        t.join(timeout=5)
+
+
+def test_http_bind_env_override_takes_precedence_over_toml(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """NYXLOOM_HTTP_BIND (set by the compose files, P38) overrides the toml
+    default -- needed because nyxloom.toml is the SAME file read on the host
+    and inside the container (bind-mounted), so it can't itself differ."""
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    monkeypatch.setenv("NYXLOOM_HTTP_BIND", "0.0.0.0")
+    _set_ephemeral_http_port(sample_project)
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    t = threading.Thread(target=d.run, daemon=True)
+    t.start()
+    deadline = time.monotonic() + 5
+    while d.http_port == 0 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    try:
+        assert d.http_port != 0
+        assert d.http_bind == "0.0.0.0"
+    finally:
+        d.stop()
+        t.join(timeout=5)
+
+
+# --------------------------------------------------------------------------
+# P38 2026-07-16 Oracle 3: `nyxloom doctor`'s dashboard-URL line reflects
+# reachability -- a bridge bind (0.0.0.0) also names the alias address
+# reachable from a co-networked container (e.g. the devcontainer), not only
+# the host-loopback address a devcontainer operator could never reach.
+
+def test_doctor_dashboard_line_stays_loopback_by_default(tmp_state, sample_project, capsys, monkeypatch):
+    monkeypatch.setattr(doctor, "doctor_project", lambda cfg: [])
+    exit_code = cli.main(["doctor"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "http://127.0.0.1:" in out
+    assert "nyxloomd" not in out
+
+
+def test_doctor_dashboard_line_names_bridge_alias_when_bind_is_bridged(
+        tmp_state, sample_project, capsys, monkeypatch):
+    monkeypatch.setattr(doctor, "doctor_project", lambda cfg: [])
+    _set_http_bind(sample_project, "0.0.0.0")
+    exit_code = cli.main(["doctor"])
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "http://nyxloomd:" in out
+    assert "http://127.0.0.1:" in out  # host-loopback still documented as working
 
 
 def test_http_endpoints(http_daemon):
