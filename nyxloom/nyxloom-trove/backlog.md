@@ -64,6 +64,18 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
   Open D-calls: brief = new doc vs enriched backlog item (lean: enriched
   backlog); does `priority` drive dispatch order (scheduler change). Depends on
   B10.
+- **B11 — daemon project mounts derived from the registry.** The nyxloomd stack
+  hardcodes its project binds (`ciu.compose.yml.j2` volumes: vbpub + dstdns),
+  duplicated into the pre-rendered `docker-compose.yml` and kept in sync only by
+  a comment. The registry already knows every project root, so a project can be
+  **registered and unreachable** — which is exactly what happened to
+  netcup-api-filter (its `D-001`; one-line fix + drift test carved as **P27**).
+  Principled fix: render the binds from the registered project roots (ciu template
+  reads the registry, or a documented render step), so `project add` cannot
+  produce a project the daemon cannot see. Consider the reverse guard too:
+  `project add` (or `doctor`) should FAIL when the root is not visible from inside
+  the container, instead of registering a project that silently never dispatches.
+  Depends on P27 landing the tactical fix first.
 - **B10 — roadmap/backlog light schema + daemon auto-tick on merge.** Give
   roadmap/backlog items a parseable structure (id, status, priority, links to
   carved handoffs / D-decisions) like `decisions.md` has, schema-validated
