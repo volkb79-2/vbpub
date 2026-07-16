@@ -391,7 +391,17 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                          # correctly refused to relaunch.
                          or (attempt.state == AttemptState.EXITED
                              and tsf.state == TaskState.AWAITING_REVIEW
-                             and attempt.role == Role.FRONTIER_REVIEW))):
+                             and attempt.role == Role.FRONTIER_REVIEW)
+                         # P32 2026-07-16: a carver's EXITED attempt whose
+                         # live pass was missed (daemon restart landing on
+                         # the exit) left the synthetic carve task ACTIVE
+                         # forever, permanently eating a wip slot — the
+                         # daemon's _consume_carve_exit handler already
+                         # retires it to SUPERSEDED, but only ever ran off
+                         # this same re-scan, which didn't cover CARVER.
+                         or (attempt.state == AttemptState.EXITED
+                             and tsf.state == TaskState.ACTIVE
+                             and attempt.role == Role.CARVER))):
                 # Receipt present and either the attempt record hasn't caught
                 # up (wrapper died pre-event, or an event race) or the wrapper
                 # emitted EXITED itself and only the TASK transition remains.

@@ -767,6 +767,81 @@ def test_receipt_running_with_receipt_emits_exit():
     assert len(exits) == 1
 
 
+def test_carver_exited_active_task_emits_exit():
+    """P32 Oracle O1: a CARVER attempt already EXITED (wrapper recorded its
+    own exit) whose synthetic carve task is still ACTIVE and has a receipt
+    -> EmitAttemptExit, so daemon.py's CARVER branch runs
+    _consume_carve_exit and retires the carve to SUPERSEDED. Regression
+    guard: previously only IMPLEMENTER/FRONTIER_REVIEW re-fired here, so a
+    carve whose live exit-pass was missed stayed ACTIVE forever."""
+    cfg = make_config()
+    routes = make_routes()
+    att = make_attempt(
+        attempt_id="att-carve-1",
+        state=AttemptState.EXITED,
+        role=Role.CARVER,
+        receipt=Receipt(result=ReceiptResult.DONE, exit_code=0),
+    )
+    tsf = make_tsf(task_id="carve-demo-1", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"carve-demo-1": tsf},
+        frontmatters={},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={"att-carve-1": {"result": "done"}},
+    )
+
+    actions = plan_project(inp)
+    exits = [a for a in actions if isinstance(a, EmitAttemptExit) and a.attempt_id == "att-carve-1"]
+    assert len(exits) == 1
+
+
+def test_carver_exited_superseded_task_no_refire():
+    """P32 Oracle O2: once the carve task has been finalized to SUPERSEDED,
+    the EXITED CARVER attempt must not re-fire EmitAttemptExit on later
+    passes (idempotent — no event spam)."""
+    cfg = make_config()
+    routes = make_routes()
+    att = make_attempt(
+        attempt_id="att-carve-1",
+        state=AttemptState.EXITED,
+        role=Role.CARVER,
+        receipt=Receipt(result=ReceiptResult.DONE, exit_code=0),
+    )
+    tsf = make_tsf(task_id="carve-demo-1", state=TaskState.SUPERSEDED, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"carve-demo-1": tsf},
+        frontmatters={},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={"att-carve-1": {"result": "done"}},
+    )
+
+    actions = plan_project(inp)
+    exits = [a for a in actions if isinstance(a, EmitAttemptExit)]
+    assert len(exits) == 0
+
+
 def test_receipt_pid_dead_no_receipt_mark_interrupted():
     """Oracle 7: no receipt, pid dead -> MarkInterrupted."""
     cfg = make_config()
