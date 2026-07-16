@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic wings cgroup property reconciliation
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Also fires shortly after any daemon-reload wiped runtime state, because the
+# 5-minute cadence bounds the exposure window; for tighter coverage add a
+# path/dbus trigger in a future revision.
+
+[Install]
+WantedBy=timers.target

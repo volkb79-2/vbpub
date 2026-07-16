@@ -1,0 +1,71 @@
+# CI for the wings-cgroups project itself (patch series stays appliable +
+# slice-manager stays green). Copy to the repo's .github/workflows/ and adjust
+# the paths trigger if the folder moves.
+name: wings-cgroups-ci
+
+on:
+  push:
+    paths: ["wings-cgroups/**"]
+  pull_request:
+    paths: ["wings-cgroups/**"]
+
+jobs:
+  patchstack:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: pterodactyl
+            remote: https://github.com/pterodactyl/wings.git
+            ref: v1.13.1
+            patches: wings-cgroups/patchstack/patches/pterodactyl-v1.13.1
+          - target: pelican
+            remote: https://github.com/pelican-dev/wings.git
+            ref: main
+            patches: wings-cgroups/patchstack/patches/pelican-main
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone upstream and apply series
+        run: |
+          git clone --depth 50 ${{ matrix.ref == 'main' && ' ' || '--branch' }} ${{ matrix.ref == 'main' && '' || matrix.ref }} "${{ matrix.remote }}" /tmp/wings
+          cd /tmp/wings
+          git config user.name ci && git config user.email ci@localhost
+          git checkout -b cgroup-ci ${{ matrix.ref == 'main' && 'origin/main' || matrix.ref }}
+          git am "$GITHUB_WORKSPACE/${{ matrix.patches }}"/*.patch
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: /tmp/wings/go.mod
+          cache: true
+      - name: Build + vet + test
+        working-directory: /tmp/wings
+        run: |
+          go build ./...
+          go vet ./config/... ./cmd/... ./environment/...
+          go test ./config/... ./environment/... ./server/...
+          go test -tags dockerintegration -count=1 ./environment/docker/ -run "Cgroup|Override|Default" -v
+
+  slice-manager:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: wings-cgroups/t3a-slice-manager/go.mod
+          cache: true
+      - name: Build + vet + test
+        working-directory: wings-cgroups/t3a-slice-manager
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+          go vet -tags systemdintegration ./...
+
+  shellcheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck all project scripts
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y shellcheck
+          find wings-cgroups -name '*.sh' -print0 | xargs -0 shellcheck -S warning

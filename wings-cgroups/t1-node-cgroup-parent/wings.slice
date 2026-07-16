@@ -1,0 +1,17 @@
+# /etc/systemd/system/wings.slice — T1 tier slice for all Wings containers.
+# Identical role to t0b's unit; duplicated here so each tier folder is
+# self-contained. Sized for a 16 GB node; tune per host. On the current
+# single-server node you may name this soulmask.slice instead and reuse the
+# values from plan-host-resource-governance.md §3.3.
+[Unit]
+Description=Wings game server tier slice
+
+[Slice]
+MemoryMin=8G
+MemoryLow=12G
+MemoryHigh=14G
+CPUWeight=800
+IOWeight=500
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,2 @@
+# Series exported from pelican-dev/wings main @ 70f3344 (v1.0.0-beta26+1), 2026-07-15.
+# Re-export against a newer main with scripts/export-patches.sh pelican.

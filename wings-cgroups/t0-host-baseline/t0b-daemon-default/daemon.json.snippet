@@ -1,0 +1,5 @@
+{
+  "_comment": "Merge these keys into /etc/docker/daemon.json on DEDICATED wings nodes only.",
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "cgroup-parent": "wings.slice"
+}

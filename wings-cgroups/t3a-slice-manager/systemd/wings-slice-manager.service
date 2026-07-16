@@ -1,0 +1,16 @@
+[Unit]
+Description=wings-slice-manager — per-server systemd slice properties for Wings containers
+Documentation=https://github.com/OWNER/wings-slice-manager
+After=network.target docker.service dbus.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/wings-slice-manager -config /etc/wings-slice-manager.yaml
+Restart=on-failure
+RestartSec=5s
+# Root: needs the Docker socket and the systemd manager D-Bus API. The
+# daemon's own blast radius is confined by its wings-*.slice namespace guard.
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,33 @@
+# /etc/wings-slice-manager.yaml — all keys optional; these are the defaults
+# (except memory_min_budget, which defaults to unlimited).
+
+# Admin-owned tier slice (unit file, e.g. from ../t1-node-cgroup-parent/).
+# NEVER managed by this daemon; its MemoryMin backs the child floors.
+parent_slice: wings.slice
+
+# Only slices named <slice_prefix><alnum>[alnum_.-]*.slice are ever created,
+# modified or stopped. The hard namespace guard.
+slice_prefix: wings-
+
+# Cap on the SUM of child MemoryMin floors. Should be <= the MemoryMin of
+# parent_slice. Empty or "0" = unlimited (the parent invariant warning still
+# fires when the parent floor is smaller than the child sum).
+memory_min_budget: "8G"
+
+# What happens to a floor that would blow the budget:
+#   clamp  — reduce it to the remaining budget (possibly 0)
+#   refuse — drop the floor entirely (slice keeps ceilings/weights)
+budget_policy: clamp
+
+reconcile_interval: 60s
+event_debounce: 2s
+
+# An orphaned slice (no container maps to it, running or stopped) is kept for
+# this long before being stopped.
+gc_grace: 5m
+
+# true: log every action instead of performing it.
+dry_run: false
+
+# debug | info | warn | error
+log_level: info

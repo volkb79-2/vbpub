@@ -1,0 +1,4 @@
+# Upstream clones and build output — never commit; the patch stack under
+# patchstack/patches/ is the canonical, committed representation of our changes.
+build/
+*.log

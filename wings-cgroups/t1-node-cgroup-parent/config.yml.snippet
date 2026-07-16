@@ -1,0 +1,4 @@
+# Merge into /etc/pterodactyl/config.yml (patched Wings only).
+# Empty/absent = stock behavior. Must be a bare systemd slice unit name.
+docker:
+  cgroup_parent: wings.slice

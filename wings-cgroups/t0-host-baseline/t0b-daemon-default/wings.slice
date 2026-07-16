@@ -1,0 +1,21 @@
+# /etc/systemd/system/wings.slice
+# Parent slice for ALL Wings-created containers (game servers + installers).
+# The one knob for the whole hosting tier. Values sized for a 16 GB dedicated
+# node; tune per host. Invariant once per-server child slices exist (T2/T3):
+#   MemoryMin here >= sum of all child slices' MemoryMin.
+[Unit]
+Description=Wings game server tier slice
+Documentation=https://github.com/pterodactyl/wings
+
+[Slice]
+# Protection floor for the tier against reclaim caused by host services.
+# Effective directly against global reclaim: no ancestor above to zero it out.
+MemoryMin=8G
+MemoryLow=12G
+# Optional tier ceiling; leave generous, per-server limits come from the panel.
+MemoryHigh=14G
+CPUWeight=800
+IOWeight=500
+
+[Install]
+WantedBy=multi-user.target

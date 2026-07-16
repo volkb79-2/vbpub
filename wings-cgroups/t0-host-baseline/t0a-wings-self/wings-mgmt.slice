@@ -1,0 +1,18 @@
+# /etc/systemd/system/wings-mgmt.slice
+# Slice for the Wings management daemon itself (NOT the game containers).
+# Values are a starting point for a 16 GB node; tune per host.
+[Unit]
+Description=Wings management daemon slice
+Documentation=https://github.com/pterodactyl/wings
+
+[Slice]
+# Throttle before OOM: Wings' peak memory is backup compression.
+MemoryHigh=1G
+MemoryMax=1536M
+# Wings must stay responsive even under game load, but never dominate.
+CPUWeight=200
+IOWeight=200
+TasksMax=2048
+
+[Install]
+WantedBy=multi-user.target

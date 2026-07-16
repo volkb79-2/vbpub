@@ -1,0 +1,11 @@
+{
+  "_comment": "Add to the egg's `variables` array (PTDL_v2 export format). Admin-only transport for per-server slice placement; Wings validates the value against its allowlist/namespace regardless.",
+  "name": "Wings Cgroup Parent",
+  "description": "Admin-only: systemd slice this server's containers are placed under (Docker HostConfig.CgroupParent). Must be within the node's allowed namespace (wings-*.slice) or docker.allowed_cgroup_parents. Leave empty for the node default. Requires cgroup-parent patched Wings.",
+  "env_variable": "WINGS_CGROUP_PARENT",
+  "default_value": "",
+  "user_viewable": false,
+  "user_editable": false,
+  "rules": "nullable|string|max:128",
+  "field_type": "text"
+}

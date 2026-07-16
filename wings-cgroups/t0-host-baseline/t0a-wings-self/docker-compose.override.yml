@@ -1,0 +1,9 @@
+# Drop-in override for /root/ptero-wings/docker-compose.yml.
+# Places the Wings management container under wings-mgmt.slice (T0a).
+# The slice unit must be installed and loaded FIRST (see README).
+#
+# NOTE: compose `cgroup_parent` requires the Docker daemon's systemd cgroup
+# driver for .slice names (daemon.json: "exec-opts": ["native.cgroupdriver=systemd"]).
+services:
+  wings:
+    cgroup_parent: wings-mgmt.slice

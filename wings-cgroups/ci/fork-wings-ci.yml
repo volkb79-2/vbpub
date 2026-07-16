@@ -1,0 +1,46 @@
+# CI for the Wings fork carrying the cgroup patch branch.
+# Copy into the fork as .github/workflows/cgroup-ci.yml (on the patch branch).
+# Works for both the pterodactyl and pelican forks (Go version from go.mod).
+name: cgroup-patch-ci
+
+on:
+  push:
+    branches: ["cgroup/**"]
+  pull_request:
+    branches: ["cgroup/**"]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet (packages touched by the patch series must be clean)
+        run: go vet ./config/... ./cmd/... ./environment/...
+
+      - name: Unit tests
+        run: go test ./config/... ./environment/... ./server/...
+
+      - name: Docker integration tests (create-only; driver-agnostic)
+        run: go test -tags dockerintegration -count=1 -v ./environment/docker/ -run "Cgroup|Override|Default"
+
+      - name: Report daemon cgroup facts (informational)
+        if: always()
+        run: docker info --format 'CgroupDriver={{.CgroupDriver}} CgroupVersion={{.CgroupVersion}}'
+
+  image:
+    runs-on: ubuntu-24.04
+    needs: build-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build wings image with the repo Dockerfile
+        run: |
+          ref="${GITHUB_REF_NAME#cgroup/}"
+          docker build -t "wings-local:${ref}-ci" --build-arg VERSION="${ref}-ci" .
