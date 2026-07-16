@@ -176,6 +176,18 @@ def validate(items: list[BacklogItem], path: str = "") -> list[LintFinding]:
     return findings
 
 
+def _set_field(fields_str: str, key: str, value: str) -> str:
+    """Set `key=value` among a header's tokens: rewrite the token in place
+    when present, append it when absent. Every other token is untouched.
+    Absent-means-append matters for `status`: an in-place-only rewrite would
+    silently leave a linked-but-status-less header un-ticked."""
+    pattern = rf"\b{re.escape(key)}=\S+"
+    if re.search(pattern, fields_str):
+        # lambda replacement: `value` is data, never a backreference template.
+        return re.sub(pattern, lambda _: f"{key}={value}", fields_str, count=1)
+    return f"{fields_str} {key}={value}"
+
+
 def tick_merged(path: Path, task_id: str, commit: str) -> bool:
     """Typed-only auto-tick: set status=merged + merge_commit=<commit> on
     the item whose carved_handoff == task_id. No-op (no write) if none
@@ -183,30 +195,32 @@ def tick_merged(path: Path, task_id: str, commit: str) -> bool:
     if not path.exists():
         return False
 
-    text = path.read_text(encoding="utf-8")
+    # newline="" disables universal-newline translation on the way in and out;
+    # with keepends below, every line the tick does not target survives
+    # byte-for-byte, so a CRLF file is not silently reflowed to LF.
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        text = fh.read()
     items = _parse_text(text)
     target = next((it for it in items if it.carved_handoff == task_id), None)
     if target is None or target.header_line is None:
         return False
 
-    lines = text.splitlines()
+    lines = text.splitlines(keepends=True)
     idx = target.header_line - 1
-    m = _HEADER_RE.match(lines[idx])
+    raw = lines[idx]
+    m = _HEADER_RE.match(raw)
     if not m:
         return False
 
     fields_str = m.group(1)
-    fields_str = re.sub(r"\bstatus=\S+", "status=merged", fields_str)
-    if re.search(r"\bmerge_commit=\S+", fields_str):
-        fields_str = re.sub(r"\bmerge_commit=\S+", f"merge_commit={commit}", fields_str)
-    else:
-        fields_str = f"{fields_str} merge_commit={commit}"
+    fields_str = _set_field(fields_str, "status", "merged")
+    fields_str = _set_field(fields_str, "merge_commit", commit)
 
-    indent = lines[idx][:len(lines[idx]) - len(lines[idx].lstrip())]
-    lines[idx] = f"{indent}<!-- nyxloom:backlog {fields_str} -->"
+    stripped = raw.rstrip("\r\n")
+    ending = raw[len(stripped):]
+    indent = stripped[:len(stripped) - len(stripped.lstrip())]
+    lines[idx] = f"{indent}<!-- nyxloom:backlog {fields_str} -->{ending}"
 
-    new_text = "\n".join(lines)
-    if text.endswith("\n"):
-        new_text += "\n"
-    path.write_text(new_text, encoding="utf-8")
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        fh.write("".join(lines))
     return True

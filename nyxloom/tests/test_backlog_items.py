@@ -139,6 +139,35 @@ class TestO2TickOnMerge:
         assert b3.status == "merged"
         assert b3.merge_commit == "abc1234"
 
+    def test_tick_sets_status_when_header_omits_status_token(self, tmp_path):
+        # A linked header that carries no status= token at all: the tick must
+        # still land status=merged (an in-place-only rewrite silently skips it,
+        # leaving the item reading `open` after its handoff merged).
+        path = tmp_path / "backlog.md"
+        path.write_text(
+            "- **B9 — linked, header omits status.** prose.\n"
+            "  <!-- nyxloom:backlog id=B9 carved_handoff=demo-P01-test -->\n"
+        )
+
+        assert backlog_items.tick_merged(path, "demo-P01-test", "abc1234") is True
+
+        b9 = backlog_items.parse(path)[0]
+        assert b9.status == "merged"
+        assert b9.merge_commit == "abc1234"
+
+    def test_tick_rewrites_existing_merge_commit_in_place(self, tmp_path):
+        path = tmp_path / "backlog.md"
+        path.write_text(
+            "- **B9 — re-merged.** prose.\n"
+            "  <!-- nyxloom:backlog id=B9 status=carved carved_handoff=T1 merge_commit=old1111 -->\n"
+        )
+
+        assert backlog_items.tick_merged(path, "T1", "new2222") is True
+
+        b9 = backlog_items.parse(path)[0]
+        assert b9.merge_commit == "new2222"
+        assert "old1111" not in path.read_text()
+
     def test_cli_merge_ticks_linked_backlog_item(self, sample_project, tmp_state, make_statefile):
         from nyxloom import storage
 
@@ -172,22 +201,48 @@ class TestO3TypedOnly:
         old_lines = VALID_BACKLOG.splitlines()
         new_lines = new_text.splitlines()
 
-        # Only the B3 header-comment line may differ; everything else,
-        # including B3's own prose line and every line of B1/B2, is
-        # byte-identical.
+        # EXACTLY one line may differ, and it must be B3's header comment;
+        # everything else, including B3's own prose line and every line of
+        # B1/B2, is byte-identical. Asserting the count pins that the tick
+        # actually landed — a no-op write would otherwise pass vacuously.
         assert len(old_lines) == len(new_lines)
-        for i, (old, new) in enumerate(zip(old_lines, new_lines)):
-            if old != new:
-                assert "nyxloom:backlog" in old
-                assert "id=B3" in old
-                assert "status=carved" in old
-            else:
-                continue
+        changed = [i for i, (o, n) in enumerate(zip(old_lines, new_lines)) if o != n]
+        assert len(changed) == 1
+
+        touched_old, touched_new = old_lines[changed[0]], new_lines[changed[0]]
+        assert "nyxloom:backlog" in touched_old and "id=B3" in touched_old
+        assert "status=carved" in touched_old
+        assert "status=merged" in touched_new
 
         items = backlog_items.parse(path)
         b1, b2 = items[0], items[1]
         assert b1.status == "open" and b1.header_line is None
         assert b2.status == "open" and b2.priority == 3
+
+    def test_tick_preserves_crlf_prose_line_endings(self, tmp_path):
+        # Reflowing the whole file's line endings would rewrite every prose
+        # line — a free-prose write, not the typed-only edit O3 requires.
+        path = tmp_path / "backlog.md"
+        path.write_bytes(
+            b"- **B1 - crlf prose.** body.\r\n"
+            b"  <!-- nyxloom:backlog id=B1 status=carved carved_handoff=T1 -->\r\n"
+        )
+
+        assert backlog_items.tick_merged(path, "T1", "sha1234") is True
+
+        raw = path.read_bytes()
+        assert b"- **B1 - crlf prose.** body.\r\n" in raw
+        assert b"status=merged" in raw and b"merge_commit=sha1234" in raw
+
+    def test_tick_preserves_absent_final_newline(self, tmp_path):
+        path = tmp_path / "backlog.md"
+        path.write_text(
+            "- **B1 — no trailing newline.** body.\n"
+            "  <!-- nyxloom:backlog id=B1 status=carved carved_handoff=T1 -->"
+        )
+
+        assert backlog_items.tick_merged(path, "T1", "sha1234") is True
+        assert not path.read_text().endswith("\n")
 
 
 # ----- O4: unlinked merge is a clean no-op -----
@@ -223,3 +278,21 @@ class TestO4UnlinkedNoop:
         path = tmp_path / "does-not-exist.md"
         assert backlog_items.tick_merged(path, "anything", "abc1234") is False
         assert backlog_items.parse(path) == []
+
+    def test_cli_merge_survives_unreadable_backlog(
+        self, sample_project, tmp_state, make_statefile, capsys
+    ):
+        # The tick is best-effort: the merge is already durably recorded by the
+        # time it runs, so an undecodable backlog must warn, not fail the merge.
+        from nyxloom import storage
+
+        backlog_path = sample_project.root / "nyxloom-trove" / "backlog.md"
+        backlog_path.parent.mkdir(parents=True, exist_ok=True)
+        backlog_path.write_bytes(b"- **B1 - bad bytes.** \xff\xfe not utf-8\n")
+
+        tsf = make_statefile(state=TaskState.MERGE_READY)
+        storage.save_state(tsf)
+
+        exit_code = cli.main(["merge", "demo", "demo-P01-test", "--commit", "d" * 40])
+        assert exit_code == 0
+        assert "warning: backlog auto-tick skipped" in capsys.readouterr().err
