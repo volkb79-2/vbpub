@@ -242,8 +242,16 @@ class CarveDispatch(Action):
     `project` names the project this carve targets -- the daemon already
     knows it too (run_pass's own per-project loop), but carrying it here
     keeps the action self-describing for tests/logs, matching
-    ProviderPause's route_id style."""
+    ProviderPause's route_id style.
+
+    item_id (P41 2026-07-16): None for the untargeted headroom-refill
+    trigger below (module contract item 9, unchanged). daemon.
+    dispatch_targeted_carve builds this action directly (outside
+    plan_project) with item_id set, so _execute_carve_dispatch seeds the
+    carver with exactly that one backlog item's intake brief instead of the
+    general review/backlog/roadmap source list."""
     project: str | None = None
+    item_id: str | None = None
 
 
 # --- input snapshot ---------------------------------------------------------

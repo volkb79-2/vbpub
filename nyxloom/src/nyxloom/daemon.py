@@ -262,8 +262,8 @@ from pathlib import Path
 from typing import Any
 
 from . import (
-    adapters, commands, config, decision_chat, decisions, frontmatter, intake_chat,
-    leases, lint, notify, paths, reconcile, render, storage, wrapper,
+    adapters, backlog_items, commands, config, decision_chat, decisions, frontmatter,
+    intake_chat, leases, lint, notify, paths, reconcile, render, storage, wrapper,
 )
 from .config import ProjectConfig
 from .types import (
@@ -546,6 +546,25 @@ class Daemon:
             except Exception:
                 pass
             return 0
+
+    def dispatch_targeted_carve(self, project: str, item_id: str) -> list[Event]:
+        """P41 2026-07-16: on-demand carve of ONE briefed backlog item --
+        distinct from reconcile.py's untargeted headroom-refill CarveDispatch
+        trigger (module contract item 9, run via run_pass/plan_project).
+        Builds a reconcile.CarveDispatch(item_id=...) and executes it
+        through the SAME carve-dispatch control flow
+        (_execute_carve_dispatch) the untargeted trigger uses -- not a
+        parallel/stubbed path -- just parameterized so the carver is seeded
+        with exactly `item_id`'s intake brief instead of the general
+        review/backlog/roadmap source list. Callable directly (CLI/UI); does
+        not require a reconcile pass to have run first."""
+        cfg = config.ProjectConfig.load(self.registry[project])
+        states = storage.list_states(project)
+        action = reconcile.CarveDispatch(project=project, item_id=item_id)
+        events = self._execute_carve_dispatch(project, cfg, states, action)
+        if events:
+            render.render_after_event(self.registry)
+        return events
 
     def _reconcile_decisions(self, project: str, cfg: ProjectConfig,
                               states: dict[str, TaskStateFile]) -> list[Event]:
@@ -1078,7 +1097,8 @@ class Daemon:
                     break
         return out
 
-    def _carve_source_note_lines(self, cfg: ProjectConfig) -> list[str]:
+    def _carve_source_note_lines(self, cfg: ProjectConfig,
+                                  item_id: str | None = None) -> list[str]:
         """Carve sources #2/#3 (backlog, roadmap/gap-analysis): name the
         conventional file paths the carver reads itself (same economy as the
         review packet's diff-only embedding: point, don't slurp). ProjectConfig
@@ -1087,7 +1107,17 @@ class Daemon:
         B2 2026-07-16: prefer the nyxloom-trove layout (backlog.md/roadmap.md
         under the managed trove) and fall back to the legacy docs/ convention
         for un-migrated projects -- mirroring config.load()'s own trove-first/
-        legacy-fallback resolution of nyxloom.toml."""
+        legacy-fallback resolution of nyxloom.toml.
+
+        P41 2026-07-16: when `item_id` names a single targeted backlog item
+        (dispatch_targeted_carve), this embeds THAT item's brief verbatim
+        (via backlog_items.is_briefed/brief_detail) instead of the generic
+        file pointers below -- so a direct carve of a briefed item loses no
+        interview context. An un-briefed/legacy item still gets only a
+        plain reference (no invented brief)."""
+        if item_id is not None:
+            return self._targeted_item_note_lines(cfg, item_id)
+
         lines = []
         # Backlog: trove-first, then legacy docs/BACKLOG.md.
         backlog = cfg.root / "nyxloom-trove" / "backlog.md"
@@ -1115,41 +1145,85 @@ class Daemon:
             )
         return lines
 
+    def _targeted_item_note_lines(self, cfg: ProjectConfig, item_id: str) -> list[str]:
+        """P41 2026-07-16: the ONE carve source for a targeted carve --
+        item_id's own intake brief, embedded verbatim (not a file pointer).
+        A backlog with no such item, or one that is not is_briefed (legacy
+        un-headered bullet, or a headered item with no detail), yields a
+        plain reference line only -- never a fabricated brief."""
+        path = backlog_items.resolve_path(cfg)
+        items = backlog_items.parse(path)
+        item = next((it for it in items if it.id == item_id), None)
+        rel = path.relative_to(cfg.root)
+        if item is None:
+            return [f"- targeted backlog item {item_id}: not found in {rel}"]
+        if not backlog_items.is_briefed(item):
+            return [f"- targeted backlog item {item_id} (status={item.status}): "
+                    "no intake brief on file"]
+        lines = [f"- targeted backlog item {item_id} -- intake brief:"]
+        lines.extend(f"  {ln}" for ln in item.detail.splitlines())
+        return lines
+
     def _build_carve_packet(self, cfg: ProjectConfig, project: str, seq: int,
                              states: dict[str, TaskStateFile],
-                             own_task_id: str | None = None) -> str:
+                             own_task_id: str | None = None,
+                             item_id: str | None = None) -> str:
         """The carve packet (mirrors the review packet's economy: point at
         sources, embed only what is cheap and structured). Written to the
         carve attempt's own packet/packet.md, exactly like LaunchReview's
-        packet."""
+        packet.
+
+        P41 2026-07-16: when `item_id` is set (dispatch_targeted_carve),
+        this is a TARGETED carve -- the packet's only carve source is that
+        one backlog item's intake brief (its pre-carve detail: aligned
+        purpose, elicited detail, linked D-NNN, priority), distinct from the
+        untargeted headroom-refill carve's review/backlog/roadmap/product-
+        goal source list."""
         lines = [
             f"# Carve packet {seq}",
             "",
             "## Your role: CARVER",
             "",
-            f"You are proposing NEW handoff packages for project '{project}'.",
-            "Read the carve sources below, then write new lint-clean handoff",
-            "file(s) under this project's handoff directory. Do NOT implement",
-            "the work yourself -- you carve packages for other agents to pick",
-            "up later.",
-            "",
-            "## Carve sources (v2 SS8)",
-            "1. Review-derived follow-ups (recent REVIEW_RECORDED events):",
         ]
-        follow_ups = self._recent_review_follow_ups(project)
-        if follow_ups:
-            for task_id, result in follow_ups:
-                lines.append(f"   - {task_id}: {result}")
+        if item_id is not None:
+            lines.extend([
+                f"You are carving ONE new handoff package for project '{project}', "
+                f"directly from backlog item {item_id}'s intake brief below -- it was "
+                "already elicited via the intake-chat interview, so do not re-derive "
+                "it from scratch. Write a single lint-clean handoff file under this "
+                "project's handoff directory covering exactly that item. Do NOT "
+                "implement the work yourself -- you carve a package for another agent "
+                "to pick up later.",
+                "",
+                "## Carve source: targeted intake brief",
+            ])
+            lines.extend(self._carve_source_note_lines(cfg, item_id=item_id))
+            lines.append("")
         else:
-            lines.append("   - none recorded yet")
-        lines.append("2. Backlog / 3. Roadmap and gap analysis:")
-        lines.extend(f"   {line}" for line in self._carve_source_note_lines(cfg))
-        lines.append(
-            "4. Standing product goal: read this project's own README/"
-            "CLAUDE.md and its nyxloom-trove/nyxloom.toml (or legacy "
-            ".nyxloom/project.toml) for its product intent."
-        )
-        lines.append("")
+            lines.extend([
+                f"You are proposing NEW handoff packages for project '{project}'.",
+                "Read the carve sources below, then write new lint-clean handoff",
+                "file(s) under this project's handoff directory. Do NOT implement",
+                "the work yourself -- you carve packages for other agents to pick",
+                "up later.",
+                "",
+                "## Carve sources (v2 SS8)",
+                "1. Review-derived follow-ups (recent REVIEW_RECORDED events):",
+            ])
+            follow_ups = self._recent_review_follow_ups(project)
+            if follow_ups:
+                for task_id, result in follow_ups:
+                    lines.append(f"   - {task_id}: {result}")
+            else:
+                lines.append("   - none recorded yet")
+            lines.append("2. Backlog / 3. Roadmap and gap analysis:")
+            lines.extend(f"   {line}" for line in self._carve_source_note_lines(cfg))
+            lines.append(
+                "4. Standing product goal: read this project's own README/"
+                "CLAUDE.md and its nyxloom-trove/nyxloom.toml (or legacy "
+                ".nyxloom/project.toml) for its product intent."
+            )
+            lines.append("")
         lines.append("## Current queue")
         queue_lines = [f"- {task_id}: {states[task_id].state.value}"
                        for task_id in sorted(states.keys()) if task_id != own_task_id]
@@ -1229,10 +1303,13 @@ class Daemon:
         # docstring for why ACTIVE (counts toward wip-cap like a review
         # attempt already does) and why SUPERSEDED is the eventual terminal
         # edge.
+        notes = f"carve seq={seq} authority={authority}"
+        if action.item_id is not None:
+            notes += f" item={action.item_id}"
         tsf = TaskStateFile(
             schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
             state=TaskState.ACTIVE, since=utc_now(), handoff_path=None,
-            notes=f"carve seq={seq} authority={authority}",
+            notes=notes,
         )
         events.append(self._append_ev(project, cfg, states, EventType.TASK_CREATED,
                                        {"statefile": tsf.to_dict()}, task_id=task_id))
@@ -1241,7 +1318,8 @@ class Daemon:
         attempt_dir = paths.attempt_dir(project, attempt_id)
         packet_dir = attempt_dir / "packet"
         packet_dir.mkdir(parents=True, exist_ok=True)
-        packet_text = self._build_carve_packet(cfg, project, seq, states, own_task_id=task_id)
+        packet_text = self._build_carve_packet(cfg, project, seq, states, own_task_id=task_id,
+                                                item_id=action.item_id)
         (packet_dir / "packet.md").write_text(packet_text, encoding="utf-8")
 
         route_def = review_routes[0]
