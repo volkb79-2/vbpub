@@ -321,7 +321,7 @@ Optional inline-table fields on any directive (except `ASK_FILE`):
 | Key | Always required | Detection (when not pre-set) |
 |---|---|---|
 | `REPO_ROOT` | Yes | `--define-root` → `REPO_ROOT` env → walk-up to `ciu.global.defaults.toml.j2` [S1.1] |
-| `PHYSICAL_REPO_ROOT` | Yes | `devcontainer.local_folder` label (DooD); native host: `= REPO_ROOT` [S1.3, S1.4] |
+| `PHYSICAL_REPO_ROOT` | Yes | env override (only if consistent with mountinfo, or mountinfo absent) → per-repo longest-prefix match of `REPO_ROOT` in `/proc/self/mountinfo` → `devcontainer.local_folder` label via `docker ps` (container-origin fallback); native host: `= REPO_ROOT` [S1.3, S1.4] |
 | `DOCKER_NETWORK_INTERNAL` | Yes | `<repo-name>-<instance-id>-network` (hash of physical path) |
 | `CONTAINER_UID` | Yes | Current user UID |
 | `CONTAINER_GID` | Yes | `DOCKER_GID` |
@@ -335,6 +335,17 @@ Optional inline-table fields on any directive (except `ASK_FILE`):
 
 All numeric values (`CONTAINER_UID`, `DOCKER_GID`, etc.) are validated as
 integers with `is None` / `== ""` checks — `0` is a valid value [S2.5].
+
+**`PHYSICAL_REPO_ROOT` is the one exception to "pre-set always wins" in this
+table (2026-07-16):** a devcontainer's login shell can `source` one repo's
+`ciu.env` (e.g. via a `REPO_ROOT`-triggered `.bashrc` hook for the primary
+workspace) and leave a stale `PHYSICAL_REPO_ROOT` set when later operating on
+an unrelated, nested repo — corrupting that repo's derived `REPO_NAME` /
+`INSTANCE_ID` / `DOCKER_NETWORK_INTERNAL`. So a pre-set `PHYSICAL_REPO_ROOT`
+wins only when it agrees with this process's own mountinfo-derived physical
+root for `REPO_ROOT`, or when mountinfo has no entry to check against;
+otherwise the mountinfo-derived value wins and CIU warns on stderr. Every
+other key in this table keeps the simple "pre-set env always wins" rule.
 
 ---
 

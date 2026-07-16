@@ -155,13 +155,21 @@ class TestFallbackWhenMountinfoYieldsNothing:
     """
 
     def test_preset_env_still_wins_over_mountinfo(self, tmp_path, monkeypatch):
-        """S2.7: a pre-set PHYSICAL_REPO_ROOT always wins, even before
-        mountinfo is consulted."""
+        """2026-07-16 refined contract: a pre-set PHYSICAL_REPO_ROOT still wins
+        when mountinfo has NO entry for repo_root at all — there is no
+        independent signal to contradict it, so the explicit override (e.g.
+        manual native-host configuration) is honored as-is. (When mountinfo
+        DOES yield a disagreeing value, see
+        TestPresetEnvConsistency.test_preset_env_ignored_when_inconsistent_with_repo_root
+        below — that is the contamination case this refinement targets.)"""
         mountinfo = _write_mountinfo(tmp_path, _LIVE_SHAPED_MOUNTINFO)
         monkeypatch.setattr("ciu.workspace_env._MOUNTINFO_PATH", mountinfo)
         monkeypatch.setenv("PHYSICAL_REPO_ROOT", "/explicit/override")
 
-        result = _detect_physical_repo_root(Path("/workspaces/vbpub"))
+        # /workspaces/totally-unmounted-repo has no entry in the fixture (see
+        # test_no_matching_destination_returns_none above), so mountinfo
+        # yields None here and the pre-set value is honored unconditionally.
+        result = _detect_physical_repo_root(Path("/workspaces/totally-unmounted-repo"))
         assert result == Path("/explicit/override")
 
     def test_falls_back_to_devcontainer_origin_label_when_no_mount_match(
@@ -197,6 +205,57 @@ class TestFallbackWhenMountinfoYieldsNothing:
             result = _detect_physical_repo_root(tmp_path / "some-native-repo")
 
         assert result == (tmp_path / "some-native-repo").resolve()
+
+
+# ---------------------------------------------------------------------------
+# Contract 3 — pre-set env consistency check against mountinfo
+#
+# 2026-07-16 refinement (P-ciu-physical-root-preset-env handoff): the live
+# bug was a nested-repo pre-set-env contamination — a devcontainer's login
+# shell `source`d dstdns's ciu.env (its primary workspace, via a
+# REPO_ROOT-triggered .bashrc hook), leaving PHYSICAL_REPO_ROOT="...dstdns"
+# in the environment. Running `ciu env generate` for an unrelated nested repo
+# (vbpub/nyxloom) from that same shell then had the stale env var win
+# unconditionally over mountinfo (Oracle 1). The refined contract: a pre-set
+# PHYSICAL_REPO_ROOT wins ONLY when consistent with mountinfo, or when
+# mountinfo yields nothing to check against (Oracle 2, covered above).
+# ---------------------------------------------------------------------------
+
+
+class TestPresetEnvConsistency:
+    def test_preset_env_wins_when_consistent_with_mountinfo(self, tmp_path, monkeypatch):
+        """Oracle 2: a pre-set PHYSICAL_REPO_ROOT that AGREES with the
+        mountinfo-derived value for repo_root still wins (the legitimate
+        manual-override use case is preserved) and emits no warning."""
+        mountinfo = _write_mountinfo(tmp_path, _LIVE_SHAPED_MOUNTINFO)
+        monkeypatch.setattr("ciu.workspace_env._MOUNTINFO_PATH", mountinfo)
+        # Consistent with what mountinfo would derive for /workspaces/vbpub.
+        monkeypatch.setenv("PHYSICAL_REPO_ROOT", "/home/vb/volkb79-2/vbpub")
+
+        result = _detect_physical_repo_root(Path("/workspaces/vbpub"))
+        assert result == Path("/home/vb/volkb79-2/vbpub")
+
+    def test_preset_env_ignored_when_inconsistent_with_repo_root(self, tmp_path, monkeypatch, capsys):
+        """Oracle 1 / regression: a pre-set PHYSICAL_REPO_ROOT pointing at a
+        SIBLING repo's host path (dstdns) must NOT win when repo_root is a
+        DIFFERENT, nested repo (vbpub/nyxloom) whose mountinfo-derived
+        physical root disagrees. This is the exact 2026-07-15 live bug:
+        dstdns's stale PHYSICAL_REPO_ROOT leaking into a nyxloom env-generate
+        run. The mountinfo-derived value must win instead, with a warning."""
+        mountinfo = _write_mountinfo(tmp_path, _LIVE_SHAPED_MOUNTINFO)
+        monkeypatch.setattr("ciu.workspace_env._MOUNTINFO_PATH", mountinfo)
+        monkeypatch.setenv("PHYSICAL_REPO_ROOT", "/home/vb/volkb79-2/dstdns")
+
+        # nyxloom has no dedicated mount entry; it is nested under the
+        # /workspaces/vbpub bind, so longest-match maps it through that bind.
+        result = _detect_physical_repo_root(Path("/workspaces/vbpub/nyxloom"))
+
+        assert result == Path("/home/vb/volkb79-2/vbpub/nyxloom")
+        assert result != Path("/home/vb/volkb79-2/dstdns")
+
+        captured = capsys.readouterr()
+        assert "PHYSICAL_REPO_ROOT" in captured.err
+        assert "dstdns" in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +313,60 @@ class TestRegressionBoundDstdns:
         assert 'export PHYSICAL_REPO_ROOT="/home/vb/volkb79-2/dstdns"' in content
         assert 'export REPO_NAME="dstdns"' in content
         assert 'export INSTANCE_ID="98535c"' in content
+
+
+# ---------------------------------------------------------------------------
+# Contract 4b — hard regression bound: nested-repo pre-set-env contamination
+# (analogous to TestRegressionBoundDstdns, but for the pre-set-env case /
+# Oracle 3 / the live P-ciu-physical-root-preset-env bug).
+# ---------------------------------------------------------------------------
+
+
+class TestRegressionBoundNestedPresetEnvContamination:
+    """A nyxloom-like layout (a ciu root nested inside a vbpub-shaped parent
+    bind mount, no dedicated mount entry of its own) must NOT have its
+    PHYSICAL_REPO_ROOT / REPO_NAME / network identity corrupted by a
+    contaminating pre-set PHYSICAL_REPO_ROOT inherited from an unrelated
+    sibling repo's ciu.env (dstdns) — end-to-end through generate_ciu_env,
+    exercising the REAL mountinfo-parsing path (no _detect_physical_repo_root
+    monkeypatch), mirroring TestRegressionBoundDstdns's end-to-end pattern.
+    """
+
+    def test_generate_ciu_env_nyxloom_shaped_ignores_contaminating_preset(
+        self, tmp_path, monkeypatch
+    ):
+        repo_root = tmp_path / "workspaces" / "vbpub" / "nyxloom"
+        repo_root.mkdir(parents=True)
+        resolved_repo_root = repo_root.resolve()
+        resolved_vbpub_root = resolved_repo_root.parent
+
+        # nyxloom has no dedicated bind entry of its own — only its parent
+        # (vbpub) is mounted, exactly like the live layout.
+        mountinfo_text = (
+            f"1996 1972 253:0 /home/vb/volkb79-2/vbpub {resolved_vbpub_root} "
+            "rw,relatime - ext4 /dev/mapper/vg-root rw\n"
+        )
+        mountinfo = _write_mountinfo(tmp_path, mountinfo_text)
+        monkeypatch.setattr("ciu.workspace_env._MOUNTINFO_PATH", mountinfo)
+        # Contaminating pre-set env: a DIFFERENT (sibling) repo's physical
+        # root, as if dstdns's ciu.env had been `source`d into this shell.
+        monkeypatch.setenv("PHYSICAL_REPO_ROOT", "/home/vb/volkb79-2/dstdns")
+        monkeypatch.delenv("DOCKER_NETWORK_INTERNAL", raising=False)
+        monkeypatch.setenv("ENV_TYPE", "devcontainer")
+        monkeypatch.setattr("ciu.workspace_env._detect_docker_gid", lambda: "1000")
+        monkeypatch.delenv("PUBLIC_FQDN", raising=False)
+        monkeypatch.delenv("PUBLIC_IP", raising=False)
+
+        with patch(_URLOPEN, side_effect=urllib.error.URLError("no network")):
+            out = generate_ciu_env(repo_root)
+
+        content = out.read_text(encoding="utf-8")
+        assert 'export PHYSICAL_REPO_ROOT="/home/vb/volkb79-2/vbpub/nyxloom"' in content
+        assert 'export REPO_NAME="nyxloom"' in content
+        # Must NOT be corrupted to dstdns's identity (the pre-fix live bug).
+        assert 'export REPO_NAME="dstdns"' not in content
+        assert 'export INSTANCE_ID="98535c"' not in content
+        assert "dstdns-98535c-network" not in content
 
 
 # ---------------------------------------------------------------------------
