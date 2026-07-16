@@ -14,15 +14,16 @@ another briefed item's brief.
 
 from __future__ import annotations
 
-import json
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from conftest import SAMPLE_ROUTES_TOML
 
-from nyxloom import adapters, backlog_items, daemon, lint, notify, paths, reconcile, render, storage, wrapper
+from nyxloom import (
+    adapters, backlog_items, daemon, intake_chat, lint, notify, paths, reconcile,
+    render, storage, wrapper,
+)
 from nyxloom.types import EventType, Role, TaskState
 
 
@@ -71,7 +72,11 @@ def _backlog_path(cfg) -> Path:
 def test_targeted_source_notes_include_genuinely_briefed_items_detail(tmp_state, sample_project):
     cfg = sample_project
     path = _backlog_path(cfg)
-    detail = f"{ALIGNED_PURPOSE}\n{ELICITED_DETAIL}\nLinked D-042."
+    # NOTE: the D-NNN link and the priority are deliberately NOT written into
+    # the detail prose -- that is not where P29 puts them (see
+    # test_real_p29_brief_round_trips_...). They must reach the carver from
+    # the header tokens or not at all.
+    detail = f"{ALIGNED_PURPOSE}\n{ELICITED_DETAIL}"
     item_id = backlog_items.create(path, "widget cache frobnicator", detail,
                                     priority=2, decisions=["D-042"])
 
@@ -82,6 +87,47 @@ def test_targeted_source_notes_include_genuinely_briefed_items_detail(tmp_state,
     assert ALIGNED_PURPOSE in joined
     assert ELICITED_DETAIL in joined
     assert "D-042" in joined
+    assert "priority: 2" in joined
+
+
+def test_real_p29_brief_round_trips_priority_and_decisions_to_the_carver(
+        tmp_state, sample_project):
+    """O1 end-to-end through the REAL P29 shape, not a hand-built one.
+
+    intake_chat._parse_brief splits `Priority:`/`Decisions:` OUT of the free
+    prose into their own fields, and backlog_items.create() persists them as
+    header tokens -- so item.detail provably never carries them. A test that
+    hand-writes "Linked D-042." into the detail string asserts only that
+    detail round-trips, and would still pass if the carver never saw the
+    priority or the linked decision at all. Drive the real parser instead."""
+    reply = (
+        "BRIEF: widget cache frobnicator\n"
+        "Priority: 2\n"
+        "Decisions: D-042, D-043\n"
+        f"Detail: {ALIGNED_PURPOSE}\n"
+        f"{ELICITED_DETAIL}\n"
+    )
+    parsed = intake_chat._parse_brief(reply)
+    # Pin the premise: the parser really does keep these out of the prose.
+    assert parsed.priority == 2
+    assert parsed.decisions == ["D-042", "D-043"]
+    assert "D-042" not in parsed.detail
+    assert "Priority" not in parsed.detail
+
+    cfg = sample_project
+    item_id = backlog_items.create(_backlog_path(cfg), parsed.title, parsed.detail,
+                                    priority=parsed.priority, decisions=parsed.decisions)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    joined = "\n".join(d._carve_source_note_lines(cfg, item_id=item_id))
+
+    assert ALIGNED_PURPOSE in joined
+    assert ELICITED_DETAIL in joined
+    # The interview asked the operator for these (steps 4 and 6); a direct
+    # carve that drops them is exactly the context loss P41 closes.
+    assert "priority: 2" in joined
+    assert "D-042" in joined
+    assert "D-043" in joined
 
 
 def test_targeted_source_notes_omit_detail_once_brief_is_gone(tmp_state, sample_project):
@@ -136,6 +182,48 @@ def test_untargeted_source_notes_unchanged_no_item_id(tmp_state, sample_project)
 
 
 # ==========================================================================
+# backlog_items.is_briefed / brief_detail -- the header-gate itself (the
+# "inverted detail extraction" the first P31 attempt was rejected for).
+# ==========================================================================
+
+def test_brief_detail_returns_detail_only_for_a_briefed_item(tmp_state, sample_project):
+    cfg = sample_project
+    item_id = backlog_items.create(_backlog_path(cfg), "widget cache frobnicator",
+                                    f"{ALIGNED_PURPOSE}\n{ELICITED_DETAIL}", priority=2)
+    assert backlog_items.brief_detail(cfg, item_id) == f"{ALIGNED_PURPOSE}\n{ELICITED_DETAIL}"
+
+
+def test_brief_detail_none_for_unknown_item(tmp_state, sample_project):
+    assert backlog_items.brief_detail(sample_project, "B999") is None
+
+
+def test_brief_detail_none_for_unheadered_bullet_with_body_prose(tmp_state, sample_project):
+    """The rejection this re-carve exists to avoid: an un-headered legacy
+    bullet's continuation prose is ordinary body text, NOT an intake brief,
+    no matter how much of it there is -- is_briefed gates on the header."""
+    cfg = sample_project
+    path = _backlog_path(cfg)
+    item_id = backlog_items.create(path, "legacy thing", ALIGNED_PURPOSE)
+    text = path.read_text(encoding="utf-8")
+    path.write_text("\n".join(ln for ln in text.splitlines()
+                              if "nyxloom:backlog" not in ln) + "\n", encoding="utf-8")
+
+    item = next(it for it in backlog_items.parse(path) if it.id == item_id)
+    assert item.detail.strip()          # body prose IS present ...
+    assert not backlog_items.is_briefed(item)   # ... but it is not a brief.
+    assert backlog_items.brief_detail(cfg, item_id) is None
+
+
+def test_brief_detail_none_for_headered_item_with_no_detail(tmp_state, sample_project):
+    cfg = sample_project
+    item_id = backlog_items.create(_backlog_path(cfg), "title only", "")
+    item = next(it for it in backlog_items.parse(_backlog_path(cfg)) if it.id == item_id)
+    assert item.header_line is not None
+    assert not backlog_items.is_briefed(item)
+    assert backlog_items.brief_detail(cfg, item_id) is None
+
+
+# ==========================================================================
 # O2: dispatch_targeted_carve(project, item_id) -- built through the real
 # carve-dispatch control flow (reconcile.CarveDispatch + _execute_carve_
 # dispatch), seeded with ONLY the chosen item's brief.
@@ -153,7 +241,7 @@ def test_dispatch_targeted_carve_seeds_only_the_chosen_items_brief(
     _configure_frontier_route()
     path = _backlog_path(cfg)
 
-    target_detail = f"{ALIGNED_PURPOSE}\n{ELICITED_DETAIL}\nLinked D-042."
+    target_detail = f"{ALIGNED_PURPOSE}\n{ELICITED_DETAIL}"
     target_id = backlog_items.create(path, "widget cache frobnicator", target_detail,
                                       priority=2, decisions=["D-042"])
 
@@ -178,8 +266,10 @@ def test_dispatch_targeted_carve_seeds_only_the_chosen_items_brief(
 
     assert ALIGNED_PURPOSE in packet_md
     assert ELICITED_DETAIL in packet_md
-    assert "D-042" in packet_md
     assert target_id in packet_md
+    # From the header tokens, not the prose -- the full interview context.
+    assert "D-042" in packet_md
+    assert "priority: 2" in packet_md
 
     # Only the targeted item's brief -- not the distractor's, and not the
     # untargeted headroom-refill carve's generic source list.

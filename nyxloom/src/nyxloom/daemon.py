@@ -244,6 +244,29 @@ summary each cycle):
   VALIDATING pipeline, which a bookkeeping-only task never enters) --
   this is what clears reconcile.py's "carve slot" (a carve task counts as
   in-flight only while non-terminal).
+
+P41 2026-07-16 (direct carve from an intake brief):
+
+- dispatch_targeted_carve(project, item_id) -> list[Event]: on-demand carve
+  of ONE briefed backlog item, callable directly (CLI/UI) without waiting
+  for a reconcile pass. Builds reconcile.CarveDispatch(item_id=...) and runs
+  it through the SAME _execute_carve_dispatch flow as the untargeted
+  headroom-refill trigger (reconcile.py module contract item 9) -- identical
+  synthetic-task/seq/authority/route semantics, differing ONLY in the carve
+  packet's sources: instead of the review/backlog/roadmap/product-goal list,
+  the packet embeds that one item's P29 intake brief (gated on
+  backlog_items.is_briefed: header-comment present AND non-empty detail, so
+  an un-headered legacy bullet's body prose is never mistaken for a brief).
+  The embedded brief is the item's detail prose PLUS its header-borne
+  priority and linked D-NNN ids -- intake_chat._parse_brief splits those out
+  of the prose into header tokens, so detail alone would drop the very
+  interview answers this path exists to carry. The synthetic carve task's
+  notes carry `item=<id>` so a targeted leg is identifiable in the log.
+  Because this is operator-initiated, it deliberately does NOT consult the
+  headroom/carve-ahead trigger conditions (those gate the AUTOMATIC refill),
+  but it DOES keep the frontier-route defense-in-depth check: no healthy
+  'frontier-review' route -> NEEDS_OPERATOR {reason: 'carve-no-route'} and
+  no synthetic task is minted.
 """
 
 from __future__ import annotations
@@ -1110,11 +1133,11 @@ class Daemon:
         legacy-fallback resolution of nyxloom.toml.
 
         P41 2026-07-16: when `item_id` names a single targeted backlog item
-        (dispatch_targeted_carve), this embeds THAT item's brief verbatim
-        (via backlog_items.is_briefed/brief_detail) instead of the generic
-        file pointers below -- so a direct carve of a briefed item loses no
-        interview context. An un-briefed/legacy item still gets only a
-        plain reference (no invented brief)."""
+        (dispatch_targeted_carve), this embeds THAT item's brief (gated on
+        backlog_items.is_briefed) instead of the generic file pointers below
+        -- so a direct carve of a briefed item loses no interview context.
+        An un-briefed/legacy item still gets only a plain reference (no
+        invented brief)."""
         if item_id is not None:
             return self._targeted_item_note_lines(cfg, item_id)
 
@@ -1150,7 +1173,19 @@ class Daemon:
         item_id's own intake brief, embedded verbatim (not a file pointer).
         A backlog with no such item, or one that is not is_briefed (legacy
         un-headered bullet, or a headered item with no detail), yields a
-        plain reference line only -- never a fabricated brief."""
+        plain reference line only -- never a fabricated brief.
+
+        The brief is NOT the detail prose alone. intake_chat._parse_brief
+        splits a P29 reply into title/Priority:/Decisions:/free prose, and
+        backlog_items.create() then persists priority + decisions as HEADER
+        tokens, leaving only the prose on the bullet's continuation lines.
+        So embedding item.detail alone would silently drop the priority the
+        interview explicitly asked the operator for (step 6) and the D-NNN
+        decisions the intake agent filed on their behalf (step 4) -- the
+        exact interview context this package exists to preserve. Emit the
+        header fields alongside the prose. Decisions are named, not slurped
+        (the carver reads decisions.md itself -- same point-don't-slurp
+        economy as the untargeted source notes above)."""
         path = backlog_items.resolve_path(cfg)
         items = backlog_items.parse(path)
         item = next((it for it in items if it.id == item_id), None)
@@ -1161,6 +1196,11 @@ class Daemon:
             return [f"- targeted backlog item {item_id} (status={item.status}): "
                     "no intake brief on file"]
         lines = [f"- targeted backlog item {item_id} -- intake brief:"]
+        if item.priority is not None:
+            lines.append(f"  priority: {item.priority}")
+        if item.decisions:
+            lines.append(f"  linked decisions: {', '.join(item.decisions)} "
+                         "(read this project's decisions.md for their content)")
         lines.extend(f"  {ln}" for ln in item.detail.splitlines())
         return lines
 
