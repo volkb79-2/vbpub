@@ -15,7 +15,7 @@
 # ("controller"), which collides with the dstdns app's per-service "controller"
 # compose project (they'd share a project; a `compose -p controller down` would
 # hit both). Unique project isolates the nyxloom stack.
-name: nyxloom-controller
+name: nyxloom-nyxloomd
 
 services:
   nyxloomd:
@@ -23,7 +23,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: {{ nyxloomd.image }}
-    container_name: {{ nyxloomd.container_prefix }}-controller
+    container_name: {{ nyxloomd.container_prefix }}-nyxloomd
     restart: unless-stopped
     user: "{{ nyxloomd.runtime.run_as_uid }}:{{ nyxloomd.runtime.run_as_gid }}"
     group_add:

@@ -5,8 +5,8 @@
 # template. Built locally from ./Dockerfile (mdt base + a /opt venv) — NOT an
 # image pull. network_mode: host so the dashboard binds the host loopback.
 [nyxloomd]
-name = "controller"
-image = "nyxloom-controller:local"
+name = "nyxloomd"
+image = "nyxloom-nyxloomd:local"
 container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}nyxloom{% endif %}"
 # Loopback-only dashboard port (host netns).
 dashboard_port = 8942

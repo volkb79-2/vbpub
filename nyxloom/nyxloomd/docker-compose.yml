@@ -27,15 +27,15 @@
 # which collides with the dstdns app's per-service compose project of the same
 # name (observed 2026-07-16: a bare `docker compose up` here recreated
 # dstdns-98535c-controller). Unique project + unique service name isolate us.
-name: nyxloom-controller
+name: nyxloom-nyxloomd
 
 services:
   nyxloomd:
     build:
       context: .
       dockerfile: Dockerfile
-    image: nyxloom-controller:local
-    container_name: nyxloom-prod-controller
+    image: nyxloom-nyxloomd:local
+    container_name: nyxloom-prod-nyxloomd
     restart: unless-stopped
     user: "1003:1003"
     group_add:

@@ -1,6 +1,6 @@
 [nyxloomd]
-name = "controller"
-image = "nyxloom-controller:local"
+name = "nyxloomd"
+image = "nyxloom-nyxloomd:local"
 container_prefix = "nyxloom-prod"
 dashboard_port = 8942
 
