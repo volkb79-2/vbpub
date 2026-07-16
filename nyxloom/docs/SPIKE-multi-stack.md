@@ -111,3 +111,30 @@ one; the lease just bounds how many run at once). Handoffctl side:
    singletons = a restart each). That's a `Stack: exclusive` action on the
    main stack. Run it as its own carved package under the factory, or hand-
    apply once and measure?
+
+## 2026-07-16 — Step B EXECUTED (manual, dstdns): FAIL on isolation, one root cause
+
+Full report: `dstdns:nyxloom-trove/reports/SPIKE-multistack-stepB-REPORT.md`.
+New **binding finding replacing §0**: RAM is no longer the blocker (5–8 GB
+available; a full second landscape measured ≈2.4 GB and booted healthy in
+~7 min, zero rebuilds). The blocker is **ciu's compose project name = stack
+name, shared across instances** — `docker compose up` from the second
+instance adopted and REMOVED the main landscape's containers
+(same project+service labels, changed container_name → recreate). Fix in
+ciu deploy: instance-scope the project (`-p <stack>-<INSTANCE_ID>` or
+compose `name:`). Until that lands, NEVER `ciu up` a second instance of a
+stack on a shared host. Secondary findings: `CIU_SERVICES_PROFILE=core,db
+ciu up` did NOT narrow the deployment (all 22 stacks deployed); rendered
+`ciu.toml` hand-edits are clobbered by `ciu up` re-render (overrides must
+go in the render-input layer). Step A (KSM) is downgraded to
+optional-for-headroom; Step C gains the F1 fix as a dependency.
+
+Addendum (same day, operator discussion): architecture for per-worktree
+stacks ratified and persisted in dstdns `nyxloom-trove/GUIDE.md` §3 (two
+modes attach/isolate, identity dimensions incl. image-tag isolation,
+teardown rules, carver env-recipe contract). Precise upstream ciu fix
+contracts in GUIDE §3.5: F1 = pass `-p {project}-{env_tag}-{stack}` at all
+compose lifecycle sites (engine.py:838 up, :700 down, ~:1332 shipped) with
+a same-name/foreign-project migration guard; F2 = drop the empty-phase-
+union→ALL coercion in resolve_profiles (contradicts SPEC S7.5a's own
+narrowing example). RAM headroom is TEMPORARY — retry promptly once fixes land.

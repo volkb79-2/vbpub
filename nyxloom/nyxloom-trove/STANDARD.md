@@ -24,9 +24,27 @@ project home (the tool's own source tree).
     decisions.md     # decisions inbox — product calls (D-<NNN>)
     roadmap.md       # self-dev milestones
     backlog.md       # un-carved ideas
+    GUIDE.md         # OPTIONAL: project-specific agent operating guide (see below)
     archive/         # merged handoffs + reports land here
   docs/              # the project's OWN docs — nyxloom READS these (see [refs])
 ```
+
+### `GUIDE.md` — project-specific operating instructions (optional, recommended)
+
+A project MAY keep a `nyxloom-trove/GUIDE.md`: the nyxloom-specific
+information and usage instructions an agent needs to *operate the
+project's environment* — gate invocation, worktree/stack setup recipes,
+environment modes and teardown rules, cockpit-vs-runner distinctions.
+Rationale: repo-root `AGENTS.md` is the cross-tool surface every agent
+CLI loads, but it should stay lean and tool-agnostic — so instead of
+inlining nyxloom-specific operating detail there, `AGENTS.md` carries a
+**one-line pointer** ("nyxloom-specific information and usage
+instructions: see `nyxloom-trove/GUIDE.md`") and the detail lives in the
+trove, versioned next to the handoffs that depend on it. Carvers should
+reference GUIDE.md sections in a handoff's "Context to read first"
+instead of restating environment recipes per-handoff (single source;
+recipes rot fast). First adopter: dstdns (multi-stack environment rules,
+2026-07-16).
 
 ## Where nyxloom's data lives — the trove vs. the state volume
 

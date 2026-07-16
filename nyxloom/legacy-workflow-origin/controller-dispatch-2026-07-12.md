@@ -20,13 +20,13 @@ merge. The frontier session (Opus high) owns review pass #2 + merge + carve.
 - For OpenRouter routes always include: "write large files incrementally in
   ~80-line batches, run pytest between batches" (504 mitigation).
 - Worktrees: `git worktree add -b <branch> .worktrees/<branch> main` from
-  `/workspaces/vbpub`. Branch names: `feat/groop-p<NN>-<slug>`,
+  `/workspaces/vbpub`. Branch names: `feat/topos-p<NN>-<slug>`,
   `feat/pwmcp-p<NN>-<slug>`.
-- Implementation gates for groop run in the package venv pattern (see v1
+- Implementation gates for topos run in the package venv pattern (see v1
   guide §Validation); never trust agent-env greens — the frontier session
   reruns.
 - On completion notification: resume the SAME implementer session for
-  self-review pass #1 (standing template in `groop/README.md`
+  self-review pass #1 (standing template in `topos/README.md`
   "Self-review pass"; substitute today's date). Then assemble the review
   packet (v2 §6) and dispatch pass #2.
 - Heartbeat: ScheduleWakeup(285), cache-warmth only, ≤7 ticks, self-checking
@@ -36,12 +36,12 @@ merge. The frontier session (Opus high) owns review pass #2 + merge + carve.
 
 | Package | Handoff | Tier | Route |
 | --- | --- | --- | --- |
-| groop P53 | groop/handoff/P53-headless-record-driver.md | flash-max | reasonix `deepseek-flash-max/deepseek-v4-flash` (DeepSeek direct — no 504 risk) |
-| groop P55 | groop/handoff/P55-collector-entity-metric-filtering.md | flash-high | reasonix `deepseek-flash-high/deepseek-v4-flash` |
-| groop P57 | groop/handoff/P57-docker-name-entity-selectors.md | flash-high | reasonix `deepseek-flash-high/deepseek-v4-flash` |
+| topos P53 | topos/handoff/P53-headless-record-driver.md | flash-max | reasonix `deepseek-flash-max/deepseek-v4-flash` (DeepSeek direct — no 504 risk) |
+| topos P55 | topos/handoff/P55-collector-entity-metric-filtering.md | flash-high | reasonix `deepseek-flash-high/deepseek-v4-flash` |
+| topos P57 | topos/handoff/P57-docker-name-entity-selectors.md | flash-high | reasonix `deepseek-flash-high/deepseek-v4-flash` |
 | pwmcp P01 | pwmcp/handoff/P01-chrome-devtools-mcp.md | flash-max | reasonix flash-max; fallback opencode GLM-5.2 `--variant high` |
 
-Also dispatchable if a slot frees (independent): groop P48 (flash-high),
+Also dispatchable if a slot frees (independent): topos P48 (flash-high),
 P49 (flash-max). Queue after deps: P54 (after P53, resume P53 session),
 P56 (after P49), P58 (anytime — P52 merged; flash-max), pwmcp P02 (after P01,
 resume P01 session), pwmcp P03 (after P01; BENCHMARK terra-med via codex vs
@@ -53,7 +53,7 @@ sessions, then hand both diffs to the same frontier review).
   EXCEPTION pwmcp chain P01→P02→P03: resume the same reviewer (SendMessage).
 - Review packet per diff: handoff path, pre-dumped `git diff main...HEAD`
   file, `--stat`, LOG/REPORT/SELFREVIEW paths, standing checklist pointer
-  (v1 guide + groop README standing contracts), negative scope ("do not read
+  (v1 guide + topos README standing contracts), negative scope ("do not read
   ROADMAP/other handoffs"). Reviewer merges `--no-ff`, validates from main,
   records evidence, then carves to refill queue to ≥5 (respect .CARVE_LOCK).
 - Reviewer must record `flagged-by-pass-1: yes/no` per finding (pass-#1
@@ -61,5 +61,5 @@ sessions, then hand both diffs to the same frontier review).
 
 ## Reporting
 Keep a slot table in your replies (package / state / session id / last
-event). Update `groop/docs/STATUS.md` only via the frontier session's
+event). Update `topos/docs/STATUS.md` only via the frontier session's
 evidence commits, not directly.

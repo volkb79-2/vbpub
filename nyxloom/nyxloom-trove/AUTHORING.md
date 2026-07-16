@@ -55,6 +55,17 @@ section that defines the contract. This is the difference between an agent that
 spends its budget re-deriving the codebase and one that spends it implementing.
 State it explicitly — never assume the agent will find it.
 
+### 2b. Environment setup is a RECIPE, not a pre-built artifact
+If the package's oracles need a live stack or any non-default environment,
+the handoff carries a mechanical `## Environment setup` section: the exact
+command sequence the **implementing agent executes at dispatch time from
+fresh main** (worktree add, env generation, config selection via the
+render-input layer, bring-up, teardown). The carver PROBES the recipe once
+at carve time but never pre-builds the environment — a pre-built checkout
+is stale by the time the task goes ACTIVE. Prefer pointing at the
+project's `nyxloom-trove/GUIDE.md` section over restating the recipe
+per-handoff (single source; recipes rot fast).
+
 ### 3. Oracles that assert the BEHAVIORAL CONTRACT
 Each oracle is a checkable claim with an **observable** (what proves it) and a
 **negative** (what a broken version does), plus the **gate** that checks it.

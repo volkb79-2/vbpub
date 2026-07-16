@@ -5,7 +5,7 @@ project-neutral architecture, typed state model and deterministic scheduler are
 defined under [`nyxloom`](../nyxloom/README.md). Do not copy this file as
 the controller architecture for another project.
 
-This guide records the controller workflow used for `groop` handoff packages
+This guide records the controller workflow used for `topos` handoff packages
 across Reasonix, Codex CLI, Claude Code, and OpenCode. It is intentionally
 operational: exact worktree boundaries, non-interactive invocation, metrics,
 monitoring, review, and merge protocol.
@@ -28,10 +28,10 @@ Implementation agents do bounded packages in dedicated worktrees.
 
 Default package flow:
 
-1. Carve or update `groop/handoff/P<NN>-<slug>.md`.
-2. Add a Planned row to `groop/README.md` and `groop/docs/ROADMAP.md`.
+1. Carve or update `topos/handoff/P<NN>-<slug>.md`.
+2. Add a Planned row to `topos/README.md` and `topos/docs/ROADMAP.md`.
 3. Commit the carve on `main`.
-4. Start a Reasonix agent from `main` in `.worktrees/-groop-p<NN>-<slug>`.
+4. Start a Reasonix agent from `main` in `.worktrees/-topos-p<NN>-<slug>`.
 5. Let the agent implement, test, write `P<NN>-LOG.md` and `P<NN>-REPORT.md`,
    and commit its feature branch.
 6. Review the diff, patch issues in the feature worktree, rerun tests.
@@ -44,8 +44,8 @@ Use repo-local worktrees, not `/tmp`, because `.worktrees/` is gitignored and
 available to agents without extra host permission surprises.
 
 ```bash
-git worktree add -b feat/groop-p28-io-cap-saturation \
-  .worktrees/-groop-p28-io-cap-saturation main
+git worktree add -b feat/topos-p28-io-cap-saturation \
+  .worktrees/-topos-p28-io-cap-saturation main
 ```
 
 Each agent prompt should state:
@@ -53,7 +53,7 @@ Each agent prompt should state:
 - branch name;
 - exact worktree path;
 - work only inside that worktree;
-- touch only `groop/**`;
+- touch only `topos/**`;
 - read the handoff and required context;
 - run focused tests, full suite, and `py_compile`;
 - write log/report files;
@@ -65,24 +65,24 @@ Fresh implementation agent:
 
 ```bash
 reasonix run --model deepseek-flash-high/deepseek-v4-flash --max-steps 0 \
-  'Implement groop P29 ... follow groop/README.md Workflow protocol exactly ...'
+  'Implement topos P29 ... follow topos/README.md Workflow protocol exactly ...'
 ```
 
 Continue the latest Reasonix session to reuse cache:
 
 ```bash
 reasonix run -c --model deepseek-flash-high/deepseek-v4-flash --max-steps 0 \
-  'Continue with groop P28 ...'
+  'Continue with topos P28 ...'
 ```
 
 Parallel two-stream run, when packages do not overlap:
 
 ```bash
 reasonix run -c --model deepseek-flash-high/deepseek-v4-flash --max-steps 0 --dir /path/to/vbpub \
-  'Implement groop P32 ... worktree .worktrees/-groop-p32-daemon-status ...'
+  'Implement topos P32 ... worktree .worktrees/-topos-p32-daemon-status ...'
 
 reasonix run --model deepseek-flash-high/deepseek-v4-flash --max-steps 0 --dir /path/to/vbpub \
-  'Implement groop P33 ... worktree .worktrees/-groop-p33-release-smoke ...'
+  'Implement topos P33 ... worktree .worktrees/-topos-p33-release-smoke ...'
 ```
 
 Useful help:
@@ -233,7 +233,7 @@ Reasonix shows token/cache/cost lines while running, for example:
 179872 tok · in 179715 (179456 cached / 259 new) · out 157 · ¥0.0042
 ```
 
-The cached/new split is the key number. Continuing related Groop/TUI packages
+The cached/new split is the key number. Continuing related Topos/TUI packages
 with `reasonix run -c` produced high cache reuse and low marginal cost. For a
 separate area of work, start a fresh Reasonix session so it builds an
 independent cache around that domain.
@@ -308,7 +308,7 @@ Then continue with controller review.
 
 Logs:
 
-- Every handoff should require `groop/handoff/reports/P<NN>-LOG.md`.
+- Every handoff should require `topos/handoff/reports/P<NN>-LOG.md`.
 - The log should contain observable actions, commands, files changed, decisions,
   blockers, and next steps.
 - Do not trust dates or test counts until the controller verifies them.
@@ -322,10 +322,10 @@ Always review before merging. Reasonix is useful, but not a trusted committer.
 Check:
 
 ```bash
-git -C .worktrees/-groop-pNN-slug status --short --branch
-git -C .worktrees/-groop-pNN-slug log --oneline --max-count=5
-git -C .worktrees/-groop-pNN-slug diff --stat main...HEAD -- groop
-git -C .worktrees/-groop-pNN-slug diff --find-renames main...HEAD -- groop
+git -C .worktrees/-topos-pNN-slug status --short --branch
+git -C .worktrees/-topos-pNN-slug log --oneline --max-count=5
+git -C .worktrees/-topos-pNN-slug diff --stat main...HEAD -- topos
+git -C .worktrees/-topos-pNN-slug diff --find-renames main...HEAD -- topos
 ```
 
 Common issues found:
@@ -342,8 +342,8 @@ Common issues found:
 Patch in the feature worktree, then commit a controller review commit:
 
 ```bash
-git add groop/...
-git commit -m "test(groop): polish PNN <topic> review"
+git add topos/...
+git commit -m "test(topos): polish PNN <topic> review"
 ```
 
 ## Validation
@@ -352,27 +352,27 @@ Use the package venv if available, but force imports from the checkout being
 validated:
 
 ```bash
-PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
+PYTHONPATH=topos/src /tmp/p25-venv/bin/python -m pytest topos/tests -q
 ```
 
 Focused examples:
 
 ```bash
-/tmp/p25-venv/bin/python -m pytest groop/tests/test_io_cap_saturation.py -q
+/tmp/p25-venv/bin/python -m pytest topos/tests/test_io_cap_saturation.py -q
 /tmp/p25-venv/bin/python -m py_compile \
-  groop/src/groop/collect/cgroup.py \
-  groop/src/groop/collect/collector.py
+  topos/src/topos/collect/cgroup.py \
+  topos/src/topos/collect/collector.py
 ```
 
 After merge, rerun from `main`, record the exact result in
-`groop/docs/STATUS.md` and `groop/handoff/reports/P<NN>-LOG.md` /
+`topos/docs/STATUS.md` and `topos/handoff/reports/P<NN>-LOG.md` /
 `P<NN>-REPORT.md`, then commit:
 
 ```bash
-git merge --no-ff feat/groop-pNN-slug -m "Merge groop PNN <topic>"
-PYTHONPATH=groop/src /tmp/p25-venv/bin/python -m pytest groop/tests -q
-git add groop/docs/STATUS.md groop/handoff/reports/P<NN>-*.md
-git commit -m "docs(groop): record PNN merge evidence"
+git merge --no-ff feat/topos-pNN-slug -m "Merge topos PNN <topic>"
+PYTHONPATH=topos/src /tmp/p25-venv/bin/python -m pytest topos/tests -q
+git add topos/docs/STATUS.md topos/handoff/reports/P<NN>-*.md
+git commit -m "docs(topos): record PNN merge evidence"
 ```
 
 ## Lessons Learned
@@ -401,7 +401,7 @@ git commit -m "docs(groop): record PNN merge evidence"
   Unicode.
 - Subprocess and UI-import tests need special scrutiny. P33 initially had a
   test that passed alone but failed in the full suite because other UI tests had
-  already imported `groop.ui`; controller validation caught it.
+  already imported `topos.ui`; controller validation caught it.
 - If an agent installs or mutates local tooling to make tests pass, treat that
   as agent-environment evidence only. Re-run in the controller's known venv
   before merge.

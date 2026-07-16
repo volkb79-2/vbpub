@@ -186,3 +186,14 @@ the daemon registry), nyxloom dispatches them itself (dogfooding).
   decision_chat; disambiguation is the only real design work (intake-start vs decision
   reply vs cmd verb — a keyword/prefix convention). Depends on P29 (merged) + the feedback
   transport. Post-rebuild feature; not part of the current convergence.
+- **B-rejected-never-requeues — REVIEW_REJECTED is a reconcile dead-end (pairs with P33).**
+  `reconcile.py` has NO REVIEW_REJECTED handling: the state machine permits
+  REVIEW_REJECTED->QUEUED, the UI says "needs another implementer attempt", and the
+  `reject` CLI verb promises "re-enters QUEUED the normal way" — but nothing performs
+  the transition, so a correctly-rejected task is stranded forever (had to re-queue P31
+  by hand 2026-07-16). This is the OTHER half of the rejection loop: P33 makes rejects
+  land in REVIEW_REJECTED correctly, but they then have nowhere to go. Fix: reconcile
+  should transition REVIEW_REJECTED->QUEUED when the distinct-record attempts budget
+  remains (re-work with the same/re-authored handoff), else ->BLOCKED (typed dead-end,
+  like the interrupted-exhausted path). Daemon-core; must land with/after P33 for the
+  review->rework loop to work end-to-end. HIGH value (silent: rejected work vanishes).

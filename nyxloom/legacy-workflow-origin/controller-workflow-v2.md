@@ -2,7 +2,7 @@
 
 Status: legacy pilot protocol · adopted 2026-07-12 · retained during migration
 to the project-neutral [`nyxloom`](../nyxloom/README.md) architecture.
-This document remains evidence for existing groop runs, but new cross-project
+This document remains evidence for existing topos runs, but new cross-project
 control-plane contracts belong under `nyxloom/`.
 Companion: `docs/ai-cli-controller-guide.md` (per-CLI invocation reference — still
 authoritative for exact commands, flags, metrics, and CLI-specific pitfalls).
@@ -306,7 +306,7 @@ Three strategies were weighed against P51/P52 evidence:
   pass.
 
 **Pass #1 (self-review, advisory).** Resume the implementation session with the
-standing self-review template (`groop/README.md`, "Self-review pass"). Catches
+standing self-review template (`topos/README.md`, "Self-review pass"). Catches
 mechanical misses (gate not run, file outside scope, LOG/REPORT missing, date
 errors). Findings committed to the feature branch as
 `P<NN>-SELFREVIEW.md` + fixes. **Trial protocol:** for each pass-#2 finding
@@ -320,7 +320,7 @@ assembled by the controller (cheap-model work) so it does not burn 50k+ tokens
 orienting itself:
 - handoff path; `git diff main...HEAD` pre-dumped to a file; `--stat` summary;
 - LOG / REPORT / SELFREVIEW paths;
-- the standing review checklist (v1 guide §Review Checklist + groop README
+- the standing review checklist (v1 guide §Review Checklist + topos README
   standing contracts);
 - explicit negative scope: "do NOT read ROADMAP, other handoffs, or unrelated
   source."
@@ -329,7 +329,7 @@ overlap metric); (2) review-fixes in the feature worktree; (3) writes the
 review report, merges `--no-ff`, validates from `main`, records evidence;
 (4) surfaces follow-up work (checks SPEC/ROADMAP/STATUS/`BACKLOG.md` for
 remaining scope) — anything found worth doing but not carved this cycle gets
-logged to `groop/docs/BACKLOG.md`, not left in prose only;
+logged to `topos/docs/BACKLOG.md`, not left in prose only;
 (5) **carves next** (§8), drawing on `BACKLOG.md` as one of the four sources.
 
 ## 7. Handoff header spec (machine-readable, parsed by the controller)
@@ -350,7 +350,7 @@ Every open handoff carries, immediately after the title:
   reading the body.
 - `Session-hint` implements cache-reuse policy: same area → resume the prior
   implementer session; independent area → fresh session with its own cache.
-- `Escalate-if` + standing rule (groop README): **escalation is mechanical,
+- `Escalate-if` + standing rule (topos README): **escalation is mechanical,
   not introspective.** Models are demonstrably poor at knowing what they miss
   (P51: four models, identical omissions, zero flagged uncertainty), so
   "reflect whether this suits your expertise" yields false confidence or
@@ -377,7 +377,7 @@ Every open handoff carries, immediately after the title:
   never carved at all. Every carve cycle draws from FOUR sources and states
   which for each package carved —
   1. **review-derived** follow-ups (warm context, cheapest to carve well);
-  2. **backlog-derived**: `groop/docs/BACKLOG.md` — findings any prior
+  2. **backlog-derived**: `topos/docs/BACKLOG.md` — findings any prior
      session identified but did not carve at the time (see its header for
      entry/promotion rules);
   3. **roadmap-driven**: the carver MUST re-read the roadmap/backlog index
@@ -551,7 +551,7 @@ cache-warmth only, never polling).
   CLI Agents"). Applied from this incident onward (e.g. P58's terra-med
   retry).
 - 2026-07-13 · OpenCode + OpenRouter + DeepSeek (`openrouter/deepseek/deepseek-v4-flash`,
-  `--variant high`/`--variant max`) probed and live-tested (groop P59) with
+  `--variant high`/`--variant max`) probed and live-tested (topos P59) with
   zero 504s or routing failures — a change from the 2026-07-12 GLM-5.2 504
   note in `docs/ai-cli-controller-guide.md` (§5.1/§5 caveats), suggesting the
   earlier idle-timeout issue was either transient OpenRouter infra or
@@ -597,7 +597,7 @@ cache-warmth only, never polling).
   P69's handoff made "write DECISIONS-INBOX entries" an implementer deliverable,
   which §8 reserves to the frontier reviewer. The agent complied (correctly — it
   followed its brief) and its own self-review then had to flag its output as a
-  process violation. The fault is the carve, not the agent. Fixed in groop's
+  process violation. The fault is the carve, not the agent. Fixed in topos's
   handoff-authoring guide; the general rule is that **a handoff must never ask an
   implementer to perform a reviewer-only action**, because a well-behaved agent
   will do it. Same handoff also cited a cross-repo reference by a path that does
