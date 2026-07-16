@@ -42,10 +42,20 @@ RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
       "/src/nyxloom[test]" \
  && /opt/tester-venv/bin/python -c "import pytest, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko; print('tester-unified closure OK')"
 
-# Some suites (e.g. topos daemon-status) call pwd.getpwuid(euid). The container
-# runs as uid 1003 (to match the host-owned bind mounts), which the base image
-# has no /etc/passwd entry for -> getpwuid(1003) raises KeyError. Add one.
-RUN echo "tester:x:1003:994:tester:/home/vscode:/bin/bash" >> /etc/passwd
+# The container runs as uid 1003 (to match the host-owned bind mounts), which
+# the base image has no /etc/passwd entry for and no writable HOME. Provide
+# BOTH: a passwd entry (pwd.getpwuid(1003) — topos daemon-status calls it) AND a
+# writable HOME with XDG dirs, so suites that read/write $HOME/.config or
+# $HOME/.cache (e.g. topos config/record) don't hit PermissionError on the
+# image's root-owned /home/vscode. A gate must give the run-uid a real HOME.
+RUN echo "tester:x:1003:994:tester:/home/tester:/bin/bash" >> /etc/passwd \
+ && echo "docker:x:994:tester" >> /etc/group \
+ && mkdir -p /home/tester/.config /home/tester/.cache /home/tester/.local/state \
+ && chown -R 1003:994 /home/tester
 
 USER 1003
-ENV TESTER_VENV=/opt/tester-venv
+ENV HOME=/home/tester \
+    XDG_CONFIG_HOME=/home/tester/.config \
+    XDG_CACHE_HOME=/home/tester/.cache \
+    XDG_STATE_HOME=/home/tester/.local/state \
+    TESTER_VENV=/opt/tester-venv
