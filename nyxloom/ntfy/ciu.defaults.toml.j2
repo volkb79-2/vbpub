@@ -14,7 +14,7 @@ image = "binwiederhier/ntfy"
 image_tag = "v2.14.0"
 container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}nyxloom{% endif %}"
 # Public hostname routed by tls-edge (must resolve to this host; wildcard A).
-public_host = "ntfy.gstammtisch.dchive.de"
+public_host = "nyxloom.gstammtisch.dchive.de"
 # In-container HTTP port (non-root bindable); never published on the host.
 port = 8080
 # tls-edge shared ingress network (external).
