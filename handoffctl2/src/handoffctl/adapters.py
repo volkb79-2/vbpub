@@ -127,8 +127,14 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         # 2026-07-15 (live P64 lesson): the first real dispatch produced a
         # full implementation but never committed it, and the review packet
         # diffs main...HEAD — uncommitted work is invisible to review.
+        # 2026-07-16 (P21 live P93 lesson): "uncommitted work is discarded"
+        # was FALSE -- the review packet now also captures uncommitted
+        # worktree state (P21), so keep the commit pressure without
+        # asserting a falsehood.
         "You MUST `git add` and `git commit` ALL your work on the branch "
-        "before finishing; uncommitted work is discarded."
+        "before finishing. Uncommitted work will be surfaced to review but "
+        "risks loss on worktree teardown — committing is required for a "
+        "clean review."
     )
 
     # Append incremental-write hint if present
