@@ -1,0 +1,57 @@
+# ─── PRE-RENDERED from ciu.compose.yml.j2 (defaults) — keep in sync ──────────
+# Plain-compose deploy path while the vbpub ciu.env is stale (see
+# ciu.defaults.toml.j2 header). NOTE the ABSOLUTE PHYSICAL host path on the
+# server.yml bind: this compose runs against the HOST docker daemon from a
+# devcontainer (DooD), so container-side paths like /workspaces/... do not
+# exist for the daemon.
+
+services:
+  ntfy:
+    image: binwiederhier/ntfy:v2.14.0
+    container_name: nyxloom-ntfy
+    command: serve
+    restart: unless-stopped
+    cgroup_parent: nyxloom.slice
+    user: "1003:1003"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: "UTC"
+    volumes:
+      - /home/vb/volkb79-2/vbpub/nyxloom/ntfy/server.yml:/etc/ntfy/server.yml:ro
+      - ntfy-data:/var/lib/ntfy
+    expose:
+      - "8080"
+    networks:
+      - ingress
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/v1/health | grep -q '\"healthy\":true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.nyxloom-ntfy.rule: "Host(`nyxloom.gstammtisch.dchive.de`)"
+      traefik.http.routers.nyxloom-ntfy.entrypoints: "websecure"
+      traefik.http.services.nyxloom-ntfy.loadbalancer.server.port: "8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  ingress:
+    external: true
+    name: ingress_public
+
+volumes:
+  ntfy-data:
+    external: true
+    name: nyxloom-ntfy_ntfy-data

@@ -4,7 +4,7 @@
 # no attachments, bounded cache, conservative visitor rate limits.
 # Reference: https://docs.ntfy.sh/config/
 
-base-url: "https://ntfy.gstammtisch.dchive.de"
+base-url: "https://nyxloom.gstammtisch.dchive.de"
 listen-http: ":8080"            # in-container, non-root; published only via tls-edge
 behind-proxy: true              # trust X-Forwarded-For from the edge for rate limiting
 
