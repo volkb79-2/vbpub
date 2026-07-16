@@ -253,6 +253,11 @@ class ReconcileInput:
     pid_alive: dict[str, bool]
     receipts: dict[str, dict | None]                    # attempt_id -> receipt dict
     stall_confirmed: dict[str, bool] = field(default_factory=dict)
+    # P26 2026-07-16: attempt_id -> count of consecutive resumes of that
+    # attempt's session that made no progress (see daemon._resume_failures_
+    # scan). Compared against policy.max_resume_failures to stop resuming a
+    # poisoned session and fresh-start instead.
+    resume_failures: dict[str, int] = field(default_factory=dict)
     budget_remaining: float | None = None
     wave_open_after_seconds: int = 1800
     merge_history: list[tuple[str, int, str]] = field(default_factory=list)
@@ -345,15 +350,12 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
 
         eligible, reason = dispatch_eligible(fm, tsf, inp)
         if eligible:
-            # Find first healthy route
-            routes_for_tier = inp.routes.for_tier(fm.tier)
-            for route_def in routes_for_tier:
-                if inp.provider_ok.get(route_def.route_id, False):
-                    lifecycle_by_id[fm_id].append(
-                        DispatchImplementer(task_id=fm_id, route_id=route_def.route_id)
-                    )
-                    dispatched += 1
-                    break
+            route_id = _first_healthy_route(fm, inp)
+            if route_id is not None:
+                lifecycle_by_id[fm_id].append(
+                    DispatchImplementer(task_id=fm_id, route_id=route_id)
+                )
+                dispatched += 1
 
     # === Attempt actions (no specific sort within category) ===
     attempt_actions: list[Action] = []
@@ -443,7 +445,25 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                 # Attempts budget left?
                 attempts_count = sum(1 for a in tsf.attempts if a.state in TERMINAL_ATTEMPT_STATES
                                     and a.receipt and a.receipt.result != ReceiptResult.LIMIT)
-                if attempts_count < inp.cfg.policy.max_attempts_per_task and attempt.session_handle:
+                has_budget = attempts_count < inp.cfg.policy.max_attempts_per_task
+                # P26 2026-07-16: a resume that keeps failing must not be
+                # resumed forever -- resumes reuse ONE attempt record, so
+                # attempts_count above never trips on a poisoned session by
+                # itself. Once its consecutive no-progress resume count
+                # reaches the threshold, stop resuming THIS session; the
+                # attempt is already terminal-for-planning-purposes
+                # (INTERRUPTED, marked by a prior MarkInterrupted pass -- no
+                # new attempt state is introduced here).
+                resume_failures = inp.resume_failures.get(attempt.attempt_id, 0)
+                poisoned = resume_failures >= inp.cfg.policy.max_resume_failures
+                if poisoned and has_budget:
+                    route_id = _first_healthy_route(fm_for_task, inp) if fm_for_task is not None else None
+                    if route_id is not None:
+                        attempt_actions.append(DispatchImplementer(task_id=task_id, route_id=route_id))
+                    # else: no healthy route this pass -- retry next pass,
+                    # same as a QUEUED task hitting dispatch_eligible's
+                    # 'no-healthy-route' reason.
+                elif not poisoned and has_budget and attempt.session_handle:
                     attempt_actions.append(ResumeAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
                 else:
                     # P14 2026-07-15 item 4 (silent-dead-end fix): no resume
@@ -452,7 +472,9 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                     # did nothing here ("handled in lifecycle" was never
                     # true: lifecycle only dispatches QUEUED tasks, and
                     # nothing ever requeued this one) leaving the task
-                    # ACTIVE forever with zero events. Surface it.
+                    # ACTIVE forever with zero events. Surface it. (P26:
+                    # also reached when a poisoned resume has exhausted the
+                    # fresh-attempt budget too.)
                     blocker = Blocker(
                         type=BlockerType.ENVIRONMENT,
                         unblock_condition="operator: inspect attempts",
@@ -595,6 +617,16 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     actions.extend(carve_actions)
 
     return actions
+
+
+def _first_healthy_route(fm: Frontmatter, inp: ReconcileInput) -> str | None:
+    """First route for fm's tier whose provider is currently healthy, or
+    None if none are. Shared by QUEUED dispatch and the P26 resume-failure
+    fresh-start fallback."""
+    for route_def in inp.routes.for_tier(fm.tier):
+        if inp.provider_ok.get(route_def.route_id, False):
+            return route_def.route_id
+    return None
 
 
 def _wall_clock_cap_exceeded(attempt, fm: Frontmatter | None, inp: ReconcileInput) -> bool:

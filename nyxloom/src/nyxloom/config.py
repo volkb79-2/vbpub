@@ -113,6 +113,13 @@ class Policy:
     carve_ahead_target: int = 5
     carve_authority: str = "branch"   # branch|main|files
     headroom_warn: int = 5
+    # P26 2026-07-16 (daemon resume-safety): a resumed session that keeps
+    # failing (no progress) is resumed at most this many consecutive times
+    # before the planner fresh-starts a new attempt instead of looping.
+    max_resume_failures: int = 2
+    # A resume log younger than this (seconds) is still "in grace" -- not
+    # yet counted as a failed/no-progress resume.
+    resume_progress_grace_seconds: int = 120
 
 
 @dataclass
