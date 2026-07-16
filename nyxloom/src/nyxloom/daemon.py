@@ -257,8 +257,8 @@ from pathlib import Path
 from typing import Any
 
 from . import (
-    adapters, commands, config, decision_chat, decisions, frontmatter, leases,
-    lint, notify, paths, reconcile, render, storage, wrapper,
+    adapters, commands, config, decision_chat, decisions, frontmatter, intake_chat,
+    leases, lint, notify, paths, reconcile, render, storage, wrapper,
 )
 from .config import ProjectConfig
 from .types import (
@@ -278,9 +278,11 @@ DEFAULT_RECONCILE_INTERVAL = 30.0
 # P15 2026-07-15: UI config endpoints (POST-only; GET on these -> 405).
 # P18 2026-07-16: /api/decision/reply joins this POST-only set (not a config
 # mutation, but the same GET->405 guard applies).
+# P30 2026-07-16: /api/intake joins it too -- the ONE sanctioned write path
+# into intake_chat.advance_intake, loopback-only like the rest of this surface.
 _CONFIG_POST_PATHS = frozenset({
     "/api/config/policy", "/api/config/pause", "/api/config/tier",
-    "/api/decision/reply",
+    "/api/decision/reply", "/api/intake",
 })
 
 # Sane per-key int bounds for POST /api/config/policy. The handoff spells
@@ -2026,6 +2028,9 @@ class Daemon:
         if path == "/api/decision/reply":
             self._post_decision_reply(handler, body)
             return
+        if path == "/api/intake":
+            self._post_intake(handler, body)
+            return
 
         self._send_json(handler, 404, b'{"error":"not found"}')
 
@@ -2055,6 +2060,45 @@ class Daemon:
 
         render.render_after_event(self.registry)
         self._send_json(handler, 200, json.dumps({"ok": True}).encode("utf-8"))
+
+    def _post_intake(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
+        """P30: drive the intake-chat bridge from the UI (intake.html) --
+        the ONE sanctioned write path into intake_chat.advance_intake().
+        Body is untrusted operator input: passed through as plain text (no
+        shell, no eval, no dynamic dispatch); advance_intake itself redacts
+        the agent's reply before it is stored or returned here. Loopback-only,
+        same as every other route on this server."""
+        project = body.get("project")
+        text = body.get("text")
+        intake_id = body.get("intake_id")
+
+        if not isinstance(project, str) or project not in self.registry:
+            self._send_json(handler, 404, b'{"error":"not found"}')
+            return
+        if not isinstance(text, str) or not text.strip():
+            self._send_json(handler, 400, b'{"error":"missing text"}')
+            return
+        if intake_id is not None and (not isinstance(intake_id, str) or not intake_id):
+            self._send_json(handler, 400, b'{"error":"invalid intake_id"}')
+            return
+        if not intake_id:
+            intake_id = new_id("intake")
+
+        try:
+            cfg = config.ProjectConfig.load(self.registry[project])
+        except Exception:
+            self._send_json(handler, 404, b'{"error":"not found"}')
+            return
+
+        try:
+            reply = intake_chat.advance_intake(cfg, project, intake_id, text.strip())
+        except Exception as exc:
+            self._send_json(handler, 500, json.dumps({"error": repr(exc)[:200]}).encode("utf-8"))
+            return
+
+        render.render_after_event(self.registry)
+        self._send_json(handler, 200, json.dumps(
+            {"ok": True, "intake_id": intake_id, "reply": reply}).encode("utf-8"))
 
     def _post_config_policy(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
         project = body.get("project")
