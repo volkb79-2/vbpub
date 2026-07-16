@@ -177,6 +177,104 @@ def test_index_html_pause_banner(seed_data, sample_project):
     assert 'id="pause-banner"' in content
 
 
+# --------------------------------------------------------------------------
+# P16 2026-07-15: carve-summary interleave + toggle (handoff/
+# P16-carver-automation.md oracle 3)
+
+def _write_carve_summary(project: str, seq: int, timestamp: str, **overrides) -> None:
+    """Persist a fake CarveSummary artifact exactly the shape
+    daemon._consume_carve_exit writes (see daemon.py) -- render.py never
+    parses events.jsonl for this, only these files."""
+    d = paths.project_dir(project) / "carves"
+    d.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "seq": seq,
+        "timestamp": timestamp,
+        "carved": [{"id": f"demo-P4{seq}-new", "why": "why text", "source_kind": "review"}],
+        "review_reflection": f"reflection <script>alert({seq})</script> text {seq}",
+        "headroom_estimate": 4,
+        "headroom_rationale": "rationale text",
+        "outcome": "CANDIDATES_READY",
+    }
+    payload.update(overrides)
+    (d / f"{seq}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_index_html_carve_toggle_default_off_via_css(seed_data, sample_project):
+    """Off = today's pure task list (Behavior item 5): the checkbox is
+    unchecked by default and CSS hides .carve-row unless the table carries
+    show-carves -- render_all has no per-request state, so this structural
+    default-hide (mirrors live.html's raw-JSON toggle) is what 'off' means
+    for a static page."""
+    tmp_state, project_id = seed_data
+    _write_carve_summary(project_id, 1, "2026-07-15T09:00:00+00:00")
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+
+    content = (paths.www_dir() / "index.html").read_text(encoding="utf-8")
+    assert 'id="carve-toggle"' in content
+    checkbox_tag = content.split('id="carve-toggle"', 1)[1].split(">", 1)[0]
+    assert "checked" not in checkbox_tag
+    assert ".carve-row" in content and "display: none" in content
+    assert "show-carves" in content
+
+
+def test_index_html_carve_rows_interleaved_by_timestamp_escaped_no_innerhtml(
+        seed_data, sample_project):
+    """Oracle 3: two persisted summaries + tasks -> toggle-on view has both
+    summaries positioned by timestamp among the task rows; reflection
+    html-escaped; no innerHTML anywhere on the page."""
+    tmp_state, project_id = seed_data
+    # P01-sample's 'since' is 2026-07-15T10:00:00Z (seed_data) -- one carve
+    # summary BEFORE it, one AFTER, to prove timestamp-based interleave.
+    _write_carve_summary(project_id, 1, "2026-07-15T09:00:00+00:00")
+    _write_carve_summary(project_id, 2, "2026-07-15T11:00:00+00:00")
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+
+    content = (paths.www_dir() / "index.html").read_text(encoding="utf-8")
+    assert 'data-carve-seq="1"' in content
+    assert 'data-carve-seq="2"' in content
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in content
+    assert "<script>alert" not in content
+    assert "innerHTML" not in content
+
+    idx_carve1 = content.index('data-carve-seq="1"')
+    idx_task = content.index("demo-P01-sample")
+    idx_carve2 = content.index('data-carve-seq="2"')
+    assert idx_carve1 < idx_task < idx_carve2
+
+
+def test_index_html_no_carve_files_no_carve_rows(seed_data, sample_project):
+    """No persisted carve summaries -> no .carve-row markers at all (the
+    common case: identical to the pre-P16 page save for the toggle
+    checkbox itself)."""
+    tmp_state, project_id = seed_data
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "index.html").read_text(encoding="utf-8")
+    # The shared CSS rule that HIDES .carve-row by default is always present
+    # (page-wide stylesheet); what must be absent is an actual RENDERED
+    # carve row (only ever emitted per persisted carves/*.json file).
+    assert "data-carve-seq" not in content
+    assert "<tr class=\"carve-row\"" not in content
+
+
+def test_config_html_renders_carve_authority_select(sample_project, tmp_state):
+    """Oracle 4 (render half): config.html exposes a carve-authority
+    control (branch/main/files) wired to the same POST /api/config/policy
+    endpoint P15 established."""
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "config.html").read_text(encoding="utf-8")
+    assert 'id="carve-authority-demo"' in content
+    assert 'value="branch"' in content and "selected" in content
+    assert 'value="main"' in content
+    assert 'value="files"' in content
+    assert "saveCarveAuthority" in content
+    assert "innerHTML" not in content
+
+
 def test_history_html(seed_data, sample_project):
     """Oracle 4: history.html has correct content for terminal tasks."""
     tmp_state, project_id = seed_data

@@ -159,8 +159,86 @@ INTERFACE CONTRACT (frozen):
         EVERY registered project's event log (routes.toml is shared, not
         project-scoped) and re-renders.
   Every other GET endpoint above remains read-only.
+  P16 2026-07-15 (carver automation, user directive): POST /api/config/
+  policy also accepts key='carve_authority' (value one of "branch"/"main"/
+  "files", string not int -- validated separately from _POLICY_BOUNDS'
+  numeric keys, same surgical-edit + CONFIG_CHANGED contract otherwise).
 - stop(): set the loop flag false and shut the HTTP server down (used by
   tests; signal handlers call it).
+
+P16 2026-07-15 (carver automation, user directives: carve authority is
+configurable per-project, default factory = carve-branch-then-human-admit;
+carve-ahead count configurable; the carver emits a persisted NARRATIVE
+summary each cycle):
+
+- CarveDispatch execution (reconcile.py's carve trigger, module contract
+  item 9): dispatches a FRONTIER carver leg (tier 'frontier-review' route,
+  role CARVER) via the wrapper. Since a carve produces brand-new handoffs
+  (no pre-existing task to host the attempt), the daemon mints a SYNTHETIC
+  task statefile (task_id f'carve-{project}-{seq}', state ACTIVE, no
+  handoff_path) purely to satisfy wrapper.py's frozen contract (it always
+  loads a real statefile + attempt by id) -- this mirrors how a wave
+  review attempt "borrows" a real task's ACTIVE/AWAITING_REVIEW capacity
+  slot (SPEC §5.7's active_count already counts AWAITING_REVIEW); `seq` is
+  a monotonic per-project counter (count of past ATTEMPT_CREATED events
+  whose attempt.role == 'carver', +1 -- recomputed from the event log every
+  time, never in-memory-only, so a daemon restart or a parse-failed prior
+  carve never collides with the next). cfg.policy.carve_authority routes
+  where the carver works and what happens once it exits:
+    'branch' (DEFAULT): a fresh `carve/<project>-<seq>` worktree/branch off
+      default_branch (mirrors _ensure_worktree); the carver commits new
+      handoff files there and does NOT merge -- a human admits by merging
+      (the next tick's frontmatter.discover_handoffs then materializes them
+      from cfg.root once merged).
+    'main': the carver works directly in cfg.root; it commits new handoff
+      files straight to the currently-checked-out branch (lint-gated by the
+      EXISTING CARVED->QUEUED lint_clean transition, item 1 of reconcile.py
+      -- no new lint code needed here).
+    'files': the carver works directly in cfg.root and writes new handoff
+      files WITHOUT committing (no git); frontmatter.discover_handoffs
+      globs disk files regardless of git status, so the next tick
+      materializes them the same way.
+  The packet (built fresh per dispatch, written to the attempt's own
+  packet/packet.md like a review packet) gives the carver: recent
+  REVIEW_RECORDED follow-ups, conventional backlog/roadmap file paths under
+  cfg.root/docs (named, not slurped -- the carver reads them itself, same
+  economy as the review packet's diff-only embedding), the current
+  non-terminal queue, and the REQUIRED OUTPUT CONTRACT below.
+- REQUIRED carver output contract: the carver writes
+  `<reports_dir>/CARVE-<seq>.md` (in whichever worktree it is dispatched
+  into) containing EXACTLY one JSON object (a CarveSummary: carved
+  [{id, why, source_kind}], review_reflection str, headroom_estimate int,
+  headroom_rationale str, outcome one of the 7 v2 §8 outcomes). On
+  EmitAttemptExit (reconcile.py's existing per-attempt scan already detects
+  this generically; the daemon adds a role == CARVER branch here, checked
+  BEFORE the FRONTIER_REVIEW/implementer branches): read+parse that file;
+  persist the FULL CarveSummary (+ 'seq' + a 'timestamp') to
+  `$XDG_STATE/nyxloom/<project>/carves/<seq>.json` (daemon-written; NOT in
+  the consumer repo even when authority puts the .md there too -- this is
+  the dashboard's own durable record, read directly off disk by render.py,
+  never replayed from events.jsonl); emit CARVE_OUTCOME with TYPED FIELDS
+  ONLY (seq, carved_ids, outcome, headroom_estimate -- no why/reflection/
+  rationale prose, even though CARVE_OUTCOME is not itself a notify.py
+  push/digest class today: the free-text reflection is persisted for the
+  dashboard but NEVER sent to a notification channel -- injection
+  boundary); if headroom_estimate < policy.headroom_warn, also push
+  SPEC_ATTENTION {reason: 'headroom-low', detail: '<n> packages left'}; if
+  outcome == 'ROADMAP_EXHAUSTED', also push SPEC_ATTENTION {reason:
+  'roadmap-exhausted', detail: '<n> packages left'} (this is what
+  reconcile.py's carve trigger later reads back via
+  ReconcileInput.roadmap_exhausted_open, computed the same way
+  _ratchet_already_open scans for its own reason string); when
+  cfg.policy.carve_authority == 'branch', ALSO push NEEDS_OPERATOR {reason:
+  'carve-ready', carved_count, headroom_estimate} (typed only -- a human
+  admits by merging the carve branch). A missing/unparsable CARVE-<seq>.md
+  is NOT fatal: no CARVE_OUTCOME is emitted, but a NEEDS_OPERATOR {reason:
+  'carve-parse-failed', seq} still fires so a broken carve leg surfaces
+  rather than silently vanishing. Either way the synthetic carve task is
+  finally moved to TaskState.SUPERSEDED (the only terminal edge reachable
+  from ACTIVE per TASK_TRANSITIONS; COMPLETED requires the full MERGED->
+  VALIDATING pipeline, which a bookkeeping-only task never enters) --
+  this is what clears reconcile.py's "carve slot" (a carve task counts as
+  in-flight only while non-terminal).
 """
 
 from __future__ import annotations
@@ -174,7 +252,7 @@ import subprocess
 import threading
 import time
 import urllib.parse
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -186,7 +264,7 @@ from .config import ProjectConfig
 from .types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, Event,
     EventType, Receipt, ReceiptResult, Role, Route, TaskState, TaskStateFile,
-    TERMINAL_ATTEMPT_STATES, new_id, utc_now,
+    TERMINAL_ATTEMPT_STATES, iso, new_id, utc_now,
 )
 
 # Tunables (module constants so tests can shrink them for determinism).
@@ -220,10 +298,69 @@ _POLICY_BOUNDS: dict[str, tuple[int, int]] = {
     "stall_log_quiet_seconds": (1, 86400),
     "attempt_max_wall_seconds": (1, 604800),
     "reconcile_interval_seconds": (5, 600),
+    # P16 2026-07-15: the two INT carve-automation Policy keys (bounds: 0 is
+    # a valid "disable carve automation for this project" setting for
+    # either -- see reconcile.py's carve trigger, which never fires when
+    # carve_ahead_target is 0 since ready_count >= 0 is never < 0).
+    "carve_ahead_target": (0, 64),
+    "headroom_warn": (0, 64),
 }
 
 # P15 2026-07-15: factory-state pause modes accepted by POST /api/config/pause.
 _PAUSE_MODES = frozenset({"run", "drain-handoffs", "drain-agents"})
+
+# P16 2026-07-15: the one STRING-valued editable Policy key (validated
+# separately from _POLICY_BOUNDS' int keys in _post_config_policy).
+_CARVE_AUTHORITIES = frozenset({"branch", "main", "files"})
+
+# v2 §8 stop-policy outcomes (docs/SPEC.md §8), inherited verbatim.
+_CARVE_OUTCOMES = frozenset({
+    "CANDIDATES_READY", "MILESTONE_COMPLETE", "ROADMAP_EXHAUSTED",
+    "SPEC_GAP", "DECISION_REQUIRED", "EXTERNAL_BLOCKER", "BUDGET_EXHAUSTED",
+})
+
+
+@dataclass
+class CarveSummary:
+    """P16 2026-07-15: the carver's REQUIRED output contract (module
+    docstring). A small dataclass local to this module (not types.py, which
+    is frozen for this package per STANDING.md) -- plain-JSON fields only,
+    matching the rest of this codebase's serde convention (manual to_dict/
+    from_dict rather than the private types._Serde mixin, which is not
+    exported for use outside types.py)."""
+    carved: list[dict[str, str]] = field(default_factory=list)
+    review_reflection: str = ""
+    headroom_estimate: int = 0
+    headroom_rationale: str = ""
+    outcome: str = "CANDIDATES_READY"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "carved": [dict(c) for c in self.carved],
+            "review_reflection": self.review_reflection,
+            "headroom_estimate": self.headroom_estimate,
+            "headroom_rationale": self.headroom_rationale,
+            "outcome": self.outcome,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "CarveSummary":
+        carved_raw = d.get("carved") or []
+        carved = [
+            {
+                "id": str(c.get("id", "")),
+                "why": str(c.get("why", "")),
+                "source_kind": str(c.get("source_kind", "")),
+            }
+            for c in carved_raw if isinstance(c, dict)
+        ]
+        return cls(
+            carved=carved,
+            review_reflection=str(d.get("review_reflection", "")),
+            headroom_estimate=int(d.get("headroom_estimate", 0) or 0),
+            headroom_rationale=str(d.get("headroom_rationale", "")),
+            outcome=str(d.get("outcome", "CANDIDATES_READY")),
+        )
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -464,6 +601,7 @@ class Daemon:
         merge_history, carve_outcomes, review_rejections_by_area, blocked_underspecified_count = \
             self._history(project)
         ratchet_already_open = self._ratchet_already_open(project)
+        roadmap_exhausted_open = self._roadmap_exhausted_open(project)
         # P14 2026-07-15 item 6: config.Policy is frozen for this package
         # (only NotifyConfig.push_classes may be edited), so
         # attempt_max_wall_seconds is NOT a Policy field here -- getattr
@@ -499,6 +637,7 @@ class Daemon:
             blocked_underspecified_count=blocked_underspecified_count,
             attempt_max_wall_seconds=attempt_max_wall_seconds,
             pause_mode=pause_mode,
+            roadmap_exhausted_open=roadmap_exhausted_open,
         )
 
     def _pause_mode(self, project: str) -> str:
@@ -758,6 +897,20 @@ class Daemon:
         return any(ev.type is EventType.SPEC_ATTENTION and ev.payload.get("reason") == "ratchet"
                    for ev in recent)
 
+    def _roadmap_exhausted_open(self, project: str) -> bool:
+        """P16 2026-07-15: mirrors _ratchet_already_open's convention (a
+        recent-window dedup flag, not a true clear/reset state machine) --
+        feeds ReconcileInput.roadmap_exhausted_open, which the carve
+        trigger (module contract item 9) consults so it stops requesting
+        more carvers once the carver itself has already reported the
+        roadmap exhausted."""
+        try:
+            recent = list(storage.iter_events(project))[-500:]
+        except Exception:
+            return False
+        return any(ev.type is EventType.SPEC_ATTENTION and ev.payload.get("reason") == "roadmap-exhausted"
+                   for ev in recent)
+
     # -- event helpers -------------------------------------------------
 
     def _append_ev(self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
@@ -838,6 +991,299 @@ class Daemon:
                 ["git", "-C", str(root), "worktree", "add", "-b", branch, str(worktree_path), default_branch],
                 check=True, capture_output=True, text=True,
             )
+
+    # -- carve automation (P16 2026-07-15) --------------------------------
+
+    def _next_carve_seq(self, project: str) -> int:
+        """Monotonic per-project carve sequence: count of past
+        ATTEMPT_CREATED events whose attempt.role == 'carver', + 1.
+        Recomputed from the event log every call (never in-memory-only, per
+        this codebase's "residency is never authority" rule) so a daemon
+        restart, or a prior carve that never produced a CARVE_OUTCOME
+        (parse failure), still never collides with the next dispatch's
+        branch/worktree/report path."""
+        count = 0
+        try:
+            events = storage.iter_events(project)
+        except Exception:
+            events = []
+        for ev in events:
+            if ev.type is EventType.ATTEMPT_CREATED:
+                att = ev.payload.get("attempt") or {}
+                if att.get("role") == Role.CARVER.value:
+                    count += 1
+        return count + 1
+
+    def _recent_review_follow_ups(self, project: str, limit: int = 10) -> list[tuple[str, str]]:
+        """Carve source #1: recent REVIEW_RECORDED (task_id, result) pairs,
+        newest first, capped at `limit`."""
+        out: list[tuple[str, str]] = []
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            events = []
+        for ev in reversed(events):
+            if ev.type is EventType.REVIEW_RECORDED and ev.task_id:
+                out.append((ev.task_id, ev.payload.get("result", "?")))
+                if len(out) >= limit:
+                    break
+        return out
+
+    def _carve_source_note_lines(self, cfg: ProjectConfig) -> list[str]:
+        """Carve sources #2/#3 (backlog, roadmap/gap-analysis): name the
+        conventional file paths under cfg.root/docs if they exist -- the
+        carver reads them itself (same economy as the review packet's
+        diff-only embedding: point, don't slurp). ProjectConfig has no
+        'product_sources' field today (config.py is frozen beyond the P16-
+        authorized Policy fields), so this probes fixed conventional paths
+        rather than a configured list."""
+        lines = []
+        backlog = cfg.root / "docs" / "BACKLOG.md"
+        lines.append(
+            f"- backlog: {backlog.relative_to(cfg.root)}"
+            if backlog.exists() else "- backlog: none found at docs/BACKLOG.md"
+        )
+        roadmap = cfg.root / "docs" / "ROADMAP.md"
+        if roadmap.exists():
+            lines.append(f"- roadmap: {roadmap.relative_to(cfg.root)}")
+        gap_files = sorted((cfg.root / "docs").glob("gap-*.md")) if (cfg.root / "docs").exists() else []
+        if gap_files:
+            lines.append("- gap analysis: " + ", ".join(
+                str(p.relative_to(cfg.root)) for p in gap_files))
+        if not roadmap.exists() and not gap_files:
+            lines.append("- roadmap/gap analysis: none found under docs/")
+        return lines
+
+    def _build_carve_packet(self, cfg: ProjectConfig, project: str, seq: int,
+                             states: dict[str, TaskStateFile],
+                             own_task_id: str | None = None) -> str:
+        """The carve packet (mirrors the review packet's economy: point at
+        sources, embed only what is cheap and structured). Written to the
+        carve attempt's own packet/packet.md, exactly like LaunchReview's
+        packet."""
+        lines = [
+            f"# Carve packet {seq}",
+            "",
+            "## Your role: CARVER",
+            "",
+            f"You are proposing NEW handoff packages for project '{project}'.",
+            "Read the carve sources below, then write new lint-clean handoff",
+            "file(s) under this project's handoff directory. Do NOT implement",
+            "the work yourself -- you carve packages for other agents to pick",
+            "up later.",
+            "",
+            "## Carve sources (v2 SS8)",
+            "1. Review-derived follow-ups (recent REVIEW_RECORDED events):",
+        ]
+        follow_ups = self._recent_review_follow_ups(project)
+        if follow_ups:
+            for task_id, result in follow_ups:
+                lines.append(f"   - {task_id}: {result}")
+        else:
+            lines.append("   - none recorded yet")
+        lines.append("2. Backlog / 3. Roadmap and gap analysis:")
+        lines.extend(f"   {line}" for line in self._carve_source_note_lines(cfg))
+        lines.append(
+            "4. Standing product goal: read this project's own README/"
+            "CLAUDE.md/.nyxloom/project.toml for its product intent."
+        )
+        lines.append("")
+        lines.append("## Current queue")
+        queue_lines = [f"- {task_id}: {states[task_id].state.value}"
+                       for task_id in sorted(states.keys()) if task_id != own_task_id]
+        lines.extend(queue_lines if queue_lines else ["- (queue empty)"])
+        lines.append("")
+        authority = getattr(cfg.policy, "carve_authority", "branch")
+        lines.append(f"## Carve authority: {authority}")
+        if authority == "branch":
+            lines.append(
+                "You are on a dedicated carve branch. Commit your new handoff "
+                "file(s) here. Do NOT merge -- a human admits this carve by "
+                "merging the branch."
+            )
+        elif authority == "main":
+            lines.append(
+                "You are working directly on the project's checked-out branch. "
+                "Commit your new handoff file(s) directly (lint-gated)."
+            )
+        else:
+            lines.append(
+                "Write your new handoff file(s) to disk WITHOUT committing "
+                "(no git). They will be picked up on the next reconcile pass."
+            )
+        lines.append("")
+        report_rel = f"{cfg.reports_dir}/CARVE-{seq}.md"
+        lines.extend([
+            "## REQUIRED OUTPUT CONTRACT",
+            f"Write `{report_rel}` containing EXACTLY one JSON object (no",
+            "markdown code fences) with these fields:",
+            '  "carved": [{"id": "<new-task-id>", "why": "<one line>", '
+            '"source_kind": "review|backlog|roadmap|product-goal"}, ...]',
+            '  "review_reflection": "<what the recent reviews/merges revealed '
+            'about quality/gaps>"',
+            '  "headroom_estimate": <int -- how many more carve-able packages '
+            "exist before ROADMAP_EXHAUSTED/SPEC_GAP>",
+            '  "headroom_rationale": "<one paragraph: how you read the '
+            'roadmap/backlog runway>"',
+            '  "outcome": one of ' + ", ".join(sorted(_CARVE_OUTCOMES)),
+            "Also print this exact JSON as your final output line.",
+        ])
+        return "\n".join(lines) + "\n"
+
+    def _execute_carve_dispatch(self, project: str, cfg: ProjectConfig,
+                                 states: dict[str, TaskStateFile],
+                                 action: "reconcile.CarveDispatch") -> list[Event]:
+        events: list[Event] = []
+
+        # Defense in depth: reconcile.py's own trigger already requires a
+        # healthy 'frontier-review' route before ever emitting CarveDispatch
+        # (module contract item 9), but routes.toml could change between
+        # planning and execution within the same pass. Never mint a
+        # synthetic task / worktree we cannot actually dispatch into.
+        routes_obj = config.Routes.load()
+        review_routes = routes_obj.for_tier("frontier-review")
+        if not review_routes:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"reason": "carve-no-route"}, task_id=None))
+            return events
+
+        seq = self._next_carve_seq(project)
+        task_id = f"carve-{project}-{seq}"
+        authority = getattr(cfg.policy, "carve_authority", "branch")
+
+        if authority == "branch":
+            branch = f"carve/{project}-{seq}"
+            carve_cwd = cfg.root / cfg.worktree_root / branch
+            self._ensure_worktree(cfg.root, branch, carve_cwd, cfg.default_branch)
+            dispatch_branch = branch
+        else:
+            carve_cwd = cfg.root
+            dispatch_branch = cfg.default_branch
+
+        # Synthetic carve task: hosts the CARVER attempt so wrapper.py's
+        # frozen load_state()/attempt_by_id() contract is satisfied (a
+        # carve has no pre-existing task to attach to). See module
+        # docstring for why ACTIVE (counts toward wip-cap like a review
+        # attempt already does) and why SUPERSEDED is the eventual terminal
+        # edge.
+        tsf = TaskStateFile(
+            schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
+            state=TaskState.ACTIVE, since=utc_now(), handoff_path=None,
+            notes=f"carve seq={seq} authority={authority}",
+        )
+        events.append(self._append_ev(project, cfg, states, EventType.TASK_CREATED,
+                                       {"statefile": tsf.to_dict()}, task_id=task_id))
+
+        attempt_id = new_id("att")
+        attempt_dir = paths.attempt_dir(project, attempt_id)
+        packet_dir = attempt_dir / "packet"
+        packet_dir.mkdir(parents=True, exist_ok=True)
+        packet_text = self._build_carve_packet(cfg, project, seq, states, own_task_id=task_id)
+        (packet_dir / "packet.md").write_text(packet_text, encoding="utf-8")
+
+        route_def = review_routes[0]
+        route_snap = Route(route_id=route_def.route_id, cli=route_def.cli, model=route_def.model,
+                            variant=route_def.variant, effort=route_def.effort,
+                            routes_rev=routes_obj.revision)
+        attempt = Attempt(attempt_id=attempt_id, role=Role.CARVER, state=AttemptState.CREATED,
+                           route=route_snap, started=utc_now(), worktree=str(carve_cwd),
+                           branch=dispatch_branch if authority == "branch" else None)
+        events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
+                                       {"attempt": attempt.to_dict()}, task_id=task_id,
+                                       attempt_id=attempt_id))
+
+        gate_hint = self._gate_hint(cfg)
+        receipt_path = str(attempt_dir / "receipt.json")
+        argv, _prompt = adapters.build_dispatch(
+            route_def, handoff_path=str(packet_dir / "packet.md"), worktree=str(carve_cwd),
+            branch=dispatch_branch, task_id=task_id, gate_hint=gate_hint, receipt_path=receipt_path,
+        )
+        spec = wrapper.WrapperSpec(
+            project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
+            cwd=str(carve_cwd), log_path=str(attempt_dir / "attempt.log"),
+            receipt_path=receipt_path, attempt_dir=str(attempt_dir), route_def=asdict(route_def),
+        )
+        pid = wrapper.launch_detached(spec)
+        attempt.state = AttemptState.PREFLIGHTING
+        attempt.pid = pid
+        events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_PREFLIGHTED,
+                                       {"attempt": attempt.to_dict()}, task_id=task_id,
+                                       attempt_id=attempt_id))
+        return events
+
+    def _consume_carve_exit(self, project: str, cfg: ProjectConfig,
+                             states: dict[str, TaskStateFile], task_id: str,
+                             attempt_id: str) -> list[Event]:
+        """P16 2026-07-15: role == CARVER branch of EmitAttemptExit (called
+        from _execute BEFORE the FRONTIER_REVIEW/implementer branches).
+        Parses the carver's REQUIRED OUTPUT CONTRACT file, persists the
+        full CarveSummary for the dashboard, emits a typed-only
+        CARVE_OUTCOME, raises headroom/roadmap-exhausted SPEC_ATTENTION and
+        (branch authority only) a NEEDS_OPERATOR, then retires the
+        synthetic carve task to SUPERSEDED (clears reconcile.py's carve
+        slot)."""
+        events: list[Event] = []
+        tsf = states[task_id]
+        attempt = tsf.attempt_by_id(attempt_id)
+        m = re.match(r"^carve-.*-(\d+)$", task_id)
+        seq = int(m.group(1)) if m else 0
+        authority = getattr(cfg.policy, "carve_authority", "branch")
+
+        worktree = Path(attempt.worktree) if attempt.worktree else cfg.root
+        report_path = worktree / cfg.reports_dir / f"CARVE-{seq}.md"
+
+        summary: CarveSummary | None = None
+        if report_path.exists():
+            try:
+                data = json.loads(report_path.read_text(encoding="utf-8"))
+                summary = CarveSummary.from_dict(data)
+            except (OSError, json.JSONDecodeError, ValueError, TypeError):
+                summary = None
+
+        if summary is not None:
+            carves_dir = paths.project_dir(project) / "carves"
+            carves_dir.mkdir(parents=True, exist_ok=True)
+            persisted = {"seq": seq, "timestamp": iso(utc_now())}
+            persisted.update(summary.to_dict())
+            (carves_dir / f"{seq}.json").write_text(
+                json.dumps(persisted, sort_keys=True), encoding="utf-8")
+
+            carved_ids = [c.get("id", "") for c in summary.carved]
+            events.append(self._append_ev(
+                project, cfg, states, EventType.CARVE_OUTCOME,
+                {"seq": seq, "carved_ids": carved_ids, "outcome": summary.outcome,
+                 "headroom_estimate": summary.headroom_estimate},
+                task_id=task_id, attempt_id=attempt_id))
+
+            if summary.headroom_estimate < cfg.policy.headroom_warn:
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.SPEC_ATTENTION,
+                    {"reason": "headroom-low",
+                     "detail": f"{summary.headroom_estimate} packages left"},
+                    task_id=task_id))
+            if summary.outcome == "ROADMAP_EXHAUSTED":
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.SPEC_ATTENTION,
+                    {"reason": "roadmap-exhausted",
+                     "detail": f"{summary.headroom_estimate} packages left"},
+                    task_id=task_id))
+            if authority == "branch":
+                events.append(self._append_ev(
+                    project, cfg, states, EventType.NEEDS_OPERATOR,
+                    {"reason": "carve-ready", "carved_count": len(summary.carved),
+                     "headroom_estimate": summary.headroom_estimate},
+                    task_id=task_id))
+        else:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"reason": "carve-parse-failed", "seq": seq}, task_id=task_id))
+
+        events.append(self._append_ev(
+            project, cfg, states, EventType.TASK_SUPERSEDED,
+            {"from": states[task_id].state.value, "notes": "carve-consumed"},
+            task_id=task_id))
+        return events
 
     def _crosscheck_head_commit(self, cfg: ProjectConfig, task_id: str, receipt: Receipt) -> None:
         """P21 2026-07-16: never let a lying null head_commit read as "no
@@ -1070,6 +1516,14 @@ class Daemon:
 
             result = receipt.result
 
+            if attempt.role == Role.CARVER:
+                # P16 2026-07-15: consume the carver's REQUIRED OUTPUT
+                # CONTRACT (a CarveSummary file, not the wrapper's own
+                # process-level Receipt above) -- see _consume_carve_exit
+                # and the module docstring's carve-automation section.
+                events.extend(self._consume_carve_exit(project, cfg, states, task_id, action.attempt_id))
+                return events
+
             if attempt.role == Role.FRONTIER_REVIEW:
                 # 2026-07-15: consume the REVIEW receipt (was unmapped —
                 # live deadlock). merge_mode=manual: MERGE_READY is declared,
@@ -1259,6 +1713,9 @@ class Daemon:
             events.append(self._append_ev(project, cfg, states, EventType.SPEC_ATTENTION,
                                            {"reason": action.reason, "detail": action.detail},
                                            task_id=action.task_id))
+
+        elif isinstance(action, reconcile.CarveDispatch):
+            events.extend(self._execute_carve_dispatch(project, cfg, states, action))
 
         else:
             raise ValueError(f"unhandled action type: {type(action)!r}")
@@ -1532,6 +1989,39 @@ class Daemon:
         if project not in self.registry:
             self._send_json(handler, 404, b'{"error":"not found"}')
             return
+
+        if key == "carve_authority":
+            # P16 2026-07-15: the one STRING-valued editable Policy key.
+            # Same surgical-edit + CONFIG_CHANGED contract as the numeric
+            # keys below, but validated separately (str, fixed enum) and
+            # written via a json.dumps-quoted value so update_project_
+            # policy's plain f-string interpolation still yields valid TOML
+            # (`carve_authority = "branch"`) without touching that frozen
+            # (P15-authored) function at all.
+            if not isinstance(value, str) or value not in _CARVE_AUTHORITIES:
+                self._send_json(handler, 400, json.dumps(
+                    {"error": f"carve_authority must be one of {sorted(_CARVE_AUTHORITIES)}"}
+                ).encode("utf-8"))
+                return
+            root = self.registry[project]
+            try:
+                cfg = config.ProjectConfig.load(root)
+            except Exception:
+                self._send_json(handler, 404, b'{"error":"not found"}')
+                return
+            old_value = getattr(cfg.policy, key)
+            try:
+                config.update_project_policy(root, {key: json.dumps(value)})
+            except ValueError as exc:
+                self._send_json(handler, 400, json.dumps({"error": str(exc)}).encode("utf-8"))
+                return
+            states = storage.list_states(project)
+            self._append_ui_event(project, cfg, states, EventType.CONFIG_CHANGED,
+                                   {"scope": "policy", "key": key, "old": old_value, "new": value})
+            render.render_after_event(self.registry)
+            self._send_json(handler, 200, json.dumps({"ok": True}).encode("utf-8"))
+            return
+
         if key not in _POLICY_BOUNDS:
             self._send_json(handler, 400,
                              json.dumps({"error": f"unknown policy key: {key!r}"}).encode("utf-8"))

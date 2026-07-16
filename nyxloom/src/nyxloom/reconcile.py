@@ -90,6 +90,27 @@ INTERFACE CONTRACT (frozen). Semantics:
    blocked_underspecified_count >= 3 in window -> SpecAttention.
 8. Actions NEVER embed prose from handoff bodies (payload injection rule) —
    only ids, enum values, and short fixed strings.
+9. CARVE TRIGGER (P16 2026-07-15, v2 §8 stop policy): count admissible ready
+   tasks -- frontmatters whose statefile is in {CARVED, QUEUED,
+   NEEDS_DECISION} AND that are not currently decision-held (an open D-dep
+   in inp.decisions_open excludes a task from the count regardless of its
+   nominal state, so a QUEUED task about to be moved to NEEDS_DECISION this
+   same pass is never counted as "ready"). If that count is <
+   policy.carve_ahead_target AND an active milestone admits work (proxy:
+   at least one non-terminal task exists, OR policy.carve_ahead_target > 0
+   AND inp.roadmap_exhausted_open is False) AND no carver attempt is
+   already in flight (any non-terminal task carrying an Attempt with
+   role CARVER -- a carve slot, mirroring the single-wave-review-in-flight
+   pattern in item 5 above) AND budget allows (inp.budget_remaining is
+   None or > 0, same rule as dispatch_eligible) AND a healthy 'frontier-
+   review' tier route exists (inp.provider_ok, item 3's own no-healthy-
+   route rule applied to the carver's own tier -- a project with no
+   review/carve infrastructure configured must never spuriously dispatch,
+   the same reasoning dispatch_eligible already applies to ordinary
+   implementer dispatch) -> emit CarveDispatch(project=cfg.project_id). At
+   most one per pass (the in-flight check makes this self-limiting pass
+   over pass too). Appended LAST in the returned action list (after
+   SpecAttention).
 """
 
 from __future__ import annotations
@@ -197,8 +218,20 @@ class LaunchReview(Action):
 
 @dataclass
 class SpecAttention(Action):
-    reason: str | None = None       # 'ratchet'|'carve-outcome'|'rejections'|'blocked-underspecified'
+    reason: str | None = None       # 'ratchet'|'carve-outcome'|'rejections'|'blocked-underspecified'|
+                                     # 'headroom-low'|'roadmap-exhausted' (P16 2026-07-15, daemon-emitted)
     detail: str | None = None
+
+
+@dataclass
+class CarveDispatch(Action):
+    """P16 2026-07-15 (module contract item 9): the carve-automation
+    trigger. task_id is unused (inherited from Action, always None);
+    `project` names the project this carve targets -- the daemon already
+    knows it too (run_pass's own per-project loop), but carrying it here
+    keeps the action self-describing for tests/logs, matching
+    ProviderPause's route_id style."""
+    project: str | None = None
 
 
 # --- input snapshot ---------------------------------------------------------
@@ -237,6 +270,13 @@ class ReconcileInput:
     # project_paused keeps its old semantics (no gate on resume/review) via
     # this field's "run" default. Only ResumeAttempt/LaunchReview consult it.
     pause_mode: str = "run"
+    # P16 2026-07-15: True once a carver outcome ROADMAP_EXHAUSTED has been
+    # observed and not yet superseded (the daemon scans recent SPEC_ATTENTION
+    # events for reason == 'roadmap-exhausted', mirroring
+    # ratchet_already_open's convention) -- reconcile.py stays pure, so this
+    # arrives as a precomputed bool rather than being derived from events
+    # here. See module contract item 9 (carve trigger).
+    roadmap_exhausted_open: bool = False
 
 
 def plan_project(inp: ReconcileInput) -> list[Action]:
@@ -509,6 +549,42 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     if inp.blocked_underspecified_count >= 3:
         spec_actions.append(SpecAttention(reason='blocked-underspecified', detail=None))
 
+    # === Carve dispatch (P16 2026-07-15, module contract item 9) ===
+    carve_actions: list[Action] = []
+    carve_in_flight = any(
+        tsf.state not in TERMINAL_TASK_STATES
+        and any(a.role is Role.CARVER for a in tsf.attempts)
+        for tsf in inp.states.values()
+    )
+    if not carve_in_flight:
+        ready_states = (TaskState.CARVED, TaskState.QUEUED, TaskState.NEEDS_DECISION)
+        ready_count = 0
+        for fm_id, (fm, _handoff_path) in inp.frontmatters.items():
+            tsf = inp.states.get(fm_id)
+            if tsf is None or tsf.state not in ready_states:
+                continue
+            if any(d in inp.decisions_open for d in fm.decision_deps()):
+                continue  # decision-held -- not admissible ready work
+            ready_count += 1
+
+        has_nonterminal_task = any(
+            tsf.state not in TERMINAL_TASK_STATES for tsf in inp.states.values()
+        )
+        milestone_admits_work = has_nonterminal_task or (
+            inp.cfg.policy.carve_ahead_target > 0 and not inp.roadmap_exhausted_open
+        )
+        budget_allows = inp.budget_remaining is None or inp.budget_remaining > 0
+        frontier_routes = inp.routes.for_tier("frontier-review")
+        frontier_route_available = any(
+            inp.provider_ok.get(r.route_id, False) for r in frontier_routes
+        )
+
+        if (ready_count < inp.cfg.policy.carve_ahead_target
+                and milestone_admits_work
+                and budget_allows
+                and frontier_route_available):
+            carve_actions.append(CarveDispatch(project=inp.cfg.project_id))
+
     # === Combine results in order ===
     actions = []
     for task_id in sorted(lifecycle_by_id.keys()):
@@ -516,6 +592,7 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     actions.extend(attempt_actions)
     actions.extend(wave_actions)
     actions.extend(spec_actions)
+    actions.extend(carve_actions)
 
     return actions
 

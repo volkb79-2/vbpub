@@ -24,6 +24,23 @@ INTERFACE CONTRACT (frozen):
                     when any project pause flag exists (now shows each
                     paused project's mode too); id="decisions-open" count;
                     id="budget" summary per project.
+                    P16 2026-07-15 (carver automation, user directive): an
+                    id="carve-toggle" checkbox (default OFF, vanilla JS
+                    classList.toggle — mirrors live.html's raw-JSON toggle)
+                    interleaves persisted CarveSummary rows (read directly
+                    off disk via _load_carve_summaries — never replayed
+                    from events.jsonl) among the task rows, both ordered by
+                    a comparable timestamp (task rows: tsf.since; carve
+                    rows: the daemon-written 'timestamp' field). Each carve
+                    row carries class="carve-row" and CSS hides it by
+                    default (`#active-tasks .carve-row { display: none }`,
+                    revealed only via `#active-tasks.show-carves
+                    .carve-row`) — both rows are always present in the
+                    static markup (this renderer has no per-request state
+                    to conditionally omit them), the toggle only affects
+                    client-side visibility, same mechanism as live.html's
+                    raw-JSON toggle. Shows: carved ids, the reflection text
+                    (html-escaped), headroom estimate, outcome.
     history.html    id="history" table of terminal + MERGED/VALIDATING
                     tasks: task, final state, merge_commit, progress_units,
                     total cost.
@@ -63,12 +80,17 @@ INTERFACE CONTRACT (frozen):
                     last 64KB of the newest attempt log, decisions
                     referenced, events tail (last 50 for this task).
     config.html     P15 2026-07-15 (spec amendment, user directive): per-
-                    project policy form (current values for the 7 editable
-                    Policy keys; one fetch POST /api/config/policy per Save
-                    click, plain vanilla JS, page reload on success), Run /
+                    project policy form (current values for the 9 editable
+                    Policy keys — 7 int, P16 2026-07-15 adds 2 more int
+                    (carve_ahead_target, headroom_warn); one fetch POST
+                    /api/config/policy per Save click, plain vanilla JS,
+                    page reload on success), Run /
                     Drain handoffs / Drain agents buttons per project
                     showing the current pause mode (fetch POST /api/config/
-                    pause), and a routing tiers table (current tier ->
+                    pause), a carve-authority select (branch/main/files,
+                    P16 2026-07-15, same POST /api/config/policy endpoint
+                    with key='carve_authority'), and a routing tiers table
+                    (current tier ->
                     routes, editable, fetch POST /api/config/tier) followed
                     by a READ-ONLY route-definitions table (cli/model/
                     variant/effort/status). No inline secrets, no innerHTML
@@ -189,6 +211,8 @@ a {{ color: #6ab0ff; }}
 nav {{ background: #1b1f24; padding: 10px; margin: -20px -20px 20px -20px; }}
 nav a {{ margin: 0 10px; }}
 #pause-banner {{ background: #3a1214; border: 2px solid #c0392b; padding: 10px; margin: 10px 0; }}
+.carve-row {{ display: none; background: #1f2a1a; }}
+#active-tasks.show-carves .carve-row {{ display: table-row; }}
 .lane {{ margin: 20px 0; padding: 10px; border: 1px solid #333a41; }}
 .lane-track {{ background: #1a1e22; }}
 .bar {{ position: absolute; top: 2px; height: 20px; min-width: 6px; padding: 2px;
@@ -537,9 +561,69 @@ def render_after_event(registry: dict[str, Path]) -> Path:
     return render_all(registry)
 
 
+def _load_carve_summaries(project: str) -> list[dict[str, Any]]:
+    """P16 2026-07-15: read persisted CarveSummary artifacts (daemon-written
+    JSON files under $XDG_STATE/nyxloom/<project>/carves/*.json — see
+    daemon.py's _consume_carve_exit) for the index.html interleave toggle.
+    Tolerant of a missing dir or an unparsable file (skip it, never raise —
+    a broken/partial carve artifact must not take the whole dashboard
+    down)."""
+    carves_dir = paths.project_dir(project) / "carves"
+    out: list[dict[str, Any]] = []
+    if not carves_dir.exists():
+        return out
+    for p in sorted(carves_dir.glob("*.json")):
+        try:
+            out.append(json.loads(p.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return out
+
+
+def _parse_carve_timestamp(value: Any) -> datetime:
+    """Best-effort ISO-8601 parse for a persisted carve summary's
+    'timestamp' field; falls back to now() (tz-aware) on anything
+    unparsable so a malformed timestamp still sorts (near the end) instead
+    of crashing the render."""
+    if isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc)
+
+
+def _render_carve_row(project: str, summary: dict[str, Any]) -> str:
+    """One <tr class="carve-row"> spanning the active-tasks table's 10
+    columns: carved ids, the reflection (html-escaped), headroom estimate,
+    outcome. Hidden by default via CSS; the show-carves toggle reveals it
+    (see _render_index)."""
+    seq = summary.get("seq", "?")
+    carved = summary.get("carved") or []
+    carved_ids = ", ".join(str(c.get("id", "?")) for c in carved) if carved else "—"
+    reflection = summary.get("review_reflection") or ""
+    headroom = summary.get("headroom_estimate", "—")
+    outcome = summary.get("outcome", "—")
+    return f"""
+      <tr class="carve-row" data-carve-seq="{html.escape(str(seq))}" data-carve-project="{html.escape(project)}">
+        <td colspan="10">
+          <strong>Carve #{html.escape(str(seq))}</strong> ({html.escape(project)}) —
+          outcome: {html.escape(str(outcome))}, headroom: {html.escape(str(headroom))}<br>
+          carved: {html.escape(carved_ids)}<br>
+          <em>{html.escape(reflection)}</em>
+        </td>
+      </tr>
+    """
+
+
 def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, dict[str, TaskStateFile]]) -> None:
-    """Render index.html with active tasks and pause banner."""
-    rows = []
+    """Render index.html with active tasks, pause banner, and (P16
+    2026-07-15) an opt-in carve-summary interleave — see the module
+    docstring's index.html section for the full contract."""
+    row_entries: list[tuple[datetime, str]] = []
     all_paused: dict[str, str] = {}   # project -> pause mode
 
     # Check if any project has a pause flag
@@ -594,7 +678,7 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
                         f"● running ({html.escape(live_attempt_id)})</a>"
                     )
 
-                rows.append(f"""
+                row_html = f"""
                   <tr>
                     <td>{html.escape(project)}</td>
                     <td><a href="task/{html.escape(project)}/{html.escape(task_id)}.html">{html.escape(task_id)}</a></td>
@@ -607,7 +691,17 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
                     <td>{html.escape(notes)}</td>
                     <td>{html.escape(last_activity)}</td>
                   </tr>
-                """)
+                """
+                row_entries.append((since, row_html))
+
+        # P16 2026-07-15: interleave this project's persisted carve
+        # summaries, positioned by their own timestamp among the task rows.
+        for summary in _load_carve_summaries(project):
+            ts = _parse_carve_timestamp(summary.get("timestamp"))
+            row_entries.append((ts, _render_carve_row(project, summary)))
+
+    row_entries.sort(key=lambda pair: pair[0])
+    rows = [row_html for _ts, row_html in row_entries]
 
     pause_banner = ""
     if all_paused:
@@ -620,6 +714,7 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
     content = f"""
     {legend_html}
     {pause_banner}
+    <p><label><input type="checkbox" id="carve-toggle"> Show carve summaries</label></p>
     <table id="active-tasks">
       <thead>
         <tr>
@@ -639,6 +734,11 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
         {"".join(rows) if rows else '<tr><td colspan="10">No active tasks</td></tr>'}
       </tbody>
     </table>
+    <script>
+    document.getElementById('carve-toggle').addEventListener('change', function() {{
+        document.getElementById('active-tasks').classList.toggle('show-carves', this.checked);
+    }});
+    </script>
     """
 
     html_content = _html_head("Dashboard") + content + _html_foot()
@@ -1110,11 +1210,18 @@ def _render_quality(www: Path, registry: dict[str, Path], all_states: dict[str, 
 # daemon._POLICY_BOUNDS' key set; render.py has no import on daemon.py, so
 # this is the render-side copy of the same editable-key list — bounds
 # themselves are validated server-side, never trusted from this page).
+# P16 2026-07-15: 2 more int keys (carve_ahead_target, headroom_warn).
+# carve_authority (the one STRING-valued key) is rendered separately as a
+# <select> below, not through this numeric-input list.
 _EDITABLE_POLICY_KEYS = [
     "max_active_tasks", "ready_queue_target", "max_attempts_per_task",
     "wave_max_diffs", "stall_log_quiet_seconds", "attempt_max_wall_seconds",
-    "reconcile_interval_seconds",
+    "reconcile_interval_seconds", "carve_ahead_target", "headroom_warn",
 ]
+
+# P16 2026-07-15: carve_authority's 3 valid values (mirrors
+# daemon._CARVE_AUTHORITIES; render.py has no import on daemon.py).
+_CARVE_AUTHORITIES = ["branch", "main", "files"]
 
 _CONFIG_JS = """
 <script>
@@ -1149,6 +1256,13 @@ function savePolicy(project, key) {
 function setPauseMode(project, mode) {
     postJSON('/api/config/pause', {project: project, mode: mode}, function(err) {
         alert('pause update failed: ' + err);
+    });
+}
+
+function saveCarveAuthority(project) {
+    var select = document.getElementById('carve-authority-' + project);
+    postJSON('/api/config/policy', {project: project, key: 'carve_authority', value: select.value}, function(err) {
+        alert('carve authority update failed: ' + err);
     });
 }
 
@@ -1191,6 +1305,13 @@ def _render_config(www: Path, registry: dict[str, Path]) -> None:
             """)
 
         mode = _pause_mode_for(project)
+        current_authority = getattr(cfg.policy, "carve_authority", "branch")
+        authority_options = "".join(
+            f'<option value="{html.escape(a)}"'
+            + (" selected" if a == current_authority else "")
+            + f'>{html.escape(a)}</option>'
+            for a in _CARVE_AUTHORITIES
+        )
         project_sections.append(f"""
           <div class="config-project" data-project="{html.escape(project)}">
             <h2>{html.escape(project)}</h2>
@@ -1199,6 +1320,10 @@ def _render_config(www: Path, registry: dict[str, Path]) -> None:
               <button type="button" onclick="setPauseMode('{html.escape(project)}', 'run')">Run</button>
               <button type="button" onclick="setPauseMode('{html.escape(project)}', 'drain-handoffs')">Drain handoffs</button>
               <button type="button" onclick="setPauseMode('{html.escape(project)}', 'drain-agents')">Drain agents</button>
+            </p>
+            <p>Carve authority:
+              <select id="carve-authority-{html.escape(project)}">{authority_options}</select>
+              <button type="button" onclick="saveCarveAuthority('{html.escape(project)}')">Save</button>
             </p>
             <table>
               <thead><tr><th>Policy key</th><th>Value</th><th></th></tr></thead>
