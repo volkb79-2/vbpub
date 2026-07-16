@@ -9,10 +9,10 @@ import pytest
 
 from nyxloom.config import MutexDef, Policy, ProjectConfig, Routes, RouteDef
 from nyxloom.reconcile import (
-    Action, CreateTask, DispatchImplementer, EmitAttemptExit, InterruptAttempt,
-    LaunchReview, MarkInterrupted, MarkStalled, OpenWave, ProviderPause,
-    ReconcileInput, ResumeAttempt, SpecAttention, StallCheck, Transition,
-    dispatch_eligible, plan_project,
+    Action, CarveDispatch, CreateTask, DispatchImplementer, EmitAttemptExit,
+    InterruptAttempt, LaunchReview, MarkInterrupted, MarkStalled, OpenWave,
+    ProviderPause, ReconcileInput, ResumeAttempt, SpecAttention, StallCheck,
+    Transition, dispatch_eligible, plan_project,
 )
 from nyxloom.types import (
     Attempt, AttemptState, Base, Blocker, BlockerType, Budget, Basis,
@@ -31,6 +31,9 @@ def make_config(
     max_attempts_per_task: int = 3,
     max_consecutive_zero_progress_merges: int = 3,
     wave_max_diffs: int = 3,
+    carve_ahead_target: int = 5,
+    carve_authority: str = "branch",
+    headroom_warn: int = 5,
 ) -> ProjectConfig:
     """Create a minimal ProjectConfig for testing."""
     return ProjectConfig(
@@ -46,6 +49,9 @@ def make_config(
             max_attempts_per_task=max_attempts_per_task,
             max_consecutive_zero_progress_merges=max_consecutive_zero_progress_merges,
             wave_max_diffs=wave_max_diffs,
+            carve_ahead_target=carve_ahead_target,
+            carve_authority=carve_authority,
+            headroom_warn=headroom_warn,
         ),
     )
 
@@ -1792,3 +1798,154 @@ def test_pause_mode_default_is_run_when_unset():
     assert inp.pause_mode == "run"
     resumes = [a for a in plan_project(inp) if isinstance(a, ResumeAttempt)]
     assert len(resumes) == 1
+
+
+# ============================================================================
+# P16 2026-07-15: carve-automation trigger (module contract item 9,
+# handoff/P16-carver-automation.md oracle 1)
+# ============================================================================
+
+def make_carve_routes() -> Routes:
+    """flash-high (ordinary implementer tier) + frontier-review (the carver's
+    own tier, module contract item 9's route-availability gate)."""
+    return Routes(
+        revision="test",
+        tiers={"flash-high": ["route-1"], "frontier-review": ["route-review"]},
+        routes={
+            "route-1": RouteDef(route_id="route-1", cli="fake", model="fake-model"),
+            "route-review": RouteDef(route_id="route-review", cli="fake", model="review-model"),
+        },
+    )
+
+
+def _carve_base_kwargs(**overrides) -> dict:
+    base = dict(
+        now=utc(2026, 7, 15),
+        cfg=make_config(carve_ahead_target=5),
+        routes=make_carve_routes(),
+        states={},
+        frontmatters={},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-review": True},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+    )
+    base.update(overrides)
+    return base
+
+
+def test_carve_trigger_fires_below_target_no_carver_inflight():
+    """Oracle 1: empty queue (0 < carve_ahead_target=5), a healthy
+    frontier-review route, no carver in flight -> exactly one
+    CarveDispatch(project='demo')."""
+    inp = ReconcileInput(**_carve_base_kwargs())
+    dispatches = [a for a in plan_project(inp) if isinstance(a, CarveDispatch)]
+    assert len(dispatches) == 1
+    assert dispatches[0].project == "demo"
+
+
+def test_carve_trigger_none_when_queue_at_or_above_target():
+    """Oracle 1 (negative): ready_count (2 QUEUED) >= carve_ahead_target
+    (2) -> no CarveDispatch."""
+    cfg = make_config(carve_ahead_target=2)
+    fm1, fm2 = make_frontmatter(id="Q1"), make_frontmatter(id="Q2")
+    tsf1 = make_tsf(task_id="Q1", state=TaskState.QUEUED)
+    tsf2 = make_tsf(task_id="Q2", state=TaskState.QUEUED)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        cfg=cfg,
+        states={"Q1": tsf1, "Q2": tsf2},
+        frontmatters={"Q1": (fm1, "h.md"), "Q2": (fm2, "h.md")},
+    ))
+    dispatches = [a for a in plan_project(inp) if isinstance(a, CarveDispatch)]
+    assert dispatches == []
+
+
+def test_carve_trigger_none_when_carver_already_inflight():
+    """Oracle 1: a carve slot -- any non-terminal task carrying a CARVER
+    attempt blocks a second dispatch, mirroring the wave-review-in-flight
+    pattern."""
+    carve_att = make_attempt(attempt_id="att-carve", state=AttemptState.RUNNING,
+                              role=Role.CARVER)
+    carve_tsf = make_tsf(task_id="carve-demo-1", state=TaskState.ACTIVE,
+                          attempts=[carve_att])
+    inp = ReconcileInput(**_carve_base_kwargs(states={"carve-demo-1": carve_tsf}))
+    dispatches = [a for a in plan_project(inp) if isinstance(a, CarveDispatch)]
+    assert dispatches == []
+
+
+def test_carve_trigger_none_when_carver_terminal_slot_freed():
+    """Oracle 1 (companion): once the carve task is terminal (SUPERSEDED),
+    the slot is free again -- a fresh CarveDispatch fires."""
+    carve_att = make_attempt(attempt_id="att-carve", state=AttemptState.EXITED,
+                              role=Role.CARVER)
+    carve_tsf = make_tsf(task_id="carve-demo-1", state=TaskState.SUPERSEDED,
+                          attempts=[carve_att])
+    inp = ReconcileInput(**_carve_base_kwargs(states={"carve-demo-1": carve_tsf}))
+    dispatches = [a for a in plan_project(inp) if isinstance(a, CarveDispatch)]
+    assert len(dispatches) == 1
+
+
+def test_carve_trigger_none_when_no_frontier_route():
+    """Oracle 1: no healthy 'frontier-review' route configured/healthy ->
+    never dispatch a carver, even though every other condition holds."""
+    inp = ReconcileInput(**_carve_base_kwargs(
+        routes=make_routes(),  # only 'flash-high', no frontier-review tier
+        provider_ok={"route-1": True, "route-2": True},
+    ))
+    dispatches = [a for a in plan_project(inp) if isinstance(a, CarveDispatch)]
+    assert dispatches == []
+
+
+def test_carve_trigger_decision_held_task_not_counted_ready():
+    """Oracle 1: a QUEUED task with an OPEN decision dep is decision-held --
+    excluded from the admissible-ready count even though its nominal state
+    is QUEUED (one of the three counted states)."""
+    cfg = make_config(carve_ahead_target=1)
+    fm = make_frontmatter(id="Q1", depends_on=["D-001"])
+    tsf = make_tsf(task_id="Q1", state=TaskState.QUEUED)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        cfg=cfg,
+        states={"Q1": tsf},
+        frontmatters={"Q1": (fm, "h.md")},
+        decisions_open={"D-001"},
+    ))
+    # ready_count would be 1 (>= target 1) if decision-held tasks counted;
+    # since Q1 is excluded, ready_count is 0 < 1 -> dispatch fires.
+    dispatches = [a for a in plan_project(inp) if isinstance(a, CarveDispatch)]
+    assert len(dispatches) == 1
+
+
+def test_carve_trigger_none_when_budget_exhausted():
+    """Oracle 1: budget_remaining <= 0 -> no CarveDispatch."""
+    inp = ReconcileInput(**_carve_base_kwargs(budget_remaining=0.0))
+    dispatches = [a for a in plan_project(inp) if isinstance(a, CarveDispatch)]
+    assert dispatches == []
+
+
+def test_carve_trigger_milestone_gate_roadmap_exhausted_no_other_work():
+    """Oracle 1: no non-terminal task exists AND roadmap_exhausted_open is
+    True -> milestone does not admit work -> no CarveDispatch, even with an
+    empty (below-target) queue."""
+    inp = ReconcileInput(**_carve_base_kwargs(roadmap_exhausted_open=True))
+    dispatches = [a for a in plan_project(inp) if isinstance(a, CarveDispatch)]
+    assert dispatches == []
+
+
+def test_carve_trigger_milestone_gate_active_task_overrides_roadmap_exhausted():
+    """Oracle 1 (companion): roadmap_exhausted_open is True, but an existing
+    non-terminal task means the milestone still admits work (the OR
+    clause) -> CarveDispatch still fires."""
+    fm = make_frontmatter(id="A1")
+    tsf = make_tsf(task_id="A1", state=TaskState.ACTIVE)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        states={"A1": tsf},
+        frontmatters={"A1": (fm, "h.md")},
+        roadmap_exhausted_open=True,
+    ))
+    dispatches = [a for a in plan_project(inp) if isinstance(a, CarveDispatch)]
+    assert len(dispatches) == 1

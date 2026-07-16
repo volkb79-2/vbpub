@@ -105,6 +105,14 @@ class Policy:
     reconcile_interval_seconds: int = 30
     wave_max_diffs: int = 3
     http_port: int = 8942           # loopback only
+    # P16 2026-07-15 (carver automation): queue-refill target, carve
+    # execution/admission mode, and the headroom threshold below which the
+    # tick flags SPEC_ATTENTION('headroom-low'). See reconcile.py's (carve
+    # trigger) and daemon.py's (CarveDispatch execution + summary
+    # persistence) module docstrings for the full contract.
+    carve_ahead_target: int = 5
+    carve_authority: str = "branch"   # branch|main|files
+    headroom_warn: int = 5
 
 
 @dataclass

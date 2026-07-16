@@ -364,6 +364,130 @@ def test_dispatch_implementer(tmp_state, sample_project, patch_siblings, monkeyp
 
 
 # --------------------------------------------------------------------------
+# P16 2026-07-15: CarveDispatch execution (carver automation, module
+# docstring's carve-automation section). The trigger itself is
+# test_reconcile.py's concern; these drive daemon._execute directly via
+# _scripted, mirroring test_dispatch_implementer/test_open_wave_and_
+# launch_review's pattern.
+
+def test_carve_dispatch_branch_authority_creates_worktree_and_carver_attempt(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    cfg = sample_project
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+    )
+    _scripted(monkeypatch, [[reconcile.CarveDispatch(project="demo")]])
+    d = daemon.Daemon({"demo": cfg.root})
+    n = d.run_pass("demo")
+    assert n == 1
+
+    branch = "carve/demo-1"
+    worktree = cfg.root / ".worktrees" / branch
+    assert worktree.exists()
+    check = subprocess.run(["git", "-C", str(cfg.root), "rev-parse", "--verify", branch],
+                            capture_output=True, text=True)
+    assert check.returncode == 0
+
+    task_id = "carve-demo-1"
+    tsf = storage.load_state("demo", task_id)
+    assert tsf is not None
+    assert tsf.state is TaskState.ACTIVE
+    assert len(tsf.attempts) == 1
+    attempt = tsf.attempts[0]
+    assert attempt.role is Role.CARVER
+    assert attempt.branch == branch
+    assert attempt.worktree == str(worktree)
+
+    events = list(storage.iter_events("demo"))
+    created_ev = next(e for e in events
+                       if e.type is EventType.ATTEMPT_CREATED and e.task_id == task_id)
+    assert created_ev.payload["attempt"]["role"] == "carver"
+    preflighted_ev = next(e for e in events
+                          if e.type is EventType.ATTEMPT_PREFLIGHTED and e.task_id == task_id)
+    assert preflighted_ev.payload["attempt"]["pid"] == 4242
+
+    packet_dir = paths.attempt_dir("demo", attempt.attempt_id) / "packet"
+    packet_md = (packet_dir / "packet.md").read_text(encoding="utf-8")
+    assert "## Your role: CARVER" in packet_md
+    assert "REQUIRED OUTPUT CONTRACT" in packet_md
+    assert "handoff/reports/CARVE-1.md" in packet_md
+    assert "## Carve authority: branch" in packet_md
+    assert "Do NOT merge" in packet_md
+
+
+def test_carve_dispatch_main_authority_uses_project_root_no_worktree(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    cfg = sample_project
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+    )
+    ptoml = cfg.root / ".nyxloom" / "project.toml"
+    text = ptoml.read_text(encoding="utf-8").replace(
+        "[policy]\n", '[policy]\ncarve_authority = "main"\n', 1)
+    ptoml.write_text(text, encoding="utf-8")
+
+    _scripted(monkeypatch, [[reconcile.CarveDispatch(project="demo")]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    task_id = "carve-demo-1"
+    tsf = storage.load_state("demo", task_id)
+    attempt = tsf.attempts[0]
+    assert attempt.worktree == str(cfg.root)
+    assert attempt.branch is None
+    assert not (cfg.root / ".worktrees" / "carve").exists()
+
+    packet_dir = paths.attempt_dir("demo", attempt.attempt_id) / "packet"
+    packet_md = (packet_dir / "packet.md").read_text(encoding="utf-8")
+    assert "## Carve authority: main" in packet_md
+    assert "lint-gated" in packet_md
+
+
+def test_carve_dispatch_files_authority_uses_project_root_no_git(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    cfg = sample_project
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+    )
+    ptoml = cfg.root / ".nyxloom" / "project.toml"
+    text = ptoml.read_text(encoding="utf-8").replace(
+        "[policy]\n", '[policy]\ncarve_authority = "files"\n', 1)
+    ptoml.write_text(text, encoding="utf-8")
+
+    _scripted(monkeypatch, [[reconcile.CarveDispatch(project="demo")]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    task_id = "carve-demo-1"
+    tsf = storage.load_state("demo", task_id)
+    attempt = tsf.attempts[0]
+    assert attempt.worktree == str(cfg.root)
+    assert attempt.branch is None
+
+    packet_dir = paths.attempt_dir("demo", attempt.attempt_id) / "packet"
+    packet_md = (packet_dir / "packet.md").read_text(encoding="utf-8")
+    assert "## Carve authority: files" in packet_md
+    assert "WITHOUT committing" in packet_md
+
+
+def test_carve_dispatch_no_frontier_route_pushes_needs_operator_no_task(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """SAMPLE_ROUTES_TOML has no frontier-review tier: the daemon must not
+    mint an orphaned synthetic carve task -- it pushes a typed NEEDS_OPERATOR
+    instead (defense in depth; reconcile.py's own trigger already guards
+    against this, but daemon._execute_carve_dispatch never trusts that)."""
+    cfg = sample_project
+    _scripted(monkeypatch, [[reconcile.CarveDispatch(project="demo")]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    assert storage.load_state("demo", "carve-demo-1") is None
+    needs_op = [e for e in storage.iter_events("demo") if e.type is EventType.NEEDS_OPERATOR]
+    assert len(needs_op) == 1
+    assert needs_op[0].payload == {"reason": "carve-no-route"}
+
+
+# --------------------------------------------------------------------------
 # Oracle 3: EmitAttemptExit healing, one test per receipt.result
 
 def test_emit_attempt_exit_done(tmp_state, sample_project, patch_siblings, monkeypatch):
