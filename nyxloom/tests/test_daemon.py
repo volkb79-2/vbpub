@@ -25,7 +25,7 @@ import pytest
 
 from conftest import SAMPLE_ROUTES_TOML
 
-from nyxloom import adapters, daemon, decisions, lint, notify, paths, reconcile, render, storage, wrapper
+from nyxloom import adapters, daemon, decision_chat, decisions, lint, notify, paths, reconcile, render, storage, wrapper
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, EventType,
     Receipt, ReceiptResult, Role, Route, TaskState, TaskStateFile, utc_now,
@@ -1191,6 +1191,103 @@ def test_drilldown_endpoint_404_for_unknown_project(http_daemon):
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(f"{base}/api/drilldown/no-such-project/att-x", timeout=5)
     assert exc_info.value.code == 404
+def test_decision_reply_endpoint(http_daemon, sample_project, monkeypatch):
+    """P18 oracle 4: POST /api/decision/reply drives the decision-chat
+    bridge for an OPEN decision; unknown decision_id -> 404; a malformed
+    body -> 400. decision_chat.advance_chat itself is stubbed here -- its
+    real turn mechanics are covered by test_decision_chat.py; this test is
+    scoped to the HTTP endpoint's own contract."""
+    inbox = sample_project.root / "docs" / "DECISIONS-INBOX.md"
+    inbox.write_text(
+        "# Decisions inbox\n\n---\n\n"
+        "## D-050 · 2026-07-16 · test · OPEN\n\n"
+        "**Question:** Ship it?\n\n---\n",
+        encoding="utf-8",
+    )
+
+    calls = []
+
+    def fake_advance_chat(cfg, project, decision_id, text):
+        calls.append((project, decision_id, text))
+        return "ok"
+
+    monkeypatch.setattr(decision_chat, "advance_chat", fake_advance_chat)
+
+    base = f"http://127.0.0.1:{http_daemon.http_port}"
+
+    body = json.dumps({"decision_id": "D-050", "text": "go ahead"}).encode("utf-8")
+    req = urllib.request.Request(f"{base}/api/decision/reply", data=body,
+                                  headers={"Content-Type": "application/json"}, method="POST")
+    resp = urllib.request.urlopen(req, timeout=5)
+    assert resp.status == 200
+    assert calls == [("demo", "D-050", "go ahead")]
+
+    unknown_body = json.dumps({"decision_id": "D-999", "text": "hi"}).encode("utf-8")
+    req2 = urllib.request.Request(f"{base}/api/decision/reply", data=unknown_body,
+                                   headers={"Content-Type": "application/json"}, method="POST")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req2, timeout=5)
+    assert exc.value.code == 404
+
+    req3 = urllib.request.Request(f"{base}/api/decision/reply", data=b"{}",
+                                   headers={"Content-Type": "application/json"}, method="POST")
+    with pytest.raises(urllib.error.HTTPError) as exc3:
+        urllib.request.urlopen(req3, timeout=5)
+    assert exc3.value.code == 400
+
+    # GET on a POST-only path -> 405 (same guard as the P15 config endpoints).
+    with pytest.raises(urllib.error.HTTPError) as exc4:
+        urllib.request.urlopen(f"{base}/api/decision/reply", timeout=5)
+    assert exc4.value.code == 405
+
+
+def test_start_cmd_listener_wraps_handler_for_decision_routing(tmp_state, sample_project, monkeypatch):
+    """P18: _start_cmd_listener wraps the CommandListener's handle_message
+    with decision_chat.wrap_command_handler (feedback-channel routing)
+    rather than leaving the raw verb dispatcher in place."""
+    ptoml = sample_project.root / ".nyxloom" / "project.toml"
+    text = ptoml.read_text(encoding="utf-8")
+    text = text.replace(
+        "[notify]\n",
+        '[notify]\ncmd_topic = "nyxloom-cmd"\ncmd_token_env = "NTFY_CMD_TOKEN_TEST"\n',
+        1,
+    )
+    ptoml.write_text(text, encoding="utf-8")
+    monkeypatch.setenv("NTFY_CMD_TOKEN_TEST", "dummy")
+
+    class FakeListener:
+        def __init__(self, registry):
+            self.registry = registry
+            self.handle_message = self._base_handle_message
+            self.started = False
+
+        def _base_handle_message(self, text, tags):
+            return "base-dispatch"
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.started = False
+
+    monkeypatch.setattr(daemon.commands, "CommandListener", FakeListener)
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    d._start_cmd_listener()
+    try:
+        assert d._cmd_listener is not None
+        assert d._cmd_listener.started
+
+        # A verb command still falls through to the original dispatcher.
+        assert d._cmd_listener.handle_message("help", []) == "base-dispatch"
+
+        # A decision-chat-routed message is intercepted BEFORE the base
+        # dispatcher ever sees it (proves the wrap, not just a passthrough).
+        monkeypatch.setattr(decision_chat, "handle_feedback_message",
+                             lambda registry, text, tags: None)
+        assert d._cmd_listener.handle_message("D-001: discuss", []) is None
+    finally:
+        d._stop_cmd_listener()
 
 
 def test_sse_stream_and_stop(tmp_state, sample_project, monkeypatch):

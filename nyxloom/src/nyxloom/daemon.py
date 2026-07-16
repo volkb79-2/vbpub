@@ -178,7 +178,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from . import adapters, commands, config, decisions, frontmatter, leases, lint, notify, paths, reconcile, render, storage, wrapper
+from . import (
+    adapters, commands, config, decision_chat, decisions, frontmatter, leases,
+    lint, notify, paths, reconcile, render, storage, wrapper,
+)
 from .config import ProjectConfig
 from .types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, Event,
@@ -195,8 +198,11 @@ DEFAULT_HTTP_PORT = 8942
 DEFAULT_RECONCILE_INTERVAL = 30.0
 
 # P15 2026-07-15: UI config endpoints (POST-only; GET on these -> 405).
+# P18 2026-07-16: /api/decision/reply joins this POST-only set (not a config
+# mutation, but the same GET->405 guard applies).
 _CONFIG_POST_PATHS = frozenset({
     "/api/config/policy", "/api/config/pause", "/api/config/tier",
+    "/api/decision/reply",
 })
 
 # Sane per-key int bounds for POST /api/config/policy. The handoff spells
@@ -289,15 +295,32 @@ class Daemon:
         self._stop_http()
 
     def _start_cmd_listener(self) -> None:
-        """P12: start the ntfy command listener if any project wants one."""
+        """P12: start the ntfy command listener if any project wants one.
+
+        P18 2026-07-16: wrap its pure verb dispatch (handle_message) with
+        decision_chat's feedback-channel router FIRST -- the 2-channel
+        design (nyxloom-trove/nyxloom.toml [notify]) unifies P12's cmd
+        topic with the decision-chat escalation loop onto the SAME
+        `feedback` channel (cfg.notify.cmd_topic), so both concerns share
+        one listener/topic/identity. A decision-shaped message ('<D-id>:
+        ...', 'decide <D-id> <choice>', or bare text with exactly one
+        active chat) is fully handled by decision_chat and never reaches
+        the verb allowlist; everything else (including P12's own
+        REPLY_TAG loop-guard) falls through to the original handler
+        unchanged. This reuses P12's transport (poll/backoff/reply)
+        verbatim -- only the pure dispatch function is wrapped, never the
+        listener's I/O (see decision_chat.wrap_command_handler)."""
         for project, root in self.registry.items():
             try:
                 cfg = config.ProjectConfig.load(root)
             except Exception:
                 continue
             if cfg.notify.cmd_topic and os.environ.get(cfg.notify.cmd_token_env):
-                self._cmd_listener = commands.CommandListener(self.registry)
-                self._cmd_listener.start()
+                listener = commands.CommandListener(self.registry)
+                listener.handle_message = decision_chat.wrap_command_handler(
+                    self.registry, listener.handle_message)
+                listener.start()
+                self._cmd_listener = listener
                 return
 
     def _stop_cmd_listener(self) -> None:
@@ -382,6 +405,14 @@ class Daemon:
         for ev_type_str, decision_id in events:
             out.append(self._append_ev(project, cfg, states, EventType(ev_type_str), {},
                                         decision_id=decision_id))
+            if ev_type_str == "DECISION_OPENED":
+                # P18: additional actionable push to the feedback channel,
+                # in ADDITION to the normal notifications-channel push
+                # notify.notify_event already sent above via _append_ev.
+                try:
+                    decision_chat.notify_decision_opened(cfg, decision_id)
+                except Exception:
+                    pass
         inbox_path = cfg.root / cfg.decisions_inbox
         if inbox_path.exists():
             try:
@@ -1460,8 +1491,38 @@ class Daemon:
         if path == "/api/config/tier":
             self._post_config_tier(handler, body)
             return
+        if path == "/api/decision/reply":
+            self._post_decision_reply(handler, body)
+            return
 
         self._send_json(handler, 404, b'{"error":"not found"}')
+
+    def _post_decision_reply(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
+        """P18: drive the decision-chat bridge from the UI (decisions.html),
+        the same advance_chat() path the feedback-channel router uses."""
+        decision_id = body.get("decision_id")
+        text = body.get("text")
+        if not isinstance(decision_id, str) or not decision_id:
+            self._send_json(handler, 400, b'{"error":"missing decision_id"}')
+            return
+        if not isinstance(text, str) or not text.strip():
+            self._send_json(handler, 400, b'{"error":"missing text"}')
+            return
+
+        target = decision_chat.find_project_for_decision(self.registry, decision_id)
+        if target is None:
+            self._send_json(handler, 404, b'{"error":"not found"}')
+            return
+        project, cfg = target
+
+        try:
+            decision_chat.advance_chat(cfg, project, decision_id, text.strip())
+        except Exception as exc:
+            self._send_json(handler, 500, json.dumps({"error": repr(exc)[:200]}).encode("utf-8"))
+            return
+
+        render.render_after_event(self.registry)
+        self._send_json(handler, 200, json.dumps({"ok": True}).encode("utf-8"))
 
     def _post_config_policy(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
         project = body.get("project")

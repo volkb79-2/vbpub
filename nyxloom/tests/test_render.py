@@ -109,6 +109,39 @@ def test_render_all_creates_pages(seed_data, sample_project):
     assert (www / "task" / "demo" / "demo-P02-done.html").exists()
 
 
+def test_decisions_html_lists_open_decision_and_transcript(seed_data, sample_project):
+    """P18 oracle 4: decisions.html lists an OPEN decision (html-escaped
+    question) plus its chat transcript (html-escaped, never raw), and an
+    answer box driving POST /api/decision/reply."""
+    from nyxloom import decision_chat
+
+    tmp_state, project_id = seed_data
+    registry = {"demo": sample_project.root}
+
+    (sample_project.root / "docs" / "DECISIONS-INBOX.md").write_text(
+        "# Decisions inbox\n\n---\n\n"
+        "## D-060 · 2026-07-16 · test · OPEN\n\n"
+        "**Question:** Ratify <script>alert(1)</script>?\n\n---\n",
+        encoding="utf-8",
+    )
+
+    chat = decision_chat.DecisionChat(decision_id="D-060", project="demo", session_id="sess-1")
+    chat.transcript.append(decision_chat.DecisionChatMessage(
+        role="user", text="<b>hi</b>", ts="2026-07-16T00:00:00+00:00"))
+    decision_chat.save_chat(chat)
+
+    render.render_all(registry)
+    content = (paths.www_dir() / "decisions.html").read_text(encoding="utf-8")
+
+    assert 'id="decisions"' in content
+    assert "D-060" in content
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in content
+    assert "<script>alert(1)</script>" not in content
+    assert "&lt;b&gt;hi&lt;/b&gt;" in content
+    assert "<b>hi</b>" not in content
+    assert "/api/decision/reply" in content
+
+
 def test_index_html_active_tasks(seed_data, sample_project):
     """Oracle 2: index.html has active-tasks table with correct content."""
     tmp_state, project_id = seed_data
