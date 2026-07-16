@@ -7,6 +7,7 @@ executable (SPEC §3, security boundary).
 
 from __future__ import annotations
 
+import os
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -86,6 +87,16 @@ class NotifyConfig:
     digest_classes: list[str] = field(default_factory=lambda: [
         "MERGE_RECORDED", "TASK_TRANSITIONED",
     ])
+
+    def __post_init__(self) -> None:
+        # P39: the ntfy server (not each project) is authoritative for its
+        # own URL — it's a deployment fact (tls-edge/PUBLIC_FQDN), so the
+        # NTFY_URL env var always wins over a project's toml value. This
+        # keeps every project's nyxloom.toml from re-hardcoding + drifting
+        # on the FQDN. Chain: env -> toml -> None (notifications disabled).
+        env_url = os.environ.get("NTFY_URL")
+        if env_url:
+            self.ntfy_url = env_url
 
 
 @dataclass
