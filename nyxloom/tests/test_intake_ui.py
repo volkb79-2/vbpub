@@ -159,6 +159,31 @@ def test_post_intake_missing_text_400(http_daemon, monkeypatch):
     assert exc.value.code == 400
 
 
+@pytest.mark.parametrize("bad_id", [
+    "../../../../pwned",            # traversal: reaches _chat_path / the turn log dir
+    "x');alert(1);('",              # breaks out of the onclick= JS string in intake.html
+    "intake-ABCDEF123456",          # not new_id()'s alphabet
+    "intake-abc",                   # too short
+    "",
+])
+def test_post_intake_rejects_unminted_intake_id(http_daemon, monkeypatch, bad_id):
+    """A client-named intake_id lands in a filesystem path AND in intake.html's
+    JS, so only ids matching new_id("intake") are accepted. Omit it to open a
+    fresh conversation (test_post_intake_advances_turn_and_echoes_reply)."""
+    calls = []
+    monkeypatch.setattr(intake_chat, "advance_intake",
+                        lambda *a, **k: calls.append(a) or "x")
+
+    base = f"http://127.0.0.1:{http_daemon.http_port}"
+    body = json.dumps({"project": "demo", "intake_id": bad_id, "text": "hi"}).encode("utf-8")
+    req = urllib.request.Request(f"{base}/api/intake", data=body,
+                                  headers={"Content-Type": "application/json"}, method="POST")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc.value.code == 400
+    assert calls == [], "rejected id must not reach advance_intake"
+
+
 def test_post_intake_get_not_allowed(http_daemon):
     base = f"http://127.0.0.1:{http_daemon.http_port}"
     with pytest.raises(urllib.error.HTTPError) as exc:
