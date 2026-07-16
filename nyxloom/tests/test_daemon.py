@@ -12,6 +12,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -210,6 +211,13 @@ def _drive_until(d, project, predicate, timeout=15.0, pass_gap=0.4):
 
 NYXLOOMD_DIR = Path(__file__).resolve().parent.parent / "nyxloomd"
 
+# `init: true` must match a real service DIRECTIVE (indentation, then the key),
+# not the several prose mentions of it in these files' header comments -- a
+# plain `"init: true" in text` is satisfied by the comments alone and stays
+# green with tini actually removed, i.e. blind to the very regression this
+# test exists to catch.
+_INIT_DIRECTIVE = re.compile(r"^[ \t]*init:[ \t]*true\b", re.M)
+
 
 def test_nyxloomd_compose_runs_daemon_under_tini_supervisor_not_pid1():
     """Both the .j2 template and its pre-rendered docker-compose.yml sibling
@@ -219,7 +227,7 @@ def test_nyxloomd_compose_runs_daemon_under_tini_supervisor_not_pid1():
     killing every in-flight agent (the P37 hazard)."""
     for fname in ("ciu.compose.yml.j2", "docker-compose.yml"):
         text = (NYXLOOMD_DIR / fname).read_text(encoding="utf-8")
-        assert "init: true" in text, f"{fname} missing `init: true` (tini as PID 1)"
+        assert _INIT_DIRECTIVE.search(text), f"{fname} missing `init: true` (tini as PID 1)"
         assert "while true" in text, f"{fname} missing the supervisor loop"
         assert "exec " not in text, f"{fname} still execs the daemon (would be PID 1)"
         assert "nyxloom.cli daemon" in text
