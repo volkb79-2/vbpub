@@ -168,7 +168,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import decision_chat, decisions, paths, storage, config, frontmatter
+from . import decision_chat, decisions, intake_chat, paths, storage, config, frontmatter
 from .types import TaskState, TaskStateFile, AttemptState, Basis, Frontmatter, BlockerType
 
 
@@ -271,7 +271,8 @@ NAV = """
   <a href="quality.html">Quality</a> |
   <a href="live.html">Live</a> |
   <a href="config.html">Config</a> |
-  <a href="decisions.html">Decisions</a>
+  <a href="decisions.html">Decisions</a> |
+  <a href="intake.html">Intake</a>
 </nav>
 """
 
@@ -557,6 +558,9 @@ def render_all(registry: dict[str, Path]) -> Path:
 
     # Render decisions.html (P18 2026-07-16: decision-chat bridge)
     _render_decisions(www, registry)
+
+    # Render intake.html (P30 2026-07-16: intake-chat bridge)
+    _render_intake(www, registry)
 
     # Render task pages
     for project in registry.keys():
@@ -1585,6 +1589,115 @@ def _render_decisions(www: Path, registry: dict[str, Path]) -> None:
 
     html_content = _html_head("Decisions") + content + _html_foot()
     (www / "decisions.html").write_text(html_content, encoding="utf-8")
+
+
+_INTAKE_JS = """
+<script>
+function postIntake(project, intakeId, text) {
+    fetch('/api/intake', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({project: project, intake_id: intakeId, text: text})
+    }).then(function(resp) {
+        if (resp.ok) {
+            window.location.reload();
+            return;
+        }
+        resp.json().then(function(data) {
+            alert('intake failed: ' + (data.error || ('http ' + resp.status)));
+        }).catch(function() {
+            alert('intake failed: http ' + resp.status);
+        });
+    }).catch(function(err) {
+        alert('intake failed: ' + String(err));
+    });
+}
+function startIntake(project) {
+    var input = document.getElementById('intake-new-' + project);
+    var text = input.value;
+    if (!text) { return; }
+    postIntake(project, null, text);
+    input.value = '';
+}
+function sendIntakeReply(project, intakeId) {
+    var input = document.getElementById('reply-' + intakeId);
+    var text = input.value;
+    if (!text) { return; }
+    postIntake(project, intakeId, text);
+}
+</script>
+"""
+
+
+def _render_intake(www: Path, registry: dict[str, Path]) -> None:
+    """Render intake.html (P30 2026-07-16): the human surface for P29's
+    intake-chat bridge -- per-project start-a-request form (posts a fresh
+    turn with no intake_id, letting the server mint one) plus every OPEN
+    (chat.brief_id is None, i.e. not yet finalized into a backlog item)
+    conversation's transcript and a reply box driving POST /api/intake.
+    Same read-only-render / server-escaped idiom as decisions.html (P18)."""
+    start_forms = []
+    sections = []
+    for project in sorted(registry.keys()):
+        root = registry[project]
+        try:
+            config.ProjectConfig.load(root)
+        except Exception:
+            continue
+
+        start_forms.append(f"""
+          <div class="intake-start" data-project="{html.escape(project)}">
+            <h3>{html.escape(project)}</h3>
+            <p>
+              <textarea id="intake-new-{html.escape(project)}" rows="3" cols="60"
+                        placeholder="Describe the feature, rough is fine..."></textarea>
+            </p>
+            <p><button type="button" onclick="startIntake('{html.escape(project)}')">Start intake</button></p>
+          </div>
+        """)
+
+        chat_dir = paths.project_dir(project) / "intake_chats"
+        if not chat_dir.is_dir():
+            continue
+        for intake_id in sorted(p.stem for p in chat_dir.glob("*.json")):
+            chat = intake_chat.load_chat(project, intake_id)
+            if chat is None or chat.brief_id is not None:
+                continue
+
+            msg_rows = []
+            for msg in chat.transcript:
+                msg_rows.append(
+                    f'<div class="chat-msg chat-{html.escape(msg.role)}">'
+                    f'<strong>{html.escape(msg.role)}:</strong> '
+                    f'<span>{html.escape(msg.text)}</span></div>'
+                )
+            transcript_html = "".join(msg_rows) if msg_rows else "<p><em>No messages yet.</em></p>"
+
+            sections.append(f"""
+              <div class="intake-card" data-intake="{html.escape(intake_id)}">
+                <h2>{html.escape(intake_id)} <small>({html.escape(project)})</small></h2>
+                <div class="chat-transcript" id="transcript-{html.escape(intake_id)}">{transcript_html}</div>
+                <p>
+                  <input type="text" id="reply-{html.escape(intake_id)}" size="60"
+                         placeholder="Reply...">
+                  <button type="button"
+                          onclick="sendIntakeReply('{html.escape(project)}', '{html.escape(intake_id)}')">Send</button>
+                </p>
+              </div>
+            """)
+
+    content = f"""
+    <div id="intake">
+      <h2>Start a feature-intake request</h2>
+      {"".join(start_forms) if start_forms else "<p>No projects registered.</p>"}
+      <h2>Open intake conversations</h2>
+      {"".join(sections) if sections else "<p>No open intake conversations.</p>"}
+    </div>
+    {_INTAKE_JS}
+    """
+
+    html_content = _html_head("Intake") + content + _html_foot()
+    (www / "intake.html").write_text(html_content, encoding="utf-8")
 
 
 def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -> None:
