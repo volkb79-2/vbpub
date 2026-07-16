@@ -255,20 +255,32 @@ def test_nyxloomd_compose_runs_daemon_under_tini_supervisor_not_pid1():
 
 _NETWORK_MODE_HOST = re.compile(r"^[ \t]*network_mode:[ \t]*host\b", re.M)
 _HTTP_BIND_ALL = re.compile(r"NYXLOOM_HTTP_BIND:\s*\"?0\.0\.0\.0\"?")
+# The alias must be the exact token `nyxloomd`, NOT merely a `- nyxloomd-net`
+# network list item: `- nyxloomd\b` would match that too (\b sits at the d/-
+# boundary), so deleting the aliases block entirely would still pass. Anchor
+# on the end of the item instead (2026-07-16 review).
+_BRIDGE_ALIAS = re.compile(r"^[ \t]*-[ \t]*nyxloomd[ \t]*(?:#.*)?$", re.M)
+# O2: the healthcheck must probe the bind address, not the old host loopback.
+_HEALTHCHECK_ON_BIND = re.compile(r"</dev/tcp/0\.0\.0\.0/")
 
 
 def test_nyxloomd_compose_drops_host_network_and_binds_bridge_address():
     """Both compose files: no `network_mode: host`, the daemon's http_bind is
     set to 0.0.0.0 (safe -- private bridge network, not host), the service
-    joins an explicit bridge network under a stable alias, and DooD
-    (docker.sock) + the physical repo binds survive the move."""
+    joins an explicit bridge network under a stable alias, the healthcheck
+    probes that bind, and DooD (docker.sock) + the physical repo binds survive
+    the move."""
     for fname in ("ciu.compose.yml.j2", "docker-compose.yml"):
         text = (NYXLOOMD_DIR / fname).read_text(encoding="utf-8")
         assert not _NETWORK_MODE_HOST.search(text), f"{fname} still on host networking"
         assert _HTTP_BIND_ALL.search(text), f"{fname} missing the 0.0.0.0 bridge bind"
         assert "networks:" in text, f"{fname} missing an explicit bridge network join"
-        assert re.search(r"^[ \t]*-[ \t]*nyxloomd\b", text, re.M), \
+        assert re.search(r"^[ \t]*aliases:[ \t]*$", text, re.M), \
+            f"{fname} missing the service's network aliases block"
+        assert _BRIDGE_ALIAS.search(text), \
             f"{fname} missing the stable 'nyxloomd' network alias"
+        assert _HEALTHCHECK_ON_BIND.search(text), \
+            f"{fname} healthcheck does not probe the 0.0.0.0 bind address"
         assert "/var/run/docker.sock:/var/run/docker.sock" in text, \
             f"{fname} lost the docker.sock mount (DooD) in the network move"
         assert "/home/vb/volkb79-2/vbpub:/workspaces/vbpub" in text, \
@@ -1619,13 +1631,19 @@ def test_http_bind_overridable_to_bridge_address(tmp_state, sample_project, patc
 
 def test_http_bind_env_override_takes_precedence_over_toml(
         tmp_state, sample_project, patch_siblings, monkeypatch):
-    """NYXLOOM_HTTP_BIND (set by the compose files, P38) overrides the toml
-    default -- needed because nyxloom.toml is the SAME file read on the host
-    and inside the container (bind-mounted), so it can't itself differ."""
+    """NYXLOOM_HTTP_BIND (set by the compose files, P38) overrides an EXPLICIT
+    toml http_bind -- needed because nyxloom.toml is the SAME file read on the
+    host and inside the container (bind-mounted), so it can't itself differ.
+    The toml is pinned to loopback here so the env var has a real value to beat:
+    without that, a no-op override would still read 127.0.0.1 by default and
+    the test would prove nothing (2026-07-16 review)."""
     monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
     monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
-    monkeypatch.setenv("NYXLOOM_HTTP_BIND", "0.0.0.0")
     _set_ephemeral_http_port(sample_project)
+    _set_http_bind(sample_project, "127.0.0.1")
+    assert 'http_bind = "127.0.0.1"' in (
+        sample_project.root / ".nyxloom" / "project.toml").read_text(encoding="utf-8")
+    monkeypatch.setenv("NYXLOOM_HTTP_BIND", "0.0.0.0")
 
     d = daemon.Daemon({"demo": sample_project.root})
     t = threading.Thread(target=d.run, daemon=True)
