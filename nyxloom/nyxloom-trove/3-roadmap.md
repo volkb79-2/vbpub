@@ -1,16 +1,57 @@
 ---
 kind: roadmap
 schema_version: 1
-milestones: []
+milestones:
+- id: M1
+  title: Trustworthy core
+  target_product_version: 1
+  features:
+  - F001
+  - F003
+  - F004
+  - F005
+  - F006
+  - F013
+  status: done
+- id: M2
+  title: Guided onboarding
+  target_product_version: 1
+  features:
+  - F002
+  status: done
+- id: M3
+  title: Intent<->reality
+  target_product_version: 1
+  features:
+  - F007
+  status: active
+- id: M4
+  title: Smart scheduling + capability-matched routing
+  target_product_version: 1
+  features:
+  - F008
+  - F009
+  status: planned
+- id: M5
+  title: Self-contained runtime + multi-tenant envs
+  target_product_version: 1
+  features:
+  - F010
+  - F011
+  status: planned
+- id: M6
+  title: Human control surface
+  target_product_version: 1
+  features:
+  - F012
+  status: planned
 ---
 
-# nyxloom dev roadmap — pointer.
+# nyxloom — roadmap
 
-The tool roadmap lives at `docs/ROADMAP.md` (referenced in project.toml [refs]).
-This file tracks the SELF-DEV milestones.
+Milestones group the product-definition features by delivery phase. M1-M2 are
+`done` (trustworthy core + guided onboarding). M3 (gap-engine) is `active`.
+M4-M6 (smart scheduling + capability-matched routing, self-contained runtime +
+multi-tenant envs, human control surface) are `planned`. The routing work is
+detailed in docs/routing-model-redesign.md (D-R1..R9).
 
-> `milestones: []` (PACKAGE F1): this file has always been a prose pointer,
-> not a structured milestone tracker — there is no existing self-dev
-> milestone list to migrate. `nyxloom lint`'s S1-S4 spine rules validate the
-> (empty, schema-valid) frontmatter above; populating real milestones here
-> is a follow-up, not part of F1's scope (schema + validator + config keys).

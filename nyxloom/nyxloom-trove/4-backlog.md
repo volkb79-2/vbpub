@@ -2,366 +2,76 @@
 kind: backlog
 schema_version: 1
 items:
-  - id: B1
-    title: "two-channel notify + FQDN"
-    type: feature
-    component: notify
-    context_estimate: medium
-  - id: B2
-    title: "nyxloom-trove config discovery + schema"
-    type: feature
-    component: config
-    context_estimate: small
-  - id: B3
-    title: "exec-nyxloom init <project_folder>"
-    type: feature
-    component: cli
-    context_estimate: small
-  - id: B4
-    title: "dashboard reads project.toml + archive UX"
-    type: feature
-    component: dashboard
-    context_estimate: medium
-  - id: B5
-    title: "migrate topos + dstdns to nyxloom-trove"
-    type: feature
-    component: migration
-    context_estimate: small
-  - id: B6
-    title: "self-host activation"
-    type: feature
-    component: self-hosting
-    context_estimate: medium
-  - id: B7
-    title: "daemon state = a persistent nyxloom-state docker volume"
-    type: feature
-    component: state
-    context_estimate: large
-  - id: B8
-    title: "daemon resume-safety (carved as P26, reverted, needs re-carve)"
-    type: feature
-    component: resume-safety
-    context_estimate: medium
-    folds_into: F001
-  - id: B9
-    title: "feature-intake exploration agent (the factory's front door)"
-    type: feature
-    component: intake
-    context_estimate: large
-  - id: B10
-    title: "roadmap/backlog light schema + daemon auto-tick on merge"
-    type: feature
-    component: spine
-    context_estimate: large
-    folds_into: F002
-  - id: B11
-    title: "doctor crashes on already-BLOCKED tasks"
-    type: bugfix
-    component: doctor
-    context_estimate: small
-  - id: B12
-    title: "lint L7 forbid-existence vs. chained handoffs"
-    type: bugfix
-    component: lint
-    context_estimate: small
-  - id: B13
-    title: "stale pause files are silently inert after the flag-format change"
-    type: bugfix
-    component: pause
-    context_estimate: small
-  - id: B14
-    title: "review verdict rubber-stamp (carved as P33)"
-    type: bugfix
-    component: review
-    context_estimate: medium
-    folds_into: F001
-  - id: B15
-    title: "nyxloom lint <path> resolves against the WRONG project config"
-    type: bugfix
-    component: lint
-    context_estimate: medium
-  - id: B16
-    title: "backlog ids collide under concurrent carving"
-    type: bugfix
-    component: lint
-    context_estimate: small
-  - id: B17
-    title: "daemon project mounts derived from the registry"
-    type: bugfix
-    component: registry
-    context_estimate: medium
-  - id: B18
-    title: "lint L7 asymmetry: scope.forbid checked literally, scope.touch globs"
-    type: bugfix
-    component: lint
-    context_estimate: small
-  - id: B19
-    title: "carve-task exit re-scan gap (carved as P32)"
-    type: bugfix
-    component: reconcile
-    context_estimate: medium
-    folds_into: F001
-  - id: B-carve-backpressure
-    title: "carve trigger ignores un-admitted candidates"
-    type: bugfix
-    component: reconcile
-    context_estimate: medium
-    folds_into: F001
-  - id: B-intake-over-ntfy
-    title: "user-initiated feature-intake chat over the feedback channel"
-    type: feature
-    component: intake
-    context_estimate: medium
-  - id: B-rejected-never-requeues
-    title: "REVIEW_REJECTED is a reconcile dead-end (pairs with P33)"
-    type: bugfix
-    component: reconcile
-    context_estimate: medium
-    folds_into: F001
-  - id: B-self-review-leg
-    title: "wire the SELF_REVIEW leg (reserved, not dispatched)"
-    type: feature
-    component: daemon-core
-    context_estimate: medium
-    folds_into: F001
+- id: B1
+  title: route doctor verb (validate routes.toml + live-test each route)
+  type: feature
+  component: routing
+  context_estimate: small
+  folds_into: F009
+- id: B2
+  title: 'availability layer: disable a CLI/provider/model without removing config'
+  type: feature
+  component: routing
+  context_estimate: medium
+  folds_into: F009
+- id: B3
+  title: per-project route policy (no-china / no-openrouter / no-model-X)
+  type: feature
+  component: routing
+  context_estimate: small
+  folds_into: F009
+- id: B4
+  title: reviewer on-the-fly fixes (configurable, serial-favored)
+  type: feature
+  component: review
+  context_estimate: medium
+  folds_into: F005
+- id: B5
+  title: component-in-slug ID scheme + STANDARD update
+  type: feature
+  component: spine
+  context_estimate: small
+  folds_into: F001
+- id: B6
+  title: implementer self-review text (gated to IMPLEMENTER role)
+  type: feature
+  component: dispatch
+  context_estimate: small
+  folds_into: F005
+- id: B7
+  title: role-scoped build_dispatch (unblocks B6; fixes all-legs prompt leak)
+  type: feature
+  component: dispatch
+  context_estimate: medium
+  folds_into: F009
+- id: B8
+  title: smart reject-triage (tech-fixable -> requeue vs needs-human -> D-NNN)
+  type: feature
+  component: review
+  context_estimate: medium
+  folds_into: F005
+- id: B9
+  title: intake-over-ntfy chatbot (human-initiated new direction)
+  type: feature
+  component: control
+  context_estimate: large
+  folds_into: F012
+- id: B10
+  title: session-limit monitoring + per-job token estimation
+  type: feature
+  component: routing
+  context_estimate: large
+  folds_into: F009
+- id: B11
+  title: sweep stale daemon worktrees/branches (merge-status-checked)
+  type: bugfix
+  component: ops
+  context_estimate: small
 ---
 
-# nyxloom dev backlog — un-carved polish items
+# nyxloom — backlog
 
-> `items:` above (PACKAGE F1, healed 2026-07-17): FULLY migrated from the
-> prose bullets below — every bullet now has a matching structured `items:`
-> entry (id, title, type, component where inferable, context_estimate,
-> `folds_into` where it plausibly maps to a real product-definition feature;
-> most items don't cleanly fold into F001/F002 yet and are left unset rather
-> than forced). The two duplicate-id collisions **B16** tracked below (two
-> `B12`s, two `B13`s) are resolved here: each bullet's FIRST occurrence keeps
-> its original id; each SECOND occurrence is renumbered to a fresh, previously
-> unused id — `B12` (lint L7 forbid/touch asymmetry) → **B18**, `B13`
-> (carve-task exit re-scan gap) → **B19**. Only the leading id changed;
-> every bullet's content is unchanged. `lint.py`'s new **S5** rule
-> (docs/spine-documents-spec.md) now makes a duplicate id within a spine
-> doc's own collection a hard ERROR, so this collision class cannot
-> recur silently — `nyxloom lint` (or `doctor`) will catch it at carve time
-> instead of a human noticing it later. The bullets below remain the body's
-> human-readable prose (renumbered ids only, per above); `items:` above is
-> now the schema-validated source of truth per S1-S5.
+Un-scheduled items and sub-packages, each folding into a product-definition
+feature (or standalone for ops). `context_estimate` is the carver's read-
+context estimate (a scheduler input); `component` is the wave-grouping proxy.
 
-Confirmed with the user 2026-07-16. These become P23+ handoffs; once
-self-hosting is on (pending handoffs frontmatter-converted → nyxloom enrolled in
-the daemon registry), nyxloom dispatches them itself (dogfooding).
-
-- **B1 — two-channel notify + FQDN.** Emit to `notifications` (progress, shared,
-  project-as-tag) and `feedback` (decisions + escalation, bidirectional; unifies
-  the old `cmd` topic + decision-chat). ntfy on `nyxloom.<fqdn>` derived from
-  ciu identity (`{{ project_name }}.{{ public_fqdn }}`, wildcard-covered).
-  Code: `notify.py`/`config.py` read `notifications_topic`/`feedback_topic`.
-  Live step: redeploy ntfy + ACLs + **user re-subscribes on phone**.
-- **B2 — nyxloom-trove config discovery + schema.** Daemon finds
-  `<root>/nyxloom-trove/project.toml`; a JSON schema for project.toml so
-  `nyxloom lint` validates config (bad gate argv, missing worktree_root,
-  unresolved `[refs]`).
-- **B3 — `exec-nyxloom init <project_folder>`.** Scaffold a trove from bundled
-  templates via the running instance (proves folder access). Adds an `init`
-  subcommand to the exec-nyxloom wrapper + `nyxloom.cli`.
-- **B4 — dashboard reads project.toml + archive UX.** Show each project's gate,
-  channels, folders. Keep last `archive_keep_visible` (10) completed visible;
-  older behind an **Archive** button. (Pairs with P22 legend/drilldown.)
-- **B5 — migrate topos + dstdns to nyxloom-trove.** One deliberate pass each
-  (`git mv handoff nyxloom-trove/handoffs`, repoint config).
-- **B6 — self-host activation.** Frontmatter-convert nyxloom's NOT-YET-
-  IMPLEMENTED handoffs (P16 carver, P18 decision-chat, P22 dashboard), then add
-  nyxloom to the daemon registry so it dispatches its own backlog.
-- **B7 — daemon state = a persistent `nyxloom-state` docker volume.** Move the
-  source of truth (event log, statefiles, registry, routes, leases, pidfile)
-  off the host-home XDG path (`~/.local/state/nyxloom`, a transitional artifact
-  of the CLI-auth home bind) into a dedicated volume mounted into the nyxloomd
-  container — container-native, `git clean`-safe. Agent logs move the other way:
-  into each project's `nyxloom-trove/agent-logs/` (gitignored by default). Code:
-  `paths.py` (state root from `NYXLOOM_STATE_DIR` → `/var/lib/nyxloom`; agent-log
-  dir → the project trove), the nyxloomd ciu stack (add the volume, set the env,
-  drop the home-bind reliance for STATE — keep it only for CLI auth), + a
-  one-shot migration of existing state. Daemon-core: gate + rebuild after merge.
-- **B8 — daemon resume-safety (carved as P26).** Replace the manual "DON'T
-  restart the daemon needlessly" operator rule with automatic detection: a
-  resumed session that keeps dying is currently resumed forever (resumes reuse
-  one attempt record, so `attempts_count` never trips `max_attempts_per_task`).
-  Detect repeated failed resumes → stop resuming that session → fresh-start a
-  new attempt (new session) under configurable `max_resume_failures` /
-  `resume_progress_grace_seconds`, or BLOCK cleanly when the fresh-attempt
-  budget is gone. Inactivity (tier-1/2 stall + wall-clock cap) already exists;
-  this only adds the resume-failure→fresh-start decision in `reconcile.py`.
-  Daemon-core: gate + rebuild after merge. Depends on B2/P24 (config schema).
-- **B9 — feature-intake exploration agent (the factory's front door).** A new
-  UI tab + conversational agent (SIBLING of `decision_chat.py` P18: reuse its
-  ntfy/UI transport, resumable read-only redacted claude session, and confirm-
-  to-finalize pattern). User starts with a ROUGH feature request; the agent (1)
-  reads project/product context (`[refs]` docs + roadmap + recent handoffs),
-  (2) interviews the user to confirm SHARED understanding (purpose/scope), (3)
-  elicits the details needed to build the right thing, (4) surfaces product +
-  technical consequences and files any genuine product calls as **`D-NNN`
-  decisions** (wiring `depends_on: [D-NNN]` into the eventual handoff), (5)
-  estimates blockers / prior work / competing roadmap items over the
-  `depends_on` graph + headroom signal, (6) asks desired PRIORITY and slots it
-  in, (7) on user satisfaction persists a structured **pre-carve brief**
-  (aligned purpose, elicited detail, consequences, linked decisions, priority)
-  as an enriched backlog item — carry the brief into the P16 carver as seed
-  context so "direct carve" loses NO context. Phases: P-α schema+auto-tick
-  (=B10), P-β intake agent backend, P-γ UI tab, P-δ direct-carve-from-brief.
-  Open D-calls: brief = new doc vs enriched backlog item (lean: enriched
-  backlog); does `priority` drive dispatch order (scheduler change). Depends on
-  B10.
-- **B10 — roadmap/backlog light schema + daemon auto-tick on merge.** Give
-  roadmap/backlog items a parseable structure (id, status, priority, links to
-  carved handoffs / D-decisions) like `decisions.md` has, schema-validated
-  (extends P24). Then the daemon writes ONE typed, mechanical update: on
-  handoff merge, tick/annotate the linked roadmap/backlog item (the same reflex
-  that archives handoffs) — making the roadmap self-updating and fixing the
-  "Status: line lies" problem at its root. STRICTLY typed writes only; the
-  daemon never free-authors roadmap prose (injection-boundary + typed-fields-
-  only doctrine). Prerequisite for B9. Daemon-core: gate + rebuild after merge.
-  NOTE (2026-07-17): the schema half is now partly subsumed by the F1 spine
-  (`items:`/`features:`/`milestones:` + S1-S5 validation, this very file) —
-  what remains open is `status`/`priority`/link fields and the daemon
-  auto-tick-on-merge write path.
-- **B12 — lint L7 forbid-existence vs. chained handoffs.** L7 errors when a
-  `forbid` path does not exist on the base branch, but a chained handoff often
-  forbids a file a NOT-YET-MERGED predecessor phase creates (e.g. P30/P31
-  forbidding `intake_chat.py` that P29 introduces) — a false stick at carve
-  time, since the file exists by the phase's actual dispatch time. Fix: when a
-  forbidden path is listed in the `scope.touch` of a `depends_on` handoff (or
-  simply: forbid-non-existence is a WARNING, not an error, mirroring how L7
-  already treats non-existent `touch` paths). Discovered dogfooding the B9/B10
-  carve. Small `lint.py` change + test.
-- **B11 — `doctor` crashes on already-BLOCKED tasks (`BLOCKED -> BLOCKED not
-  allowed`).** Observed 2026-07-16 against dstdns while three tasks sat BLOCKED
-  `interrupted-dead-end`: `exec-nyxloom.py doctor` exits with the TransitionError
-  instead of a report — the one health surface an operator reaches for when tasks
-  are blocked is the one that dies on them. Doctor must be read-only (never
-  attempt transitions) or guard the re-block path the way reconcile's
-  `!= BLOCKED` guard does. (Related TICK_ERROR spam existed in dstdns events
-  seq 91-137 before the guard landed.)
-- **B18 — lint L7 asymmetry: `scope.forbid` entries are checked as literal
-  paths while `scope.touch` entries glob.** Observed 2026-07-16 (dstdns
-  infra-P24): `forbid: ["infra/authentik/**"]` errored "path does not exist"
-  though the dir exists and the same glob in `touch` passes. Either glob both
-  or document that forbid takes literal prefixes; today authors discover it by
-  lint error archaeology. (Renumbered from a duplicate `B12` — see B16.)
-- **B13 — stale pause files are silently inert after the flag-format change.**
-  dstdns carried an EMPTY `pause.agents` file (set 2026-07-15 by the pre-rename
-  daemon); the current daemon reads the pause MODE from file CONTENT, treated it
-  as no-pause, and dispatched — the operator believed the project was paused
-  while agents ran. Migration/lint should flag (or refuse) a pause flag whose
-  content is not a known mode; `status` should render the effective pause mode
-  per project so operator belief and daemon behavior can't diverge silently.
-- **B19 — carve-task exit re-scan gap (carved as P32).** The reconcile
-  EmitAttemptExit re-scan finalizes an EXITED attempt of an ACTIVE task only for
-  `role` IMPLEMENTER / FRONTIER_REVIEW — NOT CARVER. So a carve whose live
-  exit-processing pass is missed (a daemon restart landing on the carver's exit)
-  is never retired to SUPERSEDED and its synthetic task stays ACTIVE forever,
-  permanently eating a wip slot. Observed 2026-07-16: `carve-nyxloom-1` stuck
-  ACTIVE ~2h, throttling the factory to 2/3 capacity (manually superseded to
-  unblock). Fix = add the CARVER branch to the trigger (reconcile.py); the
-  daemon.py `_consume_carve_exit` handler already exists. Depends on P26
-  (co-edits reconcile.py). Daemon-core: gate + rebuild after merge. (Renumbered
-  from a duplicate `B13` — see B16.)
-- **B14 — review verdict rubber-stamp (carved as P33).** The merge gate maps
-  `receipt.result==DONE -> MERGE_READY`, but `result` reflects only PROCESS exit
-  (wrapper: clean exit -> done), NOT the review verdict. The packet asks a
-  rejecting reviewer to emit a `BLOCKED: rejected` FINAL line — a mechanical
-  self-signal models miss. Live incident 2026-07-16: P26's reviewer wrote a
-  correct REJECTED report but exited clean -> done -> MERGE_READY -> buggy
-  daemon-core nearly merged (caught + reverted at merge review). Fix (P33):
-  derive the verdict from the durable `<task>-REVIEW.md` and FAIL SAFE to
-  REJECTED on any ambiguity; require a machine-readable `VERDICT:` line.
-  Daemon-core. NOTE: P26 (resume-safety, B8) was reverted for a real defect
-  (fresh-start dispatch bypasses every dispatch guard) — it needs re-carving
-  with the guard-respecting contract (a P34).
-- **B17 — daemon project mounts derived from the registry.** The nyxloomd stack
-  hardcodes its project binds (`ciu.compose.yml.j2` volumes: vbpub + dstdns),
-  duplicated into the pre-rendered `docker-compose.yml` and kept in sync only by
-  a comment. The registry already knows every project root, so a project can be
-  **registered and unreachable** — which is exactly what happened to
-  netcup-api-filter (its `D-001`; one-line fix + drift test carved as **P27**).
-  Principled fix: render the binds from the registered project roots (ciu template
-  reads the registry, or a documented render step), so `project add` cannot
-  produce a project the daemon cannot see. Consider the reverse guard too:
-  `project add` (or `doctor`) should FAIL when the root is not visible from inside
-  the container, instead of registering a project that silently never dispatches.
-  Depends on P27 landing the tactical fix first.
-- **B15 — `nyxloom lint <path>` resolves against the WRONG project config.** Any
-  path-form lint picks `dstdns`'s config regardless of the file's project or the
-  cwd, so a nyxloom handoff reports `L1 project 'nyxloom' does not match config
-  'dstdns'`, `L2 gate id 'tester-unified' not declared`, and a wall of `L7 path
-  does not exist` (paths resolved from dstdns's root). Reproduce — a known-good,
-  live handoff lints dirty:
-  `docker exec -w /workspaces/vbpub/nyxloom nyxloom-prod-nyxloomd python -m
-  nyxloom.cli lint nyxloom-trove/handoffs/nyxloom-P24-config-schema-lint.md`.
-  Effect: CLI lint is unusable as a pre-flight signal — the only way to read it
-  today is to diff findings against another handoff and ignore the shared noise.
-  (The daemon's per-project `lint_project` path is fine, which is why this went
-  unnoticed.) Fix: resolve the owning project from the path (walk up to the nearest
-  `nyxloom-trove/nyxloom.toml`, or match against registered project roots) instead
-  of defaulting to one project. Test: lint a handoff from EACH registered project,
-  assert no cross-project findings. Discovered adopting netcup-api-filter.
-- **B16 — backlog ids collide under concurrent carving.** As of 2026-07-16 this file
-  has TWO `B11`s, TWO `B12`s and TWO `B13`s, added by separate in-flight carves
-  (593a585, 8ccb8ad, and P27's — since renumbered to B14). Ids are the handle
-  `depends_on` and prose cross-references use, so a duplicate silently makes
-  "depends on B12" ambiguous. This is the same gap **B10** names (no parseable
-  id/status structure): with no schema and no allocator, two concurrent authors pick
-  the same next integer. Fix with B10 (typed ids, uniqueness validated by lint); a
-  cheaper interim is allocating from a monotonic counter or using the carve's task id
-  as the stem. Until then: grep before numbering.
-  RESOLVED 2026-07-17: `lint.py`'s **S5** rule (docs/spine-documents-spec.md) now
-  hard-errors on a duplicate `id` within a spine doc's own `items:`/`features:`/
-  `milestones:` collection, and this file's remaining two collisions (the second
-  `B12` and second `B13` bullets above) were renumbered to **B18**/**B19** to heal
-  it — see the note at the top of this file. `nyxloom lint`/`doctor` now catch this
-  collision class mechanically instead of a human noticing it later; the
-  allocator/monotonic-counter idea above is no longer needed for correctness (S5 is
-  a backstop either way).
-- **B-carve-backpressure — carve trigger ignores un-admitted candidates.** The
-  zombie bug itself is fixed (P32). But the carve TRIGGER (reconcile.py:584,
-  `ready_count < carve_ahead_target`) counts only the dispatchable ready queue —
-  NOT candidates already sitting un-admitted on carve branches. Under
-  `carve_authority = "branch"` (candidates await human admission), the ready
-  queue stays low while candidates pile up, so the carver re-fires every window,
-  producing increasingly-marginal/duplicate candidates (carve-2/3/4 observed:
-  each cost an opus leg + a manual finalize). Fix: the carve trigger should
-  count pending un-admitted carve outputs toward the target (or back off after N
-  windows with no admission), so branch-authority doesn't drive over-production.
-  Interim lever used 2026-07-16: `carve_ahead_target = 0` during the rebuild
-  drain. Not urgent (gated + mitigated), but a real efficiency/robustness gap.
-- **B-intake-over-ntfy — user-initiated feature-intake chat over the feedback channel.**
-  Today the ntfy `feedback` channel is bidirectional for DECISIONS (decision_chat P18)
-  + cmd verbs. Extend it so the USER can start a feature-intake discussion from ntfy
-  (phone/chat) and converse with the intake agent (P29/P30) — a chatbot surface for the
-  factory's front door, sibling of decision-chat. Mechanism: the feedback-message router
-  (decision_chat.wrap_command_handler / handle_feedback_message) recognizes a new
-  intake-start/continue message (e.g. an `intake:`/`feature:` prefix) and drives
-  intake_chat.advance_intake over the channel — the agent posts questions back, the user
-  replies from their phone, and on satisfaction it persists a pre-carve brief (P29). This
-  is the ntfy twin of P30 (the dashboard intake tab). Same read-only+redacted posture as
-  decision_chat; disambiguation is the only real design work (intake-start vs decision
-  reply vs cmd verb — a keyword/prefix convention). Depends on P29 (merged) + the feedback
-  transport. Post-rebuild feature; not part of the current convergence.
-- **B-rejected-never-requeues — REVIEW_REJECTED is a reconcile dead-end (pairs with P33).**
-  `reconcile.py` has NO REVIEW_REJECTED handling: the state machine permits
-  REVIEW_REJECTED->QUEUED, the UI says "needs another implementer attempt", and the
-  `reject` CLI verb promises "re-enters QUEUED the normal way" — but nothing performs
-  the transition, so a correctly-rejected task is stranded forever (had to re-queue P31
-  by hand 2026-07-16). This is the OTHER half of the rejection loop: P33 makes rejects
-  land in REVIEW_REJECTED correctly, but they then have nowhere to go. Fix: reconcile
-  should transition REVIEW_REJECTED->QUEUED when the distinct-record attempts budget
-  remains (re-work with the same/re-authored handoff), else ->BLOCKED (typed dead-end,
-  like the interrupted-exhausted path). Daemon-core; must land with/after P33 for the
-  review->rework loop to work end-to-end. HIGH value (silent: rejected work vanishes).
-- **B-self-review-leg — wire the SELF_REVIEW leg (reserved, not dispatched).**
-  `Role.SELF_REVIEW` is defined in the enum + statefile schema but intentionally
-  reserved (not dispatched) as of 2026-07-16 (P43): an independent self-review
-  attempt between IMPLEMENTER and FRONTIER_REVIEW, distinct from P40's
-  prompt-level implementer self-review step. Wiring it means a dispatch site in
-  daemon.py, a state-machine leg in reconcile.py, and a decision on whether it
-  consumes a WIP slot or runs inline — or, alternatively, deleting the role as
-  YAGNI. Tracked here so it doesn't sit as a silent stub again; see
-  `src/nyxloom/types.py`'s `RESERVED_ROLES`, guarded by `tests/test_types.py`.
