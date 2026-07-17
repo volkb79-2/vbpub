@@ -136,6 +136,15 @@ class Role(enum.Enum):
     CARVER = "carver"
 
 
+# Roles intentionally defined but not yet dispatched. Each member here must be
+# justified by a backlog item tracking the deferred wiring decision, so a
+# defined-but-dead role is TRACKED future work, not a silent stub (see
+# tests/test_types.py for the guard that enforces this partition).
+RESERVED_ROLES: frozenset[Role] = frozenset({
+    Role.SELF_REVIEW,  # nyxloom-trove/backlog.md: B-self-review-leg
+})
+
+
 class ReceiptResult(enum.Enum):
     DONE = "done"
     BLOCKED = "blocked"
