@@ -7,7 +7,7 @@ tier: sonnet5-high
 input_revision: "a7499cc"
 depends_on: [nyxloom-P32-carve-exit-rescan, nyxloom-P33-robust-review-verdict]
 session: fresh
-source: {kind: backlog, ref: nyxloom-trove/backlog.md}
+source: {kind: backlog, ref: nyxloom-trove/4-backlog.md}
 scope:
   touch:
     - "src/nyxloom/reconcile.py"

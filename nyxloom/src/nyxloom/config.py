@@ -145,6 +145,18 @@ class ProjectConfig:
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     decisions_inbox: str = "docs/DECISIONS-INBOX.md"
     reports_dir: str = "handoff/reports"
+    # Direction-spine docs (docs/spine-documents-spec.md, PACKAGE F1),
+    # trove-relative paths. north_star/product_definition are new and have
+    # no fallback (a project need not have adopted the spine yet). roadmap/
+    # backlog default to None here too -- callers that need the legacy
+    # unprefixed-filename convention (backlog_items.DEFAULT_RELPATH, the
+    # daemon's carve-context notes) keep their own hardcoded fallback; this
+    # field only carries an EXPLICIT repoint (e.g. nyxloom's own
+    # nyxloom-trove/nyxloom.toml points these at 3-roadmap.md/4-backlog.md).
+    north_star: str | None = None
+    product_definition: str | None = None
+    roadmap: str | None = None
+    backlog: str | None = None
 
     @classmethod
     def load(cls, root: Path) -> "ProjectConfig":
@@ -213,6 +225,10 @@ class ProjectConfig:
             notify=noti,
             decisions_inbox=data["project"].get("decisions_inbox", "docs/DECISIONS-INBOX.md"),
             reports_dir=data["project"].get("reports_dir", "handoff/reports"),
+            north_star=data["project"].get("north_star"),
+            product_definition=data["project"].get("product_definition"),
+            roadmap=data["project"].get("roadmap"),
+            backlog=data["project"].get("backlog"),
         )
 
     def redact(self, text: str) -> str:

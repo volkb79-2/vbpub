@@ -82,6 +82,20 @@ Every document nyxloom **manages or reads** is either:
 If it's neither, nyxloom doesn't know about it. `nyxloom lint` (config
 schema-validation) flags a `[refs]` path that doesn't resolve.
 
+## Direction spine (north-star / product-definition / roadmap / backlog)
+
+A project MAY additionally adopt the managed "direction spine" -- four
+numeric-prefixed trove docs (`1-north-star.md`, `2-product-definition.md`,
+`3-roadmap.md`, `4-backlog.md`) with schema-validated YAML frontmatter,
+non-AI-checked by `nyxloom lint`'s S1-S4 rules the same way handoffs get
+L1-L12. Full contract (frontmatter schemas, `nyxloom.toml` config keys,
+validator rules): see `docs/spine-documents-spec.md`. Adopting the spine is
+**optional per project** -- the plain `roadmap.md`/`backlog.md` above remain
+valid and are still what `exec-nyxloom init` scaffolds. nyxloom's own trove
+has adopted it (see `nyxloom-trove/nyxloom.toml`'s `north_star`/
+`product_definition`/`roadmap`/`backlog` keys and the four docs they point
+at) as the worked example.
+
 ## Document conventions ("managed" = enforced, not aspirational)
 
 - **Naming:** the filename stem MUST equal the frontmatter `id` (enforced by

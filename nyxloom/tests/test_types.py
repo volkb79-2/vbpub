@@ -18,7 +18,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DAEMON_SRC = (REPO_ROOT / "src" / "nyxloom" / "daemon.py").read_text()
 RECONCILE_SRC = (REPO_ROOT / "src" / "nyxloom" / "reconcile.py").read_text()
 TYPES_SRC = (REPO_ROOT / "src" / "nyxloom" / "types.py").read_text()
-BACKLOG_SRC = (REPO_ROOT / "nyxloom-trove" / "backlog.md").read_text()
+# PACKAGE F1 (2026-07-17): nyxloom's own backlog.md was git-mv'd to the
+# numeric-prefixed 4-backlog.md (docs/spine-documents-spec.md). The literal
+# 'nyxloom-trove/backlog.md' string below is a comment TAG inside types.py's
+# RESERVED_ROLES block (frozen for this package), not a resolved path -- it
+# stays unchanged; only the actual file read here follows the rename.
+BACKLOG_SRC = (REPO_ROOT / "nyxloom-trove" / "4-backlog.md").read_text()
 
 _DISPATCH_RE = re.compile(r"role=Role\.(\w+)")
 _RESERVED_BLOCK_RE = re.compile(r"^RESERVED_ROLES.*?^\}\)", re.M | re.S)

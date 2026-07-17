@@ -7,7 +7,7 @@ tier: sonnet5-high
 input_revision: "51bce30"
 depends_on: []
 session: fresh
-source: {kind: roadmap, ref: nyxloom-trove/backlog.md}
+source: {kind: roadmap, ref: nyxloom-trove/4-backlog.md}
 scope:
   touch: ["src/nyxloom/cli.py", "exec-nyxloom.py", "tests/test_cli.py"]
   forbid: ["src/nyxloom/daemon.py", "src/nyxloom/reconcile.py", "src/nyxloom/storage.py", "src/nyxloom/config.py"]

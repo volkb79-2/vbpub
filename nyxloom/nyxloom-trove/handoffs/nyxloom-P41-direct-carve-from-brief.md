@@ -7,7 +7,7 @@ tier: sonnet5-high
 input_revision: "f098cbf"
 depends_on: []
 session: fresh
-source: {kind: backlog, ref: nyxloom-trove/backlog.md}
+source: {kind: backlog, ref: nyxloom-trove/4-backlog.md}
 # Re-carve of the REJECTED+stale nyxloom-P31 (its branch was 30 commits behind
 # main — missing P34-P39 — so unmergeable; and its MERGE_READY was a pre-P33
 # rubber-stamp). This is a FRESH implementation from current main. The rejected

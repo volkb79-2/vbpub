@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vbpub.invalid/nyxloom/schemas/spine-backlog.schema.json",
+  "title": "nyxloom spine: 4-backlog.md frontmatter",
+  "description": "Features + bugfixes ledger, table-editable items (docs/spine-documents-spec.md). Independent of the per-bullet HTML-comment header convention (backlog-item.schema.json, PACKAGE P28) that already lives in this file's BODY -- this schema covers only the top-level frontmatter `items:` list.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "schema_version", "items"],
+  "properties": {
+    "kind": {"const": "backlog"},
+    "schema_version": {"const": 1},
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "type"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^B[A-Za-z0-9-]*$"},
+          "title": {"type": "string", "minLength": 1},
+          "type": {"enum": ["feature", "bugfix"]},
+          "component": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional; cheap proxy for wave-grouping (P42)"
+          },
+          "context_estimate": {
+            "enum": ["small", "medium", "large"],
+            "description": "Carver's read-context estimate (scheduler input, task #29)"
+          },
+          "folds_into": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional; the product-def feature (F<NNN>) or roadmap milestone (M<N>) id this item belongs to"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,4 +1,35 @@
+---
+kind: backlog
+schema_version: 1
+items:
+  - id: B1
+    title: "two-channel notify + FQDN"
+    type: feature
+    context_estimate: medium
+  - id: B2
+    title: "nyxloom-trove config discovery + schema"
+    type: feature
+    context_estimate: small
+  - id: B16
+    title: "backlog ids collide under concurrent carving"
+    type: bugfix
+    context_estimate: small
+---
+
 # nyxloom dev backlog — un-carved polish items
+
+> `items:` above (PACKAGE F1): a MINIMAL-VALID seed, not a full migration of
+> every prose bullet below into structured items — see
+> `docs/spine-documents-spec.md`'s S1-S4 validator and the F1 handoff notes.
+> The existing bullets (their own separate, un-headered-or-`<!--
+> nyxloom:backlog ... -->`-headered convention, PACKAGE P28) are UNCHANGED
+> and remain the durable, human-owned record; `backlog_items.py` keeps
+> parsing them exactly as before. Full structured migration was skipped
+> deliberately: several existing bullets reuse the same id (e.g. two
+> separate `B12`s, two separate `B13`s — see B16 below), which would
+> collide under this schema's `id` field; that reuse is itself the
+> pre-existing bug B16 tracks, not something F1 should paper over by
+> silently renumbering other packages' content.
 
 Confirmed with the user 2026-07-16. These become P23+ handoffs; once
 self-hosting is on (pending handoffs frontmatter-converted → nyxloom enrolled in

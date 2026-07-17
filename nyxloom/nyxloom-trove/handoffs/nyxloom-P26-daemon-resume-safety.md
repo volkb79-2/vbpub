@@ -7,7 +7,7 @@ tier: sonnet5-high
 input_revision: "6d1f2be"
 depends_on: [nyxloom-P24-config-schema-lint]
 session: fresh
-source: {kind: backlog, ref: nyxloom-trove/backlog.md}
+source: {kind: backlog, ref: nyxloom-trove/4-backlog.md}
 scope:
   touch:
     - "src/nyxloom/reconcile.py"
