@@ -95,6 +95,17 @@ produce a clear "violates the standard" signal, never a silent mystery:
   the `nyxloom.toml` spine keys resolve.
 - **S4 (tamper/corruption):** a spine doc present but frontmatter-invalid or of an
   unknown `schema_version` is a hard ERROR (fail-closed — never a silent skip).
+- **S5 (uniqueness):** within a single spine doc, the `id`s of its own collection
+  (`4-backlog.items`, `2-product-definition.features`, `3-roadmap.milestones`)
+  must be unique — a duplicate `id` is a hard ERROR, keyed to the doc. A JSON
+  schema validates each collection entry in isolation and can't see a repeated
+  id across entries, so S5 is a separate procedural check, independent of S1's
+  outcome for that doc. A doc carrying an S5 finding is excluded from the S2
+  cross-doc pool (same treatment as an S1/S4-dirty doc) — its own id space is
+  untrustworthy, so nothing else should resolve against it yet. (Motivated by
+  nyxloom's own backlog history: concurrent carves independently picked the
+  same next `B<N>`, producing two `B12`s and two `B13`s — see `4-backlog.md`'s
+  healed items and its in-body note on the renumbering.)
 
 Surfaced in both `nyxloom lint` and `doctor`.
 
