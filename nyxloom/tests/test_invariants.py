@@ -42,12 +42,23 @@ references at all:
     (`grep "phase ==" src/nyxloom/daemon.py` is empty). Practical
     consequence: TaskState.COMPLETED -- the terminal SUCCESS state -- is
     UNREACHABLE in the shipped codebase today.
+    FIXED 2026-07-17 (nyxloom-post-merge-validation package): reconcile.py's
+    module contract item 11 now plans MERGED->VALIDATING and a
+    RunPostMergeGate trigger for VALIDATING; daemon.py's
+    _run_post_merge_gate runs the declared gate (or the implementation gate
+    as the documented default, or a no-op pass if none is declared) against
+    the merged default branch and transitions onward to COMPLETED or
+    BLOCKED. See tests/test_post_merge.py for the end-to-end proof and this
+    file's test_no_dead_end_merged/test_no_dead_end_validating (now plain,
+    non-xfail tests -- the pinned xfail(strict) markers were REMOVED, since
+    a passing strict-xfail test is itself a failure (XPASS)).
 
-These four are pinned below as KNOWN_STATE_GAPS with dedicated xfail(strict)
-tests (Oracle O1: each demonstrably fails TODAY, on real code, proving the
-guard is not a tautology) rather than silently fixed -- production changes
-are out of scope for this package (see CLAUDE.md handoff scope). Report to
-the project owner: these need a backlog item and a real fix.
+The remaining two (DRAFT, READY_TO_CARVE) are still pinned below as
+KNOWN_STATE_GAPS with dedicated xfail(strict) tests (Oracle O1: each
+demonstrably fails TODAY, on real code, proving the guard is not a
+tautology) rather than silently fixed -- production changes for those two
+are out of scope for THIS package (see CLAUDE.md handoff scope). Report to
+the project owner: these still need a backlog item and a real fix.
 """
 
 from __future__ import annotations
@@ -62,7 +73,7 @@ from nyxloom import storage
 from nyxloom.config import MutexDef, Policy, ProjectConfig, RouteDef, Routes
 from nyxloom.reconcile import (
     Action, DispatchImplementer, EmitAttemptExit, OpenWave, ReconcileInput,
-    Transition, plan_project,
+    RunPostMergeGate, Transition, plan_project,
 )
 from nyxloom.types import (
     TASK_TRANSITIONS, TERMINAL_TASK_STATES, RESERVED_ROLES,
@@ -233,15 +244,23 @@ def _manual_documented_states() -> frozenset[TaskState]:
     return frozenset(out)
 
 
-# See module docstring for the evidence behind each of these four. Pinned
+# See module docstring for the evidence behind each of these two. Pinned
 # here (not silently missed) per the "GAP -> xfail/documented test, not a
 # silent no-op" rule -- fixing reconcile.py is out of scope for this
 # test-only package.
+#
+# TaskState.MERGED / TaskState.VALIDATING were ALSO tracked here originally
+# (see module docstring below, still describing the original finding for
+# the historical record) but are FIXED as of the nyxloom-post-merge-
+# validation package (2026-07-17): reconcile.py's module contract item 11
+# now plans MERGED->VALIDATING and RunPostMergeGate for VALIDATING (see
+# daemon.py's _run_post_merge_gate for the actual gate execution). Both
+# states are now genuinely `planned`, so they were REMOVED from this set --
+# leaving them in would fail test_every_nonterminal_taskstate_is_planned_
+# manual_or_tracked_gap's own isdisjoint(planned) assertion below.
 KNOWN_STATE_GAPS: frozenset[TaskState] = frozenset({
     TaskState.DRAFT,
     TaskState.READY_TO_CARVE,
-    TaskState.MERGED,
-    TaskState.VALIDATING,
 })
 
 
@@ -395,39 +414,38 @@ def test_no_dead_end_ready_to_carve():
     )
 
 
-_MERGED_PIPELINE_GAP_REASON = (
-    "ABSENCE bug found while writing this invariant suite (2026-07-17): "
-    "the MERGED -> VALIDATING -> COMPLETED 'post-merge validation' "
-    "pipeline that render.py documents ('Merged; awaiting post-merge "
-    "validation before COMPLETED') and daemon.py's own carve-retirement "
-    "comment treats as a real mechanism ('COMPLETED requires the full "
-    "MERGED->VALIDATING pipeline') is ENTIRELY UNIMPLEMENTED: cli.py's "
-    "cmd_merge transitions a task to MERGED and stops there; nothing in "
-    "reconcile.py, daemon.py, or cli.py ever transitions MERGED-> "
-    "VALIDATING or VALIDATING->COMPLETED; GateResult.phase's declared "
-    "'post-merge' value is never checked anywhere in daemon.py. Practical "
-    "consequence: TaskState.COMPLETED -- the terminal SUCCESS state -- is "
-    "UNREACHABLE in the shipped codebase today. No backlog item tracks "
-    "this; flagged here for triage -- arguably the most severe of the "
-    "four gaps found in this package."
-)
-
-
-@pytest.mark.xfail(strict=True, reason=_MERGED_PIPELINE_GAP_REASON)
+# FIXED 2026-07-17 (nyxloom-post-merge-validation package). These two used
+# to be xfail(strict=True)-pinned: the MERGED -> VALIDATING -> COMPLETED
+# "post-merge validation" pipeline that render.py documents ('Merged;
+# awaiting post-merge validation before COMPLETED') and daemon.py's own
+# carve-retirement comment treated as a real mechanism ('COMPLETED requires
+# the full MERGED->VALIDATING pipeline') was ENTIRELY UNIMPLEMENTED: cli.py's
+# cmd_merge transitioned a task to MERGED and stopped there; nothing in
+# reconcile.py, daemon.py, or cli.py ever transitioned MERGED->VALIDATING or
+# VALIDATING->COMPLETED; GateResult.phase's declared 'post-merge' value was
+# never checked anywhere in daemon.py. Practical consequence: TaskState.
+# COMPLETED -- the terminal SUCCESS state -- was UNREACHABLE in the shipped
+# codebase. Now fixed: reconcile.py's module contract item 11 plans
+# MERGED->Transition(VALIDATING) and VALIDATING->RunPostMergeGate; daemon.py's
+# _run_post_merge_gate executes the gate and transitions onward. These are
+# now plain (non-xfail) behavioral proofs, matching this file's other
+# non-hollow dead-end tests -- a strict xfail on a now-passing test is an
+# XPASS failure, so the markers were removed, not merely loosened.
 def test_no_dead_end_merged():
     inp = _base_input("INV-01", TaskState.MERGED)
     actions = plan_project(inp)
-    assert any(_action_touches_task(a, "INV-01") for a in actions), (
-        "MERGED task got zero planned actions -- the post-merge pipeline is unimplemented"
+    assert any(isinstance(a, Transition) and a.to is TaskState.VALIDATING
+               and _action_touches_task(a, "INV-01") for a in actions), (
+        "MERGED task got no Transition(VALIDATING) -- the post-merge pipeline regressed"
     )
 
 
-@pytest.mark.xfail(strict=True, reason=_MERGED_PIPELINE_GAP_REASON)
 def test_no_dead_end_validating():
     inp = _base_input("INV-01", TaskState.VALIDATING)
     actions = plan_project(inp)
-    assert any(_action_touches_task(a, "INV-01") for a in actions), (
-        "VALIDATING task got zero planned actions -- the post-merge pipeline is unimplemented"
+    assert any(isinstance(a, RunPostMergeGate) and _action_touches_task(a, "INV-01")
+               for a in actions), (
+        "VALIDATING task got no RunPostMergeGate -- the post-merge pipeline regressed"
     )
 
 

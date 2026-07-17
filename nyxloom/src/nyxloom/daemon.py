@@ -298,11 +298,11 @@ from . import (
     intake_chat, leases, lint, notify, paths, reconcile, render, storage, watchdog,
     wrapper,
 )
-from .config import ProjectConfig
+from .config import GateDef, ProjectConfig
 from .types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, Event,
-    EventType, Receipt, ReceiptResult, Role, Route, TaskState, TaskStateFile,
-    TERMINAL_ATTEMPT_STATES, iso, new_id, utc_now,
+    EventType, GateResult, Receipt, ReceiptResult, Role, Route, TaskState,
+    TaskStateFile, TERMINAL_ATTEMPT_STATES, iso, new_id, utc_now,
 )
 
 # Tunables (module constants so tests can shrink them for determinism).
@@ -1252,6 +1252,141 @@ class Daemon:
             return ""
         gate = sorted(cfg.gates.values(), key=lambda g: g.gate_id)[0]
         return " ".join(gate.argv)
+
+    # -- post-merge validation (nyxloom-post-merge-validation, 2026-07-17) --
+    #
+    # reconcile.py's module contract item 11 plans MERGED->VALIDATING (pure
+    # bookkeeping), then RunPostMergeGate(task_id) every pass while
+    # VALIDATING. The three helpers below do the actual work daemon-side.
+    # Unlike DispatchImplementer/LaunchReview (an AI CLI leg supervised by
+    # wrapper.launch_detached, async, receipt-polled over many passes), a
+    # post-merge gate is a TRUSTED STRUCTURED argv (config.py's own docstring:
+    # "model output can never introduce an executable") -- a deterministic,
+    # non-LLM-mediated command, so there is no receipt/session/resume
+    # machinery to reuse and none is invented here. This IS the first real
+    # consumer of GateDef.phase/timeout_seconds and GateResult (both were
+    # declared but never read/produced anywhere in daemon.py before this).
+    #
+    # SYNC, not planned-action-polled: _run_post_merge_gate blocks this one
+    # pass for up to gate.timeout_seconds. The daemon's own tick loop
+    # (Daemon.run) iterates registered projects SEQUENTIALLY in a single
+    # thread, so a slow post-merge gate for one project does stall every
+    # other registered project's reconcile pass for that same window -- a
+    # real, but bounded (by timeout_seconds) and infrequent (merges are a
+    # manual operator step under merge_mode=manual, not a hot dispatch path)
+    # cost. Chosen anyway because it needs zero new Role/Attempt/wrapper
+    # machinery (types.py's Role enum is out of scope for this package, and
+    # none of its four members fits "re-verify a merged gate" without
+    # misusing an existing one) -- "minimal and correct" per the handoff. A
+    # fully async/detached re-cut (mirroring DispatchImplementer's
+    # launch-then-poll-receipt shape) is the natural follow-up if this
+    # blocking proves to matter in practice; flagged here, not silently
+    # hidden.
+    def _select_post_merge_gate(self, cfg: ProjectConfig) -> GateDef | None:
+        """Prefer a gate the project declares phase == 'post-merge'. No
+        project registered today declares one (nyxloom's own nyxloom-trove/
+        nyxloom.toml has exactly one gate, phase 'implementation'), so the
+        documented default (handoff's own "if a project declares no post-
+        merge gate" clause) is to re-run the 'implementation' gate against
+        the merged default branch instead -- the same gate the merged code
+        was already required to pass, just re-verified post-merge (the
+        CLAUDE.md "re-run the gate on main post-merge" discipline this
+        pipeline exists to automate). None only if the project declares NO
+        gates at all -- see the no-op-validated-pass branch below."""
+        post_merge = [g for g in cfg.gates.values() if g.phase == "post-merge"]
+        if post_merge:
+            return sorted(post_merge, key=lambda g: g.gate_id)[0]
+        impl = [g for g in cfg.gates.values() if g.phase == "implementation"]
+        if impl:
+            return sorted(impl, key=lambda g: g.gate_id)[0]
+        return None
+
+    def _post_merge_worktree_value(self, cfg: ProjectConfig) -> str:
+        """The {worktree} substitution for a gate re-run against the
+        already-MERGED default branch (as opposed to a feature-branch
+        attempt, whose {worktree} is cfg.root / cfg.worktree_root / branch
+        -- a fresh git worktree with its OWN top-level). Post-merge
+        validation has no separate worktree: it runs against the project's
+        one already-merged checkout, so the correct value is THAT
+        checkout's git top-level.
+
+        Using `git rev-parse --show-toplevel` (rather than cfg.root itself)
+        is what makes this correct for BOTH project shapes seen in this
+        codebase: dstdns's cfg.root IS its repo root (top-level == cfg.root,
+        no-op), while nyxloom's own cfg.root is a SUBDIRECTORY of the vbpub
+        repo it is self-hosted in (top-level == cfg.root.parent) -- exactly
+        the repo-root convention nyxloom's own gate argv already assumes
+        (`cd {worktree}/nyxloom`, matching a feature worktree's top-level +
+        '/nyxloom'). Falls back to cfg.root if the git call fails for any
+        reason (e.g. a non-git test fixture)."""
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(cfg.root), "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return str(cfg.root)
+
+    def _run_post_merge_gate(self, project: str, cfg: ProjectConfig,
+                              states: dict[str, TaskStateFile],
+                              action: "reconcile.RunPostMergeGate") -> list[Event]:
+        """VALIDATING -> COMPLETED (gate passes) or BLOCKED (gate fails,
+        errors, or times out) -- see the module-level note above for the
+        sync/blocking rationale and gate-selection/worktree-substitution
+        helpers this calls."""
+        task_id = action.task_id
+        events: list[Event] = []
+        gate = self._select_post_merge_gate(cfg)
+
+        if gate is None:
+            # No gate declared at all for this project: the documented
+            # default is a no-op-validated pass straight to COMPLETED (no
+            # GateResult recorded -- there is nothing to record).
+            events.append(self._transition(
+                project, cfg, states, task_id, TaskState.COMPLETED,
+                "post-merge validation: project declares no gate, no-op pass"))
+            return events
+
+        worktree_value = self._post_merge_worktree_value(cfg)
+        argv = [tok.replace("{worktree}", worktree_value) for tok in gate.argv]
+        commit = states[task_id].merge_commit or ""
+        started = utc_now()
+        try:
+            proc = subprocess.run(argv, cwd=str(cfg.root), capture_output=True,
+                                   text=True, timeout=gate.timeout_seconds)
+            exit_code = proc.returncode
+        except subprocess.TimeoutExpired:
+            exit_code = 124  # conventional shell timeout exit code
+        except OSError:
+            exit_code = 127  # command-not-found / exec failure
+        ended = utc_now()
+
+        gate_result = GateResult(
+            gate_id=gate.gate_id, phase="post-merge", commit=commit,
+            exit_code=exit_code, started=started, ended=ended,
+            environment=gate.environment,
+        )
+        events.append(self._append_ev(project, cfg, states, EventType.GATE_FINISHED,
+                                       {"gate_result": gate_result.to_dict()}, task_id=task_id))
+
+        if exit_code == 0:
+            events.append(self._transition(
+                project, cfg, states, task_id, TaskState.COMPLETED,
+                f"post-merge gate {gate.gate_id} passed"))
+        else:
+            blocker = Blocker(
+                type=BlockerType.CONTRACT,
+                unblock_condition="operator: inspect post-merge gate failure",
+                detail=f"post-merge gate {gate.gate_id} exit_code={exit_code}"[:200],
+            )
+            events.append(self._append_ev(
+                project, cfg, states, EventType.TASK_BLOCKED,
+                {"from": states[task_id].state.value, "blocker": blocker.to_dict()},
+                task_id=task_id))
+        return events
 
     def _frontmatter_for(self, cfg: ProjectConfig, tsf: TaskStateFile):
         if not tsf.handoff_path:
@@ -2251,6 +2386,9 @@ class Daemon:
 
         elif isinstance(action, reconcile.CarveDispatch):
             events.extend(self._execute_carve_dispatch(project, cfg, states, action))
+
+        elif isinstance(action, reconcile.RunPostMergeGate):
+            events.extend(self._run_post_merge_gate(project, cfg, states, action))
 
         else:
             raise ValueError(f"unhandled action type: {type(action)!r}")
