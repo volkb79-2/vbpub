@@ -66,6 +66,31 @@ L11 error   body must contain (case-insens.) a worktree path mention
 L12 error   body must contain the BLOCKED rule marker 'BLOCKED:' and must
             not instruct violating project policy (heuristic: 'skip the
             gate', 'without running', 'ignore lint' -> flag).
+
+RULE NAMESPACE S1-S4 (PACKAGE F1, docs/spine-documents-spec.md -- the
+"direction spine" documents: nyxloom.toml's optional north_star/
+product_definition/roadmap/backlog keys, each a trove-relative path to a
+schema-validated-frontmatter Markdown doc; see lint_spine):
+
+S1  error   each configured spine doc's frontmatter validates against its
+            JSON schema (schemas/spine-<kind>.schema.json).
+S2  error   cross-doc consistency, checked only between docs that are
+            individually S1/S4-clean: every 3-roadmap milestone's
+            `features` id exists in 2-product-definition's `features`
+            ids; every 4-backlog item's `folds_into` (if set) resolves to
+            a real product-definition feature id or roadmap milestone id.
+            (Every product-def feature having >=1 `acceptance` is
+            schema-enforced -- see S1 -- not re-checked here.)
+S3  error   naming/placement/config: a configured key's path must resolve
+            to an existing file (else this rule fires, keyed to
+            nyxloom.toml since there is no doc path to key a per-doc
+            finding to), the filename must carry the doc's numeric prefix
+            (1-/2-/3-/4-), and it must sit under the project's trove dir.
+S4  error   fail-closed tamper/corruption guard: a configured spine doc
+            that is present but unparsable (broken/missing frontmatter)
+            or declares a `schema_version` other than the one this
+            package understands (1) is a hard ERROR -- never a silent
+            skip, regardless of whether the other rules could run.
 """
 
 from __future__ import annotations
@@ -152,7 +177,11 @@ def lint_project(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
     """relpath -> findings for every discovered handoff (frontmatter.discover_handoffs),
     plus one extra entry for the project's own config file (see lint_config),
     plus one extra entry for the project's backlog.md, when present (see
-    lint_backlog, PACKAGE P28, rule namespace BLG1)."""
+    lint_backlog, PACKAGE P28, rule namespace BLG1), plus one entry per
+    configured direction-spine doc (see lint_spine, PACKAGE F1, rule
+    namespace S1-S4) -- merged in (not overwritten) since a spine S3 finding
+    for a missing/unset key is keyed to the SAME nyxloom.toml path lint_config
+    already populated."""
     results = {}
     for handoff_path in frontmatter.discover_handoffs(cfg):
         rel_path = str(handoff_path.relative_to(cfg.root))
@@ -163,6 +192,8 @@ def lint_project(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
     backlog_path = backlog_items.resolve_path(cfg)
     if backlog_path.exists():
         results[str(backlog_path.relative_to(cfg.root))] = lint_backlog(cfg)
+    for rel_path, spine_findings in lint_spine(cfg).items():
+        results.setdefault(rel_path, []).extend(spine_findings)
     return results
 
 
@@ -315,6 +346,173 @@ def lint_backlog(cfg: ProjectConfig) -> list[LintFinding]:
         return []
     items = backlog_items.parse(backlog_path)
     return backlog_items.validate(items, path=str(backlog_path))
+
+
+# ----- direction spine (PACKAGE F1, docs/spine-documents-spec.md) -----
+
+# config field name -> (frontmatter `kind`, numeric filename prefix, schema file)
+_SPINE_DOCS: dict[str, tuple[str, str, str]] = {
+    "north_star": ("north-star", "1-", "spine-north-star.schema.json"),
+    "product_definition": ("product-definition", "2-", "spine-product-definition.schema.json"),
+    "roadmap": ("roadmap", "3-", "spine-roadmap.schema.json"),
+    "backlog": ("backlog", "4-", "spine-backlog.schema.json"),
+}
+
+
+def _load_spine_schema(schema_file: str) -> dict:
+    text = importlib.resources.files("nyxloom.schemas").joinpath(schema_file).read_text(encoding="utf-8")
+    return json.loads(text)
+
+
+def _trove_dir_name(cfg: ProjectConfig) -> str:
+    """The project's declared trove folder name ([project].trove), straight
+    off the raw toml -- mirrors _archive_dir's technique (config.py carries
+    no `trove` field). Defaults to the 'nyxloom-trove' convention."""
+    config_path = _locate_config_path(cfg)
+    if config_path is None:
+        return "nyxloom-trove"
+    try:
+        raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return "nyxloom-trove"
+    value = raw.get("project", {}).get("trove")
+    return value if isinstance(value, str) and value else "nyxloom-trove"
+
+
+def lint_spine(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
+    """relpath -> findings for every direction-spine doc CONFIGURED in
+    nyxloom.toml (north_star/product_definition/roadmap/backlog; an unset
+    key is skipped entirely -- adopting the spine is optional per project).
+
+    Rule namespace S1-S4 (module docstring has the full semantics):
+    S3 fires (keyed to nyxloom.toml) when a configured path does not resolve
+    to a file, is not named with its doc's numeric prefix, or does not sit
+    under the project's trove dir. Only when the path DOES resolve do we
+    attempt to read it, in which case exactly one of S4 (unparsable /
+    unknown schema_version -- fail-closed, checked BEFORE any schema
+    validation) or S1 (schema violations, schema_version==1 only) applies,
+    never both. S2 cross-doc checks then run over whichever of
+    product-definition/roadmap/backlog individually came back S1/S4-clean.
+    """
+    config_path = _locate_config_path(cfg)
+    if config_path is None:
+        return {}
+    root_resolved = cfg.root.resolve()
+    config_key = str(config_path.relative_to(cfg.root))
+    trove_name = _trove_dir_name(cfg)
+
+    results: dict[str, list[LintFinding]] = {}
+    # kind -> parsed+schema-valid frontmatter dict, for the S2 pass below.
+    clean_docs: dict[str, dict] = {}
+    # kind -> the doc's own relpath (for attributing S2 findings).
+    doc_relpaths: dict[str, str] = {}
+
+    for field_name, (kind, prefix, schema_file) in _SPINE_DOCS.items():
+        value = getattr(cfg, field_name, None)
+        if not value:
+            continue
+
+        path = (cfg.root / value).resolve()
+        # An absolute or '..'-escaping value can exist on disk while still
+        # living outside the project (mirrors CFG3's containment check) --
+        # resolve before testing is_file, not just existence.
+        if not path.is_relative_to(root_resolved) or not path.is_file():
+            results.setdefault(config_key, []).append(LintFinding(
+                rule="S3", severity="error",
+                message=f"spine config key '{field_name}' -> '{value}' does not resolve to a file under the project root",
+                path=str(config_path),
+            ))
+            continue
+
+        rel_path = str(path.relative_to(root_resolved))
+        basename = path.name
+        if not basename.startswith(prefix):
+            results.setdefault(config_key, []).append(LintFinding(
+                rule="S3", severity="error",
+                message=f"spine doc '{value}' for '{field_name}' must be named "
+                        f"'{prefix}...' (numeric-prefix convention)",
+                path=str(config_path),
+            ))
+        if Path(rel_path).parts[:1] != (trove_name,):
+            results.setdefault(config_key, []).append(LintFinding(
+                rule="S3", severity="error",
+                message=f"spine doc '{value}' for '{field_name}' is not under "
+                        f"the project trove ('{trove_name}')",
+                path=str(config_path),
+            ))
+
+        doc_relpaths[kind] = rel_path
+        findings: list[LintFinding] = []
+        try:
+            text = path.read_text(encoding="utf-8")
+            fm, _body, _line = frontmatter.split_frontmatter(text)
+        except frontmatter.HandoffParseError as e:
+            findings.append(LintFinding(
+                rule="S4", severity="error",
+                message=f"spine doc frontmatter unparsable: {'; '.join(e.errors)}",
+                path=str(path),
+            ))
+            results[rel_path] = findings
+            continue
+
+        schema_version = fm.get("schema_version")
+        if schema_version != 1:
+            findings.append(LintFinding(
+                rule="S4", severity="error",
+                message=f"unknown/missing schema_version {schema_version!r} (this package understands only 1)",
+                path=str(path),
+            ))
+            results[rel_path] = findings
+            continue
+
+        schema = _load_spine_schema(schema_file)
+        validator = jsonschema.Draft202012Validator(schema)
+        errors = sorted(validator.iter_errors(fm), key=lambda e: list(e.absolute_path))
+        if errors:
+            for error in errors:
+                json_path = ".".join(str(p) for p in error.absolute_path) or "$"
+                findings.append(LintFinding(
+                    rule="S1", severity="error",
+                    message=f"{json_path}: {error.message}",
+                    path=str(path),
+                ))
+        else:
+            clean_docs[kind] = fm
+
+        results[rel_path] = findings
+
+    # S2: cross-doc consistency, over whichever docs individually came back clean.
+    product_def = clean_docs.get("product-definition")
+    roadmap = clean_docs.get("roadmap")
+    backlog = clean_docs.get("backlog")
+
+    feature_ids = {f["id"] for f in product_def.get("features", [])} if product_def else set()
+    milestone_ids = {m["id"] for m in roadmap.get("milestones", [])} if roadmap else set()
+
+    if roadmap is not None:
+        for milestone in roadmap.get("milestones", []):
+            for feature_id in milestone.get("features", []):
+                if feature_id not in feature_ids:
+                    results.setdefault(doc_relpaths["roadmap"], []).append(LintFinding(
+                        rule="S2", severity="error",
+                        message=f"roadmap milestone '{milestone.get('id')}' references "
+                                f"unknown feature '{feature_id}'",
+                        path=doc_relpaths["roadmap"],
+                    ))
+
+    if backlog is not None:
+        resolvable = feature_ids | milestone_ids
+        for item in backlog.get("items", []):
+            fold_target = item.get("folds_into")
+            if fold_target and fold_target not in resolvable:
+                results.setdefault(doc_relpaths["backlog"], []).append(LintFinding(
+                    rule="S2", severity="error",
+                    message=f"backlog item '{item.get('id')}' folds_into unresolved "
+                            f"feature/milestone '{fold_target}'",
+                    path=doc_relpaths["backlog"],
+                ))
+
+    return results
 
 
 def _resolve_dep_handoff(cfg: ProjectConfig, dep_id: str) -> Path | None:

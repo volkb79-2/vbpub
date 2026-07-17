@@ -7,12 +7,12 @@ tier: sonnet5-high
 input_revision: "f098cbf"
 depends_on: []
 session: fresh
-source: {kind: product-goal, ref: nyxloom-trove/backlog.md}
+source: {kind: product-goal, ref: nyxloom-trove/4-backlog.md}
 scope:
   touch:
     - "src/nyxloom/types.py"
     - "tests/test_types.py"
-    - "nyxloom-trove/backlog.md"
+    - "nyxloom-trove/4-backlog.md"
   forbid:
     - "src/nyxloom/daemon.py"
     - "src/nyxloom/reconcile.py"
@@ -23,7 +23,7 @@ oracles:
     negative: "no guard exists, so a role can be added to the enum + statefile schema and never wired to dispatch with nothing failing — exactly how SELF_REVIEW sat defined-but-dead through every per-package review (a package review checks its own contract, not 'is every enum member wired'). A hollow guard that just asserts `RESERVED_ROLES <= set(Role)` without verifying real dispatch sites also fails this oracle."
     gate: tester-unified
   - id: O2
-    observable: "A backlog item is appended to nyxloom-trove/backlog.md tracking the deferred wiring: 'wire the SELF_REVIEW leg — an independent self-review attempt between IMPLEMENTER and FRONTIER_REVIEW, beyond P40's prompt-level self-review'. So the reserved role is TRACKED future work, not a silent park. Test/asserts: RESERVED_ROLES's comment references this backlog id, and backlog.md contains the item."
+    observable: "A backlog item is appended to nyxloom-trove/4-backlog.md tracking the deferred wiring: 'wire the SELF_REVIEW leg — an independent self-review attempt between IMPLEMENTER and FRONTIER_REVIEW, beyond P40's prompt-level self-review'. So the reserved role is TRACKED future work, not a silent park. Test/asserts: RESERVED_ROLES's comment references this backlog id, and backlog.md contains the item."
     negative: "SELF_REVIEW is reserved but untracked — still a silent stub, just relabelled; nothing points a future reader at the decision to wire or remove it."
     gate: tester-unified
 gates: [tester-unified]
@@ -63,7 +63,7 @@ commit all work on that branch. Do not touch the main checkout.
 - `tests/test_types.py` — add the guard test (scan daemon.py + reconcile.py
   source text for `Role.<NAME>` dispatch sites; assert the partition + the
   non-hollow anchors).
-- `nyxloom-trove/backlog.md` — append the SELF_REVIEW-leg tracking item (mirror
+- `nyxloom-trove/4-backlog.md` — append the SELF_REVIEW-leg tracking item (mirror
   an existing `- **B<N>` entry's shape).
 
 ## Work
@@ -74,11 +74,11 @@ commit all work on that branch. Do not touch the main checkout.
    dispatch sites; assert every Role is dispatched-or-reserved, disjoint; include
    the SELF_REVIEW (reserved, not dispatched) + IMPLEMENTER (dispatched, not
    reserved) non-hollow anchors.
-3. `nyxloom-trove/backlog.md`: append the "wire the SELF_REVIEW leg" item.
+3. `nyxloom-trove/4-backlog.md`: append the "wire the SELF_REVIEW leg" item.
 
 ## Scope / forbid
 
-Touch ONLY `types.py`, `tests/test_types.py`, `nyxloom-trove/backlog.md`. Do NOT
+Touch ONLY `types.py`, `tests/test_types.py`, `nyxloom-trove/4-backlog.md`. Do NOT
 edit `daemon.py`/`reconcile.py`/`adapters.py` — this guards dispatch, it does not
 change it. (Exception per escalate_if: if you instead DELETE SELF_REVIEW, the
 statefile schema may be added to scope.)

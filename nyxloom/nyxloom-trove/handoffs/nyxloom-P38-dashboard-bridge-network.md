@@ -7,7 +7,7 @@ tier: sonnet5-high
 input_revision: "5a4a4aa"
 depends_on: [nyxloom-P37-tini-supervisor-crash-safety]
 session: fresh
-source: {kind: backlog, ref: nyxloom-trove/backlog.md}
+source: {kind: backlog, ref: nyxloom-trove/4-backlog.md}
 scope:
   touch:
     - "src/nyxloom/config.py"

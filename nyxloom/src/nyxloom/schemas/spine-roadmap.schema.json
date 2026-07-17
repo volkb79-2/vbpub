@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vbpub.invalid/nyxloom/schemas/spine-roadmap.schema.json",
+  "title": "nyxloom spine: 3-roadmap.md frontmatter",
+  "description": "Ordered milestones toward the next product-definition version (docs/spine-documents-spec.md).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "schema_version", "milestones"],
+  "properties": {
+    "kind": {"const": "roadmap"},
+    "schema_version": {"const": 1},
+    "milestones": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "target_product_version", "features", "status"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^M[0-9]+$"},
+          "title": {"type": "string", "minLength": 1},
+          "target_product_version": {"type": "integer", "minimum": 1},
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^F[0-9]{3,}$",
+              "description": "Each MUST exist in 2-product-definition.features (S2 cross-doc check, not enforced by this schema)"
+            }
+          },
+          "status": {"enum": ["planned", "active", "done"]}
+        }
+      }
+    }
+  }
+}

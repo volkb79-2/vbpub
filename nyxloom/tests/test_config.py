@@ -131,3 +131,47 @@ def test_repo_own_config_notifications_disabled_without_env(monkeypatch):
     monkeypatch.delenv("NTFY_URL", raising=False)
     cfg = ProjectConfig.load(REPO_ROOT)
     assert cfg.notify.ntfy_url is None
+
+
+# =========================================================================
+# PACKAGE F1 (docs/spine-documents-spec.md): north_star/product_definition/
+# roadmap/backlog are optional trove-relative-path config keys on
+# ProjectConfig. Cross-doc validator behavior (S1-S4) is tests/test_spine.py;
+# this covers only that ProjectConfig.load reads (or defaults) them.
+# =========================================================================
+
+def test_spine_keys_default_to_none_when_unset(tmp_path):
+    root = _write_project(tmp_path)
+    cfg = ProjectConfig.load(root)
+
+    assert cfg.north_star is None
+    assert cfg.product_definition is None
+    assert cfg.roadmap is None
+    assert cfg.backlog is None
+
+
+def test_spine_keys_load_when_set(tmp_path):
+    # _write_project's template only exposes one templated slot (under
+    # [notify]) and TOML forbids redeclaring [project] -- write the toml
+    # directly here instead of routing the new keys through that helper.
+    trove = tmp_path / "nyxloom-trove"
+    trove.mkdir(parents=True)
+    (trove / "nyxloom.toml").write_text(
+        '[project]\n'
+        'id = "spineproj"\n'
+        'default_branch = "main"\n'
+        'handoff_globs = ["handoff/*.md"]\n'
+        'north_star = "nyxloom-trove/1-north-star.md"\n'
+        'product_definition = "nyxloom-trove/2-product-definition.md"\n'
+        'roadmap = "nyxloom-trove/3-roadmap.md"\n'
+        'backlog = "nyxloom-trove/4-backlog.md"\n',
+        encoding="utf-8",
+    )
+
+    cfg = ProjectConfig.load(tmp_path)
+
+    assert cfg.north_star == "nyxloom-trove/1-north-star.md"
+    assert cfg.product_definition == "nyxloom-trove/2-product-definition.md"
+    assert cfg.roadmap == "nyxloom-trove/3-roadmap.md"
+    assert cfg.backlog == "nyxloom-trove/4-backlog.md"
+    assert cfg.notify.ntfy_url is None

@@ -20,6 +20,8 @@
         "trove": {"type": "string", "minLength": 1},
         "reports_dir": {"type": "string", "minLength": 1},
         "decisions_inbox": {"type": "string", "minLength": 1},
+        "north_star": {"type": "string", "minLength": 1},
+        "product_definition": {"type": "string", "minLength": 1},
         "roadmap": {"type": "string", "minLength": 1},
         "backlog": {"type": "string", "minLength": 1},
         "archive_dir": {"type": "string", "minLength": 1},

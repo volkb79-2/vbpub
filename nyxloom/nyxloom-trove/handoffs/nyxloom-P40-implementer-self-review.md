@@ -7,7 +7,7 @@ tier: sonnet5-high
 input_revision: "f098cbf"
 depends_on: []
 session: fresh
-source: {kind: product-goal, ref: nyxloom-trove/roadmap.md}
+source: {kind: product-goal, ref: nyxloom-trove/3-roadmap.md}
 scope:
   touch:
     - "src/nyxloom/adapters.py"

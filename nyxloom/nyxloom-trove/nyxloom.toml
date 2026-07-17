@@ -19,8 +19,16 @@ trove = "nyxloom-trove"
 handoff_globs   = ["nyxloom-trove/handoffs/*.md"]   # work packages (frontmatter, lint-gated)
 reports_dir     = "nyxloom-trove/reports"            # P<NN>-LOG.md / P<NN>-REPORT.md
 decisions_inbox = "nyxloom-trove/decisions.md"       # product calls (D-<NNN>)
-roadmap         = "nyxloom-trove/roadmap.md"          # self-dev milestones
-backlog         = "nyxloom-trove/backlog.md"          # un-carved ideas
+
+# --- direction spine (docs/spine-documents-spec.md, PACKAGE F1): schema-
+#     validated frontmatter, non-AI-checked by `nyxloom lint`'s S1-S4 rules.
+#     roadmap/backlog REPOINTED here from the old unprefixed roadmap.md/
+#     backlog.md (still the default for projects that haven't adopted the
+#     spine -- see config.ProjectConfig).
+north_star         = "nyxloom-trove/1-north-star.md"         # the invariant vision/WHY
+product_definition = "nyxloom-trove/2-product-definition.md" # versioned features+acceptance
+roadmap            = "nyxloom-trove/3-roadmap.md"             # self-dev milestones
+backlog            = "nyxloom-trove/4-backlog.md"             # un-carved ideas
 archive_dir     = "nyxloom-trove/archive"             # merged handoffs+reports land here
 archive_keep_visible = 10                             # dashboard shows last N completed; rest behind an Archive button
 agent_logs      = "nyxloom-trove/agent-logs"          # per-attempt transcripts (spec/receipt/attempt.log); gitignored by default, committable for traceability

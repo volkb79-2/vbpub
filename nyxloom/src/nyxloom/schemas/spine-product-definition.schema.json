@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vbpub.invalid/nyxloom/schemas/spine-product-definition.schema.json",
+  "title": "nyxloom spine: 2-product-definition.md frontmatter",
+  "description": "Versioned features + acceptance -- the machine-diffed target (docs/spine-documents-spec.md; the F5 gap-engine diffs this against code, out of scope for F1).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "schema_version", "product_version", "features"],
+  "properties": {
+    "kind": {"const": "product-definition"},
+    "schema_version": {"const": 1},
+    "product_version": {"type": "integer", "minimum": 1},
+    "features": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "acceptance", "status"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^F[0-9]{3,}$",
+            "description": "Stable, unique; referenced by roadmap.milestones[].features and backlog.items[].folds_into"
+          },
+          "title": {"type": "string", "minLength": 1},
+          "acceptance": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": 1,
+            "description": ">=1 checkable criterion (EARS-style), schema-enforced (also the S2 cross-doc requirement)"
+          },
+          "status": {"enum": ["planned", "building", "shipped"]},
+          "milestone": {
+            "type": "string",
+            "pattern": "^M[0-9]+$",
+            "description": "Optional; which roadmap milestone delivers this feature"
+          }
+        }
+      }
+    },
+    "non_goals": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

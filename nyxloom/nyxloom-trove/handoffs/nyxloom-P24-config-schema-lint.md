@@ -7,7 +7,7 @@ tier: sonnet5-high
 input_revision: "82593d5"
 depends_on: []
 session: fresh
-source: {kind: backlog, ref: nyxloom-trove/backlog.md}
+source: {kind: backlog, ref: nyxloom-trove/4-backlog.md}
 scope:
   touch:
     - "src/nyxloom/schemas/nyxloom-config.schema.json"

@@ -7,7 +7,7 @@ tier: sonnet5-high
 input_revision: "a7499cc"
 depends_on: [nyxloom-P29-intake-agent-backend]
 session: fresh
-source: {kind: backlog, ref: nyxloom-trove/backlog.md}
+source: {kind: backlog, ref: nyxloom-trove/4-backlog.md}
 scope:
   touch:
     - "src/nyxloom/lint.py"

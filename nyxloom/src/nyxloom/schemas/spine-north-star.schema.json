@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vbpub.invalid/nyxloom/schemas/spine-north-star.schema.json",
+  "title": "nyxloom spine: 1-north-star.md frontmatter",
+  "description": "The invariant vision / WHY. No diffed fields: the north-star rarely changes and is never diffed against code (docs/spine-documents-spec.md). The body (prose narrative) is not machine-parsed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "schema_version"],
+  "properties": {
+    "kind": {"const": "north-star"},
+    "schema_version": {"const": 1}
+  }
+}

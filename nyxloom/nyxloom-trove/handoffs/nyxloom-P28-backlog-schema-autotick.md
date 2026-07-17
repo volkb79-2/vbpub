@@ -7,7 +7,7 @@ tier: sonnet5-high
 input_revision: "e329de2"
 depends_on: [nyxloom-P24-config-schema-lint]
 session: fresh
-source: {kind: backlog, ref: nyxloom-trove/backlog.md}
+source: {kind: backlog, ref: nyxloom-trove/4-backlog.md}
 scope:
   touch:
     - "src/nyxloom/schemas/backlog-item.schema.json"
@@ -21,7 +21,7 @@ scope:
     - "src/nyxloom/config.py"
 oracles:
   - id: O1
-    observable: "A backlog item carrying a structured header block (id `B<N>`, status one of {open,carved,merged}, optional priority int, optional links to a carved handoff id / D-decision ids) validates via `backlog_items.parse(path)` + the new `src/nyxloom/schemas/backlog-item.schema.json`; a malformed item (missing id, status outside the enum, non-int priority) yields a blocking lint finding (rule id in a new `BLG*` namespace) from `lint.lint_project(cfg)`. A valid `nyxloom-trove/backlog.md` yields zero backlog findings."
+    observable: "A backlog item carrying a structured header block (id `B<N>`, status one of {open,carved,merged}, optional priority int, optional links to a carved handoff id / D-decision ids) validates via `backlog_items.parse(path)` + the new `src/nyxloom/schemas/backlog-item.schema.json`; a malformed item (missing id, status outside the enum, non-int priority) yields a blocking lint finding (rule id in a new `BLG*` namespace) from `lint.lint_project(cfg)`. A valid `nyxloom-trove/4-backlog.md` yields zero backlog findings."
     negative: "a backlog item with a bad status/priority lints clean and is only caught (or silently mis-parsed) at merge time"
     gate: tester-unified
   - id: O2
@@ -59,7 +59,7 @@ under `.worktrees/` (branch `feat/nyxloom-P28-backlog-schema-autotick` from
 
 ## Context to read first (read ONLY these, in order)
 
-- `nyxloom-trove/backlog.md` — the doc being structured. Items are today free
+- `nyxloom-trove/4-backlog.md` — the doc being structured. Items are today free
   prose (`- **B<N> — title.** body...`). The new format adds a small, OPTIONAL
   machine-readable header per item (keep the prose body); design it so existing
   items remain valid (un-headered = status `open`, no links) — no lossy
