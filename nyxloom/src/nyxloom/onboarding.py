@@ -40,12 +40,14 @@ INTERFACE CONTRACT:
   implementation. Raises `TroveAlreadyExists` / `TemplatesMissing`; never
   overwrites.
 
-Deliberately NOT built here (F3/F4 territory -- see the TODOs at the bottom
-of this module):
+Deliberately NOT built here:
 - Any read of the project's actual code/docs content (the `/review`-style
-  assessment scan, F3) -- `scan_paths` is recorded, never walked.
-- Any interactive/guided authoring of the spine docs' real content (F4) --
-  the spine docs this engine creates are intentionally thin placeholders.
+  assessment scan) -- `scan_paths` is recorded, never walked, by THIS
+  module; see onboarding_scan.py (PACKAGE F3, built separately so this
+  wizard core stays non-AI) for the read-only agent pass that consumes it.
+- Any interactive/guided authoring of the spine docs' real content (F4,
+  not yet built) -- the spine docs this engine creates are intentionally
+  thin placeholders.
 """
 
 from __future__ import annotations
@@ -461,11 +463,12 @@ def run_wizard(
 
 
 # ---------------------------------------------------------------------------
-# TODO(F3): a `/review`-style read-only assessment-scan agent. Reads
-# `load_answers(trove_dir)` (mode + scan_paths) to shape its prompt, then
-# walks `answers.scan_paths` to produce a structured maturity/gap
-# assessment. Skipped for an empty repo (maturity == "empty"). NOT built in
-# this package -- out of F2's scope.
+# F3 (DONE, 2026-07-17): the `/review`-style read-only assessment-scan agent
+# lives in onboarding_scan.py (run_assessment_scan(project_root, answers) ->
+# AssessmentResult, stored at `<trove>/onboarding-assessment.json`) -- kept
+# out of this module so the non-AI wizard core above stays pure (no AI/LLM
+# consulted anywhere in run_wizard). cli.cmd_onboard's `--scan` flag calls it
+# AFTER run_wizard returns, with the very answers just recorded here.
 
 # TODO(F4): the guided questionnaire (extends intake_chat.py) that actually
 # AUTHORS north-star-first / product-definition / roadmap / backlog content
