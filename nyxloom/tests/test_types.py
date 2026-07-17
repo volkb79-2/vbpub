@@ -19,11 +19,16 @@ DAEMON_SRC = (REPO_ROOT / "src" / "nyxloom" / "daemon.py").read_text()
 RECONCILE_SRC = (REPO_ROOT / "src" / "nyxloom" / "reconcile.py").read_text()
 TYPES_SRC = (REPO_ROOT / "src" / "nyxloom" / "types.py").read_text()
 # PACKAGE F1 (2026-07-17): nyxloom's own backlog.md was git-mv'd to the
-# numeric-prefixed 4-backlog.md (docs/spine-documents-spec.md). The literal
-# 'nyxloom-trove/backlog.md' string below is a comment TAG inside types.py's
-# RESERVED_ROLES block (frozen for this package), not a resolved path -- it
-# stays unchanged; only the actual file read here follows the rename.
+# numeric-prefixed 4-backlog.md (docs/spine-documents-spec.md), AND the backlog
+# is now authored by spine_writer as schema-validated FRONTMATTER items
+# (`- id: <B-id>`), not body bullets (`- **B-id**`). The guard reads the
+# machine-trusted frontmatter surface -- the same surface `nyxloom lint`
+# validates -- so a regenerated backlog can't silently drop a reserved role's
+# tracking item. The literal 'nyxloom-trove/backlog.md' string is a frozen
+# comment TAG inside types.py's RESERVED_ROLES block, not a resolved path.
 BACKLOG_SRC = (REPO_ROOT / "nyxloom-trove" / "4-backlog.md").read_text()
+# A backlog item id `X` is present iff the frontmatter has a `- id: X` entry.
+_BACKLOG_ID_RE = r"^\s*-\s+id:\s*{}\b"
 
 _DISPATCH_RE = re.compile(r"role=Role\.(\w+)")
 _RESERVED_BLOCK_RE = re.compile(r"^RESERVED_ROLES.*?^\}\)", re.M | re.S)
@@ -80,9 +85,10 @@ def test_every_reserved_role_cites_a_live_backlog_item():
         f"{{{', '.join(sorted(r.name for r in set(RESERVED_ROLES) - set(refs)))}}}"
     )
     for role, backlog_id in refs.items():
-        assert re.search(rf"^- \*\*{re.escape(backlog_id)}\b", BACKLOG_SRC, re.M), (
-            f"{role} cites backlog item {backlog_id!r}, but backlog.md has no "
-            f"such item — reserved-but-untracked is still a silent stub"
+        assert re.search(_BACKLOG_ID_RE.format(re.escape(backlog_id)), BACKLOG_SRC, re.M), (
+            f"{role} cites backlog item {backlog_id!r}, but 4-backlog.md has no "
+            f"`- id: {backlog_id}` frontmatter item — reserved-but-untracked is "
+            f"still a silent stub"
         )
 
 
@@ -90,4 +96,4 @@ def test_self_review_cites_the_self_review_leg_backlog_item():
     """Non-hollow anchor: proves the ref scan reads the real comment and the
     real backlog file, rather than passing on an empty ref set."""
     assert _reserved_backlog_refs()[Role.SELF_REVIEW] == "B-self-review-leg"
-    assert re.search(r"^- \*\*B-self-review-leg\b", BACKLOG_SRC, re.M)
+    assert re.search(_BACKLOG_ID_RE.format("B-self-review-leg"), BACKLOG_SRC, re.M)

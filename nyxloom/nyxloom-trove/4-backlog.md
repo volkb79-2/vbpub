@@ -67,6 +67,13 @@ items:
   type: bugfix
   component: ops
   context_estimate: small
+- id: B-self-review-leg
+  title: wire the independent SELF_REVIEW dispatched leg (beyond the prompt-level
+    implementer self-review)
+  type: feature
+  component: dispatch
+  context_estimate: medium
+  folds_into: F005
 ---
 
 # nyxloom — backlog
