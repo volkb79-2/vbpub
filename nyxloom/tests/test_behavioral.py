@@ -564,34 +564,28 @@ def test_bounded_rejection_notifications_do_not_storm(two_task_project, tmp_stat
 
 
 # ===========================================================================
-# Bonus: a real bug this harness discovered while building the above
-# (documented per the handoff's BLOCKED/scope rules -- NOT fixed here;
-# reconcile.py is out of scope). Kept as a strict xfail: a regression pin
-# that will start FAILING the suite (a loud, deliberate signal) the day
-# someone fixes the underlying gap without updating/removing this marker.
+# Bonus: a real bug this harness discovered while building the above.
+# Originally pinned as a strict xfail (regression pin for a documented,
+# not-yet-fixed gap in reconcile.py). FIXED 2026-07-17 (stale-wave_id
+# strand package): reconcile.py's "Check for LaunchReview for already-open
+# waves" has_review_in_flight check previously scanned ALL of
+# tsf.attempts for ANY FRONTIER_REVIEW attempt in state EXITED, with no
+# scoping to "is this attempt still current" -- so once a task's FIRST
+# review attempt exited (approved or rejected), it stayed in
+# tsf.attempts forever and has_review_in_flight was permanently True.
+# Combined with the reject-loop (REVIEW_REJECTED -> QUEUED -> a fresh
+# implementer -> AWAITING_REVIEW a second time), that meant a second
+# review could never be launched -- the task silently stranded
+# AWAITING_REVIEW forever. Fixed by scoping has_review_in_flight to only
+# the task's LATEST attempt (tsf.attempts[-1]): a stale EXITED review
+# superseded by a fresh implementer attempt is provably no longer in
+# flight. See reconcile.py's 2026-07-17 comment on that check for the
+# full reasoning (including why scoping by wave_id alone does not work,
+# since tsf.wave_id is never reset and REVIEW_RECORDED is a true no-op
+# in storage.apply_event). No longer xfail: this now asserts the FIX,
+# not just the presence of the gap.
 # ===========================================================================
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DISCOVERED GAP (documented, not fixed -- reconcile.py is out of "
-        "scope for this package): reconcile.py's wave-launch check "
-        "('Check for LaunchReview for already-open waves') treats ANY "
-        "FRONTIER_REVIEW attempt in state EXITED as still 'in flight', "
-        "with no scoping to the CURRENT wave_id, and tsf.wave_id is never "
-        "reset after a wave closes. So once a task's FIRST review attempt "
-        "exits (approved or rejected), it can NEVER be reviewed again: a "
-        "reject-loop requeue's fresh implementation reaches AWAITING_REVIEW "
-        "a second time, but has_review_in_flight is permanently True (the "
-        "old, fully-consumed EXITED attempt still counts), so LaunchReview "
-        "never fires again. The task silently sits AWAITING_REVIEW forever "
-        "-- no BLOCKED, no operator-visible signal, same bug CLASS as the "
-        "shipped REVIEW_REJECTED strand this package targets, just one "
-        "review cycle later. Fix sketch (out of scope here): scope "
-        "has_review_in_flight to attempts whose a.wave_id == tsf.wave_id, "
-        "or clear tsf.wave_id when a review is recorded."
-    ),
-)
 def test_second_review_cycle_never_relaunches_stale_wave_id(behavioral_project, tmp_state, fake_cli):
     cfg = behavioral_project
     fake_cli.queue(TASK_ID, "implementer", _impl_commit_step())
@@ -614,7 +608,21 @@ def test_second_review_cycle_never_relaunches_stale_wave_id(behavioral_project, 
                         if e.type is EventType.REVIEW_RECORDED]
     assert len(review_recorded) >= 2, (
         "expected a SECOND review verdict (the approving one) once the "
-        "reject-loop's fresh implementation lands -- currently only the "
-        "first ever fires (see xfail reason)"
+        "reject-loop's fresh implementation lands -- a stale wave_id/"
+        "has_review_in_flight check would silently strand the task "
+        "AWAITING_REVIEW forever instead (never launching a second review)"
+    )
+    # The two REVIEW_RECORDED events must come from two genuinely DISTINCT
+    # review attempts (not the same attempt re-recorded), and must show the
+    # actual reject-then-approve sequence -- a positive, specific assertion
+    # of the fix rather than just "two events happened".
+    attempt_ids = {e.attempt_id for e in review_recorded}
+    assert len(attempt_ids) >= 2, (
+        "the two REVIEW_RECORDED events must belong to two distinct "
+        "FRONTIER_REVIEW attempts -- a second, genuinely fresh review"
+    )
+    results = [e.payload.get("result") for e in review_recorded]
+    assert "rejected" in results and "approved" in results, (
+        f"expected a rejected verdict followed by an approved one; got {results}"
     )
     assert tsf.state == TaskState.MERGE_READY
