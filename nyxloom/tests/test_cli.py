@@ -757,6 +757,91 @@ def test_init_missing_project_folder_exits_2(capsys):
     assert "project_folder" in err
 
 
+# ---------------------------------------------------------------------------
+# onboard (PACKAGE F2 2026-07-17) -- the non-AI wizard + spine instantiation
+# CLI verb. Engine-level coverage lives in tests/test_onboarding.py; these
+# exercise argparse wiring + the init-reuse path.
+
+def test_onboard_greenfield_scaffolds_and_instantiates(tmp_path, capsys):
+    """Oracle: `onboard <folder>` with no existing trove scaffolds one (via
+    the same path `init` uses) AND instantiates a lint-clean spine, in one
+    deterministic, non-interactive call -- no AI/LLM invoked."""
+    from nyxloom import lint
+
+    project_folder = tmp_path / "greenfield"
+
+    exit_code = cli.main(["onboard", str(project_folder)])
+    assert exit_code == 0
+
+    trove = project_folder / "nyxloom-trove"
+    for name in ("1-north-star.md", "2-product-definition.md",
+                 "3-roadmap.md", "4-backlog.md", "onboarding-answers.json",
+                 "STANDARD.md", "nyxloom.toml"):
+        assert (trove / name).is_file(), name
+
+    out = capsys.readouterr().out
+    assert "1-north-star.md" in out
+    assert "answers recorded:" in out
+
+    cfg = ProjectConfig.load(project_folder)
+    findings = lint.lint_project(cfg)
+    all_findings = [f for v in findings.values() for f in v]
+    assert not lint.has_blocking(all_findings), all_findings
+
+
+def test_onboard_is_idempotent_and_answers_reflect_latest_call(tmp_path):
+    from nyxloom import onboarding
+
+    project_folder = tmp_path / "proj"
+    assert cli.main(["onboard", str(project_folder)]) == 0
+    assert cli.main([
+        "onboard", str(project_folder),
+        "--maturity", "mature", "--mode", "derive-from-code", "--docs", "present",
+    ]) == 0
+
+    answers = onboarding.load_answers(project_folder / "nyxloom-trove")
+    assert answers.maturity == "mature"
+    assert answers.mode == "derive-from-code"
+    assert answers.docs_present is True
+
+
+def test_onboard_reuses_existing_trove_from_init(tmp_path):
+    """A project already scaffolded via `init` gets ONLY the spine added --
+    `onboard` must not refuse or duplicate the trove scaffold."""
+    project_folder = tmp_path / "proj"
+    assert cli.main(["init", str(project_folder)]) == 0
+
+    exit_code = cli.main(["onboard", str(project_folder)])
+    assert exit_code == 0
+
+    trove = project_folder / "nyxloom-trove"
+    assert (trove / "1-north-star.md").is_file()
+    assert (trove / "4-backlog.md").is_file()
+
+
+def test_onboard_scan_path_repeatable(tmp_path):
+    from nyxloom import onboarding
+
+    project_folder = tmp_path / "proj"
+    exit_code = cli.main([
+        "onboard", str(project_folder),
+        "--scan-path", "src", "--scan-path", "docs",
+    ])
+    assert exit_code == 0
+
+    answers = onboarding.load_answers(project_folder / "nyxloom-trove")
+    assert answers.scan_paths == ["src", "docs"]
+
+
+def test_onboard_rejects_invalid_mode_exits_2(tmp_path, capsys):
+    project_folder = tmp_path / "proj"
+    exit_code = cli.main(["onboard", str(project_folder), "--mode", "bogus"])
+    assert exit_code == 2
+
+    err = capsys.readouterr().err
+    assert "invalid choice" in err
+
+
 def test_decide_debug_reraises(sample_project, tmp_state, monkeypatch):
     """Guidance: --debug flag re-raises exceptions."""
     from nyxloom import decisions
