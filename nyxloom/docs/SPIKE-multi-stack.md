@@ -138,3 +138,18 @@ compose lifecycle sites (engine.py:838 up, :700 down, ~:1332 shipped) with
 a same-name/foreign-project migration guard; F2 = drop the empty-phase-
 union→ALL coercion in resolve_profiles (contradicts SPEC S7.5a's own
 narrowing example). RAM headroom is TEMPORARY — retry promptly once fixes land.
+
+## 2026-07-17 — Step A EXECUTED (KSM opt-in): ~435 MB net, method validated
+
+Per-container LD_PRELOAD opt-in (PR_SET_MEMORY_MERGE) measured on the four
+biggest dynamic-glibc consumers: oap 113 MiB, authentik-server 235 MiB +
+worker 252 MiB (same-image pair dedupe), postgres 12 MiB —
+`general_profit` 138 KB → ~435 MB, converged ~2 min, gate green. Evidence:
+`dstdns:nyxloom-trove/reports/KSM-OPTIN-MEASUREMENTS.md`; shim + builds in
+`dstdns:tools/ksm-optin/`. CORRECTION to §1: banyandb and minio are
+STATICALLY linked (ELF-verified) — preload is a no-op for them; the
+"banyandb=glibc" measurement above was wrong. Rollout mechanism decision →
+ciu governance overlay injection (dstdns backlog B22) instead of the
+per-image env edits sketched in §1. Step A is no longer blocking anything
+(headroom was already sufficient); it now directly raises per-GB instance
+capacity for Step C.
