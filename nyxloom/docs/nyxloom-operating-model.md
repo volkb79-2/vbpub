@@ -156,9 +156,16 @@ thin-early levels + guided reshaping.
   + property/invariant tests; found the two strands above).
 - ~~**F1 — spine schema + validator + config**~~ — **DONE** (c245a81: 4 spine
   schemas, non-AI S1–S4 validator, config keys, own trove migrated + lint-green).
-- **F2 — onboarding engine + non-AI wizard + surfaces** (CLI first) — NEXT.
-- **F3 — `/review`-style assessment scan agent.**
+- ~~**F2 — onboarding engine + non-AI wizard + surfaces** (CLI first)~~ — **DONE**
+  (f15cf0d→0af17a2: `WizardAnswers`, `run_wizard` scaffolds trove + instantiates
+  missing spine docs + records answers; idempotent; gate-green).
+- ~~**F3 — `/review`-style assessment scan agent**~~ — **DONE** (92ed415:
+  `run_assessment_scan` = read-only+redacted frontier-review agent → fail-closed
+  structured `AssessmentResult`; greenfield short-circuits with no dispatch;
+  stored in trove for F4; `onboard --scan` CLI flag; 13 non-hollow tests).
 - **F4 — guided questionnaire** (extend `intake_chat`) → populate spine
-  (north-star-first).
+  (north-star-first) — **NEXT.** Consumes F3's `AssessmentResult`; running the
+  flow on nyxloom itself drafts nyxloom's own north-star for operator approval
+  (decision D-S1).
 - **F5 — gap-engine + reconciliation** (replaces ad-hoc carve inference).
 - **F7 — proactive escalation** (leading indicators → typed "needs direction").
