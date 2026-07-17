@@ -614,3 +614,44 @@ class TestRunIopsBaseline:
         assert rc == 1
         assert not out_file.exists()
         assert "could not parse fio JSON" in capsys.readouterr().out
+
+
+class TestKsmOptinInjection:
+    """S15.11 — KSM opt-in env + bind injection."""
+
+    def _cfg(self, **overrides) -> dict:
+        return gov.resolve_config({"enabled": True, **overrides})
+
+    def test_default_is_off(self) -> None:
+        cfg = gov.resolve_config({"enabled": True})
+        assert cfg["ksm_optin"] == ""
+
+    def test_injects_env_and_bind_when_source_resolved(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov, "resolve_device", lambda configured: ("", "none"))
+        cfg = self._cfg(ksm_optin="tools/ksm-optin/ksm-optin.so")
+        cfg["_ksm_optin_source"] = "/phys/tools/ksm-optin/ksm-optin.so"
+        injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        frag = injections["redis"]
+        assert frag["environment"] == [f"LD_PRELOAD={gov.KSM_PRELOAD_TARGET}"]
+        assert frag["volumes"] == [{
+            "type": "bind",
+            "source": "/phys/tools/ksm-optin/ksm-optin.so",
+            "target": gov.KSM_PRELOAD_TARGET,
+            "read_only": True,
+        }]
+        assert any("ksm_optin=tools/ksm-optin/ksm-optin.so" in n for n in notes)
+
+    def test_exempt_service_gets_no_ksm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov, "resolve_device", lambda configured: ("", "none"))
+        cfg = self._cfg(ksm_optin="x.so", exempt_services=["vault"])
+        cfg["_ksm_optin_source"] = "/phys/x.so"
+        injections, _ = gov.build_injections({"vault": {"image": "v"}, "redis": {"image": "r"}}, cfg)
+        assert "vault" not in injections
+        assert "environment" in injections["redis"]
+
+    def test_no_source_resolved_means_no_env_frag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov, "resolve_device", lambda configured: ("", "none"))
+        cfg = self._cfg()  # ksm_optin default ""
+        injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        assert "environment" not in injections.get("redis", {})
+        assert any("ksm_optin=off" in n for n in notes)

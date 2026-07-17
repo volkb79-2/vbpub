@@ -1300,6 +1300,28 @@ stacks that need to differ (a different `cgroup_parent`, an exemption, or
 opting out entirely with `enabled = false`) declare their own
 `[<root>.governance]` table.
 
+### S15.11 — KSM opt-in injection (`ksm_optin`)
+
+Governance key `ksm_optin` (default `""` = off; requires
+`enabled = true`): a repo-relative or absolute path to a **universal**
+(dependency-free, built `-nostdlib`, zero `DT_NEEDED`) LD_PRELOAD shim
+that calls `prctl(PR_SET_MEMORY_MERGE)` (kernel ≥ 6.4). When set, the
+overlay injects into every non-exempt service:
+
+- `environment: ["LD_PRELOAD=/opt/ksm/ksm-optin.so"]`
+- a read-only bind of the shim's PHYSICAL path (S1.3/S1.4) to
+  `/opt/ksm/ksm-optin.so`.
+
+Rules: the shim MUST be dependency-free — a libc-linked shim is FATAL
+under the other libc's loader (measured: glibc `ld.so` exits 127 on a
+musl-linked preload; a zero-dependency `.so` loads under both).
+Statically-linked programs never run a dynamic loader, so the injection
+is inert for them. `environment`/`volumes` are MERGE keys in the overlay
+(appended to configfile mounts, per-key env merge in compose) — the
+S15.3 author-precedence rule for scalar keys does not apply.
+`exempt_services` opts individual services out. The one-line S15.7
+summary includes `ksm_optin=<path|off>`.
+
 ---
 
 ## Appendix A — v1 findings disposition

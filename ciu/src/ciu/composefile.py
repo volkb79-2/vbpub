@@ -771,6 +771,20 @@ def generate_overlay(
     if governance is not None:
         gov_cfg = governance_mod.resolve_config(governance)
         if gov_cfg["enabled"]:
+            # S15.11: resolve the KSM shim to a PHYSICAL path once, up front
+            # (bind sources must be host paths, S1.3/S1.4). Repo-relative
+            # values resolve against the repo root.
+            ksm_rel = str(gov_cfg.get("ksm_optin") or "")
+            if ksm_rel:
+                ksm_path = Path(ksm_rel)
+                if not ksm_path.is_absolute():
+                    base = repo_root or Path(os.environ.get("REPO_ROOT", Path.cwd()))
+                    ksm_path = base / ksm_path
+                gov_cfg["_ksm_optin_source"] = str(
+                    to_physical_path(
+                        ksm_path, repo_root=repo_root, physical_root=physical_root
+                    )
+                )
             governance_injections, gov_notes = governance_mod.build_injections(
                 compose_service_blocks, gov_cfg
             )
@@ -836,7 +850,13 @@ def generate_overlay(
     if governance_injections:
         for service_name, frag in governance_injections.items():
             svc = services.setdefault(service_name, {})
-            svc.update(frag)
+            for key, value in frag.items():
+                # "volumes"/"environment" are LIST keys shared with the
+                # configfile mounts above — append, never clobber (S15.11).
+                if key in ("volumes", "environment") and isinstance(value, list):
+                    svc.setdefault(key, []).extend(value)
+                else:
+                    svc[key] = value
 
     if services:
         overlay["services"] = services

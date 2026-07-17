@@ -58,7 +58,18 @@ GOVERNANCE_DEFAULTS: dict[str, Any] = {
     "device": "",            # "" = autodetect the disk backing /var/lib/docker
     "baseline_path": "",     # "" = search order (S15.4); explicit path wins
     "exempt_services": [],
+    # S15.11 — KSM opt-in injection. Repo-relative (or absolute) path to a
+    # UNIVERSAL (dependency-free, -nostdlib) LD_PRELOAD shim that calls
+    # prctl(PR_SET_MEMORY_MERGE). "" = disabled. When set, every non-exempt
+    # service gets LD_PRELOAD + a read-only bind of the shim injected via the
+    # overlay. Statically-linked binaries never run a dynamic loader, so the
+    # injection is inert for them; a dependency-free .so loads under both
+    # glibc and musl (a libc-linked one is FATAL under the other libc).
+    "ksm_optin": "",
 }
+
+# S15.11 — in-container path the shim is bound to / preloaded from.
+KSM_PRELOAD_TARGET = "/opt/ksm/ksm-optin.so"
 
 # The compose service-level keys governance may inject. Precedence (S15.3):
 # any of these keys already present in the AUTHOR's rendered service block
@@ -353,6 +364,21 @@ def build_injections(
                 "device_read_iops": [{"path": device, "rate": read_iops}],
                 "device_write_iops": [{"path": device, "rate": write_iops}],
             }
+        # S15.11 — KSM opt-in: additive env + bind, injected unconditionally
+        # for non-exempt services (environment/volumes are MERGE keys in the
+        # overlay, so the S15.3 author-precedence rule for scalar keys does
+        # not apply; an author-set LD_PRELOAD would win the per-key env merge
+        # anyway). `_ksm_optin_source` is the already-physical shim path,
+        # resolved by generate_overlay.
+        ksm_src = str(config.get("_ksm_optin_source") or "")
+        if ksm_src:
+            frag["environment"] = [f"LD_PRELOAD={KSM_PRELOAD_TARGET}"]
+            frag["volumes"] = [{
+                "type": "bind",
+                "source": ksm_src,
+                "target": KSM_PRELOAD_TARGET,
+                "read_only": True,
+            }]
         if frag:
             injections[svc_name] = frag
             services_touched += 1
@@ -364,6 +390,7 @@ def build_injections(
         f"read_iops={read_iops} ({read_note})",
         f"write_iops={write_iops}",
         f"device={device or '(none — blkio_config skipped)'} ({device_note})",
+        f"ksm_optin={config.get('ksm_optin') or 'off'}",
         f"services_injected={services_touched} exempt={skipped_exempt}",
     ]
     return injections, notes
