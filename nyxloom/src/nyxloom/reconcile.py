@@ -660,6 +660,30 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     # frontier-review attempt means the wave's review is in flight; a
     # terminal-but-INTERRUPTED one is retried via the normal resume path,
     # so it too must not trigger a duplicate cold launch here.
+    #
+    # 2026-07-17 fix (stale-wave_id strand, second review cycle never
+    # relaunches): the check above previously scanned ALL of tsf.attempts
+    # for ANY FRONTIER_REVIEW attempt in these states, including terminal
+    # EXITED -- with no scoping to "is this attempt still current". Once a
+    # task's first review attempt reaches EXITED (approved OR rejected),
+    # it stayed in tsf.attempts forever, so has_review_in_flight was
+    # permanently True from that point on. Combined with the reject-loop
+    # (REVIEW_REJECTED -> QUEUED -> a fresh implementer -> AWAITING_REVIEW
+    # a SECOND time), that meant a second review could never be launched --
+    # the task silently stranded AWAITING_REVIEW forever.
+    #
+    # Scoping by tsf.wave_id doesn't help on its own: tsf.wave_id is set
+    # once by OpenWave/WAVE_OPENED and never reset (REVIEW_RECORDED is a
+    # true audit-only no-op in storage.apply_event -- see
+    # test_invariants.py's test_known_ignored_event_types_are_true_noops --
+    # so it cannot clear it, and every review attempt for this task is
+    # dispatched with that SAME wave_id forever). The actual discriminator
+    # is RECENCY: only the task's LATEST attempt can meaningfully be "the
+    # review in flight" -- a stale EXITED review from a prior cycle that
+    # has since been superseded by a fresh implementer attempt (the
+    # reject-loop's re-work) is provably no longer in flight, because
+    # something newer already ran after it. This mirrors the is_latest
+    # check already used above (interrupted-poisoned handling).
     for task_id, tsf in inp.states.items():
         if tsf.state == TaskState.AWAITING_REVIEW and tsf.wave_id is not None:
             if inp.pause_mode == "drain-agents":
@@ -667,16 +691,17 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                 # one) while draining agents; the task stays parked
                 # AWAITING_REVIEW until a later pass sees run/drain-handoffs.
                 continue
-            has_review_in_flight = any(
-                a.role == Role.FRONTIER_REVIEW
+            latest = tsf.attempts[-1] if tsf.attempts else None
+            has_review_in_flight = (
+                latest is not None
+                and latest.role == Role.FRONTIER_REVIEW
                 and (
-                    a.state in (AttemptState.CREATED, AttemptState.PREFLIGHTING,
-                                AttemptState.RUNNING, AttemptState.STALLED,
-                                AttemptState.EXITED)
-                    or (a.state == AttemptState.INTERRUPTED
-                        and a.session_handle is not None)
+                    latest.state in (AttemptState.CREATED, AttemptState.PREFLIGHTING,
+                                      AttemptState.RUNNING, AttemptState.STALLED,
+                                      AttemptState.EXITED)
+                    or (latest.state == AttemptState.INTERRUPTED
+                        and latest.session_handle is not None)
                 )
-                for a in tsf.attempts
             )
             if not has_review_in_flight:
                 wave_actions.append(LaunchReview(wave_id=tsf.wave_id, task_ids=[task_id]))
