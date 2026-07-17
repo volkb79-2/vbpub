@@ -69,6 +69,29 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               (exit 1) if <project_folder>/nyxloom-trove/
                               already exists -- never overwrites. Missing
                               <project_folder> -> exit 2 (argparse usage).
+                              PACKAGE F2: the scaffold itself now lives in
+                              onboarding.scaffold_trove; this verb is a
+                              thin wrapper around it.
+  onboard <project_folder> [--maturity empty|partial|mature]
+          [--docs present|absent] [--mode derive-from-code|
+          code-good-docs-absent|greenfield-define-it]
+          [--scan-path PATH ...]
+                              PACKAGE F2 2026-07-17: the non-AI onboarding
+                              wizard + spine instantiation (docs/nyxloom-
+                              operating-model.md §2, onboarding.py). Ensures
+                              a trove exists (reusing the `init` scaffold
+                              above if none does -- never duplicates it),
+                              then instantiates any MISSING direction-spine
+                              doc (1-north-star.md .. 4-backlog.md) with
+                              minimal-valid frontmatter, wires any MISSING
+                              nyxloom.toml spine key, and records the wizard
+                              answers to
+                              <trove>/onboarding-answers.json. Idempotent:
+                              an already-present spine doc / already-set
+                              config key is left untouched. Deterministic,
+                              scriptable, no AI/LLM invoked -- the AI scan
+                              (F3) and guided questionnaire (F4) are
+                              separate, NOT built here.
 
 main(argv=None) -> int. Import module functions lazily inside handlers so
 `nyxloom version` works even if an optional module is broken; handlers
@@ -82,53 +105,6 @@ import argparse
 import os
 import sys
 from pathlib import Path
-
-# PACKAGE P23: fresh nyxloom.toml written by `nyxloom init`. Deliberately
-# minimal (no gates, empty [refs]) -- the operator fills those in per
-# STANDARD.md; a full worked example lives in this repo's own
-# nyxloom-trove/nyxloom.toml.
-_INIT_NYXLOOM_TOML = '''\
-[project]
-id = "{project_id}"
-default_branch = "main"
-
-trove = "nyxloom-trove"
-
-handoff_globs   = ["nyxloom-trove/handoffs/*.md"]
-reports_dir     = "nyxloom-trove/reports"
-decisions_inbox = "nyxloom-trove/decisions.md"
-roadmap         = "nyxloom-trove/roadmap.md"
-backlog         = "nyxloom-trove/backlog.md"
-archive_dir     = "nyxloom-trove/archive"
-archive_keep_visible = 10
-agent_logs      = "nyxloom-trove/agent-logs"
-
-worktree_root = "../.worktrees"
-
-# Docs nyxloom READS but does not manage (live in this project's own tree).
-# Fill in as needed -- see nyxloom-trove/STANDARD.md "declaration model".
-[refs]
-
-# Declare the project's real gate(s) here -- NEVER the devcontainer (cockpit
-# doctrine). See nyxloom-trove/STANDARD.md.
-# [gates.<name>]
-# argv = ["bash", "-c", "..."]
-# phase = "implementation"
-# timeout_seconds = 1800
-# environment = "..."
-
-[policy]
-max_active_tasks = 3
-ready_queue_target = 5
-max_attempts_per_task = 3
-merge_mode = "manual"
-retention_days = 60
-reconcile_interval_seconds = 30
-http_port = 8942
-
-[notify]
-'''
-
 
 def _cfg(project: str):
     """Load ProjectConfig for a project ID. Raise if not found."""
@@ -705,52 +681,73 @@ def cmd_events(args) -> int:
 
 
 def cmd_init(args) -> int:
-    """init <project_folder>"""
-    import shutil
+    """init <project_folder>
+
+    PACKAGE F2: the scaffold itself moved to onboarding.scaffold_trove (so
+    `onboard` can reuse it without duplicating it); this is now a thin
+    wrapper preserving the original P23 CLI contract (same messages/exit
+    codes)."""
+    from . import onboarding
+
+    project_folder = Path(args.project_folder)
+    try:
+        trove_dir = onboarding.scaffold_trove(project_folder)
+    except onboarding.OnboardingError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    print(str(trove_dir))
+    return 0
+
+
+def cmd_onboard(args) -> int:
+    """onboard <project_folder> [--maturity ...] [--docs ...] [--mode ...]
+    [--scan-path PATH ...]
+
+    PACKAGE F2 2026-07-17: NON-AI, deterministic onboarding wizard + spine
+    instantiation (docs/nyxloom-operating-model.md §2). Ensures the project
+    has a trove -- reusing `init`'s own scaffold (cmd_init above) if none
+    exists yet, never duplicating it -- then hands off to
+    onboarding.run_wizard to instantiate any missing spine doc, wire any
+    missing nyxloom.toml spine key, and record the wizard answers. F3 (AI
+    assessment scan) and F4 (guided questionnaire) are NOT built here -- they
+    later consume the recorded answers file."""
+    from . import onboarding
 
     project_folder = Path(args.project_folder)
     trove_dir = project_folder / "nyxloom-trove"
-    if trove_dir.exists():
-        print(f"error: {trove_dir} already exists", file=sys.stderr)
+    if not trove_dir.exists():
+        rc = cmd_init(argparse.Namespace(project_folder=str(project_folder)))
+        if rc != 0:
+            return rc
+
+    scan_paths = list(args.scan_paths) if getattr(args, "scan_paths", None) else ["."]
+    try:
+        answers = onboarding.WizardAnswers(
+            maturity=args.maturity,
+            docs_present=(args.docs == "present"),
+            mode=args.mode,
+            scan_paths=scan_paths,
+        )
+        result = onboarding.run_wizard(project_folder, answers)
+    except onboarding.OnboardingError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
         return 1
 
-    # This package's own canonical trove ships STANDARD.md/AUTHORING.md;
-    # src/nyxloom/cli.py -> src/ -> nyxloom/ (repo root of this package).
-    template_dir = Path(__file__).resolve().parent.parent.parent / "nyxloom-trove"
-    standard_src = template_dir / "STANDARD.md"
-    authoring_src = template_dir / "AUTHORING.md"
-    if not standard_src.exists() or not authoring_src.exists():
-        print(f"error: bundled trove templates not found under {template_dir}", file=sys.stderr)
-        return 1
-
-    trove_dir.mkdir(parents=True)
-    shutil.copyfile(standard_src, trove_dir / "STANDARD.md")
-    shutil.copyfile(authoring_src, trove_dir / "AUTHORING.md")
-
-    project_id = project_folder.resolve().name
-    (trove_dir / "nyxloom.toml").write_text(
-        _INIT_NYXLOOM_TOML.format(project_id=project_id), encoding="utf-8"
-    )
-
-    (trove_dir / "handoffs").mkdir()
-    (trove_dir / "reports").mkdir()
-    (trove_dir / "archive").mkdir()
-    (trove_dir / "archive" / ".gitkeep").touch()
-    (trove_dir / "agent-logs").mkdir()
-    (trove_dir / "agent-logs" / ".gitkeep").touch()
-    (trove_dir / "decisions.md").write_text(
-        f"# {project_id} dev decisions inbox — product calls awaiting the user (D-<NNN>).\n",
-        encoding="utf-8",
-    )
-    (trove_dir / "roadmap.md").write_text(
-        f"# {project_id} dev roadmap\n", encoding="utf-8"
-    )
-    (trove_dir / "backlog.md").write_text(
-        f"# {project_id} dev backlog — un-carved ideas\n", encoding="utf-8"
-    )
-    (trove_dir / ".gitignore").write_text("agent-logs/\n", encoding="utf-8")
-
-    print(str(trove_dir))
+    if result.created_docs:
+        print("created:")
+        for rel in result.created_docs:
+            print(f"  {rel}")
+    if result.skipped_docs:
+        print("already present (untouched):")
+        for rel in result.skipped_docs:
+            print(f"  {rel}")
+    if result.wired_keys:
+        print("wired nyxloom.toml keys: " + ", ".join(result.wired_keys))
+    print(f"answers recorded: {result.answers_path}")
     return 0
 
 
@@ -863,6 +860,23 @@ def main(argv: list[str] | None = None) -> int:
     init_parser = subparsers.add_parser("init")
     init_parser.add_argument("project_folder", help="Target project folder to scaffold a trove into")
 
+    # onboard (PACKAGE F2). Choices are hardcoded literals here (not
+    # imported from onboarding.py) so parser construction -- which runs for
+    # EVERY subcommand, including `version` -- never depends on importing an
+    # optional module (mirrors main()'s "lazy import inside handlers"
+    # design intent above); onboarding.WizardAnswers re-validates these same
+    # choice sets at construction time regardless.
+    onboard_parser = subparsers.add_parser("onboard")
+    onboard_parser.add_argument("project_folder", help="Target project folder (trove scaffolded here if absent)")
+    onboard_parser.add_argument("--maturity", choices=["empty", "partial", "mature"],
+                                 default="empty", help="Project maturity (default: empty)")
+    onboard_parser.add_argument("--docs", choices=["present", "absent"],
+                                 default="absent", help="Whether the project already has real docs (default: absent)")
+    onboard_parser.add_argument("--mode", choices=["derive-from-code", "code-good-docs-absent", "greenfield-define-it"],
+                                 default="greenfield-define-it", help="Onboarding mode (default: greenfield-define-it)")
+    onboard_parser.add_argument("--scan-path", action="append", dest="scan_paths", metavar="PATH",
+                                 help="Path (repeatable) for the later AI scan (F3) to read; default: ['.']")
+
     try:
         args = parser.parse_args(argv)
     except (SystemExit, argparse.ArgumentError) as e:
@@ -917,6 +931,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_version(args)
         elif args.cmd == "init":
             return cmd_init(args)
+        elif args.cmd == "onboard":
+            return cmd_onboard(args)
         else:
             parser.print_help(sys.stderr)
             return 2
