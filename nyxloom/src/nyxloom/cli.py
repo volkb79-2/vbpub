@@ -709,9 +709,17 @@ def cmd_onboard(args) -> int:
     has a trove -- reusing `init`'s own scaffold (cmd_init above) if none
     exists yet, never duplicating it -- then hands off to
     onboarding.run_wizard to instantiate any missing spine doc, wire any
-    missing nyxloom.toml spine key, and record the wizard answers. F3 (AI
-    assessment scan) and F4 (guided questionnaire) are NOT built here -- they
-    later consume the recorded answers file."""
+    missing nyxloom.toml spine key, and record the wizard answers. F4 (the
+    guided questionnaire) is NOT built here -- it later consumes the
+    recorded answers file (and, when `--scan` was passed, the assessment
+    below).
+
+    PACKAGE F3 2026-07-17: `--scan` is the follow-on AI step, kept strictly
+    AFTER `run_wizard` returns (F2's non-AI wizard core stays pure -- see
+    onboarding.py's own module docstring) -- it dispatches
+    onboarding_scan.run_assessment_scan with the very answers just recorded.
+    Skipped automatically for maturity=empty (nothing to scan; see
+    onboarding_scan's greenfield short-circuit) even if `--scan` was passed."""
     from . import onboarding
 
     project_folder = Path(args.project_folder)
@@ -748,6 +756,23 @@ def cmd_onboard(args) -> int:
     if result.wired_keys:
         print("wired nyxloom.toml keys: " + ", ".join(result.wired_keys))
     print(f"answers recorded: {result.answers_path}")
+
+    if getattr(args, "scan", False):
+        from . import onboarding_scan
+
+        try:
+            assessment = onboarding_scan.run_assessment_scan(project_folder, answers)
+        except onboarding_scan.AssessmentScanError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+
+        if assessment.skipped:
+            print(f"scan skipped: {assessment.skip_reason}")
+        else:
+            print(f"assessment recorded: {onboarding_scan.assessment_path(trove_dir)}")
+            print(f"  maturity: {assessment.maturity}")
+            print(f"  gaps: {len(assessment.gaps)}")
+
     return 0
 
 
@@ -876,6 +901,9 @@ def main(argv: list[str] | None = None) -> int:
                                  default="greenfield-define-it", help="Onboarding mode (default: greenfield-define-it)")
     onboard_parser.add_argument("--scan-path", action="append", dest="scan_paths", metavar="PATH",
                                  help="Path (repeatable) for the later AI scan (F3) to read; default: ['.']")
+    onboard_parser.add_argument("--scan", action="store_true",
+                                 help="PACKAGE F3: after the non-AI wizard, dispatch the read-only "
+                                      "assessment scan agent (skipped automatically for --maturity empty)")
 
     try:
         args = parser.parse_args(argv)
