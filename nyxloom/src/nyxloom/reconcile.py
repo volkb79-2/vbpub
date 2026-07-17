@@ -150,6 +150,24 @@ INTERFACE CONTRACT (frozen). Semantics:
     would raise TransitionError when the daemon executes it. Documented gap,
     not a silent no-op: see reconcile.py's REVIEW_REJECTED block and the
     P-selfcorrect handoff LOG/REPORT.
+11. POST-MERGE VALIDATION (nyxloom-post-merge-validation package, 2026-07-17;
+    fixes the "TaskState.COMPLETED is unreachable" gap pinned by
+    tests/test_invariants.py's now-removed MERGED/VALIDATING xfails):
+    MERGED task -> Transition(VALIDATING) unconditionally (pure bookkeeping,
+    self-limiting like item 2's CARVED->QUEUED: the state moves off MERGED
+    so this does not refire). VALIDATING task -> RunPostMergeGate(task_id)
+    every pass until the daemon's execution of that action transitions the
+    task onward (COMPLETED on a passing gate, BLOCKED with a typed CONTRACT
+    blocker on a failing/erroring/timed-out one) -- see daemon.py's
+    _run_post_merge_gate for the actual gate selection, {worktree}
+    substitution, and subprocess execution (this module stays pure; it only
+    ever emits the trigger action, exactly like item 9's CarveDispatch).
+    types.py's TASK_TRANSITIONS[BLOCKED] already permits BLOCKED->VALIDATING
+    (frozen, pre-existing edge) -- an operator who fixes the underlying
+    cause manually re-queues a blocked post-merge task back to VALIDATING to
+    retry, the same "operator must resolve BLOCKED by hand" convention
+    documented in render.py's STATE_LEGEND (no new code needed for that
+    recovery path).
 """
 
 from __future__ import annotations
@@ -279,6 +297,16 @@ class CarveDispatch(Action):
     general review/backlog/roadmap source list."""
     project: str | None = None
     item_id: str | None = None
+
+
+@dataclass
+class RunPostMergeGate(Action):
+    """Post-merge validation trigger (module contract item 11, 2026-07-17):
+    the ONLY action ever planned for a VALIDATING task. Carries nothing but
+    task_id -- which gate to run, the {worktree} substitution, and the
+    subprocess execution itself are the daemon's job (this module stays
+    pure, no subprocess/filesystem); see daemon.py's _run_post_merge_gate.
+    """
 
 
 # --- input snapshot ---------------------------------------------------------
@@ -425,6 +453,19 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                 ))
             # else: attempts exhausted -- see KNOWN GAP above; no action
             # planned (types.py edit required, out of scope).
+
+        # POST-MERGE VALIDATION (module contract item 11): MERGED ->
+        # VALIDATING is pure bookkeeping (self-limiting, same pattern as
+        # CARVED->QUEUED above); VALIDATING itself just re-emits the trigger
+        # every pass until the daemon's execution of RunPostMergeGate
+        # transitions the task onward to COMPLETED or BLOCKED.
+        if tsf.state == TaskState.MERGED:
+            task_actions.append(Transition(
+                task_id=fm_id, to=TaskState.VALIDATING,
+                notes="post-merge validation started",
+            ))
+        elif tsf.state == TaskState.VALIDATING:
+            task_actions.append(RunPostMergeGate(task_id=fm_id))
 
     # 3. Dispatch eligible QUEUED tasks (with capacity limit)
     # Count current active tasks
