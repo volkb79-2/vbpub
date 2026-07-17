@@ -21,7 +21,18 @@ INTERFACE CONTRACT (frozen):
   line), header_line (1-based header-comment line, None if un-headered),
   priority, carved_handoff, decisions (list[str]), merge_commit, raw_header
   (schema-ready dict built from the header tokens, coerced to schema types;
-  None if un-headered — schema validation is skipped for those items).
+  None if un-headered — schema validation is skipped for those items),
+  detail (str, PACKAGE P41: the item's prose, from just after its `**id —
+  title.**` bold segment through any indented continuation lines, BUT
+  cut off before the header-comment line for a headered item — body prose
+  never lives after the header).
+- is_briefed(item) -> bool: PACKAGE P41. True iff header_line is not None
+  AND detail is non-empty. An un-headered legacy bullet is NEVER briefed,
+  regardless of how much body prose it carries — only create()'s
+  ALWAYS-headered items (or a hand-authored header) can carry a brief.
+- brief_detail(cfg, item_id) -> str | None: PACKAGE P41. Looks up item_id
+  in `<cfg.root>/nyxloom-trove/backlog.md`; returns its detail iff
+  is_briefed(item), else None (including "no such item").
 - parse(path) -> list[BacklogItem]; missing file -> [].
 - validate(items, path='') -> list[LintFinding], rule namespace BLG1: schema
   violation on a PRESENT header (missing id, bad status, non-int priority,
@@ -64,6 +75,7 @@ DEFAULT_RELPATH = "nyxloom-trove/backlog.md"
 _ITEM_RE = re.compile(r"^-\s+\*\*(B\d+)\b")
 _HEADER_RE = re.compile(r"^\s*<!--\s*nyxloom:backlog\s+(.*?)\s*-->\s*$")
 _FIELD_RE = re.compile(r"(\w+)=(\S+)")
+_TITLE_TRAILING_RE = re.compile(r"^-\s+\*\*.*?\*\*\s*(.*)$")
 
 
 @dataclass
@@ -77,6 +89,7 @@ class BacklogItem:
     decisions: list[str] = field(default_factory=list)
     merge_commit: str | None = None
     raw_header: dict | None = None
+    detail: str = ""
 
 
 def resolve_path(cfg: ProjectConfig) -> Path:
@@ -108,20 +121,38 @@ def _parse_text(text: str) -> list[BacklogItem]:
     return items
 
 
+def _extract_detail(item_lines: list[str], header_offset: int | None) -> str:
+    """The item's prose: the bullet line's trailing text (after its bold
+    `**id — title.**` segment) plus any continuation lines, stopping BEFORE
+    the header-comment line (never after -- see module docstring)."""
+    end = header_offset if header_offset is not None else len(item_lines)
+    body_lines = item_lines[:end]
+    if not body_lines:
+        return ""
+    m = _TITLE_TRAILING_RE.match(body_lines[0])
+    parts = [m.group(1).strip() if m else ""]
+    parts.extend(ln.strip() for ln in body_lines[1:])
+    return "\n".join(p for p in parts if p)
+
+
 def _build_item(start_line: int, item_lines: list[str]) -> BacklogItem:
     bullet_id = _ITEM_RE.match(item_lines[0]).group(1)
 
     header_line: int | None = None
+    header_offset: int | None = None
     fields: dict[str, str] | None = None
     for offset, line in enumerate(item_lines[1:], start=1):
         m = _HEADER_RE.match(line)
         if m:
             header_line = start_line + offset
+            header_offset = offset
             fields = dict(_FIELD_RE.findall(m.group(1)))
             break
 
+    detail = _extract_detail(item_lines, header_offset)
+
     if fields is None:
-        return BacklogItem(id=bullet_id, status="open", line=start_line)
+        return BacklogItem(id=bullet_id, status="open", line=start_line, detail=detail)
 
     priority: int | None = None
     if "priority" in fields:
@@ -151,6 +182,7 @@ def _build_item(start_line: int, item_lines: list[str]) -> BacklogItem:
         decisions=decisions,
         merge_commit=fields.get("merge_commit"),
         raw_header=schema_doc,
+        detail=detail,
     )
 
 
@@ -159,6 +191,24 @@ def _load_schema() -> dict:
         "backlog-item.schema.json"
     ).read_text(encoding="utf-8")
     return json.loads(text)
+
+
+def is_briefed(item: BacklogItem) -> bool:
+    """True iff `item` carries a P29 intake brief: header-comment present
+    AND non-empty detail. Detail alone is NOT enough -- an un-headered
+    legacy bullet's continuation prose is ordinary body text, never a
+    brief, no matter how much of it there is."""
+    return item.header_line is not None and bool(item.detail.strip())
+
+
+def brief_detail(cfg: ProjectConfig, item_id: str) -> str | None:
+    """The intake-brief detail for `item_id`, or None if no such item or it
+    is not briefed (gates on is_briefed, not raw detail)."""
+    items = parse(resolve_path(cfg))
+    item = next((it for it in items if it.id == item_id), None)
+    if item is None or not is_briefed(item):
+        return None
+    return item.detail
 
 
 def validate(items: list[BacklogItem], path: str = "") -> list[LintFinding]:
