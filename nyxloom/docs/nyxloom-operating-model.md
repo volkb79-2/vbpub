@@ -163,9 +163,14 @@ thin-early levels + guided reshaping.
   `run_assessment_scan` = read-only+redacted frontier-review agent → fail-closed
   structured `AssessmentResult`; greenfield short-circuits with no dispatch;
   stored in trove for F4; `onboard --scan` CLI flag; 13 non-hollow tests).
-- **F4 — guided questionnaire** (extend `intake_chat`) → populate spine
-  (north-star-first) — **NEXT.** Consumes F3's `AssessmentResult`; running the
-  flow on nyxloom itself drafts nyxloom's own north-star for operator approval
-  (decision D-S1).
-- **F5 — gap-engine + reconciliation** (replaces ad-hoc carve inference).
+- ~~**F4 — guided questionnaire** → populate spine (north-star-first)~~ — **DONE**
+  in two packages: **F4a** (30e48ac: `spine_writer` — the populating writer F1's
+  validator/F2's placeholders lacked) + **F4b** (1bd976b:
+  `onboarding_questionnaire.run_questionnaire` — read-only north-star-first
+  dispatch → two fail-closed gates (envelope-parse + write-then-self-lint with
+  bytewise restore) → drafts the spine via F4a; `onboard --questionnaire` flag).
+  Consumes F3's `AssessmentResult`. NEXT: running the flow drafts nyxloom's own
+  north-star for operator approval (decision **D-S1**, the one human gate) — the
+  *content* is the operator's product vision, not machine-authored.
+- **F5 — gap-engine + reconciliation** (replaces ad-hoc carve inference) — **NEXT.**
 - **F7 — proactive escalation** (leading indicators → typed "needs direction").
