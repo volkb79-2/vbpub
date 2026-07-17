@@ -181,6 +181,14 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
     if "incremental-write" in route.prompt_hints:
         prompt += "\nFor large writes, batch in ~80-line chunks."
 
+    # Free-endpoint confidentiality guard: a free OpenRouter model is served by
+    # providers that may log/train on prompts (that is the price of "free"), so
+    # it must never receive secrets. Free routes carry the "free-endpoint" hint
+    # in routes.host.toml; this injects the operator-mandated no-secrets notice.
+    if "free-endpoint" in route.prompt_hints:
+        prompt += ("\nFor the free endpoint, never upload any confidential "
+                   "information, personal data, credentials or secrets.")
+
     # Check prompt length
     argv_max = route.argv_max or 1500
     if len(prompt) > argv_max:

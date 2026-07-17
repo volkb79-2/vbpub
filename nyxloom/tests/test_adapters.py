@@ -336,6 +336,25 @@ def test_build_dispatch_incremental_write_hint():
     assert "~80-line" in prompt
 
 
+def test_build_dispatch_free_endpoint_confidentiality_guard():
+    """A free-endpoint route injects the operator-mandated no-secrets notice;
+    a route without the hint does NOT (so the guard is scoped to free routes,
+    not shipped to every dispatch)."""
+    kw = dict(handoff_path="h.md", worktree="/tmp/wt", branch="feat-x",
+              task_id="T-123", gate_hint="pytest-q", receipt_path="/tmp/r.json")
+
+    free_route = RouteDef(route_id="free", cli="fake", model="m",
+                          prompt_hints=["free-endpoint"])
+    _argv, free_prompt = adapters.build_dispatch(free_route, **kw)
+    assert "never upload any confidential" in free_prompt
+    assert "credentials or secrets" in free_prompt
+
+    # NEGATIVE: a normal (non-free) route must NOT carry the notice.
+    paid_route = RouteDef(route_id="paid", cli="fake", model="m")
+    _argv2, paid_prompt = adapters.build_dispatch(paid_route, **kw)
+    assert "never upload any confidential" not in paid_prompt
+
+
 # Oracle 4: build_resume
 def test_build_resume_substitutes_placeholders():
     """Oracle 4: build_resume substitutes {session}/{worktree}/{prompt}."""

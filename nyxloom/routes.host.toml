@@ -6,15 +6,15 @@
 
 revision = "2026-07-15"
 
-# 2026-07-15 (user): implementation tiers TEMPORARILY route to sonnet-high;
-# restore the deepseek lists below when switching back.
+# 2026-07-17: LIFTED the 2026-07-15 temporary sonnet-high override on the
+# implementation tiers -- cheap-first (deepseek) restored, codex reintegrated as
+# a fallback, and vetted free OpenRouter models available via [tiers.free-high]
+# (opt-in; see the free-route block + the free-endpoint confidentiality guard).
 [tiers.flash-high]
-routes = ["claude-sonnet5-high"]
-# routes = ["opencode-deepseek-high", "reasonix-deepseek-high"]   # original
+routes = ["opencode-deepseek-high", "reasonix-deepseek-high", "codex-terra-med"]
 
 [tiers.flash-max]
-routes = ["claude-sonnet5-high"]
-# routes = ["opencode-deepseek-max", "reasonix-deepseek-max"]     # original
+routes = ["opencode-deepseek-max", "reasonix-deepseek-max", "codex-terra-med"]
 
 [tiers.terra-med]
 routes = ["codex-terra-med"]
@@ -24,6 +24,19 @@ routes = ["claude-sonnet5-high"]
 
 [tiers.frontier-review]
 routes = ["claude-opus-high"]
+
+# Vetted free OpenRouter coding models (2026-07-17, probed live via opencode+
+# openrouter). OPT-IN tier -- deliberately NOT in the default implementation
+# path: free providers may LOG/TRAIN on prompts, so every free route carries the
+# `free-endpoint` prompt_hint, which makes adapters.build_dispatch inject a
+# no-secrets guard into the agent prompt.
+# VETTED USABLE: nemotron-ultra (1M ctx), nemotron-nano, hy3, laguna-xs.
+# EXCLUDED: cohere/north-mini-code:free -> "No allowed providers are available"
+# (its free providers are filtered out under this account's data policy).
+# GOTCHA for the future `route doctor` (D-R9): opencode returned exit 0 even for
+# that failure -- probe by OUTPUT content, never the exit code alone.
+[tiers.free-high]
+routes = ["openrouter-free-nemotron-ultra", "openrouter-free-hy3", "openrouter-free-nemotron-nano", "openrouter-free-laguna-xs"]
 
 [routes.opencode-deepseek-high]
 cli = "opencode"
@@ -75,3 +88,36 @@ usage_source = "output-format-json"
 [routes.claude-opus-high]
 inherit = "claude-sonnet5-high"
 model = "opus"
+
+# --- vetted free OpenRouter routes (see [tiers.free-high] note) -------------
+# Every free route carries prompt_hints=["free-endpoint"] -> the no-secrets
+# guard is injected into the dispatch prompt. status="free" is informational.
+# resume hardcodes each route's own model (build_resume does NOT substitute
+# {model}), so an inherit-with-model-override alone would resume on the wrong
+# model -- hence resume is restated per route.
+[routes.openrouter-free-nemotron-ultra]
+cli = "opencode"
+model = "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+status = "free"
+prompt_hints = ["free-endpoint"]
+argv_max = 1500
+probe = ["opencode", "--version"]
+dispatch_extra = ["--auto"]
+resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "--dir", "{worktree}", "{prompt}"]
+session_discover = ["opencode", "session", "list", "--dir", "{worktree}", "--format", "json"]
+usage_source = "session-json"
+
+[routes.openrouter-free-nemotron-nano]
+inherit = "openrouter-free-nemotron-ultra"
+model = "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "--dir", "{worktree}", "{prompt}"]
+
+[routes.openrouter-free-hy3]
+inherit = "openrouter-free-nemotron-ultra"
+model = "openrouter/tencent/hy3:free"
+resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/tencent/hy3:free", "--dir", "{worktree}", "{prompt}"]
+
+[routes.openrouter-free-laguna-xs]
+inherit = "openrouter-free-nemotron-ultra"
+model = "openrouter/poolside/laguna-xs-2.1:free"
+resume = ["opencode", "run", "-c", "--session", "{session}", "--auto", "--model", "openrouter/poolside/laguna-xs-2.1:free", "--dir", "{worktree}", "{prompt}"]
