@@ -67,7 +67,7 @@ L12 error   body must contain the BLOCKED rule marker 'BLOCKED:' and must
             not instruct violating project policy (heuristic: 'skip the
             gate', 'without running', 'ignore lint' -> flag).
 
-RULE NAMESPACE S1-S4 (PACKAGE F1, docs/spine-documents-spec.md -- the
+RULE NAMESPACE S1-S5 (PACKAGE F1, docs/spine-documents-spec.md -- the
 "direction spine" documents: nyxloom.toml's optional north_star/
 product_definition/roadmap/backlog keys, each a trove-relative path to a
 schema-validated-frontmatter Markdown doc; see lint_spine):
@@ -75,7 +75,7 @@ schema-validated-frontmatter Markdown doc; see lint_spine):
 S1  error   each configured spine doc's frontmatter validates against its
             JSON schema (schemas/spine-<kind>.schema.json).
 S2  error   cross-doc consistency, checked only between docs that are
-            individually S1/S4-clean: every 3-roadmap milestone's
+            individually S1/S4/S5-clean: every 3-roadmap milestone's
             `features` id exists in 2-product-definition's `features`
             ids; every 4-backlog item's `folds_into` (if set) resolves to
             a real product-definition feature id or roadmap milestone id.
@@ -91,6 +91,18 @@ S4  error   fail-closed tamper/corruption guard: a configured spine doc
             or declares a `schema_version` other than the one this
             package understands (1) is a hard ERROR -- never a silent
             skip, regardless of whether the other rules could run.
+S5  error   uniqueness: within a single spine doc, the `id`s of its own
+            collection (4-backlog `items`, 2-product-definition
+            `features`, 3-roadmap `milestones`) must be unique -- a
+            duplicate is a hard ERROR, keyed to the doc. Independent of
+            S1: a JSON schema validates each collection entry in
+            isolation and cannot see a repeated id across entries, so S5
+            runs as its own procedural check over the parsed frontmatter
+            regardless of the S1 outcome for that doc. A doc carrying an
+            S5 finding is NOT treated as clean for the S2 cross-doc pass
+            (mirrors how an S1/S4-dirty doc is already excluded) --
+            duplicate ids make that doc's own id space untrustworthy, so
+            nothing should cross-reference it as ground truth yet.
 """
 
 from __future__ import annotations
@@ -179,7 +191,7 @@ def lint_project(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
     plus one extra entry for the project's backlog.md, when present (see
     lint_backlog, PACKAGE P28, rule namespace BLG1), plus one entry per
     configured direction-spine doc (see lint_spine, PACKAGE F1, rule
-    namespace S1-S4) -- merged in (not overwritten) since a spine S3 finding
+    namespace S1-S5) -- merged in (not overwritten) since a spine S3 finding
     for a missing/unset key is keyed to the SAME nyxloom.toml path lint_config
     already populated."""
     results = {}
@@ -358,6 +370,48 @@ _SPINE_DOCS: dict[str, tuple[str, str, str]] = {
     "backlog": ("backlog", "4-", "spine-backlog.schema.json"),
 }
 
+# frontmatter `kind` -> the name of its own id-bearing collection field (S5).
+# north-star has no collection (nothing to check for duplicate ids).
+_SPINE_COLLECTIONS: dict[str, str] = {
+    "product-definition": "features",
+    "roadmap": "milestones",
+    "backlog": "items",
+}
+
+
+def _check_s5_unique_ids(findings: list[LintFinding], path: Path, kind: str, fm: dict) -> None:
+    """S5 (module docstring has the full semantics): within THIS doc, the
+    `id`s of its own collection (_SPINE_COLLECTIONS[kind]) must be unique.
+    Runs independent of the S1 schema result -- a JSON schema validates each
+    collection entry in isolation and cannot see a repeated id across
+    entries, so a duplicate is worth reporting even alongside other S1
+    findings for the same doc. Defensive about shape: a non-list collection
+    or a non-dict/non-string-id entry is skipped rather than raising --
+    those are already someone else's S1 finding (or S4, if the doc didn't
+    even parse this far)."""
+    field_name = _SPINE_COLLECTIONS.get(kind)
+    if field_name is None:
+        return
+    collection = fm.get(field_name)
+    if not isinstance(collection, list):
+        return
+
+    counts: dict[str, int] = {}
+    for entry in collection:
+        if not isinstance(entry, dict):
+            continue
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, str):
+            continue
+        counts[entry_id] = counts.get(entry_id, 0) + 1
+
+    for dup_id in sorted(id_ for id_, count in counts.items() if count > 1):
+        findings.append(LintFinding(
+            rule="S5", severity="error",
+            message=f"duplicate id '{dup_id}' in {field_name} (ids must be unique within a spine doc)",
+            path=str(path),
+        ))
+
 
 def _load_spine_schema(schema_file: str) -> dict:
     text = importlib.resources.files("nyxloom.schemas").joinpath(schema_file).read_text(encoding="utf-8")
@@ -384,15 +438,17 @@ def lint_spine(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
     nyxloom.toml (north_star/product_definition/roadmap/backlog; an unset
     key is skipped entirely -- adopting the spine is optional per project).
 
-    Rule namespace S1-S4 (module docstring has the full semantics):
+    Rule namespace S1-S5 (module docstring has the full semantics):
     S3 fires (keyed to nyxloom.toml) when a configured path does not resolve
     to a file, is not named with its doc's numeric prefix, or does not sit
     under the project's trove dir. Only when the path DOES resolve do we
     attempt to read it, in which case exactly one of S4 (unparsable /
     unknown schema_version -- fail-closed, checked BEFORE any schema
     validation) or S1 (schema violations, schema_version==1 only) applies,
-    never both. S2 cross-doc checks then run over whichever of
-    product-definition/roadmap/backlog individually came back S1/S4-clean.
+    never both; S5 (duplicate ids within the doc's own collection) then
+    runs regardless of the S1 outcome. S2 cross-doc checks then run over
+    whichever of product-definition/roadmap/backlog individually came back
+    S1/S4/S5-clean.
     """
     config_path = _locate_config_path(cfg)
     if config_path is None:
@@ -468,15 +524,19 @@ def lint_spine(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
         schema = _load_spine_schema(schema_file)
         validator = jsonschema.Draft202012Validator(schema)
         errors = sorted(validator.iter_errors(fm), key=lambda e: list(e.absolute_path))
-        if errors:
-            for error in errors:
-                json_path = ".".join(str(p) for p in error.absolute_path) or "$"
-                findings.append(LintFinding(
-                    rule="S1", severity="error",
-                    message=f"{json_path}: {error.message}",
-                    path=str(path),
-                ))
-        else:
+        for error in errors:
+            json_path = ".".join(str(p) for p in error.absolute_path) or "$"
+            findings.append(LintFinding(
+                rule="S1", severity="error",
+                message=f"{json_path}: {error.message}",
+                path=str(path),
+            ))
+
+        s5_start = len(findings)
+        _check_s5_unique_ids(findings, path, kind, fm)
+        has_s5 = len(findings) > s5_start
+
+        if not errors and not has_s5:
             clean_docs[kind] = fm
 
         results[rel_path] = findings

@@ -91,6 +91,61 @@ VALID_NORTH_STAR = """\
     body
     """
 
+DUPLICATE_ID_PRODUCT_DEF = """\
+    ---
+    kind: product-definition
+    schema_version: 1
+    product_version: 1
+    features:
+      - id: F001
+        title: "a feature"
+        acceptance: ["it does the thing"]
+        status: planned
+      - id: F001
+        title: "a duplicate-id feature"
+        acceptance: ["it does another thing"]
+        status: planned
+    ---
+
+    body
+    """
+
+DUPLICATE_ID_ROADMAP = """\
+    ---
+    kind: roadmap
+    schema_version: 1
+    milestones:
+      - id: M1
+        title: "first milestone"
+        target_product_version: 1
+        features: []
+        status: planned
+      - id: M1
+        title: "duplicate-id milestone"
+        target_product_version: 1
+        features: []
+        status: planned
+    ---
+
+    body
+    """
+
+DUPLICATE_ID_BACKLOG = """\
+    ---
+    kind: backlog
+    schema_version: 1
+    items:
+      - id: B1
+        title: "an item"
+        type: feature
+      - id: B1
+        title: "a duplicate-id item"
+        type: bugfix
+    ---
+
+    body
+    """
+
 
 def _findings_for(results: dict[str, list], rel: str):
     return results.get(rel, [])
@@ -373,6 +428,86 @@ class TestS4FailClosed:
         )
         findings = lint.lint_spine(cfg)["nyxloom-trove/1-north-star.md"]
         assert any(f.rule == "S4" for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# S5: uniqueness of ids within a single doc's own collection
+
+class TestS5UniqueIds:
+    def test_duplicate_backlog_id_fails_s5(self, tmp_path):
+        cfg = _write_project(
+            tmp_path,
+            'backlog = "nyxloom-trove/4-backlog.md"\n',
+            {"nyxloom-trove/4-backlog.md": DUPLICATE_ID_BACKLOG},
+        )
+        findings = lint.lint_spine(cfg)["nyxloom-trove/4-backlog.md"]
+        s5 = [f for f in findings if f.rule == "S5"]
+        assert s5, findings
+        assert all(f.severity == "error" for f in s5)
+        assert "B1" in s5[0].message
+
+    def test_duplicate_product_definition_id_fails_s5(self, tmp_path):
+        cfg = _write_project(
+            tmp_path,
+            'product_definition = "nyxloom-trove/2-product-definition.md"\n',
+            {"nyxloom-trove/2-product-definition.md": DUPLICATE_ID_PRODUCT_DEF},
+        )
+        findings = lint.lint_spine(cfg)["nyxloom-trove/2-product-definition.md"]
+        s5 = [f for f in findings if f.rule == "S5"]
+        assert s5, findings
+        assert all(f.severity == "error" for f in s5)
+        assert "F001" in s5[0].message
+
+    def test_duplicate_roadmap_milestone_id_fails_s5(self, tmp_path):
+        cfg = _write_project(
+            tmp_path,
+            'roadmap = "nyxloom-trove/3-roadmap.md"\n',
+            {"nyxloom-trove/3-roadmap.md": DUPLICATE_ID_ROADMAP},
+        )
+        findings = lint.lint_spine(cfg)["nyxloom-trove/3-roadmap.md"]
+        s5 = [f for f in findings if f.rule == "S5"]
+        assert s5, findings
+        assert all(f.severity == "error" for f in s5)
+        assert "M1" in s5[0].message
+
+    def test_unique_ids_pass_s5(self, tmp_path):
+        """A backlog whose items all have distinct ids (no folds_into, so S2
+        can't fire either) produces no S5 finding -- proves S5 doesn't just
+        fire unconditionally."""
+        unique_backlog = DUPLICATE_ID_BACKLOG.replace(
+            '      - id: B1\n        title: "a duplicate-id item"\n        type: bugfix\n',
+            '      - id: B2\n        title: "a second item"\n        type: bugfix\n',
+        )
+        cfg = _write_project(
+            tmp_path,
+            'backlog = "nyxloom-trove/4-backlog.md"\n',
+            {"nyxloom-trove/4-backlog.md": unique_backlog},
+        )
+        results = lint.lint_spine(cfg)
+        assert _findings_for(results, "nyxloom-trove/4-backlog.md") == []
+
+    def test_duplicate_id_excludes_doc_from_s2_pool(self, tmp_path):
+        """A product-definition with a duplicate feature id is NOT treated
+        as S1/S4/S5-clean for the S2 cross-doc pass: a roadmap milestone
+        referencing that (duplicated, therefore untrustworthy) feature id
+        must still fail S2 -- the duplicate doesn't get to silently donate
+        its id to the cross-doc feature pool."""
+        cfg = _write_project(
+            tmp_path,
+            'product_definition = "nyxloom-trove/2-product-definition.md"\n'
+            'roadmap = "nyxloom-trove/3-roadmap.md"\n',
+            {
+                "nyxloom-trove/2-product-definition.md": DUPLICATE_ID_PRODUCT_DEF,
+                "nyxloom-trove/3-roadmap.md": VALID_ROADMAP,  # references F001
+            },
+        )
+        results = lint.lint_spine(cfg)
+        pd_findings = results["nyxloom-trove/2-product-definition.md"]
+        assert any(f.rule == "S5" for f in pd_findings)
+        roadmap_findings = results["nyxloom-trove/3-roadmap.md"]
+        s2 = [f for f in roadmap_findings if f.rule == "S2"]
+        assert s2, roadmap_findings
+        assert "F001" in s2[0].message
 
 
 # ---------------------------------------------------------------------------
