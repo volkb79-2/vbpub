@@ -114,6 +114,31 @@ The factory must be self-correcting without a human catching mechanical slips:
   the file where expected and **fail the REVIEW LEG for a retry** rather than
   silently rejecting good work. Pair with #16 so even a wrong reject re-queues.
 - **Backlog closes the loop:** review follow-ups + typed blocks → backlog → carve.
+- **Borrowed invariant — durable waits:** "awaiting review/decision" is a
+  first-class, crash-safe, non-stranding wait (Temporal/LangGraph *invariant*,
+  implemented in our own event log, not the engine). It re-opens whenever fresh
+  work arrives; it cannot storm or strand. Pin it with an F0 property test.
+
+## 6. The carver as scheduler (parallelism, grouping, merge strategy)
+
+The carver does not just write handoffs — it **plans execution** for a set of
+related work, bounded by config (operator co-design 2026-07-17):
+
+- **Merge strategy** — serial (impl A → review+merge → impl B …: zero conflict,
+  slow) vs. **parallel-then-batch-review-merge** (A|B|C concurrent → ONE review
+  resolves a 3–5 commit merge: trades a few review "thinking credits" + merge
+  complexity for wall-clock). A config knob favours/forces `serial | batch |
+  auto`; the carver picks per work-set from parallelizability + conflict risk.
+- **Wave grouping = shared CONTEXT, not just component.** Batch handoffs into one
+  review/session when they read the SAME large docs + surrounding code (component
+  is a cheap proxy; even cross-component jobs with large identical context are
+  worth one review/merge). Never batch disjoint context — the reviewer drags
+  irrelevant context and gets confused. `max_wave_size = 5` default. The handoff
+  author **estimates context size + overlap + conflict risk** (a `context_estimate`
+  field) so the scheduler groups smartly.
+- **`wave_id` is EPHEMERAL** (a per-review-pass batch), never persistent task
+  state — the stale-`wave_id` strand (fixed 2026-07-17) came from treating it as
+  durable. "Awaiting review" is the per-task durable wait above.
 
 ## Why a spine + reconciliation (the affirmation)
 
@@ -124,11 +149,14 @@ thin-early levels + guided reshaping.
 
 ## Foundational carves (phased)
 
-- **F6 — self-correction FIRST** (robust verdict derivation + reject-loop #16):
-  the hands-off-correctness prerequisite; unblocks trustworthy unattended runs.
-- **F1 — spine schema + trove/storage** (north-star, versioned product-def,
-  roadmap, backlog) + lint.
-- **F2 — onboarding engine + non-AI wizard + surfaces** (CLI first).
+- ~~**F6 — self-correction FIRST**~~ — **DONE** (2026-07-16/17: robust verdict,
+  reject-loop #16, runaway watchdog, windowed/deduped spec-attention, +
+  stale-wave_id + post-merge-validation strands found by F0 & fixed).
+- ~~**F0 — behavioral test harness**~~ — **DONE** (scriptable fake agent + lifecycle
+  + property/invariant tests; found the two strands above).
+- ~~**F1 — spine schema + validator + config**~~ — **DONE** (c245a81: 4 spine
+  schemas, non-AI S1–S4 validator, config keys, own trove migrated + lint-green).
+- **F2 — onboarding engine + non-AI wizard + surfaces** (CLI first) — NEXT.
 - **F3 — `/review`-style assessment scan agent.**
 - **F4 — guided questionnaire** (extend `intake_chat`) → populate spine
   (north-star-first).
