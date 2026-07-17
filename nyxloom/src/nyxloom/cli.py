@@ -90,8 +90,17 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               an already-present spine doc / already-set
                               config key is left untouched. Deterministic,
                               scriptable, no AI/LLM invoked -- the AI scan
-                              (F3) and guided questionnaire (F4) are
-                              separate, NOT built here.
+                              (F3, `--scan`) and guided questionnaire (F4b,
+                              `--questionnaire`) are separate flags, below.
+                              `--questionnaire` (PACKAGE F4b 2026-07-17):
+                              requires a STORED assessment (`--scan` this
+                              call or a prior one) -- errors clearly (exit
+                              1, no dispatch) without one. Dispatches the
+                              guided one-shot questionnaire agent, drafts
+                              the direction spine via F4a's spine_writer,
+                              self-lints it, and restores the prior spine
+                              content on any failure (see
+                              onboarding_questionnaire.py).
 
 main(argv=None) -> int. Import module functions lazily inside handlers so
 `nyxloom version` works even if an optional module is broken; handlers
@@ -719,7 +728,19 @@ def cmd_onboard(args) -> int:
     onboarding.py's own module docstring) -- it dispatches
     onboarding_scan.run_assessment_scan with the very answers just recorded.
     Skipped automatically for maturity=empty (nothing to scan; see
-    onboarding_scan's greenfield short-circuit) even if `--scan` was passed."""
+    onboarding_scan's greenfield short-circuit) even if `--scan` was passed.
+
+    PACKAGE F4b 2026-07-17: `--questionnaire` is the follow-on guided
+    one-shot draft, kept strictly AFTER `run_wizard` (and, in the same
+    invocation, after `--scan` if both are passed together). It requires a
+    STORED assessment (`onboarding-assessment.json`, written by a prior or
+    this-same-call `--scan`) -- with none stored, prints a clear error and
+    returns 1 WITHOUT dispatching. Otherwise dispatches
+    onboarding_questionnaire.run_questionnaire, which proposes + drafts the
+    direction spine (north-star/product-definition/roadmap/backlog) via
+    F4a's spine_writer, self-lints the result, and restores the prior spine
+    content on any failure (see onboarding_questionnaire's module
+    docstring)."""
     from . import onboarding
 
     project_folder = Path(args.project_folder)
@@ -772,6 +793,30 @@ def cmd_onboard(args) -> int:
             print(f"assessment recorded: {onboarding_scan.assessment_path(trove_dir)}")
             print(f"  maturity: {assessment.maturity}")
             print(f"  gaps: {len(assessment.gaps)}")
+
+    if getattr(args, "questionnaire", False):
+        from . import onboarding_questionnaire, onboarding_scan
+
+        if not onboarding_scan.assessment_path(trove_dir).exists():
+            print(
+                "error: no assessment recorded for this project -- run "
+                "`onboard --scan` first",
+                file=sys.stderr,
+            )
+            return 1
+
+        try:
+            q_result = onboarding_questionnaire.run_questionnaire(project_folder)
+        except onboarding_questionnaire.QuestionnaireError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+
+        print(
+            f"spine drafted: {q_result.feature_count} features, "
+            f"{q_result.milestone_count} milestones, "
+            f"{q_result.backlog_count} backlog items -> "
+            + ", ".join(str(p) for p in q_result.drafted_paths)
+        )
 
     return 0
 
@@ -904,6 +949,10 @@ def main(argv: list[str] | None = None) -> int:
     onboard_parser.add_argument("--scan", action="store_true",
                                  help="PACKAGE F3: after the non-AI wizard, dispatch the read-only "
                                       "assessment scan agent (skipped automatically for --maturity empty)")
+    onboard_parser.add_argument("--questionnaire", action="store_true",
+                                 help="PACKAGE F4b: dispatch the guided one-shot questionnaire agent "
+                                      "to draft the direction spine from a STORED assessment (run "
+                                      "--scan first, or pass both --scan --questionnaire together)")
 
     try:
         args = parser.parse_args(argv)
