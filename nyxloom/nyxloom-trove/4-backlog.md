@@ -63,6 +63,15 @@ items:
   type: bugfix
   component: ops
   context_estimate: small
+- id: B12
+  title: carve-ahead drift/staleness guard -- input_revision is stamped by the
+    carver but never re-validated against current main before an implementer
+    attempt starts; raising carve_ahead_target increases exposure with no
+    safety net (a CARVED task's premises can go stale while it waits)
+  type: feature
+  component: dispatch
+  context_estimate: medium
+  folds_into: F008
 - id: B-self-review-leg
   title: wire the independent SELF_REVIEW dispatched leg (beyond the prompt-level
     implementer self-review)

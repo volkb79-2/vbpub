@@ -59,13 +59,26 @@ timeout_seconds = 1800
 environment = "tester-unified"
 
 [policy]
-max_active_tasks = 3
+max_active_tasks = 5
+# 2026-07-19: operator asked for 10; capped at 5 instead -- host has 8 CPUs
+# and was observed at only ~3GB available / 20GB swap in use with ZERO
+# nyxloom attempts active yet. Each attempt's gate phase spins up its own
+# `docker run tester-unified pytest` (CPU/memory-heavy, ~4min observed);
+# N concurrent gates competing for 8 CPUs on an already-tight host risks
+# thrashing. Revisit upward once concurrent-gate behavior is observed live.
 ready_queue_target = 5
 # 2026-07-16: RESTORED to 5 after the tini+bridge+ntfy-url rebuild completed and
 # was verified (PID1=tini, bridge dashboard, NTFY_URL single-source). The
 # convergence freeze (carve=0, to drain to a quiet window) is over; autonomous
 # carving resumes. dstdns/topos remain project-paused for the nyxloom-only focus.
-carve_ahead_target = 5
+# 2026-07-19: raised 5->10 (operator request, paired with P47's carve-dispatch
+# mutex landing first -- carving further ahead of actual dispatch increases
+# concurrent-carve exposure, so the lock needed to land before this). See B12
+# for the still-open companion concern this does NOT fix: input_revision is a
+# schema field the carver stamps but nothing ever re-validates against current
+# main before an implementer attempt starts, so carving 10-deep genuinely
+# raises stale-premise risk with no safety net yet.
+carve_ahead_target = 10
 max_attempts_per_task = 3
 merge_mode = "manual"
 retention_days = 60
