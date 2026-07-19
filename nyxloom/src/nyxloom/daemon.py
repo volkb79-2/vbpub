@@ -1417,6 +1417,147 @@ class Daemon:
                 task_id=task_id))
         return events
 
+    def _execute_auto_merge(self, project: str, cfg: ProjectConfig,
+                             states: dict[str, TaskStateFile],
+                             action: "reconcile.AutoMergeTask") -> list[Event]:
+        """MERGE_READY -> MERGED (real git merge succeeds) or a
+        NEEDS_OPERATOR escalation left at MERGE_READY (a genuine conflict,
+        or any git-plumbing failure) -- see reconcile.py module contract
+        item 13 for why no verdict re-check belongs here.
+
+        Deliberately uses a disposable scratch worktree + a REAL `git merge
+        --no-ff`, never the surgical commit-tree technique an operator uses
+        by hand elsewhere in this project's own workflow: that technique
+        (commit-tree + update-ref + selective checkout) grafts the branch's
+        tree onto main WITHOUT any 3-way merge algorithm ever running, so
+        it silently has no conflict detection at all -- fine under human
+        supervision (the operator reads the diff), never fine for
+        unattended merging, where a genuine textual conflict must escalate,
+        not silently clobber whatever else landed on main concurrently.
+
+        The final `update-ref <new> <old>` call uses git's own compare-and-
+        swap form (fails if the ref no longer equals `old_commit`) as a
+        race guard: if anything else moved the default branch between this
+        method reading it and writing the merge result, the write is
+        refused rather than silently rebasing over an unknown state.
+
+        The merge commit's `-c user.name=/-c user.email=` are passed
+        explicitly, not left to ambient global git config: a `--no-ff`
+        merge always creates a commit, and an environment with no global
+        identity configured (observed in the test-runner container) would
+        otherwise fail with "Please tell me who you are" -- easy to
+        misread as a real conflict if not distinguished.
+        """
+        task_id = action.task_id
+        events: list[Event] = []
+        tsf = states[task_id]
+
+        branch = next(
+            (a.branch for a in tsf.attempts if a.role is Role.IMPLEMENTER and a.branch),
+            None,
+        )
+        if branch is None:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"detail": f"auto-merge: no recorded implementer branch for {task_id}",
+                 "reason": "auto-merge-error"}, task_id=task_id))
+            return events
+
+        repo_root_res = subprocess.run(
+            ["git", "-C", str(cfg.root), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True,
+        )
+        repo_root = repo_root_res.stdout.strip()
+        if repo_root_res.returncode != 0 or not repo_root:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"detail": f"auto-merge: could not resolve repo root for {task_id}",
+                 "reason": "auto-merge-error"}, task_id=task_id))
+            return events
+
+        old_commit = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", cfg.default_branch],
+            capture_output=True, text=True,
+        ).stdout.strip()
+
+        scratch = Path(repo_root) / ".worktrees" / f"automerge-{task_id}"
+        if scratch.exists():
+            subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
+                            capture_output=True, text=True)
+
+        add = subprocess.run(
+            ["git", "-C", repo_root, "worktree", "add", "--detach", str(scratch), old_commit],
+            capture_output=True, text=True,
+        )
+        if add.returncode != 0:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"detail": f"auto-merge: scratch worktree setup failed for {task_id}: {add.stderr[:150]}",
+                 "reason": "auto-merge-error"}, task_id=task_id))
+            return events
+
+        merge = subprocess.run(
+            ["git", "-C", str(scratch),
+             "-c", "user.name=nyxloomd", "-c", "user.email=nyxloomd@localhost",
+             "merge", "--no-ff", branch, "-m", f"Merge {task_id} (guarded-automatic)"],
+            capture_output=True, text=True,
+        )
+        if merge.returncode != 0:
+            subprocess.run(["git", "-C", str(scratch), "merge", "--abort"],
+                            capture_output=True, text=True)
+            subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
+                            capture_output=True, text=True)
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"detail": f"auto-merge: real conflict merging {task_id} -- operator must resolve by hand",
+                 "reason": "auto-merge-conflict"}, task_id=task_id))
+            return events
+
+        new_commit = subprocess.run(
+            ["git", "-C", str(scratch), "rev-parse", "HEAD"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
+                        capture_output=True, text=True)
+
+        ff = subprocess.run(
+            ["git", "-C", repo_root, "update-ref", f"refs/heads/{cfg.default_branch}",
+             new_commit, old_commit],
+            capture_output=True, text=True,
+        )
+        if ff.returncode != 0:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"detail": f"auto-merge: ref update raced for {task_id} -- git state needs inspection",
+                 "reason": "auto-merge-error"}, task_id=task_id))
+            return events
+
+        diff = subprocess.run(
+            ["git", "-C", repo_root, "diff", "--name-only", old_commit, new_commit],
+            capture_output=True, text=True,
+        )
+        changed_files = [f for f in diff.stdout.splitlines() if f.strip()]
+        if changed_files:
+            subprocess.run(
+                ["git", "-C", repo_root, "checkout", cfg.default_branch, "--"] + changed_files,
+                capture_output=True, text=True,
+            )
+
+        events.append(self._transition(project, cfg, states, task_id, TaskState.MERGED, None))
+        events.append(self._append_ev(
+            project, cfg, states, EventType.MERGE_RECORDED,
+            {"merge_commit": new_commit}, task_id=task_id))
+
+        # Best-effort backlog auto-tick, same parity as cmd_merge (cli.py) --
+        # the merge itself is already durably recorded above, so a backlog
+        # that cannot be read/written must not sink an otherwise-successful
+        # auto-merge.
+        try:
+            backlog_items.tick_merged(backlog_items.resolve_path(cfg), task_id, new_commit)
+        except (OSError, UnicodeDecodeError):
+            pass
+        return events
+
     def _frontmatter_for(self, cfg: ProjectConfig, tsf: TaskStateFile):
         if not tsf.handoff_path:
             return None
@@ -2421,6 +2562,9 @@ class Daemon:
 
         elif isinstance(action, reconcile.RunPostMergeGate):
             events.extend(self._run_post_merge_gate(project, cfg, states, action))
+
+        elif isinstance(action, reconcile.AutoMergeTask):
+            events.extend(self._execute_auto_merge(project, cfg, states, action))
 
         else:
             raise ValueError(f"unhandled action type: {type(action)!r}")
