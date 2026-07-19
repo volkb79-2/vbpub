@@ -160,6 +160,46 @@ def test_emit_attempt_exit_carver_emits_typed_outcome_and_persists_summary(
         assert CARVE_SUMMARY["review_reflection"] not in payload_text
 
 
+def test_real_plan_project_actually_plans_emit_attempt_exit_for_exited_carver(
+        tmp_state, sample_project, monkeypatch):
+    """P50 2026-07-19 (closes a live incident, distinct from the oracle-2
+    test above): every OTHER test in this file uses _scripted to hand-feed
+    reconcile.EmitAttemptExit(role=CARVER) directly, proving only that
+    _consume_carve_exit is CORRECT once invoked -- never that the real
+    reconcile.plan_project, fed by the real daemon._attempt_scan, ever
+    ACTUALLY PLANS that action for a real exited carver attempt. It never
+    did: _attempt_scan's receipt-inclusion filter checked only (task ACTIVE
+    + role IMPLEMENTER) or (task AWAITING_REVIEW + role FRONTIER_REVIEW),
+    never (task ACTIVE + role CARVER) -- so a carver's receipt.json was
+    silently excluded from ReconcileInput.receipts, has_receipt was always
+    False for it, and reconcile.py's own already-written CARVER branch
+    (present since P32 2026-07-16) could never fire. Two real synthetic
+    carve tasks sat ACTIVE forever in production before this was caught.
+    Uses REAL plan_project (no _scripted monkeypatch) with an attempt
+    already in EXITED state (as the wrapper itself leaves it on exit,
+    before the daemon has consumed it) -- the exact shape that was stuck."""
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+    cfg = sample_project
+    task_id, attempt_id = _seed_carve_task("demo", 2, cfg.root)
+    _write_carve_report(cfg.root, cfg.reports_dir, 2, CARVE_SUMMARY)
+    _write_receipt("demo", attempt_id)
+
+    states = storage.list_states("demo")
+    tsf = states[task_id]
+    tsf.attempts[0].state = AttemptState.EXITED
+    storage.save_state(tsf)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    final = storage.load_state("demo", task_id)
+    assert final.state is TaskState.SUPERSEDED, (
+        "the real reconcile.plan_project must plan EmitAttemptExit for an "
+        "exited carver attempt on its own -- not just when hand-fed"
+    )
+    assert any(e.type is EventType.CARVE_OUTCOME for e in storage.iter_events("demo"))
+
+
 def test_carve_outcome_never_produces_a_notification_even_if_forced_into_push_classes(
         tmp_state, sample_project, monkeypatch):
     """Strongest form of the injection-boundary oracle: even a future

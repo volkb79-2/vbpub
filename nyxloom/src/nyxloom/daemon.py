@@ -859,14 +859,28 @@ class Daemon:
             for att in tsf.attempts:
                 if att.state in TERMINAL_ATTEMPT_STATES:
                     # EXITED attempts whose receipt still needs consuming:
-                    # implementer exit while task ACTIVE, or (2026-07-15
-                    # deadlock fix) frontier-review exit while task is still
-                    # AWAITING_REVIEW — the planner needs both receipts.
+                    # implementer exit while task ACTIVE, frontier-review
+                    # exit while task is still AWAITING_REVIEW (2026-07-15
+                    # deadlock fix), or (P50 2026-07-19: a SEPARATE deadlock,
+                    # same shape) a carver exit while its synthetic task is
+                    # still ACTIVE. reconcile.py's dispatch_eligible-style
+                    # EXITED-while-ACTIVE-and-role-CARVER branch has existed
+                    # since P32 (2026-07-16) specifically to plan
+                    # EmitAttemptExit for this case -- its own comment there
+                    # already documented that "_consume_carve_exit ... only
+                    # ever ran off this same re-scan, which didn't cover
+                    # CARVER" -- but this scan never actually included the
+                    # CARVER case, so has_receipt was always False for a
+                    # carve attempt and that branch could never fire. Two
+                    # synthetic carve tasks sat ACTIVE forever (permanently
+                    # eating a wip slot each) until this fix.
                     if not (att.state == AttemptState.EXITED
                             and ((tsf.state == TaskState.ACTIVE
                                   and att.role == Role.IMPLEMENTER)
                                  or (tsf.state == TaskState.AWAITING_REVIEW
-                                     and att.role == Role.FRONTIER_REVIEW))):
+                                     and att.role == Role.FRONTIER_REVIEW)
+                                 or (tsf.state == TaskState.ACTIVE
+                                     and att.role == Role.CARVER))):
                         continue
                 attempt_dir = paths.attempt_dir(project, att.attempt_id)
                 receipt_path = attempt_dir / "receipt.json"
