@@ -762,6 +762,40 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                     else:
                         attempt_actions.append(StallCheck(task_id=task_id, attempt_id=attempt.attempt_id))
 
+            # P54 2026-07-19 (M2, CRITICAL -- attempt-state closure). A FAILED
+            # attempt is TERMINAL: the wrapper writes ATTEMPT_FAILED for a
+            # lease-lost-race (exit 75) or a spawn failure -- neither ran real
+            # work -- but the loop had NO branch for FAILED, so the task was
+            # never moved off its non-terminal state. Consequence: an
+            # IMPLEMENTER task stuck ACTIVE forever (eats a wip slot); a CARVER
+            # synthetic task stuck ACTIVE forever -> carve_in_flight permanently
+            # True (any non-terminal task carrying a CARVER attempt) -> ALL
+            # carving deadlocks silently, with nothing in the log but one
+            # ATTEMPT_FAILED. And the planner CREATES same-pass capacity-1 lease
+            # collisions itself (it plans dispatches against the snapshot
+            # leases_free and never decrements it while planning), so a FAILED
+            # race-loser is routine operation, not adversarial input. Guard on
+            # is-latest so an older FAILED attempt behind a newer one is
+            # ignored; self-limiting (the transition moves the task off its
+            # current state, so this does not refire next pass).
+            elif (attempt.state == AttemptState.FAILED
+                  and bool(tsf.attempts) and tsf.attempts[-1].attempt_id == attempt.attempt_id
+                  and tsf.state not in TERMINAL_TASK_STATES):
+                if attempt.role == Role.CARVER:
+                    # Free the single carve slot; a later untargeted trigger
+                    # re-carves if still below carve_ahead_target.
+                    attempt_actions.append(Transition(
+                        task_id=task_id, to=TaskState.SUPERSEDED,
+                        notes="carve attempt failed (lease-race/spawn) -- freeing carve slot"))
+                elif attempt.role == Role.IMPLEMENTER and tsf.state == TaskState.ACTIVE:
+                    # The attempt never ran real work -> re-queue to re-dispatch
+                    # once the transient lease/spawn condition clears. (The
+                    # FAILED receipt still counts toward max_attempts today;
+                    # excluding never-ran races is A8/M8's unified accessor.)
+                    attempt_actions.append(Transition(
+                        task_id=task_id, to=TaskState.QUEUED,
+                        notes="implementer attempt failed to start (lease-race/spawn) -- re-queued"))
+
             # INTERRUPTED attempt handling
             elif attempt.state == AttemptState.INTERRUPTED and inp.pause_mode == "drain-agents":
                 # P15 2026-07-15: draining agents -- no NEW agent process may
