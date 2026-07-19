@@ -80,7 +80,9 @@ ready_queue_target = 5
 # raises stale-premise risk with no safety net yet.
 carve_ahead_target = 10
 max_attempts_per_task = 3
-merge_mode = "manual"
+merge_mode = "guarded-automatic"  # 2026-07-19: P48 shipped -- real git merge --no-ff
+                                   # via a scratch worktree, escalates NEEDS_OPERATOR
+                                   # on a genuine conflict, never fires while paused
 retention_days = 60
 reconcile_interval_seconds = 30
 http_port = 8942

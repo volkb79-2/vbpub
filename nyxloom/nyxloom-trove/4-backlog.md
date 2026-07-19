@@ -63,6 +63,19 @@ items:
   type: bugfix
   component: ops
   context_estimate: small
+- id: B13
+  title: runaway watchdog conflates a persistent-but-acknowledged condition with
+    actively-worsening thrash -- review_rejections_by_area>=2 stays true for the
+    FULL 7-day HISTORY_REJECTION_WINDOW_SECONDS regardless of an operator having
+    already unpaused once, so the SAME reconcile-thrash streak re-trips an
+    auto-pause every ~13 reconcile passes (minutes, once unblocked) until the
+    triggering rejections finally age out; needs the thrash-streak to reset (or
+    not count) once an operator has unpaused for this specific condition, not
+    just dedupe the notification
+  type: bugfix
+  component: watchdog
+  context_estimate: medium
+  folds_into: F006
 - id: B12
   title: carve-ahead drift/staleness guard -- input_revision is stamped by the
     carver but never re-validated against current main before an implementer
