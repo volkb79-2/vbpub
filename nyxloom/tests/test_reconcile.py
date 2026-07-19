@@ -2649,6 +2649,44 @@ def test_carve_trigger_none_when_carver_terminal_slot_freed():
     assert len(dispatches) == 1
 
 
+def test_failed_carver_attempt_supersedes_and_frees_carve_slot():
+    """P54 2026-07-19 (M2, CRITICAL -- attempt-state closure). A synthetic
+    carve task whose sole CARVER attempt is FAILED (the wrapper writes
+    ATTEMPT_FAILED for a lease-lost-race, exit 75, or a spawn failure) had
+    NO handler in the attempt loop -> it stayed ACTIVE forever -> the
+    carve_in_flight predicate (any non-terminal task carrying a CARVER
+    attempt) was permanently True -> ALL carving deadlocked silently. Now
+    the FAILED attempt transitions the carve task to SUPERSEDED, freeing the
+    single carve slot for a later pass (self-limiting)."""
+    carve_att = make_attempt(attempt_id="att-carve", state=AttemptState.FAILED,
+                              role=Role.CARVER)
+    carve_tsf = make_tsf(task_id="carve-demo-1", state=TaskState.ACTIVE,
+                          attempts=[carve_att])
+    inp = ReconcileInput(**_carve_base_kwargs(states={"carve-demo-1": carve_tsf}))
+    actions = plan_project(inp)
+    transitions = [a for a in actions
+                   if isinstance(a, Transition) and a.task_id == "carve-demo-1"]
+    assert len(transitions) == 1
+    assert transitions[0].to == TaskState.SUPERSEDED
+
+
+def test_failed_implementer_attempt_requeues():
+    """P54 (M2, CRITICAL): an ACTIVE implementer task whose latest attempt is
+    FAILED (failed to start -- lease-race/spawn, never ran real work) had no
+    handler -> stuck ACTIVE forever, eating a wip slot. Now re-queued to
+    re-dispatch once the transient condition clears (self-limiting)."""
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-1", state=AttemptState.FAILED,
+                        role=Role.IMPLEMENTER)
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+    inp = ReconcileInput(**_carve_base_kwargs(
+        states={"P01": tsf}, frontmatters={"P01": (fm, "h.md")}))
+    actions = plan_project(inp)
+    transitions = [a for a in actions
+                   if isinstance(a, Transition) and a.task_id == "P01"]
+    assert any(t.to == TaskState.QUEUED for t in transitions)
+
+
 def test_carve_trigger_none_when_no_frontier_route():
     """Oracle 1: no healthy 'frontier-review' route configured/healthy ->
     never dispatch a carver, even though every other condition holds."""
