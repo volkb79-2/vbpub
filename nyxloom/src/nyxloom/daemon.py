@@ -611,7 +611,8 @@ class Daemon:
 
             inp = self._build_input(project, cfg, states)
             actions = reconcile.plan_project(inp)
-            actions, watchdog_events = self._apply_watchdog(project, cfg, states, actions)
+            actions, watchdog_events = self._apply_watchdog(
+                project, cfg, states, actions, inp.project_paused)
             appended.extend(watchdog_events)
             for action in actions:
                 appended.extend(self._execute(project, cfg, states, action))
@@ -1118,7 +1119,8 @@ class Daemon:
     # -- runaway watchdog (P44 2026-07-16) ------------------------------
 
     def _apply_watchdog(self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
-                        actions: list[reconcile.Action]) -> tuple[list[reconcile.Action], list[Event]]:
+                        actions: list[reconcile.Action], project_paused: bool
+                        ) -> tuple[list[reconcile.Action], list[Event]]:
         """Run watchdog.detect_runaways over the recent event window BEFORE
         this pass's actions execute. For each detected RunawaySignal:
           (i)  escalate ONCE -- a NEEDS_OPERATOR{reason:'runaway', pattern,
@@ -1137,6 +1139,30 @@ class Daemon:
                paths.pause_flag(project), so a persistent runaway stops
                rather than merely slows down. A no-op if already paused
                (human or an earlier runaway already handled it).
+
+        P49 2026-07-19 (fixes a live incident: unpausing re-paused within
+        one reconcile_interval_seconds, repeatedly): the streak used to
+        increment UNCONDITIONALLY every pass a signal was (re-)detected --
+        including every pass spent ALREADY paused, since detect_runaways
+        keeps re-finding the same still-undecayed historical condition
+        (e.g. review_rejections_by_area>=2, true for a full 7-day window
+        regardless of an operator having acted). By the time an operator
+        unpaused, the in-memory streak had climbed far past
+        RUNAWAY_PERSIST_AFTER_CYCLES from all the passes spent paused, so
+        the very next pass re-paused almost instantly -- the pause flag
+        was the only thing gating _auto_pause_for_runaway's OWN no-op, not
+        the streak that decides whether to even try. Fix: while
+        project_paused (for ANY reason -- an operator's own pause counts
+        the same as this watchdog's own prior pause), freeze+reset each
+        signal's streak to 0 instead of incrementing it, and skip
+        escalating/suppressing for it this pass (there is nothing new to
+        suppress while already paused). The pass after an operator
+        unpauses starts every streak at 0, so the SAME still-open
+        condition needs RUNAWAY_PERSIST_AFTER_CYCLES fresh detections
+        again (not zero) before re-pausing -- a real window, not an
+        instant re-trip, while still re-pausing if the condition is
+        genuinely still active rather than silently disabling the
+        watchdog.
         Returns (filtered_actions, new_events) -- both empty/unchanged when
         no runaway is detected (the overwhelmingly common case)."""
         try:
@@ -1154,6 +1180,11 @@ class Daemon:
         new_events: list[Event] = []
         for sig in signals:
             streak_key = f"{project}:{sig.key}"
+
+            if project_paused:
+                self._runaway_streak[streak_key] = 0
+                continue
+
             streak = self._runaway_streak.get(streak_key, 0) + 1
             self._runaway_streak[streak_key] = streak
 

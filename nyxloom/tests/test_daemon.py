@@ -2232,3 +2232,91 @@ def test_watchdog_transient_signal_suppresses_action_without_pausing(
     assert len(runaway_escalations) == 2
     patterns = {e.payload["pattern"] for e in runaway_escalations}
     assert patterns == {"reconcile-thrash", "notification-storm"}
+
+
+# --------------------------------------------------------------------------
+# P49 2026-07-19: fixes a live incident -- unpausing re-paused within one
+# reconcile_interval_seconds, repeatedly. The in-memory streak used to climb
+# unboundedly every pass spent already-paused (detect_runaways keeps
+# re-finding the same still-undecayed historical condition), so by the time
+# an operator unpaused, the streak was already far past
+# RUNAWAY_PERSIST_AFTER_CYCLES and the very next pass re-paused almost
+# instantly.
+
+def test_watchdog_streak_frozen_while_already_paused_not_unbounded(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Same attempt-loop setup as the oracle-3 test above: auto-pause after
+    RUNAWAY_PERSIST_AFTER_CYCLES passes. Then run MANY more passes while
+    STILL paused (simulating time an operator hasn't looked yet) -- before
+    the fix the in-memory streak would climb to
+    RUNAWAY_PERSIST_AFTER_CYCLES + 10; after the fix it stays frozen at 0
+    every pass spent paused, so clearing the pause file and running exactly
+    RUNAWAY_PERSIST_AFTER_CYCLES - 1 MORE passes must NOT yet re-pause."""
+    project = "demo"
+    task_id = "demo-attempt-loop-task"
+    now = utc_now()
+    for i in range(7):
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.ATTEMPT_CREATED, payload={}, task_id=task_id,
+            timestamp=now - timedelta(seconds=(7 - i)),
+        )
+
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES):
+        d.run_pass(project)
+    assert paths.pause_flag(project).exists()
+
+    # 10 MORE passes while still paused -- the exact scenario that used to
+    # let the streak climb unboundedly.
+    for _ in range(10):
+        d.run_pass(project)
+    assert paths.pause_flag(project).exists()
+
+    # Operator unpauses (matches this project's own pause-flag convention:
+    # remove the file for 'run' mode).
+    paths.pause_flag(project).unlink()
+    assert not paths.pause_flag(project).exists()
+
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES - 1):
+        d.run_pass(project)
+    assert not paths.pause_flag(project).exists(), (
+        "streak must have reset to 0 on unpause -- re-pausing after fewer "
+        "than RUNAWAY_PERSIST_AFTER_CYCLES fresh passes means it did not"
+    )
+
+
+def test_watchdog_repauses_after_fresh_persist_cycles_if_condition_still_open(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Companion to the freeze test above: the watchdog is NOT silently
+    disabled by the fix -- if the SAME condition is still genuinely open
+    after an operator unpauses, exactly RUNAWAY_PERSIST_AFTER_CYCLES fresh
+    passes re-pauses it (a real window, not an instant re-trip, but not a
+    permanent bypass either)."""
+    project = "demo"
+    task_id = "demo-attempt-loop-task"
+    now = utc_now()
+    for i in range(7):
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.ATTEMPT_CREATED, payload={}, task_id=task_id,
+            timestamp=now - timedelta(seconds=(7 - i)),
+        )
+
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES):
+        d.run_pass(project)
+    assert paths.pause_flag(project).exists()
+
+    paths.pause_flag(project).unlink()
+
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES):
+        d.run_pass(project)
+    assert paths.pause_flag(project).exists(), (
+        "a genuinely still-open condition must still re-pause -- the fix "
+        "must not disable the watchdog"
+    )
