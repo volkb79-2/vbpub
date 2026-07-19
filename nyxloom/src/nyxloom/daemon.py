@@ -1966,7 +1966,29 @@ class Daemon:
         CARVE_OUTCOME, raises headroom/roadmap-exhausted SPEC_ATTENTION and
         (branch authority only) a NEEDS_OPERATOR, then retires the
         synthetic carve task to SUPERSEDED (clears reconcile.py's carve
-        slot)."""
+        slot).
+
+        P51 2026-07-19 (live incident: two real carves both hit
+        carve-parse-failed despite writing a genuinely valid report):
+        _execute_carve_dispatch's 'branch' authority worktree is a git
+        worktree of the WHOLE physical repo (worktree_root = '../.worktrees'
+        is relative to cfg.root, one level ABOVE it), so the carver's own
+        cwd there is the repo root, not cfg.root -- it correctly wrote (and
+        committed) its report at <worktree>/<cfg.root.name>/<reports_dir>/
+        CARVE-N.md, e.g. <worktree>/nyxloom/nyxloom-trove/reports/CARVE-6.md.
+        'main'/'files' authority never hits this: _execute_carve_dispatch
+        sets carve_cwd = cfg.root directly for both (no separate worktree).
+        The distinguishing signal is deliberately "does the recorded
+        worktree differ from cfg.root", NOT the current policy's
+        carve_authority string -- carve_authority is a live-editable POLICY
+        value (config.html can change it any time after this attempt was
+        dispatched), while attempt.worktree is what was ACTUALLY used for
+        THIS specific attempt; keying off the live policy instead would
+        silently break replaying an older attempt after an operator
+        changes carve_authority later. Reusing cfg.root.name (not a
+        repo-root subprocess call) matches the SAME repo-layout assumption
+        cfg.worktree_root's '../.worktrees' already bakes in throughout
+        this carve mechanism -- not a new, riskier one."""
         events: list[Event] = []
         tsf = states[task_id]
         attempt = tsf.attempt_by_id(attempt_id)
@@ -1975,7 +1997,10 @@ class Daemon:
         authority = getattr(cfg.policy, "carve_authority", "branch")
 
         worktree = Path(attempt.worktree) if attempt.worktree else cfg.root
-        report_path = worktree / cfg.reports_dir / f"CARVE-{seq}.md"
+        if attempt.worktree and worktree.resolve() != cfg.root.resolve():
+            report_path = worktree / cfg.root.name / cfg.reports_dir / f"CARVE-{seq}.md"
+        else:
+            report_path = worktree / cfg.reports_dir / f"CARVE-{seq}.md"
 
         summary: CarveSummary | None = None
         if report_path.exists():
