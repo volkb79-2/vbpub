@@ -4,8 +4,9 @@
 
 ## Commit
 Branch `feat/nyxloom-P44-role-scoped-dispatch`, parent `29434d7` (main, `780b522` input_revision +
-one doc-authoring commit). This package's commit hash is recorded below after `git commit` (see
-final line of this file / LOG for the exact hash — check `git log -1` on the branch).
+one doc-authoring commit). This package's commit: `e2bf3e101ef38cbeb0c97c3dd447d043604f39a5`
+("fix(nyxloom): role-scoped build_dispatch (P44)") — 7 files changed (adapters.py, daemon.py,
+test_adapters.py, test_daemon.py, test_carve_from_brief.py, P44-LOG.md, P44-REPORT.md).
 
 ## Gate output (tester-unified, from `main`-derived worktree; re-run after the fixture-widening fix
 below)
