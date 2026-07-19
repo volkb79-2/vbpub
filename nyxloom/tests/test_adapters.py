@@ -10,7 +10,7 @@ import pytest
 
 from nyxloom import adapters
 from nyxloom.config import RouteDef
-from nyxloom.types import Basis
+from nyxloom.types import Basis, Role
 
 
 @pytest.fixture()
@@ -293,6 +293,113 @@ def test_build_dispatch_prompt_commit_instruction_is_truthful():
     assert "uncommitted work is discarded" not in prompt
     assert "git commit" in prompt
     assert "surfaced to review" in prompt
+
+
+# P44 (O1/O2): role-scoped build_dispatch -- IMPLEMENTER keeps today's exact
+# text (regression pin), CARVER/FRONTIER_REVIEW get their own role-correct
+# prompt instead of inheriting the implementer's commit instruction.
+_P44_KW = dict(
+    handoff_path="handoff/P44.md",
+    worktree="/workspace/.worktrees/feat-x",
+    branch="feat-x",
+    task_id="T-P44",
+    gate_hint="pytest-q",
+    receipt_path="/tmp/receipt.json",
+)
+
+
+def test_build_dispatch_role_implementer_matches_pre_p44_default():
+    """O1(a) non-hollow anchor: passing role=Role.IMPLEMENTER explicitly
+    produces a prompt BYTE-FOR-BYTE IDENTICAL to calling build_dispatch with
+    no role kwarg at all (today's only behavior, pre-P44) -- a real
+    regression pin, not just a re-check of the same substrings."""
+    route = RouteDef(route_id="test", cli="fake", model="fake-model")
+    _argv_default, prompt_default = adapters.build_dispatch(route, **_P44_KW)
+    _argv_explicit, prompt_explicit = adapters.build_dispatch(
+        route, role=Role.IMPLEMENTER, **_P44_KW)
+    assert prompt_explicit == prompt_default
+
+    # Re-assert the pre-existing IMPLEMENTER-path assertions (P21 truthfulness
+    # pin + required-info) against the EXPLICIT-role prompt, proving role=
+    # Role.IMPLEMENTER is not just equal to the default but still carries
+    # every one of today's real assertions.
+    assert "handoff/P44.md" in prompt_explicit
+    assert "/workspace/.worktrees/feat-x" in prompt_explicit
+    assert "feat-x" in prompt_explicit
+    assert "pytest-q" in prompt_explicit
+    assert "/tmp/receipt.json" in prompt_explicit
+    assert "uncommitted work is discarded" not in prompt_explicit
+    assert "git commit" in prompt_explicit
+    assert "surfaced to review" in prompt_explicit
+
+
+def test_build_dispatch_role_carver_files_authority_drops_commit_instruction():
+    """O1(b) non-hollow anchor: a CARVER dispatch under carve_authority
+    'files' must NOT contain the commit instruction -- 'files' authority's
+    whole contract (daemon.py module docstring above _CARVE_AUTHORITIES) is
+    "writes new handoff files WITHOUT committing (no git)"."""
+    route = RouteDef(route_id="test", cli="fake", model="fake-model")
+    _argv, prompt = adapters.build_dispatch(
+        route, role=Role.CARVER, carve_authority="files", **_P44_KW)
+    assert "git commit" not in prompt
+    assert "git add" not in prompt
+    # still names what the carver needs to find its work:
+    assert "handoff/P44.md" in prompt
+    assert "/workspace/.worktrees/feat-x" in prompt
+    assert "pytest-q" in prompt
+    assert "/tmp/receipt.json" in prompt
+
+
+@pytest.mark.parametrize("authority", ["branch", "main"])
+def test_build_dispatch_role_carver_branch_or_main_keeps_commit_instruction(authority):
+    """Positive counterpart to the 'files' case: O1 explicitly permits
+    keeping the commit instruction when authority is 'branch' or 'main'
+    (these DO commit the new handoff file(s)) -- proves the CARVER branch
+    is authority-conditional, not just unconditionally silent about git."""
+    route = RouteDef(route_id="test", cli="fake", model="fake-model")
+    _argv, prompt = adapters.build_dispatch(
+        route, role=Role.CARVER, carve_authority=authority, **_P44_KW)
+    assert "git commit" in prompt
+
+
+def test_build_dispatch_role_frontier_review_never_tells_reviewer_to_commit():
+    """O1(c) non-hollow anchor: a FRONTIER_REVIEW dispatch's prompt must NOT
+    contain 'git commit' and must not claim a branch to commit to -- fixes
+    the live bug (daemon.py's wave-launch call site passes
+    branch=cfg.default_branch) where a reviewer was told to commit to main."""
+    route = RouteDef(route_id="test", cli="fake", model="fake-model")
+    _argv, prompt = adapters.build_dispatch(
+        route, role=Role.FRONTIER_REVIEW, **_P44_KW)
+    assert "git commit" not in prompt
+    assert "Branch:" not in prompt
+    # still names what the reviewer needs to find the packet/gate/receipt:
+    assert "handoff/P44.md" in prompt
+    assert "pytest-q" in prompt
+    assert "/tmp/receipt.json" in prompt
+
+
+def test_daemon_build_dispatch_call_sites_pass_role_explicitly():
+    """O2 (grep-provable): all three daemon.py build_dispatch call sites
+    (CARVER ~L1725, IMPLEMENTER ~L2026, FRONTIER_REVIEW ~L2362) pass their
+    own role= explicitly -- guards against the exact silent-mismatch this
+    package exists to close (a call site importing Role but never actually
+    passing role= to build_dispatch, silently keeping the wrong-role
+    default)."""
+    import re
+
+    daemon_src = (Path(__file__).parent.parent / "src" / "nyxloom" / "daemon.py").read_text()
+    calls = re.findall(
+        r"adapters\.build_dispatch\(\s*(?:[^()]|\([^()]*\))*?\)",
+        daemon_src,
+        flags=re.DOTALL,
+    )
+    assert len(calls) == 3, f"expected exactly 3 build_dispatch call sites, found {len(calls)}"
+    roles_seen = set()
+    for call in calls:
+        m = re.search(r"role\s*=\s*Role\.(\w+)", call)
+        assert m is not None, f"a build_dispatch call site is missing role=Role.*:\n{call}"
+        roles_seen.add(m.group(1))
+    assert roles_seen == {"CARVER", "IMPLEMENTER", "FRONTIER_REVIEW"}
 
 
 # Oracle 3: Prompt-length guard

@@ -1725,6 +1725,7 @@ class Daemon:
         argv, _prompt = adapters.build_dispatch(
             route_def, handoff_path=str(packet_dir / "packet.md"), worktree=str(carve_cwd),
             branch=dispatch_branch, task_id=task_id, gate_hint=gate_hint, receipt_path=receipt_path,
+            role=Role.CARVER, carve_authority=authority,
         )
         spec = wrapper.WrapperSpec(
             project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
@@ -2026,6 +2027,7 @@ class Daemon:
             argv, _prompt = adapters.build_dispatch(
                 route_def, handoff_path=tsf.handoff_path or "", worktree=str(worktree_path),
                 branch=branch, task_id=task_id, gate_hint=gate_hint, receipt_path=receipt_path,
+                role=Role.IMPLEMENTER,
             )
             spec = wrapper.WrapperSpec(
                 project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
@@ -2362,7 +2364,7 @@ class Daemon:
             argv, _prompt = adapters.build_dispatch(
                 route_def, handoff_path=str(packet_dir / "packet.md"), worktree=str(cfg.root),
                 branch=cfg.default_branch, task_id=first_task or wave_id or "review",
-                gate_hint=gate_hint, receipt_path=receipt_path,
+                gate_hint=gate_hint, receipt_path=receipt_path, role=Role.FRONTIER_REVIEW,
             )
             spec = wrapper.WrapperSpec(
                 project=project, task_id=first_task or wave_id or "review", attempt_id=attempt_id,
