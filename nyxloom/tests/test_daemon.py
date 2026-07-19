@@ -80,7 +80,12 @@ def patch_siblings(monkeypatch):
         calls["probe"].append(route.route_id)
         return (True, "ok")
 
-    def fake_build_dispatch(route, *, handoff_path, worktree, branch, task_id, gate_hint, receipt_path):
+    def fake_build_dispatch(route, *, handoff_path, worktree, branch, task_id, gate_hint,
+                             receipt_path, **_kw):
+        # P44 2026-07-19: **_kw absorbs the new role=/carve_authority= kwargs
+        # the three daemon.py call sites now pass explicitly (role-scoped
+        # prompt text) -- this fake only records argv/routing, not prompt
+        # text, so it never needed to care which role dispatched it.
         argv = ["fake-cli", "--task", task_id, "--worktree", worktree]
         calls["build_dispatch"].append({
             "route": route.route_id, "handoff_path": handoff_path, "worktree": worktree,

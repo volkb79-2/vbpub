@@ -32,6 +32,20 @@ INTERFACE CONTRACT (frozen):
   gate command hint and the receipt requirement; substance stays in the
   handoff (v2: argv wedge). If 'incremental-write' in route.prompt_hints,
   append the fixed sentence about ~80-line write batches.
+  (P44 2026-07-19: the PROMPT TEXT is now role-scoped via the keyword-only
+  `role: Role = Role.IMPLEMENTER` param -- everything above (the per-CLI argv
+  shapes, prompt_hints appends, argv_max check) is unchanged and role-
+  agnostic. IMPLEMENTER (the default, so every pre-existing call site that
+  does not pass `role` keeps today's exact text) still gets Handoff:/
+  Worktree:/Branch:/Gate:/Receipt: + "you MUST git commit ALL your work on
+  the branch". CARVER gets its own prompt: when the optional
+  `carve_authority` kwarg is 'files' the commit instruction is DROPPED
+  entirely (that authority writes new handoff files WITHOUT committing --
+  see daemon.py's module docstring above `_CARVE_AUTHORITIES`); 'branch'/
+  'main'/unset keep a carve-worded commit instruction. FRONTIER_REVIEW gets
+  its own prompt that never claims a branch to commit to and never says
+  "git commit" -- fixes the live bug where a reviewer dispatched with
+  branch=cfg.default_branch got told to commit to main.)
 - probe(route) runs route.probe argv (subprocess, timeout 60s, captured):
   returns (ok: bool, detail: str). probe == 'session-limit-check' or
   'one-token-ping' are named builtins: for the pilot both execute
@@ -110,7 +124,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import RouteDef
-from .types import Basis, Usage
+from .types import Basis, Role, Usage
 
 
 class AdapterError(Exception):
@@ -155,27 +169,85 @@ def render_argv(template: list[str], mapping: dict[str, str]) -> list[str]:
 
 def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
                    branch: str, task_id: str, gate_hint: str,
-                   receipt_path: str) -> tuple[list[str], str]:
-    """Returns (argv, prompt). See module contract for per-CLI shapes."""
+                   receipt_path: str, role: Role = Role.IMPLEMENTER,
+                   carve_authority: str | None = None) -> tuple[list[str], str]:
+    """Returns (argv, prompt). See module contract for per-CLI shapes.
+
+    P44 2026-07-19: `role` selects the PROMPT TEXT only (the per-CLI argv
+    shapes below are unchanged and role-agnostic). Defaults to
+    Role.IMPLEMENTER so every call site written before this package (there
+    are several outside daemon.py -- intake_chat.py, onboarding_scan.py,
+    decision_chat.py, onboarding_questionnaire.py -- none of which pass
+    `role`) keeps its exact byte-for-byte prompt/argv. `carve_authority` is
+    only consulted when role is Role.CARVER (see daemon.py's module
+    docstring above `_CARVE_AUTHORITIES` for what 'branch'/'main'/'files'
+    each mean for who commits what).
+    """
     # Construct the prompt (short, names handoff, worktree, branch, gate, receipt)
-    prompt = (
-        f"Handoff: {handoff_path}\n"
-        f"Worktree: {worktree}\n"
-        f"Branch: {branch}\n"
-        f"Gate: {gate_hint}\n"
-        f"Receipt: {receipt_path}\n"
-        # 2026-07-15 (live P64 lesson): the first real dispatch produced a
-        # full implementation but never committed it, and the review packet
-        # diffs main...HEAD — uncommitted work is invisible to review.
-        # 2026-07-16 (P21 live P93 lesson): "uncommitted work is discarded"
-        # was FALSE -- the review packet now also captures uncommitted
-        # worktree state (P21), so keep the commit pressure without
-        # asserting a falsehood.
-        "You MUST `git add` and `git commit` ALL your work on the branch "
-        "before finishing. Uncommitted work will be surfaced to review but "
-        "risks loss on worktree teardown — committing is required for a "
-        "clean review."
-    )
+    if role is Role.CARVER:
+        if carve_authority == "files":
+            # 'files' authority: the carver writes new handoff files WITHOUT
+            # committing (no git) -- frontmatter.discover_handoffs globs disk
+            # files regardless of git status, so there is nothing to commit
+            # and telling it to commit anything would be actively wrong.
+            prompt = (
+                f"Handoff: {handoff_path}\n"
+                f"Worktree: {worktree}\n"
+                f"Gate: {gate_hint}\n"
+                f"Receipt: {receipt_path}\n"
+                "Carve authority: files. Write your new handoff file(s) to "
+                "disk without running git at all (no staging, no "
+                "committing) -- they will be picked up on the next "
+                "reconcile pass regardless of git status."
+            )
+        else:
+            # 'branch'/'main' (or unset -> treat as the safe default): the
+            # carver DOES commit its new handoff file(s) -- O1 permits
+            # keeping a commit instruction here.
+            prompt = (
+                f"Handoff: {handoff_path}\n"
+                f"Worktree: {worktree}\n"
+                f"Branch: {branch}\n"
+                f"Gate: {gate_hint}\n"
+                f"Receipt: {receipt_path}\n"
+                "You MUST `git add` and `git commit` your new handoff "
+                "file(s) on this branch before finishing."
+            )
+    elif role is Role.FRONTIER_REVIEW:
+        # A reviewer authors no changes and must never be told to commit to
+        # the branch it was dispatched with (today's live bug: the
+        # wave-launch call site passes branch=cfg.default_branch, and the
+        # old one-size-fits-all prompt told the reviewer to "git commit ALL
+        # your work on the branch" -- i.e. commit to main).
+        prompt = (
+            f"Handoff: {handoff_path}\n"
+            f"Worktree: {worktree}\n"
+            f"Gate: {gate_hint}\n"
+            f"Receipt: {receipt_path}\n"
+            "You are REVIEWING this packet, not authoring changes to it. Do "
+            "not commit anything to git -- write your verdict to the "
+            "receipt path above."
+        )
+    else:
+        # IMPLEMENTER (default). Byte-for-byte identical to the pre-P44 text.
+        prompt = (
+            f"Handoff: {handoff_path}\n"
+            f"Worktree: {worktree}\n"
+            f"Branch: {branch}\n"
+            f"Gate: {gate_hint}\n"
+            f"Receipt: {receipt_path}\n"
+            # 2026-07-15 (live P64 lesson): the first real dispatch produced a
+            # full implementation but never committed it, and the review packet
+            # diffs main...HEAD — uncommitted work is invisible to review.
+            # 2026-07-16 (P21 live P93 lesson): "uncommitted work is discarded"
+            # was FALSE -- the review packet now also captures uncommitted
+            # worktree state (P21), so keep the commit pressure without
+            # asserting a falsehood.
+            "You MUST `git add` and `git commit` ALL your work on the branch "
+            "before finishing. Uncommitted work will be surfaced to review but "
+            "risks loss on worktree teardown — committing is required for a "
+            "clean review."
+        )
 
     # Append incremental-write hint if present
     if "incremental-write" in route.prompt_hints:

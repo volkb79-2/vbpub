@@ -43,7 +43,11 @@ def patch_siblings(monkeypatch):
     def fake_probe(route):
         return (True, "ok")
 
-    def fake_build_dispatch(route, *, handoff_path, worktree, branch, task_id, gate_hint, receipt_path):
+    def fake_build_dispatch(route, *, handoff_path, worktree, branch, task_id, gate_hint,
+                             receipt_path, **_kw):
+        # P44 2026-07-19: **_kw absorbs the new role=/carve_authority= kwargs
+        # the daemon.py CARVER call site now passes explicitly (role-scoped
+        # prompt text) -- this fake only records argv, not prompt text.
         return ["fake-cli", "--task", task_id], "prompt"
 
     def fake_launch_detached(spec):
