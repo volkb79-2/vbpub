@@ -3,7 +3,7 @@
 Branch: `feat/nyxloom-P45-ready-to-carve-triage`
 Worktree: `/workspaces/vbpub/nyxloom/.worktrees/nyxloom-P45-ready-to-carve-triage/nyxloom`
 Input revision: `f38d306` (post-P44 main)
-Commit (this package): `bd8c4c6` (see `git log -1` on this branch after commit)
+Commit (this package): `7b707c1ba5af9204978644cb0d2c9cb73f055f07`
 
 ## Gate (tester-unified, the ONLY gate that counts)
 
