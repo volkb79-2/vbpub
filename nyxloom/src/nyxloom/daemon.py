@@ -276,6 +276,35 @@ P41 2026-07-16 (direct carve from an intake brief):
   but it DOES keep the frontier-route defense-in-depth check: no healthy
   'frontier-review' route -> NEEDS_OPERATOR {reason: 'carve-no-route'} and
   no synthetic task is minted.
+
+P47 2026-07-19 (carve-dispatch mutex, closes a real race): neither the
+untargeted headroom-refill trigger's carve_in_flight scan (reconcile.py
+item 9/12) nor dispatch_targeted_carve's direct call path had ever been
+protected against two carve dispatches racing each other -- the scan is a
+plain read of current statefiles, not atomic with the write that follows,
+and dispatch_targeted_carve (being callable directly, with no reconcile
+pass in between) skips the scan entirely. Two dispatch_targeted_carve
+calls close enough in time (or one racing the automatic trigger) could
+both pass their checks and each spawn a real CARVER attempt, violating
+the single-strategic-carver invariant the operator was explicit about.
+Fixed the ONE place both paths converge (_execute_carve_dispatch's
+WrapperSpec) rather than each caller separately: it now carries
+leases=[{"name": f"{project}.strategic-carver", "capacity": 1}], so
+wrapper_main's existing (frozen, already-battle-tested for handoff-
+declared serialize-with mutexes) lease-acquisition step 2 does the actual
+enforcement -- non-blocking flock, race loser gets a clean
+ATTEMPT_FAILED{blocked_reason: 'lease-lost-race'} and exits 75 without
+ever starting a real carver CLI session, race winner holds the flock for
+its ENTIRE wrapper process lifetime (not just the dispatch call), and the
+kernel auto-releases it the instant that process exits for any reason --
+crash, kill, or clean completion -- with zero daemon-side monitoring or
+stale-lock recovery needed (leases.py's own frozen-core contract). Holding
+the lease in the WRAPPER rather than the daemon's own process is
+deliberate: P37's tini+supervisor design makes the daemon process itself
+independently restart-safe from in-flight attempts, so a lease living in
+the daemon's memory would spuriously free on a routine daemon respawn
+while the actual carver subprocess (reparented to tini, still alive) kept
+running -- exactly the bug P37 exists to prevent recurring here.
 """
 
 from __future__ import annotations
@@ -1731,6 +1760,7 @@ class Daemon:
             project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
             cwd=str(carve_cwd), log_path=str(attempt_dir / "attempt.log"),
             receipt_path=receipt_path, attempt_dir=str(attempt_dir), route_def=asdict(route_def),
+            leases=[{"name": f"{project}.strategic-carver", "capacity": 1}],
         )
         pid = wrapper.launch_detached(spec)
         attempt.state = AttemptState.PREFLIGHTING

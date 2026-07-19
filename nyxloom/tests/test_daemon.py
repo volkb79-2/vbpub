@@ -506,6 +506,52 @@ def test_carve_dispatch_branch_authority_creates_worktree_and_carver_attempt(
     assert "Do NOT merge" in packet_md
 
 
+def test_carve_dispatch_wrapper_spec_carries_strategic_carver_lease(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """P47 2026-07-19: the untargeted headroom-refill CarveDispatch path
+    must populate WrapperSpec.leases so wrapper_main's existing (frozen)
+    lease-acquisition step actually enforces the single-strategic-carver
+    invariant -- before this package the field was omitted entirely, so
+    two racing carve dispatches could both spawn a real CARVER attempt."""
+    cfg = sample_project
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+    )
+    _scripted(monkeypatch, [[reconcile.CarveDispatch(project="demo")]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    assert len(patch_siblings["launch_detached"]) == 1
+    spec = patch_siblings["launch_detached"][0]
+    assert spec.leases == [{"name": "demo.strategic-carver", "capacity": 1}]
+
+
+def test_dispatch_targeted_carve_wrapper_spec_carries_strategic_carver_lease(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """P47: the operator-initiated dispatch_targeted_carve path (P41) has
+    no reconcile-pass carve_in_flight scan in front of it at all -- it is
+    the path most exposed to the race this package closes, so it must get
+    the same lease population as the untargeted trigger above."""
+    cfg = sample_project
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+    )
+    backlog = cfg.root / "nyxloom-trove" / "4-backlog.md"
+    backlog.parent.mkdir(parents=True, exist_ok=True)
+    backlog.write_text(
+        "---\nkind: backlog\nschema_version: 1\nitems:\n"
+        "- id: B1\n  title: sample item\n  type: feature\n  component: ops\n"
+        "  context_estimate: small\n---\n\n# backlog\n",
+        encoding="utf-8",
+    )
+    d = daemon.Daemon({"demo": cfg.root})
+    d.dispatch_targeted_carve("demo", "B1")
+
+    assert len(patch_siblings["launch_detached"]) == 1
+    spec = patch_siblings["launch_detached"][0]
+    assert spec.leases == [{"name": "demo.strategic-carver", "capacity": 1}]
+
+
 def test_carve_dispatch_main_authority_uses_project_root_no_worktree(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     cfg = sample_project
