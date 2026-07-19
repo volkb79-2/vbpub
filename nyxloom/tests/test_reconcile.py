@@ -2917,6 +2917,30 @@ def test_ready_to_carve_no_dispatch_without_frontier_route():
     assert [a for a in actions if isinstance(a, CarveDispatch)] == []
 
 
+def test_ready_to_carve_no_dispatch_when_budget_exhausted():
+    """Reviewer addendum (2026-07-19, post-P45 merge review): a READY_TO_CARVE
+    task must NOT get a CarveDispatch when the project's session budget is
+    already exhausted -- every other dispatch path in this module (item 9's
+    own untargeted trigger, dispatch_eligible's check 5) already stops all
+    new agent processes on budget_remaining <= 0; a rejected task's re-carve
+    is not exempt. Mirrors test_ready_to_carve_no_dispatch_without_frontier_
+    route's shape with budget_remaining=0.0 instead of an unhealthy route."""
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.READY_TO_CARVE)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        budget_remaining=0.0,
+    ))
+
+    actions = plan_project(inp)
+    assert [a for a in actions if isinstance(a, CarveDispatch)] == []
+    # The task itself is left untouched (still READY_TO_CARVE, not
+    # SUPERSEDED) so it is retried once budget frees up.
+    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert transitions == []
+
+
 def test_ready_to_carve_superseded_is_terminal_no_refire_next_pass():
     """O4 (non-hollow anchor, second half): a follow-up pass with the SAME
     task now in SUPERSEDED (the state the first pass's Transition landed it

@@ -523,6 +523,13 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     frontier_route_available = any(
         inp.provider_ok.get(r.route_id, False) for r in frontier_routes
     )
+    # Reviewer addendum (2026-07-19, post-P45 merge review): also hoisted
+    # here and shared, so the READY_TO_CARVE handler respects the same
+    # budget-exhaustion stop every other dispatch path in this module
+    # already honors (dispatch_eligible's own check 5, and item 9's
+    # untargeted trigger below) -- a rejected task's re-carve is not exempt
+    # from "no budget left, no new agent process starts."
+    budget_allows = inp.budget_remaining is None or inp.budget_remaining > 0
     # True once EITHER trigger has planned the pass's single CarveDispatch
     # -- the operator's explicit ask: the single strategic carver remains
     # the sole carve authority, so at most one CarveDispatch is ever planned
@@ -535,7 +542,7 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     # multiple tasks are simultaneously READY_TO_CARVE, only the lowest
     # task_id gets this pass's single carve slot; the rest stay in
     # READY_TO_CARVE, picked up on a later pass.
-    if not carve_in_flight and frontier_route_available:
+    if not carve_in_flight and frontier_route_available and budget_allows:
         ready_to_carve_ids = sorted(
             task_id for task_id, tsf in inp.states.items()
             if tsf.state == TaskState.READY_TO_CARVE
@@ -897,7 +904,7 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
         milestone_admits_work = has_nonterminal_task or (
             inp.cfg.policy.carve_ahead_target > 0 and not inp.roadmap_exhausted_open
         )
-        budget_allows = inp.budget_remaining is None or inp.budget_remaining > 0
+        # budget_allows computed once, shared with item 12 above.
 
         if (ready_count < inp.cfg.policy.carve_ahead_target
                 and milestone_admits_work
