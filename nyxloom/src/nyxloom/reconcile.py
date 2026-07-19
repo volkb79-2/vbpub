@@ -218,6 +218,20 @@ INTERFACE CONTRACT (frozen). Semantics:
     defaults to 'manual', under which this item never fires at all --
     existing behavior (an operator's own `nyxloom merge` after their own
     real git merge) is completely unchanged.
+14. CARVE TRIGGERS RESPECT project_paused (P52 2026-07-19, live incident):
+    neither item 9's untargeted headroom-refill trigger nor item 12's
+    READY_TO_CARVE handler ever consulted project_paused -- a "paused"
+    project (drain-handoffs OR drain-agents) still got a brand-new carve
+    dispatch fired against it every pass its ready_count sat below
+    carve_ahead_target, completely bypassing the pause. 4 unauthorized
+    carve dispatches fired against a paused project (dstdns) in ~15
+    minutes before this was caught live -- dispatch_eligible (regular
+    implementer dispatch) and item 13 (guarded-automatic merge) already
+    both consulted project_paused; carving was the one dispatch path in
+    this module that never did. Fixed by adding `not inp.project_paused`
+    to the shared guard both items already reuse (carve_in_flight /
+    frontier_route_available / budget_allows), so both triggers close in
+    one place rather than two independently-drifting copies.
 """
 
 from __future__ import annotations
@@ -602,7 +616,20 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     # multiple tasks are simultaneously READY_TO_CARVE, only the lowest
     # task_id gets this pass's single carve slot; the rest stay in
     # READY_TO_CARVE, picked up on a later pass.
-    if not carve_in_flight and frontier_route_available and budget_allows:
+    #
+    # P52 2026-07-19 (live incident, dstdns): neither this handler nor item
+    # 9's untargeted trigger below ever checked project_paused -- a
+    # "paused" project (drain-handoffs OR drain-agents) still got a NEW
+    # carve dispatch fired against it every pass ready_count sat below
+    # carve_ahead_target, completely bypassing the pause. 4 unauthorized
+    # carve dispatches fired against dstdns in ~15 minutes before this was
+    # caught live. dispatch_eligible (regular implementer dispatch) and
+    # item 13 (guarded-automatic merge) already both consult
+    # project_paused; carving was the one dispatch path in this whole
+    # module that never did. Added to the shared guard (not two
+    # independently-drifting copies), same convention as carve_in_flight/
+    # frontier_route_available/budget_allows above.
+    if not inp.project_paused and not carve_in_flight and frontier_route_available and budget_allows:
         ready_to_carve_ids = sorted(
             task_id for task_id, tsf in inp.states.items()
             if tsf.state == TaskState.READY_TO_CARVE
@@ -945,9 +972,10 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     # is True if that handler already used this pass's single carve slot --
     # P45 2026-07-19: at most one CarveDispatch is ever planned in a pass,
     # shared across both triggers (the single strategic carver is the sole
-    # carve authority).
+    # carve authority). P52 2026-07-19: not inp.project_paused added here
+    # too -- see item 12's guard above for the live incident this closes.
     carve_actions: list[Action] = []
-    if not carve_in_flight and not carve_dispatch_planned:
+    if not inp.project_paused and not carve_in_flight and not carve_dispatch_planned:
         ready_states = (TaskState.CARVED, TaskState.QUEUED, TaskState.NEEDS_DECISION)
         ready_count = 0
         for fm_id, (fm, _handoff_path) in inp.frontmatters.items():

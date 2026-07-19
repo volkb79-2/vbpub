@@ -2594,6 +2594,20 @@ def test_carve_trigger_fires_below_target_no_carver_inflight():
     assert dispatches[0].project == "demo"
 
 
+def test_carve_trigger_none_when_project_paused():
+    """P52 2026-07-19 (live incident, dstdns): a 'paused' project must not
+    get a brand-new carve dispatch, even though every OTHER condition here
+    (below carve_ahead_target, healthy route, no carver in flight) would
+    otherwise fire one -- this is exactly the gap that let 4 unauthorized
+    carves fire against a paused project in production before it was
+    caught. Covers BOTH pause modes (drain-handoffs and drain-agents are
+    both project_paused=True; the untargeted trigger does not distinguish
+    between them, matching dispatch_eligible's own convention)."""
+    inp = ReconcileInput(**_carve_base_kwargs(project_paused=True))
+    dispatches = [a for a in plan_project(inp) if isinstance(a, CarveDispatch)]
+    assert dispatches == []
+
+
 def test_carve_trigger_none_when_queue_at_or_above_target():
     """Oracle 1 (negative): ready_count (2 QUEUED) >= carve_ahead_target
     (2) -> no CarveDispatch."""
@@ -2837,6 +2851,26 @@ def test_ready_to_carve_dispatches_existing_carve_mechanism_then_supersedes():
     transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
     assert len(transitions) == 1
     assert transitions[0].to == TaskState.SUPERSEDED
+
+
+def test_ready_to_carve_no_dispatch_when_project_paused():
+    """P52 2026-07-19 (live incident, dstdns): a READY_TO_CARVE task in a
+    'paused' project must not get a CarveDispatch either -- it stays in
+    READY_TO_CARVE untouched (no SUPERSEDED transition), picked up once the
+    project is unpaused, same as the carver-already-inflight case below."""
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.READY_TO_CARVE)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        project_paused=True,
+    ))
+
+    actions = plan_project(inp)
+
+    assert [a for a in actions if isinstance(a, CarveDispatch)] == []
+    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert transitions == []
 
 
 def test_ready_to_carve_no_dispatch_when_carver_already_inflight():
