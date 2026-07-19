@@ -2303,6 +2303,24 @@ class Daemon:
                 receipt_path=str(attempt_dir / "receipt.json"), attempt_dir=str(attempt_dir),
                 route_def=asdict(route_def), leases=self._lease_specs(cfg, fm_obj),
             )
+            # P53 2026-07-19 (M1, CRITICAL -- receipt-run binding): a resumed
+            # attempt reuses this attempt_dir and the SAME receipt.json path,
+            # and (below) is set back to RUNNING. The leg we are resuming
+            # already wrote an interrupt/error receipt.json at its own exit
+            # (wrapper.py always writes a receipt before ATTEMPT_INTERRUPTED).
+            # If that stale receipt is left in place, the NEXT reconcile pass
+            # sees this attempt RUNNING (in _INTERRUPTIBLE_STATES) WITH a
+            # receipt and treats it as "wrapper died before its exit event"
+            # (reconcile.py's has_receipt branch) -> a premature EmitAttemptExit
+            # on the STALE receipt while the resumed session is still live,
+            # which transitions the task off ACTIVE and lets a SECOND
+            # implementer dispatch into the same feat/<task> worktree. Archive
+            # the stale receipt (audit trail, not deleted) BEFORE launch so
+            # receipt.json does not exist again until THIS resumed run
+            # genuinely exits and writes its own -- consumed exactly once.
+            stale_receipt = Path(spec.receipt_path)
+            if stale_receipt.exists():
+                stale_receipt.rename(attempt_dir / f"receipt.pre-resume-{resume_n}.json")
             pid = wrapper.launch_detached(spec)
             attempt.state = AttemptState.RUNNING
             attempt.pid = pid

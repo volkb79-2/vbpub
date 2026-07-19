@@ -1175,6 +1175,59 @@ def test_mark_interrupted_and_resume(tmp_state, sample_project, patch_siblings, 
     assert att2.log_path != str(attempt_dir / "attempt.log")
 
 
+def test_resume_archives_stale_receipt_so_no_premature_exit(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """P53 2026-07-19 (M1, CRITICAL). The wrapper ALWAYS writes an
+    interrupt/error receipt.json before ATTEMPT_INTERRUPTED (wrapper.py
+    step 9), so a real INTERRUPTED attempt has a receipt on disk -- the
+    input EVERY existing resume test omits by seeding receipt=None, an
+    input the wrapper contract cannot actually produce. On resume, that
+    stale receipt must be archived; otherwise the next pass sees the
+    resumed attempt back in RUNNING (in _INTERRUPTIBLE_STATES) WITH a
+    receipt, fires a premature EmitAttemptExit on the STALE receipt,
+    transitions the task off ACTIVE while the resumed session is still
+    live, and dispatches a second implementer into the same worktree.
+
+    Non-hollow: seeds the realistic on-disk receipt, then asserts the real
+    daemon._attempt_scan surfaces NO receipt for the resumed attempt (so
+    plan_project cannot emit the premature exit). Fails against pre-P53
+    code, where receipt.json is left in place."""
+    task_id, attempt_id = "t-m1", "att-m1"
+    _seed_running_attempt("demo", task_id, attempt_id)
+
+    tsf = storage.load_state("demo", task_id)
+    att = tsf.attempt_by_id(attempt_id)
+    att.state = AttemptState.INTERRUPTED
+    att.session_handle = "sess-1"
+    att.worktree = str(sample_project.root)
+    storage.save_state(tsf)
+
+    attempt_dir = paths.attempt_dir("demo", attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    receipt_json = attempt_dir / "receipt.json"
+    receipt_json.write_text(
+        json.dumps(Receipt(result=ReceiptResult.ERROR, exit_code=143,
+                           blocked_reason="interrupted").to_dict()),
+        encoding="utf-8")
+
+    _scripted(monkeypatch, [[reconcile.ResumeAttempt(task_id=task_id, attempt_id=attempt_id)]])
+    d = daemon.Daemon({"demo": sample_project.root})
+    d.run_pass("demo")
+
+    # The stale receipt is archived (audit trail), not left where the scan reads it.
+    assert not receipt_json.exists()
+    assert (attempt_dir / "receipt.pre-resume-1.json").exists()
+
+    tsf2 = storage.load_state("demo", task_id)
+    att2 = tsf2.attempt_by_id(attempt_id)
+    assert att2.state is AttemptState.RUNNING
+
+    # The real scan therefore surfaces NO receipt for the resumed attempt,
+    # so plan_project cannot fire a premature EmitAttemptExit on the stale one.
+    _log_quiet, _pid_alive, receipts = d._attempt_scan("demo", {task_id: tsf2})
+    assert receipts.get(attempt_id) is None
+
+
 def test_interrupt_attempt_signals_pgid(tmp_state, sample_project, patch_siblings, monkeypatch):
     task_id, attempt_id = "t-kill", "att-kill"
     _seed_running_attempt("demo", task_id, attempt_id)
