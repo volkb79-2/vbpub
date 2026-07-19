@@ -25,6 +25,15 @@ routes = ["claude-sonnet5-high"]
 [tiers.frontier-review]
 routes = ["claude-opus-high"]
 
+# 2026-07-16 (user): cheap tier for mechanical, well-specified handoffs
+# (add-a-branch-mirroring-existing, config edits, small lint fixes). The
+# BLOCKED escape hatch makes cheap-first safe — haiku re-routes up on
+# anything beyond it. Route fitting handoffs here via `tier: haiku-low`.
+# (Live-deployed 2026-07-16; backfilled into this tracked copy 2026-07-19 --
+# it had drifted deployed-only, see the P44/P45 pilot's routes-sync step.)
+[tiers.haiku-low]
+routes = ["claude-haiku"]
+
 # Vetted free OpenRouter coding models (2026-07-17, probed live via opencode+
 # openrouter). OPT-IN tier -- deliberately NOT in the default implementation
 # path: free providers may LOG/TRAIN on prompts, so every free route carries the
@@ -88,6 +97,18 @@ usage_source = "output-format-json"
 [routes.claude-opus-high]
 inherit = "claude-sonnet5-high"
 model = "opus"
+
+# Haiku 4.5 — cheap/fast tier for mechanical implementation. Explicit route
+# (not `inherit`) so the resume template carries `--model haiku`, not the
+# inherited `--model sonnet` literal. No `--effort` (haiku has no effort tiers).
+[routes.claude-haiku]
+cli = "claude"
+model = "haiku"
+dispatch_extra = ["--dangerously-skip-permissions"]
+probe = ["claude", "--version"]
+session_capture = "newest-jsonl"
+resume = ["claude", "--resume", "{session}", "--model", "haiku", "-p", "{prompt}"]
+usage_source = "output-format-json"
 
 # --- vetted free OpenRouter routes (see [tiers.free-high] note) -------------
 # Every free route carries prompt_hints=["free-endpoint"] -> the no-secrets

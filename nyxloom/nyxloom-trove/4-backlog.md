@@ -38,14 +38,10 @@ items:
   component: dispatch
   context_estimate: small
   folds_into: F005
-- id: B7
-  title: role-scoped build_dispatch (unblocks B6; fixes all-legs prompt leak)
-  type: feature
-  component: dispatch
-  context_estimate: medium
-  folds_into: F009
 - id: B8
-  title: smart reject-triage (tech-fixable -> requeue vs needs-human -> D-NNN)
+  title: smart reject-triage — needs-human branch (tech-fixable half shipped via
+    P45's exhausted-budget->READY_TO_CARVE re-carve route; the needs-human->D-NNN
+    escalation branch is still unbuilt, reconcile.py item 10 has no such path)
   type: feature
   component: review
   context_estimate: medium
