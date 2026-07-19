@@ -9,10 +9,10 @@ import pytest
 
 from nyxloom.config import MutexDef, Policy, ProjectConfig, Routes, RouteDef
 from nyxloom.reconcile import (
-    Action, CarveDispatch, CreateTask, DispatchImplementer, EmitAttemptExit,
-    InterruptAttempt, LaunchReview, MarkInterrupted, MarkStalled, OpenWave,
-    ProviderPause, ReconcileInput, ResumeAttempt, SpecAttention, StallCheck,
-    Transition, dispatch_eligible, plan_project,
+    Action, AutoMergeTask, CarveDispatch, CreateTask, DispatchImplementer,
+    EmitAttemptExit, InterruptAttempt, LaunchReview, MarkInterrupted,
+    MarkStalled, OpenWave, ProviderPause, ReconcileInput, ResumeAttempt,
+    SpecAttention, StallCheck, Transition, dispatch_eligible, plan_project,
 )
 from nyxloom.types import (
     Attempt, AttemptState, Base, Blocker, BlockerType, Budget, Basis,
@@ -2960,3 +2960,68 @@ def test_ready_to_carve_superseded_is_terminal_no_refire_next_pass():
 
     actions = plan_project(inp)
     assert actions == []
+
+
+# ============================================================================
+# P48 2026-07-19: guarded-automatic merge trigger (module contract item 13)
+# ============================================================================
+
+def test_auto_merge_fires_when_guarded_automatic_and_merge_ready():
+    """Item 13: a MERGE_READY task under policy.merge_mode ==
+    'guarded-automatic' with the project not paused gets exactly one
+    AutoMergeTask(task_id). No separate verdict check belongs here --
+    reaching MERGE_READY already structurally means 'approved'."""
+    cfg = make_config()
+    cfg.policy.merge_mode = "guarded-automatic"
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.MERGE_READY)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        cfg=cfg,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+    ))
+
+    actions = plan_project(inp)
+
+    auto_merges = [a for a in actions if isinstance(a, AutoMergeTask)]
+    assert len(auto_merges) == 1
+    assert auto_merges[0].task_id == "P01"
+
+
+def test_auto_merge_none_when_merge_mode_manual():
+    """Item 13 (regression pin): the existing manual-mode behavior --
+    MERGE_READY sits inert until an operator's own `nyxloom merge` -- must
+    be completely unchanged. policy.merge_mode defaults to 'manual', so a
+    MERGE_READY task with no explicit override plans no AutoMergeTask at
+    all."""
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.MERGE_READY)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+    ))
+
+    actions = plan_project(inp)
+
+    assert [a for a in actions if isinstance(a, AutoMergeTask)] == []
+
+
+def test_auto_merge_none_when_project_paused():
+    """Item 13: guarded-automatic must not merge blind while the project is
+    paused for ANY reason (drain-handoffs or drain-agents) -- an operator
+    or the runaway watchdog flagging the project is exactly backwards from
+    a signal to keep auto-merging unattended."""
+    cfg = make_config()
+    cfg.policy.merge_mode = "guarded-automatic"
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.MERGE_READY)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        cfg=cfg,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        project_paused=True,
+    ))
+
+    actions = plan_project(inp)
+
+    assert [a for a in actions if isinstance(a, AutoMergeTask)] == []

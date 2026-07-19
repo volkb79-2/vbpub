@@ -197,6 +197,27 @@ INTERFACE CONTRACT (frozen). Semantics:
     it wins ties) consumes the single carve slot for the pass; the operator
     was explicit that the single strategic carver remains the sole carve
     authority, so a second, independent dispatch path is never created here.
+13. GUARDED-AUTOMATIC MERGE (P48 2026-07-19): a MERGE_READY task ->
+    AutoMergeTask(task_id) only when policy.merge_mode ==
+    'guarded-automatic' AND not project_paused. Reaching MERGE_READY at all
+    already structurally means a FRONTIER_REVIEW attempt's verdict was
+    'approved' (the only writer of that transition, in daemon.py's review-
+    consumption branch) -- so no separate verdict re-check belongs here.
+    project_paused is deliberately consulted (unlike dispatch_eligible's
+    narrower reasons for it): if the runaway watchdog or an operator has
+    paused the project for ANY reason, unattended merging must not proceed
+    -- that is exactly the scenario the pause exists to stop. Self-limiting
+    like items 9-12: the daemon's execution of AutoMergeTask (a REAL `git
+    merge --no-ff` in a disposable scratch worktree, for genuine 3-way
+    conflict detection -- never the surgical commit-tree technique an
+    operator uses by hand, which trades away conflict detection for
+    monorepo-dirty-state safety, acceptable only under human supervision)
+    moves the task off MERGE_READY (to MERGED on a clean merge, or to a
+    NEEDS_OPERATOR escalation leaving it at MERGE_READY on a real conflict)
+    so this does not refire for the same task next pass. merge_mode
+    defaults to 'manual', under which this item never fires at all --
+    existing behavior (an operator's own `nyxloom merge` after their own
+    real git merge) is completely unchanged.
 """
 
 from __future__ import annotations
@@ -341,6 +362,25 @@ class RunPostMergeGate(Action):
     task_id -- which gate to run, the {worktree} substitution, and the
     subprocess execution itself are the daemon's job (this module stays
     pure, no subprocess/filesystem); see daemon.py's _run_post_merge_gate.
+    """
+
+
+@dataclass
+class AutoMergeTask(Action):
+    """Guarded-automatic merge trigger (module contract item 13, P48
+    2026-07-19): the ONLY action ever planned for a MERGE_READY task when
+    policy.merge_mode == 'guarded-automatic'. Reaching MERGE_READY already
+    structurally means a FRONTIER_REVIEW attempt returned verdict
+    'approved' (daemon.py's review-consumption branch is the only writer of
+    this transition) -- so this action carries nothing but task_id, same
+    shape as RunPostMergeGate: which branch to merge, the actual git
+    operations (a disposable scratch worktree + real `git merge --no-ff`
+    for genuine 3-way conflict detection, never the surgical commit-tree
+    technique an operator can use by hand -- that technique intentionally
+    skips conflict detection, acceptable under human supervision but not
+    for unattended merging), and escalation on conflict are all the
+    daemon's job (see daemon.py's _execute_auto_merge). This module stays
+    pure, no subprocess/filesystem.
     """
 
 
@@ -508,6 +548,26 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
             ))
         elif tsf.state == TaskState.VALIDATING:
             task_actions.append(RunPostMergeGate(task_id=fm_id))
+
+        # GUARDED-AUTOMATIC MERGE (module contract item 13, P48 2026-07-19):
+        # a MERGE_READY task only ever gets here via an 'approved' review
+        # verdict (daemon.py's REVIEW_RECORDED-consuming branch is the sole
+        # writer of this transition), so no separate verdict check is
+        # needed here -- reaching this state already IS the guard. The
+        # remaining guard this module CAN express purely is project_paused:
+        # if the runaway watchdog (or an operator) has paused the project
+        # for ANY reason (drain-handoffs or drain-agents), guarded-automatic
+        # must not merge blind -- unattended merging during a flagged
+        # condition is exactly backwards from the safety intent. Self-
+        # limiting like every other item here: the daemon's execution of
+        # AutoMergeTask transitions the task off MERGE_READY (to MERGED on
+        # success, back to REVIEW_REJECTED-adjacent NEEDS_OPERATOR escalation
+        # on a real git conflict -- see daemon.py's _execute_auto_merge), so
+        # this does not refire for the same task once acted on.
+        elif (tsf.state == TaskState.MERGE_READY
+              and inp.cfg.policy.merge_mode == "guarded-automatic"
+              and not inp.project_paused):
+            task_actions.append(AutoMergeTask(task_id=fm_id))
 
     # Shared single-carve-authority guard (module contract items 9 & 12,
     # P45 2026-07-19): computed ONCE, reused verbatim by BOTH item 12's
