@@ -123,18 +123,87 @@ schema (extends `nyxloom lint`), and (b) **actively test** each route end-to-end
 Surfaces unhealthy routes before dispatch instead of discovering them mid-carve.
 Feeds the D-R4 availability layer.
 
+## D-R10 — Persistent strategic carver (single session, resumed across cycles)
+
+**Verified against current code (2026-07-19):** every `CarveDispatch` (P16)
+mints a brand-new synthetic task + `Attempt` + fresh `adapters.build_dispatch`
+call — the carver has **no memory across cycles**; each cycle re-reads
+backlog/roadmap/decisions cold. The `claude-opus-high` route (inherits
+`claude-sonnet5-high`) already carries `session_capture = "newest-jsonl"` and a
+full `resume` template — the CLI-level plumbing for session reuse already
+exists (used today only for the IMPLEMENTER interrupt-resume path,
+`daemon.py:2054`), just never applied to CARVER.
+
+**Decision:** exactly ONE carver identity, resumed via `attempt.session_handle`
++ `adapters.build_resume` for as long as the current `carve_authority ==
+'branch'` carve branch/worktree is still live and un-admitted. A NEW
+branch/worktree — and therefore a fresh session — is minted only once the
+prior carve branch is admitted (merged) or explicitly abandoned. Review agents
+never gain carve authority themselves: D-R8's on-the-fly fixes stay bounded to
+the reviewed diff; anything bigger becomes a `REVIEW_REJECTED` task that (see
+P45) transitions to `READY_TO_CARVE` — a state that already exists in
+`types.py`'s frozen `TASK_TRANSITIONS` but has no handler (a pinned
+`xfail(strict=True)` in `tests/test_invariants.py`, filed 2026-07-17,
+untracked until now) — which only the single persistent carver ever consumes.
+This is the concrete shape of "review agents may flag/propose carve-worthy
+work; the single carver remains the sole carve authority."
+
+**Open design question, deliberately NOT built in P44/P45:** the exact
+staleness/rotation check ("is the prior carve branch still live and
+unmerged?" — worktree-exists + `git merge-base --is-ancestor` against
+`default_branch`) needs its own careful package, tracked as a follow-on
+(P46-designate) rather than guessed at here.
+
+## D-R11 — External, daemon-driven context compaction
+
+**Verified against current docs (2026-07-19):** there is no hook or API
+letting an agent compact its own context mid-turn — Anthropic tracks this as
+an open feature request (`anthropics/claude-code#38925`). The only two
+triggers are the context window actually filling up, or an external caller
+sending the literal string `/compact` as the next prompt to a **resumed**
+session. Since D-R10 already makes the daemon the external caller holding the
+carver's `session_handle`, the daemon can do exactly what a human does
+manually: after each carve cycle, read usage via the route's `usage_source`
+(`output-format-json` for `claude` routes, `session-json` for `opencode`
+routes), and once cumulative usage crosses a configurable threshold, issue one
+`build_resume(..., prompt="/compact")` call before the next real carve packet.
+This is the daemon-side mechanism **B10** ("session-limit monitoring +
+per-job token estimation") was already scoped to cover — D-R11 folds into B10
+rather than adding a new backlog item.
+
+## D-R12 — Benchmark/pricing-API-driven route scoring
+
+Two machine-readable sources checked live (2026-07-19), relevant to D-R3's
+tier-prediction and D-R5's cost model:
+- **Artificial Analysis Data API** (`GET /data/llms/models`,
+  `x-api-key` auth, free tier 1,000 req/day) — returns BOTH a capability score
+  (Intelligence/Coding/Agentic Index) and pricing per model in one schema; the
+  natural backing table for tier→route scoring.
+- **OpenRouter `/api/v1/models`** (public, no auth) — the right source for
+  D-R4's availability layer to dynamically discover currently-`:free`-suffixed
+  models instead of hand-curating `routes.host.toml`'s `[tiers.free-high]`
+  block.
+- **LMArena/Chatbot Arena** — no official API (only unofficial community
+  mirrors); a secondary cross-check signal at most, never a hard dependency.
+
 ## What folds where
 
 - **North-star** (identity-level): capability-matched review (D-R2), the
   self-contained sandboxed runtime (D-R7), cost-aware/policy-driven routing
   (D-R1/R5/R6), and the human control/escalation surface. See north-star draft.
-- **This design doc**: the full D-R1..R9 contract.
-- **Build epic** (after F5): tier-taxonomy rename folds into #34; availability
+- **This design doc**: the full D-R1..R12 contract.
+- **Pulled forward (2026-07-19, operator directive):** D-R10 + D-R11 are
+  P44 (role-scoped `build_dispatch`, closes #34/B7) + P45 (`READY_TO_CARVE`
+  dead-end fix + review-initiated micro-carve routing, closes #25/#26/B8),
+  ahead of the "after F5" sequencing below.
+- **Build epic** (still after F5): tier-taxonomy rename (D-R1); availability
   layer, cost model, per-project policy, self-contained runtime, reviewer-fix
-  policy, and `route doctor` are phased packages.
+  policy, `route doctor`, and D-R12's benchmark-API scoring are phased
+  packages.
 
 ## Sequencing
 
-Design now (this doc). Build **after F5** (gap-engine). D-R1 (tier rename) folds
-into #34 (role-scoped `build_dispatch`); the rest is a phased epic to be carved
-once F5 lands.
+Design now (this doc). D-R10/D-R11 build **now** (P44/P45, operator-prioritized
+2026-07-19). Everything else builds **after F5** (gap-engine). D-R1 (tier
+rename) folds into #34 (role-scoped `build_dispatch`, delivered by P44); the
+rest is a phased epic to be carved once F5 lands.
