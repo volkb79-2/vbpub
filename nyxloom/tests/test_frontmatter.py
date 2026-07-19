@@ -113,6 +113,30 @@ class TestSchemaErrors:
         errors = frontmatter.schema_errors(data)
         assert len(errors) >= 2
 
+    def test_component_optional_and_valid(self):
+        """P42: component is optional and, when present, must match the slug pattern."""
+        base = {
+            "schema_version": 1,
+            "id": "demo-P01-test",
+            "project": "demo",
+            "title": "Test",
+            "tier": "flash-high",
+            "input_revision": "0000000",
+            "source": {"kind": "review"},
+            "scope": {"touch": ["src/test.py"]},
+            "oracles": [{"id": "O1", "observable": "pass", "negative": "fail", "gate": "gate1"}],
+            "gates": ["gate1"],
+            "escalate_if": ["trigger"],
+        }
+        assert frontmatter.schema_errors(base) == []  # no component: still valid
+
+        with_component = dict(base, component="lifecycle")
+        assert frontmatter.schema_errors(with_component) == []
+
+        bad_component = dict(base, component="Not_Valid")
+        errors = frontmatter.schema_errors(bad_component)
+        assert any("component" in str(e).lower() for e in errors)
+
 
 class TestParseHandoff:
     """Test parse_handoff function."""
@@ -147,6 +171,66 @@ class TestParseHandoff:
         assert fm.id == "demo-P01-test"
         assert fm.project == "demo"
         assert "Body content here" in body
+
+    def test_parse_with_component(self, tmp_path):
+        """P42 O1: a handoff with `component:` parses with .component set."""
+        content = textwrap.dedent("""\
+            ---
+            schema_version: 1
+            id: demo-P01-test
+            project: demo
+            title: Test Package
+            tier: flash-high
+            input_revision: "0000000"
+            source: {kind: review}
+            scope: {touch: ["src/test.py"]}
+            oracles:
+              - id: O1
+                observable: "test passes"
+                negative: "test fails"
+                gate: gate1
+            gates: [gate1]
+            escalate_if: ["trigger"]
+            component: lifecycle
+            ---
+
+            Body content here.
+            """)
+        path = tmp_path / "test.md"
+        path.write_text(content)
+
+        fm, _body = frontmatter.parse_handoff(path)
+        assert fm.component == "lifecycle"
+
+    def test_parse_without_component_is_backward_compatible(self, tmp_path):
+        """P42 O1: a handoff without `component:` still validates and parses
+        with .component is None (existing handoffs are unaffected)."""
+        content = textwrap.dedent("""\
+            ---
+            schema_version: 1
+            id: demo-P01-test
+            project: demo
+            title: Test Package
+            tier: flash-high
+            input_revision: "0000000"
+            source: {kind: review}
+            scope: {touch: ["src/test.py"]}
+            oracles:
+              - id: O1
+                observable: "test passes"
+                negative: "test fails"
+                gate: gate1
+            gates: [gate1]
+            escalate_if: ["trigger"]
+            ---
+
+            Body content here.
+            """)
+        path = tmp_path / "test.md"
+        path.write_text(content)
+
+        fm, _body = frontmatter.parse_handoff(path)
+        assert fm.component is None
 
     def test_parse_error_bubbles_up(self, tmp_path):
         """Test that parse errors bubble up with correct path."""

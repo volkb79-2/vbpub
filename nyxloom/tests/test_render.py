@@ -17,6 +17,7 @@ from nyxloom.types import (
     EventType, Frontmatter, Source, Scope, Oracle, Role,
 )
 from nyxloom.config import ProjectConfig
+from conftest import SAMPLE_HANDOFF
 
 
 @pytest.fixture()
@@ -158,6 +159,52 @@ def test_index_html_active_tasks(seed_data, sample_project):
     assert "demo-P02-done" not in content  # MERGED should not be in active
     assert "&lt;script&gt;" in content  # HTML escaped
     assert "<script>alert" not in content  # Raw script not present
+
+
+def test_index_html_groups_task_by_component(sample_project, tmp_state):
+    """P42 O2: a task whose handoff declares `component: lifecycle` renders
+    that component as a label/tag in the active-tasks row."""
+    project_id = "demo"
+    now = datetime.now(timezone.utc)
+    handoff_text = SAMPLE_HANDOFF.replace(
+        "id: demo-P01-sample", "id: demo-P44-labelled",
+    ).replace(
+        "escalate_if: [\"a named contract cannot be met as specified\"]",
+        "escalate_if: [\"a named contract cannot be met as specified\"]\n"
+        "component: lifecycle",
+    )
+    (sample_project.root / "handoff" / "demo-P44-labelled.md").write_text(handoff_text)
+
+    storage.save_state(TaskStateFile(
+        schema_version=1, task_id="demo-P44-labelled", project=project_id,
+        state=TaskState.ACTIVE, since=now,
+        handoff_path="handoff/demo-P44-labelled.md",
+    ))
+
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)
+    content = (paths.www_dir() / "index.html").read_text(encoding="utf-8")
+
+    assert "demo-P44-labelled" in content
+    assert '<span class="component-tag">lifecycle</span>' in content
+
+
+def test_index_html_componentless_task_renders_ungrouped(sample_project, tmp_state):
+    """P42 O2 negative: a task with no `component` (or no handoff at all)
+    still renders without crashing, tagged 'uncategorized'."""
+    project_id = "demo"
+    now = datetime.now(timezone.utc)
+    storage.save_state(TaskStateFile(
+        schema_version=1, task_id="demo-P45-nocomponent", project=project_id,
+        state=TaskState.ACTIVE, since=now,
+    ))
+
+    registry = {"demo": sample_project.root}
+    render.render_all(registry)  # must not raise
+    content = (paths.www_dir() / "index.html").read_text(encoding="utf-8")
+
+    assert "demo-P45-nocomponent" in content
+    assert '<span class="component-tag">uncategorized</span>' in content
 
 
 def test_index_html_pause_banner(seed_data, sample_project):

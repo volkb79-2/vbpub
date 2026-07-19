@@ -13,7 +13,11 @@ INTERFACE CONTRACT (frozen):
 - Pages and their REQUIRED content (tests assert on marker strings /
   element ids listed below):
     index.html      id="active-tasks" table: one row per non-terminal task:
-                    project, task_id (link to task page), state, current
+                    project, task_id (link to task page), component (P42
+                    2026-07-16: a span.component-tag read from the task's own
+                    handoff frontmatter via _load_frontmatter — never
+                    mirrored to the statefile; 'uncategorized' when the
+                    handoff omits it or fails to parse), state, current
                     attempt route_id, started, minutes since statefile
                     'since', cost-so-far as '<sum> <CCY> (<basis-mix>)'
                     where basis-mix is 'actual'/'estimated'/'mixed'/'unknown',
@@ -258,6 +262,8 @@ svg text {{ font-family: sans-serif; }}
 #state-legend table {{ margin: 10px 0; }}
 .live-indicator {{ color: #00ff00; font-weight: bold; text-decoration: none; }}
 .live-indicator:hover {{ text-decoration: underline; }}
+.component-tag {{ background: #263140; color: #9fb4cc; padding: 1px 6px;
+                 border-radius: 3px; font-size: 11px; white-space: nowrap; }}
 #drilldown-transcript {{ background: #0e1114; padding: 10px; border: 1px solid #333a41; overflow-x: auto; color: #b8c4cc; white-space: pre-wrap; }}
 </style>
 """
@@ -619,7 +625,7 @@ def _parse_carve_timestamp(value: Any) -> datetime:
 
 
 def _render_carve_row(project: str, summary: dict[str, Any]) -> str:
-    """One <tr class="carve-row"> spanning the active-tasks table's 10
+    """One <tr class="carve-row"> spanning the active-tasks table's 11
     columns: carved ids, the reflection (html-escaped), headroom estimate,
     outcome. Hidden by default via CSS; the show-carves toggle reveals it
     (see _render_index)."""
@@ -631,7 +637,7 @@ def _render_carve_row(project: str, summary: dict[str, Any]) -> str:
     outcome = summary.get("outcome", "—")
     return f"""
       <tr class="carve-row" data-carve-seq="{html.escape(str(seq))}" data-carve-project="{html.escape(project)}">
-        <td colspan="10">
+        <td colspan="11">
           <strong>Carve #{html.escape(str(seq))}</strong> ({html.escape(project)}) —
           outcome: {html.escape(str(outcome))}, headroom: {html.escape(str(headroom))}<br>
           carved: {html.escape(carved_ids)}<br>
@@ -656,10 +662,17 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
     now_ts = datetime.now(timezone.utc).timestamp()
 
     for project in sorted(registry.keys()):
+        root = registry[project]
         states = all_states.get(project, {})
         for task_id in sorted(states.keys()):
             tsf = states[task_id]
             if _is_non_terminal(tsf.state):
+                # P42 2026-07-16: component is frontmatter-only (never
+                # mirrored to the statefile); read it at render time so a
+                # missing/unparsable handoff just falls back to ungrouped.
+                fm = _load_frontmatter(root, tsf)
+                component = (fm.component if fm else None) or "uncategorized"
+
                 # Get current attempt
                 att = tsf.current_attempt()
                 route_id = att.route.route_id if att else "—"
@@ -704,6 +717,7 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
                   <tr>
                     <td>{html.escape(project)}</td>
                     <td><a href="task/{html.escape(project)}/{html.escape(task_id)}.html">{html.escape(task_id)}</a></td>
+                    <td><span class="component-tag">{html.escape(component)}</span></td>
                     <td>{state_cell}</td>
                     <td>{html.escape(route_id)}</td>
                     <td>{html.escape(started)}</td>
@@ -742,6 +756,7 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
         <tr>
           <th>Project</th>
           <th>Task</th>
+          <th>Component</th>
           <th>State</th>
           <th>Route</th>
           <th>Started</th>
@@ -753,7 +768,7 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
         </tr>
       </thead>
       <tbody>
-        {"".join(rows) if rows else '<tr><td colspan="10">No active tasks</td></tr>'}
+        {"".join(rows) if rows else '<tr><td colspan="11">No active tasks</td></tr>'}
       </tbody>
     </table>
     <script>

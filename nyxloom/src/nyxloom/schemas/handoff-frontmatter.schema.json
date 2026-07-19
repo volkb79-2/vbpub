@@ -26,6 +26,11 @@
       "description": "e.g. ui-P05-retry-graduation; unique per project"
     },
     "project": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+    "component": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Optional first-class category (e.g. lifecycle, worker, ui, infra) for grouping/filtering; distinct from the id's convention-only slug component."
+    },
     "title": {"type": "string", "minLength": 1, "maxLength": 240},
     "tier": {
       "type": "string",
