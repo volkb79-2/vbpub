@@ -2747,22 +2747,21 @@ def test_review_rejected_with_budget_remaining_requeues():
     assert len(actions) >= 1
 
 
-def test_review_rejected_attempts_exhausted_documents_known_gap():
-    """O2 (documented gap, NOT a silent no-op): the handoff's contract asked
-    for REVIEW_REJECTED->BLOCKED once attempts are exhausted (mirroring the
-    INTERRUPTED-exhausted typed-blocker path elsewhere in this module).
-    That transition is illegal per types.py's
+def test_review_rejected_attempts_exhausted_routes_to_ready_to_carve():
+    """O1(a) (P45 2026-07-19, non-hollow anchor): the original handoff's
+    contract asked for REVIEW_REJECTED->BLOCKED once attempts are exhausted
+    (mirroring the INTERRUPTED-exhausted typed-blocker path elsewhere in
+    this module). That transition is illegal per types.py's
     TASK_TRANSITIONS[REVIEW_REJECTED] (BLOCKED is absent from that
-    frozenset -- see reconcile.py module-contract item 10) and types.py is
-    FROZEN CORE / out of scope for this package (scope.touch forbids
-    editing it), so planning the transition would crash the daemon with
-    TransitionError the moment it executed (check_task_transition runs for
-    every TASK_TRANSITIONED/TASK_BLOCKED event, no bypass).
-
-    This test pins the CURRENT, honest behavior -- no action planned for
-    the exhausted case -- so a future package that adds BLOCKED to that
-    frozenset has an explicit failing test to flip, instead of this
-    residual strand silently regressing further unnoticed."""
+    frozenset) and types.py is FROZEN CORE / out of scope for this package
+    (scope.touch forbids editing it) -- planning it would crash the daemon
+    with TransitionError the moment it executed. REVIEW_REJECTED->
+    READY_TO_CARVE IS legal in that same frozen table, so P45 routes the
+    exhausted case there instead: this used to pin the CURRENT, honest
+    behavior of "no action planned for the exhausted case" (a documented
+    KNOWN GAP, not a silent drop) -- now it pins the fix. See
+    test_review_rejected_with_budget_remaining_requeues just above for the
+    still-byte-for-byte-unchanged attempts-remaining path (O1(b))."""
     cfg = make_config(max_attempts_per_task=1)
     routes = make_routes()
     fm = make_frontmatter(id="P01")
@@ -2791,4 +2790,173 @@ def test_review_rejected_attempts_exhausted_documents_known_gap():
 
     actions = plan_project(inp)
     transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert len(transitions) == 1
+    t = transitions[0]
+    assert t.to == TaskState.READY_TO_CARVE
+    assert t.blocker is None
+    assert "review rejected" in (t.notes or "").lower()
+    assert "exhausted" in (t.notes or "").lower()
+
+
+# ============================================================================
+# P45 2026-07-19: READY_TO_CARVE handler (module contract item 12) -- closes
+# the dead-end pinned by tests/test_invariants.py's
+# test_no_dead_end_ready_to_carve. Re-dispatches the SAME single carve
+# authority as item 9's untargeted headroom-refill trigger (reconcile.
+# CarveDispatch / daemon._execute_carve_dispatch -- see make_carve_routes/
+# _carve_base_kwargs in the CARVE TRIGGER section above, reused here). These
+# are the non-hollow anchors for oracles O2/O3/O4.
+# ============================================================================
+
+def test_ready_to_carve_dispatches_existing_carve_mechanism_then_supersedes():
+    """O2/O4 (non-hollow anchor): a READY_TO_CARVE task with no carver in
+    flight and a healthy frontier-review route gets BOTH a CarveDispatch
+    (task_id=fm_id, item_id=None -- the existing untargeted carve-packet
+    path, reusing reconcile.CarveDispatch / daemon._execute_carve_dispatch,
+    NOT a new Action subclass or a new Daemon method) AND a same-pass
+    Transition to SUPERSEDED (self-limiting, so it does not re-fire a
+    second CarveDispatch on a later pass once the carve slot frees up --
+    see test_ready_to_carve_superseded_is_terminal_no_refire_next_pass
+    below for that second half)."""
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.READY_TO_CARVE)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+    ))
+
+    actions = plan_project(inp)
+
+    dispatches = [a for a in actions if isinstance(a, CarveDispatch)]
+    assert len(dispatches) == 1
+    d = dispatches[0]
+    assert d.task_id == "P01"
+    assert d.item_id is None
+    assert d.project == "demo"
+
+    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert len(transitions) == 1
+    assert transitions[0].to == TaskState.SUPERSEDED
+
+
+def test_ready_to_carve_no_dispatch_when_carver_already_inflight():
+    """O3(a) (non-hollow anchor): a carver attempt already in flight (any
+    non-terminal task carrying an Attempt with role CARVER) means a
+    READY_TO_CARVE task gets NO new CarveDispatch this pass -- it stays in
+    READY_TO_CARVE, picked up on a later pass once the slot frees. Reuses
+    the EXACT SAME in-flight predicate item 9's own carve trigger uses (see
+    test_carve_trigger_none_when_carver_already_inflight above), not a
+    second, independently-drifting check."""
+    carve_att = make_attempt(attempt_id="att-carve", state=AttemptState.RUNNING,
+                              role=Role.CARVER)
+    carve_tsf = make_tsf(task_id="carve-demo-1", state=TaskState.ACTIVE,
+                          attempts=[carve_att])
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.READY_TO_CARVE)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        states={"P01": tsf, "carve-demo-1": carve_tsf},
+        frontmatters={"P01": (fm, "h.md")},
+    ))
+
+    actions = plan_project(inp)
+
+    assert [a for a in actions if isinstance(a, CarveDispatch)] == []
+    # P01 stays in READY_TO_CARVE -- no Transition planned for it either.
+    assert [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"] == []
+
+
+def test_ready_to_carve_two_simultaneous_only_one_carve_dispatch_total():
+    """O3(b) (non-hollow anchor): TWO tasks simultaneously in
+    READY_TO_CARVE -> exactly ONE CarveDispatch total is planned across the
+    WHOLE returned action list, not two -- the single-strategic-carver
+    invariant holds even when multiple tasks would independently want a
+    carve. (This input also satisfies item 9's own untargeted trigger
+    conditions -- ready_count is 0 for both READY_TO_CARVE tasks, since
+    that count only considers CARVED/QUEUED/NEEDS_DECISION, and
+    milestone_admits_work is True from either task being non-terminal --
+    proving the single-CarveDispatch cap is truly SHARED across both
+    triggers, not just enforced within the READY_TO_CARVE handler alone.)"""
+    fm1 = make_frontmatter(id="P01")
+    fm2 = make_frontmatter(id="P02")
+    tsf1 = make_tsf(task_id="P01", state=TaskState.READY_TO_CARVE)
+    tsf2 = make_tsf(task_id="P02", state=TaskState.READY_TO_CARVE)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        states={"P01": tsf1, "P02": tsf2},
+        frontmatters={"P01": (fm1, "h.md"), "P02": (fm2, "h.md")},
+    ))
+
+    actions = plan_project(inp)
+
+    dispatches = [a for a in actions if isinstance(a, CarveDispatch)]
+    assert len(dispatches) == 1
+    # Determinism: sorted task-id order (mirrors item 3's dispatch-capacity
+    # loop) -- the lower id wins this pass's single carve slot.
+    assert dispatches[0].task_id == "P01"
+    superseded = [a for a in actions if isinstance(a, Transition) and a.to == TaskState.SUPERSEDED]
+    assert len(superseded) == 1
+    assert superseded[0].task_id == "P01"
+    # P02 stays untouched in READY_TO_CARVE for a later pass.
+    assert [a for a in actions if isinstance(a, Transition) and a.task_id == "P02"] == []
+
+
+def test_ready_to_carve_no_dispatch_without_frontier_route():
+    """O2 (negative-adjacent): reuses item 9's own no-healthy-route guard --
+    no healthy 'frontier-review' route means a READY_TO_CARVE task never
+    gets a spurious CarveDispatch either, even though every other condition
+    holds (mirrors test_carve_trigger_none_when_no_frontier_route above)."""
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.READY_TO_CARVE)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        routes=make_routes(),  # only 'flash-high', no frontier-review tier
+        provider_ok={"route-1": True},
+    ))
+
+    actions = plan_project(inp)
+    assert [a for a in actions if isinstance(a, CarveDispatch)] == []
+
+
+def test_ready_to_carve_no_dispatch_when_budget_exhausted():
+    """Reviewer addendum (2026-07-19, post-P45 merge review): a READY_TO_CARVE
+    task must NOT get a CarveDispatch when the project's session budget is
+    already exhausted -- every other dispatch path in this module (item 9's
+    own untargeted trigger, dispatch_eligible's check 5) already stops all
+    new agent processes on budget_remaining <= 0; a rejected task's re-carve
+    is not exempt. Mirrors test_ready_to_carve_no_dispatch_without_frontier_
+    route's shape with budget_remaining=0.0 instead of an unhealthy route."""
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.READY_TO_CARVE)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        budget_remaining=0.0,
+    ))
+
+    actions = plan_project(inp)
+    assert [a for a in actions if isinstance(a, CarveDispatch)] == []
+    # The task itself is left untouched (still READY_TO_CARVE, not
+    # SUPERSEDED) so it is retried once budget frees up.
+    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
     assert transitions == []
+
+
+def test_ready_to_carve_superseded_is_terminal_no_refire_next_pass():
+    """O4 (non-hollow anchor, second half): a follow-up pass with the SAME
+    task now in SUPERSEDED (the state the first pass's Transition landed it
+    in) plans NOTHING further at all -- SUPERSEDED is terminal per
+    TERMINAL_TASK_STATES, so the carve does not re-fire once the carve slot
+    frees up on a later pass. roadmap_exhausted_open=True with no other
+    non-terminal task also suppresses item 9's OWN untargeted trigger here,
+    so an empty action list is the correct, clean assertion (isolating this
+    from the unrelated, independently-tested item-9 behavior)."""
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.SUPERSEDED)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        roadmap_exhausted_open=True,
+    ))
+
+    actions = plan_project(inp)
+    assert actions == []

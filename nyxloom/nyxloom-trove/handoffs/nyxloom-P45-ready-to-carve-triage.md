@@ -4,7 +4,7 @@ id: nyxloom-P45-ready-to-carve-triage
 project: nyxloom
 title: "Close the READY_TO_CARVE dead-end: review-initiated micro-carve routes to the single strategic carver"
 tier: sonnet5-high
-input_revision: "f38d306"
+input_revision: "<P44 merge commit — fill in when carving this from post-P44 main>"
 depends_on: [nyxloom-P44-role-scoped-dispatch]
 session: fresh
 source: {kind: product-goal, ref: nyxloom-trove/4-backlog.md}
