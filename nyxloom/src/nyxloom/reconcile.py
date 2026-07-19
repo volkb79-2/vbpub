@@ -136,20 +136,27 @@ INTERFACE CONTRACT (frozen). Semantics:
    implementer dispatch) -> emit CarveDispatch(project=cfg.project_id). At
    most one per pass (the in-flight check makes this self-limiting pass
    over pass too). Appended LAST in the returned action list (after
-   SpecAttention).
-10. REJECT LOOP (self-correct package, 2026-07-16): REVIEW_REJECTED with
-    attempts remaining (same accounting as dispatch_eligible check 5:
-    receipted attempts excluding 'limit' results, < policy.
-    max_attempts_per_task) -> Transition to QUEUED (re-work). Self-limiting
-    like item 2's CARVED->QUEUED (the transition moves the task out of
-    REVIEW_REJECTED, so it does not refire next pass). Attempts exhausted:
-    NO action is planned -- REVIEW_REJECTED->BLOCKED would be the
-    escalation, mirroring item 4's INTERRUPTED-exhausted typed-blocker path,
-    but that edge is absent from types.py's TASK_TRANSITIONS[REVIEW_REJECTED]
-    (a FROZEN CORE table, out of scope for this package) -- planning it
-    would raise TransitionError when the daemon executes it. Documented gap,
-    not a silent no-op: see reconcile.py's REVIEW_REJECTED block and the
-    P-selfcorrect handoff LOG/REPORT.
+   SpecAttention). P45 2026-07-19: the in-flight and route-health guards are
+   now computed ONCE and shared with item 12's READY_TO_CARVE handler below
+   -- see that item's note for why AT MOST ONE CarveDispatch is ever planned
+   in a pass across BOTH triggers (the single strategic carver is the sole
+   carve authority).
+10. REJECT LOOP (self-correct package, 2026-07-16; exhausted-budget half
+    closed by P45 2026-07-19): REVIEW_REJECTED with attempts remaining (same
+    accounting as dispatch_eligible check 5: receipted attempts excluding
+    'limit' results, < policy.max_attempts_per_task) -> Transition to
+    QUEUED (re-work). Self-limiting like item 2's CARVED->QUEUED (the
+    transition moves the task out of REVIEW_REJECTED, so it does not refire
+    next pass). Attempts exhausted: the original handoff wanted
+    REVIEW_REJECTED->BLOCKED (mirroring item 4's INTERRUPTED-exhausted
+    typed-blocker path), but that edge is absent from types.py's
+    TASK_TRANSITIONS[REVIEW_REJECTED] (FROZEN CORE, out of scope) --
+    planning it would raise TransitionError when the daemon executes it.
+    REVIEW_REJECTED->READY_TO_CARVE IS legal in that same frozen table, so
+    P45 routes the exhausted case there instead of leaving it a silent
+    no-op: Transition to READY_TO_CARVE (self-limiting, same reasoning as
+    the attempts-remaining branch). See item 12 below for what happens to a
+    task once it is in READY_TO_CARVE.
 11. POST-MERGE VALIDATION (nyxloom-post-merge-validation package, 2026-07-17;
     fixes the "TaskState.COMPLETED is unreachable" gap pinned by
     tests/test_invariants.py's now-removed MERGED/VALIDATING xfails):
@@ -168,6 +175,28 @@ INTERFACE CONTRACT (frozen). Semantics:
     retry, the same "operator must resolve BLOCKED by hand" convention
     documented in render.py's STATE_LEGEND (no new code needed for that
     recovery path).
+12. READY_TO_CARVE handler (P45 2026-07-19, closes the dead-end pinned by
+    tests/test_invariants.py's test_no_dead_end_ready_to_carve -- a task in
+    READY_TO_CARVE had NO handler at all before this package, reached only
+    via item 10's exhausted-budget re-route): when no carver attempt is
+    already in flight (the EXACT SAME predicate item 9 uses, computed once
+    and shared -- not a second, independently-drifting version) and a
+    healthy 'frontier-review' route exists (ditto), the single lowest
+    (sorted) task_id currently in READY_TO_CARVE gets BOTH a
+    CarveDispatch(project=cfg.project_id, task_id=fm_id) -- re-dispatched
+    through the SAME existing carve mechanism as item 9 (daemon.
+    _execute_carve_dispatch); item_id is left None, so the untargeted
+    carve-packet path fires, which already embeds recent REVIEW_RECORDED
+    follow-ups (this rejection's own context, for free) -- AND a
+    Transition(task_id=fm_id, to=SUPERSEDED) in the SAME pass, self-limiting
+    like every other bookkeeping transition in this module (the task moves
+    off READY_TO_CARVE so it does not re-trigger a second CarveDispatch once
+    the carve slot frees up on a later pass). AT MOST ONE CarveDispatch is
+    ever planned in a single pass, shared between this handler and item 9 --
+    whichever fires first (this item runs earlier in the function body, so
+    it wins ties) consumes the single carve slot for the pass; the operator
+    was explicit that the single strategic carver remains the sole carve
+    authority, so a second, independent dispatch path is never created here.
 """
 
 from __future__ import annotations
@@ -283,11 +312,17 @@ class SpecAttention(Action):
 @dataclass
 class CarveDispatch(Action):
     """P16 2026-07-15 (module contract item 9): the carve-automation
-    trigger. task_id is unused (inherited from Action, always None);
-    `project` names the project this carve targets -- the daemon already
-    knows it too (run_pass's own per-project loop), but carrying it here
-    keeps the action self-describing for tests/logs, matching
-    ProviderPause's route_id style.
+    trigger. task_id is unused for item 9's own untargeted headroom-refill
+    trigger (inherited from Action, left None there); `project` names the
+    project this carve targets -- the daemon already knows it too (run_
+    pass's own per-project loop), but carrying it here keeps the action
+    self-describing for tests/logs, matching ProviderPause's route_id
+    style. P45 2026-07-19: item 12's READY_TO_CARVE handler sets task_id to
+    the triggering task's own id (fm_id) so the action is task-attributable
+    in tests/logs; _execute_carve_dispatch itself never reads task_id (the
+    carve still mints its own fresh synthetic carve-<project>-<seq> task,
+    same as item 9) -- it is informational only, not a second execution
+    path.
 
     item_id (P41 2026-07-16): None for the untargeted headroom-refill
     trigger below (module contract item 9, unchanged). daemon.
@@ -422,25 +457,24 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
         # branch no longer matches on the next pass, so it fires once per
         # rejection, not every tick.
         #
-        # KNOWN GAP (documented, not silently dropped -- see P-selfcorrect
-        # LOG/REPORT): the exhausted-budget half of this handoff's contract
+        # P45 2026-07-19 (closes the KNOWN GAP the pre-P45 code left here):
+        # the exhausted-budget half of this handoff's original contract
         # asked for REVIEW_REJECTED -> BLOCKED with a typed blocker
         # (mirroring the INTERRUPTED-exhausted typed-blocker path elsewhere
-        # in this module). That specific transition is NOT legal today:
+        # in this module). That specific transition is NOT legal:
         # types.py's TASK_TRANSITIONS[REVIEW_REJECTED] is {QUEUED,
         # READY_TO_CARVE, NEEDS_DECISION, SUPERSEDED, CANCELLED} -- BLOCKED
-        # is absent -- so planning it would produce an action that raises
-        # TransitionError the moment the daemon executes it (check_task_
-        # transition runs for BOTH TASK_TRANSITIONED and TASK_BLOCKED
-        # events -- storage.apply_event, no bypass; verified empirically).
-        # types.py is FROZEN CORE and out of scope for this handoff (scope.
-        # touch forbids editing it, on the -- here inaccurate -- premise
-        # that "the transition table is already correct"). Rather than plan
-        # an action that would crash the daemon in real use, or silently
-        # substitute an unauthorized state the handoff never asked for, the
-        # exhausted case is deliberately left unhandled here pending a
-        # follow-up types.py edit (adding BLOCKED to that frozenset) that is
-        # outside this package's authorized scope.
+        # is absent -- so planning it would raise TransitionError the moment
+        # the daemon executed it (check_task_transition runs for BOTH
+        # TASK_TRANSITIONED and TASK_BLOCKED events -- storage.apply_event,
+        # no bypass; verified empirically), and types.py is FROZEN CORE /
+        # out of scope for this package. READY_TO_CARVE IS a legal edge in
+        # that same frozen table, and the two absence bugs turned out to be
+        # the same gap: routing the exhausted case there, and giving
+        # READY_TO_CARVE a real handler (module contract item 12, below)
+        # that re-dispatches the SAME single strategic carver, closes both
+        # at once with zero new dispatch machinery. Self-limiting the same
+        # way the attempts-remaining branch above is.
         if tsf.state == TaskState.REVIEW_REJECTED:
             rejected_attempts_count = sum(
                 1 for a in tsf.attempts
@@ -451,8 +485,16 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                     task_id=fm_id, to=TaskState.QUEUED,
                     notes="review rejected -- re-queued for re-work (attempt budget remains)",
                 ))
-            # else: attempts exhausted -- see KNOWN GAP above; no action
-            # planned (types.py edit required, out of scope).
+            else:
+                # Attempts exhausted: no more re-work is possible with this
+                # task's own budget -- route it to READY_TO_CARVE so item
+                # 12's handler (below) re-dispatches it to the single
+                # strategic carver for a fresh, re-scoped package instead of
+                # stranding it forever.
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.READY_TO_CARVE,
+                    notes="review rejected -- attempt budget exhausted; routed for re-carve",
+                ))
 
         # POST-MERGE VALIDATION (module contract item 11): MERGED ->
         # VALIDATING is pure bookkeeping (self-limiting, same pattern as
@@ -466,6 +508,49 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
             ))
         elif tsf.state == TaskState.VALIDATING:
             task_actions.append(RunPostMergeGate(task_id=fm_id))
+
+    # Shared single-carve-authority guard (module contract items 9 & 12,
+    # P45 2026-07-19): computed ONCE, reused verbatim by BOTH item 12's
+    # READY_TO_CARVE handler (immediately below) and item 9's untargeted
+    # headroom-refill trigger (further down, past dispatch/attempts/waves/
+    # spec) -- never two independently-drifting copies of either check.
+    carve_in_flight = any(
+        tsf.state not in TERMINAL_TASK_STATES
+        and any(a.role is Role.CARVER for a in tsf.attempts)
+        for tsf in inp.states.values()
+    )
+    frontier_routes = inp.routes.for_tier("frontier-review")
+    frontier_route_available = any(
+        inp.provider_ok.get(r.route_id, False) for r in frontier_routes
+    )
+    # True once EITHER trigger has planned the pass's single CarveDispatch
+    # -- the operator's explicit ask: the single strategic carver remains
+    # the sole carve authority, so at most one CarveDispatch is ever planned
+    # in a pass no matter which of the two triggers wants one.
+    carve_dispatch_planned = False
+
+    # 12. READY_TO_CARVE handler (P45 2026-07-19): see module contract item
+    # 12 docstring above for the full rationale. Sorted task-id order for
+    # determinism (mirrors item 3's dispatch-capacity loop below) -- if
+    # multiple tasks are simultaneously READY_TO_CARVE, only the lowest
+    # task_id gets this pass's single carve slot; the rest stay in
+    # READY_TO_CARVE, picked up on a later pass.
+    if not carve_in_flight and frontier_route_available:
+        ready_to_carve_ids = sorted(
+            task_id for task_id, tsf in inp.states.items()
+            if tsf.state == TaskState.READY_TO_CARVE
+        )
+        if ready_to_carve_ids:
+            chosen_id = ready_to_carve_ids[0]
+            chosen_actions = lifecycle_by_id.setdefault(chosen_id, [])
+            chosen_actions.append(
+                CarveDispatch(project=inp.cfg.project_id, task_id=chosen_id)
+            )
+            chosen_actions.append(Transition(
+                task_id=chosen_id, to=TaskState.SUPERSEDED,
+                notes="ready-to-carve: dispatched to the strategic carver",
+            ))
+            carve_dispatch_planned = True
 
     # 3. Dispatch eligible QUEUED tasks (with capacity limit)
     # Count current active tasks
@@ -788,13 +873,14 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
         spec_actions.append(SpecAttention(reason='blocked-underspecified', detail=None))
 
     # === Carve dispatch (P16 2026-07-15, module contract item 9) ===
+    # carve_in_flight / frontier_route_available computed once, above
+    # (shared with item 12's READY_TO_CARVE handler); carve_dispatch_planned
+    # is True if that handler already used this pass's single carve slot --
+    # P45 2026-07-19: at most one CarveDispatch is ever planned in a pass,
+    # shared across both triggers (the single strategic carver is the sole
+    # carve authority).
     carve_actions: list[Action] = []
-    carve_in_flight = any(
-        tsf.state not in TERMINAL_TASK_STATES
-        and any(a.role is Role.CARVER for a in tsf.attempts)
-        for tsf in inp.states.values()
-    )
-    if not carve_in_flight:
+    if not carve_in_flight and not carve_dispatch_planned:
         ready_states = (TaskState.CARVED, TaskState.QUEUED, TaskState.NEEDS_DECISION)
         ready_count = 0
         for fm_id, (fm, _handoff_path) in inp.frontmatters.items():
@@ -812,16 +898,13 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
             inp.cfg.policy.carve_ahead_target > 0 and not inp.roadmap_exhausted_open
         )
         budget_allows = inp.budget_remaining is None or inp.budget_remaining > 0
-        frontier_routes = inp.routes.for_tier("frontier-review")
-        frontier_route_available = any(
-            inp.provider_ok.get(r.route_id, False) for r in frontier_routes
-        )
 
         if (ready_count < inp.cfg.policy.carve_ahead_target
                 and milestone_admits_work
                 and budget_allows
                 and frontier_route_available):
             carve_actions.append(CarveDispatch(project=inp.cfg.project_id))
+            carve_dispatch_planned = True
 
     # === Combine results in order ===
     actions = []

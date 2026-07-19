@@ -30,6 +30,16 @@ references at all:
     it (not even reconcile.py's own NEEDS_DECISION handler, which
     unconditionally targets QUEUED, never READY_TO_CARVE, despite the
     graph technically allowing it).
+    FIXED 2026-07-19 (nyxloom-P45-ready-to-carve-triage package): reconcile.
+    py's module contract item 10 (REJECT LOOP) now routes a REVIEW_REJECTED
+    task with attempts exhausted INTO READY_TO_CARVE (previously a silent
+    no-op, itself a documented KNOWN GAP), and the new item 12 gives
+    READY_TO_CARVE a real handler OUT: re-dispatch the single strategic
+    carver (reconcile.CarveDispatch / daemon._execute_carve_dispatch, the
+    SAME mechanism item 9's automatic headroom-refill trigger already uses
+    -- no second carve authority), then Transition(SUPERSEDED) in the same
+    pass (self-limiting). See tests/test_no_dead_end_ready_to_carve below
+    (now plain, non-xfail) and tests/test_reconcile.py's O1/O3/O4 tests.
   - TaskState.MERGED / TaskState.VALIDATING: render.py documents a
     "post-merge validation" pipeline ("Merged; awaiting post-merge
     validation before COMPLETED") and daemon.py's own carve-retirement
@@ -53,12 +63,12 @@ references at all:
     non-xfail tests -- the pinned xfail(strict) markers were REMOVED, since
     a passing strict-xfail test is itself a failure (XPASS)).
 
-The remaining two (DRAFT, READY_TO_CARVE) are still pinned below as
-KNOWN_STATE_GAPS with dedicated xfail(strict) tests (Oracle O1: each
-demonstrably fails TODAY, on real code, proving the guard is not a
-tautology) rather than silently fixed -- production changes for those two
-are out of scope for THIS package (see CLAUDE.md handoff scope). Report to
-the project owner: these still need a backlog item and a real fix.
+The remaining one (DRAFT) is still pinned below as a KNOWN_STATE_GAPS entry
+with a dedicated xfail(strict) test (Oracle O1: it demonstrably fails
+TODAY, on real code, proving the guard is not a tautology) rather than
+silently fixed -- production changes for it are out of scope for THIS
+package (see CLAUDE.md handoff scope). Report to the project owner: it
+still needs a backlog item and a real fix.
 """
 
 from __future__ import annotations
@@ -258,9 +268,16 @@ def _manual_documented_states() -> frozenset[TaskState]:
 # states are now genuinely `planned`, so they were REMOVED from this set --
 # leaving them in would fail test_every_nonterminal_taskstate_is_planned_
 # manual_or_tracked_gap's own isdisjoint(planned) assertion below.
+#
+# TaskState.READY_TO_CARVE REMOVED 2026-07-19 (nyxloom-P45-ready-to-carve-
+# triage): reconcile.py's module contract item 10 (REJECT LOOP) now routes
+# a REVIEW_REJECTED task with attempts exhausted to READY_TO_CARVE, and item
+# 12 (new) gives READY_TO_CARVE a real handler (re-dispatches the single
+# strategic carver, then Transition(SUPERSEDED)) -- genuinely `planned` now,
+# same reasoning as the MERGED/VALIDATING removal above. See
+# test_no_dead_end_ready_to_carve below (no longer xfail).
 KNOWN_STATE_GAPS: frozenset[TaskState] = frozenset({
     TaskState.DRAFT,
-    TaskState.READY_TO_CARVE,
 })
 
 
@@ -391,23 +408,32 @@ def test_no_dead_end_draft():
     )
 
 
-_READY_TO_CARVE_GAP_REASON = (
-    "ABSENCE bug found while writing this invariant suite (2026-07-17): "
-    "TaskState.READY_TO_CARVE has outgoing TASK_TRANSITIONS edges and a "
-    "STATE_LEGEND entry ('waiting to become a real task (CARVED)') "
-    "implying automatic progression -- but across the ENTIRE src/ tree it "
-    "is referenced ONLY in types.py (the graph itself) and render.py (the "
-    "legend). No code path ever assigns it as a transition target (not "
-    "even reconcile.py's own NEEDS_DECISION handler, which unconditionally "
-    "targets QUEUED, never READY_TO_CARVE, though the graph allows it), "
-    "and reconcile.py never checks for a task already in this state "
-    "either. No backlog item tracks this; flagged here for triage."
-)
-
-
-@pytest.mark.xfail(strict=True, reason=_READY_TO_CARVE_GAP_REASON)
+# FIXED 2026-07-19 (nyxloom-P45-ready-to-carve-triage package). Used to be
+# xfail(strict=True)-pinned: TaskState.READY_TO_CARVE has outgoing
+# TASK_TRANSITIONS edges and a STATE_LEGEND entry ('waiting to become a real
+# task (CARVED)') implying automatic progression -- but across the ENTIRE
+# src/ tree it was referenced ONLY in types.py (the graph itself) and
+# render.py (the legend); no code path ever assigned it as a transition
+# target, and reconcile.py never checked for a task already in this state
+# either. Now fixed: reconcile.py's module contract item 10 (REJECT LOOP)
+# routes a REVIEW_REJECTED task with attempts exhausted INTO
+# READY_TO_CARVE, and item 12 gives READY_TO_CARVE a real handler OUT --
+# re-dispatch the single strategic carver (reconcile.CarveDispatch /
+# daemon._execute_carve_dispatch, the SAME mechanism item 9's automatic
+# headroom-refill trigger already uses), then Transition(SUPERSEDED) in the
+# same pass. This is now a plain (non-xfail) behavioral proof, matching this
+# file's other now-fixed dead-end tests (test_no_dead_end_merged/
+# test_no_dead_end_validating above) -- a passing strict-xfail test is
+# itself a failure (XPASS), so the marker was REMOVED, not merely loosened.
+#
+# The route override below (frontier-review tier, unlike _base_input's
+# default flash-high-only Routes) is required because this handler's
+# in-flight/route-health guard specifically checks the 'frontier-review'
+# tier (module contract item 9's own predicate, reused verbatim) --
+# _base_input's default fixture has no such tier registered.
 def test_no_dead_end_ready_to_carve():
-    inp = _base_input("INV-01", TaskState.READY_TO_CARVE)
+    routes = _routes(tier="frontier-review")
+    inp = _base_input("INV-01", TaskState.READY_TO_CARVE, routes=routes)
     actions = plan_project(inp)
     assert any(_action_touches_task(a, "INV-01") for a in actions), (
         "READY_TO_CARVE task got zero planned actions -- reconcile.py has no handler for it"
@@ -628,10 +654,13 @@ def test_task_transition_graph_fully_reachable_from_draft():
     code in the enum (declared, never enterable) -- a milder cousin of the
     dead-end-state bug Invariant 1 catches (those are ENTERABLE-but-stuck;
     this is NEVER-enterable). All 15 TaskStates are in fact reachable from
-    DRAFT today (this test passes) -- DRAFT/READY_TO_CARVE/MERGED/
-    VALIDATING being unreachable IN PRACTICE (no code ever assigns them) is
-    a *dispatch-code* gap (Invariant 1), not a *graph* gap; the graph edges
-    themselves are fully connected."""
+    DRAFT today (this test passes) -- DRAFT being unreachable IN PRACTICE
+    (no code ever assigns it) is a *dispatch-code* gap (Invariant 1), not a
+    *graph* gap; the graph edges themselves are fully connected.
+    (READY_TO_CARVE/MERGED/VALIDATING previously belonged in that same
+    "unreachable in practice" list too -- P45 2026-07-19 fixed
+    READY_TO_CARVE, the 2026-07-17 post-merge-validation package fixed
+    MERGED/VALIDATING; both are genuinely live now, see Invariant 1 above.)"""
     seen = {TaskState.DRAFT}
     frontier = [TaskState.DRAFT]
     while frontier:
