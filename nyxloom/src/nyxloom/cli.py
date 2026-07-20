@@ -518,12 +518,27 @@ def cmd_merge(args) -> int:
         payload={"from": from_state.value, "to": TaskState.MERGED.value, "notes": None},
         task_id=args.task,
     )
+    # P64 2026-07-20 (A12, D-061): carry a REAL progress_units (files the merge
+    # changed) so the ratchet sees genuine progress -- parity with the daemon
+    # auto-merge path (_merge_progress_units). Same git command; best-effort.
+    _changed: list[str] = []
+    try:
+        _root = subprocess.run(
+            ["git", "-C", str(cfg.root), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True).stdout.strip() or str(cfg.root)
+        _d = subprocess.run(
+            ["git", "-C", _root, "diff-tree", "--no-commit-id", "--name-only", "-r", commit],
+            capture_output=True, text=True)
+        if _d.returncode == 0:
+            _changed = [ln.strip() for ln in _d.stdout.splitlines() if ln.strip()]
+    except OSError:
+        pass
     storage.append_and_apply(
         args.project,
         states,
         actor=actor,
         type=EventType.MERGE_RECORDED,
-        payload={"merge_commit": commit},
+        payload={"merge_commit": commit, "progress_units": _changed, "source_kind": "review"},
         task_id=args.task,
     )
 

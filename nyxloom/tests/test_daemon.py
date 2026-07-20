@@ -2458,6 +2458,80 @@ def test_history_windowed_rejection_count_within_window_all_count(tmp_state, sam
     assert review_rejections_by_area.get("ui", 0) == 2
 
 
+def test_history_merge_progress_units_from_changed_files(tmp_state, sample_project):
+    """P64 2026-07-20 (A12, D-061/M17): _history derives a merge's progress
+    units from the files it changed (the progress_units payload both merge
+    paths now write). Pre-A12 NOTHING emitted progress_units, so units read 0
+    for EVERY merge and the ratchet false-fired after any N merges. A merge
+    that changed files must read units>0; a genuinely empty merge reads 0."""
+    project = "demo"
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "abc123",
+                 "progress_units": ["a.py", "b.py", "c.py"], "source_kind": "review"},
+        task_id="t-real",
+    )
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.MERGE_RECORDED,
+        payload={"merge_commit": "def456", "progress_units": [], "source_kind": "review"},
+        task_id="t-empty",
+    )
+    d = daemon.Daemon({"demo": sample_project.root})
+    merge_history, _co, _rej, _bu = d._history(project)
+    by_task = {t: (u, s) for t, u, s in merge_history}
+    assert by_task["t-real"] == (3, "review"), "3 changed files => 3 progress units, not zero"
+    assert by_task["t-empty"] == (0, "review"), "an empty merge is genuinely zero-progress"
+
+
+def test_history_windowed_blocked_underspecified_ages_out(tmp_state, sample_project):
+    """P64 2026-07-20 (A12, M16): the contract-blocker count is now WINDOWED
+    like review_rejections. 3 contract blockers OLDER than the window + 1
+    recent => count drops to 1. Pre-A12 it was a full-log-forever count that
+    stayed high and re-fired SpecAttention('blocked-underspecified') whenever
+    its dedup event scrolled out of the 500-event window."""
+    project = "demo"
+    now = utc_now()
+    old_ts = now - timedelta(seconds=daemon.HISTORY_REJECTION_WINDOW_SECONDS + 3600)
+    recent_ts = now - timedelta(seconds=60)
+    for _ in range(3):
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.TASK_BLOCKED,
+            payload={"from": "MERGED", "blocker": {"type": "contract", "detail": "old"}},
+            timestamp=old_ts,
+        )
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.TASK_BLOCKED,
+        payload={"from": "MERGED", "blocker": {"type": "contract", "detail": "recent"}},
+        timestamp=recent_ts,
+    )
+    d = daemon.Daemon({"demo": sample_project.root})
+    _mh, _co, _rej, blocked = d._history(project)
+    assert blocked == 1, "old contract blockers must age out of the underspecified count"
+
+
+def test_history_environment_blocker_not_counted_as_underspecified(tmp_state, sample_project):
+    """P64 2026-07-20 (A12, M16): a post-merge GATE failure is now typed
+    ENVIRONMENT, not CONTRACT, so it must NOT inflate the
+    blocked_underspecified (contract) count -- otherwise every failing
+    post-merge gate would read as an 'underspecified handoff'."""
+    project = "demo"
+    recent_ts = utc_now() - timedelta(seconds=60)
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.TASK_BLOCKED,
+        payload={"from": "VALIDATING",
+                 "blocker": {"type": "environment", "detail": "post-merge gate exit_code=1"}},
+        timestamp=recent_ts,
+    )
+    d = daemon.Daemon({"demo": sample_project.root})
+    _mh, _co, _rej, blocked = d._history(project)
+    assert blocked == 0, "an ENVIRONMENT (gate-failure) blocker is not an underspecified-handoff signal"
+
+
 # --------------------------------------------------------------------------
 # P44 2026-07-16 Oracle 3 (integration half): a PERSISTENT runaway
 # auto-pauses the project and emits exactly ONE escalation, not
