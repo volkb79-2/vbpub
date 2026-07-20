@@ -554,13 +554,28 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
         # CARVED->QUEUED above); VALIDATING itself just re-emits the trigger
         # every pass until the daemon's execution of RunPostMergeGate
         # transitions the task onward to COMPLETED or BLOCKED.
+        #
+        # D-060 (B2, docs/spec-flow-stages.md): the VALIDATING handler honours
+        # the composed pipeline. `post_merge_gate` in the pipeline (the default,
+        # and every project with no `pipeline` key -> parity) -> RunPostMergeGate
+        # exactly as before. A pipeline that omits the gate stage (e.g. the
+        # `lean` preset) auto-advances VALIDATING -> COMPLETED immediately -- the
+        # frozen graph already permits that edge, and MERGED still transits
+        # through VALIDATING first (never MERGED -> COMPLETED directly), so no
+        # new transition edge is introduced.
         if tsf.state == TaskState.MERGED:
             task_actions.append(Transition(
                 task_id=fm_id, to=TaskState.VALIDATING,
                 notes="post-merge validation started",
             ))
         elif tsf.state == TaskState.VALIDATING:
-            task_actions.append(RunPostMergeGate(task_id=fm_id))
+            if "post_merge_gate" in inp.cfg.pipeline:
+                task_actions.append(RunPostMergeGate(task_id=fm_id))
+            else:
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.COMPLETED,
+                    notes="no post_merge_gate stage -- auto-validated",
+                ))
 
         # GUARDED-AUTOMATIC MERGE (module contract item 13, P48 2026-07-19):
         # a MERGE_READY task only ever gets here via an 'approved' review
