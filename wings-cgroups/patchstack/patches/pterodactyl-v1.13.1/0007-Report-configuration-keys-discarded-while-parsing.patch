@@ -1,4 +1,4 @@
-From f5f1ea86f39220da993ddd663b4ce9cf626f70a3 Mon Sep 17 00:00:00 2001
+From f6b837c13ad39e39d5669a4c2eee43c00b190cf1 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Fri, 17 Jul 2026 09:48:27 +0000
 Subject: [PATCH 7/7] Report configuration keys discarded while parsing

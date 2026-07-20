@@ -1,4 +1,4 @@
-From 57d043f265b9d848d02c3541f74f5d055060b4cc Mon Sep 17 00:00:00 2001
+From b03598e1c7c8a48d42a1a99d500181aa69a52406 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Mon, 20 Jul 2026 10:04:51 +0000
 Subject: [PATCH 6/7] Stage per-server slice properties across server startup
@@ -8,52 +8,66 @@ world generation and asset streaming reach for everything at once -- so a
 memory.high sized for the steady state throttles precisely the phase that can
 least afford it.
 
-That would merely be slow if the two knobs were independent, but they are
-not: memory.high reclaim is the one path that ignores memory.min, because
-protection only fends off reclaim driven from OUTSIDE the cgroup. A ceiling
-below the load-time peak therefore evicts the server through its own floor,
-and the damage is permanent -- nothing faults those pages back except the
+That would merely be slow if floor and ceiling were independent, but they are
+not. memory.min and memory.low only fend off reclaim driven from OUTSIDE a
+cgroup, so reclaim a cgroup inflicts on itself -- by exceeding its own
+memory.high, or its own memory.max -- ignores them entirely. A ceiling below
+the load-time peak therefore evicts the server straight through its own floor,
+and the damage is permanent: nothing faults those pages back except the
 workload itself, one at a time. Operators are left with a server pinned well
 under a floor that is configured, applied and completely effective.
 
 Add a startup band: WINGS_CG_STARTUP_MEMORY_MIN/_LOW/_HIGH/_MAX and
-docker.per_server_slices.startup_defaults, applied when the slice is ensured
-before container creation and replaced by the steady band once the server is
-up. Only the memory band is staged; cpu/io weights are work-conserving and
-cannot evict anything.
+docker.per_server_slices.startup_defaults, applied by OnBeforeStart -- the one
+path that actually precedes a boot -- and replaced by the steady band once the
+server is up. Only the memory band is staged; cpu/io weights are
+work-conserving and cannot evict anything.
+
+Environment.Create() deliberately keeps applying the steady band: it also runs
+at Wings boot, for a newly created server and for an incoming transfer, none
+of which start the server, and a startup band applied there would never be
+replaced.
 
 The transition reuses detection Wings already performs. The egg's startup
-"done" matcher flips the environment to the running state, which reaches
-OnStateChange -- so the trigger is per-egg configuration every game already
-carries, and no new console parsing is introduced. A startup_grace timer
-(default 15m) bounds the startup band, because a ready line that never matches
--- a broken egg, a game that changed its log format -- must not leave a server
-on startup properties forever.
+"done" matcher sets the running state, which reaches OnStateChange -- so the
+trigger is per-egg configuration every game already carries, and no new
+console parsing is introduced. A startup_grace timer (default 15m) bounds the
+band for servers whose ready line never matches. Note that state-change events
+are dispatched one goroutine each and OnStateChange re-reads current state, so
+"starting" can be coalesced away; that only costs the timer, and a server that
+never reaches "running" is safer holding the startup band anyway.
 
-Every application now logs the slice it targets, the phase, what triggered it
-and the properties applied, with sizes rendered in the units they were
-configured with rather than raw byte counts.
+Applications are gated on the bands actually differing, so a node that
+configures no startup band issues no extra systemd calls and arms no timers --
+its behaviour is unchanged apart from the config file gaining the new keys.
 
-Nodes that configure no startup band are unaffected: both phases resolve to
-the same properties, which a test asserts.
+Every application logs the slice it targets, the phase, what triggered it and
+the properties applied, with sizes rendered in the units they were configured
+with instead of raw byte counts:
+
+  cgroups: ensured per-server slice  slice=wings-<32hex>.slice phase=startup
+    reason="server starting" properties="MemoryMin=9G MemoryHigh=64G ..."
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
- config/config_docker.go          |  92 +++++++++++++++++--
- environment/docker/container.go  |   2 +-
- internal/cgroups/cgroups.go      | 149 ++++++++++++++++++++++++++++---
+ config/config_docker.go          |  84 +++++++++++++-
+ environment/docker/container.go  |   8 +-
+ environment/docker/power.go      |  32 ++++++
+ internal/cgroups/cgroups.go      | 165 ++++++++++++++++++++++++++--
  internal/cgroups/cgroups_test.go |   2 +-
- internal/cgroups/ensure.go       |  54 +++++++++--
- internal/cgroups/phase_test.go   | 142 +++++++++++++++++++++++++++++
+ internal/cgroups/ensure.go       |  66 +++++++++--
+ internal/cgroups/phase_test.go   | 182 +++++++++++++++++++++++++++++++
  server/install.go                |   2 +-
- server/server.go                 |   9 ++
- server/slice_phase.go            | 109 ++++++++++++++++++++++
- 9 files changed, 532 insertions(+), 29 deletions(-)
+ server/server.go                 |  14 +++
+ server/slice_phase.go            | 159 +++++++++++++++++++++++++++
+ server/slice_phase_test.go       | 166 ++++++++++++++++++++++++++++
+ 11 files changed, 851 insertions(+), 29 deletions(-)
  create mode 100644 internal/cgroups/phase_test.go
  create mode 100644 server/slice_phase.go
+ create mode 100644 server/slice_phase_test.go
 
 diff --git a/config/config_docker.go b/config/config_docker.go
-index 4ba4369..2ecfca6 100644
+index 4ba4369..d1ffaaa 100644
 --- a/config/config_docker.go
 +++ b/config/config_docker.go
 @@ -5,6 +5,7 @@ import (
@@ -81,7 +95,7 @@ index 4ba4369..2ecfca6 100644
  // PerServerSlicesConfiguration configures automatic per-server slice
  // management (docker.per_server_slices). Requires CgroupParent to be set:
  // derived slices nest under it via systemd dash naming.
-@@ -193,6 +204,25 @@ type PerServerSlicesConfiguration struct {
+@@ -193,6 +204,24 @@ type PerServerSlicesConfiguration struct {
  	// check.
  	MemoryMinBudget string `default:"" json:"memory_min_budget" yaml:"memory_min_budget"`
  
@@ -91,10 +105,9 @@ index 4ba4369..2ecfca6 100644
 +	// expires. Empty fields mean "no startup override".
 +	//
 +	// This exists because a memory.high sized for the steady working set
-+	// throttles the load-time peak, and memory.high reclaim is the one path
-+	// that ignores memory.min — a ceiling below the peak evicts the server
-+	// through its own floor, permanently, since nothing faults those pages
-+	// back except the workload itself.
++	// throttles the load-time peak, and a cgroup is not protected from reclaim
++	// it inflicts on itself — a ceiling below the peak evicts the server
++	// through its own floor, permanently. See internal/cgroups.
 +	StartupDefaults DockerSliceStartupDefaults `json:"startup_defaults" yaml:"startup_defaults"`
 +
 +	// StartupGrace bounds how long the startup band may hold. A server whose
@@ -107,7 +120,7 @@ index 4ba4369..2ecfca6 100644
  	// BudgetPolicy decides what happens to a MemoryMin request exceeding the
  	// remaining budget. Every other property is applied unchanged in all
  	// three cases:
-@@ -393,9 +423,22 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
+@@ -393,9 +422,22 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
  	if _, errs := c.SliceDefaults().Props(); len(errs) > 0 {
  		return errors.Wrap(errs[0], "docker.per_server_slices.defaults")
  	}
@@ -130,7 +143,7 @@ index 4ba4369..2ecfca6 100644
  // SliceDefaults converts the configured per-server slice defaults into the
  // internal/cgroups representation.
  func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
-@@ -414,16 +457,53 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
+@@ -414,16 +456,46 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
  // SliceEnsureRequest assembles the cgroups.EnsureForServer request for a
  // server whose containers are about to be placed under slice (a value
  // previously returned as managed by ResolveServerCgroupParent).
@@ -179,35 +192,88 @@ index 4ba4369..2ecfca6 100644
 +	return d
 +}
 +
-+// SliceStagedStartup reports whether any startup-phase override is configured
-+// at node level. Per-server WINGS_CG_STARTUP_* variables are independent of
-+// this and are always honoured.
-+func (c DockerConfiguration) SliceStagedStartup() bool {
-+	d := c.PerServerSlices.StartupDefaults
-+	return d.MemoryMin != "" || d.MemoryLow != "" || d.MemoryHigh != "" || d.MemoryMax != ""
-+}
 +
  // SliceBudget converts the configured floor budget into the internal/cgroups
  // representation, excluding the slice currently being ensured from the
  // sibling sum. Derived slices share the parent's name prefix, so the sibling
 diff --git a/environment/docker/container.go b/environment/docker/container.go
-index a03c205..64778b6 100644
+index a03c205..d75a6e7 100644
 --- a/environment/docker/container.go
 +++ b/environment/docker/container.go
-@@ -183,7 +183,7 @@ func (e *Environment) Create() error {
+@@ -183,7 +183,13 @@ func (e *Environment) Create() error {
  		// container is placed under it; a missing unit would silently
  		// materialize as a limit-less transient slice. Best-effort: failures
  		// are logged and never block container creation.
 -		cgroups.EnsureForServer(ctx, e.log(), cfg.Docker.SliceEnsureRequest(e.Id, cgroupParent, evs))
-+		cgroups.EnsureForServer(ctx, e.log(), cfg.Docker.SliceEnsureRequest(e.Id, cgroupParent, evs, cgroups.PhaseStartup), "container create")
++		//
++		// The steady band, deliberately: Create() also runs at Wings boot, for
++		// a newly created server and for an incoming transfer, none of which
++		// start the server. A startup band applied here would never be
++		// replaced. OnBeforeStart applies it on the one path that does precede
++		// a boot.
++		cgroups.EnsureForServer(ctx, e.log(), cfg.Docker.SliceEnsureRequest(e.Id, cgroupParent, evs, cgroups.PhaseSteady), "container create")
  	}
  
  	// Merge user-provided labels with system labels
+diff --git a/environment/docker/power.go b/environment/docker/power.go
+index c56adea..56a7c89 100644
+--- a/environment/docker/power.go
++++ b/environment/docker/power.go
+@@ -11,7 +11,9 @@ import (
+ 	"github.com/docker/docker/api/types/container"
+ 	"github.com/docker/docker/client"
+ 
++	"github.com/pelican-dev/wings/config"
+ 	"github.com/pelican-dev/wings/environment"
++	"github.com/pelican-dev/wings/internal/cgroups"
+ 	"github.com/pelican-dev/wings/remote"
+ )
+ 
+@@ -42,9 +44,39 @@ func (e *Environment) OnBeforeStart(ctx context.Context) error {
+ 		return err
+ 	}
+ 
++	// The container is about to start, so this is the one moment where the
++	// startup band is both correct and bounded: the server will either report
++	// ready or hit the startup grace, and either way the steady band replaces
++	// this. Best-effort, like every other slice operation.
++	e.applySliceBand(ctx, cgroups.PhaseStartup, "server starting")
++
+ 	return nil
+ }
+ 
++// applySliceBand re-ensures this server's slice with the given phase's
++// property band. A server without a Wings-managed slice is skipped.
++func (e *Environment) applySliceBand(ctx context.Context, phase cgroups.Phase, reason string) {
++	cfg := config.Get()
++	if !cfg.Docker.PerServerSlices.Enabled {
++		return
++	}
++	evs := e.Configuration.EnvironmentVariables()
++	parent, managed, err := cfg.Docker.ResolveServerCgroupParent(e.Id, evs)
++	if err != nil {
++		e.log().WithField("cgroup_parent", parent).WithError(err).Warn("environment/docker: rejected per-server cgroup parent override")
++	}
++	if !managed {
++		return
++	}
++	req := cfg.Docker.SliceEnsureRequest(e.Id, parent, evs, phase)
++	if !req.Staged() {
++		// Nothing staged: the band applied at container create is already the
++		// steady one, so this would rewrite identical properties.
++		return
++	}
++	cgroups.EnsureForServer(ctx, e.log(), req, reason)
++}
++
+ // Start will start the server environment and begins piping output to the event
+ // listeners for the console. If a container does not exist, or needs to be
+ // rebuilt that will happen in the call to OnBeforeStart().
 diff --git a/internal/cgroups/cgroups.go b/internal/cgroups/cgroups.go
-index fddcdbe..b366a52 100644
+index fddcdbe..69230fb 100644
 --- a/internal/cgroups/cgroups.go
 +++ b/internal/cgroups/cgroups.go
-@@ -40,6 +40,39 @@ const (
+@@ -40,6 +40,40 @@ const (
  	EnvIOBFQWeight = "WINGS_CG_IO_BFQ_WEIGHT"
  )
  
@@ -216,11 +282,12 @@ index fddcdbe..b366a52 100644
 +// asset streaming reach for everything at once — so a memory.high sized for
 +// the steady state throttles exactly the phase that can least afford it.
 +//
-+// Worse, the damage is permanent: memory.high reclaim is the one path that
-+// ignores memory.min (protection only fends off reclaim driven from OUTSIDE
-+// the cgroup), so a ceiling below the load-time peak evicts the server through
-+// its own floor, and nothing pulls those pages back — they return only when
-+// the workload faults them in again, one at a time.
++// Worse, the damage is permanent. memory.min and memory.low only fend off
++// reclaim driven from OUTSIDE the cgroup, so reclaim a cgroup inflicts on
++// itself — by exceeding its own memory.high, or its own memory.max — ignores
++// them entirely. A ceiling below the load-time peak therefore evicts the
++// server straight through its own floor, and nothing pulls those pages back:
++// they return only when the workload faults them in again, one at a time.
 +//
 +// These variables state the band to apply while the server is still starting.
 +// Wings replaces it with the steady band once the server reports ready, or
@@ -247,7 +314,7 @@ index fddcdbe..b366a52 100644
  // BFQ weight bounds. BFQ keeps its own per-cgroup weight in io.bfq.weight on a
  // 1..1000 scale and does NOT read io.weight — that file belongs to the iocost
  // controller, which is inert unless io.cost.model/io.cost.qos are configured.
-@@ -108,23 +141,52 @@ func (p Props) Empty() bool {
+@@ -108,23 +142,67 @@ func (p Props) Empty() bool {
  		p.MemoryMax == nil && p.CPUWeight == nil && p.IOWeight == nil
  }
  
@@ -266,6 +333,21 @@ index fddcdbe..b366a52 100644
 +		}
 +	}
 +	return strconv.FormatUint(v, 10)
++}
++
++// Equal reports whether two property sets request exactly the same thing,
++// including which properties are left unset. Compared structurally rather than
++// through String(), so the log format stays a logging concern.
++func (p Props) Equal(o Props) bool {
++	eq := func(a, b *uint64) bool {
++		if a == nil || b == nil {
++			return a == b
++		}
++		return *a == *b
++	}
++	return eq(p.MemoryMin, o.MemoryMin) && eq(p.MemoryLow, o.MemoryLow) &&
++		eq(p.MemoryHigh, o.MemoryHigh) && eq(p.MemoryMax, o.MemoryMax) &&
++		eq(p.CPUWeight, o.CPUWeight) && eq(p.IOWeight, o.IOWeight)
 +}
 +
 +// String renders the requested properties for logs, naming each systemd
@@ -293,17 +375,17 @@ index fddcdbe..b366a52 100644
 -			b.WriteByte('=')
 -			b.WriteString(strconv.FormatUint(*v, 10))
 +			addRaw(name, strconv.FormatUint(*v, 10))
++		}
++	}
++	size := func(name string, v *uint64) {
++		if v != nil {
++			addRaw(name, FormatSize(*v))
  		}
  	}
 -	add("MemoryMin", p.MemoryMin)
 -	add("MemoryLow", p.MemoryLow)
 -	add("MemoryHigh", p.MemoryHigh)
 -	add("MemoryMax", p.MemoryMax)
-+	size := func(name string, v *uint64) {
-+		if v != nil {
-+			addRaw(name, FormatSize(*v))
-+		}
-+	}
 +	size("MemoryMin", p.MemoryMin)
 +	size("MemoryLow", p.MemoryLow)
 +	size("MemoryHigh", p.MemoryHigh)
@@ -311,7 +393,7 @@ index fddcdbe..b366a52 100644
  	add("CPUWeight", p.CPUWeight)
  	add("IOWeight", p.IOWeight)
  	// Spell out the derived BFQ weight: on a BFQ node that is the value which
-@@ -210,6 +272,71 @@ func FromEnv(env []string) (props Props, errs []error) {
+@@ -210,6 +288,71 @@ func FromEnv(env []string) (props Props, errs []error) {
  	return props, errs
  }
  
@@ -397,7 +479,7 @@ index 11c235f..1d69107 100644
  	}
  }
 diff --git a/internal/cgroups/ensure.go b/internal/cgroups/ensure.go
-index 003dccb..b6111ca 100644
+index 003dccb..6680161 100644
 --- a/internal/cgroups/ensure.go
 +++ b/internal/cgroups/ensure.go
 @@ -20,8 +20,14 @@ type EnsureRequest struct {
@@ -415,7 +497,7 @@ index 003dccb..b6111ca 100644
  	// Env is the resolved server environment, the source of the per-server
  	// WINGS_CG_* property overrides.
  	Env []string
-@@ -29,31 +35,61 @@ type EnsureRequest struct {
+@@ -29,31 +35,73 @@ type EnsureRequest struct {
  	Budget Budget
  }
  
@@ -446,6 +528,18 @@ index 003dccb..b6111ca 100644
 +		startup = Merge(defaults, startup)
 +	}
 +	return Merge(props, startup), errs
++}
++
++// Staged reports whether this request's startup band actually differs from its
++// steady band. When nothing is staged the two are identical, so the properties
++// applied at container create are already correct and the steady re-apply on
++// the ready transition would be a pointless systemd round trip.
++func (req EnsureRequest) Staged() bool {
++	a, b := req, req
++	a.Phase, b.Phase = PhaseStartup, PhaseSteady
++	pa, _ := a.props()
++	pb, _ := b.props()
++	return !pa.Equal(pb)
 +}
 +
 +// EnsureForServer ensures a server's slice unit exists and carries its
@@ -488,10 +582,10 @@ index 003dccb..b6111ca 100644
  		return
 diff --git a/internal/cgroups/phase_test.go b/internal/cgroups/phase_test.go
 new file mode 100644
-index 0000000..ea93ca7
+index 0000000..9ab785a
 --- /dev/null
 +++ b/internal/cgroups/phase_test.go
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,182 @@
 +package cgroups
 +
 +import "testing"
@@ -634,6 +728,46 @@ index 0000000..ea93ca7
 +		t.Errorf("non-derived min = %v, want only the explicit 1G", p.MemoryMin)
 +	}
 +}
++
++func TestPropsEqual(t *testing.T) {
++	a := Props{MemoryMin: u64(6 << 30), CPUWeight: u64(200)}
++	if !a.Equal(Props{MemoryMin: u64(6 << 30), CPUWeight: u64(200)}) {
++		t.Error("identical props must compare equal")
++	}
++	if a.Equal(Props{MemoryMin: u64(7 << 30), CPUWeight: u64(200)}) {
++		t.Error("differing values must not compare equal")
++	}
++	// "unset" and "set to zero" are different requests and must not collapse.
++	if (Props{MemoryMin: u64(0)}).Equal(Props{}) {
++		t.Error("explicit zero must not equal unset")
++	}
++}
++
++// Staged() gates the steady re-apply: with nothing staged it must report false
++// so no pointless systemd round trip happens on every server start.
++func TestEnsureRequestStaged(t *testing.T) {
++	base := EnsureRequest{Derived: true, Defaults: Defaults{MemoryMin: "6G", MemoryHigh: "7G"}}
++	if base.Staged() {
++		t.Error("no startup band configured must report not staged")
++	}
++	withNode := base
++	withNode.StartupDefaults = StartupDefaults{MemoryHigh: "64G"}
++	if !withNode.Staged() {
++		t.Error("node startup_defaults must report staged")
++	}
++	withServer := base
++	withServer.Env = []string{"WINGS_CG_STARTUP_MEMORY_HIGH=64G"}
++	if !withServer.Staged() {
++		t.Error("per-server startup variable must report staged")
++	}
++	// A startup value equal to the steady one changes nothing and must not
++	// trigger a transition.
++	same := base
++	same.StartupDefaults = StartupDefaults{MemoryHigh: "7G"}
++	if same.Staged() {
++		t.Error("startup band identical to steady must report not staged")
++	}
++}
 diff --git a/server/install.go b/server/install.go
 index 2064e3b..d709841 100644
 --- a/server/install.go
@@ -648,10 +782,10 @@ index 2064e3b..d709841 100644
  	if cgroupParent != "" {
  		hostConf.CgroupParent = cgroupParent
 diff --git a/server/server.go b/server/server.go
-index 2a6fcd6..c21ca5b 100644
+index 2a6fcd6..1845184 100644
 --- a/server/server.go
 +++ b/server/server.go
-@@ -68,6 +68,11 @@ type Server struct {
+@@ -68,6 +68,12 @@ type Server struct {
  	transferring *system.AtomicBool
  	restoring    *system.AtomicBool
  
@@ -659,11 +793,23 @@ index 2a6fcd6..c21ca5b 100644
 +	// slice property band (see slice_phase.go).
 +	slicePhaseMu    sync.Mutex
 +	slicePhaseTimer *time.Timer
++	slicePhaseFired bool
 +
  	// The console throttler instance used to control outputs.
  	throttler    *ConsoleThrottle
  	throttleOnce sync.Once
-@@ -410,6 +415,10 @@ func (s *Server) OnStateChange() {
+@@ -114,6 +120,10 @@ func New(client remote.Client) (*Server, error) {
+ // using the context on the server struct. This will cancel any running install
+ // processes for the server as well.
+ func (s *Server) CleanupForDestroy() {
++	// Stop the per-server slice grace timer: its closure holds this *Server,
++	// and firing it after destruction would log and dial systemd for a server
++	// that no longer exists.
++	s.endSlicePhase()
+ 	s.CtxCancel()
+ 	s.Events().Destroy()
+ 	s.DestroyAllSinks()
+@@ -410,6 +420,10 @@ func (s *Server) OnStateChange() {
  	if prevState != s.Environment.State() {
  		s.Log().WithField("status", st).Debug("saw server status change event")
  		s.Events().Publish(StatusEvent, st)
@@ -676,10 +822,10 @@ index 2a6fcd6..c21ca5b 100644
  	// Reset the resource usage to 0 when the process fully stops so that all the UI
 diff --git a/server/slice_phase.go b/server/slice_phase.go
 new file mode 100644
-index 0000000..e2c2c39
+index 0000000..0ecbe01
 --- /dev/null
 +++ b/server/slice_phase.go
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,159 @@
 +package server
 +
 +import (
@@ -693,10 +839,10 @@ index 0000000..e2c2c39
 +// Staged per-server slice properties.
 +//
 +// A game server's load-time peak routinely dwarfs its steady working set, and
-+// memory.high reclaim is the one path that ignores memory.min — so a ceiling
-+// sized for the steady state evicts the server through its own floor while it
-+// is still loading, permanently, because nothing faults those pages back
-+// except the workload itself.
++// a cgroup is not protected from reclaim it inflicts on itself (see the
++// package comment on internal/cgroups) — so a ceiling sized for the steady
++// state evicts the server through its own floor while it is still loading,
++// permanently, because nothing faults those pages back except the workload.
 +//
 +// Wings therefore applies the startup band before the container is created and
 +// swaps in the steady band once the server is up. "Up" reuses the detection
@@ -709,13 +855,22 @@ index 0000000..e2c2c39
 +// matches — a broken egg, a game that changed its log format — must not leave
 +// a server on startup properties forever.
 +
-+// sliceStartupGraceReason and friends name the trigger in every log line, so a
-+// server's phase transitions are readable without correlating timestamps.
++// Reasons name the trigger in every log line, so a server's phase transitions
++// are readable without correlating timestamps against console output.
 +const (
-+	sliceReasonCreate = "container create"
-+	sliceReasonReady  = "server reported ready"
-+	sliceReasonGrace  = "startup grace expired"
++	sliceReasonReady = "server reported ready"
++	sliceReasonGrace = "startup grace expired"
 +)
++
++// A note on delivery guarantees, because this design leans on them. Wings
++// dispatches each state-change event in its own goroutine (server/listeners.go)
++// and OnStateChange re-reads the current state rather than using the event
++// payload, so a fast starting -> running sequence can deliver "running" twice
++// and "starting" not at all. That is survivable here by construction: missing
++// "starting" only means no grace timer is armed, which matters solely when the
++// server never reaches "running" — and if it never reaches "running" after a
++// start, the startup band is the safer of the two to be holding. The terminal
++// states that replace the band are the ones delivered reliably.
 +
 +// beginSlicePhase starts the startup-grace timer for a server that has just
 +// entered the starting state. It is a no-op when nothing stages the startup
@@ -729,12 +884,18 @@ index 0000000..e2c2c39
 +	if grace == 0 {
 +		return
 +	}
++	// Nothing staged for this server: the band applied at container create is
++	// already the steady one, so there is nothing for the timer to swap in.
++	if !s.sliceRequest(cgroups.PhaseSteady).Staged() {
++		return
++	}
 +
 +	s.slicePhaseMu.Lock()
 +	defer s.slicePhaseMu.Unlock()
 +	if s.slicePhaseTimer != nil {
 +		s.slicePhaseTimer.Stop()
 +	}
++	s.slicePhaseFired = false
 +	s.slicePhaseTimer = time.AfterFunc(grace, func() {
 +		s.Log().WithField("grace", grace.String()).
 +			Warn("cgroups: startup grace expired without the server reporting ready; applying steady slice properties")
@@ -748,19 +909,23 @@ index 0000000..e2c2c39
 +func (s *Server) endSlicePhase() {
 +	s.slicePhaseMu.Lock()
 +	defer s.slicePhaseMu.Unlock()
-+	if s.slicePhaseTimer != nil {
-+		s.slicePhaseTimer.Stop()
-+		s.slicePhaseTimer = nil
++	if s.slicePhaseTimer == nil {
++		return
 +	}
++	// Stop reports false when the callback goroutine has already started, in
++	// which case a steady application is in flight and we must not pretend we
++	// cancelled it — the caller may be about to apply a band itself.
++	s.slicePhaseFired = !s.slicePhaseTimer.Stop()
++	s.slicePhaseTimer = nil
 +}
 +
-+// applySliceProps re-ensures this server's slice with the given phase's
-+// property band. Best-effort like every other slice operation: a server that
-+// is already running is never disturbed by a failure here.
-+func (s *Server) applySliceProps(phase cgroups.Phase, reason string) {
++// sliceRequest resolves this server's slice and builds the ensure request for
++// the given phase. The zero request (empty Slice) means the server has no
++// Wings-managed slice and nothing should be applied.
++func (s *Server) sliceRequest(phase cgroups.Phase) cgroups.EnsureRequest {
 +	cfg := config.Get()
 +	if !cfg.Docker.PerServerSlices.Enabled {
-+		return
++		return cgroups.EnsureRequest{}
 +	}
 +	env := s.GetEnvironmentVariables()
 +	slice, managed, err := cfg.Docker.ResolveServerCgroupParent(s.ID(), env)
@@ -769,9 +934,34 @@ index 0000000..e2c2c39
 +			Warn("cgroups: rejected per-server cgroup parent override while applying slice properties")
 +	}
 +	if !managed {
++		return cgroups.EnsureRequest{}
++	}
++	return cfg.Docker.SliceEnsureRequest(s.ID(), slice, env, phase)
++}
++
++// gracePhaseFired reports whether the last endSlicePhase found the grace timer
++// already running its callback.
++func (s *Server) gracePhaseFired() bool {
++	s.slicePhaseMu.Lock()
++	defer s.slicePhaseMu.Unlock()
++	return s.slicePhaseFired
++}
++
++// applySliceProps re-ensures this server's slice with the given phase's
++// property band. Best-effort like every other slice operation: a server that
++// is already running is never disturbed by a failure here.
++func (s *Server) applySliceProps(phase cgroups.Phase, reason string) {
++	req := s.sliceRequest(phase)
++	if req.Slice == "" {
 +		return
 +	}
-+	cgroups.EnsureForServer(s.Context(), s.Log(), cfg.Docker.SliceEnsureRequest(s.ID(), slice, env, phase), reason)
++	// With no startup band staged, the properties set at container create are
++	// already the steady ones; re-applying them would cost a systemd round
++	// trip per server start and log a transition that did not happen.
++	if phase == cgroups.PhaseSteady && !req.Staged() {
++		return
++	}
++	cgroups.EnsureForServer(s.Context(), s.Log(), req, reason)
 +}
 +
 +// onSliceStateChange drives the startup -> steady transition from the server's
@@ -784,9 +974,187 @@ index 0000000..e2c2c39
 +		// The egg's "done" matcher fired: the server is up, and whatever
 +		// headroom the startup band granted is no longer needed.
 +		s.endSlicePhase()
++		if s.gracePhaseFired() {
++			// The grace timer beat us to it by a hair and is already applying
++			// the steady band; a second concurrent Ensure on the same slice
++			// would race it for no benefit.
++			return
++		}
 +		s.applySliceProps(cgroups.PhaseSteady, sliceReasonReady)
 +	case environment.ProcessOfflineState:
 +		s.endSlicePhase()
++	}
++}
+diff --git a/server/slice_phase_test.go b/server/slice_phase_test.go
+new file mode 100644
+index 0000000..266fea6
+--- /dev/null
++++ b/server/slice_phase_test.go
+@@ -0,0 +1,166 @@
++package server
++
++import (
++	"testing"
++	"time"
++
++	"github.com/pelican-dev/wings/config"
++	"github.com/pelican-dev/wings/environment"
++	"github.com/pelican-dev/wings/internal/cgroups"
++)
++
++// sliceTestConfig installs a per-server-slices configuration for these tests.
++//
++// It deliberately does NOT snapshot the previous configuration first:
++// config.Get() takes mu.RLock() and then dereferences a nil _config when no
++// configuration has been set, and its mu.RUnlock() is not deferred — so a
++// single Get() before the first Set() leaves the read lock held forever and
++// every later Set() deadlocks. Unit tests are exactly that situation.
++func sliceTestConfig(t *testing.T, enabled bool, grace string, startupHigh string) {
++	t.Helper()
++	var c config.Configuration
++	// config.Set derives the JWT signer from the token and panics on an empty
++	// HMAC key, so a non-empty placeholder is required.
++	c.AuthenticationToken = "slice-phase-test-token"
++	c.Docker.CgroupParent = "wings.slice"
++	c.Docker.PerServerSlices.Enabled = enabled
++	c.Docker.PerServerSlices.Defaults.MemoryHigh = "7G"
++	c.Docker.PerServerSlices.StartupDefaults.MemoryHigh = startupHigh
++	c.Docker.PerServerSlices.StartupGrace = grace
++	config.Set(&c)
++}
++
++// newSliceTestServer builds the minimum Server that GetEnvironmentVariables
++// can be called on. Pelican makes Allocations.DefaultMapping a pointer and
++// dereferences it unconditionally, so it must be populated.
++func newSliceTestServer() *Server {
++	s := &Server{}
++	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
++	s.cfg.Allocations.DefaultMapping = &environment.DefaultAllocationMapping{Ip: "127.0.0.1", Port: 0}
++	return s
++}
++
++func TestSliceStartupGraceParsing(t *testing.T) {
++	for _, tt := range []struct {
++		raw  string
++		want time.Duration
++	}{
++		{"15m", 15 * time.Minute},
++		{"90s", 90 * time.Second},
++		{"", 0},
++		{"0", 0},
++		{"garbage", 0}, // unreachable via config (validation rejects it first)
++		{"-5m", 0},
++	} {
++		sliceTestConfig(t, true, tt.raw, "64G")
++		if got := config.Get().Docker.SliceStartupGrace(); got != tt.want {
++			t.Errorf("startup_grace %q = %v, want %v", tt.raw, got, tt.want)
++		}
++	}
++}
++
++// The grace timer must not be armed when nothing is staged, or every server on
++// a node that does not use the feature gets a 15-minute timer and an eventual
++// spurious warning.
++func TestBeginSlicePhaseOnlyArmsWhenStaged(t *testing.T) {
++	s := newSliceTestServer()
++
++	sliceTestConfig(t, true, "15m", "") // no startup band configured
++	s.beginSlicePhase()
++	if s.slicePhaseTimer != nil {
++		t.Error("timer armed with no startup band staged")
++	}
++	s.endSlicePhase()
++
++	sliceTestConfig(t, true, "15m", "64G") // startup band configured
++	s.beginSlicePhase()
++	if s.slicePhaseTimer == nil {
++		t.Error("timer not armed despite a staged startup band")
++	}
++	s.endSlicePhase()
++
++	sliceTestConfig(t, false, "15m", "64G") // per-server slices disabled entirely
++	s.beginSlicePhase()
++	if s.slicePhaseTimer != nil {
++		t.Error("timer armed while per_server_slices is disabled")
++	}
++	s.endSlicePhase()
++
++	sliceTestConfig(t, true, "0", "64G") // grace disabled
++	s.beginSlicePhase()
++	if s.slicePhaseTimer != nil {
++		t.Error("timer armed with startup_grace disabled")
++	}
++	s.endSlicePhase()
++}
++
++func TestEndSlicePhaseIsIdempotent(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	s := newSliceTestServer()
++
++	s.endSlicePhase() // nothing armed yet
++	s.beginSlicePhase()
++	s.endSlicePhase()
++	s.endSlicePhase()
++	if s.slicePhaseTimer != nil {
++		t.Error("timer should be nil after cancellation")
++	}
++	if s.gracePhaseFired() {
++		t.Error("a cleanly cancelled timer must not report as fired")
++	}
++}
++
++// A cancelled timer that had already started its callback must be reported as
++// fired, so the ready path does not race a steady application already running.
++func TestEndSlicePhaseReportsAlreadyFired(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	s := newSliceTestServer()
++
++	fired := make(chan struct{})
++	s.slicePhaseMu.Lock()
++	s.slicePhaseFired = false
++	s.slicePhaseTimer = time.AfterFunc(time.Millisecond, func() { close(fired) })
++	s.slicePhaseMu.Unlock()
++
++	<-fired
++	time.Sleep(10 * time.Millisecond) // let the callback goroutine finish
++	s.endSlicePhase()
++	if !s.gracePhaseFired() {
++		t.Error("timer that already fired must be reported as fired")
++	}
++}
++
++// CleanupForDestroy must cancel the timer: its closure pins the whole *Server.
++func TestCleanupForDestroyCancelsSlicePhase(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	s, err := New(nil)
++	if err != nil {
++		t.Fatalf("New: %v", err)
++	}
++	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
++	s.cfg.Allocations.DefaultMapping = &environment.DefaultAllocationMapping{Ip: "127.0.0.1", Port: 0}
++	s.beginSlicePhase()
++	if s.slicePhaseTimer == nil {
++		t.Fatal("precondition: timer should be armed")
++	}
++	s.CleanupForDestroy()
++	if s.slicePhaseTimer != nil {
++		t.Error("CleanupForDestroy left the grace timer running")
++	}
++}
++
++// A server with no Wings-managed slice must produce no request at all, so no
++// systemd call is ever attempted for it.
++func TestSliceRequestSkipsUnmanaged(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	s := newSliceTestServer()
++
++	if got := s.sliceRequest(cgroups.PhaseSteady); got.Slice == "" {
++		t.Error("a derived slice should have produced a request")
++	}
++
++	sliceTestConfig(t, false, "15m", "64G")
++	if got := s.sliceRequest(cgroups.PhaseSteady); got.Slice != "" {
++		t.Errorf("per_server_slices disabled must yield no request, got %q", got.Slice)
 +	}
 +}
 -- 

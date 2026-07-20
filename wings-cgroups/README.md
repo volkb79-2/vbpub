@@ -83,7 +83,7 @@ Both targets carry the full series: `pterodactyl/wings` v1.13.1 (production) and
 patchstack/scripts/clone.sh                          # 1. clone upstreams
 patchstack/scripts/apply.sh pterodactyl              # 2. apply the stack
 patchstack/scripts/test.sh pterodactyl               # 3. build + vet + unit tests
-patchstack/scripts/build-image.sh pterodactyl cgroup.5   # 4. -> wings-local:1.13.1-cgroup.5
+patchstack/scripts/build-image.sh pterodactyl cgroup.6   # 4. -> wings-local:1.13.1-cgroup.6
 test/smoke-placement.sh                              # 5. placement vs the real daemon
 test/e2e-systemd/run-e2e.sh                          # 6. e2e: effective memory.min
 ```
@@ -106,8 +106,9 @@ Deploying the result: [`SETUP.md`](SETUP.md).
 - [x] Production rollout complete (2026-07-17): `cgroup.4`, per-server slices
       enabled, all six properties verified effective in cgroupfs. Worked
       runbook: `../scripts/gstammtisch-guide/WINGS-CGROUPS-ROLLOUT.md`.
-- [ ] `cgroup.5` (staged startup band, patch 0006) built and tested, **not yet
-      deployed** — it needs `startup_defaults` in `config.yml` and the new
+- [ ] `cgroup.6` (staged startup band, patch 0006) built and tested, **not yet
+      deployed** — supersedes `cgroup.5`, which applied the startup band on
+      paths that never start a server — it needs `startup_defaults` in `config.yml` and the new
       `WINGS_CG_STARTUP_*` egg variables to do anything.
 - [ ] Upstream PRs submitted — deliberately not yet (see `pr/`); fork not created
       (`FORK_REPO` in `patchstack/stack.conf` is still a placeholder). `pr/README.md`
