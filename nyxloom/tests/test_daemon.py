@@ -717,6 +717,231 @@ def test_carve_dispatch_no_frontier_route_pushes_needs_operator_no_task(
 
 
 # --------------------------------------------------------------------------
+# B7 2026-07-20 (P75, D-060 carver re-scope entry): a task triage routed to
+# READY_TO_CARVE (architectural / stale-premise / attempt-exhausted) is
+# RE-SCOPED -- the carve packet embeds the rejected task's handoff + review
+# verdict + input_revision drift, and the ORIGINAL task is superseded (RESCOPED
+# outcome) ONLY after the re-scope carve actually launches (critique A10/M20).
+
+def _write_origin_handoff(root, task_id, input_revision):
+    """A minimal schema-valid handoff for `task_id` with a chosen input_revision,
+    written (untracked) to the on-disk working tree so _rescope_context's
+    parse_handoff can read it. MUST be written while HEAD is on main and AFTER any
+    _make_feature_branch/_commit_review_report calls (those check out and back,
+    which would drop an untracked file from the working tree)."""
+    text = (
+        "---\n"
+        "schema_version: 1\n"
+        f"id: {task_id}\n"
+        "project: demo\n"
+        "title: Origin sample\n"
+        "tier: flash-high\n"
+        f'input_revision: "{input_revision}"\n'
+        "source: {kind: roadmap, ref: docs/ROADMAP.md}\n"
+        "scope:\n"
+        '  touch: ["src/demo/origin.py"]\n'
+        "oracles:\n"
+        "  - id: O1\n"
+        '    observable: "pytest tests/test_origin.py::test_x passes"\n'
+        '    negative: "a bad value raises ValueError (test_x_violation)"\n'
+        "    gate: pytest-q\n"
+        "gates: [pytest-q]\n"
+        'escalate_if: ["a named contract cannot be met as specified"]\n'
+        "---\n\n# Origin sample\nBody.\n"
+    )
+    rel = f"handoff/{task_id}.md"
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    return rel
+
+
+def test_build_carve_packet_rescope_embeds_verdict_and_drift(
+        tmp_state, sample_project, patch_siblings):
+    """The re-scope packet branch renders the origin handoff pointer, the DRIFTED
+    premise line, and the reviewer's verdict prose (quoted). This is what makes a
+    re-scope more than a blind re-carve -- the carver reads WHY it was rejected."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    rescope = {
+        "origin_task_id": "P01", "handoff_path": "handoff/P01.md",
+        "verdict": "Findings: the design is architecturally wrong.\nSecond finding.",
+        "input_revision": "deadbeef", "head_revision": "abc1234567", "drifted": True,
+    }
+    packet = d._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
+    assert "RE-SCOPING" in packet
+    assert "Re-scope source: the rejected task" in packet
+    assert "handoff/P01.md" in packet
+    assert "DRIFTED" in packet
+    assert "the design is architecturally wrong" in packet
+    assert "> Findings:" in packet          # verdict is quoted line-by-line
+    assert "Do NOT simply re-emit the original handoff" in packet
+
+
+def test_build_carve_packet_rescope_no_drift_no_verdict_negative(
+        tmp_state, sample_project, patch_siblings):
+    """Differently-routing NEGATIVE of the above: drifted=False renders the
+    'current' premise line (NOT 'DRIFTED'), and a missing verdict renders the
+    explicit 'no committed review report' note rather than a quote block."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    rescope = {
+        "origin_task_id": "P02", "handoff_path": "handoff/P02.md",
+        "verdict": None, "input_revision": "abc1234", "head_revision": "abc1234def",
+        "drifted": False,
+    }
+    packet = d._build_carve_packet(cfg, "demo", 1, {}, rescope=rescope)
+    assert "RE-SCOPING" in packet
+    assert "current --" in packet
+    assert "DRIFTED" not in packet
+    assert "no committed review report found" in packet
+
+
+def test_build_carve_packet_untargeted_has_no_rescope_section(
+        tmp_state, sample_project, patch_siblings):
+    """Discrimination: the untargeted headroom packet (rescope=None, item_id=None)
+    carries NONE of the re-scope framing -- it is the general 'propose NEW
+    packages' packet. Neutering the `if rescope is not None` guard would leak the
+    re-scope section into every headroom carve."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    packet = d._build_carve_packet(cfg, "demo", 1, {})
+    assert "RE-SCOPING" not in packet
+    assert "Re-scope source" not in packet
+    assert "You are proposing NEW handoff packages" in packet
+
+
+def test_rescope_context_reads_handoff_verdict_and_drift(
+        tmp_state, sample_project, patch_siblings):
+    """_rescope_context assembles the packet inputs from real state: the origin's
+    handoff_path + parsed input_revision, its committed review verdict, and the
+    computed drift flag (a bogus input_revision vs a real main HEAD -> drifted)."""
+    cfg = sample_project
+    _make_feature_branch(cfg.root, "demo-P01", "P01.py", "# P01\n")
+    _commit_review_report(
+        cfg.root, "demo-P01", cfg.reports_dir,
+        "# Review\n\nFindings: the module boundary is wrong.\n\nVERDICT: REJECTED\n"
+        "REJECT_CLASS: architectural\n")
+    rel = _write_origin_handoff(cfg.root, "demo-P01", "deadbeefdeadbeef")
+    _seed_task("demo", "demo-P01", TaskState.READY_TO_CARVE, handoff_path=rel)
+    d = daemon.Daemon({"demo": cfg.root})
+    states = storage.list_states("demo")
+
+    ctx = d._rescope_context(cfg, states, "demo-P01")
+    assert ctx["origin_task_id"] == "demo-P01"
+    assert ctx["handoff_path"] == rel
+    assert ctx["input_revision"] == "deadbeefdeadbeef"
+    assert ctx["drifted"] is True                       # bogus rev != real main HEAD
+    assert ctx["verdict"] is not None
+    assert "module boundary is wrong" in ctx["verdict"]
+
+
+def test_rescope_context_graceful_when_no_handoff_and_no_review(
+        tmp_state, sample_project, patch_siblings):
+    """Differently-routing NEGATIVE: an origin task with NO handoff_path and NO
+    committed review degrades to handoff_path/input_revision None, verdict None,
+    and drifted False (fail-safe-to-no-drift) -- the re-scope carve must still be
+    launchable; the atomic supersede is what must never be skipped, not richness."""
+    cfg = sample_project
+    _seed_task("demo", "demo-P09", TaskState.READY_TO_CARVE, handoff_path=None)
+    d = daemon.Daemon({"demo": cfg.root})
+    states = storage.list_states("demo")
+
+    ctx = d._rescope_context(cfg, states, "demo-P09")
+    assert ctx["handoff_path"] is None
+    assert ctx["input_revision"] is None
+    assert ctx["verdict"] is None
+    assert ctx["drifted"] is False
+
+
+def test_execute_carve_dispatch_rescope_supersedes_origin_with_rescoped_outcome(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """END-TO-END oracle (critique CRITIQUE.md:249): a CarveDispatch(task_id=P01)
+    for a rejected-architectural task launches the re-scope carve AND supersedes
+    the ORIGINAL task with the RESCOPED outcome, and the carve packet embeds the
+    review verdict. Driven through run_pass/_execute so the CarveDispatch.task_id
+    -> _execute_carve_dispatch plumbing is exercised, not just the leaf method."""
+    cfg = sample_project
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n")
+    _make_feature_branch(cfg.root, "demo-P01", "P01.py", "# P01\n")
+    _commit_review_report(
+        cfg.root, "demo-P01", cfg.reports_dir,
+        "# Review\n\nFindings: the whole approach is wrong-layer.\n\n"
+        "VERDICT: REJECTED\nREJECT_CLASS: architectural\n")
+    rel = _write_origin_handoff(cfg.root, "demo-P01", "deadbeefdeadbeef")
+    _seed_task("demo", "demo-P01", TaskState.READY_TO_CARVE, handoff_path=rel)
+    _scripted(monkeypatch, [[reconcile.CarveDispatch(project="demo", task_id="demo-P01")]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    # the re-scope carve launched: a synthetic ACTIVE carve task exists
+    carve = storage.load_state("demo", "carve-demo-1")
+    assert carve is not None and carve.state is TaskState.ACTIVE
+    # the ORIGINAL task is now SUPERSEDED, with the RESCOPED outcome recorded
+    origin = storage.load_state("demo", "demo-P01")
+    assert origin.state is TaskState.SUPERSEDED
+    sup = [e for e in storage.iter_events("demo")
+           if e.type is EventType.TASK_SUPERSEDED and e.task_id == "demo-P01"]
+    assert len(sup) == 1
+    assert sup[0].payload["outcome"] == daemon._RESCOPE_OUTCOME
+    assert sup[0].payload["carve_task_id"] == "carve-demo-1"
+    # the carve packet embeds the reviewer's verdict prose (a real re-scope, not
+    # a blind re-carve)
+    carve_att = carve.attempts[0]
+    packet_md = (paths.attempt_dir("demo", carve_att.attempt_id) / "packet"
+                 / "packet.md").read_text(encoding="utf-8")
+    assert "RE-SCOPING" in packet_md
+    assert "wrong-layer" in packet_md
+
+
+def test_execute_carve_dispatch_rescope_no_supersede_when_admission_refused(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """M20 ATOMICITY oracle (the load-bearing one): when admission is refused at
+    the effect boundary, the executor early-returns and the origin task is NOT
+    superseded -- it stays in READY_TO_CARVE for a later pass. This is exactly the
+    bug the pre-B7 split (Transition planned independently of the carve) had: the
+    supersede fired even though no carve launched. Differently-routing NEGATIVE of
+    the end-to-end test above (same origin, admission the only difference)."""
+    cfg = sample_project
+    rel = _write_origin_handoff(cfg.root, "demo-P01", "deadbeefdeadbeef")
+    _seed_task("demo", "demo-P01", TaskState.READY_TO_CARVE, handoff_path=rel)
+    d = daemon.Daemon({"demo": cfg.root})
+    monkeypatch.setattr(d, "_dispatch_admissible", lambda *a, **k: (False, "paused"))
+    states = storage.list_states("demo")
+
+    events = d._execute_carve_dispatch(
+        "demo", cfg, states, reconcile.CarveDispatch(project="demo", task_id="demo-P01"))
+
+    assert events == []                                  # refused before any effect
+    assert storage.load_state("demo", "demo-P01").state is TaskState.READY_TO_CARVE
+    assert [e for e in storage.iter_events("demo")
+            if e.type is EventType.TASK_SUPERSEDED and e.task_id == "demo-P01"] == []
+    assert patch_siblings["launch_detached"] == []       # no carve launched
+
+
+def test_execute_carve_dispatch_untargeted_supersedes_nothing(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Discrimination: an UNTARGETED headroom carve (task_id=None) is NOT a
+    re-scope -- the executor launches the carve but emits NO TASK_SUPERSEDED for
+    any origin task (the synthetic carve task is retired later by
+    _consume_carve_exit, never here). Neutering the `is_rescope` guard would make
+    every headroom carve try to supersede a None task."""
+    cfg = sample_project
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n")
+    d = daemon.Daemon({"demo": cfg.root})
+    states = storage.list_states("demo")
+
+    events = d._execute_carve_dispatch(
+        "demo", cfg, states, reconcile.CarveDispatch(project="demo"))
+
+    assert any(e.type is EventType.ATTEMPT_PREFLIGHTED for e in events)  # carve launched
+    assert [e for e in events if e.type is EventType.TASK_SUPERSEDED] == []
+
+
+# --------------------------------------------------------------------------
 # Oracle 3: EmitAttemptExit healing, one test per receipt.result
 
 def test_emit_attempt_exit_done(tmp_state, sample_project, patch_siblings, monkeypatch):

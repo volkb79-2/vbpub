@@ -42,6 +42,20 @@ def test_registry_exit_edges_are_all_legal():
             assert to in legal, f"{st.name}:{label} -> {to} absent from graph"
 
 
+def test_carve_stage_declares_rescope_superseded_edge():
+    """B7 2026-07-20 (P75): the carve stage declares the `rescope_superseded`
+    exit READY_TO_CARVE -> SUPERSEDED, which daemon._execute_carve_dispatch makes
+    real (the RESCOPED atomic supersede of a re-scoped origin task). Pin it here so
+    a future edit that drops the edge fails loudly rather than silently unwiring
+    the declared model from the runtime behaviour. SUPERSEDED is terminal, so the
+    dead-end scan skips it; this asserts the edge exists AND is graph-legal."""
+    carve = STAGE_REGISTRY["carve"]
+    labels = {label: to for label, to in carve.exit_map}
+    assert labels["rescope_superseded"] is TaskState.SUPERSEDED
+    assert carve.exit_from is TaskState.READY_TO_CARVE
+    assert TaskState.SUPERSEDED in TASK_TRANSITIONS[TaskState.READY_TO_CARVE]
+
+
 def test_compose_default_and_preset_and_list():
     assert compose(None) == list(DEFAULT_PIPELINE)
     assert compose("full") == list(PRESETS["full"])

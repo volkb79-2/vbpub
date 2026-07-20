@@ -3151,16 +3151,17 @@ def test_review_rejected_attempts_exhausted_routes_to_ready_to_carve():
 # are the non-hollow anchors for oracles O2/O3/O4.
 # ============================================================================
 
-def test_ready_to_carve_dispatches_existing_carve_mechanism_then_supersedes():
+def test_ready_to_carve_dispatches_carve_and_plans_no_supersede_transition():
     """O2/O4 (non-hollow anchor): a READY_TO_CARVE task with no carver in
-    flight and a healthy frontier-review route gets BOTH a CarveDispatch
-    (task_id=fm_id, item_id=None -- the existing untargeted carve-packet
-    path, reusing reconcile.CarveDispatch / daemon._execute_carve_dispatch,
-    NOT a new Action subclass or a new Daemon method) AND a same-pass
-    Transition to SUPERSEDED (self-limiting, so it does not re-fire a
-    second CarveDispatch on a later pass once the carve slot frees up --
-    see test_ready_to_carve_superseded_is_terminal_no_refire_next_pass
-    below for that second half)."""
+    flight and a healthy frontier-review route gets exactly ONE CarveDispatch
+    (task_id=fm_id -- which now DRIVES the re-scope packet + atomic supersede
+    in daemon._execute_carve_dispatch, item_id=None). B7 2026-07-20 (A10/M20):
+    reconcile plans NO separate SUPERSEDED Transition for the task -- the
+    supersede is emitted by the executor ONLY after the carve launches, so it
+    can never fire when the carve early-returns. The differently-routing
+    NEGATIVE is test_ready_to_carve_no_dispatch_when_project_paused (no carve
+    -> genuinely nothing planned); this asserts the split is gone in the
+    positive case too (was 1 Transition pre-B7, now 0)."""
     fm = make_frontmatter(id="P01")
     tsf = make_tsf(task_id="P01", state=TaskState.READY_TO_CARVE)
     inp = ReconcileInput(**_carve_base_kwargs(
@@ -3177,9 +3178,10 @@ def test_ready_to_carve_dispatches_existing_carve_mechanism_then_supersedes():
     assert d.item_id is None
     assert d.project == "demo"
 
+    # B7: the reconcile plan no longer carries the origin's SUPERSEDED transition
+    # (it moved into the executor, gated on launch). Nothing else transitions P01.
     transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
-    assert len(transitions) == 1
-    assert transitions[0].to == TaskState.SUPERSEDED
+    assert transitions == []
 
 
 def test_ready_to_carve_no_dispatch_when_project_paused():
@@ -3255,10 +3257,11 @@ def test_ready_to_carve_two_simultaneous_only_one_carve_dispatch_total():
     # Determinism: sorted task-id order (mirrors item 3's dispatch-capacity
     # loop) -- the lower id wins this pass's single carve slot.
     assert dispatches[0].task_id == "P01"
-    superseded = [a for a in actions if isinstance(a, Transition) and a.to == TaskState.SUPERSEDED]
-    assert len(superseded) == 1
-    assert superseded[0].task_id == "P01"
-    # P02 stays untouched in READY_TO_CARVE for a later pass.
+    # B7 2026-07-20: no SUPERSEDED transition is planned in reconcile at all now
+    # (the origin's supersede moved into the executor, gated on launch), so NEITHER
+    # task gets a transition this pass -- P01's arrives from the executor after its
+    # carve launches, P02 waits for a later pass's slot.
+    assert [a for a in actions if isinstance(a, Transition) and a.to == TaskState.SUPERSEDED] == []
     assert [a for a in actions if isinstance(a, Transition) and a.task_id == "P02"] == []
 
 
@@ -3306,8 +3309,8 @@ def test_ready_to_carve_no_dispatch_when_budget_exhausted():
 
 def test_ready_to_carve_superseded_is_terminal_no_refire_next_pass():
     """O4 (non-hollow anchor, second half): a follow-up pass with the SAME
-    task now in SUPERSEDED (the state the first pass's Transition landed it
-    in) plans NOTHING further at all -- SUPERSEDED is terminal per
+    task now in SUPERSEDED (the state the executor's post-launch re-scope
+    supersede landed it in, B7) plans NOTHING further at all -- SUPERSEDED is terminal per
     TERMINAL_TASK_STATES, so the carve does not re-fire once the carve slot
     frees up on a later pass. roadmap_exhausted_open=True with no other
     non-terminal task also suppresses item 9's OWN untargeted trigger here,

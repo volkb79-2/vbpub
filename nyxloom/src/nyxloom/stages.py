@@ -61,6 +61,13 @@ class Stage:
 # the declarative record matches what the engine actually plans. A genuinely new
 # kind is a code change here carrying the full validate_pipeline obligation.
 STAGE_REGISTRY: dict[str, Stage] = {
+    # carve exits: `done` (new packages carved -> CARVED), `needs_decision` (the
+    # carver escalates a product question -> NEEDS_DECISION), and
+    # `rescope_superseded` (B7/P75): when a READY_TO_CARVE entry is a RE-SCOPE of a
+    # rejected task (triage routed it here as architectural/stale/exhausted), the
+    # daemon supersedes that ORIGINAL task once the re-scope carve launches
+    # (daemon._execute_carve_dispatch, RESCOPED outcome). B7 makes this declared
+    # edge real; READY_TO_CARVE -> SUPERSEDED is already a legal frozen-graph edge.
     "carve": Stage(
         name="carve", role=Role.CARVER,
         entry_state=TaskState.READY_TO_CARVE, exit_from=TaskState.READY_TO_CARVE,
