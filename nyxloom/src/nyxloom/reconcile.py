@@ -894,8 +894,14 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
         # Check if we should open a wave
         should_open = len(task_ids_to_batch) >= wave_max
         if not should_open and task_ids_to_batch:
-            oldest_task_id = task_ids_to_batch[0]
-            oldest_since = inp.states[oldest_task_id].since.timestamp()
+            # P65 2026-07-20 (M11): the age trigger must read the age of the
+            # GENUINELY oldest waiting task. task_ids_to_batch is sorted by
+            # task_id, so [0] is the lexicographically-first task -- which need
+            # not be the oldest. An old task sorted after a fresh one would
+            # otherwise never trip the timeout, stranding a review unboundedly
+            # under low throughput. Take the minimum `since` across the batch.
+            oldest_since = min(
+                inp.states[t].since.timestamp() for t in task_ids_to_batch)
             age = now_timestamp - oldest_since
             if age > inp.wave_open_after_seconds:
                 should_open = True
