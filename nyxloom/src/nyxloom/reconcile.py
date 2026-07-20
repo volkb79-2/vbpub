@@ -249,7 +249,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ProjectConfig, RouteDef, Routes
-from .stages import effective_concurrency
+from .stages import effective_concurrency, stage_context
 from .types import (
     Blocker, BlockerType, Frontmatter, TaskState, TaskStateFile, AttemptState,
     ReceiptResult, Role, TERMINAL_ATTEMPT_STATES, TERMINAL_TASK_STATES
@@ -360,6 +360,16 @@ class OpenWave(Action):
 class LaunchReview(Action):
     wave_id: str | None = None
     task_ids: list[str] = field(default_factory=list)
+    # B6/P74 (D-R10 reviewer session-reuse): when set, the daemon dispatches this
+    # wave's review as a WARM RESUME of a prior frontier-review session (this
+    # handle) via adapters.build_resume instead of a cold adapters.build_dispatch,
+    # so the ~35-40k role-contract/orientation prefix replays from prompt cache.
+    # None == a cold launch (no prior review session to resume, or the
+    # frontier_review stage's context does not include "session-reuse"). The
+    # daemon still mints a FRESH attempt id and stamps it for A7 verdict-attempt
+    # binding on the resumed session too -- reuse is a cache optimization, never a
+    # relaxation of the binding that made it safe (see the executor).
+    resume_session: str | None = None
 
 
 @dataclass
@@ -1163,11 +1173,36 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
             if not has_review_in_flight:
                 needs_review_by_wave.setdefault(tsf.wave_id, []).append(task_id)
 
+    # B6/P74 (D-R10): reviewer session-reuse. If the frontier_review stage's
+    # context declares "session-reuse", every review launched THIS pass resumes
+    # the warmest prior review session -- the most-recent EXITED FRONTIER_REVIEW
+    # attempt that captured a session_handle (max by `started`). A cold first wave
+    # (no such prior) leaves this None -> the executor cold-dispatches, exactly as
+    # before. Resuming an old/cache-expired session is harmless (a cache MISS, the
+    # pre-B6 cost), and A7 binding is preserved by the executor stamping a fresh
+    # attempt id -- so the only precondition is "a resumable review session
+    # exists", nothing about which wave it reviewed. frontier_review is serial, so
+    # in practice at most one review is in flight and a second wave planned the
+    # same pass simply shares the same warm handle (each still gets its own fresh
+    # attempt id downstream).
+    resume_session: str | None = None
+    if needs_review_by_wave and "session-reuse" in stage_context("frontier_review"):
+        prior_review_sessions = [
+            a for tsf in inp.states.values() for a in tsf.attempts
+            if a.role == Role.FRONTIER_REVIEW
+            and a.state == AttemptState.EXITED
+            and a.session_handle
+        ]
+        if prior_review_sessions:
+            resume_session = max(
+                prior_review_sessions, key=lambda a: a.started).session_handle
+
     # One LaunchReview per wave, carrying all its members (sorted for a
     # deterministic plan / stable first_task anchor).
     for wave_id in sorted(needs_review_by_wave):
         wave_actions.append(
-            LaunchReview(wave_id=wave_id, task_ids=sorted(needs_review_by_wave[wave_id])))
+            LaunchReview(wave_id=wave_id, task_ids=sorted(needs_review_by_wave[wave_id]),
+                         resume_session=resume_session))
 
     # === Self-review dispatch (B5 2026-07-20) ===
     # A SELF_REVIEWING task needs its self_review leg launched ONCE: a warm

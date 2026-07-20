@@ -277,8 +277,33 @@ prose — the divergence lives in **composition**, never in the **semantics** of
   LaunchSelfReview planning + in-flight guard + drain-parking; stages tests for the
   adjacency rule (rule 5). Reject routes to QUEUED (D-063); the warm in-session fix loop
   is deferred.
-- **B6 (P74)** reviewer session-reuse (`context = session-reuse` via `build_resume`) +
-  carver-maintained `SPINE-DIGEST.md` referenced-by-pointer in review/carve packets.
+- **B6 (P74) — DONE 2026-07-20 (hand-driven).** Reviewer session-reuse + carver spine
+  digest, as stages-as-data. `Stage` gains a `context: frozenset` packet-assembly policy
+  (frozen menu `KNOWN_CONTEXT_FLAGS = {session-reuse, spine-digest}`); `frontier_review`
+  declares both, `carve` declares `spine-digest`, everything else empty (`stage_context()`
+  accessor). **Reviewer session-reuse (D-R10):** when `session-reuse` is in the
+  frontier_review context and a prior EXITED `FRONTIER_REVIEW` attempt captured a
+  `session_handle`, reconcile sets `LaunchReview.resume_session` to the warmest (max-by-
+  `started`) such handle; the daemon executor then WARM-resumes it via `adapters.build_resume`
+  + a lean `review_resume_prompt` (cache-hit on the ~35–40k role/orientation prefix) instead
+  of a cold `build_dispatch`. **A7 preserved on resume (the safety hinge — the reason D-R10
+  was blocked until A7):** the resume prompt threads the NEW attempt id and requires the
+  identical `(attempt <id>)` verdict stamp the cold path uses, so a warm session still holding
+  a prior wave's old attempt id cannot misbind a stale verdict (the daemon counts only current-
+  attempt-id verdicts). A cold first wave (no prior session) or a context without `session-reuse`
+  stays byte-identically cold. **Spine digest:** review + carve packets reference the carver-
+  maintained `<reports_dir>/SPINE-DIGEST.md` BY POINTER (path only, never slurped); the carve
+  packet also instructs the carver to MAINTAIN it. **Proof shipped:** stages — the two context
+  declarations + registry-consistency (no flag outside the frozen menu) + `implement`-has-none
+  discriminator; reconcile — resume-the-warmest-prior-session, newest-of-several, cold-when-none
+  (implementer-only attempt does not qualify), cold-when-context-lacks-flag (the gate is
+  stages-as-data); daemon — warm→`build_resume` + fresh-attempt-id A7 stamp (+ `resumed_from`
+  marker), cold→`build_dispatch` negative, spine-referenced-not-slurped in BOTH packets (sentinel
+  on disk, absent from packet) + `MAINTAIN`, context-gated-off negative, and `cached_in>0`
+  captured through the real `extract_usage` path fed the fake's usage line (the cache-hit
+  observable) vs a cold-baseline 0. **Deferred (explicitly optional — D-064-L3):** `test_audit`
+  as a 2nd turn of the same warm review session (opt-in like triage); the session-reuse plumbing
+  it needs now exists, so it is a small follow-on, not part of B6's oracle set.
 - **B7 (P75) — DONE 2026-07-20 (hand-driven).** Carver re-scope entry: a task triage
   routes to READY_TO_CARVE (architectural / stale-premise / attempt-exhausted) is
   packaged by the daemon into a re-scope carve packet — the origin handoff (pointer), the

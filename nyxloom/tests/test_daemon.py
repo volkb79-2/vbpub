@@ -100,7 +100,12 @@ def patch_siblings(monkeypatch):
 
     def fake_build_resume(route, *, session, worktree, prompt):
         argv = ["fake-cli", "--resume", session or "", "--worktree", worktree]
-        calls["build_resume"].append({"route": route.route_id, "session": session, "worktree": worktree})
+        # B6/P74: also record the resume PROMPT so the reviewer-session-reuse
+        # tests can assert the A7 `(attempt <id>)` stamp is threaded onto the
+        # WARM resume path (purely additive -- pre-B6 tests read only route/
+        # session/worktree).
+        calls["build_resume"].append({"route": route.route_id, "session": session,
+                                      "worktree": worktree, "prompt": prompt})
         return argv
 
     def fake_launch_detached(spec):
@@ -3442,3 +3447,151 @@ def test_build_input_plumbs_head_revision_and_triage_class(
     inp = captured[0]
     assert inp.head_revision is not None and len(inp.head_revision) == 40
     assert inp.triage_class.get("t-plumb") == "product"
+
+
+# --------------------------------------------------------------------------
+# B6/P74 reviewer session-reuse + carver SPINE-DIGEST (D-R10). The reuse
+# DECISION (which session, gated on stage context) is test_reconcile.py's
+# concern; these drive daemon._execute directly via _scripted and assert the
+# EXECUTION contract: warm build_resume vs cold build_dispatch, the A7
+# verdict-attempt binding preserved on the resumed session, and the spine
+# digest referenced-by-pointer (never slurped) in both packets.
+
+def _frontier_routes():
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n")
+
+
+def test_review_warm_resume_uses_build_resume_and_stamps_fresh_attempt_id(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """B6 (P74, D-R10) + the A7-on-resume SAFETY oracle. A LaunchReview carrying
+    resume_session WARM-resumes it via adapters.build_resume (the cache-hit path),
+    NOT a cold build_dispatch. A7 is PRESERVED: the resume prompt carries the
+    FRESH attempt id and requires the `(attempt <id>)` stamp -- so a warm session
+    (which still holds a PRIOR wave's OLD attempt id) cannot misbind a stale
+    verdict, since the daemon counts only verdicts carrying the current attempt
+    id. This binding is exactly why session-reuse was blocked until A7."""
+    cfg = sample_project
+    task_id = "demo-P02-mutex"
+    _frontier_routes()
+    _seed_task("demo", task_id, TaskState.AWAITING_REVIEW,
+               handoff_path="handoff/demo-P02-mutex.md")
+    _scripted(monkeypatch, [[reconcile.LaunchReview(
+        wave_id="wave-2", task_ids=[task_id], resume_session="sess-rev-1")]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    # WARM: build_resume with the prior handle; NO cold review build_dispatch.
+    assert len(patch_siblings["build_resume"]) == 1
+    resume = patch_siblings["build_resume"][0]
+    assert resume["session"] == "sess-rev-1"
+    assert patch_siblings["build_dispatch"] == []
+    # a fresh attempt actually launched
+    assert len(patch_siblings["launch_detached"]) == 1
+    new_attempt_id = patch_siblings["launch_detached"][0].attempt_id
+    assert new_attempt_id != "sess-rev-1"
+    # A7: the resume prompt binds THIS fresh attempt id -- not the resumed session
+    assert f"(attempt {new_attempt_id})" in resume["prompt"]
+    assert "sess-rev-1" not in resume["prompt"]   # session handle is never a verdict stamp
+    # daemon-set observability marker
+    created = next(e for e in storage.iter_events("demo")
+                   if e.type is EventType.ATTEMPT_CREATED and e.payload.get("resumed_from"))
+    assert created.payload["resumed_from"] == "sess-rev-1"
+
+
+def test_review_cold_uses_build_dispatch_when_resume_session_none(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Negative discriminator for the cold/warm branch: resume_session=None -> the
+    review is a COLD build_dispatch (the pre-B6 path), build_resume never called.
+    Neutering the branch would flip exactly one of these two assertions."""
+    cfg = sample_project
+    task_id = "demo-P02-mutex"
+    _frontier_routes()
+    _seed_task("demo", task_id, TaskState.AWAITING_REVIEW,
+               handoff_path="handoff/demo-P02-mutex.md")
+    _scripted(monkeypatch, [[reconcile.LaunchReview(
+        wave_id="wave-1", task_ids=[task_id], resume_session=None)]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+    assert patch_siblings["build_resume"] == []
+    assert len(patch_siblings["build_dispatch"]) == 1
+    assert patch_siblings["build_dispatch"][0]["handoff_path"].endswith("packet.md")
+    # cold ATTEMPT_CREATED carries NO resumed_from marker
+    assert all(not e.payload.get("resumed_from")
+               for e in storage.iter_events("demo")
+               if e.type is EventType.ATTEMPT_CREATED)
+
+
+def test_review_packet_references_spine_digest_by_pointer_not_body(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """B6 oracle 2 (review packet): the packet REFERENCES the spine digest by its
+    PATH but never slurps its body. Discriminator: a real SPINE-DIGEST.md with a
+    unique sentinel exists on disk; the packet must contain the PATH and NOT the
+    sentinel -- a slurping implementation would embed the sentinel and fail."""
+    cfg = sample_project
+    task_id = "demo-P02-mutex"
+    _frontier_routes()
+    _seed_task("demo", task_id, TaskState.AWAITING_REVIEW,
+               handoff_path="handoff/demo-P02-mutex.md")
+    digest = cfg.root / cfg.reports_dir / "SPINE-DIGEST.md"
+    digest.parent.mkdir(parents=True, exist_ok=True)
+    digest.write_text("REVIEW_SPINE_SENTINEL_DO_NOT_SLURP\n", encoding="utf-8")
+    _scripted(monkeypatch, [[reconcile.LaunchReview(wave_id="w", task_ids=[task_id])]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+    attempt_id = patch_siblings["launch_detached"][0].attempt_id
+    packet_md = (paths.attempt_dir("demo", attempt_id) / "packet" / "packet.md").read_text(
+        encoding="utf-8")
+    assert "SPINE-DIGEST.md" in packet_md                          # referenced by pointer
+    assert "REVIEW_SPINE_SENTINEL_DO_NOT_SLURP" not in packet_md   # NOT slurped
+
+
+def test_carve_packet_references_spine_digest_by_pointer_and_maintains_it(
+        tmp_state, sample_project):
+    """B6 oracle 2 (carve packet): same referenced-not-slurped contract, plus the
+    carver is instructed to MAINTAIN the digest (it is the digest's owner)."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    digest = cfg.root / cfg.reports_dir / "SPINE-DIGEST.md"
+    digest.parent.mkdir(parents=True, exist_ok=True)
+    digest.write_text("CARVE_SPINE_SENTINEL_DO_NOT_SLURP\n", encoding="utf-8")
+    packet = d._build_carve_packet(cfg, "demo", 1, storage.list_states("demo"))
+    assert "SPINE-DIGEST.md" in packet                          # referenced
+    assert "MAINTAIN it" in packet                              # carver owns/maintains it
+    assert "CARVE_SPINE_SENTINEL_DO_NOT_SLURP" not in packet    # NOT slurped
+
+
+def test_carve_packet_omits_spine_digest_when_context_lacks_flag(
+        tmp_state, sample_project, monkeypatch):
+    """Negative: the spine pointer is gated on the carve stage's context (stages-
+    as-data). Strip "spine-digest" and the whole section disappears -- proving the
+    pointer is not an unconditional string."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    monkeypatch.setattr(daemon.stages, "stage_context", lambda name: frozenset())
+    packet = d._build_carve_packet(cfg, "demo", 1, storage.list_states("demo"))
+    assert "SPINE-DIGEST.md" not in packet
+
+
+def test_extract_usage_reads_cache_read_tokens_from_fake_output():
+    """B6 oracle 1 (the cached_in OBSERVABLE): the reuse WIN is a prompt-cache
+    hit, surfaced as usage.cached_in > 0. The fake CLI has no native usage, but it
+    prints to the attempt log and the PRODUCTION parser (output-format-json) reads
+    cache_read_input_tokens from that output -- so a fake emitting a usage line
+    yields a REAL captured cached_in through the real code path. Paired with the
+    reconcile/daemon reuse-MECHANISM tests (which prove the 2nd wave actually
+    resumes the prior session), this closes the 'cache-hit on second wave' oracle.
+    A cold wave (cache_read 0) captures 0 -- the baseline the warm wave beats."""
+    from nyxloom.config import RouteDef
+    route = RouteDef(route_id="fake-review", cli="fake", model="m",
+                     usage_source="output-format-json")
+    warm = adapters.extract_usage(
+        route, Path("/tmp"),
+        '{"usage": {"input_tokens": 500, "output_tokens": 40, '
+        '"cache_read_input_tokens": 9000}}\n')
+    assert warm.cached_in == 9000                     # a real cache hit, captured
+    cold = adapters.extract_usage(
+        route, Path("/tmp"),
+        '{"usage": {"input_tokens": 40000, "output_tokens": 40, '
+        '"cache_read_input_tokens": 0}}\n')
+    assert (cold.cached_in or 0) == 0                 # cold baseline
