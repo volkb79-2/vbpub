@@ -23,6 +23,9 @@ DOCKER_GID = "$DOCKER_GID"
 stacks = ["ntfy", "nyxloomd"]
 
 [ciu]
+# S1.2 — independent root: refuse to run if $REPO_ROOT points elsewhere
+# (this devcontainer's shell auto-sources a sibling repo's ciu.env).
+standalone_root = true
 require_certs = false
 require_fqdn = false
 auto_connect_network = false
