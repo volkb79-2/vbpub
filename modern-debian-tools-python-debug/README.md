@@ -1,604 +1,369 @@
-# Modern Debian Python Debug Images
-
-This project builds and publishes two GHCR package families:
-- `modern-debian-tools-python-debug`
-- `modern-debian-tools-python-debug-vsc-devcontainer`
-
-The PHP 8.5 flavor is **not** a third/fourth package family — it is a TAG variant layered
-on top of either family above (e.g. `trixie-py3.14-php8.5-20260707-10`). See "PHP 8.5
-Flavor (Tag Variant)" below. (Before 2026-07-07 it published to two extra package
-families, `-php85` and `-php85-vsc-devcontainer`; see "Migration Note" for what to do
-with those now-retired GHCR packages.)
-
-The purpose is to provide a curated, reproducible Debian + Python environment with modern CLI tooling for local development, CI, and VS Code devcontainers.
-
-Rich GHCR-facing package docs live under [package-manifests-versioned](package-manifests-versioned/README.md). The release resolver regenerates those versioned Markdown pages on each build so OCI labels can point to repository-hosted Markdown instead of relying on flattened GHCR description text.
-
-The versioned release pages are copied into the image as `/usr/local/share/modern-debian-tools-python-debug/manifest.md`, which is the canonical manifest path. `/home/vscode/mdt-manifest.md` is kept as a compatibility symlink, and `/etc/os-release` advertises the shared-root location via `IMAGE_MANIFEST=/usr/local/share/modern-debian-tools-python-debug/manifest.md`.
-
-## Image Families
-
-1. `modern-debian-tools-python-debug`
-	- Base: `python:${PYTHON_VERSION}-${DEBIAN_VERSION}`
-	- Use when you want a plain Python image with the custom tool stack.
-
-2. `modern-debian-tools-python-debug-vsc-devcontainer`
-	- Base: `mcr.microsoft.com/devcontainers/python:${PYTHON_VERSION}-${DEBIAN_VERSION}`
-	- Use when you want Microsoft devcontainer behavior plus custom tooling.
-
-### Native versus VSC image
-
-The two families intentionally share the same project-owned tool layer. The main
-difference is the base image and the runtime integration around it:
-
-| Capability | Native image | VSC devcontainer image |
-|---|---|---|
-| Base | `python:<version>-<debian>` | `mcr.microsoft.com/devcontainers/python:<version>-<debian>` |
-| Intended use | Docker `run`, CI, SSH, or a plain shell | VS Code Dev Containers with `remoteUser: vscode` |
-| zsh and interactive helpers | Explicitly installed by this project | Explicitly installed by this project, with the base image's Oh My Zsh retained |
-| Docker CLI, Compose, Buildx | Present; no daemon or socket is provided | Present; the template adds `docker-outside-of-docker`, mounts the host socket, and supplies Docker group access |
-| VS Code server/features | Not included | Inherited from the Dev Containers base and consumer `devcontainer.json` |
-| Oh My Zsh | Not installed | Inherited from the Dev Containers base/common-utils setup |
-
-The Docker tools are clients only. The native image does not start or contain a
-Docker daemon, so `docker version` there needs an explicitly configured remote
-`DOCKER_HOST` or a mounted socket. The VSC template sets
-`DOCKER_HOST=unix:///var/run/docker.sock` and supplies that socket through the
-outside-of-Docker feature.
-
-Both variants now install zsh, Debian's standard zsh completion support,
-`zsh-autosuggestions`, and
-`zsh-syntax-highlighting`. The shared configuration is installed at
-`~/.config/modern-debian-tools-python-debug/zshrc`; it enables the standalone
-fzf integration (`fzf --zsh`), fuzzy Ctrl-R history search, Ctrl-T file search,
-Alt-C directory search, completions, inline suggestions, and syntax highlighting.
-The VSC base `.zshrc` is extended rather than replaced, so its existing prompt
-and Oh My Zsh behavior remain intact.
-
-### Oh My Zsh and Powerlevel10k
-
-These are different layers:
-
-- **Oh My Zsh** is a zsh configuration framework. It manages plugins, themes,
-  aliases, and startup configuration. The VSC base image provides it under
-  `/home/vscode/.oh-my-zsh` and currently selects the `devcontainers` theme.
-- **Powerlevel10k (p10k)** is a highly configurable zsh prompt theme. It can be
-  installed as an Oh My Zsh theme, but it does not replace zsh, and it does not
-  provide Oh My Zsh's plugin framework.
-
-P10k is useful when prompt performance, Git status detail, and extensive prompt
-customization matter. It is not required for history search, completions, fzf,
-autosuggestions, or syntax highlighting. We therefore do not install it by
-default: doing so would add a second prompt policy and would make the native and
-VSC images less predictable. Users who want it can install/configure it in their
-own `~/.zshrc` while retaining the shared interactive integrations.
-
-### PHP 8.5 Flavor (Tag Variant)
-
-PHP 8.5 (CLI/FPM, Composer, Xdebug, and the common web-debugging extensions) is available
-as a **tag variant** of either family above — it is built by the `trixie-py314-php85` /
-`trixie-py314-php85-vsc` bake targets, but publishes into the same two package names,
-distinguished only by a `-php8.5-` segment in the tag:
-
-- `ghcr.io/volkb79-2/modern-debian-tools-python-debug:trixie-py3.14-php8.5-<YYYYMMDD>` (+ `-latest`)
-- `ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-<YYYYMMDD>` (+ `-latest`)
-
-## Tagging and Variants
-
-Tag format:
-
-```text
-<debian>-py<python>[-<flavor>]-<YYYYMMDD>
-```
-
-Examples:
-- `trixie-py3.14-20260511`
-- `trixie-py3.14-php8.5-20260707-10` (PHP 8.5 flavor)
-- `trixie-py3.14-php8.5-latest`
-- `trixie-py3.14-latest`
-- `latest` (family-wide floating tag)
-
-Enabled build group target list is in [docker-bake.hcl](docker-bake.hcl) under `group "all"`; `group "everything"` is the wider local superset.
-
-The docker images use date-based tags (`trixie-py3.14-20260616`, `20260616-2` for same-day rebuilds) plus floating `latest`. 
-
-## Bake Helpers and Build Groups
-
-`docker-bake.hcl` is the source of truth for what gets built.
-
-- `group "all"`: release/publish matrix used by `build-push.py` and by the release-doc generator.
-- `group "everything"`: local exhaustive superset (`all` + `base` + `multi`).
-- `group "detection"`: resolver-only latest-stable probe target.
-- A plain `docker buildx bake` resolves to the default group, which currently points at `everything`.
-- Release builds automatically use the resource-confined named builder selected
-  by `BUILDX_BUILDER`; limits are defined in `cmru.build.toml`. See
-  [the build architecture](docs/BUILD-ARCHITECTURE.md) for the complete
-  build/repack/publication flow, cgroup boundaries, and load-attribution guide.
-  See [OCI image tooling and repack design](docs/OCI-IMAGE-TOOLING.md) for the
-  human-manifest/OCI-manifest distinction, registry-client choices, layer
-  trade-offs, and the CMRU reuse boundary.
-
-Helper functions:
-
-- `base_tag` / `base_latest_tag`: base-family immutable and floating tags.
-- `vsc_tag` / `vsc_latest_tag`: single-Python VSC devcontainer tags.
-- `base_tag_variant` / `base_latest_tag_variant`: base-family tags with a flavor segment (e.g. PHP 8.5) inserted before the date/`latest` segment.
-- `vsc_tag_variant` / `vsc_latest_tag_variant`: VSC devcontainer tags with the same flavor-segment treatment.
-- `vsc_multi_tag` / `vsc_multi_latest_tag`: multi-Python VSC devcontainer tags.
-- `package_manifest_relpath` / `package_manifest_url`: versioned release-page path and URL.
-- `package_manifest_relpath_variant` / `package_manifest_url_variant`: same, for flavor (variant-tagged) builds — keeps the manifest filename collision-free with the plain build sharing the same (debian, python).
-- `package_docs_readme_relpath` / `package_docs_readme_url`: family index path and URL.
-- `package_latest_relpath` / `package_latest_url`: stable landing-page path and URL.
-- `description_with_manifest_docs` / `description_with_manifest_docs_variant`: OCI description helpers that append the release-page URL.
-
-If you add or remove a Python variant, update the matching target block and its tag/helper docs together. The build matrix is explicit; it is not inferred from filenames.
-
-## Migration Note: PHP 8.5 Package-Family Retirement (2026-07-07)
-
-Before 2026-07-07, the PHP 8.5 flavor published to two GHCR packages of its own:
-
-- `modern-debian-tools-python-debug-php85`
-- `modern-debian-tools-python-debug-php85-vsc-devcontainer`
-
-As of the `docker-bake.hcl` restructuring in this commit, PHP 8.5 is a **tag** variant of
-the two base families instead (`-php8.5-` inserted into the tag — see "PHP 8.5 Flavor
-(Tag Variant)" above). No new images will be pushed to the two `-php85*` package names
-going forward.
-
-What to do about the two retired packages:
-
-- **Recommended**: deprecate or delete `modern-debian-tools-python-debug-php85` and
-  `modern-debian-tools-python-debug-php85-vsc-devcontainer` from the GitHub Packages UI
-  (`https://github.com/users/volkb79-2/packages/container/<name>/settings` → Danger Zone).
-  They are dead weight once the next PHP release lands under the base families.
-- Do **not** delete the historical Markdown manifests under
-  `package-manifests-versioned/modern-debian-tools-python-debug-php85/` and
-  `.../modern-debian-tools-python-debug-php85-vsc-devcontainer/` — already-published
-  image OCI labels (`org.opencontainers.image.documentation`, etc.) point at those exact
-  paths and would 404 if the files moved or were deleted. They are left in place,
-  unmodified, as a frozen historical record. New PHP 8.5 manifests are written under
-  `package-manifests-versioned/modern-debian-tools-python-debug/` and
-  `.../modern-debian-tools-python-debug-vsc-devcontainer/` with `-php8.5-` in the
-  filename (e.g. `trixie-py3.14-php8.5-20260707-10.md`), never colliding with the
-  plain (non-flavor) manifest for the same Debian/Python pair.
-- This also happens to make moot a related observation: **new GHCR packages default to
-  private** (see [GHCR-ACCESS-GUIDE.md](GHCR-ACCESS-GUIDE.md) § "When is public/private
-  decided?"), which is almost certainly why only some of the (formerly four) package
-  families were visible/public at any given time — each new family needs its own
-  visibility sync. Collapsing back down to two package families removes two of the
-  moving parts that visibility sync had to keep track of; no *new* package family will
-  ever be created by a future flavor addition as long as it follows the tag-variant
-  pattern documented above instead of inventing another package name.
-
-## Canonical Manifest
-
-The user-facing manifest is copied into the image at `/usr/local/share/modern-debian-tools-python-debug/manifest.md`.
-`/home/vscode/mdt-manifest.md` is kept as a compatibility symlink, and `/etc/os-release` gets a custom `IMAGE_MANIFEST=/usr/local/share/modern-debian-tools-python-debug/manifest.md` entry so scripts can discover it without hardcoding a second path.
-
-The repository-hosted versioned manifest is intended to match that in-image file.
-
-## Multi-Python Devcontainer Variants
-
-Standard single-Python targets ship one Python version (from the base image) in a full primary venv. Multi-Python targets additionally bake in one or more lean secondary environments at image build time — no post-create download needed.
-
-### Python Environments in the Image
-
-| Venv | Path | Contents |
-|------|------|----------|
-| Primary | `/home/vscode/.venv` | Full toolkit — see [Primary Venv Packages](#primary-venv-packages) below |
-| Secondary 3.11 | `/home/vscode/.venv-py311` | Lean: `uv`, `debugpy`, `ruff` |
-| Secondary 3.9 | `/home/vscode/.venv-py39` | Lean: `uv`, `debugpy`, `ruff` |
-
-VS Code discovers all venvs automatically. Switch via `Python: Select Interpreter` or:
-
-```bash
-source /home/vscode/.venv-py311/bin/activate
-```
-
-### Available Multi-Python Targets
-
-| Target | Primary Python | Secondaries | Tag example |
-|--------|---------------|-------------|-------------|
-| `trixie-py314-vsc` | 3.14 (full) | — | `trixie-py314-latest` |
-| `trixie-py314-py311-vsc` | 3.14 (full) | 3.11 (lean) | `trixie-py314-py311-latest` |
-| `trixie-py314-py311-py39-vsc` | 3.14 (full) | 3.11, 3.9 (lean) | `trixie-py314-py311-py39-latest` |
-
-Tag format for multi-Python variants: `<debian>-<primary>-<secondary...>-<YYYYMMDD>` with a matching `-latest` floating tag.
-
-### Primary Venv Packages
-
-The full toolkit installed into `/home/vscode/.venv` is defined in
-[`requirements/toolkit.txt`](requirements/toolkit.txt) — the single source of truth, with every entry
-annotated for what it's for. It splits into dev/build tooling (`ruff`, `mypy`, `pytest`, `build`,
-`uv`, `tox`, …) and **inspection / AI-scratch libraries** (`httpx`, `asyncpg`, `redis`, `hvac`,
-`sqlalchemy`, `dnspython`, `websockets`, …) used to talk to running services interactively.
-
-`ruff` supersedes `black` and `isort` (formatting + import sorting), so those are no longer installed.
-
-> This venv is a **debug cockpit**, not a gating test environment. "Green here" is never a ship
-> signal — a project's gating tests run in a test image built `FROM <app-base>`. See
-> [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md), and
-> [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) for what to put in your repo's AI
-> instruction files. The apt system-package list lives in [`apt/packages.list`](apt/packages.list).
-
-Optional (controlled by `INSTALL_*` build args, all enabled by default):
-- `aider-chat` — `INSTALL_AIDER=true`
-- `reasonix`, `openclaw`, `opencode`, `copilot` — npm-based, installed separately from the venv into the user-owned `/home/vscode/.local` prefix and backed by the image's upstream Node 26 toolchain. OpenCode uses its resolved platform package directly because the `opencode-ai` meta-package can select mutually incompatible glibc and musl optional packages under npm 11.
-- `codex` — installed separately from the venv with the official user-local standalone installer
-- `claude-code`, `antigravity` — installed separately from the venv as image-owned binaries
-
-The user-local AI CLIs are deliberately installed for `vscode`, so their normal
-upgrade commands do not require `sudo`: `codex update`, `reasonix upgrade`, and
-`opencode upgrade`. Rebuild the image when you need the pinned build manifest or
-the image's initial versions refreshed.
-
-Node 26 is sourced from NodeSource because Debian 13 still ships Node 20, and the npm-based AI CLIs
-need a newer runtime.
-
-The GitHub release tools preserve their Linux manpages and shell completions where upstream ships
-them. The upstream `fd` command is installed as both `fd` and the Debian-compatible `fdfind`, with
-both corresponding manpage names available.
-
-Container inspection tools are also installed in-image:
-- `dtop` - live per-container CPU, memory, I/O, and network drilldown
-- `lazydocker` - Docker/Compose TUI for lifecycle, logs, exec, and stats
-- `glances` - broader host resource view with Docker awareness
-- `dive` - image-layer inspection
-- `syft` - SBOM generation and image/package inventory analysis
-- `htop` - GitHub-sourced build with a shipped default config
-
-Neovim is also shipped as `nvim`, with the NvChad `v2.5` starter config staged
-into `/home/vscode/.config/nvim`. The shell defaults prefer `nvim` as the
-editor when it is present.
-
-For zswap specifically, recent `htop` builds can surface compressed-memory/zswap counters, and the
-shipped `zswap-status` shell helper prints the kernel counters directly when they are exposed under
-sysfs or debugfs.
-
-Both image families create the `vscode` user if the base image does not already provide it, so consumer repos can use the same `remoteUser: "vscode"` setting for either family.
-
-## Customization Roots
-
-The image keeps one visible home for shipped behavior and one visible home for user overrides:
-
-- `/usr/local/share/modern-debian-tools-python-debug/` for shipped profile files, alias templates, and manifest support files
-- `/home/vscode/.config/modern-debian-tools-python-debug/` for user-editable bootstrap state, including the central `ai.env`, `aliases.sh`, `shell.env`, `htoprc`, `mc.ini`, `nanorc`, and `lesspipe.sh`
-
-The shell bootstrap sources the user files once at session start. That means `ai.env` becomes the single source of truth for tools such as Aider, Claude Code, Codex, Reasonix, OpenClaw, and OpenCode, while tool-specific auth files that need a local path but should not duplicate secrets are symlinked back to that central file.
-
-### Lean Venv Packages (Secondary Pythons)
-
-Each secondary venv (`/home/vscode/.venv-py{nodot}`) contains only:
-
-```
-pip (latest)   uv   debugpy   ruff
-```
-
-Install project-specific dependencies on demand:
-
-```bash
-uv pip install -r requirements.txt --python /home/vscode/.venv-py311/bin/python
-```
-
-### Adding More Secondary Versions or Targets
-
-Copy an existing multi-Python target in `docker-bake.hcl`, update `SECONDARY_PYTHON_VERSIONS` (space-separated dotted versions) and the target name and tags to match. Example — adding 3.13 alongside 3.11:
-
-```hcl
-target "trixie-py314-py313-py311-vsc" {
-  inherits = ["base"]
-  args = {
-    BASE_IMAGE = "${DEVCONTAINERS_BASE_PINNED}"
-    PYTHON_VERSION = "3.14"
-    DEBIAN_VERSION = "trixie"
-    SECONDARY_PYTHON_VERSIONS = "3.13 3.11"
-    ...
-  }
-  tags = [vsc_multi_tag("trixie", "py314-py313-py311"), vsc_multi_latest_tag("trixie", "py314-py313-py311")]
+# Modern Debian Tools + Python Debug (mdt)
+
+A curated, reproducible Debian + Python environment with modern CLI tooling, an AI-agent
+toolchain, and a debug cockpit venv — published as two GHCR package families for use in
+local development, CI, and VS Code devcontainers.
+
+```json
+{
+  "image": "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-latest",
+  "remoteUser": "vscode"
 }
 ```
 
-The `vsc_multi_tag` / `vsc_multi_latest_tag` HCL functions accept any `<debian>` and `<pythons_label>` string, so naming is fully flexible.
+Consumer repos should reference a published image rather than building from this
+Dockerfile. A ready-made devcontainer definition — mounts, host cgroup placement, and the
+bootstrap hook — is in [`templates/`](templates/README.md); the lifecycle it implements is
+explained in [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md).
 
-### Python Version Support Status
+## Repository map
 
-CPython has no odd/even stability distinction (unlike the Linux kernel). All released minor versions are production-quality. Support windows as of June 2026:
+| Path | What lives there |
+|---|---|
+| [`Dockerfile`](Dockerfile), [`docker-bake.hcl`](docker-bake.hcl) | The image and the build matrix — bake is the source of truth for what gets built |
+| [`build-push.py`](build-push.py), [`cmru.build.toml`](cmru.build.toml) | Release entry point and its step/env configuration |
+| [`scripts/`](scripts/) | Release-time machinery: base resolver, bake/repack lanes, tool staging, OCI validation, benchmarks |
+| [`requirements/`](requirements/), [`apt/`](apt/), [`pip/`](pip/), [`ai-cli-tools.list`](ai-cli-tools.list) | What goes *into* the image: venv toolkit, Debian packages, first-party wheels, AI CLIs |
+| [`customization/`](customization/README.md) | Shipped shell/profile/editor assets (`zshrc`, `aliases.sh`, `ai.env.example`, `htoprc`, …) |
+| [`templates/`](templates/README.md) | The consumer-facing `devcontainer.json` + bootstrap script |
+| [`host-setup/`](host-setup/README.md) | **Host-side** companion: cgroup v2 tiers that govern devcontainers and the containers they spawn |
+| [`docs/`](#documentation) | Architecture and doctrine documents — see the index below |
+| [`package-manifests-versioned/`](package-manifests-versioned/README.md) | Generated GHCR-facing release pages, one per published tag |
+| [`benchmarks/`](benchmarks/) | Recorded measurement runs (recompression, time-to-connect) |
 
-| Version | EOL | Notes |
-|---------|-----|-------|
-| 3.9 | Oct 2025 | **EOL** — include only for legacy compatibility testing |
-| 3.11 | Oct 2027 | Active — production staple, matches netcup-api-filter deploy target |
-| 3.13 | Oct 2029 | Active — previous stable release |
-| 3.14 | Oct 2030 | **Current stable** — primary base image |
+## Image families
 
-## Build and Push Flow
+1. **`modern-debian-tools-python-debug`** — base `python:${PYTHON_VERSION}-${DEBIAN_VERSION}`.
+   A plain Python image with the custom tool stack.
+2. **`modern-debian-tools-python-debug-vsc-devcontainer`** — base
+   `mcr.microsoft.com/devcontainers/python:${PYTHON_VERSION}-${DEBIAN_VERSION}`.
+   Microsoft devcontainer behavior plus the same tooling.
 
-Entry point:
-- [build-push.py](build-push.py) — unified script (`--build`, `--push`, `--rebuild`)
+PHP 8.5 is **not** a third family — it is a tag variant of both, see
+[Tags and variants](#tags-and-variants).
 
-Step configuration:
-- [build-push.toml](build-push.toml)
+Both families share the same project-owned tool layer. The difference is the base image and
+the runtime integration around it:
 
-Bake definition:
-- [docker-bake.hcl](docker-bake.hcl)
+| Capability | Native image | VSC devcontainer image |
+|---|---|---|
+| Intended use | Docker `run`, CI, SSH, or a plain shell | VS Code Dev Containers with `remoteUser: vscode` |
+| zsh + interactive helpers | Installed by this project | Installed by this project, extending the base's Oh My Zsh rather than replacing it |
+| Docker CLI, Compose, Buildx | Present; no daemon or socket provided | Present; the template adds `docker-outside-of-docker`, mounts the host socket, sets `DOCKER_HOST` |
+| VS Code server / features | Not included | Inherited from the base and the consumer `devcontainer.json` |
+| Oh My Zsh | Not installed | Inherited from the base |
 
-### Critical freshness behavior
+The Docker tools are **clients only** — neither image runs a daemon. In the native image
+`docker version` needs an explicitly configured remote `DOCKER_HOST` or a mounted socket.
 
-`scripts/resolve-devcontainers-release.py` now **always pulls** the configured base devcontainer image before reading labels. This avoids stale local-cache metadata during build/push.
+Both families create the `vscode` user when the base does not, so consumers can use
+`remoteUser: "vscode"` with either.
 
-During `./build-push.py --build`, the resolver also performs a **dynamic registry check** against live MCR tag inventory.
-
-Default behavior is now **fail-fast**:
-- if newer stable Python **or Debian** streams are detected, build stops before bake starts
-- to continue intentionally, run `./build-push.py --build --ignore-new-releases`
-
-When the gate stops a build, `build-push.py` prints a clean actionable message (no Python traceback) with explicit next steps.
-
-Example advisory:
+## Tags and variants
 
 ```text
-[WARN] Newer stable devcontainers/python tag(s) detected for trixie: 1-3.15-trixie, 3.15-trixie. Current base: 3.14-trixie. Recommended newest stable: 3.15-trixie.
+<debian>-py<python>[-<flavor>]-<YYYYMMDD>[-<n>]
 ```
 
-Resolver checks are dynamic and do not hardcode future version numbers.
+| Example | Meaning |
+|---|---|
+| `trixie-py3.14-20260511` | immutable dated build |
+| `trixie-py3.14-20260707-10` | same-day rebuild, counter suffix |
+| `trixie-py3.14-latest` | floating tag for that Debian/Python pair |
+| `trixie-py3.14-php8.5-20260707-10` | PHP 8.5 flavor, same package family |
+| `trixie-py3.14-php8.5-latest` | floating PHP 8.5 tag |
+| `latest` | family-wide floating tag — see the caveat below |
 
-Detection scope is dynamic (live registry), and includes:
-- newer Python for your current Debian codename (minor and major streams, for example `3.15` or `4.x`)
-- **newer Debian codename for your current Python version** (e.g. `forky` when you have `bookworm`)
-- additional Debian codenames for your current Python stream (helps detect new Debian variant availability)
-- newer Python streams that may already exist on other Debian variants (early visibility)
+Tags produced by the `*_tag` / `*_latest_tag` helpers always follow the pattern above. The
+bare family-wide `latest` is different: it is **hardcoded inline** on three targets in
+`docker-bake.hcl` rather than emitted by a helper —
 
-The script exports:
-- `DEVCONTAINERS_RELEASE_STABLE` (example: `v0.4.26`)
-- `DEVCONTAINERS_VERSION_STABLE` (example: `3.0.7`)
-- `DEVCONTAINERS_BASE_DYNAMIC_LATEST` (example: `mcr.microsoft.com/devcontainers/python:3.15-trixie`)
-- `DEVCONTAINERS_DYNAMIC_LATEST_PYTHON` and `DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN`
+| Target | Also tagged |
+|---|---|
+| `trixie-py314` | `modern-debian-tools-python-debug:latest` |
+| `trixie-py314-vsc` | `…-vsc-devcontainer:latest` |
+| `trixie-py314-py311-py39-vsc` | `…-vsc-devcontainer:latest` |
 
-Those values are passed through `build-push.toml` into bake args and then into Dockerfile metadata and manifest content.
+— so the last two **collide**: whichever builds later owns the VSC family's floating
+`latest`, and which one that is depends on bake ordering, not on intent. Pin a
+`<debian>-py<python>-latest` tag instead of the bare one if it matters to you.
+(`latest-vsc` additionally publishes `…-vsc-devcontainer:latest-stable`, the alias for the
+resolver-selected stable base.)
 
-You can change which stable base image is checked (and resolved) by overriding:
+### PHP 8.5 flavor
+
+PHP 8.5 (CLI/FPM, Composer, Xdebug, and the common web-debugging extensions) is built by
+the `trixie-py314-php85` / `trixie-py314-php85-vsc` bake targets and publishes into the two
+package names above, distinguished only by the `-php8.5-` tag segment. Adding a future
+flavor should follow the same pattern — a new tag segment, never a new package name.
+
+## What is in the image
+
+### Python environments
+
+| Venv | Path | Contents |
+|---|---|---|
+| Primary | `/home/vscode/.venv` | Full toolkit — see below |
+| Secondary 3.11 | `/home/vscode/.venv-py311` | Lean: `pip`, `uv`, `debugpy`, `ruff` |
+| Secondary 3.9 | `/home/vscode/.venv-py39` | Lean: `pip`, `uv`, `debugpy`, `ruff` |
+
+Secondary venvs exist only in the multi-Python targets and are baked at build time — no
+post-create download. VS Code discovers them automatically (`Python: Select Interpreter`),
+or activate one directly:
 
 ```bash
-DEVCONTAINERS_BASE_PINNED=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-images.py
+source /home/vscode/.venv-py311/bin/activate
+uv pip install -r requirements.txt --python /home/vscode/.venv-py311/bin/python
 ```
 
-see also (https://mcr.microsoft.com/v2/devcontainers/python/tags/list)
+The primary toolkit is defined in [`requirements/toolkit.txt`](requirements/toolkit.txt) —
+the single source of truth, every entry annotated. It splits into dev/build tooling
+(`ruff`, `mypy`, `pytest`, `build`, `uv`, `tox`, …) and **inspection / AI-scratch
+libraries** (`httpx`, `asyncpg`, `redis`, `hvac`, `sqlalchemy`, `dnspython`,
+`websockets`, …) for talking to running services interactively. `ruff` supersedes `black`
+and `isort`, so neither is installed.
 
-Ignore release-gate intentionally:
+> This venv is a **debug cockpit**, not a gating test environment. "Green here" is never a
+> ship signal — a project's gating tests belong in a test image built `FROM <app-base>`.
+> See [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md), and
+> [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) for what to put in your
+> repo's AI instruction files.
+
+Debian packages come from [`apt/packages.list`](apt/packages.list); first-party wheels
+(`ciu`, `cmru`) are staged from their GitHub releases into [`pip/`](pip/).
+
+### AI CLI tools
+
+Enabled by default, each controlled by an `INSTALL_*` build arg:
+
+- `aider-chat` (`INSTALL_AIDER`) — in the venv.
+- `reasonix`, `openclaw`, `opencode`, `copilot` — npm-based, installed into the user-owned
+  `/home/vscode/.local` prefix on the image's Node 26 toolchain. OpenCode uses its resolved
+  platform package directly, because the `opencode-ai` meta-package can select mutually
+  incompatible glibc and musl optional packages under npm 11.
+- `codex` — the official user-local standalone installer.
+- `claude-code`, `antigravity` — image-owned binaries.
+
+These are deliberately installed **for the `vscode` user**, so their normal upgrade paths
+need no `sudo`: `codex update`, `reasonix upgrade`, `opencode upgrade`. Rebuild the image
+to refresh the pinned build manifest.
+
+Node 26 comes from NodeSource because Debian 13 ships Node 20, which is too old for the
+npm-based CLIs.
+
+Startup guidance for consumer repos: the shipped
+`/usr/local/share/modern-debian-tools-python-debug/AGENTS.md.example`. The cross-CLI
+adapter pattern is in [docs/AI-AGENT-TOOL-DISCOVERY.md](docs/AI-AGENT-TOOL-DISCOVERY.md).
+
+Pin versions or opt out at build time:
 
 ```bash
-./build-images.py --ignore-new-releases
+CODEX_VERSION=0.34.0 CLAUDE_CODE_VERSION=1.0.27 AIDER_VERSION=0.64.0 ./build-push.py --build
+INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_AIDER=false ./build-push.py --build
 ```
 
-The same `DEVCONTAINERS_BASE_PINNED` variable is also used by the `trixie-py314-vsc` bake target base image in [docker-bake.hcl](docker-bake.hcl), so warning/check behavior and actual build input stay aligned.
+`AIDER_VERSION` defaults to `main` (upstream git branch); `AIDER_VERSION=latest` resolves
+the current PyPI release at staging time, which keeps the manifest concrete.
+`ANTIGRAVITY_VERSION` follows upstream `latest` manifest resolution.
 
-### Known-latest variables in bake file
+### Shell and CLI tooling
 
-To make maintenance explicit and readable, [docker-bake.hcl](docker-bake.hcl) defines:
-- `LATEST_KNOWN_DEBIAN` (default: `trixie`)
-- `LATEST_KNOWN_PYTHON` (default: `3.14`)
+Both variants install zsh, Debian's zsh completion support, `zsh-autosuggestions`, and
+`zsh-syntax-highlighting`. The shared config at
+`~/.config/modern-debian-tools-python-debug/zshrc` enables standalone fzf integration
+(`fzf --zsh`), Ctrl-R fuzzy history, Ctrl-T file search, Alt-C directory search,
+completions, inline suggestions, and syntax highlighting. The VSC base `.zshrc` is
+*extended*, not replaced, so its prompt and Oh My Zsh behavior survive.
 
-`DEVCONTAINERS_BASE_PINNED` is composed from these values. This does not replace live detection, but improves local intent clarity and reduces scattered hardcoded values.
+**On Powerlevel10k:** Oh My Zsh is a configuration framework (plugins, themes, startup);
+p10k is a prompt theme. p10k is not required for history search, completions, fzf,
+autosuggestions, or highlighting — installing it by default would add a second prompt
+policy and make the two families less predictable. Install it in your own `~/.zshrc` if you
+want it; the shared integrations still apply.
 
-Policy:
-- Keep `LATEST_KNOWN_*` aligned with the currently adopted stable baseline.
-- If upstream releases move ahead, gate will fail until you either:
-	- update `LATEST_KNOWN_*` to adopt the new baseline, or
-	- run with `--ignore-new-releases` intentionally.
+Container and system inspection, in-image:
 
-### Latest dynamic target
+| Tool | For |
+|---|---|
+| `dtop` | live per-container CPU, memory, I/O, network drilldown |
+| `lazydocker` | Docker/Compose TUI — lifecycle, logs, exec, stats |
+| `glances` | broader host resource view with Docker awareness |
+| `dive` | image-layer inspection |
+| `syft` | SBOM generation, image/package inventory |
+| `htop` | GitHub-sourced build with a shipped default config |
+| `zswap-status` | prints kernel zswap counters directly from sysfs/debugfs |
 
-`docker-bake.hcl` includes a dynamic target/group:
-- target: `latest-vsc`
-- group: `detection`
+Neovim ships as `nvim` with the NvChad `v2.5` starter config staged into
+`/home/vscode/.config/nvim`; the shell defaults prefer `nvim` as `$EDITOR` when present.
+GitHub-release tools keep their manpages and completions where upstream ships them; `fd` is
+installed as both `fd` and Debian-compatible `fdfind`.
 
-`latest-vsc` uses resolver-exported live values (`DEVCONTAINERS_BASE_DYNAMIC_LATEST`, Python, Debian) so it automatically follows current upstream stable availability.
+### Customization roots
 
-Target policy:
-- `group "all"` includes the released VSC targets only.
-- `group "everything"` adds `all`, `base`, and `multi` for an exhaustive local build.
-- `group "detection"` keeps a focused entrypoint for resolver-driven validation-only runs.
-- `latest-stable` is the floating alias for the resolver-selected stable devcontainer image.
+One visible home for shipped behavior, one for user overrides:
 
-Example build of the dynamic latest target:
+- `/usr/local/share/modern-debian-tools-python-debug/` — shipped profile files, alias
+  templates, manifest support files.
+- `/home/vscode/.config/modern-debian-tools-python-debug/` — user-editable bootstrap state:
+  `ai.env`, `aliases.sh`, `shell.env`, `htoprc`, `mc.ini`, `nanorc`, `lesspipe.sh`.
+
+The shell bootstrap sources the user files once per session, which makes **`ai.env` the
+single source of truth** for Aider, Claude Code, Codex, Reasonix, OpenClaw, and OpenCode.
+Tool-specific auth files that need a local path are symlinked back to it rather than
+duplicating secrets. Supported keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`.
+
+To survive rebuilds, keep these persistent (the shipped mount layout already does):
+the workspace root, `/home/vscode/.claude`, `.codex`, `.reasonix`, `.openclaw`, and
+`/home/vscode/.config/modern-debian-tools-python-debug`.
+
+### Canonical manifest
+
+Every image writes a Markdown manifest to
+`/usr/local/share/modern-debian-tools-python-debug/manifest.md`.
+`/home/vscode/mdt-manifest.md` is a compatibility symlink, and `/etc/os-release` carries
+`IMAGE_MANIFEST=<that path>` so scripts can find it without hardcoding a second location.
+The repository-hosted versioned page under
+[`package-manifests-versioned/`](package-manifests-versioned/README.md) is regenerated on
+each build and is intended to match the in-image file, so OCI labels can point at
+repository-hosted Markdown instead of flattened GHCR description text.
+
+Sections, and why one component can appear in two of them without duplication:
+
+| Section | View |
+|---|---|
+| `Base` | Debian + Python version, `OCI_VERSION`, computed tag pattern, devcontainers release (`v0.4.x`) and image version (`3.0.x`) |
+| `First-Party Wheels` | image-owned releases: `ciu`, `cmru` |
+| `AI CLI Tools` | agent CLI inventory: `aider`, `reasonix`, `openclaw`, `opencode`, `copilot`, `codex`, `claude`, `antigravity` |
+| `Custom Tooling` | operational view — release-managed executables and their runtime `--version` output |
+| `Python packages` | venv inventory |
+| `System packages` | Debian package names and versions |
+
+For example `aider` appears under `Custom Tooling` as the version `aider --version`
+reports, while `postgresql-client=…` appears under `System packages` as the Debian package
+providing `psql` — `psql` itself stays out of `Custom Tooling` so apt-shipped packages stay
+grouped together.
+
+### `pip install` vs `pipx`
+
+Both are valid; they solve different needs. `python -m pip install` puts everything in one
+environment — good for a curated, integrated toolset. `pipx` isolates each CLI in its own
+venv — better when tool dependency trees must not interact. This image deliberately uses a
+shared curated environment (`/home/vscode/.venv`) for consistency across tools.
+
+## Governing the container on the host
+
+Placement into a cgroup tier is **create-time only** and cannot be expressed from inside an
+image, so it lives in two places that must agree:
+
+- **Container side** — `templates/devcontainer.json` ships
+  `"--cgroup-parent=interactive.slice"` in `runArgs`. Safe everywhere: if the host has no
+  such unit, systemd creates a transient unlimited slice and the container starts normally.
+- **Host side** — [`host-setup/`](host-setup/README.md) installs and maintains the tiers
+  themselves: `interactive.slice` for devcontainers, `besteffort.slice` for the test/build
+  stacks they spawn, IO caps derived from a measured device baseline, and a health check.
+
+```bash
+sudo host-setup/install.sh --with-baseline    # ~4 min of saturated disk — quiet window
+sudo mdt-host-check.sh
+```
+
+[`host-setup/CGROUP-NOTES.md`](host-setup/CGROUP-NOTES.md) explains what a slice unit
+fundamentally cannot express — and the BFQ caveats, where `IOWeight` does not mean what it
+says. Read it before changing any weight.
+
+BuildKit builders are governed separately; see
+[docs/BUILD-ARCHITECTURE.md](docs/BUILD-ARCHITECTURE.md).
+
+## Building and publishing
+
+### Entry point
+
+```bash
+./build-push.py --build      # resolve env + build locally
+./build-push.py --push       # push previously built images
+./build-push.py --rebuild    # build then push
+```
+
+Step and environment configuration is [`cmru.build.toml`](cmru.build.toml); the build
+matrix is [`docker-bake.hcl`](docker-bake.hcl). Release builds run on the resource-confined
+named builder selected by `BUILDX_BUILDER`, with limits defined in `cmru.build.toml`.
+
+### Bake groups
+
+| Group | Contents |
+|---|---|
+| `all` | the release/publish matrix used by `build-push.py` and the release-doc generator |
+| `everything` | exhaustive local superset: `all` + `base` + `multi` + `php` |
+| `base`, `vsc`, `multi`, `php` | the individual slices `everything` composes |
+| `detection` | resolver-only probe (`latest-vsc`) |
+
+There is **no `default` group** — a bare `docker buildx bake` fails with
+`failed to find target default`. Always name a group or target:
 
 ```bash
 docker buildx bake -f docker-bake.hcl detection --load
 ```
 
-You can still force a specific older base to validate gate behavior:
+The matrix is explicit, never inferred from filenames. If you add or remove a Python
+variant, update the target block and its tag/helper docs together.
 
-```bash
-DEVCONTAINERS_BASE_PINNED=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-images.py
-```
+### Tag helper functions
 
-Then continue anyway only when explicitly requested:
+| Helper | Produces |
+|---|---|
+| `base_tag` / `base_latest_tag` | base-family immutable and floating tags |
+| `vsc_tag` / `vsc_latest_tag` | single-Python VSC devcontainer tags |
+| `base_tag_variant` / `base_latest_tag_variant` | base-family tags with a flavor segment before the date/`latest` |
+| `vsc_tag_variant` / `vsc_latest_tag_variant` | the same for VSC devcontainer tags |
+| `vsc_multi_tag` / `vsc_multi_latest_tag` | multi-Python VSC devcontainer tags |
+| `package_manifest_relpath` / `package_manifest_url` | versioned release-page path and URL |
+| `package_manifest_relpath_variant` / `..._url_variant` | same for flavor builds — keeps the filename collision-free with the plain build sharing that (debian, python) |
+| `package_docs_readme_relpath` / `..._url` | family index path and URL |
+| `package_latest_relpath` / `package_latest_url` | stable landing-page path and URL |
+| `description_with_manifest_docs[_variant]` | OCI description helpers that append the release-page URL |
 
-```bash
-DEVCONTAINERS_BASE_PINNED=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-images.py --ignore-new-releases
-```
+### Base-image freshness gate
 
-## Manifest Location and Content
+`scripts/resolve-devcontainers-release.py` **always pulls** the configured base
+devcontainer image before reading labels, so stale local-cache metadata cannot leak into a
+build. During `--build` it additionally performs a live MCR tag-inventory check.
 
-Each built image writes a markdown manifest at:
+Default behavior is **fail-fast**: if a newer stable Python *or Debian* stream is detected,
+the build stops before bake starts, with an actionable message and no traceback.
 
 ```text
-/usr/local/share/modern-debian-tools-python-debug/manifest.md
+[WARN] Newer stable devcontainers/python tag(s) detected for trixie: 1-3.15-trixie,
+       3.15-trixie. Current base: 3.14-trixie. Recommended newest stable: 3.15-trixie.
 ```
 
-Manifest sections:
-- `Base`
-- `First-Party Wheels`
-- `AI CLI Tools`
-- `Custom Tooling`
-- `Python packages`
-- `System packages`
+Continue intentionally with `--ignore-new-releases`. Detection is dynamic — no future
+version numbers are hardcoded — and covers newer Python for your current Debian, newer
+Debian for your current Python, additional Debian codenames for your Python stream, and
+newer Python streams already visible on other Debian variants.
 
-The base section includes:
-- Debian version
-- Python runtime version
-- image build version (`OCI_VERSION`)
-- computed tag pattern (`<debian>-py<python>-<date>`)
-- devcontainers release (`v0.4.x` stream)
-- devcontainers image version (`3.0.x` stream)
+The resolver exports `DEVCONTAINERS_RELEASE_STABLE`, `DEVCONTAINERS_VERSION_STABLE`,
+`DEVCONTAINERS_BASE_DYNAMIC_LATEST`, `DEVCONTAINERS_DYNAMIC_LATEST_PYTHON`, and
+`DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN`; `cmru.build.toml` passes them into bake args, then
+into Dockerfile metadata and manifest content.
 
-## About `Custom Tooling` vs `System packages`
+`docker-bake.hcl` declares `LATEST_KNOWN_DEBIAN` (`trixie`) and `LATEST_KNOWN_PYTHON`
+(`3.14`), from which `DEVCONTAINERS_BASE_PINNED` is composed. This does not replace live
+detection — it makes local intent explicit and removes scattered hardcoded values. Keep
+`LATEST_KNOWN_*` aligned with the adopted stable baseline; when upstream moves ahead, the
+gate fails until you either adopt the new baseline or pass `--ignore-new-releases`.
 
-- `First-Party Wheels` is the wheel inventory view: image-owned releases (`ciu`, `cmru`).
-- `AI CLI Tools` is the agent CLI inventory view: `aider`, `reasonix`, `openclaw`, `opencode`, `copilot`, `codex`, `claude`, `antigravity`.
-- `Custom Tooling` is an operational view: release-managed tool executables and their runtime `--version` output.
-- `System packages` is a Debian package inventory view: apt package names and versions.
-
-This means one component can appear in both sections without being duplicated.
-The manifest now splits first-party wheels and AI CLI tools into their own sections so the
-release inventory reads the same way as the image build pipeline.
-
-For AI CLI startup guidance, use the shipped
-`/usr/local/share/modern-debian-tools-python-debug/AGENTS.md.example` as a
-consumer-repository starting point. The cross-CLI adapter pattern and why exact
-versions stay in the generated inventory are documented in
-[AI agent tool discovery](docs/AI-AGENT-TOOL-DISCOVERY.md).
-
-Example:
-- `aider` in `Custom Tooling` is the resolved release version from `aider --version`.
-- `postgresql-client=...` in `System packages` is the Debian package that provides `psql`.
-- `psql` stays out of `Custom Tooling` so Debian-shipped packages are grouped together.
-
-## `python -m pip install` vs `pipx`
-
-Both are valid but solve different needs:
-
-1. `python -m pip install`
-	- Installs into the active environment.
-	- Good for a curated, integrated toolset in one venv.
-
-2. `pipx`
-	- Installs each CLI app in its own isolated venv.
-	- Better when you need strong separation between tool dependency trees.
-
-Current design here intentionally uses a shared curated environment (`/home/vscode/.venv`) for consistency across tools.
-
-## Base Version Labels on Built Images
-
-Built images include labels:
-- `net.volkb79.base-devcontainers-release`
-- `net.volkb79.base-devcontainers-version`
-
-Inspect example:
+Override the checked/resolved base, e.g. to validate gate behavior:
 
 ```bash
-docker image inspect ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-20260511 \
-  --format '{{ index .Config.Labels "net.volkb79.base-devcontainers-release" }}'
-
-docker image inspect ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-20260511 \
-  --format '{{ index .Config.Labels "net.volkb79.base-devcontainers-version" }}'
+DEVCONTAINERS_BASE_PINNED=mcr.microsoft.com/devcontainers/python:3.13-trixie ./build-push.py --build
 ```
 
-## Practical Commands
-
-Build all enabled targets:
-
-```bash
-./build-images.py
-```
-
-Push all enabled targets:
-
-```bash
-./push-images.py
-```
-
-Override specific build variables:
-
-```bash
-B2_VERSION=4.5.0 ./build-images.py
-```
-
-Pin AI tooling versions when needed:
-
-```bash
-CODEX_VERSION=0.34.0 CLAUDE_CODE_VERSION=1.0.27 AIDER_VERSION=0.64.0 ./build-images.py
-```
-
-Disable optional AI tooling across all image variants:
-
-```bash
-INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_AIDER=false INSTALL_REASONIX=false INSTALL_OPENCLAW=false ./build-images.py
-```
-
-Notes:
-- `ANTIGRAVITY_VERSION` currently follows upstream `latest` manifest resolution during staging.
-- `AIDER_VERSION=latest` resolves to the current PyPI release version during staging.
-
-## GHCR Credentials
-
-Use PAT with package scopes (classic token):
-- `write:packages`
-- `read:packages`
-
-Configured via environment (for example `.env` loaded by your release tooling).
-The release pipeline mirrors each GHCR package's visibility to the source repository after push, so new releases should not need a manual package-settings toggle.
-
-The canonical direct-push release path publishes through BuildKit and does not
-call `skopeo`. The historical local compression benchmark still uses `skopeo`
-to import an image from Docker's local image store; if you run that benchmark,
-`REGISTRY_AUTH_FILE` may point at a workspace-local file such as
-`./.ghcr-auth.json`. Keep that file untracked.
-
-> **Note:** When using the new cmru oci-image handler (cmru.toml `[project.xxx.oci]`),
-> cmru handles Docker login automatically. The `.ghcr-auth.json` fallback is only needed
-> for manual/local use outside cmru.
-
-## Persisting AI Tool State
-
-If you want agent state to survive devcontainer rebuilds, keep the workspace mount persistent and
-let the shipped mount layout persist the tool homes below:
-
-- Workspace root for `reasonix.toml`, `AGENTS.md`, and any repo-local scratch files
-- `/home/vscode/.claude`
-- `/home/vscode/.codex`
-- `/home/vscode/.reasonix`
-- `/home/vscode/.openclaw`
-- `/home/vscode/.config/modern-debian-tools-python-debug`
-- `/home/vscode/.config/modern-debian-tools-python-debug/aliases.sh`
-
-The central key file is:
-
-- `~/.config/modern-debian-tools-python-debug/ai.env`
-
-Supported key names:
-
-- `ANTHROPIC_API_KEY`
-- `OPENAI_API_KEY`
-- `OPENROUTER_API_KEY`
-- `DEEPSEEK_API_KEY`
-
-Reasonix and OpenClaw also read their tool-local `.env` paths, but those are symlinked back to the same central file so the key values live in one place only.
-
-## Using in another repository
-
-Use image reference in `.devcontainer/devcontainer.json`:
-
-```json
-{
-  "image": "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-20260511",
-  "remoteUser": "vscode"
-}
-```
-
-Avoid building from Dockerfile in consumer repos when a published image already exists.
-
-## Checking Available Upstream Devcontainer Tags
-
-Run:
+To see what upstream currently offers:
 
 ```bash
 ./check-mcr-devcontainer-tags.py
 ```
-
-This compares discovered tags against upstream manifest data and helps spot newly available variants.
-
-Example output:
 
 ```text
 debian    3.12   3.13   3.14   3.15   3.16
@@ -608,77 +373,136 @@ trixie    pd     pd     pd     .      .
 forky     .      .      .      .      .
 
 Legend: 1 = 1- prefix, p = plain, d = dev- prefix, . = missing
-
-Secondary manifest variants: 10 (https://raw.githubusercontent.com/devcontainers/images/main/src/python/manifest.json)
 ```
 
-## References
+### GHCR credentials and visibility
 
-- Upstream devcontainers images: https://github.com/devcontainers/images
-- Python manifest: https://raw.githubusercontent.com/devcontainers/images/main/src/python/manifest.json
-- OCI image/registry tool design: [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md)
-- Awesome Tools List for Docker ecosystem: https://github.com/veggiemonk/awesome-docker/blob/master/README.md
+A classic PAT with `write:packages` and `read:packages`, supplied via environment (for
+example a `.env` loaded by your release tooling). The release pipeline mirrors each GHCR
+package's visibility to the source repository after push, so a new release should not need
+a manual package-settings toggle. Note that **new GHCR packages default to private** — see
+[GHCR-ACCESS-GUIDE.md](GHCR-ACCESS-GUIDE.md) § "When is public/private decided?". This is
+one reason flavors are tag variants rather than new package names: no new family means no
+new visibility state to sync.
 
-### Critical freshness behavior
+The canonical direct-push release path publishes through BuildKit and does **not** call
+`skopeo`. When using the cmru oci-image handler (`cmru.toml [project.xxx.oci]`), cmru
+handles Docker login. The `.ghcr-auth.json` fallback (`REGISTRY_AUTH_FILE`) is only for
+manual/local use outside cmru, such as the historical compression benchmark — keep that
+file untracked.
 
-`scripts/resolve-devcontainers-release.py` now **always pulls** the configured base devcontainer image before reading labels. This avoids stale local-cache metadata during build/push.
+Built images carry `net.volkb79.base-devcontainers-release` and
+`net.volkb79.base-devcontainers-version` labels:
 
-### AIDER_VERSION workaround (Python 3.13/3.14)
-
-The default `AIDER_VERSION=main` installs aider-chat from upstream git `main` branch.
-`AIDER_VERSION=latest` now resolves to the current PyPI release version during staging,
-which keeps the manifest concrete while still letting you opt into the branch build when
-you need it. See `USAGE.md` for details on switching modes.
-
-## Notes
-
-### docker buildx/bake (BuildKit)
-
-BuildKit's generic registry exporter defaults to gzip. MDT overrides that in
-`cmru.build.toml`: release publication uses OCI media types, forced zstd level
-3 and the original layer topology. The level is intentionally modest because
-cold time-to-connect and governed export cost matter more than minimizing the
-last few compressed bytes.
-
-### Compression and time-to-connect benchmarks
-
-The canonical measurements, methodology, historical target-size sweep and
-policy decision now live in
-[Image delivery and time-to-connect benchmarks](docs/IMAGE-DELIVERY-BENCHMARKS.md).
-Cold tests on both Docker stores showed native zstd level 3 faster than gzip,
-while the three-layer 2 GB repack was substantially slower despite its smaller
-download. Release publication therefore uses native zstd and keeps the normal
-layer topology; repack remains experimental.
-
-### `docker-repack`
-
-`docker-repack` controls how the deduped content is sliced into layers: smaller `--target-size` means more, smaller layers with better parallel-download/cache granularity but more per-layer compression-dictionary overhead; larger means fewer fat layers with slightly better ratio but coarser caching.
-
-For this image family, the benchmark script is:
-
-`scripts/benchmark-docker-repack.sh`
-
-It is intentionally benchmark-only. The optional release code can exercise the
-same transformation via `RELEASE_IMAGE_FLOW=repack`; its target size is
-configured independently. The canonical release flow does not repack.
-
-The optional repack path is OCI-layout-native: Bake writes one OCI tar per target,
-the tar is extracted into disk-backed scratch, `docker-repack` writes a second
-OCI layout, and the governed BuildKit builder validates that layout by importing
-and unpacking it before registry publication. No daemon image round-trip or
-`skopeo` copy is involved. The affected image currently triggers the fail-closed
-gate because of the repacker defect recorded in the architecture guide; use the
-default unrepacked `push` release lane, not a raw copy of the invalid layout.
-See [MDT build and release architecture](docs/BUILD-ARCHITECTURE.md) for the
-resource model, cgroup/slice boundaries, and live load-attribution commands.
-
-(b) How to count layers, source vs target:
 ```bash
-# source registry manifest:
-docker buildx imagetools inspect --raw <img> | jq '.layers | length'
-# target OCI layout directory:
-digest=$(jq -r '.manifests[0].digest' /tmp/mdt-repacked2/index.json)
-jq '.layers | length' "/tmp/mdt-repacked2/blobs/sha256/${digest#sha256:}"
-# a local daemon image (diff-layer count):
-docker inspect <img> --format '{{len .RootFS.Layers}}'
+docker image inspect <image> \
+  --format '{{ index .Config.Labels "net.volkb79.base-devcontainers-release" }}'
 ```
+
+### Compression and layer topology
+
+BuildKit's generic registry exporter defaults to gzip. `cmru.build.toml` overrides that:
+release publication uses OCI media types, forced **zstd level 3**, and the original layer
+topology. The level is deliberately modest — cold time-to-connect and governed export cost
+matter more than the last few compressed bytes.
+
+Cold tests on both Docker stores showed native zstd level 3 faster than gzip, while a
+three-layer 2 GB repack was substantially slower despite the smaller download. Methodology,
+the historical target-size sweep, and the policy decision are in
+[docs/IMAGE-DELIVERY-BENCHMARKS.md](docs/IMAGE-DELIVERY-BENCHMARKS.md).
+
+`docker-repack` therefore remains **experimental** and is not in the canonical release
+flow. It controls how deduped content is sliced into layers: a smaller `--target-size`
+gives more, smaller layers with better parallel-download and cache granularity but more
+per-layer compression-dictionary overhead; larger gives fewer fat layers with a slightly
+better ratio and coarser caching. The benchmark is `scripts/benchmark-docker-repack.sh`;
+the optional release lane is `RELEASE_IMAGE_FLOW=repack`, whose target size is configured
+independently.
+
+That optional path is OCI-layout-native: bake writes one OCI tar per target, the tar is
+extracted into disk-backed scratch, `docker-repack` writes a second OCI layout, and the
+governed BuildKit builder validates it by importing and unpacking before publication — no
+daemon round-trip, no `skopeo` copy. It currently trips the fail-closed gate because of the
+repacker defect recorded in the architecture guide; use the default `push` lane rather than
+copying an invalid layout.
+
+Counting layers, source vs target:
+
+```bash
+docker buildx imagetools inspect --raw <img> | jq '.layers | length'   # registry manifest
+digest=$(jq -r '.manifests[0].digest' <oci-layout>/index.json)          # OCI layout dir
+jq '.layers | length' "<oci-layout>/blobs/sha256/${digest#sha256:}"
+docker inspect <img> --format '{{len .RootFS.Layers}}'                  # local daemon image
+```
+
+## Multi-Python variants
+
+Standard single-Python targets ship one Python version in a full primary venv. Multi-Python
+targets additionally bake lean secondary environments at image build time.
+
+| Target | Primary | Secondaries | Tag example |
+|---|---|---|---|
+| `trixie-py314-vsc` | 3.14 (full) | — | `trixie-py3.14-latest` |
+| `trixie-py314-py311-vsc` | 3.14 (full) | 3.11 (lean) | `trixie-py314-py311-latest` |
+| `trixie-py314-py311-py39-vsc` | 3.14 (full) | 3.11, 3.9 (lean) | `trixie-py314-py311-py39-latest` |
+
+Multi-Python tag format: `<debian>-<primary>-<secondary…>-<YYYYMMDD>` plus a matching
+`-latest`.
+
+To add a combination, copy an existing multi-Python target and update
+`SECONDARY_PYTHON_VERSIONS` (space-separated dotted versions), the target name, and the
+tags:
+
+```hcl
+target "trixie-py314-py313-py311-vsc" {
+  inherits = ["base"]
+  args = {
+    BASE_IMAGE = "${DEVCONTAINERS_BASE_PINNED}"
+    PYTHON_VERSION = "3.14"
+    DEBIAN_VERSION = "trixie"
+    SECONDARY_PYTHON_VERSIONS = "3.13 3.11"
+  }
+  tags = [vsc_multi_tag("trixie", "py314-py313-py311"),
+          vsc_multi_latest_tag("trixie", "py314-py313-py311")]
+}
+```
+
+`vsc_multi_tag` / `vsc_multi_latest_tag` accept any `<debian>` and `<pythons_label>`, so
+naming is fully flexible.
+
+### Python version support
+
+CPython has no odd/even stability distinction — all released minor versions are
+production-quality. Windows as of June 2026:
+
+| Version | EOL | Status |
+|---|---|---|
+| 3.9 | Oct 2025 | **EOL** — legacy compatibility testing only |
+| 3.11 | Oct 2027 | Active — production staple |
+| 3.13 | Oct 2029 | Active — previous stable |
+| 3.14 | Oct 2030 | **Current stable** — primary base |
+
+## Documentation
+
+| Document | Covers |
+|---|---|
+| [USAGE.md](USAGE.md) | Consuming the image day to day |
+| [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) | Build → create → start ordering, what runs when, host resource governance |
+| [host-setup/README.md](host-setup/README.md) | Installing the host cgroup tiers |
+| [host-setup/CGROUP-NOTES.md](host-setup/CGROUP-NOTES.md) | What slice units can't express; BFQ caveats |
+| [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) | Which concerns belong to the image, the orchestration, and the host |
+| [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |
+| [docs/AI-AGENT-TOOL-DISCOVERY.md](docs/AI-AGENT-TOOL-DISCOVERY.md) | Cross-CLI adapter pattern; why exact versions stay in the generated inventory |
+| [docs/BUILD-ARCHITECTURE.md](docs/BUILD-ARCHITECTURE.md) | Build/repack/publication flow, cgroup boundaries, load attribution |
+| [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md) | Human-manifest vs OCI-manifest, registry clients, layer trade-offs, CMRU reuse boundary |
+| [docs/IMAGE-DELIVERY-BENCHMARKS.md](docs/IMAGE-DELIVERY-BENCHMARKS.md) | Compression and time-to-connect measurements and policy |
+| [docs/DOCKER-IMAGE-STORE.md](docs/DOCKER-IMAGE-STORE.md) | Docker image store behavior |
+| [GHCR-ACCESS-GUIDE.md](GHCR-ACCESS-GUIDE.md) | Registry auth, package visibility |
+| [TODO.md](TODO.md) | Backlog |
+
+External references:
+
+- Upstream devcontainers images — <https://github.com/devcontainers/images>
+- Python manifest — <https://raw.githubusercontent.com/devcontainers/images/main/src/python/manifest.json>
+- MCR tag list — <https://mcr.microsoft.com/v2/devcontainers/python/tags/list>
+- Awesome Docker — <https://github.com/veggiemonk/awesome-docker>

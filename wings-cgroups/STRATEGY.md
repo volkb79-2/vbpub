@@ -1,16 +1,19 @@
 # Slices/cgroups for Pterodactyl/Pelican — fresh tiered proposal and deployment strategy
 
-Date: 2026-07-15
-Status: proposal (supersedes neither companion doc; builds on both)
+Date: 2026-07-15 (updated 2026-07-17: T3b implemented as patch 0004; doc moved
+into the implementation project — it started life in `scripts/gstammtisch-guide/`)
+Status: implemented through T3b — this project (`wings-cgroups/`) is the
+realization of this strategy; §T3b and the decision matrix reflect the shipped
+patch series.
 
 Companion documents (verified details live there, not restated here):
 
-- `wings-cgroup-parent-proposal.md` — the compiled v1/v2 Wings patches, source-level
-  verification of Wings v1.13.1 and the panel payload path, live Findings A/D,
-  single-node deployment runbook (Appendix A).
-- `wings-cgroup-parent-proposal-review.md` — external review; guardrail requirements
-  (shared runtime/installer resolver, namespace/allowlist), effort table, egg
-  assessment.
+- `../scripts/gstammtisch-guide/wings-cgroup-parent-proposal.md` — the compiled
+  v1/v2 Wings patches, source-level verification of Wings v1.13.1 and the panel
+  payload path, live Findings A/D, single-node deployment runbook (Appendix A).
+- `../scripts/gstammtisch-guide/wings-cgroup-parent-proposal-review.md` —
+  external review; guardrail requirements (shared runtime/installer resolver,
+  namespace/allowlist), effort table, egg assessment.
 
 This document is a deliberate re-framing, written as if starting fresh: it derives
 the tier ladder from first principles rather than from the v1→v3 patch history,
@@ -69,7 +72,7 @@ Wings runs either as a docker-compose service (our node) or as a native systemd
 service. Both cases are closed problems:
 
 - **Compose deployment:** the compose spec supports `cgroup_parent:` per service.
-  Add to the wings service in `/root/ptero-wings/docker-compose.yml`:
+  Add to the wings service in the node's `docker-compose.yml`:
 
   ```yaml
   services:
@@ -151,10 +154,9 @@ Properties stay host-owned (static slice units + T0c for residuals).
   slice — full floors/ceilings for the game, today.
 - Fork burden: 4 files, stable touch points (`Create()`, installer `Execute()`,
   config struct, startup validation). The cheapest possible recurring rebase.
-- Deployment: Appendix A runbook in the companion proposal, including the
-  mandatory pre-flight (`systemctl show <slice> -p FragmentPath -p MemoryMin …` +
-  throwaway-container smoke test) that closes the false-positive-rollout footgun
-  (review F3).
+- Deployment: [`SETUP.md`](SETUP.md), including the mandatory pre-flight
+  (`systemctl show <slice> -p FragmentPath -p MemoryMin …` + throwaway-container
+  smoke test) that closes the false-positive-rollout footgun (review F3).
 
 ---
 
@@ -223,19 +225,53 @@ Trade-offs, honestly:
 - **Con:** one more host service to deploy/monitor — but it *replaces* the current
   watcher rather than adding to it, and it is the same class of component.
 
-### T3b. In-Wings D-Bus slice manager (the earlier v2.5)
+### T3b. In-Wings D-Bus slice manager — **implemented as patch 0004**
 
-Wings itself parses the spec variables, creates/reconciles transient slices before
-container create, removes them on server delete. Cleaner lifecycle (no race, no
-extra service), but: host D-Bus socket mounted into the Wings container,
-root-equivalent code surface inside Wings, reconciliation semantics entangled with
-Wings' own lifecycle (live-restore, restarts — review F4), and a fork delta of
-weeks, permanently rebased. **Only worth building as an upstream RFC** (ideally in
-Pelican, which owns both halves) — not as private fork code.
+Wings itself derives, creates and reconciles each server's slice before
+container create/start, and removes it on server delete. Cleaner lifecycle than
+T3a (no startup race, no extra service). This section originally parked the
+tier as "upstream-RFC only" with a fork delta estimated in weeks; that estimate
+died once T3a existed — its D-Bus/spec/budget machinery ported into Wings as a
+fourth clean commit in a day (`internal/cgroups`, ~300 lines of production code
+plus tests).
 
-**Verdict:** if automation is needed before upstream moves, build T3a. Promote its
-design to a T3b/v3 upstream RFC in parallel — the spec format and namespace/budget
-rules transfer 1:1.
+Design as shipped (`patchstack/patches/*/0004-*`, both trees):
+
+- `docker.per_server_slices.enabled: true` places **every** server under a
+  derived `wings-<dashless-uuid>.slice` (dash naming nests it under
+  `cgroup_parent`) — zero per-server admin steps, no UUID lookups, no
+  `mk-server-slice.sh`. `WINGS_CGROUP_PARENT` (0002) remains as the explicit
+  per-server override; overriding with exactly the node-wide value is the
+  per-server opt-out.
+- Properties: node-wide `docker.per_server_slices.defaults`
+  (`memory_min/low/high/max`, `cpu_weight`, `io_weight`) merged with admin-only
+  per-server `WINGS_CG_*` egg variables. Override slices are hand-managed: they
+  receive only explicit `WINGS_CG_*` values, never the node defaults.
+- Transient units over systemd D-Bus (`StartTransientUnit` /
+  `SetUnitProperties(runtime=true)`) — the reload-safe channel; nothing written
+  to the host filesystem. Wings recreates the container on every server start,
+  and the slice is re-ensured at the same moment, so reboots reconstruct the
+  whole tree. Containerized Wings needs `/run/dbus/system_bus_socket` (or
+  `/run/systemd/private`) mounted from the host.
+- `memory_min_budget` + `budget_policy: clamp|refuse` guards the floor
+  arithmetic (Finding A: child floors beyond the parent slice's own MemoryMin
+  are dead — an unchecked sum silently weakens every guarantee).
+- Fail-open by design: any D-Bus problem logs a warning and degrades to plain
+  placement. Slice management never blocks a server start.
+- GC: the derived slice is stopped on server delete; a boot-time sweep stops
+  derived-shape transient slices with no matching server. Administrator
+  unit-file slices are never touched.
+
+The concerns that parked this tier were real and are answered in the code:
+untrusted panel data (namespace guard + fail-closed resolution, unchanged from
+0002); root-equivalent D-Bus surface (confined to `internal/cgroups`,
+best-effort semantics); lifecycle entanglement (ensure runs in exactly the two
+places Wings creates containers — runtime and installer).
+
+**Verdict (updated):** T3b is the deployed architecture. T3a remains in the
+tree as the external alternative for nodes running *stock* Wings ≥T2 (or
+another agent's Wings) where patching further is not an option — the spec
+format and namespace/budget rules are identical in both, by construction.
 
 ---
 
@@ -266,34 +302,43 @@ lands, the variables just stop being needed; nothing breaks.
 | **T1** node-wide `cgroup_parent` | via T0a | ✅ (shared nodes too) | per-node only | single-server nodes only | manual units | ~65 lines | none | minimal |
 | **T2** guarded per-server variable | via T0a | ✅ | ✅ | ✅ | manual units (scriptable) | ~250 lines | none (data only) | small |
 | **T3a** + external slice-manager | via T0a | ✅ | ✅ | ✅ | ✅ (outside fork) | = T2 | none (data only) | small |
-| **T3b** in-Wings D-Bus manager | via T0a | ✅ | ✅ | ✅ | ✅ (inside Wings) | weeks | none (data only) | heavy |
+| **T3b** in-Wings D-Bus manager (patch 0004) | via T0a | ✅ | ✅ | ✅ | ✅ (inside Wings) | ~300 lines + tests (ported from T3a) | none (data only) | small (4th commit in the series) |
 | **T4** panel-native | via T0a | ✅ | ✅ | ✅ | ✅ | medium | migrations+UI+API | fork: prohibitive; upstream: right |
 
 ---
 
-## Recommendation — what to do now
+## Recommendation — the chosen path (status 2026-07-17)
 
-### Deploy (next 1–2 weeks)
+### Deploy
 
-1. **Now, zero risk:** T0a — put the Wings container itself under
-   `wings-mgmt.slice` via compose `cgroup_parent:` + a real slice unit. Independent
-   of everything else.
-2. **This week:** T1 on the production node. The patch is already compiled and
-   vetted; the runbook exists (companion proposal, Appendix A). Install the real
-   `soulmask.slice`/`wings.slice` unit **first**, run the mandatory pre-flight and
-   throwaway-container smoke test, then flip `docker.cgroup_parent`, recreate the
-   game container in a planned window. On this single-server node, T1 already
-   delivers the full goal: effective `memory.min` floors, reload-safe, and the
-   blunt `system.slice MemoryMin` hack can be retired.
-3. **Next (fold into the same custom build):** T2 with the guardrails — shared
-   runtime/installer resolver, `wings-*.slice` namespace enforcement, fail-closed
-   logging, table-driven tests. Add the admin-only `WINGS_CGROUP_PARENT` variable
-   to the Soulmask egg (default empty; per-server override carries the value —
-   review's egg guidance). This future-proofs for a second server/tier without a
-   second fork-and-rebase cycle: **ship one patch series containing T1+T2, even if
-   only T1 is exercised at first.**
-4. **Defer:** T3a until slice-unit management actually hurts (≳ a handful of
-   servers). T3b/T4 are upstream-RFC material only.
+The staged plan below was executed; it is kept as the decision record. **The
+deployment procedure now lives in [`SETUP.md`](SETUP.md)** — follow that, not
+this section.
+
+1. ~~**Now, zero risk:** T0a — Wings' own container under `wings-mgmt.slice`.~~
+   **Done** — unit + compose `cgroup_parent:`, independent of everything else.
+2. ~~**This week:** T1 on the production node.~~ **Done** — `wings.slice` unit
+   installed with the pre-flight, `docker.cgroup_parent` flipped, game container
+   recreated, legacy `system.slice MemoryMin` hack retired. On a single-server
+   node T1 alone already delivers effective, reload-safe `memory.min` floors —
+   it remains the fallback mode if 0004 is switched off.
+3. ~~**Next:** T2 with the guardrails, shipped in the same series.~~ **Done** —
+   shared runtime/installer resolver, `wings-*.slice` namespace enforcement,
+   fail-closed logging, table-driven tests, admin-only `WINGS_CGROUP_PARENT`.
+   Shipping T1+T2 together avoided a second fork-and-rebase cycle, as intended.
+4. ~~**Defer:** T3a until slice-unit management actually hurts (≳ a handful of
+   servers). T3b/T4 are upstream-RFC material only.~~ **Superseded 2026-07-17:**
+   manual slice units were rejected as a permanent workflow ("admin greps a
+   UUID and runs a script" is not a PR-worthy story); T3b was implemented as
+   patch 0004 and is the production path — deploy the cgroup.2 image with
+   `docker.per_server_slices.enabled: true`. T1/T2 remain live as the fallback
+   modes of the same build; `mk-server-slice.sh` is demoted to PoC/fallback
+   tooling. T3a survives as the external option for nodes whose Wings stays at
+   T2. T4 stays upstream-only.
+
+One kernel prerequisite was found the hard way and is not optional at any tier:
+slice-level protection only reaches the `docker-*.scope` below it when cgroup2 is
+mounted with `memory_recursiveprot` (`SETUP.md` §1b).
 
 ### Fork strategy — the direct answer
 
