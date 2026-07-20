@@ -1246,6 +1246,102 @@ def test_parse_review_verdict_no_artifact_anywhere_returns_missing(
 
 
 # --------------------------------------------------------------------------
+# P59b 2026-07-20 (A7, M6/I8): verdict-attempt binding. A re-review must bind
+# the verdict to THIS review attempt and ignore any verdict a PRIOR (or other)
+# attempt left committed on the branch -- both a stale REJECTED (which would
+# wrongly re-trigger re-implementation, I8) and, worse, a foreign APPROVED
+# (which would rubber-stamp an unreviewed merge, M6). The first review keeps
+# the unbound-verdict path (no prior attempt => staleness impossible).
+
+_ATT_OLD = "att-aaaaaaaaaaaa"
+_ATT_CUR = "att-bbbbbbbbbbbb"
+_ATT_FOREIGN = "att-cccccccccccc"
+
+
+def test_parse_review_verdict_rereview_ignores_stale_prior_reject(
+    tmp_state, sample_project
+):
+    """I8: on a re-review, a stale `VERDICT: REJECTED (attempt <old>)` left on
+    the branch by a PRIOR review attempt -- with nothing from the current
+    attempt -- must NOT be consumed as this attempt's rejection (which would
+    kick off a full, wasteful re-implementation of possibly-fine work). It is
+    a review-LEG failure of the current attempt => "missing" => relaunch."""
+    cfg = sample_project
+    task_id = "t-rereview-stale-reject"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        f"# Review\n\nPrior cycle found problems.\n\nVERDICT: REJECTED (attempt {_ATT_OLD})\n",
+    )
+    d = daemon.Daemon({"demo": cfg.root})
+    # current attempt is _ATT_CUR and there WAS a prior review (is_first_review=False):
+    # the stale verdict is bound to att-old, so it is ignored -> "missing" (relaunch),
+    # NOT consumed as this attempt's rejection.
+    assert d._parse_review_verdict(
+        cfg, task_id, current_attempt_id=_ATT_CUR, is_first_review=False) == "missing"
+
+
+def test_parse_review_verdict_rereview_ignores_foreign_approved(
+    tmp_state, sample_project
+):
+    """M6 (the dangerous one): a `VERDICT: APPROVED (attempt <foreign>)` bound
+    to some OTHER attempt must never rubber-stamp THIS review to MERGE_READY.
+    On a re-review with nothing bound to the current attempt, a foreign
+    approval is ignored => "missing" => relaunch, not "approved"."""
+    cfg = sample_project
+    task_id = "t-rereview-foreign-approve"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        f"# Review\n\nLooks good.\n\nVERDICT: APPROVED (attempt {_ATT_FOREIGN})\n",
+    )
+    d = daemon.Daemon({"demo": cfg.root})
+    assert d._parse_review_verdict(
+        cfg, task_id, current_attempt_id=_ATT_CUR, is_first_review=False) == "missing"
+
+
+def test_parse_review_verdict_rereview_consumes_current_attempt_verdict(
+    tmp_state, sample_project
+):
+    """The current attempt's verdict IS authoritative even when a stale prior
+    verdict is still present: a file carrying BOTH a stale REJECTED (old
+    attempt) and the current attempt's APPROVED resolves to "approved" -- only
+    the current-bound verdict is counted, the stale one ignored."""
+    cfg = sample_project
+    task_id = "t-rereview-current-wins"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    # BOTH verdict lines are at line-start so the parser sees both -- the test
+    # only means something if the stale REJECTED is genuinely competing and
+    # must be IGNORED in favour of the current-attempt APPROVED.
+    _commit_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        f"# Review\n\nVERDICT: REJECTED (attempt {_ATT_OLD})\n\n"
+        f"Re-review after fixes; issues resolved.\n\nVERDICT: APPROVED (attempt {_ATT_CUR})\n",
+    )
+    d = daemon.Daemon({"demo": cfg.root})
+    assert d._parse_review_verdict(
+        cfg, task_id, current_attempt_id=_ATT_CUR, is_first_review=False) == "approved"
+
+
+def test_parse_review_verdict_first_review_accepts_current_bound_verdict(
+    tmp_state, sample_project
+):
+    """A first review whose reviewer DID stamp the current attempt id is
+    classified from that binding (approved) -- the binding path works on the
+    first cycle too, not only unbound back-compat."""
+    cfg = sample_project
+    task_id = "t-first-bound"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        f"# Review\n\nAll good.\n\nVERDICT: APPROVED (attempt {_ATT_CUR})\n",
+    )
+    d = daemon.Daemon({"demo": cfg.root})
+    assert d._parse_review_verdict(
+        cfg, task_id, current_attempt_id=_ATT_CUR, is_first_review=True) == "approved"
+
+
+# --------------------------------------------------------------------------
 # Oracle 4: MarkInterrupted/ResumeAttempt/InterruptAttempt
 
 def test_mark_interrupted_and_resume(tmp_state, sample_project, patch_siblings, monkeypatch):

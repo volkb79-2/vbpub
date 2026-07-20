@@ -2208,13 +2208,41 @@ class Daemon:
         if branch_sha and branch_sha != default_res.stdout.strip():
             receipt.head_commit = branch_sha
 
-    def _parse_review_verdict(self, cfg: ProjectConfig, task_id: str) -> str:
+    def _parse_review_verdict(self, cfg: ProjectConfig, task_id: str,
+                              current_attempt_id: str | None = None,
+                              is_first_review: bool = True) -> str:
         """P33 2026-07-16: the merge gate must reflect the reviewer's actual
         verdict, not just process exit (live P26 incident -- a correct
         REJECTED review report + clean process exit -> receipt DONE ->
         rubber-stamped MERGE_READY). Reads review artifacts committed to the
         task's OWN feat/<task_id> branch (git show, read-only) and extracts
         a `VERDICT: APPROVED` or `VERDICT: REJECTED` line.
+
+        P59b 2026-07-20 (A7, M6/I8 -- verdict-attempt binding). The pooled
+        scan below reads EVERY *REVIEW*.md on the branch that references the
+        task, with no binding to WHICH review attempt authored it. On a
+        reject-loop re-review that let attempt #2 silently consume attempt
+        #1's stale `VERDICT: REJECTED` still committed on the branch (I8), or
+        a file that merely name-drops the task (M6) -- either one re-triggers
+        a full re-implementation of possibly-fine work. The reviewer now
+        stamps its attempt id on the VERDICT line (see adapters.py). The
+        binding STRENGTHENS the stale/foreign case without making a perfect
+        id-echo a hard precondition for the common path:
+          * A verdict bound to THIS attempt is authoritative, any cycle.
+          * A verdict explicitly bound to a DIFFERENT attempt id is ALWAYS
+            ignored (I8 stale prior verdict; M6 foreign approval) -- if that
+            is all that is present the result is "missing" -> relaunch (A4),
+            NEVER a stale reject re-implementing good work nor a foreign
+            approval rubber-stamping a merge.
+          * An UNBOUND verdict (reviewer wrote one this cycle but dropped the
+            id) still classifies -- the <task>-REVIEW.md is overwritten each
+            review cycle, so an unbound verdict present now is this cycle's
+            write. This keeps the common single-review AND the reject-loop
+            re-review paths working (a strict "must be bound" rule would
+            strand every re-review whose reviewer forgot the id).
+        `is_first_review` only distinguishes the malformed-but-present
+        fail-safe: a verdict-less own review file is "rejected" on the first
+        review (unchanged) but "missing" (relaunch) on a re-review.
 
         SELF-CORRECT 2026-07-16 (bug 1 of the review-verdict + reject-loop
         package): a live incident had a reviewer commit `P42-REVIEW.md`
@@ -2265,28 +2293,52 @@ class Daemon:
         regardless of a `./` prefix (verified empirically); `./` is kept
         below purely for visual consistency with the show calls."""
         branch = f"feat/{task_id}"
+        cur = current_attempt_id.lower() if current_attempt_id else None
 
-        def _verdicts_in(content: str) -> set[str]:
-            return {
-                m.group(1).upper()
-                for m in re.finditer(r"^\s*VERDICT:\s*(APPROVED|REJECTED)\b", content,
-                                      re.IGNORECASE | re.MULTILINE)
-            }
+        def _pairs_in(content: str) -> set[tuple[str, str | None]]:
+            # (verdict, bound_attempt_id | None). The optional
+            # `(attempt att-<hex>)` suffix is what P59b's reviewer prompt
+            # emits; a bare VERDICT line (pre-P59b reviewers, or a reviewer
+            # that dropped the suffix) parses with bound id None.
+            out: set[tuple[str, str | None]] = set()
+            for m in re.finditer(
+                r"^\s*VERDICT:\s*(APPROVED|REJECTED)\b"
+                r"(?:[^\S\n]*\(\s*attempt[:\s]+(att-[0-9a-fA-F]+)\s*\))?",
+                content, re.IGNORECASE | re.MULTILINE,
+            ):
+                bound = m.group(2).lower() if m.group(2) else None
+                out.add((m.group(1).upper(), bound))
+            return out
 
         rel_path = f"{cfg.reports_dir}/{task_id}-REVIEW.md"
+        # `own_review_present` = a review file whose NAME is this task's (the
+        # documented path, or a broadened *REVIEW*.md with task_id in the
+        # filename). Only such a file can trip the malformed-but-present
+        # fail-safe; a file that references the task solely in its CONTENT and
+        # whose verdicts bind elsewhere is a foreign name-drop, not our review.
+        own_review_present = False
+        all_pairs: set[tuple[str, str | None]] = set()
+
         show_res = subprocess.run(
             ["git", "-C", str(cfg.root), "show", f"{branch}:./{rel_path}"],
             capture_output=True, text=True,
         )
-        any_candidate_found = False
-        all_verdicts: set[str] = set()
         if show_res.returncode == 0:
-            any_candidate_found = True
-            all_verdicts |= _verdicts_in(show_res.stdout)
+            own_review_present = True
+            all_pairs |= _pairs_in(show_res.stdout)
 
-        if not all_verdicts:
-            # The documented path was absent or silent -- broaden the
-            # search (bug 1 fix: a misnamed review file still counts).
+        # Broaden the search whenever the documented path gave us nothing bound
+        # to THIS attempt (a misnamed review file, or a re-review whose file is
+        # named differently). Cheap common case still short-circuits: a
+        # current/unbound verdict from rel_path above skips the ls-tree.
+        def _usable(pairs: set[tuple[str, str | None]]) -> bool:
+            # A verdict bound to THIS attempt, or any unbound verdict (the
+            # reviewer wrote one this cycle but didn't stamp the id), is enough
+            # to classify -- only a verdict bound to a DIFFERENT attempt fails
+            # to short-circuit and forces the broadened search.
+            return any(b == cur or b is None for _, b in pairs)
+
+        if not _usable(all_pairs):
             ls_res = subprocess.run(
                 ["git", "-C", str(cfg.root), "ls-tree", "-r", "--name-only", branch,
                  "--", f"./{cfg.reports_dir}"],
@@ -2307,19 +2359,41 @@ class Daemon:
                     if show2.returncode != 0:
                         continue
                     content = show2.stdout
-                    if task_id not in content and task_id not in name:
-                        continue  # doesn't reference this task
-                    any_candidate_found = True
-                    all_verdicts |= _verdicts_in(content)
+                    name_names_task = task_id in name
+                    if task_id not in content and not name_names_task:
+                        continue  # doesn't reference this task at all
+                    if name_names_task:
+                        own_review_present = True
+                    all_pairs |= _pairs_in(content)
 
-        if all_verdicts:
-            return "approved" if all_verdicts == {"APPROVED"} else "rejected"
-        if any_candidate_found:
-            # A review artifact for this task exists but never carries a
-            # VERDICT line -- malformed, fail safe exactly as before.
-            return "rejected"
-        # No review artifact referencing this task exists anywhere on the
-        # branch -- a review-LEG failure, not a genuine reject verdict.
+        current_verdicts = {v for v, b in all_pairs if b == cur}
+        unbound_verdicts = {v for v, b in all_pairs if b is None}
+        has_any_verdict_line = bool(all_pairs)
+
+        # (1) Verdicts bound to THIS attempt are authoritative, any cycle.
+        if current_verdicts:
+            return "approved" if current_verdicts == {"APPROVED"} else "rejected"
+        # (2) Unbound verdicts: the reviewer wrote a verdict but did not stamp
+        #     the attempt id. The <task>-REVIEW.md is OVERWRITTEN each review
+        #     cycle, so an unbound verdict present NOW is this cycle's write --
+        #     a genuinely stale one from a prior cycle is bound-to-prior and
+        #     handled by (4). Accept it on any cycle: binding STRENGTHENS the
+        #     bound case (killing I8/M6) without making perfect id-echo a hard
+        #     precondition for the common path (which would strand every
+        #     re-review whose reviewer dropped the id -> relaunch loop).
+        if unbound_verdicts:
+            return "approved" if unbound_verdicts == {"APPROVED"} else "rejected"
+        # (3) Our review file is present but carries NO verdict line at all --
+        #     malformed. First review: fail safe to "rejected" (unchanged
+        #     pre-P59b behaviour). Re-review: "missing" -> relaunch, never a
+        #     fresh re-implementation triggered off a malformed re-review.
+        if own_review_present and not has_any_verdict_line:
+            return "rejected" if is_first_review else "missing"
+        # (4) Only verdict(s) bound to a DIFFERENT/PRIOR attempt (I8 stale,
+        #     M6 foreign), or no review artifact at all: nothing attributable
+        #     to THIS review -> "missing" -> REVIEW_INCOMPLETE -> relaunch (A4),
+        #     never a stale reject re-triggering re-implementation nor a
+        #     foreign approval rubber-stamping a merge.
         return "missing"
 
     def _next_resume_n(self, attempt_dir: Path) -> int:
@@ -2569,7 +2643,20 @@ class Daemon:
                 # defense-in-depth fail-safe below WITHOUT reading the
                 # report; only a DONE receipt's verdict is worth parsing.
                 if result is ReceiptResult.DONE:
-                    verdict = self._parse_review_verdict(cfg, task_id)
+                    # P59b (A7): bind the verdict to THIS review attempt. A
+                    # re-review (a prior FRONTIER_REVIEW attempt exists) counts
+                    # only verdicts stamped with the current attempt id; the
+                    # first review keeps the unbound-verdict path (no prior
+                    # attempt -> no staleness possible).
+                    tsf = states.get(task_id)
+                    prior_reviews = [
+                        a for a in (tsf.attempts if tsf else [])
+                        if a.role == Role.FRONTIER_REVIEW
+                        and a.attempt_id != action.attempt_id
+                    ]
+                    verdict = self._parse_review_verdict(
+                        cfg, task_id, current_attempt_id=action.attempt_id,
+                        is_first_review=not prior_reviews)
                 else:
                     # P56 2026-07-20 (M7, decoupled subset). A non-DONE review
                     # receipt (LIMIT/ERROR/BLOCKED) is an INFRA failure of the
@@ -2775,6 +2862,7 @@ class Daemon:
                 route_def, handoff_path=str(packet_dir / "packet.md"), worktree=str(cfg.root),
                 branch=cfg.default_branch, task_id=first_task or wave_id or "review",
                 gate_hint=gate_hint, receipt_path=receipt_path, role=Role.FRONTIER_REVIEW,
+                attempt_id=attempt_id,  # P59b (A7): reviewer stamps this on the VERDICT line
             )
             spec = wrapper.WrapperSpec(
                 project=project, task_id=first_task or wave_id or "review", attempt_id=attempt_id,

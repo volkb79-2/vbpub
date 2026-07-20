@@ -170,7 +170,8 @@ def render_argv(template: list[str], mapping: dict[str, str]) -> list[str]:
 def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
                    branch: str, task_id: str, gate_hint: str,
                    receipt_path: str, role: Role = Role.IMPLEMENTER,
-                   carve_authority: str | None = None) -> tuple[list[str], str]:
+                   carve_authority: str | None = None,
+                   attempt_id: str | None = None) -> tuple[list[str], str]:
     """Returns (argv, prompt). See module contract for per-CLI shapes.
 
     P44 2026-07-19: `role` selects the PROMPT TEXT only (the per-CLI argv
@@ -229,6 +230,26 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         # report, onto the task's own feat/ branch, never main and never a
         # code change (the original "never commit to main" safety intent is
         # kept -- the bug was forbidding ALL commits, not just the wrong ones).
+        #
+        # P59b 2026-07-20 (A7, M6/I8 -- verdict-attempt binding). The verdict
+        # parser reads EVERY *REVIEW*.md on feat/<task> that mentions the task,
+        # with no binding to WHICH review attempt produced it. In a reject
+        # loop, review attempt #2 could therefore consume attempt #1's stale
+        # `VERDICT: REJECTED` still sitting on the branch (I8), or a file that
+        # merely name-drops the task (M6). The fix binds the verdict to THIS
+        # attempt: the reviewer must stamp its attempt id on the VERDICT line,
+        # and on a re-review the daemon counts ONLY verdicts carrying the
+        # current attempt id. `attempt_id` is threaded from the launch site;
+        # if absent (no caller currently omits it for a real review) the
+        # instruction degrades to the old unbound form.
+        _bind = f" (attempt {attempt_id})" if attempt_id else ""
+        _bind_note = (
+            f" The `(attempt {attempt_id})` suffix is REQUIRED and must be "
+            "copied EXACTLY -- the daemon binds your verdict to this specific "
+            "review by that id and ignores any verdict missing it or carrying "
+            "a different id (a stale verdict from an earlier review of this "
+            "same task)." if attempt_id else ""
+        )
         prompt = (
             f"Handoff: {handoff_path}\n"
             f"Worktree: {worktree}\n"
@@ -236,11 +257,11 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
             f"Receipt: {receipt_path}\n"
             "You are REVIEWING this packet, not authoring code changes. Follow "
             "the packet's REQUIRED OUTPUT CONTRACT: write your verdict as a "
-            "`VERDICT: APPROVED` or `VERDICT: REJECTED` line into the "
-            "<task>-REVIEW.md the packet names, then `git add` and `git commit` "
-            "ONLY that review file onto the task's own feat/ branch -- never "
-            "main, and never a code change. The daemon reads your verdict from "
-            "that committed file, NOT from the receipt."
+            f"`VERDICT: APPROVED{_bind}` or `VERDICT: REJECTED{_bind}` line into "
+            "the <task>-REVIEW.md the packet names, then `git add` and `git "
+            "commit` ONLY that review file onto the task's own feat/ branch -- "
+            "never main, and never a code change. The daemon reads your verdict "
+            f"from that committed file, NOT from the receipt.{_bind_note}"
         )
     else:
         # IMPLEMENTER (default). Byte-for-byte identical to the pre-P44 text.

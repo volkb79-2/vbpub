@@ -390,6 +390,35 @@ def test_build_dispatch_role_frontier_review_commits_verdict_never_main_or_code(
     assert "/tmp/receipt.json" in prompt
 
 
+def test_build_dispatch_frontier_review_stamps_attempt_id_on_verdict():
+    """P59b 2026-07-20 (A7, M6/I8). When an attempt_id is threaded in, the
+    review prompt must instruct the reviewer to stamp `(attempt <id>)` on the
+    VERDICT line and flag it as REQUIRED/copied-exactly, so the daemon can
+    bind the verdict to THIS review and ignore stale/foreign ones. Without an
+    attempt_id (older call sites), the instruction degrades to the unbound
+    form -- proven byte-stable by the test above (which passes no id)."""
+    route = RouteDef(route_id="test", cli="fake", model="fake-model")
+    att = "att-abc123def456"
+    _argv, prompt = adapters.build_dispatch(
+        route, role=Role.FRONTIER_REVIEW, attempt_id=att, **_P44_KW)
+    assert f"VERDICT: APPROVED (attempt {att})" in prompt
+    assert f"VERDICT: REJECTED (attempt {att})" in prompt
+    assert "REQUIRED" in prompt and "EXACTLY" in prompt
+    # unbound form absent when bound (would defeat the binding):
+    assert "VERDICT: APPROVED`" not in prompt
+
+
+def test_build_dispatch_frontier_review_unbound_when_no_attempt_id():
+    """Back-compat: no attempt_id => byte-for-byte the pre-P59b unbound prompt
+    (the bound suffix and note are empty), so callers that don't thread an id
+    are unchanged."""
+    route = RouteDef(route_id="test", cli="fake", model="fake-model")
+    _a, bound = adapters.build_dispatch(route, role=Role.FRONTIER_REVIEW, attempt_id=None, **_P44_KW)
+    _a2, plain = adapters.build_dispatch(route, role=Role.FRONTIER_REVIEW, **_P44_KW)
+    assert bound == plain
+    assert "(attempt" not in bound
+
+
 def test_daemon_build_dispatch_call_sites_pass_role_explicitly():
     """O2 (grep-provable): all three daemon.py build_dispatch call sites
     (CARVER ~L1725, IMPLEMENTER ~L2026, FRONTIER_REVIEW ~L2362) pass their
