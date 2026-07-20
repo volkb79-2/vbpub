@@ -2046,7 +2046,24 @@ class Daemon:
 
         worktree = Path(attempt.worktree) if attempt.worktree else cfg.root
         if attempt.worktree and worktree.resolve() != cfg.root.resolve():
-            report_path = worktree / cfg.root.name / cfg.reports_dir / f"CARVE-{seq}.md"
+            # P58 2026-07-20 (M5, Fable-xhigh critique -- corrects P51). A
+            # branch-authority carve worktree is a git worktree of the WHOLE
+            # physical repo. cfg.root may BE the repo root (dstdns:
+            # worktree_root=".worktrees") or a SUBDIR of it (nyxloom:
+            # worktree_root="../.worktrees", nyxloom is a subdir of the vbpub
+            # repo). The carver writes its report at <worktree>/<repo-relative
+            # path of cfg.root>/<reports_dir>. P51 hard-coded cfg.root.name --
+            # correct ONLY for the one-level-nested nyxloom layout; for a
+            # repo-root project it inserted a bogus segment and EVERY carve
+            # parse-failed (dstdns would reproduce the P51 incident the moment
+            # its carving unpaused). `git rev-parse --show-prefix` from
+            # cfg.root is that repo-relative path exactly: "" for a repo-root
+            # project, "nyxloom/" for the nested one. An empty component is a
+            # no-op in Path joining, so one expression handles both layouts.
+            prefix = subprocess.run(
+                ["git", "-C", str(cfg.root), "rev-parse", "--show-prefix"],
+                capture_output=True, text=True).stdout.strip()
+            report_path = worktree / prefix / cfg.reports_dir / f"CARVE-{seq}.md"
         else:
             report_path = worktree / cfg.reports_dir / f"CARVE-{seq}.md"
 

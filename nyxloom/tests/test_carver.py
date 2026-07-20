@@ -200,37 +200,26 @@ def test_real_plan_project_actually_plans_emit_attempt_exit_for_exited_carver(
     assert any(e.type is EventType.CARVE_OUTCOME for e in storage.iter_events("demo"))
 
 
-def test_branch_authority_report_path_matches_where_the_carver_actually_wrote_it(
+def test_branch_authority_report_path_repo_root_project(
         tmp_state, sample_project, monkeypatch, tmp_path):
-    """P51 2026-07-19 (live incident: two real carves both hit
-    carve-parse-failed despite the carver writing a genuinely valid
-    report). _execute_carve_dispatch's 'branch' authority worktree is a
-    git worktree of the WHOLE physical repo (cfg.worktree_root =
-    '../.worktrees' is relative to cfg.root, one level ABOVE it) -- so the
-    carver's own cwd there is the repo root, and it correctly writes (and
-    commits) its report at <worktree>/<cfg.root.name>/<reports_dir>/
-    CARVE-N.md, e.g. <worktree>/nyxloom/nyxloom-trove/reports/CARVE-6.md
-    in production. Every OTHER carver test in this file passes cfg.root
-    itself as attempt.worktree (matching 'main'/'files' authority, where
-    _execute_carve_dispatch sets carve_cwd = cfg.root directly with no
-    separate worktree) -- none of them exercise the 'branch' authority
-    shape, which is the DEFAULT carve_authority, so this exact mismatch
-    went uncaught. This test builds the real nested-worktree directory
-    shape (an OUTER dir containing a subdirectory NAMED for cfg.root,
-    itself containing reports_dir) and verifies the report is found and
-    parsed there, not at the (wrong, missing-segment) path directly under
-    the outer worktree."""
+    """P58 2026-07-20 (M5, Fable-xhigh critique -- corrects P51). sample_project
+    is a REPO-ROOT project: cfg.root is itself the git root (like dstdns,
+    worktree_root='.worktrees'), so `git rev-parse --show-prefix` is "" and a
+    branch-authority carve worktree's top-level IS the project content -- the
+    carver writes its report at <worktree>/<reports_dir>/CARVE-N.md with NO
+    project-name segment. P51 hard-coded cfg.root.name and inserted a bogus
+    segment here, so every repo-root-project (dstdns) carve parse-failed. This
+    is exactly the case P51 broke; verifies the report is now found at the
+    un-prefixed path."""
     monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
     cfg = sample_project
     outer_worktree = tmp_path / "carve-scratch"
-    nested_root = outer_worktree / cfg.root.name  # mirrors cfg.root.name inside the worktree
-    (nested_root / cfg.reports_dir).mkdir(parents=True, exist_ok=True)
-    (nested_root / cfg.reports_dir / "CARVE-3.md").write_text(
+    (outer_worktree / cfg.reports_dir).mkdir(parents=True, exist_ok=True)
+    (outer_worktree / cfg.reports_dir / "CARVE-3.md").write_text(
         json.dumps(CARVE_SUMMARY), encoding="utf-8")
 
     task_id, attempt_id = _seed_carve_task("demo", 3, outer_worktree)
     _write_receipt("demo", attempt_id)
-
     states = storage.list_states("demo")
     tsf = states[task_id]
     tsf.attempts[0].state = AttemptState.EXITED
@@ -242,11 +231,57 @@ def test_branch_authority_report_path_matches_where_the_carver_actually_wrote_it
     events = list(storage.iter_events("demo"))
     parse_failed = [e for e in events if e.type is EventType.NEEDS_OPERATOR
                      and e.payload.get("reason") == "carve-parse-failed"]
-    assert parse_failed == [], (
-        "report_path must be computed under <worktree>/<cfg.root.name>/"
-        "<reports_dir> for branch authority, matching where the carver "
-        "actually writes it -- not directly under the outer worktree"
-    )
+    assert parse_failed == [], "repo-root project: report is at <worktree>/<reports_dir>, no name segment"
+    outcome_ev = next(e for e in events if e.type is EventType.CARVE_OUTCOME)
+    assert outcome_ev.payload["carved_ids"] == ["demo-P30-new"]
+
+
+def test_branch_authority_report_path_nested_project_layout(
+        tmp_state, monkeypatch, tmp_path):
+    """P58: the nyxloom-shape layout -- cfg.root is a SUBDIR of the git repo
+    (worktree_root='../.worktrees'). `git rev-parse --show-prefix` from cfg.root
+    returns the subdir path ('proj/'), so the report is correctly found at
+    <worktree>/<subdir>/<reports_dir>. Together with the repo-root test above,
+    this is the full layout matrix (both dstdns and nyxloom shapes) Fable's A6
+    requires -- and both are handled by the single --show-prefix expression."""
+    import subprocess as _sp
+    from conftest import SAMPLE_PROJECT_TOML, SAMPLE_ROUTES_TOML
+    from nyxloom.config import ProjectConfig, register_project
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+
+    outer = tmp_path / "monorepo"          # the git root
+    proj = outer / "proj"                  # cfg.root, a subdir of the repo
+    (proj / ".nyxloom").mkdir(parents=True)
+    (proj / ".nyxloom" / "project.toml").write_text(SAMPLE_PROJECT_TOML)
+    (proj / "handoff").mkdir()
+    _sp.run(["git", "init", "-q", "-b", "main"], cwd=outer, check=True)
+    _sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"], cwd=outer, check=True)
+    _sp.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], cwd=outer, check=True)
+    paths.routes_path().write_text(SAMPLE_ROUTES_TOML)
+    register_project("demo", proj)
+    paths.ensure_layout("demo")
+    cfg = ProjectConfig.load(proj)         # show-prefix from proj == "proj/"
+
+    outer_worktree = tmp_path / "carve-scratch"
+    nested = outer_worktree / "proj"       # matches the show-prefix path
+    (nested / cfg.reports_dir).mkdir(parents=True, exist_ok=True)
+    (nested / cfg.reports_dir / "CARVE-3.md").write_text(
+        json.dumps(CARVE_SUMMARY), encoding="utf-8")
+
+    task_id, attempt_id = _seed_carve_task("demo", 3, outer_worktree)
+    _write_receipt("demo", attempt_id)
+    states = storage.list_states("demo")
+    tsf = states[task_id]
+    tsf.attempts[0].state = AttemptState.EXITED
+    storage.save_state(tsf)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    events = list(storage.iter_events("demo"))
+    parse_failed = [e for e in events if e.type is EventType.NEEDS_OPERATOR
+                     and e.payload.get("reason") == "carve-parse-failed"]
+    assert parse_failed == [], "nested project: report is at <worktree>/proj/<reports_dir>"
     outcome_ev = next(e for e in events if e.type is EventType.CARVE_OUTCOME)
     assert outcome_ev.payload["carved_ids"] == ["demo-P30-new"]
 
