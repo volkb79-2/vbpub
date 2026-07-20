@@ -1458,18 +1458,44 @@ class Daemon:
                 "post-merge validation: project declares no gate, no-op pass"))
             return events
 
-        worktree_value = self._post_merge_worktree_value(cfg)
-        argv = [tok.replace("{worktree}", worktree_value) for tok in gate.argv]
         commit = states[task_id].merge_commit or ""
         started = utc_now()
+        # P63 2026-07-20 (M13): run the gate in a CLEAN scratch worktree checked
+        # out at the merge commit -- never against the operator's live checkout
+        # (the old cwd=cfg.root), which may sit on a feature branch or carry
+        # uncommitted edits and would validate the WRONG tree, minting a
+        # COMPLETED/BLOCKED verdict against code that is not the merge commit.
+        # Fall back to the live root only if the merge commit is unknown (should
+        # not happen for a VALIDATING task, which reached here via a merge).
+        repo_root = subprocess.run(
+            ["git", "-C", str(cfg.root), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True).stdout.strip()
+        scratch = None
+        if commit and repo_root:
+            scratch = Path(repo_root) / ".worktrees" / f"postmerge-{task_id}"
+            if scratch.exists():
+                subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
+                                capture_output=True, text=True)
+            add = subprocess.run(
+                ["git", "-C", repo_root, "worktree", "add", "--detach", str(scratch), commit],
+                capture_output=True, text=True)
+            if add.returncode != 0:
+                scratch = None  # fall back to the live root below
+        gate_cwd = str(scratch) if scratch is not None else str(cfg.root)
+        worktree_value = str(scratch) if scratch is not None else self._post_merge_worktree_value(cfg)
+        argv = [tok.replace("{worktree}", worktree_value) for tok in gate.argv]
         try:
-            proc = subprocess.run(argv, cwd=str(cfg.root), capture_output=True,
+            proc = subprocess.run(argv, cwd=gate_cwd, capture_output=True,
                                    text=True, timeout=gate.timeout_seconds)
             exit_code = proc.returncode
         except subprocess.TimeoutExpired:
             exit_code = 124  # conventional shell timeout exit code
         except OSError:
             exit_code = 127  # command-not-found / exec failure
+        finally:
+            if scratch is not None:
+                subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
+                                capture_output=True, text=True)
         ended = utc_now()
 
         gate_result = GateResult(
@@ -1611,16 +1637,21 @@ class Daemon:
                  "reason": "auto-merge-error"}, task_id=task_id))
             return events
 
-        diff = subprocess.run(
-            ["git", "-C", repo_root, "diff", "--name-only", old_commit, new_commit],
-            capture_output=True, text=True,
-        )
-        changed_files = [f for f in diff.stdout.splitlines() if f.strip()]
-        if changed_files:
-            subprocess.run(
-                ["git", "-C", repo_root, "checkout", cfg.default_branch, "--"] + changed_files,
-                capture_output=True, text=True,
-            )
+        # P63 2026-07-20 (M13, Fable-xhigh critique): the merge is now DONE --
+        # `update-ref` above durably advanced the default branch to the merge
+        # commit. The old code then ran `git checkout <default> -- <changed>`
+        # in the shared repo root to materialize the merge into the LIVE
+        # working tree; that step is DELETED. nyxloom self-hosts inside the
+        # operator's live vbpub checkout, so a blind checkout there silently
+        # CLOBBERED the operator's uncommitted edits to any merged file,
+        # errored on files the merge DELETED (leaving tree/index inconsistent),
+        # and, if the live checkout sat on a non-default branch, grafted main's
+        # content onto it. The daemon's job is to advance the merge REF, not to
+        # mutate the operator's working tree -- a running system picks up new
+        # code through a deliberate rebuild/redeploy, never a surprise
+        # mid-merge checkout. The post-merge gate no longer needs the live
+        # tree either: it runs in a clean scratch worktree at the merge commit
+        # (see _run_post_merge_gate).
 
         events.append(self._transition(project, cfg, states, task_id, TaskState.MERGED, None))
         events.append(self._append_ev(
