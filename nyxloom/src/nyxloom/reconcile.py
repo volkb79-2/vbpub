@@ -530,11 +530,10 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
         # at once with zero new dispatch machinery. Self-limiting the same
         # way the attempts-remaining branch above is.
         if tsf.state == TaskState.REVIEW_REJECTED:
-            rejected_attempts_count = sum(
-                1 for a in tsf.attempts
-                if a.receipt is not None and a.receipt.result != ReceiptResult.LIMIT
-            )
-            if rejected_attempts_count < inp.cfg.policy.max_attempts_per_task:
+            # P60 (M8): attempts_used counts only IMPLEMENTER attempts -- the
+            # old role-blind formula here counted the review attempt too, so a
+            # reject cycle burned 2 units and exhausted the task a rejection early.
+            if attempts_used(tsf) < inp.cfg.policy.max_attempts_per_task:
                 task_actions.append(Transition(
                     task_id=fm_id, to=TaskState.QUEUED,
                     notes="review rejected -- re-queued for re-work (attempt budget remains)",
@@ -822,9 +821,7 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                             >= inp.cfg.policy.max_resume_failures)
                 if not poisoned:
                     # unchanged (O2): today's ResumeAttempt-or-BLOCKED branch.
-                    attempts_count = sum(1 for a in tsf.attempts if a.state in TERMINAL_ATTEMPT_STATES
-                                        and a.receipt and a.receipt.result != ReceiptResult.LIMIT)
-                    if attempts_count < inp.cfg.policy.max_attempts_per_task and attempt.session_handle:
+                    if attempts_used(tsf) < inp.cfg.policy.max_attempts_per_task and attempt.session_handle:  # P60 (M8): was this same formula inline
                         attempt_actions.append(ResumeAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
                     else:
                         # P14 2026-07-15 item 4 (silent-dead-end fix): no resume
@@ -1122,12 +1119,10 @@ def dispatch_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) 
     if active_count >= inp.cfg.policy.max_active_tasks:
         return (False, 'wip-cap')
 
-    # 5. attempts-exhausted check (exclude limit attempts)
-    attempts_count = sum(
-        1 for a in tsf.attempts
-        if a.receipt and a.receipt.result != ReceiptResult.LIMIT
-    )
-    if attempts_count >= inp.cfg.policy.max_attempts_per_task:
+    # 5. attempts-exhausted check (P60 M8: single role-filtered accessor --
+    # excludes LIMIT attempts AND non-implementer attempts, so a review does
+    # not count against the implementer dispatch budget).
+    if attempts_used(tsf) >= inp.cfg.policy.max_attempts_per_task:
         return (False, 'attempts-exhausted')
 
     # 6. budget-exhausted check
@@ -1172,10 +1167,36 @@ def fresh_start_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInpu
     return (True, '')
 
 
+def attempts_used(tsf: TaskStateFile) -> int:
+    """P60 2026-07-20 (M8, Fable-xhigh critique). THE single receipt-based
+    implementer-attempt-budget accessor, replacing three subtly-different
+    inline formulas (dispatch_eligible check 5, the REVIEW_REJECTED re-queue
+    counter, and the ERROR-path daemon count) plus the resume path's copy.
+    Those formulas were role-BLIND -- a reviewer/carver attempt also lands in
+    tsf.attempts with a DONE receipt, so a single reject cycle (implement +
+    review) counted as 2 units, exhausting a task after ~2 rejections instead
+    of policy.max_attempts_per_task implementer tries.
+
+    Counts IMPLEMENTER attempts that reached a terminal state and carry a
+    receipt whose result is not LIMIT (a rate-limited attempt does not consume
+    the budget -- it is retried for free). The TERMINAL_ATTEMPT_STATES guard
+    matches the resume path's existing condition (never counts an in-flight
+    INTERRUPTED attempt against itself) and is a no-op for the other sites
+    (a REVIEW_REJECTED / QUEUED / just-ERRORed task's counted attempts are all
+    already terminal). Distinct from implementer_record_count below, which is
+    the RECORD budget (counts receiptless poisoned records too, P34)."""
+    return sum(
+        1 for a in tsf.attempts
+        if a.role is Role.IMPLEMENTER
+        and a.state in TERMINAL_ATTEMPT_STATES
+        and a.receipt is not None and a.receipt.result != ReceiptResult.LIMIT
+    )
+
+
 def implementer_record_count(tsf: TaskStateFile) -> int:
     """Distinct-record budget (P34 2026-07-16): count of role==IMPLEMENTER
     attempt RECORDS in tsf.attempts, unlike the receipt-based
-    attempts_count above -- a poisoned INTERRUPTED record has no receipt
+    attempts_used above -- a poisoned INTERRUPTED record has no receipt
     but still consumes one fresh-start's worth of budget, so this must
     count it (else the fresh-start sequence never terminates, O5)."""
     return sum(1 for a in tsf.attempts if a.role == Role.IMPLEMENTER)

@@ -2586,11 +2586,9 @@ class Daemon:
                 events.append(self._transition(project, cfg, states, task_id, TaskState.QUEUED, None))
                 events.extend(self._provider_pause(project, cfg, states, attempt.route.route_id, task_id))
             elif result is ReceiptResult.ERROR:
-                attempts_used = sum(
-                    1 for a in states[task_id].attempts
-                    if a.receipt is not None and a.receipt.result != ReceiptResult.LIMIT
-                )
-                if attempts_used < cfg.policy.max_attempts_per_task:
+                # P60 (M8): the single role-filtered accessor -- was this same
+                # role-blind formula inline, counting reviews against the budget.
+                if reconcile.attempts_used(states[task_id]) < cfg.policy.max_attempts_per_task:
                     events.append(self._transition(project, cfg, states, task_id, TaskState.QUEUED, None))
                 else:
                     blocker = Blocker(type=BlockerType.ENVIRONMENT,

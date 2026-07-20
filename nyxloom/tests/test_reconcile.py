@@ -12,7 +12,8 @@ from nyxloom.reconcile import (
     Action, AutoMergeTask, CarveDispatch, CreateTask, DispatchImplementer,
     EmitAttemptExit, InterruptAttempt, LaunchReview, MarkInterrupted,
     MarkStalled, OpenWave, ProviderPause, ReconcileInput, ResumeAttempt,
-    SpecAttention, StallCheck, Transition, dispatch_eligible, plan_project,
+    SpecAttention, StallCheck, Transition, attempts_used, dispatch_eligible,
+    plan_project,
 )
 from nyxloom.types import (
     Attempt, AttemptState, Base, Blocker, BlockerType, Budget, Basis,
@@ -2797,6 +2798,57 @@ def test_review_rejected_with_budget_remaining_requeues():
 
     # The negative this fixes: never left with zero planned progress.
     assert len(actions) >= 1
+
+
+def test_attempts_used_counts_only_implementer_not_review_or_carve():
+    """P60 2026-07-20 (M8): the single accessor counts only IMPLEMENTER
+    attempts with a non-LIMIT receipt in a terminal state. A review/carve
+    attempt (which also lands in tsf.attempts with a DONE receipt) must NOT
+    count against the implementer budget, and a LIMIT attempt is free."""
+    impl = make_attempt(attempt_id="i1", state=AttemptState.EXITED, role=Role.IMPLEMENTER,
+                        receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
+    review = make_attempt(attempt_id="r1", state=AttemptState.EXITED, role=Role.FRONTIER_REVIEW,
+                          receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
+    limited = make_attempt(attempt_id="i2", state=AttemptState.EXITED, role=Role.IMPLEMENTER,
+                           receipt=Receipt(result=ReceiptResult.LIMIT, exit_code=1))
+    tsf = make_tsf(task_id="P01", state=TaskState.REVIEW_REJECTED,
+                   attempts=[impl, review, limited])
+    assert attempts_used(tsf) == 1   # only the one non-LIMIT implementer
+
+
+def test_review_reject_cycle_counts_one_implementer_unit_not_two():
+    """P60 (M8): a reject cycle is implement + review. The old role-blind
+    formula counted BOTH -> with max_attempts=2 one rejection exhausted the
+    task (routed to READY_TO_CARVE) instead of allowing a second implementer
+    try. Now the review is not counted, so budget remains and it re-queues."""
+    cfg = make_config(max_attempts_per_task=2)
+    fm = make_frontmatter(id="P01")
+    impl = make_attempt(attempt_id="i1", state=AttemptState.EXITED, role=Role.IMPLEMENTER,
+                        receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
+    review = make_attempt(attempt_id="r1", state=AttemptState.EXITED, role=Role.FRONTIER_REVIEW,
+                          receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
+    tsf = make_tsf(task_id="P01", state=TaskState.REVIEW_REJECTED, attempts=[impl, review])
+    inp = ReconcileInput(**_carve_base_kwargs(
+        cfg=cfg, states={"P01": tsf}, frontmatters={"P01": (fm, "h.md")}))
+    actions = plan_project(inp)
+    transitions = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert len(transitions) == 1
+    assert transitions[0].to == TaskState.QUEUED   # requeued (budget remains), NOT READY_TO_CARVE
+
+
+def test_no_inline_attempt_budget_formula_outside_accessor():
+    """P60 (M8) invariant: the receipt-based implementer-budget count lives
+    ONLY in attempts_used -- the three role-blind inline copies that drifted
+    out of sync (dispatch check 5, REVIEW_REJECTED counter, ERROR path) are
+    gone, so the defect this package fixes cannot recur."""
+    src_dir = Path(__file__).parent.parent / "src" / "nyxloom"
+    reconcile_src = (src_dir / "reconcile.py").read_text()
+    daemon_src = (src_dir / "daemon.py").read_text()
+    assert "def attempts_used" in reconcile_src
+    assert "rejected_attempts_count = sum(" not in reconcile_src
+    assert "attempts_count = sum(" not in reconcile_src
+    assert "attempts_used = sum(" not in daemon_src
+    assert "reconcile.attempts_used(" in daemon_src   # daemon uses the shared accessor
 
 
 def test_review_rejected_attempts_exhausted_routes_to_ready_to_carve():
