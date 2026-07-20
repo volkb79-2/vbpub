@@ -135,8 +135,11 @@ def test_clean_merge_advances_main_and_transitions_to_merged(
     parents = _run(cfg.root, "log", "-1", "--format=%P", after_main).stdout.split()
     assert len(parents) == 2, "must be a real merge commit (two parents), not a fast-forward/graft"
 
-    # working tree materialized the branch's file without a manual checkout
-    assert (cfg.root / "new_thing.txt").read_text(encoding="utf-8") == "hello\n"
+    # P63 (M13): the merge COMMIT's tree carries the branch's file ...
+    assert _run(cfg.root, "show", f"{after_main}:new_thing.txt").stdout == "hello\n"
+    # ... but the daemon does NOT materialize it into the live working tree
+    # (nyxloom self-hosts in the operator's checkout; code updates via redeploy)
+    assert not (cfg.root / "new_thing.txt").exists()
 
     events = list(storage.iter_events("demo"))
     assert any(e.type is EventType.MERGE_RECORDED and e.task_id == "demo-P99" for e in events)
@@ -197,3 +200,60 @@ def test_manual_mode_never_plans_auto_merge_even_when_merge_ready(
     tsf = storage.load_state("demo", "demo-P97")
     assert tsf.state is TaskState.MERGE_READY
     assert _run(cfg.root, "rev-parse", "main").stdout.strip() == before_main
+
+
+def test_auto_merge_does_not_clobber_uncommitted_operator_edits(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """P63 2026-07-20 (M13). nyxloom self-hosts inside the operator's live
+    checkout. The old auto-merge ran `git checkout <default> -- <changed>` in
+    the repo root, silently OVERWRITING the operator's uncommitted edits to any
+    merged file. The daemon now only advances the merge REF and never touches
+    the live working tree -- verified here by an uncommitted edit surviving a
+    merge that changed the very same file."""
+    cfg = sample_project
+    cfg = dataclasses.replace(cfg, policy=dataclasses.replace(cfg.policy, merge_mode="guarded-automatic"))
+    _freeze_cfg(monkeypatch, cfg)
+    tracked = "handoff/demo-P01-sample.md"   # a file sample_project tracks
+    _make_branch_with_file(cfg.root, "feat/demo-P77", tracked, "BRANCH VERSION\n")
+    # the operator has an UNCOMMITTED edit to the same file in the live checkout
+    (cfg.root / tracked).write_text("OPERATOR UNCOMMITTED EDIT\n", encoding="utf-8")
+
+    _seed_merge_ready(cfg.root, "demo", "demo-P77", "feat/demo-P77")
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    # the merge REF advanced (task MERGED) ...
+    assert storage.load_state("demo", "demo-P77").state is TaskState.MERGED
+    # ... but the operator's uncommitted edit SURVIVES (was clobbered before P63)
+    assert (cfg.root / tracked).read_text(encoding="utf-8") == "OPERATOR UNCOMMITTED EDIT\n"
+
+
+def test_post_merge_gate_runs_on_merge_commit_not_live_checkout(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """P63 (M13). The post-merge gate must validate the MERGE COMMIT's tree,
+    not the operator's live checkout -- which no longer contains the merged
+    files (auto-merge stopped materializing them). A gate that requires a
+    merge-only file passes only when run at the merge commit (in the scratch
+    worktree), and fails if run against the live root (as it did before)."""
+    gate = config.GateDef(
+        gate_id="check-merged-file",
+        argv=["test", "-f", "{worktree}/new_thing.txt"],
+        phase="post-merge", timeout_seconds=30, environment="local")
+    cfg = sample_project
+    cfg = dataclasses.replace(
+        cfg, gates={"check-merged-file": gate},
+        policy=dataclasses.replace(cfg.policy, merge_mode="guarded-automatic"))
+    _freeze_cfg(monkeypatch, cfg)
+    _make_branch_with_file(cfg.root, "feat/demo-P78", "new_thing.txt", "hi\n")
+    # the live checkout does NOT have new_thing.txt (no materialize, post-P63)
+    _seed_merge_ready(cfg.root, "demo", "demo-P78", "feat/demo-P78")
+
+    d = daemon.Daemon({"demo": cfg.root})
+    for _ in range(4):   # MERGE_READY->MERGED->VALIDATING->gate->COMPLETED
+        d.run_pass("demo")
+
+    tsf = storage.load_state("demo", "demo-P78")
+    assert tsf.state is TaskState.COMPLETED     # gate saw new_thing.txt at the merge commit
+    assert not (cfg.root / "new_thing.txt").exists()   # live checkout untouched
+    # the scratch worktree was cleaned up
+    assert not (cfg.root / ".worktrees" / "postmerge-demo-P78").exists()
