@@ -207,6 +207,18 @@ def _set_http_bind(cfg, bind):
         ptoml.write_text(text, encoding="utf-8")
 
 
+def _set_pipeline(cfg, pipeline):
+    """B5: write an explicit `pipeline = [...]` into the project's toml (under
+    [project]) so the daemon composes that exact pipeline instead of the default
+    -- used to pin the legacy (no-self_review) routing."""
+    ptoml = cfg.root / ".nyxloom" / "project.toml"
+    text = ptoml.read_text(encoding="utf-8")
+    if "\npipeline" not in text:
+        toml_list = "[" + ", ".join(f'"{s}"' for s in pipeline) + "]"
+        text = text.replace("[project]\n", f"[project]\npipeline = {toml_list}\n", 1)
+        ptoml.write_text(text, encoding="utf-8")
+
+
 def _drive_until(d, project, predicate, timeout=15.0, pass_gap=0.4):
     """P14 2026-07-15: repeatedly call run_pass (no background daemon
     thread/loop -- the 'monkeypatched pass cadence' the P14 handoff asks
@@ -704,6 +716,11 @@ def test_carve_dispatch_no_frontier_route_pushes_needs_operator_no_task(
 # Oracle 3: EmitAttemptExit healing, one test per receipt.result
 
 def test_emit_attempt_exit_done(tmp_state, sample_project, patch_siblings, monkeypatch):
+    """B5 2026-07-20: the default pipeline now includes self_review, so an
+    implementer DONE exit routes to SELF_REVIEWING (the warm self-check before
+    the expensive frontier reviewer) rather than straight to AWAITING_REVIEW.
+    The legacy (no-self_review) routing is pinned by the discrimination partner
+    test_emit_attempt_exit_done_legacy_pipeline below."""
     task_id, attempt_id = "t-done", "att-done"
     _seed_running_attempt("demo", task_id, attempt_id)
     _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
@@ -713,10 +730,29 @@ def test_emit_attempt_exit_done(tmp_state, sample_project, patch_siblings, monke
     d.run_pass("demo")
 
     tsf = storage.load_state("demo", task_id)
-    assert tsf.state is TaskState.AWAITING_REVIEW
+    assert tsf.state is TaskState.SELF_REVIEWING
     types = [e.type for e in storage.iter_events("demo")]
     assert EventType.ATTEMPT_EXITED in types
     assert EventType.TASK_TRANSITIONED in types
+
+
+def test_emit_attempt_exit_done_legacy_pipeline(tmp_state, sample_project, patch_siblings, monkeypatch):
+    """B5 parity / opt-out: a project composing the pre-B5 pipeline (no
+    self_review) routes an implementer DONE exit STRAIGHT to AWAITING_REVIEW --
+    byte-identical to pre-B5. Discrimination partner of test_emit_attempt_exit_
+    done: same seed and receipt, only the composed pipeline differs. Neutering
+    the `"self_review" in cfg.pipeline` guard would send this to SELF_REVIEWING."""
+    _set_pipeline(sample_project, ["carve", "implement", "frontier_review",
+                                   "triage", "auto_merge", "post_merge_gate"])
+    task_id, attempt_id = "t-done-legacy", "att-done-legacy"
+    _seed_running_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    d.run_pass("demo")
+
+    assert storage.load_state("demo", task_id).state is TaskState.AWAITING_REVIEW
 
 
 def test_emit_attempt_exit_blocked(tmp_state, sample_project, patch_siblings, monkeypatch):
@@ -961,6 +997,203 @@ def test_frontier_review_done_receipt_approved_report_yields_merge_ready(
 
     recorded = next(e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED)
     assert recorded.payload["result"] == "approved"
+
+
+# --------------------------------------------------------------------------
+# B5 2026-07-20: the self_review leg. Verdict comes from the COMMITTED
+# <task>-SELFREVIEW.md (same P33 lesson as the frontier reviewer), never the
+# process receipt. approved -> AWAITING_REVIEW; rejected -> QUEUED; a missing
+# verdict degrades to AWAITING_REVIEW (self-review is an OPTIONAL pre-gate).
+
+def _seed_self_review_attempt(project, task_id, attempt_id):
+    tsf = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
+        state=TaskState.SELF_REVIEWING, since=utc_now(), handoff_path=None,
+    )
+    route = Route(route_id="fake-cli", cli="fake", model="fake-model", routes_rev="test-rev")
+    attempt = Attempt(attempt_id=attempt_id, role=Role.SELF_REVIEW, state=AttemptState.RUNNING,
+                       route=route, started=utc_now())
+    tsf.attempts.append(attempt)
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.TASK_CREATED, payload={"statefile": tsf.to_dict()}, task_id=task_id,
+    )
+    return storage.load_state(project, task_id)
+
+
+def _commit_self_review_report(root, task_id, reports_dir, content):
+    """Commit `<reports_dir>/<task_id>-SELFREVIEW.md` onto feat/<task_id> --
+    that branch must already exist (see _make_feature_branch)."""
+    branch = f"feat/{task_id}"
+    subprocess.run(["git", "-C", str(root), "checkout", branch], check=True, capture_output=True)
+    report_dir = root / reports_dir
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / f"{task_id}-SELFREVIEW.md").write_text(content, encoding="utf-8")
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(root), "add", "-A"],
+                    check=True, capture_output=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(root), "commit",
+                    "-qm", f"self-review {task_id}"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "checkout", "main"], check=True, capture_output=True)
+
+
+def test_self_review_approved_goes_to_awaiting_review(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """A self_review leg whose COMMITTED verdict is APPROVED hands the task to
+    the frontier reviewer (AWAITING_REVIEW)."""
+    cfg = sample_project
+    task_id, attempt_id = "t-sr-ok", "att-sr-ok"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_self_review_report(cfg.root, task_id, cfg.reports_dir,
+                               "# Self-review\n\nLooks good.\n\nSELF_REVIEW: APPROVED\n")
+    _seed_self_review_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    assert storage.load_state("demo", task_id).state is TaskState.AWAITING_REVIEW
+
+
+def test_self_review_rejected_goes_to_queued(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """A REJECTED self_review verdict routes to QUEUED -- a fresh, budget-bounded
+    fix attempt (deliberately NOT ACTIVE; see D-063). Neutering the committed-
+    verdict parse (trusting the clean process exit as approved) would send it to
+    AWAITING_REVIEW instead -- so this pins the P33 committed-verdict contract."""
+    cfg = sample_project
+    task_id, attempt_id = "t-sr-no", "att-sr-no"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_self_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        "# Self-review\n\nFound a bug I cannot fix in-session.\n\nSELF_REVIEW: REJECTED\n")
+    _seed_self_review_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    assert storage.load_state("demo", task_id).state is TaskState.QUEUED
+
+
+def test_self_review_missing_verdict_proceeds_to_awaiting_review(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """Self-review is an OPTIONAL pre-gate: a DONE receipt with NO committed
+    verdict file must NOT block the task -- it degrades to AWAITING_REVIEW so the
+    frontier reviewer (the real gate) still runs. (Contrast the frontier path,
+    where a missing verdict fails SAFE to REVIEW_REJECTED -- self-review must not
+    punish work for a self-check that could not complete.)"""
+    cfg = sample_project
+    task_id, attempt_id = "t-sr-missing", "att-sr-missing"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    # deliberately NO SELF_REVIEW report committed
+    _seed_self_review_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    assert storage.load_state("demo", task_id).state is TaskState.AWAITING_REVIEW
+
+
+def test_launch_self_review_mints_warm_borrowed_session_attempt(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """B5: LaunchSelfReview mints a NEW Attempt(role=SELF_REVIEW) that BORROWS
+    the implementer's session_handle (a WARM resume via build_resume, never a
+    cold build_dispatch). The task stays SELF_REVIEWING -- its own exit is what
+    moves it on."""
+    cfg = sample_project
+    task_id = "t-sr-launch"
+    route = Route(route_id="fake-cli", cli="fake", model="fake-model", routes_rev="test-rev")
+    impl = Attempt(attempt_id="att-impl", role=Role.IMPLEMENTER, state=AttemptState.EXITED,
+                   route=route, started=utc_now(), ended=utc_now(),
+                   worktree=str(cfg.root), branch=f"feat/{task_id}",
+                   session_handle="sess-warm-123")
+    tsf = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id=task_id, project="demo",
+                        state=TaskState.SELF_REVIEWING, since=utc_now(), handoff_path=None,
+                        attempts=[impl])
+    storage.append_and_apply("demo", {}, actor=Actor(ActorKind.OPERATOR, "test"),
+                             type=EventType.TASK_CREATED, payload={"statefile": tsf.to_dict()},
+                             task_id=task_id)
+    _scripted(monkeypatch, [[reconcile.LaunchSelfReview(task_id=task_id, source_attempt_id="att-impl")]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf2 = storage.load_state("demo", task_id)
+    sr = [a for a in tsf2.attempts if a.role is Role.SELF_REVIEW]
+    assert len(sr) == 1
+    assert sr[0].session_handle == "sess-warm-123"          # borrowed the warm session
+    assert tsf2.state is TaskState.SELF_REVIEWING            # unchanged; its own exit moves it
+    assert patch_siblings["build_resume"][-1]["session"] == "sess-warm-123"  # warm resume
+    assert patch_siblings["build_dispatch"] == []           # never a cold dispatch
+
+
+def test_launch_self_review_no_session_handle_skips_to_awaiting_review(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """B5 graceful degradation: if the implementer left NO session_handle (early
+    capture failed), the leg cannot resume warm -- so skip it and proceed to the
+    frontier reviewer (the real gate) rather than stranding the task in
+    SELF_REVIEWING. No SELF_REVIEW attempt is minted."""
+    cfg = sample_project
+    task_id = "t-sr-nohandle"
+    route = Route(route_id="fake-cli", cli="fake", model="fake-model", routes_rev="test-rev")
+    impl = Attempt(attempt_id="att-impl", role=Role.IMPLEMENTER, state=AttemptState.EXITED,
+                   route=route, started=utc_now(), ended=utc_now(),
+                   worktree=str(cfg.root), branch=f"feat/{task_id}", session_handle=None)
+    tsf = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id=task_id, project="demo",
+                        state=TaskState.SELF_REVIEWING, since=utc_now(), handoff_path=None,
+                        attempts=[impl])
+    storage.append_and_apply("demo", {}, actor=Actor(ActorKind.OPERATOR, "test"),
+                             type=EventType.TASK_CREATED, payload={"statefile": tsf.to_dict()},
+                             task_id=task_id)
+    _scripted(monkeypatch, [[reconcile.LaunchSelfReview(task_id=task_id, source_attempt_id="att-impl")]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf2 = storage.load_state("demo", task_id)
+    assert tsf2.state is TaskState.AWAITING_REVIEW
+    assert [a for a in tsf2.attempts if a.role is Role.SELF_REVIEW] == []  # nothing minted
+    assert patch_siblings["build_resume"] == []
+
+
+def test_attempt_scan_surfaces_self_review_receipt_only_when_self_reviewing(
+    tmp_state, sample_project
+):
+    """B5: _attempt_scan is the input-builder that feeds reconcile's `receipts`
+    map; its eligibility tuple must include (SELF_REVIEWING, SELF_REVIEW) so a
+    finished self_review leg's receipt reaches the planner (else EmitAttemptExit
+    is never planned and the task strands in SELF_REVIEWING). The _scripted
+    daemon tests stub plan_project and bypass this method, so this is its
+    dedicated coverage -- AND a state-scoping neuter control: the SAME attempt on
+    an ACTIVE task must NOT surface, proving the branch keys on the state, not
+    the role alone (which would break every non-SELF_REVIEWING path)."""
+    project, task_id, attempt_id = "demo", "t-sr-scan", "att-sr-scan"
+    route = Route(route_id="fake-cli", cli="fake", model="fake-model", routes_rev="test-rev")
+    att = Attempt(attempt_id=attempt_id, role=Role.SELF_REVIEW, state=AttemptState.EXITED,
+                  route=route, started=utc_now(), ended=utc_now())
+    _write_receipt(project, attempt_id, ReceiptResult.DONE, exit_code=0)
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    tsf_sr = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
+                           state=TaskState.SELF_REVIEWING, since=utc_now(), handoff_path=None,
+                           attempts=[att])
+    _lq, _pa, receipts = d._attempt_scan(project, {task_id: tsf_sr})
+    assert receipts.get(attempt_id) is not None  # surfaced for consumption
+
+    tsf_active = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
+                               state=TaskState.ACTIVE, since=utc_now(), handoff_path=None,
+                               attempts=[att])
+    _lq2, _pa2, receipts2 = d._attempt_scan(project, {task_id: tsf_active})
+    assert receipts2.get(attempt_id) is None  # NOT surfaced -- state-scoped, not role-alone
 
 
 def test_frontier_review_wave_exit_fans_out_per_member_verdicts(

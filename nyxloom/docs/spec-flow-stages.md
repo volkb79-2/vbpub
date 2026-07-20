@@ -53,17 +53,19 @@ invariant promoted from declaration to *composition* (B2 ports it):
 |---|---|---|---|---|
 | carve | CARVER | READY_TO_CARVE | READY_TO_CARVE | done→CARVED · needs_decision→NEEDS_DECISION |
 | implement | IMPLEMENTER | QUEUED, ACTIVE | QUEUED (dispatch→ACTIVE) | done→AWAITING_REVIEW¹ · incomplete→QUEUED · dead_end→BLOCKED |
-| self_review | SELF_REVIEW | **SELF_REVIEWING** (new²) | SELF_REVIEWING | approved→AWAITING_REVIEW · rejected→ACTIVE (in-session loop) |
+| self_review | SELF_REVIEW | **SELF_REVIEWING** (new²) | SELF_REVIEWING | approved→AWAITING_REVIEW · rejected→QUEUED (fresh fix attempt; D-063) |
 | frontier_review | FRONTIER_REVIEW | AWAITING_REVIEW | AWAITING_REVIEW | approved→MERGE_READY · rejected→REVIEW_REJECTED · incomplete→AWAITING_REVIEW (relaunch, A4) |
 | triage | — (mech + cheap LLM) | REVIEW_REJECTED | REVIEW_REJECTED | fixable→QUEUED · stale/architectural→READY_TO_CARVE · product→NEEDS_DECISION |
 | auto_merge | — (daemon) | MERGE_READY | MERGE_READY | merged→MERGED · refused→MERGE_READY (escalate, A11) |
 | post_merge_gate | GATE | MERGED, VALIDATING | MERGED (→VALIDATING) | pass→COMPLETED · fail→BLOCKED |
 
 ¹ If `self_review` is the next stage, implement-done targets SELF_REVIEWING instead.
-² **Frozen-graph addition (B5):** insert `SELF_REVIEWING` with edges
-  ACTIVE→SELF_REVIEWING, SELF_REVIEWING→{ACTIVE, AWAITING_REVIEW}. Nothing routes
-  into it unless the `self_review` stage is in the pipeline, so a pipeline without
-  it is byte-identical to today (the state is simply unreachable). Adding it is the
+² **Frozen-graph addition (B5, DONE 2026-07-20):** insert `SELF_REVIEWING` with edges
+  ACTIVE→SELF_REVIEWING, SELF_REVIEWING→{AWAITING_REVIEW, QUEUED, BLOCKED} (+ the
+  universal SUPERSEDED/CANCELLED). A reject routes to QUEUED (a fresh fix attempt), NOT
+  back to ACTIVE — see D-063 for why the warm in-session fix loop was deferred. Nothing
+  routes into SELF_REVIEWING unless the `self_review` stage is in the pipeline, so a
+  legacy pipeline without it plans byte-identically to today. Adding the state is the
   sanctioned "new stage kind = code change + matrix test" path.
 
 **Lifecycle/manual edges (not stages):** DRAFT/NEEDS_DECISION (intake, human),
@@ -121,12 +123,17 @@ prose — the divergence lives in **composition**, never in the **semantics** of
 | `lean` | implement → self_review → frontier_review → auto_merge | low-ceremony projects, no gate |
 
 **Operator decisions baked in (2026-07-20):**
-- **`self_review` is in every preset.** It runs in the implementer's warm session
-  (`context = session-reuse`), so a self-reject fix loop pays no 35–40k startup tax,
-  and the expensive frontier reviewer only ever sees already-self-checked diffs. It is
-  near-free and strictly raises review signal. (A project may still drop it explicitly;
-  the *default* is on.) This also closes long-standing task #15 and un-reserves
-  `Role.SELF_REVIEW` (B5 updates the P43 reservation guard).
+- **`self_review` is the compiled default AND in every preset.** It runs as a WARM
+  resume of the implementer's session (`context = session-reuse`), so the self-check
+  pays no 35–40k startup tax and the expensive frontier reviewer only ever sees
+  already-self-checked diffs — near-free, strictly raises review signal. **Greenfield
+  decision (operator, 2026-07-20):** with no external byte-compat contract to preserve,
+  `DEFAULT_PIPELINE` itself includes self_review (`full` aliases it) — the compiled
+  default IS the recommended flow, not a legacy subset. A project may still compose an
+  explicit legacy list to drop it (proven byte-identical by test). On a REJECT the leg
+  routes to QUEUED (a fresh fix attempt), not ACTIVE — see D-063. This closes
+  long-standing task #15 and un-reserves `Role.SELF_REVIEW` (RESERVED_ROLES is now
+  empty; every role is dispatched).
 - **`triage` is opt-in (`full` only).** Without it, a REVIEW_REJECTED task falls back
   to the built-in default (requeue under `max_attempts_per_task`, escalate to BLOCKED
   when exhausted) — fine for projects whose rejects are almost always "just fix and
@@ -155,6 +162,15 @@ prose — the divergence lives in **composition**, never in the **semantics** of
   that the gate records in the event log. A human asking for a specific carve during a
   pause is a legitimate intent; the audit trail makes it honest. (Today M15 makes it an
   accidental total bypass — the fix folds into A3's gate.)
+- **D-063** (resolved 2026-07-20 — my call during B5, no sign-off): on a self-review
+  REJECT the task routes to **QUEUED (a fresh, budget-bounded fix attempt)**, NOT to
+  ACTIVE as B1 first sketched. Routing a reject back to ACTIVE re-exposes the
+  ACTIVE-scoped stale-implementer-receipt re-consumption the proven frontier reject loop
+  deliberately avoids (it parks in a non-ACTIVE state), and would need novel
+  loop-termination + receipt-archival machinery to be safe. The self-review ATTEMPT is
+  still warm (the primary "cheap, every time" win is fully delivered); only the *fix*
+  after a reject is a fresh cold attempt. The warm in-session fix loop (rejected→ACTIVE
+  + implementer resume) is a deferred optimization for once the gate is proven live.
 
 ## Sequenced implementation (B2–B7) — proofs keep each package honest
 - **B2 (P70)** stage registry + composed-pipeline validation. `reconcile.py` thins
@@ -166,10 +182,16 @@ prose — the divergence lives in **composition**, never in the **semantics** of
   async-with-timeout so a slow gate can't block another project's pass.
 - **B4 (P72)** triage stage (mechanical tier: drift-guard I4 + infra classes from A4;
   LLM tier: fixable/architectural/product). Re-dispatch packets embed the review verdict.
-- **B5 (P73)** self_review stage: add SELF_REVIEWING + edges, un-reserve
-  `Role.SELF_REVIEW`, update the P43 guard. **Proof:** self_review-enabled pipeline runs
-  implement→self_review→frontier_review on the fake CLI; **disabled pipeline byte-identical
-  to today.** Becomes the new default (self_review in every preset).
+- **B5 (P73) — DONE 2026-07-20 (hand-driven).** self_review stage: added SELF_REVIEWING
+  + edges, the `LaunchSelfReview` action (a warm resume borrowing the implementer's
+  session_handle), the daemon consumption branch (approved→AWAITING_REVIEW,
+  rejected→QUEUED, missing→AWAITING_REVIEW graceful), un-reserved `Role.SELF_REVIEW`,
+  flipped the P43 guard, and made it the compiled default (greenfield). **Proof shipped:**
+  daemon tests for implement-done→SELF_REVIEWING (default) vs →AWAITING_REVIEW (legacy),
+  the three verdict outcomes, and the warm-borrowed-session launch; reconcile tests for
+  LaunchSelfReview planning + in-flight guard + drain-parking; stages tests for the
+  adjacency rule (rule 5). Reject routes to QUEUED (D-063); the warm in-session fix loop
+  is deferred.
 - **B6 (P74)** reviewer session-reuse (`context = session-reuse` via `build_resume`) +
   carver-maintained `SPINE-DIGEST.md` referenced-by-pointer in review/carve packets.
 - **B7 (P75)** carver re-scope entry: triage "architectural/stale" packaged into a carve

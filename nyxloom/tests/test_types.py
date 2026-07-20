@@ -42,6 +42,8 @@ def _dispatched_roles() -> set[Role]:
 
 def _reserved_backlog_refs() -> dict[Role, str]:
     """Map each RESERVED_ROLES member to the backlog id its comment cites."""
+    if not RESERVED_ROLES:
+        return {}  # B5: RESERVED_ROLES is empty (every role dispatched) -> nothing to scan
     block = _RESERVED_BLOCK_RE.search(TYPES_SRC)
     assert block is not None, "could not locate the RESERVED_ROLES block in types.py"
     return {Role[name]: ref for name, ref in _RESERVED_REF_RE.findall(block.group(0))}
@@ -60,11 +62,16 @@ def test_reserved_and_dispatched_roles_are_disjoint():
     assert _dispatched_roles().isdisjoint(RESERVED_ROLES)
 
 
-def test_self_review_is_reserved_and_not_dispatched():
-    """Non-hollow anchor: proves the scan finds SELF_REVIEW absent from
-    dispatch sites, not just that RESERVED_ROLES is a subset of Role."""
-    assert Role.SELF_REVIEW not in _dispatched_roles()
-    assert Role.SELF_REVIEW in RESERVED_ROLES
+def test_self_review_is_dispatched_and_not_reserved():
+    """B5 2026-07-20: the self_review leg wired Role.SELF_REVIEW into daemon.py's
+    LaunchSelfReview executor (a real `role=Role.SELF_REVIEW` dispatch site), so
+    it is now DISPATCHED and no longer reserved. This deliberately INVERTS the
+    pre-B5 anchor (was: reserved + not dispatched) -- a legitimate flip because
+    the role went from defined-but-dead to actually-wired, exactly the transition
+    RESERVED_ROLES exists to track. Still non-hollow: it proves the source scan
+    finds the real dispatch site, not just that the set membership flipped."""
+    assert Role.SELF_REVIEW in _dispatched_roles()
+    assert Role.SELF_REVIEW not in RESERVED_ROLES
 
 
 def test_implementer_is_dispatched_and_not_reserved():
@@ -92,8 +99,15 @@ def test_every_reserved_role_cites_a_live_backlog_item():
         )
 
 
-def test_self_review_cites_the_self_review_leg_backlog_item():
-    """Non-hollow anchor: proves the ref scan reads the real comment and the
-    real backlog file, rather than passing on an empty ref set."""
-    assert _reserved_backlog_refs()[Role.SELF_REVIEW] == "B-self-review-leg"
-    assert re.search(_BACKLOG_ID_RE.format("B-self-review-leg"), BACKLOG_SRC, re.M)
+def test_all_roles_dispatched_none_reserved_after_b5():
+    """B5 2026-07-20: SELF_REVIEW was the LAST reserved role; wiring the
+    self_review leg dispatched it, so RESERVED_ROLES is now empty and EVERY Role
+    is dispatched. Replaces the old SELF_REVIEW-cites-backlog anchor, which
+    became moot once the role stopped being reserved. A future defined-but-dead
+    role must go back into RESERVED_ROLES WITH a citation comment; the (now
+    dormant) test_every_reserved_role_cites_a_live_backlog_item re-arms
+    automatically when a real reserved role reappears in the multi-line block."""
+    assert RESERVED_ROLES == frozenset()
+    dispatched = _dispatched_roles()
+    for role in Role:
+        assert role in dispatched, f"{role} is neither dispatched nor reserved"

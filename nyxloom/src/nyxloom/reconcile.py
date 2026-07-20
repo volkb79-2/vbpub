@@ -293,6 +293,23 @@ class ResumeAttempt(Action):
 
 
 @dataclass
+class LaunchSelfReview(Action):
+    """B5 2026-07-20: dispatch the self_review stage for a SELF_REVIEWING task.
+    A HYBRID of DispatchImplementer (mint a NEW Attempt, role=Role.SELF_REVIEW --
+    the role must live on its own record because Attempt.role is immutable and
+    EmitAttemptExit keys on it) and ResumeAttempt (build_resume with the
+    IMPLEMENTER's BORROWED session_handle, so the self-review runs in the warm
+    session that just produced the diff -- no 35-40k cold-start tax). Only ever
+    planned when the `self_review` stage is composed into the pipeline (nothing
+    routes a task into SELF_REVIEWING otherwise). source_attempt_id names the
+    implementer attempt whose session_handle + worktree/branch the daemon borrows;
+    if that handle is absent (capture failed) the daemon degrades gracefully to
+    AWAITING_REVIEW (skip self-review, let the frontier reviewer -- the real gate
+    -- catch it)."""
+    source_attempt_id: str | None = None
+
+
+@dataclass
 class InterruptAttempt(Action):
     attempt_id: str | None = None
 
@@ -756,7 +773,17 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                          # this same re-scan, which didn't cover CARVER.
                          or (attempt.state == AttemptState.EXITED
                              and tsf.state == TaskState.ACTIVE
-                             and attempt.role == Role.CARVER))):
+                             and attempt.role == Role.CARVER)
+                         # B5 2026-07-20: a self_review attempt's EXITED receipt
+                         # is consumed ONLY while the task is SELF_REVIEWING. The
+                         # state scope (not the role alone) is load-bearing: a
+                         # SELF_REVIEW attempt lingering in any other state (e.g.
+                         # ACTIVE) stays unconsumed, so every non-SELF_REVIEWING
+                         # path is byte-identical to today (see
+                         # test_non_carver_exited_active_task_no_exit).
+                         or (attempt.state == AttemptState.EXITED
+                             and tsf.state == TaskState.SELF_REVIEWING
+                             and attempt.role == Role.SELF_REVIEW))):
                 # Receipt present and either the attempt record hasn't caught
                 # up (wrapper died pre-event, or an event race) or the wrapper
                 # emitted EXITED itself and only the TASK transition remains.
@@ -1029,6 +1056,47 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
         wave_actions.append(
             LaunchReview(wave_id=wave_id, task_ids=sorted(needs_review_by_wave[wave_id])))
 
+    # === Self-review dispatch (B5 2026-07-20) ===
+    # A SELF_REVIEWING task needs its self_review leg launched ONCE: a warm
+    # resume of the implementer's session under Role.SELF_REVIEW. Mirrors the
+    # wave review's in-flight recency guard -- a SELF_REVIEW attempt that is the
+    # task's LATEST and still live/pending (or EXITED-pending-consumption) means
+    # the leg is already running, so do not relaunch. The daemon reads the source
+    # implementer attempt's session_handle; if absent it degrades to
+    # AWAITING_REVIEW (skip). Inert unless the `self_review` stage is composed
+    # into the pipeline -- nothing routes a task into SELF_REVIEWING otherwise, so
+    # a pipeline without self_review plans byte-identically to today.
+    self_review_actions: list[Action] = []
+    for task_id, tsf in inp.states.items():
+        if tsf.state != TaskState.SELF_REVIEWING:
+            continue
+        if inp.pause_mode == "drain-agents":
+            # no NEW agent process while draining (a self-review IS one); the
+            # task parks in SELF_REVIEWING until a later run/drain-handoffs pass.
+            continue
+        latest = tsf.attempts[-1] if tsf.attempts else None
+        self_review_in_flight = (
+            latest is not None
+            and latest.role == Role.SELF_REVIEW
+            and (
+                latest.state in (AttemptState.CREATED, AttemptState.PREFLIGHTING,
+                                 AttemptState.RUNNING, AttemptState.STALLED,
+                                 AttemptState.EXITED)
+                or (latest.state == AttemptState.INTERRUPTED
+                    and latest.session_handle is not None)
+            )
+        )
+        if self_review_in_flight:
+            continue
+        # the implementer attempt whose done-exit routed the task here -- its
+        # warm session_handle is what the self-review borrows.
+        source = next(
+            (a for a in reversed(tsf.attempts) if a.role == Role.IMPLEMENTER), None)
+        if source is None:
+            continue  # unreachable in practice: SELF_REVIEWING is only entered via implement-done
+        self_review_actions.append(
+            LaunchSelfReview(task_id=task_id, source_attempt_id=source.attempt_id))
+
     # === Spec attention ===
     spec_actions: list[Action] = []
 
@@ -1110,6 +1178,7 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
         actions.extend(lifecycle_by_id[task_id])
     actions.extend(attempt_actions)
     actions.extend(wave_actions)
+    actions.extend(self_review_actions)
     actions.extend(spec_actions)
     actions.extend(carve_actions)
 
@@ -1129,7 +1198,7 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     if blocked_here:
         deconflicted: list[Action] = []
         for a in actions:
-            if isinstance(a, (DispatchImplementer, ResumeAttempt)) and a.task_id in blocked_here:
+            if isinstance(a, (DispatchImplementer, ResumeAttempt, LaunchSelfReview)) and a.task_id in blocked_here:
                 continue  # drop: this task is being dead-ended this pass
             if isinstance(a, LaunchReview):
                 keep = [t for t in a.task_ids if t not in blocked_here]

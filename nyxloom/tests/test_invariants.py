@@ -82,8 +82,8 @@ import pytest
 from nyxloom import storage
 from nyxloom.config import MutexDef, Policy, ProjectConfig, RouteDef, Routes
 from nyxloom.reconcile import (
-    Action, DispatchImplementer, EmitAttemptExit, OpenWave, ReconcileInput,
-    RunPostMergeGate, Transition, plan_project,
+    Action, DispatchImplementer, EmitAttemptExit, LaunchSelfReview, OpenWave,
+    ReconcileInput, RunPostMergeGate, Transition, plan_project,
 )
 from nyxloom.types import (
     TASK_TRANSITIONS, TERMINAL_TASK_STATES, RESERVED_ROLES,
@@ -364,6 +364,22 @@ def test_no_dead_end_active_with_receipted_attempt():
                for a in actions)
 
 
+def test_no_dead_end_self_reviewing():
+    """B5 2026-07-20: SELF_REVIEWING is a new non-terminal state -- it must not
+    be a dead end. A task there (its implementer attempt EXITED, warm session
+    ready to borrow) progresses: reconcile plans a LaunchSelfReview naming the
+    source implementer attempt. Without the planner branch this would strand,
+    exactly the failure class this invariant file exists to catch."""
+    att = _attempt(attempt_id="att-impl-1", state=AttemptState.EXITED,
+                   role=Role.IMPLEMENTER,
+                   receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
+    tsf = _tsf(task_id="INV-01", state=TaskState.SELF_REVIEWING, attempts=[att])
+    inp = _base_input("INV-01", TaskState.SELF_REVIEWING, tsf=tsf)
+    actions = plan_project(inp)
+    assert any(isinstance(a, LaunchSelfReview) and _action_touches_task(a, "INV-01")
+               and a.source_attempt_id == "att-impl-1" for a in actions)
+
+
 def test_no_dead_end_awaiting_review_opens_wave():
     tsf = _tsf(task_id="INV-01", state=TaskState.AWAITING_REVIEW, since=_utc(2026, 6, 1))
     inp = _base_input("INV-01", TaskState.AWAITING_REVIEW, tsf=tsf)
@@ -504,11 +520,13 @@ def test_implementer_role_is_dispatched_not_reserved():
     assert Role.IMPLEMENTER not in RESERVED_ROLES
 
 
-def test_self_review_role_is_reserved_not_dispatched():
-    """Non-hollow anchor: proves the scan finds SELF_REVIEW genuinely
-    absent from dispatch sites (the P43 bug this generalizes)."""
-    assert Role.SELF_REVIEW in RESERVED_ROLES
-    assert Role.SELF_REVIEW not in _dispatched_roles()
+def test_self_review_role_is_dispatched_not_reserved():
+    """B5 2026-07-20: inverts the pre-B5 anchor. The self_review leg wired
+    Role.SELF_REVIEW into daemon.py's LaunchSelfReview executor, so the scan now
+    finds it at a real `role=Role.SELF_REVIEW` dispatch site and it is no longer
+    reserved -- the defined-but-dead -> wired transition RESERVED_ROLES tracks."""
+    assert Role.SELF_REVIEW in _dispatched_roles()
+    assert Role.SELF_REVIEW not in RESERVED_ROLES
 
 
 # ===========================================================================

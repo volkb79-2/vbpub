@@ -901,7 +901,13 @@ class Daemon:
                                  or (tsf.state == TaskState.AWAITING_REVIEW
                                      and att.role == Role.FRONTIER_REVIEW)
                                  or (tsf.state == TaskState.ACTIVE
-                                     and att.role == Role.CARVER))):
+                                     and att.role == Role.CARVER)
+                                 # B5 2026-07-20: a self_review exit while the
+                                 # task is still SELF_REVIEWING -- its verdict
+                                 # receipt must reach reconcile so EmitAttemptExit
+                                 # is planned (mirror of reconcile.py's tuple).
+                                 or (tsf.state == TaskState.SELF_REVIEWING
+                                     and att.role == Role.SELF_REVIEW))):
                         continue
                 attempt_dir = paths.attempt_dir(project, att.attempt_id)
                 receipt_path = attempt_dir / "receipt.json"
@@ -1076,14 +1082,16 @@ class Daemon:
         through a pass) or any planner gap could still launch an agent this
         pass. This predicate is called immediately BEFORE every wrapper launch
         so pause/budget are authoritative at the moment of effect, not merely
-        at plan time. `kind` in {'dispatch','resume','review','carve'}.
+        at plan time. `kind` in {'dispatch','resume','review','carve','self-review'}.
 
         Semantics deliberately MATCH the planner's existing per-kind pause
         rules (so this changes no behaviour except closing the plan/execute
         gap) and ADD the budget check the planner omits for resume/review
         (M9): 'drain-agents' blocks every kind (no new agent process of any
         kind); 'drain-handoffs' blocks new work ('dispatch'/'carve') but lets
-        in-flight legs finish ('resume'/'review'); an exhausted budget blocks
+        in-flight legs finish ('resume'/'review'/'self-review' -- the self_review
+        leg continues a task the implementer already ran, so it drains); an
+        exhausted budget blocks
         ALL kinds -- including the review/resume legs the planner never
         gated, which are the most expensive to launch into a spent budget.
 
@@ -2462,6 +2470,45 @@ class Daemon:
         #     foreign approval rubber-stamping a merge.
         return "missing"
 
+    def _parse_self_review_verdict(self, cfg: ProjectConfig, task_id: str) -> str:
+        """B5 2026-07-20: the self_review leg's verdict, read from the warm
+        session's COMMITTED report -- NOT the process receipt (same P33 lesson
+        as _parse_review_verdict: a clean process exit says nothing about the
+        review's finding). The self-review runs in the implementer's own
+        feat/<task> worktree, so it writes `SELF_REVIEW: APPROVED` or
+        `SELF_REVIEW: REJECTED` into <reports_dir>/<task>-SELFREVIEW.md and
+        commits it there. Per-task, single attempt -- none of the wave fan-out
+        or attempt-id binding _parse_review_verdict needs (that machinery guards
+        the reject LOOP across review cycles; self-review's reject routes to a
+        fresh QUEUED implementer attempt whose own self-review OVERWRITES this
+        file, so a stale prior verdict cannot survive to be misread).
+
+        Returns "approved" | "rejected" | "missing". The caller treats "missing"
+        (no committed report, or one with no SELF_REVIEW line) as
+        graceful-proceed (-> AWAITING_REVIEW), NOT a rejection: self-review is an
+        optional pre-gate and the frontier reviewer is the real gate. The `./`
+        prefix on the git-show path is load-bearing under `-C` (bare paths
+        resolve from the repo root, ignoring -C -- see _parse_review_verdict)."""
+        branch = f"feat/{task_id}"
+        rel_path = f"{cfg.reports_dir}/{task_id}-SELFREVIEW.md"
+        show_res = subprocess.run(
+            ["git", "-C", str(cfg.root), "show", f"{branch}:./{rel_path}"],
+            capture_output=True, text=True,
+        )
+        if show_res.returncode != 0:
+            return "missing"
+        verdicts = {
+            m.group(1).upper()
+            for m in re.finditer(r"^\s*SELF_REVIEW:\s*(APPROVED|REJECTED)\b",
+                                 show_res.stdout, re.IGNORECASE | re.MULTILINE)
+        }
+        if not verdicts:
+            return "missing"
+        # An explicit REJECTED, or conflicting verdicts, both fail toward
+        # "rejected" (a fresh fix attempt is cheap and safe); only an
+        # unambiguous APPROVED proceeds to the frontier reviewer without re-work.
+        return "approved" if verdicts == {"APPROVED"} else "rejected"
+
     def _next_resume_n(self, attempt_dir: Path) -> int:
         n = 1
         while (attempt_dir / f"attempt.resume-{n}.log").exists() or (attempt_dir / f"spec.resume-{n}.json").exists():
@@ -2604,6 +2651,65 @@ class Daemon:
             events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_RESUMED,
                                            {"attempt": attempt.to_dict()}, task_id=task_id,
                                            attempt_id=action.attempt_id))
+
+        elif isinstance(action, reconcile.LaunchSelfReview):
+            # B5 2026-07-20: the self_review leg -- a WARM resume of the
+            # implementer's session under a NEW Attempt(role=Role.SELF_REVIEW).
+            # A new record (not a ResumeAttempt) because Attempt.role is
+            # immutable and EmitAttemptExit keys on it; warm (build_resume with
+            # the implementer's BORROWED session_handle) so the self-check pays
+            # no 35-40k cold-start tax. If the source implementer left no
+            # session_handle (early capture failed), degrade gracefully: skip
+            # the leg and proceed to the frontier reviewer (the real gate) rather
+            # than stranding the task in SELF_REVIEWING.
+            ok, _reason = self._dispatch_admissible(project, cfg, states, "self-review")
+            if not ok:
+                return events  # admission refused; task stays SELF_REVIEWING, retried next pass
+            task_id = action.task_id
+            tsf = states[task_id]
+            source = tsf.attempt_by_id(action.source_attempt_id)
+            if source is None or not source.session_handle:
+                events.append(self._transition(
+                    project, cfg, states, task_id, TaskState.AWAITING_REVIEW,
+                    "self-review skipped (no warm session to resume) -- proceeding to frontier review"))
+                return events
+            worktree = source.worktree or str(cfg.root)
+            branch = source.branch or f"feat/{task_id}"
+            routes_obj = config.Routes.load()
+            route_def = routes_obj.routes[source.route.route_id]
+            attempt_id = new_id("att")
+            route_snap = Route(route_id=route_def.route_id, cli=route_def.cli, model=route_def.model,
+                                variant=route_def.variant, effort=route_def.effort,
+                                routes_rev=routes_obj.revision)
+            attempt = Attempt(attempt_id=attempt_id, role=Role.SELF_REVIEW, state=AttemptState.CREATED,
+                               route=route_snap, started=utc_now(), worktree=worktree,
+                               branch=branch, session_handle=source.session_handle)
+            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
+                                           {"attempt": attempt.to_dict()}, task_id=task_id,
+                                           attempt_id=attempt_id))
+            attempt_dir = paths.attempt_dir(project, attempt_id)
+            report_rel = f"{cfg.reports_dir}/{task_id}-SELFREVIEW.md"
+            prompt = adapters.self_review_prompt(
+                task_id=task_id, worktree=worktree, branch=branch, report_path=report_rel)
+            argv = adapters.build_resume(route_def, session=source.session_handle,
+                                          worktree=worktree, prompt=prompt)
+            fm_obj = self._frontmatter_for(cfg, tsf)
+            spec = wrapper.WrapperSpec(
+                project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
+                cwd=worktree, log_path=str(attempt_dir / "attempt.log"),
+                receipt_path=str(attempt_dir / "receipt.json"), attempt_dir=str(attempt_dir),
+                route_def=asdict(route_def), leases=self._lease_specs(cfg, fm_obj),
+            )
+            pid = wrapper.launch_detached(spec)
+            attempt.state = AttemptState.PREFLIGHTING
+            attempt.pid = pid
+            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_PREFLIGHTED,
+                                           {"attempt": attempt.to_dict()}, task_id=task_id,
+                                           attempt_id=attempt_id))
+            # NOTE: no transition here -- the task is already SELF_REVIEWING (the
+            # implement-done consumption put it there); the leg's own EXITED
+            # receipt is what moves it on (approved -> AWAITING_REVIEW, rejected
+            # -> QUEUED), via the SELF_REVIEW branch of EmitAttemptExit.
 
         elif isinstance(action, reconcile.InterruptAttempt):
             tsf = states[action.task_id]
@@ -2787,9 +2893,46 @@ class Daemon:
                                                         f"review verdict: incomplete (receipt: {result.value})"))
                 return events
 
+            if attempt.role == Role.SELF_REVIEW:
+                # B5 2026-07-20: consume the self_review leg's verdict for a
+                # SELF_REVIEWING task. Like the frontier reviewer (P33), the
+                # verdict lives in a COMMITTED report, never the process receipt
+                # (a clean exit says nothing about the finding). approved ->
+                # AWAITING_REVIEW (hand to the frontier reviewer); rejected ->
+                # QUEUED (a fresh, budget-bounded fix attempt -- deliberately NOT
+                # ACTIVE, which would re-expose the ACTIVE-scoped stale-receipt
+                # re-consumption the frontier reject loop avoids; see D-063). A
+                # non-DONE receipt or a missing verdict degrades to
+                # AWAITING_REVIEW: self-review is an OPTIONAL pre-gate, so never
+                # BLOCK a task because its cheap self-check could not complete --
+                # the frontier reviewer (the real gate) still runs.
+                if states[task_id].state is not TaskState.SELF_REVIEWING:
+                    return events  # stale/superseded exit; the task already moved on
+                verdict = (self._parse_self_review_verdict(cfg, task_id)
+                           if result is ReceiptResult.DONE else "missing")
+                if verdict == "rejected":
+                    events.append(self._transition(
+                        project, cfg, states, task_id, TaskState.QUEUED,
+                        "self-review verdict: rejected -- fresh fix attempt"))
+                else:
+                    events.append(self._transition(
+                        project, cfg, states, task_id, TaskState.AWAITING_REVIEW,
+                        None if verdict == "approved"
+                        else f"self-review {verdict} (receipt: {result.value}) -- proceeding to frontier review"))
+                return events
+
             if result is ReceiptResult.DONE:
-                events.append(self._transition(project, cfg, states, task_id,
-                                                TaskState.AWAITING_REVIEW, None))
+                # implement-done: route to the self_review stage when it is
+                # composed into the pipeline (the warm self-check before the
+                # expensive frontier reviewer); else straight to frontier review
+                # -- byte-identical to pre-B5 for a legacy (no-self_review)
+                # pipeline (and for any non-IMPLEMENTER role that reaches here).
+                if attempt.role == Role.IMPLEMENTER and "self_review" in cfg.pipeline:
+                    events.append(self._transition(project, cfg, states, task_id,
+                                                    TaskState.SELF_REVIEWING, None))
+                else:
+                    events.append(self._transition(project, cfg, states, task_id,
+                                                    TaskState.AWAITING_REVIEW, None))
             elif result is ReceiptResult.BLOCKED:
                 blocker = Blocker(type=BlockerType.CONTRACT, unblock_condition="triage BLOCKED reason",
                                    detail=(receipt.blocked_reason or "")[:200])

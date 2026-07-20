@@ -89,6 +89,18 @@ def _wait(predicate, timeout=15.0, step=0.2):
 
 
 def test_full_dispatch_cycle_reaches_awaiting_review(e2e_project):
+    # B5: this test exercises the dispatch/collect/receipt-healing mechanics (the
+    # 2026-07-15 stuck-ACTIVE regression) + idempotence -- all pipeline-agnostic.
+    # Compose the LEGACY pipeline (no self_review) so the cycle is
+    # implement -> AWAITING_REVIEW without the self_review leg (unit-tested
+    # separately in test_daemon). Under the B5 default it would stop at
+    # SELF_REVIEWING and the idempotence tail below would instead launch the
+    # self-review leg (needs a warm session + resume template), out of scope here.
+    ptoml = e2e_project.root / ".nyxloom" / "project.toml"
+    ptoml.write_text(ptoml.read_text().replace(
+        "[project]\n",
+        '[project]\npipeline = ["carve", "implement", "frontier_review", '
+        '"triage", "auto_merge", "post_merge_gate"]\n', 1))
     # Pass 1: discover handoff -> CARVED. Pass 2: lint-clean -> QUEUED.
     # Pass 3: dispatch (worktree + wrapper + fake CLI).
     for _ in range(3):

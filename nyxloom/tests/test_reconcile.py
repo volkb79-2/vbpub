@@ -12,10 +12,10 @@ from dataclasses import replace
 
 from nyxloom.reconcile import (
     Action, AutoMergeTask, CarveDispatch, CreateTask, DispatchImplementer,
-    EmitAttemptExit, InterruptAttempt, LaunchReview, MarkInterrupted,
-    MarkStalled, OpenWave, ProviderPause, ReconcileInput, ResumeAttempt,
-    RunPostMergeGate, SpecAttention, StallCheck, Transition, attempts_used,
-    dispatch_eligible, plan_project,
+    EmitAttemptExit, InterruptAttempt, LaunchReview, LaunchSelfReview,
+    MarkInterrupted, MarkStalled, OpenWave, ProviderPause, ReconcileInput,
+    ResumeAttempt, RunPostMergeGate, SpecAttention, StallCheck, Transition,
+    attempts_used, dispatch_eligible, plan_project,
 )
 from nyxloom.types import (
     Attempt, AttemptState, Base, Blocker, BlockerType, Budget, Basis,
@@ -889,10 +889,13 @@ def test_carver_exited_non_active_task_no_exit():
 
 
 def test_non_carver_exited_active_task_no_exit():
-    """P32 Oracle O2 (negative): the branch keys on role == CARVER and must not
-    fire for a non-carve role on an ACTIVE task. SELF_REVIEW has no exit
-    re-scan branch, so an EXITED SELF_REVIEW attempt with a receipt stays
-    unconsumed rather than being routed to daemon's _consume_carve_exit."""
+    """P32 Oracle O2 (negative): the carve re-scan branch keys on role == CARVER
+    and must not fire for a non-carve role on an ACTIVE task. B5 2026-07-20: the
+    SELF_REVIEW consumption branch is STATE-SCOPED to SELF_REVIEWING, so an
+    EXITED SELF_REVIEW attempt on an ACTIVE task (as here) still produces NO
+    EmitAttemptExit -- the state scope, not the role alone, is what keeps every
+    non-SELF_REVIEWING path byte-identical. (This is exactly why the eligibility
+    tuple pairs SELF_REVIEW with SELF_REVIEWING, never with ACTIVE.)"""
     att = make_attempt(
         attempt_id="att-sr-1",
         state=AttemptState.EXITED,
@@ -921,6 +924,67 @@ def test_non_carver_exited_active_task_no_exit():
     actions = plan_project(inp)
     exits = [a for a in actions if isinstance(a, EmitAttemptExit)]
     assert exits == []
+
+
+def _self_reviewing_inp(attempts, pause_mode=None, receipts=None):
+    """A minimal ReconcileInput for a single SELF_REVIEWING task."""
+    tsf = make_tsf(task_id="demo-P01", state=TaskState.SELF_REVIEWING, attempts=attempts)
+    kw = dict(
+        now=utc(2026, 7, 15), cfg=make_config(), routes=make_routes(),
+        states={"demo-P01": tsf}, frontmatters={}, lint_clean={},
+        project_paused=False, decisions_open=set(), merged_branches=set(),
+        leases_free={}, provider_ok={}, log_quiet_seconds={}, pid_alive={},
+        receipts=receipts or {},
+    )
+    if pause_mode is not None:
+        kw["pause_mode"] = pause_mode
+    return ReconcileInput(**kw)
+
+
+def _impl_done(attempt_id="att-impl"):
+    return make_attempt(attempt_id=attempt_id, state=AttemptState.EXITED,
+                        role=Role.IMPLEMENTER,
+                        receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
+
+
+def test_self_reviewing_task_plans_launch_self_review():
+    """B5: a SELF_REVIEWING task whose implementer leg finished must get its
+    self_review leg launched -- reconcile plans exactly one LaunchSelfReview
+    naming the source implementer attempt (whose warm session it borrows)."""
+    inp = _self_reviewing_inp([_impl_done("att-impl")])
+    launches = [a for a in plan_project(inp) if isinstance(a, LaunchSelfReview)]
+    assert len(launches) == 1
+    assert launches[0].task_id == "demo-P01"
+    assert launches[0].source_attempt_id == "att-impl"
+
+
+def test_self_review_in_flight_not_relaunched():
+    """The in-flight recency guard (mirrors the wave review's): while the
+    self_review attempt is the LATEST and still running, no second launch."""
+    sr = make_attempt(attempt_id="att-sr", state=AttemptState.RUNNING, role=Role.SELF_REVIEW)
+    inp = _self_reviewing_inp([_impl_done("att-impl"), sr])
+    assert [a for a in plan_project(inp) if isinstance(a, LaunchSelfReview)] == []
+
+
+def test_self_review_exited_plans_emit_attempt_exit_not_relaunch():
+    """A finished self_review leg (EXITED + receipt, task still SELF_REVIEWING)
+    is consumed, not relaunched: reconcile plans EmitAttemptExit for it (so the
+    daemon reads the verdict) and does NOT plan a fresh LaunchSelfReview."""
+    sr = make_attempt(attempt_id="att-sr", state=AttemptState.EXITED, role=Role.SELF_REVIEW,
+                      receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
+    inp = _self_reviewing_inp([_impl_done("att-impl"), sr],
+                              receipts={"att-sr": {"result": "done"}})
+    actions = plan_project(inp)
+    exits = [a for a in actions if isinstance(a, EmitAttemptExit) and a.attempt_id == "att-sr"]
+    assert len(exits) == 1
+    assert [a for a in actions if isinstance(a, LaunchSelfReview)] == []
+
+
+def test_self_reviewing_drain_agents_parks():
+    """P15: no NEW agent process while draining agents -- a SELF_REVIEWING task
+    parks (no LaunchSelfReview) until a later run/drain-handoffs pass."""
+    inp = _self_reviewing_inp([_impl_done("att-impl")], pause_mode="drain-agents")
+    assert [a for a in plan_project(inp) if isinstance(a, LaunchSelfReview)] == []
 
 
 def test_receipt_pid_dead_no_receipt_mark_interrupted():

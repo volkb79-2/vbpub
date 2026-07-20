@@ -195,6 +195,7 @@ COLORS = {
     TaskState.CARVED: "#ffff00",
     TaskState.QUEUED: "#ffff99",
     TaskState.ACTIVE: "#00ff00",
+    TaskState.SELF_REVIEWING: "#00ddaa",
     TaskState.AWAITING_REVIEW: "#0099ff",
     TaskState.REVIEW_REJECTED: "#ff6600",
     TaskState.MERGE_READY: "#00ccff",
@@ -219,6 +220,7 @@ a {{ color: #6ab0ff; }}
 .state-CARVED {{ background: #ffff00; }}
 .state-QUEUED {{ background: #ffff99; }}
 .state-ACTIVE {{ background: #00ff00; }}
+.state-SELF_REVIEWING {{ background: #00ddaa; }}
 .state-AWAITING_REVIEW {{ background: #0099ff; }}
 .state-REVIEW_REJECTED {{ background: #ff6600; }}
 .state-MERGE_READY {{ background: #00ccff; }}
@@ -299,6 +301,7 @@ STATE_LEGEND: dict[TaskState, str] = {
     TaskState.CARVED: "A task file exists for this handoff; not yet queued for dispatch.",
     TaskState.QUEUED: "Waiting for a free dispatch slot (budget, leases, or provider gating).",
     TaskState.ACTIVE: "An implementer attempt has been dispatched and should be running now.",
+    TaskState.SELF_REVIEWING: "The implementer finished and is self-reviewing its own diff in its warm session (the self_review stage) before independent review.",
     TaskState.AWAITING_REVIEW: "The implementer finished (receipt DONE); waiting for a review wave to pick it up.",
     TaskState.REVIEW_REJECTED: "A reviewer rejected the work; it needs another implementer attempt.",
     TaskState.MERGE_READY: "A reviewer approved the work. Merge is a MANUAL operator step, never automatic.",

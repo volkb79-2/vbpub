@@ -361,6 +361,32 @@ def build_resume(route: RouteDef, *, session: str | None, worktree: str,
     return render_argv(route.resume, mapping)
 
 
+def self_review_prompt(*, task_id: str, worktree: str, branch: str,
+                       report_path: str) -> str:
+    """B5 2026-07-20: the self_review leg's prompt. It is fed to build_resume
+    (a WARM resume of the implementer's OWN session -- that session already
+    holds the full context of the diff it just wrote, so this pays no cold-start
+    tax and needs no packet). The leg reviews its own work, fixes what it can IN
+    THIS SESSION, then records a machine-readable verdict the daemon parses from
+    git (`_parse_self_review_verdict`), NEVER from the receipt (P33: a clean
+    process exit says nothing about the finding). Mirrors the FRONTIER_REVIEW
+    verdict-file contract in build_dispatch, adapted for a self-review turn."""
+    return (
+        f"Self-review your OWN just-committed work on {branch} in {worktree}, "
+        "before it goes to independent frontier review. In THIS same warm "
+        "session: re-read your diff critically (correctness, edge cases, hollow "
+        "tests that do not assert the real contract, missed handoff "
+        "requirements); fix anything you can and `git add`/`git commit` it on "
+        f"{branch}. Then write your verdict as a single line "
+        "`SELF_REVIEW: APPROVED` (ready for independent review) or "
+        "`SELF_REVIEW: REJECTED` (needs a fresh attempt -- you hit a wall you "
+        f"cannot resolve in-session) into {report_path}, and `git add`/`git "
+        f"commit` ONLY that file on {branch} (never main, never a code change in "
+        "that commit). The daemon reads your verdict from that committed file, "
+        "NOT from the receipt."
+    )
+
+
 def probe(route: RouteDef) -> tuple[bool, str]:
     """Test route liveness via probe."""
     if route.probe is None:

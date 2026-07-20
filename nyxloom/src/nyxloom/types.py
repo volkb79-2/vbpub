@@ -49,6 +49,7 @@ class TaskState(enum.Enum):
     CARVED = "CARVED"
     QUEUED = "QUEUED"
     ACTIVE = "ACTIVE"
+    SELF_REVIEWING = "SELF_REVIEWING"
     AWAITING_REVIEW = "AWAITING_REVIEW"
     REVIEW_REJECTED = "REVIEW_REJECTED"
     MERGE_READY = "MERGE_READY"
@@ -76,8 +77,20 @@ TASK_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
                                  TaskState.SUPERSEDED, TaskState.CANCELLED}),
     TaskState.QUEUED: frozenset({TaskState.ACTIVE, TaskState.BLOCKED, TaskState.NEEDS_DECISION,
                                  TaskState.SUPERSEDED, TaskState.CANCELLED}),
-    TaskState.ACTIVE: frozenset({TaskState.AWAITING_REVIEW, TaskState.BLOCKED, TaskState.QUEUED,
+    TaskState.ACTIVE: frozenset({TaskState.AWAITING_REVIEW, TaskState.SELF_REVIEWING,
+                                 TaskState.BLOCKED, TaskState.QUEUED,
                                  TaskState.SUPERSEDED, TaskState.CANCELLED}),
+    # SELF_REVIEWING (B5, 2026-07-20): the self_review stage's owned state. The
+    # implementer's warm session reviews its own diff before the expensive
+    # frontier reviewer sees it -- approved -> AWAITING_REVIEW; rejected -> QUEUED
+    # (a fresh fix attempt, budget-bounded, mirroring the proven frontier reject
+    # loop's ACTIVE-scoped stale-receipt protection -- see D-063 in
+    # docs/spec-flow-stages.md); BLOCKED is the typed dead-end escape. Only
+    # reachable when the `self_review` stage is composed into the pipeline, so a
+    # pipeline without it is byte-identical to today (the state is unreachable).
+    TaskState.SELF_REVIEWING: frozenset({TaskState.AWAITING_REVIEW, TaskState.QUEUED,
+                                         TaskState.BLOCKED, TaskState.SUPERSEDED,
+                                         TaskState.CANCELLED}),
     TaskState.AWAITING_REVIEW: frozenset({TaskState.REVIEW_REJECTED, TaskState.MERGE_READY,
                                           TaskState.BLOCKED, TaskState.SUPERSEDED,
                                           TaskState.CANCELLED}),
@@ -140,9 +153,14 @@ class Role(enum.Enum):
 # justified by a backlog item tracking the deferred wiring decision, so a
 # defined-but-dead role is TRACKED future work, not a silent stub (see
 # tests/test_types.py for the guard that enforces this partition).
-RESERVED_ROLES: frozenset[Role] = frozenset({
-    Role.SELF_REVIEW,  # nyxloom-trove/backlog.md: B-self-review-leg
-})
+# Empty as of B5 (2026-07-20): every Role is now dispatched. SELF_REVIEW was the
+# last reserved role -- the self_review stage wired it into daemon.py's
+# LaunchSelfReview execution (a real `role=Role.SELF_REVIEW` dispatch site) plus
+# reconcile's SELF_REVIEWING planning, so it is no longer a defined-but-dead stub.
+# A future defined-but-unwired role goes back in here WITH a trailing
+# `# nyxloom-trove/backlog.md: <B-id>` citation (the test_types.py guard enforces
+# both the citation and a live backlog item), keeping the partition honest.
+RESERVED_ROLES: frozenset[Role] = frozenset()
 
 
 class ReceiptResult(enum.Enum):
