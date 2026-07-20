@@ -1028,6 +1028,70 @@ def test_interrupted_no_resume_handle_blocks_task():
     assert t.blocker.unblock_condition == "operator: inspect attempts"
 
 
+def test_interrupted_review_no_handle_relaunches_not_blocks_and_dies():
+    """P62 2026-07-20 (A10, M10): an AWAITING_REVIEW task whose latest FRONTIER_
+    REVIEW attempt is INTERRUPTED with NO session handle must NOT be dead-ended
+    here -- the WAVE loop already plans a relaunch (a no-handle INTERRUPTED
+    review is not 'in flight'). Emitting a Transition->BLOCKED too made ONE pass
+    plan BOTH a dead-end AND a LaunchReview for the same task; execution blocked
+    it then wasted a frontier session on the now-BLOCKED task. The plan must
+    contain the relaunch and NO BLOCKED for this task."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-rev1", state=AttemptState.INTERRUPTED,
+                       role=Role.FRONTIER_REVIEW, receipt=None)
+    assert att.session_handle is None
+    tsf = make_tsf(task_id="P01", state=TaskState.AWAITING_REVIEW, attempts=[att])
+    tsf.wave_id = "wave-1"   # already waved -> the wave loop relaunches the review
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15), cfg=cfg, routes=routes,
+        states={"P01": tsf}, frontmatters={"P01": (fm, "h.md")},
+        lint_clean={}, project_paused=False, decisions_open=set(),
+        merged_branches=set(), leases_free={}, provider_ok={},
+        log_quiet_seconds={}, pid_alive={}, receipts={},
+    )
+    actions = plan_project(inp)
+    launches = [a for a in actions if isinstance(a, LaunchReview) and "P01" in a.task_ids]
+    blocks = [a for a in actions
+              if isinstance(a, Transition) and a.task_id == "P01" and a.to == TaskState.BLOCKED]
+    assert len(launches) == 1, "the wave loop must relaunch the review for P01"
+    assert blocks == [], "P01 must NOT be dead-ended here (that is the M10 contradiction)"
+
+
+def test_plan_never_dead_ends_and_launches_same_task():
+    """P62 (A10, M10) invariant: no single plan may contain BOTH a
+    Transition->BLOCKED and an agent launch (DispatchImplementer / ResumeAttempt
+    / LaunchReview) for the SAME task. The source fix above removes the known
+    producer; the whole-plan guard in plan_project enforces it universally.
+    Checked here on the exact M10 scenario."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-rev1", state=AttemptState.INTERRUPTED,
+                       role=Role.FRONTIER_REVIEW, receipt=None)
+    tsf = make_tsf(task_id="P01", state=TaskState.AWAITING_REVIEW, attempts=[att])
+    tsf.wave_id = "wave-1"
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15), cfg=cfg, routes=routes,
+        states={"P01": tsf}, frontmatters={"P01": (fm, "h.md")},
+        lint_clean={}, project_paused=False, decisions_open=set(),
+        merged_branches=set(), leases_free={}, provider_ok={},
+        log_quiet_seconds={}, pid_alive={}, receipts={},
+    )
+    actions = plan_project(inp)
+    blocked = {a.task_id for a in actions
+               if isinstance(a, Transition) and a.to == TaskState.BLOCKED}
+    launched = set()
+    for a in actions:
+        if isinstance(a, (DispatchImplementer, ResumeAttempt)):
+            launched.add(a.task_id)
+        elif isinstance(a, LaunchReview):
+            launched.update(a.task_ids)
+    assert blocked.isdisjoint(launched), (
+        f"a task is both dead-ended and launched in one plan: {blocked & launched}")
+
+
 def test_interrupted_attempts_exhausted_blocks_task_even_with_handle():
     """P14 item 4: attempts budget exhausted -> BLOCKED even though a
     session_handle IS present (the budget check gates ResumeAttempt first)."""
