@@ -83,6 +83,15 @@ ready_queue_target = 5
 # main before an implementer attempt starts, so carving 10-deep genuinely
 # raises stale-premise risk with no safety net yet.
 carve_ahead_target = 10
+test_health_interval_days = 14
+# D-065 2026-07-20 (B63): cadence for the project-WIDE test-health carve
+# (reconcile.py module contract item 15) -- a seldom-run pass where the
+# strategic carver evaluates the SUITE's standing debt and carves test-
+# improvement packages. It complements the D-064-L2 diff-coverage gate: that
+# gate enforces coverage on lines a change TOUCHES and so is structurally
+# blind to code that was already there and already untested. 14 days keeps it
+# rare enough not to compete with real work (it takes the pass's single carve
+# slot when it fires). 0 disables; nyxloom sets it because nyxloom dogfoods.
 max_attempts_per_task = 3
 merge_mode = "guarded-automatic"  # 2026-07-19: P48 shipped -- real git merge --no-ff
                                    # via a scratch worktree, escalates NEEDS_OPERATOR

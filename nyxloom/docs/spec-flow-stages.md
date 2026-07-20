@@ -241,6 +241,17 @@ prose — the divergence lives in **composition**, never in the **semantics** of
   carve_ahead_target). Add a seldom-run, project-WIDE **test-health trigger** of the same
   shape: it steps back from per-task work, evaluates suite-wide test debt, and carves
   test-improvement tasks — the test analog of the strategic carver reading the north star.
+  **DONE 2026-07-20, #63 (B63)** as reconcile module contract **item 15**: fires on
+  `policy.test_health_interval_days` (0 = off; nyxloom's own config sets 14), gated by the
+  SAME shared guards as item 9 (pause / carve-in-flight / budget / frontier route) and the
+  single-carve-authority flag, and evaluated *before* item 9 so a rare trigger cannot be
+  starved of the pass's one carve slot by a perpetually-hungry headroom refill. Cadence is
+  durable across restarts (`daemon._days_since_test_health_carve` scans the event log for the
+  `carve_kind` marker). `CarveDispatch.kind='test-health'` shapes the packet only —
+  seq/authority/route/lease semantics are identical, so the single-strategic-carver invariant
+  is unchanged. The carve-outcome handler suppresses `headroom-low`/`roadmap-exhausted`
+  SPEC_ATTENTION for this kind: those are readings of the *work* roadmap, and letting a
+  healthy suite's "0 areas left" through would falsely throttle all work carving.
 
 ## Sequenced implementation (B2–B7) — proofs keep each package honest
 - **B2 (P70)** stage registry + composed-pipeline validation. `reconcile.py` thins
