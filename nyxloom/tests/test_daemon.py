@@ -208,7 +208,11 @@ def _set_ephemeral_http_port(cfg):
 
 
 def _set_http_bind(cfg, bind):
-    """P38: override policy.http_bind in the project's toml."""
+    """Write an http_bind into the project's toml. 2026-07-20: http_bind is
+    INFRA-sourced (NYXLOOM_HTTP_BIND), NOT a toml key, so this now writes a
+    value that ProjectConfig.load must IGNORE -- used only to prove that
+    ignoring (test_toml_http_bind_never_reaches_the_real_bind). To actually
+    set the bind, monkeypatch.setenv NYXLOOM_HTTP_BIND instead."""
     ptoml = cfg.root / ".nyxloom" / "project.toml"
     text = ptoml.read_text(encoding="utf-8")
     if "http_bind" not in text:
@@ -2561,12 +2565,15 @@ def test_http_bind_defaults_to_loopback(http_daemon):
 
 
 def test_http_bind_overridable_to_bridge_address(tmp_state, sample_project, patch_siblings, monkeypatch):
-    """policy.http_bind = "0.0.0.0" makes the server bind all interfaces --
-    used on a private ciu bridge network, never on host-network."""
+    """NYXLOOM_HTTP_BIND = "0.0.0.0" makes the server bind all interfaces --
+    used on a private ciu bridge network, never on host-network. 2026-07-20:
+    the bind is INFRA-sourced from the env var, no longer a toml key (see
+    config.Policy.http_bind); this drives the capability end-to-end through the
+    real ThreadingHTTPServer."""
     monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
     monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
     _set_ephemeral_http_port(sample_project)
-    _set_http_bind(sample_project, "0.0.0.0")
+    monkeypatch.setenv("NYXLOOM_HTTP_BIND", "0.0.0.0")
 
     d = daemon.Daemon({"demo": sample_project.root})
     t = threading.Thread(target=d.run, daemon=True)
@@ -2583,21 +2590,21 @@ def test_http_bind_overridable_to_bridge_address(tmp_state, sample_project, patc
         t.join(timeout=5)
 
 
-def test_http_bind_env_override_takes_precedence_over_toml(
+def test_toml_http_bind_never_reaches_the_real_bind(
         tmp_state, sample_project, patch_siblings, monkeypatch):
-    """NYXLOOM_HTTP_BIND (set by the compose files, P38) overrides an EXPLICIT
-    toml http_bind -- needed because nyxloom.toml is the SAME file read on the
-    host and inside the container (bind-mounted), so it can't itself differ.
-    The toml is pinned to loopback here so the env var has a real value to beat:
-    without that, a no-op override would still read 127.0.0.1 by default and
-    the test would prove nothing (2026-07-16 review)."""
+    """2026-07-20 (contract change): http_bind is INFRA-sourced, so a hand-
+    edited toml http_bind must NOT reach the running socket even with NO env
+    set -- otherwise the SAME bind-mounted toml read on the host could silently
+    expose the unauthenticated control plane on the LAN. The toml here asks for
+    0.0.0.0 (the dangerous value); the real ThreadingHTTPServer must still bind
+    127.0.0.1. This is the end-to-end twin of test_config.py's unit assertion.
+    (Replaces the pre-2026-07-20 test that proved env 'overrides' toml -- toml
+    is no longer a source to override.)"""
     monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
     monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    monkeypatch.delenv("NYXLOOM_HTTP_BIND", raising=False)
     _set_ephemeral_http_port(sample_project)
-    _set_http_bind(sample_project, "127.0.0.1")
-    assert 'http_bind = "127.0.0.1"' in (
-        sample_project.root / ".nyxloom" / "project.toml").read_text(encoding="utf-8")
-    monkeypatch.setenv("NYXLOOM_HTTP_BIND", "0.0.0.0")
+    _set_http_bind(sample_project, "0.0.0.0")  # writes a toml http_bind that must be ignored
 
     d = daemon.Daemon({"demo": sample_project.root})
     t = threading.Thread(target=d.run, daemon=True)
@@ -2607,10 +2614,58 @@ def test_http_bind_env_override_takes_precedence_over_toml(
         time.sleep(0.05)
     try:
         assert d.http_port != 0
-        assert d.http_bind == "0.0.0.0"
+        assert d.http_bind == "127.0.0.1"
+        assert d._httpd.server_address[0] == "127.0.0.1"
     finally:
         d.stop()
         t.join(timeout=5)
+
+
+def test_nonloopback_bind_prints_unauthenticated_notice(
+        tmp_state, sample_project, patch_siblings, monkeypatch, capsys):
+    """2026-07-20: a non-loopback bind states the security assumption out loud
+    at startup -- the control plane is unauthenticated, only safe on a private
+    unpublished network. Read after join so the print has flushed."""
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    monkeypatch.setenv("NYXLOOM_HTTP_BIND", "0.0.0.0")
+    _set_ephemeral_http_port(sample_project)
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    t = threading.Thread(target=d.run, daemon=True)
+    t.start()
+    deadline = time.monotonic() + 5
+    while d.http_port == 0 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    d.stop()
+    t.join(timeout=5)
+
+    err = capsys.readouterr().err
+    assert "UNAUTHENTICATED" in err
+    assert "0.0.0.0" in err
+
+
+def test_loopback_bind_prints_no_notice_THE_NEGATIVE(
+        tmp_state, sample_project, patch_siblings, monkeypatch, capsys):
+    """The default loopback bind is safe and needs no callout -- so the notice
+    must NOT fire, or it becomes boot noise on every safe daemon and the real
+    (non-loopback) case stops standing out."""
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    monkeypatch.delenv("NYXLOOM_HTTP_BIND", raising=False)
+    _set_ephemeral_http_port(sample_project)
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    t = threading.Thread(target=d.run, daemon=True)
+    t.start()
+    deadline = time.monotonic() + 5
+    while d.http_port == 0 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    d.stop()
+    t.join(timeout=5)
+
+    assert d.http_bind == "127.0.0.1"
+    assert "UNAUTHENTICATED" not in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------
@@ -2631,7 +2686,9 @@ def test_doctor_dashboard_line_stays_loopback_by_default(tmp_state, sample_proje
 def test_doctor_dashboard_line_names_bridge_alias_when_bind_is_bridged(
         tmp_state, sample_project, capsys, monkeypatch):
     monkeypatch.setattr(doctor, "doctor_project", lambda cfg: [])
-    _set_http_bind(sample_project, "0.0.0.0")
+    # 2026-07-20: bind is env-sourced now, so drive the bridge case via the env
+    # var rather than a (now-ignored) toml http_bind.
+    monkeypatch.setenv("NYXLOOM_HTTP_BIND", "0.0.0.0")
     exit_code = cli.main(["doctor"])
     assert exit_code == 0
     out = capsys.readouterr().out

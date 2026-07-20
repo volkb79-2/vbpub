@@ -118,10 +118,14 @@ class Policy:
     # P38 2026-07-16 (dashboard bridge network): HTTP bind address, loopback
     # by default (safe). A containerized nyxloomd on a private ciu bridge
     # network sets this to "0.0.0.0" so the devcontainer can reach it --
-    # NEVER on host-network, where 0.0.0.0 would expose it to the LAN. The
-    # NYXLOOM_HTTP_BIND env var (see ProjectConfig.load) overrides the toml
-    # value, since nyxloom.toml is bind-mounted and shared verbatim between
-    # host and container runs -- it can't itself differ per target.
+    # NEVER on host-network, where 0.0.0.0 would expose it to the LAN.
+    # 2026-07-20: INFRA-SOURCED, not a toml [policy] key. ProjectConfig.load
+    # drops any toml http_bind and sources it SOLELY from the NYXLOOM_HTTP_BIND
+    # env var (or this loopback default) -- nyxloom.toml is bind-mounted and
+    # shared verbatim host<->container, so it can't differ per target, and the
+    # bind guards an unauthenticated control plane. Kept on Policy (not a
+    # separate infra struct) only so cfg.policy.http_bind consumers are
+    # unchanged; it is deliberately absent from nyxloom-config.schema.json.
     http_bind: str = "127.0.0.1"
     # P16 2026-07-15 (carver automation): queue-refill target, carve
     # execution/admission mode, and the headroom threshold below which the
@@ -201,11 +205,23 @@ class ProjectConfig:
                            global_alias=m.get("global_alias"))
             for name, m in data.get("mutexes", {}).items()
         }
-        pol = Policy(**data.get("policy", {}))
-        # P38 2026-07-16: env override for the bind address (see Policy.http_bind
-        # docstring above) -- lets a ciu compose file flip the containerized
-        # daemon onto its private bridge (0.0.0.0) without editing the toml
-        # that the host process shares via the same bind mount.
+        # http_bind is INFRA-sourced, NOT a toml [policy] key (2026-07-20). It is
+        # the address the daemon's unauthenticated HTTP control plane binds to, so
+        # it is security-relevant AND must differ per deployment target (loopback
+        # on the host; 0.0.0.0 on a private ciu bridge). nyxloom.toml is bind-
+        # mounted and shared VERBATIM between host and container runs, so it
+        # structurally cannot carry a per-target value -- only the infra layer
+        # (the ciu/compose NYXLOOM_HTTP_BIND env var) can. Drop any toml value
+        # before constructing Policy so the env var (or the loopback default) is
+        # the SOLE authority and a hand-edited toml can never force a non-loopback
+        # bind on the host. lint's CFG1 (policy is additionalProperties:false, and
+        # http_bind is deliberately absent from the schema) already flags a toml
+        # http_bind as an unknown key, so this drop is belt-and-braces, not silent.
+        policy_data = dict(data.get("policy", {}))
+        policy_data.pop("http_bind", None)
+        pol = Policy(**policy_data)
+        # P38 2026-07-16 / 2026-07-20: the env var is the authority (see above).
+        # Absent, the safe loopback default from Policy stands.
         env_bind = os.environ.get("NYXLOOM_HTTP_BIND")
         if env_bind:
             pol.http_bind = env_bind

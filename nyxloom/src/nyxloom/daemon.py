@@ -315,6 +315,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -3720,6 +3721,19 @@ class Daemon:
         self._httpd = httpd
         self.http_port = httpd.server_address[1]
         self.http_bind = httpd.server_address[0]
+        # 2026-07-20: state the security assumption out loud at bind time. The
+        # control plane is UNAUTHENTICATED (POST /api/config/* can pause/unpause
+        # projects, edit policy, answer decisions) -- a non-loopback bind is only
+        # safe on a PRIVATE, unpublished network (the ciu bridge), which the infra
+        # layer, not this process, guarantees. An INFO notice, not a warning: a
+        # non-loopback bind is the correct, expected production state under that
+        # model, so this states the assumption rather than crying wolf. Goes to
+        # stderr -> docker logs, where an operator inspecting the running daemon
+        # looks. Loopback (the default) needs no callout.
+        if self.http_bind not in ("127.0.0.1", "::1"):
+            print(f"nyxloomd: HTTP control plane bound to {self.http_bind}:"
+                  f"{self.http_port} (UNAUTHENTICATED; assumes a private, "
+                  "unpublished network -- the ciu bridge)", file=sys.stderr, flush=True)
         t = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
         t.start()
         self._http_thread = t

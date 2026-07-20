@@ -97,23 +97,28 @@ def _carves(inp: ReconcileInput) -> list[CarveDispatch]:
 # A policy knob has TWO homes -- the dataclass and the CFG1 schema
 # ==========================================================================
 
-# Known, PRE-EXISTING gap (not introduced by B63): http_bind is a real
-# Policy field documented as toml-settable, but absent from the schema's
-# policy properties, so a project that sets it gets a spurious CFG1 error.
-# Left alone deliberately -- whether http_bind should be toml-settable at all
-# (an env override already exists) is its own call, not a side effect of this
-# package. Listed here so the invariant below is enforceable today and the
-# gap stays visible instead of buried.
-_KNOWN_SCHEMA_GAPS = {"http_bind"}
+# Policy fields that are DELIBERATELY not toml [policy] keys -- sourced from the
+# infra layer instead, so intentionally absent from the schema (whose policy
+# object is additionalProperties:false). This is not a gap list to burn down;
+# it is the second half of the invariant below. http_bind is the sole member
+# (2026-07-20): it is INFRA-sourced from the NYXLOOM_HTTP_BIND env var because
+# nyxloom.toml is bind-mounted+shared verbatim host<->container and the bind
+# guards an unauthenticated control plane -- see config.Policy.http_bind and
+# ProjectConfig.load. A NEW field lands here ONLY with that same deliberate
+# rationale; the default is to add it to the schema (the branch below).
+_INFRA_SOURCED_POLICY_FIELDS = {"http_bind"}
 
 
-def test_every_policy_field_is_in_the_config_schema():
+def test_every_policy_field_is_toml_settable_or_explicitly_infra_sourced():
     """The gate caught B63 adding test_health_interval_days to the Policy
     dataclass but not to nyxloom-config.schema.json, whose policy object is
     additionalProperties:false -- so nyxloom's OWN nyxloom.toml became
     CFG1-invalid the moment it used the new knob. That coupling is invisible
-    at the dataclass, so pin it: any future knob fails HERE, with a message
-    naming the file to edit, instead of as a puzzling lint failure."""
+    at the dataclass, so pin it: EVERY Policy field must be either a toml key
+    (present in the schema) or an explicitly-declared infra-sourced field --
+    nothing falls through unclassified. A future knob that is neither fails
+    HERE, with a message naming the file to edit, instead of as a puzzling
+    lint failure."""
     import dataclasses
 
     schema = json.loads(
@@ -121,13 +126,37 @@ def test_every_policy_field_is_in_the_config_schema():
         .read_text(encoding="utf-8"))
     props = set(schema["properties"]["policy"]["properties"])
     fields = {f.name for f in dataclasses.fields(Policy)}
-    missing = fields - props - _KNOWN_SCHEMA_GAPS
-    assert not missing, (
-        f"Policy field(s) {sorted(missing)} are missing from "
-        "src/nyxloom/schemas/nyxloom-config.schema.json (policy.properties). "
-        "That object is additionalProperties:false, so any project setting "
-        "them in nyxloom.toml gets a CFG1 error."
+    unclassified = fields - props - _INFRA_SOURCED_POLICY_FIELDS
+    assert not unclassified, (
+        f"Policy field(s) {sorted(unclassified)} are neither in "
+        "src/nyxloom/schemas/nyxloom-config.schema.json (policy.properties) nor "
+        "declared infra-sourced. That schema object is additionalProperties:"
+        "false, so a toml key absent from it is a CFG1 error -- add the field "
+        "to the schema, or (if it is genuinely infra/env-sourced like http_bind) "
+        "to _INFRA_SOURCED_POLICY_FIELDS with a rationale."
     )
+
+
+def test_infra_sourced_fields_are_absent_from_the_schema_THE_OTHER_HALF():
+    """The infra-sourced set is only meaningful if those fields are ACTUALLY
+    kept out of the schema -- otherwise the exemption would silently mask a
+    field that IS toml-settable. So assert the converse: every declared
+    infra-sourced field is NOT in the schema (toml setting it is a correct
+    CFG1 error, the whole point)."""
+    import dataclasses
+
+    schema = json.loads(
+        (Path(reconcile.__file__).parent / "schemas" / "nyxloom-config.schema.json")
+        .read_text(encoding="utf-8"))
+    props = set(schema["properties"]["policy"]["properties"])
+    leaked = _INFRA_SOURCED_POLICY_FIELDS & props
+    assert not leaked, (
+        f"{sorted(leaked)} are declared infra-sourced but ARE in the config "
+        "schema -- so toml can set them, contradicting the exemption. Remove "
+        "them from the schema or from _INFRA_SOURCED_POLICY_FIELDS."
+    )
+    # and they must still be real Policy fields, not a stale name
+    assert _INFRA_SOURCED_POLICY_FIELDS <= {f.name for f in dataclasses.fields(Policy)}
 
 
 def test_test_health_interval_days_is_schema_valid_in_the_repos_own_config():
