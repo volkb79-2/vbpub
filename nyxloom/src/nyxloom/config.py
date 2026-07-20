@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import paths
+from .stages import DEFAULT_PIPELINE, compose, validate_pipeline
 from .types import Basis, Usage
 
 
@@ -157,6 +158,12 @@ class ProjectConfig:
     product_definition: str | None = None
     roadmap: str | None = None
     backlog: str | None = None
+    # D-060 stages-as-data (docs/spec-flow-stages.md): the composed, validated
+    # per-project pipeline as an ordered list of stage-kind names. Defaults to
+    # the current hardcoded flow (DEFAULT_PIPELINE) so a project with no
+    # `pipeline` key is byte-identical. load() resolves a preset name / explicit
+    # list here and validates closure against the frozen graph.
+    pipeline: list[str] = field(default_factory=lambda: list(DEFAULT_PIPELINE))
 
     @classmethod
     def load(cls, root: Path) -> "ProjectConfig":
@@ -211,6 +218,14 @@ class ProjectConfig:
         if env_url:
             notify_data["ntfy_url"] = env_url
         noti = NotifyConfig(**notify_data)
+        # D-060: resolve + validate the pipeline at load. A preset name or an
+        # explicit list under top-level `pipeline` (or [project].pipeline);
+        # absent -> DEFAULT_PIPELINE. validate_pipeline raises ValueError on a
+        # composition that does not close against the frozen graph (unknown
+        # kind, illegal exit edge, dead-end routing, or no terminal) -- config
+        # load fails loudly rather than the daemon planning an invalid flow.
+        pipeline = compose(data.get("pipeline", data.get("project", {}).get("pipeline")))
+        validate_pipeline(pipeline)
         return cls(
             project_id=data["project"]["id"],
             root=root,
@@ -229,6 +244,7 @@ class ProjectConfig:
             product_definition=data["project"].get("product_definition"),
             roadmap=data["project"].get("roadmap"),
             backlog=data["project"].get("backlog"),
+            pipeline=pipeline,
         )
 
     def redact(self, text: str) -> str:

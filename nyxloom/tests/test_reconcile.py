@@ -8,12 +8,14 @@ from pathlib import Path
 import pytest
 
 from nyxloom.config import MutexDef, Policy, ProjectConfig, Routes, RouteDef
+from dataclasses import replace
+
 from nyxloom.reconcile import (
     Action, AutoMergeTask, CarveDispatch, CreateTask, DispatchImplementer,
     EmitAttemptExit, InterruptAttempt, LaunchReview, MarkInterrupted,
     MarkStalled, OpenWave, ProviderPause, ReconcileInput, ResumeAttempt,
-    SpecAttention, StallCheck, Transition, attempts_used, dispatch_eligible,
-    plan_project,
+    RunPostMergeGate, SpecAttention, StallCheck, Transition, attempts_used,
+    dispatch_eligible, plan_project,
 )
 from nyxloom.types import (
     Attempt, AttemptState, Base, Blocker, BlockerType, Budget, Basis,
@@ -3322,3 +3324,47 @@ def test_auto_merge_none_when_project_paused():
     actions = plan_project(inp)
 
     assert [a for a in actions if isinstance(a, AutoMergeTask)] == []
+
+
+# ============================================================================
+# D-060 stages-as-data (B2/P70): the VALIDATING handler honours the composed
+# pipeline's post_merge_gate presence.
+# ============================================================================
+
+def test_validating_runs_gate_when_pipeline_has_gate():
+    """B2 parity: the default pipeline includes post_merge_gate, so a VALIDATING
+    task re-emits RunPostMergeGate exactly as before B2 -- byte-identical to the
+    pre-B2 hardcoded behaviour (make_config() carries DEFAULT_PIPELINE)."""
+    cfg = make_config()
+    assert "post_merge_gate" in cfg.pipeline
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.VALIDATING)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        cfg=cfg, states={"P01": tsf}, frontmatters={"P01": (fm, "h.md")}))
+
+    task_actions = [a for a in plan_project(inp) if a.task_id == "P01"]
+
+    assert any(isinstance(a, RunPostMergeGate) for a in task_actions)
+    assert not any(isinstance(a, Transition) and a.to == TaskState.COMPLETED
+                   for a in task_actions)
+
+
+def test_validating_autocompletes_when_pipeline_omits_gate():
+    """B2 discrimination: a pipeline without post_merge_gate (the `lean` shape)
+    auto-advances VALIDATING -> COMPLETED and NEVER emits RunPostMergeGate.
+    Neuter the reconcile item-11 gate check (always emit RunPostMergeGate) and
+    this fails -- a real discriminator, not a hollow assert."""
+    cfg = replace(make_config(), pipeline=[
+        "carve", "implement", "frontier_review", "triage", "auto_merge"])
+    assert "post_merge_gate" not in cfg.pipeline
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.VALIDATING)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        cfg=cfg, states={"P01": tsf}, frontmatters={"P01": (fm, "h.md")}))
+
+    task_actions = [a for a in plan_project(inp) if a.task_id == "P01"]
+
+    assert not any(isinstance(a, RunPostMergeGate) for a in task_actions)
+    completes = [a for a in task_actions
+                 if isinstance(a, Transition) and a.to == TaskState.COMPLETED]
+    assert len(completes) == 1
