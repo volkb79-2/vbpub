@@ -362,16 +362,28 @@ def test_build_dispatch_role_carver_branch_or_main_keeps_commit_instruction(auth
     assert "git commit" in prompt
 
 
-def test_build_dispatch_role_frontier_review_never_tells_reviewer_to_commit():
-    """O1(c) non-hollow anchor: a FRONTIER_REVIEW dispatch's prompt must NOT
-    contain 'git commit' and must not claim a branch to commit to -- fixes
-    the live bug (daemon.py's wave-launch call site passes
-    branch=cfg.default_branch) where a reviewer was told to commit to main."""
+def test_build_dispatch_role_frontier_review_commits_verdict_never_main_or_code():
+    """P59 2026-07-20 (M6a -- corrects P44's O1(c)). The daemon derives the
+    merge verdict EXCLUSIVELY from the reviewer's COMMITTED <task>-REVIEW.md
+    (_parse_review_verdict via `git show`); the receipt carries no verdict.
+    P44's old assertion here ('git commit' not in prompt) encoded the very
+    bug -- a reviewer told never to commit left NO committed verdict, so the
+    daemon read 'missing' and false-rejected approved work (or, under
+    guarded-automatic merge, could mis-decide): a nondeterministic merge gate
+    contradicting the packet's REQUIRED OUTPUT CONTRACT. The prompt must now
+    AGREE with the packet -- commit the verdict report -- while keeping the
+    original safety intent (never main, never a code change)."""
     route = RouteDef(route_id="test", cli="fake", model="fake-model")
     _argv, prompt = adapters.build_dispatch(
         route, role=Role.FRONTIER_REVIEW, **_P44_KW)
-    assert "git commit" not in prompt
-    assert "Branch:" not in prompt
+    # tells the reviewer to commit its verdict report (consistent with the
+    # packet AND with what _parse_review_verdict actually reads):
+    assert "git commit" in prompt
+    assert "VERDICT" in prompt
+    assert "NOT from the receipt" in prompt
+    # ...but keeps the safety intent P44 was after: not main, not code changes.
+    assert "never main" in prompt
+    assert "not authoring code changes" in prompt
     # still names what the reviewer needs to find the packet/gate/receipt:
     assert "handoff/P44.md" in prompt
     assert "pytest-q" in prompt
