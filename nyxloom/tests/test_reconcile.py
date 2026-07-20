@@ -1978,6 +1978,70 @@ def test_waves_age_trigger_reads_oldest_not_lexicographically_first():
     assert sorted(opens[0].task_ids) == ["P01", "P99"]
 
 
+def test_wave_review_batched_one_launch_for_all_members():
+    """P61 2026-07-20 (A9, M3 -- real wave batching). A wave of 3
+    AWAITING_REVIEW tasks sharing a wave_id, none with a review in flight,
+    must produce exactly ONE LaunchReview carrying all three -- one frontier
+    session over the whole wave, not three singleton launches each paying the
+    ~35-40k frontier startup tax. Pre-P61 the wave loop emitted one
+    LaunchReview(task_ids=[task_id]) per task."""
+    cfg = make_config(wave_max_diffs=5)
+    routes = make_routes()
+    states = {}
+    frontmatters = {}
+    for tid in ("P01", "P02", "P03"):
+        tsf = make_tsf(task_id=tid, state=TaskState.AWAITING_REVIEW)
+        tsf.wave_id = "wave-42"          # already waved, no review attempt yet
+        states[tid] = tsf
+        frontmatters[tid] = (make_frontmatter(id=tid), "h.md")
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15, 1, 0),
+        cfg=cfg,
+        routes=routes,
+        states=states,
+        frontmatters=frontmatters,
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        wave_open_after_seconds=1800,
+    )
+    actions = plan_project(inp)
+    launches = [a for a in actions if isinstance(a, LaunchReview)]
+    assert len(launches) == 1, "one frontier session per wave, not one per task"
+    assert launches[0].wave_id == "wave-42"
+    assert sorted(launches[0].task_ids) == ["P01", "P02", "P03"]
+
+
+def test_wave_review_two_waves_get_one_launch_each():
+    """P61 (A9): tasks in DIFFERENT waves are launched separately -- batching
+    is per wave_id, not a single launch across unrelated waves."""
+    cfg = make_config(wave_max_diffs=5)
+    routes = make_routes()
+    states = {}
+    frontmatters = {}
+    for tid, wid in (("P01", "wave-a"), ("P02", "wave-a"), ("P03", "wave-b")):
+        tsf = make_tsf(task_id=tid, state=TaskState.AWAITING_REVIEW)
+        tsf.wave_id = wid
+        states[tid] = tsf
+        frontmatters[tid] = (make_frontmatter(id=tid), "h.md")
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15, 1, 0), cfg=cfg, routes=routes, states=states,
+        frontmatters=frontmatters, lint_clean={}, project_paused=False,
+        decisions_open=set(), merged_branches=set(), leases_free={},
+        provider_ok={}, log_quiet_seconds={}, pid_alive={}, receipts={},
+        wave_open_after_seconds=1800,
+    )
+    launches = [a for a in plan_project(inp) if isinstance(a, LaunchReview)]
+    by_wave = {l.wave_id: sorted(l.task_ids) for l in launches}
+    assert by_wave == {"wave-a": ["P01", "P02"], "wave-b": ["P03"]}
+
+
 def test_waves_fresh_single_no_open():
     """Oracle 9 (negative): 1 waiting, fresh -> no OpenWave."""
     cfg = make_config(wave_max_diffs=3)
