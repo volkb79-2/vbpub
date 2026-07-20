@@ -49,6 +49,11 @@ class Stage:
     exit_from: TaskState              # the state its outcome transitions FROM
     exit_map: tuple                   # ((label, TaskState), ...) -- outcome -> target
     owns: frozenset                   # the non-terminal states this stage owns
+    # B3/P71 per-stage scheduling: an int N, "serial" (== 1), or None on the
+    # `implement` stage to INHERIT policy.max_active_tasks (parity -- the old
+    # single global knob). Resolved to an int by effective_concurrency(); a
+    # per-project [stage.<name>] concurrency override wins over this default.
+    concurrency: int | str | None = "serial"
 
 
 # The frozen menu of stage KINDS. entry_state / exit_from / exit_map / owns are
@@ -69,7 +74,8 @@ STAGE_REGISTRY: dict[str, Stage] = {
         exit_map=(("done", TaskState.AWAITING_REVIEW),
                   ("incomplete", TaskState.QUEUED),
                   ("dead_end", TaskState.BLOCKED)),
-        owns=frozenset({TaskState.QUEUED, TaskState.ACTIVE})),
+        owns=frozenset({TaskState.QUEUED, TaskState.ACTIVE}),
+        concurrency=None),   # inherit policy.max_active_tasks unless overridden
     "frontier_review": Stage(
         name="frontier_review", role=Role.FRONTIER_REVIEW,
         entry_state=TaskState.AWAITING_REVIEW, exit_from=TaskState.AWAITING_REVIEW,
@@ -195,3 +201,41 @@ def validate_pipeline(names: list[str]) -> None:
     ) or any(st.name == "auto_merge" for st in stages)
     if not reaches_terminal:
         raise ValueError("pipeline has no path to a terminal state")
+
+
+def effective_concurrency(stage_name: str, overrides: dict, max_active_tasks: int) -> int:
+    """Resolve a stage's effective integer concurrency (B3/P71).
+
+    Precedence: a per-project `[stage.<name>] concurrency` override, else the
+    Stage default. `None` (the `implement` default) inherits max_active_tasks --
+    exact parity with the old single global knob. `"serial"` resolves to 1.
+    Values are validated at config load (validate_stage_overrides), so this is a
+    pure resolver.
+    """
+    raw = overrides.get(stage_name, {}).get("concurrency")
+    if raw is None:
+        raw = STAGE_REGISTRY[stage_name].concurrency
+    if raw is None:                      # implement's inherit-the-policy default
+        return max_active_tasks
+    if raw == "serial":
+        return 1
+    return int(raw)
+
+
+def validate_stage_overrides(overrides: dict) -> None:
+    """Raise ValueError unless every `[stage.<name>]` override names a known
+    stage kind and carries a legal `concurrency` (a positive int or "serial").
+    Called at config load so a bad knob fails loudly, never at plan time."""
+    for name, tbl in overrides.items():
+        if name not in STAGE_REGISTRY:
+            raise ValueError(
+                f"[stage.{name}] overrides an unknown stage kind; "
+                f"menu: {sorted(STAGE_REGISTRY)}")
+        if "concurrency" in tbl:
+            c = tbl["concurrency"]
+            if c == "serial":
+                continue
+            if isinstance(c, bool) or not isinstance(c, int) or c < 1:
+                raise ValueError(
+                    f'[stage.{name}] concurrency must be a positive int or '
+                    f'"serial", got {c!r}')

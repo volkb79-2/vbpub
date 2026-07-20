@@ -13,7 +13,8 @@ import pytest
 
 from nyxloom import stages
 from nyxloom.stages import (
-    DEFAULT_PIPELINE, PRESETS, STAGE_REGISTRY, Stage, compose, validate_pipeline,
+    DEFAULT_PIPELINE, PRESETS, STAGE_REGISTRY, Stage, compose,
+    effective_concurrency, validate_pipeline, validate_stage_overrides,
 )
 from nyxloom.types import TaskState, TASK_TRANSITIONS, TERMINAL_TASK_STATES
 
@@ -123,3 +124,43 @@ def test_lean_preset_drops_the_gate_but_still_closes():
     reaches a terminal via auto_merge."""
     assert "post_merge_gate" not in PRESETS["lean"]
     validate_pipeline(list(PRESETS["lean"]))
+
+
+# --- B3/P71 per-stage concurrency ------------------------------------------
+
+def test_implement_concurrency_defaults_to_max_active_tasks():
+    """Parity: implement's concurrency is None in the registry, so with no
+    override it inherits policy.max_active_tasks -- the old single global knob."""
+    assert STAGE_REGISTRY["implement"].concurrency is None
+    assert effective_concurrency("implement", {}, 4) == 4
+    assert effective_concurrency("implement", {}, 1) == 1
+
+
+def test_stage_override_wins_over_policy():
+    """A [stage.implement] concurrency override takes precedence over
+    max_active_tasks -- the knob that makes implement parallelism per-stage."""
+    assert effective_concurrency("implement", {"implement": {"concurrency": 2}}, 9) == 2
+
+
+def test_serial_resolves_to_one():
+    """"serial" (the default for review/carve/etc.) resolves to 1."""
+    assert STAGE_REGISTRY["frontier_review"].concurrency == "serial"
+    assert effective_concurrency("frontier_review", {}, 9) == 1
+    assert effective_concurrency("implement", {"implement": {"concurrency": "serial"}}, 9) == 1
+
+
+def test_validate_stage_overrides_accepts_legal():
+    validate_stage_overrides({})
+    validate_stage_overrides({"implement": {"concurrency": 4}})
+    validate_stage_overrides({"frontier_review": {"concurrency": "serial"}})
+
+
+def test_validate_stage_overrides_rejects_unknown_stage():
+    with pytest.raises(ValueError, match="unknown stage kind"):
+        validate_stage_overrides({"frobnicate": {"concurrency": 2}})
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, 1.5, "parallel"])
+def test_validate_stage_overrides_rejects_bad_concurrency(bad):
+    with pytest.raises(ValueError, match="positive int"):
+        validate_stage_overrides({"implement": {"concurrency": bad}})
