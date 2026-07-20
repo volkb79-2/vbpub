@@ -1046,6 +1046,40 @@ class Daemon:
                         spent += att.usage.cost
         return cfg.policy.max_cost - spent
 
+    def _dispatch_admissible(self, project: str, cfg: ProjectConfig,
+                             states: dict[str, TaskStateFile], kind: str) -> tuple[bool, str]:
+        """P55 2026-07-19 (R5 -- execute-time admission at the EFFECT
+        BOUNDARY). Every guard the planner evaluates runs against a snapshot;
+        the daemon then executes minutes of side-effects with NO re-check, so
+        a mid-pass auto-pause (the watchdog can write the pause flag partway
+        through a pass) or any planner gap could still launch an agent this
+        pass. This predicate is called immediately BEFORE every wrapper launch
+        so pause/budget are authoritative at the moment of effect, not merely
+        at plan time. `kind` in {'dispatch','resume','review','carve'}.
+
+        Semantics deliberately MATCH the planner's existing per-kind pause
+        rules (so this changes no behaviour except closing the plan/execute
+        gap) and ADD the budget check the planner omits for resume/review
+        (M9): 'drain-agents' blocks every kind (no new agent process of any
+        kind); 'drain-handoffs' blocks new work ('dispatch'/'carve') but lets
+        in-flight legs finish ('resume'/'review'); an exhausted budget blocks
+        ALL kinds -- including the review/resume legs the planner never
+        gated, which are the most expensive to launch into a spent budget.
+
+        Does NOT yet cover the four non-daemon launch sites (intake/decision/
+        onboarding); the fully structural form (an AdmissionToken minted only
+        here and required by wrapper.launch_detached) is a follow-up -- this
+        package closes the R5 gap for every launch the AUTONOMOUS loop makes."""
+        pause_mode = self._pause_mode(project)
+        if pause_mode == "drain-agents":
+            return (False, "paused:drain-agents")
+        if pause_mode == "drain-handoffs" and kind in ("dispatch", "carve"):
+            return (False, "paused:drain-handoffs")
+        budget = self._budget_remaining(cfg, states)
+        if budget is not None and budget <= 0:
+            return (False, "budget-exhausted")
+        return (True, "")
+
     def _history(self, project: str):
         """P44 2026-07-16 (anti-runaway self-correction): review_rejections_by_area
         is now WINDOWED (only rejections within HISTORY_REJECTION_WINDOW_SECONDS of
@@ -1873,6 +1907,20 @@ class Daemon:
                                  action: "reconcile.CarveDispatch") -> list[Event]:
         events: list[Event] = []
 
+        # P55 2026-07-19 (R5): execute-time admission at the effect boundary --
+        # pause/budget re-checked immediately before any side effect (the
+        # route re-check just below is the SAME idea, already present for
+        # routes only). This is the single carve chokepoint, so it covers
+        # BOTH the untargeted headroom trigger (via _execute's CarveDispatch
+        # branch) AND the operator-initiated dispatch_targeted_carve path
+        # (M15, which previously bypassed pause/budget entirely). An explicit
+        # operator-override of pause for a targeted carve is a product
+        # decision (D-062), added as an audited flag later -- not the current
+        # silent bypass.
+        ok, _reason = self._dispatch_admissible(project, cfg, states, "carve")
+        if not ok:
+            return events  # refused at the effect boundary; no synthetic task minted
+
         # Defense in depth: reconcile.py's own trigger already requires a
         # healthy 'frontier-review' route before ever emitting CarveDispatch
         # (module contract item 9), but routes.toml could change between
@@ -2242,6 +2290,9 @@ class Daemon:
                 events.append(self._transition(project, cfg, states, action.task_id, action.to, action.notes))
 
         elif isinstance(action, reconcile.DispatchImplementer):
+            ok, _reason = self._dispatch_admissible(project, cfg, states, "dispatch")
+            if not ok:
+                return events  # P55: execute-time admission refused; task stays QUEUED, re-evaluated next pass
             task_id = action.task_id
             tsf = states[task_id]
             branch = f"feat/{task_id}"
@@ -2285,6 +2336,9 @@ class Daemon:
             events.append(self._transition(project, cfg, states, task_id, TaskState.ACTIVE, None))
 
         elif isinstance(action, reconcile.ResumeAttempt):
+            ok, _reason = self._dispatch_admissible(project, cfg, states, "resume")
+            if not ok:
+                return events  # P55: execute-time admission refused; attempt stays INTERRUPTED, re-evaluated next pass
             task_id = action.task_id
             tsf = states[task_id]
             attempt = tsf.attempt_by_id(action.attempt_id)
@@ -2490,6 +2544,9 @@ class Daemon:
                                            {"task_ids": list(action.task_ids)}, wave_id=wave_id))
 
         elif isinstance(action, reconcile.LaunchReview):
+            ok, _reason = self._dispatch_admissible(project, cfg, states, "review")
+            if not ok:
+                return events  # P55: execute-time admission refused; task stays AWAITING_REVIEW, re-evaluated next pass
             wave_id = action.wave_id
             attempt_id = new_id("att")
             attempt_dir = paths.attempt_dir(project, attempt_id)
