@@ -2044,6 +2044,35 @@ class Daemon:
         seq = int(m.group(1)) if m else 0
         authority = getattr(cfg.policy, "carve_authority", "branch")
 
+        # P57 2026-07-20 (M4, Fable-xhigh critique): a carver that exited on a
+        # provider LIMIT / ERROR / BLOCKED wrote NO report (it never ran the
+        # carve to completion). Before this, the code fell straight through to
+        # report-parsing, found nothing, and emitted NEEDS_OPERATOR{carve-
+        # parse-failed} -- conflating an INFRA failure with a malformed report
+        # -- then SUPERSEDED (freeing the slot) so the NEXT pass immediately
+        # dispatched a fresh carver into the SAME rate limit (a burn loop the
+        # watchdog only catches after several wasted frontier dispatches +
+        # operator pings, because attempt-loop counts per task_id and every
+        # carve mints a fresh carve-<seq> task). Read the wrapper receipt
+        # first: on a non-DONE result, ProviderPause the carve route on a
+        # LIMIT (so the re-carve does not dive back into the same limit) and
+        # escalate with a DISTINCT, typed reason -- never carve-parse-failed
+        # -- then SUPERSEDE to free the slot as before.
+        carve_result = attempt.receipt.result if attempt.receipt else None
+        if carve_result is not None and carve_result is not ReceiptResult.DONE:
+            if carve_result is ReceiptResult.LIMIT:
+                events.extend(self._provider_pause(
+                    project, cfg, states, attempt.route.route_id, task_id))
+            events.append(self._append_ev(
+                project, cfg, states, EventType.NEEDS_OPERATOR,
+                {"reason": "carve-leg-failed", "result": carve_result.value, "seq": seq},
+                task_id=task_id))
+            events.append(self._append_ev(
+                project, cfg, states, EventType.TASK_SUPERSEDED,
+                {"from": states[task_id].state.value, "notes": "carve-leg-failed"},
+                task_id=task_id))
+            return events
+
         worktree = Path(attempt.worktree) if attempt.worktree else cfg.root
         if attempt.worktree and worktree.resolve() != cfg.root.resolve():
             # P58 2026-07-20 (M5, Fable-xhigh critique -- corrects P51). A
