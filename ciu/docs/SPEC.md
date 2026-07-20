@@ -64,7 +64,15 @@ requirements are marked *(withdrawn)*.
   working directory to the nearest dir containing `ciu.global.defaults.toml.j2`.
 - **S1.2** A repo whose `ciu.global.defaults.toml.j2` sets
   `standalone_root = true` is a standalone root: CIU MUST refuse to run with a
-  `REPO_ROOT` that does not match that directory.
+  `REPO_ROOT` that does not match that directory. The guard MUST be evaluated by
+  walking up from the **invocation directory** (cwd, or the `--dir` target) — NOT
+  from the already-resolved repo root, which may itself be the contaminated value
+  the guard exists to reject. Every entrypoint that resolves a root (`render`,
+  `up`, `down`, `check`, `graph`, …) MUST apply this check identically via the
+  single `enforce_standalone_root(invocation_dir)` helper. Recommended for every
+  independent repo; omit it only for a project intentionally operated as a nested
+  sub-tree of a larger CIU root (where `REPO_ROOT` legitimately points at an
+  ancestor).
 - **S1.3** Two path namespaces exist (DooD): logical (`REPO_ROOT`) and physical
   (`PHYSICAL_REPO_ROOT`). Everything CIU hands to the Docker daemon as a bind
   source (hostdirs, secret files, configfiles) MUST be a physical path.

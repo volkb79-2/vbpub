@@ -75,7 +75,7 @@ from .workspace_env import (  # P8 contract — relied on exactly, never edited 
     WorkspaceEnvError,
     bootstrap_env_init,
     bootstrap_workspace_env,
-    detect_standalone_root,
+    enforce_standalone_root,
     ensure_workspace_network,
     resolve_env_root,
     validate_required_certs,
@@ -1030,15 +1030,9 @@ def main_execution(
         except WorkspaceEnvError:
             raise  # exit 3 via main()
 
-        standalone_root = detect_standalone_root(working_dir)
-        if standalone_root:
-            env_repo_root = Path(os.environ.get("REPO_ROOT", "")).resolve()
-            if env_repo_root and env_repo_root != standalone_root:
-                raise WorkspaceEnvError(
-                    "[S1.2] standalone_root is true but REPO_ROOT does not match. "
-                    f"Expected: {standalone_root}, got: {env_repo_root}. "
-                    "Regenerate ciu.env from the standalone root."
-                )
+        # S1.2 — enforce from working_dir (the invocation / --dir target), the same
+        # source deploy.py's render path now uses via the shared helper.
+        enforce_standalone_root(working_dir)
 
         # repo_root from --define-root or env REPO_ROOT (keep v1 mismatch rule).
         if define_root:

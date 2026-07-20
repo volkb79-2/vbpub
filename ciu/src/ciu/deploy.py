@@ -66,7 +66,7 @@ from .workspace_env import (
     WorkspaceEnvError,
     bootstrap_env_init,
     bootstrap_workspace_env,
-    detect_standalone_root,
+    enforce_standalone_root,
     ensure_workspace_network,
     resolve_env_root,
 )
@@ -1628,16 +1628,13 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         required_keys=REQUIRED_KEYS_CORE,
     )
 
-    repo_root = resolve_repo_root(define_root)
+    # S1.2 — enforce from the INVOCATION dir (cwd), NOT the resolved repo_root.
+    # A contaminated $REPO_ROOT is exactly what this guards, and detecting from the
+    # resolved root would inspect the wrong repo's marker and silently pass (the
+    # render-path bug). Mirrors engine.main_execution's working_dir call.
+    enforce_standalone_root(Path.cwd())
 
-    standalone_root = detect_standalone_root(repo_root)
-    if standalone_root:
-        env_repo_root = Path(os.environ.get("REPO_ROOT", "")).resolve()
-        if env_repo_root and env_repo_root != standalone_root:
-            raise WorkspaceEnvError(
-                "[S1.2] standalone_root is true but REPO_ROOT does not match. "
-                f"Expected: {standalone_root}, got: {env_repo_root}."
-            )
+    repo_root = resolve_repo_root(define_root)
 
     # --- config + profile (S3.3 / S7.4 / Seam 4) ---
     global_cfg = load_global_config(repo_root)

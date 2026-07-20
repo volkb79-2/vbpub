@@ -104,7 +104,7 @@ key-level; scalars and lists **replace** (no list concatenation).
 |---|---|---|---|
 | `require_fqdn` | `false` | S2.3 | `true` when a public FQDN is needed |
 | `require_certs` | `false` | S2.3, S2.4 | `true` to validate TLS cert files |
-| `standalone_root` | absent | S1.2 | `true` in a single-project repo to lock REPO_ROOT |
+| `standalone_root` | absent | S1.2 | `true` to lock REPO_ROOT to this dir — recommended for any independent repo; omit only for a nested-composition sub-tree |
 | `auto_connect_network` | `true` | S2.8 | `false` in demo/CI to skip devcontainer attach |
 
 Test-repo: `test-repo/ciu.global.defaults.toml.j2` — sets `require_certs = false`

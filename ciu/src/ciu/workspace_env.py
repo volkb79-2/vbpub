@@ -208,6 +208,41 @@ def detect_standalone_root(start_dir: Path) -> Optional[Path]:
     return None
 
 
+def enforce_standalone_root(start_dir: Path) -> None:
+    """Enforce the S1.2 standalone-root guard from an INVOCATION directory.
+
+    If ``start_dir`` sits inside a standalone CIU root (a directory whose
+    ``ciu.global.defaults.toml.j2`` sets ``standalone_root = true``), then
+    ``$REPO_ROOT`` MUST resolve to that same directory, else ``WorkspaceEnvError``.
+
+    ``start_dir`` MUST be the directory the command was invoked from (cwd, or the
+    ``--dir`` target), NOT an already-resolved ``repo_root``. The guard exists
+    precisely to catch a contaminated / stale ``$REPO_ROOT`` — e.g. a sibling
+    repo's ``ciu.env`` auto-sourced by the shell (``~/.bashrc`` sourcing
+    ``${REPO_ROOT}/ciu.env``). Walking up from the *resolved* root would inspect
+    the wrong repo's marker and silently pass — which is exactly the bug this
+    helper fixes: ``ciu render`` used ``detect_standalone_root(repo_root)`` while
+    ``ciu up`` used the invocation dir, so the two paths disagreed and ``render``
+    would proceed against the wrong repo. Both call this with their invocation
+    directory now, so they cannot diverge again.
+    """
+    standalone_root = detect_standalone_root(start_dir)
+    if standalone_root is None:
+        return
+    env_repo_root_raw = os.environ.get("REPO_ROOT", "")
+    if not env_repo_root_raw:
+        # Nothing to compare against; resolve_repo_root / bootstrap raise their
+        # own "REPO_ROOT not set" error for the unset case.
+        return
+    env_repo_root = Path(env_repo_root_raw).resolve()
+    if env_repo_root != standalone_root:
+        raise WorkspaceEnvError(
+            "[S1.2] standalone_root is true but REPO_ROOT does not match. "
+            f"Expected: {standalone_root}, got: {env_repo_root}. "
+            "Regenerate ciu.env from the standalone root (or run from it)."
+        )
+
+
 def _detect_env_type() -> Dict[str, str]:
     """Detect ENV_TYPE: devcontainer | native | github-actions (S2.7).
 

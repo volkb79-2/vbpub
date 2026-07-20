@@ -34,7 +34,14 @@ from ciu import deploy  # noqa: E402
 from ciu import dev  # noqa: E402
 from ciu import engine  # noqa: E402
 from ciu.deploy_pkg import profiles as profiles_pkg  # noqa: E402
-from ciu.workspace_env import bootstrap_workspace_env, detect_standalone_root  # noqa: E402
+from ciu.workspace_env import (  # noqa: E402
+    WorkspaceEnvError,
+    bootstrap_workspace_env,
+    detect_standalone_root,
+    enforce_standalone_root,
+)
+
+import pytest  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -215,6 +222,42 @@ def test_detects_standalone_root() -> None:
     standalone_root = TEST_REPO / "standalone" / "project"
     detected = detect_standalone_root(standalone_root / "app")
     assert detected == standalone_root
+
+
+# --- S1.2 enforce_standalone_root: the guard both `ciu up` and `ciu render` call ---
+#
+# Regression: `ciu render` used to detect the standalone root from the ALREADY-RESOLVED
+# repo_root instead of the invocation dir, so a contaminated $REPO_ROOT (a sibling
+# repo's auto-sourced ciu.env) slipped past the guard and render proceeded against the
+# wrong repo. These pin the contract to the INVOCATION directory.
+
+_STANDALONE_ROOT = TEST_REPO / "standalone" / "project"
+
+
+def test_enforce_standalone_root_raises_on_mismatch(monkeypatch) -> None:
+    """The core regression: invoked from inside a standalone root, but $REPO_ROOT
+    points elsewhere -> MUST raise, regardless of what a resolved root would be."""
+    monkeypatch.setenv("REPO_ROOT", str(TEST_REPO))  # deliberately NOT the standalone root
+    with pytest.raises(WorkspaceEnvError, match=r"\[S1\.2\].*does not match"):
+        enforce_standalone_root(_STANDALONE_ROOT / "app")
+
+
+def test_enforce_standalone_root_passes_when_matching(monkeypatch) -> None:
+    monkeypatch.setenv("REPO_ROOT", str(_STANDALONE_ROOT))
+    enforce_standalone_root(_STANDALONE_ROOT / "app")  # no raise
+
+
+def test_enforce_standalone_root_noop_outside_standalone(tmp_path, monkeypatch) -> None:
+    """A directory not under any standalone root imposes no constraint on $REPO_ROOT."""
+    monkeypatch.setenv("REPO_ROOT", str(tmp_path / "somewhere-else"))
+    enforce_standalone_root(tmp_path)  # no marker above tmp_path -> no raise
+
+
+def test_enforce_standalone_root_noop_when_repo_root_unset(monkeypatch) -> None:
+    """With REPO_ROOT unset, the standalone guard defers to resolve_repo_root's
+    own 'REPO_ROOT not set' error rather than raising its own."""
+    monkeypatch.delenv("REPO_ROOT", raising=False)
+    enforce_standalone_root(_STANDALONE_ROOT / "app")  # no raise
 
 
 def test_deploy_render_all_configs_respects_phases(monkeypatch) -> None:
