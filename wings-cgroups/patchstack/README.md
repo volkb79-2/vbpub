@@ -31,7 +31,7 @@ for refs, go images, and the `FORK_REPO` placeholder.
 scripts/clone.sh
 scripts/apply.sh pterodactyl
 INTEGRATION=1 scripts/test.sh pterodactyl   # needs /var/run/docker.sock
-scripts/build-image.sh pterodactyl cgroup.7 # -> wings-local:1.13.1-cgroup.7
+scripts/build-image.sh pterodactyl cgroup.8 # -> wings-local:1.13.1-cgroup.8
 ```
 
 **New upstream release (the recurring ~1–2h/release chore)**
@@ -40,7 +40,7 @@ scripts/build-image.sh pterodactyl cgroup.7 # -> wings-local:1.13.1-cgroup.7
 scripts/rebase.sh pterodactyl v1.13.2       # rebases commits onto the new tag
 scripts/export-patches.sh pterodactyl       # refresh committed series
 INTEGRATION=1 scripts/test.sh pterodactyl
-scripts/build-image.sh pterodactyl cgroup.8   # bump the suffix per deployable change
+scripts/build-image.sh pterodactyl cgroup.9   # bump the suffix per deployable change
 # deploy per ../SETUP.md, then commit patches/ changes
 ```
 

@@ -1,4 +1,4 @@
-From 3c395394c96f2e6fe74b1b35f6a106b1c5d39beb Mon Sep 17 00:00:00 2001
+From a4ffdcdaea1d22e0d767f931a8e5f8254e7ebebf Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Mon, 20 Jul 2026 10:01:23 +0000
 Subject: [PATCH 7/8] Stage per-server slice properties across server startup
@@ -50,17 +50,18 @@ with instead of raw byte counts:
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
- config/config_docker.go         |  83 ++++++++++++++--
+ config/config_docker.go         |  83 +++++++++-
  environment/docker/container.go |   8 +-
- environment/docker/power.go     |  32 +++++++
- internal/cgroups/cgroups.go     | 114 ++++++++++++++++++++++
- internal/cgroups/ensure.go      |  66 +++++++++++--
- internal/cgroups/phase_test.go  | 163 ++++++++++++++++++++++++++++++++
+ environment/docker/power.go     |  32 ++++
+ internal/cgroups/cgroups.go     | 164 +++++++++++++++++++
+ internal/cgroups/ensure.go      |  66 +++++++-
+ internal/cgroups/phase_test.go  | 163 +++++++++++++++++++
  server/install.go               |   2 +-
- server/server.go                |  15 +++
- server/slice_phase.go           | 159 +++++++++++++++++++++++++++++++
- server/slice_phase_test.go      | 158 +++++++++++++++++++++++++++++++
- 10 files changed, 783 insertions(+), 17 deletions(-)
+ server/listeners.go             |  17 ++
+ server/server.go                |  18 ++
+ server/slice_phase.go           | 269 ++++++++++++++++++++++++++++++
+ server/slice_phase_test.go      | 280 ++++++++++++++++++++++++++++++++
+ 11 files changed, 1085 insertions(+), 17 deletions(-)
  create mode 100644 internal/cgroups/phase_test.go
  create mode 100644 server/slice_phase.go
  create mode 100644 server/slice_phase_test.go
@@ -265,10 +266,18 @@ index 7b143a4..770b6a8 100644
  // listeners for the console. If a container does not exist, or needs to be
  // rebuilt that will happen in the call to OnBeforeStart().
 diff --git a/internal/cgroups/cgroups.go b/internal/cgroups/cgroups.go
-index 06ad73d..69230fb 100644
+index 06ad73d..376631a 100644
 --- a/internal/cgroups/cgroups.go
 +++ b/internal/cgroups/cgroups.go
-@@ -40,6 +40,40 @@ const (
+@@ -20,6 +20,7 @@ import (
+ 	"math"
+ 	"strconv"
+ 	"strings"
++	"time"
+ 
+ 	"emperror.dev/errors"
+ )
+@@ -40,6 +41,56 @@ const (
  	EnvIOBFQWeight = "WINGS_CG_IO_BFQ_WEIGHT"
  )
  
@@ -293,6 +302,22 @@ index 06ad73d..69230fb 100644
 +	EnvStartupMemoryLow  = "WINGS_CG_STARTUP_MEMORY_LOW"
 +	EnvStartupMemoryHigh = "WINGS_CG_STARTUP_MEMORY_HIGH"
 +	EnvStartupMemoryMax  = "WINGS_CG_STARTUP_MEMORY_MAX"
++
++	// EnvSteadyMatch is a console line that ends the startup phase. Wings
++	// otherwise falls back to the egg's own startup "done" matcher, which marks
++	// the server "running" for the Panel — an event that for many games fires
++	// well before the world has finished loading. Where the two differ, this is
++	// the one that matters: applying the steady ceiling too early is what the
++	// startup band exists to prevent.
++	//
++	// A "regex:" prefix makes it a regular expression, matching the convention
++	// the Panel already uses for startup.done; anything else is a substring.
++	EnvSteadyMatch = "WINGS_CG_STEADY_MATCH"
++
++	// EnvStartupGrace overrides docker.per_server_slices.startup_grace for one
++	// server, because how long a world takes to load is a property of the game
++	// and its save, not of the node.
++	EnvStartupGrace = "WINGS_CG_STARTUP_GRACE"
 +)
 +
 +// Phase selects which property band a slice should carry.
@@ -309,7 +334,7 @@ index 06ad73d..69230fb 100644
  // BFQ weight bounds. BFQ keeps its own per-cgroup weight in io.bfq.weight on a
  // 1..1000 scale and does NOT read io.weight — that file belongs to the iocost
  // controller, which is inert unless io.cost.model/io.cost.qos are configured.
-@@ -124,6 +158,21 @@ func FormatSize(v uint64) string {
+@@ -124,6 +175,21 @@ func FormatSize(v uint64) string {
  	return strconv.FormatUint(v, 10)
  }
  
@@ -331,7 +356,7 @@ index 06ad73d..69230fb 100644
  // String renders the requested properties for logs, naming each systemd
  // property (what Wings actually sets) and rendering memory sizes with the
  // binary suffix they were configured with, so a log line can be read against
-@@ -239,6 +288,71 @@ func FromEnv(env []string) (props Props, errs []error) {
+@@ -239,6 +305,104 @@ func FromEnv(env []string) (props Props, errs []error) {
  	return props, errs
  }
  
@@ -367,6 +392,39 @@ index 06ad73d..69230fb 100644
 +	set(EnvStartupMemoryHigh, &props.MemoryHigh)
 +	set(EnvStartupMemoryMax, &props.MemoryMax)
 +	return props, errs
++}
++
++// SteadyMatchFromEnv returns the per-server console matcher that ends the
++// startup phase, or "" when the server does not define one.
++func SteadyMatchFromEnv(env []string) string {
++	return envValue(env, EnvSteadyMatch)
++}
++
++// StartupGraceFromEnv returns the per-server startup grace override. The bool
++// reports whether the server defined one at all; an unparseable value is
++// reported as an error so it can be logged and the node default used.
++func StartupGraceFromEnv(env []string) (time.Duration, bool, error) {
++	raw := envValue(env, EnvStartupGrace)
++	if raw == "" {
++		return 0, false, nil
++	}
++	d, err := time.ParseDuration(raw)
++	if err != nil {
++		return 0, true, errors.Wrap(err, EnvStartupGrace)
++	}
++	if d < 0 {
++		return 0, true, errors.New(EnvStartupGrace + " must not be negative")
++	}
++	return d, true, nil
++}
++
++func envValue(env []string, key string) string {
++	for _, kv := range env {
++		if k, v, ok := strings.Cut(kv, "="); ok && k == key {
++			return v
++		}
++	}
++	return ""
 +}
 +
 +// StartupDefaults are the node-wide startup-phase memory band defaults. Empty
@@ -687,19 +745,50 @@ index 64a1ea7..24274fc 100644
  	}
  	if cgroupParent != "" {
  		hostConf.CgroupParent = cgroupParent
+diff --git a/server/listeners.go b/server/listeners.go
+index d39e664..3789da5 100644
+--- a/server/listeners.go
++++ b/server/listeners.go
+@@ -184,6 +184,23 @@ func (s *Server) onConsoleOutput(data []byte) {
+ 		}
+ 	}
+ 
++	// Strip ANSI for the slice matcher independently: the block above only
++	// strips while the server is "starting", and the steady trigger routinely
++	// fires later than that. Done on a copy so the stop-command comparison
++	// below still sees the bytes it expects.
++	sliceLine := v
++	if processConfiguration.Startup.StripAnsi {
++		sliceLine = stripAnsiRegex.ReplaceAll(v, []byte(""))
++	}
++
++	// Feed the line to the per-server slice steady trigger. This is separate
++	// from Startup.Done on purpose: "done" is whatever makes the Panel show
++	// Running, and for a world-streaming game that routinely fires before the
++	// load is finished — applying the steady memory ceiling at that point is
++	// what the startup band exists to avoid. No-op unless the server both
++	// stages a startup band and defines a trigger.
++	s.matchSliceSteady(sliceLine)
++
+ 	// If the command sent to the server is one that should stop the server we will need to
+ 	// set the server to be in a stopping state, otherwise crash detection will kick in and
+ 	// cause the server to unexpectedly restart on the user.
 diff --git a/server/server.go b/server/server.go
-index a1777b0..7a7c782 100644
+index a1777b0..6301383 100644
 --- a/server/server.go
 +++ b/server/server.go
-@@ -10,6 +10,7 @@ import (
+@@ -8,8 +8,10 @@ import (
+ 	"net/http"
+ 	"os"
  	"path/filepath"
++	"regexp"
  	"strings"
  	"sync"
 +	"time"
  
  	"emperror.dev/errors"
  	"github.com/apex/log"
-@@ -64,6 +65,12 @@ type Server struct {
+@@ -64,6 +66,14 @@ type Server struct {
  	transferring *system.AtomicBool
  	restoring    *system.AtomicBool
  
@@ -708,11 +797,13 @@ index a1777b0..7a7c782 100644
 +	slicePhaseMu    sync.Mutex
 +	slicePhaseTimer *time.Timer
 +	slicePhaseFired bool
++	slicePhaseSlice string
++	slicePhaseMatch *regexp.Regexp
 +
  	// The console throttler instance used to control outputs.
  	throttler    *ConsoleThrottle
  	throttleOnce sync.Once
-@@ -110,6 +117,10 @@ func New(client remote.Client) (*Server, error) {
+@@ -110,6 +120,10 @@ func New(client remote.Client) (*Server, error) {
  // using the context on the server struct. This will cancel any running install
  // processes for the server as well.
  func (s *Server) CleanupForDestroy() {
@@ -723,7 +814,7 @@ index a1777b0..7a7c782 100644
  	s.CtxCancel()
  	s.Events().Destroy()
  	s.DestroyAllSinks()
-@@ -325,6 +336,10 @@ func (s *Server) OnStateChange() {
+@@ -325,6 +339,10 @@ func (s *Server) OnStateChange() {
  	if prevState != s.Environment.State() {
  		s.Log().WithField("status", st).Debug("saw server status change event")
  		s.Events().Publish(StatusEvent, st)
@@ -736,14 +827,20 @@ index a1777b0..7a7c782 100644
  	// Reset the resource usage to 0 when the process fully stops so that all the UI
 diff --git a/server/slice_phase.go b/server/slice_phase.go
 new file mode 100644
-index 0000000..e038e59
+index 0000000..73fbed2
 --- /dev/null
 +++ b/server/slice_phase.go
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,269 @@
 +package server
 +
 +import (
++	"context"
++	"regexp"
++	"strconv"
++	"strings"
 +	"time"
++
++	"github.com/apex/log"
 +
 +	"github.com/pterodactyl/wings/config"
 +	"github.com/pterodactyl/wings/environment"
@@ -773,6 +870,7 @@ index 0000000..e038e59
 +// are readable without correlating timestamps against console output.
 +const (
 +	sliceReasonReady = "server reported ready"
++	sliceReasonMatch = "steady match seen in console"
 +	sliceReasonGrace = "startup grace expired"
 +)
 +
@@ -794,13 +892,33 @@ index 0000000..e038e59
 +	if !cfg.Docker.PerServerSlices.Enabled {
 +		return
 +	}
-+	grace := cfg.Docker.SliceStartupGrace()
-+	if grace == 0 {
++	// Nothing staged for this server: the band applied at container create is
++	// already the steady one, so there is nothing to swap in later.
++	req := s.sliceRequest(cgroups.PhaseSteady)
++	if !req.Staged() {
 +		return
 +	}
-+	// Nothing staged for this server: the band applied at container create is
-+	// already the steady one, so there is nothing for the timer to swap in.
-+	if !s.sliceRequest(cgroups.PhaseSteady).Staged() {
++	env := s.GetEnvironmentVariables()
++
++	// How long a world takes to load is a property of the game and its save,
++	// so the server may override the node default.
++	grace := cfg.Docker.SliceStartupGrace()
++	if d, set, err := cgroups.StartupGraceFromEnv(env); err != nil {
++		s.Log().WithError(err).Warn("cgroups: ignoring invalid per-server startup grace; using the node default")
++	} else if set {
++		grace = d
++	}
++
++	// An explicit matcher displaces the egg's "done" line as the trigger. That
++	// matters when "done" fires before the world has finished loading, which is
++	// exactly the case the startup band exists for.
++	matcher, err := compileSliceMatch(cgroups.SteadyMatchFromEnv(env))
++	if err != nil {
++		s.Log().WithError(err).Warn("cgroups: ignoring invalid " + cgroups.EnvSteadyMatch + "; falling back to the egg's startup done matcher")
++	}
++	if grace == 0 && matcher == nil {
++		// No timer and no matcher: the running state is the only trigger left,
++		// which onSliceStateChange already handles.
 +		return
 +	}
 +
@@ -810,13 +928,21 @@ index 0000000..e038e59
 +		s.slicePhaseTimer.Stop()
 +	}
 +	s.slicePhaseFired = false
-+	s.slicePhaseTimer = time.AfterFunc(grace, func() {
-+		s.Log().WithField("grace", grace.String()).
-+			Warn("cgroups: startup grace expired without the server reporting ready; applying steady slice properties")
-+		s.applySliceProps(cgroups.PhaseSteady, sliceReasonGrace)
-+	})
-+	s.Log().WithField("grace", grace.String()).
-+		Debug("cgroups: startup slice properties in effect; steady band applies on ready or after grace")
++	s.slicePhaseSlice = req.Slice
++	s.slicePhaseMatch = matcher
++	if grace > 0 {
++		s.slicePhaseTimer = time.AfterFunc(grace, func() {
++			s.Log().WithField("grace", grace.String()).
++				Warn("cgroups: startup grace expired without the steady trigger firing; applying steady slice properties")
++			s.applySliceProps(cgroups.PhaseSteady, sliceReasonGrace)
++		})
++	}
++	trigger := "the egg's startup done matcher"
++	if matcher != nil {
++		trigger = cgroups.EnvSteadyMatch + "=" + matcher.String()
++	}
++	s.Log().WithFields(log.Fields{"grace": grace.String(), "steady_trigger": trigger}).
++		Info("cgroups: startup slice properties in effect")
 +}
 +
 +// endSlicePhase cancels a pending grace timer. Safe to call repeatedly.
@@ -831,6 +957,8 @@ index 0000000..e038e59
 +	// cancelled it — the caller may be about to apply a band itself.
 +	s.slicePhaseFired = !s.slicePhaseTimer.Stop()
 +	s.slicePhaseTimer = nil
++	s.slicePhaseSlice = ""
++	s.slicePhaseMatch = nil
 +}
 +
 +// sliceRequest resolves this server's slice and builds the ensure request for
@@ -853,12 +981,60 @@ index 0000000..e038e59
 +	return cfg.Docker.SliceEnsureRequest(s.ID(), slice, env, phase)
 +}
 +
++// hasSliceMatcher reports whether an explicit steady trigger is in effect for
++// the phase currently in progress.
++func (s *Server) hasSliceMatcher() bool {
++	s.slicePhaseMu.Lock()
++	defer s.slicePhaseMu.Unlock()
++	return s.slicePhaseMatch != nil
++}
++
++// matchSliceSteady is fed every console line while a startup phase is in
++// progress. The first line matching the server's steady trigger ends the
++// phase. Called from the console listener, so it must stay cheap and must
++// never block: the apply is dispatched.
++func (s *Server) matchSliceSteady(line []byte) {
++	s.slicePhaseMu.Lock()
++	m := s.slicePhaseMatch
++	s.slicePhaseMu.Unlock()
++	if m == nil || !m.Match(line) {
++		return
++	}
++	s.Log().WithFields(log.Fields{
++		"match":   m.String(),
++		"against": strconv.QuoteToASCII(string(line)),
++	}).Info("cgroups: steady trigger matched; leaving the startup band")
++	s.endSlicePhase()
++	go s.applySliceProps(cgroups.PhaseSteady, sliceReasonMatch)
++}
++
++// compileSliceMatch builds the steady trigger. A "regex:" prefix makes it a
++// regular expression, matching the convention the Panel uses for
++// startup.done; anything else is matched as a literal substring.
++func compileSliceMatch(raw string) (*regexp.Regexp, error) {
++	if raw == "" {
++		return nil, nil
++	}
++	if expr, ok := strings.CutPrefix(raw, "regex:"); ok {
++		return regexp.Compile(expr)
++	}
++	return regexp.Compile(regexp.QuoteMeta(raw))
++}
++
 +// gracePhaseFired reports whether the last endSlicePhase found the grace timer
 +// already running its callback.
 +func (s *Server) gracePhaseFired() bool {
 +	s.slicePhaseMu.Lock()
 +	defer s.slicePhaseMu.Unlock()
 +	return s.slicePhaseFired
++}
++
++// pinnedSlice returns the slice captured when this server's startup phase
++// began, or "" when no phase is in progress.
++func (s *Server) pinnedSlice() string {
++	s.slicePhaseMu.Lock()
++	defer s.slicePhaseMu.Unlock()
++	return s.slicePhaseSlice
 +}
 +
 +// applySliceProps re-ensures this server's slice with the given phase's
@@ -869,13 +1045,29 @@ index 0000000..e038e59
 +	if req.Slice == "" {
 +		return
 +	}
++	// Placement is fixed when the container is created, so the container stays
++	// in whatever slice it was placed under even if the Panel later syncs a
++	// different WINGS_CGROUP_PARENT. Apply to the slice this phase began with,
++	// or the steady band lands on a unit holding nothing.
++	if pinned := s.pinnedSlice(); pinned != "" && pinned != req.Slice {
++		s.Log().WithFields(log.Fields{"resolved": req.Slice, "applying_to": pinned}).
++			Warn("cgroups: server cgroup parent changed while starting; the container is still in the slice it was created under")
++		req.Slice = pinned
++		req.Budget.Exclude = pinned
++	}
 +	// With no startup band staged, the properties set at container create are
 +	// already the steady ones; re-applying them would cost a systemd round
 +	// trip per server start and log a transition that did not happen.
 +	if phase == cgroups.PhaseSteady && !req.Staged() {
 +		return
 +	}
-+	cgroups.EnsureForServer(s.Context(), s.Log(), req, reason)
++	// This runs on its own goroutine, where a panic takes the whole daemon
++	// with it, so do not assume a context exists.
++	ctx := s.Context()
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	cgroups.EnsureForServer(ctx, s.Log(), req, reason)
 +}
 +
 +// onSliceStateChange drives the startup -> steady transition from the server's
@@ -885,8 +1077,13 @@ index 0000000..e038e59
 +	case environment.ProcessStartingState:
 +		s.beginSlicePhase()
 +	case environment.ProcessRunningState:
-+		// The egg's "done" matcher fired: the server is up, and whatever
-+		// headroom the startup band granted is no longer needed.
++		// The egg's "done" matcher fired. When the server defines its own
++		// steady trigger this is deliberately NOT the end of the startup
++		// phase: "done" is whatever makes the Panel show Running, which for a
++		// world-streaming game is routinely well before loading finishes.
++		if s.hasSliceMatcher() {
++			return
++		}
 +		s.endSlicePhase()
 +		if s.gracePhaseFired() {
 +			// The grace timer beat us to it by a hair and is already applying
@@ -894,20 +1091,25 @@ index 0000000..e038e59
 +			// would race it for no benefit.
 +			return
 +		}
-+		s.applySliceProps(cgroups.PhaseSteady, sliceReasonReady)
++		// Dispatched: OnStateChange runs crash detection after this, and a
++		// slice application is a D-Bus round trip bounded only by
++		// cgroups.ensureTimeout. Slice management is best-effort decoration
++		// and must never sit in the state machine's path.
++		go s.applySliceProps(cgroups.PhaseSteady, sliceReasonReady)
 +	case environment.ProcessOfflineState:
 +		s.endSlicePhase()
 +	}
 +}
 diff --git a/server/slice_phase_test.go b/server/slice_phase_test.go
 new file mode 100644
-index 0000000..4ba4fdd
+index 0000000..5e51dc2
 --- /dev/null
 +++ b/server/slice_phase_test.go
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,280 @@
 +package server
 +
 +import (
++	"context"
 +	"testing"
 +	"time"
 +
@@ -936,6 +1138,16 @@ index 0000000..4ba4fdd
 +	config.Set(&c)
 +}
 +
++// newSliceTestServer builds the minimum Server these tests need, including a
++// context: applySliceProps is dispatched onto a goroutine and would otherwise
++// panic on a nil parent.
++func newSliceTestServer() *Server {
++	ctx, cancel := context.WithCancel(context.Background())
++	s := &Server{ctx: ctx, ctxCancel: &cancel}
++	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
++	return s
++}
++
 +func TestSliceStartupGraceParsing(t *testing.T) {
 +	for _, tt := range []struct {
 +		raw  string
@@ -959,8 +1171,7 @@ index 0000000..4ba4fdd
 +// a node that does not use the feature gets a 15-minute timer and an eventual
 +// spurious warning.
 +func TestBeginSlicePhaseOnlyArmsWhenStaged(t *testing.T) {
-+	s := &Server{}
-+	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
++	s := newSliceTestServer()
 +
 +	sliceTestConfig(t, true, "15m", "") // no startup band configured
 +	s.beginSlicePhase()
@@ -993,8 +1204,7 @@ index 0000000..4ba4fdd
 +
 +func TestEndSlicePhaseIsIdempotent(t *testing.T) {
 +	sliceTestConfig(t, true, "15m", "64G")
-+	s := &Server{}
-+	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
++	s := newSliceTestServer()
 +
 +	s.endSlicePhase() // nothing armed yet
 +	s.beginSlicePhase()
@@ -1012,8 +1222,7 @@ index 0000000..4ba4fdd
 +// fired, so the ready path does not race a steady application already running.
 +func TestEndSlicePhaseReportsAlreadyFired(t *testing.T) {
 +	sliceTestConfig(t, true, "15m", "64G")
-+	s := &Server{}
-+	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
++	s := newSliceTestServer()
 +
 +	fired := make(chan struct{})
 +	s.slicePhaseMu.Lock()
@@ -1051,8 +1260,7 @@ index 0000000..4ba4fdd
 +// systemd call is ever attempted for it.
 +func TestSliceRequestSkipsUnmanaged(t *testing.T) {
 +	sliceTestConfig(t, true, "15m", "64G")
-+	s := &Server{}
-+	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
++	s := newSliceTestServer()
 +
 +	if got := s.sliceRequest(cgroups.PhaseSteady); got.Slice == "" {
 +		t.Error("a derived slice should have produced a request")
@@ -1061,6 +1269,121 @@ index 0000000..4ba4fdd
 +	sliceTestConfig(t, false, "15m", "64G")
 +	if got := s.sliceRequest(cgroups.PhaseSteady); got.Slice != "" {
 +		t.Errorf("per_server_slices disabled must yield no request, got %q", got.Slice)
++	}
++}
++
++// Placement is create-time only, so once a phase has begun the steady band
++// must target the slice that phase captured — not whatever the environment
++// resolves to later, which a Panel sync can change mid-startup.
++func TestSlicePhasePinsTheSliceItBeganWith(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	s := newSliceTestServer()
++
++	if got := s.pinnedSlice(); got != "" {
++		t.Errorf("no phase in progress must pin nothing, got %q", got)
++	}
++	s.beginSlicePhase()
++	want := s.sliceRequest(cgroups.PhaseSteady).Slice
++	if got := s.pinnedSlice(); got != want {
++		t.Errorf("pinned slice = %q, want %q", got, want)
++	}
++	s.endSlicePhase()
++	if got := s.pinnedSlice(); got != "" {
++		t.Errorf("ended phase must clear the pin, got %q", got)
++	}
++}
++
++func TestCompileSliceMatch(t *testing.T) {
++	if m, err := compileSliceMatch(""); m != nil || err != nil {
++		t.Errorf("empty trigger = (%v, %v), want (nil, nil)", m, err)
++	}
++	// A bare string is a literal substring, so regex metacharacters in a game's
++	// log line cannot silently change what it matches.
++	m, err := compileSliceMatch("Create Dungeon (Successed)")
++	if err != nil {
++		t.Fatalf("literal: %v", err)
++	}
++	if !m.Match([]byte("xx Create Dungeon (Successed) yy")) {
++		t.Error("literal trigger should match as a substring")
++	}
++	if m.Match([]byte("Create Dungeon Successed")) {
++		t.Error("literal trigger must not be interpreted as a regex")
++	}
++	// regex: opts in, matching the Panel's own startup.done convention.
++	m, err = compileSliceMatch(`regex:SERVER_LIST.*registe server.*succeed`)
++	if err != nil {
++		t.Fatalf("regex: %v", err)
++	}
++	if !m.Match([]byte("[SERVER_LIST] try registe server ... succeed!")) {
++		t.Error("regex trigger should match the registration line")
++	}
++	if m.Match([]byte("Create Dungeon Successed")) {
++		t.Error("regex trigger must not match the earlier done line")
++	}
++	if _, err := compileSliceMatch("regex:[unterminated"); err == nil {
++		t.Error("a bad regex must report an error, not be silently ignored")
++	}
++}
++
++// With an explicit trigger the egg's early "done" must NOT end the phase.
++func TestExplicitTriggerOutranksTheDoneMatcher(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	s := newSliceTestServer()
++	s.cfg.EnvVars = map[string]interface{}{
++		"WINGS_CG_STEADY_MATCH": `regex:registe server.*succeed`,
++	}
++	s.beginSlicePhase()
++	if !s.hasSliceMatcher() {
++		t.Fatal("an explicit trigger should be in effect")
++	}
++	// The Panel's running state arrives first and must be ignored.
++	s.onSliceStateChange("running")
++	if !s.hasSliceMatcher() || s.pinnedSlice() == "" {
++		t.Error("running state ended the phase despite an explicit trigger")
++	}
++	// A non-matching line changes nothing.
++	s.matchSliceSteady([]byte("Create Dungeon Successed"))
++	if s.pinnedSlice() == "" {
++		t.Error("a non-matching console line ended the phase")
++	}
++	// The trigger line ends it.
++	s.matchSliceSteady([]byte("[SERVER_LIST] try registe server ... succeed!"))
++	if s.pinnedSlice() != "" || s.hasSliceMatcher() {
++		t.Error("the trigger line did not end the startup phase")
++	}
++}
++
++// Without a trigger the previous behaviour stands: running ends the phase.
++func TestWithoutTriggerRunningEndsThePhase(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	s := newSliceTestServer()
++	s.beginSlicePhase()
++	if s.hasSliceMatcher() {
++		t.Fatal("no trigger configured, yet one is in effect")
++	}
++	s.onSliceStateChange("running")
++	if s.pinnedSlice() != "" {
++		t.Error("running state should have ended the phase")
++	}
++}
++
++func TestPerServerStartupGraceOverride(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	for _, tt := range []struct{ raw string; want time.Duration; set bool }{
++		{"30m", 30 * time.Minute, true},
++		{"", 0, false},
++		{"nonsense", 0, true}, // reported as an error, node default used
++	} {
++		d, set, err := cgroups.StartupGraceFromEnv([]string{"WINGS_CG_STARTUP_GRACE=" + tt.raw})
++		if tt.raw == "nonsense" {
++			if err == nil {
++				t.Error("an unparseable grace must report an error")
++			}
++			continue
++		}
++		if set != tt.set || d != tt.want {
++			t.Errorf("grace %q = (%v, %v), want (%v, %v)", tt.raw, d, set, tt.want, tt.set)
++		}
 +	}
 +}
 -- 

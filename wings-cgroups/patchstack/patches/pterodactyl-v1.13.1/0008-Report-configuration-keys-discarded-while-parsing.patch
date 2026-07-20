@@ -1,6 +1,6 @@
-From 78a827c39a1b80c7a36c79b7d4ca4c1e11f3dc6c Mon Sep 17 00:00:00 2001
+From 975c2a8ba9bd743b4fcd7389342f0677a195526f Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
-Date: Fri, 17 Jul 2026 09:48:27 +0000
+Date: Mon, 20 Jul 2026 12:50:28 +0000
 Subject: [PATCH 8/8] Report configuration keys discarded while parsing
 
 Wings parses config.yml permissively and then rewrites the file from the
@@ -26,10 +26,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
  cmd/root.go                     | 13 ++++++
  config/config.go                | 48 +++++++++++++++++++++
  config/config_discarded_test.go | 74 +++++++++++++++++++++++++++++++++
- server/server.go                |  1 +
- server/slice_phase.go           | 31 +++++++++++++-
- server/slice_phase_test.go      | 22 ++++++++++
- 6 files changed, 187 insertions(+), 2 deletions(-)
+ 3 files changed, 135 insertions(+)
  create mode 100644 config/config_discarded_test.go
 
 diff --git a/cmd/root.go b/cmd/root.go
@@ -214,132 +211,6 @@ index 0000000..d12bf06
 +`
 +	if got := discardedKeys([]byte(yml)); len(got) != 0 {
 +		t.Errorf("valid configuration produced diagnostics: %v", got)
-+	}
-+}
-diff --git a/server/server.go b/server/server.go
-index 7a7c782..8c6e4f6 100644
---- a/server/server.go
-+++ b/server/server.go
-@@ -70,6 +70,7 @@ type Server struct {
- 	slicePhaseMu    sync.Mutex
- 	slicePhaseTimer *time.Timer
- 	slicePhaseFired bool
-+	slicePhaseSlice string
- 
- 	// The console throttler instance used to control outputs.
- 	throttler    *ConsoleThrottle
-diff --git a/server/slice_phase.go b/server/slice_phase.go
-index e038e59..9458354 100644
---- a/server/slice_phase.go
-+++ b/server/slice_phase.go
-@@ -3,6 +3,8 @@ package server
- import (
- 	"time"
- 
-+	"github.com/apex/log"
-+
- 	"github.com/pterodactyl/wings/config"
- 	"github.com/pterodactyl/wings/environment"
- 	"github.com/pterodactyl/wings/internal/cgroups"
-@@ -58,7 +60,8 @@ func (s *Server) beginSlicePhase() {
- 	}
- 	// Nothing staged for this server: the band applied at container create is
- 	// already the steady one, so there is nothing for the timer to swap in.
--	if !s.sliceRequest(cgroups.PhaseSteady).Staged() {
-+	req := s.sliceRequest(cgroups.PhaseSteady)
-+	if !req.Staged() {
- 		return
- 	}
- 
-@@ -68,6 +71,7 @@ func (s *Server) beginSlicePhase() {
- 		s.slicePhaseTimer.Stop()
- 	}
- 	s.slicePhaseFired = false
-+	s.slicePhaseSlice = req.Slice
- 	s.slicePhaseTimer = time.AfterFunc(grace, func() {
- 		s.Log().WithField("grace", grace.String()).
- 			Warn("cgroups: startup grace expired without the server reporting ready; applying steady slice properties")
-@@ -89,6 +93,7 @@ func (s *Server) endSlicePhase() {
- 	// cancelled it — the caller may be about to apply a band itself.
- 	s.slicePhaseFired = !s.slicePhaseTimer.Stop()
- 	s.slicePhaseTimer = nil
-+	s.slicePhaseSlice = ""
- }
- 
- // sliceRequest resolves this server's slice and builds the ensure request for
-@@ -119,6 +124,14 @@ func (s *Server) gracePhaseFired() bool {
- 	return s.slicePhaseFired
- }
- 
-+// pinnedSlice returns the slice captured when this server's startup phase
-+// began, or "" when no phase is in progress.
-+func (s *Server) pinnedSlice() string {
-+	s.slicePhaseMu.Lock()
-+	defer s.slicePhaseMu.Unlock()
-+	return s.slicePhaseSlice
-+}
-+
- // applySliceProps re-ensures this server's slice with the given phase's
- // property band. Best-effort like every other slice operation: a server that
- // is already running is never disturbed by a failure here.
-@@ -127,6 +140,16 @@ func (s *Server) applySliceProps(phase cgroups.Phase, reason string) {
- 	if req.Slice == "" {
- 		return
- 	}
-+	// Placement is fixed when the container is created, so the container stays
-+	// in whatever slice it was placed under even if the Panel later syncs a
-+	// different WINGS_CGROUP_PARENT. Apply to the slice this phase began with,
-+	// or the steady band lands on a unit holding nothing.
-+	if pinned := s.pinnedSlice(); pinned != "" && pinned != req.Slice {
-+		s.Log().WithFields(log.Fields{"resolved": req.Slice, "applying_to": pinned}).
-+			Warn("cgroups: server cgroup parent changed while starting; the container is still in the slice it was created under")
-+		req.Slice = pinned
-+		req.Budget.Exclude = pinned
-+	}
- 	// With no startup band staged, the properties set at container create are
- 	// already the steady ones; re-applying them would cost a systemd round
- 	// trip per server start and log a transition that did not happen.
-@@ -152,7 +175,11 @@ func (s *Server) onSliceStateChange(state string) {
- 			// would race it for no benefit.
- 			return
- 		}
--		s.applySliceProps(cgroups.PhaseSteady, sliceReasonReady)
-+		// Dispatched: OnStateChange runs crash detection after this, and a
-+		// slice application is a D-Bus round trip bounded only by
-+		// cgroups.ensureTimeout. Slice management is best-effort decoration
-+		// and must never sit in the state machine's path.
-+		go s.applySliceProps(cgroups.PhaseSteady, sliceReasonReady)
- 	case environment.ProcessOfflineState:
- 		s.endSlicePhase()
- 	}
-diff --git a/server/slice_phase_test.go b/server/slice_phase_test.go
-index 4ba4fdd..db58630 100644
---- a/server/slice_phase_test.go
-+++ b/server/slice_phase_test.go
-@@ -156,3 +156,25 @@ func TestSliceRequestSkipsUnmanaged(t *testing.T) {
- 		t.Errorf("per_server_slices disabled must yield no request, got %q", got.Slice)
- 	}
- }
-+
-+// Placement is create-time only, so once a phase has begun the steady band
-+// must target the slice that phase captured — not whatever the environment
-+// resolves to later, which a Panel sync can change mid-startup.
-+func TestSlicePhasePinsTheSliceItBeganWith(t *testing.T) {
-+	sliceTestConfig(t, true, "15m", "64G")
-+	s := &Server{}
-+	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
-+
-+	if got := s.pinnedSlice(); got != "" {
-+		t.Errorf("no phase in progress must pin nothing, got %q", got)
-+	}
-+	s.beginSlicePhase()
-+	want := s.sliceRequest(cgroups.PhaseSteady).Slice
-+	if got := s.pinnedSlice(); got != want {
-+		t.Errorf("pinned slice = %q, want %q", got, want)
-+	}
-+	s.endSlicePhase()
-+	if got := s.pinnedSlice(); got != "" {
-+		t.Errorf("ended phase must clear the pin, got %q", got)
 +	}
 +}
 -- 

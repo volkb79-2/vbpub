@@ -1,10 +1,10 @@
 {
-    "_comment": "egg-soulmask-rcon-ksm + 12 admin-only cgroup variables for patched Wings (vbpub/wings-cgroups). With docker.per_server_slices.enabled (patch 0004) Wings derives wings-<uuid32>.slice automatically, so WINGS_CGROUP_PARENT is only an explicit override/opt-out; the WINGS_CG_* variables carry optional per-server floors, ceilings and weights that override the node defaults in config.yml. Import over the existing egg (update-in-place) so running servers keep their egg association. Every value defaults to empty, so importing changes no behaviour by itself; values are validated and budget-checked by Wings and take effect at the next container (re)creation -- panel Stop then Start, not Restart. Stock Wings ignores all of them. Variable groups: placement (WINGS_CGROUP_PARENT); the steady memory band (WINGS_CG_MEMORY_MIN/_LOW/_HIGH/_MAX); the startup memory band (WINGS_CG_STARTUP_MEMORY_MIN/_LOW/_HIGH/_MAX, patch 0007, image cgroup.7+), applied while the server is loading and replaced by the steady band when the egg's startup 'done' string matches or docker.per_server_slices.startup_grace expires; and the weights (WINGS_CG_CPU_WEIGHT, and WINGS_CG_IO_BFQ_WEIGHT / WINGS_CG_IO_WEIGHT, which are mutually exclusive). Two facts worth knowing before setting values. (1) IO: patch 0005 added WINGS_CG_IO_BFQ_WEIGHT so the weight can be stated on BFQ's own 1-1000 scale; systemd compresses its own 1-10000 IOWeight into that range, so ratios above the default shrink by ~11x and WINGS_CG_IO_WEIGHT=1000 buys 1.8:1, not 10:1. Prefer the BFQ spelling on BFQ nodes; keep the systemd one for iocost/non-BFQ nodes. (2) MEMORY: memory.high reclaim ignores memory.min, so a ceiling below the server's LOAD-TIME peak evicts it through its own guaranteed floor and it does not recover without a restart -- if you set WINGS_CG_MEMORY_HIGH, set WINGS_CG_STARTUP_MEMORY_HIGH generously as well.",
+    "_comment": "egg-soulmask-rcon-ksm + 14 admin-only cgroup variables for patched Wings (vbpub/wings-cgroups). With docker.per_server_slices.enabled (patch 0004) Wings derives wings-<uuid32>.slice automatically, so WINGS_CGROUP_PARENT is only an explicit override/opt-out; the WINGS_CG_* variables carry optional per-server floors, ceilings and weights that override the node defaults in config.yml. Import over the existing egg (update-in-place) so running servers keep their egg association. Every value defaults to empty, so importing changes no behaviour by itself; values are validated and budget-checked by Wings and take effect at the next container (re)creation -- panel Stop then Start, not Restart. Stock Wings ignores all of them. Variable groups: placement (WINGS_CGROUP_PARENT); the steady memory band (WINGS_CG_MEMORY_MIN/_LOW/_HIGH/_MAX); the STARTUP memory band (WINGS_CG_STARTUP_MEMORY_MIN/_LOW/_HIGH/_MAX, patch 0007, image cgroup.8+) applied while the world loads; its two exit triggers (WINGS_CG_STEADY_MATCH, a console line -- default is Steam server-list registration, because the egg's own 'done' string fires during world construction and is too early; and WINGS_CG_STARTUP_GRACE, the backstop timeout); the STEADY band that replaces it; and the weights (WINGS_CG_CPU_WEIGHT, and WINGS_CG_IO_BFQ_WEIGHT / WINGS_CG_IO_WEIGHT, which are mutually exclusive). Two facts worth knowing before setting values. (1) IO: patch 0005 added WINGS_CG_IO_BFQ_WEIGHT so the weight can be stated on BFQ's own 1-1000 scale; systemd compresses its own 1-10000 IOWeight into that range, so ratios above the default shrink by ~11x and WINGS_CG_IO_WEIGHT=1000 buys 1.8:1, not 10:1. Prefer the BFQ spelling on BFQ nodes; keep the systemd one for iocost/non-BFQ nodes. (2) MEMORY: memory.high reclaim ignores memory.min, so a ceiling below the server's LOAD-TIME peak evicts it through its own guaranteed floor and it does not recover without a restart -- if you set WINGS_CG_MEMORY_HIGH, set WINGS_CG_STARTUP_MEMORY_HIGH generously as well.",
     "meta": {
         "version": "PTDL_v2",
         "update_url": null
     },
-    "exported_at": "2026-07-20T14:30:00+00:00",
+    "exported_at": "2026-07-20T16:00:00+00:00",
     "name": "Soulmask updated for DLC+RCON+KSM+CGROUPS",
     "author": "Volker Badziong",
     "description": "Escaping a deadly sacrificial ritual, you find an ancient mystical mask on your journey. This mask holds potent knowledge, changing the world you knew. Face the harsh challenges of nature, survive, rally followers, and build your own tribe. Explore and unveil the truths behind the enigmatic mask. | KSM variant: starts the server with LD_PRELOAD=/home/container/ksm-optin.so which opts the process into Kernel Samepage Merging (dedups identical anonymous pages across multiple Soulmask instances; kernel >=6.4). Build/deploy the shim per game_stuff/soulmask/ksm-optin.c; if the .so is absent the loader prints a harmless warning and the server runs without KSM. | CGROUPS variant: adds 12 admin-only variables for per-server systemd slice placement and resource guarantees (WINGS_CGROUP_PARENT + WINGS_CG_MEMORY_MIN/LOW/HIGH/MAX + the startup band WINGS_CG_STARTUP_MEMORY_MIN/LOW/HIGH/MAX + WINGS_CG_CPU_WEIGHT + WINGS_CG_IO_BFQ_WEIGHT/WINGS_CG_IO_WEIGHT). Requires patched Wings (vbpub/wings-cgroups) with docker.per_server_slices.enabled; stock Wings ignores them all. Every variable defaults to empty = use the node default.",
@@ -189,7 +189,7 @@
             "field_type": "text"
         },
         {
-            "name": "Wings Cgroup Parent",
+            "name": "Cgroup Parent (placement override)",
             "description": "Admin-only OVERRIDE -- normally LEAVE EMPTY.\n\nWith docker.per_server_slices.enabled, Wings already derives wings-<32-hex-uuid>.slice for every server, so this variable is only for exceptions. Set a wings-*.slice name to pin this server to a specific, hand-managed slice (it then receives ONLY the explicit WINGS_CG_* values below, never the node-wide defaults). Set it to exactly the node-wide docker.cgroup_parent value to opt this server out of per-server slices entirely.\n\nPanel-supplied values are not trusted: a value outside the allowed namespace (or the docker.allowed_cgroup_parents allow-list) is rejected with a logged warning and Wings falls back to the derived slice.\n\nPlacement is fixed at container-create time, so a change here only takes effect on the next container (re)creation -- panel Stop then Start, not Restart.",
             "env_variable": "WINGS_CGROUP_PARENT",
             "default_value": "",
@@ -199,7 +199,67 @@
             "field_type": "text"
         },
         {
-            "name": "Wings Cgroup Memory Min",
+            "name": "Cgroup STARTUP Memory Min",
+            "description": "memory.min while the world is loading. A higher floor here protects the assets being streamed in from other tiers' pressure, at the moment the server is hungriest and least tolerant of reclaim.\n\nWHEN IT APPLIES: from just before the container starts until the startup phase ends. The phase ends at whichever comes first -- the console line matching WINGS_CG_STEADY_MATCH, or WINGS_CG_STARTUP_GRACE elapsing. At that point the matching STEADY variable replaces this value. Both events are logged with the slice name, the trigger, and the exact values applied.\n\nRequires patched Wings 0007 (image cgroup.8+). Empty = the STEADY value applies from the very start, which is how every earlier build behaved.",
+            "env_variable": "WINGS_CG_STARTUP_MEMORY_MIN",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "Cgroup STARTUP Memory Low",
+            "description": "memory.low while the world is loading. Rarely needed -- set the STARTUP floor and ceiling first.\n\nWHEN IT APPLIES: from just before the container starts until the startup phase ends. The phase ends at whichever comes first -- the console line matching WINGS_CG_STEADY_MATCH, or WINGS_CG_STARTUP_GRACE elapsing. At that point the matching STEADY variable replaces this value. Both events are logged with the slice name, the trigger, and the exact values applied.\n\nRequires patched Wings 0007 (image cgroup.8+). Empty = the STEADY value applies from the very start, which is how every earlier build behaved.",
+            "env_variable": "WINGS_CG_STARTUP_MEMORY_LOW",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "Cgroup STARTUP Memory High",
+            "description": "THE ONE THAT MATTERS. memory.high while the world is loading. Set it generously -- 64G on a 16G host simply means \"no ceiling yet\".\n\nA steady-state ceiling is actively destructive during startup. The load-time peak is routinely several times the settled working set, and a cgroup is NOT protected from reclaim it inflicts on itself: exceeding your own memory.high reclaims straight through your own memory.min floor. Nothing faults those pages back except the workload, so the server stays pinned far below a floor that is applied, effective and verified -- until it is restarted.\n\nIf you set WINGS_CG_MEMORY_HIGH at all, set this one too.\n\nWHEN IT APPLIES: from just before the container starts until the startup phase ends. The phase ends at whichever comes first -- the console line matching WINGS_CG_STEADY_MATCH, or WINGS_CG_STARTUP_GRACE elapsing. At that point the matching STEADY variable replaces this value. Both events are logged with the slice name, the trigger, and the exact values applied.\n\nRequires patched Wings 0007 (image cgroup.8+). Empty = the STEADY value applies from the very start, which is how every earlier build behaved.",
+            "env_variable": "WINGS_CG_STARTUP_MEMORY_HIGH",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "Cgroup STARTUP Memory Max",
+            "description": "memory.max while the world is loading. Take care: this is the OOM boundary, and startup is when the server needs the most headroom. Almost always leave empty.\n\nWHEN IT APPLIES: from just before the container starts until the startup phase ends. The phase ends at whichever comes first -- the console line matching WINGS_CG_STEADY_MATCH, or WINGS_CG_STARTUP_GRACE elapsing. At that point the matching STEADY variable replaces this value. Both events are logged with the slice name, the trigger, and the exact values applied.\n\nRequires patched Wings 0007 (image cgroup.8+). Empty = the STEADY value applies from the very start, which is how every earlier build behaved.",
+            "env_variable": "WINGS_CG_STARTUP_MEMORY_MAX",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "Cgroup Steady Trigger (console match)",
+            "rules": "nullable|string|max:255",
+            "description": "The console line that ends the STARTUP phase and applies the STEADY band.\n\nWhy this is not simply the egg's own startup \"done\" string: \"done\" is whatever makes the Panel show Running, and for a world-streaming game that fires well before loading has finished. This egg's done string is \"Create Dungeon Successed\", which appears during world construction -- dropping the steady ceiling there is precisely the mistake the STARTUP band exists to prevent. Steam server-list registration is the honest \"fully up\" signal.\n\nPrefix with \"regex:\" for a regular expression (same convention the Panel uses for startup.done); anything else is matched as a literal substring, so log punctuation cannot accidentally act as a metacharacter.\n\nEmpty = fall back to the egg's startup \"done\" matcher, i.e. the Panel's Running transition. Requires patched Wings 0007 (image cgroup.8+).",
+            "env_variable": "WINGS_CG_STEADY_MATCH",
+            "default_value": "regex:SERVER_LIST.*registe server.*succeed",
+            "user_viewable": false,
+            "user_editable": false,
+            "field_type": "text"
+        },
+        {
+            "name": "Cgroup Startup Grace (timeout)",
+            "rules": "nullable|string|max:16",
+            "description": "How long the STARTUP band may hold before the STEADY band is applied regardless -- the backstop for a trigger that never fires (a game that changed its log format, a save that fails to load, a typo in WINGS_CG_STEADY_MATCH).\n\nGo duration syntax: 15m, 30m, 90s, 1h. \"0\" disables the timer entirely, leaving the console trigger as the only way out of the startup band -- only sensible if you are certain the trigger fires.\n\nHow long a world takes to load is a property of the game and the save, not of the node, which is why this is per server. Empty = the node default in docker.per_server_slices.startup_grace (15m unless changed). Requires patched Wings 0007 (image cgroup.8+).",
+            "env_variable": "WINGS_CG_STARTUP_GRACE",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "field_type": "text"
+        },
+        {
+            "name": "Cgroup STEADY Memory Min",
             "description": "Admin-only: memory.min -- the GUARANTEED, never-reclaimed floor for this server's slice. Accepts 6G, 512M, or a plain byte count. Empty = the node default (docker.per_server_slices.defaults.memory_min).\n\nWhat it does: while this server is using less than this much memory, the kernel will not reclaim its pages under host-wide pressure -- it takes memory from unprotected cgroups instead, and would sooner OOM than break the floor.\n\nTwo things it does NOT do, both of which cause real confusion:\n1. It is not a reservation and it never pulls pages back. If the server has already been pushed into swap, raising the floor does not restore anything -- those pages return only as the workload faults them in again.\n2. It does NOT protect the server from its own WINGS_CG_MEMORY_HIGH. Reclaim triggered by a cgroup's own ceiling ignores the floor completely, which is the one way a server ends up pinned BELOW a floor that is correctly applied and fully effective.\n\nCapped by the parent slice: a floor larger than the node slice's own MemoryMin is arithmetically dead. Wings enforces this at apply time via docker.per_server_slices.memory_min_budget (clamp / refuse / distribute) and logs any reduction.",
             "env_variable": "WINGS_CG_MEMORY_MIN",
             "default_value": "",
@@ -209,7 +269,7 @@
             "field_type": "text"
         },
         {
-            "name": "Wings Cgroup Memory Low",
+            "name": "Cgroup STEADY Memory Low",
             "description": "Admin-only: memory.low -- best-effort protection above the memory.min floor. Accepts 12G, 512M, or bytes. Empty = the node default.\n\nUnlike memory.min this is a hint, not a guarantee: the kernel reclaims unprotected cgroups first and only takes from here when it finds nothing else, rather than refusing outright.\n\nOnly meaningful BELOW this server's own memory.high -- a cgroup is never allowed to hold more than its ceiling, so any memory.low above it is decorative. With high=7G, setting low=12G behaves exactly like low=7G.",
             "env_variable": "WINGS_CG_MEMORY_LOW",
             "default_value": "",
@@ -219,7 +279,7 @@
             "field_type": "text"
         },
         {
-            "name": "Wings Cgroup Memory High",
+            "name": "Cgroup STEADY Memory High",
             "description": "Admin-only: memory.high -- a THROTTLE, not a hard limit. Accepts 7G, 512M, or bytes. Empty = the node default. Above this the kernel continuously reclaims the server back down (into zswap, then disk swap); allocations still succeed, the server just gets slow.\n\nREAD THIS BEFORE SETTING IT. Reclaim driven by memory.high IGNORES memory.min. This is the only mechanism that can push a server below its own guaranteed floor, and the damage does not heal: nothing faults those pages back except the workload itself, so the server can sit permanently below its floor until it is restarted. A ceiling and a floor are not independent knobs -- a ceiling set too low destroys the floor.\n\nTherefore size this against the LOAD-TIME PEAK, not the steady working set. A game server streaming in a world routinely peaks at several times what it settles at afterwards. If the peak is much higher than steady state, do not lower this value -- set WINGS_CG_STARTUP_MEMORY_HIGH instead, which applies a roomier ceiling only while the server is starting.\n\nSymptoms of a ceiling that is too low: high resident memory early, then a server pinned well under its floor with a large swap footprint, many memory.high events in memory.events, and steady refaults. Leaving this empty is a perfectly reasonable production choice -- WINGS_CG_MEMORY_MAX is the emergency backstop.",
             "env_variable": "WINGS_CG_MEMORY_HIGH",
             "default_value": "",
@@ -229,7 +289,7 @@
             "field_type": "text"
         },
         {
-            "name": "Wings Cgroup Memory Max",
+            "name": "Cgroup STEADY Memory Max",
             "description": "Admin-only: memory.max -- the hard wall for this server's slice. The kernel reclaims first and then OOM-kills inside the cgroup. Accepts 20G or bytes. Empty = the node default.\n\nUsually leave this empty or set it only as a generous emergency backstop. The panel's own memory limit already caps the game container; a slice-level max additionally caps the installer container and every future container of this server.\n\nA value above the host's physical RAM can never be reached and does nothing.",
             "env_variable": "WINGS_CG_MEMORY_MAX",
             "default_value": "",
@@ -239,47 +299,7 @@
             "field_type": "text"
         },
         {
-            "name": "Wings Cgroup Startup Memory Min",
-            "description": "Admin-only, STARTUP PHASE: memory.min while the server is loading. A higher floor during world generation and asset streaming protects what is being paged in from host-wide pressure, at a time when the server is at its most memory-hungry and least tolerant of reclaim.\n\nApplies only while the server is STARTING. Wings swaps in the steady value above as soon as the server reports ready -- it reuses the egg's own startup 'done' console match, so no extra configuration is needed -- or, if that line never appears, once docker.per_server_slices.startup_grace elapses (default 15m). Both events are logged with the slice name and the exact values applied.\n\nRequires patched Wings 0007 (image cgroup.7+). Empty = the steady value applies from the very start, which is the behaviour of every earlier build.",
-            "env_variable": "WINGS_CG_STARTUP_MEMORY_MIN",
-            "default_value": "",
-            "user_viewable": false,
-            "user_editable": false,
-            "rules": "nullable|string|max:32",
-            "field_type": "text"
-        },
-        {
-            "name": "Wings Cgroup Startup Memory Low",
-            "description": "Admin-only, STARTUP PHASE: memory.low while the server is loading. Rarely needed -- set the startup floor and ceiling first.\n\nApplies only while the server is STARTING. Wings swaps in the steady value above as soon as the server reports ready -- it reuses the egg's own startup 'done' console match, so no extra configuration is needed -- or, if that line never appears, once docker.per_server_slices.startup_grace elapses (default 15m). Both events are logged with the slice name and the exact values applied.\n\nRequires patched Wings 0007 (image cgroup.7+). Empty = the steady value applies from the very start, which is the behaviour of every earlier build.",
-            "env_variable": "WINGS_CG_STARTUP_MEMORY_LOW",
-            "default_value": "",
-            "user_viewable": false,
-            "user_editable": false,
-            "rules": "nullable|string|max:32",
-            "field_type": "text"
-        },
-        {
-            "name": "Wings Cgroup Startup Memory High",
-            "description": "Admin-only, STARTUP PHASE -- THE ONE THAT MATTERS: memory.high while the server is loading. Set it generously (64G on a 16G host simply means 'no ceiling yet').\n\nThis variable exists because a steady-state ceiling is actively destructive during startup. A game server's load-time peak is routinely several times its settled working set, and memory.high reclaim ignores memory.min -- so a ceiling sized for the steady state evicts the server through its own guaranteed floor while it is still loading its world, and it never recovers, because nothing faults those pages back except the workload. The result is a server pinned far below a floor that is applied, effective and verified.\n\nIf you set WINGS_CG_MEMORY_HIGH at all, set this one too.\n\nApplies only while the server is STARTING. Wings swaps in the steady value above as soon as the server reports ready -- it reuses the egg's own startup 'done' console match, so no extra configuration is needed -- or, if that line never appears, once docker.per_server_slices.startup_grace elapses (default 15m). Both events are logged with the slice name and the exact values applied.\n\nRequires patched Wings 0007 (image cgroup.7+). Empty = the steady value applies from the very start, which is the behaviour of every earlier build.",
-            "env_variable": "WINGS_CG_STARTUP_MEMORY_HIGH",
-            "default_value": "",
-            "user_viewable": false,
-            "user_editable": false,
-            "rules": "nullable|string|max:32",
-            "field_type": "text"
-        },
-        {
-            "name": "Wings Cgroup Startup Memory Max",
-            "description": "Admin-only, STARTUP PHASE: memory.max while the server is loading. Take care -- this is the OOM boundary, and startup is when the server needs the most headroom. Almost always leave empty.\n\nApplies only while the server is STARTING. Wings swaps in the steady value above as soon as the server reports ready -- it reuses the egg's own startup 'done' console match, so no extra configuration is needed -- or, if that line never appears, once docker.per_server_slices.startup_grace elapses (default 15m). Both events are logged with the slice name and the exact values applied.\n\nRequires patched Wings 0007 (image cgroup.7+). Empty = the steady value applies from the very start, which is the behaviour of every earlier build.",
-            "env_variable": "WINGS_CG_STARTUP_MEMORY_MAX",
-            "default_value": "",
-            "user_viewable": false,
-            "user_editable": false,
-            "rules": "nullable|string|max:32",
-            "field_type": "text"
-        },
-        {
-            "name": "Wings Cgroup CPU Weight",
+            "name": "Cgroup CPU Weight",
             "description": "Admin-only: cpu.weight (1-10000, default sibling weight is 100) for this server's slice. Overrides the node default. Empty = node default. Weights are relative to SIBLINGS only, and compose down the tree: this server's share of the host is (this / sum of siblings inside wings.slice) x (wings.slice's CPUWeight / sum of the root slices). They are also work-conserving -- a weight never caps anything, it only decides who yields when everyone wants the CPU at once. CPU is the exact axis: systemd passes cpu.weight through unscaled, so 1000 vs a sibling's 100 really is 10:1 (unlike IO -- see the two IO variables).",
             "env_variable": "WINGS_CG_CPU_WEIGHT",
             "default_value": "",
@@ -289,7 +309,7 @@
             "field_type": "text"
         },
         {
-            "name": "Wings Cgroup IO BFQ Weight",
+            "name": "Cgroup IO Weight (BFQ scale, preferred)",
             "description": "Admin-only, PREFER THIS ON BFQ NODES: the IO weight on BFQ's own 1-1000 scale (default sibling weight is 100) for this server's slice -- i.e. the number the scheduler actually uses, which you can read back at /sys/fs/cgroup/wings.slice/wings-<uuid32>.slice/io.bfq.weight. Requires patched Wings 0005 (image cgroup.4+); Wings converts it to the equivalent systemd IOWeight (100 + 11 x (bfq - 100)) and logs both, e.g. IOWeight=5940(io.bfq.weight=540). Mutually exclusive with WINGS_CG_IO_WEIGHT: if both are set, NEITHER is applied and Wings logs the conflict. Empty = node default (docker.per_server_slices.defaults.io_bfq_weight). See wings-cgroups/CGROUP-SEMANTICS.md Rule 7.",
             "env_variable": "WINGS_CG_IO_BFQ_WEIGHT",
             "default_value": "",
@@ -299,7 +319,7 @@
             "field_type": "text"
         },
         {
-            "name": "Wings Cgroup IO Weight",
+            "name": "Cgroup IO Weight (systemd scale, legacy)",
             "description": "Admin-only, LEGACY SCALE -- prefer WINGS_CG_IO_BFQ_WEIGHT: systemd's IOWeight (1-10000) for this server's slice. Overrides the node default. Empty = node default. CAUTION: on a BFQ node this number is NOT what you get. BFQ schedules on io.bfq.weight (1-1000) and never reads io.weight (that file belongs to iocost, inert unless io.cost.* is configured), and systemd compresses 100-10000 into 100-1000 on the way -- so 1000 buys 1.8:1 against a default sibling, not 10:1, and 4950 buys 5.4:1. Mutually exclusive with WINGS_CG_IO_BFQ_WEIGHT. Check the scheduler with: cat /sys/block/vda/queue/scheduler.",
             "env_variable": "WINGS_CG_IO_WEIGHT",
             "default_value": "",

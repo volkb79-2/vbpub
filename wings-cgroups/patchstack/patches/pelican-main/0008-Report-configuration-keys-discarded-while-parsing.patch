@@ -1,6 +1,6 @@
-From 61306e52e5586b8a8508f278d431c736df11196c Mon Sep 17 00:00:00 2001
+From 5a4ae4e80bf451be060c459e59231a1cec37df4c Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
-Date: Fri, 17 Jul 2026 09:50:46 +0000
+Date: Mon, 20 Jul 2026 12:50:38 +0000
 Subject: [PATCH 8/8] Report configuration keys discarded while parsing
 
 Wings parses config.yml permissively and then rewrites the file from the

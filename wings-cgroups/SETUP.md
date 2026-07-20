@@ -77,7 +77,7 @@ Weight" alike) are inert under `none`/`mq-deadline`; only BFQ enforces them.
 ```yaml
 services:
   wings:
-    image: wings-local:1.13.1-cgroup.7        # the patched image
+    image: wings-local:1.13.1-cgroup.8        # the patched image
     cgroup_parent: wings-mgmt.slice           # optional (T0a): cap the daemon itself
     volumes:
       # …existing mounts (docker.sock, /etc/pterodactyl, /var/lib/pterodactyl, …)…
@@ -241,7 +241,7 @@ docker compose logs --tail 30 wings   # config validation runs at boot and fails
 
 ## 4. Panel data (egg / server variables — all admin-only, optional)
 
-Add these 12 admin-only variables to your egg. A complete worked example in
+Add these 14 admin-only variables to your egg. A complete worked example in
 PTDL_v2 export format is `../game_stuff/soulmask/egg-soulmask-rcon-ksm-cgroups.json`
 (import it over an existing egg to update in place — servers keep their egg
 association); `t2-per-server-placement/egg-variable.snippet.json` carries just
@@ -255,6 +255,8 @@ the next container (re)creation — panel **Stop → Start**, not restart.
 | `WINGS_CG_CPU_WEIGHT` | per-server CPU weight (1..10000). Ratios are honoured exactly. |
 | `WINGS_CG_IO_BFQ_WEIGHT` | per-server IO weight on BFQ's scale (1..1000) — what BFQ actually schedules on, and what `io.bfq.weight` reads back. **Prefer it on BFQ nodes.** Needs patch 0005. |
 | `WINGS_CG_IO_WEIGHT` | the same setting on systemd's scale (1..10000). **Compressed on BFQ nodes** — 1000 becomes `io.bfq.weight` 181. Keep for iocost/non-BFQ nodes. Mutually exclusive with `WINGS_CG_IO_BFQ_WEIGHT`: set both and neither is applied (logged). |
+| `WINGS_CG_STEADY_MATCH` | the console line that ends the startup phase and applies the steady band. `regex:` prefix for a regular expression, anything else is a literal substring. **Empty falls back to the egg's own `startup.done` matcher** — which for a world-streaming game routinely fires *before* loading finishes, so set this explicitly if the two differ. |
+| `WINGS_CG_STARTUP_GRACE` | per-server override of `startup_grace`; the backstop for a trigger that never fires. Go duration (`15m`, `90s`); `0` disables the timer. Empty = the node default. |
 | `WINGS_CG_STARTUP_MEMORY_MIN` / `_LOW` / `_HIGH` / `_MAX` | the same four knobs, applied only while the server is starting and replaced by the steady values once it reports ready (or after `startup_grace`). Set `_HIGH` generously — a ceiling below the load-time peak breaches the floor and cannot be undone without a restart. Needs patch 0007. |
 | `WINGS_CGROUP_PARENT` | **leave empty** — override/opt-out only. A set value beats the derived slice (and must pass the allow-list); setting it *to the node default* opts the server out of a derived slice entirely. |
 
