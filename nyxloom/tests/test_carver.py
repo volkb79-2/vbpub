@@ -317,6 +317,51 @@ def test_carve_outcome_never_produces_a_notification_even_if_forced_into_push_cl
     assert json.dumps(notif_events[0].payload) == "{}"  # always-empty request payload
 
 
+def test_emit_attempt_exit_carver_limit_receipt_pauses_provider_not_parse_failed(
+        tmp_state, sample_project, monkeypatch):
+    """P57 2026-07-20 (M4). A carver that exited on a provider LIMIT wrote no
+    report. Before: it fell through to report-parsing, found nothing, and
+    emitted NEEDS_OPERATOR{carve-parse-failed} (conflating an infra failure
+    with a malformed report) then SUPERSEDED -> the next pass re-dispatched a
+    fresh carver into the SAME rate limit (a burn loop). Now: read the receipt
+    first -> ProviderPause the carve route + a DISTINCT carve-leg-failed
+    escalation, never carve-parse-failed."""
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+    cfg = sample_project
+    task_id, attempt_id = _seed_carve_task("demo", 1, cfg.root)
+    _write_receipt("demo", attempt_id, ReceiptResult.LIMIT)   # no carve report written
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    events = list(storage.iter_events("demo"))
+    reasons = [e.payload.get("reason") for e in events if e.type is EventType.NEEDS_OPERATOR]
+    assert "carve-leg-failed" in reasons
+    assert "carve-parse-failed" not in reasons
+    assert any(e.type is EventType.PROVIDER_STATE_CHANGED for e in events)   # ProviderPause on LIMIT
+    assert storage.load_state("demo", task_id).state is TaskState.SUPERSEDED  # slot freed
+
+
+def test_emit_attempt_exit_carver_error_receipt_is_leg_failed_no_provider_pause(
+        tmp_state, sample_project, monkeypatch):
+    """P57 (M4): a carver ERROR/BLOCKED exit is a distinct carve-leg-failed
+    (not carve-parse-failed), and does NOT ProviderPause (only LIMIT does)."""
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+    cfg = sample_project
+    task_id, attempt_id = _seed_carve_task("demo", 1, cfg.root)
+    _write_receipt("demo", attempt_id, ReceiptResult.ERROR)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    events = list(storage.iter_events("demo"))
+    reasons = [e.payload.get("reason") for e in events if e.type is EventType.NEEDS_OPERATOR]
+    assert "carve-leg-failed" in reasons
+    assert "carve-parse-failed" not in reasons
+    assert not any(e.type is EventType.PROVIDER_STATE_CHANGED for e in events)
+    assert storage.load_state("demo", task_id).state is TaskState.SUPERSEDED
+
+
 def test_emit_attempt_exit_carver_headroom_low_pushes_spec_attention(
         tmp_state, sample_project, monkeypatch):
     monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
