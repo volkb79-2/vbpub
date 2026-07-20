@@ -76,7 +76,8 @@
         "http_port": {"type": "integer", "minimum": 1, "maximum": 65535},
         "carve_ahead_target": {"type": "integer", "minimum": 0},
         "carve_authority": {"enum": ["branch", "main", "files"]},
-        "headroom_warn": {"type": "integer", "minimum": 0}
+        "headroom_warn": {"type": "integer", "minimum": 0},
+        "test_health_interval_days": {"type": "integer", "minimum": 0}
       }
     },
     "notify": {

@@ -813,6 +813,7 @@ class Daemon:
             blocked_underspecified_already_open=blocked_underspecified_already_open,
             head_revision=head_revision,
             triage_class=triage_class,
+            days_since_test_health_carve=self._days_since_test_health_carve(project),
         )
 
     def _pause_mode(self, project: str) -> str:
@@ -1239,6 +1240,63 @@ class Daemon:
             return False
         return any(ev.type is EventType.SPEC_ATTENTION and ev.payload.get("reason") == "ratchet"
                    for ev in recent)
+
+    def _days_since_test_health_carve(self, project: str) -> float | None:
+        """D-065 (B63 2026-07-20): age in days of the most recent test-health
+        carve, feeding ReconcileInput.days_since_test_health_carve so module
+        contract item 15's cadence is durable across daemon restarts (the
+        event log is the only state that survives one). None = never carved,
+        which item 15 reads as "fire" -- enabling the knob is itself the
+        request for a first pass.
+
+        Scans the WHOLE log, unlike the [-500:] recent-window dedup helpers
+        above, and deliberately so: those answer "is this condition currently
+        open", where a stale hit is harmless. This one answers "how long ago",
+        and a window that scrolled past the last carve would report None =
+        never = FIRE -- turning a 14-day cadence into a carve every pass on
+        any busy project. The marker is the structured `carve_kind` key
+        _execute_carve_dispatch stamps on the carve's own TASK_CREATED
+        (payload-additive; storage's replay reads only payload["statefile"],
+        so it cannot cause divergence).
+
+        Fail-safe on an unreadable log is 0.0 ("just carved"), NOT None: this
+        value gates spawning a real agent process, so an I/O error must never
+        be the thing that authorizes spend. A permanently unreadable event log
+        is a far larger failure that doctor surfaces on its own.
+        """
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            return 0.0
+        latest = None
+        for ev in events:
+            if ev.type is EventType.TASK_CREATED and ev.payload.get("carve_kind") == "test-health":
+                if latest is None or ev.timestamp > latest:
+                    latest = ev.timestamp
+        if latest is None:
+            return None
+        try:
+            return max(0.0, (utc_now() - latest).total_seconds() / 86400.0)
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _carve_kind(states: dict[str, TaskStateFile], task_id: str | None) -> str:
+        """D-065 (B63): recover a synthetic carve task's kind at OUTCOME time,
+        when only the task is in hand. Reads the `kind=<x>` marker
+        _execute_carve_dispatch writes into the task's notes -- which is
+        replayed state (it rides the TASK_CREATED statefile), so this survives
+        a daemon restart between the carve's dispatch and its exit. Anything
+        without the marker is 'headroom', matching the dispatch-side default
+        and keeping every pre-B63 carve in the log classified exactly as
+        before."""
+        tsf = states.get(task_id) if task_id else None
+        if tsf is None or not tsf.notes:
+            return "headroom"
+        for token in tsf.notes.split():
+            if token.startswith("kind="):
+                return token[len("kind="):]
+        return "headroom"
 
     def _roadmap_exhausted_open(self, project: str) -> bool:
         """P16 2026-07-15: mirrors _ratchet_already_open's convention (a
@@ -1980,7 +2038,8 @@ class Daemon:
                              states: dict[str, TaskStateFile],
                              own_task_id: str | None = None,
                              item_id: str | None = None,
-                             rescope: dict | None = None) -> str:
+                             rescope: dict | None = None,
+                             kind: str = "headroom") -> str:
         """The carve packet (mirrors the review packet's economy: point at
         sources, embed only what is cheap and structured). Written to the
         carve attempt's own packet/packet.md, exactly like LaunchReview's
@@ -2001,14 +2060,71 @@ class Daemon:
         is shared with the other two modes; only the source section differs.
         The three modes are mutually exclusive (item 12 sets task_id not item_id;
         dispatch_targeted_carve sets item_id not task_id; item 9 sets neither),
-        so rescope takes precedence, then item_id, then the untargeted default."""
+        so rescope takes precedence, then item_id, then the untargeted default.
+
+        D-065 (B63 2026-07-20): when `kind` == 'test-health' (reconcile module
+        contract item 15's seldom-run project-WIDE trigger), the carve source is
+        the TEST SUITE rather than any work source -- the carver evaluates
+        standing suite debt and carves test-IMPROVEMENT packages. It is checked
+        FIRST because a test-health carve is untargeted (no item_id, no rescope),
+        so it would otherwise fall through to the work-source default. The
+        packet explicitly authorizes carving NOTHING when the suite is healthy:
+        a periodic trigger that must always produce output would manufacture
+        busywork, which is worse than not running at all."""
         lines = [
             f"# Carve packet {seq}",
             "",
             "## Your role: CARVER",
             "",
         ]
-        if rescope is not None:
+        if kind == "test-health":
+            gate_cmd = self._gate_hint(cfg) or "(no gate configured for this project)"
+            lines.extend([
+                f"You are performing a periodic project-WIDE TEST-HEALTH review "
+                f"for project '{project}'. This is NOT a per-task job and NOT a "
+                "queue refill: step back from the work roadmap entirely and assess "
+                "the health of the TEST SUITE AS A WHOLE, then carve handoff "
+                "package(s) that improve it. Do NOT implement the improvements "
+                "yourself -- you carve packages for other agents to pick up later.",
+                "",
+                "## Carve source: the test suite's standing debt",
+                "Look for debt the per-change gate structurally CANNOT catch. That",
+                "gate enforces coverage on lines a change TOUCHES, so it says",
+                "nothing about code that was already there and already untested --",
+                "which is exactly what this pass exists to find. Specifically:",
+                "- modules with low or no coverage that no recent change has touched;",
+                "- behaviour covered only by happy-path tests, with no negative/error",
+                "  case asserting the contract actually fails when it should;",
+                "- tests that pass without asserting the behavioral contract they",
+                "  name (hollow tests) -- a passing suite is not evidence of health;",
+                "- missing regression tests for defects that reached review or prod;",
+                "- slow, flaky, or interdependent tests that erode the gate's value.",
+                "",
+                f"This project's gate command is:\n    {gate_cmd}",
+                "Run it (or just its coverage leg) to get real numbers rather than",
+                "guessing. Prefer evidence you actually measured over impressions.",
+                "",
+                "## Carve NOTHING if the suite is healthy",
+                "You are explicitly authorized to return an EMPTY `carved` list. A",
+                "periodic trigger that always produces packages manufactures",
+                "busywork and devalues every real finding. If you find no debt worth",
+                'a package, report `"carved": []` with outcome MILESTONE_COMPLETE',
+                "and say why in review_reflection.",
+                "",
+                "## Reporting notes specific to this pass",
+                '- Use `"source_kind": "review"` for anything you carve here.',
+                "- Do NOT report outcome ROADMAP_EXHAUSTED. That outcome is a",
+                "  statement about the PRODUCT roadmap's runway, which this pass",
+                "  does not read; the daemon reads it back to throttle ordinary",
+                "  work carving. MILESTONE_COMPLETE is the correct 'nothing left",
+                "  to do here' answer for a test-health pass.",
+                "- headroom_estimate/headroom_rationale: report how many FURTHER",
+                "  test-health areas you left un-carved this pass, and how you",
+                "  judged that. (The daemon does not raise a headroom-low alert",
+                "  from a test-health carve -- these numbers are for the record.)",
+                "",
+            ])
+        elif rescope is not None:
             origin_id = rescope.get("origin_task_id")
             input_rev = rescope.get("input_revision") or "(unknown)"
             head_rev = rescope.get("head_revision") or "(unknown)"
@@ -2204,7 +2320,15 @@ class Daemon:
         # docstring for why ACTIVE (counts toward wip-cap like a review
         # attempt already does) and why SUPERSEDED is the eventual terminal
         # edge.
+        # D-065 (B63): 'headroom' (the default) covers every carve that reads the
+        # project's WORK sources -- item 9's refill, item 12's re-scope, the
+        # targeted backlog carve. 'test-health' is item 15's project-wide suite-
+        # debt pass. A test-health carve is untargeted (no item_id, no origin), so
+        # kind is the ONLY thing distinguishing it from item 9's carve here.
+        kind = getattr(action, "kind", "headroom")
         notes = f"carve seq={seq} authority={authority}"
+        if kind != "headroom":
+            notes += f" kind={kind}"
         if action.item_id is not None:
             notes += f" item={action.item_id}"
         if origin_task_id is not None:
@@ -2214,8 +2338,15 @@ class Daemon:
             state=TaskState.ACTIVE, since=utc_now(), handoff_path=None,
             notes=notes,
         )
+        # `carve_kind` is the STRUCTURED marker _days_since_test_health_carve
+        # scans for (notes above is the human-legible twin -- never the machine
+        # source). Payload-additive: storage's TASK_CREATED replay reads only
+        # payload["statefile"], so an extra key cannot cause replay divergence.
+        created_payload: dict[str, Any] = {"statefile": tsf.to_dict()}
+        if kind != "headroom":
+            created_payload["carve_kind"] = kind
         events.append(self._append_ev(project, cfg, states, EventType.TASK_CREATED,
-                                       {"statefile": tsf.to_dict()}, task_id=task_id))
+                                       created_payload, task_id=task_id))
 
         attempt_id = new_id("att")
         attempt_dir = paths.attempt_dir(project, attempt_id)
@@ -2224,7 +2355,8 @@ class Daemon:
         rescope_ctx = (self._rescope_context(cfg, states, origin_task_id)
                        if origin_task_id is not None else None)
         packet_text = self._build_carve_packet(cfg, project, seq, states, own_task_id=task_id,
-                                                item_id=action.item_id, rescope=rescope_ctx)
+                                                item_id=action.item_id, rescope=rescope_ctx,
+                                                kind=kind)
         (packet_dir / "packet.md").write_text(packet_text, encoding="utf-8")
 
         route_def = review_routes[0]
@@ -2396,13 +2528,24 @@ class Daemon:
                  "headroom_estimate": summary.headroom_estimate},
                 task_id=task_id, attempt_id=attempt_id))
 
-            if summary.headroom_estimate < cfg.policy.headroom_warn:
+            # D-065 (B63 2026-07-20): 'headroom-low' and 'roadmap-exhausted' are
+            # readings of the WORK roadmap's runway -- and 'roadmap-exhausted' is
+            # read straight back by reconcile as roadmap_exhausted_open, which
+            # THROTTLES item 9's headroom refill. A test-health carve (item 15)
+            # never reads the work roadmap at all: it reports how much TEST debt
+            # remains. Letting its numbers through here would mean a healthy suite
+            # ("0 test-debt areas left") announcing the product roadmap was
+            # exhausted and suppressing all further work carving -- a false alarm
+            # that silently stalls the factory. Suppressed at the SOURCE rather
+            # than steered around in packet prose, which would be LLM-dependent.
+            is_test_health = self._carve_kind(states, task_id) == "test-health"
+            if not is_test_health and summary.headroom_estimate < cfg.policy.headroom_warn:
                 events.append(self._append_ev(
                     project, cfg, states, EventType.SPEC_ATTENTION,
                     {"reason": "headroom-low",
                      "detail": f"{summary.headroom_estimate} packages left"},
                     task_id=task_id))
-            if summary.outcome == "ROADMAP_EXHAUSTED":
+            if not is_test_health and summary.outcome == "ROADMAP_EXHAUSTED":
                 events.append(self._append_ev(
                     project, cfg, states, EventType.SPEC_ATTENTION,
                     {"reason": "roadmap-exhausted",

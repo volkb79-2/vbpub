@@ -131,6 +131,15 @@ class Policy:
     carve_ahead_target: int = 5
     carve_authority: str = "branch"   # branch|main|files
     headroom_warn: int = 5
+    # D-065 2026-07-20 (B63, strategic test-health): cadence in DAYS for the
+    # project-WIDE test-health carve trigger (reconcile.py module contract
+    # item 15) -- a seldom-run sibling of item 9's headroom refill that steps
+    # back from per-task work and carves test-IMPROVEMENT packages for the
+    # suite's standing debt. 0 disables it (the default: a project must opt in
+    # before nyxloom starts spending carve budget on test debt it never asked
+    # about). nyxloom's own nyxloom.toml sets 14 -- dogfooding, and the reason
+    # this is not a dead stub (P43's guard).
+    test_health_interval_days: int = 0
 
 
 @dataclass

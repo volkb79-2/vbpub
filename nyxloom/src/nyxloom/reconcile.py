@@ -239,6 +239,33 @@ INTERFACE CONTRACT (frozen). Semantics:
     to the shared guard both items already reuse (carve_in_flight /
     frontier_route_available / budget_allows), so both triggers close in
     one place rather than two independently-drifting copies.
+15. TEST-HEALTH CARVE TRIGGER (D-065, B63 2026-07-20): a seldom-run,
+    project-WIDE sibling of item 9. Item 9 refills the queue from the
+    backlog/roadmap when it runs dry; this one steps back from per-task
+    work entirely and asks the strategic carver to evaluate the SUITE's
+    standing test debt and carve test-IMPROVEMENT packages -- the test
+    analog of the carver reading the north star. It fires when
+    policy.test_health_interval_days > 0 (opt-in; 0 disables) AND
+    inp.days_since_test_health_carve is None (never run -- enabling the
+    knob means "do a pass") or >= that interval, AND every guard item 9
+    itself honors (the SHARED not-paused / not-carve-in-flight /
+    budget_allows / frontier_route_available set, plus the single-carve-
+    authority carve_dispatch_planned flag) -> CarveDispatch(kind=
+    'test-health'). Like items 9 and 12 it is purely a WHEN decision:
+    plan_project stays pure and never measures coverage itself; the
+    daemon's carve packet tells the CARVER agent how to evaluate debt
+    (and explicitly authorizes carving NOTHING when the suite is healthy,
+    so a periodic trigger cannot manufacture busywork).
+
+    ORDERING (a real design call, not an accident): this trigger is
+    evaluated BEFORE item 9's headroom refill, so when both want the
+    pass's single carve slot, test-health wins. Item 9's condition
+    (ready_count < carve_ahead_target) is true on essentially every pass
+    of an actively-draining project, so a rare trigger placed after it
+    would lose the slot indefinitely and starve -- the cadence would
+    silently never fire. Item 12 (READY_TO_CARVE re-carve) still precedes
+    BOTH, because finishing already-started work outranks starting new
+    work of either kind.
 """
 
 from __future__ import annotations
@@ -402,6 +429,16 @@ class CarveDispatch(Action):
     general review/backlog/roadmap source list."""
     project: str | None = None
     item_id: str | None = None
+    # kind (D-065 2026-07-20, B63): which trigger minted this carve, and so
+    # which SOURCE section the daemon's packet builder uses. 'headroom' is the
+    # default and covers item 9's untargeted refill, item 12's re-scope
+    # (further distinguished by task_id) and the targeted backlog carve
+    # (item_id) -- all three read the project's WORK sources. 'test-health' is
+    # module contract item 15's project-wide suite-debt pass, whose packet
+    # points at the test suite and the gate instead. Packet-shaping ONLY:
+    # seq/authority/route/lease semantics are identical across kinds, so the
+    # single-strategic-carver invariant holds unchanged.
+    kind: str = "headroom"
 
 
 @dataclass
@@ -511,6 +548,16 @@ class ReconcileInput:
     # stamped) and falls back to the mechanical attempt-budget path -- graceful
     # degradation, byte-identical to the pre-B4b routing.
     triage_class: dict[str, str] = field(default_factory=dict)
+    # D-065 (B63 2026-07-20): age in DAYS of the most recent test-health carve
+    # (module contract item 15), or None when the project has never had one.
+    # The daemon derives it by scanning its own event log for the marker
+    # _execute_carve_dispatch stamps on a test-health carve's TASK_CREATED
+    # (see daemon._days_since_test_health_carve) -- so the cadence is durable
+    # across daemon restarts, and this module stays pure (it never reads a
+    # clock or an event log itself; `now` and this age both arrive as input).
+    # None deliberately means "fire" rather than "never fired": turning the
+    # knob on is itself the request for a first pass.
+    days_since_test_health_carve: float | None = None
 
 
 # B4b (critique I4): a handoff stamps the main sha it was carved against as
@@ -1294,6 +1341,29 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     # carve authority). P52 2026-07-19: not inp.project_paused added here
     # too -- see item 12's guard above for the live incident this closes.
     carve_actions: list[Action] = []
+
+    # === Test-health carve (D-065, module contract item 15, B63 2026-07-20) ===
+    # Evaluated BEFORE item 9's headroom refill DELIBERATELY: item 9's condition
+    # (ready_count < carve_ahead_target) holds on essentially every pass of an
+    # actively-draining project, so a seldom-run trigger placed after it would
+    # lose the pass's single carve slot forever and its cadence would silently
+    # never fire. Item 12's re-scope still precedes both (finishing started work
+    # outranks starting new work of either kind). Same shared guards as item 9 --
+    # never a second, independently-drifting copy of pause/in-flight/budget/route.
+    test_health_interval = inp.cfg.policy.test_health_interval_days
+    if (test_health_interval > 0
+            and not inp.project_paused
+            and not carve_in_flight
+            and not carve_dispatch_planned
+            and budget_allows
+            and frontier_route_available):
+        age = inp.days_since_test_health_carve
+        if age is None or age >= test_health_interval:
+            carve_actions.append(
+                CarveDispatch(project=inp.cfg.project_id, kind="test-health")
+            )
+            carve_dispatch_planned = True
+
     if not inp.project_paused and not carve_in_flight and not carve_dispatch_planned:
         ready_states = (TaskState.CARVED, TaskState.QUEUED, TaskState.NEEDS_DECISION)
         ready_count = 0
