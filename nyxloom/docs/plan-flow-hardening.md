@@ -62,6 +62,13 @@ every MEDIUM+ LIVE bug in the critique are fixed & live.
   the frozen core exists to close.
 - **D-061 (resolved autonomously 2026-07-20)**: FIX the progress ratchet (done in
   P64), do not retire it.
+- **D-062 (PENDING — CRITIQUE §4, not yet decided)**: does an operator-initiated
+  *targeted* carve override pause? Today M15 makes it an accident
+  (`dispatch_targeted_carve` bypasses pause/budget/route entirely). The fix folds
+  into A3's admission gate as an *explicit, audited* override token — not a silent
+  bypass. Operator call: allow-override-with-audit, or forbid (targeted carve also
+  respects pause). Recommendation: allow-with-audit (a human asking for a specific
+  carve during a pause is a legitimate intent; the audit trail makes it honest).
 
 ## Wave B — flow system (D-060) · 7 packages
 See CRITIQUE §4 "Wave B" table (B1–B7) for the authoritative per-package spec:
