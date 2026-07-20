@@ -85,11 +85,15 @@ STAGE_REGISTRY: dict[str, Stage] = {
     "triage": Stage(
         name="triage", role=None,
         entry_state=TaskState.REVIEW_REJECTED, exit_from=TaskState.REVIEW_REJECTED,
-        # B2: matches the current reject-loop (item 10) -- attempts-remaining ->
-        # QUEUED, exhausted -> READY_TO_CARVE. B4 makes the exhausted target
-        # pipeline-aware (NEEDS_DECISION when no carve stage) + adds LLM tiers.
+        # The DECLARED floor (pipeline-independent, always safe): attempts
+        # remaining -> QUEUED; exhausted -> NEEDS_DECISION (a human decides). This
+        # is what lets a carve-less pipeline (`gated`/`lean`) validate. B4a: when
+        # the pipeline DOES include a carve stage, reconcile UPGRADES the
+        # exhausted case to READY_TO_CARVE (carve owns that state, so it is never
+        # a dead-end and needs no separate declaration here). B4b will add the
+        # drift-guard (stale input_revision -> re-carve) and the LLM tier.
         exit_map=(("fixable", TaskState.QUEUED),
-                  ("exhausted", TaskState.READY_TO_CARVE)),
+                  ("exhausted", TaskState.NEEDS_DECISION)),
         owns=frozenset({TaskState.REVIEW_REJECTED})),
     "auto_merge": Stage(
         name="auto_merge", role=None,
@@ -111,15 +115,15 @@ DEFAULT_PIPELINE: tuple = (
     "carve", "implement", "frontier_review", "triage", "auto_merge", "post_merge_gate",
 )
 
-# Ergonomic presets (docs/spec-flow-stages.md). B2 ships `full` (== default) and
-# `lean` (drops post_merge_gate -> VALIDATING advances straight to COMPLETED).
-# `gated` (drops carve) and self_review-in-every-preset land in B4/B5, which own
-# reject-routing and the SELF_REVIEWING state respectively -- until then, a
-# carve-less pipeline that still routes rejects to READY_TO_CARVE is (correctly)
-# rejected by validate_pipeline's dead-end check.
+# Ergonomic presets (docs/spec-flow-stages.md). B4a makes the carve-less presets
+# real (triage escalates exhausted rejects to NEEDS_DECISION when no carve stage
+# is present, so they close): `gated` drops carve (externally-fed handoffs +
+# a real gate, e.g. dstdns); `lean` also drops the gate (low-ceremony projects).
+# self_review-in-every-preset lands in B5 (needs the SELF_REVIEWING state).
 PRESETS: dict[str, tuple] = {
     "full": DEFAULT_PIPELINE,
-    "lean": ("carve", "implement", "frontier_review", "triage", "auto_merge"),
+    "gated": ("implement", "frontier_review", "triage", "auto_merge", "post_merge_gate"),
+    "lean": ("implement", "frontier_review", "triage", "auto_merge"),
 }
 
 
