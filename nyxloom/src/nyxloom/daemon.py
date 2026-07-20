@@ -615,7 +615,28 @@ class Daemon:
                 project, cfg, states, actions, inp.project_paused)
             appended.extend(watchdog_events)
             for action in actions:
-                appended.extend(self._execute(project, cfg, states, action))
+                # P62 2026-07-20 (A10, M12): per-action isolation. The action
+                # loop was inside ONE try/except spanning the whole pass, so a
+                # single raising executor (a routes.toml KeyError, a receipt
+                # race, an IndexError) aborted every REMAINING action that pass
+                # -- starving unrelated tasks. Isolate each action: log the
+                # failure as a TICK_ERROR and continue with the rest. The
+                # outer try/except still covers pass-level setup (plan_project,
+                # _build_input, watchdog).
+                try:
+                    appended.extend(self._execute(project, cfg, states, action))
+                except Exception as action_exc:
+                    detail = f"action {type(action).__name__}: {repr(action_exc)[:400]}"
+                    try:
+                        ev = storage.append_and_apply(
+                            project, {}, actor=Actor(ActorKind.TICK, "nyxloomd"),
+                            type=EventType.TICK_ERROR, payload={"error": detail})
+                        try:
+                            notify.notify_event(cfg, {}, ev)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
             if appended:
                 render.render_after_event(self.registry)
             return len(actions)

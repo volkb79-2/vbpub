@@ -1596,6 +1596,38 @@ def test_hang_detection_full_pipeline_real(tmp_state, sample_project, monkeypatc
 # --------------------------------------------------------------------------
 # Oracle 5: OpenWave/LaunchReview
 
+def test_run_pass_isolates_a_failing_action_from_the_rest(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """P62 2026-07-20 (A10, M12): one action whose executor RAISES must not
+    starve the remaining actions in the pass. The old single try/except spanned
+    the WHOLE action loop, so the first raise aborted every remaining action --
+    starving unrelated tasks. Now each action is isolated: the failure is
+    surfaced as a TICK_ERROR and the pass continues."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    a1 = reconcile.OpenWave(task_ids=["boom"])   # will be made to raise
+    a2 = reconcile.OpenWave(task_ids=["ok"])     # must still run
+    _scripted(monkeypatch, [[a1, a2]])
+    real_execute = d._execute
+
+    def flaky_execute(project, cfg_, states, action):
+        if action is a1:
+            raise RuntimeError("boom-in-action")
+        return real_execute(project, cfg_, states, action)
+
+    monkeypatch.setattr(d, "_execute", flaky_execute)
+    d.run_pass("demo")   # must NOT raise
+
+    events = list(storage.iter_events("demo"))
+    # the SECOND action still executed (its WAVE_OPENED landed) despite the first raising ...
+    assert any(e.type is EventType.WAVE_OPENED and e.payload.get("task_ids") == ["ok"]
+               for e in events), "the action after the failing one was starved (M12)"
+    # ... and the failure was surfaced, not swallowed nor allowed to abort the pass.
+    assert any(e.type is EventType.TICK_ERROR and "boom-in-action" in (e.payload.get("error") or "")
+               for e in events), "the failing action must be logged as a TICK_ERROR"
+
+
 def test_open_wave_and_launch_review(tmp_state, sample_project, patch_siblings, monkeypatch):
     cfg = sample_project
     paths.routes_path().write_text(

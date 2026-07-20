@@ -823,7 +823,7 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                     # unchanged (O2): today's ResumeAttempt-or-BLOCKED branch.
                     if attempts_used(tsf) < inp.cfg.policy.max_attempts_per_task and attempt.session_handle:  # P60 (M8): was this same formula inline
                         attempt_actions.append(ResumeAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
-                    else:
+                    elif tsf.state == TaskState.ACTIVE:
                         # P14 2026-07-15 item 4 (silent-dead-end fix): no resume
                         # handle, or the attempt budget is exhausted -- either
                         # way there is no path forward. The prior code silently
@@ -831,6 +831,19 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                         # true: lifecycle only dispatches QUEUED tasks, and
                         # nothing ever requeued this one) leaving the task
                         # ACTIVE forever with zero events. Surface it.
+                        #
+                        # P62 2026-07-20 (A10, M10): SCOPED to ACTIVE (implementer
+                        # dead-end) only. For an AWAITING_REVIEW task whose review
+                        # attempt is INTERRUPTED with no handle, the WAVE loop
+                        # already plans a relaunch (has_review_in_flight is False
+                        # for a no-handle INTERRUPTED review) -- emitting BLOCKED
+                        # here too made a single pass plan BOTH a dead-end AND a
+                        # LaunchReview for the same task, so execution blocked it
+                        # and then wasted a frontier session on the now-BLOCKED
+                        # task whose exit receipt is never consumed. Deferring to
+                        # the wave loop (park here) removes the contradiction; a
+                        # genuinely unrecoverable review still surfaces via the
+                        # review budget / smart-triage, not a spurious block.
                         blocker = Blocker(
                             type=BlockerType.ENVIRONMENT,
                             unblock_condition="operator: inspect attempts",
@@ -838,6 +851,8 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                         )
                         attempt_actions.append(Transition(task_id=task_id, to=TaskState.BLOCKED,
                                                            notes="interrupted-dead-end", blocker=blocker))
+                    # else (e.g. AWAITING_REVIEW): park -- the wave loop plans the
+                    # review relaunch; no dead-end here (M10 contradiction fix).
                 else:
                     is_latest = bool(tsf.attempts) and tsf.attempts[-1].attempt_id == attempt.attempt_id
                     if not is_latest:
@@ -1066,6 +1081,33 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     actions.extend(wave_actions)
     actions.extend(spec_actions)
     actions.extend(carve_actions)
+
+    # P62 2026-07-20 (A10, M10): whole-plan consistency guard (defense in depth
+    # alongside the source fix in the INTERRUPTED branch). A single pass must
+    # NEVER both dead-end a task (Transition -> BLOCKED) AND launch an agent for
+    # it: executing both blocks the task and then wastes an agent session on the
+    # now-BLOCKED task whose exit receipt is never consumed (an orphan attempt).
+    # If any launch targets a task this same plan is blocking, drop that task
+    # from the launch (and drop a launch left empty); keep the dead-end -- it is
+    # the inspectable half. This guarantees the invariant regardless of which
+    # producing branch introduced the contradiction.
+    blocked_here = {
+        a.task_id for a in actions
+        if isinstance(a, Transition) and a.to == TaskState.BLOCKED
+    }
+    if blocked_here:
+        deconflicted: list[Action] = []
+        for a in actions:
+            if isinstance(a, (DispatchImplementer, ResumeAttempt)) and a.task_id in blocked_here:
+                continue  # drop: this task is being dead-ended this pass
+            if isinstance(a, LaunchReview):
+                keep = [t for t in a.task_ids if t not in blocked_here]
+                if not keep:
+                    continue  # every member was being blocked -> drop the launch
+                if len(keep) != len(a.task_ids):
+                    a = LaunchReview(wave_id=a.wave_id, task_ids=keep)
+            deconflicted.append(a)
+        actions = deconflicted
 
     return actions
 
