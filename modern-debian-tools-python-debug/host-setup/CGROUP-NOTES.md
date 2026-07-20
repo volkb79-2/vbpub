@@ -242,3 +242,72 @@ cat /sys/fs/cgroup/interactive.slice/io.bfq.weight   # NOT io.weight
 docker inspect -f '{{.HostConfig.CgroupParent}}' <c> # placement — create-time, recreate to change
 journalctl -u mdt-host-slices.service -n 40          # what the last sweep did
 ```
+
+## zswap writeback — who may page to disk
+
+Policy on these hosts: **every tier may drain its coldest pages from zswap out
+to disk swap.** zswap is a cache, not a destination — pinning one tier's cold
+tail in it spends a fixed share of RAM (`max_pool_percent`) on pages nobody is
+touching, and zswap's own LRU already evicts only the coldest-of-cold. The one
+documented exception is a cgroup holding incompressible data, which is better
+off bypassing the pool entirely (`memory.zswap.max=0`) than paying zstd for a
+~1.0x ratio.
+
+Two different knobs, easy to confuse:
+
+| Knob | 0 means | 1 / non-zero means |
+|---|---|---|
+| `memory.zswap.writeback` | cold pages **stay** in the compressed pool, never reach disk | pool LRU may evict to disk swap |
+| `memory.zswap.max` | **bypass** the pool — anon goes straight to disk swap | may use the pool, up to this many bytes |
+
+**`memory.zswap.writeback` is hierarchical.** A `0` on any ancestor disables
+writeback for the whole subtree, so a cgroup reading `1` can still be denied by
+a parent. Check the ancestors, not just the leaf.
+
+### Test
+
+```bash
+# Every cgroup that DENIES writeback. Empty output = the whole host allows it.
+find /sys/fs/cgroup -name memory.zswap.writeback -exec sh -c \
+  '[ "$(cat "$1")" = 0 ] && echo "DENIED: ${1%/memory.zswap.writeback}"' _ {} \;
+
+# Every cgroup that BYPASSES the pool (straight to disk).
+find /sys/fs/cgroup -name memory.zswap.max -exec sh -c \
+  '[ "$(cat "$1")" = 0 ] && echo "BYPASS: ${1%/memory.zswap.max}"' _ {} \;
+
+# Walk one cgroup's ancestors — the hierarchical rule above.
+p=/sys/fs/cgroup/interactive.slice
+while [ "$p" != /sys/fs/cgroup ]; do
+    printf '%-52s %s\n' "$p" "$(cat "$p/memory.zswap.writeback" 2>/dev/null)"
+    p=$(dirname "$p")
+done
+printf '%-52s %s\n' /sys/fs/cgroup "$(cat /sys/fs/cgroup/memory.zswap.writeback)"
+
+# systemd's own view for a unit (needs systemd >= 256).
+systemctl show interactive.slice -p MemoryZSwapWriteback
+
+# Global pool state — writeback itself has no global switch in cgroup v2,
+# it is per-cgroup only.
+grep . /sys/module/zswap/parameters/* 2>/dev/null
+```
+
+### Toggle
+
+```bash
+# Dev tiers — use the supported knob, not a raw write:
+#   /etc/mdt/host-setup.env :  INTERACTIVE_ZSWAP_WRITEBACK=yes|no
+sudo "$PWD/install.sh"          # re-renders + reinstalls the slice units
+
+# Any other unit, runtime only (gone at reboot, survives daemon-reload):
+systemctl set-property --runtime <unit> MemoryZSwapWriteback=yes
+
+# Any other unit, persistent (drop-in under /etc/systemd/system.control):
+systemctl set-property <unit> MemoryZSwapWriteback=yes
+
+# systemd < 256 has no directive — raw write, and NOT reload-safe:
+echo 1 > /sys/fs/cgroup/<path>/memory.zswap.writeback
+```
+
+Setting it to `no` is defensible only when you have *measured* stalls caused by
+swap-in on that tier. Weigh it against the pool RAM it permanently occupies:
+that RAM is taken from every other tier, including production.

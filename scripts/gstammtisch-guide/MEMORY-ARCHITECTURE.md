@@ -40,6 +40,13 @@
 | Network | fq_codel + DSCP/tc | prio qdisc + filters | **fq_codel only** | don't build speculative QoS; revisit only if starvation observed |
 | Kernel | "stay 6.12; 7.0 doesn't exist" ✗ | "7.0.10 available" ✓ | **on 7.0.10 already; plan toward 6.18 LTS** | see §8 |
 
+> **Live drift, observed 2026-07-20:** `max_pool_percent` reads **30** on the
+> case-study node while `zswap-config.service` (enabled, active) sets **40**.
+> The service only runs at boot, so a later manual write wins silently until
+> the next reboot. Reconcile with `systemctl restart zswap-config.service`,
+> and read the value back — this file, `MEASUREMENTS.md` and the unit have
+> disagreed on 30 vs 40 before.
+
 ---
 
 ## 2. zswap, not zram — and why it matters here
