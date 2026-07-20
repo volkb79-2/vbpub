@@ -406,11 +406,23 @@ _PAUSE_MODES = frozenset({"run", "drain-handoffs", "drain-agents"})
 # separately from _POLICY_BOUNDS' int keys in _post_config_policy).
 _CARVE_AUTHORITIES = frozenset({"branch", "main", "files"})
 
-# v2 §8 stop-policy outcomes (docs/SPEC.md §8), inherited verbatim.
+# v2 §8 stop-policy outcomes (docs/SPEC.md §8), inherited verbatim. These are
+# the CARVER agent's SELF-REPORTED run outcome (summary.outcome) -- what its
+# whole carve pass concluded about the roadmap runway. The carver decides them.
 _CARVE_OUTCOMES = frozenset({
     "CANDIDATES_READY", "MILESTONE_COMPLETE", "ROADMAP_EXHAUSTED",
     "SPEC_GAP", "DECISION_REQUIRED", "EXTERNAL_BLOCKER", "BUDGET_EXHAUSTED",
 })
+
+# B7 2026-07-20 (P75, D-060 carver re-scope entry; D-067): the DAEMON-determined
+# fate stamped on the ORIGINAL rejected task's carve-driven SUPERSEDED event when
+# a re-scope carve is launched to replace it. Deliberately NOT a member of
+# _CARVE_OUTCOMES above: the carver never reports RESCOPED (it is not a stop-policy
+# conclusion about its run); the daemon writes it, atomically, only AFTER the
+# re-scope carve dispatch actually launches. Mirrors the stages.py carve exit label
+# ("rescope_superseded" -> SUPERSEDED), which B7 makes real. It is an OUTCOME
+# marker, NOT a new TaskState -- the origin task lands in the existing SUPERSEDED.
+_RESCOPE_OUTCOME = "RESCOPED"
 
 
 @dataclass
@@ -1967,7 +1979,8 @@ class Daemon:
     def _build_carve_packet(self, cfg: ProjectConfig, project: str, seq: int,
                              states: dict[str, TaskStateFile],
                              own_task_id: str | None = None,
-                             item_id: str | None = None) -> str:
+                             item_id: str | None = None,
+                             rescope: dict | None = None) -> str:
         """The carve packet (mirrors the review packet's economy: point at
         sources, embed only what is cheap and structured). Written to the
         carve attempt's own packet/packet.md, exactly like LaunchReview's
@@ -1978,14 +1991,58 @@ class Daemon:
         one backlog item's intake brief (its pre-carve detail: aligned
         purpose, elicited detail, linked D-NNN, priority), distinct from the
         untargeted headroom-refill carve's review/backlog/roadmap/product-
-        goal source list."""
+        goal source list.
+
+        B7 2026-07-20 (P75): when `rescope` is set (built by _rescope_context
+        for a task triage routed to READY_TO_CARVE), this is a RE-SCOPE carve
+        -- the primary source is the rejected task itself: its original handoff
+        (pointer), the reviewer's rejection verdict (embedded prose), and the
+        input_revision drift report. The carve authority + output-contract tail
+        is shared with the other two modes; only the source section differs.
+        The three modes are mutually exclusive (item 12 sets task_id not item_id;
+        dispatch_targeted_carve sets item_id not task_id; item 9 sets neither),
+        so rescope takes precedence, then item_id, then the untargeted default."""
         lines = [
             f"# Carve packet {seq}",
             "",
             "## Your role: CARVER",
             "",
         ]
-        if item_id is not None:
+        if rescope is not None:
+            origin_id = rescope.get("origin_task_id")
+            input_rev = rescope.get("input_revision") or "(unknown)"
+            head_rev = rescope.get("head_revision") or "(unknown)"
+            drift_line = (
+                f"DRIFTED -- input_revision {input_rev} is not an ancestor of main "
+                f"{(head_rev[:7] if isinstance(head_rev, str) else head_rev)}; the "
+                "package was written against a base main has since moved past"
+                if rescope.get("drifted")
+                else f"current -- input_revision {input_rev} still matches main "
+                     f"{(head_rev[:7] if isinstance(head_rev, str) else head_rev)}"
+            )
+            lines.extend([
+                f"You are RE-SCOPING one rejected task for project '{project}'. Task "
+                f"'{origin_id}' was implemented, REVIEWED, and REJECTED, and triage "
+                "classified it as architectural or stale-premise -- a same-base retry by "
+                "the implementer cannot fix it. YOU decide what happens: write a fresh, "
+                "corrected handoff package (re-carve), drop the work if the review shows "
+                "it is no longer worth doing, or escalate a genuine product question as a "
+                "D-NNN decision. Do NOT simply re-emit the original handoff unchanged, and "
+                "do NOT implement the work yourself.",
+                "",
+                "## Re-scope source: the rejected task",
+                f"- Original handoff: {rescope.get('handoff_path') or '(none recorded)'}",
+                f"- Premise drift: {drift_line}",
+                "- Reviewer's rejection verdict (why it was rejected):",
+            ])
+            verdict = rescope.get("verdict")
+            if verdict:
+                lines.append("")
+                lines.extend(f"  > {ln}" for ln in verdict.splitlines())
+            else:
+                lines.append("  (no committed review report found for the origin task)")
+            lines.append("")
+        elif item_id is not None:
             lines.extend([
                 f"You are carving ONE new handoff package for project '{project}', "
                 f"directly from backlog item {item_id}'s intake brief below -- it was "
@@ -2102,6 +2159,20 @@ class Daemon:
         task_id = f"carve-{project}-{seq}"
         authority = getattr(cfg.policy, "carve_authority", "branch")
 
+        # B7 2026-07-20 (P75): a RE-SCOPE carve carries the ORIGINAL rejected
+        # task's id in action.task_id (set by reconcile item 12 for a task triage
+        # routed to READY_TO_CARVE). It is distinct from the untargeted headroom
+        # trigger (task_id None) and the targeted backlog carve (item_id set,
+        # task_id None). Only a re-scope embeds the rejected task's context in the
+        # packet AND atomically supersedes the origin -- but ONLY after the carve
+        # actually launches (below), so a carve that early-returns (admission
+        # refused / no route above) leaves the origin in READY_TO_CARVE to retry,
+        # never silently dropping the re-carve (critique M20; the A10 atomicity
+        # B7's oracle requires -- the old item-12 code planned the supersede as an
+        # independent action that fired even when the carve did not).
+        is_rescope = action.task_id is not None and action.item_id is None
+        origin_task_id = action.task_id if is_rescope else None
+
         if authority == "branch":
             branch = f"carve/{project}-{seq}"
             carve_cwd = cfg.root / cfg.worktree_root / branch
@@ -2120,6 +2191,8 @@ class Daemon:
         notes = f"carve seq={seq} authority={authority}"
         if action.item_id is not None:
             notes += f" item={action.item_id}"
+        if origin_task_id is not None:
+            notes += f" rescope-of={origin_task_id}"
         tsf = TaskStateFile(
             schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
             state=TaskState.ACTIVE, since=utc_now(), handoff_path=None,
@@ -2132,8 +2205,10 @@ class Daemon:
         attempt_dir = paths.attempt_dir(project, attempt_id)
         packet_dir = attempt_dir / "packet"
         packet_dir.mkdir(parents=True, exist_ok=True)
+        rescope_ctx = (self._rescope_context(cfg, states, origin_task_id)
+                       if origin_task_id is not None else None)
         packet_text = self._build_carve_packet(cfg, project, seq, states, own_task_id=task_id,
-                                                item_id=action.item_id)
+                                                item_id=action.item_id, rescope=rescope_ctx)
         (packet_dir / "packet.md").write_text(packet_text, encoding="utf-8")
 
         route_def = review_routes[0]
@@ -2166,6 +2241,28 @@ class Daemon:
         events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_PREFLIGHTED,
                                        {"attempt": attempt.to_dict()}, task_id=task_id,
                                        attempt_id=attempt_id))
+
+        # B7 2026-07-20 (P75; critique CRITIQUE.md:249, A10 atomicity): supersede
+        # the ORIGINAL rejected task NOW -- and ONLY now, after launch_detached +
+        # ATTEMPT_PREFLIGHTED have committed the re-scope carve. Every early return
+        # above (admission refused, no frontier route) skips this, so a carve that
+        # never launched leaves the origin in READY_TO_CARVE for the next pass to
+        # retry -- closing M20 (the pre-B7 item-12 code planned CarveDispatch and
+        # Transition(SUPERSEDED) as two independent actions, so the supersede fired
+        # even when the carve early-returned, silently dropping the re-carve). The
+        # RESCOPED outcome distinguishes this daemon-driven re-scope supersede from
+        # a plain carve-consumed one; the origin lands in the existing SUPERSEDED
+        # state (READY_TO_CARVE -> SUPERSEDED is the stages.py carve `rescope_
+        # superseded` edge, now made real). Guarded on membership: item 12 only
+        # emits a re-scope CarveDispatch for a task present in states.
+        if origin_task_id is not None and origin_task_id in states:
+            events.append(self._append_ev(
+                project, cfg, states, EventType.TASK_SUPERSEDED,
+                {"from": states[origin_task_id].state.value,
+                 "outcome": _RESCOPE_OUTCOME,
+                 "carve_task_id": task_id,
+                 "notes": f"rescoped -- re-scope carve {task_id} launched (seq={seq})"},
+                task_id=origin_task_id))
         return events
 
     def _consume_carve_exit(self, project: str, cfg: ProjectConfig,
@@ -2609,6 +2706,41 @@ class Daemon:
         if len(text) > max_chars:
             text = text[:max_chars].rstrip() + "\n[... review report truncated ...]"
         return text
+
+    def _rescope_context(self, cfg: ProjectConfig, states: dict[str, TaskStateFile],
+                         origin_task_id: str) -> dict:
+        """B7 2026-07-20 (P75, D-060 carver re-scope entry; critique CRITIQUE.md:206).
+        Assemble the re-scope packet inputs for an origin task that triage routed to
+        READY_TO_CARVE (architectural / stale-premise / attempt-exhausted). The
+        strategic carver -- the only component with whole-system context -- reads
+        these and decides re-carve vs. drop vs. escalate-as-D-NNN, so a same-base
+        retry that could never fix the flagged defect is never blindly re-issued
+        (the critique's ban on the bare context-free retry, at the carve tier).
+
+        Every field degrades gracefully: a missing/unparsable handoff -> input_revision
+        None -> drifted False (the same fail-safe-to-no-drift rule as
+        reconcile._premise_drifted); an un-committed review -> verdict None. A re-scope
+        carve MUST still launch with whatever context exists -- the ATOMIC supersede
+        (emitted only AFTER the carve launches) is what must never be skipped, not the
+        packet's richness. Read-only: no writes, no transitions."""
+        origin = states.get(origin_task_id)
+        handoff_path = origin.handoff_path if origin else None
+        input_revision: str | None = None
+        if handoff_path:
+            try:
+                fm, _body = frontmatter.parse_handoff(cfg.root / handoff_path)
+                input_revision = fm.input_revision
+            except Exception:
+                input_revision = None
+        head_revision = self._head_revision(cfg)
+        return {
+            "origin_task_id": origin_task_id,
+            "handoff_path": handoff_path,
+            "verdict": self._review_rationale(cfg, origin_task_id),
+            "input_revision": input_revision,
+            "head_revision": head_revision,
+            "drifted": reconcile._premise_drifted(input_revision, head_revision),
+        }
 
     def _parse_self_review_verdict(self, cfg: ProjectConfig, task_id: str) -> str:
         """B5 2026-07-20: the self_review leg's verdict, read from the warm

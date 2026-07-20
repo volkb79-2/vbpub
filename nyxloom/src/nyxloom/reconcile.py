@@ -182,16 +182,23 @@ INTERFACE CONTRACT (frozen). Semantics:
     already in flight (the EXACT SAME predicate item 9 uses, computed once
     and shared -- not a second, independently-drifting version) and a
     healthy 'frontier-review' route exists (ditto), the single lowest
-    (sorted) task_id currently in READY_TO_CARVE gets BOTH a
+    (sorted) task_id currently in READY_TO_CARVE gets a
     CarveDispatch(project=cfg.project_id, task_id=fm_id) -- re-dispatched
     through the SAME existing carve mechanism as item 9 (daemon.
-    _execute_carve_dispatch); item_id is left None, so the untargeted
-    carve-packet path fires, which already embeds recent REVIEW_RECORDED
-    follow-ups (this rejection's own context, for free) -- AND a
-    Transition(task_id=fm_id, to=SUPERSEDED) in the SAME pass, self-limiting
-    like every other bookkeeping transition in this module (the task moves
-    off READY_TO_CARVE so it does not re-trigger a second CarveDispatch once
-    the carve slot frees up on a later pass). AT MOST ONE CarveDispatch is
+    _execute_carve_dispatch); item_id is left None.
+    B7 2026-07-20 (P75, critique A10/M20): this handler plans ONLY the
+    CarveDispatch. The origin task's SUPERSEDED transition is NO LONGER a
+    separate action planned here -- the daemon emits it atomically, and only
+    AFTER the re-scope carve launches, folding the origin's handoff/verdict/
+    input_revision-drift into the carve packet (task_id=fm_id now DRIVES that
+    re-scope path, not merely informational). The pre-B7 design planned the
+    supersede as an independent same-pass action; under per-action isolation
+    (A10/M12) it fired even when the CarveDispatch early-returned (admission
+    refused / no route), silently dropping the re-carve -- the M20 gap.
+    Coupling the supersede to the launch is the only real atomicity. The task
+    still moves off READY_TO_CARVE the same pass on a successful launch, so it
+    does not re-trigger a second CarveDispatch; on a failed launch it stays,
+    correctly, for the next pass to retry. AT MOST ONE CarveDispatch is
     ever planned in a single pass, shared between this handler and item 9 --
     whichever fires first (this item runs earlier in the function body, so
     it wins ties) consumes the single carve slot for the pass; the operator
@@ -778,13 +785,21 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
         if ready_to_carve_ids:
             chosen_id = ready_to_carve_ids[0]
             chosen_actions = lifecycle_by_id.setdefault(chosen_id, [])
+            # B7 2026-07-20 (P75, critique A10/M20): plan ONLY the CarveDispatch
+            # here. The origin task's SUPERSEDED transition is NO LONGER a separate
+            # planned action -- daemon._execute_carve_dispatch emits it atomically,
+            # and ONLY after the re-scope carve actually launches (with the RESCOPED
+            # outcome + the origin's handoff/verdict/drift folded into the carve
+            # packet). Splitting them here was the M20 bug: per-action isolation
+            # (A10/M12) runs each action independently, so the supersede fired even
+            # when the CarveDispatch early-returned (admission refused / no route),
+            # silently dropping the rejected task's re-carve. Coupling the supersede
+            # to the launch is the only real atomicity. task_id=chosen_id now DRIVES
+            # that path (the origin whose context seeds the re-scope packet), where
+            # for item 9's untargeted trigger it stays None.
             chosen_actions.append(
                 CarveDispatch(project=inp.cfg.project_id, task_id=chosen_id)
             )
-            chosen_actions.append(Transition(
-                task_id=chosen_id, to=TaskState.SUPERSEDED,
-                notes="ready-to-carve: dispatched to the strategic carver",
-            ))
             carve_dispatch_planned = True
 
     # 3. Dispatch eligible QUEUED tasks (with capacity limit)

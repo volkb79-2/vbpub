@@ -201,6 +201,18 @@ prose — the divergence lives in **composition**, never in the **semantics** of
   the critique's matrix oracle + its "no bare same-model retry" ban. If the reviewer omits
   the line (older reviewer, or an infra 'incomplete' leg), the task is unclassified and falls
   to the mechanical attempt-budget path — graceful degradation, byte-identical to A4a.
+- **D-067** (resolved 2026-07-20 — my call during B7, no sign-off): the critique's "carve
+  outcomes extended with RESCOPED" is implemented as a DAEMON-determined marker on the ORIGINAL
+  rejected task's carve-driven SUPERSEDED event — NOT as a member of the carver's stop-policy
+  `_CARVE_OUTCOMES` set. Those two "outcomes" are different concepts: `_CARVE_OUTCOMES`
+  (CANDIDATES_READY, ROADMAP_EXHAUSTED, …) is what the CARVER agent self-reports about its
+  whole run; `RESCOPED` is what the DAEMON records about the origin task's fate when it launches
+  a re-scope carve to replace it. Adding RESCOPED to `_CARVE_OUTCOMES` would wrongly tell the
+  carver it may report a value it never decides. RESCOPED is an OUTCOME marker, not a new
+  TaskState — the origin lands in the existing SUPERSEDED, via the `stages.py` carve
+  `rescope_superseded` exit that B7 makes real. It is written atomically, only after the
+  re-scope carve actually launches (the A10/M20 coupling), so a carve that never launches
+  never stamps RESCOPED and never supersedes the origin.
 - **D-065** (design 2026-07-20 — strategic test-health, from the operator's question): the
   strategic carver already exists as the untargeted *headroom-refill* CarveDispatch
   (reconcile item 9 — carves from backlog/roadmap/review-follow-ups when ready_count <
@@ -251,9 +263,27 @@ prose — the divergence lives in **composition**, never in the **semantics** of
   is deferred.
 - **B6 (P74)** reviewer session-reuse (`context = session-reuse` via `build_resume`) +
   carver-maintained `SPINE-DIGEST.md` referenced-by-pointer in review/carve packets.
-- **B7 (P75)** carver re-scope entry: triage "architectural/stale" packaged into a carve
-  packet (handoff + verdict + drift report); original task SUPERSEDED only *after* the
-  carve dispatch actually launches (uses A10 atomicity). Adds a RESCOPED carve outcome.
+- **B7 (P75) — DONE 2026-07-20 (hand-driven).** Carver re-scope entry: a task triage
+  routes to READY_TO_CARVE (architectural / stale-premise / attempt-exhausted) is
+  packaged by the daemon into a re-scope carve packet — the origin handoff (pointer), the
+  reviewer's rejection verdict (`_review_rationale`), and the `input_revision` drift report
+  (`_rescope_context`) — so the strategic carver decides re-carve vs. drop vs. D-NNN instead
+  of a blind same-base re-issue. The ORIGINAL task is SUPERSEDED with the `RESCOPED` outcome
+  **only after** `_execute_carve_dispatch` actually launches the carve (A10 atomicity): the
+  supersede moved OUT of reconcile item 12 (which planned it as an independent action that
+  fired even when the carve early-returned — the M20 gap) and INTO the executor, gated on
+  `launch_detached` + `ATTEMPT_PREFLIGHTED`. `RESCOPED` is the daemon-determined origin fate
+  (D-067), distinct from the carver's stop-policy `_CARVE_OUTCOMES`; it makes the
+  `stages.py` carve `rescope_superseded` → SUPERSEDED edge real (READY_TO_CARVE → SUPERSEDED
+  was already graph-legal). **Proof shipped:** reconcile — the READY_TO_CARVE handler now
+  plans exactly one CarveDispatch and NO SUPERSEDED transition (updated `then_supersedes` +
+  two-simultaneous tests); daemon — packet-embeds-verdict+drift (with a no-drift/no-verdict
+  negative), `_rescope_context` reads handoff/verdict/drift (with a no-handoff/no-review
+  graceful negative), the end-to-end supersede-with-RESCOPED-outcome, the **M20 atomicity
+  oracle** (admission refused → NO supersede, origin stays READY_TO_CARVE), and the
+  untargeted-carve-supersedes-nothing discriminator; stages — the carve `rescope_superseded`
+  edge is pinned. **Deferred (out of B7 scope):** the operator-override-token audit for a
+  targeted carve during pause (D-062, a separate A3 fold-in).
 
 ## Build discipline (unchanged from Wave A)
 Worktree `feat/flow-stages` under `.worktrees/`; gate ONLY via `tester-unified`
