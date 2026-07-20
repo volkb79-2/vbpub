@@ -171,6 +171,29 @@ prose — the divergence lives in **composition**, never in the **semantics** of
   still warm (the primary "cheap, every time" win is fully delivered); only the *fix*
   after a reject is a fresh cold attempt. The warm in-session fix loop (rejected→ACTIVE
   + implementer resume) is a deferred optimization for once the gate is proven live.
+- **D-064** (design 2026-07-20 — test-completeness enforcement, from the operator's
+  question): implementer-generated tests are structurally happy-path-biased, so add
+  test-completeness as a LAYERED discipline, NOT one big LLM pass:
+  1. **self_review is oracle-anchored + negative-checked** (done, B5-hardened): run each
+     oracle's observable on REAL data and check its NEGATIVE (the edge case; a test that
+     also passes on the negative is HOLLOW). This is MECHANICAL — deliberately not "review
+     with fresh eyes / reflect", which AUTHORING flags as false confidence (models are
+     poor judges of what they missed; the historical P40 prompt already rejected it). The
+     operator's "test edge cases, not just the happy path" IS this negative check.
+  2. **Mechanical diff-coverage gate** (planned, pairs with #57): fail the gate when
+     changed/added source lines have no test hitting them. Deterministic, no LLM — would
+     have caught the B5 `_attempt_scan` gap. The reliable floor coverage-% can enforce.
+  3. **`test_audit` as a 2nd turn of the frontier_review session** (folds into B6): after
+     the COLD reviewer's correctness pass, a second prompt in the SAME (session-reused)
+     review session audits test completeness — hollow tests, missing negatives, un-tested
+     ripple. Cold+independent (unlike warm self_review, which shares the implementer's
+     blind spots) and cache-cheap (reuses the review session). Opt-in like triage.
+- **D-065** (design 2026-07-20 — strategic test-health, from the operator's question): the
+  strategic carver already exists as the untargeted *headroom-refill* CarveDispatch
+  (reconcile item 9 — carves from backlog/roadmap/review-follow-ups when ready_count <
+  carve_ahead_target). Add a seldom-run, project-WIDE **test-health trigger** of the same
+  shape: it steps back from per-task work, evaluates suite-wide test debt, and carves
+  test-improvement tasks — the test analog of the strategic carver reading the north star.
 
 ## Sequenced implementation (B2–B7) — proofs keep each package honest
 - **B2 (P70)** stage registry + composed-pipeline validation. `reconcile.py` thins
