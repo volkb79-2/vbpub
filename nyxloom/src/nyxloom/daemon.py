@@ -2642,53 +2642,83 @@ class Daemon:
                 # The non-DONE receipt states (BLOCKED/LIMIT/ERROR) stay a
                 # defense-in-depth fail-safe below WITHOUT reading the
                 # report; only a DONE receipt's verdict is worth parsing.
+                # P61 2026-07-20 (A9): ONE review attempt covers ALL wave
+                # members. Fan the single exit out to a per-member verdict +
+                # transition. IDEMPOTENT: the receipt-based reconcile scan can
+                # emit an EmitAttemptExit for EACH member this pass (every
+                # member's attempt copy is receipt-bearing); the FIRST to run
+                # transitions every member out of AWAITING_REVIEW, so the rest
+                # find no members and no-op here (the exit-healing preamble
+                # above still ran for each, so every member's attempt copy
+                # reaches EXITED).
+                # A task is a member of THIS review iff it is still awaiting
+                # review AND this attempt is its LATEST (attempts[-1]) -- the
+                # same recency discriminator the 2026-07-17 stale-wave_id fix
+                # uses. Without it, on a reject-loop's SECOND cycle the stale
+                # first-review attempt (still EXITED in the task's history, and
+                # re-emitted by the scan because the task is AWAITING_REVIEW
+                # again) would be re-consumed and re-record its old verdict
+                # against the fresh review's task -- masking the genuine second
+                # review attempt.
+                members = sorted(
+                    t for t, tsf_m in states.items()
+                    if tsf_m.state == TaskState.AWAITING_REVIEW
+                    and tsf_m.attempts
+                    and tsf_m.attempts[-1].attempt_id == action.attempt_id
+                )
+                if not members:
+                    return events  # stale/superseded exit, or already consumed by a sibling this pass
+
                 if result is ReceiptResult.DONE:
-                    # P59b (A7): bind the verdict to THIS review attempt. A
-                    # re-review (a prior FRONTIER_REVIEW attempt exists) counts
-                    # only verdicts stamped with the current attempt id; the
-                    # first review keeps the unbound-verdict path (no prior
-                    # attempt -> no staleness possible).
-                    tsf = states.get(task_id)
-                    prior_reviews = [
-                        a for a in (tsf.attempts if tsf else [])
-                        if a.role == Role.FRONTIER_REVIEW
-                        and a.attempt_id != action.attempt_id
-                    ]
-                    verdict = self._parse_review_verdict(
-                        cfg, task_id, current_attempt_id=action.attempt_id,
-                        is_first_review=not prior_reviews)
+                    for member in members:
+                        # P59b (A7): bind the verdict to THIS review attempt,
+                        # per member. A re-review (a prior FRONTIER_REVIEW
+                        # attempt for this member exists) counts only verdicts
+                        # stamped with the current attempt id; the first review
+                        # keeps the unbound path (no prior attempt -> no
+                        # staleness possible).
+                        prior_reviews = [
+                            a for a in states[member].attempts
+                            if a.role == Role.FRONTIER_REVIEW
+                            and a.attempt_id != action.attempt_id
+                        ]
+                        verdict = self._parse_review_verdict(
+                            cfg, member, current_attempt_id=action.attempt_id,
+                            is_first_review=not prior_reviews)
+                        events.append(self._append_ev(
+                            project, cfg, states, EventType.REVIEW_RECORDED,
+                            {"result": verdict}, task_id=member,
+                            attempt_id=action.attempt_id, wave_id=attempt.wave_id))
+                        if verdict == "approved":
+                            events.append(self._transition(project, cfg, states, member,
+                                                            TaskState.MERGE_READY, None))
+                        else:
+                            events.append(self._transition(project, cfg, states, member,
+                                                            TaskState.REVIEW_REJECTED,
+                                                            f"review verdict: {verdict} (receipt: {result.value})"))
                 else:
-                    # P56 2026-07-20 (M7, decoupled subset). A non-DONE review
-                    # receipt (LIMIT/ERROR/BLOCKED) is an INFRA failure of the
-                    # review LEG, not a semantic rejection of the work. Record
-                    # it as "incomplete" (NOT "rejected") so a provider outage
-                    # does not pollute review_rejections_by_area (which counts
-                    # only result=="rejected") and trip SpecAttention(
-                    # 'rejections') -> a false runaway auto-pause; and
-                    # ProviderPause the review route on a LIMIT so the
-                    # subsequent re-review does not dive straight back into the
-                    # same rate limit. The task still goes to REVIEW_REJECTED
-                    # below (defense-in-depth, unchanged behaviour) -- replacing
-                    # the wasteful full re-implementation with a review RELAUNCH
-                    # is coupled to the wave-launch / has_review_in_flight
-                    # rework (an EXITED attempt cannot be re-marked --
-                    # ATTEMPT_TRANSITIONS[EXITED] is empty) and is deferred to
-                    # A9/P61.
-                    verdict = "incomplete"
+                    # P56 2026-07-20 (M7). A non-DONE review receipt
+                    # (LIMIT/ERROR/BLOCKED) is an INFRA failure of the review
+                    # LEG covering the WHOLE wave, not a semantic rejection of
+                    # any member's work. Record every member "incomplete" (NOT
+                    # "rejected") so a provider outage does not pollute
+                    # review_rejections_by_area (which counts only
+                    # result=="rejected") and trip SpecAttention('rejections')
+                    # -> a false runaway auto-pause; ProviderPause the review
+                    # route ONCE on a LIMIT so the re-review does not dive
+                    # straight back into the same rate limit. Members still go
+                    # to REVIEW_REJECTED below (defense-in-depth, unchanged).
                     if result is ReceiptResult.LIMIT:
                         events.extend(self._provider_pause(
-                            project, cfg, states, attempt.route.route_id, task_id))
-                events.append(self._append_ev(
-                    project, cfg, states, EventType.REVIEW_RECORDED,
-                    {"result": verdict}, task_id=task_id,
-                    attempt_id=action.attempt_id, wave_id=attempt.wave_id))
-                if verdict == "approved":
-                    events.append(self._transition(project, cfg, states, task_id,
-                                                    TaskState.MERGE_READY, None))
-                else:
-                    events.append(self._transition(project, cfg, states, task_id,
-                                                    TaskState.REVIEW_REJECTED,
-                                                    f"review verdict: {verdict} (receipt: {result.value})"))
+                            project, cfg, states, attempt.route.route_id, members[0]))
+                    for member in members:
+                        events.append(self._append_ev(
+                            project, cfg, states, EventType.REVIEW_RECORDED,
+                            {"result": "incomplete"}, task_id=member,
+                            attempt_id=action.attempt_id, wave_id=attempt.wave_id))
+                        events.append(self._transition(project, cfg, states, member,
+                                                        TaskState.REVIEW_REJECTED,
+                                                        f"review verdict: incomplete (receipt: {result.value})"))
                 return events
 
             if result is ReceiptResult.DONE:
@@ -2848,13 +2878,27 @@ class Daemon:
             route_snap = Route(route_id=route_def.route_id, cli=route_def.cli, model=route_def.model,
                                 variant=route_def.variant, effort=route_def.effort,
                                 routes_rev=routes_obj.revision)
-            first_task = action.task_ids[0] if action.task_ids else None
+            members = list(action.task_ids)
+            first_task = members[0] if members else None
+            # A launch with no members is a no-op (nothing to review).
+            record_on = members or ([first_task] if first_task else [])
             attempt = Attempt(attempt_id=attempt_id, role=Role.FRONTIER_REVIEW,
                                state=AttemptState.CREATED, route=route_snap, started=utc_now(),
                                wave_id=wave_id)
-            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
-                                           {"attempt": attempt.to_dict()}, task_id=first_task,
-                                           attempt_id=attempt_id, wave_id=wave_id))
+            # P61 2026-07-20 (A9): record the ONE review attempt on EVERY wave
+            # member, so each member's LATEST attempt is this review (the
+            # per-task has_review_in_flight guard then sees it in flight for
+            # all of them and does not relaunch) and A7's per-member
+            # is_first_review reads a correct review history. The wrapper writes
+            # ATTEMPT_STARTED/EXITED keyed to first_task only; the secondary
+            # members' copies are healed to EXITED when the fan-out consumer
+            # runs (see the EmitAttemptExit FRONTIER_REVIEW branch) and, until
+            # then, the receipt-based reconcile scan (which keys on attempt_id,
+            # not task) drives their exit consumption.
+            for t in record_on:
+                events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
+                                               {"attempt": attempt.to_dict()}, task_id=t,
+                                               attempt_id=attempt_id, wave_id=wave_id))
 
             gate_hint = self._gate_hint(cfg)
             receipt_path = str(attempt_dir / "receipt.json")
@@ -2864,17 +2908,31 @@ class Daemon:
                 gate_hint=gate_hint, receipt_path=receipt_path, role=Role.FRONTIER_REVIEW,
                 attempt_id=attempt_id,  # P59b (A7): reviewer stamps this on the VERDICT line
             )
+            # P61 (A9): the review holds the UNION of its members' leases, so a
+            # concurrent carve/dispatch cannot touch a task while it is under
+            # review (dedup by lease name).
+            review_leases: list[dict[str, Any]] = []
+            _seen_leases: set[str] = set()
+            for t in members:
+                tsf_t = states.get(t)
+                fm_t = self._frontmatter_for(cfg, tsf_t) if tsf_t is not None else None
+                for ls in self._lease_specs(cfg, fm_t):
+                    if ls["name"] not in _seen_leases:
+                        _seen_leases.add(ls["name"])
+                        review_leases.append(ls)
             spec = wrapper.WrapperSpec(
                 project=project, task_id=first_task or wave_id or "review", attempt_id=attempt_id,
                 argv=argv, cwd=str(cfg.root), log_path=str(attempt_dir / "attempt.log"),
                 receipt_path=receipt_path, attempt_dir=str(attempt_dir), route_def=asdict(route_def),
+                leases=review_leases,
             )
             pid = wrapper.launch_detached(spec)
             attempt.state = AttemptState.PREFLIGHTING
             attempt.pid = pid
-            events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_PREFLIGHTED,
-                                           {"attempt": attempt.to_dict()}, task_id=first_task,
-                                           attempt_id=attempt_id, wave_id=wave_id))
+            for t in record_on:
+                events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_PREFLIGHTED,
+                                               {"attempt": attempt.to_dict()}, task_id=t,
+                                               attempt_id=attempt_id, wave_id=wave_id))
 
         elif isinstance(action, reconcile.SpecAttention):
             # Debounce backstop: do not re-emit (and re-notify) the same

@@ -941,6 +941,20 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
     # reject-loop's re-work) is provably no longer in flight, because
     # something newer already ran after it. This mirrors the is_latest
     # check already used above (interrupted-poisoned handling).
+    # P61 2026-07-20 (A9, M3 -- real wave batching). A wave's review is ONE
+    # frontier session over ALL its members, not one session per task. The
+    # per-task in-flight recency check below is unchanged (it still decides,
+    # task by task, "does THIS task still need a review launched") -- but the
+    # tasks that pass it are GROUPED BY wave_id and launched together, so a
+    # 3-task wave pays the ~35-40k frontier startup tax ONCE, not three times,
+    # and (with the executor recording the shared attempt on every member) each
+    # member's LATEST attempt is that review, so the next pass sees it in
+    # flight for all of them and does not relaunch. The reject-loop still works
+    # per task: a rejected member re-queues, gets a fresh implementer attempt
+    # (its new LATEST, role IMPLEMENTER), and on returning to AWAITING_REVIEW
+    # is the sole member of its own re-review launch -- preserving the
+    # 2026-07-17 recency fix.
+    needs_review_by_wave: dict[str, list[str]] = {}
     for task_id, tsf in inp.states.items():
         if tsf.state == TaskState.AWAITING_REVIEW and tsf.wave_id is not None:
             if inp.pause_mode == "drain-agents":
@@ -961,7 +975,13 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                 )
             )
             if not has_review_in_flight:
-                wave_actions.append(LaunchReview(wave_id=tsf.wave_id, task_ids=[task_id]))
+                needs_review_by_wave.setdefault(tsf.wave_id, []).append(task_id)
+
+    # One LaunchReview per wave, carrying all its members (sorted for a
+    # deterministic plan / stable first_task anchor).
+    for wave_id in sorted(needs_review_by_wave):
+        wave_actions.append(
+            LaunchReview(wave_id=wave_id, task_ids=sorted(needs_review_by_wave[wave_id])))
 
     # === Spec attention ===
     spec_actions: list[Action] = []

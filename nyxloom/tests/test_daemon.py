@@ -963,6 +963,51 @@ def test_frontier_review_done_receipt_approved_report_yields_merge_ready(
     assert recorded.payload["result"] == "approved"
 
 
+def test_frontier_review_wave_exit_fans_out_per_member_verdicts(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """P61 2026-07-20 (A9): ONE review attempt covers a whole wave; its single
+    exit fans out to a PER-MEMBER verdict + transition. Two members reviewed
+    by one session -- one APPROVED, one REJECTED -- must land in MERGE_READY
+    and REVIEW_REJECTED respectively, each verdict parsed from that member's
+    OWN committed REVIEW.md. IDEMPOTENT: scripting an EmitAttemptExit for BOTH
+    members (as the receipt-based reconcile scan would, since the shared
+    attempt is recorded on each) transitions every member exactly once -- the
+    first fans out, the second finds no AWAITING_REVIEW members and no-ops."""
+    cfg = sample_project
+    attempt_id = "att-wave-fanout"
+    for tid, v in (("t-fan-ok", "APPROVED"), ("t-fan-no", "REJECTED")):
+        _make_feature_branch(cfg.root, tid, f"{tid}.py", f"# {tid}\n")
+        _commit_review_report(cfg.root, tid, cfg.reports_dir, f"# Review\n\nVERDICT: {v}\n")
+        # the SAME attempt_id recorded on EACH member (option-a wave attempt)
+        _seed_review_attempt("demo", tid, attempt_id, wave_id="wave-fan")
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    d = daemon.Daemon({"demo": cfg.root})
+
+    # A SINGLE exit (anchored on the first member only) must transition BOTH
+    # members -- this is the discriminator vs the pre-A9 single-task consumer,
+    # which would leave t-fan-no stuck in AWAITING_REVIEW.
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id="t-fan-ok", attempt_id=attempt_id)]])
+    d.run_pass("demo")
+    assert storage.load_state("demo", "t-fan-ok").state is TaskState.MERGE_READY
+    assert storage.load_state("demo", "t-fan-no").state is TaskState.REVIEW_REJECTED
+    recorded = [e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED]
+    assert {e.task_id: e.payload["result"] for e in recorded} == {
+        "t-fan-ok": "approved", "t-fan-no": "rejected"}
+    assert {e.attempt_id for e in recorded} == {attempt_id}
+
+    # IDEMPOTENT: the sibling EmitAttemptExit the scan also emits for t-fan-no
+    # (its attempt copy is receipt-bearing) must be a no-op -- both members
+    # already left AWAITING_REVIEW -- so no second REVIEW_RECORDED, no error,
+    # no state change.
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id="t-fan-no", attempt_id=attempt_id)]])
+    d.run_pass("demo")
+    assert storage.load_state("demo", "t-fan-ok").state is TaskState.MERGE_READY
+    assert storage.load_state("demo", "t-fan-no").state is TaskState.REVIEW_REJECTED
+    recorded2 = [e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED]
+    assert len(recorded2) == len(recorded), "no duplicate REVIEW_RECORDED on the idempotent sibling exit"
+
+
 def test_frontier_review_missing_report_fails_safe_to_rejected(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):
@@ -1577,10 +1622,21 @@ def test_open_wave_and_launch_review(tmp_state, sample_project, patch_siblings, 
 
     events2 = list(storage.iter_events("demo"))
     created = [e for e in events2 if e.type is EventType.ATTEMPT_CREATED and e.wave_id == wave_id]
-    assert len(created) == 1
-    attempt_payload = created[0].payload["attempt"]
-    assert attempt_payload["role"] == "frontier-review"
-    assert attempt_payload["route"]["route_id"] == "fake-cli"
+    # P61 (A9): ONE frontier session reviews the whole wave -- exactly one
+    # distinct attempt_id -- but that single attempt is RECORDED ON EVERY
+    # member (so each member's latest attempt is the review and A7's per-member
+    # is_first_review reads a correct history). A 2-task wave => 2
+    # ATTEMPT_CREATED events, ONE attempt_id, one per member task.
+    assert {e.attempt_id for e in created} == {created[0].attempt_id}, "must be ONE frontier session"
+    assert sorted(e.task_id for e in created) == ["t1", "t2"], "recorded on every member"
+    for e in created:
+        assert e.payload["attempt"]["role"] == "frontier-review"
+        assert e.payload["attempt"]["route"]["route_id"] == "fake-cli"
+    # both members carry the review attempt in their state
+    assert any(a.attempt_id == created[0].attempt_id
+               for a in storage.load_state("demo", "t1").attempts)
+    assert any(a.attempt_id == created[0].attempt_id
+               for a in storage.load_state("demo", "t2").attempts)
 
     attempt_id = created[0].attempt_id
     packet_dir = paths.attempt_dir("demo", attempt_id) / "packet"
