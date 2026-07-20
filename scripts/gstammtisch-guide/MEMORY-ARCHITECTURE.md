@@ -134,7 +134,7 @@ be applied at runtime, are documented in that companion's `CGROUP-NOTES.md`.
 - `memory.low` (**best-effort**) — abundant memory → game keeps up to 12 G; under pressure the kernel reclaims unprotected cgroups first; the game is reclaimed *last*, never immune.
 - `memory.high` (**throttle**) — dev slice over 8 G → allocations throttle + reclaim *within the slice*; slows the offender without killing.
 - `memory.max` (**hard cap → OOM**) — dev slice hits 14 G → OOM kills the largest process *inside dev.slice*; the game is never considered.
-- `memory.zswap.writeback` — `1` everywhere since 2026-07-07: zswap's LRU means only the coldest-of-cold pages drain to disk, freeing pool RAM. The game observably carries a ~4G genuinely-cold tail. Gate: if login latency regresses, set the game back to `0` (`SOULMASK_WRITEBACK=0`, see MEASUREMENTS.md M4). The pak slice goes further: `memory.zswap.max=0` (pak is zstd-incompressible, 1.006× — zswap would waste CPU+RAM on it; cold pak goes straight to disk).
+- `memory.zswap.writeback` — `1` everywhere since 2026-07-07 (and for `interactive.slice` too since 2026-07-20, closing the last exception): zswap's LRU means only the coldest-of-cold pages drain to disk, freeing pool RAM. The game observably carries a ~4G genuinely-cold tail. Gate: if login latency regresses, set the game back to `0` (`SOULMASK_WRITEBACK=0`, see MEASUREMENTS.md M4). The pak slice goes further: `memory.zswap.max=0` (pak is zstd-incompressible, 1.006× — zswap would waste CPU+RAM on it; cold pak goes straight to disk).
 - `cpu.weight` / `io.weight` — proportional under contention only; idle CPU/IO is always available to dev.
 
 **Why swap-IN latency drives these choices:** swap-*out* is async/background; swap-*in* is a synchronous page fault that blocks the process. So protecting the game = keeping its *hot* pages where fault-in is fastest: uncompressed RAM via a correctly-sized (and chain-effective) `memory.min`, warm pages in zswap (µs faults), and only the genuinely-cold tail on disk. The monitor's `rf_d/s` column (disk refaults) is the alarm that cold-tail paging is touching pages that aren't actually cold.
@@ -157,7 +157,7 @@ be applied at runtime, are documented in that companion's `CGROUP-NOTES.md`.
 |---|---|---|---|---|
 | Soulmask game | 6G (3 players; 5G caused login failures) | 12G | 7G (1G login/area-load transient headroom; 8G if logins regress) | 1 (since 2026-07-07) |
 | soulmask-paks.slice | 150M (calibrate via MEASUREMENTS.md M2) | — | — | zswap bypassed entirely (`memory.zswap.max=0` — pak incompressible) |
-| interactive.slice | 0 | 2G | 5G | **0** — never page the IDE's cold tail to disk (mdt host-setup; systemd < 256 has no directive for this, so it is a raw write) |
+| interactive.slice | 0 | 2G | 5G | **1** (revised 2026-07-20) — every tier may drain its coldest pages to disk. Pinning the IDE's cold tail in the pool spends a fixed share of RAM on pages nobody touches, and zswap's LRU already evicts only the coldest-of-cold. Exposed as `INTERACTIVE_ZSWAP_WRITEBACK` in mdt host-setup; set `no` only if IDE stalls are measured and attributed to swap-in |
 | besteffort.slice | 0 | 0 | 8G | 1 (default) |
 | system.slice (ancestor) | 7G (protection chain for the game floor) | — | — | — |
 | soulmask.slice (ancestor) | 1G (protection chain for the pak floor) | — | — | — |

@@ -1,7 +1,7 @@
-From b03598e1c7c8a48d42a1a99d500181aa69a52406 Mon Sep 17 00:00:00 2001
+From 3c395394c96f2e6fe74b1b35f6a106b1c5d39beb Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
-Date: Mon, 20 Jul 2026 10:04:51 +0000
-Subject: [PATCH 6/7] Stage per-server slice properties across server startup
+Date: Mon, 20 Jul 2026 10:01:23 +0000
+Subject: [PATCH 7/8] Stage per-server slice properties across server startup
 
 A game server's load-time peak routinely dwarfs its steady working set --
 world generation and asset streaming reach for everything at once -- so a
@@ -50,35 +50,34 @@ with instead of raw byte counts:
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
- config/config_docker.go          |  84 +++++++++++++-
- environment/docker/container.go  |   8 +-
- environment/docker/power.go      |  32 ++++++
- internal/cgroups/cgroups.go      | 165 ++++++++++++++++++++++++++--
- internal/cgroups/cgroups_test.go |   2 +-
- internal/cgroups/ensure.go       |  66 +++++++++--
- internal/cgroups/phase_test.go   | 182 +++++++++++++++++++++++++++++++
- server/install.go                |   2 +-
- server/server.go                 |  14 +++
- server/slice_phase.go            | 159 +++++++++++++++++++++++++++
- server/slice_phase_test.go       | 166 ++++++++++++++++++++++++++++
- 11 files changed, 851 insertions(+), 29 deletions(-)
+ config/config_docker.go         |  83 ++++++++++++++--
+ environment/docker/container.go |   8 +-
+ environment/docker/power.go     |  32 +++++++
+ internal/cgroups/cgroups.go     | 114 ++++++++++++++++++++++
+ internal/cgroups/ensure.go      |  66 +++++++++++--
+ internal/cgroups/phase_test.go  | 163 ++++++++++++++++++++++++++++++++
+ server/install.go               |   2 +-
+ server/server.go                |  15 +++
+ server/slice_phase.go           | 159 +++++++++++++++++++++++++++++++
+ server/slice_phase_test.go      | 158 +++++++++++++++++++++++++++++++
+ 10 files changed, 783 insertions(+), 17 deletions(-)
  create mode 100644 internal/cgroups/phase_test.go
  create mode 100644 server/slice_phase.go
  create mode 100644 server/slice_phase_test.go
 
 diff --git a/config/config_docker.go b/config/config_docker.go
-index 4ba4369..d1ffaaa 100644
+index b0b791e..bd8b29e 100644
 --- a/config/config_docker.go
 +++ b/config/config_docker.go
-@@ -5,6 +5,7 @@ import (
+@@ -7,6 +7,7 @@ import (
  	"sort"
  	"strconv"
  	"strings"
 +	"time"
  
  	"emperror.dev/errors"
- 	"github.com/docker/docker/api/types/container"
-@@ -173,6 +174,16 @@ type DockerSliceDefaults struct {
+ 	"github.com/distribution/reference"
+@@ -171,6 +172,16 @@ type DockerSliceDefaults struct {
  	IOBFQWeight uint64 `default:"0" json:"io_bfq_weight" yaml:"io_bfq_weight"`
  }
  
@@ -95,7 +94,7 @@ index 4ba4369..d1ffaaa 100644
  // PerServerSlicesConfiguration configures automatic per-server slice
  // management (docker.per_server_slices). Requires CgroupParent to be set:
  // derived slices nest under it via systemd dash naming.
-@@ -193,6 +204,24 @@ type PerServerSlicesConfiguration struct {
+@@ -191,6 +202,24 @@ type PerServerSlicesConfiguration struct {
  	// check.
  	MemoryMinBudget string `default:"" json:"memory_min_budget" yaml:"memory_min_budget"`
  
@@ -120,7 +119,7 @@ index 4ba4369..d1ffaaa 100644
  	// BudgetPolicy decides what happens to a MemoryMin request exceeding the
  	// remaining budget. Every other property is applied unchanged in all
  	// three cases:
-@@ -393,9 +422,22 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
+@@ -391,6 +420,18 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
  	if _, errs := c.SliceDefaults().Props(); len(errs) > 0 {
  		return errors.Wrap(errs[0], "docker.per_server_slices.defaults")
  	}
@@ -139,11 +138,7 @@ index 4ba4369..d1ffaaa 100644
  	return nil
  }
  
-+
- // SliceDefaults converts the configured per-server slice defaults into the
- // internal/cgroups representation.
- func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
-@@ -414,16 +456,46 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
+@@ -412,16 +453,46 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
  // SliceEnsureRequest assembles the cgroups.EnsureForServer request for a
  // server whose containers are about to be placed under slice (a value
  // previously returned as managed by ResolveServerCgroupParent).
@@ -197,10 +192,10 @@ index 4ba4369..d1ffaaa 100644
  // representation, excluding the slice currently being ensured from the
  // sibling sum. Derived slices share the parent's name prefix, so the sibling
 diff --git a/environment/docker/container.go b/environment/docker/container.go
-index a03c205..d75a6e7 100644
+index 3e0af2e..2311850 100644
 --- a/environment/docker/container.go
 +++ b/environment/docker/container.go
-@@ -183,7 +183,13 @@ func (e *Environment) Create() error {
+@@ -178,7 +178,13 @@ func (e *Environment) Create() error {
  		// container is placed under it; a missing unit would silently
  		// materialize as a limit-less transient slice. Best-effort: failures
  		// are logged and never block container creation.
@@ -216,17 +211,17 @@ index a03c205..d75a6e7 100644
  
  	// Merge user-provided labels with system labels
 diff --git a/environment/docker/power.go b/environment/docker/power.go
-index c56adea..56a7c89 100644
+index 7b143a4..770b6a8 100644
 --- a/environment/docker/power.go
 +++ b/environment/docker/power.go
 @@ -11,7 +11,9 @@ import (
  	"github.com/docker/docker/api/types/container"
  	"github.com/docker/docker/client"
  
-+	"github.com/pelican-dev/wings/config"
- 	"github.com/pelican-dev/wings/environment"
-+	"github.com/pelican-dev/wings/internal/cgroups"
- 	"github.com/pelican-dev/wings/remote"
++	"github.com/pterodactyl/wings/config"
+ 	"github.com/pterodactyl/wings/environment"
++	"github.com/pterodactyl/wings/internal/cgroups"
+ 	"github.com/pterodactyl/wings/remote"
  )
  
 @@ -42,9 +44,39 @@ func (e *Environment) OnBeforeStart(ctx context.Context) error {
@@ -270,7 +265,7 @@ index c56adea..56a7c89 100644
  // listeners for the console. If a container does not exist, or needs to be
  // rebuilt that will happen in the call to OnBeforeStart().
 diff --git a/internal/cgroups/cgroups.go b/internal/cgroups/cgroups.go
-index fddcdbe..69230fb 100644
+index 06ad73d..69230fb 100644
 --- a/internal/cgroups/cgroups.go
 +++ b/internal/cgroups/cgroups.go
 @@ -40,6 +40,40 @@ const (
@@ -314,27 +309,10 @@ index fddcdbe..69230fb 100644
  // BFQ weight bounds. BFQ keeps its own per-cgroup weight in io.bfq.weight on a
  // 1..1000 scale and does NOT read io.weight — that file belongs to the iocost
  // controller, which is inert unless io.cost.model/io.cost.qos are configured.
-@@ -108,23 +142,67 @@ func (p Props) Empty() bool {
- 		p.MemoryMax == nil && p.CPUWeight == nil && p.IOWeight == nil
+@@ -124,6 +158,21 @@ func FormatSize(v uint64) string {
+ 	return strconv.FormatUint(v, 10)
  }
  
--// String renders the requested properties for logs.
-+// FormatSize renders a byte count with the binary suffix an administrator
-+// would have written it with, so log lines can be compared against the
-+// configuration and against the cgroup files without arithmetic. Values that
-+// are not a whole multiple of a unit are left as plain byte counts.
-+func FormatSize(v uint64) string {
-+	for _, u := range []struct {
-+		suffix string
-+		size   uint64
-+	}{{"G", 1 << 30}, {"M", 1 << 20}, {"K", 1 << 10}} {
-+		if v >= u.size && v%u.size == 0 {
-+			return strconv.FormatUint(v/u.size, 10) + u.suffix
-+		}
-+	}
-+	return strconv.FormatUint(v, 10)
-+}
-+
 +// Equal reports whether two property sets request exactly the same thing,
 +// including which properties are left unset. Compared structurally rather than
 +// through String(), so the log format stays a logging concern.
@@ -350,50 +328,10 @@ index fddcdbe..69230fb 100644
 +		eq(p.CPUWeight, o.CPUWeight) && eq(p.IOWeight, o.IOWeight)
 +}
 +
-+// String renders the requested properties for logs, naming each systemd
-+// property (what Wings actually sets) and rendering memory sizes with the
-+// binary suffix they were configured with, so a log line can be read against
-+// the configuration and against /sys/fs/cgroup without arithmetic. IOWeight
-+// additionally carries the io.bfq.weight it derives to, since on a BFQ node
-+// that is the number which actually schedules.
- func (p Props) String() string {
- 	var b strings.Builder
-+	addRaw := func(name, val string) {
-+		if b.Len() > 0 {
-+			b.WriteByte(' ')
-+		}
-+		b.WriteString(name)
-+		b.WriteByte('=')
-+		b.WriteString(val)
-+	}
- 	add := func(name string, v *uint64) {
- 		if v != nil {
--			if b.Len() > 0 {
--				b.WriteByte(' ')
--			}
--			b.WriteString(name)
--			b.WriteByte('=')
--			b.WriteString(strconv.FormatUint(*v, 10))
-+			addRaw(name, strconv.FormatUint(*v, 10))
-+		}
-+	}
-+	size := func(name string, v *uint64) {
-+		if v != nil {
-+			addRaw(name, FormatSize(*v))
- 		}
- 	}
--	add("MemoryMin", p.MemoryMin)
--	add("MemoryLow", p.MemoryLow)
--	add("MemoryHigh", p.MemoryHigh)
--	add("MemoryMax", p.MemoryMax)
-+	size("MemoryMin", p.MemoryMin)
-+	size("MemoryLow", p.MemoryLow)
-+	size("MemoryHigh", p.MemoryHigh)
-+	size("MemoryMax", p.MemoryMax)
- 	add("CPUWeight", p.CPUWeight)
- 	add("IOWeight", p.IOWeight)
- 	// Spell out the derived BFQ weight: on a BFQ node that is the value which
-@@ -210,6 +288,71 @@ func FromEnv(env []string) (props Props, errs []error) {
+ // String renders the requested properties for logs, naming each systemd
+ // property (what Wings actually sets) and rendering memory sizes with the
+ // binary suffix they were configured with, so a log line can be read against
+@@ -239,6 +288,71 @@ func FromEnv(env []string) (props Props, errs []error) {
  	return props, errs
  }
  
@@ -465,19 +403,6 @@ index fddcdbe..69230fb 100644
  // Defaults are node-wide slice property defaults, carried as the raw strings
  // and integers found in the Wings configuration. Zero values mean "no
  // default" for the respective property.
-diff --git a/internal/cgroups/cgroups_test.go b/internal/cgroups/cgroups_test.go
-index 11c235f..1d69107 100644
---- a/internal/cgroups/cgroups_test.go
-+++ b/internal/cgroups/cgroups_test.go
-@@ -157,7 +157,7 @@ func TestPropsString(t *testing.T) {
- 		t.Errorf("empty props = %q", s)
- 	}
- 	p := Props{MemoryMin: u64(64 << 20), CPUWeight: u64(800)}
--	if s := p.String(); s != "MemoryMin=67108864 CPUWeight=800" {
-+	if s := p.String(); s != "MemoryMin=64M CPUWeight=800" {
- 		t.Errorf("props string = %q", s)
- 	}
- }
 diff --git a/internal/cgroups/ensure.go b/internal/cgroups/ensure.go
 index 003dccb..6680161 100644
 --- a/internal/cgroups/ensure.go
@@ -582,32 +507,13 @@ index 003dccb..6680161 100644
  		return
 diff --git a/internal/cgroups/phase_test.go b/internal/cgroups/phase_test.go
 new file mode 100644
-index 0000000..9ab785a
+index 0000000..385d046
 --- /dev/null
 +++ b/internal/cgroups/phase_test.go
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,163 @@
 +package cgroups
 +
 +import "testing"
-+
-+func TestFormatSize(t *testing.T) {
-+	for _, c := range []struct {
-+		in   uint64
-+		want string
-+	}{
-+		{6 << 30, "6G"},
-+		{512 << 20, "512M"},
-+		{64 << 20, "64M"},
-+		{4 << 10, "4K"},
-+		{0, "0"},
-+		{1536, "1536"},                // 1.5K is not a whole unit: stays exact
-+		{(6 << 30) + 1, "6442450945"}, // ditto
-+	} {
-+		if got := FormatSize(c.in); got != c.want {
-+			t.Errorf("FormatSize(%d) = %q, want %q", c.in, got, c.want)
-+		}
-+	}
-+}
 +
 +func TestStartupFromEnv(t *testing.T) {
 +	env := []string{
@@ -769,10 +675,10 @@ index 0000000..9ab785a
 +	}
 +}
 diff --git a/server/install.go b/server/install.go
-index 2064e3b..d709841 100644
+index 64a1ea7..24274fc 100644
 --- a/server/install.go
 +++ b/server/install.go
-@@ -471,7 +471,7 @@ func (ip *InstallationProcess) Execute() (string, error) {
+@@ -462,7 +462,7 @@ func (ip *InstallationProcess) Execute() (string, error) {
  		ip.Server.Log().WithField("cgroup_parent", cgroupParent).WithError(err).Warn("installer: rejected per-server cgroup parent override")
  	}
  	if managed {
@@ -782,10 +688,18 @@ index 2064e3b..d709841 100644
  	if cgroupParent != "" {
  		hostConf.CgroupParent = cgroupParent
 diff --git a/server/server.go b/server/server.go
-index 2a6fcd6..1845184 100644
+index a1777b0..7a7c782 100644
 --- a/server/server.go
 +++ b/server/server.go
-@@ -68,6 +68,12 @@ type Server struct {
+@@ -10,6 +10,7 @@ import (
+ 	"path/filepath"
+ 	"strings"
+ 	"sync"
++	"time"
+ 
+ 	"emperror.dev/errors"
+ 	"github.com/apex/log"
+@@ -64,6 +65,12 @@ type Server struct {
  	transferring *system.AtomicBool
  	restoring    *system.AtomicBool
  
@@ -798,7 +712,7 @@ index 2a6fcd6..1845184 100644
  	// The console throttler instance used to control outputs.
  	throttler    *ConsoleThrottle
  	throttleOnce sync.Once
-@@ -114,6 +120,10 @@ func New(client remote.Client) (*Server, error) {
+@@ -110,6 +117,10 @@ func New(client remote.Client) (*Server, error) {
  // using the context on the server struct. This will cancel any running install
  // processes for the server as well.
  func (s *Server) CleanupForDestroy() {
@@ -809,7 +723,7 @@ index 2a6fcd6..1845184 100644
  	s.CtxCancel()
  	s.Events().Destroy()
  	s.DestroyAllSinks()
-@@ -410,6 +420,10 @@ func (s *Server) OnStateChange() {
+@@ -325,6 +336,10 @@ func (s *Server) OnStateChange() {
  	if prevState != s.Environment.State() {
  		s.Log().WithField("status", st).Debug("saw server status change event")
  		s.Events().Publish(StatusEvent, st)
@@ -822,7 +736,7 @@ index 2a6fcd6..1845184 100644
  	// Reset the resource usage to 0 when the process fully stops so that all the UI
 diff --git a/server/slice_phase.go b/server/slice_phase.go
 new file mode 100644
-index 0000000..0ecbe01
+index 0000000..e038e59
 --- /dev/null
 +++ b/server/slice_phase.go
 @@ -0,0 +1,159 @@
@@ -831,9 +745,9 @@ index 0000000..0ecbe01
 +import (
 +	"time"
 +
-+	"github.com/pelican-dev/wings/config"
-+	"github.com/pelican-dev/wings/environment"
-+	"github.com/pelican-dev/wings/internal/cgroups"
++	"github.com/pterodactyl/wings/config"
++	"github.com/pterodactyl/wings/environment"
++	"github.com/pterodactyl/wings/internal/cgroups"
 +)
 +
 +// Staged per-server slice properties.
@@ -987,19 +901,18 @@ index 0000000..0ecbe01
 +}
 diff --git a/server/slice_phase_test.go b/server/slice_phase_test.go
 new file mode 100644
-index 0000000..266fea6
+index 0000000..4ba4fdd
 --- /dev/null
 +++ b/server/slice_phase_test.go
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,158 @@
 +package server
 +
 +import (
 +	"testing"
 +	"time"
 +
-+	"github.com/pelican-dev/wings/config"
-+	"github.com/pelican-dev/wings/environment"
-+	"github.com/pelican-dev/wings/internal/cgroups"
++	"github.com/pterodactyl/wings/config"
++	"github.com/pterodactyl/wings/internal/cgroups"
 +)
 +
 +// sliceTestConfig installs a per-server-slices configuration for these tests.
@@ -1021,16 +934,6 @@ index 0000000..266fea6
 +	c.Docker.PerServerSlices.StartupDefaults.MemoryHigh = startupHigh
 +	c.Docker.PerServerSlices.StartupGrace = grace
 +	config.Set(&c)
-+}
-+
-+// newSliceTestServer builds the minimum Server that GetEnvironmentVariables
-+// can be called on. Pelican makes Allocations.DefaultMapping a pointer and
-+// dereferences it unconditionally, so it must be populated.
-+func newSliceTestServer() *Server {
-+	s := &Server{}
-+	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
-+	s.cfg.Allocations.DefaultMapping = &environment.DefaultAllocationMapping{Ip: "127.0.0.1", Port: 0}
-+	return s
 +}
 +
 +func TestSliceStartupGraceParsing(t *testing.T) {
@@ -1056,7 +959,8 @@ index 0000000..266fea6
 +// a node that does not use the feature gets a 15-minute timer and an eventual
 +// spurious warning.
 +func TestBeginSlicePhaseOnlyArmsWhenStaged(t *testing.T) {
-+	s := newSliceTestServer()
++	s := &Server{}
++	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
 +
 +	sliceTestConfig(t, true, "15m", "") // no startup band configured
 +	s.beginSlicePhase()
@@ -1089,7 +993,8 @@ index 0000000..266fea6
 +
 +func TestEndSlicePhaseIsIdempotent(t *testing.T) {
 +	sliceTestConfig(t, true, "15m", "64G")
-+	s := newSliceTestServer()
++	s := &Server{}
++	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
 +
 +	s.endSlicePhase() // nothing armed yet
 +	s.beginSlicePhase()
@@ -1107,7 +1012,8 @@ index 0000000..266fea6
 +// fired, so the ready path does not race a steady application already running.
 +func TestEndSlicePhaseReportsAlreadyFired(t *testing.T) {
 +	sliceTestConfig(t, true, "15m", "64G")
-+	s := newSliceTestServer()
++	s := &Server{}
++	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
 +
 +	fired := make(chan struct{})
 +	s.slicePhaseMu.Lock()
@@ -1131,7 +1037,6 @@ index 0000000..266fea6
 +		t.Fatalf("New: %v", err)
 +	}
 +	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
-+	s.cfg.Allocations.DefaultMapping = &environment.DefaultAllocationMapping{Ip: "127.0.0.1", Port: 0}
 +	s.beginSlicePhase()
 +	if s.slicePhaseTimer == nil {
 +		t.Fatal("precondition: timer should be armed")
@@ -1146,7 +1051,8 @@ index 0000000..266fea6
 +// systemd call is ever attempted for it.
 +func TestSliceRequestSkipsUnmanaged(t *testing.T) {
 +	sliceTestConfig(t, true, "15m", "64G")
-+	s := newSliceTestServer()
++	s := &Server{}
++	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
 +
 +	if got := s.sliceRequest(cgroups.PhaseSteady); got.Slice == "" {
 +		t.Error("a derived slice should have produced a request")

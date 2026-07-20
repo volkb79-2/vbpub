@@ -1,7 +1,7 @@
 From 7df70236206111865916013b4312949aad4c2e25 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Fri, 17 Jul 2026 10:40:51 +0000
-Subject: [PATCH 5/7] Let administrators state IO weights on BFQ's own scale
+Subject: [PATCH 5/8] Let administrators state IO weights on BFQ's own scale
 
 IOWeight= is a deeply unintuitive knob on any node using BFQ, which is the
 only scheduler most deployments have that implements proportional IO

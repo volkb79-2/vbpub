@@ -1,0 +1,138 @@
+From d95f7d228ff4e6dca05b6c788778dcb88664d167 Mon Sep 17 00:00:00 2001
+From: Volker Badziong <development@richtfest.tech>
+Date: Mon, 20 Jul 2026 11:52:41 +0000
+Subject: [PATCH 6/8] Render slice property values in the units they were
+ configured with
+
+Slice property log lines carried raw byte counts, so the line an operator
+reads back bears no resemblance to the value they wrote: a 6G floor logs as
+6442450944. Comparing a log line against the configuration, or against
+/sys/fs/cgroup, meant doing binary arithmetic by hand.
+
+Render memory sizes with the binary suffix they would have been written with,
+leaving values that are not a whole multiple of a unit as exact byte counts.
+Weights are unitless and unchanged.
+
+This changes user-visible log output: MemoryMin=6442450944 becomes
+MemoryMin=6G. Anything scraping the old format needs updating.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ internal/cgroups/cgroups.go      | 51 +++++++++++++++++++++++++-------
+ internal/cgroups/cgroups_test.go |  2 +-
+ internal/cgroups/format_test.go  | 22 ++++++++++++++
+ 3 files changed, 63 insertions(+), 12 deletions(-)
+ create mode 100644 internal/cgroups/format_test.go
+
+diff --git a/internal/cgroups/cgroups.go b/internal/cgroups/cgroups.go
+index fddcdbe..06ad73d 100644
+--- a/internal/cgroups/cgroups.go
++++ b/internal/cgroups/cgroups.go
+@@ -108,23 +108,52 @@ func (p Props) Empty() bool {
+ 		p.MemoryMax == nil && p.CPUWeight == nil && p.IOWeight == nil
+ }
+ 
+-// String renders the requested properties for logs.
++// FormatSize renders a byte count with the binary suffix an administrator
++// would have written it with, so log lines can be compared against the
++// configuration and against the cgroup files without arithmetic. Values that
++// are not a whole multiple of a unit are left as plain byte counts.
++func FormatSize(v uint64) string {
++	for _, u := range []struct {
++		suffix string
++		size   uint64
++	}{{"G", 1 << 30}, {"M", 1 << 20}, {"K", 1 << 10}} {
++		if v >= u.size && v%u.size == 0 {
++			return strconv.FormatUint(v/u.size, 10) + u.suffix
++		}
++	}
++	return strconv.FormatUint(v, 10)
++}
++
++// String renders the requested properties for logs, naming each systemd
++// property (what Wings actually sets) and rendering memory sizes with the
++// binary suffix they were configured with, so a log line can be read against
++// the configuration and against /sys/fs/cgroup without arithmetic. IOWeight
++// additionally carries the io.bfq.weight it derives to, since on a BFQ node
++// that is the number which actually schedules.
+ func (p Props) String() string {
+ 	var b strings.Builder
++	addRaw := func(name, val string) {
++		if b.Len() > 0 {
++			b.WriteByte(' ')
++		}
++		b.WriteString(name)
++		b.WriteByte('=')
++		b.WriteString(val)
++	}
+ 	add := func(name string, v *uint64) {
+ 		if v != nil {
+-			if b.Len() > 0 {
+-				b.WriteByte(' ')
+-			}
+-			b.WriteString(name)
+-			b.WriteByte('=')
+-			b.WriteString(strconv.FormatUint(*v, 10))
++			addRaw(name, strconv.FormatUint(*v, 10))
++		}
++	}
++	size := func(name string, v *uint64) {
++		if v != nil {
++			addRaw(name, FormatSize(*v))
+ 		}
+ 	}
+-	add("MemoryMin", p.MemoryMin)
+-	add("MemoryLow", p.MemoryLow)
+-	add("MemoryHigh", p.MemoryHigh)
+-	add("MemoryMax", p.MemoryMax)
++	size("MemoryMin", p.MemoryMin)
++	size("MemoryLow", p.MemoryLow)
++	size("MemoryHigh", p.MemoryHigh)
++	size("MemoryMax", p.MemoryMax)
+ 	add("CPUWeight", p.CPUWeight)
+ 	add("IOWeight", p.IOWeight)
+ 	// Spell out the derived BFQ weight: on a BFQ node that is the value which
+diff --git a/internal/cgroups/cgroups_test.go b/internal/cgroups/cgroups_test.go
+index 11c235f..1d69107 100644
+--- a/internal/cgroups/cgroups_test.go
++++ b/internal/cgroups/cgroups_test.go
+@@ -157,7 +157,7 @@ func TestPropsString(t *testing.T) {
+ 		t.Errorf("empty props = %q", s)
+ 	}
+ 	p := Props{MemoryMin: u64(64 << 20), CPUWeight: u64(800)}
+-	if s := p.String(); s != "MemoryMin=67108864 CPUWeight=800" {
++	if s := p.String(); s != "MemoryMin=64M CPUWeight=800" {
+ 		t.Errorf("props string = %q", s)
+ 	}
+ }
+diff --git a/internal/cgroups/format_test.go b/internal/cgroups/format_test.go
+new file mode 100644
+index 0000000..0ad9d56
+--- /dev/null
++++ b/internal/cgroups/format_test.go
+@@ -0,0 +1,22 @@
++package cgroups
++
++import "testing"
++
++func TestFormatSize(t *testing.T) {
++	for _, c := range []struct {
++		in   uint64
++		want string
++	}{
++		{6 << 30, "6G"},
++		{512 << 20, "512M"},
++		{64 << 20, "64M"},
++		{4 << 10, "4K"},
++		{0, "0"},
++		{1536, "1536"},                // 1.5K is not a whole unit: stays exact
++		{(6 << 30) + 1, "6442450945"}, // ditto
++	} {
++		if got := FormatSize(c.in); got != c.want {
++			t.Errorf("FormatSize(%d) = %q, want %q", c.in, got, c.want)
++		}
++	}
++}
+-- 
+2.55.0
+

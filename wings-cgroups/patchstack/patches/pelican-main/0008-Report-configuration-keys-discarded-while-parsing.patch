@@ -1,7 +1,7 @@
-From f6b837c13ad39e39d5669a4c2eee43c00b190cf1 Mon Sep 17 00:00:00 2001
+From 61306e52e5586b8a8508f278d431c736df11196c Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
-Date: Fri, 17 Jul 2026 09:48:27 +0000
-Subject: [PATCH 7/7] Report configuration keys discarded while parsing
+Date: Fri, 17 Jul 2026 09:50:46 +0000
+Subject: [PATCH 8/8] Report configuration keys discarded while parsing
 
 Wings parses config.yml permissively and then rewrites the file from the
 parsed struct at boot. A key the schema does not define -- most often a
@@ -30,10 +30,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
  create mode 100644 config/config_discarded_test.go
 
 diff --git a/cmd/root.go b/cmd/root.go
-index 8d84ed6..50aef0c 100644
+index a7a4b99..e8af42d 100644
 --- a/cmd/root.go
 +++ b/cmd/root.go
-@@ -50,6 +50,7 @@ var rootCommand = &cobra.Command{
+@@ -52,6 +52,7 @@ var rootCommand = &cobra.Command{
  	PreRun: func(cmd *cobra.Command, args []string) {
  		initConfig()
  		initLogging()
@@ -41,7 +41,7 @@ index 8d84ed6..50aef0c 100644
  		if tls, _ := cmd.Flags().GetBool("auto-tls"); tls {
  			if host, _ := cmd.Flags().GetString("tls-hostname"); host == "" {
  				fmt.Println("A TLS hostname must be provided when running wings with automatic TLS, e.g.:\n\n    ./wings --auto-tls --tls-hostname my.example.com")
-@@ -421,6 +422,18 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
+@@ -459,6 +460,18 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
  
  // Reads the configuration from the disk and then sets up the global singleton
  // with all the configuration values.
@@ -61,10 +61,10 @@ index 8d84ed6..50aef0c 100644
  	if !filepath.IsAbs(configPath) {
  		d, err := filepath.Abs(configPath)
 diff --git a/config/config.go b/config/config.go
-index b133123..453ed30 100644
+index c1e936a..1ebf703 100644
 --- a/config/config.go
 +++ b/config/config.go
-@@ -330,6 +330,11 @@ type Configuration struct {
+@@ -340,6 +340,11 @@ type Configuration struct {
  	// The location from which this configuration instance was instantiated.
  	path string
  
@@ -76,12 +76,12 @@ index b133123..453ed30 100644
  	// Determines if wings should be running in debug mode. This value is ignored
  	// if the debug flag is passed through the command line arguments.
  	Debug bool
-@@ -584,6 +589,48 @@ nobody:x:65534:65534::/var/empty:/bin/sh
+@@ -582,6 +587,48 @@ func EnsurePelicanUser() error {
  	return nil
  }
  
 +// discardedKeys re-decodes the raw configuration strictly, purely to report
-+// what the permissive decode above accepted and then threw away.
++// what the permissive decode below accepted and then threw away.
 +//
 +// Two silent-loss cases are worth an administrator's attention, and neither
 +// produces any diagnostic today:
@@ -125,7 +125,7 @@ index b133123..453ed30 100644
  // FromFile reads the configuration from the provided file and stores it in the
  // global singleton for this instance.
  func FromFile(path string) error {
-@@ -599,6 +646,7 @@ func FromFile(path string) error {
+@@ -597,6 +644,7 @@ func FromFile(path string) error {
  	if err := yaml.Unmarshal(b, c); err != nil {
  		return err
  	}
@@ -135,7 +135,7 @@ index b133123..453ed30 100644
  		ID:    os.Getenv("WINGS_TOKEN_ID"),
 diff --git a/config/config_discarded_test.go b/config/config_discarded_test.go
 new file mode 100644
-index 0000000..d12bf06
+index 0000000..1e787bc
 --- /dev/null
 +++ b/config/config_discarded_test.go
 @@ -0,0 +1,74 @@
@@ -157,21 +157,21 @@ index 0000000..d12bf06
 +	}{
 +		{
 +			name: "clean file reports nothing",
-+			yaml: "debug: true\nsystem:\n  username: pterodactyl\n",
++			yaml: "debug: true\nsystem:\n  username: pelican\n",
 +		},
 +		{
 +			name: "key indented under the wrong parent",
-+			yaml: "system:\n  username: pterodactyl\n  interface: 172.18.0.1\n",
++			yaml: "system:\n  username: pelican\n  interface: 172.18.0.1\n",
 +			want: "interface",
 +		},
 +		{
 +			name: "nested key hoisted to the document root",
-+			yaml: "docker:\n  username: pterodactyl\nnetwork:\n  interface: 172.18.0.1\n",
++			yaml: "docker:\n  username: pelican\nnetwork:\n  interface: 172.18.0.1\n",
 +			want: "network",
 +		},
 +		{
 +			name: "duplicate key silently overwrites the first",
-+			yaml: "system:\n  username: pterodactyl\nsystem:\n  username: wings\n",
++			yaml: "system:\n  username: pelican\nsystem:\n  username: wings\n",
 +			want: "system",
 +		},
 +	} {
@@ -203,8 +203,8 @@ index 0000000..d12bf06
 +  host: 0.0.0.0
 +  port: 8080
 +system:
-+  data: /var/lib/pterodactyl/volumes
-+  username: pterodactyl
++  data: /var/lib/pelican/volumes
++  username: pelican
 +docker:
 +  network:
 +    interface: 172.18.0.1

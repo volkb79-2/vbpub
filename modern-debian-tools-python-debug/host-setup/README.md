@@ -22,7 +22,7 @@ weight in `host-setup.env`.
 
 | Tier | Who joins | Character |
 |---|---|---|
-| `interactive.slice` | devcontainers (IDE + AI agents) via devcontainer.json runArg | responsive: soft-protected working set (`MemoryLow`), generous `MemoryHigh`, cold tail pinned in zswap (never disk swap), never OOM-killed |
+| `interactive.slice` | devcontainers (IDE + AI agents) via devcontainer.json runArg | responsive: soft-protected working set (`MemoryLow`), generous `MemoryHigh`, cold tail compressed into zswap and allowed to drain to disk from there (`INTERACTIVE_ZSWAP_WRITEBACK`), never OOM-killed |
 | `besteffort.slice` | test/build/CI stacks via compose `cgroup_parent` | bounded: hard memory+swap caps, `systemd-oomd` kills inside the tier first, whole-tier **IO caps** at a percent of the *measured* device ceiling |
 | (production tiers) | e.g. `wings.slice` for game servers | owned elsewhere — this companion never touches them, it only keeps dev work from starving them |
 

@@ -1,7 +1,7 @@
 From 4896a7a475d71fac47cfa38da95635d3b5ad2130 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Wed, 15 Jul 2026 10:43:10 +0000
-Subject: [PATCH 2/7] Support per-server cgroup parent override via
+Subject: [PATCH 2/8] Support per-server cgroup parent override via
  WINGS_CGROUP_PARENT
 
 Allows a reserved, admin-only egg/server environment variable,

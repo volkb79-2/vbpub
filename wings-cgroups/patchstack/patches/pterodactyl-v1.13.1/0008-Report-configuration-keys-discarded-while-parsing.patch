@@ -1,7 +1,7 @@
-From 91fe844b59e6511fa5732227c70cec5c5e8a7c86 Mon Sep 17 00:00:00 2001
+From 78a827c39a1b80c7a36c79b7d4ca4c1e11f3dc6c Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
-Date: Fri, 17 Jul 2026 09:50:46 +0000
-Subject: [PATCH 7/7] Report configuration keys discarded while parsing
+Date: Fri, 17 Jul 2026 09:48:27 +0000
+Subject: [PATCH 8/8] Report configuration keys discarded while parsing
 
 Wings parses config.yml permissively and then rewrites the file from the
 parsed struct at boot. A key the schema does not define -- most often a
@@ -26,14 +26,17 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
  cmd/root.go                     | 13 ++++++
  config/config.go                | 48 +++++++++++++++++++++
  config/config_discarded_test.go | 74 +++++++++++++++++++++++++++++++++
- 3 files changed, 135 insertions(+)
+ server/server.go                |  1 +
+ server/slice_phase.go           | 31 +++++++++++++-
+ server/slice_phase_test.go      | 22 ++++++++++
+ 6 files changed, 187 insertions(+), 2 deletions(-)
  create mode 100644 config/config_discarded_test.go
 
 diff --git a/cmd/root.go b/cmd/root.go
-index a7a4b99..e8af42d 100644
+index 8d84ed6..50aef0c 100644
 --- a/cmd/root.go
 +++ b/cmd/root.go
-@@ -52,6 +52,7 @@ var rootCommand = &cobra.Command{
+@@ -50,6 +50,7 @@ var rootCommand = &cobra.Command{
  	PreRun: func(cmd *cobra.Command, args []string) {
  		initConfig()
  		initLogging()
@@ -41,7 +44,7 @@ index a7a4b99..e8af42d 100644
  		if tls, _ := cmd.Flags().GetBool("auto-tls"); tls {
  			if host, _ := cmd.Flags().GetString("tls-hostname"); host == "" {
  				fmt.Println("A TLS hostname must be provided when running wings with automatic TLS, e.g.:\n\n    ./wings --auto-tls --tls-hostname my.example.com")
-@@ -459,6 +460,18 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
+@@ -421,6 +422,18 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
  
  // Reads the configuration from the disk and then sets up the global singleton
  // with all the configuration values.
@@ -61,10 +64,10 @@ index a7a4b99..e8af42d 100644
  	if !filepath.IsAbs(configPath) {
  		d, err := filepath.Abs(configPath)
 diff --git a/config/config.go b/config/config.go
-index c1e936a..1ebf703 100644
+index b133123..453ed30 100644
 --- a/config/config.go
 +++ b/config/config.go
-@@ -340,6 +340,11 @@ type Configuration struct {
+@@ -330,6 +330,11 @@ type Configuration struct {
  	// The location from which this configuration instance was instantiated.
  	path string
  
@@ -76,12 +79,12 @@ index c1e936a..1ebf703 100644
  	// Determines if wings should be running in debug mode. This value is ignored
  	// if the debug flag is passed through the command line arguments.
  	Debug bool
-@@ -582,6 +587,48 @@ func EnsurePelicanUser() error {
+@@ -584,6 +589,48 @@ nobody:x:65534:65534::/var/empty:/bin/sh
  	return nil
  }
  
 +// discardedKeys re-decodes the raw configuration strictly, purely to report
-+// what the permissive decode below accepted and then threw away.
++// what the permissive decode above accepted and then threw away.
 +//
 +// Two silent-loss cases are worth an administrator's attention, and neither
 +// produces any diagnostic today:
@@ -125,7 +128,7 @@ index c1e936a..1ebf703 100644
  // FromFile reads the configuration from the provided file and stores it in the
  // global singleton for this instance.
  func FromFile(path string) error {
-@@ -597,6 +644,7 @@ func FromFile(path string) error {
+@@ -599,6 +646,7 @@ func FromFile(path string) error {
  	if err := yaml.Unmarshal(b, c); err != nil {
  		return err
  	}
@@ -135,7 +138,7 @@ index c1e936a..1ebf703 100644
  		ID:    os.Getenv("WINGS_TOKEN_ID"),
 diff --git a/config/config_discarded_test.go b/config/config_discarded_test.go
 new file mode 100644
-index 0000000..1e787bc
+index 0000000..d12bf06
 --- /dev/null
 +++ b/config/config_discarded_test.go
 @@ -0,0 +1,74 @@
@@ -157,21 +160,21 @@ index 0000000..1e787bc
 +	}{
 +		{
 +			name: "clean file reports nothing",
-+			yaml: "debug: true\nsystem:\n  username: pelican\n",
++			yaml: "debug: true\nsystem:\n  username: pterodactyl\n",
 +		},
 +		{
 +			name: "key indented under the wrong parent",
-+			yaml: "system:\n  username: pelican\n  interface: 172.18.0.1\n",
++			yaml: "system:\n  username: pterodactyl\n  interface: 172.18.0.1\n",
 +			want: "interface",
 +		},
 +		{
 +			name: "nested key hoisted to the document root",
-+			yaml: "docker:\n  username: pelican\nnetwork:\n  interface: 172.18.0.1\n",
++			yaml: "docker:\n  username: pterodactyl\nnetwork:\n  interface: 172.18.0.1\n",
 +			want: "network",
 +		},
 +		{
 +			name: "duplicate key silently overwrites the first",
-+			yaml: "system:\n  username: pelican\nsystem:\n  username: wings\n",
++			yaml: "system:\n  username: pterodactyl\nsystem:\n  username: wings\n",
 +			want: "system",
 +		},
 +	} {
@@ -203,14 +206,140 @@ index 0000000..1e787bc
 +  host: 0.0.0.0
 +  port: 8080
 +system:
-+  data: /var/lib/pelican/volumes
-+  username: pelican
++  data: /var/lib/pterodactyl/volumes
++  username: pterodactyl
 +docker:
 +  network:
 +    interface: 172.18.0.1
 +`
 +	if got := discardedKeys([]byte(yml)); len(got) != 0 {
 +		t.Errorf("valid configuration produced diagnostics: %v", got)
++	}
++}
+diff --git a/server/server.go b/server/server.go
+index 7a7c782..8c6e4f6 100644
+--- a/server/server.go
++++ b/server/server.go
+@@ -70,6 +70,7 @@ type Server struct {
+ 	slicePhaseMu    sync.Mutex
+ 	slicePhaseTimer *time.Timer
+ 	slicePhaseFired bool
++	slicePhaseSlice string
+ 
+ 	// The console throttler instance used to control outputs.
+ 	throttler    *ConsoleThrottle
+diff --git a/server/slice_phase.go b/server/slice_phase.go
+index e038e59..9458354 100644
+--- a/server/slice_phase.go
++++ b/server/slice_phase.go
+@@ -3,6 +3,8 @@ package server
+ import (
+ 	"time"
+ 
++	"github.com/apex/log"
++
+ 	"github.com/pterodactyl/wings/config"
+ 	"github.com/pterodactyl/wings/environment"
+ 	"github.com/pterodactyl/wings/internal/cgroups"
+@@ -58,7 +60,8 @@ func (s *Server) beginSlicePhase() {
+ 	}
+ 	// Nothing staged for this server: the band applied at container create is
+ 	// already the steady one, so there is nothing for the timer to swap in.
+-	if !s.sliceRequest(cgroups.PhaseSteady).Staged() {
++	req := s.sliceRequest(cgroups.PhaseSteady)
++	if !req.Staged() {
+ 		return
+ 	}
+ 
+@@ -68,6 +71,7 @@ func (s *Server) beginSlicePhase() {
+ 		s.slicePhaseTimer.Stop()
+ 	}
+ 	s.slicePhaseFired = false
++	s.slicePhaseSlice = req.Slice
+ 	s.slicePhaseTimer = time.AfterFunc(grace, func() {
+ 		s.Log().WithField("grace", grace.String()).
+ 			Warn("cgroups: startup grace expired without the server reporting ready; applying steady slice properties")
+@@ -89,6 +93,7 @@ func (s *Server) endSlicePhase() {
+ 	// cancelled it — the caller may be about to apply a band itself.
+ 	s.slicePhaseFired = !s.slicePhaseTimer.Stop()
+ 	s.slicePhaseTimer = nil
++	s.slicePhaseSlice = ""
+ }
+ 
+ // sliceRequest resolves this server's slice and builds the ensure request for
+@@ -119,6 +124,14 @@ func (s *Server) gracePhaseFired() bool {
+ 	return s.slicePhaseFired
+ }
+ 
++// pinnedSlice returns the slice captured when this server's startup phase
++// began, or "" when no phase is in progress.
++func (s *Server) pinnedSlice() string {
++	s.slicePhaseMu.Lock()
++	defer s.slicePhaseMu.Unlock()
++	return s.slicePhaseSlice
++}
++
+ // applySliceProps re-ensures this server's slice with the given phase's
+ // property band. Best-effort like every other slice operation: a server that
+ // is already running is never disturbed by a failure here.
+@@ -127,6 +140,16 @@ func (s *Server) applySliceProps(phase cgroups.Phase, reason string) {
+ 	if req.Slice == "" {
+ 		return
+ 	}
++	// Placement is fixed when the container is created, so the container stays
++	// in whatever slice it was placed under even if the Panel later syncs a
++	// different WINGS_CGROUP_PARENT. Apply to the slice this phase began with,
++	// or the steady band lands on a unit holding nothing.
++	if pinned := s.pinnedSlice(); pinned != "" && pinned != req.Slice {
++		s.Log().WithFields(log.Fields{"resolved": req.Slice, "applying_to": pinned}).
++			Warn("cgroups: server cgroup parent changed while starting; the container is still in the slice it was created under")
++		req.Slice = pinned
++		req.Budget.Exclude = pinned
++	}
+ 	// With no startup band staged, the properties set at container create are
+ 	// already the steady ones; re-applying them would cost a systemd round
+ 	// trip per server start and log a transition that did not happen.
+@@ -152,7 +175,11 @@ func (s *Server) onSliceStateChange(state string) {
+ 			// would race it for no benefit.
+ 			return
+ 		}
+-		s.applySliceProps(cgroups.PhaseSteady, sliceReasonReady)
++		// Dispatched: OnStateChange runs crash detection after this, and a
++		// slice application is a D-Bus round trip bounded only by
++		// cgroups.ensureTimeout. Slice management is best-effort decoration
++		// and must never sit in the state machine's path.
++		go s.applySliceProps(cgroups.PhaseSteady, sliceReasonReady)
+ 	case environment.ProcessOfflineState:
+ 		s.endSlicePhase()
+ 	}
+diff --git a/server/slice_phase_test.go b/server/slice_phase_test.go
+index 4ba4fdd..db58630 100644
+--- a/server/slice_phase_test.go
++++ b/server/slice_phase_test.go
+@@ -156,3 +156,25 @@ func TestSliceRequestSkipsUnmanaged(t *testing.T) {
+ 		t.Errorf("per_server_slices disabled must yield no request, got %q", got.Slice)
+ 	}
+ }
++
++// Placement is create-time only, so once a phase has begun the steady band
++// must target the slice that phase captured — not whatever the environment
++// resolves to later, which a Panel sync can change mid-startup.
++func TestSlicePhasePinsTheSliceItBeganWith(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	s := &Server{}
++	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
++
++	if got := s.pinnedSlice(); got != "" {
++		t.Errorf("no phase in progress must pin nothing, got %q", got)
++	}
++	s.beginSlicePhase()
++	want := s.sliceRequest(cgroups.PhaseSteady).Slice
++	if got := s.pinnedSlice(); got != want {
++		t.Errorf("pinned slice = %q, want %q", got, want)
++	}
++	s.endSlicePhase()
++	if got := s.pinnedSlice(); got != "" {
++		t.Errorf("ended phase must clear the pin, got %q", got)
 +	}
 +}
 -- 

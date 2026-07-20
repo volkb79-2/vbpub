@@ -22,8 +22,12 @@ CPUWeight=@INTERACTIVE_CPU_WEIGHT@
 # everything above 100 by ~11x). See CGROUP-NOTES.md §BFQ.
 IOWeight=@INTERACTIVE_IO_WEIGHT@
 
-# Never page the IDE's cold tail out to disk-backed swap: swap-in stalls freeze
-# the IDE. Cold pages stay in the compressed in-RAM zswap pool instead.
+# Whether this tier's coldest pages may drain from zswap out to disk swap.
+# Shipped default is "yes": zswap is a cache, and letting its LRU evict the
+# coldest-of-cold keeps pool RAM available for pages that are actually warm.
+# Set INTERACTIVE_ZSWAP_WRITEBACK=no to pin the cold tail in compressed RAM
+# instead — that avoids disk swap-in stalls in the IDE, but permanently spends
+# pool RAM on pages nobody is touching. See host-setup.env.example.
 # (Directive needs systemd >= 256; install.sh drops this line on older hosts
 # and mdt-apply-dev-caps.sh raw-writes memory.zswap.writeback as the fallback.)
 MemoryZSwapWriteback=@INTERACTIVE_ZSWAP_WRITEBACK@

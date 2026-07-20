@@ -55,7 +55,7 @@ explicit allowlist) and fails closed to the node default.
 
 ## The patch stack
 
-Seven commits per upstream tree, kept as `git format-patch` series (the
+Eight commits per upstream tree, kept as `git format-patch` series (the
 canonical artifact — the clones under `build/` are disposable):
 
 | # | Commit | Tier |
@@ -65,12 +65,13 @@ canonical artifact — the clones under `build/` are disposable):
 | 0003 | Build-tagged docker integration tests (droppable if maintainers object) | — |
 | 0004 | `docker.per_server_slices` — in-Wings slice lifecycle: auto-derived `wings-<dashless-uuid>.slice`, transient units via systemd D-Bus, config defaults + admin-only `WINGS_CG_*` egg overrides, `memory_min` budget (clamp/refuse/distribute), delete/boot GC, fail-open. New pkg `internal/cgroups`. | T3b |
 | 0005 | `io_bfq_weight` / `WINGS_CG_IO_BFQ_WEIGHT` — state IO weights on BFQ's own 1..1000 scale instead of systemd's, which compresses ratios above the default by ~11×. Converted to the equivalent `IOWeight` property, so values stay systemd-owned and reload-safe. | T3b |
-| 0006 | Staged slice properties — a startup memory band applied before the container starts and replaced by the steady band when the egg's `startup.done` matcher reports the server ready (or after `startup_grace`). A ceiling sized for the steady state otherwise evicts the server through its own floor during world load, permanently. | T3b |
-| 0007 | Report configuration keys discarded while parsing — a strict re-decode used purely as a diagnostic, so a misindented or duplicated key warns instead of vanishing. Independent of the cgroup work; useful to any Wings user. | — |
+| 0006 | Render slice property values in the units they were configured with — a `6G` floor logged as `6442450944` cannot be compared against the config or against cgroupfs without arithmetic. User-visible log format change. | — |
+| 0007 | Staged slice properties — a startup memory band applied before the container starts and replaced by the steady band when the egg's `startup.done` matcher reports the server ready (or after `startup_grace`). A ceiling sized for the steady state otherwise evicts the server through its own floor during world load, permanently. | T3b |
+| 0008 | Report configuration keys discarded while parsing — a strict re-decode used purely as a diagnostic, so a misindented or duplicated key warns instead of vanishing. Independent of the cgroup work; useful to any Wings user. | — |
 
 The order is chosen so each planned upstream PR is a **contiguous range**:
-`0001–0003` (placement), `0004–0006` (per-server slices, stacked on the first),
-and `0007` alone — which is why the one commit unrelated to cgroups sits last
+`0001–0003` (placement), `0004–0007` (per-server slices, stacked on the first),
+and `0008` alone — which is why the one commit unrelated to cgroups sits last
 rather than in the middle. Submission plan and known review exposure: `pr/`.
 
 Both targets carry the full series: `pterodactyl/wings` v1.13.1 (production) and
@@ -83,7 +84,7 @@ Both targets carry the full series: `pterodactyl/wings` v1.13.1 (production) and
 patchstack/scripts/clone.sh                          # 1. clone upstreams
 patchstack/scripts/apply.sh pterodactyl              # 2. apply the stack
 patchstack/scripts/test.sh pterodactyl               # 3. build + vet + unit tests
-patchstack/scripts/build-image.sh pterodactyl cgroup.6   # 4. -> wings-local:1.13.1-cgroup.6
+patchstack/scripts/build-image.sh pterodactyl cgroup.7   # 4. -> wings-local:1.13.1-cgroup.7
 test/smoke-placement.sh                              # 5. placement vs the real daemon
 test/e2e-systemd/run-e2e.sh                          # 6. e2e: effective memory.min
 ```
@@ -94,7 +95,7 @@ Deploying the result: [`SETUP.md`](SETUP.md).
 ## Status
 
 - [x] T0 artifacts
-- [x] Patch stack 0001–0007 on both trees — compiled, vetted, unit + integration
+- [x] Patch stack 0001–0008 on both trees — compiled, vetted, unit + integration
       tested; systemd e2e verifies *effective* floors, reload survival, budget
       clamping and orphan GC. The exported series re-applies onto bare upstream
       and reproduces the tree exactly.
@@ -106,7 +107,7 @@ Deploying the result: [`SETUP.md`](SETUP.md).
 - [x] Production rollout complete (2026-07-17): `cgroup.4`, per-server slices
       enabled, all six properties verified effective in cgroupfs. Worked
       runbook: `../scripts/gstammtisch-guide/WINGS-CGROUPS-ROLLOUT.md`.
-- [ ] `cgroup.6` (staged startup band, patch 0006) built and tested, **not yet
+- [ ] `cgroup.7` (staged startup band, patch 0007) built and tested, **not yet
       deployed** — supersedes `cgroup.5`, which applied the startup band on
       paths that never start a server — it needs `startup_defaults` in `config.yml` and the new
       `WINGS_CG_STARTUP_*` egg variables to do anything.

@@ -1,7 +1,7 @@
 From 07c5fb0f29dcac95b99b676fb6805ba7b399bbc0 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Fri, 17 Jul 2026 06:38:24 +0000
-Subject: [PATCH 4/7] Manage per-server transient slices via systemd D-Bus
+Subject: [PATCH 4/8] Manage per-server transient slices via systemd D-Bus
 
 With docker.per_server_slices.enabled, every server is placed under its own
 derived slice (cgroup_parent + dashless server UUID, nesting via systemd

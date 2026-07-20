@@ -1,4 +1,4 @@
-# SETUP — deploying the patched Wings (patches 0001–0007) on a node
+# SETUP — deploying the patched Wings (patches 0001–0008) on a node
 
 The one-stop, node-agnostic deployment guide: host prerequisites → compose →
 `config.yml` → panel data → cutover → verification → rollback, in that order.
@@ -77,7 +77,7 @@ Weight" alike) are inert under `none`/`mq-deadline`; only BFQ enforces them.
 ```yaml
 services:
   wings:
-    image: wings-local:1.13.1-cgroup.6        # the patched image
+    image: wings-local:1.13.1-cgroup.7        # the patched image
     cgroup_parent: wings-mgmt.slice           # optional (T0a): cap the daemon itself
     volumes:
       # …existing mounts (docker.sock, /etc/pterodactyl, /var/lib/pterodactyl, …)…
@@ -168,7 +168,7 @@ docker:
       io_bfq_weight: 0        # 1..1000, BFQ's own scale; 0 = unset. Prefer this
                               # on BFQ nodes: the number you write is the number
                               # BFQ uses. (patch 0005)
-    # Startup band (patch 0006) — applied when the slice is ensured, BEFORE the
+    # Startup band (patch 0007) — applied when the slice is ensured, BEFORE the
     # container starts, then replaced by `defaults:` once the server reports
     # ready (the egg's startup "done" matcher) or startup_grace expires.
     #
@@ -255,7 +255,7 @@ the next container (re)creation — panel **Stop → Start**, not restart.
 | `WINGS_CG_CPU_WEIGHT` | per-server CPU weight (1..10000). Ratios are honoured exactly. |
 | `WINGS_CG_IO_BFQ_WEIGHT` | per-server IO weight on BFQ's scale (1..1000) — what BFQ actually schedules on, and what `io.bfq.weight` reads back. **Prefer it on BFQ nodes.** Needs patch 0005. |
 | `WINGS_CG_IO_WEIGHT` | the same setting on systemd's scale (1..10000). **Compressed on BFQ nodes** — 1000 becomes `io.bfq.weight` 181. Keep for iocost/non-BFQ nodes. Mutually exclusive with `WINGS_CG_IO_BFQ_WEIGHT`: set both and neither is applied (logged). |
-| `WINGS_CG_STARTUP_MEMORY_MIN` / `_LOW` / `_HIGH` / `_MAX` | the same four knobs, applied only while the server is starting and replaced by the steady values once it reports ready (or after `startup_grace`). Set `_HIGH` generously — a ceiling below the load-time peak breaches the floor and cannot be undone without a restart. Needs patch 0006. |
+| `WINGS_CG_STARTUP_MEMORY_MIN` / `_LOW` / `_HIGH` / `_MAX` | the same four knobs, applied only while the server is starting and replaced by the steady values once it reports ready (or after `startup_grace`). Set `_HIGH` generously — a ceiling below the load-time peak breaches the floor and cannot be undone without a restart. Needs patch 0007. |
 | `WINGS_CGROUP_PARENT` | **leave empty** — override/opt-out only. A set value beats the derived slice (and must pass the allow-list); setting it *to the node default* opts the server out of a derived slice entirely. |
 
 Sizing guidance: `memory.min` = the working set that must never be reclaimed
