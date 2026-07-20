@@ -15,7 +15,9 @@ GOVERNANCE_DEFAULTS    : dict[str, Any]   — code-level defaults (S15.2)
 INJECTED_KEYS          : tuple[str, ...]  — compose keys governance may inject
 BASELINE_PATH_ENV_VAR  : str              — env override for the baseline file
 DEFAULT_BASELINE_PATH  : Path             — neutral default baseline location
-LEGACY_BASELINE_PATH   : Path             — legacy (gstammtisch) fallback location
+HOST_TOOLING_BASELINE_PATH : Path         — mdt host-setup's baseline, last candidate
+MEASURE_METHOD_BURST   : str              — provenance marker CIU's own run writes
+KNOWN_MEASURE_METHODS  : tuple[str, ...]  — markers whose semantics are known
 FALLBACK_READ_IOPS     : int              — used when no baseline is found
 BASELINE_MAX_AGE_DAYS  : int              — freshness window for re-measurement
 resolve_config(raw) -> dict
@@ -23,6 +25,7 @@ resolve_stack_governance(stack_governance, global_config) -> dict | None   — S
 baseline_search_candidates(configured="") -> list[Path]
 resolve_baseline_path(configured="") -> Path | None
 read_iops_baseline(path) -> int | None
+read_baseline_method(path) -> str | None
 derive_read_iops(configured, *, baseline_path=None, configured_path="") -> (int, str)
 detect_device() -> str
 resolve_device(configured) -> (str, str)
@@ -91,13 +94,39 @@ INJECTED_KEYS: tuple[str, ...] = (
 #   (b) env CIU_GOV_BASELINE_PATH              (per-host override)
 #   (c) DEFAULT_BASELINE_PATH                  (neutral default; written by
 #                                               `ciu iops-baseline`, S15.9)
-#   (d) LEGACY_BASELINE_PATH                   (gstammtisch host tooling)
+#   (d) HOST_TOOLING_BASELINE_PATH             (mdt host-setup, if installed)
+# (d) is a search CANDIDATE, not a dependency: CIU never requires mdt, it just
+# reuses a measurement already on the host instead of saturating the disk a
+# second time to learn the same number. It ranks last so an explicit
+# `ciu iops-baseline` always wins.
 BASELINE_PATH_ENV_VAR = "CIU_GOV_BASELINE_PATH"
 DEFAULT_BASELINE_PATH = Path("/var/lib/ciu/io-baseline.env")
-LEGACY_BASELINE_PATH = Path("/var/lib/gstammtisch/io-baseline.env")
+HOST_TOOLING_BASELINE_PATH = Path("/var/lib/mdt/io-baseline.env")
 FALLBACK_READ_IOPS = 200
 
 _RIOPS_MAX_RE = re.compile(r'^\s*RIOPS_MAX\s*=\s*"?(\d+)"?\s*$')
+_MEASURE_METHOD_RE = re.compile(r'^\s*MEASURE_METHOD\s*=\s*"?([A-Za-z0-9._-]+)"?\s*$')
+
+# S15.4 — measurement provenance.
+#
+# A baseline file is a handful of KEY=VALUE lines; nothing in the format says
+# HOW the numbers were produced, and different fio invocations of "randread 4k"
+# do not measure the same thing. Two are known to write this format:
+#
+#   burst-v1      CIU's own `ciu iops-baseline`: 1G span, 10s, no ramp_time.
+#                 The window includes the cache-warm burst, so on a VM (where
+#                 direct=1 bypasses the guest page cache but not the
+#                 hypervisor's) RIOPS_MAX reads HIGH relative to what the
+#                 device sustains.
+#   sustained-v3  mdt host-setup's `mdt-io-baseline.py`: 4G span, 10s ramp +
+#                 40s measure, incompressible buffers. Deliberately excludes
+#                 the burst; the conservative number, and the better input to
+#                 a cap.
+#
+# A file with no MEASURE_METHOD predates this marker or came from a third
+# tool — usable, but its provenance is unknown and derivation says so.
+MEASURE_METHOD_BURST = "burst-v1"
+KNOWN_MEASURE_METHODS: tuple[str, ...] = (MEASURE_METHOD_BURST, "sustained-v3")
 
 
 def resolve_config(raw: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -167,7 +196,7 @@ def baseline_search_candidates(configured: str = "") -> list[Path]:
     ``(a)`` the governance table's ``baseline_path`` (when non-empty) →
     ``(b)`` env :data:`BASELINE_PATH_ENV_VAR` (when set) →
     ``(c)`` :data:`DEFAULT_BASELINE_PATH` →
-    ``(d)`` :data:`LEGACY_BASELINE_PATH`.
+    ``(d)`` :data:`HOST_TOOLING_BASELINE_PATH`.
     Constants are read at call time so tests can monkeypatch them.
     """
     candidates: list[Path] = []
@@ -177,7 +206,7 @@ def baseline_search_candidates(configured: str = "") -> list[Path]:
     if env_path:
         candidates.append(Path(env_path))
     candidates.append(DEFAULT_BASELINE_PATH)
-    candidates.append(LEGACY_BASELINE_PATH)
+    candidates.append(HOST_TOOLING_BASELINE_PATH)
     return candidates
 
 
@@ -192,9 +221,9 @@ def resolve_baseline_path(configured: str = "") -> Path | None:
 def read_iops_baseline(path: Path) -> int | None:
     """Parse ``RIOPS_MAX=<int>`` from a shell-style env file; ``None`` if absent/unparseable.
 
-    The file is written by ``ciu iops-baseline`` (S15.9) or an external host
-    measurement (e.g. the gstammtisch cgroup tooling's ``io-baseline.sh``);
-    this function only reads it.
+    The file is written by ``ciu iops-baseline`` (S15.9) or by an external host
+    measurement (e.g. mdt host-setup's ``mdt-io-baseline.py``); this function
+    only reads it. See :func:`read_baseline_method` for provenance.
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -205,6 +234,46 @@ def read_iops_baseline(path: Path) -> int | None:
         if m:
             return int(m.group(1))
     return None
+
+
+def read_baseline_method(path: Path) -> str | None:
+    """Parse ``MEASURE_METHOD=<token>``; ``None`` when the file omits it (S15.4).
+
+    The marker records HOW the numbers were measured — see
+    :data:`KNOWN_MEASURE_METHODS`. ``None`` means the file predates the marker
+    or came from a third tool: still usable, provenance simply unknown.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        m = _MEASURE_METHOD_RE.match(line.strip())
+        if m:
+            return m.group(1)
+    return None
+
+
+def _method_note(path: Path) -> str:
+    """Provenance clause appended to the derivation note (never raises)."""
+    method = read_baseline_method(path)
+    if method is None:
+        return (
+            "; method=UNKNOWN (no MEASURE_METHOD marker — cannot tell a sustained "
+            "measurement from a cache-warm burst; re-run `ciu iops-baseline --force` "
+            "to get a marked file)"
+        )
+    if method not in KNOWN_MEASURE_METHODS:
+        return (
+            f"; method={method} (UNRECOGNISED — not one of "
+            f"{', '.join(KNOWN_MEASURE_METHODS)}; treat the derived cap as unverified)"
+        )
+    if method == MEASURE_METHOD_BURST:
+        return (
+            f"; method={method} (unramped 1G/10s burst — reads high on a VM; "
+            "mdt host-setup's sustained-v3 baseline is the more conservative input)"
+        )
+    return f"; method={method}"
 
 
 def derive_read_iops(
@@ -236,7 +305,10 @@ def derive_read_iops(
         )
     baseline = read_iops_baseline(path)
     if baseline is not None:
-        return (baseline * 2) // 3, f"derived: 2/3 of baseline RIOPS_MAX={baseline} ({path})"
+        return (
+            (baseline * 2) // 3,
+            f"derived: 2/3 of baseline RIOPS_MAX={baseline} ({path}){_method_note(path)}",
+        )
     return (
         FALLBACK_READ_IOPS,
         f"fallback default ({path} not found or has no RIOPS_MAX)",
@@ -482,6 +554,10 @@ def _write_baseline_file(output_path: Path, riops: int, engine: str) -> None:
         f"# fio randread 4k direct=1 (see docs/SPEC.md S15.9)\n"
         f"RIOPS_MAX={riops}\n"
         f"RIOPS_ENGINE={engine}\n"
+        # Provenance marker: readers cannot otherwise tell this unramped 1G/10s
+        # measurement apart from a sustained one. See KNOWN_MEASURE_METHODS.
+        f"MEASURE_METHOD={MEASURE_METHOD_BURST}\n"
+        f"MEASURED_AT={stamp}\n"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = output_path.with_name(output_path.name + ".tmp")

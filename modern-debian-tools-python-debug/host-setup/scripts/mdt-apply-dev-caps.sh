@@ -66,9 +66,19 @@ fi
 
 # --- besteffort.slice: tier-wide measured IO caps -----------------------------
 if [ -f "$IO_BASELINE_ENV" ]; then
-  RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS=""
+  RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS="" MEASURE_METHOD=""
   # shellcheck disable=SC1090
   . "$IO_BASELINE_ENV" 2>/dev/null || true
+  # Provenance: the numbers alone can't say how they were measured, and the
+  # methods differ in a direction we can't see. sustained-v3 is ours; burst-v1
+  # is `ciu iops-baseline` (unramped 1G/10s — reads HIGH on a VM, so caps
+  # derived from it are looser than the percentage suggests).
+  case "${MEASURE_METHOD:-}" in
+    sustained-v3) : ;;
+    "")           log "WARN: $IO_BASELINE_ENV has no MEASURE_METHOD — provenance unknown; caps may not be the intended fraction of sustained capacity" ;;
+    burst-v1)     log "WARN: baseline method=burst-v1 (ciu iops-baseline, unramped 1G/10s) — reads high on a VM; run mdt-io-baseline.py for a sustained measurement" ;;
+    *)            log "WARN: baseline method=$MEASURE_METHOD is UNRECOGNISED — treat the derived caps as unverified" ;;
+  esac
   if [ -n "${RIOPS_MAX:-}" ] && [ -n "${WIOPS_MAX:-}" ] && [ -n "${RBW_MAX_BPS:-}" ] \
      && [ -n "${WBW_MAX_BPS:-}" ] && [ -n "${IO_DEV_PATH:-}" ]; then
     BE_RIOPS=$(( RIOPS_MAX * BE_IO_CAP_PCT / 100 ))

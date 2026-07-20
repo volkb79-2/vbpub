@@ -304,8 +304,8 @@ def _detect_governance_read_iops() -> tuple[str, str]:
     by the overlay generator, which re-derives independently so governance
     still works without an env regen). Derivation follows the S15.4 baseline
     search order: env ``CIU_GOV_BASELINE_PATH`` →
-    ``/var/lib/ciu/io-baseline.env`` → the legacy
-    ``/var/lib/gstammtisch/io-baseline.env``; first existing file wins.
+    ``/var/lib/ciu/io-baseline.env`` → mdt host-setup's
+    ``/var/lib/mdt/io-baseline.env``; first existing file wins.
 
     Returns ``(value_str, source_note)`` — the note is folded into the emitted
     comment so ``ciu.env`` documents where the number came from.

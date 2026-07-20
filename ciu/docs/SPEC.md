@@ -1146,9 +1146,9 @@ wiring — like secret/configfile wiring — lives only in the generated overlay
 `read_iops = 0` (the default) means "derive": CIU reads a shell-style
 io-baseline file (`RIOPS_MAX=<int>`, written by `ciu iops-baseline` — S15.9 —
 or by an external host measurement) and computes `RIOPS_MAX * 2 / 3`
-(integer division) — matching the gstammtisch host's `setup-cgroups.sh`
-bench-cap formula, so container and non-CIU bench workloads apply the same
-fraction of measured disk capacity.
+(integer division ≈ 66%). Host cgroup tooling caps the same device in the same
+60–80% band, so container and non-CIU workloads apply a consistent fraction of
+measured disk capacity.
 
 **Baseline file resolution order** (CIU ships as a wheel to arbitrary hosts,
 so the location must not couple to any single host's tooling; the **first
@@ -1158,8 +1158,13 @@ existing file wins**):
 2. env `CIU_GOV_BASELINE_PATH` (when set)
 3. `/var/lib/ciu/io-baseline.env` (neutral default; `ciu iops-baseline`
    writes here)
-4. `/var/lib/gstammtisch/io-baseline.env` (legacy fallback — kept so hosts
-   provisioned by the gstammtisch cgroup tooling work unchanged)
+4. `/var/lib/mdt/io-baseline.env` (mdt host-setup's baseline, when that
+   companion is installed)
+
+Step 4 is a search **candidate, not a dependency**: CIU never requires mdt: it
+reuses a measurement already present on the host rather than saturating the
+disk a second time to learn the same number. It ranks last so an explicit
+`ciu iops-baseline` always wins.
 
 A configured but non-existent path (steps 1–2) falls through to the next
 candidate — resolution is by existence, not by declaration. If no candidate
@@ -1167,6 +1172,24 @@ exists, or the resolved file has no `RIOPS_MAX` line, CIU falls back to
 `200` and logs a notice as part of the S15.7 summary line (never a silent
 fallback; the no-file note lists the searched paths). Any nonzero
 `read_iops` in the stack config is explicit and always wins over derivation.
+
+**Measurement provenance (`MEASURE_METHOD`).** The file format is a handful of
+`KEY=VALUE` lines and says nothing about how the numbers were produced — but
+different fio invocations of "randread 4k" do not measure the same thing, so a
+reader that assumes one and gets the other derives a cap that is wrong in a
+direction it cannot see. Writers therefore emit a `MEASURE_METHOD` token, and
+derivation reports it:
+
+| Token | Measurement | Bias |
+|---|---|---|
+| `burst-v1` | `ciu iops-baseline`: 1G span, 10s, **no** `ramp_time` | reads **high** on a VM — the window includes the cache-warm burst, and `direct=1` bypasses the guest page cache but not the hypervisor's |
+| `sustained-v3` | mdt host-setup `mdt-io-baseline.py`: 4G span, 10s ramp + 40s measure, incompressible buffers | conservative; the better input to a cap |
+
+A file with **no** marker predates it or came from a third tool: CIU still
+derives from it, and the note says `method=UNKNOWN` rather than implying a
+provenance it cannot verify. An unrecognised token derives too, flagged
+`UNRECOGNISED`. Neither is an error — the derived value is usable, its
+confidence is simply lower, and the S15.7 summary line carries that.
 
 ### S15.5 — `device` autodetection
 
@@ -1234,9 +1257,15 @@ so a wheel-installed CIU can produce its own baseline with no external
 script. It is **explicit opt-in only**: CIU MUST NOT run it automatically
 (not from `ciu env generate`, not from the overlay generator). Default
 output is the neutral S15.4 location `/var/lib/ciu/io-baseline.env`
-(`--path` overrides); the file carries `RIOPS_MAX=<int>` plus
+(`--path` overrides); the file carries `RIOPS_MAX=<int>`,
 `RIOPS_ENGINE=<engine>` (so a psync-derived number is identifiable later),
-written atomically (tmp + `os.replace`).
+`MEASURE_METHOD=burst-v1` and `MEASURED_AT=<UTC>` — written atomically
+(tmp + `os.replace`).
+
+`MEASURE_METHOD` is mandatory output (S15.4 "Measurement provenance"): the
+arguments in requirement 4 below are an **unramped 1G/10s** measurement, which
+a reader cannot distinguish from a sustained one by looking at the numbers.
+The marker is what lets derivation say so.
 
 Behavioral requirements (each learned from a live incident or a fio
 footgun):

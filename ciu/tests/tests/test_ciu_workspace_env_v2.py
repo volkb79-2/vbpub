@@ -450,7 +450,7 @@ class TestDetectGovernanceReadIops:
             governance_mod, "DEFAULT_BASELINE_PATH", tmp_path / "default-baseline.env"
         )
         monkeypatch.setattr(
-            governance_mod, "LEGACY_BASELINE_PATH", tmp_path / "legacy-baseline.env"
+            governance_mod, "HOST_TOOLING_BASELINE_PATH", tmp_path / "host-tooling-baseline.env"
         )
 
     def test_derives_from_baseline_when_unset(self, monkeypatch, tmp_path):
@@ -514,7 +514,7 @@ class TestGenerateCiuEnvGovernance:
             governance_mod, "DEFAULT_BASELINE_PATH", tmp_path / "no-such-baseline.env"
         )
         monkeypatch.setattr(
-            governance_mod, "LEGACY_BASELINE_PATH", tmp_path / "no-such-legacy.env"
+            governance_mod, "HOST_TOOLING_BASELINE_PATH", tmp_path / "no-such-host-tooling.env"
         )
 
         with patch(_URLOPEN, side_effect=urllib.error.URLError("no network")):

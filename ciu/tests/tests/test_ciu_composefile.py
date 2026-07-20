@@ -928,7 +928,7 @@ class TestGenerateOverlayGovernance:
         monkeypatch.delenv(governance_mod.BASELINE_PATH_ENV_VAR, raising=False)
         monkeypatch.setattr(governance_mod, "DEFAULT_BASELINE_PATH", baseline)
         monkeypatch.setattr(
-            governance_mod, "LEGACY_BASELINE_PATH", tmp_path / "legacy-missing.env"
+            governance_mod, "HOST_TOOLING_BASELINE_PATH", tmp_path / "host-tooling-missing.env"
         )
         compose_yaml = "services:\n  redis:\n    image: redis\n"
         path = generate_overlay(
@@ -952,7 +952,7 @@ class TestGenerateOverlayGovernance:
             governance_mod, "DEFAULT_BASELINE_PATH", tmp_path / "default-missing.env"
         )
         monkeypatch.setattr(
-            governance_mod, "LEGACY_BASELINE_PATH", tmp_path / "legacy-missing.env"
+            governance_mod, "HOST_TOOLING_BASELINE_PATH", tmp_path / "host-tooling-missing.env"
         )
         compose_yaml = "services:\n  redis:\n    image: redis\n"
         path = generate_overlay(

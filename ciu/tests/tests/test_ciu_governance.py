@@ -161,17 +161,17 @@ class TestDeriveReadIops:
 # ---------------------------------------------------------------------------
 
 class TestBaselineSearchOrder:
-    """S15.4 — (a) config key > (b) env > (c) neutral default > (d) legacy;
+    """S15.4 — (a) config key > (b) env > (c) neutral default > (d) host tooling;
     first EXISTING file wins."""
 
     def _pin(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path]:
-        """Point (c)/(d) into tmp and clear (b); returns (default, legacy) paths."""
+        """Point (c)/(d) into tmp and clear (b); returns (default, host-tooling) paths."""
         default = tmp_path / "default" / "io-baseline.env"
-        legacy = tmp_path / "legacy" / "io-baseline.env"
+        host = tmp_path / "host-tooling" / "io-baseline.env"
         monkeypatch.delenv(gov.BASELINE_PATH_ENV_VAR, raising=False)
         monkeypatch.setattr(gov, "DEFAULT_BASELINE_PATH", default)
-        monkeypatch.setattr(gov, "LEGACY_BASELINE_PATH", legacy)
-        return default, legacy
+        monkeypatch.setattr(gov, "HOST_TOOLING_BASELINE_PATH", host)
+        return default, host
 
     def _touch(self, path: Path, riops: int) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -179,47 +179,48 @@ class TestBaselineSearchOrder:
         return path
 
     def test_candidate_order(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        default, legacy = self._pin(monkeypatch, tmp_path)
+        default, host = self._pin(monkeypatch, tmp_path)
         monkeypatch.setenv(gov.BASELINE_PATH_ENV_VAR, "/env/override.env")
         candidates = gov.baseline_search_candidates("/config/path.env")
         assert candidates == [
             Path("/config/path.env"),
             Path("/env/override.env"),
             default,
-            legacy,
+            host,
         ]
 
     def test_configured_path_wins_over_all(self, monkeypatch, tmp_path: Path) -> None:
-        default, legacy = self._pin(monkeypatch, tmp_path)
+        default, host = self._pin(monkeypatch, tmp_path)
         self._touch(default, 111)
-        self._touch(legacy, 222)
+        self._touch(host, 222)
         configured = self._touch(tmp_path / "configured.env", 333)
         env_file = self._touch(tmp_path / "env.env", 444)
         monkeypatch.setenv(gov.BASELINE_PATH_ENV_VAR, str(env_file))
         assert gov.resolve_baseline_path(str(configured)) == configured
 
-    def test_env_wins_over_default_and_legacy(self, monkeypatch, tmp_path: Path) -> None:
-        default, legacy = self._pin(monkeypatch, tmp_path)
+    def test_env_wins_over_default_and_host_tooling(self, monkeypatch, tmp_path: Path) -> None:
+        default, host = self._pin(monkeypatch, tmp_path)
         self._touch(default, 111)
-        self._touch(legacy, 222)
+        self._touch(host, 222)
         env_file = self._touch(tmp_path / "env.env", 444)
         monkeypatch.setenv(gov.BASELINE_PATH_ENV_VAR, str(env_file))
         assert gov.resolve_baseline_path("") == env_file
 
-    def test_default_wins_over_legacy(self, monkeypatch, tmp_path: Path) -> None:
-        default, legacy = self._pin(monkeypatch, tmp_path)
+    def test_default_wins_over_host_tooling(self, monkeypatch, tmp_path: Path) -> None:
+        default, host = self._pin(monkeypatch, tmp_path)
         self._touch(default, 111)
-        self._touch(legacy, 222)
+        self._touch(host, 222)
         assert gov.resolve_baseline_path("") == default
 
-    def test_legacy_fallback_when_only_it_exists(self, monkeypatch, tmp_path: Path) -> None:
-        _default, legacy = self._pin(monkeypatch, tmp_path)
-        self._touch(legacy, 222)
-        assert gov.resolve_baseline_path("") == legacy
+    def test_host_tooling_fallback_when_only_it_exists(self, monkeypatch, tmp_path: Path) -> None:
+        """A host with mdt host-setup installed but no `ciu iops-baseline` run."""
+        _default, host = self._pin(monkeypatch, tmp_path)
+        self._touch(host, 222)
+        assert gov.resolve_baseline_path("") == host
 
     def test_nonexistent_configured_falls_through(self, monkeypatch, tmp_path: Path) -> None:
         """First EXISTING wins: a configured-but-missing path does not block the search."""
-        default, _legacy = self._pin(monkeypatch, tmp_path)
+        default, _host = self._pin(monkeypatch, tmp_path)
         self._touch(default, 111)
         resolved = gov.resolve_baseline_path(str(tmp_path / "missing-configured.env"))
         assert resolved == default
@@ -254,6 +255,65 @@ class TestBaselineSearchOrder:
         injections, _ = gov.build_injections({"redis": {"image": "redis"}}, cfg)
         rate = injections["redis"]["blkio_config"]["device_read_iops"][0]["rate"]
         assert rate == 600
+
+
+# ---------------------------------------------------------------------------
+# S15.4 — measurement provenance (MEASURE_METHOD)
+# ---------------------------------------------------------------------------
+
+class TestBaselineMethod:
+    """S15.4 — the numbers alone cannot say how they were measured, so the
+    marker must survive the round trip and reach the derivation note."""
+
+    def _write(self, tmp_path: Path, body: str) -> Path:
+        f = tmp_path / "io-baseline.env"
+        f.write_text(body, encoding="utf-8")
+        return f
+
+    def test_reads_marker(self, tmp_path: Path) -> None:
+        f = self._write(tmp_path, "RIOPS_MAX=90000\nMEASURE_METHOD=sustained-v3\n")
+        assert gov.read_baseline_method(f) == "sustained-v3"
+
+    def test_quoted_marker(self, tmp_path: Path) -> None:
+        f = self._write(tmp_path, 'MEASURE_METHOD="burst-v1"\n')
+        assert gov.read_baseline_method(f) == "burst-v1"
+
+    def test_none_when_absent(self, tmp_path: Path) -> None:
+        f = self._write(tmp_path, "RIOPS_MAX=90000\n")
+        assert gov.read_baseline_method(f) is None
+
+    def test_none_when_unreadable(self, tmp_path: Path) -> None:
+        assert gov.read_baseline_method(tmp_path / "nope.env") is None
+
+    def test_derive_reports_sustained(self, tmp_path: Path) -> None:
+        f = self._write(tmp_path, "RIOPS_MAX=90000\nMEASURE_METHOD=sustained-v3\n")
+        value, note = gov.derive_read_iops(0, baseline_path=f)
+        assert value == 60000
+        assert "method=sustained-v3" in note
+        assert "UNKNOWN" not in note and "UNRECOGNISED" not in note
+
+    def test_derive_flags_missing_marker(self, tmp_path: Path) -> None:
+        """Still derives — provenance is lower confidence, not an error."""
+        f = self._write(tmp_path, "RIOPS_MAX=90000\n")
+        value, note = gov.derive_read_iops(0, baseline_path=f)
+        assert value == 60000
+        assert "method=UNKNOWN" in note
+
+    def test_derive_flags_unrecognised_marker(self, tmp_path: Path) -> None:
+        f = self._write(tmp_path, "RIOPS_MAX=90000\nMEASURE_METHOD=homegrown-v9\n")
+        value, note = gov.derive_read_iops(0, baseline_path=f)
+        assert value == 60000
+        assert "UNRECOGNISED" in note
+
+    def test_derive_warns_burst_reads_high(self, tmp_path: Path) -> None:
+        """burst-v1 is known but biased — the note must say which way."""
+        f = self._write(tmp_path, f"RIOPS_MAX=90000\nMEASURE_METHOD={gov.MEASURE_METHOD_BURST}\n")
+        _value, note = gov.derive_read_iops(0, baseline_path=f)
+        assert "reads high" in note
+
+    def test_ciu_own_method_is_known(self) -> None:
+        assert gov.MEASURE_METHOD_BURST in gov.KNOWN_MEASURE_METHODS
+        assert "sustained-v3" in gov.KNOWN_MEASURE_METHODS
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +632,11 @@ class TestRunIopsBaseline:
         assert "RIOPS_ENGINE=libaio" in content
         # The parsed file is shell-sourceable by the S15.4 reader.
         assert gov.read_iops_baseline(out_file) == 1235
+        # S15.9: provenance is mandatory output and round-trips to the reader —
+        # this measurement is the unramped 1G/10s one, and must say so.
+        assert f"MEASURE_METHOD={gov.MEASURE_METHOD_BURST}" in content
+        assert gov.read_baseline_method(out_file) == gov.MEASURE_METHOD_BURST
+        assert "MEASURED_AT=" in content
         # fio argv carries the required knobs (S15.9 item 4) + runtime.
         cmd = captured["cmd"]
         for expected in (
