@@ -6,6 +6,19 @@ universal partition editor. Synthesizes `GAMINGHOST-SWAP-1.md`,
 `GAMINGHOST-SWAP-2.md`, and the design discussion, corrected against the real
 host and current (June 2026) kernel facts.
 
+## Scope
+
+This guide covers the **host and the game server**. Two neighbouring concerns on
+the same host are owned elsewhere, and nothing here should duplicate them:
+
+| Concern | Owner |
+|---|---|
+| Per-server game slices (`wings-<uuid>.slice`, memory floors, CPU/IO weight) | Wings itself — patch stack in [`../../wings-cgroups/`](../../wings-cgroups/). Rollout on this node: [WINGS-CGROUPS-ROLLOUT.md](WINGS-CGROUPS-ROLLOUT.md) |
+| Dev tiers: `interactive.slice` (devcontainers) + `besteffort.slice` (test/build stacks), their measured IO caps, the fio baseline, BFQ setup | [`../../modern-debian-tools-python-debug/host-setup/`](../../modern-debian-tools-python-debug/host-setup/) — `sudo host-setup/install.sh --with-baseline` |
+
+`setup-cgroups.sh` here is therefore **game-side only**. Adding dev-tier logic
+back to it would give two scripts the same cgroup attributes to write.
+
 ## Read these
 | Doc | What |
 |---|---|
@@ -30,8 +43,7 @@ gstammtisch-guide/
 │   ├── etc/gstammtisch/instance-defaults.env      # per-instance defaults (N-instance, see SOULMASK.md §9b)
 │   ├── etc/gstammtisch/instances.d/*.env(.example) # per-instance overrides (one file per server UUID)
 │   ├── etc/systemd/system/zswap-config.service        # zstd post-boot fix
-│   ├── etc/systemd/system/dev-workloads.slice         # dev limits + oomd
-│   ├── etc/systemd/system/gstammtisch-cgroups.service # extra cgroup knobs
+│   ├── etc/systemd/system/gstammtisch-cgroups.service # extra cgroup knobs (game side)
 │   ├── etc/systemd/system/soulmask-graceful-stop.service
 │   ├── etc/systemd/system/soulmask-pak-ramdisk.service  # shared pak tmpfs (opt-in per instance, §2c/§9b)
 │   ├── etc/systemd/system/soulmask-paks.slice           # pak cgroup: writeback=yes, memory.min=150M
@@ -57,7 +69,7 @@ across several running Soulmask servers, how to add instance #2): see
 ```bash
 # 0) copy this folder to the host, then from inside it:
 sudo scripts/install.sh
-#    -> copies configs, enables zswap-config/dev-workloads/cgroups/graceful-stop/oomd,
+#    -> copies configs, enables zswap-config/cgroups/graceful-stop/oomd,
 #       applies sysctl, brings up zswap+zstd live. Prints the next steps.
 
 # 1) swap partitions — DRY-RUN first, then commit
@@ -73,7 +85,8 @@ sudo systemctl restart gstammtisch-cgroups
 
 # 4) priorities
 #    - Pterodactyl panel: set Soulmask memory/CPU/IO limits.
-#    - dev containers:  docker run --cgroup-parent=dev-workloads.slice --label workload=dev ...
+#    - dev/test/build containers: governed by mdt host-setup, not this guide —
+#      sudo <vbpub>/modern-debian-tools-python-debug/host-setup/install.sh --with-baseline
 
 # 5) RCON + verify
 docker pull itzg/rcon-cli
@@ -95,7 +108,7 @@ These are runtime confirmations the deliverables assume but couldn't be tested f
 - **zswap + zstd**, configured **post-boot** (built-in init races the zstd module → lzo fallback; GRUB tokens dropped).
 - **swappiness=100** (zswap makes anon reclaim cheap; protect the game with `memory.min`, not swappiness).
 - **2 labeled swap partitions** for `iostat` visibility — *not* for speed (striping is a no-op on one vda); thin-provisioned disk → `discard=once`.
-- **cgroup v2**: Soulmask `memory.min`/`memory.low`/`zswap.writeback=0`, `io.bfq.weight=1000`, `cpu.weight=800`; bench containers `io.bfq.weight=1` + `io.max` hard IOPS cap; `dev-workloads.slice` + systemd-oomd kills dev first.
+- **cgroup v2**: Soulmask `memory.min`/`memory.low`/`zswap.writeback=0`, `io.bfq.weight=1000`, `cpu.weight=800`. Dev/test/build tiers are a separate concern — see [scope](#scope) below.
 - **BFQ I/O scheduler** on `vda` (not `[none]`): only scheduler that enforces cgroup `io.weight`/`io.bfq.weight` — without it, all I/O priority settings are no-ops. `io.latency` unavailable (`CONFIG_BLK_CGROUP_IOLATENCY` not set in Debian 13); `io.cost.qos` is the available alternative (see SOULMASK.md §2b).
 - **KSM optional** (dev opts containers in via `prctl`; never the game); **THP=madvise**.
 - **fq_codel only** for network; skip speculative QoS.

@@ -172,12 +172,17 @@ pool ≈ compressed size of the *warm* anon set; currently 40 %).
 
 ## M6. Disk IOPS ceiling + bench cap
 
+The benchmark and the caps it feeds live in the mdt host-setup companion
+(`modern-debian-tools-python-debug/host-setup/`), not in this guide — dev/test
+IO governance is not a game-side concern. The procedure and the reference
+numbers below still apply to this host.
+
 ```bash
-io-baseline.py            # caches RIOPS_MAX, WIOPS_MAX, RBW_MAX_BPS, WBW_MAX_BPS
+mdt-io-baseline.py        # caches RIOPS_MAX, WIOPS_MAX, RBW_MAX_BPS, WBW_MAX_BPS
                           # sustained-v3: 4 fio passes × (10s ramp + 40s measure),
                           # 4G span, incompressible buffers — ~4 min saturation
-systemctl restart gstammtisch-cgroups   # setup-cgroups derives all four bench caps
-                                        # as IO_CAP_PCT (default 80%) × measured
+systemctl start mdt-host-slices.service  # derives the caps: 60% of measured for
+                                         # the besteffort tier, 80% per container
 ```
 
 Reference (sustained-v3, 2026-07-08, game running): riops 90,173 / wiops 58,695 /

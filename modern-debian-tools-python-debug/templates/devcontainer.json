@@ -104,7 +104,9 @@
     // Host resource governance (cgroup v2) — OPTIONAL, safe everywhere.
     // Cgroup placement is CREATE-TIME ONLY, so it must be set here.
     // HOST PREREQUISITE: /etc/systemd/system/interactive.slice unit with desired
-    // limits (MemoryHigh/MemoryMax/CPUWeight/...).
+    // limits (MemoryHigh/MemoryMax/CPUWeight/...) — install it (plus the
+    // besteffort tier for test/build stacks) with mdt's host-setup/ companion:
+    //   sudo <mdt>/host-setup/install.sh   (see host-setup/README.md)
     // GRACEFUL DEGRADATION: if that unit is missing, systemd creates a transient
     // UNLIMITED slice — the container still starts normally.
     "--cgroup-parent=interactive.slice"

@@ -9,10 +9,10 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"          # gstammtisch-guide/
 
 echo "== host package prerequisites =="
 # systemd-oomd: ManagedOOM* slice settings are silent no-ops without it (separate
-# package on Debian trixie). vmtouch: pak hot-set measurement. fio: io-baseline.sh.
+# package on Debian trixie). vmtouch: pak hot-set measurement.
 # jdupes: hardlink-dedupe of duplicate game installs across instance volumes.
-apt-get install -y --no-install-recommends systemd-oomd vmtouch fio jdupes \
-  || echo "WARN: prerequisite install failed — install systemd-oomd vmtouch fio jdupes manually"
+apt-get install -y --no-install-recommends systemd-oomd vmtouch jdupes \
+  || echo "WARN: prerequisite install failed — install systemd-oomd vmtouch jdupes manually"
 
 echo "== copying config files from $HERE/files into / =="
 # Remove the minimal sysctl stub deployed by the initial commit; the full
@@ -32,7 +32,7 @@ chmod +x /usr/local/sbin/setup-cgroups.sh /usr/local/sbin/soulmask-shutdown.sh \
          /usr/local/sbin/soulmask-zswap-monitor.sh /usr/local/sbin/soulmask-zswap-monitor.py \
          /usr/local/sbin/soulmask-mempress.sh \
          /usr/local/sbin/soulmask-startup-cgroup.sh /usr/local/sbin/soulmask-pak-mempress.sh \
-         /usr/local/sbin/soulmask-cgroup-watcher.sh /usr/local/sbin/io-baseline.sh \
+         /usr/local/sbin/soulmask-cgroup-watcher.sh \
          /usr/local/sbin/container-mempress.sh
 # soulmask-instance-lib.sh is sourced only (not directly executed) — no +x needed.
 # /etc/gstammtisch/instance-defaults.env + instances.d/*.env came in via the
@@ -71,10 +71,9 @@ echo madvise > /sys/kernel/mm/transparent_hugepage/defrag   2>/dev/null || true
 echo "== systemd: reload + enable units =="
 systemctl daemon-reload
 systemctl enable --now zswap-config.service
-systemctl enable dev-workloads.slice 2>/dev/null || true
 systemctl enable soulmask-paks.slice 2>/dev/null || true   # pak ramdisk cgroup slice
-systemctl enable interactive.slice 2>/dev/null || true     # devcontainer + AI agents (2026-07-10)
-systemctl enable besteffort.slice 2>/dev/null || true      # dstdns stack containers (2026-07-10)
+# The dev tiers (interactive.slice / besteffort.slice) are NOT installed here —
+# they belong to mdt host-setup, see the note at the end of this script.
 systemctl enable --now gstammtisch-cgroups.service
 systemctl enable --now soulmask-cgroup-watcher.service
 systemctl enable --now soulmask-graceful-stop.service
@@ -103,10 +102,13 @@ cat <<'NEXT'
      /etc/gstammtisch/instances.d/<server-uuid>.env (or instance-defaults.env
      for every instance), then: systemctl restart gstammtisch-cgroups
   4) Pterodactyl panel: set Soulmask memory/CPU/IO limits.
-     Launch dev containers with:  --cgroup-parent=dev-workloads.slice --label workload=dev
   5) Pre-pull the RCON image:  docker pull itzg/rcon-cli
      Verify RCON:               exec-soulmask-rcon.sh -d List_OnlinePlayers
   6) Watch health:              swap-health watch
-  7) Measure the disk IOPS ceiling ONCE while the game is stopped:
-       io-baseline.sh          (caches RIOPS_MAX; setup-cgroups.sh derives bench caps)
+  7) Dev/test/build containers on this host are governed SEPARATELY, by the mdt
+     host-setup companion (interactive.slice + besteffort.slice, measured IO
+     caps, the fio baseline, BFQ setup):
+       sudo <vbpub>/modern-debian-tools-python-debug/host-setup/install.sh --with-baseline
+       sudo mdt-host-check.sh
+     Run the baseline while the game is STOPPED — it saturates the disk ~4 min.
 NEXT

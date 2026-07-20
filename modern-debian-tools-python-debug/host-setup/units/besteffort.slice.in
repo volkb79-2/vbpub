@@ -1,0 +1,40 @@
+# RENDERED by host-setup/install.sh from host-setup.env — do not edit the
+# installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
+[Unit]
+Description=Best-effort dev/test/build containers — bounded, OOM-first, yields to every other tier
+Before=slices.target
+
+[Slice]
+# Soft ceiling first (throttle into zswap), hard cap so a leak can never
+# poison the host, swap cap so it can't poison swap/zswap either.
+MemoryHigh=@BESTEFFORT_MEMORY_HIGH@
+MemoryMax=@BESTEFFORT_MEMORY_MAX@
+MemorySwapMax=@BESTEFFORT_MEMORY_SWAP_MAX@
+
+CPUWeight=@BESTEFFORT_CPU_WEIGHT@
+# On a BFQ host this is only a true ratio against interactive.slice because
+# both weights are <= 100 (systemd compresses IOWeight > 100 into BFQ's 1..1000
+# range). See CGROUP-NOTES.md §BFQ before raising it.
+IOWeight=@BESTEFFORT_IO_WEIGHT@
+
+# Static IO caps — BOOT-WINDOW FALLBACK ONLY (deliberately tight).
+# mdt-host-slices.service overrides them at runtime with BE_IO_CAP_PCT% (60% by
+# default) of the measured ceilings from io-baseline.env — a static unit file
+# cannot express "a percentage of what this disk actually does". If no baseline
+# has been measured yet, these statics stay in force indefinitely.
+IOReadBandwidthMax=@IO_DEV_PATH@ @BESTEFFORT_STATIC_RBW@
+IOWriteBandwidthMax=@IO_DEV_PATH@ @BESTEFFORT_STATIC_WBW@
+IOReadIOPSMax=@IO_DEV_PATH@ @BESTEFFORT_STATIC_RIOPS@
+IOWriteIOPSMax=@IO_DEV_PATH@ @BESTEFFORT_STATIC_WIOPS@
+
+# systemd-oomd: under sustained pressure, kill inside this tier first.
+# Silent no-op unless systemd-oomd is installed and running (install.sh
+# installs it; ManagedOOM* settings do nothing without the daemon).
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=@BESTEFFORT_OOM_PRESSURE_LIMIT@
+ManagedOOMSwap=kill
+
+# NOTE: memory.zswap.writeback stays at the kernel default (1) here — cold
+# best-effort pages MAY be written back to disk; that is the point of the tier.
+# Containers join via compose `cgroup_parent: besteffort.slice` (ciu governance
+# injects it) or `docker run --cgroup-parent=besteffort.slice`.

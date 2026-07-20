@@ -107,12 +107,18 @@ Docker's `--cgroup-parent` (and the compose/Kubernetes equivalents) is fixed at 
 time. There is no supported way to move a running container into a different slice afterwards —
 placement can only be declared where the container is created (`runArgs` here, `cgroup_parent:` in
 compose, a Wings/panel setting, etc.), never applied post-hoc by a script running inside or beside
-the container.
+the container. This is one of several things a slice unit fundamentally cannot express — the full
+list, and the BFQ caveats that come with IO weights, are in
+[host-setup/CGROUP-NOTES.md](host-setup/CGROUP-NOTES.md).
 
 ### Host prerequisite: the slice unit must actually exist
 
 `--cgroup-parent=interactive.slice` only produces a governed container if the host has installed a
-systemd slice unit at `/etc/systemd/system/interactive.slice` with real limits, e.g.:
+systemd slice unit at `/etc/systemd/system/interactive.slice` with real limits. **The
+[`host-setup/`](host-setup/README.md) companion installs and maintains exactly this** — both dev
+tiers (`interactive.slice` for devcontainers, `besteffort.slice` for test/build stacks), rendered
+from a per-host env file, plus a measured-baseline IO-cap service and a health check
+(`mdt-host-check.sh`). Hand-rolled minimal equivalent:
 
 ```ini
 # /etc/systemd/system/interactive.slice — illustrative values, tune to your host

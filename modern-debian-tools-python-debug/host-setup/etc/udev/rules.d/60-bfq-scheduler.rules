@@ -1,0 +1,7 @@
+# Select BFQ for virtio + SATA/SCSI disks — enables cgroup v2 io.weight /
+# io.bfq.weight so the dev tiers' IO weights actually bite.
+# NVMe is deliberately NOT matched: at NVMe IOPS rates BFQ's per-request CPU
+# cost usually hurts more than weights help — on NVMe hosts rely on the io.max
+# caps (scheduler-independent) and add an nvme rule yourself if wanted.
+ACTION=="add|change", KERNEL=="vd[a-z]", ATTR{queue/scheduler}="bfq"
+ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/scheduler}="bfq"

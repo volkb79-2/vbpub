@@ -120,14 +120,14 @@ The goal: **Soulmask always preempts dev work and is the last thing reclaimed; d
 │     memory.zswap.writeback = 1       cold tail may drain to disk (2026-07-07; zswap LRU = coldest first)
 │     (cpu.weight high via panel / default 100)
 ├── system.slice/                  ← apt, certbot, sshd, wings… default weights, short-lived
-└── dev-workloads.slice/           ← LOW priority, OOM-first
-      memory.high = 8G                 throttle reclaim inside the slice
-      memory.max  = 14G                hard cap; OOM fires INSIDE this slice only
-      memory.zswap.writeback = 1       cold dev pages may drain to disk (2026-07-07)
-      cpu.weight = 50 / io.weight = 50  Soulmask (100) gets 2:1 under contention
-      IO{Read,Write}BandwidthMax=/dev/vda 200M   builds can't saturate the disk
-      ManagedOOMMemoryPressure=kill    systemd-oomd kills worst dev offender first
+├── interactive.slice/             ← devcontainers + IDE: responsive, bounded, never OOM-killed
+└── besteffort.slice/              ← test/build stacks: LOW priority, OOM-first, IO-capped
 ```
+
+The two dev tiers are installed and maintained by the **mdt host-setup**
+companion (`modern-debian-tools-python-debug/host-setup/`), not by this guide —
+see [README §Scope](README.md#scope). Their knobs, and why some of them can only
+be applied at runtime, are documented in that companion's `CGROUP-NOTES.md`.
 
 **What each knob does under pressure**
 - `memory.min` (**hard guarantee**) — the kernel will OOM-kill processes in *other* cgroups before reclaiming below this. This is your **"RAM never swapped" = the hot amount** lever (you can't truly pin a managed binary with `mlock`; `memory.min` is the practical equivalent). **Set it from measurement** (DAMON, §8) — too low and the game faults pages back under pressure → stutter; err high.
@@ -157,9 +157,8 @@ The goal: **Soulmask always preempts dev work and is the last thing reclaimed; d
 |---|---|---|---|---|
 | Soulmask game | 6G (3 players; 5G caused login failures) | 12G | 7G (1G login/area-load transient headroom; 8G if logins regress) | 1 (since 2026-07-07) |
 | soulmask-paks.slice | 150M (calibrate via MEASUREMENTS.md M2) | — | — | zswap bypassed entirely (`memory.zswap.max=0` — pak incompressible) |
-| dev-workloads.slice | 0 | — | 8G | 1 |
-| interactive.slice | 0 | 2G | 5G | **0** (2026-07-10 fix — `setup-cgroups.sh` now actually writes this; the unit comment had promised it since creation but no code applied it, see `plan-stack-resource-tuning.md` PKG-1) |
-| besteffort.slice | 0 | 0 | **8G** (2026-07-10, was 4G) | 1 (default) |
+| interactive.slice | 0 | 2G | 5G | **0** — never page the IDE's cold tail to disk (mdt host-setup; systemd < 256 has no directive for this, so it is a raw write) |
+| besteffort.slice | 0 | 0 | 8G | 1 (default) |
 | system.slice (ancestor) | 7G (protection chain for the game floor) | — | — | — |
 | soulmask.slice (ancestor) | 1G (protection chain for the pak floor) | — | — | — |
 
@@ -230,18 +229,17 @@ the minimal consistent scheme; `setup-cgroups.sh` implements exactly this.
 | `zswapped` | Cumulative bytes ever written to zswap |
 
 ### 5.1 Applying it (files)
-- [`dev-workloads.slice`](files/etc/systemd/system/dev-workloads.slice) — standard knobs via systemd (memory, cpu/io weight, IO bandwidth cap, oomd).
-- [`besteffort.slice`](files/etc/systemd/system/besteffort.slice) / [`interactive.slice`](files/etc/systemd/system/interactive.slice) — the dstdns-stack and devcontainer tiers (2026-07-10 values, `plan-stack-resource-tuning.md` D1); enabled by `scripts/install.sh`.
-- [`setup-cgroups.sh`](files/usr/local/sbin/setup-cgroups.sh) (run by [`gstammtisch-cgroups.service`](files/etc/systemd/system/gstammtisch-cgroups.service)) — applies the knobs systemd can't: ancestor `MemoryMin` floors (protection chain), `memory.zswap.writeback` on the dev slice (1) and interactive slice (0, fixed 2026-07-10), pak-slice zswap bypass, dynamic `besteffort.slice` `IO*Max` at `BE_IO_CAP_PCT` of the measured `io-baseline.env` ceilings (2026-07-10, D2), and locates the Soulmask container's scope to set `memory.min/low/high` + writeback. Re-runnable after the server restarts.
+- [`setup-cgroups.sh`](files/usr/local/sbin/setup-cgroups.sh) (run by [`gstammtisch-cgroups.service`](files/etc/systemd/system/gstammtisch-cgroups.service)) — applies the **game-side** knobs systemd can't: ancestor `MemoryMin` floors (protection chain), pak-slice zswap bypass, and locates the Soulmask container's scope to set `memory.min/low/high` + writeback. Re-runnable after the server restarts.
+- `interactive.slice` / `besteffort.slice` and everything that sizes them (measured IO caps, the fio baseline, BFQ setup) — **not in this guide**: `modern-debian-tools-python-debug/host-setup/`, see [README §Scope](README.md#scope).
 
 ### 5.2 Pterodactyl / Wings integration (be realistic)
 Wings creates the Soulmask container under Docker's default cgroup parent, and recreates it on updates — moving its cgroup is fragile. Use **defense in depth**:
 1. **Pterodactyl panel** — set Soulmask's memory/CPU/IO limits there. Wings re-applies them on every (re)start. This is the *reliable* lever.
-2. **dev containers** — launch into the slice: `docker run --cgroup-parent=dev-workloads.slice --label workload=dev …` (or `cgroup_parent: dev-workloads.slice` in compose). The dev's own devcontainer can stay at default priority so it preempts the containers *it* starts.
+2. **dev containers** — launch into the dev tiers: `cgroup_parent: besteffort.slice` in compose (ciu governance injects it) for test/build stacks, `--cgroup-parent=interactive.slice` in devcontainer.json `runArgs` for the devcontainer itself. Placement is **create-time only** — a running container cannot be moved.
 3. **`gstammtisch-cgroups.service`** re-asserts the raw Soulmask knobs; optionally trigger it from a Wings post-start hook or a `.timer` to survive container recreation.
 
 ### 5.3 systemd-oomd — the safety net
-With this much oversubscription the in-kernel OOM killer is slow and may pick a poor victim. [`oomd.conf.d/gstammtisch.conf`](files/etc/systemd/oomd.conf.d/gstammtisch.conf) + `ManagedOOMMemoryPressure=kill` on the dev slice makes systemd-oomd kill the worst **dev** offender fast on PSI/swap pressure — never touching the protected game. This is what makes `swappiness=100` + large swap safe.
+With this much oversubscription the in-kernel OOM killer is slow and may pick a poor victim. [`oomd.conf.d/gstammtisch.conf`](files/etc/systemd/oomd.conf.d/gstammtisch.conf) + `ManagedOOMMemoryPressure=kill` on `besteffort.slice` makes systemd-oomd kill the worst **best-effort** offender fast on PSI/swap pressure — never touching the protected game or the IDE tier. This is what makes `swappiness=100` + large swap safe.
 
 ---
 
@@ -286,7 +284,7 @@ See [README.md](README.md) for the full runbook. Summary:
 2. `partition-editor.py … add-swap … --commit` — create the two swap partitions.
 3. Clean `zswap.*` out of GRUB; optional `preempt=full`.
 4. DAMON-measure Soulmask hot set → set `SOULMASK_MIN` → `systemctl restart gstammtisch-cgroups`.
-5. Panel limits for Soulmask; `--cgroup-parent=dev-workloads.slice` for dev containers.
+5. Panel limits for Soulmask; mdt `host-setup/install.sh` for the dev tiers.
 6. `swap-health watch` to confirm no red flags.
 
 ---

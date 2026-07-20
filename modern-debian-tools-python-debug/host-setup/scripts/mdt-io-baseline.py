@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 # Measure the disk's r/w IOPS and r/w bandwidth ceilings with fio (4 passes)
-# and cache them at /var/lib/gstammtisch/io-baseline.env.
+# and cache them at /var/lib/mdt/io-baseline.env (override: IO_BASELINE_ENV).
 #
-# Consumers:
-#   - setup-cgroups.sh sources /var/lib/gstammtisch/io-baseline.env
-#   - ciu governance parses the same plain KEY=VALUE cache
-# Policy:
-#   setup-cgroups.sh derives bench/buildkit/devcontainer io.max caps as
-#   IO_CAP_PCT (default 80%) of the measured ceilings in this cache.
+# Part of mdt host-setup. Consumers:
+#   - mdt-apply-dev-caps.sh sources the cache (besteffort tier caps at
+#     BE_IO_CAP_PCT%, per-container bench caps at BENCH_IO_CAP_PCT% — both in
+#     the 60-80% band, see host-setup.env.example)
+#   - ciu governance reads the same plain KEY=VALUE format, but from its own
+#     search path — point CIU_GOV_BASELINE_PATH here so one measurement serves
+#     both (host-setup.env.example, IO_BASELINE_ENV section)
 #
-# Incident notes carried over from the shell predecessor:
+# Incident notes:
 #   - libaio, NOT the psync default: psync silently caps the queue at depth 1
 #     and measures single-request latency, not the ceiling (6928 vs 90197
 #     IOPS on this host, 2026-07-07).
@@ -36,8 +37,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-OUT = Path("/var/lib/gstammtisch/io-baseline.env")
-DEFAULT_TESTFILE = "/var/lib/pterodactyl/io-baseline.testfile"
+OUT = Path(os.environ.get("IO_BASELINE_ENV") or "/var/lib/mdt/io-baseline.env")
+DEFAULT_TESTFILE = "/var/lib/mdt/io-baseline.testfile"
 DEFAULT_SIZE = "4G"
 DEFAULT_RUNTIME = 40
 DEFAULT_RAMP = 10
@@ -72,7 +73,7 @@ def env_string(name: str, fallback: str) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="io-baseline.py")
+    parser = argparse.ArgumentParser(prog="mdt-io-baseline.py")
     parser.add_argument("--force", action="store_true", help="ignore a fresh cache")
     parser.add_argument(
         "--runtime",
@@ -89,7 +90,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--testfile",
         default=os.environ.get("IO_BASELINE_TESTFILE", DEFAULT_TESTFILE),
-        help="benchmark file path (default: IO_BASELINE_TESTFILE or /var/lib/pterodactyl/io-baseline.testfile)",
+        help=f"benchmark file path (default: IO_BASELINE_TESTFILE or {DEFAULT_TESTFILE})",
     )
     return parser.parse_args()
 
@@ -106,7 +107,10 @@ def print_cached_cache(path: Path) -> None:
         sys.stdout.write("\n")
 
 
-def maybe_warn_soulmask_running() -> None:
+def maybe_warn_containers_running() -> None:
+    # The 4 fio passes hold the disk saturated for roughly 4 x (ramp + runtime)
+    # seconds plus a one-time 4G layout write (~3.5-4 min with defaults) — any
+    # latency-sensitive workload sharing the device WILL feel it.
     try:
         ps = subprocess.run(
             ["docker", "ps", "-q"],
@@ -120,26 +124,15 @@ def maybe_warn_soulmask_running() -> None:
     if ps.returncode != 0:
         return
 
-    for cid in ps.stdout.split():
-        try:
-            top = subprocess.run(
-                ["docker", "top", cid],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                check=False,
-            )
-        except FileNotFoundError:
-            return
-        if top.returncode == 0 and "WSServer-Linux-Shipping" in top.stdout:
-            print(
-                "WARNING: Soulmask is RUNNING - the 4 fio passes will hold the disk saturated "
-                "roughly 4 x (ramp + runtime) seconds plus a one-time 4G layout write "
-                "(~3.5-4 min with defaults)."
-            )
-            print("         Ctrl-C within 5s to abort...")
-            time.sleep(5)
-            return
+    count = len(ps.stdout.split())
+    if count:
+        print(
+            f"WARNING: {count} container(s) are RUNNING - the benchmark saturates the disk "
+            "for ~3.5-4 min (defaults). Run in a quiet window if anything on this host is "
+            "latency-sensitive (production game/DB servers especially)."
+        )
+        print("         Ctrl-C within 5s to abort...")
+        time.sleep(5)
 
 
 def detect_engine() -> str:
@@ -273,8 +266,8 @@ def write_cache_atomic(values: dict[str, int | str], engine: str, out: Path) -> 
     os.replace(tmp, out)
 
 
-def pct80(value: int) -> int:
-    return value * 4 // 5
+def pct(value: int, percent: int) -> int:
+    return value * percent // 100
 
 
 def main() -> int:
@@ -293,7 +286,7 @@ def main() -> int:
         print_cached_cache(OUT)
         return 0
 
-    maybe_warn_soulmask_running()
+    maybe_warn_containers_running()
 
     testfile = Path(args.testfile)
     if testfile.exists() or testfile.is_symlink():
@@ -362,14 +355,16 @@ def main() -> int:
             clean_path(path)
         clean_path(Path(str(OUT) + ".tmp"))
 
-    print(f"RIOPS_MAX={values['RIOPS_MAX']} (80%={pct80(values['RIOPS_MAX'])})")
-    print(f"RBW_MAX_BPS={values['RBW_MAX_BPS']} (80%={pct80(values['RBW_MAX_BPS'])})")
-    print(f"WIOPS_MAX={values['WIOPS_MAX']} (80%={pct80(values['WIOPS_MAX'])})")
-    print(f"WBW_MAX_BPS={values['WBW_MAX_BPS']} (80%={pct80(values['WBW_MAX_BPS'])})")
+    # The two percentages mdt-apply-dev-caps.sh derives caps at by default:
+    # BE_IO_CAP_PCT (whole besteffort tier) and BENCH_IO_CAP_PCT (one container).
+    print("measured ceiling            (tier 60%)   (per-container 80%)")
+    for key in ("RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS"):
+        v = int(values[key])
+        print(f"{key}={v:<18} {pct(v, 60):<12} {pct(v, 80)}")
     for key in ("RIOPS_P99_US", "RBW_P99_US", "WIOPS_P99_US", "WBW_P99_US"):
         if key in values:
             print(f"{key}={values[key]}us")
-    print("applied on next setup-cgroups.sh run")
+    print("applied on next mdt-apply-dev-caps.sh run (systemctl start mdt-host-slices.service)")
     return 0
 
 

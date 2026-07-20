@@ -10,13 +10,13 @@
 #                            io.weight=4950 + io.bfq.weight=1000 (BFQ priority), cpu.weight=800
 #   - pak slice            : memory.zswap.max=0 (pak is zstd-incompressible, 1.006× — zswap
 #                            wastes CPU+RAM on it; cold pak goes straight to disk)
-#   - dev-workloads.slice  : memory.zswap.writeback=1 (cold dev pages may page to disk)
-#   - bench containers     : test-runner/buildx_buildkit_* get io.weight=1,
-#                            io.bfq.weight=1, io.max hard caps at IO_CAP_PCT
-#                            (default 80%) of the measured r/w IOPS AND r/w
-#                            bandwidth ceilings (io-baseline.py)
-#   - devcontainer         : io.weight=1, io.bfq.weight=1, same 80% io.max caps
 # Idempotent; tolerant if containers aren't running yet.
+#
+# GAME SIDE ONLY. The dev tiers (interactive.slice/besteffort.slice, their
+# measured IO caps, the per-container bench/buildkit/devcontainer caps and the
+# fio baseline) are NOT here — they belong to the mdt host-setup companion,
+# modern-debian-tools-python-debug/host-setup/. Do not re-add them: both would
+# write besteffort.slice's io.max and the last writer would win at random.
 #
 # N-instance (2026-07-07): iterates EVERY running Soulmask (WSServer) container,
 # not just "first found wins". Each container's server UUID (== its docker name,
@@ -53,51 +53,6 @@ _parse_bytes() {
   esac
 }
 
-# I/O caps for bench/buildkit/devcontainer containers.
-# Policy (2026-07-08): IO_CAP_PCT (default 80%) of the MEASURED device ceilings —
-# r-IOPS, w-IOPS, read bandwidth, write bandwidth (io-baseline.py →
-# /var/lib/gstammtisch/io-baseline.env). Replaces the old 2/3-riops formula
-# (60k riops — effectively inert) and the fixed 31 MB/s bandwidth cap (the
-# actual bench limiter). The game keeps device priority via io.weight
-# 4950-vs-1 + BFQ weight 1000-vs-1; the 20% headroom keeps the device off full
-# saturation so Soulmask's periodic DB saves never queue behind a build storm.
-# MEASUREMENTS.md M6 (build storm) validates this policy.
-# io.bfq.weight range is 1–1000 (unlike io.weight which is 1–10000).
-#
-# With the pak ramdisk active (soulmask-pak-ramdisk.service), pak pages are
-# tmpfs-backed anon — they go through zswap, not page cache, so bench file I/O
-# cannot evict them. The io.max cap here limits benchmark impact on Soulmask's
-# periodic DB saves (which DO go through the real disk via writeback threads).
-# No memory.high on bench: the devcontainer is also VSCode — capping total
-# cgroup memory kills the IDE. BFQ io.weight + io.max is the right lever.
-IO_CAP_PCT="${IO_CAP_PCT:-80}"
-# Remember which caps the caller set explicitly — env always beats the baseline.
-BENCH_RBPS_ENV="${BENCH_RBPS:-}"
-BENCH_WBPS_ENV="${BENCH_WBPS:-}"
-BENCH_RIOPS_ENV="${BENCH_RIOPS:-}"
-BENCH_WIOPS_ENV="${BENCH_WIOPS:-}"
-DEVCONTAINER_RIOPS_ENV="${DEVCONTAINER_RIOPS:-}"
-# Conservative static fallbacks for a host with NO measured baseline yet
-# (read iops saturation lags the game even when it's CPU-bound — stay tight
-# until io-baseline.py has been run).
-BENCH_RBPS="${BENCH_RBPS:-31457280}"
-BENCH_WBPS="${BENCH_WBPS:-31457280}"
-BENCH_RIOPS="${BENCH_RIOPS:-200}"
-BENCH_WIOPS="${BENCH_WIOPS:-400}"
-DEVCONTAINER_RIOPS="${DEVCONTAINER_RIOPS:-$BENCH_RIOPS}"
-
-IO_BASELINE=/var/lib/gstammtisch/io-baseline.env
-if [ -f "$IO_BASELINE" ]; then
-  RIOPS_MAX="" WIOPS_MAX="" RBW_MAX_BPS="" WBW_MAX_BPS=""
-  . "$IO_BASELINE" 2>/dev/null || true
-  [ -z "$BENCH_RIOPS_ENV" ] && [ -n "${RIOPS_MAX:-}" ] && BENCH_RIOPS=$(( RIOPS_MAX * IO_CAP_PCT / 100 ))
-  [ -z "$DEVCONTAINER_RIOPS_ENV" ] && [ -n "${RIOPS_MAX:-}" ] && DEVCONTAINER_RIOPS=$(( RIOPS_MAX * IO_CAP_PCT / 100 ))
-  [ -z "$BENCH_WIOPS_ENV" ] && [ -n "${WIOPS_MAX:-}" ] && BENCH_WIOPS=$(( WIOPS_MAX * IO_CAP_PCT / 100 ))
-  [ -z "$BENCH_RBPS_ENV" ]  && [ -n "${RBW_MAX_BPS:-}" ] && BENCH_RBPS=$(( RBW_MAX_BPS * IO_CAP_PCT / 100 ))
-  [ -z "$BENCH_WBPS_ENV" ]  && [ -n "${WBW_MAX_BPS:-}" ] && BENCH_WBPS=$(( WBW_MAX_BPS * IO_CAP_PCT / 100 ))
-  log "io-baseline (${IO_CAP_PCT}% caps): riops=${BENCH_RIOPS} wiops=${BENCH_WIOPS} rbw=$((BENCH_RBPS/1048576))MB/s wbw=$((BENCH_WBPS/1048576))MB/s devcontainer_riops=${DEVCONTAINER_RIOPS}"
-fi
-
 # --- ancestor protection floors (plan §1.5 Finding A) ---
 # system.slice floor = SUM of every applied instance's game floor + ~1G for host
 # daemons (sshd/dockerd/wings — also keeps SSH responsive under pressure). Do NOT
@@ -115,53 +70,6 @@ SYSTEM_SLICE_MIN_EXPLICIT="${SYSTEM_SLICE_MIN:-}"
 # Host-wide (the pak tmpfs/slice is shared across instances), not per-instance.
 SOULMASK_SLICE_MIN="${SOULMASK_SLICE_MIN:-1G}"
 
-# Discover the block device backing the pterodactyl volume directory.
-# MAJ:MIN for raw io.max writes; the device node PATH for systemd IO*Max=
-# properties (set-property needs a path, not maj:min).
-# Prefers the pterodactyl path; falls back through docker data dir to root.
-_io_dev() {
-  local dev
-  for path in /var/lib/pterodactyl/volumes /var/lib/docker /; do
-    dev=$(findmnt -no MAJ:MIN --target "$path" 2>/dev/null) && echo "$dev" && return
-  done
-}
-_io_dev_path() {
-  local dev
-  for path in /var/lib/pterodactyl/volumes /var/lib/docker /; do
-    dev=$(findmnt -no SOURCE --target "$path" 2>/dev/null) && echo "$dev" && return
-  done
-}
-IO_DEV=$(_io_dev)
-IO_DEV_PATH=$(_io_dev_path)
-[ -n "$IO_DEV" ] && log "discovered io device: $IO_DEV ($IO_DEV_PATH)" || log "WARN: could not discover block device for io.max"
-
-# --- besteffort.slice: dynamic disk IO caps (plan-stack-resource-tuning.md D2) ---
-# The unit file's static IOReadBandwidthMax/IOWriteBandwidthMax/IOReadIOPSMax/
-# IOWriteIOPSMax (31M/100/400) are a boot-window fallback only. Here we
-# override them at runtime with BE_IO_CAP_PCT% (default 40%) of the SAME
-# measured io-baseline.env ceilings the bench-container caps above use
-# (RIOPS_MAX/WIOPS_MAX/RBW_MAX_BPS/WBW_MAX_BPS) — sourced by the IO_BASELINE
-# block above, so this only fires when that file exists. Different percentage
-# than the 80% bench/devcontainer caps: this is a whole-tier ceiling (every
-# dstdns container together), not a single builder's share.
-BE_IO_CAP_PCT="${BE_IO_CAP_PCT:-40}"
-if [ -f "$IO_BASELINE" ] && [ -n "${RIOPS_MAX:-}" ] && [ -n "${WIOPS_MAX:-}" ] \
-   && [ -n "${RBW_MAX_BPS:-}" ] && [ -n "${WBW_MAX_BPS:-}" ]; then
-  BE_RIOPS=$(( RIOPS_MAX * BE_IO_CAP_PCT / 100 ))
-  BE_WIOPS=$(( WIOPS_MAX * BE_IO_CAP_PCT / 100 ))
-  BE_RBPS=$(( RBW_MAX_BPS * BE_IO_CAP_PCT / 100 ))
-  BE_WBPS=$(( WBW_MAX_BPS * BE_IO_CAP_PCT / 100 ))
-  if [ -n "$IO_DEV_PATH" ] && systemctl set-property --runtime besteffort.slice \
-       "IOReadBandwidthMax=$IO_DEV_PATH $BE_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $BE_WBPS" \
-       "IOReadIOPSMax=$IO_DEV_PATH $BE_RIOPS" "IOWriteIOPSMax=$IO_DEV_PATH $BE_WIOPS" 2>/tmp/cg-write-err; then
-    log "besteffort.slice: set-property io.max=${BE_RIOPS}r/${BE_WIOPS}w IOPS $((BE_RBPS/1048576))/$((BE_WBPS/1048576))MB/s r/w (${BE_IO_CAP_PCT}% of baseline)"
-  else
-    log "WARN: besteffort.slice IO*Max set-property failed ($(cat /tmp/cg-write-err 2>/dev/null)) — unit-file statics (31M/100/400) remain in force"
-  fi
-else
-  log "no io-baseline.env (or device undiscovered) — besteffort.slice keeps its unit-file static IO*Max (boot-window fallback)"
-fi
-
 # Pak is zstd-incompressible (1.006× measured) — bypass zswap entirely so cold pak
 # pages go straight to disk swap. Also declared in the soulmask-paks.slice unit
 # (MemoryZSwapMax=0); asserted here in case the unit predates that setting.
@@ -170,29 +78,6 @@ fi
 PAK_CG="$CG/soulmask.slice/soulmask-paks.slice"
 if [ -w "$PAK_CG/memory.zswap.max" ]; then
   echo 0 > "$PAK_CG/memory.zswap.max" && log "soulmask-paks.slice memory.zswap.max=0 (pak bypasses zswap)"
-fi
-
-# --- dev workloads: allow cold dev pages to page out to disk (2026-07-07) ---
-DEV="$CG/dev-workloads.slice"
-if [ -d "$DEV" ] && [ -w "$DEV/memory.zswap.writeback" ]; then
-  echo 1 > "$DEV/memory.zswap.writeback" && log "dev-workloads.slice memory.zswap.writeback=1"
-else
-  log "dev-workloads.slice not present yet (start it / launch a dev container first)"
-fi
-
-# --- interactive.slice: never page the IDE's cold tail to disk (2026-07-10 fix) ---
-# The interactive.slice unit file's comment has promised "memory.zswap.writeback=0
-# applied by setup-cgroups.sh" since it was created, but no code ever wrote it —
-# systemd has no property for this attribute (same as dev-workloads above), so
-# it's a raw cgroupfs write, not a set-property call. Opposite value from
-# dev-workloads: dev-workloads writes 1 (cold dev pages MAY page to disk),
-# interactive writes 0 (never — throttle via memory.high/zswap pool instead,
-# since this is also the VS Code server and disk-backed swap-in stalls the IDE).
-INTERACTIVE="$CG/interactive.slice"
-if [ -d "$INTERACTIVE" ] && [ -w "$INTERACTIVE/memory.zswap.writeback" ]; then
-  echo 0 > "$INTERACTIVE/memory.zswap.writeback" && log "interactive.slice memory.zswap.writeback=0"
-else
-  log "interactive.slice not present yet (start it / launch the devcontainer first)"
 fi
 
 _cg_write() {
@@ -309,47 +194,8 @@ systemctl set-property soulmask.slice MemoryMin="$SOULMASK_SLICE_MIN" 2>/dev/nul
   && log "soulmask.slice MemoryMin=$SOULMASK_SLICE_MIN (protection chain for pak floor)" \
   || log "WARN: set-property soulmask.slice MemoryMin failed"
 
-# --- throttle bench containers (test-runner + buildkit); devcontainer gets a softer cap ---
-# test-runner is a separate bench container; buildx_buildkit_* runs all buildx bake / cmru builds.
-# The devcontainer itself still gets BFQ/IO weight 1, with a slightly higher
-# io.max ceiling (80% of baseline) so release/build work stays responsive.
-# We identify by image name patterns rather than fixed IDs since those change on restart.
-_apply_bench_limits() {
-  local cid="$1" label="$2" mode="${3:-capped}" riops_limit="${4:-$BENCH_RIOPS}" tmp_io_max
-  local pid scope unit
-  pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || true)
-  [ -z "$pid" ] && return
-  scope="$CG$(awk -F: '/^0::/{print $3}' /proc/$pid/cgroup 2>/dev/null)"
-  # buildkitd nests its own sub-cgroups INSIDE the container (PID 1's cgroup
-  # path continues below docker-<id>.scope). Trim to the scope component so
-  # the systemd unit name is right; limits on the scope cover the subtree.
-  case "$scope" in *".scope/"*) scope="${scope%%.scope/*}.scope" ;; esac
-  [ -d "$scope" ] || return
-  unit="${scope##*/}"
-  # set-property so a daemon-reload re-applies instead of wiping (see game section)
-  if [ -n "$IO_DEV_PATH" ] && systemctl set-property --runtime "$unit" IOWeight=1 \
-       "IOReadBandwidthMax=$IO_DEV_PATH $BENCH_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $BENCH_WBPS" \
-       "IOReadIOPSMax=$IO_DEV_PATH $riops_limit" "IOWriteIOPSMax=$IO_DEV_PATH $BENCH_WIOPS" 2>/dev/null; then
-    log "$label ($cid): set-property io.weight=1, io.max=${riops_limit}r/${BENCH_WIOPS}w IOPS $((BENCH_RBPS/1048576))MB/s"
-  else
-    echo "default 1" > "$scope/io.weight"     2>/dev/null
-    if [ -n "$IO_DEV" ]; then
-      echo "$IO_DEV rbps=${BENCH_RBPS} wbps=${BENCH_WBPS} riops=${riops_limit} wiops=${BENCH_WIOPS}" \
-        > "$scope/io.max" 2>/dev/null
-    fi
-    log "$label ($cid): raw-write io.weight=1, io.max=${riops_limit}r/${BENCH_WIOPS}w IOPS (will NOT survive daemon-reload)"
-  fi
-  echo "default 1" > "$scope/io.bfq.weight" 2>/dev/null   # no systemd property; survives reload
-}
-
-for c in $(docker ps -q 2>/dev/null); do
-  img=$(docker inspect -f '{{.Config.Image}}' "$c" 2>/dev/null || true)
-  name=$(docker inspect -f '{{.Name}}' "$c" 2>/dev/null | tr -d '/' || true)
-  case "$img" in
-    *test-runner*) _apply_bench_limits "$c" "test-runner" ;;
-  esac
-  case "$name" in
-    *devcontainer*|*dstdns-devcontainer*) _apply_bench_limits "$c" "devcontainer" "capped" "$DEVCONTAINER_RIOPS" ;;
-    buildx_buildkit_*)                    _apply_bench_limits "$c" "buildkit" ;;
-  esac
-done
+# Bench/buildkit/devcontainer IO caps used to live here. They are now
+# mdt-apply-dev-caps.sh's job (mdt host-setup, installed separately) — along
+# with the besteffort.slice tier caps, the interactive.slice zswap policy and
+# the fio baseline that sizes all of them. Keeping a second implementation on
+# this host would mean two owners for the same cgroup attributes.

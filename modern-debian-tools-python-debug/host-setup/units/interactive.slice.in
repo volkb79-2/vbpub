@@ -1,0 +1,34 @@
+# RENDERED by host-setup/install.sh from host-setup.env — do not edit the
+# installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
+[Unit]
+Description=Interactive devcontainers + IDE — responsive, bounded, below any production tier
+Before=slices.target
+
+[Slice]
+# Generous ceilings: this tier is also the VS Code / IDE server — a too-low
+# MemoryMax OOM-kills the IDE. memory.high throttling into zswap is the
+# intended pressure valve; the hard cap is only the leak backstop.
+MemoryHigh=@INTERACTIVE_MEMORY_HIGH@
+MemoryMax=@INTERACTIVE_MEMORY_MAX@
+# Soft protection of the IDE working set against OTHER tiers' pressure.
+# NOTE: this only reaches the container's pages if cgroup2 is mounted with
+# memory_recursiveprot (the systemd >= 248 boot default — but runtime remounts
+# can strip it; check.sh verifies, mdt-apply-dev-caps.sh warns/fixes).
+MemoryLow=@INTERACTIVE_MEMORY_LOW@
+
+CPUWeight=@INTERACTIVE_CPU_WEIGHT@
+# CPU ratios are exact; IO ratios are NOT on a BFQ host unless the weights stay
+# <= 100 (systemd rescales IOWeight 1..10000 into BFQ's 1..1000, compressing
+# everything above 100 by ~11x). See CGROUP-NOTES.md §BFQ.
+IOWeight=@INTERACTIVE_IO_WEIGHT@
+
+# Never page the IDE's cold tail out to disk-backed swap: swap-in stalls freeze
+# the IDE. Cold pages stay in the compressed in-RAM zswap pool instead.
+# (Directive needs systemd >= 256; install.sh drops this line on older hosts
+# and mdt-apply-dev-caps.sh raw-writes memory.zswap.writeback as the fallback.)
+MemoryZSwapWriteback=@INTERACTIVE_ZSWAP_WRITEBACK@
+
+# Deliberately NO ManagedOOM* here: never OOM-kill the IDE tier.
+# Devcontainers join via devcontainer.json runArgs:
+#   "--cgroup-parent=interactive.slice"
+# (see ../templates/devcontainer.json — placement is CREATE-time only).

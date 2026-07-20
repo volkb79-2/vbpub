@@ -33,7 +33,7 @@ Soulmask must always preempt dev work and be the last thing reclaimed. Layers:
    - `memory.zswap.writeback = 0` — its pages stay in the fast compressed pool, never proactively to disk (no fault-back stutter).
    - `io.weight = 4950`, `io.bfq.weight = 1000` — top I/O priority under BFQ (see §2b).
    - `cpu.weight = 800` — CPU preemption headroom over default-weight containers.
-3. **dev work is fenced off** in `dev-workloads.slice` (low weight, capped, OOM-first). See [MEMORY-ARCHITECTURE.md §5](MEMORY-ARCHITECTURE.md).
+3. **dev work is fenced off** in `besteffort.slice` (low weight, IO-capped, OOM-first) and `interactive.slice` (the devcontainer/IDE). Both are installed by the mdt host-setup companion, not by this guide — see [README §Scope](README.md#scope) and [MEMORY-ARCHITECTURE.md §5](MEMORY-ARCHITECTURE.md).
 
 > Set `memory.min` from real measurement and err **high** — a too-low floor lets the game fault pages back during save/join/AI bursts → visible stutter.
 
@@ -76,7 +76,7 @@ Switching to BFQ immediately activates the existing `io.weight` values AND adds 
 
 Effective I/O ratio (BFQ): **1000:1**. Bench gets CPU slices on the disk head only when Soulmask's queue is idle.
 
-No `memory.high` on bench containers — the devcontainer is also the VSCode workspace, and capping its total cgroup memory kills the IDE. Policy since 2026-07-08: ONE cap formula for all capped citizens — `IO_CAP_PCT` (default 80%) of every measured ceiling from `io-baseline.py` (r-IOPS, w-IOPS, read MB/s, write MB/s). This replaced the 2/3-riops formula (its 60k cap was inert) and the fixed 31 MB/s bandwidth cap (which was the actual limiter). Protection now leans on the weight ratios; the 20% headroom keeps the device off saturation. M6 validates.
+No `memory.high` on bench containers — the devcontainer is also the VSCode workspace, and capping its total cgroup memory kills the IDE. The IO caps on them are applied by the mdt host-setup companion (`mdt-apply-dev-caps.sh`), not from this guide: one formula for all capped citizens — a percentage of every measured ceiling from `mdt-io-baseline.py` (r-IOPS, w-IOPS, read MB/s, write MB/s), 80% per container and 60% for the `besteffort.slice` tier as a whole. Protection leans on the weight ratios; the headroom keeps the device off saturation. M6 validates.
 
 The `io.max` hard caps are belt-and-suspenders on test-runner/buildkit: they cut the benchmark's 709 r/s burst (observed without caps) to a lower ceiling before it even reaches the BFQ scheduler, ensuring the device queue depth stays clean for Soulmask's periodic DB saves.
 
