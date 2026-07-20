@@ -196,9 +196,15 @@ prose — the divergence lives in **composition**, never in the **semantics** of
      with fresh eyes / reflect", which AUTHORING flags as false confidence (models are
      poor judges of what they missed; the historical P40 prompt already rejected it). The
      operator's "test edge cases, not just the happy path" IS this negative check.
-  2. **Mechanical diff-coverage gate** (planned, pairs with #57): fail the gate when
-     changed/added source lines have no test hitting them. Deterministic, no LLM — would
-     have caught the B5 `_attempt_scan` gap. The reliable floor coverage-% can enforce.
+  2. **Mechanical diff-coverage gate** (DONE 2026-07-20, #62 — `src/nyxloom/coverage_gate.py`):
+     the gate now runs pytest under `coverage`, then fails when a changed/added *executable*
+     source line has no test hitting it. Deterministic, no LLM — would have caught the B5
+     `_attempt_scan` gap. `--fail-under` is the reliable floor coverage-% (default 100);
+     `# pragma: no cover` the escape hatch for a genuinely-unreachable line. One command
+     serves both phases: a feature branch measures its merge-base delta, a post-merge run
+     measures the merge commit's first-parent delta (empty → clean pass, never a false fail).
+     A changed line coverage deems non-executable (comment/blank) is ignored — the load-bearing
+     discriminator. `coverage[toml]` added to the `test` extra flows to tester-unified on rebuild.
   3. **`test_audit` as a 2nd turn of the frontier_review session** (folds into B6): after
      the COLD reviewer's correctness pass, a second prompt in the SAME (session-reused)
      review session audits test completeness — hollow tests, missing negatives, un-tested
