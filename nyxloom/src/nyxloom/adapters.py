@@ -433,6 +433,54 @@ def self_review_prompt(*, task_id: str, worktree: str, branch: str,
     )
 
 
+def review_resume_prompt(*, packet_path: str, attempt_id: str,
+                         gate_hint: str, spine_pointer: str | None = None) -> str:
+    """B6/P74 (D-R10): the WARM-resume frontier-review prompt.
+
+    Fed to build_resume when reviewer session-reuse resumes a PRIOR review
+    session (the ~35-40k role-contract/orientation prefix is already in that
+    session's context, so it replays from prompt cache -- the cache-hit win).
+    The warm session does NOT yet hold THIS wave's packet, so the prompt names
+    it and repeats ONLY the load-bearing output contract, terse (this goes into
+    argv; build_dispatch's cold FRONTIER_REVIEW branch is close to argv_max, so
+    the resume form stays lean and skips the full role recap the session already
+    holds).
+
+    A7 (verdict-attempt binding) is PRESERVED on the resumed session: the prompt
+    carries the NEW attempt id and requires the reviewer to stamp `(attempt
+    <id>)` on every VERDICT line, WORD-FOR-WORD the same binding the cold
+    build_dispatch prompt uses (P59b) -- the daemon counts only verdicts carrying
+    the current attempt id, so a warm session (which still contains the PRIOR
+    wave's packet and its OLD attempt id) cannot misbind a stale verdict to a new
+    task. This binding is exactly why session-reuse was blocked until A7; keeping
+    the stamp identical is the safety contract of B6."""
+    _bind = f" (attempt {attempt_id})"
+    spine_line = (
+        f"\nStanding spine digest (standing invariants/risks/reflections): read "
+        f"{spine_pointer} in the repo -- it is referenced, not inlined."
+        if spine_pointer else ""
+    )
+    return (
+        "Resume your frontier-review session for the NEXT review wave. The new "
+        f"packet is at {packet_path} (read it now -- this session does not yet "
+        "hold it). Same role and contract as your prior review in this session: "
+        "verify real git state (git state is truth, receipts lie), adversarially "
+        "check each task's diff against its handoff oracles (hollow tests, "
+        "overclaimed evidence, edge-case gaps), and re-run the declared gate "
+        f"yourself ({gate_hint}). For EACH task in the packet, write and `git "
+        "add`/`git commit` its <task>-REVIEW.md onto that task's OWN feat/ branch "
+        "(never main, never a code change), containing exactly one line "
+        f"`VERDICT: APPROVED{_bind}` or `VERDICT: REJECTED{_bind}`. The `(attempt "
+        f"{attempt_id})` suffix is REQUIRED and must be copied EXACTLY -- the "
+        "daemon binds your verdict to THIS review by that id and ignores any "
+        "verdict missing it or carrying a different id (a stale verdict from an "
+        "earlier review of the same task in this warm session). If REJECTED, also "
+        "add `REJECT_CLASS: <fixable|architectural|product>`. Finally, if ANY "
+        "task is rejected, make your FINAL output line exactly `BLOCKED: rejected "
+        f"-- <task ids and one-line reasons>`.{spine_line}"
+    )
+
+
 def probe(route: RouteDef) -> tuple[bool, str]:
     """Test route liveness via probe."""
     if route.probe is None:

@@ -324,7 +324,7 @@ from typing import Any
 
 from . import (
     adapters, backlog_items, commands, config, decision_chat, decisions, frontmatter,
-    intake_chat, leases, lint, notify, paths, reconcile, render, storage, watchdog,
+    intake_chat, leases, lint, notify, paths, reconcile, render, stages, storage, watchdog,
     wrapper,
 )
 from .config import GateDef, ProjectConfig
@@ -2105,6 +2105,22 @@ class Daemon:
                 "(no git). They will be picked up on the next reconcile pass."
             )
         lines.append("")
+        # B6/P74: the carver is the component that MAINTAINS the spine digest, and
+        # its packet references it BY POINTER (never slurps the body) when the
+        # carve stage's context declares "spine-digest". This is where carve-6-style
+        # reflections ("hollow tests dominate") stop being one-off prose and become
+        # standing, versioned reviewer/carver instructions.
+        if "spine-digest" in stages.stage_context("carve"):
+            spine_rel = f"{cfg.reports_dir}/SPINE-DIGEST.md"
+            lines.extend([
+                f"## Standing spine digest -- {spine_rel}",
+                f"Read `{spine_rel}` in this repo for the standing catalog of",
+                "invariants, recent review reflections, and open risks (referenced",
+                "by pointer, not inlined here). As part of THIS carve, MAINTAIN it:",
+                "create it if absent, and fold in what the recent reviews/merges",
+                "revealed -- keep it terse and current, not append-only sprawl.",
+                "",
+            ])
         report_rel = f"{cfg.reports_dir}/CARVE-{seq}.md"
         lines.extend([
             "## REQUIRED OUTPUT CONTRACT",
@@ -3313,6 +3329,23 @@ class Daemon:
                 "   per-task VERDICT: line in each REVIEW.md.)",
                 "",
             ]
+            # B6/P74: reference the carver-maintained spine digest BY POINTER
+            # (never slurp its body) when the frontier_review stage's context
+            # declares "spine-digest" -- standing invariants/risks/reflections at
+            # file-pointer cost, framing every task's review. The path is emitted
+            # whether or not the file exists yet (the carver creates/maintains it);
+            # the reviewer reads it from the repo, so the packet never inlines it.
+            spine_pointer = None
+            if "spine-digest" in stages.stage_context("frontier_review"):
+                spine_pointer = f"{cfg.reports_dir}/SPINE-DIGEST.md"
+                packet_lines.extend([
+                    "## Standing spine digest (read from the repo; not inlined here)",
+                    f"- {spine_pointer} -- the carver-maintained catalog of standing",
+                    "  invariants, recent review reflections, and open risks. Read it",
+                    "  in the repo for cross-cutting context; it is referenced here by",
+                    "  pointer, never pasted.",
+                    "",
+                ])
             for t in action.task_ids:
                 tsf_t = states.get(t)
                 branch = f"feat/{t}"
@@ -3394,18 +3427,43 @@ class Daemon:
             # then, the receipt-based reconcile scan (which keys on attempt_id,
             # not task) drives their exit consumption.
             for t in record_on:
+                created_payload = {"attempt": attempt.to_dict()}
+                if action.resume_session:
+                    # B6/P74: record that this review WARM-resumed a prior session
+                    # (observability + the reuse oracle) -- the daemon-set marker,
+                    # not something the agent reports.
+                    created_payload["resumed_from"] = action.resume_session
                 events.append(self._append_ev(project, cfg, states, EventType.ATTEMPT_CREATED,
-                                               {"attempt": attempt.to_dict()}, task_id=t,
+                                               created_payload, task_id=t,
                                                attempt_id=attempt_id, wave_id=wave_id))
 
             gate_hint = self._gate_hint(cfg)
             receipt_path = str(attempt_dir / "receipt.json")
-            argv, _prompt = adapters.build_dispatch(
-                route_def, handoff_path=str(packet_dir / "packet.md"), worktree=str(cfg.root),
-                branch=cfg.default_branch, task_id=first_task or wave_id or "review",
-                gate_hint=gate_hint, receipt_path=receipt_path, role=Role.FRONTIER_REVIEW,
-                attempt_id=attempt_id,  # P59b (A7): reviewer stamps this on the VERDICT line
-            )
+            packet_md = str(packet_dir / "packet.md")
+            if action.resume_session:
+                # B6/P74 (D-R10): WARM resume of a prior review session -> the
+                # ~35-40k role-contract/orientation prefix replays from prompt
+                # cache (the cache-hit win). A7 is PRESERVED: review_resume_prompt
+                # threads THIS fresh attempt_id and requires the identical
+                # `(attempt <id>)` verdict stamp the cold build_dispatch uses, so a
+                # warm session (which still holds the PRIOR wave's packet + old
+                # attempt id) cannot misbind a stale verdict -- the daemon counts
+                # only verdicts carrying the current attempt id. If the route has
+                # no resume template build_resume raises, and run_pass's per-action
+                # isolation (A10) leaves the task AWAITING_REVIEW for a later pass.
+                resume_prompt = adapters.review_resume_prompt(
+                    packet_path=packet_md, attempt_id=attempt_id,
+                    gate_hint=gate_hint, spine_pointer=spine_pointer)
+                argv = adapters.build_resume(
+                    route_def, session=action.resume_session,
+                    worktree=str(cfg.root), prompt=resume_prompt)
+            else:
+                argv, _prompt = adapters.build_dispatch(
+                    route_def, handoff_path=packet_md, worktree=str(cfg.root),
+                    branch=cfg.default_branch, task_id=first_task or wave_id or "review",
+                    gate_hint=gate_hint, receipt_path=receipt_path, role=Role.FRONTIER_REVIEW,
+                    attempt_id=attempt_id,  # P59b (A7): reviewer stamps this on the VERDICT line
+                )
             # P61 (A9): the review holds the UNION of its members' leases, so a
             # concurrent carve/dispatch cannot touch a task while it is under
             # review (dedup by lease name).

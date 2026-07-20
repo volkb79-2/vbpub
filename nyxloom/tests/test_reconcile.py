@@ -3739,3 +3739,94 @@ def test_review_rejected_unclassified_matches_pre_b4b_budget_path():
     t2 = _reject_transition(_reject_inp(fm=fm, tsf=_rejected_tsf(used_attempts=1), cfg=cfg1))
     assert t2.to == TaskState.READY_TO_CARVE
     assert "exhausted" in (t2.notes or "").lower()
+
+
+# -- B6/P74 reviewer session-reuse (D-R10) -----------------------------------
+
+def _review_reuse_input(states):
+    """Minimal ReconcileInput for exercising wave-review planning (B6)."""
+    return ReconcileInput(
+        now=utc(2026, 7, 20), cfg=make_config(), routes=make_routes(),
+        states=states, frontmatters={}, lint_clean={}, project_paused=False,
+        decisions_open=set(), merged_branches=set(), leases_free={},
+        provider_ok={}, log_quiet_seconds={}, pid_alive={}, receipts={},
+    )
+
+
+def _awaiting_task(task_id="demo-P01", wave_id="wave-2"):
+    """An AWAITING_REVIEW task, no attempts -> its wave needs a review launched."""
+    tsf = make_tsf(task_id=task_id, state=TaskState.AWAITING_REVIEW)
+    tsf.wave_id = wave_id
+    return tsf
+
+
+def _prior_review_session(task_id="demo-P00", handle="sess-rev-1"):
+    """A COMPLETED (inert) task carrying a prior wave's EXITED FRONTIER_REVIEW
+    attempt whose session_handle B6 resumes for the cache hit."""
+    rev = make_attempt(attempt_id="att-rev-1", state=AttemptState.EXITED,
+                       role=Role.FRONTIER_REVIEW)
+    rev.session_handle = handle
+    return make_tsf(task_id=task_id, state=TaskState.COMPLETED, attempts=[rev])
+
+
+def test_review_resumes_most_recent_prior_review_session():
+    """B6 2026-07-20 (P74, D-R10): when the frontier_review stage's context
+    declares "session-reuse" and a prior EXITED review session exists, the wave's
+    LaunchReview carries resume_session = that handle -- so the daemon WARM-resumes
+    it (prompt-cache hit on the ~35-40k role/orientation prefix) instead of a cold
+    build_dispatch. The prior session lives on ANY task's attempt history (reuse is
+    across waves/cycles), here an inert COMPLETED task."""
+    states = {"demo-P01": _awaiting_task(), "demo-P00": _prior_review_session()}
+    actions = plan_project(_review_reuse_input(states))
+    reviews = [a for a in actions if isinstance(a, LaunchReview)]
+    assert len(reviews) == 1
+    assert reviews[0].wave_id == "wave-2"
+    assert reviews[0].resume_session == "sess-rev-1"
+
+
+def test_review_resume_picks_the_newest_of_several_prior_sessions():
+    """Discriminator for the max-by-started selection: with two prior review
+    sessions, the WARMEST (most-recently started) handle is chosen -- an older,
+    likely cache-expired session is never preferred over a newer one."""
+    old = make_attempt(attempt_id="att-old", state=AttemptState.EXITED,
+                       role=Role.FRONTIER_REVIEW)
+    old.session_handle, old.started = "sess-OLD", utc(2026, 7, 18)
+    new = make_attempt(attempt_id="att-new", state=AttemptState.EXITED,
+                       role=Role.FRONTIER_REVIEW)
+    new.session_handle, new.started = "sess-NEW", utc(2026, 7, 20)
+    prior = make_tsf(task_id="demo-P00", state=TaskState.COMPLETED, attempts=[old, new])
+    states = {"demo-P01": _awaiting_task(), "demo-P00": prior}
+    reviews = [a for a in plan_project(_review_reuse_input(states))
+               if isinstance(a, LaunchReview)]
+    assert len(reviews) == 1
+    assert reviews[0].resume_session == "sess-NEW"
+
+
+def test_review_cold_when_no_prior_review_session_exists():
+    """Negative (cold first wave): with no EXITED review session anywhere,
+    resume_session is None -> the executor cold-dispatches, exactly as pre-B6.
+    An implementer-only attempt does NOT qualify (role filter)."""
+    impl_only = make_tsf(task_id="demo-P00", state=TaskState.COMPLETED,
+                         attempts=[make_attempt(attempt_id="att-impl",
+                                                state=AttemptState.EXITED,
+                                                role=Role.IMPLEMENTER)])
+    states = {"demo-P01": _awaiting_task(), "demo-P00": impl_only}
+    reviews = [a for a in plan_project(_review_reuse_input(states))
+               if isinstance(a, LaunchReview)]
+    assert len(reviews) == 1
+    assert reviews[0].resume_session is None
+
+
+def test_review_cold_when_stage_context_lacks_session_reuse(monkeypatch):
+    """Negative (the gate is the STAGE CONTEXT, not just "a prior session
+    exists"): with the SAME prior review session present but the frontier_review
+    stage's context stripped of "session-reuse", resume_session is None. Proves
+    B6 consults stages-as-data -- a project could compose a cold reviewer and the
+    reuse would correctly not fire. Neutering the context check would make this
+    resume the handle and fail."""
+    monkeypatch.setattr("nyxloom.reconcile.stage_context", lambda name: frozenset())
+    states = {"demo-P01": _awaiting_task(), "demo-P00": _prior_review_session()}
+    reviews = [a for a in plan_project(_review_reuse_input(states))
+               if isinstance(a, LaunchReview)]
+    assert len(reviews) == 1
+    assert reviews[0].resume_session is None

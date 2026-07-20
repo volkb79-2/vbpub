@@ -13,8 +13,8 @@ import pytest
 
 from nyxloom import stages
 from nyxloom.stages import (
-    DEFAULT_PIPELINE, PRESETS, STAGE_REGISTRY, Stage, compose,
-    effective_concurrency, validate_pipeline, validate_stage_overrides,
+    DEFAULT_PIPELINE, KNOWN_CONTEXT_FLAGS, PRESETS, STAGE_REGISTRY, Stage, compose,
+    effective_concurrency, stage_context, validate_pipeline, validate_stage_overrides,
 )
 from nyxloom.types import TaskState, TASK_TRANSITIONS, TERMINAL_TASK_STATES
 
@@ -54,6 +54,39 @@ def test_carve_stage_declares_rescope_superseded_edge():
     assert labels["rescope_superseded"] is TaskState.SUPERSEDED
     assert carve.exit_from is TaskState.READY_TO_CARVE
     assert TaskState.SUPERSEDED in TASK_TRANSITIONS[TaskState.READY_TO_CARVE]
+
+
+# --- B6/P74 packet-assembly context policy --------------------------------
+
+def test_context_flags_declared_are_known_and_frontier_reviewer_reuses():
+    """B6 2026-07-20 (P74): the packet-assembly context policy is stages-as-data.
+    Pin the two declarations B6 relies on AND the registry-consistency invariant
+    (no stage may declare a flag outside the frozen KNOWN_CONTEXT_FLAGS menu -- a
+    typo like "session_reuse" would silently disable reviewer cache reuse, so it
+    must fail loudly here). The `implement` stage carries NO context flag -- the
+    discriminating negative proving `context` is a real per-kind property, not a
+    blanket default; if every stage got the flags, reviewer-only reuse would be
+    indistinguishable from a global."""
+    assert KNOWN_CONTEXT_FLAGS == frozenset({"session-reuse", "spine-digest"})
+    # every declared flag is in the frozen menu (registry cannot drift)
+    for name, st in STAGE_REGISTRY.items():
+        assert st.context <= KNOWN_CONTEXT_FLAGS, f"{name} declares unknown flag(s): {st.context}"
+    # the two load-bearing declarations
+    assert stage_context("frontier_review") == frozenset({"session-reuse", "spine-digest"})
+    assert stage_context("carve") == frozenset({"spine-digest"})
+    # the discriminating negatives: reuse is reviewer-specific, not global
+    assert "session-reuse" not in stage_context("implement")
+    assert stage_context("implement") == frozenset()
+    assert "session-reuse" not in stage_context("auto_merge")
+
+
+def test_context_does_not_break_pipeline_closure():
+    """Adding the `context` field must not disturb the closure invariant -- every
+    shipped composition still validates (context is packet policy, orthogonal to
+    the frozen-graph closure the validator checks)."""
+    validate_pipeline(list(DEFAULT_PIPELINE))
+    for pipeline in PRESETS.values():
+        validate_pipeline(list(pipeline))
 
 
 def test_compose_default_and_preset_and_list():

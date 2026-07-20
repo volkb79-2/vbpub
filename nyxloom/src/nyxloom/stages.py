@@ -54,6 +54,18 @@ class Stage:
     # single global knob). Resolved to an int by effective_concurrency(); a
     # per-project [stage.<name>] concurrency override wins over this default.
     concurrency: int | str | None = "serial"
+    # B6/P74 packet-assembly policy (docs/spec-flow-stages.md §"Stage schema").
+    # A frozenset of CONTEXT FLAGS naming how this stage's dispatch packet is
+    # built beyond the base diff-only form. Only two are wired today (the frozen
+    # menu is KNOWN_CONTEXT_FLAGS): "session-reuse" (the reviewer resumes its warm
+    # session across a wave/cycle for prompt-cache hits, via adapters.build_resume
+    # -- reconcile plans it, the daemon executes it, and the A7 verdict-attempt
+    # binding is preserved by stamping the NEW attempt id even on a resumed
+    # session) and "spine-digest" (the packet references the carver-maintained
+    # SPINE-DIGEST.md by POINTER, never slurping its body). Default empty == the
+    # pre-B6 cold, diff-only packet. Declared per stage KIND here; a per-project
+    # override surface can be added later exactly like `concurrency`.
+    context: frozenset = frozenset()
 
 
 # The frozen menu of stage KINDS. entry_state / exit_from / exit_map / owns are
@@ -74,7 +86,11 @@ STAGE_REGISTRY: dict[str, Stage] = {
         exit_map=(("done", TaskState.CARVED),
                   ("needs_decision", TaskState.NEEDS_DECISION),
                   ("rescope_superseded", TaskState.SUPERSEDED)),
-        owns=frozenset({TaskState.READY_TO_CARVE})),
+        owns=frozenset({TaskState.READY_TO_CARVE}),
+        # B6/P74: the carve packet references SPINE-DIGEST.md by pointer AND the
+        # carver is the component that MAINTAINS it (carve-6-style reflections
+        # become standing instructions there rather than one-off prose).
+        context=frozenset({"spine-digest"})),
     "implement": Stage(
         name="implement", role=Role.IMPLEMENTER,
         entry_state=TaskState.QUEUED, exit_from=TaskState.ACTIVE,
@@ -103,7 +119,12 @@ STAGE_REGISTRY: dict[str, Stage] = {
         entry_state=TaskState.AWAITING_REVIEW, exit_from=TaskState.AWAITING_REVIEW,
         exit_map=(("approved", TaskState.MERGE_READY),
                   ("rejected", TaskState.REVIEW_REJECTED)),
-        owns=frozenset({TaskState.AWAITING_REVIEW})),
+        owns=frozenset({TaskState.AWAITING_REVIEW}),
+        # B6/P74: the reviewer resumes its warm session across a wave/cycle for
+        # prompt-cache hits (D-R10, safe now that A7 verdict-attempt binding is
+        # enforced on resumed sessions too), and its packet references the spine
+        # digest by pointer.
+        context=frozenset({"session-reuse", "spine-digest"})),
     "triage": Stage(
         name="triage", role=None,
         entry_state=TaskState.REVIEW_REJECTED, exit_from=TaskState.REVIEW_REJECTED,
@@ -260,6 +281,24 @@ def validate_pipeline(names: list[str]) -> None:
     ) or any(st.name == "auto_merge" for st in stages)
     if not reaches_terminal:
         raise ValueError("pipeline has no path to a terminal state")
+
+
+# B6/P74: the frozen menu of packet-assembly context flags (see Stage.context).
+# A stage kind may only declare flags from this set; the registry-consistency
+# test (test_stages.py) pins it so a typo like "session_reuse" fails loudly
+# rather than silently disabling the reviewer's cache reuse.
+KNOWN_CONTEXT_FLAGS: frozenset = frozenset({"session-reuse", "spine-digest"})
+
+
+def stage_context(stage_name: str) -> frozenset:
+    """The declared packet-assembly context flags for a stage KIND (B6/P74).
+
+    Pure registry read -- the flags are a property of the stage kind (like
+    exit_map), not per-project config yet, so callers (reconcile's reviewer
+    session-reuse gate, the daemon's packet builders) consult this single source
+    rather than hardcoding a stage-name check. Unknown stage names raise KeyError
+    (a programming error), matching STAGE_REGISTRY's other accessors."""
+    return STAGE_REGISTRY[stage_name].context
 
 
 def effective_concurrency(stage_name: str, overrides: dict, max_active_tasks: int) -> int:
