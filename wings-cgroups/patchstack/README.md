@@ -12,7 +12,7 @@ upstream PRs can cherry-pick, and rebases stay reviewable:
 | 0004 | `Manage per-server transient slices via systemd D-Bus` | T3b (`docker.per_server_slices`: auto-derived slices, defaults + `WINGS_CG_*` overrides, floor budget with clamp/refuse/distribute, GC; `internal/cgroups`) |
 | 0005 | `Let administrators state IO weights on BFQ's own scale` | T3b follow-up (`io_bfq_weight`/`WINGS_CG_IO_BFQ_WEIGHT`; inverts systemd's IOWeight→io.bfq.weight compression) |
 | 0006 | `Render slice property values in the units they were configured with` | log rendering only; split out because it changes user-visible output independently of any feature |
-| 0007 | `Stage per-server slice properties across server startup` | T3b follow-up (`startup_defaults`/`WINGS_CG_STARTUP_*` + `startup_grace`; transition driven by the egg's existing `startup.done` matcher via `OnStateChange`) |
+| 0007 | `Stage per-server slice properties across server startup` | T3b follow-up (`startup_defaults`/`WINGS_CG_STARTUP_*`; exits on `WINGS_CG_STEADY_MATCH` seen in console output, or `WINGS_CG_STARTUP_GRACE`/`startup_grace`. Falls back to the egg's `startup.done` matcher via `OnStateChange` when no trigger is set) |
 | 0008 | `Report configuration keys discarded while parsing` | standalone diagnostic — strict re-decode warns about unknown/misindented/duplicate keys instead of dropping them silently. No dependency on 0001–0007, and its test fixtures use only upstream-native config keys so it cherry-picks onto stock Wings. |
 
 The unrelated commit sits **last** on purpose: it makes each planned upstream PR
