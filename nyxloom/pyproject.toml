@@ -9,7 +9,7 @@ dependencies = ["PyYAML>=6", "jsonschema>=4"]
 # tester-unified SoT: nyxloom's test closure lives HERE (not duplicated in
 # a hand-maintained requirements file). The vbpub test container installs this
 # extra, so a dep change here flows to the gate on the next image rebuild.
-test = ["pytest>=8", "hypothesis>=6"]
+test = ["pytest>=8", "hypothesis>=6", "coverage[toml]>=7"]  # coverage: D-064-L2 diff-coverage gate
 
 [project.scripts]
 nyxloom = "nyxloom.cli:main"
