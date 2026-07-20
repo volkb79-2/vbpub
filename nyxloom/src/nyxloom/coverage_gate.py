@@ -134,7 +134,15 @@ def evaluate(
     A changed line counts toward the denominator only if coverage deems it
     executable (in executed ∪ missing); of those, membership in `missing` means
     uncovered. Changes to files outside `source_prefix` (tests, docs, config) are
-    ignored — the gate enforces coverage of SOURCE, not of everything touched."""
+    ignored — the gate enforces coverage of SOURCE, not of everything touched.
+
+    B63 2026-07-20 (false positive found by the gate's own run): a changed file
+    under `source_prefix` that is not PYTHON is ignored too. coverage.py measures
+    `.py` modules and nothing else, so a data file living beside the code — a
+    JSON schema, a template, a .toml fixture — can never appear in the coverage
+    report. Treating its absence as "unmeasured, therefore uncovered" flagged
+    edits to `schemas/nyxloom-config.schema.json` as a test-coverage failure, a
+    verdict no test could ever clear. Unmeasur*able* is not unmeasur*ed*."""
     prefix = os.path.normpath(source_prefix).replace(os.sep, "/")
     cov_by_norm: dict[str, dict] = {
         _rel_to_source(k, prefix): v for k, v in coverage_files.items()
@@ -147,6 +155,8 @@ def evaluate(
         npath = _rel_to_source(path, prefix)
         if not npath.startswith(prefix):
             continue  # not a source file — no coverage obligation
+        if not npath.endswith(".py"):
+            continue  # not measurable by coverage.py at all — see docstring
         cov = cov_by_norm.get(npath)
         if cov is None:
             # A source file changed but coverage never saw it. With

@@ -116,6 +116,31 @@ def test_evaluate_all_changed_lines_covered_passes():
     assert v.passed and not v.uncovered and v.pct == 100.0
 
 
+def test_evaluate_ignores_non_python_files_under_the_source_prefix():
+    """B63 2026-07-20 (false positive this gate produced on its own repo): a
+    JSON schema lives under src/nyxloom/ but coverage.py measures only .py, so
+    it can NEVER appear in the report. The unmeasured-file branch below treated
+    that absence as uncovered and failed the gate with a verdict no test could
+    clear. Unmeasurable is not unmeasured."""
+    added = {"src/nyxloom/schemas/nyxloom-config.schema.json": {79, 80}}
+    v = cg.evaluate(added, {})
+    assert v.passed
+    assert v.uncovered == {}
+    assert v.files_missing_coverage == []
+    assert v.changed_executable == 0
+
+
+def test_evaluate_still_fails_an_unmeasured_PYTHON_file_THE_NEGATIVE():
+    """The paired negative: the fix must skip only non-Python paths. A .py
+    file absent from the report is still a real unmeasured-source failure --
+    otherwise the exemption would silently swallow untested new modules."""
+    added = {"src/nyxloom/brand_new.py": {1, 2}}
+    v = cg.evaluate(added, {})
+    assert not v.passed
+    assert v.uncovered == {"src/nyxloom/brand_new.py": {1, 2}}
+    assert v.files_missing_coverage == ["src/nyxloom/brand_new.py"]
+
+
 def test_evaluate_ignores_non_executable_changed_lines_THE_DISCRIMINATOR():
     # Line 30 is a changed comment/blank: coverage lists it in NEITHER executed
     # nor missing. Editing it must NOT be an uncovered-code event.
