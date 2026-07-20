@@ -94,6 +94,56 @@ def _carves(inp: ReconcileInput) -> list[CarveDispatch]:
 
 
 # ==========================================================================
+# A policy knob has TWO homes -- the dataclass and the CFG1 schema
+# ==========================================================================
+
+# Known, PRE-EXISTING gap (not introduced by B63): http_bind is a real
+# Policy field documented as toml-settable, but absent from the schema's
+# policy properties, so a project that sets it gets a spurious CFG1 error.
+# Left alone deliberately -- whether http_bind should be toml-settable at all
+# (an env override already exists) is its own call, not a side effect of this
+# package. Listed here so the invariant below is enforceable today and the
+# gap stays visible instead of buried.
+_KNOWN_SCHEMA_GAPS = {"http_bind"}
+
+
+def test_every_policy_field_is_in_the_config_schema():
+    """The gate caught B63 adding test_health_interval_days to the Policy
+    dataclass but not to nyxloom-config.schema.json, whose policy object is
+    additionalProperties:false -- so nyxloom's OWN nyxloom.toml became
+    CFG1-invalid the moment it used the new knob. That coupling is invisible
+    at the dataclass, so pin it: any future knob fails HERE, with a message
+    naming the file to edit, instead of as a puzzling lint failure."""
+    import dataclasses
+
+    schema = json.loads(
+        (Path(reconcile.__file__).parent / "schemas" / "nyxloom-config.schema.json")
+        .read_text(encoding="utf-8"))
+    props = set(schema["properties"]["policy"]["properties"])
+    fields = {f.name for f in dataclasses.fields(Policy)}
+    missing = fields - props - _KNOWN_SCHEMA_GAPS
+    assert not missing, (
+        f"Policy field(s) {sorted(missing)} are missing from "
+        "src/nyxloom/schemas/nyxloom-config.schema.json (policy.properties). "
+        "That object is additionalProperties:false, so any project setting "
+        "them in nyxloom.toml gets a CFG1 error."
+    )
+
+
+def test_test_health_interval_days_is_schema_valid_in_the_repos_own_config():
+    """The specific instance: nyxloom's own toml sets the knob (dogfooding,
+    and what keeps it off P43's dead-stub list), so it must lint clean."""
+    import dataclasses
+
+    schema = json.loads(
+        (Path(reconcile.__file__).parent / "schemas" / "nyxloom-config.schema.json")
+        .read_text(encoding="utf-8"))
+    spec = schema["properties"]["policy"]["properties"]["test_health_interval_days"]
+    assert spec == {"type": "integer", "minimum": 0}
+    assert "test_health_interval_days" in {f.name for f in dataclasses.fields(Policy)}
+
+
+# ==========================================================================
 # Item 15 -- the cadence itself
 # ==========================================================================
 
