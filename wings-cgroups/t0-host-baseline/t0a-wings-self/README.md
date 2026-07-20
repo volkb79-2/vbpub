@@ -4,7 +4,10 @@ Puts the Wings **management process** under its own resource-controlled systemd
 slice. This is independent of everything else in this project and satisfies the
 "cgroup limits for wings itself" goal outright. Do this unconditionally.
 
-## Compose deployment (our node: `/root/ptero-wings/docker-compose.yml`)
+## Compose deployment (`<wings-compose-dir>/docker-compose.yml`)
+
+`<wings-compose-dir>` is wherever the node keeps the Wings compose file
+(commonly `/etc/pterodactyl` or a dedicated `ptero-wings` directory).
 
 1. Install the slice unit and load it:
 
@@ -20,8 +23,8 @@ slice. This is independent of everything else in this project and satisfies the
    merge the key into it):
 
    ```bash
-   cp docker-compose.override.yml /root/ptero-wings/
-   cd /root/ptero-wings && docker compose up -d --force-recreate wings
+   cp docker-compose.override.yml <wings-compose-dir>/
+   cd <wings-compose-dir> && docker compose up -d --force-recreate wings
    ```
 
 3. Verify placement:

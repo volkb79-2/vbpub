@@ -1,7 +1,14 @@
 # wings-slice-manager (T3a)
 
+> **Status: fallback / external option.** The in-Wings variant (T3b, patch
+> 0004 `docker.per_server_slices`) shipped and is the deployed architecture.
+> This daemon is what you reach for when a node's Wings stays at T2 — a build
+> not carrying 0004, a policy against giving Wings D-Bus access, or a host
+> where the properties axis must live outside the fork. On a 0004 node you do
+> **not** want both: two writers on the same slice will fight.
+
 Standalone host daemon that automates the **properties axis** for per-server
-Wings slices, keeping the Wings fork frozen at T2 size. It watches Docker,
+Wings slices while keeping the Wings fork frozen at T2 size. It watches Docker,
 reads the admin-only `WINGS_CG_*` metadata that the T2 egg variables deliver
 into each container's environment, and creates/reconciles the matching
 transient `wings-<uuid>.slice` units via the systemd D-Bus API — the
@@ -33,6 +40,13 @@ These ride in the container environment, so the game process can read them:
 **non-secret metadata only** — and they are requests, not authority; the
 daemon validates everything.
 
+**Divergence from patch 0004 — the two paths are no longer feature-identical.**
+This daemon does not implement `io_bfq_weight` / `WINGS_CG_IO_BFQ_WEIGHT`
+(patch 0005's BFQ-native 1..1000 scale; here you must pre-compress by hand
+through Rule 7's formula and set `IOWeight` to the systemd-scale number), and
+its `budget_policy` has only `clamp` and `refuse` — 0004 adds `distribute`.
+Anything written against those two features has to run on a 0004 node.
+
 ## Safety rails
 
 - **Namespace guard (hard rule):** only units matching
@@ -55,8 +69,10 @@ A freshly created container can run for a second or two before its slice has
 properties: Docker/systemd create the slice at placement time (limit-less),
 and this daemon applies properties on the create/start event (debounced 2s)
 or at the latest on the next periodic reconcile. For game servers with
-multi-second boots this window is cosmetic. The in-Wings variant (T3b) that
-closes it is deliberately upstream-RFC material, not fork code.
+multi-second boots this window is cosmetic. It is inherent to the external
+position: only the process that creates the container can have the slice ready
+first. Patch 0004 (T3b) closes it by ensuring the slice *before* the create
+call — one more reason it, not this daemon, is the default path.
 
 ## Run
 

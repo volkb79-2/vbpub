@@ -1,8 +1,15 @@
 # /etc/systemd/system/wings.slice — T1 tier slice for all Wings containers.
 # Identical role to t0b's unit; duplicated here so each tier folder is
-# self-contained. Sized for a 16 GB node; tune per host. On the current
-# single-server node you may name this soulmask.slice instead and reuse the
-# values from plan-host-resource-governance.md §3.3.
+# self-contained. Sized for a 16 GB node; tune per host. You may name the unit
+# after the workload instead (dash-free, e.g. games.slice) — the name only has
+# to match docker.cgroup_parent.
+#
+# IOWeight is NOT on the same scale as CPUWeight. systemd compresses IOWeight
+# 100..10000 into io.bfq.weight 100..1000, so IOWeight=500 buys 1.36:1, not
+# 5:1 — pairing it with CPUWeight=800 would silently ask for 8:1 on CPU and
+# 1.36:1 on IO. IOWeight=7800 yields io.bfq.weight=800, matching the CPU
+# priority. See ../CGROUP-SEMANTICS.md Rule 7 for the conversion formula and
+# the measured table.
 [Unit]
 Description=Wings game server tier slice
 
@@ -11,7 +18,7 @@ MemoryMin=8G
 MemoryLow=12G
 MemoryHigh=14G
 CPUWeight=800
-IOWeight=500
+IOWeight=7800
 
 [Install]
 WantedBy=multi-user.target

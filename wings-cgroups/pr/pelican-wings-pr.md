@@ -3,6 +3,11 @@
 > **Status: DRAFT — not submitted.** Patches: `../patchstack/patches/pelican-main/`
 > (0001+0002; include 0003 tests at maintainers' preference).
 > Submit with: fork pelican-dev/wings → push `cgroup/main` → open PR. See `README.md` here.
+>
+> Sections through "Security notes" are the body of **PR 2** (placement). The
+> trailing "Relationship to the existing `io_weight`" section belongs to the
+> stacked **PR 3** (0004+0005, per-server slices) and should open that PR body,
+> not this one.
 
 **Title:** `Add cgroup parent support: node-wide docker.cgroup_parent + optional per-server override`
 
@@ -76,3 +81,64 @@ slice units and their resource properties remain host/operator concerns.
   slice name only; docs say non-secret metadata only.
 - A compromised panel payload cannot place a server outside the operator's
   allowlist/namespace (`system.slice` etc. are rejected).
+
+---
+
+## Relationship to the existing `io_weight` (PR 3)
+
+*This section belongs at the top of the stacked per-server-slices PR. Raising it
+first because it is the one place this series visibly overlaps code you already
+ship, and because it ends in a naming question only maintainers can settle.*
+
+Wings already has a per-server IO weight: `environment/settings.go` declares
+`IoWeight uint16` ("a value between 10 and 1000"), applied as
+`resources.BlkioWeight` and guarded by `blkioWeightSupported()`. It is
+panel-supplied, per-server, and lands on the **container scope**.
+
+That knob works, and this series does not replace or fix it. Verified
+empirically on a cgroup-v2 + BFQ host with the systemd cgroup driver:
+`docker run --blkio-weight 700` produced, on that container's scope,
+
+```
+io.bfq.weight = 700
+io.weight     = 100   # unchanged default
+```
+
+so runc writes BFQ's own file directly, on BFQ's own 1..1000 scale — no
+compression, nothing broken.
+
+After this series a node has **three** IO-weight knobs:
+
+| key | set by | scale | applied to | via |
+|---|---|---|---|---|
+| `io_weight` (existing) | panel, per server | 10..1000, BFQ scale | container **scope** | runc → `io.bfq.weight` |
+| `docker.per_server_slices.defaults.io_weight` (new) | node admin | 1..10000, systemd `IOWeight` scale | per-server **slice** | systemd → `io.bfq.weight`, compressed ~11x |
+| `io_bfq_weight` (new) | node admin | 1..1000, BFQ scale | per-server **slice** | systemd `IOWeight`, pre-divided so the compression cancels |
+
+They are complementary rather than redundant: cgroup-v2 weights are relative
+among siblings at each level, so a scope-level weight settles containers against
+each other *under one slice*, while a slice-level weight settles slices against
+each other *under the node tier* — the two compose multiplicatively into the
+effective share, and neither can express the other's decision.
+
+The problem is the name, not the mechanism: two of the three are called
+`io_weight` while meaning different scales at different levels of the hierarchy.
+An operator who reads "IO weight 1000" in the panel and writes `io_weight: 1000`
+in `config.yml` has set two different things, one of which does not mean what
+the number suggests. We would rather fix this before merge than after.
+
+Our suggestion — offered as a question, not a decision — is to rename the
+slice-level systemd-scale key to something unambiguous, e.g.
+`io_weight_systemd`, and keep `io_bfq_weight` as-is since it already names its
+scale. **Which key names do you want?** We will rename to whatever you prefer;
+none of these keys have shipped, so there is no compatibility cost to getting it
+right now.
+
+One smaller observation while in this code: `blkioWeightSupported()` probes for
+the existence of `io.weight` — the iocost controller's file — to decide whether
+BFQ weighting is available, which is unrelated to the path runc actually takes
+(`io.bfq.weight`). On the host tested, `/sys/fs/cgroup/system.slice/io.weight`
+did not exist while `/sys/fs/cgroup/io.weight` did, so the probe passed via its
+fallback path. We have not found a host where it wrongly returns false, so this
+is not a reported bug — just a check against a file unrelated to the mechanism
+it gates, which looks incidental.

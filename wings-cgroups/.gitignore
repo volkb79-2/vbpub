@@ -2,3 +2,4 @@
 # patchstack/patches/ is the canonical, committed representation of our changes.
 build/
 *.log
+test/e2e-systemd/artifacts/

@@ -13,8 +13,9 @@ set -e
 echo "=== go build ===" && go build ./...
 echo "=== go vet (strict, minus known-dirty upstream pkgs) ==="
 go vet $(go list ./... | grep -v -E "'"$VET_EXCLUDE_RE"'")
-echo "=== go test ===" && go test ./config/... ./environment/... ./server/...
+echo "=== go test ===" && go test ./config/... ./environment/... ./server/... ./internal/cgroups/...
 echo "=== integration compile check ===" && go vet -tags dockerintegration ./environment/docker/
+go vet -tags systemdintegration ./internal/cgroups/
 '
 if [[ "${INTEGRATION:-0}" == "1" ]]; then
     CMD+='

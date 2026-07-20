@@ -1,0 +1,369 @@
+From 7df70236206111865916013b4312949aad4c2e25 Mon Sep 17 00:00:00 2001
+From: Volker Badziong <development@richtfest.tech>
+Date: Fri, 17 Jul 2026 10:40:51 +0000
+Subject: [PATCH 5/6] Let administrators state IO weights on BFQ's own scale
+
+IOWeight= is a deeply unintuitive knob on any node using BFQ, which is the
+only scheduler most deployments have that implements proportional IO
+control at all.
+
+BFQ keeps its weight in io.bfq.weight on a 1..1000 scale and does not read
+io.weight -- that file belongs to the iocost controller, inert unless
+io.cost.model/io.cost.qos are configured. systemd bridges the gap by
+deriving io.bfq.weight from IOWeight, compressing 100..10000 into
+100..1000. Ratios above the default therefore shrink by ~11x: IOWeight=1000
+yields io.bfq.weight=181, i.e. 1.81x against a default sibling rather than
+the 10x it reads like, and a genuine 5x needs IOWeight=4500. Nothing
+surfaces this -- io.weight faithfully reads back the ineffective number
+that was written.
+
+Add io_bfq_weight / WINGS_CG_IO_BFQ_WEIGHT stating the weight on BFQ's
+scale, converted to the equivalent IOWeight and applied as an ordinary
+systemd property. systemd's divisor is exactly 1/11, so the round trip is
+exact for every weight in 1..1000. Writing io.bfq.weight directly would be
+the obvious alternative and is a trap: systemd re-derives that file from
+IOWeight whenever it re-applies the unit's IO settings, silently clobbering
+the raw value -- the same class of bug this package exists to avoid.
+
+The two spellings drive one property and are mutually exclusive; setting
+both is reported rather than resolved by guessing. Slice property logs now
+name the derived io.bfq.weight so the effective weight is visible without
+knowing the mapping exists.
+
+Expected values verified against a live systemd 257 / Linux 7.0 node.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ config/config_docker.go      |  25 +++++---
+ internal/cgroups/bfq_test.go | 105 +++++++++++++++++++++++++++++++
+ internal/cgroups/cgroups.go  | 118 ++++++++++++++++++++++++++++++++---
+ 3 files changed, 233 insertions(+), 15 deletions(-)
+ create mode 100644 internal/cgroups/bfq_test.go
+
+diff --git a/config/config_docker.go b/config/config_docker.go
+index ea1f01c..4ba4369 100644
+--- a/config/config_docker.go
++++ b/config/config_docker.go
+@@ -160,7 +160,17 @@ type DockerSliceDefaults struct {
+ 	MemoryHigh string `default:"" json:"memory_high" yaml:"memory_high"`
+ 	MemoryMax  string `default:"" json:"memory_max" yaml:"memory_max"`
+ 	CPUWeight  uint64 `default:"0" json:"cpu_weight" yaml:"cpu_weight"`
+-	IOWeight   uint64 `default:"0" json:"io_weight" yaml:"io_weight"`
++
++	// IOWeight is systemd's IOWeight= scale (1..10000, default 100).
++	IOWeight uint64 `default:"0" json:"io_weight" yaml:"io_weight"`
++
++	// IOBFQWeight states the same setting on BFQ's own scale (1..1000,
++	// default 100) and is converted to the equivalent IOWeight. Prefer it on
++	// BFQ nodes: systemd compresses IOWeight into BFQ's range, so io_weight
++	// ratios above 100 shrink by ~11x and the number you write is not the one
++	// that schedules (io_weight 1000 => io.bfq.weight 181). Mutually exclusive
++	// with IOWeight — both drive the same systemd property.
++	IOBFQWeight uint64 `default:"0" json:"io_bfq_weight" yaml:"io_bfq_weight"`
+ }
+ 
+ // PerServerSlicesConfiguration configures automatic per-server slice
+@@ -391,12 +401,13 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
+ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
+ 	d := c.PerServerSlices.Defaults
+ 	return cgroups.Defaults{
+-		MemoryMin:  d.MemoryMin,
+-		MemoryLow:  d.MemoryLow,
+-		MemoryHigh: d.MemoryHigh,
+-		MemoryMax:  d.MemoryMax,
+-		CPUWeight:  d.CPUWeight,
+-		IOWeight:   d.IOWeight,
++		MemoryMin:   d.MemoryMin,
++		MemoryLow:   d.MemoryLow,
++		MemoryHigh:  d.MemoryHigh,
++		MemoryMax:   d.MemoryMax,
++		CPUWeight:   d.CPUWeight,
++		IOWeight:    d.IOWeight,
++		IOBFQWeight: d.IOBFQWeight,
+ 	}
+ }
+ 
+diff --git a/internal/cgroups/bfq_test.go b/internal/cgroups/bfq_test.go
+new file mode 100644
+index 0000000..8fbce6b
+--- /dev/null
++++ b/internal/cgroups/bfq_test.go
+@@ -0,0 +1,105 @@
++package cgroups
++
++import "testing"
++
++// The expected io.bfq.weight values were measured on a live systemd 257 /
++// Linux 7.0 node by stepping IOWeight= on a transient slice and reading
++// io.bfq.weight back. Note systemd truncates rather than rounds: IOWeight=1000
++// yields 181, not 182.
++func TestBFQFromIOWeight(t *testing.T) {
++	for _, tt := range []struct{ io, bfq uint64 }{
++		{1, 1},
++		{10, 10},
++		{100, 100},
++		{200, 109},
++		{500, 136},
++		{1000, 181},
++		{4500, 500},
++		{4950, 540},
++		{10000, 1000},
++	} {
++		if got := BFQFromIOWeight(tt.io); got != tt.bfq {
++			t.Errorf("BFQFromIOWeight(%d) = %d, want %d (measured on a live node)", tt.io, got, tt.bfq)
++		}
++	}
++}
++
++// systemd's divisor 900/9900 is exactly 1/11, so stating a BFQ weight and
++// converting it to an IOWeight must land back on the same BFQ weight for every
++// value in range — no rounding drift anywhere.
++func TestIOWeightFromBFQRoundTripsExactly(t *testing.T) {
++	for bfq := uint64(BFQWeightMin); bfq <= BFQWeightMax; bfq++ {
++		io := IOWeightFromBFQ(bfq)
++		if io < 1 || io > 10000 {
++			t.Fatalf("IOWeightFromBFQ(%d) = %d, outside systemd's 1..10000", bfq, io)
++		}
++		if got := BFQFromIOWeight(io); got != bfq {
++			t.Errorf("round trip bfq %d -> IOWeight %d -> bfq %d", bfq, io, got)
++		}
++	}
++}
++
++func TestIOWeightFromBFQKnownPoints(t *testing.T) {
++	for _, tt := range []struct{ bfq, io uint64 }{
++		{10, 10},      // at or below the default: identity
++		{100, 100},    // the default maps to the default
++		{500, 4500},   // a true 5x against a default sibling
++		{800, 7800},   // parity with a cpu.weight of 800
++		{1000, 10000}, // BFQ's max is systemd's max
++	} {
++		if got := IOWeightFromBFQ(tt.bfq); got != tt.io {
++			t.Errorf("IOWeightFromBFQ(%d) = %d, want %d", tt.bfq, got, tt.io)
++		}
++	}
++}
++
++func TestFromEnvIOBFQWeight(t *testing.T) {
++	// Stated on BFQ's scale, applied as the equivalent IOWeight.
++	props, errs := FromEnv([]string{"WINGS_CG_IO_BFQ_WEIGHT=500"})
++	if len(errs) != 0 {
++		t.Fatalf("unexpected errors: %v", errs)
++	}
++	if props.IOWeight == nil || *props.IOWeight != 4500 {
++		t.Fatalf("IOWeight = %v, want 4500 (= bfq 500)", props.IOWeight)
++	}
++
++	// Out of BFQ's range.
++	if _, errs = FromEnv([]string{"WINGS_CG_IO_BFQ_WEIGHT=5000"}); len(errs) == 0 {
++		t.Error("bfq weight 5000 is out of range 1..1000 and must be rejected")
++	}
++
++	// Both spellings drive one property: refuse to guess which was meant.
++	props, errs = FromEnv([]string{"WINGS_CG_IO_WEIGHT=500", "WINGS_CG_IO_BFQ_WEIGHT=500"})
++	if len(errs) == 0 {
++		t.Error("io_weight + io_bfq_weight together must be reported")
++	}
++	if props.IOWeight != nil {
++		t.Errorf("conflicting IO weights must apply neither, got %v", props.IOWeight)
++	}
++}
++
++func TestDefaultsIOBFQWeight(t *testing.T) {
++	props, errs := Defaults{IOBFQWeight: 800}.Props()
++	if len(errs) != 0 {
++		t.Fatalf("unexpected errors: %v", errs)
++	}
++	if props.IOWeight == nil || *props.IOWeight != 7800 {
++		t.Fatalf("IOWeight = %v, want 7800 (= bfq 800)", props.IOWeight)
++	}
++
++	if _, errs = (Defaults{IOWeight: 500, IOBFQWeight: 500}).Props(); len(errs) == 0 {
++		t.Error("io_weight + io_bfq_weight together must be reported")
++	}
++	if _, errs = (Defaults{IOBFQWeight: 1001}).Props(); len(errs) == 0 {
++		t.Error("bfq weight 1001 must be rejected")
++	}
++}
++
++// The derived value belongs in the log: it is what BFQ schedules on, and it is
++// never the number the administrator wrote.
++func TestPropsStringShowsDerivedBFQWeight(t *testing.T) {
++	w := uint64(4500)
++	if got := (Props{IOWeight: &w}).String(); got != "IOWeight=4500(io.bfq.weight=500)" {
++		t.Errorf("String() = %q", got)
++	}
++}
+diff --git a/internal/cgroups/cgroups.go b/internal/cgroups/cgroups.go
+index 5498002..fddcdbe 100644
+--- a/internal/cgroups/cgroups.go
++++ b/internal/cgroups/cgroups.go
+@@ -31,14 +31,65 @@ import (
+ // they must only ever carry non-secret resource metadata. Wings does not trust
+ // them: every value is parsed, validated and budget-checked before use.
+ const (
+-	EnvMemoryMin  = "WINGS_CG_MEMORY_MIN"
+-	EnvMemoryLow  = "WINGS_CG_MEMORY_LOW"
+-	EnvMemoryHigh = "WINGS_CG_MEMORY_HIGH"
+-	EnvMemoryMax  = "WINGS_CG_MEMORY_MAX"
+-	EnvCPUWeight  = "WINGS_CG_CPU_WEIGHT"
+-	EnvIOWeight   = "WINGS_CG_IO_WEIGHT"
++	EnvMemoryMin   = "WINGS_CG_MEMORY_MIN"
++	EnvMemoryLow   = "WINGS_CG_MEMORY_LOW"
++	EnvMemoryHigh  = "WINGS_CG_MEMORY_HIGH"
++	EnvMemoryMax   = "WINGS_CG_MEMORY_MAX"
++	EnvCPUWeight   = "WINGS_CG_CPU_WEIGHT"
++	EnvIOWeight    = "WINGS_CG_IO_WEIGHT"
++	EnvIOBFQWeight = "WINGS_CG_IO_BFQ_WEIGHT"
+ )
+ 
++// BFQ weight bounds. BFQ keeps its own per-cgroup weight in io.bfq.weight on a
++// 1..1000 scale and does NOT read io.weight — that file belongs to the iocost
++// controller, which is inert unless io.cost.model/io.cost.qos are configured.
++// Since BFQ is the only scheduler implementing proportional IO control on most
++// deployments, io.bfq.weight is usually the only IO weight that schedules
++// anything.
++//
++// systemd bridges the two: IOWeight= writes io.weight and *derives*
++// io.bfq.weight from it, compressing 100..10000 into 100..1000:
++//
++//	io.bfq.weight = w                            for w <= 100
++//	io.bfq.weight = 100 + (w-100)*900/9900       for w > 100
++//
++// Ratios above the default therefore shrink by ~11x, which makes IOWeight a
++// deeply unintuitive knob: IOWeight=1000 buys 1.81x against a default sibling,
++// not 10x. A genuine 5x needs IOWeight=4500.
++const (
++	BFQWeightMin     = 1
++	BFQWeightMax     = 1000
++	BFQWeightDefault = 100
++)
++
++// IOWeightFromBFQ inverts systemd's conversion, so an administrator can state
++// the BFQ weight they actually want instead of reverse-engineering the
++// IOWeight that happens to produce it. 900/9900 is exactly 1/11, so the round
++// trip is exact for every BFQ weight in 1..1000 (1000 maps to IOWeight=10000,
++// the top of systemd's range).
++//
++// The result is applied as an ordinary IOWeight property, which keeps every
++// value systemd-owned and reload-safe. Writing io.bfq.weight directly would be
++// the obvious alternative and is a trap: systemd re-derives that file from
++// IOWeight whenever it (re-)applies the unit's IO settings, silently
++// overwriting the raw value.
++func IOWeightFromBFQ(bfq uint64) uint64 {
++	if bfq <= BFQWeightDefault {
++		return bfq
++	}
++	return BFQWeightDefault + (bfq-BFQWeightDefault)*11
++}
++
++// BFQFromIOWeight reproduces systemd's conversion, i.e. what io.bfq.weight will
++// hold once IOWeight is applied. Used for logging, so the effective weight is
++// visible without an administrator having to know the mapping exists.
++func BFQFromIOWeight(w uint64) uint64 {
++	if w <= BFQWeightDefault {
++		return w
++	}
++	return BFQWeightDefault + (w-BFQWeightDefault)*900/9900
++}
++
+ // Props are the systemd slice properties requested for a per-server slice.
+ // Nil means "not requested": the slice keeps whatever systemd default or
+ // previously-set value applies to that property.
+@@ -76,6 +127,13 @@ func (p Props) String() string {
+ 	add("MemoryMax", p.MemoryMax)
+ 	add("CPUWeight", p.CPUWeight)
+ 	add("IOWeight", p.IOWeight)
++	// Spell out the derived BFQ weight: on a BFQ node that is the value which
++	// actually schedules, and it is not the one the administrator wrote.
++	if p.IOWeight != nil {
++		b.WriteString("(io.bfq.weight=")
++		b.WriteString(strconv.FormatUint(BFQFromIOWeight(*p.IOWeight), 10))
++		b.WriteByte(')')
++	}
+ 	if b.Len() == 0 {
+ 		return "(none)"
+ 	}
+@@ -112,7 +170,8 @@ func FromEnv(env []string) (props Props, errs []error) {
+ 			continue
+ 		}
+ 		switch k {
+-		case EnvMemoryMin, EnvMemoryLow, EnvMemoryHigh, EnvMemoryMax, EnvCPUWeight, EnvIOWeight:
++		case EnvMemoryMin, EnvMemoryLow, EnvMemoryHigh, EnvMemoryMax,
++			EnvCPUWeight, EnvIOWeight, EnvIOBFQWeight:
+ 			vals[k] = v
+ 		}
+ 	}
+@@ -134,6 +193,20 @@ func FromEnv(env []string) (props Props, errs []error) {
+ 	set(EnvMemoryMax, &props.MemoryMax, ParseSize)
+ 	set(EnvCPUWeight, &props.CPUWeight, ParseWeight)
+ 	set(EnvIOWeight, &props.IOWeight, ParseWeight)
++	// Expressed on BFQ's own scale and converted to the equivalent IOWeight, so
++	// both spellings drive the single systemd property (see IOWeightFromBFQ).
++	set(EnvIOBFQWeight, &props.IOWeight, func(s string) (uint64, error) {
++		bfq, err := ParseBFQWeight(s)
++		if err != nil {
++			return 0, err
++		}
++		return IOWeightFromBFQ(bfq), nil
++	})
++	if vals[EnvIOWeight] != "" && vals[EnvIOBFQWeight] != "" {
++		errs = append(errs, errors.New(EnvIOBFQWeight+" conflicts with "+EnvIOWeight+
++			": both set the same systemd IOWeight property, so set only one"))
++		props.IOWeight = nil
++	}
+ 	return props, errs
+ }
+ 
+@@ -146,7 +219,11 @@ type Defaults struct {
+ 	MemoryHigh string
+ 	MemoryMax  string
+ 	CPUWeight  uint64
+-	IOWeight   uint64
++	// IOWeight is the systemd scale (1..10000); IOBFQWeight is BFQ's own
++	// (1..1000) and is converted to the equivalent IOWeight. They are mutually
++	// exclusive — both drive the same property.
++	IOWeight    uint64
++	IOBFQWeight uint64
+ }
+ 
+ // Props parses the defaults into a property set. Invalid entries are reported
+@@ -181,6 +258,19 @@ func (d Defaults) Props() (props Props, errs []error) {
+ 	}
+ 	setW("cpu_weight", d.CPUWeight, &props.CPUWeight)
+ 	setW("io_weight", d.IOWeight, &props.IOWeight)
++	if d.IOBFQWeight != 0 {
++		switch {
++		case d.IOWeight != 0:
++			errs = append(errs, errors.New("io_bfq_weight conflicts with io_weight: "+
++				"both set the same systemd IOWeight property, so set only one"))
++			props.IOWeight = nil
++		case d.IOBFQWeight > BFQWeightMax:
++			errs = append(errs, errors.New("io_bfq_weight: weight out of range 1..1000"))
++		default:
++			v := IOWeightFromBFQ(d.IOBFQWeight)
++			props.IOWeight = &v
++		}
++	}
+ 	return props, errs
+ }
+ 
+@@ -221,3 +311,15 @@ func ParseWeight(s string) (uint64, error) {
+ 	}
+ 	return n, nil
+ }
++
++// ParseBFQWeight parses a BFQ cgroup weight (1..1000).
++func ParseBFQWeight(s string) (uint64, error) {
++	n, err := strconv.ParseUint(strings.TrimSpace(s), 10, 64)
++	if err != nil {
++		return 0, errors.New("invalid bfq weight " + strconv.Quote(s))
++	}
++	if n < BFQWeightMin || n > BFQWeightMax {
++		return 0, errors.New("bfq weight " + strconv.FormatUint(n, 10) + " out of range 1..1000")
++	}
++	return n, nil
++}
+-- 
+2.55.0
+

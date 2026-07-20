@@ -12,8 +12,9 @@ Usage:
   wingsctl.py logs   <uuid> [lines]         # recent console output
 
 Options (all commands):
-  --url URL       wings base URL (default: env WINGS_URL or
-                  https://wings.gstammtisch.dchive.de — the traefik route)
+  --url URL       wings base URL (default: env WINGS_URL, else
+                  https://127.0.0.1:8080). Point it at the node's public
+                  route if you are not running this on the node itself.
   --config PATH   wings config.yml (default: /etc/pterodactyl/config.yml)
   --insecure      skip TLS verification (only if the cert chain is broken)
 
@@ -32,7 +33,7 @@ import sys
 import urllib.error
 import urllib.request
 
-DEFAULT_URL = os.environ.get("WINGS_URL", "https://wings.gstammtisch.dchive.de")
+DEFAULT_URL = os.environ.get("WINGS_URL", "https://127.0.0.1:8080")
 DEFAULT_CONFIG = "/etc/pterodactyl/config.yml"
 
 

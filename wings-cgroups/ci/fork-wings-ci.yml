@@ -23,10 +23,15 @@ jobs:
         run: go build ./...
 
       - name: Vet (packages touched by the patch series must be clean)
-        run: go vet ./config/... ./cmd/... ./environment/...
+        run: go vet ./config/... ./cmd/... ./environment/... ./internal/cgroups/...
 
       - name: Unit tests
-        run: go test ./config/... ./environment/... ./server/...
+        run: go test ./config/... ./environment/... ./server/... ./internal/cgroups/...
+
+      - name: Integration tests compile (build-tagged, not run here)
+        run: |
+          go vet -tags dockerintegration ./environment/docker/
+          go vet -tags systemdintegration ./internal/cgroups/
 
       - name: Docker integration tests (create-only; driver-agnostic)
         run: go test -tags dockerintegration -count=1 -v ./environment/docker/ -run "Cgroup|Override|Default"

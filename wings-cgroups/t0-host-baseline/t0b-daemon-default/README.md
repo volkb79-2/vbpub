@@ -5,9 +5,10 @@ places every container it creates under `wings.slice`. Gives the whole game
 tier a real, arithmetically effective `MemoryMin` floor plus ceilings/weights
 and per-tier PSI — with stock, unpatched Wings.
 
-**Do NOT use on mixed-use hosts** (like the current 16 GB case-study node):
-every non-Wings container on the same daemon would land under `wings.slice`
-too. That host should use T1 instead.
+**Do NOT use on mixed-use hosts** — any node whose Docker daemon also runs
+non-Wings containers: every one of them would land under `wings.slice` too,
+drawing on a floor budget sized for the game tier. Such a host should use T1
+instead.
 
 ## Setup
 

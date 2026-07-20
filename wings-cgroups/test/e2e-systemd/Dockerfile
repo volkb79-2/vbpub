@@ -27,6 +27,9 @@ RUN mkdir -p /etc/docker && printf '%s\n' \
     > /etc/docker/daemon.json
 
 COPY --from=wsm-build /out/ /usr/local/bin/
+# Pre-compiled wings internal/cgroups integration test binary (see run-e2e.sh);
+# the directory may be empty, in which case the inner test SKIPs the section.
+COPY test/e2e-systemd/artifacts/ /usr/local/bin/
 COPY test/e2e-systemd/inner-test.sh /usr/local/bin/inner-test.sh
 RUN chmod +x /usr/local/bin/inner-test.sh
 

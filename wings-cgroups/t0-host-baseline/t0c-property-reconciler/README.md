@@ -16,7 +16,9 @@ slices and Docker container scopes via `systemctl set-property` — the
 
 Role in the ladder: interim hardening of the current watcher approach, and the
 property-owner companion to T1/T2 for values not carried by static slice units.
-Superseded by the T3a slice-manager daemon.
+Superseded by patch 0004 (T3b), which does this inside Wings on per-server
+slices; the T3a slice-manager daemon is itself now only the external fallback
+for nodes that stay at T2.
 
 ## Usage
 

@@ -14,6 +14,24 @@ if ! docker run --rm --privileged busybox true >/dev/null 2>&1; then
     exit 0
 fi
 
+# Pre-compile the wings internal/cgroups integration test binary (patch 0004)
+# from the patched clone; build/ is excluded from the image context, so the
+# binary is handed in as an artifact. Missing clone -> section is SKIPped.
+ART="$HERE/artifacts"
+mkdir -p "$ART" && rm -f "$ART/cgroups.test"
+if [[ -d "$PROJECT/build/wings-pterodactyl" ]]; then
+    echo "== compiling wings internal/cgroups integration test binary =="
+    # shellcheck source=../../patchstack/scripts/common.sh
+    source "$PROJECT/patchstack/scripts/common.sh"
+    resolve_target pterodactyl
+    go_in_container "$SRC_DIR" \
+        "CGO_ENABLED=0 go test -c -tags systemdintegration -o /tmp/cgroups.test ./internal/cgroups/ 1>&2 && cat /tmp/cgroups.test" \
+        > "$ART/cgroups.test"
+    chmod +x "$ART/cgroups.test"
+else
+    echo "NOTE: build/wings-pterodactyl missing; wings cgroups integration section will be SKIPped"
+fi
+
 echo "== building e2e image (context tar-piped: paths here are not daemon-mountable) =="
 tar -C "$PROJECT" --exclude='build' --exclude='.git' -cf - . \
     | docker build -q -t "$IMG" -f test/e2e-systemd/Dockerfile - \

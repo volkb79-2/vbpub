@@ -125,6 +125,20 @@ EOF
     kill "$WSM_PID" 2>/dev/null
 fi
 
+section "4. wings internal/cgroups integration (patch 0004: D-Bus lifecycle, budget, GC)"
+if [[ ! -x /usr/local/bin/cgroups.test ]]; then
+    echo "  SKIP: cgroups.test binary not in image (build/wings-pterodactyl absent at harness build)"
+else
+    if /usr/local/bin/cgroups.test -test.v -test.run TestSliceLifecycleIntegration \
+        > /var/log/cgroups-test.log 2>&1; then
+        pass "wings internal/cgroups integration test"
+        grep -E '^(=== RUN|--- (PASS|FAIL))' /var/log/cgroups-test.log | sed 's/^/  /'
+    else
+        fail "wings internal/cgroups integration test"
+        tail -40 /var/log/cgroups-test.log
+    fi
+fi
+
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "E2E: ALL PASS"; else echo "E2E: $FAILS FAILURE(S)"; fi
 exit "$FAILS"

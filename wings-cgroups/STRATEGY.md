@@ -1,10 +1,11 @@
 # Slices/cgroups for Pterodactyl/Pelican — fresh tiered proposal and deployment strategy
 
 Date: 2026-07-15 (updated 2026-07-17: T3b implemented as patch 0004; doc moved
-into the implementation project — it started life in `scripts/gstammtisch-guide/`)
-Status: implemented through T3b — this project (`wings-cgroups/`) is the
-realization of this strategy; §T3b and the decision matrix reflect the shipped
-patch series.
+into the implementation project — it started life in `../scripts/gstammtisch-guide/`)
+Status: implemented through T3b and rolled out — this project (`wings-cgroups/`)
+is the realization of this strategy; §T3b and the decision matrix reflect the
+shipped six-commit patch series, deployed on the case-study node 2026-07-17 with
+all six slice properties verified effective in cgroupfs.
 
 Companion documents (verified details live there, not restated here):
 
@@ -39,8 +40,9 @@ workaround, see T0).
 **Axis 2 — Properties.** What floors/ceilings/weights (`MemoryMin`, `MemoryLow`,
 `MemoryHigh`, `CPUWeight`, `IOWeight`, zswap knobs) exist on the slices in the
 ancestor chain? These are **pure host-side systemd state** — unit files,
-`systemctl set-property`, or D-Bus transient-unit properties. They need **no Wings
-code and no Panel code, ever**. The only design questions are who writes them
+`systemctl set-property`, or D-Bus transient-unit properties. They need **no Panel
+code, ever**, and no Wings code in principle — T3b puts them in Wings by choice,
+not by necessity. The only design questions are who writes them
 (sysadmin/IaC, an external reconciler, Wings itself, or eventually the panel) and
 whether they are reload-safe (systemd-owned values are; raw cgroupfs writes are
 wiped by any `daemon-reload` — Finding D, proven live).
@@ -68,8 +70,8 @@ It is handled explicitly here so it doesn't get lost.
 
 ### T0a. Limits for Wings itself — already fully solvable
 
-Wings runs either as a docker-compose service (our node) or as a native systemd
-service. Both cases are closed problems:
+Wings runs either as a docker-compose service (as on the case-study node) or as a
+native systemd service. Both cases are closed problems:
 
 - **Compose deployment:** the compose spec supports `cgroup_parent:` per service.
   Add to the wings service in the node's `docker-compose.yml`:
@@ -98,7 +100,7 @@ daemon creates — server containers, installer containers, everything — lands
 that slice, with no Wings changes at all.
 
 The earlier review rejected this (Option G, "too broad: affects unrelated Docker
-workloads"). That is correct **for our mixed-use case-study host** (dev/test stacks
+workloads"). That is correct **for a mixed-use host** such as the case-study node (dev/test stacks
 share the daemon) — but it is wrong as a general verdict. On a **dedicated Wings
 node** — which is what every multi-node game host actually runs — "all containers
 on this daemon" and "all Wings workloads" are the same set, minus the Wings
@@ -119,7 +121,7 @@ slices) is out.
 
 Verdict: **the correct baseline for dedicated nodes while unpatched upstream Wings
 is in use**, and a fine permanent answer for operators who only need tier-level
-guarantees. Not sufficient for our mixed host or for per-server floors.
+guarantees. Not sufficient for a mixed-use host or for per-server floors.
 
 ### T0c. Host-side property reconciler (`set-property`) — the current watcher, hardened
 
@@ -131,7 +133,7 @@ project.
 Hard limit: it cannot fix placement. On a shared node, scopes stay under
 `system.slice`, so per-server *floors* remain arithmetically dead; only ceilings
 (`MemoryHigh`/`Max`) and weights work. That is exactly the compensating role the
-current Soulmask watcher plays. Keep it as the property-owner for T1/T2 below; stop
+legacy watcher plays. Keep it as the property-owner for T1/T2 below; stop
 expecting floors from it alone.
 
 **T0 summary:** do T0a now unconditionally. T0b is the right zero-fork baseline
@@ -150,7 +152,7 @@ Properties stay host-owned (static slice units + T0c for residuals).
 - Capability: everything T0b gives, but works on **shared** nodes (only
   Wings-created containers move; dev/test workloads untouched) and per-node choice
   without touching the Docker daemon.
-- On a single-game-server node (ours), the per-node slice *is* the per-server
+- On a single-game-server node, the per-node slice *is* the per-server
   slice — full floors/ceilings for the game, today.
 - Fork burden: 4 files, stable touch points (`Create()`, installer `Execute()`,
   config struct, startup validation). The cheapest possible recurring rebase.
@@ -212,10 +214,11 @@ A small standalone host service (own repo, no fork of anything):
 Trade-offs, honestly:
 
 - **Pro:** the Wings patch never grows beyond T2 (~250 lines) — the entire D-Bus /
-  budget / lifecycle complexity lives outside the fork, ships on our schedule,
+  budget / lifecycle complexity lives outside the fork, ships on its own schedule,
   is testable in isolation, and works identically under Pterodactyl Wings, Pelican
   Wings, or a future merged upstream. Root-equivalent D-Bus power is confined to a
-  ~500-line auditable daemon instead of being added to Wings' surface.
+  ~1100-line auditable daemon (plus ~600 lines of tests) instead of being added
+  to Wings' surface.
 - **Con:** a startup race — the container can exist for a second or two before its
   slice has properties (the slice *name* exists immediately as a limit-less
   transient slice created by systemd on placement; the reconciler then sets
@@ -232,8 +235,9 @@ container create/start, and removes it on server delete. Cleaner lifecycle than
 T3a (no startup race, no extra service). This section originally parked the
 tier as "upstream-RFC only" with a fork delta estimated in weeks; that estimate
 died once T3a existed — its D-Bus/spec/budget machinery ported into Wings as a
-fourth clean commit in a day (`internal/cgroups`, ~300 lines of production code
-plus tests).
+fourth clean commit in a day (`internal/cgroups` plus the config and create-site
+wiring, ~1000 lines of non-test production code across 7 files, plus ~530 lines
+of tests).
 
 Design as shipped (`patchstack/patches/*/0004-*`, both trees):
 
@@ -244,7 +248,9 @@ Design as shipped (`patchstack/patches/*/0004-*`, both trees):
   per-server override; overriding with exactly the node-wide value is the
   per-server opt-out.
 - Properties: node-wide `docker.per_server_slices.defaults`
-  (`memory_min/low/high/max`, `cpu_weight`, `io_weight`) merged with admin-only
+  (`memory_min/low/high/max`, `cpu_weight`, `io_weight`, and `io_bfq_weight`
+  (0005), which states the weight on BFQ's own 1..1000 scale because systemd's
+  `IOWeight` compresses ratios above the default by roughly 11x) merged with admin-only
   per-server `WINGS_CG_*` egg variables. Override slices are hand-managed: they
   receive only explicit `WINGS_CG_*` values, never the node defaults.
 - Transient units over systemd D-Bus (`StartTransientUnit` /
@@ -253,9 +259,12 @@ Design as shipped (`patchstack/patches/*/0004-*`, both trees):
   and the slice is re-ensured at the same moment, so reboots reconstruct the
   whole tree. Containerized Wings needs `/run/dbus/system_bus_socket` (or
   `/run/systemd/private`) mounted from the host.
-- `memory_min_budget` + `budget_policy: clamp|refuse` guards the floor
+- `memory_min_budget` + `budget_policy: clamp|refuse|distribute` guards the floor
   arithmetic (Finding A: child floors beyond the parent slice's own MemoryMin
-  are dead — an unchecked sum silently weakens every guarantee).
+  are dead — an unchecked sum silently weakens every guarantee). `distribute`
+  is the honest-about-oversubscription option: floors are left as stated and the
+  kernel shares the parent's protection among the children in proportion to how
+  much each is using below its own floor.
 - Fail-open by design: any D-Bus problem logs a warning and degrades to plain
   placement. Slice management never blocks a server start.
 - GC: the derived slice is stopped on server delete; a boot-time sweep stops
@@ -270,8 +279,15 @@ places Wings creates containers — runtime and installer).
 
 **Verdict (updated):** T3b is the deployed architecture. T3a remains in the
 tree as the external alternative for nodes running *stock* Wings ≥T2 (or
-another agent's Wings) where patching further is not an option — the spec
-format and namespace/budget rules are identical in both, by construction.
+another agent's Wings) where patching further is not an option. The two shared
+one spec format and one set of namespace/budget rules by construction, but that
+parity no longer holds: T3b has since gained `budget_policy: distribute` and
+`io_bfq_weight`, neither of which T3a implements (it stops at `clamp|refuse`
+and systemd's `IOWeight`). That is a known gap in the fallback path — a node on
+T3a cannot express a BFQ-scale IO weight or an oversubscribed-but-honest floor
+set, and specs written for T3b are not portable to it unchanged. Closing it is
+a straight port in the same direction as the original one; it has simply not
+been done, because nothing runs T3a.
 
 ---
 
@@ -302,7 +318,7 @@ lands, the variables just stop being needed; nothing breaks.
 | **T1** node-wide `cgroup_parent` | via T0a | ✅ (shared nodes too) | per-node only | single-server nodes only | manual units | ~65 lines | none | minimal |
 | **T2** guarded per-server variable | via T0a | ✅ | ✅ | ✅ | manual units (scriptable) | ~250 lines | none (data only) | small |
 | **T3a** + external slice-manager | via T0a | ✅ | ✅ | ✅ | ✅ (outside fork) | = T2 | none (data only) | small |
-| **T3b** in-Wings D-Bus manager (patch 0004) | via T0a | ✅ | ✅ | ✅ | ✅ (inside Wings) | ~300 lines + tests (ported from T3a) | none (data only) | small (4th commit in the series) |
+| **T3b** in-Wings D-Bus manager (patch 0004) | via T0a | ✅ | ✅ | ✅ | ✅ (inside Wings) | ~1000 lines + tests (ported from T3a) | none (data only) | small (4th commit in the series) |
 | **T4** panel-native | via T0a | ✅ | ✅ | ✅ | ✅ | medium | migrations+UI+API | fork: prohibitive; upstream: right |
 
 ---
@@ -330,8 +346,10 @@ this section.
    servers). T3b/T4 are upstream-RFC material only.~~ **Superseded 2026-07-17:**
    manual slice units were rejected as a permanent workflow ("admin greps a
    UUID and runs a script" is not a PR-worthy story); T3b was implemented as
-   patch 0004 and is the production path — deploy the cgroup.2 image with
-   `docker.per_server_slices.enabled: true`. T1/T2 remain live as the fallback
+   patch 0004 and is the production path. **Done** —
+   `wings-local:1.13.1-cgroup.4` rolled out on the case-study node 2026-07-17
+   with `docker.per_server_slices.enabled: true`, all six slice properties
+   verified effective in cgroupfs. T1/T2 remain live as the fallback
    modes of the same build; `mk-server-slice.sh` is demoted to PoC/fallback
    tooling. T3a survives as the external option for nodes whose Wings stays at
    T2. T4 stays upstream-only.
@@ -352,8 +370,12 @@ rebasing patch series" sense. Never fork the Panel.**
   not into a private fork.
 - **Wings: maintain a patch-stack fork.** Concretely:
   - GitHub fork of `pterodactyl/wings` (what production runs today); branch
-    `cgroup/v1.13.1` off the release tag; **one clean commit per feature**
-    (v1 placement; v2 resolver+guard; tests) — never squash into upstream history.
+    `cgroup/v1.13.1` off the release tag; **one clean commit per feature** —
+    six today, each independently revertable: node-wide placement, the guarded
+    per-server override, build-tagged docker integration tests, the in-Wings
+    slice lifecycle (`internal/cgroups`), config discarded-key diagnostics
+    (unrelated to cgroups, carried because upstream lacks it), and BFQ-scale IO
+    weights — never squash into upstream history.
   - CI (GitHub Actions) on the fork: `go build ./... && go vet && go test ./...`,
     build the image with the repo's own Dockerfile, tag
     `wings-local:<upstream>-cgroup.<n>` (registry-shaped prefix deliberately
@@ -379,17 +401,36 @@ rebasing patch series" sense. Never fork the Panel.**
 
 ### Division of responsibility to hold the line on (all tiers)
 
-- **Wings (patched):** placement only — resolve slice name, validate against the
-  namespace, set `HostConfig.CgroupParent` at both create sites. Nothing else.
+Through T2 the line was drawn at placement: Wings resolved and validated a slice
+name and set `HostConfig.CgroupParent`, nothing more, and every property, budget
+and parent invariant was host-side. **T3b moved that line deliberately**, and the
+reason is worth recording: leaving properties host-side meant per-server slice
+unit files, and "the admin greps a server UUID out of the panel and runs a script
+before the tenant can start" is not a workflow worth defending permanently, nor a
+feature story worth upstreaming. Where it stands now:
+
+- **Wings (patched):** placement *and* the derived per-server slice's lifecycle —
+  resolve the slice name, validate against the namespace, ensure the transient
+  slice with its merged properties over D-Bus, enforce the floor budget, set
+  `HostConfig.CgroupParent` at both create sites, stop the slice on delete and
+  sweep orphans at boot. Best-effort throughout: it fails open to plain
+  placement, and it touches only slices matching its own derived shape.
 - **Egg variables:** transport for admin-only, non-secret placement/profile
   metadata. Not an authorization boundary — Wings validates.
-- **Host (units/IaC, later T3a daemon):** all slice properties, budgets, the
-  `wings.slice` parent invariant (`MemoryMin` ≥ Σ child floors), reconciliation.
-- **Panel:** untouched code; carries data.
+- **Host (units/IaC, or a T3a daemon on unpatched nodes):** the node slice unit
+  itself — the tier's own reservation and the `MemoryMin` ceiling that Wings'
+  per-server budget is checked against. That stays an admin-owned unit file and
+  is the one property surface Wings must never write: it is the node operator's
+  declaration of how much of the machine the game tier may claim, and Wings is
+  a tenant of it, not its author.
+- **Panel:** untouched code; carries data. Zero lines, at every tier below T4.
 
-This boundary is what keeps the fork rebase-friendly for however long "a while"
-turns out to be — and it is unchanged whether the endgame is an upstream merge, a
-Pelican migration, or carrying the patches indefinitely.
+What survives the move is the property that mattered: Wings' footprint is still
+one self-contained package plus four stable call sites, with no new coupling to
+panel schema or upstream internals. That is what keeps the fork rebase-friendly
+for however long "a while" turns out to be — and it is unchanged whether the
+endgame is an upstream merge, a Pelican migration, or carrying the patches
+indefinitely.
 
 ---
 
