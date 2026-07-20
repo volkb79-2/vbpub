@@ -737,6 +737,8 @@ class Daemon:
         except Exception:
             decisions_open = set()
         merged_branches = self._merged_branches(cfg, states)
+        head_revision = self._head_revision(cfg)
+        triage_class = self._triage_classes(project, states)
         leases_free = self._leases_free(cfg)
         provider_ok = self._provider_ok(routes)
         log_quiet_seconds, pid_alive, receipts = self._attempt_scan(project, states)
@@ -797,6 +799,8 @@ class Daemon:
             rejections_already_open=rejections_already_open,
             carve_outcome_already_open=carve_outcome_already_open,
             blocked_underspecified_already_open=blocked_underspecified_already_open,
+            head_revision=head_revision,
+            triage_class=triage_class,
         )
 
     def _pause_mode(self, project: str) -> str:
@@ -838,6 +842,61 @@ class Daemon:
             if tsf.state in (TaskState.MERGED, TaskState.VALIDATING, TaskState.COMPLETED):
                 out.add(tsf.task_id)
                 out.add(f"feat/{tsf.task_id}")
+        return out
+
+    def _head_revision(self, cfg: ProjectConfig) -> str | None:
+        """B4b (critique I4): the current default-branch HEAD sha, so the triage
+        stage's drift-guard (reconcile._premise_drifted) can tell a handoff whose
+        `input_revision` premise has gone STALE against main from one still valid.
+        Returns None on any git failure -- the drift-guard fail-safes to 'no drift'
+        on an unknown base, so a transient git hiccup never spuriously re-carves.
+        Resolves cfg.default_branch (not HEAD): the daemon process may sit on a
+        feat/ worktree, but the premise a handoff is measured against is always
+        main -- exactly the ref _merged_branches already uses."""
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(cfg.root), "rev-parse", cfg.default_branch],
+                capture_output=True, text=True, timeout=15,
+            )
+            if res.returncode == 0:
+                return res.stdout.strip() or None
+        except Exception:
+            pass
+        return None
+
+    def _triage_classes(self, project: str, states: dict[str, TaskStateFile]) -> dict[str, str]:
+        """B4b (D-060 triage Tier-2; D-066): for each task CURRENTLY in
+        REVIEW_REJECTED, the frontier reviewer's self-classification of the
+        rejection ("fixable"|"architectural"|"product"), read from the reject_class
+        stamped on its LATEST REVIEW_RECORDED event. reconcile stays pure -- it
+        consumes this precomputed dict rather than reading events itself, exactly
+        like review_rejections_by_area.
+
+        Bind to the latest REVIEW_RECORDED of ANY result (not just the latest
+        'rejected' one), then classify only if THAT event is a genuine rejection
+        carrying a class. This is what prevents stale-class bleed: if a task's
+        newest review leg was an infra 'incomplete' failure, or a rejection from an
+        older reviewer that stamped no class, the entry is dropped and the task
+        falls to reconcile's mechanical attempt-budget path (graceful degradation)
+        rather than inheriting a class from a superseded earlier cycle. Events are
+        append-only and ordered, so 'latest event' is an inherently current binding
+        (no committed-file staleness to guard, unlike _parse_review_verdict)."""
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            return {}
+        latest_payload: dict[str, dict] = {}
+        for ev in events:
+            if ev.type is EventType.REVIEW_RECORDED and ev.task_id:
+                latest_payload[ev.task_id] = ev.payload or {}
+        out: dict[str, str] = {}
+        for task_id, payload in latest_payload.items():
+            tsf = states.get(task_id)
+            if (tsf is not None and tsf.state is TaskState.REVIEW_REJECTED
+                    and payload.get("result") == "rejected"):
+                cls = payload.get("reject_class")
+                if cls in ("fixable", "architectural", "product"):
+                    out[task_id] = cls
         return out
 
     def _leases_free(self, cfg: ProjectConfig) -> dict[str, bool]:
@@ -2470,6 +2529,87 @@ class Daemon:
         #     foreign approval rubber-stamping a merge.
         return "missing"
 
+    def _review_report_text(self, cfg: ProjectConfig, task_id: str) -> str | None:
+        """B4b: the raw text of the frontier reviewer's committed
+        <task_id>-REVIEW.md on feat/<task_id> (read-only `git show`), for the two
+        B4b consumers that need the reviewer's PROSE rather than just its
+        APPROVED/REJECTED classification: _parse_reject_class (the Tier-2
+        self-class line) and _review_rationale (the rejection findings embedded
+        into a re-dispatch packet). Mirrors _parse_review_verdict's lookup -- the
+        documented path first, then (only if that is absent/empty) a broadened
+        *REVIEW*.md on the branch whose name or content references the task (the
+        misnamed-file case a live P26 incident hit). Returns None if nothing is
+        found. The `./` prefix on `git show` is load-bearing under -C (see
+        _parse_review_verdict)."""
+        branch = f"feat/{task_id}"
+        rel_path = f"{cfg.reports_dir}/{task_id}-REVIEW.md"
+        show_res = subprocess.run(
+            ["git", "-C", str(cfg.root), "show", f"{branch}:./{rel_path}"],
+            capture_output=True, text=True,
+        )
+        if show_res.returncode == 0 and show_res.stdout.strip():
+            return show_res.stdout
+        ls_res = subprocess.run(
+            ["git", "-C", str(cfg.root), "ls-tree", "-r", "--name-only", branch,
+             "--", f"./{cfg.reports_dir}"],
+            capture_output=True, text=True,
+        )
+        if ls_res.returncode == 0:
+            for path in ls_res.stdout.splitlines():
+                path = path.strip()
+                if not path or path == rel_path:
+                    continue
+                name = path.rsplit("/", 1)[-1]
+                if "REVIEW" not in name.upper() or not name.upper().endswith(".MD"):
+                    continue
+                show2 = subprocess.run(
+                    ["git", "-C", str(cfg.root), "show", f"{branch}:./{path}"],
+                    capture_output=True, text=True,
+                )
+                if show2.returncode != 0:
+                    continue
+                if task_id in name or task_id in show2.stdout:
+                    return show2.stdout
+        return None
+
+    def _parse_reject_class(self, cfg: ProjectConfig, task_id: str) -> str | None:
+        """B4b (D-060 triage Tier-2; D-066): extract the reviewer's self-stamped
+        `REJECT_CLASS: <fixable|architectural|product>` line from the committed
+        review report (adapters.build_dispatch's FRONTIER_REVIEW prompt requires
+        it on a REJECTED verdict). Returns the class lowercased, or None when the
+        line is absent or its value is unrecognised -> the task stays unclassified
+        and reconcile falls back to the mechanical attempt-budget path. Only
+        meaningful on a rejection; the FRONTIER_REVIEW consumption site calls it
+        only when the verdict is not 'approved'."""
+        text = self._review_report_text(cfg, task_id)
+        if not text:
+            return None
+        m = re.search(
+            r"^\s*REJECT_CLASS:\s*(fixable|architectural|product)\b",
+            text, re.IGNORECASE | re.MULTILINE,
+        )
+        return m.group(1).lower() if m else None
+
+    def _review_rationale(self, cfg: ProjectConfig, task_id: str,
+                          max_chars: int = 4000) -> str | None:
+        """B4b (critique "re-dispatch packets embed the review verdict"): the
+        reviewer's rejection PROSE from the committed review report, embedded by
+        the DispatchImplementer executor into an implementer re-dispatch prompt so
+        a re-queued fix targets exactly what was flagged -- never the bare
+        context-free same-model retry the critique bans. Returns a bounded excerpt
+        (max_chars) or None when no review report exists yet: on a FIRST dispatch
+        there is no committed review, so build_dispatch receives prior_verdict=None
+        and its prompt is byte-identical to the pre-B4b text. Bounded so a
+        pathologically long review cannot blow build_dispatch's prompt-length
+        guard."""
+        text = self._review_report_text(cfg, task_id)
+        if not text or not text.strip():
+            return None
+        text = text.strip()
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip() + "\n[... review report truncated ...]"
+        return text
+
     def _parse_self_review_verdict(self, cfg: ProjectConfig, task_id: str) -> str:
         """B5 2026-07-20: the self_review leg's verdict, read from the warm
         session's COMMITTED report -- NOT the process receipt (same P33 lesson
@@ -2580,10 +2720,15 @@ class Daemon:
             fm_obj = self._frontmatter_for(cfg, tsf)
             gate_hint = self._gate_hint(cfg)
             receipt_path = str(attempt_dir / "receipt.json")
+            # B4b (critique "re-dispatch packets embed the review verdict"): if this
+            # task was rejected by a prior review, embed that review's findings so
+            # the fix is targeted -- never a bare context-free same-model retry.
+            # None on a first dispatch (no committed review yet) -> unchanged prompt.
+            prior_verdict = self._review_rationale(cfg, task_id)
             argv, _prompt = adapters.build_dispatch(
                 route_def, handoff_path=tsf.handoff_path or "", worktree=str(worktree_path),
                 branch=branch, task_id=task_id, gate_hint=gate_hint, receipt_path=receipt_path,
-                role=Role.IMPLEMENTER,
+                role=Role.IMPLEMENTER, prior_verdict=prior_verdict,
             )
             spec = wrapper.WrapperSpec(
                 project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
@@ -2857,9 +3002,21 @@ class Daemon:
                         verdict = self._parse_review_verdict(
                             cfg, member, current_attempt_id=action.attempt_id,
                             is_first_review=not prior_reviews)
+                        # B4b (D-060 triage Tier-2; D-066): on a genuine rejection
+                        # the reviewer stamps a REJECT_CLASS line into the SAME
+                        # committed report -- capture it in the event so
+                        # _triage_classes (at input-build) can route the reject by
+                        # {fixable, architectural, product}. None on approval, or
+                        # when an older/unclassified reviewer stamped no line ->
+                        # reconcile's mechanical attempt-budget fallback.
+                        payload = {"result": verdict}
+                        if verdict != "approved":
+                            reject_class = self._parse_reject_class(cfg, member)
+                            if reject_class:
+                                payload["reject_class"] = reject_class
                         events.append(self._append_ev(
                             project, cfg, states, EventType.REVIEW_RECORDED,
-                            {"result": verdict}, task_id=member,
+                            payload, task_id=member,
                             attempt_id=action.attempt_id, wave_id=attempt.wave_id))
                         if verdict == "approved":
                             events.append(self._transition(project, cfg, states, member,

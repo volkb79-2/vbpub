@@ -171,7 +171,8 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
                    branch: str, task_id: str, gate_hint: str,
                    receipt_path: str, role: Role = Role.IMPLEMENTER,
                    carve_authority: str | None = None,
-                   attempt_id: str | None = None) -> tuple[list[str], str]:
+                   attempt_id: str | None = None,
+                   prior_verdict: str | None = None) -> tuple[list[str], str]:
     """Returns (argv, prompt). See module contract for per-CLI shapes.
 
     P44 2026-07-19: `role` selects the PROMPT TEXT only (the per-CLI argv
@@ -183,6 +184,15 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
     only consulted when role is Role.CARVER (see daemon.py's module
     docstring above `_CARVE_AUTHORITIES` for what 'branch'/'main'/'files'
     each mean for who commits what).
+
+    B4b 2026-07-20 (D-060 triage; critique "re-dispatch packets embed the
+    review verdict" + "same-model context-free retries cease to exist"):
+    `prior_verdict`, when given, is the prior review's rejection prose. It is
+    embedded into an IMPLEMENTER re-dispatch prompt so a re-queued fix is
+    TARGETED at what the reviewer flagged, never a bare context-free retry of
+    the same handoff. Defaults None (a first dispatch, or any non-implementer
+    role) -> the prompt is byte-identical to the pre-B4b text. Only the
+    IMPLEMENTER branch consults it.
     """
     # Construct the prompt (short, names handoff, worktree, branch, gate, receipt)
     if role is Role.CARVER:
@@ -262,6 +272,14 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
             "commit` ONLY that review file onto the task's own feat/ branch -- "
             "never main, and never a code change. The daemon reads your verdict "
             f"from that committed file, NOT from the receipt.{_bind_note}"
+            # B4b 2026-07-20 (D-060 triage Tier-2; critique CRITIQUE.md:207; D-066).
+            # You already hold the diff to reject, so you are the cheapest correct
+            # classifier of WHY -- the daemon routes on it, no 2nd model call. Kept
+            # TERSE: the reviewer prompt is close to argv_max (a verbose version
+            # overflowed it, stranding the review dispatch -- caught by the gate).
+            "\nIf REJECTED, also add a line `REJECT_CLASS: <fixable|architectural|"
+            "product>` (fixable=local defect, fix on retry; architectural=re-carve; "
+            "product=human decision). Omit it on APPROVED."
         )
     else:
         # IMPLEMENTER (default). Byte-for-byte identical to the pre-P44 text.
@@ -296,8 +314,31 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         prompt += ("\nFor the free endpoint, never upload any confidential "
                    "information, personal data, credentials or secrets.")
 
-    # Check prompt length
     argv_max = route.argv_max or 1500
+
+    # B4b 2026-07-20 (D-060 triage; critique "re-dispatch packets embed the review
+    # verdict"): on a re-queued IMPLEMENTER fix after a REJECTED review, append the
+    # reviewer's rejection prose so this pass targets exactly what was flagged --
+    # the critique's ban on "bare same-model context-free retries". Appended LAST
+    # and bounded to the REMAINING argv budget: a real review report can be multi-KB
+    # and the base prompt + hints already vary with path length, so an unbounded
+    # embed would overflow argv_max and strand the re-dispatch (the same failure the
+    # terse REJECT_CLASS rewrite fixed on the reviewer side). Truncate to fit, or
+    # skip entirely if too little room remains -- dispatching without the findings
+    # beats not dispatching at all. First dispatches pass prior_verdict=None.
+    if role is Role.IMPLEMENTER and prior_verdict:
+        header = ("\n\nThis task was REJECTED by review on a prior attempt. Do NOT "
+                  "re-submit the same work -- address the reviewer's findings below "
+                  "before finishing:\n")
+        marker = "\n[... review findings truncated to fit ...]"
+        room = argv_max - len(prompt) - len(header)
+        if room >= 200:
+            body = prior_verdict.strip()
+            if len(body) > room:
+                body = body[: room - len(marker)].rstrip() + marker
+            prompt += header + body
+
+    # Check prompt length
     if len(prompt) > argv_max:
         raise AdapterError(
             f"rendered prompt exceeds argv_max ({len(prompt)} > {argv_max})"

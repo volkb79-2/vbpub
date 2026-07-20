@@ -474,6 +474,53 @@ class ReconcileInput:
     rejections_already_open: bool = False
     carve_outcome_already_open: bool = False
     blocked_underspecified_already_open: bool = False
+    # B4b 2026-07-20 (D-060 triage stage; critique I4 drift-guard + Tier-2 matrix):
+    # the current default-branch HEAD sha, so the triage stage can detect a
+    # REVIEW_REJECTED task whose handoff `input_revision` premise has DRIFTED from
+    # main -- re-working against a moved base is exactly P40's root cause, so a
+    # stale premise re-carves instead of re-dispatching (critique I4). None when
+    # the daemon could not resolve main (git failure); the drift-guard then
+    # fail-safes to "no drift" (never re-carve on an unknown base). reconcile
+    # stays pure -- the daemon computes this via `git rev-parse` and passes it in,
+    # exactly like merged_branches.
+    head_revision: str | None = None
+    # B4b: per-task LLM triage class for tasks currently in REVIEW_REJECTED,
+    # derived by the daemon from the LATEST rejected REVIEW_RECORDED event's
+    # `reject_class` payload -- the frontier reviewer self-classifies its genuine
+    # rejection in the same pass it already read the diff (D-066: Tier-2 without a
+    # new dispatched leg or an inline-completion call the daemon does not have).
+    # One of "fixable"|"architectural"|"product". A task ABSENT from this dict is
+    # unclassified (older reviewer, an infra "incomplete" leg failure, or no class
+    # stamped) and falls back to the mechanical attempt-budget path -- graceful
+    # degradation, byte-identical to the pre-B4b routing.
+    triage_class: dict[str, str] = field(default_factory=dict)
+
+
+# B4b (critique I4): a handoff stamps the main sha it was carved against as
+# `input_revision`; if main has since moved, that premise is STALE and the packet
+# should be re-carved, never re-dispatched against a base it no longer describes.
+_REV_PLACEHOLDER = "0000000"
+
+
+def _premise_drifted(input_revision: str | None, head_revision: str | None) -> bool:
+    """True iff a handoff's stamped `input_revision` is a REAL sha that no longer
+    matches the current main HEAD (critique I4 -- stale premise). Fail-safe to
+    False (no drift) whenever either side is unknown, so the drift-guard fires
+    ONLY on a confident mismatch and never re-carves on missing data:
+      * head_revision falsy (daemon could not resolve main) -> no drift.
+      * input_revision falsy, the '0000000' placeholder, or all-zero (the carver
+        could not infer a base) -> no drift (there is no premise to invalidate).
+      * otherwise DRIFT iff neither sha is a prefix of the other -- git shas may
+        be abbreviated to different lengths, so an abbreviated input_revision that
+        prefixes the full head sha is the SAME commit (not drift), and only a real
+        divergence counts."""
+    if not head_revision or not input_revision:
+        return False
+    a = input_revision.strip().lower()
+    b = head_revision.strip().lower()
+    if not a or not b or a == _REV_PLACEHOLDER or all(c == "0" for c in a):
+        return False
+    return not (a.startswith(b) or b.startswith(a))
 
 
 def plan_project(inp: ReconcileInput) -> list[Action]:
@@ -548,10 +595,61 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
         # at once with zero new dispatch machinery. Self-limiting the same
         # way the attempts-remaining branch above is.
         if tsf.state == TaskState.REVIEW_REJECTED:
+            # B4b 2026-07-20 (D-060 triage stage; critique CRITIQUE.md:207 two
+            # tiers + the {infra, stale-premise, fixable, architectural, product}
+            # matrix). The infra class ("incomplete" leg failure) is already split
+            # off upstream (A4/M7: a non-DONE review receipt records "incomplete",
+            # never "rejected", so it carries no triage_class and never reaches the
+            # semantic routing here). The remaining four are decided in a fixed
+            # PRECEDENCE, most-terminal first, so a task that trips several signals
+            # takes the safest single route:
+            #   product        -> NEEDS_DECISION  (a human must decide direction;
+            #                      no retry or re-carve resolves a product question)
+            #   stale-premise  -> READY_TO_CARVE  (I4: input_revision drifted from
+            #                      main; re-work would build on a moved base)
+            #   architectural  -> READY_TO_CARVE  (design/scope wrong; same-base
+            #                      retries cannot fix it -> re-scope via the carver)
+            #   fixable / none -> the mechanical attempt-budget path (below), a
+            #                      TARGETED re-queue whose re-dispatch packet embeds
+            #                      the review verdict (daemon build_dispatch
+            #                      prior_verdict) so it is never the bare
+            #                      context-free same-model retry the critique bans.
+            # Drift & architectural both re-carve, so in a carve-less pipeline
+            # (gated/lean) they share the exhausted case's terminating escalation
+            # to NEEDS_DECISION -- never a dead-end in READY_TO_CARVE with no owner.
+            tclass = inp.triage_class.get(fm_id)
+            has_carve = "carve" in inp.cfg.pipeline
+            drifted = _premise_drifted(fm.input_revision, inp.head_revision)
+            if tclass == "product":
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.NEEDS_DECISION,
+                    notes="review rejected -- triage: product decision required; escalating to operator",
+                ))
+            elif drifted and has_carve:
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.READY_TO_CARVE,
+                    notes=(f"review rejected -- stale premise (input_revision "
+                           f"{fm.input_revision} != main {inp.head_revision[:7]}); routed for re-carve"),
+                ))
+            elif tclass == "architectural" and has_carve:
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.READY_TO_CARVE,
+                    notes="review rejected -- triage: architectural; routed for re-scope",
+                ))
+            elif (drifted or tclass == "architectural") and not has_carve:
+                # Stale-premise or architectural, but the composed pipeline has no
+                # carve stage to re-scope the work (gated/lean). Escalate to a human
+                # -- same terminating logic B4a uses for the exhausted case, so the
+                # reject loop still closes rather than dead-ending in READY_TO_CARVE.
+                reason = "stale premise" if drifted else "architectural"
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.NEEDS_DECISION,
+                    notes=f"review rejected -- triage: {reason}; no carve stage, escalating to operator",
+                ))
             # P60 (M8): attempts_used counts only IMPLEMENTER attempts -- the
             # old role-blind formula here counted the review attempt too, so a
             # reject cycle burned 2 units and exhausted the task a rejection early.
-            if attempts_used(tsf) < inp.cfg.policy.max_attempts_per_task:
+            elif attempts_used(tsf) < inp.cfg.policy.max_attempts_per_task:
                 task_actions.append(Transition(
                     task_id=fm_id, to=TaskState.QUEUED,
                     notes="review rejected -- re-queued for re-work (attempt budget remains)",

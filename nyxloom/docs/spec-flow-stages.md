@@ -204,6 +204,19 @@ prose — the divergence lives in **composition**, never in the **semantics** of
      review session audits test completeness — hollow tests, missing negatives, un-tested
      ripple. Cold+independent (unlike warm self_review, which shares the implementer's
      blind spots) and cache-cheap (reuses the review session). Opt-in like triage.
+- **D-066** (resolved 2026-07-20 — my call during B4b, no sign-off): the reject-triage
+  **Tier-2 classifier is the frontier reviewer itself**, not a separate cheap-model call
+  (as the critique's prose literally sketched) nor a new dispatched triage leg. The daemon
+  has no inline-completion primitive — its only model interaction is launching agents — so a
+  synchronous classification call inside the reconcile input-build is architecturally
+  impossible, and a dispatched TRIAGE leg would be a whole B5-sized package. Instead the
+  reviewer, which already read the full diff to reach REJECTED, stamps one extra
+  `REJECT_CLASS: <fixable|architectural|product>` line into the same committed report. It is
+  the cheapest correct classifier (full context, zero extra dispatch), fits stages-as-data
+  (enriches the existing frontier_review output rather than adding a stage), and satisfies
+  the critique's matrix oracle + its "no bare same-model retry" ban. If the reviewer omits
+  the line (older reviewer, or an infra 'incomplete' leg), the task is unclassified and falls
+  to the mechanical attempt-budget path — graceful degradation, byte-identical to A4a.
 - **D-065** (design 2026-07-20 — strategic test-health, from the operator's question): the
   strategic carver already exists as the untargeted *headroom-refill* CarveDispatch
   (reconcile item 9 — carves from backlog/roadmap/review-follow-ups when ready_count <
@@ -221,6 +234,27 @@ prose — the divergence lives in **composition**, never in the **semantics** of
   async-with-timeout so a slow gate can't block another project's pass.
 - **B4 (P72)** triage stage (mechanical tier: drift-guard I4 + infra classes from A4;
   LLM tier: fixable/architectural/product). Re-dispatch packets embed the review verdict.
+  - **B4a — DONE 2026-07-20.** Pipeline-aware exhausted-reject routing: attempts remain →
+    QUEUED; exhausted + carve present → READY_TO_CARVE; exhausted + carve-less (gated/lean)
+    → NEEDS_DECISION (so a carve-less pipeline still closes). Presets made real.
+  - **B4b — DONE 2026-07-20 (hand-driven).** The full reject-triage matrix
+    {infra, stale-premise, fixable, architectural, product} (D-066). `ReconcileInput`
+    gains `head_revision` (daemon `git rev-parse main`) + `triage_class`; reconcile routes
+    in precedence product→NEEDS_DECISION > stale-premise(I4 drift)→re-carve >
+    architectural→re-carve > fixable/unclassified→mechanical budget, with the carve-less
+    escalation to NEEDS_DECISION preserved for drift/architectural. The frontier reviewer
+    self-stamps `REJECT_CLASS` (Tier-2 producer — no new leg, no inline model call), the
+    daemon records it in REVIEW_RECORDED and derives `triage_class` from the latest event,
+    and the implementer re-dispatch embeds the review prose (`prior_verdict`) so a fixable
+    requeue is targeted, never a bare same-model retry. **Proof shipped:** the I4 property
+    test (+ placeholder/abbreviated/unknown negatives), the four semantic routes each with
+    a differently-routing negative, product-beats-drift precedence, carve-less closure,
+    graceful degradation to A4a; daemon tests for REJECT_CLASS→event (+approved/no-line
+    negatives), `_parse_reject_class`/`_review_rationale`/`_head_revision`/`_triage_classes`
+    units (+negatives incl. stale-class-bleed), the DispatchImplementer verdict-embed
+    end-to-end, and a `_build_input` plumbing gap-closer (the B5 dead-wire lesson).
+    **Deferred (explicitly optional in the critique):** the RetryPolicy route-escalation
+    ladder for a fixable requeue.
 - **B5 (P73) — DONE 2026-07-20 (hand-driven).** self_review stage: added SELF_REVIEWING
   + edges, the `LaunchSelfReview` action (a warm resume borrowing the implementer's
   session_handle), the daemon consumption branch (approved→AWAITING_REVIEW,
