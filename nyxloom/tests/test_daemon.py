@@ -1040,6 +1040,41 @@ def test_frontier_review_nondone_receipt_is_defense_in_depth_rejected(
     assert tsf.state is TaskState.REVIEW_REJECTED
 
 
+def test_frontier_review_limit_receipt_is_incomplete_not_rejected_and_pauses_provider(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """P56 2026-07-20 (M7, decoupled subset). A non-DONE review receipt is an
+    INFRA failure of the review leg, not a quality rejection: it records
+    result='incomplete' (so review_rejections_by_area, which counts only
+    'rejected', is NOT polluted -> no false SpecAttention('rejections')
+    runaway auto-pause on a provider outage) and ProviderPauses the review
+    route on a LIMIT (so the re-review does not dive back into the same rate
+    limit). Task still REVIEW_REJECTED (defense-in-depth unchanged; replacing
+    the wasteful re-implementation with a review relaunch is A9/P61)."""
+    cfg = sample_project
+    task_id, attempt_id = "t-rev-limit", "att-rev-limit"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _seed_review_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.LIMIT, exit_code=1)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    recorded = next(e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED)
+    assert recorded.payload["result"] == "incomplete"       # NOT "rejected"
+
+    # ProviderPause fired on the review route
+    assert any(e.type is EventType.PROVIDER_STATE_CHANGED for e in storage.iter_events("demo"))
+
+    # de-pollution: an infra failure is not counted as a quality rejection
+    _mh, _co, rej_by_area, _bu = d._history("demo")
+    assert rej_by_area == {}
+
+    # defense-in-depth preserved: the task still lands REVIEW_REJECTED
+    assert storage.load_state("demo", task_id).state is TaskState.REVIEW_REJECTED
+
+
 def test_launch_review_packet_requires_machine_readable_verdict_line(
     tmp_state, sample_project, patch_siblings, monkeypatch
 ):

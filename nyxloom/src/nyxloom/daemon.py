@@ -2511,7 +2511,26 @@ class Daemon:
                 if result is ReceiptResult.DONE:
                     verdict = self._parse_review_verdict(cfg, task_id)
                 else:
-                    verdict = "rejected"
+                    # P56 2026-07-20 (M7, decoupled subset). A non-DONE review
+                    # receipt (LIMIT/ERROR/BLOCKED) is an INFRA failure of the
+                    # review LEG, not a semantic rejection of the work. Record
+                    # it as "incomplete" (NOT "rejected") so a provider outage
+                    # does not pollute review_rejections_by_area (which counts
+                    # only result=="rejected") and trip SpecAttention(
+                    # 'rejections') -> a false runaway auto-pause; and
+                    # ProviderPause the review route on a LIMIT so the
+                    # subsequent re-review does not dive straight back into the
+                    # same rate limit. The task still goes to REVIEW_REJECTED
+                    # below (defense-in-depth, unchanged behaviour) -- replacing
+                    # the wasteful full re-implementation with a review RELAUNCH
+                    # is coupled to the wave-launch / has_review_in_flight
+                    # rework (an EXITED attempt cannot be re-marked --
+                    # ATTEMPT_TRANSITIONS[EXITED] is empty) and is deferred to
+                    # A9/P61.
+                    verdict = "incomplete"
+                    if result is ReceiptResult.LIMIT:
+                        events.extend(self._provider_pause(
+                            project, cfg, states, attempt.route.route_id, task_id))
                 events.append(self._append_ev(
                     project, cfg, states, EventType.REVIEW_RECORDED,
                     {"result": verdict}, task_id=task_id,
