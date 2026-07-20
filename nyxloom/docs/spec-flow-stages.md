@@ -6,6 +6,22 @@ This is the decision doc the CRITIQUE flags as B1 (`[D-060]`): the mechanism/pol
 line, the stage schema, the pipeline config format, and how much per-project
 divergence is allowed. It is a *decision*, not code — B2–B7 implement against it.
 
+## Implementation status (2026-07-20)
+- **B1** ✅ this doc (main `554fd11`).
+- **B2** ✅ stage registry + `validate_pipeline` closure check + `pipeline` config
+  (main merge `e11c5a1`). Byte-identical for the default pipeline.
+- **B3** ✅ per-stage `concurrency` (implement inherits `max_active_tasks`;
+  `[stage.<name>]` overrides) (main merge `891d15a`).
+- **B4a** ✅ pipeline-aware exhausted-reject routing → the `gated`/`lean`
+  carve-less presets are now real (main merge `7cd2b1f`).
+- **Engine live**: daemon redeployed on B2/B3 (pid 69845, healthy, all configs
+  load); B4a is inert for nyxloom's full pipeline (picks up on next redeploy).
+- **Remaining**: B4b (drift-guard — needs a new `ReconcileInput.head_revision` +
+  daemon plumbing — plus the LLM triage tier and re-dispatch verdict embedding);
+  B5 (self_review — adds the SELF_REVIEWING state to the frozen graph); B6
+  (reviewer session-reuse + spine digest); B7 (carver re-scope entry). B4b/B5 are
+  core/frozen-graph-adjacent (hand-drive); B6/B7 are additive (dogfood candidates).
+
 ## D-060 (locked): stages-as-data, not a flow language
 Wave B composes a **fixed set of code-backed stage KINDS** via a per-project
 `pipeline` list. Dynamism beyond stage composition — user-defined states, actions,
