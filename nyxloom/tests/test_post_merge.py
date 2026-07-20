@@ -131,7 +131,13 @@ def test_validating_task_blocks_on_failing_gate(tmp_state, sample_project, patch
     tsf = storage.load_state("demo", task_id)
     assert tsf.state is TaskState.BLOCKED
     assert tsf.blocker is not None
-    assert tsf.blocker.type is BlockerType.CONTRACT
+    # P64 2026-07-20 (A12, M16): a post-merge GATE failure is an ENVIRONMENT
+    # failure (the merged tree failed its own tests), NOT a CONTRACT/
+    # underspecified-handoff. Typed CONTRACT it inflated
+    # blocked_underspecified_count and could trip
+    # SpecAttention('blocked-underspecified'); ENVIRONMENT keeps it out of
+    # that counter (see _history + test_history_environment_blocker_...).
+    assert tsf.blocker.type is BlockerType.ENVIRONMENT
 
     assert len(tsf.gate_results) == 1
     gr = tsf.gate_results[0]

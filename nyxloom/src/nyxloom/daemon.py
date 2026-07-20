@@ -1090,8 +1090,11 @@ class Daemon:
         resolved. A time window (not an event-count window like the
         `*_already_open` flags below) is the right shape here: an aged, resolved
         rejection should age OUT regardless of how much OTHER unrelated event
-        traffic has or hasn't happened since. merge_history / carve_outcomes /
-        blocked_underspecified_count are UNCHANGED (still full-log, then sliced)."""
+        traffic has or hasn't happened since. P64 2026-07-20 (A12, M16):
+        blocked_underspecified_count is now WINDOWED the same way (was
+        full-log-forever). merge_history / carve_outcomes remain full-log, then
+        sliced; merge_history now carries a REAL progress_units file count
+        (A12/D-061), not the structurally-zero placeholder."""
         merge_history: list[tuple[str, int, str]] = []
         carve_outcomes: list[dict] = []
         review_rejections_by_area: dict[str, int] = {}
@@ -1116,7 +1119,16 @@ class Daemon:
             elif ev.type is EventType.TASK_BLOCKED:
                 blocker = ev.payload.get("blocker") or {}
                 if blocker.get("type") == "contract":
-                    blocked_underspecified_count += 1
+                    # P64 2026-07-20 (A12, M16): WINDOW this count, same shape
+                    # and rationale as review_rejections_by_area above. It was
+                    # a full-log-forever counter, so a project that ever hit a
+                    # few contract blockers stayed >= threshold forever and
+                    # re-fired SpecAttention('blocked-underspecified') every
+                    # time its dedup event scrolled out of the 500-event
+                    # window. An aged, resolved blocker must age OUT.
+                    age_seconds = (now - ev.timestamp).total_seconds()
+                    if age_seconds <= HISTORY_REJECTION_WINDOW_SECONDS:
+                        blocked_underspecified_count += 1
         merge_history.reverse()  # most recent first
         return merge_history[:50], carve_outcomes[-20:], review_rejections_by_area, blocked_underspecified_count
 
@@ -1512,7 +1524,14 @@ class Daemon:
                 f"post-merge gate {gate.gate_id} passed"))
         else:
             blocker = Blocker(
-                type=BlockerType.CONTRACT,
+                # P64 2026-07-20 (A12, M16): a post-merge GATE failure is an
+                # ENVIRONMENT failure (the merged tree failed its own tests),
+                # NOT a CONTRACT/underspecified-handoff. Typing it CONTRACT
+                # made every post-merge gate failure inflate
+                # blocked_underspecified_count -- a wrong signal that could
+                # trip SpecAttention('blocked-underspecified'). ENVIRONMENT
+                # keeps it out of that counter (see _history).
+                type=BlockerType.ENVIRONMENT,
                 unblock_condition="operator: inspect post-merge gate failure",
                 detail=f"post-merge gate {gate.gate_id} exit_code={exit_code}"[:200],
             )
@@ -1521,6 +1540,29 @@ class Daemon:
                 {"from": states[task_id].state.value, "blocker": blocker.to_dict()},
                 task_id=task_id))
         return events
+
+    def _merge_progress_units(self, cfg: ProjectConfig, commit: str) -> list[str]:
+        """P64 2026-07-20 (A12, D-061): objective progress signal for the
+        ratchet -- the files a merge actually changed (vs its first parent).
+        MERGE_RECORDED previously carried NO progress_units, so the ratchet's
+        reader defaulted every merge to zero progress and false-fired after any
+        N merges (a SPEC_ATTENTION bleed source). An empty list (a no-op merge)
+        is now real zero-progress; a normal merge that touched files is not, so
+        the ratchet fires ONLY on genuinely-empty consecutive merges. Uses
+        `git diff-tree` so it works on both merge and fast-forward commits."""
+        try:
+            repo_root = subprocess.run(
+                ["git", "-C", str(cfg.root), "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True).stdout.strip() or str(cfg.root)
+            res = subprocess.run(
+                ["git", "-C", repo_root, "diff-tree", "--no-commit-id",
+                 "--name-only", "-r", commit],
+                capture_output=True, text=True)
+            if res.returncode != 0:
+                return []
+            return [ln.strip() for ln in res.stdout.splitlines() if ln.strip()]
+        except OSError:
+            return []
 
     def _execute_auto_merge(self, project: str, cfg: ProjectConfig,
                              states: dict[str, TaskStateFile],
@@ -1656,7 +1698,10 @@ class Daemon:
         events.append(self._transition(project, cfg, states, task_id, TaskState.MERGED, None))
         events.append(self._append_ev(
             project, cfg, states, EventType.MERGE_RECORDED,
-            {"merge_commit": new_commit}, task_id=task_id))
+            {"merge_commit": new_commit,
+             "progress_units": self._merge_progress_units(cfg, new_commit),
+             "source_kind": "review"},
+            task_id=task_id))
 
         # Best-effort backlog auto-tick, same parity as cmd_merge (cli.py) --
         # the merge itself is already durably recorded above, so a backlog
