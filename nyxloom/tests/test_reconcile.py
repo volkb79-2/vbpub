@@ -1933,6 +1933,51 @@ def test_waves_oldest_over_timeout_opens():
     assert "P01" in opens[0].task_ids
 
 
+def test_waves_age_trigger_reads_oldest_not_lexicographically_first():
+    """P65 2026-07-20 (M11, R3 counterfeit-input). The age trigger must open a
+    wave when the GENUINELY oldest waiting task has aged past the timeout --
+    even if that task sorts AFTER a fresh one. `test_waves_oldest_over_timeout_
+    opens` above aligned sort order with age order (P01 was BOTH oldest and
+    lexicographically-first), so it passed whether the code read the oldest OR
+    the sorted-first task -- a counterfeit-input test that masked the bug. Here
+    the sorted-first task is FRESH and a later-sorting task is OLD, so ONLY the
+    correct 'oldest' reading opens the wave; the buggy `task_ids_to_batch[0]`
+    reading measures the fresh task and never trips the timeout (a review
+    stranded unboundedly under low throughput)."""
+    cfg = make_config(wave_max_diffs=3)   # count threshold (>=3) deliberately NOT met
+    routes = make_routes()
+    # "P01" sorts first but is FRESH (5 min); "P99" sorts last but is OLD (60 min).
+    fresh = make_tsf(task_id="P01", state=TaskState.AWAITING_REVIEW)
+    fresh.since = utc(2026, 7, 15, 0, 55)
+    old = make_tsf(task_id="P99", state=TaskState.AWAITING_REVIEW)
+    old.since = utc(2026, 7, 15, 0, 0)
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15, 1, 0),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": fresh, "P99": old},
+        frontmatters={"P01": (make_frontmatter(id="P01"), "h.md"),
+                       "P99": (make_frontmatter(id="P99"), "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        wave_open_after_seconds=1800,   # 30 min
+    )
+    actions = plan_project(inp)
+    opens = [a for a in actions if isinstance(a, OpenWave)]
+    assert len(opens) == 1, (
+        "the wave must open on the OLDEST waiting task's age (P99, 60 min), not "
+        "the lexicographically-first task's age (P01, 5 min)"
+    )
+    assert sorted(opens[0].task_ids) == ["P01", "P99"]
+
+
 def test_waves_fresh_single_no_open():
     """Oracle 9 (negative): 1 waiting, fresh -> no OpenWave."""
     cfg = make_config(wave_max_diffs=3)
