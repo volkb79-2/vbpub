@@ -363,27 +363,32 @@ def build_resume(route: RouteDef, *, session: str | None, worktree: str,
 
 def self_review_prompt(*, task_id: str, worktree: str, branch: str,
                        report_path: str) -> str:
-    """B5 2026-07-20: the self_review leg's prompt. It is fed to build_resume
-    (a WARM resume of the implementer's OWN session -- that session already
-    holds the full context of the diff it just wrote, so this pays no cold-start
-    tax and needs no packet). The leg reviews its own work, fixes what it can IN
-    THIS SESSION, then records a machine-readable verdict the daemon parses from
-    git (`_parse_self_review_verdict`), NEVER from the receipt (P33: a clean
-    process exit says nothing about the finding). Mirrors the FRONTIER_REVIEW
-    verdict-file contract in build_dispatch, adapted for a self-review turn."""
+    """B5 2026-07-20 (hardened per P40 + AUTHORING): the self_review leg's prompt.
+    Fed to build_resume (a WARM resume of the implementer's OWN session, which
+    already holds the diff's full context -- no cold-start tax, no packet). The
+    review is MECHANICAL and oracle-anchored -- deliberately NOT "reflect on your
+    work" / "review with fresh eyes", which AUTHORING flags as false confidence
+    (models are poor judges of what they missed). It runs each oracle's
+    observable on REAL data, checks the oracle's NEGATIVE (the edge case: a test
+    that also passes on the negative is a HOLLOW test), confirms every Work step,
+    fixes in-session, and records a machine-readable verdict the daemon parses
+    from git (`_parse_self_review_verdict`), NEVER the receipt (P33)."""
     return (
         f"Self-review your OWN just-committed work on {branch} in {worktree}, "
-        "before it goes to independent frontier review. In THIS same warm "
-        "session: re-read your diff critically (correctness, edge cases, hollow "
-        "tests that do not assert the real contract, missed handoff "
-        "requirements); fix anything you can and `git add`/`git commit` it on "
-        f"{branch}. Then write your verdict as a single line "
-        "`SELF_REVIEW: APPROVED` (ready for independent review) or "
-        "`SELF_REVIEW: REJECTED` (needs a fresh attempt -- you hit a wall you "
-        f"cannot resolve in-session) into {report_path}, and `git add`/`git "
-        f"commit` ONLY that file on {branch} (never main, never a code change in "
-        "that commit). The daemon reads your verdict from that committed file, "
-        "NOT from the receipt."
+        "before it goes to independent frontier review. Do NOT merely 're-read' "
+        "or 'reflect' for a good feeling -- run a MECHANICAL, oracle-anchored "
+        "check in THIS warm session: (1) for EACH oracle in the handoff, run its "
+        "observable in the gate on REAL data and confirm it passes; (2) confirm "
+        "each oracle's NEGATIVE case -- the edge/failure path, not just the happy "
+        "path -- a test that would ALSO pass on the negative is a HOLLOW test, a "
+        "defect to fix; (3) confirm every numbered Work step was met. Fix any "
+        f"finding and `git add`/`git commit` it on {branch}. Then write your "
+        "verdict as a single line `SELF_REVIEW: APPROVED` (all oracles pass on "
+        "real data, no hollow tests, all Work steps met) or `SELF_REVIEW: "
+        "REJECTED` (a wall you cannot resolve in-session) into "
+        f"{report_path}, and `git add`/`git commit` ONLY that file on {branch} "
+        "(never main, never a code change in that commit). The daemon reads your "
+        "verdict from that committed file, NOT from the receipt."
     )
 
 

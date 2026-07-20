@@ -1189,3 +1189,19 @@ def test_classify_limit_false_positive_domain_vocab():
     assert classify_log_tail(real) == "limit"
     # BLOCKED still wins and is still recognized deep in the tail:
     assert classify_log_tail("BLOCKED: cannot meet contract\n" + "x\n" * 10) == "blocked"
+
+
+def test_self_review_prompt_is_mechanical_oracle_anchored():
+    """B5-hardened (P40 + AUTHORING): the self_review prompt must be MECHANICAL
+    and oracle-anchored -- run each oracle's observable on REAL data AND check
+    the NEGATIVE (edge case) so a hollow test is caught -- NOT the subjective
+    'reflect / fresh eyes' framing AUTHORING flags as false confidence. Pins the
+    contract so it cannot silently regress to a vague 'review critically'."""
+    p = adapters.self_review_prompt(
+        task_id="demo-P01", worktree="/w", branch="feat/demo-P01",
+        report_path="reports/demo-P01-SELFREVIEW.md")
+    low = p.lower()
+    for token in ("oracle", "observable", "real data", "negative", "hollow"):
+        assert token in low, f"self_review prompt missing mechanical token {token!r}"
+    assert "SELF_REVIEW: APPROVED" in p and "SELF_REVIEW: REJECTED" in p
+    assert "reports/demo-P01-SELFREVIEW.md" in p
