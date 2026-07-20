@@ -3419,3 +3419,45 @@ def test_implement_concurrency_default_matches_max_active_tasks():
 
     dispatches = [a for a in plan_project(inp) if isinstance(a, DispatchImplementer)]
     assert len(dispatches) == 2
+
+
+# ============================================================================
+# B4a/D-060: pipeline-aware exhausted-reject routing -- an exhausted rejection
+# routes to READY_TO_CARVE only when the pipeline HAS a carve stage; otherwise
+# it escalates to NEEDS_DECISION (making carve-less presets safe).
+# ============================================================================
+
+def _exhausted_reject_inp(cfg):
+    """A REVIEW_REJECTED task with its (single) implementer attempt spent."""
+    att1 = make_attempt(attempt_id="att-1", state=AttemptState.EXITED,
+                        receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
+    tsf = make_tsf(task_id="P01", state=TaskState.REVIEW_REJECTED, attempts=[att1])
+    return ReconcileInput(
+        now=utc(2026, 7, 15), cfg=cfg, routes=make_routes(),
+        states={"P01": tsf}, frontmatters={"P01": (make_frontmatter(id="P01"), "h.md")},
+        lint_clean={}, project_paused=False, decisions_open=set(),
+        merged_branches=set(), leases_free={}, provider_ok={"route-1": True},
+        log_quiet_seconds={}, pid_alive={}, receipts={},
+    )
+
+
+def test_exhausted_reject_routes_to_ready_to_carve_when_carve_present():
+    """B4a parity: the default pipeline includes carve, so an exhausted reject
+    routes to READY_TO_CARVE exactly as before (item 12 then re-carves)."""
+    cfg = make_config(max_attempts_per_task=1)   # default pipeline has carve
+    assert "carve" in cfg.pipeline
+    t = [a for a in plan_project(_exhausted_reject_inp(cfg))
+         if isinstance(a, Transition) and a.task_id == "P01"]
+    assert len(t) == 1 and t[0].to == TaskState.READY_TO_CARVE
+
+
+def test_exhausted_reject_escalates_to_needs_decision_when_carveless():
+    """B4a discrimination: a carve-less pipeline escalates an exhausted reject to
+    NEEDS_DECISION instead of stranding it in READY_TO_CARVE with no owner.
+    Neuter the `"carve" in pipeline` guard and it wrongly plans READY_TO_CARVE."""
+    cfg = replace(make_config(max_attempts_per_task=1),
+                  pipeline=["implement", "frontier_review", "triage", "auto_merge"])
+    assert "carve" not in cfg.pipeline
+    t = [a for a in plan_project(_exhausted_reject_inp(cfg))
+         if isinstance(a, Transition) and a.task_id == "P01"]
+    assert len(t) == 1 and t[0].to == TaskState.NEEDS_DECISION

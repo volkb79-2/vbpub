@@ -83,19 +83,20 @@ def test_rejects_illegal_exit_edge(monkeypatch):
 
 
 def test_rejects_dead_end_routing():
-    """triage routes an exhausted reject to READY_TO_CARVE; a pipeline with no
-    carve stage to own that state is a dead-end and must be rejected (check 3).
-    This is exactly why dropping `carve` is a B4 concern (B4 makes the exhausted
-    target pipeline-aware)."""
+    """frontier_review routes a rejection to REVIEW_REJECTED; a pipeline with no
+    triage stage to own that state is a dead-end and must be rejected (check 3).
+    (B4a made the carve-less-but-triaged case VALID -- triage now escalates an
+    exhausted reject to NEEDS_DECISION -- so the genuine remaining dead-end is a
+    rejection with nothing owning REVIEW_REJECTED.)"""
     with pytest.raises(ValueError, match="dead-end"):
-        validate_pipeline(["implement", "frontier_review", "triage", "auto_merge"])
+        validate_pipeline(["implement", "frontier_review", "auto_merge"])
 
 
-def test_dead_end_check_passes_once_carve_is_added():
-    """Control for the test above: add the owning stage and the same pipeline
-    closes -- proving the rejection was about the missing owner, not noise."""
-    validate_pipeline(
-        ["carve", "implement", "frontier_review", "triage", "auto_merge"])
+def test_dead_end_check_passes_once_triage_is_added():
+    """Control for the test above: add the owning stage (triage) and the same
+    pipeline closes -- proving the rejection was about the missing owner of
+    REVIEW_REJECTED, not noise. This is the carve-less `lean` shape."""
+    validate_pipeline(["implement", "frontier_review", "triage", "auto_merge"])
 
 
 def test_rejects_no_terminal_path():
@@ -124,6 +125,19 @@ def test_lean_preset_drops_the_gate_but_still_closes():
     reaches a terminal via auto_merge."""
     assert "post_merge_gate" not in PRESETS["lean"]
     validate_pipeline(list(PRESETS["lean"]))
+
+
+def test_gated_and_lean_presets_are_carveless_and_close():
+    """B4a: `gated` and `lean` drop the carve stage entirely and still close --
+    triage escalates an exhausted reject to NEEDS_DECISION (a lifecycle state)
+    rather than to READY_TO_CARVE, so there is no unowned dead-end. This is the
+    operator's per-project divergence made real."""
+    for name in ("gated", "lean"):
+        assert "carve" not in PRESETS[name], name
+        assert "triage" in PRESETS[name], name
+        validate_pipeline(list(PRESETS[name]))
+    assert "post_merge_gate" in PRESETS["gated"]
+    assert "post_merge_gate" not in PRESETS["lean"]
 
 
 # --- B3/P71 per-stage concurrency ------------------------------------------

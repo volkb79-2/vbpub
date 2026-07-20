@@ -539,15 +539,26 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                     task_id=fm_id, to=TaskState.QUEUED,
                     notes="review rejected -- re-queued for re-work (attempt budget remains)",
                 ))
-            else:
-                # Attempts exhausted: no more re-work is possible with this
-                # task's own budget -- route it to READY_TO_CARVE so item
-                # 12's handler (below) re-dispatches it to the single
-                # strategic carver for a fresh, re-scoped package instead of
-                # stranding it forever.
+            elif "carve" in inp.cfg.pipeline:
+                # Attempts exhausted, and the pipeline has a carve stage: route
+                # to READY_TO_CARVE so item 12's handler (below) re-dispatches
+                # it to the single strategic carver for a fresh, re-scoped
+                # package instead of stranding it forever.
                 task_actions.append(Transition(
                     task_id=fm_id, to=TaskState.READY_TO_CARVE,
                     notes="review rejected -- attempt budget exhausted; routed for re-carve",
+                ))
+            else:
+                # B4a/D-060: attempts exhausted and the composed pipeline has NO
+                # carve stage to re-scope the work (the `gated`/`lean` presets).
+                # Escalate to a human decision instead -- NEEDS_DECISION is a
+                # legal REVIEW_REJECTED edge and a lifecycle state, so the reject
+                # loop still terminates rather than dead-ending in READY_TO_CARVE
+                # with no owner. This is exactly what makes a carve-less pipeline
+                # safe (and is why stages.validate_pipeline can now accept one).
+                task_actions.append(Transition(
+                    task_id=fm_id, to=TaskState.NEEDS_DECISION,
+                    notes="review rejected -- attempt budget exhausted; no carve stage, escalating to operator",
                 ))
 
         # POST-MERGE VALIDATION (module contract item 11): MERGED ->
