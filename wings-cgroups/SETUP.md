@@ -1,4 +1,4 @@
-# SETUP — deploying the patched Wings (patches 0001–0006) on a node
+# SETUP — deploying the patched Wings (patches 0001–0007) on a node
 
 The one-stop, node-agnostic deployment guide: host prerequisites → compose →
 `config.yml` → panel data → cutover → verification → rollback, in that order.
@@ -77,7 +77,7 @@ Weight" alike) are inert under `none`/`mq-deadline`; only BFQ enforces them.
 ```yaml
 services:
   wings:
-    image: wings-local:1.13.1-cgroup.4        # the patched image
+    image: wings-local:1.13.1-cgroup.5        # the patched image
     cgroup_parent: wings-mgmt.slice           # optional (T0a): cap the daemon itself
     volumes:
       # …existing mounts (docker.sock, /etc/pterodactyl, /var/lib/pterodactyl, …)…
@@ -168,6 +168,24 @@ docker:
       io_bfq_weight: 0        # 1..1000, BFQ's own scale; 0 = unset. Prefer this
                               # on BFQ nodes: the number you write is the number
                               # BFQ uses. (patch 0005)
+    # Startup band (patch 0006) — applied when the slice is ensured, BEFORE the
+    # container starts, then replaced by `defaults:` once the server reports
+    # ready (the egg's startup "done" matcher) or startup_grace expires.
+    #
+    # Why this exists: a game's load-time peak dwarfs its steady working set,
+    # and memory.high reclaim is the one path that IGNORES memory.min. A
+    # ceiling sized for the steady state therefore evicts the server through
+    # its own floor while it is still loading — permanently, because nothing
+    # faults those pages back except the workload. Leave empty to apply the
+    # steady band from the start (behaviour before 0006).
+    startup_defaults:
+      memory_min: ""          # e.g. "9G" — a higher floor while loading
+      memory_low: ""
+      memory_high: ""         # e.g. "64G" — effectively "no ceiling yet"
+      memory_max: ""
+    # How long the startup band may hold when the ready line never matches (a
+    # broken egg, a game that changed its log format). "0" disables the timer.
+    startup_grace: 15m
     # Floor budget: Σ MemoryMin over all Wings-managed slices must stay ≤ this.
     # Set it = the wings.slice unit's MemoryMin. Empty = unlimited (not advised:
     # it also removes the overcommit log line).
@@ -223,7 +241,7 @@ docker compose logs --tail 30 wings   # config validation runs at boot and fails
 
 ## 4. Panel data (egg / server variables — all admin-only, optional)
 
-Add these 8 admin-only variables to your egg. A complete worked example in
+Add these 12 admin-only variables to your egg. A complete worked example in
 PTDL_v2 export format is `../game_stuff/soulmask/egg-soulmask-rcon-ksm-cgroups.json`
 (import it over an existing egg to update in place — servers keep their egg
 association); `t2-per-server-placement/egg-variable.snippet.json` carries just
@@ -237,6 +255,7 @@ the next container (re)creation — panel **Stop → Start**, not restart.
 | `WINGS_CG_CPU_WEIGHT` | per-server CPU weight (1..10000). Ratios are honoured exactly. |
 | `WINGS_CG_IO_BFQ_WEIGHT` | per-server IO weight on BFQ's scale (1..1000) — what BFQ actually schedules on, and what `io.bfq.weight` reads back. **Prefer it on BFQ nodes.** Needs patch 0005. |
 | `WINGS_CG_IO_WEIGHT` | the same setting on systemd's scale (1..10000). **Compressed on BFQ nodes** — 1000 becomes `io.bfq.weight` 181. Keep for iocost/non-BFQ nodes. Mutually exclusive with `WINGS_CG_IO_BFQ_WEIGHT`: set both and neither is applied (logged). |
+| `WINGS_CG_STARTUP_MEMORY_MIN` / `_LOW` / `_HIGH` / `_MAX` | the same four knobs, applied only while the server is starting and replaced by the steady values once it reports ready (or after `startup_grace`). Set `_HIGH` generously — a ceiling below the load-time peak breaches the floor and cannot be undone without a restart. Needs patch 0006. |
 | `WINGS_CGROUP_PARENT` | **leave empty** — override/opt-out only. A set value beats the derived slice (and must pass the allow-list); setting it *to the node default* opts the server out of a derived slice entirely. |
 
 Sizing guidance: `memory.min` = the working set that must never be reclaimed
@@ -291,8 +310,13 @@ systemctl show $SLICE -p Transient -p MemoryMin              # floor set; Transi
 systemctl daemon-reload \
   && cat /sys/fs/cgroup/wings.slice/$SLICE/memory.min        # unchanged
 
-# 4. Wings' own account of it
-docker logs <wings-container> 2>&1 | grep "ensured per-server slice"
+# 4. Wings' own account of it — one line per application, naming the slice,
+#    the phase, what triggered it, and the values actually applied
+docker logs <wings-container> 2>&1 | grep "cgroups:"
+#   ... ensured per-server slice  slice=wings-<32hex>.slice phase=startup
+#       reason="container create" properties="MemoryMin=9G MemoryHigh=64G ..."
+#   ... ensured per-server slice  slice=wings-<32hex>.slice phase=steady
+#       reason="server reported ready" properties="MemoryMin=6G MemoryHigh=7G ..."
 ```
 
 Lifecycle spot-checks worth doing once: panel Restart (slice re-ensured,

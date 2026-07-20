@@ -1,0 +1,312 @@
+{
+    "_comment": "egg-soulmask-rcon-ksm + 12 admin-only cgroup variables for patched Wings (vbpub/wings-cgroups). With docker.per_server_slices.enabled (patch 0004) Wings derives wings-<uuid32>.slice automatically: WINGS_CGROUP_PARENT is only an explicit override/opt-out, and the WINGS_CG_* variables carry optional per-server floors/weights that override the node defaults in config.yml. Import over the existing egg (update-in-place) so the running server keeps its egg association; all values default to empty, so importing changes no behaviour by itself. Values are validated + budget-checked by Wings, and applied when the container is (re)created (panel Stop -> Start); stock Wings ignores everything. 2026-07-17: WINGS_CG_IO_BFQ_WEIGHT added (patch 0006, image cgroup.4+) -- state the IO weight on BFQ's own 1-1000 scale instead of systemd's 1-10000 IOWeight, which BFQ nodes silently compress by ~11x. It supersedes WINGS_CG_IO_WEIGHT, which is kept for iocost/non-BFQ nodes; the two are mutually exclusive. 2026-07-20: added WINGS_CG_STARTUP_MEMORY_MIN/_LOW/_HIGH/_MAX (patch 0006, image cgroup.5+) -- the band applied while the server is still starting, replaced by the steady values when the egg's startup 'done' string matches, or after startup_grace. A steady-state memory.high applied during world load evicts the server through its own memory.min floor, permanently.",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-07-20T10:15:00+00:00",
+    "name": "Soulmask updated for DLC+RCON+KSM+CGROUPS",
+    "author": "Volker Badziong",
+    "description": "Escaping a deadly sacrificial ritual, you find an ancient mystical mask on your journey. This mask holds potent knowledge, changing the world you knew. Face the harsh challenges of nature, survive, rally followers, and build your own tribe. Explore and unveil the truths behind the enigmatic mask. | KSM variant: starts the server with LD_PRELOAD=/home/container/ksm-optin.so which opts the process into Kernel Samepage Merging (dedups identical anonymous pages across multiple Soulmask instances; kernel >=6.4). Build/deploy the shim per game_stuff/soulmask/ksm-optin.c; if the .so is absent the loader prints a harmless warning and the server runs without KSM. | CGROUPS variant: adds 8 admin-only variables for per-server systemd slice placement and resource guarantees (WINGS_CGROUP_PARENT + WINGS_CG_MEMORY_MIN/LOW/HIGH/MAX + WINGS_CG_CPU_WEIGHT + WINGS_CG_IO_BFQ_WEIGHT/WINGS_CG_IO_WEIGHT). Requires patched Wings (vbpub/wings-cgroups) with docker.per_server_slices.enabled; stock Wings ignores them all. Every variable defaults to empty = use the node default.",
+    "features": null,
+    "docker_images": {
+        "SteamCMD": "ghcr.io/ptero-eggs/steamcmd:debian"
+    },
+    "file_denylist": [],
+    "startup": "LD_PRELOAD=/home/container/ksm-optin.so /home/container/WS/Binaries/Linux/WSServer-Linux-Shipping {{MAP_TYPE}} -server -SteamServerName=\"{{SERVER_NAME}}\" -PSW={{SERVER_PASSWORD}} -saving={{SAVE_TIME}} -Port={{PORT_SERVER}} -QueryPort={{QUERY_PORT}} -EchoPort={{ECHO_PORT}} -forcepassthrough -adminpsw={{ADMIN_PASSWORD}} -MaxPlayers={{MAX_PLAYERS}} -gamedistindex={{REGION}} -backup={{BACKUP_TIME}} -log -UTF8Output -MULTIHOME=0.0.0.0 -rconport={{RCON_PORT}} -rconpsw={{RCON_PASSWORD}} -mod=\\\"{{MOD_ID}}\\\"",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": \"Create Dungeon Successed\"\r\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\r\n# steamcmd Base Installation Script\r\n#\r\n# Server Files: /mnt/server\r\n# Image to install with is 'ghcr.io/ptero-eggs/installers:debian'\r\n\r\n\r\n# Install packages. Default packages below are not required if using our existing install image thus speeding up the install process.\r\n#apt -y update\r\n#apt -y --no-install-recommends install curl lib32gcc-s1 ca-certificates\r\n\r\n## just in case someone removed the defaults.\r\nif [[ \"${STEAM_USER}\" == \"\" ]] || [[ \"${STEAM_PASS}\" == \"\" ]]; then\r\n    echo -e \"steam user is not set.\\n\"\r\n    echo -e \"Using anonymous user.\\n\"\r\n    STEAM_USER=anonymous\r\n    STEAM_PASS=\"\"\r\n    STEAM_AUTH=\"\"\r\nelse\r\n    echo -e \"user set to ${STEAM_USER}\"\r\nfi\r\n\r\n## download and install steamcmd\r\ncd /tmp\r\nmkdir -p /mnt/server/steamcmd\r\ncurl -sSL -o steamcmd.tar.gz https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz\r\ntar -xzvf steamcmd.tar.gz -C /mnt/server/steamcmd\r\nmkdir -p /mnt/server/steamapps # Fix steamcmd disk write error when this folder is missing\r\ncd /mnt/server/steamcmd\r\n\r\n# SteamCMD fails otherwise for some reason, even running as root.\r\n# This is changed at the end of the install process anyways.\r\nchown -R root:root /mnt\r\nexport HOME=/mnt/server\r\n\r\n## install game using steamcmd\r\n./steamcmd.sh +force_install_dir /mnt/server +login ${STEAM_USER} ${STEAM_PASS} ${STEAM_AUTH} $( [[ \"${WINDOWS_INSTALL}\" == \"1\" ]] && printf %s '+@sSteamCmdForcePlatformType windows' ) +app_update ${SRCDS_APPID} +app_update 1007 $( [[ -z ${SRCDS_BETAID} ]] || printf %s \"-beta ${SRCDS_BETAID}\" ) $( [[ -z ${SRCDS_BETAPASS} ]] || printf %s \"-betapassword ${SRCDS_BETAPASS}\" ) ${INSTALL_FLAGS} validate +quit ## other flags may be needed depending on install. looking at you cs 1.6\r\n\r\n## set up 32 bit libraries\r\nmkdir -p /mnt/server/.steam/sdk32\r\ncp -v linux32/steamclient.so ../.steam/sdk32/steamclient.so\r\n\r\n## set up 64 bit libraries\r\nmkdir -p /mnt/server/.steam/sdk64\r\ncp -v linux64/steamclient.so ../.steam/sdk64/steamclient.so\r\n\r\n## add below your custom commands if needed\r\n## Maybe this path is just needed?\r\nmkdir -p /mnt/server/WS/Saved/Config/LinuxServer\r\n\r\n## install end\r\necho \"-----------------------------------------\"\r\necho \"Installation completed...\"\r\necho \"-----------------------------------------\"",
+            "container": "ghcr.io/ptero-eggs/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "App ID",
+            "description": "Steam ID for the linux version of soulmask",
+            "env_variable": "SRCDS_APPID",
+            "default_value": "3017300",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "required|string|in:3017300",
+            "field_type": "text"
+        },
+        {
+            "name": "Auto Update",
+            "description": "Auto update the server on start",
+            "env_variable": "AUTO_UPDATE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|boolean",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Name",
+            "description": "Specifies the name of the game instance displayed in the server list",
+            "env_variable": "SERVER_NAME",
+            "default_value": "Soulmask Server",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:85",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Password",
+            "description": "Server password, private servers can specify a password, players must enter the password to enter/join the server.",
+            "env_variable": "SERVER_PASSWORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "Map Players",
+            "description": "Specifies the maximum number of players the game instance can support.",
+            "env_variable": "MAX_PLAYERS",
+            "default_value": "60",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric|between:1,70",
+            "field_type": "text"
+        },
+        {
+            "name": "Backup Interval",
+            "description": "Specifies the interval for writing the game database to disk (unit: seconds).",
+            "env_variable": "BACKUP_TIME",
+            "default_value": "960",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric",
+            "field_type": "text"
+        },
+        {
+            "name": "Save Time Interval",
+            "description": "Specifies the interval for writing game objects to the database (unit: seconds).",
+            "env_variable": "SAVE_TIME",
+            "default_value": "600",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Port",
+            "description": "UDP, Game connections (using PORT_SERVER as SERVER_PORT is reserved)",
+            "env_variable": "PORT_SERVER",
+            "default_value": "8777",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric|between:1024,65536",
+            "field_type": "text"
+        },
+        {
+            "name": "Query Port",
+            "description": "Specifies the Steam query port, UDP, needs to be open to the public.",
+            "env_variable": "QUERY_PORT",
+            "default_value": "27015",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric|between:1024,65536",
+            "field_type": "text"
+        },
+        {
+            "name": "Echo Port",
+            "description": "Maintenance port, used for local telnet server maintenance, TCP, does not need to be open.",
+            "env_variable": "ECHO_PORT",
+            "default_value": "18888",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric|between:1024,65536",
+            "field_type": "text"
+        },
+        {
+            "name": "RCON Port",
+            "description": "Specifies the TCP port that the RCON listener will bind to. This is the port that RCON clients will need to connect to. If not specified, it defaults to port 19000.",
+            "env_variable": "RCON_PORT",
+            "default_value": "19000",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric|between:1024,65536",
+            "field_type": "text"
+        },
+        {
+            "name": "RCON Password",
+            "description": "If specified, enables RCON on the server, allowing RCON clients to connect and issue some admin commands. The value specifies the password that is required for RCON clients to connect. If this parameter is not specified, RCON will be disabled.",
+            "env_variable": "RCON_PASSWORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "Admin Password",
+            "description": "GM activation password.Open GM Panel (gm key [password])",
+            "env_variable": "ADMIN_PASSWORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "Mods",
+            "description": "Specifies the order and which mods are loaded. ModIDs need to be comma-separated such as: ModID1,ModID2,ModID3",
+            "env_variable": "MOD_ID",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|regex:/^[0-9,]+$/",
+            "field_type": "text"
+        },
+        {
+            "name": "Region (gamedistindex)",
+            "description": "1= Asia 2=North America 3=Europe 4=Mainland China 5=South America 6=Oceania 7=Africa",
+            "env_variable": "REGION",
+            "default_value": "3",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|numeric|between:0,7",
+            "field_type": "text"
+        },
+        {
+            "name": "Map Type",
+            "description": "which map to load: Level01_Main (original), DLC_Level01_Main (DLC Shifting Sands)",
+            "env_variable": "MAP_TYPE",
+            "default_value": "Level01_Main",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:Level01_Main,DLC_Level01_Main",
+            "field_type": "text"
+        },
+        {
+            "name": "Wings Cgroup Startup Memory Min",
+            "description": "Admin-only, STARTUP PHASE: memory.min applied while the server is still starting, replaced by WINGS_CG_MEMORY_MIN once it reports ready (the egg's startup 'done' match) or docker.per_server_slices.startup_grace expires. A higher floor during world load protects the assets being streamed in. Requires patched Wings 0006 (image cgroup.5+). Empty = the steady value applies from the start.",
+            "env_variable": "WINGS_CG_STARTUP_MEMORY_MIN",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:20",
+            "field_type": "text"
+        },
+        {
+            "name": "Wings Cgroup Startup Memory Low",
+            "description": "Admin-only, STARTUP PHASE: memory.low while starting; replaced by WINGS_CG_MEMORY_LOW once the server reports ready. Requires patched Wings 0006 (image cgroup.5+). Empty = the steady value applies from the start.",
+            "env_variable": "WINGS_CG_STARTUP_MEMORY_LOW",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:20",
+            "field_type": "text"
+        },
+        {
+            "name": "Wings Cgroup Startup Memory High",
+            "description": "Admin-only, STARTUP PHASE, THE IMPORTANT ONE: memory.high while the server is starting, replaced by WINGS_CG_MEMORY_HIGH once it reports ready. Set it generously (e.g. 64G = effectively no ceiling during world load). A ceiling below the LOAD-TIME peak is destructive rather than merely slow: memory.high reclaim is the one path that ignores memory.min, so it evicts the server through its own guaranteed floor -- and nothing faults those pages back except the workload itself, so the server stays pinned below its floor until restarted. Requires patched Wings 0006 (image cgroup.5+). Empty = the steady value applies from the start.",
+            "env_variable": "WINGS_CG_STARTUP_MEMORY_HIGH",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:20",
+            "field_type": "text"
+        },
+        {
+            "name": "Wings Cgroup Startup Memory Max",
+            "description": "Admin-only, STARTUP PHASE: memory.max while starting; replaced by WINGS_CG_MEMORY_MAX once the server reports ready. Requires patched Wings 0006 (image cgroup.5+). Empty = the steady value applies from the start.",
+            "env_variable": "WINGS_CG_STARTUP_MEMORY_MAX",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:20",
+            "field_type": "text"
+        },
+        {
+            "name": "Wings Cgroup Parent",
+            "description": "Admin-only OVERRIDE: with docker.per_server_slices.enabled Wings already derives wings-<uuid>.slice per server, so leave this EMPTY normally. Set a wings-*.slice name to pin a specific (hand-managed) slice, or set it to exactly the node-wide docker.cgroup_parent value to opt this server out of per-server slices. Must be within the allowed namespace; rejected values fail closed to the derived/node slice. Placement is create-time only: recreate the container after changing this.",
+            "env_variable": "WINGS_CGROUP_PARENT",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Wings Cgroup Memory Min",
+            "description": "Admin-only: memory.min floor for this server's slice (e.g. 6G, 512M, or bytes). Overrides the node default in docker.per_server_slices.defaults. Subject to the node floor budget (memory_min_budget: clamp/refuse). Empty = node default. Applied by patched Wings (0004) when the container is (re)created.",
+            "env_variable": "WINGS_CG_MEMORY_MIN",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "Wings Cgroup Memory Low",
+            "description": "Admin-only: memory.low best-effort protection for this server's slice (e.g. 12G). Overrides the node default. Empty = node default.",
+            "env_variable": "WINGS_CG_MEMORY_LOW",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "Wings Cgroup Memory High",
+            "description": "Admin-only: memory.high throttle ceiling for this server's slice (e.g. 7G). Overrides the node default. Empty = node default.",
+            "env_variable": "WINGS_CG_MEMORY_HIGH",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "Wings Cgroup Memory Max",
+            "description": "Admin-only: memory.max hard limit (OOM-kill boundary) for this server's slice. Usually leave empty — the panel's own memory limit already caps the container; a slice-level max additionally caps installer + all future containers of the server.",
+            "env_variable": "WINGS_CG_MEMORY_MAX",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|string|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "Wings Cgroup CPU Weight",
+            "description": "Admin-only: cpu.weight (1-10000, default sibling weight is 100) for this server's slice. Overrides the node default. Empty = node default. Weights are relative to SIBLINGS only, and compose down the tree: this server's share of the host is (this / sum of siblings inside wings.slice) x (wings.slice's CPUWeight / sum of the root slices). They are also work-conserving -- a weight never caps anything, it only decides who yields when everyone wants the CPU at once. CPU is the exact axis: systemd passes cpu.weight through unscaled, so 1000 vs a sibling's 100 really is 10:1 (unlike IO -- see the two IO variables).",
+            "env_variable": "WINGS_CG_CPU_WEIGHT",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|numeric|between:1,10000",
+            "field_type": "text"
+        },
+        {
+            "name": "Wings Cgroup IO BFQ Weight",
+            "description": "Admin-only, PREFER THIS ON BFQ NODES: the IO weight on BFQ's own 1-1000 scale (default sibling weight is 100) for this server's slice -- i.e. the number the scheduler actually uses, which you can read back at /sys/fs/cgroup/wings.slice/wings-<uuid32>.slice/io.bfq.weight. Requires patched Wings 0006 (image cgroup.4+); Wings converts it to the equivalent systemd IOWeight (100 + 11 x (bfq - 100)) and logs both, e.g. IOWeight=5940(io.bfq.weight=540). Mutually exclusive with WINGS_CG_IO_WEIGHT: if both are set, NEITHER is applied and Wings logs the conflict. Empty = node default (docker.per_server_slices.defaults.io_bfq_weight). See wings-cgroups/CGROUP-SEMANTICS.md Rule 7.",
+            "env_variable": "WINGS_CG_IO_BFQ_WEIGHT",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|numeric|between:1,1000",
+            "field_type": "text"
+        },
+        {
+            "name": "Wings Cgroup IO Weight",
+            "description": "Admin-only, LEGACY SCALE -- prefer WINGS_CG_IO_BFQ_WEIGHT: systemd's IOWeight (1-10000) for this server's slice. Overrides the node default. Empty = node default. CAUTION: on a BFQ node this number is NOT what you get. BFQ schedules on io.bfq.weight (1-1000) and never reads io.weight (that file belongs to iocost, inert unless io.cost.* is configured), and systemd compresses 100-10000 into 100-1000 on the way -- so 1000 buys 1.8:1 against a default sibling, not 10:1, and 4950 buys 5.4:1. Mutually exclusive with WINGS_CG_IO_BFQ_WEIGHT. Check the scheduler with: cat /sys/block/vda/queue/scheduler.",
+            "env_variable": "WINGS_CG_IO_WEIGHT",
+            "default_value": "",
+            "user_viewable": false,
+            "user_editable": false,
+            "rules": "nullable|numeric|between:1,10000",
+            "field_type": "text"
+        }
+    ]
+}

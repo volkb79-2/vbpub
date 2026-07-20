@@ -1,7 +1,7 @@
 From fa0cc596786ef325922d146bbdd0ed34f7ae9966 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Wed, 15 Jul 2026 10:37:58 +0000
-Subject: [PATCH 1/6] Add docker.cgroup_parent to place containers under a
+Subject: [PATCH 1/7] Add docker.cgroup_parent to place containers under a
  systemd slice
 
 Adds an opt-in, node-level docker.cgroup_parent configuration key that

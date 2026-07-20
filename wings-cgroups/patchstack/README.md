@@ -11,11 +11,12 @@ upstream PRs can cherry-pick, and rebases stay reviewable:
 | 0003 | `Add docker integration tests for cgroup parent placement` | tests (build-tagged; include in PR or drop) |
 | 0004 | `Manage per-server transient slices via systemd D-Bus` | T3b (`docker.per_server_slices`: auto-derived slices, defaults + `WINGS_CG_*` overrides, floor budget with clamp/refuse/distribute, GC; `internal/cgroups`) |
 | 0005 | `Let administrators state IO weights on BFQ's own scale` | T3b follow-up (`io_bfq_weight`/`WINGS_CG_IO_BFQ_WEIGHT`; inverts systemd's IOWeight→io.bfq.weight compression) |
-| 0006 | `Report configuration keys discarded while parsing` | standalone diagnostic — strict re-decode warns about unknown/misindented/duplicate keys instead of dropping them silently. No dependency on 0001–0005, and its test fixtures use only upstream-native config keys so it cherry-picks onto stock Wings. |
+| 0006 | `Stage per-server slice properties across server startup` | T3b follow-up (`startup_defaults`/`WINGS_CG_STARTUP_*` + `startup_grace`; transition driven by the egg's existing `startup.done` matcher via `OnStateChange`) |
+| 0007 | `Report configuration keys discarded while parsing` | standalone diagnostic — strict re-decode warns about unknown/misindented/duplicate keys instead of dropping them silently. No dependency on 0001–0006, and its test fixtures use only upstream-native config keys so it cherry-picks onto stock Wings. |
 
 The unrelated commit sits **last** on purpose: it makes each planned upstream PR
-a contiguous range (`0001–0003` placement, `0001–0005` stacked slice lifecycle,
-`0006` alone) instead of forcing a cherry-pick out of the middle of the series.
+a contiguous range (`0001–0003` placement, `0001–0006` stacked slice lifecycle,
+`0007` alone) instead of forcing a cherry-pick out of the middle of the series.
 
 Targets: `pterodactyl` (tag `v1.13.1` — what production runs) and `pelican`
 (`main` — the faster-merging upstream; same commits, ported). See `stack.conf`
@@ -29,7 +30,7 @@ for refs, go images, and the `FORK_REPO` placeholder.
 scripts/clone.sh
 scripts/apply.sh pterodactyl
 INTEGRATION=1 scripts/test.sh pterodactyl   # needs /var/run/docker.sock
-scripts/build-image.sh pterodactyl cgroup.4 # -> wings-local:1.13.1-cgroup.4
+scripts/build-image.sh pterodactyl cgroup.5 # -> wings-local:1.13.1-cgroup.5
 ```
 
 **New upstream release (the recurring ~1–2h/release chore)**
@@ -38,7 +39,7 @@ scripts/build-image.sh pterodactyl cgroup.4 # -> wings-local:1.13.1-cgroup.4
 scripts/rebase.sh pterodactyl v1.13.2       # rebases commits onto the new tag
 scripts/export-patches.sh pterodactyl       # refresh committed series
 INTEGRATION=1 scripts/test.sh pterodactyl
-scripts/build-image.sh pterodactyl cgroup.5   # bump the suffix per deployable change
+scripts/build-image.sh pterodactyl cgroup.6   # bump the suffix per deployable change
 # deploy per ../SETUP.md, then commit patches/ changes
 ```
 
@@ -104,7 +105,7 @@ CI for the fork lives in `../ci/fork-wings-ci.yml` (copy into the fork as
   file from in-memory state, so on-disk edits made while Wings runs can be
   reverted by an unrelated panel action unless `ignore_panel_config_updates` is
   set. Neither is caused by our patches — 0004 just made the blast radius
-  visible. **0006 is the response**: a strict re-decode used purely as a
+  visible. **0007 is the response**: a strict re-decode used purely as a
   diagnostic, so the discarded key is named in the log instead of vanishing. It
   deliberately warns rather than failing — a full `KnownFields(true)` decode
   would turn a stale key from an older Wings into a boot failure.

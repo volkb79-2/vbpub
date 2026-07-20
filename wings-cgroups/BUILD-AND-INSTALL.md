@@ -10,7 +10,7 @@ which is where all host/node deployment lives.
 ```bash
 cd /workspaces/vbpub/wings-cgroups
 patchstack/scripts/clone.sh                # -> build/wings-pterodactyl, build/wings-pelican (gitignored)
-patchstack/scripts/apply.sh pterodactyl    # applies 0001..0006 onto v1.13.1
+patchstack/scripts/apply.sh pterodactyl    # applies 0001..0007 onto v1.13.1
 ```
 
 `build/` is disposable — the `patchstack/patches/` series is the canonical
@@ -30,7 +30,7 @@ zero new warnings.
 ## 3. Build the image
 
 ```bash
-patchstack/scripts/build-image.sh pterodactyl cgroup.4    # -> wings-local:1.13.1-cgroup.4
+patchstack/scripts/build-image.sh pterodactyl cgroup.5    # -> wings-local:1.13.1-cgroup.5
 patchstack/scripts/build-image.sh pelican               # -> wings-local-pelican:<ver>-cgroup.1
 ```
 
@@ -41,13 +41,13 @@ push. Idempotent: re-running rebuilds the same tag.
 
 **The registry-less name is deliberate.** A stray `docker compose pull` on the
 node fails loudly instead of silently reverting the node to stock upstream Wings.
-Bump the suffix (`cgroup.4` → `cgroup.5`) for each deployable change so compose
+Bump the suffix (`cgroup.5` → `cgroup.6`) for each deployable change so compose
 `--force-recreate` and rollback stay unambiguous.
 
 ## 4. Verify the image before deploying
 
 ```bash
-docker run --rm wings-local:1.13.1-cgroup.4 --version    # v1.13.1-cgroup.4
+docker run --rm wings-local:1.13.1-cgroup.5 version      # prints the version
 test/smoke-placement.sh                                  # placement vs the real host daemon
 test/e2e-systemd/run-e2e.sh                              # privileged systemd-in-Docker: effective floors
 ```
