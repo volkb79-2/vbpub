@@ -214,19 +214,33 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
                 "file(s) on this branch before finishing."
             )
     elif role is Role.FRONTIER_REVIEW:
-        # A reviewer authors no changes and must never be told to commit to
-        # the branch it was dispatched with (today's live bug: the
-        # wave-launch call site passes branch=cfg.default_branch, and the
-        # old one-size-fits-all prompt told the reviewer to "git commit ALL
-        # your work on the branch" -- i.e. commit to main).
+        # P59 2026-07-20 (M6a, Fable-xhigh critique -- prompt/packet
+        # consistency). The daemon derives the merge verdict EXCLUSIVELY from
+        # the reviewer's COMMITTED <task>-REVIEW.md (_parse_review_verdict via
+        # `git show`); the receipt carries no verdict. The old prompt told the
+        # reviewer "do not commit anything -- write your verdict to the
+        # receipt", which flatly CONTRADICTED the packet's REQUIRED OUTPUT
+        # CONTRACT ("write + commit <task>-REVIEW.md with a VERDICT: line") --
+        # a reviewer obeying the prompt left NO committed verdict, so the
+        # daemon read "missing" and false-rejected approved work (or, under
+        # guarded-automatic merge, could mis-decide): a nondeterministic merge
+        # gate whose outcome depended on which instruction the model followed.
+        # This prompt now AGREES with the packet: commit ONLY the verdict
+        # report, onto the task's own feat/ branch, never main and never a
+        # code change (the original "never commit to main" safety intent is
+        # kept -- the bug was forbidding ALL commits, not just the wrong ones).
         prompt = (
             f"Handoff: {handoff_path}\n"
             f"Worktree: {worktree}\n"
             f"Gate: {gate_hint}\n"
             f"Receipt: {receipt_path}\n"
-            "You are REVIEWING this packet, not authoring changes to it. Do "
-            "not commit anything to git -- write your verdict to the "
-            "receipt path above."
+            "You are REVIEWING this packet, not authoring code changes. Follow "
+            "the packet's REQUIRED OUTPUT CONTRACT: write your verdict as a "
+            "`VERDICT: APPROVED` or `VERDICT: REJECTED` line into the "
+            "<task>-REVIEW.md the packet names, then `git add` and `git commit` "
+            "ONLY that review file onto the task's own feat/ branch -- never "
+            "main, and never a code change. The daemon reads your verdict from "
+            "that committed file, NOT from the receipt."
         )
     else:
         # IMPLEMENTER (default). Byte-for-byte identical to the pre-P44 text.
