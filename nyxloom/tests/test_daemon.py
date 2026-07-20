@@ -91,6 +91,10 @@ def patch_siblings(monkeypatch):
             "route": route.route_id, "handoff_path": handoff_path, "worktree": worktree,
             "branch": branch, "task_id": task_id, "gate_hint": gate_hint,
             "receipt_path": receipt_path, "argv": argv,
+            # B4b 2026-07-20: record the new prior_verdict kwarg (the re-dispatch
+            # review-verdict embed) so the DispatchImplementer wiring can be
+            # asserted end-to-end; None on a first dispatch.
+            "prior_verdict": _kw.get("prior_verdict"),
         })
         return argv, "prompt"
 
@@ -2975,3 +2979,241 @@ def test_watchdog_repauses_after_fresh_persist_cycles_if_condition_still_open(
         "a genuinely still-open condition must still re-pause -- the fix "
         "must not disable the watchdog"
     )
+
+
+# --------------------------------------------------------------------------
+# B4b 2026-07-20 (D-060 triage stage; critique CRITIQUE.md:207). The daemon
+# half: the frontier reviewer self-stamps a REJECT_CLASS the daemon captures in
+# the REVIEW_RECORDED event (Tier-2 producer, D-066); _triage_classes derives
+# per-task classes for the input; the drift base sha (_head_revision) and the
+# re-dispatch verdict embed (_review_rationale) are computed for reconcile.
+# Each oracle carries a NEGATIVE control so none passes hollowly.
+
+def test_frontier_review_rejected_stamps_reject_class(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """A REJECTED review whose committed report carries a REJECT_CLASS line ->
+    the daemon records that class in the REVIEW_RECORDED event, so
+    _triage_classes can later route the reject."""
+    cfg = sample_project
+    task_id, attempt_id = "t-rc-arch", "att-rc-arch"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        "# Review\n\nThe module boundary is wrong.\n\n"
+        "VERDICT: REJECTED\nREJECT_CLASS: architectural\n",
+    )
+    _seed_review_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+    daemon.Daemon({"demo": cfg.root}).run_pass("demo")
+
+    recorded = next(e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED)
+    assert recorded.payload["result"] == "rejected"
+    assert recorded.payload["reject_class"] == "architectural"
+
+
+def test_frontier_review_approved_has_no_reject_class(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """NEGATIVE: an APPROVED review records NO reject_class (the class is a
+    property of a rejection only) -- guards against always-stamping."""
+    cfg = sample_project
+    task_id, attempt_id = "t-rc-approved", "att-rc-approved"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        "# Review\n\nLooks good.\n\nVERDICT: APPROVED\n",
+    )
+    _seed_review_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+    daemon.Daemon({"demo": cfg.root}).run_pass("demo")
+
+    recorded = next(e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED)
+    assert recorded.payload["result"] == "approved"
+    assert "reject_class" not in recorded.payload
+
+
+def test_frontier_review_rejected_without_class_omits_key(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """NEGATIVE/graceful: a REJECTED review whose reviewer stamped NO
+    REJECT_CLASS (older reviewer) records result=rejected but no reject_class,
+    so _triage_classes drops it to reconcile's mechanical budget path."""
+    cfg = sample_project
+    task_id, attempt_id = "t-rc-none", "att-rc-none"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(
+        cfg.root, task_id, cfg.reports_dir,
+        "# Review\n\nSomething is off.\n\nVERDICT: REJECTED\n",
+    )
+    _seed_review_attempt("demo", task_id, attempt_id)
+    _write_receipt("demo", attempt_id, ReceiptResult.DONE, exit_code=0)
+    _scripted(monkeypatch, [[reconcile.EmitAttemptExit(task_id=task_id, attempt_id=attempt_id)]])
+    daemon.Daemon({"demo": cfg.root}).run_pass("demo")
+
+    recorded = next(e for e in storage.iter_events("demo") if e.type is EventType.REVIEW_RECORDED)
+    assert recorded.payload["result"] == "rejected"
+    assert "reject_class" not in recorded.payload
+
+
+def test_parse_reject_class_unit(tmp_state, sample_project):
+    """_parse_reject_class reads the committed line; NEGATIVE: absent line ->
+    None; an unrecognised value -> None (never a garbage class into routing)."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+
+    _make_feature_branch(cfg.root, "t-pc-1", "a.py", "# a\n")
+    _commit_review_report(cfg.root, "t-pc-1", cfg.reports_dir,
+                          "VERDICT: REJECTED\nREJECT_CLASS: product\n")
+    assert d._parse_reject_class(cfg, "t-pc-1") == "product"
+
+    _make_feature_branch(cfg.root, "t-pc-2", "b.py", "# b\n")
+    _commit_review_report(cfg.root, "t-pc-2", cfg.reports_dir, "VERDICT: REJECTED\n")
+    assert d._parse_reject_class(cfg, "t-pc-2") is None
+
+    _make_feature_branch(cfg.root, "t-pc-3", "c.py", "# c\n")
+    _commit_review_report(cfg.root, "t-pc-3", cfg.reports_dir,
+                          "VERDICT: REJECTED\nREJECT_CLASS: totally-bogus\n")
+    assert d._parse_reject_class(cfg, "t-pc-3") is None
+
+
+def test_review_rationale_unit(tmp_state, sample_project):
+    """_review_rationale returns the committed prose; NEGATIVE: no review file
+    -> None; a very long review is bounded with a truncation marker."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+
+    _make_feature_branch(cfg.root, "t-rr-1", "a.py", "# a\n")
+    _commit_review_report(cfg.root, "t-rr-1", cfg.reports_dir,
+                          "# Review\n\nThe cap is off by one.\n\nVERDICT: REJECTED\n")
+    got = d._review_rationale(cfg, "t-rr-1")
+    assert got is not None and "cap is off by one" in got
+
+    # NEGATIVE: a branch with no committed review at all.
+    _make_feature_branch(cfg.root, "t-rr-2", "b.py", "# b\n")
+    assert d._review_rationale(cfg, "t-rr-2") is None
+
+    # bounded: an oversized review is truncated.
+    _make_feature_branch(cfg.root, "t-rr-3", "c.py", "# c\n")
+    _commit_review_report(cfg.root, "t-rr-3", cfg.reports_dir, "X" * 9000 + "\nVERDICT: REJECTED\n")
+    bounded = d._review_rationale(cfg, "t-rr-3", max_chars=4000)
+    assert bounded is not None and len(bounded) < 5000
+    assert "truncated" in bounded
+
+
+def test_head_revision_resolves_main(tmp_state, sample_project):
+    """_head_revision returns main's sha; NEGATIVE: a bogus root -> None
+    (fail-safe, so a git hiccup never spuriously flags drift)."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    expected = subprocess.run(
+        ["git", "-C", str(cfg.root), "rev-parse", cfg.default_branch],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    assert d._head_revision(cfg) == expected
+    assert len(expected) == 40                       # a real full sha, not a placeholder
+
+    from dataclasses import replace as _replace
+    bogus = _replace(cfg, root=cfg.root / "does-not-exist")
+    assert d._head_revision(bogus) is None
+
+
+def _seed_review_recorded(project, task_id, result, reject_class=None):
+    payload = {"result": result}
+    if reject_class is not None:
+        payload["reject_class"] = reject_class
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.REVIEW_RECORDED, payload=payload, task_id=task_id,
+    )
+
+
+def test_triage_classes_binds_latest_rejected_event(tmp_state, sample_project):
+    """_triage_classes maps a currently-REVIEW_REJECTED task to the class on its
+    LATEST REVIEW_RECORDED event. Three NEGATIVE controls: (a) a task not in
+    REVIEW_REJECTED is excluded; (b) a task whose LATEST review leg is an infra
+    'incomplete' does NOT inherit an earlier rejection's class (no stale bleed);
+    (c) a rejected event with no class is excluded."""
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+
+    # (positive) rejected + class, task in REVIEW_REJECTED
+    _seed_task("demo", "t-tc-pos", TaskState.REVIEW_REJECTED)
+    _seed_review_recorded("demo", "t-tc-pos", "rejected", reject_class="architectural")
+    # (a) same event shape but task is QUEUED, not REVIEW_REJECTED
+    _seed_task("demo", "t-tc-wrongstate", TaskState.QUEUED)
+    _seed_review_recorded("demo", "t-tc-wrongstate", "rejected", reject_class="architectural")
+    # (b) earlier rejected+class, then a LATER infra 'incomplete' -> no bleed
+    _seed_task("demo", "t-tc-infra", TaskState.REVIEW_REJECTED)
+    _seed_review_recorded("demo", "t-tc-infra", "rejected", reject_class="architectural")
+    _seed_review_recorded("demo", "t-tc-infra", "incomplete")
+    # (c) rejected but NO class stamped
+    _seed_task("demo", "t-tc-noclass", TaskState.REVIEW_REJECTED)
+    _seed_review_recorded("demo", "t-tc-noclass", "rejected")
+
+    states = {tid: storage.load_state("demo", tid) for tid in
+              ("t-tc-pos", "t-tc-wrongstate", "t-tc-infra", "t-tc-noclass")}
+    out = d._triage_classes("demo", states)
+
+    assert out == {"t-tc-pos": "architectural"}
+
+
+def test_dispatch_implementer_embeds_prior_review_verdict(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """End-to-end wiring: a QUEUED task with a committed REJECTED review on its
+    feat branch dispatches with build_dispatch(prior_verdict=<the review prose>)
+    -- proving _review_rationale is read AND threaded. NEGATIVE: a task with no
+    committed review dispatches with prior_verdict=None (unchanged first pass)."""
+    cfg = sample_project
+
+    # positive: prior rejected review exists on the branch
+    (cfg.root / "handoff" / "demo-P02-mutex.md").write_text(MUTEX_HANDOFF, encoding="utf-8")
+    task_id = "demo-P02-mutex"
+    _make_feature_branch(cfg.root, task_id, f"{task_id}.py", f"# {task_id}\n")
+    _commit_review_report(cfg.root, task_id, cfg.reports_dir,
+                          "# Review\n\nThe backoff ignores the max cap.\n\nVERDICT: REJECTED\n")
+    _seed_task("demo", task_id, TaskState.QUEUED, handoff_path="handoff/demo-P02-mutex.md")
+    _scripted(monkeypatch, [[reconcile.DispatchImplementer(task_id=task_id, route_id="fake-cli")]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    call = patch_siblings["build_dispatch"][-1]
+    assert call["task_id"] == task_id
+    assert call["prior_verdict"] is not None
+    assert "ignores the max cap" in call["prior_verdict"]
+
+    # NEGATIVE: a different task with a feat branch but NO committed review
+    task2 = "t-di-fresh"
+    _make_feature_branch(cfg.root, task2, f"{task2}.py", f"# {task2}\n")
+    _seed_task("demo", task2, TaskState.QUEUED, handoff_path=None)
+    _scripted(monkeypatch, [[reconcile.DispatchImplementer(task_id=task2, route_id="fake-cli")]])
+    d.run_pass("demo")
+
+    call2 = patch_siblings["build_dispatch"][-1]
+    assert call2["task_id"] == task2
+    assert call2["prior_verdict"] is None
+
+
+def test_build_input_plumbs_head_revision_and_triage_class(
+    tmp_state, sample_project, patch_siblings, monkeypatch
+):
+    """Self-review gap-closer (the B5 _attempt_scan lesson): reconcile tests
+    inject head_revision/triage_class directly, so a field could be CONSUMED by
+    the planner yet never PLUMBED by the daemon's _build_input -- a silent
+    dead-wire. Run a REAL pass and inspect the ReconcileInput the daemon built:
+    head_revision must be main's sha, and a REVIEW_REJECTED task's stamped class
+    must appear in triage_class. Without the two _build_input lines this fails."""
+    cfg = sample_project
+    _seed_task("demo", "t-plumb", TaskState.REVIEW_REJECTED)
+    _seed_review_recorded("demo", "t-plumb", "rejected", reject_class="product")
+
+    captured = _scripted(monkeypatch, [[]])          # planner returns no actions
+    daemon.Daemon({"demo": cfg.root}).run_pass("demo")
+
+    assert captured, "plan_project was never called -- no ReconcileInput built"
+    inp = captured[0]
+    assert inp.head_revision is not None and len(inp.head_revision) == 40
+    assert inp.triage_class.get("t-plumb") == "product"

@@ -3525,3 +3525,214 @@ def test_exhausted_reject_escalates_to_needs_decision_when_carveless():
     t = [a for a in plan_project(_exhausted_reject_inp(cfg))
          if isinstance(a, Transition) and a.task_id == "P01"]
     assert len(t) == 1 and t[0].to == TaskState.NEEDS_DECISION
+
+
+# ============================================================================
+# B4b 2026-07-20 (D-060 triage stage; critique CRITIQUE.md:207 two-tier
+# reject-triage matrix {infra, stale-premise, fixable, architectural, product}
+# + the I4 drift-guard property). The infra class is split off upstream (A4/M7)
+# and asserted in test_daemon.py; here we pin the SEMANTIC routing reconcile
+# does for the other four, plus the precedence when several signals fire. Each
+# oracle carries its NEGATIVE control (same input minus the triggering signal
+# routes differently) so none is a hollow pass.
+# ============================================================================
+
+def _rejected_tsf(task_id="P01", used_attempts=1):
+    """A REVIEW_REJECTED task with `used_attempts` DONE implementer attempts
+    (so attempts_used() < the default max_attempts_per_task=3 -> the MECHANICAL
+    path would re-queue). Every triage/drift oracle below therefore proves it
+    OVERRIDES a would-be QUEUED, not merely that it agrees with the budget."""
+    atts = [
+        make_attempt(attempt_id=f"i{n}", state=AttemptState.EXITED, role=Role.IMPLEMENTER,
+                     receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
+        for n in range(used_attempts)
+    ]
+    return make_tsf(task_id=task_id, state=TaskState.REVIEW_REJECTED, attempts=atts)
+
+
+def _reject_inp(*, fm, tsf, cfg=None, head_revision=None, triage_class=None):
+    return ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg or make_config(max_attempts_per_task=3),
+        routes=make_routes(),
+        states={tsf.task_id: tsf},
+        frontmatters={fm.id: (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        head_revision=head_revision,
+        triage_class=triage_class or {},
+    )
+
+
+def _reject_transition(inp):
+    actions = plan_project(inp)
+    ts = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"]
+    assert len(ts) == 1, f"expected exactly one Transition for P01, got {ts}"
+    return ts[0]
+
+
+# -- I4 property: input_revision drift ---------------------------------------
+
+def test_premise_drifted_property():
+    """The I4 drift predicate (critique 'reject-triage matrix ... I4 property
+    test'): a REAL input_revision that mismatches main is drift; an abbreviated
+    sha that PREFIXES the full head is the same commit (not drift); the '0000000'
+    placeholder / empty / unknown head all fail-safe to no-drift."""
+    from nyxloom.reconcile import _premise_drifted as pd
+    # positive: divergent shas
+    assert pd("abc1234", "def5678") is True
+    assert pd("abc1234", "abc9999") is True          # shared prefix, then diverge
+    # negative: same commit (exact, or abbreviated prefix of the full head)
+    assert pd("abc1234", "abc1234") is False
+    assert pd("abc1234", "abc1234def0") is False     # abbreviated input, full head
+    assert pd("abc1234def0", "abc1234") is False     # full input, abbreviated head
+    assert pd("ABC1234", "abc1234") is False         # case-insensitive
+    # negative: no premise / unknown base -> never re-carve on missing data
+    assert pd("0000000", "def5678") is False
+    assert pd("", "def5678") is False
+    assert pd("0000000000000000", "def5678") is False
+    assert pd("abc1234", None) is False
+    assert pd("abc1234", "") is False
+    assert pd(None, "def5678") is False
+
+
+def test_review_rejected_stale_premise_routes_to_re_carve():
+    """Tier-1 I4: a REVIEW_REJECTED task whose handoff input_revision no longer
+    matches main -> READY_TO_CARVE (re-carve on a fresh base), OVERRIDING the
+    budget-remaining re-queue. Note names the stale premise."""
+    fm = replace(make_frontmatter(id="P01"), input_revision="abc123")
+    tsf = _rejected_tsf()                       # budget remains -> mechanical would QUEUE
+    inp = _reject_inp(fm=fm, tsf=tsf, head_revision="9999999deadbeef")
+    t = _reject_transition(inp)
+    assert t.to == TaskState.READY_TO_CARVE
+    assert "stale premise" in (t.notes or "").lower()
+
+
+def test_review_rejected_no_drift_when_revision_matches_requeues():
+    """I4 NEGATIVE control: identical input_revision and main HEAD (an
+    abbreviated sha that prefixes the full head) is NOT drift -> the task falls
+    through to the mechanical budget path and re-queues, proving the re-carve in
+    the test above is caused by the mismatch, not merely by being rejected."""
+    fm = replace(make_frontmatter(id="P01"), input_revision="abc123")
+    tsf = _rejected_tsf()
+    inp = _reject_inp(fm=fm, tsf=tsf, head_revision="abc123def456789")
+    t = _reject_transition(inp)
+    assert t.to == TaskState.QUEUED
+
+
+def test_review_rejected_placeholder_revision_is_not_drift():
+    """I4 NEGATIVE: the '0000000' placeholder (carver could not infer a base)
+    is not a premise to invalidate -> no re-carve even against a real main
+    HEAD; the task takes the mechanical budget path."""
+    fm = replace(make_frontmatter(id="P01"), input_revision="0000000")
+    tsf = _rejected_tsf()
+    inp = _reject_inp(fm=fm, tsf=tsf, head_revision="9999999deadbeef")
+    t = _reject_transition(inp)
+    assert t.to == TaskState.QUEUED
+
+
+# -- Tier-2 class routing -----------------------------------------------------
+
+def test_review_rejected_product_class_escalates_to_needs_decision():
+    """Tier-2 'product': routes to NEEDS_DECISION (a human decides direction),
+    OVERRIDING the budget-remaining re-queue."""
+    fm = replace(make_frontmatter(id="P01"), input_revision="abc123")
+    tsf = _rejected_tsf()
+    inp = _reject_inp(fm=fm, tsf=tsf, head_revision="abc123def",  # no drift
+                      triage_class={"P01": "product"})
+    t = _reject_transition(inp)
+    assert t.to == TaskState.NEEDS_DECISION
+    assert "product" in (t.notes or "").lower()
+
+
+def test_review_rejected_architectural_class_routes_to_re_carve():
+    """Tier-2 'architectural': a design/scope defect no same-base retry can fix
+    -> READY_TO_CARVE, OVERRIDING the budget-remaining re-queue."""
+    fm = replace(make_frontmatter(id="P01"), input_revision="abc123")
+    tsf = _rejected_tsf()
+    inp = _reject_inp(fm=fm, tsf=tsf, head_revision="abc123def",  # no drift
+                      triage_class={"P01": "architectural"})
+    t = _reject_transition(inp)
+    assert t.to == TaskState.READY_TO_CARVE
+    assert "architectural" in (t.notes or "").lower()
+
+
+def test_review_rejected_fixable_class_requeues():
+    """Tier-2 'fixable' NEGATIVE control: unlike architectural/product, a
+    bounded local defect takes the mechanical budget path -> QUEUED (budget
+    remains). Same input as the two tests above but class='fixable' -> a
+    DIFFERENT route, proving the class value is what drives the decision."""
+    fm = replace(make_frontmatter(id="P01"), input_revision="abc123")
+    tsf = _rejected_tsf()
+    inp = _reject_inp(fm=fm, tsf=tsf, head_revision="abc123def",
+                      triage_class={"P01": "fixable"})
+    t = _reject_transition(inp)
+    assert t.to == TaskState.QUEUED
+
+
+def test_review_rejected_precedence_product_beats_drift():
+    """Precedence: product > stale-premise. When BOTH a product class and drift
+    fire, the human decision wins (a re-carve cannot resolve a product question)
+    -> NEEDS_DECISION, not READY_TO_CARVE."""
+    fm = replace(make_frontmatter(id="P01"), input_revision="abc123")
+    tsf = _rejected_tsf()
+    inp = _reject_inp(fm=fm, tsf=tsf, head_revision="9999999deadbeef",  # drift
+                      triage_class={"P01": "product"})
+    t = _reject_transition(inp)
+    assert t.to == TaskState.NEEDS_DECISION
+
+
+# -- carve-less pipeline closure (gated/lean) --------------------------------
+
+_NO_CARVE_PIPELINE = ["implement", "self_review", "frontier_review", "triage", "auto_merge"]
+
+
+def test_review_rejected_stale_premise_no_carve_escalates():
+    """A carve-less pipeline (gated/lean) has no stage to re-scope a stale
+    premise -> escalate to NEEDS_DECISION rather than dead-end in READY_TO_CARVE
+    with no owner. This is the closure-safety half of the drift-guard."""
+    cfg = replace(make_config(max_attempts_per_task=3), pipeline=list(_NO_CARVE_PIPELINE))
+    fm = replace(make_frontmatter(id="P01"), input_revision="abc123")
+    tsf = _rejected_tsf()
+    inp = _reject_inp(fm=fm, tsf=tsf, cfg=cfg, head_revision="9999999deadbeef")
+    t = _reject_transition(inp)
+    assert t.to == TaskState.NEEDS_DECISION
+    assert "no carve" in (t.notes or "").lower()
+
+
+def test_review_rejected_architectural_no_carve_escalates():
+    """Same closure safety for the architectural class in a carve-less
+    pipeline -> NEEDS_DECISION, never a dead-end READY_TO_CARVE."""
+    cfg = replace(make_config(max_attempts_per_task=3), pipeline=list(_NO_CARVE_PIPELINE))
+    fm = replace(make_frontmatter(id="P01"), input_revision="abc123")
+    tsf = _rejected_tsf()
+    inp = _reject_inp(fm=fm, tsf=tsf, cfg=cfg, head_revision="abc123def",
+                      triage_class={"P01": "architectural"})
+    t = _reject_transition(inp)
+    assert t.to == TaskState.NEEDS_DECISION
+    assert "no carve" in (t.notes or "").lower()
+
+
+# -- graceful degradation / parity -------------------------------------------
+
+def test_review_rejected_unclassified_matches_pre_b4b_budget_path():
+    """Parity: with NO triage_class and NO head_revision (an older reviewer, or
+    the daemon could not resolve main), routing is byte-for-byte the pre-B4b
+    mechanical budget path: budget remaining -> QUEUED; exhausted (+carve) ->
+    READY_TO_CARVE. Proves B4b is additive, degrading gracefully to A4a."""
+    fm = make_frontmatter(id="P01")
+    # budget remaining
+    t1 = _reject_transition(_reject_inp(fm=fm, tsf=_rejected_tsf(used_attempts=1)))
+    assert t1.to == TaskState.QUEUED
+    # budget exhausted, carve present (default pipeline)
+    cfg1 = make_config(max_attempts_per_task=1)
+    t2 = _reject_transition(_reject_inp(fm=fm, tsf=_rejected_tsf(used_attempts=1), cfg=cfg1))
+    assert t2.to == TaskState.READY_TO_CARVE
+    assert "exhausted" in (t2.notes or "").lower()

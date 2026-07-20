@@ -1205,3 +1205,113 @@ def test_self_review_prompt_is_mechanical_oracle_anchored():
         assert token in low, f"self_review prompt missing mechanical token {token!r}"
     assert "SELF_REVIEW: APPROVED" in p and "SELF_REVIEW: REJECTED" in p
     assert "reports/demo-P01-SELFREVIEW.md" in p
+
+
+# ============================================================================
+# B4b 2026-07-20 (D-060 triage; critique CRITIQUE.md:207). Two prompt
+# contracts: (1) the FRONTIER_REVIEW prompt makes the reviewer self-stamp a
+# REJECT_CLASS on a rejection (the Tier-2 producer, D-066); (2) an IMPLEMENTER
+# re-dispatch embeds the prior review verdict so a re-queued fix is targeted,
+# never the "bare same-model context-free retry" the critique bans. Each pins
+# a NEGATIVE so the assertion cannot pass hollowly.
+# ============================================================================
+
+def _fake_route():
+    return RouteDef(route_id="r-b4b", cli="fake", model="m")
+
+
+def test_frontier_review_prompt_requires_reject_class():
+    """The reviewer prompt instructs a REJECT_CLASS line with all three classes
+    on a REJECTED verdict (the Tier-2 producer). NEGATIVE: the IMPLEMENTER and
+    CARVER prompts carry NO such instruction -- only the reviewer classifies."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.FRONTIER_REVIEW,
+    )
+    assert "REJECT_CLASS" in prompt
+    for cls in ("fixable", "architectural", "product"):
+        assert cls in prompt, f"reviewer prompt must define the {cls!r} class"
+    assert "REJECTED" in prompt
+
+    _a2, impl_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER,
+    )
+    assert "REJECT_CLASS" not in impl_prompt
+
+
+def test_frontier_review_prompt_stays_under_argv_max_with_real_paths():
+    """B4b REGRESSION GUARD (the live gate catch): the REJECT_CLASS block must
+    NOT push the reviewer prompt past argv_max. The first cut used minimal paths
+    in the content test above and passed at ~1490 chars, but real deep-worktree
+    paths overflowed 1500 -> build_dispatch raised -> the review leg never
+    dispatched -> every task stranded at AWAITING_REVIEW (7 behavioral tests).
+    Pin a realistic long path AND a comfortable margin so a future prompt edit
+    that eats the headroom fails HERE, cheaply, not in a stranded daemon."""
+    long_task = "nyxloom-P74-reviewer-session-reuse-and-spine-digest"
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(),
+        handoff_path=f"nyxloom-trove/handoffs/{long_task}.md",
+        worktree=f"/workspaces/vbpub/.worktrees/flow-stages/nyxloom/.worktrees/feat/{long_task}",
+        branch=f"feat/{long_task}", task_id=long_task,
+        gate_hint="cd .. && MOCK_MODE=true pytest tests -q",
+        receipt_path=f"/state/attempts/att-0123456789abcdef/receipt.json",
+        role=Role.FRONTIER_REVIEW, attempt_id="att-0123456789abcdef",
+    )
+    # argv_max default is 1500; keep >= 200 chars of headroom for even longer paths.
+    assert len(prompt) <= 1300, f"reviewer prompt too long ({len(prompt)}); trim the REJECT_CLASS block"
+    assert "REJECT_CLASS" in prompt          # not trimmed away entirely
+
+
+def test_implementer_re_dispatch_embeds_prior_verdict():
+    """A re-queued implementer dispatch with a prior_verdict embeds that prose
+    verbatim, flagged as a prior rejection to fix. NEGATIVE: prior_verdict=None
+    (a first dispatch) produces a prompt with NO such block -- so the embed is
+    caused by the verdict, not always present."""
+    rationale = "Findings: the retry backoff ignores the max cap.\nVERDICT: REJECTED"
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER, prior_verdict=rationale,
+    )
+    assert "ignores the max cap" in prompt          # the reviewer's prose is embedded
+    assert "REJECTED by review" in prompt
+
+    _a2, first_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER, prior_verdict=None,
+    )
+    assert "REJECTED by review" not in first_prompt
+    assert "ignores the max cap" not in first_prompt
+
+
+def test_prior_verdict_only_embedded_for_implementer():
+    """The docstring's claim 'Only the IMPLEMENTER branch consults it' pinned:
+    a prior_verdict passed to a FRONTIER_REVIEW dispatch is NOT embedded (the
+    reviewer is reviewing fresh, not fixing a prior rejection)."""
+    rationale = "Findings: unique-marker-xyz should not leak into the reviewer prompt."
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.FRONTIER_REVIEW, prior_verdict=rationale,
+    )
+    assert "unique-marker-xyz" not in prompt
+
+
+def test_implementer_prior_verdict_bounded_to_argv_max():
+    """B4b: a multi-KB review report embedded into an implementer re-dispatch is
+    TRUNCATED to fit argv_max, never raises -- an unbounded embed would overflow
+    the guard and strand the reject-loop's fix pass. Keeps the HEAD of the
+    findings (most salient) + a truncation marker, and stays within budget."""
+    huge = "REVIEWER FINDINGS: " + ("the retry cap is wrong; " * 400)  # ~9 KB
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER, prior_verdict=huge,
+    )
+    assert len(prompt) <= 1500                       # never overflows the guard
+    assert "REVIEWER FINDINGS" in prompt             # keeps the head of the review
+    assert "truncated to fit" in prompt              # marked as truncated

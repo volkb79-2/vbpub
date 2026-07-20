@@ -105,8 +105,15 @@ STAGE_REGISTRY: dict[str, Stage] = {
         # is what lets a carve-less pipeline (`gated`/`lean`) validate. B4a: when
         # the pipeline DOES include a carve stage, reconcile UPGRADES the
         # exhausted case to READY_TO_CARVE (carve owns that state, so it is never
-        # a dead-end and needs no separate declaration here). B4b will add the
-        # drift-guard (stale input_revision -> re-carve) and the LLM tier.
+        # a dead-end and needs no separate declaration here). B4b (DONE 2026-07-20)
+        # adds the rest of the {infra, stale-premise, fixable, architectural,
+        # product} matrix as further CONTEXT-SENSITIVE upgrades in reconcile, not
+        # new declared edges: stale-premise (input_revision drift, critique I4) and
+        # architectural -> READY_TO_CARVE when a carve stage is present (else the
+        # NEEDS_DECISION floor); product -> NEEDS_DECISION (already the declared
+        # floor's target). Keeping the tuple as the minimal always-safe floor is
+        # deliberate -- declaring READY_TO_CARVE here would force `carve` into
+        # every pipeline and break the carve-less presets' closure check.
         exit_map=(("fixable", TaskState.QUEUED),
                   ("exhausted", TaskState.NEEDS_DECISION)),
         owns=frozenset({TaskState.REVIEW_REJECTED})),
