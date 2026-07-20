@@ -76,6 +76,21 @@ STAGE_REGISTRY: dict[str, Stage] = {
                   ("dead_end", TaskState.BLOCKED)),
         owns=frozenset({TaskState.QUEUED, TaskState.ACTIVE}),
         concurrency=None),   # inherit policy.max_active_tasks unless overridden
+    "self_review": Stage(
+        name="self_review", role=Role.SELF_REVIEW,
+        entry_state=TaskState.SELF_REVIEWING, exit_from=TaskState.SELF_REVIEWING,
+        # B5 (2026-07-20): the implementer's WARM session (context=session-reuse)
+        # reviews its own diff before the expensive frontier reviewer sees it.
+        # approved -> AWAITING_REVIEW (hand to the frontier reviewer); rejected ->
+        # QUEUED (a fresh, budget-bounded fix attempt -- deliberately NOT ACTIVE,
+        # which would re-expose the ACTIVE-scoped stale-receipt re-consumption the
+        # frontier reject loop avoids; the warm in-session fix loop is deferred,
+        # see D-063). Ships in every preset but NOT in DEFAULT_PIPELINE (parity:
+        # a no-pipeline project keeps today's exact behaviour). Must sit
+        # immediately after `implement` (validate_pipeline rule 5).
+        exit_map=(("approved", TaskState.AWAITING_REVIEW),
+                  ("rejected", TaskState.QUEUED)),
+        owns=frozenset({TaskState.SELF_REVIEWING})),
     "frontier_review": Stage(
         name="frontier_review", role=Role.FRONTIER_REVIEW,
         entry_state=TaskState.AWAITING_REVIEW, exit_from=TaskState.AWAITING_REVIEW,
@@ -108,22 +123,29 @@ STAGE_REGISTRY: dict[str, Stage] = {
         owns=frozenset({TaskState.MERGED, TaskState.VALIDATING})),
 }
 
-# The default pipeline == the current hardcoded behaviour (the parity baseline).
-# A project with no `pipeline` key gets exactly this, so existing projects are
-# byte-identical after B2.
+# The default pipeline == the PROVEN STANDARD flow, self_review included. This is
+# a greenfield engine with no external byte-compat contract to preserve, so the
+# compiled default is the best recommended pipeline -- NOT a legacy subset. A
+# project with no `pipeline` key gets self-review (warm, near-free, run before the
+# expensive frontier reviewer) by default; `full` is an alias for it. A project
+# that deliberately wants the pre-B5 flow composes an explicit legacy list
+# WITHOUT self_review (proven byte-identical by test_*_legacy_pipeline_*). Opting
+# OUT is the documented exception; the good default is the rule.
 DEFAULT_PIPELINE: tuple = (
-    "carve", "implement", "frontier_review", "triage", "auto_merge", "post_merge_gate",
+    "carve", "implement", "self_review", "frontier_review", "triage", "auto_merge", "post_merge_gate",
 )
 
 # Ergonomic presets (docs/spec-flow-stages.md). B4a makes the carve-less presets
 # real (triage escalates exhausted rejects to NEEDS_DECISION when no carve stage
-# is present, so they close): `gated` drops carve (externally-fed handoffs +
-# a real gate, e.g. dstdns); `lean` also drops the gate (low-ceremony projects).
-# self_review-in-every-preset lands in B5 (needs the SELF_REVIEWING state).
+# is present, so they close). B5: self_review sits IMMEDIATELY after implement in
+# EVERY preset (the warm, near-free self-check before the expensive frontier
+# reviewer). `full` == DEFAULT_PIPELINE (the proven standard); `gated` drops carve
+# (externally-fed handoffs + a real gate, e.g. dstdns); `lean` also drops the gate
+# (low-ceremony projects).
 PRESETS: dict[str, tuple] = {
     "full": DEFAULT_PIPELINE,
-    "gated": ("implement", "frontier_review", "triage", "auto_merge", "post_merge_gate"),
-    "lean": ("implement", "frontier_review", "triage", "auto_merge"),
+    "gated": ("implement", "self_review", "frontier_review", "triage", "auto_merge", "post_merge_gate"),
+    "lean": ("implement", "self_review", "frontier_review", "triage", "auto_merge"),
 }
 
 
@@ -147,14 +169,16 @@ def compose(spec: object) -> list[str]:
 
 def validate_pipeline(names: list[str]) -> None:
     """Raise ValueError unless the composed pipeline closes against the frozen
-    graph. Four checks (docs/spec-flow-stages.md, load-time validation):
+    graph. Five checks (docs/spec-flow-stages.md, load-time validation):
 
       1. every stage name is a known kind, and no state is owned by two stages;
       2. every exit_map target is a real TASK_TRANSITIONS edge from exit_from;
       3. every non-terminal exit target is HANDLED -- owned by a present stage,
          the entry of a present stage, a lifecycle state, or the post-merge
          region -- so no stage routes a task into a dead-end;
-      4. the pipeline can reach a terminal state.
+      4. the pipeline can reach a terminal state;
+      5. self_review, if present, sits immediately after implement (it resumes
+         that stage's warm session, so it is meaningless anywhere else).
     """
     if not names:
         raise ValueError("pipeline is empty")
@@ -163,6 +187,23 @@ def validate_pipeline(names: list[str]) -> None:
         raise ValueError(
             f"unknown stage kind(s): {unknown}; menu: {sorted(STAGE_REGISTRY)}")
     stages = [STAGE_REGISTRY[n] for n in names]
+
+    # 5 (B5): self_review adjacency -- checked EARLY (before the generic
+    # ownership/dead-end scans) so a misplaced or implement-less self_review
+    # gets a precise message instead of a downstream QUEUED/AWAITING_REVIEW
+    # dead-end complaint. self_review resumes the implementer's warm session
+    # (context=session-reuse) to review the diff that session just produced, so
+    # it is meaningless -- and has no session to borrow -- anywhere but the slot
+    # immediately after implement.
+    if "self_review" in names:
+        if "implement" not in names:
+            raise ValueError(
+                "self_review requires the implement stage -- it resumes the "
+                "implementer's warm session")
+        if names.index("self_review") != names.index("implement") + 1:
+            raise ValueError(
+                "self_review must immediately follow implement (it resumes that "
+                "stage's warm session); found it at a non-adjacent position")
 
     # 1: single ownership
     owner: dict[TaskState, str] = {}

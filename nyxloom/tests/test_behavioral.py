@@ -369,15 +369,16 @@ def test_fake_misnamed_review_file_still_approves(behavioral_project, tmp_state,
     assert f"{TASK_ID}-REVIEW.md" not in ls
 
 
-def test_fake_null_commit_receipt_still_reaches_awaiting_review(behavioral_project, tmp_state, fake_cli):
+def test_fake_null_commit_receipt_still_reaches_self_review(behavioral_project, tmp_state, fake_cli):
     """The wrapper always writes head_commit=null itself (it never reads
     back anything the CLI wrote); the daemon's _crosscheck_head_commit only
     upgrades it to a real sha when the branch is ACTUALLY ahead of
     default_branch. Script an implementer step that commits NOTHING: the
     branch stays even with default_branch (a genuine null-head_commit
-    case), yet a DONE receipt still reaches AWAITING_REVIEW today --
-    documented here as observed behavior (not asserted as either
-    correct or incorrect; see the REPORT)."""
+    case), yet a DONE receipt still PROGRESSES past ACTIVE. Under the B5
+    default pipeline (self_review included) that first stop is SELF_REVIEWING
+    -- the implementer's own warm self-check -- not straight to
+    AWAITING_REVIEW. Documented as observed behavior (see the REPORT)."""
     cfg = behavioral_project
     fake_cli.queue(TASK_ID, "implementer", FakeStep())  # no commits, exit 0
 
@@ -389,7 +390,7 @@ def test_fake_null_commit_receipt_still_reaches_awaiting_review(behavioral_proje
             break
 
     tsf = storage.load_state("demo", TASK_ID)
-    assert tsf.state == TaskState.AWAITING_REVIEW
+    assert tsf.state == TaskState.SELF_REVIEWING
 
     branch_sha = _git(cfg, "rev-parse", "--verify", f"feat/{TASK_ID}")
     main_sha = _git(cfg, "rev-parse", "--verify", cfg.default_branch)

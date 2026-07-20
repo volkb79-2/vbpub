@@ -178,3 +178,74 @@ def test_validate_stage_overrides_rejects_unknown_stage():
 def test_validate_stage_overrides_rejects_bad_concurrency(bad):
     with pytest.raises(ValueError, match="positive int"):
         validate_stage_overrides({"implement": {"concurrency": bad}})
+
+
+# --- B5/P73 self_review stage ----------------------------------------------
+
+def test_self_review_stage_owns_self_reviewing_and_routes_approved_rejected():
+    """The registered stage kind: owns SELF_REVIEWING, approved->AWAITING_REVIEW
+    (hand to the frontier reviewer), rejected->QUEUED (a fresh, budget-bounded
+    fix attempt; NOT ACTIVE -- see D-063)."""
+    st = STAGE_REGISTRY["self_review"]
+    assert st.entry_state == TaskState.SELF_REVIEWING
+    assert st.owns == frozenset({TaskState.SELF_REVIEWING})
+    assert dict(st.exit_map) == {
+        "approved": TaskState.AWAITING_REVIEW, "rejected": TaskState.QUEUED}
+
+
+def test_self_review_is_the_default_and_in_every_preset_after_implement():
+    """B5: self_review is the proven-standard default -- present in
+    DEFAULT_PIPELINE and every preset, always in the slot IMMEDIATELY after
+    implement (it resumes that stage's warm session). full == the compiled
+    default (greenfield: the default IS the recommended flow, not a subset)."""
+    for pl in (DEFAULT_PIPELINE, *PRESETS.values()):
+        assert "self_review" in pl
+        assert pl[pl.index("implement") + 1] == "self_review"
+    assert PRESETS["full"] == DEFAULT_PIPELINE
+
+
+def test_rejects_self_review_not_immediately_after_implement():
+    """Rule 5: self_review anywhere but the slot right after implement is
+    rejected. Uses a triage-bearing pipeline so it is otherwise closed, so ONLY
+    rule 5 can be the cause (the paired control below confirms it)."""
+    with pytest.raises(ValueError, match="immediately follow"):
+        validate_pipeline(["implement", "frontier_review", "triage", "self_review", "auto_merge"])
+
+
+def test_rejects_self_review_before_implement():
+    with pytest.raises(ValueError, match="immediately follow"):
+        validate_pipeline(["self_review", "implement", "frontier_review", "triage", "auto_merge"])
+
+
+def test_rejects_self_review_without_implement():
+    """Rule 5 (checked EARLY, before the generic dead-end scan): self_review has
+    no session to borrow without an implement stage -- a precise message, not a
+    downstream QUEUED-dead-end complaint."""
+    with pytest.raises(ValueError, match="requires the implement"):
+        validate_pipeline(["self_review", "frontier_review", "triage", "auto_merge"])
+
+
+def test_adjacency_rejection_is_placement_specific_not_stage_set():
+    """Non-hollow control for the rejections above: the SAME stage set, only
+    reordered so self_review sits right after implement, validates cleanly. So
+    the rejection is caused by rule 5 (placement), not by the stages present --
+    neutering rule 5 would let the misplaced form pass."""
+    misplaced = ["implement", "frontier_review", "triage", "self_review", "auto_merge"]
+    with pytest.raises(ValueError, match="immediately follow"):
+        validate_pipeline(misplaced)
+    adjacent = ["implement", "self_review", "frontier_review", "triage", "auto_merge"]
+    validate_pipeline(adjacent)  # closes cleanly -- only placement differed
+
+
+def test_legacy_pipeline_without_self_review_still_validates():
+    """The opt-out path: a project can compose the pre-B5 flow (no self_review)
+    and it still closes -- proving self_review is a composable stage, not a
+    hardcoded requirement. The composition port of B5's parity claim (a
+    no-self_review pipeline plans implement-done exactly as pre-B5)."""
+    validate_pipeline(["carve", "implement", "frontier_review", "triage",
+                       "auto_merge", "post_merge_gate"])
+
+
+def test_compose_full_preset_includes_self_review():
+    assert "self_review" in compose("full")
+    assert "self_review" in compose(None)  # None -> DEFAULT_PIPELINE, which now has it
