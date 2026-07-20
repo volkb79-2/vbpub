@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from . import paths
-from .stages import DEFAULT_PIPELINE, compose, validate_pipeline
+from .stages import (
+    DEFAULT_PIPELINE, compose, validate_pipeline, validate_stage_overrides,
+)
 from .types import Basis, Usage
 
 
@@ -164,6 +166,11 @@ class ProjectConfig:
     # `pipeline` key is byte-identical. load() resolves a preset name / explicit
     # list here and validates closure against the frozen graph.
     pipeline: list[str] = field(default_factory=lambda: list(DEFAULT_PIPELINE))
+    # B3/P71 per-stage scheduling: `[stage.<name>]` TOML tables, e.g.
+    # `[stage.implement] concurrency = 4`. Resolved per stage by
+    # stages.effective_concurrency(); empty (the default) means every stage uses
+    # its registry default -- implement inherits policy.max_active_tasks (parity).
+    stage_overrides: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, root: Path) -> "ProjectConfig":
@@ -226,6 +233,9 @@ class ProjectConfig:
         # load fails loudly rather than the daemon planning an invalid flow.
         pipeline = compose(data.get("pipeline", data.get("project", {}).get("pipeline")))
         validate_pipeline(pipeline)
+        # B3: per-stage `[stage.<name>]` overrides (currently just concurrency).
+        stage_overrides = {name: dict(tbl) for name, tbl in data.get("stage", {}).items()}
+        validate_stage_overrides(stage_overrides)
         return cls(
             project_id=data["project"]["id"],
             root=root,
@@ -245,6 +255,7 @@ class ProjectConfig:
             roadmap=data["project"].get("roadmap"),
             backlog=data["project"].get("backlog"),
             pipeline=pipeline,
+            stage_overrides=stage_overrides,
         )
 
     def redact(self, text: str) -> str:

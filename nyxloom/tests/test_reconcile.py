@@ -3368,3 +3368,54 @@ def test_validating_autocompletes_when_pipeline_omits_gate():
     completes = [a for a in task_actions
                  if isinstance(a, Transition) and a.to == TaskState.COMPLETED]
     assert len(completes) == 1
+
+
+# ============================================================================
+# B3/P71: per-stage concurrency -- [stage.implement].concurrency overrides the
+# global policy.max_active_tasks for implementer dispatch capacity.
+# ============================================================================
+
+def test_implement_concurrency_override_caps_dispatch_below_policy():
+    """B3 discrimination: 3 QUEUED, policy.max_active_tasks=5, but a
+    [stage.implement] concurrency=1 override caps dispatch to exactly 1. Neuter
+    the resolver (read max_active_tasks directly) and this dispatches 3 -- a
+    real discriminator, and the inverse of test_dispatch_order_three_tasks_max_two."""
+    cfg = replace(make_config(max_active_tasks=5),
+                  stage_overrides={"implement": {"concurrency": 1}})
+    routes = make_routes(route_ids=["route-1", "route-2"])
+    fms = {tid: (make_frontmatter(id=tid), "h.md") for tid in ("P01", "P02", "P03")}
+    states = {tid: make_tsf(task_id=tid, state=TaskState.QUEUED)
+              for tid in ("P01", "P02", "P03")}
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15), cfg=cfg, routes=routes, states=states,
+        frontmatters=fms, lint_clean={}, project_paused=False,
+        decisions_open=set(), merged_branches=set(), leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        log_quiet_seconds={}, pid_alive={}, receipts={},
+    )
+
+    dispatches = [a for a in plan_project(inp) if isinstance(a, DispatchImplementer)]
+    assert len(dispatches) == 1
+    assert dispatches[0].task_id == "P01"
+
+
+def test_implement_concurrency_default_matches_max_active_tasks():
+    """B3 parity: with no [stage.implement] override, dispatch capacity is
+    exactly policy.max_active_tasks -- identical to pre-B3 behaviour."""
+    cfg = make_config(max_active_tasks=2)   # no stage_overrides
+    routes = make_routes(route_ids=["route-1", "route-2"])
+    fms = {tid: (make_frontmatter(id=tid), "h.md") for tid in ("P01", "P02", "P03")}
+    states = {tid: make_tsf(task_id=tid, state=TaskState.QUEUED)
+              for tid in ("P01", "P02", "P03")}
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15), cfg=cfg, routes=routes, states=states,
+        frontmatters=fms, lint_clean={}, project_paused=False,
+        decisions_open=set(), merged_branches=set(), leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        log_quiet_seconds={}, pid_alive={}, receipts={},
+    )
+
+    dispatches = [a for a in plan_project(inp) if isinstance(a, DispatchImplementer)]
+    assert len(dispatches) == 2

@@ -242,6 +242,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ProjectConfig, RouteDef, Routes
+from .stages import effective_concurrency
 from .types import (
     Blocker, BlockerType, Frontmatter, TaskState, TaskStateFile, AttemptState,
     ReceiptResult, Role, TERMINAL_ATTEMPT_STATES, TERMINAL_TASK_STATES
@@ -666,7 +667,11 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
         1 for tsf in inp.states.values()
         if tsf.state in (TaskState.ACTIVE, TaskState.AWAITING_REVIEW)
     )
-    dispatch_capacity = inp.cfg.policy.max_active_tasks - active_count
+    # B3/P71: the implement stage's concurrency (a per-project [stage.implement]
+    # override, else policy.max_active_tasks by default -> parity).
+    implement_cap = effective_concurrency(
+        "implement", inp.cfg.stage_overrides, inp.cfg.policy.max_active_tasks)
+    dispatch_capacity = implement_cap - active_count
 
     # Find all eligible QUEUED tasks, sorted by task_id
     queued_tasks = []
@@ -1194,12 +1199,14 @@ def dispatch_eligible(fm: Frontmatter, tsf: TaskStateFile, inp: ReconcileInput) 
         if d_id in inp.decisions_open:
             return (False, f'decision-hold:{d_id}')
 
-    # 4. wip-cap check
+    # 4. wip-cap check (B3/P71: the implement stage's effective concurrency --
+    # a [stage.implement] override wins, else policy.max_active_tasks -> parity)
     active_count = sum(
         1 for tid, st in inp.states.items()
         if st.state in (TaskState.ACTIVE, TaskState.AWAITING_REVIEW)
     )
-    if active_count >= inp.cfg.policy.max_active_tasks:
+    if active_count >= effective_concurrency(
+            "implement", inp.cfg.stage_overrides, inp.cfg.policy.max_active_tasks):
         return (False, 'wip-cap')
 
     # 5. attempts-exhausted check (P60 M8: single role-filtered accessor --
