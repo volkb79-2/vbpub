@@ -455,6 +455,82 @@ def test_dispatch_implementer(tmp_state, sample_project, patch_siblings, monkeyp
 
 
 # --------------------------------------------------------------------------
+# P55 2026-07-19 (Wave-A3, R5): execute-time admission gate. Every launch
+# is re-checked against pause + budget at the EFFECT BOUNDARY, not just at
+# plan time -- so a mid-pass auto-pause or any planner gap cannot slip an
+# agent through. Tests hand-feed the launch action (bypassing the planner's
+# own guard) so the EXECUTOR's gate is what must refuse.
+
+def test_admission_gate_drain_agents_blocks_dispatch_at_execute(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    cfg = sample_project
+    (cfg.root / "handoff" / "demo-P02-mutex.md").write_text(MUTEX_HANDOFF, encoding="utf-8")
+    task_id = "demo-P02-mutex"
+    _seed_task("demo", task_id, TaskState.QUEUED, handoff_path="handoff/demo-P02-mutex.md")
+    paths.pause_flag("demo").parent.mkdir(parents=True, exist_ok=True)
+    paths.pause_flag("demo").write_text("drain-agents", encoding="utf-8")
+
+    _scripted(monkeypatch, [[reconcile.DispatchImplementer(task_id=task_id, route_id="fake-cli")]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    # No wrapper launch, and the paired QUEUED->ACTIVE transition was skipped too.
+    assert patch_siblings["launch_detached"] == []
+    assert storage.load_state("demo", task_id).state is TaskState.QUEUED
+
+
+def test_admission_gate_drain_agents_blocks_review_at_execute(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Review launch is execute-gated too (previously ungated for budget --
+    M9); under drain-agents a hand-fed LaunchReview produces no launch."""
+    cfg = sample_project
+    task_id = "demo-P02-mutex"
+    _seed_task("demo", task_id, TaskState.AWAITING_REVIEW, handoff_path="handoff/demo-P02-mutex.md")
+    paths.pause_flag("demo").parent.mkdir(parents=True, exist_ok=True)
+    paths.pause_flag("demo").write_text("drain-agents", encoding="utf-8")
+
+    _scripted(monkeypatch, [[reconcile.LaunchReview(wave_id="wave-1", task_ids=[task_id])]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    assert patch_siblings["launch_detached"] == []
+
+
+def test_admission_gate_mode_and_budget_matrix(tmp_state, sample_project):
+    """_dispatch_admissible enforces the mode-aware pause rules (matching the
+    planner) and ADDS the budget check the planner omits for resume/review
+    (M9). Direct unit test of the gate over the full kind x condition matrix."""
+    import dataclasses
+    cfg = sample_project
+    d = daemon.Daemon({"demo": cfg.root})
+    states = storage.list_states("demo")
+    flag = paths.pause_flag("demo")
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    kinds = ("dispatch", "resume", "review", "carve")
+
+    # run mode -> everything admissible
+    if flag.exists():
+        flag.unlink()
+    assert all(d._dispatch_admissible("demo", cfg, states, k)[0] for k in kinds)
+
+    # drain-agents -> no new agent process of ANY kind
+    flag.write_text("drain-agents", encoding="utf-8")
+    assert not any(d._dispatch_admissible("demo", cfg, states, k)[0] for k in kinds)
+
+    # drain-handoffs -> block NEW work, allow in-flight completion
+    flag.write_text("drain-handoffs", encoding="utf-8")
+    assert d._dispatch_admissible("demo", cfg, states, "dispatch")[0] is False
+    assert d._dispatch_admissible("demo", cfg, states, "carve")[0] is False
+    assert d._dispatch_admissible("demo", cfg, states, "resume")[0] is True
+    assert d._dispatch_admissible("demo", cfg, states, "review")[0] is True
+
+    # budget exhausted -> block ALL kinds, including review/resume (the M9 fix)
+    flag.unlink()
+    cfg0 = dataclasses.replace(cfg, policy=dataclasses.replace(cfg.policy, max_cost=0.0))
+    assert not any(d._dispatch_admissible("demo", cfg0, states, k)[0] for k in kinds)
+
+
+# --------------------------------------------------------------------------
 # P16 2026-07-15: CarveDispatch execution (carver automation, module
 # docstring's carve-automation section). The trigger itself is
 # test_reconcile.py's concern; these drive daemon._execute directly via
