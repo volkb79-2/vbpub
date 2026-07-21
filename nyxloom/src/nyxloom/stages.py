@@ -23,7 +23,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .log import get_logger
 from .types import TaskState, Role, TASK_TRANSITIONS, TERMINAL_TASK_STATES
+
+log = get_logger("stages")
 
 # States handled by the frozen mechanism or by manual operator action, never
 # owned by a composable stage: intake (DRAFT, NEEDS_DECISION), queue admission
@@ -191,14 +194,22 @@ def compose(spec: object) -> list[str]:
     list of stage names. Does NOT validate closure -- call validate_pipeline.
     """
     if spec is None:
-        return list(DEFAULT_PIPELINE)
+        result = list(DEFAULT_PIPELINE)
+        log.debug("pipeline composed", source="default", count=len(result))
+        return result
     if isinstance(spec, str):
         if spec not in PRESETS:
+            log.warning("pipeline compose rejected", reason="unknown-preset", preset=spec)
             raise ValueError(
                 f"unknown pipeline preset {spec!r}; known presets: {sorted(PRESETS)}")
-        return list(PRESETS[spec])
+        result = list(PRESETS[spec])
+        log.debug("pipeline composed", source="preset", preset=spec, count=len(result))
+        return result
     if isinstance(spec, (list, tuple)):
-        return [str(n) for n in spec]
+        result = [str(n) for n in spec]
+        log.debug("pipeline composed", source="explicit", count=len(result))
+        return result
+    log.warning("pipeline compose rejected", reason="invalid-spec-type", spec_type=type(spec).__name__)
     raise ValueError(f"pipeline must be a preset name or a list of stage names, got {type(spec).__name__}")
 
 
@@ -216,9 +227,11 @@ def validate_pipeline(names: list[str]) -> None:
          that stage's warm session, so it is meaningless anywhere else).
     """
     if not names:
+        log.warning("pipeline validation failed", reason="empty")
         raise ValueError("pipeline is empty")
     unknown = [n for n in names if n not in STAGE_REGISTRY]
     if unknown:
+        log.warning("pipeline validation failed", reason="unknown-stage-kind", unknown=unknown)
         raise ValueError(
             f"unknown stage kind(s): {unknown}; menu: {sorted(STAGE_REGISTRY)}")
     stages = [STAGE_REGISTRY[n] for n in names]
@@ -232,10 +245,12 @@ def validate_pipeline(names: list[str]) -> None:
     # immediately after implement.
     if "self_review" in names:
         if "implement" not in names:
+            log.warning("pipeline validation failed", reason="self-review-requires-implement")
             raise ValueError(
                 "self_review requires the implement stage -- it resumes the "
                 "implementer's warm session")
         if names.index("self_review") != names.index("implement") + 1:
+            log.warning("pipeline validation failed", reason="self-review-not-adjacent")
             raise ValueError(
                 "self_review must immediately follow implement (it resumes that "
                 "stage's warm session); found it at a non-adjacent position")
@@ -245,6 +260,8 @@ def validate_pipeline(names: list[str]) -> None:
     for st in stages:
         for s in st.owns:
             if s in owner:
+                log.warning("pipeline validation failed", reason="duplicate-ownership",
+                            state=s.value, first=owner[s], second=st.name)
                 raise ValueError(
                     f"state {s.value} is owned by both {owner[s]} and {st.name}")
             owner[s] = st.name
@@ -256,6 +273,8 @@ def validate_pipeline(names: list[str]) -> None:
         legal = TASK_TRANSITIONS[st.exit_from]
         for label, to in st.exit_map:
             if to not in legal:
+                log.warning("pipeline validation failed", reason="illegal-exit-edge",
+                            stage=st.name, label=label, target=to.value)
                 raise ValueError(
                     f"stage {st.name}: exit {label!r} -> {to.value} is not a legal "
                     f"transition from {st.exit_from.value} (TASK_TRANSITIONS)")
@@ -269,6 +288,8 @@ def validate_pipeline(names: list[str]) -> None:
             if to in TERMINAL_TASK_STATES:
                 continue
             if to not in handled:
+                log.warning("pipeline validation failed", reason="dead-end",
+                            stage=st.name, label=label, target=to.value)
                 raise ValueError(
                     f"stage {st.name}: exit {label!r} -> {to.value} lands in a state "
                     f"no stage in this pipeline owns or handles (dead-end); add a "
@@ -280,7 +301,10 @@ def validate_pipeline(names: list[str]) -> None:
         to in TERMINAL_TASK_STATES for st in stages for _label, to in st.exit_map
     ) or any(st.name == "auto_merge" for st in stages)
     if not reaches_terminal:
+        log.warning("pipeline validation failed", reason="no-terminal-path")
         raise ValueError("pipeline has no path to a terminal state")
+
+    log.debug("pipeline validated", count=len(names))
 
 
 # B6/P74: the frozen menu of packet-assembly context flags (see Stage.context).
@@ -314,10 +338,13 @@ def effective_concurrency(stage_name: str, overrides: dict, max_active_tasks: in
     if raw is None:
         raw = STAGE_REGISTRY[stage_name].concurrency
     if raw is None:                      # implement's inherit-the-policy default
-        return max_active_tasks
-    if raw == "serial":
-        return 1
-    return int(raw)
+        result = max_active_tasks
+    elif raw == "serial":
+        result = 1
+    else:
+        result = int(raw)
+    log.debug("stage concurrency resolved", stage=stage_name, concurrency=result)
+    return result
 
 
 def validate_stage_overrides(overrides: dict) -> None:
@@ -326,6 +353,7 @@ def validate_stage_overrides(overrides: dict) -> None:
     Called at config load so a bad knob fails loudly, never at plan time."""
     for name, tbl in overrides.items():
         if name not in STAGE_REGISTRY:
+            log.warning("stage override rejected", reason="unknown-stage", stage=name)
             raise ValueError(
                 f"[stage.{name}] overrides an unknown stage kind; "
                 f"menu: {sorted(STAGE_REGISTRY)}")
@@ -334,6 +362,9 @@ def validate_stage_overrides(overrides: dict) -> None:
             if c == "serial":
                 continue
             if isinstance(c, bool) or not isinstance(c, int) or c < 1:
+                log.warning("stage override rejected", reason="invalid-concurrency",
+                            stage=name, value=repr(c))
                 raise ValueError(
                     f'[stage.{name}] concurrency must be a positive int or '
                     f'"serial", got {c!r}')
+    log.debug("stage overrides validated", count=len(overrides))

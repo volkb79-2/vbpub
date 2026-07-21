@@ -47,16 +47,18 @@ import http.server
 import json
 import os
 import threading
-import urllib.error
 import urllib.request
 from io import BytesIO
 from urllib.parse import urlencode
 
 from . import storage
 from .config import NotifyConfig, ProjectConfig
+from .log import get_logger
 from .types import (
     Actor, ActorKind, Event, EventType, TaskStateFile, TaskState, utc_now,
 )
+
+log = get_logger("notify")
 
 
 def notification_for(ev: Event) -> dict | None:
@@ -203,16 +205,25 @@ def send(nc: NotifyConfig, note: dict) -> tuple[bool, str]:
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=5) as response:
                 if response.status == 200:
+                    # NEVER log the token/headers/URL -- only the fixed
+                    # channel name and topic (an identifier, not a secret;
+                    # SPEC §13's injection boundary + the no-secret rule).
+                    log.info("notification sent", channel="ntfy", topic=nc.ntfy_topic)
                     return (True, "ok")
                 else:
                     # Non-200 response from ntfy
+                    log.warning("notification channel failed", channel="ntfy",
+                                topic=nc.ntfy_topic, status=response.status)
                     return (False, f"ntfy returned {response.status}")
-        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as e:
-            # ntfy failed; try webhook fallback
-            pass
         except Exception as e:
-            # Catch any other exception and try webhook
-            pass
+            # ntfy failed (connection error, HTTP error, or anything else);
+            # try webhook fallback. (logging-P05b: the previous two except
+            # clauses -- (HTTPError, URLError, OSError) then a catch-all
+            # Exception -- had textually IDENTICAL bodies; merged into one,
+            # which is behavior-preserving since Exception is already a
+            # strict superset of the narrower tuple.)
+            log.warning("notification channel failed", channel="ntfy",
+                        topic=nc.ntfy_topic, error=type(e).__name__)
 
     # Try webhook fallback if ntfy failed or not configured
     if nc.webhook_url:
@@ -224,15 +235,30 @@ def send(nc: NotifyConfig, note: dict) -> tuple[bool, str]:
             req = urllib.request.Request(nc.webhook_url, data=body, headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=5) as response:
                 if response.status == 200:
+                    # NEVER log nc.webhook_url -- for many providers the
+                    # URL itself IS the secret (e.g. Slack incoming
+                    # webhooks). Only the fixed channel name.
+                    log.info("notification sent", channel="webhook")
                     return (True, "webhook ok")
                 else:
+                    log.warning("notification channel failed", channel="webhook",
+                                status=response.status)
                     return (False, f"webhook returned {response.status}")
-        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as e:
-            return (False, f"webhook failed: {type(e).__name__}")
         except Exception as e:
-            return (False, f"webhook error: {type(e).__name__}")
+            # (logging-P05b: same merge as the ntfy branch above -- the
+            # previous two except clauses' bodies differed only in the
+            # returned detail string's prefix ("webhook failed" vs "webhook
+            # error"); using "webhook failed" for both preserves the
+            # ORIGINAL (HTTPError, URLError, OSError)-branch wording for
+            # every caller, since that tuple covers the overwhelmingly
+            # common real-world case -- connection errors -- and no
+            # existing test asserted the "webhook error" wording.)
+            log.warning("notification channel failed", channel="webhook",
+                        error=type(e).__name__)
+            return (False, f"webhook failed: {type(e).__name__}")
 
     # No notification channel configured
+    log.debug("notification unconfigured")
     return (False, "unconfigured")
 
 
@@ -277,7 +303,10 @@ def notify_event(cfg: ProjectConfig, states: dict[str, TaskStateFile], ev: Event
     both_unconfigured = not (cfg.notify.ntfy_url or cfg.notify.webhook_url)
 
     if both_unconfigured:
-        # Both unconfigured: don't call send, just mark as failed
+        # Both unconfigured: don't call send, just mark as failed -- a soft,
+        # expected skip (no channel configured), not an operational failure.
+        log.warning("notification skipped", reason="unconfigured",
+                    event_type=ev.type.value, project=ev.project, task=ev.task_id)
         storage.append_event(
             ev.project,
             actor=Actor(ActorKind.NOTIFIER, "notify"),
@@ -291,6 +320,8 @@ def notify_event(cfg: ProjectConfig, states: dict[str, TaskStateFile], ev: Event
         # Try to send
         ok, detail = send(cfg.notify, note)
         if ok:
+            log.info("notification delivered", event_type=ev.type.value,
+                     project=ev.project, task=ev.task_id)
             storage.append_event(
                 ev.project,
                 actor=Actor(ActorKind.NOTIFIER, "notify"),
@@ -301,6 +332,8 @@ def notify_event(cfg: ProjectConfig, states: dict[str, TaskStateFile], ev: Event
                 wave_id=ev.wave_id,
             )
         else:
+            log.warning("notification delivery failed", event_type=ev.type.value,
+                        project=ev.project, task=ev.task_id, detail=detail)
             storage.append_event(
                 ev.project,
                 actor=Actor(ActorKind.NOTIFIER, "notify"),
@@ -362,6 +395,9 @@ def digest(cfg: ProjectConfig, project: str, since_seq: int) -> str:
 
     if open_decisions:
         lines.append(f"decisions open: {len(open_decisions)}")
+
+    log.debug("digest generated", project=project, merges=merge_count,
+              transitions=transition_count, decisions_open=len(open_decisions))
 
     if not lines:
         return ""

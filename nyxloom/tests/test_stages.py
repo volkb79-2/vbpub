@@ -101,7 +101,22 @@ def test_compose_rejects_unknown_preset():
         compose("turbo")
 
 
+def test_compose_rejects_invalid_spec_type():
+    """logging-P05b: closes the one previously-uncovered compose() branch --
+    a spec that is neither None, a preset name, nor a list/tuple (e.g. an
+    int) is rejected with a precise message, not a silent misbehavior."""
+    with pytest.raises(ValueError, match="must be a preset name or a list"):
+        compose(42)
+
+
 # --- validator rejects each distinct non-closure ---------------------------
+
+def test_rejects_empty_pipeline():
+    """logging-P05b: closes the one previously-uncovered validate_pipeline
+    branch -- an empty pipeline list is rejected outright."""
+    with pytest.raises(ValueError, match="pipeline is empty"):
+        validate_pipeline([])
+
 
 def test_rejects_unknown_stage_kind():
     with pytest.raises(ValueError, match="unknown stage kind"):

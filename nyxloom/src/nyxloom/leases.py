@@ -18,7 +18,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import paths
+from .log import get_logger
 from .types import iso, utc_now
+
+log = get_logger("leases")
 
 
 @dataclass
@@ -32,6 +35,7 @@ class Lease:
             fcntl.flock(self.fd, fcntl.LOCK_UN)
         finally:
             os.close(self.fd)
+        log.debug("lease released", name=self.name)
 
 
 def _try_lock(path: Path, owner: str, purpose: str) -> Lease | None:
@@ -49,14 +53,30 @@ def _try_lock(path: Path, owner: str, purpose: str) -> Lease | None:
 
 
 def acquire(name: str, *, owner: str, purpose: str = "", capacity: int = 1) -> Lease | None:
-    """Non-blocking. Returns a held Lease or None if unavailable."""
+    """Non-blocking. Returns a held Lease or None if unavailable.
+
+    Logging (logging-P05b, §5): a successful acquire is DEBUG -- routine,
+    mechanical fact, matching every dispatch tick. An exclusive-lease miss
+    (capacity<=1, someone else already holds it) is INFO -- an operational
+    note explaining why the caller's task stays QUEUED this tick, not an
+    alarm. A capacity>1 counted lease with EVERY slot contended is the
+    escalation-worthy case -- the whole resource pool is saturated, not
+    just one contended slot -- so that gets WARNING.
+    """
     d = paths.leases_dir()
     if capacity <= 1:
-        return _try_lock(d / f"{name}.lock", owner, purpose)
+        lease = _try_lock(d / f"{name}.lock", owner, purpose)
+        if lease is not None:
+            log.debug("lease acquired", name=name, owner=owner, capacity=capacity)
+        else:
+            log.info("lease unavailable", name=name, owner=owner, capacity=capacity)
+        return lease
     for slot in range(capacity):
         lease = _try_lock(d / f"{name}.{slot}.lock", owner, purpose)
         if lease is not None:
+            log.debug("lease acquired", name=name, owner=owner, slot=slot, capacity=capacity)
             return lease
+    log.warning("lease pool exhausted", name=name, owner=owner, capacity=capacity)
     return None
 
 
