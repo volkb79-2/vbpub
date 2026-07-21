@@ -86,3 +86,13 @@ audit trail rather than deleted, until a periodic prune.
 | B-040 | P87 frontier review | `actions/execute.py` docker verbs | Docker verbs still execute by the raw accepted name/ID string, so a name reassigned between the single authorizing inspect and the runner still races (inherent to P46 preview-parity argv). Executing by the resolved canonical full ID would close it but must keep preview/execute argv parity. | Medium; TOCTOU residue | Open — P93 should decide the argv contract. |
 | B-041 | implementer-report | `P88-REPORT.md` | Ranking a large hierarchy by a `child_sum` metric (`net_*`) recomputes subtree sums per node → worst-case super-linear; common ranking metrics (`ram`/`psi`/`cpu`) are `kernel_subtree`/`local_only` (O(1)/node) so the measured budget is linear. A memoized single subtree-sum pass would harden the rare case. | Low; benchmark-triggered | Open (folds with B-021/B-025 subtree-pruning work). |
 | B-042 | implementer-report | `P88-REPORT.md` | `topos query` offers no flat slice-grain rollup (`group_by slice`); the hierarchy projection surfaces slice structure and `topos report` keeps its rollup. A future consumer wanting flat slice sums can add it on the existing `subtree_aggregate` primitive. | Low | Open. |
+| B-043 | feature request | user request | global: report if KSM is active, drilldown shows stats/agressivness. also show flags/labels for other facts like if ZRAM/ZSWAP/BFQ are active (any other important things to highlight?). in table per process/container if PR_SET_MEMORY_MERGE is set and report on memory saving (per container/process), how much memory is shared would be great. | high| open |
+| B-044 | feature request | user request | consider this theoretical output, you see tiered slices with docker and (major) processes folded in, in the columns on the right the cgroups values: What `szstemd-cgls` tree can't show you
+```
+wings.slice                              min=8G  low=12G  high=14G  cpu=800   
+└─ wings-b87c0a5b…slice                  min=0   low=0    high=max  cpu=100   
+   └─ docker-cfc76dd….scope              min=0   low=0    high=max  cpu=100
+``` | high| open |
+| B-045 | feature request | user request | add is competitor, consider its features and display, if we should adapt something, `https://github.com/VHSgunzo/zswapmon` | high| open |
+
+
