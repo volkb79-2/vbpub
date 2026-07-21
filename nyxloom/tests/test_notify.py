@@ -244,6 +244,64 @@ def test_send_ntfy_server_error():
     assert ok is False
 
 
+def test_send_ntfy_2xx_non200_logs_and_fails():
+    """logging-P05b: reach send()'s ntfy `else` (status != 200) branch + its
+    log.warning. A 2xx-but-not-200 response (204) is the ONLY way there:
+    urllib's HTTPErrorProcessor diverts 4xx/5xx to HTTPError (the except
+    branch), so a 500 does NOT exercise this branch -- only an in-range,
+    non-200 status does."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_port
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+
+    nc = NotifyConfig(ntfy_url=f"http://127.0.0.1:{port}", ntfy_topic="alerts")
+    note = {"title": "T", "body": "b", "click": "", "priority": 3, "tags": []}
+
+    ok, detail = send(nc, note)
+    thread.join(timeout=2)
+    server.server_close()
+
+    assert ok is False
+    assert "204" in detail  # "ntfy returned 204" -- the else branch, not the except path
+
+
+def test_send_webhook_2xx_non200_logs_and_fails():
+    """logging-P05b: same 2xx-non-200 case for the webhook fallback `else`
+    branch + its log.warning. ntfy left unconfigured so the call goes straight
+    to the webhook."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_port
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+
+    nc = NotifyConfig(webhook_url=f"http://127.0.0.1:{port}/webhook")
+    note = {"title": "T", "body": "b", "click": "", "priority": 3, "tags": []}
+
+    ok, detail = send(nc, note)
+    thread.join(timeout=2)
+    server.server_close()
+
+    assert ok is False
+    assert "204" in detail  # "webhook returned 204" -- the else branch
+
+
 def test_send_connection_refused():
     """Oracle 3: connection refused returns (False, ...) and does NOT raise."""
     nc = NotifyConfig(
