@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -71,6 +72,42 @@ _LEVEL_NAME_TO_VALUE: dict[str, int] = {
 
 _LOGGER_NAME = "nyxloom"      # the ONLY stdlib channel this module ever touches
 _LOG_FILENAME = "nyxloom.jsonl"
+
+# Retention knobs (D-L6). Size-based rotation via stdlib RotatingFileHandler;
+# operational infra config (env), NOT the bind-mounted shared nyxloom.toml --
+# same precedent as NYXLOOM_LOG_LEVEL (D-L3) / http_bind.
+_LOG_MAX_BYTES_ENV = "NYXLOOM_LOG_MAX_BYTES"
+_LOG_BACKUPS_ENV = "NYXLOOM_LOG_BACKUPS"
+_DEFAULT_LOG_MAX_BYTES = 10_000_000   # ~10 MB per segment
+_DEFAULT_LOG_BACKUPS = 5              # bound total retention: current + 5 prior
+
+
+def _resolve_int_env(name: str, default: int) -> int:
+    """Read a non-negative int from env ``name``, falling back to ``default``
+    on an absent / non-integer / negative value. The retention knobs are
+    operational infra config: a typo in compose must never crash logging
+    setup (same tolerant precedent as ``resolve_level`` in P02)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+def resolve_rotation() -> tuple[int, int]:
+    """Return ``(max_bytes, backup_count)`` for the rotating log file from
+    ``NYXLOOM_LOG_MAX_BYTES`` / ``NYXLOOM_LOG_BACKUPS`` (env), defaulting to
+    10 MB x 5 backups (D-L6). Size-based: the current segment plus up to
+    ``backup_count`` prior ``nyxloom.jsonl.<n>`` segments are retained; older
+    ones are discarded. (D-L6's zstd-of-aged-segments is a v2 enhancement;
+    v1 is the proven stdlib size-based scheme -- see docs/logging.md.)"""
+    return (
+        _resolve_int_env(_LOG_MAX_BYTES_ENV, _DEFAULT_LOG_MAX_BYTES),
+        _resolve_int_env(_LOG_BACKUPS_ENV, _DEFAULT_LOG_BACKUPS),
+    )
 
 
 def _normalize_level(level: int | str) -> int:
@@ -287,10 +324,11 @@ def configure(level: int | str = INFO, log_dir: str | Path | None = None, consol
     if log_dir is not None:
         log_dir_path = Path(log_dir)
         log_dir_path.mkdir(parents=True, exist_ok=True)
+        max_bytes, backup_count = resolve_rotation()
         file_handler = logging.handlers.RotatingFileHandler(
             log_dir_path / _LOG_FILENAME,
-            maxBytes=10_000_000,
-            backupCount=5,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
             encoding="utf-8",
         )
         file_handler.setLevel(logging.NOTSET)

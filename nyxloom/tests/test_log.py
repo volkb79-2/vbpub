@@ -292,3 +292,55 @@ def test_trace_returns_none_on_drop_event():
             raise structlog.DropEvent
 
     assert cls.trace(_FakeSelf(), "dropped") is None
+
+
+# ---------------------------------------------------------------------------
+# P06 (docs/plan-logging.md §6, D-L6): retention knobs — size-based rotation
+# with env-configurable maxBytes x backupCount.
+
+def test_resolve_int_env_falls_back_on_absent_bad_and_negative(monkeypatch):
+    """The retention env reader tolerates absent / non-integer / negative
+    values, falling back to the default (a compose typo must never crash
+    logging setup). Negative: a bad value propagates or raises."""
+    monkeypatch.delenv("NYXLOOM_LOG_MAX_BYTES", raising=False)
+    assert log._resolve_int_env("NYXLOOM_LOG_MAX_BYTES", 999) == 999   # absent -> default
+    monkeypatch.setenv("NYXLOOM_LOG_MAX_BYTES", "4242")
+    assert log._resolve_int_env("NYXLOOM_LOG_MAX_BYTES", 999) == 4242  # valid int used
+    monkeypatch.setenv("NYXLOOM_LOG_MAX_BYTES", "notanint")
+    assert log._resolve_int_env("NYXLOOM_LOG_MAX_BYTES", 999) == 999   # non-int -> default
+    monkeypatch.setenv("NYXLOOM_LOG_MAX_BYTES", "-5")
+    assert log._resolve_int_env("NYXLOOM_LOG_MAX_BYTES", 999) == 999   # negative -> default
+
+
+def test_resolve_rotation_reads_env_with_defaults(monkeypatch):
+    """resolve_rotation() returns the 10 MB x 5 defaults when unset, and the
+    env overrides when present."""
+    monkeypatch.delenv("NYXLOOM_LOG_MAX_BYTES", raising=False)
+    monkeypatch.delenv("NYXLOOM_LOG_BACKUPS", raising=False)
+    assert log.resolve_rotation() == (10_000_000, 5)                   # defaults (D-L6)
+    monkeypatch.setenv("NYXLOOM_LOG_MAX_BYTES", "200")
+    monkeypatch.setenv("NYXLOOM_LOG_BACKUPS", "2")
+    assert log.resolve_rotation() == (200, 2)                          # env overrides
+
+
+def test_log_file_rotates_by_size_and_backups_are_bounded(tmp_path, monkeypatch):
+    """A tiny maxBytes forces rotation and the rotated-backup count is bounded
+    by NYXLOOM_LOG_BACKUPS (older segments discarded) -- proving the retention
+    knobs take effect end-to-end. Negative: no rotation, or unbounded growth
+    past backupCount."""
+    monkeypatch.setenv("NYXLOOM_LOG_MAX_BYTES", "500")
+    monkeypatch.setenv("NYXLOOM_LOG_BACKUPS", "2")
+    log.configure(level=log.TRACE, log_dir=tmp_path, console=False)
+    logger = log.get_logger("rot")
+    for i in range(300):
+        logger.info("rotation probe line padded to exceed the tiny segment",
+                     i=i, pad="x" * 40)
+
+    base = tmp_path / log._LOG_FILENAME
+    assert base.exists()                                              # current segment present
+    backups = sorted(tmp_path.glob(log._LOG_FILENAME + ".*"))
+    assert backups, "expected at least one rotated backup"            # rotation happened
+    assert len(backups) <= 2                                          # bounded by backupCount=2
+
+    # Restore default logging so later tests aren't left pointed at tmp_path.
+    log.configure(level=log.INFO, console=False)
