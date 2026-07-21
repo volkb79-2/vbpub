@@ -34,7 +34,7 @@ for all of them).
 | # | Oracle | Test(s) | Result |
 |---|--------|---------|--------|
 | 1 | help lists all 5 verbs; garbage/shell-metachar commands rejected | `test_help_lists_all_five_verbs`, `test_garbage_command_is_rejected`, `test_shell_metacharacters_rejected_by_strict_regex` | pass (3/3) |
-| 2 | pause/unpause: flag + PAUSE_SET/PAUSE_CLEARED event, actor `ntfy-cmd`, reply confirms state | `test_unpause_clears_flag_and_appends_cleared_event`, `test_pause_sets_flag_and_appends_set_event` | pass (2/2) |
+| 2 | pause/resume: flag + PAUSE_SET/PAUSE_CLEARED event, actor `ntfy-cmd`, reply confirms state | `test_resume_clears_flag_and_appends_cleared_event`, `test_pause_sets_flag_and_appends_set_event` | pass (2/2) |
 | 3 | status reflects seeded statefiles (+ paused suffix, unknown/missing project) | `test_status_reflects_seeded_statefiles`, `test_status_reflects_paused_flag`, `test_status_unknown_project`, `test_status_missing_project_arg` | pass (4/4) |
 | 4 | `nyxloomd-reply` tag -> `None` (loop guard) | `test_nyxloomd_reply_tag_is_ignored` | pass |
 | 5 | Transport: reply POST (publisher token, `nyxloomd-reply` tag) + reconnect carrying `since` after connection ends | `test_transport_reply_and_reconnect_carries_since` | pass |
@@ -77,7 +77,7 @@ contract): `test_digest_verb_uses_notify_digest`,
   the SAME `cmd_topic` -- verified in the transport test (`Authorization:
   Bearer write-tok` on the POST vs `Bearer read-tok` on the GET).
 - Verb parsing is the single anchored regex
-  `^(help|status|pause|unpause|digest)( [a-z][a-z0-9-]{0,30})?$` (no
+  `^(help|status|pause|resume|digest)( [a-z][a-z0-9-]{0,30})?$` (no
   `re.IGNORECASE`, no shell, no eval). Anything not fully matching falls
   through to the fixed `UNKNOWN_REPLY` constant.
 - All reply text is built from: the fixed `HELP_TEXT`/`UNKNOWN_REPLY`
@@ -86,8 +86,8 @@ contract): `test_digest_verb_uses_notify_digest`,
   output (already typed-fields-only per its own P06 contract, capped to
   1500 chars here). No handoff prose, log text, or raw ntfy message
   content is ever echoed back.
-- Every executed pause/unpause appends via `storage.append_event` (not
-  `append_and_apply`, matching cli.py's own project-level pause/unpause
+- Every executed pause/resume appends via `storage.append_event` (not
+  `append_and_apply`, matching cli.py's own project-level pause/resume
   branch, which has no per-task statefile to project onto) with
   `Actor(ActorKind.OPERATOR, "ntfy-cmd")`.
 
@@ -131,7 +131,7 @@ contract): `test_digest_verb_uses_notify_digest`,
    over 2s.
 5. Did not modify `notify.py`, `cli.py`, or any frozen file. Read-only
    references were made to `notify.send`/`notify.digest` (P06) and to the
-   pause/unpause flag + event semantics in `cli.py` (P10) purely to mirror
+   pause/resume flag + event semantics in `cli.py` (P10) purely to mirror
    their exact behavior, per the handoff's instruction to "reuse the CLI's
    exact semantics."
 
@@ -146,5 +146,5 @@ contract): `test_digest_verb_uses_notify_digest`,
   handoff's "any registered project" wording -- if multi-project
   chat-ops with distinct cmd topics per project is ever wanted, this will
   need revisiting (current design assumes one shared ntfy command topic
-  across all projects, consistent with the "operator sends `unpause
+  across all projects, consistent with the "operator sends `resume
   topos`" phrasing in the handoff).

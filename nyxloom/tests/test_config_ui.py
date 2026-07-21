@@ -247,10 +247,10 @@ def test_tier_remap_unknown_tier_404(cfg_daemon):
 
 
 # ==========================================================================
-# Oracle 4 / 7 (UI surface): pause via UI -> flag + event; unpause reverses.
+# Oracle 4 / 7 (UI surface): pause via UI -> flag + event; resume reverses.
 # ==========================================================================
 
-def test_pause_via_ui_then_unpause(cfg_daemon):
+def test_pause_via_ui_then_resume(cfg_daemon):
     d = cfg_daemon
     base = f"http://127.0.0.1:{d.http_port}"
     flag = paths.pause_flag("demo")

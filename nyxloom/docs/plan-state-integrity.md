@@ -31,7 +31,7 @@ Two structural problems, both observed live:
    missing` because the handoffs were archived. `_merged_branches` reads git but only to avoid
    re-dispatch (it never advances `MERGE_READY→MERGED`) and is brittle (only sees merges that
    leave a discoverable `--merged` branch — a squash/CAS/deleted-branch merge is invisible).
-   **On unpause, nyxloom would try to merge already-merged work** → escalations, churn,
+   **On resume, nyxloom would try to merge already-merged work** → escalations, churn,
    mis-triage. topos is the same shape. There is no "reconcile from ground truth" heal today.
 
 The clean division this plan establishes: **SQLite for the authoritative state (consistency
@@ -128,7 +128,7 @@ runs inside the transaction before the INSERT.
 ## B.0 What & why
 A verb — **`nyxloom resync <project>`** (distinct name from the daemon's *reconcile* loop) — that
 compares each task's nyxloom-believed state against **ground truth** (the trove + git) and
-advances/retires stale states via **audited event transitions**. Run it before unpausing a
+advances/retires stale states via **audited event transitions**. Run it before resuming a
 project that advanced manually. It doubles as the safe **on-ramp for onboarding an
 already-advanced project** (e.g. registering `netcup-api-filter`, which today has *no* nyxloom
 state — resync imports its reality instead of assuming greenfield).
@@ -169,17 +169,17 @@ re-baseline is itself in the event log, replayable and inspectable — not a mag
   `resync` is a no-op (idempotent — nothing left drifted); paused projects can be resynced (this is
   an operator verb, not a daemon dispatch, so it is *allowed* while paused — that's the point).
   **Gate:** full.
-- **RP03 — pre-unpause guard + docs.** Wire a check so unpausing a project surfaces "N tasks
+- **RP03 — pre-resume guard + docs.** Wire a check so resuming a project surfaces "N tasks
   drifted — run `resync` first" if resync has pending changes; document the verb in the operator
   guide. Then **resync dstdns and topos for real** (dry-run → review → apply) so they are safe to
-  unpause. **Oracle:** post-resync, dstdns/topos `doctor` shows no orphan-statefile findings and no
+  resume. **Oracle:** post-resync, dstdns/topos `doctor` shows no orphan-statefile findings and no
   believed-`MERGE_READY`-already-merged tasks. **Gate:** full + operator review of the applied diff.
 
 ---
 
 ## Sequencing note (flexibility)
 Part B uses only the `storage.py` API, so it is **backend-agnostic** — it would run on today's
-JSONL store too. The agreed order does A first (transactional substrate), but if unpausing
+JSONL store too. The agreed order does A first (transactional substrate), but if resuming
 dstdns/topos becomes urgent before A lands, RP01–RP03 can be pulled forward onto the current store
 without rework (they benefit from A's atomicity but don't require it). Logging (`plan-logging.md`)
 follows both.

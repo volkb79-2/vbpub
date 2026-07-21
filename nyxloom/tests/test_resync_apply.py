@@ -355,7 +355,7 @@ def test_cli_resync_apply_content_merges_flag_gates_the_squash_case(
 def test_apply_works_on_paused_project(sample_project, tmp_state, capsys):
     """Oracle 5: resync --apply is an operator verb, not daemon dispatch --
     it must work on a project whose pause flag is set (that's the whole
-    point of resyncing before an unpause)."""
+    point of resyncing before a resume)."""
     root = sample_project.root
     _run_git(root, "checkout", "-b", "feat/demo-P43-paused")
     (root / "marker-P43.txt").write_text("work\n")

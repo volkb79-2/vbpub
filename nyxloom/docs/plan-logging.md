@@ -256,7 +256,7 @@ The point is *measured* verbosity — not noise. Every phase-5 batch follows thi
   a watchdog suppression, work skipped for a soft reason, a config value out of expected range.
 - **INFO** — the operational narrative one wants in `docker logs`: daemon start/stop, project
   pass begin/end (terse), dispatch, review launch, merge, carve dispatch, state transitions,
-  config changes, pause/unpause. One line per *decision that changed the world*.
+  config changes, pause/resume. One line per *decision that changed the world*.
 - **DEBUG** — the reasoning: reconcile trace breadcrumbs (why dispatched / why skipped), guard
   evaluations, per-pass counts, HTTP requests served, cache hits, provider-probe details.
 - **TRACE** — firehose: every event append, every state file read/write, every file poll. Off

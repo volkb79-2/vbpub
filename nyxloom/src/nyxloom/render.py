@@ -1472,7 +1472,7 @@ def _render_config(www: Path, registry: dict[str, Path]) -> None:
             <h2>{html.escape(project)}</h2>
             <p>Factory state: <strong>{html.escape(mode)}</strong></p>
             <p>
-              <button type="button" onclick="setPauseMode('{html.escape(project)}', 'run')">Run</button>
+              <button type="button" onclick="setPauseMode('{html.escape(project)}', 'run')">Resume</button>
               <button type="button" onclick="setPauseMode('{html.escape(project)}', 'drain-handoffs')">Drain handoffs</button>
               <button type="button" onclick="setPauseMode('{html.escape(project)}', 'drain-agents')">Drain agents</button>
             </p>

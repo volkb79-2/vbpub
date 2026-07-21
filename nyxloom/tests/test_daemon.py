@@ -3285,11 +3285,11 @@ def test_watchdog_transient_signal_suppresses_action_without_pausing(
 
 
 # --------------------------------------------------------------------------
-# P49 2026-07-19: fixes a live incident -- unpausing re-paused within one
+# P49 2026-07-19: fixes a live incident -- resuming re-paused within one
 # reconcile_interval_seconds, repeatedly. The in-memory streak used to climb
 # unboundedly every pass spent already-paused (detect_runaways keeps
 # re-finding the same still-undecayed historical condition), so by the time
-# an operator unpaused, the streak was already far past
+# an operator resumed, the streak was already far past
 # RUNAWAY_PERSIST_AFTER_CYCLES and the very next pass re-paused almost
 # instantly.
 
@@ -3325,7 +3325,7 @@ def test_watchdog_streak_frozen_while_already_paused_not_unbounded(
         d.run_pass(project)
     assert paths.pause_flag(project).exists()
 
-    # Operator unpauses (matches this project's own pause-flag convention:
+    # Operator resumes (matches this project's own pause-flag convention:
     # remove the file for 'run' mode).
     paths.pause_flag(project).unlink()
     assert not paths.pause_flag(project).exists()
@@ -3333,7 +3333,7 @@ def test_watchdog_streak_frozen_while_already_paused_not_unbounded(
     for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES - 1):
         d.run_pass(project)
     assert not paths.pause_flag(project).exists(), (
-        "streak must have reset to 0 on unpause -- re-pausing after fewer "
+        "streak must have reset to 0 on resume -- re-pausing after fewer "
         "than RUNAWAY_PERSIST_AFTER_CYCLES fresh passes means it did not"
     )
 
@@ -3342,7 +3342,7 @@ def test_watchdog_repauses_after_fresh_persist_cycles_if_condition_still_open(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     """Companion to the freeze test above: the watchdog is NOT silently
     disabled by the fix -- if the SAME condition is still genuinely open
-    after an operator unpauses, exactly RUNAWAY_PERSIST_AFTER_CYCLES fresh
+    after an operator resumes, exactly RUNAWAY_PERSIST_AFTER_CYCLES fresh
     passes re-pauses it (a real window, not an instant re-trip, but not a
     permanent bypass either)."""
     project = "demo"

@@ -14,7 +14,7 @@ SECURITY MODEL (non-negotiable, see handoff/P12-ntfy-command-listener.md):
   tag is ignored -- ntfy exposes no sender identity, so tag-based loop
   prevention is the only guard against the listener replying to itself.
 - Verb allowlist, strict parse: only
-  ``^(help|status|pause|unpause|digest)( [a-z][a-z0-9-]{0,30}){0,2}$`` on the
+  ``^(help|status|pause|resume|digest)( [a-z][a-z0-9-]{0,30}){0,2}$`` on the
   TRIMMED message body is accepted (P15 2026-07-15: widened from one
   optional arg to two, to carry `pause`'s optional mode word -- the
   compiled pattern uses two explicit capture groups rather than a single
@@ -28,7 +28,7 @@ SECURITY MODEL (non-negotiable, see handoff/P12-ntfy-command-listener.md):
   values read from storage) are ever placed into a reply, always through
   fixed templates -- the same injection boundary as notify.py, applied to
   replies too.
-- Every executed verb (pause/unpause) appends an audited event via
+- Every executed verb (pause/resume) appends an audited event via
   storage.append_event with actor Actor(OPERATOR, "ntfy-cmd"). status/
   digest/help never mutate state and never append events.
 
@@ -69,7 +69,7 @@ REPLY_TAG = "nyxloomd-reply"
 # widened to two optional trailing tokens (project, then pause's optional
 # mode word) -- see module docstring.
 _VERB_RE = re.compile(
-    r"^(help|status|pause|unpause|digest)"
+    r"^(help|status|pause|resume|digest)"
     r"(?: ([a-z][a-z0-9-]{0,30}))?(?: ([a-z][a-z0-9-]{0,30}))?$"
 )
 
@@ -80,7 +80,7 @@ HELP_TEXT = "\n".join([
     "help                        - this message",
     "status <project>            - per-state task counts",
     "pause <project> [mode]      - pause; mode is agents|handoffs (default handoffs)",
-    "unpause <project>           - resume the project (mode: run)",
+    "resume <project>            - resume the project (mode: run)",
     "digest <project>            - recent activity summary",
 ])
 
@@ -154,8 +154,8 @@ class CommandListener:
             return self._cmd_status(project)
         if verb == "pause":
             return self._cmd_pause(project, mode_word)
-        if verb == "unpause":
-            return self._cmd_unpause(project)
+        if verb == "resume":
+            return self._cmd_resume(project)
         if verb == "digest":
             return self._cmd_digest(project)
         return UNKNOWN_REPLY  # unreachable given _VERB_RE; kept defensive
@@ -205,15 +205,15 @@ class CommandListener:
         log.info("project paused", project=project, mode=mode)
         return f"paused ({mode}): {project}"
 
-    def _cmd_unpause(self, project: str) -> str:
+    def _cmd_resume(self, project: str) -> str:
         flag_path = paths.pause_flag(project)
         flag_path.unlink(missing_ok=True)
         storage.append_event(
             project, actor=Actor(ActorKind.OPERATOR, "ntfy-cmd"),
             type=EventType.PAUSE_CLEARED, payload={},
         )
-        log.info("project unpaused", project=project)
-        return f"unpaused: {project}"
+        log.info("project resumed", project=project)
+        return f"resumed: {project}"
 
     def _cmd_digest(self, project: str) -> str:
         log.debug("digest queried", project=project)

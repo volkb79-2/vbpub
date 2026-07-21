@@ -42,7 +42,7 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               --apply performs no further writes. Allowed
                               on a PAUSED project (operator verb, not
                               daemon dispatch -- resync a project before
-                              unpausing it is the whole point).
+                              resuming it is the whole point).
   render                      render.render_all(registry); prints www path.
   migrate-store <project>     PACKAGE SP02 2026-07-21 (docs/plan-state-
                               integrity.md Part A.3): imports a project's
@@ -90,7 +90,7 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               than a hand-padded placeholder. Prints the
                               recorded commit.
   pause <project> [task]      touch pause flag + PAUSE_SET event;
-  unpause <project> [task]    remove + PAUSE_CLEARED. (Project-level pause
+  resume <project> [task]     remove + PAUSE_CLEARED. (Project-level pause
                               writes the flag file; task-level also flows
                               into the statefile via the event projection.)
   leases                      leases.holder_info for every mutex declared
@@ -473,7 +473,7 @@ def cmd_resync(args) -> int:
     reported). Prints an "applied N; skipped M" summary line plus one line
     per considered row. Deliberately does NOT check the project's pause
     flag -- resync is an operator verb, not daemon dispatch, and remaining
-    resyncable while paused is the entire point (B.4's pre-unpause use
+    resyncable while paused is the entire point (B.4's pre-resume use
     case).
     """
     from . import storage
@@ -803,8 +803,8 @@ def cmd_pause(args) -> int:
     return 0
 
 
-def cmd_unpause(args) -> int:
-    """unpause <project> [task]"""
+def cmd_resume(args) -> int:
+    """resume <project> [task]"""
     from . import paths, storage
     from .types import Actor, ActorKind, EventType
 
@@ -813,7 +813,7 @@ def cmd_unpause(args) -> int:
     actor = Actor(kind=ActorKind.OPERATOR, id=os.environ.get("USER", "operator"))
 
     if hasattr(args, 'task') and args.task:
-        # Task-level unpause
+        # Task-level resume
         flag_path = paths.pause_flag(args.project, args.task)
         flag_path.unlink(missing_ok=True)
 
@@ -828,7 +828,7 @@ def cmd_unpause(args) -> int:
             payload={},
         )
     else:
-        # Project-level unpause
+        # Project-level resume
         flag_path = paths.pause_flag(args.project)
         flag_path.unlink(missing_ok=True)
 
@@ -1185,10 +1185,10 @@ def main(argv: list[str] | None = None) -> int:
     pause_parser.add_argument("project", help="Project ID")
     pause_parser.add_argument("task", nargs="?", help="Task ID (optional)")
 
-    # unpause
-    unpause_parser = subparsers.add_parser("unpause")
-    unpause_parser.add_argument("project", help="Project ID")
-    unpause_parser.add_argument("task", nargs="?", help="Task ID (optional)")
+    # resume
+    resume_parser = subparsers.add_parser("resume")
+    resume_parser.add_argument("project", help="Project ID")
+    resume_parser.add_argument("task", nargs="?", help="Task ID (optional)")
 
     # leases
     leases_parser = subparsers.add_parser("leases")
@@ -1285,8 +1285,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_merge(args)
         elif args.cmd == "pause":
             return cmd_pause(args)
-        elif args.cmd == "unpause":
-            return cmd_unpause(args)
+        elif args.cmd == "resume":
+            return cmd_resume(args)
         elif args.cmd == "leases":
             return cmd_leases(args)
         elif args.cmd == "digest":

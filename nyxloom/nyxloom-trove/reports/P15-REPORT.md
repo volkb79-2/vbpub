@@ -21,10 +21,10 @@ baseline, 0 failures).
 | 1 | POST policy change -> project.toml line updated in place (comment intact), CONFIG_CHANGED with old/new, next run_pass uses new cap | **PASS** | `test_config_ui.py::test_policy_update_full_flow` |
 | 2 | Bounds: max_active_tasks=0 or 999 -> 400, file untouched, no event | **PASS** | `test_config_ui.py::test_policy_bounds_rejects_zero_and_too_large` (+ `test_policy_unknown_key_rejected`) |
 | 3 | Tier remap: POST tier -> rewrites only that line; unknown route id -> 400 | **PASS** | `test_config_ui.py::test_tier_remap_rewrites_only_that_tier`, `test_tier_remap_unknown_route_id_400_no_write`, `test_tier_remap_unknown_tier_404` |
-| 4 | Pause via UI -> flag + event; unpause reverses | **PASS** | `test_config_ui.py::test_pause_via_ui_then_unpause`, `test_pause_unknown_mode_rejected` |
+| 4 | Pause via UI -> flag + event; resume reverses | **PASS** | `test_config_ui.py::test_pause_via_ui_then_resume`, `test_pause_unknown_mode_rejected` |
 | 5 | config.html renders current policy + tier table; no inline secrets; no innerHTML | **PASS** | `test_config_ui.py::test_config_html_renders_policy_and_tiers_no_secrets_no_innerhtml` |
 | 6 | Traversal/method safety: GET on POST endpoints -> 405/404; unknown project -> 404; full suite green | **PASS** | `test_config_ui.py::test_get_on_config_endpoints_is_405`, `test_post_config_unknown_project_404`, `test_post_unknown_path_404`; full suite 354 passed (see Gate Output) |
-| 7 | Pause modes: drain-handoffs allows resume+launch-review but blocks dispatch; drain-agents blocks all three; run allows all three; legacy empty flag = drain-handoffs; UI/CLI/ntfy each set mode file + event | **PASS** (UI+ntfy; CLI out of scope — see Deviations) | Planner: `test_reconcile.py::test_pause_mode_run_allows_all_three`, `_drain_handoffs_blocks_dispatch_only`, `_drain_agents_blocks_all_three`, `_default_is_run_when_unset`. Legacy flag: `test_daemon.py::test_input_building` (asserts `pause_mode == "drain-handoffs"` from a bare `touch()`), plus `test_pause_mode_absent_flag_is_run`/`_explicit_drain_agents_content`/`_explicit_drain_handoffs_content`. UI surface: `test_config_ui.py::test_pause_via_ui_then_unpause`. ntfy surface: `test_commands.py::test_pause_agents_mode_sets_flag_content_and_event`, `_pause_handoffs_mode_explicit`, `_pause_unknown_mode_rejected_no_flag_no_event` |
+| 7 | Pause modes: drain-handoffs allows resume+launch-review but blocks dispatch; drain-agents blocks all three; run allows all three; legacy empty flag = drain-handoffs; UI/CLI/ntfy each set mode file + event | **PASS** (UI+ntfy; CLI out of scope — see Deviations) | Planner: `test_reconcile.py::test_pause_mode_run_allows_all_three`, `_drain_handoffs_blocks_dispatch_only`, `_drain_agents_blocks_all_three`, `_default_is_run_when_unset`. Legacy flag: `test_daemon.py::test_input_building` (asserts `pause_mode == "drain-handoffs"` from a bare `touch()`), plus `test_pause_mode_absent_flag_is_run`/`_explicit_drain_agents_content`/`_explicit_drain_handoffs_content`. UI surface: `test_config_ui.py::test_pause_via_ui_then_resume`. ntfy surface: `test_commands.py::test_pause_agents_mode_sets_flag_content_and_event`, `_pause_handoffs_mode_explicit`, `_pause_unknown_mode_rejected_no_flag_no_event` |
 | 8 | last-activity: seeded attempt log with known mtime renders expected age string in both tables | **PASS** | `test_config_ui.py::test_last_activity_column_index_and_task_page`, `test_last_activity_dash_when_no_log` |
 
 ## Files Touched
@@ -120,7 +120,7 @@ cd /workspaces/vbpub/nyxloom && /workspaces/vbpub/.venv/bin/python -m pytest -q
   ownership summary: daemon.py, render.py, reconcile.py, commands.py,
   config.py's two functions, tests). Since `cli.py` belongs to another
   package (P10) and STANDING.md forbids touching files owned elsewhere,
-  `cmd_pause`/`cmd_unpause` still only support the old task-level pause
+  `cmd_pause`/`cmd_resume` still only support the old task-level pause
   (no mode arg) and were left as-is. Oracle 7's "CLI ... sets the mode file
   + event" is therefore satisfied for the UI and ntfy surfaces only.
   Flagging for the reviewer: either a follow-up package should extend

@@ -67,10 +67,10 @@ items:
   title: runaway watchdog conflates a persistent-but-acknowledged condition with
     actively-worsening thrash -- review_rejections_by_area>=2 stays true for the
     FULL 7-day HISTORY_REJECTION_WINDOW_SECONDS regardless of an operator having
-    already unpaused once, so the SAME reconcile-thrash streak re-trips an
+    already resumed once, so the SAME reconcile-thrash streak re-trips an
     auto-pause every ~13 reconcile passes (minutes, once unblocked) until the
     triggering rejections finally age out; needs the thrash-streak to reset (or
-    not count) once an operator has unpaused for this specific condition, not
+    not count) once an operator has resumed for this specific condition, not
     just dedupe the notification
   type: bugfix
   component: watchdog
@@ -99,4 +99,3 @@ items:
 Un-scheduled items and sub-packages, each folding into a product-definition
 feature (or standalone for ops). `context_estimate` is the carver's read-
 context estimate (a scheduler input); `component` is the wave-grouping proxy.
-

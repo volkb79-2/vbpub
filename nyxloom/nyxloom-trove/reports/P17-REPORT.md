@@ -229,7 +229,7 @@ I switched to `-v` for the authoritative tail pasted here.)
 
 - Consider whether `reject`/`merge` should also live behind the P15 UI
   config-mutation endpoints (`POST /api/config/...`) for parity with
-  `pause`/`unpause`, which got both a CLI and a UI surface. Not requested by
+  `pause`/`resume`, which got both a CLI and a UI surface. Not requested by
   this handoff; flagging only because the precedent exists.
 - If the `merge` verb invention above is rejected, the minimal fallback is:
   keep only a small `git rev-parse HEAD` helper (e.g.
