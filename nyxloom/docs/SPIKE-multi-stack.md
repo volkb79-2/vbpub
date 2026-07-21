@@ -145,7 +145,7 @@ Per-container LD_PRELOAD opt-in (PR_SET_MEMORY_MERGE) measured on the four
 biggest dynamic-glibc consumers: oap 113 MiB, authentik-server 235 MiB +
 worker 252 MiB (same-image pair dedupe), postgres 12 MiB —
 `general_profit` 138 KB → ~435 MB, converged ~2 min, gate green. Evidence:
-`dstdns:nyxloom-trove/reports/KSM-OPTIN-MEASUREMENTS.md`; shim + builds in
+`dstdns:docs/KSM-OPTIN-MEASUREMENTS.md`; shim + builds in
 `dstdns:tools/ksm-optin/`. CORRECTION to §1: banyandb and minio are
 STATICALLY linked (ELF-verified) — preload is a no-op for them; the
 "banyandb=glibc" measurement above was wrong. Rollout mechanism decision →
