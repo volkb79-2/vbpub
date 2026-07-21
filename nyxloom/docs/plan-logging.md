@@ -1,7 +1,10 @@
 # Plan: holistic, level-based logging + a log-stream UI
 
-**Status:** proposed · authored 2026-07-20 · **D-L1 (structlog) + timestamp format resolved
-2026-07-21 by operator** · owner: operator-directed
+**Status:** proposed · authored 2026-07-20 · **D-L1 (structlog), timestamp, D-L6 (rotation)
+resolved 2026-07-21 by operator** · owner: operator-directed
+**Sequence:** this is **step 3** of the agreed order *event-store → re-baseline → logging*
+(2026-07-21, see `plan-state-integrity.md`). The event store is the substrate logs sit beside;
+`docs/design-choices.md` records the storage-format + tooling rationale.
 **Scope:** nyxloom (`/workspaces/vbpub/nyxloom`). A major cross-cutting refactor that
 adds a *measured-verbosity logging subsystem* to **all** nyxloom code, a daemon-global
 verbosity control (runtime-adjustable), and a filterable **log-stream page** in the
@@ -135,12 +138,17 @@ logs fire only where the daemon acts on a *fresh* event. (Enforced by an oracle 
   returns a **`ReconcileTrace`** (pure data: ordered breadcrumbs — "dispatch P12 via route-x",
   "carve skipped: paused", "task P7 excluded: decision-held") which the **daemon** flushes to
   the logger at DEBUG after the pass. Purity preserved; reconcile fully debuggable. (§4.3)
-- **D-L6 — storage & rotation.** One daemon-global stream `logs/nyxloom.jsonl` under the state
-  volume (records carry a `project` field; one file is far easier to tail/filter in the UI than
-  N per-project files). `RotatingFileHandler` (proven-standard) — *recommend* size-based
-  (e.g. 20 MB × 5 backups) so a debug burst can't fill the volume; retention bounded by the
-  backup count, independent of `retention_days` (which governs the event log). Gitignored;
-  never in the trove.
+- **D-L6 — storage & rotation. RESOLVED 2026-07-21.** One daemon-global stream
+  `logs/nyxloom.jsonl` under the state volume (records carry a `project` field; one file is far
+  easier to tail/filter in the UI — and in `lnav` — than N per-project files). **Retention:
+  last 3 days native JSONL, then zstd** (operator directive): the current day + previous 2 stay
+  uncompressed `.jsonl` (append / `tail -f` / live UI / instant grep); on the daily roll that
+  ages a segment past 3 days it is compressed to `nyxloom.jsonl.<date>.zst` (~10–20× on JSONL).
+  Mechanism: a daily `TimedRotatingFileHandler` whose `rotator`/`namer` zstd-compress on
+  rollover once a segment leaves the 3-day native window; a configurable number of `.zst`
+  backups bound total retention (independent of the event log's `retention_days`). Gitignored;
+  never in the trove. Full rationale + the tooling that reads this (lnav/klp/jq/duckdb) is in
+  `docs/design-choices.md`.
 - **D-L7 — UI v1 scope.** Level filter + substring/regex **highlight** + **context-around-line**
   (click → N lines before/after) + **live tail** (SSE) + **history/paging** + UTC display +
   colour-by-level + pause/resume. *Defer to v2:* full-text server-side search, download/export,
@@ -358,9 +366,8 @@ the logs-vs-events principle. Finalize rotation/retention (size×backups) with a
 - **Perf of DEBUG in hot paths.** Mitigated by stdlib `isEnabledFor` gating + lazy `%s` args.
 
 ## 9. Open decisions
-- **Resolved 2026-07-21:** D-L1 → **structlog**; D-L2 timestamp → **`YYYY-MM-DDTHH:MM:SS` UTC**.
+- **Resolved 2026-07-21:** D-L1 → **structlog**; D-L2 timestamp → **`YYYY-MM-DDTHH:MM:SS` UTC**;
+  D-L6 → **one global `nyxloom.jsonl`, 3 days native then zstd** (see design-choices.md).
 - **Still open (confirm before their phase):** D-L5 (reconcile trace vs injected logger vs relax
-  purity — recommend trace, blocks P03), D-L6 (one global file vs per-project; rotation sizing —
-  recommend one file + size rotation, blocks P01's handler config), D-L7 (v1 UI feature cut —
-  blocks P04). Recommendations inline in §3; these become `D-<NNN>` entries in
-  `nyxloom-trove/decisions.md` at carve time.
+  purity — recommend trace, blocks P03), D-L7 (v1 UI feature cut — blocks P04). Recommendations
+  inline in §3; these become `D-<NNN>` entries in `nyxloom-trove/decisions.md` at carve time.
