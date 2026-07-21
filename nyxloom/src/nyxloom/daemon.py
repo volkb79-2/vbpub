@@ -147,6 +147,10 @@ INTERFACE CONTRACT (frozen):
     GET /api/stream?project= -> text/event-stream: poll events.jsonl every
         2s, emit new events as `data: <json>\n\n` (heartbeat comment line
         every 15s); connection ends when client disconnects.
+    P02 2026-07-21 (docs/plan-logging.md §4.4, D-L3): GET /api/logs/level
+        -> {"level": <name>, "source": "runtime-file"|"env"|"config"|
+        "default"} — the daemon's current effective log level and which
+        D-L3 precedence layer supplied it (see `resolve_level`).
   P15 2026-07-15 (spec amendment, user directive): CONFIG mutations are now
   allowed through audited loopback endpoints (workflow-STATE mutations
   remain CLI-only). All three are POST, JSON in/out, 400 on validation
@@ -177,6 +181,16 @@ INTERFACE CONTRACT (frozen):
   policy also accepts key='carve_authority' (value one of "branch"/"main"/
   "files", string not int -- validated separately from _POLICY_BOUNDS'
   numeric keys, same surgical-edit + CONFIG_CHANGED contract otherwise).
+  P02 2026-07-21 (docs/plan-logging.md §4.4, D-L3 runtime control): POST
+  /api/config/log-level {level} -> validates against the same level names
+  log_module._normalize_level accepts (400, level unchanged, on a bad
+  name); on success, log_module.set_level(level) flips the daemon's
+  EFFECTIVE level immediately (no restart) AND persists it to
+  paths.daemon_log_level_path() (D-L3 layer 1, so a respawn's
+  resolve_level() bootstrap picks the same level back up). Deliberately
+  emits an INFO **log record**, not a domain event -- D-L4, logs != events
+  (§2) -- so no storage.append_and_apply / CONFIG_CHANGED here, unlike
+  every other endpoint in this section.
 - stop(): set the loop flag false and shut the HTTP server down (used by
   tests; signal handlers call it).
 
@@ -328,7 +342,9 @@ from . import (
     intake_chat, leases, lint, notify, paths, reconcile, render, stages, storage, watchdog,
     wrapper,
 )
+from . import __version__
 from .config import GateDef, ProjectConfig
+from . import log as log_module
 from .log import get_logger
 from .types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, Event,
@@ -363,14 +379,84 @@ HISTORY_REJECTION_WINDOW_SECONDS = 7 * 24 * 3600
 # never a wrong-direction outcome.
 RUNAWAY_PERSIST_AFTER_CYCLES = 3
 
+# P02 2026-07-21 (docs/plan-logging.md §3 D-L3, §4.4): bootstrap env var for
+# the daemon-global log level -- layer 2 of the verbosity precedence chain
+# (below the runtime-override file, above a project's own `[logging] level`).
+NYXLOOM_LOG_LEVEL_ENV = "NYXLOOM_LOG_LEVEL"
+
+
+def resolve_level(registry: dict[str, Path] | None = None) -> tuple[str, str]:
+    """D-L3 verbosity precedence (highest wins), returning ``(level, source)``:
+
+    1. **runtime override file** -- ``paths.daemon_log_level_path()``, written
+       by a live ``POST /api/config/log-level`` flip so it survives a daemon
+       respawn (source ``"runtime-file"``).
+    2. **``NYXLOOM_LOG_LEVEL`` env** -- compose/infra bootstrap default
+       (source ``"env"``).
+    3. **``[logging] level``** in the "primary" project's config (source
+       ``"config"``) -- the alphabetically-first registered project id is the
+       stand-in for "primary" here, the SAME convention ``/api/stream``'s
+       bare-``EventSource`` fallback already uses elsewhere in this module
+       (``next(iter(sorted(self.registry)), None)``) for "one project must be
+       picked and none is more authoritative than the others."
+    4. hardcoded **INFO** (source ``"default"``).
+
+    A layer whose value is not a level ``log_module`` recognises is treated
+    as ABSENT (falls through to the next layer) rather than raising --
+    ``resolve_level()`` always returns something ``log_module.configure()``/
+    ``log_module.set_level()`` accept outright, so a corrupted runtime-file
+    or a typo'd project toml can never crash daemon bootstrap.
+    """
+    override_path = paths.daemon_log_level_path()
+    if override_path.exists():
+        try:
+            candidate = override_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            candidate = ""
+        if candidate:
+            try:
+                log_module._normalize_level(candidate)
+            except ValueError:
+                pass
+            else:
+                return candidate, "runtime-file"
+
+    env_candidate = os.environ.get(NYXLOOM_LOG_LEVEL_ENV)
+    if env_candidate:
+        try:
+            log_module._normalize_level(env_candidate)
+        except ValueError:
+            pass
+        else:
+            return env_candidate, "env"
+
+    if registry:
+        primary = next(iter(sorted(registry)), None)
+        if primary is not None:
+            try:
+                cfg = config.ProjectConfig.load(registry[primary])
+            except Exception:
+                cfg = None
+            if cfg is not None and cfg.logging_level:
+                try:
+                    log_module._normalize_level(cfg.logging_level)
+                except ValueError:
+                    pass
+                else:
+                    return cfg.logging_level, "config"
+
+    return "info", "default"
+
+
 # P15 2026-07-15: UI config endpoints (POST-only; GET on these -> 405).
 # P18 2026-07-16: /api/decision/reply joins this POST-only set (not a config
 # mutation, but the same GET->405 guard applies).
 # P30 2026-07-16: /api/intake joins it too -- the ONE sanctioned write path
 # into intake_chat.advance_intake, loopback-only like the rest of this surface.
+# P02 2026-07-21: /api/config/log-level joins it too (D-L3 runtime control).
 _CONFIG_POST_PATHS = frozenset({
     "/api/config/policy", "/api/config/pause", "/api/config/tier",
-    "/api/decision/reply", "/api/intake",
+    "/api/decision/reply", "/api/intake", "/api/config/log-level",
 })
 
 # /api/intake is the one route that lets a caller NAME the record it writes
@@ -511,6 +597,20 @@ class Daemon:
     # -- lifecycle ------------------------------------------------------
 
     def run(self) -> None:
+        # P02 (D-L3 §4.4): configure logging FIRST, before anything else in
+        # the boot sequence, so every subsequent line -- including the
+        # pidfile-conflict RuntimeError's own callers -- runs under the
+        # resolved level. resolve_level reads self.registry for layer 3
+        # ([logging] level in the primary project's config).
+        level, level_source = resolve_level(self.registry)
+        log_module.configure(level, paths.logs_dir())
+        # NB: field name deliberately NOT "level" -- structlog.stdlib.
+        # add_log_level unconditionally overwrites event_dict["level"]
+        # with the record's own SEVERITY name (here always "info"), so a
+        # same-named custom field would be silently clobbered.
+        log.info("daemon started", version=__version__, effective_level=level,
+                  level_source=level_source, projects=sorted(self.registry))
+
         pidfile = paths.daemon_dir() / "nyxloomd.pid"
         if pidfile.exists():
             try:
@@ -3852,6 +3952,18 @@ class Daemon:
             self._serve_sse(handler, project)
             return
 
+        if path == "/api/logs/level":
+            # P02 (D-L3 §4.4): the current effective level + which
+            # precedence layer supplied it -- reruns the exact same
+            # resolve_level() chain the daemon's own bootstrap and the
+            # POST-side live flip both go through, so this always reflects
+            # the truth (a POST persists to the runtime-file, the top layer
+            # resolve_level checks).
+            level, source = resolve_level(self.registry)
+            body = json.dumps({"level": level, "source": source}).encode("utf-8")
+            self._send_json(handler, 200, body)
+            return
+
         self._send_json(handler, 404, b'{"error":"not found"}')
 
     # -- HTTP config mutation endpoints (P15 2026-07-15) -----------------
@@ -3915,8 +4027,47 @@ class Daemon:
         if path == "/api/intake":
             self._post_intake(handler, body)
             return
+        if path == "/api/config/log-level":
+            self._post_config_log_level(handler, body)
+            return
 
         self._send_json(handler, 404, b'{"error":"not found"}')
+
+    def _post_config_log_level(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
+        """P02 (D-L3 §4.4): live-flip the daemon's effective log level, no
+        restart required, and persist it to paths.daemon_log_level_path()
+        so a respawn's bootstrap resolve_level() picks the same level back
+        up (the runtime-file is precedence layer 1 -- the highest).
+
+        D-L4: this is a LOG record, never a domain one -- unlike every
+        other endpoint in this config-mutation section, there is
+        deliberately NO storage.append_and_apply / _append_ui_event call
+        here (a log-level flip is an operational-diagnostics concern, not
+        a fact about task/attempt state the event log needs to replay)."""
+        level = body.get("level")
+        if not isinstance(level, str) or not level.strip():
+            self._send_json(handler, 400, b'{"error":"missing level"}')
+            return
+        canonical = level.strip().lower()
+        try:
+            log_module._normalize_level(canonical)
+        except ValueError:
+            self._send_json(handler, 400, json.dumps(
+                {"error": f"unknown log level: {level!r}"}).encode("utf-8"))
+            return
+
+        log_module.set_level(canonical)
+        override_path = paths.daemon_log_level_path()
+        override_path.parent.mkdir(parents=True, exist_ok=True)
+        override_path.write_text(canonical, encoding="utf-8")
+        # NB: field name "new_level", NOT "level" -- see the matching
+        # comment on the "daemon started" log call in Daemon.run(); "level"
+        # in the rendered record is always the record's own severity
+        # ("info" here), overwritten unconditionally by structlog.stdlib.
+        # add_log_level regardless of what a same-named kwarg carried.
+        log.info("log level changed", new_level=canonical, change_source="ui")
+
+        self._send_json(handler, 200, json.dumps({"ok": True, "level": canonical}).encode("utf-8"))
 
     def _post_decision_reply(self, handler: http.server.BaseHTTPRequestHandler, body: dict) -> None:
         """P18: drive the decision-chat bridge from the UI (decisions.html),

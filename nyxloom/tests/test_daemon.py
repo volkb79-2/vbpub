@@ -3672,3 +3672,264 @@ def test_extract_usage_reads_cache_read_tokens_from_fake_output():
         '{"usage": {"input_tokens": 40000, "output_tokens": 40, '
         '"cache_read_input_tokens": 0}}\n')
     assert (cold.cached_in or 0) == 0                 # cold baseline
+
+
+# --------------------------------------------------------------------------
+# PACKAGE P02 (docs/plan-logging.md §3 D-L3, §4.4): verbosity config,
+# bootstrap & runtime control. Oracles:
+#   1. precedence chain (four tests, each removing the top layer)
+#   2. live flip, no restart + persists (simulated respawn)
+#   3. invalid level -> 400, unchanged
+#   4. no domain event (D-L4) -- a log record only
+
+def _set_logging_level(cfg, level):
+    """Append a `[logging]` table (D-L3 layer 3 -- the primary project's own
+    static default) to the project's toml. A NEW top-level section, so
+    simple appending is safe regardless of where [notify]/[policy] etc. end."""
+    ptoml = cfg.root / ".nyxloom" / "project.toml"
+    text = ptoml.read_text(encoding="utf-8")
+    if "[logging]" not in text:
+        text += f'\n[logging]\nlevel = "{level}"\n'
+        ptoml.write_text(text, encoding="utf-8")
+
+
+def test_resolve_level_runtime_file_beats_everything(tmp_state, sample_project, monkeypatch):
+    """Layer 1 (runtime-override file) wins even with layer 2 (env) AND
+    layer 3 ([logging] level) both also set to something else."""
+    monkeypatch.setenv("NYXLOOM_LOG_LEVEL", "warning")
+    _set_logging_level(sample_project, "error")
+    paths.daemon_log_level_path().write_text("debug", encoding="utf-8")
+
+    registry = {"demo": sample_project.root}
+    assert daemon.resolve_level(registry) == ("debug", "runtime-file")
+
+
+def test_resolve_level_env_beats_config_and_default(tmp_state, sample_project, monkeypatch):
+    """Layer 1 removed (no runtime-file): layer 2 (env) wins over layer 3
+    ([logging] level, also set) and the hardcoded default."""
+    assert not paths.daemon_log_level_path().exists()
+    monkeypatch.setenv("NYXLOOM_LOG_LEVEL", "warning")
+    _set_logging_level(sample_project, "error")
+
+    registry = {"demo": sample_project.root}
+    assert daemon.resolve_level(registry) == ("warning", "env")
+
+
+def test_resolve_level_config_beats_default(tmp_state, sample_project, monkeypatch):
+    """Layers 1 & 2 removed: layer 3 ([logging] level in the primary
+    project's config) wins over the hardcoded INFO default."""
+    assert not paths.daemon_log_level_path().exists()
+    monkeypatch.delenv("NYXLOOM_LOG_LEVEL", raising=False)
+    _set_logging_level(sample_project, "error")
+
+    registry = {"demo": sample_project.root}
+    assert daemon.resolve_level(registry) == ("error", "config")
+
+
+def test_resolve_level_default_when_nothing_set(tmp_state, sample_project, monkeypatch):
+    """All three layers absent: hardcoded INFO, source 'default'."""
+    assert not paths.daemon_log_level_path().exists()
+    monkeypatch.delenv("NYXLOOM_LOG_LEVEL", raising=False)
+    # sample_project's toml has no [logging] section (SAMPLE_PROJECT_TOML).
+
+    registry = {"demo": sample_project.root}
+    assert daemon.resolve_level(registry) == ("info", "default")
+
+    # Also true with NO registry at all (e.g. before any project loads).
+    assert daemon.resolve_level(None) == ("info", "default")
+    assert daemon.resolve_level({}) == ("info", "default")
+
+
+def test_resolve_level_treats_corrupt_layers_as_absent(tmp_state, sample_project, monkeypatch):
+    """A garbage runtime-file/env value is not a level log_module accepts --
+    resolve_level falls through to the next layer rather than propagating
+    ValueError (so a corrupted state file can never crash daemon boot)."""
+    monkeypatch.setenv("NYXLOOM_LOG_LEVEL", "not-a-level")
+    _set_logging_level(sample_project, "warning")
+    paths.daemon_log_level_path().write_text("also-not-a-level", encoding="utf-8")
+
+    registry = {"demo": sample_project.root}
+    # runtime-file garbage -> skip to env; env garbage -> skip to config.
+    assert daemon.resolve_level(registry) == ("warning", "config")
+
+
+def test_log_level_post_flips_live_no_restart_and_persists(http_daemon, tmp_state, monkeypatch):
+    """Oracle 2: POST /api/config/log-level changes the EFFECTIVE level
+    without a restart (the same already-running process's `daemon.log`
+    immediately obeys it) AND persists to the runtime-override file, so a
+    simulated respawn (a fresh resolve_level() call reading that file)
+    returns the flipped level."""
+    monkeypatch.delenv("NYXLOOM_LOG_LEVEL", raising=False)
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+    log_dir = tmp_state / "logs"
+
+    # Boot default is INFO (sample_project has no [logging], no env, no
+    # runtime-file yet) -- a DEBUG call is dropped pre-flip.
+    daemon.log.debug("pre_flip_debug_marker")
+    pre = _read_log_records(log_dir)
+    assert not any(r.get("msg") == "pre_flip_debug_marker" for r in pre)
+
+    req = urllib.request.Request(
+        f"{base}/api/config/log-level",
+        data=json.dumps({"level": "DEBUG"}).encode("utf-8"),
+        method="POST", headers={"Content-Type": "application/json"},
+    )
+    resp = urllib.request.urlopen(req, timeout=5)
+    assert resp.status == 200
+    assert json.loads(resp.read()) == {"ok": True, "level": "debug"}
+
+    # Live flip, no restart: the running daemon's own already-imported
+    # logger now emits DEBUG in the SAME process, no reconfigure/restart.
+    daemon.log.debug("post_flip_debug_marker")
+    post = _read_log_records(log_dir)
+    assert any(r.get("msg") == "post_flip_debug_marker" for r in post)
+
+    # Persists: the runtime-override file carries the new level...
+    assert paths.daemon_log_level_path().read_text(encoding="utf-8").strip() == "debug"
+    # ...and a simulated respawn (fresh resolve_level()) reads it back.
+    assert daemon.resolve_level(d.registry) == ("debug", "runtime-file")
+
+
+def test_log_level_post_invalid_level_400_unchanged(http_daemon, tmp_state, monkeypatch):
+    """Oracle 3: a bad level name -> 400, and the effective level (plus its
+    source) is left exactly as it was -- no partial/garbage write."""
+    monkeypatch.delenv("NYXLOOM_LOG_LEVEL", raising=False)
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+
+    before = daemon.resolve_level(d.registry)
+    assert before == ("info", "default")
+
+    req = urllib.request.Request(
+        f"{base}/api/config/log-level",
+        data=json.dumps({"level": "not-a-real-level"}).encode("utf-8"),
+        method="POST", headers={"Content-Type": "application/json"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc_info.value.code == 400
+
+    assert daemon.resolve_level(d.registry) == before
+    assert not paths.daemon_log_level_path().exists()
+
+
+def test_log_level_post_missing_level_400(http_daemon):
+    """400 for a missing/non-string `level`, same as every other POST
+    endpoint's missing-field contract on this surface."""
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+
+    req = urllib.request.Request(
+        f"{base}/api/config/log-level",
+        data=json.dumps({}).encode("utf-8"),
+        method="POST", headers={"Content-Type": "application/json"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc_info.value.code == 400
+
+
+def test_log_level_get_reports_effective_level_and_source(http_daemon, monkeypatch):
+    """GET /api/logs/level reports the current effective level + its
+    source, and reflects a live POST flip without a restart."""
+    monkeypatch.delenv("NYXLOOM_LOG_LEVEL", raising=False)
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+
+    data = json.loads(urllib.request.urlopen(f"{base}/api/logs/level", timeout=5).read())
+    assert data == {"level": "info", "source": "default"}
+
+    req = urllib.request.Request(
+        f"{base}/api/config/log-level",
+        data=json.dumps({"level": "warning"}).encode("utf-8"),
+        method="POST", headers={"Content-Type": "application/json"},
+    )
+    urllib.request.urlopen(req, timeout=5)
+
+    data2 = json.loads(urllib.request.urlopen(f"{base}/api/logs/level", timeout=5).read())
+    assert data2 == {"level": "warning", "source": "runtime-file"}
+
+
+def test_log_level_config_path_405_on_get(http_daemon):
+    """/api/config/log-level joins _CONFIG_POST_PATHS: GET on it is 405, the
+    same guard every other config-mutation endpoint gets."""
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"{base}/api/config/log-level", timeout=5)
+    assert exc_info.value.code == 405
+
+
+def test_log_level_post_emits_log_not_domain_event(http_daemon, tmp_state):
+    """Oracle 4 (D-L4): the level change emits an INFO log record and
+    appends NO domain event -- the event log is byte-for-byte unchanged
+    across the POST, unlike every other POST /api/config/* endpoint on
+    this surface (which all append a CONFIG_CHANGED/PAUSE_* event)."""
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+    log_dir = tmp_state / "logs"
+
+    before_events = [e.to_dict() for e in storage.iter_events("demo", since=0)]
+
+    req = urllib.request.Request(
+        f"{base}/api/config/log-level",
+        data=json.dumps({"level": "warning"}).encode("utf-8"),
+        method="POST", headers={"Content-Type": "application/json"},
+    )
+    resp = urllib.request.urlopen(req, timeout=5)
+    assert resp.status == 200
+
+    after_events = [e.to_dict() for e in storage.iter_events("demo", since=0)]
+    assert after_events == before_events   # NOT ONE new domain event
+
+    records = _read_log_records(log_dir)
+    assert any(
+        r.get("level") == "info" and r.get("msg") == "log level changed"
+        and r.get("new_level") == "warning"
+        for r in records
+    )
+
+
+def test_daemon_run_configures_logging_before_loop_and_logs_started(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Daemon.run() calls log.configure(resolve_level(), paths.logs_dir())
+    BEFORE the main loop, then logs an INFO 'daemon started' -- exercised
+    via the immediate-stop pattern (no HTTP fixture needed)."""
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    monkeypatch.delenv("NYXLOOM_LOG_LEVEL", raising=False)
+    _set_ephemeral_http_port(sample_project)
+    log_dir = tmp_state / "logs"
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    d._stop_event.set()   # loop flag pre-set: run() configures + starts/stops HTTP, then exits
+    d.run()
+
+    records = _read_log_records(log_dir)
+    started = [r for r in records if r.get("msg") == "daemon started"]
+    assert started, "expected an INFO 'daemon started' record"
+    assert started[0]["level"] == "info"
+    assert started[0]["effective_level"] == "info"
+    assert started[0]["level_source"] == "default"
+
+
+def test_daemon_run_bootstraps_from_project_logging_level(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """End-to-end: a project's `[logging] level` (D-L3 layer 3) is honoured
+    at Daemon.run() bootstrap -- a DEBUG record is captured in the log file
+    even though nothing was flipped at runtime."""
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    _set_ephemeral_http_port(sample_project)
+    monkeypatch.delenv("NYXLOOM_LOG_LEVEL", raising=False)
+    _set_logging_level(sample_project, "debug")
+    log_dir = tmp_state / "logs"
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    d._stop_event.set()
+    d.run()
+
+    started = [r for r in _read_log_records(log_dir) if r.get("msg") == "daemon started"]
+    assert started
+    assert started[0]["effective_level"] == "debug"
+    assert started[0]["level_source"] == "config"
