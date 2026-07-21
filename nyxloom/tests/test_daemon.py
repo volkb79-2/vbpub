@@ -28,7 +28,7 @@ import pytest
 from conftest import SAMPLE_ROUTES_TOML
 
 from nyxloom import (
-    adapters, cli, daemon, decision_chat, decisions, doctor, lint, log, notify, paths,
+    adapters, cli, daemon, decision_chat, decisions, doctor, lint, notify, paths,
     reconcile, render, storage, wrapper,
 )
 from nyxloom.types import (
@@ -2621,29 +2621,15 @@ def test_toml_http_bind_never_reaches_the_real_bind(
         t.join(timeout=5)
 
 
-def _read_log_records(log_dir: Path) -> list[dict]:
-    """P01: the http_bind notice moved from a stderr `print` to
-    `log.warning(...)` -- read back the rendered JSONL records the same way
-    test_log.py does, rather than capturing stderr."""
-    p = log_dir / "nyxloom.jsonl"
-    if not p.exists():
-        return []
-    return [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
-
-
 def test_nonloopback_bind_prints_unauthenticated_notice(
-        tmp_state, sample_project, patch_siblings, monkeypatch):
+        tmp_state, sample_project, patch_siblings, monkeypatch, capsys):
     """2026-07-20: a non-loopback bind states the security assumption out loud
     at startup -- the control plane is unauthenticated, only safe on a private
-    unpublished network. 2026-07-21 (P01): the notice is now a structured
-    `log.warning` record (read back from the JSONL file) rather than a raw
-    stderr print."""
+    unpublished network. Read after join so the print has flushed."""
     monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
     monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
     monkeypatch.setenv("NYXLOOM_HTTP_BIND", "0.0.0.0")
     _set_ephemeral_http_port(sample_project)
-    log_dir = tmp_state / "logs"
-    log.configure(level=log.INFO, log_dir=log_dir, console=False)
 
     d = daemon.Daemon({"demo": sample_project.root})
     t = threading.Thread(target=d.run, daemon=True)
@@ -2654,25 +2640,20 @@ def test_nonloopback_bind_prints_unauthenticated_notice(
     d.stop()
     t.join(timeout=5)
 
-    warnings = [r for r in _read_log_records(log_dir) if r.get("level") == "warning"]
-    assert any(
-        "UNAUTHENTICATED" in r.get("msg", "") and r.get("http_bind") == "0.0.0.0"
-        for r in warnings
-    )
+    err = capsys.readouterr().err
+    assert "UNAUTHENTICATED" in err
+    assert "0.0.0.0" in err
 
 
 def test_loopback_bind_prints_no_notice_THE_NEGATIVE(
-        tmp_state, sample_project, patch_siblings, monkeypatch):
+        tmp_state, sample_project, patch_siblings, monkeypatch, capsys):
     """The default loopback bind is safe and needs no callout -- so the notice
     must NOT fire, or it becomes boot noise on every safe daemon and the real
-    (non-loopback) case stops standing out. 2026-07-21 (P01): asserts against
-    the structured log record stream, not stderr."""
+    (non-loopback) case stops standing out."""
     monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
     monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
     monkeypatch.delenv("NYXLOOM_HTTP_BIND", raising=False)
     _set_ephemeral_http_port(sample_project)
-    log_dir = tmp_state / "logs"
-    log.configure(level=log.INFO, log_dir=log_dir, console=False)
 
     d = daemon.Daemon({"demo": sample_project.root})
     t = threading.Thread(target=d.run, daemon=True)
@@ -2684,8 +2665,7 @@ def test_loopback_bind_prints_no_notice_THE_NEGATIVE(
     t.join(timeout=5)
 
     assert d.http_bind == "127.0.0.1"
-    warnings = [r for r in _read_log_records(log_dir) if r.get("level") == "warning"]
-    assert not any("UNAUTHENTICATED" in r.get("msg", "") for r in warnings)
+    assert "UNAUTHENTICATED" not in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------

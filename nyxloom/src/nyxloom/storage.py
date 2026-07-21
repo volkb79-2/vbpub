@@ -26,14 +26,6 @@ Projection contract (what emitters MUST put in payloads):
   everything else       no projection effect
 
 All other modules MUST NOT write events.jsonl or statefiles directly.
-
-Backend selector (PACKAGE SP01, docs/plan-state-integrity.md Part A): this
-module's implementation below is the FILE backend and stays the default,
-unchanged. Setting env var `NYXLOOM_STATE_BACKEND=sqlite` switches every
-public function here to delegate to `storage_sqlite.py` instead -- a dark
-flag so landing SP01 does not change the running daemon's behavior. Only
-`apply_event`/`_validate_before_append` (pure, in-memory, no I/O) are shared
-by both backends unchanged.
 """
 
 from __future__ import annotations
@@ -54,13 +46,6 @@ from .types import (
 SCHEMA_VERSION = 1
 
 _EARLY_ATTEMPT_STATES = frozenset({AttemptState.CREATED, AttemptState.PREFLIGHTING})
-
-
-def _sqlite_backend_enabled() -> bool:
-    """DARK FLAG (SP01): `NYXLOOM_STATE_BACKEND=sqlite` selects the SQLite
-    backend; anything else, including unset, keeps the file backend below as
-    the default so merging this does not change the running daemon."""
-    return os.environ.get("NYXLOOM_STATE_BACKEND") == "sqlite"
 
 
 def _attempt_regression(current: AttemptState, incoming: AttemptState) -> bool:
@@ -105,13 +90,6 @@ def append_event(
     timestamp=None,
 ) -> Event:
     """Append one event under an exclusive flock; assigns the sequence."""
-    if _sqlite_backend_enabled():
-        from . import storage_sqlite
-        return storage_sqlite.append_event(
-            project, actor=actor, type=type, payload=payload, task_id=task_id,
-            attempt_id=attempt_id, wave_id=wave_id, decision_id=decision_id,
-            timestamp=timestamp,
-        )
     paths.ensure_layout(project)
     path = paths.events_path(project)
     with path.open("a+", encoding="utf-8") as f:
@@ -139,10 +117,6 @@ def append_event(
 
 
 def iter_events(project: str, since: int = 0) -> Iterator[Event]:
-    if _sqlite_backend_enabled():
-        from . import storage_sqlite
-        yield from storage_sqlite.iter_events(project, since=since)
-        return
     path = paths.events_path(project)
     if not path.exists():
         return
@@ -160,9 +134,6 @@ def iter_events(project: str, since: int = 0) -> Iterator[Event]:
 # statefiles
 
 def load_state(project: str, task_id: str) -> TaskStateFile | None:
-    if _sqlite_backend_enabled():
-        from . import storage_sqlite
-        return storage_sqlite.load_state(project, task_id)
     p = paths.statefile_path(project, task_id)
     if not p.exists():
         return None
@@ -171,10 +142,6 @@ def load_state(project: str, task_id: str) -> TaskStateFile | None:
 
 def save_state(state: TaskStateFile) -> None:
     """Atomic write (tmp + rename) under a per-task flock."""
-    if _sqlite_backend_enabled():
-        from . import storage_sqlite
-        storage_sqlite.save_state(state)
-        return
     paths.ensure_layout(state.project)
     p = paths.statefile_path(state.project, state.task_id)
     lock = p.with_suffix(".lock")
@@ -192,9 +159,6 @@ def save_state(state: TaskStateFile) -> None:
 
 
 def list_states(project: str) -> dict[str, TaskStateFile]:
-    if _sqlite_backend_enabled():
-        from . import storage_sqlite
-        return storage_sqlite.list_states(project)
     d = paths.state_dir(project)
     out: dict[str, TaskStateFile] = {}
     if not d.exists():
@@ -391,9 +355,6 @@ def append_and_apply(
 
     kwargs are `append_event`'s keyword arguments.
     """
-    if _sqlite_backend_enabled():
-        from . import storage_sqlite
-        return storage_sqlite.append_and_apply(project, states, **kwargs)
     _validate_before_append(states, **kwargs)
     ev = append_event(project, **kwargs)
     for tid in apply_event(states, ev):
@@ -403,9 +364,6 @@ def append_and_apply(
 
 def replay(project: str) -> dict[str, TaskStateFile]:
     """Rebuild the full projection from the event log alone."""
-    if _sqlite_backend_enabled():
-        from . import storage_sqlite
-        return storage_sqlite.replay(project)
     states: dict[str, TaskStateFile] = {}
     for ev in iter_events(project):
         apply_event(states, ev)

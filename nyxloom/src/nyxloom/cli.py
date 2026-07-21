@@ -17,29 +17,7 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               {critical, error}. --rebuild prints diffs.
   status [--project X]        per task: id, state, since, attempt route,
                               cost, notes. Reads statefiles only.
-  resync <project>            PACKAGE RP01 2026-07-21 (docs/plan-state-
-                              integrity.md Part B): ground-truth
-                              re-baseline PROBE. Reads statefiles + trove
-                              handoff presence + git merge facts (branch
-                              --merged AND a content-check fallback for a
-                              squash/CAS/deleted-branch merge), plans via
-                              resync.resync_plan, prints a table (task,
-                              believed, ground-truth, proposed action,
-                              evidence). PURE READ-ONLY: no writes, no
-                              events, no `--apply` (that is RP02, not yet
-                              built).
   render                      render.render_all(registry); prints www path.
-  migrate-store <project>     PACKAGE SP02 2026-07-21 (docs/plan-state-
-                              integrity.md Part A.3): imports a project's
-                              file-backend events.jsonl into the SQLite
-                              backend (storage_sqlite), verifies ZERO
-                              divergence against the on-disk statefiles,
-                              then retires the source (events.jsonl ->
-                              events.jsonl.pre-sqlite, kept as a backup,
-                              never deleted). Idempotent. See
-                              migrate_store.migrate for the full
-                              contract; only ever run against a live
-                              project at the SP03 cutover (not here).
   daemon [--foreground]       Daemon(registry).run() (foreground only in
                               the pilot; systemd/tmux owns daemonization).
   tick [--project X]          daemon.run_once — one pass, prints action
@@ -81,25 +59,7 @@ INTERFACE CONTRACT (frozen) — subcommands:
   leases                      leases.holder_info for every mutex declared
                               by any registered project (project + host).
   digest <project> [--since SEQ]   prints notify.digest.
-  events <project> [--since SEQ] [--type T] [--tail] [--json]
-                              PACKAGE SP04 2026-07-21 (docs/plan-state-
-                              integrity.md A.3): the greppability bridge --
-                              dumps the event store as JSONL to stdout via
-                              storage.iter_events, which is backend-agnostic
-                              (file or SQLite, per NYXLOOM_STATE_BACKEND),
-                              restoring `| jq` / `| lnav` over the event log
-                              regardless of backend. --since/--type filter
-                              (--type unchanged from the original P10 debug
-                              verb); --json is an explicit alias for the
-                              already-JSONL default output (no other output
-                              mode exists); --tail polls for new appends
-                              after the initial dump and follows them
-                              (KeyboardInterrupt during the poll -> clean
-                              exit 0). Reads only -- never writes an event
-                              or a statefile. An unknown/never-written
-                              project is not an error: iter_events yields
-                              nothing for it, so nothing is printed and the
-                              exit code is 0.
+  events <project> [--since SEQ] [--type T]   raw event lines (debug).
   version                     nyxloom.__version__.
   init <project_folder>       PACKAGE P23. Scaffold nyxloom-trove/ into
                               <project_folder> from this package's bundled
@@ -392,46 +352,6 @@ def cmd_status(args) -> int:
     return 0
 
 
-def cmd_resync(args) -> int:
-    """resync <project>
-
-    PACKAGE RP01 2026-07-21: ground-truth re-baseline PROBE (docs/plan-
-    state-integrity.md Part B.4). Gathers the three B.1 ground-truth
-    sources (statefile belief via storage.list_states, handoff presence
-    via resync.gather_handoff_presence, git merge facts via
-    resync.gather_git_facts), plans via the pure resync.resync_plan, and
-    prints the plan as a table. No writes, no events -- dry-run only.
-    """
-    from . import storage
-    from .resync import gather_git_facts, gather_handoff_presence, resync_plan
-
-    cfg = _cfg(args.project)
-    states = storage.list_states(args.project)
-    frontmatters = gather_handoff_presence(cfg.root, states)
-    git_facts = gather_git_facts(str(cfg.root), cfg.default_branch, states)
-    plan = resync_plan(states, frontmatters, git_facts)
-
-    rows = [
-        {
-            "task_id": p.task_id,
-            "believed": p.believed_state.value,
-            "ground_truth": p.ground_truth,
-            "proposed_action": p.proposed_action,
-            "evidence": p.evidence,
-        }
-        for p in plan
-    ]
-
-    if rows:
-        print(_format_table(
-            rows, ["task_id", "believed", "ground_truth", "proposed_action", "evidence"]
-        ))
-    else:
-        print("no tasks")
-
-    return 0
-
-
 def cmd_render(args) -> int:
     """render"""
     from . import config, render
@@ -439,36 +359,6 @@ def cmd_render(args) -> int:
     registry = config.load_registry()
     www_path = render.render_all(registry)
     print(www_path)
-    return 0
-
-
-def cmd_migrate_store(args) -> int:
-    """migrate-store <project>
-
-    PACKAGE SP02 2026-07-21 (docs/plan-state-integrity.md Part A.3): thin
-    wrapper -- all logic lives in migrate_store.migrate (import/verify/
-    rename). Prints the resulting status + counts; a MigrationError
-    (corrupt source line, divergence, or an inconsistent partial-import
-    state) is caught here and reported the same way other verbs report
-    domain errors: 'error: ...' to stderr, exit 1.
-    """
-    from .migrate_store import MigrationError, migrate
-
-    try:
-        result = migrate(args.project)
-    except MigrationError as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-
-    if result.status == "migrated":
-        print(
-            f"migrated: {result.imported_count} event(s) imported, "
-            f"{len(result.task_ids)} task(s) verified zero-divergence"
-        )
-    elif result.status == "already-migrated":
-        print("already-migrated: events.jsonl.pre-sqlite backup already present, nothing to do")
-    else:
-        print("nothing-to-migrate: no events.jsonl source found")
     return 0
 
 
@@ -797,63 +687,19 @@ def cmd_digest(args) -> int:
 
 
 def cmd_events(args) -> int:
-    """events <project> [--since SEQ] [--type T] [--tail] [--json]
-
-    PACKAGE SP04 2026-07-21 (docs/plan-state-integrity.md A.3 -- the
-    greppability bridge). Dumps the event store as JSONL to stdout via
-    storage.iter_events, which is backend-agnostic (file or SQLite, per
-    NYXLOOM_STATE_BACKEND) -- so `nyxloom events P | jq` / `| lnav` works
-    unchanged regardless of which backend is selected. Each printed line is
-    `Event.to_dict()` JSON-encoded, the exact shape storage.py's file
-    backend writes to events.jsonl, so a dump round-trips to the same
-    records `iter_events` yields.
-
-    Deliberately does NOT resolve the project through `_cfg`/the registry:
-    storage.iter_events works directly off the project id string on both
-    backends and simply yields nothing for a project with no events.jsonl /
-    no state.db row, so an unknown or never-written project is not an
-    error here -- it prints nothing and exits 0 (this is a read-only
-    debug/grep tool, not a mutation path that needs config validation).
-
-    --since SEQ   only sequence > SEQ (passed straight through to
-                  iter_events(project, since=SEQ)).
-    --type T      filter to one event type value (unchanged P10 behavior).
-    --json        explicit alias for the (already-JSONL) default output --
-                  accepted so a script can be unambiguous about the format
-                  it depends on; there is no other output mode to select.
-    --tail        after the initial dump, poll for new appends and emit
-                  them as they arrive, tracking the highest sequence seen
-                  so each poll only re-queries iter_events for the delta.
-                  Interruptible: a KeyboardInterrupt (Ctrl-C) during the
-                  poll is caught and the command exits 0 cleanly.
-
-    Reads only -- iter_events is a pure SELECT/scan on both backends; this
-    command never calls append_event/append_and_apply/save_state.
-    """
-    import json as json_lib
-    import time
-
+    """events <project> [--since SEQ] [--type T]"""
     from . import storage
+
+    cfg = _cfg(args.project)
 
     since_seq = int(args.since) if hasattr(args, 'since') and args.since else 0
     filter_type = args.type if hasattr(args, 'type') and args.type else None
 
-    def _dump_since(last_seq: int) -> int:
-        for ev in storage.iter_events(args.project, last_seq):
-            if filter_type is None or ev.type.value == filter_type:
-                print(json_lib.dumps(ev.to_dict()))
-            last_seq = ev.sequence
-        return last_seq
-
-    last_seq = _dump_since(since_seq)
-
-    if getattr(args, "tail", False):
-        try:
-            while True:
-                time.sleep(1.0)
-                last_seq = _dump_since(last_seq)
-        except KeyboardInterrupt:
-            pass
+    for ev in storage.iter_events(args.project, since_seq):
+        if filter_type is None or ev.type.value == filter_type:
+            # Print event as JSON line
+            import json
+            print(json.dumps(ev.to_dict()))
 
     return 0
 
@@ -1027,16 +873,8 @@ def main(argv: list[str] | None = None) -> int:
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--project", help="Project ID (optional)")
 
-    # resync
-    resync_parser = subparsers.add_parser("resync")
-    resync_parser.add_argument("project", help="Project ID")
-
     # render
     render_parser = subparsers.add_parser("render")
-
-    # migrate-store
-    migrate_store_parser = subparsers.add_parser("migrate-store")
-    migrate_store_parser.add_argument("project", help="Project ID")
 
     # daemon
     daemon_parser = subparsers.add_parser("daemon")
@@ -1099,10 +937,6 @@ def main(argv: list[str] | None = None) -> int:
     events_parser.add_argument("project", help="Project ID")
     events_parser.add_argument("--since", help="Since sequence (optional)")
     events_parser.add_argument("--type", help="Event type (optional)")
-    events_parser.add_argument("--tail", action="store_true",
-                                help="Follow new events as they are appended (Ctrl-C to stop)")
-    events_parser.add_argument("--json", action="store_true",
-                                help="Explicit JSONL output (default; no other output mode exists)")
 
     # version
     version_parser = subparsers.add_parser("version")
@@ -1159,12 +993,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_doctor(args)
         elif args.cmd == "status":
             return cmd_status(args)
-        elif args.cmd == "resync":
-            return cmd_resync(args)
         elif args.cmd == "render":
             return cmd_render(args)
-        elif args.cmd == "migrate-store":
-            return cmd_migrate_store(args)
         elif args.cmd == "daemon":
             return cmd_daemon(args)
         elif args.cmd == "tick":

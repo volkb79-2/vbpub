@@ -7,6 +7,10 @@
 ## 1. What we're running
 
 Pterodactyl Wings → Docker → `WSServer-Linux-Shipping` (egg: `egg-soulmask.json`).
+Startup console markers and the measured phase timeline (what Wings' matchers
+see, and the cgroup/activity phase triggers) live in
+[`SOULMASK-STARTUP-MARKERS.md`](SOULMASK-STARTUP-MARKERS.md).
+
 Key facts pulled from the egg:
 
 | Item | Value | Note |

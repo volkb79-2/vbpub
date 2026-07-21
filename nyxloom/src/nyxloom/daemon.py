@@ -329,14 +329,11 @@ from . import (
     wrapper,
 )
 from .config import GateDef, ProjectConfig
-from .log import get_logger
 from .types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, Event,
     EventType, GateResult, Receipt, ReceiptResult, Role, Route, TaskState,
     TaskStateFile, TERMINAL_ATTEMPT_STATES, iso, new_id, utc_now,
 )
-
-log = get_logger("daemon")  # P01: first real user of nyxloom.log (proof it works end-to-end)
 
 # Tunables (module constants so tests can shrink them for determinism).
 PROBE_TTL_SECONDS = 600
@@ -3728,19 +3725,15 @@ class Daemon:
         # control plane is UNAUTHENTICATED (POST /api/config/* can pause/unpause
         # projects, edit policy, answer decisions) -- a non-loopback bind is only
         # safe on a PRIVATE, unpublished network (the ciu bridge), which the infra
-        # layer, not this process, guarantees. A WARNING, not INFO (2026-07-21,
-        # P01): this states the assumption rather than crying wolf, but a
-        # non-loopback bind is still worth a level above the routine operational
-        # narrative -- and this is P01's first real caller of nyxloom.log,
-        # proof the module works end-to-end. Loopback (the default) needs no
-        # callout.
+        # layer, not this process, guarantees. An INFO notice, not a warning: a
+        # non-loopback bind is the correct, expected production state under that
+        # model, so this states the assumption rather than crying wolf. Goes to
+        # stderr -> docker logs, where an operator inspecting the running daemon
+        # looks. Loopback (the default) needs no callout.
         if self.http_bind not in ("127.0.0.1", "::1"):
-            log.warning(
-                "HTTP control plane bound to a non-loopback address "
-                "(UNAUTHENTICATED; assumes a private, unpublished network -- "
-                "the ciu bridge)",
-                http_bind=self.http_bind, http_port=self.http_port,
-            )
+            print(f"nyxloomd: HTTP control plane bound to {self.http_bind}:"
+                  f"{self.http_port} (UNAUTHENTICATED; assumes a private, "
+                  "unpublished network -- the ciu bridge)", file=sys.stderr, flush=True)
         t = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
         t.start()
         self._http_thread = t
