@@ -57,7 +57,7 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu env generate` | (Re)generate `ciu.env` from system state | `--define-root PATH` |
 | `ciu render` | Render `ciu.global.toml` + per-stack `ciu.toml` | `--profile NAME`, `--define-root PATH`, `--host NAME` (remote) |
 | `ciu profiles` | List host profiles | — |
-| `ciu up` | Render + materialise secrets + `compose up` | `--profile NAME` \| `--dir PATH`, `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; `--host NAME` push-deploys to a remote host (S14.2); `--thin` reserved/not-yet-implemented |
+| `ciu up` | Render + materialise secrets + `compose up` | `--profile NAME` \| `--dir PATH`, `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; `--host NAME` push-deploys to a remote host (S14.2); `--thin` docker-optional push→activate (S14.6), `--bootstrap`/`--rollback` select activation verbs |
 | `ciu down` | Stop containers (volumes preserved) | `--profile NAME`, `--host NAME` |
 | `ciu clean` | **Complete** teardown: containers (any state) + volumes + `vol-*` + rendered; enforces post-clean invariant (exit 1 on survivors) | `--profile NAME`, `-y`, `--ignore-errors` |
 | `ciu health` | Health gate over the selection | `--profile NAME`, `--host NAME` |
@@ -207,5 +207,10 @@ ciu up --host core1 --dir infra/vault    # second run: TOFU env unset, key now p
 - **Host-key pinning is fail-closed (S14.4a).** A missing `known_host` in the hosts
   inventory causes `ciu ssh` and `ciu up --host` to refuse the connection. Set
   `CIU_SSH_INSECURE_TOFU=1` only during initial bootstrap to discover and pin the key.
-- **`--thin` is reserved (S14.2).** `ciu up --host <name> --thin` exits 1 with a clear
-  error message. The render-on-target path (default, no `--thin`) is always available.
+- **`--thin` is the docker-optional push→activate path (S14.6).** `ciu up --host <name>
+  --thin` pushes an artifact to `bundle_dir` (rsync, with a tar+scp fallback for hosts
+  without rsync) and runs the project's shell activation contract
+  (`bootstrap|apply|health|rollback`) — no Docker or general-purpose Python needed on
+  the target (fits a Passenger webhoster). `--bootstrap`/`--rollback` select the other
+  verbs; `ciu health --host <name> --thin` runs the `health` verb. The render-on-target
+  path (default, no `--thin`) is unchanged and needs Docker on the target.

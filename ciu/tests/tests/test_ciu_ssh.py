@@ -558,6 +558,102 @@ class TestSshSync:
         rc = ssh_sync(host_cfg, "/local", "/remote", config={}, repo_root=tmp_path)
         assert rc == 23
 
+    def test_excludes_default_none_emits_no_exclude_flag(self, tmp_path, monkeypatch):
+        """No excludes => rsync cmd is unchanged (docker --host path preserved)."""
+        monkeypatch.delenv("CIU_SSH_INSECURE_TOFU", raising=False)
+        key_file = tmp_path / "id_rsa"
+        key_file.write_text("KEY")
+        host_cfg = {
+            "ssh_host": "web.example.com", "ssh_user": "deploy", "ssh_port": 22,
+            "ssh_key": str(key_file), "known_host": "ecdsa-sha2-nistp256 AAAA...",
+        }
+        captured = []
+        monkeypatch.setattr(tssh_mod.subprocess, "run",
+                            lambda cmd, **kw: (captured.extend(cmd), MagicMock(returncode=0))[1])
+        ssh_sync(host_cfg, "/local", "/remote", config={}, repo_root=tmp_path)
+        assert "--exclude" not in captured
+
+    def test_excludes_emits_exclude_flags(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("CIU_SSH_INSECURE_TOFU", raising=False)
+        key_file = tmp_path / "id_rsa"
+        key_file.write_text("KEY")
+        host_cfg = {
+            "ssh_host": "web.example.com", "ssh_user": "deploy", "ssh_port": 22,
+            "ssh_key": str(key_file), "known_host": "ecdsa-sha2-nistp256 AAAA...",
+        }
+        captured = []
+        monkeypatch.setattr(tssh_mod.subprocess, "run",
+                            lambda cmd, **kw: (captured.extend(cmd), MagicMock(returncode=0))[1])
+        ssh_sync(host_cfg, "/local", "/remote", config={}, repo_root=tmp_path,
+                 excludes=[".git", "node_modules"])
+        # Two --exclude pairs, before -e
+        assert captured.count("--exclude") == 2
+        assert ".git" in captured and "node_modules" in captured
+        e_idx = captured.index("-e")
+        assert captured.index("--exclude") < e_idx
+
+
+# ===========================================================================
+# transport_ssh.py — scp_file (S14.6 fallback transport)
+# ===========================================================================
+
+
+class TestScpFile:
+    from ciu.transport_ssh import scp_file as _scp_file  # noqa
+
+    def _host(self, key_file, **kw):
+        base = {
+            "ssh_host": "web.example.com", "ssh_user": "deploy", "ssh_port": 22,
+            "ssh_key": str(key_file), "known_host": "ecdsa-sha2-nistp256 AAAA...",
+        }
+        base.update(kw)
+        return base
+
+    def test_fails_closed_no_known_host(self, tmp_path, monkeypatch):
+        from ciu.transport_ssh import scp_file
+        monkeypatch.delenv("CIU_SSH_INSECURE_TOFU", raising=False)
+        host_cfg = {"ssh_host": "h", "ssh_user": "u", "ssh_key": "/k"}
+        with pytest.raises(ValueError, match="no 'known_host' pinned"):
+            scp_file(host_cfg, "/tmp/a", "/remote/a", config={}, repo_root=tmp_path)
+
+    def test_fails_without_ssh_host(self, tmp_path):
+        from ciu.transport_ssh import scp_file
+        with pytest.raises(ValueError, match="ssh_host not configured"):
+            scp_file({"ssh_key": "/k"}, "/a", "/b", config={}, repo_root=tmp_path)
+
+    def test_scp_cmd_uses_capital_P_port_and_pinning(self, tmp_path, monkeypatch):
+        from ciu.transport_ssh import scp_file
+        monkeypatch.delenv("CIU_SSH_INSECURE_TOFU", raising=False)
+        key_file = tmp_path / "id_rsa"
+        key_file.write_text("KEY")
+        host_cfg = self._host(key_file, ssh_port=2222)
+        captured = []
+        monkeypatch.setattr(tssh_mod.subprocess, "run",
+                            lambda cmd, **kw: (captured.extend(cmd), MagicMock(returncode=0))[1])
+        rc = scp_file(host_cfg, str(key_file), "/remote/x.tar.gz",
+                      config={}, repo_root=tmp_path)
+        assert rc == 0
+        assert captured[0] == "scp"
+        # scp spells the port -P (uppercase); -p would silently hit port 22
+        assert "-P" in captured
+        assert captured[captured.index("-P") + 1] == "2222"
+        assert "-p" not in captured
+        assert any("StrictHostKeyChecking=yes" in a for a in captured)
+        assert any("UserKnownHostsFile=" in a for a in captured)
+        assert any("BatchMode=yes" in a for a in captured)
+        assert "deploy@web.example.com:/remote/x.tar.gz" in captured
+
+    def test_scp_returns_exit_code(self, tmp_path, monkeypatch):
+        from ciu.transport_ssh import scp_file
+        monkeypatch.delenv("CIU_SSH_INSECURE_TOFU", raising=False)
+        key_file = tmp_path / "id_rsa"
+        key_file.write_text("KEY")
+        host_cfg = self._host(key_file)
+        monkeypatch.setattr(tssh_mod.subprocess, "run",
+                            lambda cmd, **kw: MagicMock(returncode=7))
+        rc = scp_file(host_cfg, "/a", "/b", config={}, repo_root=tmp_path)
+        assert rc == 7
+
 
 # ===========================================================================
 # CLI — ssh verb dispatch
@@ -720,16 +816,42 @@ class TestCliUpHostRouting:
             tssh.ssh_sync = orig_sync
             tssh.ssh_exec = orig_exec
 
-    def test_up_thin_flag_exits_1(self, tmp_path, monkeypatch):
+    def test_up_thin_flag_routes_to_activation(self, tmp_path, monkeypatch):
+        """--thin is now the docker-optional push→activate path (S14.6), not exit 1."""
         monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+        monkeypatch.delenv("CIU_SSH_INSECURE_TOFU", raising=False)
+        key_file = tmp_path / "id_rsa"
+        key_file.write_text("KEY")
         hosts_file = tmp_path / ".ciu.hosts.toml"
         hosts_file.write_text(
-            '[deploy.hosts.myhost]\nssh_host = "h"\nssh_user = "u"\nssh_key = "/k"\n'
+            f'[deploy.hosts.myhost]\n'
+            f'ssh_host = "h"\nssh_user = "u"\nssh_port = 22\n'
+            f'ssh_key = "{key_file}"\n'
+            f'known_host = "ssh-ed25519 AAAA..."\n'
+            f'bundle_dir = "/opt/app"\n'
+            f'activate = "sh deploy/activate.sh"\n'
         )
-        monkeypatch.setattr(sys, "argv", ["ciu", "up", "--host", "myhost", "--thin"])
-        with pytest.raises(SystemExit) as exc:
-            cli_mod.main()
-        assert exc.value.code == 1
+        import ciu.activate as act_mod
+        orig = act_mod.run_thin_up
+        captured = {}
+
+        def fake_run_thin_up(host_cfg, *, config, repo_root, bundle_dir, bootstrap=False, rollback=False, remaining=None):
+            captured["bundle_dir"] = bundle_dir
+            captured["bootstrap"] = bootstrap
+            captured["rollback"] = rollback
+            return 0
+
+        act_mod.run_thin_up = fake_run_thin_up
+        try:
+            monkeypatch.setattr(sys, "argv", ["ciu", "up", "--host", "myhost", "--thin"])
+            with pytest.raises(SystemExit) as exc:
+                cli_mod.main()
+            assert exc.value.code == 0
+            assert captured["bundle_dir"] == "/opt/app"
+            assert captured["bootstrap"] is False
+            assert captured["rollback"] is False
+        finally:
+            act_mod.run_thin_up = orig
 
 
 # ===========================================================================

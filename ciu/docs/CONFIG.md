@@ -380,6 +380,51 @@ ssh_user = "root"
 ssh_key  = "ASK_VAULT:ssh/core1/admin_key"
 ```
 
+**Docker-optional hosts (`--thin`, [S14.6]).** For a target with no Docker and no
+general-purpose Python — e.g. a shared **Passenger webhoster** (only `sh` +
+`tar`/`unzip` + `touch`) — deploy with `ciu up --host <name> --thin`. CIU pushes
+an artifact to `bundle_dir`, then runs the project's **shell activation contract**
+(`bootstrap|apply|health|rollback`) — CIU never hardcodes `ciu render && ciu up`
+for these hosts. Extra host keys:
+
+| Key | Description |
+|---|---|
+| `docker_optional` | Advisory: this host has no Docker; use `--thin`. CIU nudges on stderr if the docker `--host` path is used, but does not block. |
+| `activate` | Activation entrypoint. A **string** (CIU appends the verb) or a **per-verb table** (`bootstrap`/`apply`/`health`/`rollback`). Required for `--thin`. |
+| `push_mode` | `auto` (default) \| `rsync` \| `scp`. `auto` tries rsync, falls back to `tar`+`scp` when rsync is missing on the control host or target. |
+| `bundle_excludes` | List of top-level paths excluded from the pushed bundle (default `[".git"]`); applied identically to the rsync and tar+scp paths. |
+
+```toml
+[deploy.hosts.web]
+ssh_host   = "ssh.webhoster.example"
+ssh_user   = "d0123456"
+ssh_key    = "ASK_VAULT:ssh/webhoster/key"
+known_host = "ssh-ed25519 AAAA…"
+bundle_dir = "/kunden/homepages/1/d0123456/htdocs/app"
+docker_optional = true
+push_mode  = "auto"                       # rsync, else tar+scp fallback
+bundle_excludes = [".git", "node_modules"]
+
+# (a) string entrypoint — CIU runs: cd <bundle_dir> && sh deploy/activate.sh <verb>
+activate = "sh deploy/activate.sh"
+
+# …or (b) an explicit per-verb table (overrides the string form):
+[deploy.hosts.web.activate]
+bootstrap = "sh deploy/activate.sh bootstrap"
+apply     = "touch tmp/restart.txt"       # Passenger restart trigger
+health    = "sh deploy/health.sh"
+rollback  = "sh deploy/rollback.sh"
+```
+
+Usage:
+
+```bash
+ciu up     --host web --thin              # push, then run the 'apply' verb
+ciu up     --host web --thin --bootstrap  # push, then 'bootstrap' then 'apply'
+ciu up     --host web --thin --rollback   # 'rollback' verb only (no fresh push)
+ciu health --host web --thin              # run the 'health' verb (no push)
+```
+
 **`known_host` format.** For the default port (22) use the bare hostname form
 (`hostname ssh-ed25519 AAAA…`). For non-default ports use the bracketed form:
 `[hostname]:port ssh-ed25519 AAAA…`. CIU constructs the temp known-hosts file

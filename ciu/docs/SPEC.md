@@ -841,8 +841,9 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `profiles`, `up`, `down`, `clean`, `health`, `bake`, `dev` (S5a), `secrets`,
   `check` (S13), `graph` (S13), `ssh` (S14), `iops-baseline` (S15.9).
   The global modifier `--host <name>`
-  (S14) is accepted on `up`, `down`, `health`, and `render`; `--thin` is reserved
-  on `up --host` (not yet implemented, exits 1 with a clear message).
+  (S14) is accepted on `up`, `down`, `health`, and `render`; `--thin`
+  (with `--host`) selects the docker-optional push→activate path on `up` and
+  `health` (S14.6). `up --host --thin` also accepts `--bootstrap`/`--rollback`.
   A sub-subcommand with its own parser (`env generate`) keeps its argparse help.
 - **S10.5** `ciu diagnose [--project NAME] [--logs N] [--json]` is a strictly
   read-only Docker diagnostic. It selects CIU-labelled containers (optionally
@@ -1020,8 +1021,9 @@ ciu health --host core1
 ciu render --host core1
 ```
 
-`--thin` is reserved for a future render-on-control/ship-rendered path and is
-**not yet implemented** — it exits 1 with a clear error message.
+`--thin` selects the **docker-optional push→activate** path (S14.6) instead of
+render-on-target: it pushes an artifact and runs the project's shell activation
+contract, needing no Docker/Python on the target. It composes with `--host`.
 
 ### S14.3 — Host inventory
 
@@ -1043,6 +1045,10 @@ accepted for the user-global file). Keys:
 | `ssh_key` | Yes | Filesystem path OR `ASK_VAULT:<path>[#field]` — never committed |
 | `known_host` | Yes* | Pinned host public key (e.g. `ssh-ed25519 AAAA…`) |
 | `bundle_dir` | No | Remote path for bundle-sync (default `/opt/ciu/current`) |
+| `docker_optional` | No | Advisory flag: this host has no Docker; deploy it with `--thin` (S14.6). CIU nudges (stderr) if the docker `--host` path is used on it, but does not block. |
+| `activate` | Yes† | S14.6 activation contract — a string entrypoint (CIU appends the verb) or a per-verb table (`bootstrap`/`apply`/`health`/`rollback`). †Required only for `--thin`. |
+| `push_mode` | No | `auto` (default) \| `rsync` \| `scp`. `auto` tries rsync, falls back to tar+scp when rsync is absent on the control host or target (S14.6). |
+| `bundle_excludes` | No | List of top-level paths excluded from the pushed bundle (default `[".git"]`). Applied identically to the rsync and tar+scp paths. |
 
 `[deploy.hosts.<name>.admin]` subtable overrides `ssh_user` / `ssh_key` for the
 higher-privilege access plane (`ciu ssh <host> --admin`).
@@ -1069,6 +1075,60 @@ paramiko is an **optional dependency**: `pip install ciu[ssh]` (pulls
 the host). `import ciu` works with paramiko absent — the subprocess transport
 is the fallback. Set `CIU_SSH_TRANSPORT=paramiko` to force paramiko when it is
 installed.
+
+### S14.6 — Docker-optional push→activate (`--thin`, normative)
+
+The render-on-target path (S14.2) needs Docker **and** a full Python/CIU install
+on the target. That does not fit a shared **Passenger webhoster** — an SSH shell
+with only POSIX `sh` + `tar`/`unzip` + `touch`, no Docker and no general-purpose
+Python. `ciu up --host <name> --thin` deploys such a host by splitting the deploy
+into a **push** and a pluggable **activation contract**. CIU owns transport +
+inventory + host-key pinning + Vault-key resolution; the *project* owns
+activation (supplied as shell via the `activate` host key). The default docker
+`--host` path (S14.2) is untouched — `--thin` is a parallel branch.
+
+**Push.** An artifact (the repo tree, minus `bundle_excludes`, default `.git`)
+is shipped to `bundle_dir`. Strategy is `push_mode`:
+
+- **S14.6a** `auto` (default) tries `rsync` (S14.2 machinery, `--exclude` per
+  `bundle_excludes`); when `rsync` is absent on the **control host**
+  (`FileNotFoundError`) **or** on the **target** (ssh exit code `127`), CIU falls
+  back to: build a `tar.gz` locally, `scp` it to `bundle_dir`, then remote
+  `tar xzf … -C bundle_dir && rm …`. The fallback needs only `sh`/`tar` on the
+  target and rides the ssh daemon's own scp/sftp subsystem (no user-space
+  transfer tool on the target). `rsync` forces rsync-only; `scp` forces
+  tar+scp-only. Both strategies honour `bundle_excludes`, so they ship an
+  identical tree.
+
+**Activation contract.** Instead of the hardcoded `ciu render && ciu up`, CIU
+runs one of four verbs — `bootstrap | apply | health | rollback` (the same shape
+as the cmru ProjectAdapter) — over `ssh_exec`, as
+`cd <bundle_dir> && <activation-cmd> [selection…]` (ONE argv element, so the
+remote login shell parses the `cd`/`&&` chain — same rule as S14.2). The
+`activate` host key supplies the command(s):
+
+- **S14.6b** A **string** entrypoint — CIU appends the verb:
+  `activate = "sh deploy/activate.sh"` becomes `sh deploy/activate.sh apply`.
+- **S14.6c** A **per-verb table** — explicit commands:
+  `[deploy.hosts.<name>.activate]` with `bootstrap`/`apply`/`health`/`rollback`
+  entries (e.g. `apply = "touch tmp/restart.txt"` for a Passenger restart).
+
+CLI-to-verb mapping:
+
+- **S14.6d** `ciu up --host X --thin` pushes, then runs `apply`. `--bootstrap`
+  runs `bootstrap` before `apply` (first-time host setup). `--rollback` runs
+  `rollback` only (revert to previous release; **no** fresh push).
+  `--bootstrap`/`--rollback` are mutually exclusive and require `--thin`.
+- **S14.6e** `ciu health --host X --thin` runs the `health` verb (no push).
+- Trailing selection flags (e.g. `--profile apps`) are appended to the `apply`
+  and `health` verbs so the activation script can act on them.
+
+**S14.6f** A `--thin` deploy whose host declares no `activate` key (or whose
+activate table lacks the requested verb) fails fast with exit code **2** and an
+actionable message — CIU never guesses an activation command. The S14.4
+host-key/Vault/temp-file security envelope applies unchanged to the scp/tar
+fallback (fail-closed pinning; key material never logged; mode-0600 temp files
+cleaned up in `finally`).
 
 ## S15 — Stack-wide resource governance (cgroups)
 
@@ -1568,7 +1628,8 @@ dual shipping — `ciu.compose.yml` alongside an optional committed
 `pg:schema/<name>` kind, configurable `consul:token` Vault path, one-shot
 `stack:<name>:healthy` support, per-phase live probing, `ciu check` / `ciu
 graph` verbs; and SSH remote transport (S14) — `ciu ssh`, `ciu up/down/health/render
---host`, render-on-target push-deploy, fail-closed host-key pinning, optional
+--host`, render-on-target push-deploy, the docker-optional `--thin` push→activate
+contract (S14.6), fail-closed host-key pinning, optional
 `paramiko` extra (`pip install ciu[ssh]`); and stack-wide resource governance
 (S15) — opt-in `[<root>.governance]` injects `cgroup_parent`/`mem_limit`/
 `mem_reservation`/`blkio_config` into every enumerated service via the

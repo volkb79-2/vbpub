@@ -97,6 +97,8 @@ ciu profiles
 """,
     "up": """\
 ciu up [--profile NAME | --dir PATH] [--phases N,M] [--dry-run] [-y] [--ignore-errors]
+ciu up --host NAME [selection...]            # push-deploy, render-on-target (needs docker on target)
+ciu up --host NAME --thin [--bootstrap | --rollback] [selection...]  # docker-optional push→activate
   Render + materialise secrets + start the Docker Compose stack(s).
 
   --profile NAME     deploy the named host profile (default: active profile)
@@ -105,6 +107,14 @@ ciu up [--profile NAME | --dir PATH] [--phases N,M] [--dry-run] [-y] [--ignore-e
   --dry-run          render everything but do not call docker
   -y, --yes          assume yes to prompts
   --ignore-errors    continue past a failing stack
+
+  Remote (SPEC S14):
+  --host NAME        push-deploy to a host from the inventory (.ciu.hosts.toml)
+  --thin             docker-optional: push an artifact to bundle_dir, then run the
+                     host's shell activation contract (bootstrap|apply|health|
+                     rollback) — no docker/python needed on the target (S14.6)
+  --bootstrap        (with --thin) run the 'bootstrap' verb before 'apply'
+  --rollback         (with --thin) run the 'rollback' verb only (no fresh push)
 """,
     "down": """\
 ciu down [--profile NAME]
@@ -127,12 +137,16 @@ ciu clean [--profile NAME] [-y] [--ignore-errors]
     "health": """\
 ciu health [--profile NAME]
 ciu health --preflight [--strict]
+ciu health --host NAME [--thin]
   Run the health gate (S7.7) over the selection, or probe images for missing
   healthcheck tools (--preflight).
 
   --profile NAME   restrict to the named host profile (default: active profile)
   --preflight      probe rendered compose images for missing healthcheck tools
   --strict         (with --preflight) treat missing tools as an error
+  --host NAME      run the health gate on a remote host (SPEC S14)
+  --thin           (with --host) run the docker-optional 'health' activation
+                   verb instead of remote `ciu health` (S14.6)
 """,
     "diagnose": """\
 ciu diagnose [--project NAME] [--logs N] [--json]
@@ -337,10 +351,9 @@ def main() -> None:
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
             p.add_argument("--thin", action="store_true", default=False)
+            p.add_argument("--bootstrap", action="store_true", default=False)
+            p.add_argument("--rollback", action="store_true", default=False)
             opts, remaining = p.parse_known_args(rest)
-            if opts.thin:
-                print("[ERROR] --thin not yet implemented; use render-on-target (omit --thin)", file=sys.stderr)
-                raise SystemExit(1)
             repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
             try:
                 from .deploy import load_global_config
@@ -348,9 +361,48 @@ def main() -> None:
             except Exception:
                 config = {}
             from .hosts import get_host
-            from .transport_ssh import ssh_sync, ssh_exec
             host_cfg = get_host(repo_root, opts.host)
             bundle_dir = host_cfg.get("bundle_dir", "/opt/ciu/current")
+
+            if opts.thin:
+                # Docker-optional push→activate path (S14.6). Pushes an artifact
+                # to bundle_dir, then runs the project's shell activation contract
+                # (bootstrap|apply|health|rollback) — no Docker/Python on target.
+                if opts.bootstrap and opts.rollback:
+                    print("[ERROR] --bootstrap and --rollback are mutually exclusive.", file=sys.stderr)
+                    raise SystemExit(2)
+                from .activate import run_thin_up
+                try:
+                    rc = run_thin_up(
+                        host_cfg,
+                        config=config,
+                        repo_root=repo_root,
+                        bundle_dir=bundle_dir,
+                        bootstrap=opts.bootstrap,
+                        rollback=opts.rollback,
+                        remaining=remaining,
+                    )
+                except ValueError as exc:
+                    print(f"[ERROR] {exc}", file=sys.stderr)
+                    raise SystemExit(2)
+                raise SystemExit(rc)
+
+            # --bootstrap/--rollback only apply to the --thin activation contract.
+            if opts.bootstrap or opts.rollback:
+                print("[ERROR] --bootstrap/--rollback require --thin (the docker-optional activation path).", file=sys.stderr)
+                raise SystemExit(2)
+
+            # Advisory (S14.6): a docker-optional host has no docker; the
+            # render-on-target path below needs it. Nudge, but do not block.
+            if host_cfg.get("docker_optional"):
+                print(
+                    f"[WARN] Host '{opts.host}' is marked docker_optional but you are using "
+                    "the docker render-on-target path. Did you mean 'ciu up --host "
+                    f"{opts.host} --thin'? (S14.6)",
+                    file=sys.stderr,
+                )
+
+            from .transport_ssh import ssh_sync, ssh_exec
             rc = ssh_sync(host_cfg, str(repo_root), bundle_dir, config=config, repo_root=repo_root)
             if rc != 0:
                 raise SystemExit(rc)
@@ -411,6 +463,7 @@ def main() -> None:
             import argparse as _ap
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
+            p.add_argument("--thin", action="store_true", default=False)
             opts, remaining = p.parse_known_args(rest)
             repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
             try:
@@ -419,8 +472,23 @@ def main() -> None:
             except Exception:
                 config = {}
             from .hosts import get_host
-            from .transport_ssh import ssh_exec
             host_cfg = get_host(repo_root, opts.host)
+            if opts.thin:
+                # Docker-optional path (S14.6): run the project's 'health' verb
+                # of the activation contract instead of remote `ciu health`.
+                bundle_dir = host_cfg.get("bundle_dir", "/opt/ciu/current")
+                from .activate import run_activation
+                try:
+                    rc = run_activation(
+                        host_cfg, "health",
+                        config=config, repo_root=repo_root,
+                        bundle_dir=bundle_dir, remaining=remaining,
+                    )
+                except ValueError as exc:
+                    print(f"[ERROR] {exc}", file=sys.stderr)
+                    raise SystemExit(2)
+                raise SystemExit(rc)
+            from .transport_ssh import ssh_exec
             remote_cmd_parts = ["ciu health"]
             remote_cmd_parts.extend(remaining)
             remote_cmd = " ".join(remote_cmd_parts)

@@ -1566,7 +1566,7 @@ Examples:
     control.add_argument("--host", default=None, metavar="NAME",
                          help="Remote host name (from hosts inventory): push-deploy via SSH (SPEC J)")
     control.add_argument("--thin", action="store_true", default=False,
-                         help="Thin-target mode (not yet implemented; use render-on-target)")
+                         help="With --host: docker-optional push→activate mode (S14.6)")
     control.add_argument("--version", action="version", version=f"ciu-deploy {get_cli_version()}")
 
     return parser.parse_args(argv)

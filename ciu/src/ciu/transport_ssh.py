@@ -265,11 +265,19 @@ def ssh_sync(
     config: dict,
     repo_root: Path,
     admin: bool = False,
+    excludes: Optional[list[str]] = None,
 ) -> int:
     """Rsync the bundle to the remote host.
 
-    Uses: rsync -az -e "ssh -i <key> -p <port> -o StrictHostKeyChecking=yes
-          -o UserKnownHostsFile=<pinned>" <local_dir>/ <user>@<host>:<remote_dir>/
+    Uses: rsync -az [--exclude <e> ...] -e "ssh -i <key> -p <port>
+          -o StrictHostKeyChecking=yes -o UserKnownHostsFile=<pinned>"
+          <local_dir>/ <user>@<host>:<remote_dir>/
+
+    ``excludes`` is optional and additive: when None (the default) the rsync
+    invocation is byte-for-byte identical to the pre-CIU-12 behaviour, so the
+    docker render-on-target ``--host`` path is unchanged. The docker-optional
+    ``--thin`` path passes ``bundle_excludes`` so the rsync and the scp/tar
+    fallback (S14.6) ship exactly the same tree.
     """
     ssh_host = host_cfg.get("ssh_host")
     ssh_user = host_cfg.get("ssh_user", "root")
@@ -308,7 +316,78 @@ def ssh_sync(
         src = local_dir.rstrip("/") + "/"
         dst = f"{ssh_user}@{ssh_host}:{remote_dir}/"
 
-        cmd = ["rsync", "-az", "-e", ssh_cmd, src, dst]
+        cmd = ["rsync", "-az"]
+        for ex in (excludes or []):
+            cmd += ["--exclude", ex]
+        cmd += ["-e", ssh_cmd, src, dst]
+        result = subprocess.run(cmd)
+        return result.returncode
+    finally:
+        if vault_key_tmp and key_path and Path(key_path).exists():
+            try:
+                os.unlink(key_path)
+            except OSError:
+                pass
+        if known_hosts_path and Path(known_hosts_path).exists():
+            try:
+                os.unlink(known_hosts_path)
+            except OSError:
+                pass
+
+
+def scp_file(
+    host_cfg: dict,
+    local_file: str,
+    remote_path: str,
+    *,
+    config: dict,
+    repo_root: Path,
+    admin: bool = False,
+) -> int:
+    """Copy a single local file to the remote host with ``scp`` (S14.6 fallback).
+
+    Mirrors :func:`ssh_sync`'s security envelope exactly — fail-closed host-key
+    pinning, Vault key resolution to a mode-0600 temp file, temp-file cleanup in
+    ``finally`` — but uses ``scp`` instead of ``rsync`` so a webhoster that ships
+    no ``rsync`` can still receive a bundle. ``scp`` rides the ssh daemon's own
+    sftp/scp subsystem, so the target needs no user-space transfer tool.
+
+    NOTE: ``scp`` spells the port ``-P`` (uppercase); ``ssh``/``rsync`` use
+    ``-p``/``-p``. Getting this wrong silently connects to port 22.
+    """
+    ssh_host = host_cfg.get("ssh_host")
+    ssh_user = host_cfg.get("ssh_user", "root")
+    ssh_port = str(host_cfg.get("ssh_port", 22))
+
+    if not ssh_host:
+        raise ValueError("[SPEC J] ssh_host not configured for this host.")
+
+    known_host_val = host_cfg.get("known_host")
+    if not known_host_val:
+        tofu_ok = os.environ.get("CIU_SSH_INSECURE_TOFU", "") == "1"
+        if not tofu_ok:
+            raise ValueError(
+                f"[SPEC J] Host '{ssh_host}' has no 'known_host' pinned. "
+                "Refusing scp (no blind TOFU). "
+                "Set CIU_SSH_INSECURE_TOFU=1 to override (insecure)."
+            )
+
+    key_path: Optional[str] = None
+    known_hosts_path: Optional[str] = None
+    vault_key_tmp: bool = False
+
+    try:
+        key_path = resolve_key(host_cfg, config, repo_root)
+        vault_key_tmp = host_cfg.get("ssh_key", "").startswith("ASK_VAULT:")
+        known_hosts_path = _known_hosts_file(host_cfg)
+
+        cmd = ["scp", "-i", key_path, "-P", ssh_port]
+        if known_hosts_path:
+            cmd += ["-o", "StrictHostKeyChecking=yes",
+                    "-o", f"UserKnownHostsFile={known_hosts_path}"]
+        else:
+            cmd += ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+        cmd += ["-o", "BatchMode=yes", local_file, f"{ssh_user}@{ssh_host}:{remote_path}"]
         result = subprocess.run(cmd)
         return result.returncode
     finally:
