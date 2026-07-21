@@ -42,6 +42,7 @@ ARG GITHUB_REPO
 ARG CIU_LATEST_TAG
 ARG CIU_LATEST_ASSET_NAME
 ARG CIU_INSTALL_REQUIRED="false"
+ARG CMRU_INSTALL_REQUIRED="false"
 
 ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
 ENV BACKPORTS_URI="${BACKPORTS_URI}"
@@ -428,6 +429,58 @@ RUN set -euo pipefail; \
         fi; \
     else \
         echo "GITHUB_USERNAME/GITHUB_REPO not set; skipping CIU install"; \
+    fi
+
+# cmru — resolves via the `<prefix>-latest` release's `latest.json` thin-redirect
+# pointer (the wheel itself lives on the immutable versioned release, not on the
+# moving tag — see cmru/docs/../docs/VERSIONING.md), giving the url + sha256 in one
+# request. Simpler than CIU's block above because latest.json already names the
+# exact asset — no METADATA-sniffing needed.
+RUN set -euo pipefail; \
+    if [ -n "${GITHUB_USERNAME}" ] && [ -n "${GITHUB_REPO}" ]; then \
+        skip_cmru=0; \
+        latest_json_url="https://github.com/${GITHUB_USERNAME}/${GITHUB_REPO}/releases/download/cmru-latest/latest.json"; \
+        latest_json="$(curl -fsSL "${latest_json_url}" || true)"; \
+        if [ -z "${latest_json}" ]; then \
+            if [ "${CMRU_INSTALL_REQUIRED}" = "true" ]; then \
+                echo "[ERROR] Failed to fetch ${latest_json_url}" >&2; \
+                exit 1; \
+            fi; \
+            echo "[WARN] cmru latest.json not found; skipping cmru install" >&2; \
+            skip_cmru=1; \
+        fi; \
+        if [ "${skip_cmru}" -eq 0 ]; then \
+            cmru_url="$(printf '%s' "${latest_json}" | jq -r '.url // empty')"; \
+            cmru_sha256="$(printf '%s' "${latest_json}" | jq -r '.sha256 // empty')"; \
+            if [ -z "${cmru_url}" ]; then \
+                if [ "${CMRU_INSTALL_REQUIRED}" = "true" ]; then \
+                    echo "[ERROR] cmru latest.json missing .url" >&2; \
+                    exit 1; \
+                fi; \
+                echo "[WARN] cmru latest.json missing .url; skipping cmru install" >&2; \
+                skip_cmru=1; \
+            fi; \
+        fi; \
+        if [ "${skip_cmru}" -eq 0 ]; then \
+            wheel_path="/tmp/$(basename "${cmru_url}")"; \
+            if ! curl -fsSL "${cmru_url}" -o "${wheel_path}"; then \
+                if [ "${CMRU_INSTALL_REQUIRED}" = "true" ]; then \
+                    echo "[ERROR] Failed to download cmru wheel from ${cmru_url}" >&2; \
+                    exit 1; \
+                fi; \
+                echo "[WARN] Failed to download cmru wheel from ${cmru_url}; skipping cmru install" >&2; \
+                skip_cmru=1; \
+            fi; \
+        fi; \
+        if [ "${skip_cmru}" -eq 0 ] && [ -n "${cmru_sha256}" ]; then \
+            echo "${cmru_sha256}  ${wheel_path}" | sha256sum -c - >&2; \
+        fi; \
+        if [ "${skip_cmru}" -eq 0 ]; then \
+            /home/vscode/.venv/bin/python -m pip install --disable-pip-version-check "${wheel_path}"; \
+            rm -f "${wheel_path}"; \
+        fi; \
+    else \
+        echo "GITHUB_USERNAME/GITHUB_REPO not set; skipping cmru install"; \
     fi
 
 ENV VIRTUAL_ENV="/home/vscode/.venv"

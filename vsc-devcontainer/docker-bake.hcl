@@ -136,6 +136,10 @@ variable "CIU_INSTALL_REQUIRED" {
   default = "false"
 }
 
+variable "CMRU_INSTALL_REQUIRED" {
+  default = "false"
+}
+
 function "base_tag" {
   params = [debian, python]
   result = "${REGISTRY}/${GITHUB_USERNAME}/modern-debian-tools-python-debug:${debian}-py${python}-${BUILD_DATE}"
@@ -191,6 +195,7 @@ target "base" {
     CIU_LATEST_TAG = "${CIU_LATEST_TAG}"
     CIU_LATEST_ASSET_NAME = "${CIU_LATEST_ASSET_NAME}"
     CIU_INSTALL_REQUIRED = "${CIU_INSTALL_REQUIRED}"
+    CMRU_INSTALL_REQUIRED = "${CMRU_INSTALL_REQUIRED}"
   }
 }
 
