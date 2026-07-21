@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# host-escape — run a command in the HOST's namespaces from inside this devcontainer.
+#
+# The devcontainer talks to the host's own docker daemon (docker-outside-of-docker),
+# so a short-lived --privileged --pid=host container can nsenter into a target PID's
+# mount/UTS/net/IPC namespaces and exec there — once those namespaces are switched,
+# the exec'd program resolves against the TARGET's filesystem/network, not this
+# container's. Default target is PID 1 (the host's init), giving full host access;
+# an explicit --target lets the same mechanism enter any other container's namespace
+# instead (the generalized form of the manual `nsenter --net=/proc/<PID>/ns/net`
+# one-liner already used by hand in scripts/damon-analysis/rcon_probe.py).
+#
+# This fully bypasses container isolation. Convenience tool, not a safety rail.
+set -euo pipefail
+
+target=1
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -t|--target)
+            target="$2"
+            shift 2
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+echo "[host-escape] running in the namespace of pid ${target}, not this devcontainer" >&2
+
+docker_tty=()
+if [[ -t 0 && -t 1 ]]; then
+    docker_tty=(-it)
+fi
+
+if [[ $# -eq 0 ]]; then
+    exec docker run --rm "${docker_tty[@]}" --privileged --pid=host \
+        debian:bookworm-slim nsenter -t "$target" -m -u -n -i -- bash
+fi
+
+# Args are passed through nsenter as an argv array (never re-interpolated into a
+# shell string), so callers don't need to worry about a second layer of quoting.
+exec docker run --rm "${docker_tty[@]}" --privileged --pid=host \
+    debian:bookworm-slim nsenter -t "$target" -m -u -n -i -- "$@"

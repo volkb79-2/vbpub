@@ -17,7 +17,7 @@
 # Build from the REPO ROOT so the project sources are in context:
 #   docker build -f tester-unified/Dockerfile -t tester-unified:local /workspaces/vbpub
 # (see the repo-root .dockerignore, which whitelists only these projects.)
-FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug-php85-vsc-devcontainer:trixie-py3.14-latest
+FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
 
 USER root
 

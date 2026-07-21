@@ -14,12 +14,9 @@ set -euo pipefail
 export PYTHONUNBUFFERED=1
 
 repo_dir="$(dirname "$(readlink -f "$0")")"
-if [[ -n "${CMRU_PYTHON:-}" ]]; then
-    python_bin="$CMRU_PYTHON"
-elif [[ -x "$repo_dir/.venv/bin/python" ]]; then
-    python_bin="$repo_dir/.venv/bin/python"
-else
-    python_bin="python3"
-fi
+# cmru itself is stdlib-only; the wheel-build step's toolchain runs in a dedicated
+# container (see wheel-builder/Dockerfile, cmru.toml's [env] CMRU_WHEEL_BUILDER_IMAGE)
+# rather than needing anything pre-installed in the host interpreter.
+python_bin="${CMRU_PYTHON:-python3}"
 
 exec "$python_bin" -u "$repo_dir/cmru.py" release "$@"

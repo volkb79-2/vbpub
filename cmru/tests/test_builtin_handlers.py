@@ -6,6 +6,7 @@ Stdlib + tmp files only — no network, no git, no subprocess.
 """
 from __future__ import annotations
 
+import argparse
 import zipfile
 from pathlib import Path
 
@@ -95,6 +96,104 @@ def test_validate_latest_release_none_exits():
         # retries=1, delay=0 so the test does not sleep
         release.validate_latest_release(gh, "ciu", retries=1, delay=0)
     assert gh.calls == 1
+
+
+def test_check_build_prerequisites_missing_module_exits(monkeypatch):
+    import importlib.util
+
+    from cmru import exit_codes
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    with pytest.raises(SystemExit) as exc:
+        handlers._check_build_prerequisites()
+    assert exc.value.code == exit_codes.PREREQ_MISSING
+
+
+def test_check_build_prerequisites_present_is_noop(monkeypatch):
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    handlers._check_build_prerequisites()  # must not raise
+
+
+def test_check_build_prerequisites_container_mode_needs_docker(monkeypatch):
+    from cmru import exit_codes
+
+    monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
+    monkeypatch.setattr(handlers.shutil, "which", lambda name: None)
+    with pytest.raises(SystemExit) as exc:
+        handlers._check_build_prerequisites()
+    assert exc.value.code == exit_codes.PREREQ_MISSING
+
+
+def test_check_build_prerequisites_container_mode_docker_present(monkeypatch):
+    monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
+    monkeypatch.setattr(handlers.shutil, "which", lambda name: "/usr/bin/docker")
+    handlers._check_build_prerequisites()  # must not raise
+
+
+def test_host_bind_source_resolves_bind_mount(monkeypatch):
+    mountinfo = (
+        "1996 1972 253:0 /home/vb/volkb79-2/vbpub /workspaces/vbpub rw,relatime "
+        "- ext4 /dev/mapper/gstammtisch--vg-root rw,errors=remount-ro\n"
+    )
+
+    def fake_read_text(self, encoding="utf-8"):
+        if str(self) == "/proc/self/mountinfo":
+            return mountinfo
+        raise OSError("unexpected path")
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+    assert handlers._host_bind_source(Path("/workspaces/vbpub/cmru")) == \
+        "/home/vb/volkb79-2/vbpub/cmru"
+    assert handlers._host_bind_source(Path("/workspaces/vbpub")) == \
+        "/home/vb/volkb79-2/vbpub"
+
+
+def test_host_bind_source_falls_back_without_mountinfo(monkeypatch):
+    def fake_read_text(self, encoding="utf-8"):
+        raise OSError("no such file")
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+    assert handlers._host_bind_source(Path("/workspaces/vbpub/cmru")) == \
+        "/workspaces/vbpub/cmru"
+
+
+def test_cmd_wheel_build_direct_mode_unchanged(tmp_path, monkeypatch):
+    monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
+    project = tmp_path / "cmru"
+    project.mkdir()
+    calls = []
+    monkeypatch.setattr(
+        handlers.subprocess, "run",
+        lambda argv, **kw: calls.append((argv, kw)),
+    )
+    handlers.cmd_wheel_build(argparse.Namespace(cwd=str(project)))
+    assert len(calls) == 1
+    argv, kw = calls[0]
+    assert argv[:3] == [handlers.sys.executable, "-m", "build"]
+    assert argv[-1] == str(project)
+    assert kw["cwd"] == str(project.parent)
+
+
+def test_cmd_wheel_build_container_mode(tmp_path, monkeypatch):
+    project = tmp_path / "cmru"
+    project.mkdir()
+    monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
+    monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
+    calls = []
+    monkeypatch.setattr(
+        handlers.subprocess, "run",
+        lambda argv, **kw: calls.append((argv, kw)),
+    )
+    handlers.cmd_wheel_build(argparse.Namespace(cwd=str(project)))
+    assert len(calls) == 1
+    argv, _kw = calls[0]
+    assert argv[:3] == ["docker", "run", "--rm"]
+    assert argv[argv.index("-v") + 1] == f"/host{project.parent}:{project.parent}"
+    assert argv[argv.index("-w") + 1] == str(project.parent)
+    assert "wheel-builder:local" in argv
+    assert argv[-1] == str(project)
 
 
 # ─── built-in step synthesis (cmru.cli) ──────────────────────────────────────

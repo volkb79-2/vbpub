@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 try:
     from cmru.release import (
@@ -83,14 +85,98 @@ def _wheel_glob(prefix: str) -> str:
 
 
 # ─── wheel profile ────────────────────────────────────────────────────────────
+_WHEEL_BUILDER_IMAGE_ENV = "CMRU_WHEEL_BUILDER_IMAGE"
+
+
+def _check_build_prerequisites() -> None:
+    """Check the wheel-build path is usable before `cmd_wheel_build` invokes it.
+    Exit 3 (PREREQ_MISSING) with an actionable message if not, rather than failing
+    deep in a subprocess with a bare `No module named build` (direct mode) or a
+    confusing docker error (container mode)."""
+    from cmru import exit_codes
+
+    if os.getenv(_WHEEL_BUILDER_IMAGE_ENV):
+        if shutil.which("docker") is None:
+            print(
+                f"[ERROR] ${_WHEEL_BUILDER_IMAGE_ENV} is set but docker is required "
+                "and not found in PATH",
+                file=sys.stderr,
+            )
+            raise SystemExit(exit_codes.PREREQ_MISSING)
+        return
+
+    import importlib.util
+
+    if importlib.util.find_spec("build") is None:
+        print(
+            f"[ERROR] the 'build' package is required but not installed in {sys.executable}\n"
+            f"        fix: {sys.executable} -m pip install build\n"
+            f"        (or set ${_WHEEL_BUILDER_IMAGE_ENV} to build via a container instead)",
+            file=sys.stderr,
+        )
+        raise SystemExit(exit_codes.PREREQ_MISSING)
+
+
+def _host_bind_source(container_path: Path) -> str:
+    """Resolve the real host-filesystem path backing a bind-mounted directory.
+
+    A sibling `docker run` (e.g. the wheel-builder container) talks to the *host's*
+    docker daemon (docker-outside-of-docker), so a `-v` source must be a host path —
+    this container's own view (e.g. `/workspaces/vbpub`) may itself be a bind mount
+    from a differently-named host directory. Reads `/proc/self/mountinfo` for the
+    longest matching mount point and substitutes its root. Falls back to the path
+    unchanged when no bind-mount entry is found (e.g. already running directly on
+    the host, where the two paths are identical)."""
+    path_str = str(container_path)
+    best: Optional[tuple[str, str]] = None
+    try:
+        lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return path_str
+    for line in lines:
+        fields = line.split(" - ", 1)[0].split()
+        if len(fields) < 5:
+            continue
+        mount_root, mount_point = fields[3], fields[4]
+        if path_str == mount_point or path_str.startswith(mount_point.rstrip("/") + "/"):
+            if best is None or len(mount_point) > len(best[1]):
+                best = (mount_root, mount_point)
+    if best is None:
+        return path_str
+    mount_root, mount_point = best
+    rel = path_str[len(mount_point):].lstrip("/")
+    return f"{mount_root}/{rel}" if rel else mount_root
+
+
 def cmd_wheel_build(args: argparse.Namespace) -> None:
     """Clean stale wheels + `python -m build --wheel --outdir dist` in the project."""
+    _check_build_prerequisites()
     cwd = Path(args.cwd).resolve()
     dist = cwd / "dist"
     if dist.exists():
         for stale in dist.glob("*.whl"):
             stale.unlink()
     print(f"[INFO] cmru built-in: building wheel in {cwd}")
+
+    image = os.getenv(_WHEEL_BUILDER_IMAGE_ENV)
+    if image:
+        # Same invocation shape as the direct path below (run from the parent dir,
+        # project dir as the positional srcdir), just through `docker run` with the
+        # image's venv python in place of sys.executable.
+        host_parent = _host_bind_source(cwd.parent)
+        subprocess.run(
+            [
+                "docker", "run", "--rm",
+                "-v", f"{host_parent}:{cwd.parent}",
+                "-w", str(cwd.parent),
+                image,
+                "/opt/wheel-builder-venv/bin/python", "-m", "build",
+                "--wheel", "--outdir", str(dist), str(cwd),
+            ],
+            check=True,
+        )
+        return
+
     # Run the module from the parent directory so a project-local `build/`
     # folder does not shadow the `pypa/build` package.
     subprocess.run(
@@ -207,7 +293,6 @@ def _reject_experimental_repack(repack: bool) -> None:
 
 def _check_prerequisites() -> None:
     """Check that required CLI tools are available. Exit 3 (PREREQ_MISSING) if not."""
-    import shutil
     from cmru import exit_codes
 
     if shutil.which("docker") is None:

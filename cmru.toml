@@ -37,6 +37,10 @@ ghcr_delete_packages = ["modern-debian-tools-python-debug-vsc-devcontainer-dev"]
 
 [env]
 # Shared env for all projects. Per-project defaults live in <project>/cmru.build.toml [env].
+# Route the built-in wheel-build handler (ciu + cmru) through the dedicated
+# wheel-builder container instead of the host interpreter — see wheel-builder/Dockerfile.
+# Build once: docker build -f wheel-builder/Dockerfile -t wheel-builder:local /workspaces/vbpub
+CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
 
 # ─── ciu — Python wheel (built-in handlers; only run-tests is ciu-specific) ────
 # build/push/validate come from cmru's built-in wheel handlers (cmru/handlers.py).

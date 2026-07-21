@@ -714,6 +714,12 @@ USER root
 COPY scripts/finalize_container_environment.py /usr/local/bin/finalize_container_environment.py
 RUN chmod 0755 /usr/local/bin/finalize_container_environment.py
 
+# Convenience tool: run a command in the HOST's namespaces (docker-outside-of-docker
+# --privileged --pid=host nsenter), for agents/developers who need host-level access
+# from inside the devcontainer. See customization/host-escape for the mechanism.
+COPY customization/host-escape /usr/local/bin/host-escape
+RUN chmod 0755 /usr/local/bin/host-escape
+
 # Repo-owned consumer template: agents do not auto-discover files under
 # /usr/local/share, so projects explicitly copy/adapt this as AGENTS.md and use
 # a one-line CLAUDE.md adapter. Exact versions remain in the generated manifest.
