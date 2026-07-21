@@ -4015,6 +4015,60 @@ class Daemon:
             self._send_json(handler, 200, body)
             return
 
+        if path == "/api/logs":
+            # P04 (§4.5): server-side filtered read of paths.nyxloom_log_path().
+            # D5: a missing file is a clean 200 [] (handled inside the helper),
+            # never a 404/500.
+            level = qs.get("level", [None])[0]
+            project = qs.get("project", [None])[0]
+            q = qs.get("q", [None])[0]
+            try:
+                since = int(qs.get("since", ["-1"])[0])
+            except ValueError:
+                since = -1
+            try:
+                limit = int(qs.get("limit", ["500"])[0])
+            except ValueError:
+                limit = 500
+            records = self._read_log_records(
+                level=level, since=since, limit=limit, project=project, q=q)
+            self._send_json(handler, 200, json.dumps(records).encode("utf-8"))
+            return
+
+        if path == "/api/logs/export":
+            # D2: a distinct route from /api/logs (not a query flag on it),
+            # same filters, JSONL download rather than a JSON array body.
+            level = qs.get("level", [None])[0]
+            project = qs.get("project", [None])[0]
+            q = qs.get("q", [None])[0]
+            try:
+                since = int(qs.get("since", ["-1"])[0])
+            except ValueError:
+                since = -1
+            try:
+                limit = int(qs.get("limit", ["500"])[0])
+            except ValueError:
+                limit = 500
+            records = self._read_log_records(
+                level=level, since=since, limit=limit, project=project, q=q)
+            lines = "".join(json.dumps(r) + "\n" for r in records)
+            body = lines.encode("utf-8")
+            handler.send_response(200)
+            handler.send_header("Content-Type", "application/x-ndjson")
+            handler.send_header("Content-Disposition",
+                                 'attachment; filename="nyxloom-logs.jsonl"')
+            handler.send_header("Content-Length", str(len(body)))
+            handler.end_headers()
+            handler.wfile.write(body)
+            return
+
+        if path == "/api/logs/stream":
+            # D6/§4.5: SSE tail of the log FILE (byte offset), the log-stream
+            # twin of /api/stream's event-sequence tail (_serve_sse above).
+            level = qs.get("level", [None])[0]
+            self._serve_log_stream(handler, level)
+            return
+
         self._send_json(handler, 404, b'{"error":"not found"}')
 
     # -- HTTP config mutation endpoints (P15 2026-07-15) -----------------
@@ -4456,6 +4510,102 @@ class Daemon:
                     chunk = f"data: {json.dumps(ev.to_dict())}\n\n".encode("utf-8")
                     handler.wfile.write(chunk)
                 handler.wfile.flush()
+                now = time.monotonic()
+                if now - last_heartbeat >= SSE_HEARTBEAT_SECONDS:
+                    handler.wfile.write(b": hb\n\n")
+                    handler.wfile.flush()
+                    last_heartbeat = now
+                time.sleep(SSE_POLL_SECONDS)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+
+    def _read_log_records(
+        self, *, level: str | int | None = None, since: int | None = None,
+        limit: int | None = None, project: str | None = None,
+        q: str | None = None,
+    ) -> list[dict]:
+        """P04 (D7, docs/plan-logging.md §4.5): read back
+        ``paths.nyxloom_log_path()`` for the ``/api/logs*`` endpoints.
+
+        D3: there is no persisted sequence field and ``ts`` is only second-
+        precision, so a 0-based ``seq`` -- the record's line index in the
+        CURRENT file -- is injected on every record; a client pages with
+        ``since=<last seq>`` (kept strictly greater than). D5: a missing
+        file returns ``[]``, never raises. Malformed lines (a partial write
+        mid-append) are skipped defensively rather than failing the whole
+        read. Returned newest-last (the file's own append order), capped to
+        the *last* ``limit`` entries so a cap keeps the most recent ones.
+        """
+        log_path = paths.nyxloom_log_path()
+        if not log_path.exists():
+            return []
+        min_level = log_module._normalize_level(level) if level is not None else None
+        q_lower = q.lower() if q else None
+        records: list[dict] = []
+        for idx, line in enumerate(log_path.read_text(encoding="utf-8").splitlines()):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            record["seq"] = idx
+            if since is not None and idx <= since:
+                continue
+            if min_level is not None:
+                rec_level = log_module._normalize_level(record.get("level", "info"))
+                if rec_level < min_level:
+                    continue
+            if project is not None and record.get("project") != project:
+                continue
+            if q_lower is not None and q_lower not in json.dumps(record).lower():
+                continue
+            records.append(record)
+        if limit is not None and limit >= 0:
+            records = records[-limit:]
+        return records
+
+    def _serve_log_stream(self, handler: http.server.BaseHTTPRequestHandler,
+                           level: str | None) -> None:
+        """P04 (D6/§4.5): SSE tail of ``paths.nyxloom_log_path()``, mirroring
+        ``_serve_sse``'s exact poll/heartbeat/disconnect shape but tailing
+        the log FILE by byte offset (there is no event-sequence store for
+        logs). Starts at EOF (only NEW lines stream). D6: reads the CURRENT
+        file only; if it shrinks below the last offset (rotation happened)
+        the offset resets to 0 rather than tailing a rotated-away file."""
+        min_level = log_module._normalize_level(level) if level is not None else None
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream")
+        handler.send_header("Cache-Control", "no-cache")
+        handler.send_header("Connection", "close")
+        handler.end_headers()
+        log_path = paths.nyxloom_log_path()
+        offset = log_path.stat().st_size if log_path.exists() else 0
+        last_heartbeat = time.monotonic()
+        try:
+            while not self._stop_event.is_set():
+                size = log_path.stat().st_size if log_path.exists() else 0
+                if size < offset:
+                    offset = 0  # D6: rotation -- do not chase the rotated-away tail
+                if size > offset:
+                    with log_path.open("r", encoding="utf-8") as fh:
+                        fh.seek(offset)
+                        new_text = fh.read()
+                        offset = fh.tell()
+                    for line in new_text.splitlines():
+                        if not line.strip():
+                            continue
+                        try:
+                            record = json.loads(line)
+                        except ValueError:
+                            continue
+                        if min_level is not None:
+                            rec_level = log_module._normalize_level(record.get("level", "info"))
+                            if rec_level < min_level:
+                                continue
+                        chunk = f"data: {json.dumps(record)}\n\n".encode("utf-8")
+                        handler.wfile.write(chunk)
+                    handler.wfile.flush()
                 now = time.monotonic()
                 if now - last_heartbeat >= SSE_HEARTBEAT_SECONDS:
                     handler.wfile.write(b": hb\n\n")
