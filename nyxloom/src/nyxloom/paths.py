@@ -43,6 +43,18 @@ def daemon_dir() -> Path:
     return state_root() / "daemon"          # pidfile, http port file
 
 
+def logs_dir() -> Path:
+    return state_root() / "logs"
+
+
+def nyxloom_log_path() -> Path:
+    return logs_dir() / "nyxloom.jsonl"
+
+
+def daemon_log_level_path() -> Path:
+    return daemon_dir() / "log-level"       # runtime log-level override (D-L3)
+
+
 def project_dir(project: str) -> Path:
     return state_root() / "projects" / project
 
@@ -76,7 +88,7 @@ def pause_flag(project: str, task_id: str | None = None) -> Path:
 
 def ensure_layout(project: str | None = None) -> None:
     """Create the directory skeleton (idempotent)."""
-    for d in (state_root(), leases_dir(), www_dir(), daemon_dir()):
+    for d in (state_root(), leases_dir(), www_dir(), daemon_dir(), logs_dir()):
         d.mkdir(parents=True, exist_ok=True)
     if project is not None:
         for d in (project_dir(project), state_dir(project), attempts_dir(project)):
