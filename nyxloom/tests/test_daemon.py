@@ -263,17 +263,29 @@ _INIT_DIRECTIVE = re.compile(r"^[ \t]*init:[ \t]*true\b", re.M)
 
 
 def test_nyxloomd_compose_runs_daemon_under_tini_supervisor_not_pid1():
-    """Both the .j2 template and its pre-rendered docker-compose.yml sibling
-    set `init: true` (tini as container PID 1) and run the daemon through a
-    `while` supervisor loop with NO `exec` -- an `exec`'d daemon would still
-    be PID 1, and its crash or restart would tear down the whole container,
-    killing every in-flight agent (the P37 hazard)."""
+    """Both the .j2 template and its pre-rendered docker-compose.yml sibling set
+    `init: true` (tini as container PID 1) and DELEGATE the daemon to
+    supervise.sh -- a `while` supervisor loop with NO `exec` of the daemon, so a
+    daemon crash or restart never tears down the whole container, killing every
+    in-flight agent (the P37 hazard). The loop (and its crash-loop breaker) live
+    in supervise.sh, bind-mounted from the repo, so the compose `command` is just
+    `bash .../supervise.sh` (2026-07-21 refactor)."""
     for fname in ("ciu.compose.yml.j2", "docker-compose.yml"):
         text = (NYXLOOMD_DIR / fname).read_text(encoding="utf-8")
         assert _INIT_DIRECTIVE.search(text), f"{fname} missing `init: true` (tini as PID 1)"
-        assert "while true" in text, f"{fname} missing the supervisor loop"
-        assert "exec " not in text, f"{fname} still execs the daemon (would be PID 1)"
-        assert "nyxloom.cli daemon" in text
+        assert "supervise.sh" in text, f"{fname} must delegate the daemon to supervise.sh"
+
+    # supervise.sh IS the supervisor loop: it runs `nyxloom.cli daemon` in a
+    # `while` loop WITHOUT exec'ing it (an exec'd daemon would be PID 1). Only
+    # the crash-loop-breaker PARK uses exec (`exec sleep infinity`), never the
+    # daemon itself.
+    sup = (NYXLOOMD_DIR / "supervise.sh").read_text(encoding="utf-8")
+    assert "while" in sup, "supervise.sh missing the supervisor loop"
+    assert "nyxloom.cli daemon" in sup, "supervise.sh must invoke the daemon"
+    assert "exec $DAEMON_CMD" not in sup and "exec /opt/nyxloom-venv" not in sup, \
+        "supervise.sh must NOT exec the daemon (it would become PID 1)"
+    # crash-loop breaker: after N rapid failures, PARK for inspection, not flap.
+    assert "sleep infinity" in sup, "supervise.sh missing the crash-loop-breaker park"
 
 
 # --------------------------------------------------------------------------
