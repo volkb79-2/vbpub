@@ -9,7 +9,23 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited in the entry.
 
-Last updated: 2026-07-16.
+Last updated: 2026-07-21.
+
+**Audit 2026-07-21 (post CIU-9/10/11).** Every entry below was re-verified against
+the current `src/` tree. All three recent fixes are present and intact:
+CIU-9 (`engine.py:_rmtree_with_fallback` resolves the physical path first and routes
+DooD removals through `privileged_rmtree` unconditionally, `engine.py:398-448`),
+CIU-10 (`workspace_env.py:_detect_physical_repo_root` reconciles a pre-set
+`PHYSICAL_REPO_ROOT` against mountinfo, `workspace_env.py:432`), and CIU-11 (shared
+`enforce_standalone_root(invocation_dir)` helper in `workspace_env.py:211`, called by
+both `deploy.py:1635` with `Path.cwd()` and `engine.py:1035` with `working_dir`).
+CIU-COMMENT-ENV is present (`config_model.py:_split_toml_line_at_comment` +
+TOML-aware `expand_env_vars_or_fail`). **No open code items** remain in this file;
+nothing required implementation or escalation. One stale cross-reference in the
+CIU-9 detail was sharpened (see below). Separately, the reserved-but-unimplemented
+`ciu up --host --thin` slot was implemented as the docker-optional push→activate
+path (SPEC S14.6, code + tests + docs) — tracked as CIU-12 in git history, not a
+bug entry here.
 
 ## How issues get here
 
@@ -135,8 +151,10 @@ the physical paths, not the pre-rewrite logical ones. A new end-to-end test,
 (`tests/tests/test_ciu_hostdir_creation.py`), exercises exactly this call sequence with a
 DooD-style `repo_root != physical_root` and asserts the rendered compose text contains the
 **physical** hostdir path and not the logical one — it passes against the current code
-unmodified, confirming the mutation-propagation mechanism already works correctly. No CIU-10 was
-filed: this is not a second live bug in the current codebase. (The live repro's rendered compose
+unmodified, confirming the mutation-propagation mechanism already works correctly. No separate
+follow-up issue was filed for this create_hostdirs→render sub-path — it is not a second live bug in
+the current codebase. (This predates, and is unrelated to, the later CIU-10, which is the sibling-repo
+`PHYSICAL_REPO_ROOT` contamination bug, not this render-propagation question.) (The live repro's rendered compose
 showing the logical path most likely reflects a stale artifact from a run predating this
 investigation, or an environment/ordering detail outside `engine.py`'s own pipeline — not a defect
 in `create_hostdirs`'s propagation to Jinja rendering as traced here.)
