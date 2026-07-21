@@ -61,13 +61,13 @@ services:
       TZ: UTC
       PYTHONPATH: /workspaces/vbpub/nyxloom/src
       PATH: /home/vscode/.local/bin:/usr/local/bin:/usr/bin:/bin
-      # NYXLOOM_STATE_BACKEND: "sqlite"        -- SP03 cutover DEFERRED
-      #   2026-07-21. migrate-store found storage_sqlite's replay/projection
-      #   DIVERGES from the incumbent file backend on the REAL dstdns (11 tasks)
-      #   and topos (illegal COMPLETED->BLOCKED in replay) event logs; nyxloom
-      #   migrated clean. Daemon runs on the FILE backend until storage_sqlite
-      #   is fixed and migrate-store re-verifies zero-divergence on all three
-      #   projects; re-enable then. (structlog dep + supervise.sh below stay.)
+      NYXLOOM_STATE_BACKEND: "sqlite"          # SP03 cutover LIVE 2026-07-21:
+                                                 # authoritative state is per-project
+                                                 # SQLite (state.db), migrated
+                                                 # statefile-authoritatively via SP02b;
+                                                 # events.jsonl retired to .pre-sqlite.
+                                                 # Reversible: comment out + restore
+                                                 # events.jsonl from .pre-sqlite.
       NYXLOOM_HTTP_BIND: "0.0.0.0"              # P38: safe here -- a private ciu
                                                  # bridge network, never host-net
     # tini (PID 1, via init: true above) supervises this shell, which runs
