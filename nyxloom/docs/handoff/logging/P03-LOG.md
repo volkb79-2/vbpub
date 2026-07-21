@@ -26,10 +26,12 @@ runtime control are both present).
    `reconcile.plan_project`, line 729) — confirmed `log = get_logger("daemon")`
    already exists (P01) and `from .log import get_logger` is already
    imported; `bind` was NOT yet imported (P02 never used it) — added it here.
-4. `tests/test_reconcile.py` (3833 lines, 130 `def test_`) — read the header
+4. `tests/test_reconcile.py` (3833 lines, 121 `def test_` — the handoff's
+   own "~50" is a stale undercount; the real back-compat surface is more
+   than double that) — read the header
    helpers (`make_config`, `make_frontmatter`, `make_tsf`, `make_attempt`,
    `make_routes`, `_carve_base_kwargs`) and grepped every
-   `plan_project(...)` call site (20 distinct call sites, ~130 tests
+   `plan_project(...)` call site (20 distinct call sites, 121 tests
    collectively) to confirm HOW the return value is consumed: always via
    `isinstance(a, ...)` filtering, `len()`, or list-comprehension iteration
    over `actions` — never `type(actions) is list` or any check that would
@@ -64,7 +66,7 @@ that this is safe:
 - `list.__eq__` compares by *content*, not exact type, so
   `PlanResult([x]) == [x]` is `True` — every existing `assert actions ==
   [...]`-style comparison (if any existed) would still pass. In practice
-  the ~130 existing tests never compare the WHOLE return value to a literal
+  the 121 existing tests never compare the WHOLE return value to a literal
   list anyway — they always filter/index/len() it — but this was checked.
 - `isinstance(actions, list)` is `True` for a `PlanResult` (subclass), so
   any hypothetical type-narrowing check downstream still holds.
@@ -173,8 +175,8 @@ braces — confirmed both pass locally before the container gate run).
 Ran `PYTHONPATH=src python3 -m pytest tests -q` in the devcontainer's own
 venv (structlog 26.1.0 happened to already be installed there) purely as a
 fast iteration signal before paying for the container gate:
-- `tests/test_reconcile.py` alone: all pass (previously ~130 tests, now
-  ~144 after the 14 new P03 tests).
+- `tests/test_reconcile.py` alone: all pass (121 pre-existing tests, now
+  133 after the 12 new P03 tests).
 - `tests/test_daemon.py -k reconcile_trace`: both new tests pass.
 - Full `tests -q`: all green, one pre-existing `x` (xfail, unrelated to
   this package — same position noted in P01/P02's own reports).
