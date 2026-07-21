@@ -285,7 +285,11 @@ def resolve_latest_tag(token: Optional[str] = None) -> str:
 def normalize_tag(version_arg: str) -> str:
     if version_arg.startswith(TAG_PREFIX):
         return version_arg
-    return f"{TAG_PREFIX}{version_arg.lstrip('v')}"
+    # Drop a single leading "v" prefix only — NOT str.lstrip('v'), which strips a
+    # whole leading run of 'v' chars (so "v1.0.0" is fine but a hypothetical multi-'v'
+    # or 'v'-initial token would be corrupted). Prefix-strip, not charset-strip.
+    bare = version_arg[1:] if version_arg.startswith("v") else version_arg
+    return f"{TAG_PREFIX}{bare}"
 
 
 def _find_asset_by_name(assets: list, name: str) -> Optional[dict]:
@@ -320,6 +324,14 @@ def _persist_variant(root: Path, variant: Optional[str]) -> None:
     marker = _variant_marker_path(root)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(variant + "\n", encoding="utf-8")
+
+
+def _installed_variant(root: Path) -> Optional[str]:
+    """The variant recorded by the last install/update (None if single-asset / unset)."""
+    marker = _variant_marker_path(root)
+    if marker.exists():
+        return marker.read_text(encoding="utf-8").strip() or None
+    return None
 
 
 def _select_variant(args: argparse.Namespace, root: Path) -> Optional[str]:
@@ -893,13 +905,16 @@ def do_update(args: argparse.Namespace, token: Optional[str]) -> None:
         tag = resolve_latest_tag(token)
         info(f"Latest: {_c('BLD', tag)}")
 
-    if tag == current_ver:
-        ok(f"Already at {tag}. Nothing to do.")
-        return
-
     variant = _select_variant(args, root)
     if variant:
         info(f"Variant: {_c('BLD', variant)}")
+
+    # Nothing to do only when BOTH the version AND the selected variant already match
+    # what is installed — otherwise `update --variant OTHER` at the current version must
+    # re-install the other variant (S6.12), not be silently short-circuited.
+    if tag == current_ver and variant == _installed_variant(root):
+        ok(f"Already at {tag}. Nothing to do.")
+        return
 
     info(f"Updating {current_ver} -> {tag} ...")
     _copy_preserve_to_shared(root)

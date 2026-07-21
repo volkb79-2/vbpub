@@ -1250,3 +1250,33 @@ install_dir = "/opt/demo"
         with pytest.raises(SystemExit) as exc:
             getpy_main(["--project", "demo", "--config", str(cfg_path)])
         assert exc.value.code == 2
+
+
+class TestNormalizeTag:
+    """normalize_tag: a bare semver (optionally a single leading 'v') maps to
+    <prefix><semver>; a full tag passes through. Regression-guards the prefix-strip
+    (must NOT be str.lstrip('v'), which strips a whole leading run of 'v')."""
+
+    def _ns(self) -> dict:
+        from cmru.getpy import render_get_py
+        src = render_get_py(
+            project_name="demo", repo_owner="o", repo_name="r", tag_prefix="demo-v",
+            install_dir_system="/opt/demo", install_dir_user="demo",
+        )
+        ns: dict = {}
+        exec(compile(src, "<rendered-get.py>", "exec"), ns)
+        return ns
+
+    def test_bare_semver(self):
+        assert self._ns()["normalize_tag"]("1.2.3") == "demo-v1.2.3"
+
+    def test_single_v_prefix_stripped(self):
+        assert self._ns()["normalize_tag"]("v1.2.3") == "demo-v1.2.3"
+
+    def test_full_tag_passthrough(self):
+        assert self._ns()["normalize_tag"]("demo-v1.2.3") == "demo-v1.2.3"
+
+    def test_only_single_leading_v_stripped_not_charset(self):
+        # str.lstrip('v') would strip BOTH leading v's → 'demo-v1.0.0'; a single
+        # prefix-strip preserves the inner 'v' → 'demo-vv1.0.0'.
+        assert self._ns()["normalize_tag"]("vv1.0.0") == "demo-vv1.0.0"

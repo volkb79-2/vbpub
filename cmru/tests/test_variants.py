@@ -205,6 +205,34 @@ class TestFindArtifactVariant:
         assert release.variant_asset_name("naf", "1.0.0", "py39", ".tar.xz") == \
             "naf-v1.0.0-py39.tar.xz"
 
+    def test_overlapping_variant_names_disambiguated_not_misresolved(self, tmp_path):
+        """A variant whose name is a dash-suffix of another's must never silently
+        mis-resolve: find_artifact returns the exact file when unambiguous and
+        refuses (errors) rather than picking the wrong one when ambiguous."""
+        dist = tmp_path / "dist"
+        dist.mkdir()
+        (dist / "naf-v1.0.0-py39.tar.xz").write_bytes(b"a")
+        (dist / "naf-v1.0.0-musl-py39.tar.xz").write_bytes(b"b")
+        # 'musl-py39' is unambiguous (nothing else ends in -musl-py39).
+        got = release.find_artifact(dist, "naf-v*.tar.xz",
+                                    variant="musl-py39", suffix=".tar.xz")
+        assert got.name == "naf-v1.0.0-musl-py39.tar.xz"
+        # 'py39' matches BOTH names' tails → fail-safe error, never the wrong file.
+        with pytest.raises(SystemExit):
+            release.find_artifact(dist, "naf-v*.tar.xz", variant="py39", suffix=".tar.xz")
+
+    def test_sidecar_and_extras_excluded_by_suffix(self, tmp_path):
+        """With suffix given, a variant's own .sha256 / manifest sidecars are not
+        mistaken for the artifact — resolution stays exactly one file."""
+        dist = tmp_path / "dist"
+        dist.mkdir()
+        (dist / "naf-v1.0.0-py39.tar.xz").write_bytes(b"a")
+        (dist / "naf-v1.0.0-py39.tar.xz.sha256").write_text("x  naf-v1.0.0-py39.tar.xz\n")
+        (dist / "naf-v1.0.0-py39.manifest.json").write_text("{}")
+        got = release.find_artifact(dist, "naf-v1.0.0-py39*",
+                                    variant="py39", suffix=".tar.xz")
+        assert got.name == "naf-v1.0.0-py39.tar.xz"
+
 
 # ─── Publish: multi-variant ──────────────────────────────────────────────────
 
@@ -430,6 +458,13 @@ class TestInstallerVariantSelection:
         ns["_persist_variant"](tmp_path, None)
         assert not (tmp_path / "shared" / ".variant").exists()
 
+    def test_installed_variant_reads_marker(self, tmp_path):
+        ns = self._ns()
+        assert ns["_installed_variant"](tmp_path) is None
+        (tmp_path / "shared").mkdir()
+        (tmp_path / "shared" / ".variant").write_text("py39\n")
+        assert ns["_installed_variant"](tmp_path) == "py39"
+
 
 class TestInstallerVariantDownloadName:
     """The selected variant drives the download asset name; None keeps the legacy name."""
@@ -473,3 +508,88 @@ class TestInstallerVariantDownloadName:
         wd.mkdir()
         got = ns["download_and_verify"]("naf-v1.0.0", wd, None, None)
         assert got.name == "naf-v1.0.0.tar.xz"
+
+
+# ─── Installer: variant transaction (install → same-version switch, S6.12) ────
+
+class TestInstallerVariantTransaction:
+    """End-to-end install/update proving a same-version ``--variant`` switch re-installs
+    the selected variant instead of being short-circuited as 'nothing to do' (S6.12),
+    while a same-version same-variant update stays a no-op."""
+
+    def _ns(self, tmp_path):
+        src = render_get_py(
+            project_name="naf", repo_owner="o", repo_name="r", tag_prefix="naf-v",
+            install_dir_system=str(tmp_path / "system"), install_dir_user="naf",
+            entrypoint="", required_commands=[], preserve_paths=[],
+            variants=[{"name": "py39", "label": "Python 3.9"},
+                      {"name": "py311", "label": "Python 3.11"}],
+        )
+        ns: dict = {}
+        exec(compile(src, "<rendered-get.py>", "exec"), ns)
+        ns["MANIFEST_NAME"] = ""    # skip minisig extraction
+        ns["SIGNATURE_NAME"] = ""
+        return ns
+
+    def _bundles(self, workdir, tag="naf-v1.0.0"):
+        """One .tar.xz + .sha256 per variant; each carries a variant.txt marker so the
+        installed release can be identified after a swap."""
+        import io
+        workdir.mkdir(parents=True, exist_ok=True)
+        for variant in ("py39", "py311"):
+            asset_name = f"{tag}-{variant}.tar.xz"
+            asset = workdir / asset_name
+            with tarfile.open(asset, "w:xz") as tf:
+                for rel, content in (("VERSION", "1.0.0\n"), ("variant.txt", variant + "\n")):
+                    data = content.encode()
+                    ti = tarfile.TarInfo(name=f"{tag}/{rel}")
+                    ti.size = len(data)
+                    tf.addfile(ti, io.BytesIO(data))
+            (workdir / f"{asset_name}.sha256").write_text(f"{_sha256(asset)}  {asset_name}\n")
+        return workdir
+
+    def _download_patch(self, ns, workdir):
+        def fake_download(tag, name, dest, token):
+            shutil.copy2(workdir / name, dest)
+        ns["_download_asset"] = fake_download
+
+    def _args(self, variant):
+        import argparse
+        return argparse.Namespace(version="naf-v1.0.0", scope="system",
+                                  manifest_pubkey=None, variant=variant)
+
+    def _installed_marker(self, ns):
+        return (Path(ns["INSTALL_DIR_SYSTEM"]) / "current").resolve() / "variant.txt"
+
+    def test_same_version_variant_switch_reinstalls(self, tmp_path):
+        ns = self._ns(tmp_path)
+        self._download_patch(ns, self._bundles(tmp_path / "bundles"))
+        root = Path(ns["INSTALL_DIR_SYSTEM"])
+        root.mkdir(parents=True, exist_ok=True)
+
+        with mock.patch.object(ns["os"], "geteuid", return_value=0):
+            ns["do_install"](self._args("py39"), token=None)
+        assert self._installed_marker(ns).read_text().strip() == "py39"
+        assert (root / "shared" / ".variant").read_text().strip() == "py39"
+
+        # Same version, DIFFERENT variant → must switch, not "nothing to do".
+        with mock.patch.object(ns["os"], "geteuid", return_value=0):
+            ns["do_update"](self._args("py311"), token=None)
+        assert (root / "current").resolve().name == "naf-v1.0.0"
+        assert self._installed_marker(ns).read_text().strip() == "py311"
+        assert (root / "shared" / ".variant").read_text().strip() == "py311"
+
+    def test_same_version_same_variant_is_noop(self, tmp_path, capsys):
+        ns = self._ns(tmp_path)
+        self._download_patch(ns, self._bundles(tmp_path / "bundles"))
+        root = Path(ns["INSTALL_DIR_SYSTEM"])
+        root.mkdir(parents=True, exist_ok=True)
+
+        with mock.patch.object(ns["os"], "geteuid", return_value=0):
+            ns["do_install"](self._args("py39"), token=None)
+        capsys.readouterr()
+
+        with mock.patch.object(ns["os"], "geteuid", return_value=0):
+            ns["do_update"](self._args("py39"), token=None)
+        assert "Nothing to do" in capsys.readouterr().out
+        assert self._installed_marker(ns).read_text().strip() == "py39"
