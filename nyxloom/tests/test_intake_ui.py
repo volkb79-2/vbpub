@@ -7,14 +7,30 @@ stubbed so these tests are scoped to the render/HTTP contract only.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import urllib.error
 import urllib.request
 
 import pytest
+import structlog.contextvars
 
-from nyxloom import daemon, intake_chat, lint, paths, reconcile, render
+from nyxloom import daemon, intake_chat, lint, log, paths, reconcile, render
+
+
+@pytest.fixture(autouse=True)
+def _silence_nyxloom_logging():
+    """PACKAGE P05c safety net -- see test_backlog_items.py's copy of this
+    fixture for the full rationale (byte-unchanged CLI oracle,
+    docs/plan-logging.md P05c)."""
+    log.configure(level=log.CRITICAL, console=False)
+    yield
+    structlog.contextvars.clear_contextvars()
+    nyxloom_logger = logging.getLogger("nyxloom")
+    for handler in list(nyxloom_logger.handlers):
+        nyxloom_logger.removeHandler(handler)
+        handler.close()
 
 
 # --------------------------------------------------------------------------

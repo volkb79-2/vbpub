@@ -2,14 +2,34 @@
 
 from __future__ import annotations
 
+import logging
 import shlex
 import textwrap
 from pathlib import Path
 
 import pytest
+import structlog.contextvars
 
-from nyxloom.decisions import Decision, DecisionError, decide, discuss, open_ids, parse_inbox, reconcile_decisions
+from nyxloom import log
+from nyxloom.decisions import (
+    Decision, DecisionError, decide, discuss, open_decision, open_ids,
+    parse_inbox, reconcile_decisions,
+)
 from nyxloom.types import utc_now
+
+
+@pytest.fixture(autouse=True)
+def _silence_nyxloom_logging():
+    """PACKAGE P05c safety net -- see test_backlog_items.py's copy of this
+    fixture for the full rationale (byte-unchanged CLI oracle,
+    docs/plan-logging.md P05c)."""
+    log.configure(level=log.CRITICAL, console=False)
+    yield
+    structlog.contextvars.clear_contextvars()
+    nyxloom_logger = logging.getLogger("nyxloom")
+    for handler in list(nyxloom_logger.handlers):
+        nyxloom_logger.removeHandler(handler)
+        handler.close()
 
 
 # Sample inbox matching the handoff specification exactly
@@ -451,3 +471,74 @@ class TestEdgeCases:
         # The implementation joins lines with spaces
         assert "multiple lines" in decisions[0].question
         assert "should be joined" in decisions[0].question
+
+
+# ==========================================================================
+# PACKAGE P05c (docs/plan-logging.md, logging sweep): decisions.py oracles.
+# ==========================================================================
+
+def _read_jsonl(path) -> list[dict]:
+    import json
+    if not path.exists():
+        return []
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    return [json.loads(ln) for ln in lines]
+
+
+class TestDecideLogging:
+    """Oracle 4: a representative decision step logs at the rubric level
+    (§5: 'INFO -- ... state transitions ... one line per decision that
+    changed the world' -- decide() finalizing a decision entry is exactly
+    that)."""
+
+    def test_decide_success_logs_info(self, sample_project, tmp_path):
+        inbox_path = sample_project.root / sample_project.decisions_inbox
+        inbox_path.write_text(SAMPLE_INBOX, encoding="utf-8")
+        log.configure(level=log.DEBUG, log_dir=tmp_path, console=False)
+
+        decide(sample_project, "D-002", "option b", "auth-on stays", "user")
+
+        records = _read_jsonl(tmp_path / "nyxloom.jsonl")
+        decided = [r for r in records if r.get("msg") == "decision decided"]
+        assert len(decided) == 1
+        assert decided[0]["level"] == "info"
+        assert decided[0]["decision_id"] == "D-002"
+
+    def test_decide_failure_logs_warning(self, sample_project, tmp_path):
+        inbox_path = sample_project.root / sample_project.decisions_inbox
+        inbox_path.write_text(SAMPLE_INBOX, encoding="utf-8")
+        log.configure(level=log.DEBUG, log_dir=tmp_path, console=False)
+
+        with pytest.raises(DecisionError):
+            decide(sample_project, "D-001", "option", "note", "user")
+
+        records = _read_jsonl(tmp_path / "nyxloom.jsonl")
+        warned = [r for r in records if r.get("level") == "warning"]
+        assert any(r.get("decision_id") == "D-001" for r in warned)
+
+
+class TestOpenDecision:
+    """open_decision: the inverse of decide() -- files a brand-new OPEN
+    entry (P29 intake-agent PRODUCT_CALL protocol). No prior direct unit
+    coverage existed (only intake_chat.py's own end-to-end tests reach it)."""
+
+    def test_open_decision_appends_new_open_entry(self, sample_project):
+        inbox_path = sample_project.root / sample_project.decisions_inbox
+        inbox_path.write_text(SAMPLE_INBOX, encoding="utf-8")
+
+        new_id = open_decision(sample_project, "Should X ship?", "Discuss X.")
+
+        assert new_id == "D-004"
+        text = inbox_path.read_text(encoding="utf-8")
+        assert f"## {new_id}" in text
+        assert "OPEN" in text.splitlines()[-3] or "OPEN" in text
+        assert "Should X ship?" in text
+
+    def test_open_decision_creates_missing_inbox(self, sample_project):
+        inbox_path = sample_project.root / sample_project.decisions_inbox
+        inbox_path.unlink()
+
+        new_id = open_decision(sample_project, "First question?", "Resume here.")
+
+        assert new_id == "D-001"
+        assert inbox_path.exists()

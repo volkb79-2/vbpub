@@ -84,7 +84,10 @@ from typing import Any, Callable
 from . import adapters, commands, config, decisions, notify, paths, storage
 from .config import NotifyConfig, ProjectConfig, RouteDef, Routes
 from .decisions import Decision
+from .log import get_logger
 from .types import Actor, ActorKind, EventType, utc_now
+
+log = get_logger("decision_chat")
 
 # --- tunables (module constants so tests can override behavior) -----------
 
@@ -386,10 +389,12 @@ def advance_chat(cfg: ProjectConfig, project: str, decision_id: str, user_text: 
     traffic)."""
     chat = load_chat(project, decision_id) or DecisionChat(decision_id=decision_id, project=project)
     chat.transcript.append(DecisionChatMessage(role="user", text=user_text, ts=utc_now().isoformat()))
+    log.debug("decision-chat turn begin", decision_id=decision_id, turn=len(chat.transcript))
 
     routes_obj = Routes.load()
     route = _pick_route(routes_obj)
     if route is None:
+        log.warning("decision-chat turn: no route configured", tier=DECISION_AGENT_TIER)
         reply = f"decision-chat: no '{DECISION_AGENT_TIER}' route configured"
         chat.transcript.append(DecisionChatMessage(role="agent", text=reply, ts=utc_now().isoformat()))
         save_chat(chat)
@@ -429,6 +434,7 @@ def advance_chat(cfg: ProjectConfig, project: str, decision_id: str, user_text: 
                             ActorKind.FRONTIER_SESSION, "decision-agent")
 
     _post_feedback(cfg, decision_id, reply)
+    log.debug("decision-chat turn advanced", decision_id=decision_id, route=route.route_id)
     return reply
 
 
@@ -455,8 +461,8 @@ def notify_decision_opened(cfg: ProjectConfig, decision_id: str) -> None:
     }
     try:
         notify.send(nc, note)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("notify send failed", decision_id=decision_id, exc_type=type(exc).__name__)
 
 
 def _post_feedback(cfg: ProjectConfig, decision_id: str, reply_text: str) -> None:
@@ -477,8 +483,8 @@ def _post_feedback(cfg: ProjectConfig, decision_id: str, reply_text: str) -> Non
     }
     try:
         notify.send(nc, note)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("notify send failed", decision_id=decision_id, exc_type=type(exc).__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -501,6 +507,7 @@ def handle_feedback_message(registry: dict[str, Path], text: str, tags: list[str
     dm = _DECIDE_CMD_RE.match(stripped)
     if dm:
         decision_id, choice = dm.group(1), dm.group(2).strip()
+        log.debug("feedback message routed", route="decide-command", decision_id=decision_id)
         target = find_project_for_decision(registry, decision_id)
         if target is None:
             return _NOT_HANDLED
@@ -513,6 +520,7 @@ def handle_feedback_message(registry: dict[str, Path], text: str, tags: list[str
     pm = _DECISION_PREFIX_RE.match(stripped)
     if pm:
         decision_id, message = pm.group(1), pm.group(2).strip()
+        log.debug("feedback message routed", route="decision-prefix", decision_id=decision_id)
         target = find_project_for_decision(registry, decision_id)
         if target is None:
             return _NOT_HANDLED

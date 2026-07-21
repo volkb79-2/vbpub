@@ -20,7 +20,10 @@ import jsonschema
 import yaml
 
 from .config import ProjectConfig
+from .log import get_logger
 from .types import Frontmatter
+
+log = get_logger("frontmatter")
 
 
 class HandoffParseError(Exception):
@@ -46,6 +49,7 @@ def split_frontmatter(text: str) -> tuple[dict, str, int]:
 
     # Check for leading ---
     if not lines or lines[0] != "---":
+        log.warning("frontmatter split failed", reason="missing leading ---")
         raise HandoffParseError("<text>", ["missing leading '---'"])
 
     # Find closing ---
@@ -56,6 +60,7 @@ def split_frontmatter(text: str) -> tuple[dict, str, int]:
             break
 
     if closing_idx is None:
+        log.warning("frontmatter split failed", reason="unterminated frontmatter")
         raise HandoffParseError("<text>", ["unterminated frontmatter"])
 
     # Parse YAML
@@ -63,16 +68,19 @@ def split_frontmatter(text: str) -> tuple[dict, str, int]:
     try:
         data = yaml.safe_load(fm_text)
     except yaml.YAMLError as e:
+        log.warning("frontmatter split failed", reason="yaml parse error")
         raise HandoffParseError("<text>", [f"YAML parse error: {e}"])
 
     # Ensure it's a mapping (dict)
     if not isinstance(data, dict):
+        log.warning("frontmatter split failed", reason="not a mapping")
         raise HandoffParseError("<text>", ["frontmatter YAML is not a mapping"])
 
     # Body starts after the closing ---
     body_start_line = closing_idx + 2  # 1-based: +1 for 0-indexing, +1 for next line
     body = "\n".join(lines[closing_idx + 1:])
 
+    log.debug("frontmatter split", body_start_line=body_start_line)
     return data, body, body_start_line
 
 
@@ -118,11 +126,13 @@ def parse_handoff(path: Path) -> tuple[Frontmatter, str]:
     # Validate schema
     errs = schema_errors(data)
     if errs:
+        log.warning("handoff schema invalid", path=str(path), error_count=len(errs))
         raise HandoffParseError(str(path), errs)
 
     # Construct Frontmatter
     fm = Frontmatter.from_dict(data)
 
+    log.debug("handoff parsed", path=str(path), id=fm.id)
     return fm, body
 
 
@@ -144,7 +154,9 @@ def discover_handoffs(cfg: ProjectConfig) -> list[Path]:
                     # Not under reports_dir, include it
                     results.append(match)
 
-    return sorted(set(results))
+    discovered = sorted(set(results))
+    log.debug("handoffs discovered", count=len(discovered))
+    return discovered
 
 
 def convert_legacy_header(text: str) -> str:
@@ -265,4 +277,5 @@ def convert_legacy_header(text: str) -> str:
     # Remove (merged) suffix from the preserved body text
     body_text = re.sub(r"\s*\(merged\)\s*", " ", text)
 
+    log.debug("legacy header converted", tier=tier or "TODO")
     return f"---\n{fm_text}---\n\n{body_text}"

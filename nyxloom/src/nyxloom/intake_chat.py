@@ -69,7 +69,10 @@ from typing import Any
 
 from . import adapters, backlog_items, decisions, paths
 from .config import ProjectConfig, RouteDef, Routes
+from .log import get_logger
 from .types import utc_now
+
+log = get_logger("intake_chat")
 
 # --- tunables (module constants; independently owned, see module docstring)
 
@@ -360,10 +363,13 @@ def advance_intake(cfg: ProjectConfig, project: str, intake_id: str, user_text: 
     Returns the reply text (assertable by callers/tests directly)."""
     chat = load_chat(project, intake_id) or IntakeChat(intake_id=intake_id, project=project)
     chat.transcript.append(IntakeChatMessage(role="user", text=user_text, ts=utc_now().isoformat()))
+    log.debug("intake turn begin", project=project, intake_id=intake_id,
+              turn=len(chat.transcript))
 
     routes_obj = Routes.load()
     route = _pick_route(routes_obj)
     if route is None:
+        log.warning("intake turn: no route configured", tier=INTAKE_AGENT_TIER)
         reply = f"intake-chat: no '{INTAKE_AGENT_TIER}' route configured"
         chat.transcript.append(IntakeChatMessage(role="agent", text=reply, ts=utc_now().isoformat()))
         save_chat(chat)
@@ -412,4 +418,6 @@ def advance_intake(cfg: ProjectConfig, project: str, intake_id: str, user_text: 
             chat.brief_id = _finalize_brief(cfg, chat, parsed_brief)
 
     save_chat(chat)
+    log.debug("intake turn advanced", project=project, intake_id=intake_id,
+              route=route.route_id, brief_id=chat.brief_id)
     return reply

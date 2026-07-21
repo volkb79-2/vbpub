@@ -14,6 +14,7 @@ package (not in its owned-files list) and is therefore not exercised here.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -22,12 +23,29 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import structlog.contextvars
 
-from nyxloom import config, daemon, lint, paths, reconcile, render, storage
+from nyxloom import config, daemon, lint, log, paths, reconcile, render, storage
 from nyxloom.types import (
     ActorKind, Attempt, AttemptState, EventType, Role, Route, TaskState,
     TaskStateFile,
 )
+
+
+@pytest.fixture(autouse=True)
+def _silence_nyxloom_logging():
+    """PACKAGE P05c safety net -- see test_backlog_items.py's copy of this
+    fixture for the full rationale (byte-unchanged CLI oracle,
+    docs/plan-logging.md P05c). config.py's update_project_policy/
+    update_routes now carry log.info/log.warning calls reachable through
+    this file's live daemon HTTP fixture."""
+    log.configure(level=log.CRITICAL, console=False)
+    yield
+    structlog.contextvars.clear_contextvars()
+    nyxloom_logger = logging.getLogger("nyxloom")
+    for handler in list(nyxloom_logger.handlers):
+        nyxloom_logger.removeHandler(handler)
+        handler.close()
 
 
 # --------------------------------------------------------------------------

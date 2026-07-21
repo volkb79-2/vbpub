@@ -173,7 +173,10 @@ from pathlib import Path
 from typing import Any
 
 from . import decision_chat, decisions, intake_chat, paths, storage, config, frontmatter
+from .log import get_logger
 from .types import TaskState, TaskStateFile, AttemptState, Basis, Frontmatter, BlockerType
+
+log = get_logger("render")
 
 
 # --- timeline layout constants ---
@@ -538,6 +541,7 @@ def _is_terminal_or_validating(state: TaskState) -> bool:
 
 def render_all(registry: dict[str, Path]) -> Path:
     """Render all HTML pages under www_dir(); return www_dir path."""
+    log.debug("render all: begin", project_count=len(registry))
     www = paths.www_dir()
     www.mkdir(parents=True, exist_ok=True)
 
@@ -584,6 +588,7 @@ def render_all(registry: dict[str, Path]) -> Path:
     # Remove stale task pages
     _clean_stale_pages(www, all_states)
 
+    log.debug("render all: complete", www=str(www))
     return www
 
 
@@ -654,6 +659,7 @@ def _render_index(www: Path, registry: dict[str, Path], all_states: dict[str, di
     """Render index.html with active tasks, pause banner, and (P16
     2026-07-15) an opt-in carve-summary interleave — see the module
     docstring's index.html section for the full contract."""
+    log.debug("page render", page="index")
     row_entries: list[tuple[datetime, str]] = []
     all_paused: dict[str, str] = {}   # project -> pause mode
 
@@ -802,6 +808,7 @@ def _render_history(www: Path, registry: dict[str, Path],
     the remainder is still emitted (class="archive-row") but hidden by
     default via CSS, mirroring the carve-toggle pattern -- revealed by an
     Archive checkbox, never client-side innerHTML."""
+    log.debug("page render", page="history")
     entries = []   # (project, task_id, tsf, completed_at)
     for project in all_states.keys():
         for task_id, tsf in all_states[project].items():
@@ -1032,6 +1039,7 @@ def _render_dag(www: Path, registry: dict[str, Path], all_states: dict[str, dict
     frontmatter.parse_handoff), never from the statefile, which carries no
     dependency data.
     """
+    log.debug("page render", page="dag")
     edges: list[tuple[str, str, str]] = []
     node_state: dict[str, TaskState] = {}
     mutex_nodes: set[str] = set()
@@ -1120,6 +1128,7 @@ def _timeline_axis(all_states: dict[str, dict[str, TaskStateFile]], now: datetim
 def _render_timeline(www: Path, all_states: dict[str, dict[str, TaskStateFile]]) -> None:
     """Render timeline.html: one lane per task, attempt bars absolutely
     positioned over a shared auto-fit axis (see _timeline_axis)."""
+    log.debug("page render", page="timeline")
     now = datetime.now(timezone.utc)
     axis_start, axis_end = _timeline_axis(all_states, now)
     axis_span = (axis_end - axis_start).total_seconds()
@@ -1198,6 +1207,7 @@ def _render_timeline(www: Path, all_states: dict[str, dict[str, TaskStateFile]])
 
 def _render_quality(www: Path, registry: dict[str, Path], all_states: dict[str, dict[str, TaskStateFile]]) -> None:
     """Render quality.html with stats per tier/route."""
+    log.debug("page render", page="quality")
     # Load routes to get tiers
     try:
         routes = config.Routes.load()
@@ -1383,6 +1393,7 @@ def _render_config(www: Path, registry: dict[str, Path]) -> None:
     """Render config.html: per-project policy form + pause-mode buttons,
     plus a global routing-tiers editor and a read-only route-definitions
     table (P15 2026-07-15 spec amendment)."""
+    log.debug("page render", page="config")
     project_sections = []
     for project in sorted(registry.keys()):
         root = registry[project]
@@ -1555,6 +1566,7 @@ def _render_decisions(www: Path, registry: dict[str, Path]) -> None:
     so the transcript is inherently safe -- no client-side innerHTML is
     ever needed to display it (unlike live.html's dynamically-appended
     rows)."""
+    log.debug("page render", page="decisions")
     sections = []
     for project in sorted(registry.keys()):
         root = registry[project]
@@ -1654,6 +1666,7 @@ def _render_intake(www: Path, registry: dict[str, Path]) -> None:
     (chat.brief_id is None, i.e. not yet finalized into a backlog item)
     conversation's transcript and a reply box driving POST /api/intake.
     Same read-only-render / server-escaped idiom as decisions.html (P18)."""
+    log.debug("page render", page="intake")
     start_forms = []
     sections = []
     for project in sorted(registry.keys()):
@@ -1720,6 +1733,7 @@ def _render_intake(www: Path, registry: dict[str, Path]) -> None:
 
 def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -> None:
     """Render a task/<project>/<task_id>.html page."""
+    log.debug("page render", page="task", project=project, task_id=tsf.task_id)
     task_dir = www / "task" / project
     task_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1839,6 +1853,7 @@ def _render_task_page(www: Path, project: str, tsf: TaskStateFile, root: Path) -
 def _render_live(www: Path) -> None:
     """Render live.html: SSE client that parses each event into one
     human-readable row (never innerHTML) plus a raw-JSON toggle."""
+    log.debug("page render", page="live")
     content = """
     <h2>Live Stream</h2>
     <p>This page streams events from the nyxloom daemon via Server-Sent Events (SSE).</p>

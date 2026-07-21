@@ -170,6 +170,49 @@ import os
 import sys
 from pathlib import Path
 
+
+def _bootstrap_logging() -> None:
+    """PACKAGE P05c: every OTHER module this CLI dispatches into
+    (config/lint/decisions/backlog_items/frontmatter/render/...) now carries
+    `log.debug`/`log.info`/`log.warning` calls. structlog's OWN default (when
+    `log.configure()` has never been called by anyone in the process) is an
+    unfiltered PrintLogger straight to stdout -- see structlog's docs on its
+    pre-configure default. A short-lived `nyxloom` CLI invocation (unlike the
+    persistent daemon, which wires this in `Daemon.run()` via P02's
+    `resolve_level()`) never otherwise calls `log.configure()`, so without
+    this bootstrap the FIRST log call any dispatched command reaches would
+    print a raw structlog line into the middle of this CLI's stdout/stderr --
+    corrupting the exact `doctor`/`status` output contract this package's
+    own byte-unchanged oracle guards (see docs/plan-logging.md P05c). Kept
+    intentionally minimal: `console=False` so nothing but a JSONL file is
+    ever written (the CLI's own stdout/stderr stays exactly the print
+    statements below, untouched); the level honors NYXLOOM_LOG_LEVEL (the
+    same env D-L3/resolve_level's layer 2 the daemon honors) so `nyxloom
+    doctor`/`lint`/etc. share the daemon's one nyxloom.jsonl stream at a
+    consistent verbosity, falling back to INFO on an unset/invalid value.
+    Never imports daemon.py (that would defeat `nyxloom version`'s
+    resilience to a broken optional module -- see this module's own
+    docstring on lazy imports)."""
+    from . import log as log_module, paths
+
+    level = os.environ.get("NYXLOOM_LOG_LEVEL", "info")
+    try:
+        log_module.configure(level=level, log_dir=paths.logs_dir(), console=False)
+    except ValueError:
+        log_module.configure(level=log_module.INFO, log_dir=paths.logs_dir(), console=False)
+    except OSError:  # pragma: no cover -- defensive; needs an unwritable state dir to trigger
+        # Defensive (mirrors this module's own "nyxloom version works even
+        # if an optional module is broken" resilience intent, above): a
+        # state dir that cannot be created/written (read-only HOME, full
+        # disk) must never take the whole CLI down over a diagnostics
+        # side-channel. structlog's own pre-configure default (unfiltered
+        # PrintLogger to stdout) is worse than no file handler at all here,
+        # so fall back to a level-gated, handler-less config: WARNING+ still
+        # risks stdlib's `lastResort` stderr fallback in this one degraded
+        # case, but DEBUG/INFO (this package's own added calls) stay silent.
+        log_module.configure(level=log_module.INFO, log_dir=None, console=False)
+
+
 def _cfg(project: str):
     """Load ProjectConfig for a project ID. Raise if not found."""
     from . import config
@@ -1050,6 +1093,7 @@ def cmd_version(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _bootstrap_logging()
     parser = argparse.ArgumentParser(prog="nyxloom", add_help=False, exit_on_error=False)
     parser.add_argument("--debug", action="store_true", help="Show tracebacks")
 
