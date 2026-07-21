@@ -33,6 +33,24 @@ ARG MCP_PROXY_VERSION=6.5.2
 # local install, not any global one). The build below asserts the two stay
 # in sync; bump both together when updating this pin.
 ARG LIGHTHOUSE_VERSION=13.4.0
+
+# --- ksm-optin build stage ---------------------------------------------
+# Compiles containers/pwmcp/ksm-optin.c -- the LD_PRELOAD shim that opts
+# every pwmcp process into KSM (Kernel Samepage Merging) via
+# prctl(PR_SET_MEMORY_MERGE). Vendored from
+# dstdns/tools/ksm-optin/ksm-optin.c and compiled from source here (rather
+# than shipping a prebuilt .so, which is arch-fragile). Built in a
+# throwaway stage on a small Debian base so the final image never carries
+# a compiler toolchain -- only the resulting .so is copied into the final
+# stage below. See "KSM Opt-In" in README.md.
+FROM debian:bookworm-slim AS ksm-optin-builder
+COPY containers/pwmcp/ksm-optin.c /tmp/ksm-optin.c
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gcc libc6-dev \
+ && mkdir -p /opt/ksm \
+ && cc -shared -fPIC -O2 -o /opt/ksm/ksm-optin.so /tmp/ksm-optin.c \
+ && rm -rf /var/lib/apt/lists/*
+
 # Base image digest pinned for reproducibility (resolved via
 # 'docker buildx imagetools inspect mcr.microsoft.com/playwright:v<ver>-<distro>').
 # Multi-arch manifest digest (linux/amd64 + linux/arm64):
@@ -90,6 +108,16 @@ ENV PWMCP_RUN_SERVER_PORT=3000 \
 ENV HOME=/tmp \
     XDG_CACHE_HOME=/tmp/.cache
 
+# KSM (Kernel Samepage Merging) opt-in -- default ON. entrypoint.sh reads
+# this and, when "1", sets LD_PRELOAD=/opt/ksm/ksm-optin.so before
+# `exec supervisord`; supervisord's children (run-server, the gateway, mcp,
+# devtools-mcp, lighthouse-mcp) inherit LD_PRELOAD, so every one of them
+# opts in. Set to "0" to disable. The shim itself fails soft: on a host
+# kernel <6.4 or with CONFIG_KSM off, the prctl call errors, the shim logs a
+# warning, and the process starts normally -- so leaving this on by default
+# is safe everywhere. See "KSM Opt-In" in README.md.
+ENV PWMCP_KSM_OPTIN=1
+
 # Install playwright JS package (run-server needs it; base image ships only
 # browser binaries), @playwright/mcp (MCP HTTP/SSE server), and supervisord
 # (PID-1 process manager that reaps children and forwards SIGTERM).
@@ -118,6 +146,12 @@ RUN node -e "const {chromium}=require('/usr/lib/node_modules/playwright');proces
 # Use /tmp-based paths (already world-writable) instead of /var/run.
 RUN mkdir -p /var/log/supervisor \
  && chmod 1777 /var/log/supervisor
+
+# KSM opt-in shim, compiled in the ksm-optin-builder stage above (world
+# readable by default from that build, so uid 1000 can load it via
+# LD_PRELOAD). entrypoint.sh decides whether to actually set LD_PRELOAD
+# based on PWMCP_KSM_OPTIN.
+COPY --from=ksm-optin-builder /opt/ksm/ksm-optin.so /opt/ksm/ksm-optin.so
 
 COPY containers/pwmcp/supervisord.conf /etc/supervisor/conf.d/pwmcp.conf
 # browser_mode=shared config (P03): both configs are always baked into the

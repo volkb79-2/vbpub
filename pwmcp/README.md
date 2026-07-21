@@ -161,6 +161,38 @@ configuration and the admin endpoint (`POST /browser/reset`,
 [docs/SECURITY.md](docs/SECURITY.md#p03-shared-browser-mode--risk-posture)
 for the risk posture.
 
+## KSM Opt-In (default on)
+
+Every process in the container opts into Kernel Samepage Merging (KSM) by
+default via `prctl(PR_SET_MEMORY_MERGE)`, so the host kernel's `ksmd` can
+dedupe identical memory pages (e.g. shared Chromium/Node code pages) across
+this container and any other opted-in process on the host — including other
+pwmcp instances — without the consumer needing to wire up ciu's KSM
+governance overlay.
+
+Mechanism: `containers/pwmcp/ksm-optin.c` (vendored from
+`dstdns/tools/ksm-optin/ksm-optin.c`) is a tiny `LD_PRELOAD` shim whose
+constructor calls `prctl(PR_SET_MEMORY_MERGE, 1, ...)`. It is compiled from
+source in a throwaway Dockerfile build stage (`ksm-optin-builder`) so the
+final image never carries a compiler toolchain. `entrypoint.sh` sets
+`LD_PRELOAD=/opt/ksm/ksm-optin.so` before `exec supervisord`; since
+supervisord is PID 1 and its children inherit the environment, `run-server`,
+the gateway, and every MCP program (`mcp`, `devtools-mcp`, `lighthouse-mcp`,
+and — in shared browser mode — `chromium`/`admin-server`) all opt in
+automatically, with no per-program wiring.
+
+Requires kernel >= 6.4 with KSM enabled on the host. If the host kernel is
+older or `CONFIG_KSM` is off, the shim's `prctl` call fails, it logs a
+warning to stderr, and the process starts normally — enabling this by
+default is safe even on hosts where KSM isn't available.
+
+Toggle via `PWMCP_KSM_OPTIN` (default `1`). Set to `0` to disable:
+
+```yaml
+environment:
+  PWMCP_KSM_OPTIN: "0"
+```
+
 ## Package Version Pins
 
 ### Playwright Version

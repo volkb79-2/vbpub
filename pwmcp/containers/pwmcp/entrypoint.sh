@@ -13,6 +13,10 @@
 #
 # Strict validation: an unknown PWMCP_BROWSER_MODE value is a fatal error,
 # not a silent fallback to a default.
+#
+# KSM opt-in: PWMCP_KSM_OPTIN (default "1") controls whether LD_PRELOAD is
+# set to the ksm-optin.so shim before exec'ing supervisord — see the check
+# near the bottom of this file for details.
 
 set -e
 
@@ -75,5 +79,26 @@ if [ "$PWMCP_RUN_SERVER_DEFAULT_LEASE_S" -gt "$PWMCP_RUN_SERVER_MAX_LEASE_S" ]; 
 fi
 PWMCP_SUPERVISOR_CONF="$SUPERVISOR_CONF"
 export PWMCP_SUPERVISOR_CONF
+
+# KSM (Kernel Samepage Merging) opt-in — default ON (image ENV
+# PWMCP_KSM_OPTIN=1). When enabled, LD_PRELOAD the compiled shim
+# (/opt/ksm/ksm-optin.so, built from containers/pwmcp/ksm-optin.c) into this
+# process. supervisord is PID 1 here and its children inherit LD_PRELOAD, so
+# run-server, the gateway, and every MCP program opt into KSM too — no
+# per-program wiring needed. Set PWMCP_KSM_OPTIN=0 to disable (LD_PRELOAD is
+# then left unset). The shim fails soft on unsupported kernels, so leaving
+# this on is safe even where KSM isn't available.
+PWMCP_KSM_OPTIN="${PWMCP_KSM_OPTIN:-1}"
+case "$PWMCP_KSM_OPTIN" in
+  1)
+    export LD_PRELOAD="/opt/ksm/ksm-optin.so"
+    ;;
+  0)
+    ;;
+  *)
+    echo "FATAL: PWMCP_KSM_OPTIN must be 0 or 1 (got: '${PWMCP_KSM_OPTIN}')" >&2
+    exit 1
+    ;;
+esac
 
 exec supervisord -c "$SUPERVISOR_CONF" --nodaemon "$@"
