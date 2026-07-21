@@ -26,7 +26,24 @@ signal.
 ## Worktree protocol
 Parallel implementation runs in `.worktrees/<branch>` (branch from `main`).
 Merge serially onto `main` with `--no-ff`; expect minor overlap reconciliation.
-Keep packages small + non-overlapping to parallelize.
+Keep packages small + non-overlapping to parallelize. Each worktree has its own
+index, so `git add`/`commit` there is private and safe.
+
+## Committing from the shared `main` checkout
+The main checkout (`/workspaces/vbpub`) is shared: another agent's serial merge
+may `git add`/commit at any moment, so its index is not yours to trust. A plain
+`git add <paths> && git commit` can capture whatever a concurrent `git add`
+staged — observed live: a wings commit that swept in another agent's `cmru/`
+files under the wrong message. When committing from here (not from an isolated
+worktree), **scope to explicit paths and bypass the shared index**:
+
+    git commit --only -F msg.txt -- <your paths>     # commits only these paths
+
+then verify: `git show --stat HEAD --name-only | sed 's#/.*##' | sort -u` lists
+only your dirs. Do **not** `reset`/`rebase`/`--amend` to repair a contaminated
+commit — HEAD may have already moved under concurrent commits; leave the bad one
+buried and land a correct new commit instead. (Inside a private worktree none of
+this applies — commit normally.)
 
 ## Carving for a project — where the specifics live
 Project-specific constraints a carve/review agent must honor (schema policy,
