@@ -1027,3 +1027,66 @@ class TestP05aLogging:
             assert errs[0]["lease"] == "demo.stack"
         finally:
             pre_lease.release()
+
+    def test_interrupted_in_process_emits_warning_attempt_exit(
+            self, tmp_state, tmp_path, fake_cli, mock_adapters):
+        """§5: INTERRUPTED is a handled, operator-triggered stop -> WARNING
+        (not ERROR). Delivered IN-PROCESS (a real SIGTERM to this test's own
+        pid, caught by wrapper_main's own installed handler since it runs
+        directly here, not via launch_detached's fork) -- unlike
+        TestSigterm.test_sigterm_detached_real, which forks and so is
+        invisible to this process's coverage recorder."""
+        import threading
+
+        project = "demo"
+        task_id = "demo-P01-sample"
+        attempt_id = "att-1"
+        seed(project, task_id, attempt_id)
+
+        script = fake_cli(["starting"], exit_code=0, sleep_time="2")
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir(parents=True)
+        log_path = attempt_dir / "attempt.log"
+        receipt_path = attempt_dir / "receipt.json"
+
+        spec = WrapperSpec(
+            project=project, task_id=task_id, attempt_id=attempt_id,
+            argv=[str(script)], cwd=str(tmp_path), log_path=str(log_path),
+            receipt_path=str(receipt_path), attempt_dir=str(attempt_dir),
+            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+            term_grace_seconds=1,
+        )
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+        log_dir = tmp_path / "logs"
+        log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+        old_sigterm = signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        old_sigint = signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+        def _signal_self():
+            time.sleep(0.3)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        try:
+            t = threading.Thread(target=_signal_self)
+            t.start()
+            exit_code = wrapper_main(str(spec_path))
+            t.join(timeout=5)
+        finally:
+            signal.signal(signal.SIGTERM, old_sigterm)
+            signal.signal(signal.SIGINT, old_sigint)
+
+        assert exit_code != 0
+        receipt = json.loads(receipt_path.read_text())
+        assert receipt["blocked_reason"] == "interrupted"
+
+        records = _read_log_records(log_dir)
+        exits = [r for r in records if r.get("msg") == "attempt-exit"]
+        assert len(exits) == 1
+        assert exits[0]["level"] == "warning"
+        assert exits[0]["result"] == "error"
+        assert exits[0]["project"] == project
+        assert exits[0]["task"] == task_id
+        assert exits[0]["attempt"] == attempt_id

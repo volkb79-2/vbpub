@@ -1389,3 +1389,46 @@ def test_capture_session_discover_emits_debug(tmp_path, monkeypatch, emit_script
     assert discovered[0]["level"] == "debug"
     assert discovered[0]["route"] == "discover-route"
     assert discovered[0]["worktree"] == "/tmp/wt"
+
+
+def test_probe_file_not_found_emits_warning(tmp_path):
+    """§5: the FileNotFoundError branch (command-not-found) also emits the
+    WARNING probe-failed record."""
+    log_dir = tmp_path / "logs"
+    log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+    route = RouteDef(route_id="probe-route-missing", cli="fake", model="fake-model",
+                      probe=["/nonexistent/binary/xyz-does-not-exist"])
+    ok, detail = adapters.probe(route)
+    assert ok is False
+    assert "command not found" in detail
+
+    records = _read_log_records(log_dir)
+    failed = [r for r in records if r.get("msg") == "probe-failed"]
+    assert len(failed) == 1
+    assert failed[0]["level"] == "warning"
+    assert failed[0]["route"] == "probe-route-missing"
+    assert "command not found" in failed[0]["detail"]
+
+
+def test_probe_generic_exception_emits_warning(tmp_path):
+    """§5: the catch-all Exception branch also emits the WARNING
+    probe-failed record."""
+    import subprocess
+    from unittest.mock import patch
+
+    log_dir = tmp_path / "logs"
+    log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+    route = RouteDef(route_id="probe-route-boom", cli="fake", model="fake-model", probe=["true"])
+    with patch("subprocess.run", side_effect=RuntimeError("boom")):
+        ok, detail = adapters.probe(route)
+    assert ok is False
+    assert detail == "boom"
+
+    records = _read_log_records(log_dir)
+    failed = [r for r in records if r.get("msg") == "probe-failed"]
+    assert len(failed) == 1
+    assert failed[0]["level"] == "warning"
+    assert failed[0]["route"] == "probe-route-boom"
+    assert failed[0]["detail"] == "boom"
