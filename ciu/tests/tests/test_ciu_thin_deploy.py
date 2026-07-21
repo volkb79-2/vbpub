@@ -254,6 +254,18 @@ class TestPushScp:
         rc = act._push_scp({}, str(src), "/remote", config={}, repo_root=tmp_path)
         assert rc == 5
 
+    def test_extract_failure_propagates_rc(self, tmp_path, monkeypatch):
+        # mkdir ok (rc 0), scp ok (rc 0), remote tar extract fails (rc 8) ->
+        # _push_scp must return the extract rc, not 0.
+        src = tmp_path / "repo"
+        src.mkdir()
+        (src / "f").write_text("data")
+        exec_rcs = iter([0, 8])  # 1st exec = mkdir, 2nd exec = extract
+        monkeypatch.setattr(act, "ssh_exec", lambda *a, **k: next(exec_rcs))
+        monkeypatch.setattr(act, "scp_file", lambda *a, **k: 0)
+        rc = act._push_scp({}, str(src), "/remote", config={}, repo_root=tmp_path)
+        assert rc == 8
+
     def test_tarball_cleaned_up_on_scp_failure(self, tmp_path, monkeypatch):
         src = tmp_path / "repo"
         src.mkdir()

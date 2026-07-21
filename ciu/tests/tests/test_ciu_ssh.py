@@ -654,6 +654,51 @@ class TestScpFile:
         rc = scp_file(host_cfg, "/a", "/b", config={}, repo_root=tmp_path)
         assert rc == 7
 
+    def test_scp_cleans_up_vault_key_and_known_hosts_even_on_failure(self, tmp_path, monkeypatch):
+        # S14.6f / S14.4b: scp_file must mirror ssh_sync's fail-closed envelope —
+        # a Vault-resolved key temp file (0600) AND the pinned known_hosts temp
+        # file are BOTH removed in the finally block, even when scp exits nonzero.
+        from ciu.transport_ssh import scp_file
+        monkeypatch.delenv("CIU_SSH_INSECURE_TOFU", raising=False)
+
+        made = {}
+
+        def fake_resolve_key(host_cfg, config, repo_root):
+            fd, p = tempfile.mkstemp(prefix="ciu_ssh_key_", suffix=".pem")
+            os.close(fd)
+            made["key"] = p
+            return p
+
+        monkeypatch.setattr(tssh_mod, "resolve_key", fake_resolve_key)
+
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            # snapshot the temp paths handed to scp while they still exist
+            captured["key_present"] = Path(made["key"]).exists()
+            i = cmd.index("-i")
+            captured["key_arg"] = cmd[i + 1]
+            kh = [a for a in cmd if isinstance(a, str) and a.startswith("UserKnownHostsFile=")]
+            captured["kh_arg"] = kh[0].split("=", 1)[1] if kh else None
+            return MagicMock(returncode=13)  # scp fails
+
+        monkeypatch.setattr(tssh_mod.subprocess, "run", fake_run)
+
+        host_cfg = {
+            "ssh_host": "web.example.com", "ssh_user": "d", "ssh_port": 22,
+            "ssh_key": "ASK_VAULT:ssh/web/key", "known_host": "ssh-ed25519 AAAA...",
+        }
+        rc = scp_file(host_cfg, "/local/a.tar.gz", "/remote/a.tar.gz",
+                      config={}, repo_root=tmp_path)
+        assert rc == 13
+        # while scp ran, both temp files existed and were the ones passed
+        assert captured["key_present"] is True
+        assert captured["key_arg"] == made["key"]
+        assert captured["kh_arg"] and Path(captured["kh_arg"]).name.startswith("ciu_known_hosts_")
+        # after the finally block, both are gone
+        assert not Path(made["key"]).exists()
+        assert not Path(captured["kh_arg"]).exists()
+
 
 # ===========================================================================
 # CLI — ssh verb dispatch
