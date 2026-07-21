@@ -63,6 +63,27 @@ from .types import (
 # accident.
 log = get_logger("storage")
 
+
+def _trace(msg: str, **kw: Any) -> None:
+    """Fire a TRACE record if the CURRENTLY configured logging wrapper class
+    supports it -- a silent no-op otherwise. TRACE(5) is nyxloom.log's own
+    custom extension (see log.py's ``_make_wrapper_class``); it exists only
+    once ``log.configure()``/``set_level()`` has installed that wrapper
+    class into structlog's global config. structlog's OWN default
+    (never-configured) global state lacks it entirely, so a bare
+    ``log.trace(...)`` call would raise ``AttributeError`` the first time
+    this hot path (every event append / statefile read-write) runs in any
+    process or test that has not called ``log.configure()`` yet. Degrading
+    to a no-op here is exactly the same "logging is additive, never load-
+    bearing" contract §2 already establishes -- a TRACE record silently
+    missing before boot-time configure() is no worse than TRACE being
+    filtered out at a higher effective level, which every caller already
+    tolerates."""
+    trace_fn = getattr(log, "trace", None)
+    if trace_fn is not None:
+        trace_fn(msg, **kw)
+
+
 SCHEMA_VERSION = 1
 
 _EARLY_ATTEMPT_STATES = frozenset({AttemptState.CREATED, AttemptState.PREFLIGHTING})
@@ -148,8 +169,14 @@ def append_event(
             # P05a (§6 P05a oracle 4): an event append emits TRACE. Only
             # reachable on the LIVE append path -- replay() never calls
             # append_event, so this can never fire during a replay.
-            log.trace("event-append", project=project, event=type.value,
-                      task=task_id, attempt=attempt_id, sequence=ev.sequence)
+            # NB: field name deliberately "event_type", NOT "event" -- every
+            # structlog bound-logger method's own first positional parameter
+            # is itself named `event` (the message), so a same-named kwarg
+            # collides ("got multiple values for argument 'event'"); see the
+            # matching comment on daemon.py's "daemon started" log call for
+            # the analogous "level" clash with add_log_level.
+            _trace("event-append", project=project, event_type=type.value,
+                   task=task_id, attempt=attempt_id, sequence=ev.sequence)
             return ev
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
@@ -183,7 +210,7 @@ def load_state(project: str, task_id: str) -> TaskStateFile | None:
     p = paths.statefile_path(project, task_id)
     if not p.exists():
         return None
-    log.trace("statefile-read", project=project, task=task_id)
+    _trace("statefile-read", project=project, task=task_id)
     return TaskStateFile.from_dict(json.loads(p.read_text(encoding="utf-8")))
 
 
@@ -205,7 +232,7 @@ def save_state(state: TaskStateFile) -> None:
                 encoding="utf-8",
             )
             os.replace(tmp, p)
-            log.trace("statefile-write", project=state.project, task=state.task_id)
+            _trace("statefile-write", project=state.project, task=state.task_id)
         finally:
             fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 

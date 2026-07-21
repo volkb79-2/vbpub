@@ -361,7 +361,7 @@ def test_event_append_emits_trace(tmp_state, tmp_path):
     appends = [r for r in records if r.get("msg") == "event-append"]
     assert appends, "expected at least one TRACE event-append record"
     assert all(r["level"] == "trace" for r in appends)
-    created = next(r for r in appends if r.get("event") == EventType.TASK_CREATED.value)
+    created = next(r for r in appends if r.get("event_type") == EventType.TASK_CREATED.value)
     assert created["project"] == project
     assert created["task"] == task_id
     assert created["sequence"] == 1
@@ -387,12 +387,13 @@ def test_statefile_read_write_emit_trace(tmp_state, tmp_path):
 
 def test_replay_is_silent_but_live_append_logs(tmp_state, tmp_path):
     """Oracle 5 (THE load-bearing oracle): replaying an existing event
-    history emits ZERO log records at DEBUG (the noisiest non-TRACE level a
-    live pass would normally use) -- proving apply_event/replay never
-    re-logs history on a daemon restart -- while a FRESH live event (the
-    exact same append_and_apply a genuine reconcile pass uses) DOES log.
-    Fails against any implementation that logs inside apply_event/replay
-    instead of only on the live append_event/save_state paths."""
+    history emits ZERO log records even at TRACE (the noisiest level --
+    the level event-append/statefile writes themselves use, so this is
+    the strongest possible proof replay never re-logs history on a daemon
+    restart) -- while a FRESH live event (the exact same append_and_apply
+    a genuine reconcile pass uses) DOES log. Fails against any
+    implementation that logs inside apply_event/replay instead of only on
+    the live append_event/save_state paths."""
     project = "p05a-replay-silent"
     task_id = "t-replay-silent"
 
@@ -404,11 +405,12 @@ def test_replay_is_silent_but_live_append_logs(tmp_state, tmp_path):
         payload={"from": "QUEUED", "to": "ACTIVE", "notes": None}, task_id=task_id,
     )
 
-    # NOW configure logging at DEBUG (INFO/DEBUG would both be visible here
-    # if replay logged anything) and replay the WHOLE history from scratch --
-    # exactly what Daemon.run()'s bootstrap does via config.load_registry ->
-    # storage.list_states, and what `nyxloom doctor`'s divergence check does.
-    log.configure(level=log.DEBUG, log_dir=tmp_path, console=False)
+    # NOW configure logging at TRACE (the noisiest level -- everything an
+    # event append/statefile write would ever emit) and replay the WHOLE
+    # history from scratch -- exactly what Daemon.run()'s bootstrap does via
+    # config.load_registry -> storage.list_states, and what `nyxloom
+    # doctor`'s divergence check does.
+    log.configure(level=log.TRACE, log_dir=tmp_path, console=False)
     replayed = storage.replay(project)
     assert replayed[task_id].state is TaskState.ACTIVE
 
