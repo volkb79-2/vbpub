@@ -4027,3 +4027,359 @@ def test_daemon_run_bootstraps_from_project_logging_level(
     assert started
     assert started[0]["effective_level"] == "debug"
     assert started[0]["level_source"] == "config"
+
+
+# ==========================================================================
+# P05a (docs/plan-logging.md §5, §6 P05a): effect-core sweep -- daemon.py.
+#
+# Oracles:
+#   1. a dispatch emits INFO carrying project+task+route
+#   2. a gate failure emits ERROR
+#   3. an attempt retry emits WARNING
+# (Oracles 4+5 -- event append TRACE + replay-is-silent -- are storage.py's,
+# proven in tests/test_storage.py.) Plus explicit coverage for the other §5
+# items this package also instruments: review launch (INFO), merge (INFO),
+# a merge conflict (ERROR), state transitions (INFO), and per-pass counts
+# (DEBUG).
+
+def test_dispatch_implementer_emits_info_dispatch_with_project_task_route(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Oracle 1: a dispatch emits INFO carrying project+task+route."""
+    cfg = sample_project
+    (cfg.root / "handoff" / "demo-P02-mutex.md").write_text(MUTEX_HANDOFF, encoding="utf-8")
+    task_id = "demo-P02-mutex"
+    _seed_task("demo", task_id, TaskState.QUEUED, handoff_path="handoff/demo-P02-mutex.md")
+    log_dir = tmp_state / "logs"
+    log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+    _scripted(monkeypatch, [[reconcile.DispatchImplementer(task_id=task_id, route_id="fake-cli")]])
+    d = daemon.Daemon({"demo": cfg.root})
+    n = d.run_pass("demo")
+    assert n == 1
+
+    records = _read_log_records(log_dir)
+    dispatched = [r for r in records if r.get("msg") == "dispatch"]
+    assert len(dispatched) == 1
+    assert dispatched[0]["level"] == "info"
+    assert dispatched[0]["project"] == "demo"
+    assert dispatched[0]["task"] == task_id
+    assert dispatched[0]["route"] == "fake-cli"
+
+
+def test_resume_attempt_emits_warning_attempt_retry(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Oracle 3: an attempt retry (ResumeAttempt) emits WARNING."""
+    task_id, attempt_id = "t-retry", "att-retry"
+    _seed_running_attempt("demo", task_id, attempt_id)
+    tsf = storage.load_state("demo", task_id)
+    att = tsf.attempt_by_id(attempt_id)
+    att.state = AttemptState.INTERRUPTED
+    att.session_handle = "sess-1"
+    att.worktree = str(sample_project.root)
+    storage.save_state(tsf)
+
+    log_dir = tmp_state / "logs"
+    log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+    _scripted(monkeypatch, [[reconcile.ResumeAttempt(task_id=task_id, attempt_id=attempt_id)]])
+    d = daemon.Daemon({"demo": sample_project.root})
+    d.run_pass("demo")
+
+    records = _read_log_records(log_dir)
+    retried = [r for r in records if r.get("msg") == "attempt-retry"]
+    assert len(retried) == 1
+    assert retried[0]["level"] == "warning"
+    assert retried[0]["project"] == "demo"
+    assert retried[0]["task"] == task_id
+    assert retried[0]["attempt"] == attempt_id
+    assert retried[0]["route"] == "fake-cli"
+
+
+def test_post_merge_gate_failure_emits_error(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Oracle 2: a gate failure emits ERROR. Self-contained (mirrors
+    tests/test_post_merge.py's test_validating_task_blocks_on_failing_gate,
+    which this package may not touch -- see scope.touch)."""
+    import dataclasses
+    from nyxloom import config as config_mod
+    from nyxloom.config import GateDef
+
+    cfg = sample_project
+    task_id = "demo-P01-sample"
+    tsf = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id=task_id, project="demo",
+        state=TaskState.CARVED, since=utc_now(), handoff_path="handoff/demo-P01-sample.md",
+    )
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.TASK_CREATED, payload={"statefile": tsf.to_dict()}, task_id=task_id,
+    )
+    cur = storage.load_state("demo", task_id)
+    cur.state = TaskState.VALIDATING
+    cur.merge_commit = "badc0de00002"
+    storage.save_state(cur)
+
+    failing_cfg = dataclasses.replace(cfg, gates={
+        "pytest-q": GateDef(gate_id="pytest-q", argv=["false"], phase="implementation",
+                             timeout_seconds=10, environment="local"),
+    })
+    monkeypatch.setattr(config_mod.ProjectConfig, "load", classmethod(lambda cls, root: failing_cfg))
+
+    log_dir = tmp_state / "logs"
+    log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+    _scripted(monkeypatch, [[reconcile.RunPostMergeGate(task_id=task_id)]])
+    d = daemon.Daemon({"demo": cfg.root})
+    n = d.run_pass("demo")
+    assert n == 1
+
+    tsf2 = storage.load_state("demo", task_id)
+    assert tsf2.state is TaskState.BLOCKED
+
+    records = _read_log_records(log_dir)
+    gate_failed = [r for r in records if r.get("msg") == "gate-failed"]
+    assert len(gate_failed) == 1
+    assert gate_failed[0]["level"] == "error"
+    assert gate_failed[0]["project"] == "demo"
+    assert gate_failed[0]["task"] == task_id
+    assert gate_failed[0]["gate"] == "pytest-q"
+    assert gate_failed[0]["exit_code"] != 0
+
+
+def _write_merge_handoff(root, task_id: str) -> str:
+    """A real handoff/*.md matching handoff_globs (SAMPLE_PROJECT_TOML),
+    frontmatter `id:` == task_id -- reconcile.plan_project's per-task loop
+    is keyed on `inp.frontmatters` (only ids present there are ever
+    visited: `for fm_id, ... in inp.frontmatters.items(): if fm_id not in
+    inp.states: continue`), so the MERGE_READY->AutoMergeTask trigger for
+    this task_id never fires without a matching frontmatter entry."""
+    rel = f"handoff/{task_id}.md"
+    (root / "handoff" / f"{task_id}.md").write_text(f"""\
+---
+schema_version: 1
+id: {task_id}
+project: demo
+title: Test package
+tier: flash-high
+input_revision: "0000000"
+source: {{kind: roadmap, ref: docs/ROADMAP.md}}
+scope:
+  touch: ["src/demo/thing.py"]
+  forbid: []
+oracles:
+  - id: O1
+    observable: "pytest tests/test_thing.py::test_bound passes"
+    negative: "a value over the limit raises BoundError"
+    gate: pytest-q
+gates: [pytest-q]
+escalate_if: ["a named contract cannot be met as specified"]
+---
+
+# Test package
+""", encoding="utf-8")
+    return rel
+
+
+def test_auto_merge_emits_merge_info_log(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """§5: merge -> INFO. Self-contained (mirrors tests/test_auto_merge.py's
+    test_clean_merge_advances_main_and_transitions_to_merged, which this
+    package may not touch -- see scope.touch)."""
+    import dataclasses
+    from nyxloom import config as config_mod
+
+    cfg = sample_project
+    cfg2 = dataclasses.replace(cfg, policy=dataclasses.replace(cfg.policy, merge_mode="guarded-automatic"))
+    monkeypatch.setattr(config_mod.ProjectConfig, "load", classmethod(lambda cls, root: cfg2))
+
+    subprocess.run(["git", "-C", str(cfg.root), "checkout", "-b", "feat/demo-P96"],
+                    check=True, capture_output=True)
+    (cfg.root / "new_thing.txt").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(cfg.root), "add", "new_thing.txt"], check=True, capture_output=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(cfg.root),
+                    "commit", "-qm", "add new_thing"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(cfg.root), "checkout", "main"], check=True, capture_output=True)
+
+    task_id = "demo-P96"
+    handoff_path = _write_merge_handoff(cfg.root, task_id)
+    tsf = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id=task_id, project="demo",
+        state=TaskState.CARVED, since=utc_now(), handoff_path=handoff_path,
+    )
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.TASK_CREATED, payload={"statefile": tsf.to_dict()}, task_id=task_id,
+    )
+    cur = storage.load_state("demo", task_id)
+    cur.state = TaskState.MERGE_READY
+    cur.attempts = [Attempt(
+        attempt_id="att-impl96", role=Role.IMPLEMENTER, state=AttemptState.EXITED,
+        route=Route(route_id="fake-cli", cli="fake", model="fake-model"),
+        started=utc_now(), branch="feat/demo-P96",
+    )]
+    storage.save_state(cur)
+
+    log_dir = tmp_state / "logs"
+    log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf2 = storage.load_state("demo", task_id)
+    assert tsf2.state is TaskState.MERGED
+
+    records = _read_log_records(log_dir)
+    merged = [r for r in records if r.get("msg") == "merge"]
+    assert len(merged) == 1
+    assert merged[0]["level"] == "info"
+    assert merged[0]["project"] == "demo"
+    assert merged[0]["task"] == task_id
+    assert merged[0]["merge_commit"] == tsf2.merge_commit
+
+
+def test_auto_merge_conflict_emits_error(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """§5: "merge conflict escalated" is a named ERROR example. Self-
+    contained (mirrors tests/test_auto_merge.py's real-conflict test, which
+    this package may not touch -- see scope.touch)."""
+    import dataclasses
+    from nyxloom import config as config_mod
+
+    cfg = sample_project
+    cfg2 = dataclasses.replace(cfg, policy=dataclasses.replace(cfg.policy, merge_mode="guarded-automatic"))
+    monkeypatch.setattr(config_mod.ProjectConfig, "load", classmethod(lambda cls, root: cfg2))
+    task_id = "demo-P95"
+    # demo-P95's OWN handoff (untouched by the conflict below -- disk-only,
+    # never committed, exactly like the plain-merge test above; frontmatter
+    # discovery globs disk regardless of git status).
+    handoff_path = _write_merge_handoff(cfg.root, task_id)
+
+    # The conflict is manufactured on an UNRELATED, already-tracked file
+    # (sample_project's own base handoff, committed by the fixture) -- never
+    # demo-P95's own handoff -- mirroring tests/test_auto_merge.py's own
+    # real-conflict test exactly.
+    conflict_victim = "handoff/demo-P01-sample.md"
+    subprocess.run(["git", "-C", str(cfg.root), "checkout", "-b", "feat/demo-P95"],
+                    check=True, capture_output=True)
+    (cfg.root / conflict_victim).write_text("branch version\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(cfg.root), "add", conflict_victim],
+                    check=True, capture_output=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(cfg.root),
+                    "commit", "-qm", "branch edit"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(cfg.root), "checkout", "main"], check=True, capture_output=True)
+    # main then diverges on the SAME file, guaranteeing a real textual conflict
+    (cfg.root / conflict_victim).write_text("main version\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(cfg.root), "add", conflict_victim],
+                    check=True, capture_output=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(cfg.root),
+                    "commit", "-qm", "main diverges"], check=True, capture_output=True)
+
+    tsf = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id=task_id, project="demo",
+        state=TaskState.CARVED, since=utc_now(), handoff_path=handoff_path,
+    )
+    storage.append_and_apply(
+        "demo", {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.TASK_CREATED, payload={"statefile": tsf.to_dict()}, task_id=task_id,
+    )
+    cur = storage.load_state("demo", task_id)
+    cur.state = TaskState.MERGE_READY
+    cur.attempts = [Attempt(
+        attempt_id="att-impl95", role=Role.IMPLEMENTER, state=AttemptState.EXITED,
+        route=Route(route_id="fake-cli", cli="fake", model="fake-model"),
+        started=utc_now(), branch="feat/demo-P95",
+    )]
+    storage.save_state(cur)
+
+    log_dir = tmp_state / "logs"
+    log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+
+    tsf2 = storage.load_state("demo", task_id)
+    assert tsf2.state is TaskState.MERGE_READY  # unresolved conflict left in place
+
+    records = _read_log_records(log_dir)
+    conflict = [r for r in records if r.get("msg") == "merge-conflict"]
+    assert len(conflict) == 1
+    assert conflict[0]["level"] == "error"
+    assert conflict[0]["project"] == "demo"
+    assert conflict[0]["task"] == task_id
+
+
+def test_launch_review_emits_info_review_launch(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """§5: review launch -> INFO."""
+    cfg = sample_project
+    paths.routes_path().write_text(
+        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+    )
+    for tid in ("rt1", "rt2"):
+        _seed_task("demo", tid, TaskState.AWAITING_REVIEW, handoff_path=None)
+        _make_feature_branch(cfg.root, tid, f"{tid}.py", f"# {tid}\n")
+
+    _scripted(monkeypatch, [[reconcile.OpenWave(task_ids=["rt1", "rt2"])]])
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")
+    wave_id = next(e for e in storage.iter_events("demo") if e.type is EventType.WAVE_OPENED).wave_id
+
+    log_dir = tmp_state / "logs"
+    log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+    _scripted(monkeypatch, [[reconcile.LaunchReview(wave_id=wave_id, task_ids=["rt1", "rt2"])]])
+    d.run_pass("demo")
+
+    records = _read_log_records(log_dir)
+    launched = [r for r in records if r.get("msg") == "review-launch"]
+    assert len(launched) == 1
+    assert launched[0]["level"] == "info"
+    assert launched[0]["project"] == "demo"
+    assert sorted(launched[0]["tasks"]) == ["rt1", "rt2"]
+    assert launched[0]["route"] == "fake-cli"
+    assert launched[0]["wave"] == wave_id
+
+
+def test_transition_emits_info_state_transition(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """§5: state transitions -> INFO (every transition funnels through the
+    one Daemon._transition helper)."""
+    task_id = "demo-P01-sample"
+    _seed_task("demo", task_id, TaskState.QUEUED, handoff_path="handoff/demo-P01-sample.md")
+
+    log_dir = tmp_state / "logs"
+    log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+    _scripted(monkeypatch, [[reconcile.Transition(task_id=task_id, to=TaskState.ACTIVE, notes=None)]])
+    d = daemon.Daemon({"demo": sample_project.root})
+    d.run_pass("demo")
+
+    records = _read_log_records(log_dir)
+    transitioned = [r for r in records if r.get("msg") == "state-transition"]
+    assert len(transitioned) == 1
+    assert transitioned[0]["level"] == "info"
+    assert transitioned[0]["project"] == "demo"
+    assert transitioned[0]["task"] == task_id
+    assert transitioned[0]["frm"] == "QUEUED"
+    assert transitioned[0]["to"] == "ACTIVE"
+
+
+def test_run_pass_emits_debug_pass_summary(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """§5: "per-pass counts ... -> DEBUG"."""
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])  # zero actions this pass
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+    log_dir = tmp_state / "logs"
+    log.configure(level=log.DEBUG, log_dir=log_dir, console=False)
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    n = d.run_pass("demo")
+    assert n == 0
+
+    records = _read_log_records(log_dir)
+    summary = [r for r in records if r.get("msg") == "pass-summary"]
+    assert len(summary) == 1
+    assert summary[0]["level"] == "debug"
+    assert summary[0]["project"] == "demo"
+    assert summary[0]["actions"] == 0
+    assert summary[0]["events"] == 0

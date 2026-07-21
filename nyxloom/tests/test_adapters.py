@@ -8,9 +8,19 @@ from pathlib import Path
 
 import pytest
 
-from nyxloom import adapters
+from nyxloom import adapters, log
 from nyxloom.config import RouteDef
 from nyxloom.types import Basis, Role
+
+
+def _read_log_records(log_dir: Path) -> list[dict]:
+    """P05a: local helper (never added to conftest.py -- see
+    tests/test_daemon.py's identical helper) reading back the rendered
+    JSONL records nyxloom.log writes."""
+    p = log_dir / "nyxloom.jsonl"
+    if not p.exists():
+        return []
+    return [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
 @pytest.fixture()
@@ -1315,3 +1325,110 @@ def test_implementer_prior_verdict_bounded_to_argv_max():
     assert len(prompt) <= 1500                       # never overflows the guard
     assert "REVIEWER FINDINGS" in prompt             # keeps the head of the review
     assert "truncated to fit" in prompt              # marked as truncated
+
+
+# ---------------------------------------------------------------------------
+# P05a (docs/plan-logging.md §5): adapters.py instrumentation -- a provider
+# call -> DEBUG; "a route probe failure/pause" is a named WARNING example.
+
+def test_probe_emits_debug_and_warning_on_failure(tmp_path):
+    log_dir = tmp_path / "logs"
+    log.configure(level=log.DEBUG, log_dir=log_dir, console=False)
+
+    route = RouteDef(route_id="probe-route", cli="fake", model="fake-model", probe=["false"])
+    ok, _detail = adapters.probe(route)
+    assert ok is False
+
+    records = _read_log_records(log_dir)
+    probed = [r for r in records if r.get("msg") == "probe"]
+    assert len(probed) == 1
+    assert probed[0]["level"] == "debug"
+    assert probed[0]["route"] == "probe-route"
+
+    failed = [r for r in records if r.get("msg") == "probe-failed"]
+    assert len(failed) == 1
+    assert failed[0]["level"] == "warning"
+    assert failed[0]["route"] == "probe-route"
+    assert "exit code" in failed[0]["detail"]
+
+
+def test_probe_success_emits_no_warning(tmp_path):
+    """The DEBUG probe call fires either way; the WARNING is failure-only."""
+    log_dir = tmp_path / "logs"
+    log.configure(level=log.DEBUG, log_dir=log_dir, console=False)
+
+    route = RouteDef(route_id="probe-route-ok", cli="fake", model="fake-model", probe=["true"])
+    ok, _detail = adapters.probe(route)
+    assert ok is True
+
+    records = _read_log_records(log_dir)
+    assert any(r.get("msg") == "probe" and r["level"] == "debug" for r in records)
+    assert not any(r.get("msg") == "probe-failed" for r in records)
+
+
+def test_capture_session_discover_emits_debug(tmp_path, monkeypatch, emit_script):
+    json_output = json.dumps([{"id": "sess-1", "dir": "/tmp/wt", "title": "Session 1"}])
+    emit_file = tmp_path / "emit.txt"
+    emit_file.write_text(json_output)
+    monkeypatch.setenv("EMIT_FILE", str(emit_file))
+
+    log_dir = tmp_path / "logs"
+    log.configure(level=log.DEBUG, log_dir=log_dir, console=False)
+
+    route = RouteDef(route_id="discover-route", cli="fake", model="fake-model",
+                      session_discover=[str(emit_script)])
+    result = adapters.capture_session(
+        route, attempt_dir=tmp_path / "attempt", worktree="/tmp/wt",
+        launched_at=datetime.now(tz=timezone.utc),
+    )
+    assert result == "sess-1"
+
+    records = _read_log_records(log_dir)
+    discovered = [r for r in records if r.get("msg") == "session-discover"]
+    assert len(discovered) == 1
+    assert discovered[0]["level"] == "debug"
+    assert discovered[0]["route"] == "discover-route"
+    assert discovered[0]["worktree"] == "/tmp/wt"
+
+
+def test_probe_file_not_found_emits_warning(tmp_path):
+    """§5: the FileNotFoundError branch (command-not-found) also emits the
+    WARNING probe-failed record."""
+    log_dir = tmp_path / "logs"
+    log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+    route = RouteDef(route_id="probe-route-missing", cli="fake", model="fake-model",
+                      probe=["/nonexistent/binary/xyz-does-not-exist"])
+    ok, detail = adapters.probe(route)
+    assert ok is False
+    assert "command not found" in detail
+
+    records = _read_log_records(log_dir)
+    failed = [r for r in records if r.get("msg") == "probe-failed"]
+    assert len(failed) == 1
+    assert failed[0]["level"] == "warning"
+    assert failed[0]["route"] == "probe-route-missing"
+    assert "command not found" in failed[0]["detail"]
+
+
+def test_probe_generic_exception_emits_warning(tmp_path):
+    """§5: the catch-all Exception branch also emits the WARNING
+    probe-failed record."""
+    import subprocess
+    from unittest.mock import patch
+
+    log_dir = tmp_path / "logs"
+    log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+    route = RouteDef(route_id="probe-route-boom", cli="fake", model="fake-model", probe=["true"])
+    with patch("subprocess.run", side_effect=RuntimeError("boom")):
+        ok, detail = adapters.probe(route)
+    assert ok is False
+    assert detail == "boom"
+
+    records = _read_log_records(log_dir)
+    failed = [r for r in records if r.get("msg") == "probe-failed"]
+    assert len(failed) == 1
+    assert failed[0]["level"] == "warning"
+    assert failed[0]["route"] == "probe-route-boom"
+    assert failed[0]["detail"] == "boom"

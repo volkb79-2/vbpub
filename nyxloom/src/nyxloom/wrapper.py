@@ -86,10 +86,13 @@ from typing import Any
 
 from . import adapters, leases, paths, storage
 from .config import RouteDef
+from .log import get_logger
 from .types import (
     Actor, ActorKind, AttemptState, EventType, Receipt, ReceiptResult,
     utc_now,
 )
+
+log = get_logger("wrapper")  # P05a (docs/plan-logging.md §5)
 
 SESSION_CAPTURE_DELAY = 5.0
 
@@ -207,6 +210,10 @@ def wrapper_main(spec_path: str) -> int:
                 Path(spec.receipt_path).write_text(
                     json.dumps(receipt.to_dict()), encoding="utf-8"
                 )
+                # P05a (§5): "attempt errored" is a named ERROR example --
+                # a lease-race loss fails this whole attempt (state FAILED).
+                log.error("lease-lost-race", project=spec.project, task=spec.task_id,
+                          attempt=spec.attempt_id, lease=lease_spec["name"])
                 # Append ATTEMPT_FAILED
                 state = storage.load_state(spec.project, spec.task_id)
                 attempt = state.attempt_by_id(spec.attempt_id)
@@ -278,6 +285,9 @@ def wrapper_main(spec_path: str) -> int:
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
                 )
+                # P05a (§5): subprocess spawn -> DEBUG.
+                log.debug("spawn", project=spec.project, task=spec.task_id,
+                          attempt=spec.attempt_id, pid=child.pid, cwd=spec.cwd)
 
                 # Write child.pid
                 Path(spec.attempt_dir, "child.pid").write_text(
@@ -319,6 +329,9 @@ def wrapper_main(spec_path: str) -> int:
             if not interrupted:
                 try:
                     route_def = RouteDef(**spec.route_def)
+                    # P05a (§5): a provider call -> DEBUG.
+                    log.debug("session-capture-attempt", project=spec.project, task=spec.task_id,
+                              attempt=spec.attempt_id, route=route_def.route_id)
                     session_handle = adapters.capture_session(
                         route_def,
                         attempt_dir=Path(spec.attempt_dir),
@@ -411,6 +424,27 @@ def wrapper_main(spec_path: str) -> int:
                 blocked_reason = None
                 event_type = EventType.ATTEMPT_EXITED
                 attempt_state = AttemptState.EXITED
+
+        # P05a (§5): a failure -> WARNING/ERROR; a clean exit -> DEBUG (the
+        # daemon's own ATTEMPT_EXITED/-INTERRUPTED events already carry this
+        # fact into the event log -- this is the wrapper's own diagnostic
+        # narrative, not a duplicate record of domain state). INTERRUPTED is
+        # a handled, operator/supervisor-triggered stop (degraded, not a
+        # crash) -> WARNING; a genuine process error -> ERROR (§5's "attempt
+        # errored"); LIMIT/BLOCKED are soft, handled outcomes -> WARNING.
+        if attempt_state is AttemptState.INTERRUPTED:
+            log.warning("attempt-exit", project=spec.project, task=spec.task_id,
+                        attempt=spec.attempt_id, result=result.value, exit_code=child_exit_code)
+        elif result is ReceiptResult.DONE:
+            log.debug("attempt-exit", project=spec.project, task=spec.task_id,
+                      attempt=spec.attempt_id, result=result.value, exit_code=child_exit_code)
+        elif result in (ReceiptResult.LIMIT, ReceiptResult.BLOCKED):
+            log.warning("attempt-exit", project=spec.project, task=spec.task_id,
+                        attempt=spec.attempt_id, result=result.value, exit_code=child_exit_code,
+                        blocked_reason=blocked_reason)
+        else:
+            log.error("attempt-exit", project=spec.project, task=spec.task_id,
+                      attempt=spec.attempt_id, result=result.value, exit_code=child_exit_code)
 
         # Step 8: Extract usage
         route_def = RouteDef(**spec.route_def)
