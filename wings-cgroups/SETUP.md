@@ -77,7 +77,7 @@ Weight" alike) are inert under `none`/`mq-deadline`; only BFQ enforces them.
 ```yaml
 services:
   wings:
-    image: wings-local:1.13.1-cgroup.8        # the patched image
+    image: wings-local:1.13.1-cgroup.9        # the patched image
     cgroup_parent: wings-mgmt.slice           # optional (T0a): cap the daemon itself
     volumes:
       # …existing mounts (docker.sock, /etc/pterodactyl, /var/lib/pterodactyl, …)…
@@ -186,6 +186,15 @@ docker:
     # How long the startup band may hold when the ready line never matches (a
     # broken egg, a game that changed its log format). "0" disables the timer.
     startup_grace: 15m
+    # When the startup band gives way to the steady band, walk memory.high down
+    # to its steady ceiling in steps of at most this size instead of dropping it
+    # in one shot -- so a world's cold tail is freed progressively rather than
+    # in a single squeeze. Only the ceiling is stepped, and only when the steady
+    # ceiling is below current usage; the floor and everything else apply at
+    # once. Empty or "0" = one-shot (the pre-ramp behaviour). 64M is a gentle
+    # default; the ramp self-paces (each step waits for reclaim to catch up), so
+    # this bounds per-step throttle, not the total time.
+    steady_ramp_step: 64M
     # Floor budget: Σ MemoryMin over all Wings-managed slices must stay ≤ this.
     # Set it = the wings.slice unit's MemoryMin. Empty = unlimited (not advised:
     # it also removes the overcommit log line).
@@ -241,7 +250,7 @@ docker compose logs --tail 30 wings   # config validation runs at boot and fails
 
 ## 4. Panel data (egg / server variables — all admin-only, optional)
 
-Add these 14 admin-only variables to your egg. A complete worked example in
+Add these 15 admin-only variables to your egg. A complete worked example in
 PTDL_v2 export format is `../game_stuff/soulmask/egg-soulmask-rcon-ksm-cgroups.json`
 (import it over an existing egg to update in place — servers keep their egg
 association); `t2-per-server-placement/egg-variable.snippet.json` carries just
@@ -256,6 +265,7 @@ the next container (re)creation — panel **Stop → Start**, not restart.
 | `WINGS_CG_IO_BFQ_WEIGHT` | per-server IO weight on BFQ's scale (1..1000) — what BFQ actually schedules on, and what `io.bfq.weight` reads back. **Prefer it on BFQ nodes.** Needs patch 0005. |
 | `WINGS_CG_IO_WEIGHT` | the same setting on systemd's scale (1..10000). **Compressed on BFQ nodes** — 1000 becomes `io.bfq.weight` 181. Keep for iocost/non-BFQ nodes. Mutually exclusive with `WINGS_CG_IO_BFQ_WEIGHT`: set both and neither is applied (logged). |
 | `WINGS_CG_STEADY_MATCH` | the console line that ends the startup phase and applies the steady band. `regex:` prefix for a regular expression, anything else is a literal substring. **Empty falls back to the egg's own `startup.done` matcher** — which for a world-streaming game routinely fires *before* loading finishes, so set this explicitly if the two differ. |
+| `WINGS_CG_PHASE_EVENTS` | optional, **informational only** — newline-separated `name=match` lines; the first console line matching each is recorded to the Panel activity log (`server:cgroups.phase`). Surfaces a game's long, opaque startup (steam update, world load). Drives no cgroup behaviour. |
 | `WINGS_CG_STARTUP_GRACE` | per-server override of `startup_grace`; the backstop for a trigger that never fires. Go duration (`15m`, `90s`); `0` disables the timer. Empty = the node default. |
 | `WINGS_CG_STARTUP_MEMORY_MIN` / `_LOW` / `_HIGH` / `_MAX` | the same four knobs, applied only while the server is starting and replaced by the steady values once it reports ready (or after `startup_grace`). Set `_HIGH` generously — a ceiling below the load-time peak breaches the floor and cannot be undone without a restart. Needs patch 0007. |
 | `WINGS_CGROUP_PARENT` | **leave empty** — override/opt-out only. A set value beats the derived slice (and must pass the allow-list); setting it *to the node default* opts the server out of a derived slice entirely. |

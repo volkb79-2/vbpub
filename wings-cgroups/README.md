@@ -66,7 +66,7 @@ canonical artifact — the clones under `build/` are disposable):
 | 0004 | `docker.per_server_slices` — in-Wings slice lifecycle: auto-derived `wings-<dashless-uuid>.slice`, transient units via systemd D-Bus, config defaults + admin-only `WINGS_CG_*` egg overrides, `memory_min` budget (clamp/refuse/distribute), delete/boot GC, fail-open. New pkg `internal/cgroups`. | T3b |
 | 0005 | `io_bfq_weight` / `WINGS_CG_IO_BFQ_WEIGHT` — state IO weights on BFQ's own 1..1000 scale instead of systemd's, which compresses ratios above the default by ~11×. Converted to the equivalent `IOWeight` property, so values stay systemd-owned and reload-safe. | T3b |
 | 0006 | Render slice property values in the units they were configured with — a `6G` floor logged as `6442450944` cannot be compared against the config or against cgroupfs without arithmetic. User-visible log format change. | — |
-| 0007 | Staged slice properties — a startup memory band applied before the container starts and replaced by the steady band when `WINGS_CG_STEADY_MATCH` matches a console line — defaulting to the egg's `startup.done` matcher, which for a world-streaming game usually fires too early — or after `startup_grace`. A ceiling sized for the steady state otherwise evicts the server through its own floor during world load, permanently. | T3b |
+| 0007 | Staged slice properties — a startup memory band (ceiling lifted during load) that gives way to the steady band when `WINGS_CG_STEADY_MATCH` matches a console line (default: the egg's `startup.done`) or `startup_grace` expires. The steady `memory.high` is reached by a self-pacing **ramp** (`steady_ramp_step`) so the cold tail is freed gradually, not in one squeeze. Optional `WINGS_CG_PHASE_EVENTS` records informational startup markers to the Panel activity log. A ceiling sized for the steady state otherwise evicts the server through its own floor during world load, permanently. | T3b |
 | 0008 | Report configuration keys discarded while parsing — a strict re-decode used purely as a diagnostic, so a misindented or duplicated key warns instead of vanishing. Independent of the cgroup work; useful to any Wings user. | — |
 
 The order is chosen so each planned upstream PR is a **contiguous range**:
@@ -84,7 +84,7 @@ Both targets carry the full series: `pterodactyl/wings` v1.13.1 (production) and
 patchstack/scripts/clone.sh                          # 1. clone upstreams
 patchstack/scripts/apply.sh pterodactyl              # 2. apply the stack
 patchstack/scripts/test.sh pterodactyl               # 3. build + vet + unit tests
-patchstack/scripts/build-image.sh pterodactyl cgroup.8   # 4. -> wings-local:1.13.1-cgroup.8
+patchstack/scripts/build-image.sh pterodactyl cgroup.9   # 4. -> wings-local:1.13.1-cgroup.9
 test/smoke-placement.sh                              # 5. placement vs the real daemon
 test/e2e-systemd/run-e2e.sh                          # 6. e2e: effective memory.min
 ```
@@ -107,7 +107,7 @@ Deploying the result: [`SETUP.md`](SETUP.md).
 - [x] Production rollout complete (2026-07-17): `cgroup.4`, per-server slices
       enabled, all six properties verified effective in cgroupfs. Worked
       runbook: `../scripts/gstammtisch-guide/WINGS-CGROUPS-ROLLOUT.md`.
-- [ ] `cgroup.8` (staged startup band, patch 0007) built and tested, **not yet
+- [ ] `cgroup.9` (staged startup band, patch 0007) built and tested, **not yet
       deployed** — supersedes `cgroup.5`, which applied the startup band on
       paths that never start a server — it needs `startup_defaults` in `config.yml` and the new
       `WINGS_CG_STARTUP_*` egg variables to do anything.

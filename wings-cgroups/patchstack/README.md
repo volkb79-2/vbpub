@@ -12,7 +12,7 @@ upstream PRs can cherry-pick, and rebases stay reviewable:
 | 0004 | `Manage per-server transient slices via systemd D-Bus` | T3b (`docker.per_server_slices`: auto-derived slices, defaults + `WINGS_CG_*` overrides, floor budget with clamp/refuse/distribute, GC; `internal/cgroups`) |
 | 0005 | `Let administrators state IO weights on BFQ's own scale` | T3b follow-up (`io_bfq_weight`/`WINGS_CG_IO_BFQ_WEIGHT`; inverts systemd's IOWeight→io.bfq.weight compression) |
 | 0006 | `Render slice property values in the units they were configured with` | log rendering only; split out because it changes user-visible output independently of any feature |
-| 0007 | `Stage per-server slice properties across server startup` | T3b follow-up (`startup_defaults`/`WINGS_CG_STARTUP_*`; exits on `WINGS_CG_STEADY_MATCH` seen in console output, or `WINGS_CG_STARTUP_GRACE`/`startup_grace`. Falls back to the egg's `startup.done` matcher via `OnStateChange` when no trigger is set) |
+| 0007 | `Stage per-server slice properties across server startup` | T3b follow-up (`startup_defaults`/`WINGS_CG_STARTUP_*`; exits on `WINGS_CG_STEADY_MATCH`/`startup.done`/`startup_grace`; steady `memory.high` reached by a self-pacing ramp `steady_ramp_step`; optional `WINGS_CG_PHASE_EVENTS` → Panel activity log) |
 | 0008 | `Report configuration keys discarded while parsing` | standalone diagnostic — strict re-decode warns about unknown/misindented/duplicate keys instead of dropping them silently. No dependency on 0001–0007, and its test fixtures use only upstream-native config keys so it cherry-picks onto stock Wings. |
 
 The unrelated commit sits **last** on purpose: it makes each planned upstream PR
@@ -31,7 +31,7 @@ for refs, go images, and the `FORK_REPO` placeholder.
 scripts/clone.sh
 scripts/apply.sh pterodactyl
 INTEGRATION=1 scripts/test.sh pterodactyl   # needs /var/run/docker.sock
-scripts/build-image.sh pterodactyl cgroup.8 # -> wings-local:1.13.1-cgroup.8
+scripts/build-image.sh pterodactyl cgroup.9 # -> wings-local:1.13.1-cgroup.9
 ```
 
 **New upstream release (the recurring ~1–2h/release chore)**
@@ -40,7 +40,7 @@ scripts/build-image.sh pterodactyl cgroup.8 # -> wings-local:1.13.1-cgroup.8
 scripts/rebase.sh pterodactyl v1.13.2       # rebases commits onto the new tag
 scripts/export-patches.sh pterodactyl       # refresh committed series
 INTEGRATION=1 scripts/test.sh pterodactyl
-scripts/build-image.sh pterodactyl cgroup.9   # bump the suffix per deployable change
+scripts/build-image.sh pterodactyl cgroup.10  # bump the suffix per deployable change
 # deploy per ../SETUP.md, then commit patches/ changes
 ```
 

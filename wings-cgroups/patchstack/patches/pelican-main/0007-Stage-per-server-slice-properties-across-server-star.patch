@@ -1,4 +1,4 @@
-From 3a613f8b00b526ffb1b3066e322352dc9573f24e Mon Sep 17 00:00:00 2001
+From 281033399a4fa773129afcdc68650075f110a13f Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Mon, 20 Jul 2026 11:55:08 +0000
 Subject: [PATCH 7/8] Stage per-server slice properties across server startup
@@ -50,24 +50,27 @@ with instead of raw byte counts:
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
- config/config_docker.go         |  84 +++++++++-
+ config/config_docker.go         | 111 +++++++++-
  environment/docker/container.go |   8 +-
- environment/docker/power.go     |  33 ++++
- internal/cgroups/cgroups.go     | 164 ++++++++++++++++++
- internal/cgroups/ensure.go      |  66 +++++++-
- internal/cgroups/phase_test.go  | 163 ++++++++++++++++++
+ environment/docker/power.go     |  33 +++
+ internal/cgroups/cgroups.go     | 205 +++++++++++++++++++
+ internal/cgroups/ensure.go      |  93 ++++++++-
+ internal/cgroups/phase_test.go  | 182 +++++++++++++++++
+ internal/cgroups/sysd.go        | 115 +++++++++++
+ internal/database/database.go   |   7 +
+ server/activity.go              |   1 +
  server/install.go               |   2 +-
- server/listeners.go             |  17 ++
- server/server.go                |  16 ++
- server/slice_phase.go           | 269 ++++++++++++++++++++++++++++++
- server/slice_phase_test.go      | 286 ++++++++++++++++++++++++++++++++
- 11 files changed, 1091 insertions(+), 17 deletions(-)
+ server/listeners.go             |  18 ++
+ server/server.go                |  18 ++
+ server/slice_phase.go           | 347 ++++++++++++++++++++++++++++++++
+ server/slice_phase_test.go      | 323 +++++++++++++++++++++++++++++
+ 14 files changed, 1446 insertions(+), 17 deletions(-)
  create mode 100644 internal/cgroups/phase_test.go
  create mode 100644 server/slice_phase.go
  create mode 100644 server/slice_phase_test.go
 
 diff --git a/config/config_docker.go b/config/config_docker.go
-index 4ba4369..d1ffaaa 100644
+index 4ba4369..a8311c8 100644
 --- a/config/config_docker.go
 +++ b/config/config_docker.go
 @@ -5,6 +5,7 @@ import (
@@ -95,7 +98,7 @@ index 4ba4369..d1ffaaa 100644
  // PerServerSlicesConfiguration configures automatic per-server slice
  // management (docker.per_server_slices). Requires CgroupParent to be set:
  // derived slices nest under it via systemd dash naming.
-@@ -193,6 +204,24 @@ type PerServerSlicesConfiguration struct {
+@@ -193,6 +204,32 @@ type PerServerSlicesConfiguration struct {
  	// check.
  	MemoryMinBudget string `default:"" json:"memory_min_budget" yaml:"memory_min_budget"`
  
@@ -117,15 +120,28 @@ index 4ba4369..d1ffaaa 100644
 +	// timer, leaving the ready line as the only transition.
 +	StartupGrace string `default:"15m" json:"startup_grace" yaml:"startup_grace"`
 +
++	// SteadyRampStep, when set, walks a server's memory.high down to its steady
++	// ceiling in steps of at most this size instead of dropping it in one shot
++	// when the startup band gives way to the steady band. Sizes take the usual
++	// suffixes ("64M"). Empty or "0" = one-shot (the pre-ramp behaviour). Only
++	// the ceiling is stepped, and only when the steady ceiling is below current
++	// usage; the floor and everything else apply immediately.
++	SteadyRampStep string `default:"" json:"steady_ramp_step" yaml:"steady_ramp_step"`
++
  	// BudgetPolicy decides what happens to a MemoryMin request exceeding the
  	// remaining budget. Every other property is applied unchanged in all
  	// three cases:
-@@ -393,9 +422,22 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
+@@ -393,9 +430,27 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
  	if _, errs := c.SliceDefaults().Props(); len(errs) > 0 {
  		return errors.Wrap(errs[0], "docker.per_server_slices.defaults")
  	}
 +	if _, errs := c.SliceStartupDefaults().Props(); len(errs) > 0 {
 +		return errors.Wrap(errs[0], "docker.per_server_slices.startup_defaults")
++	}
++	if raw := s.SteadyRampStep; raw != "" && raw != "0" {
++		if _, err := cgroups.ParseSize(raw); err != nil {
++			return errors.Wrap(err, "docker.per_server_slices.steady_ramp_step")
++		}
 +	}
 +	if raw := s.StartupGrace; raw != "" {
 +		d, err := time.ParseDuration(raw)
@@ -143,7 +159,7 @@ index 4ba4369..d1ffaaa 100644
  // SliceDefaults converts the configured per-server slice defaults into the
  // internal/cgroups representation.
  func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
-@@ -414,16 +456,46 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
+@@ -414,16 +469,60 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
  // SliceEnsureRequest assembles the cgroups.EnsureForServer request for a
  // server whose containers are about to be placed under slice (a value
  // previously returned as managed by ResolveServerCgroupParent).
@@ -162,7 +178,21 @@ index 4ba4369..d1ffaaa 100644
 +		StartupDefaults: c.SliceStartupDefaults(),
 +		Env:             env,
 +		Budget:          c.SliceBudget(slice),
++		RampStep:        c.sliceRampStep(),
+ 	}
+ }
+ 
++// sliceRampStep parses docker.per_server_slices.steady_ramp_step into bytes.
++// Invalid or empty yields 0 (one-shot); a bad value is validated at startup.
++func (c DockerConfiguration) sliceRampStep() uint64 {
++	raw := c.PerServerSlices.SteadyRampStep
++	if raw == "" || raw == "0" {
++		return 0
 +	}
++	if v, err := cgroups.ParseSize(raw); err == nil {
++		return v
++	}
++	return 0
 +}
 +
 +// SliceStartupDefaults converts the configured startup-phase memory band into
@@ -174,9 +204,9 @@ index 4ba4369..d1ffaaa 100644
 +		MemoryLow:  d.MemoryLow,
 +		MemoryHigh: d.MemoryHigh,
 +		MemoryMax:  d.MemoryMax,
- 	}
- }
- 
++	}
++}
++
 +// SliceStartupGrace returns how long the startup band may hold before the
 +// steady band is applied regardless of whether the server reported ready.
 +// Zero disables the timer.
@@ -271,7 +301,7 @@ index c56adea..a3a8afa 100644
  // listeners for the console. If a container does not exist, or needs to be
  // rebuilt that will happen in the call to OnBeforeStart().
 diff --git a/internal/cgroups/cgroups.go b/internal/cgroups/cgroups.go
-index 06ad73d..376631a 100644
+index 06ad73d..0085bc2 100644
 --- a/internal/cgroups/cgroups.go
 +++ b/internal/cgroups/cgroups.go
 @@ -20,6 +20,7 @@ import (
@@ -282,7 +312,7 @@ index 06ad73d..376631a 100644
  
  	"emperror.dev/errors"
  )
-@@ -40,6 +41,56 @@ const (
+@@ -40,6 +41,64 @@ const (
  	EnvIOBFQWeight = "WINGS_CG_IO_BFQ_WEIGHT"
  )
  
@@ -323,6 +353,14 @@ index 06ad73d..376631a 100644
 +	// server, because how long a world takes to load is a property of the game
 +	// and its save, not of the node.
 +	EnvStartupGrace = "WINGS_CG_STARTUP_GRACE"
++
++	// EnvPhaseEvents is an optional per-server list of console lines to record
++	// to the Panel activity log as they first appear, one "name=match" per
++	// line. name is a short slug; match is a substring, or a regular expression
++	// with a "regex:" prefix. It is purely informational — a way to surface a
++	// game's long, opaque startup ("steam update", "world load") to operators —
++	// and drives no cgroup behaviour. Empty = nothing recorded.
++	EnvPhaseEvents = "WINGS_CG_PHASE_EVENTS"
 +)
 +
 +// Phase selects which property band a slice should carry.
@@ -339,7 +377,7 @@ index 06ad73d..376631a 100644
  // BFQ weight bounds. BFQ keeps its own per-cgroup weight in io.bfq.weight on a
  // 1..1000 scale and does NOT read io.weight — that file belongs to the iocost
  // controller, which is inert unless io.cost.model/io.cost.qos are configured.
-@@ -124,6 +175,21 @@ func FormatSize(v uint64) string {
+@@ -124,6 +183,21 @@ func FormatSize(v uint64) string {
  	return strconv.FormatUint(v, 10)
  }
  
@@ -361,7 +399,7 @@ index 06ad73d..376631a 100644
  // String renders the requested properties for logs, naming each systemd
  // property (what Wings actually sets) and rendering memory sizes with the
  // binary suffix they were configured with, so a log line can be read against
-@@ -239,6 +305,104 @@ func FromEnv(env []string) (props Props, errs []error) {
+@@ -239,6 +313,137 @@ func FromEnv(env []string) (props Props, errs []error) {
  	return props, errs
  }
  
@@ -403,6 +441,39 @@ index 06ad73d..376631a 100644
 +// startup phase, or "" when the server does not define one.
 +func SteadyMatchFromEnv(env []string) string {
 +	return envValue(env, EnvSteadyMatch)
++}
++
++// PhaseEvent is one informational console->activity mapping from
++// WINGS_CG_PHASE_EVENTS: a short name and the raw match string (with any
++// "regex:" prefix intact, for the caller to compile).
++type PhaseEvent struct {
++	Name  string
++	Match string
++}
++
++// PhaseEventsFromEnv parses WINGS_CG_PHASE_EVENTS into its entries, one
++// "name=match" per line. Blank lines and entries without a name or match are
++// skipped. Compilation of the match is left to the caller.
++func PhaseEventsFromEnv(env []string) []PhaseEvent {
++	raw := envValue(env, EnvPhaseEvents)
++	if raw == "" {
++		return nil
++	}
++	var out []PhaseEvent
++	for _, line := range strings.Split(raw, "\n") {
++		line = strings.TrimSpace(line)
++		if line == "" {
++			continue
++		}
++		name, match, ok := strings.Cut(line, "=")
++		name = strings.TrimSpace(name)
++		match = strings.TrimSpace(match)
++		if !ok || name == "" || match == "" {
++			continue
++		}
++		out = append(out, PhaseEvent{Name: name, Match: match})
++	}
++	return out
 +}
 +
 +// StartupGraceFromEnv returns the per-server startup grace override. The bool
@@ -467,10 +538,10 @@ index 06ad73d..376631a 100644
  // and integers found in the Wings configuration. Zero values mean "no
  // default" for the respective property.
 diff --git a/internal/cgroups/ensure.go b/internal/cgroups/ensure.go
-index 003dccb..6680161 100644
+index 003dccb..7435878 100644
 --- a/internal/cgroups/ensure.go
 +++ b/internal/cgroups/ensure.go
-@@ -20,8 +20,14 @@ type EnsureRequest struct {
+@@ -20,40 +20,115 @@ type EnsureRequest struct {
  	// (as opposed to an explicit WINGS_CGROUP_PARENT override). Only derived
  	// slices receive the node-wide property defaults.
  	Derived bool
@@ -485,8 +556,12 @@ index 003dccb..6680161 100644
  	// Env is the resolved server environment, the source of the per-server
  	// WINGS_CG_* property overrides.
  	Env []string
-@@ -29,31 +35,73 @@ type EnsureRequest struct {
+ 	// Budget bounds the memory.min floor this request may claim.
  	Budget Budget
++	// RampStep, when > 0 and this is a steady application whose target
++	// memory.high is below current usage, walks memory.high down in steps of
++	// at most this many bytes instead of setting it in one shot. 0 = one-shot.
++	RampStep uint64
  }
  
 -// EnsureForServer ensures a server's slice unit exists and carries its
@@ -550,6 +625,29 @@ index 003dccb..6680161 100644
  	for _, err := range errs {
 -		l.WithField("slice", req.Slice).WithError(err).Warn("cgroups: ignoring invalid per-server slice property")
 +		l.WithError(err).Warn("cgroups: ignoring invalid per-server slice property")
++	}
++
++	// Steady transition with a configured ramp: apply every property except the
++	// ceiling under the normal timeout, then walk the ceiling down on its own
++	// (unbounded by ensureTimeout — a ramp can take tens of seconds). Skipped
++	// when nothing sets a ceiling.
++	if phase == PhaseSteady && req.RampStep > 0 && props.MemoryHigh != nil {
++		target := *props.MemoryHigh
++		base := props
++		base.MemoryHigh = nil
++		bctx, bcancel := context.WithTimeout(ctx, ensureTimeout)
++		res, err := Ensure(bctx, req.Slice, base, req.Budget)
++		bcancel()
++		if err != nil {
++			l.WithError(err).Warn("cgroups: could not ensure per-server slice; containers will run under it without managed resource properties")
++			return
++		}
++		l.WithField("properties", res.Applied.String()).WithField("memory_high_target", FormatSize(target)).
++			Info("cgroups: steady band applied; ramping memory.high down to the ceiling")
++		if err := RampHigh(ctx, req.Slice, target, req.RampStep, l); err != nil {
++			l.WithError(err).Warn("cgroups: memory.high ramp did not complete")
++		}
++		return
  	}
  
  	ctx, cancel := context.WithTimeout(ctx, ensureTimeout)
@@ -570,10 +668,10 @@ index 003dccb..6680161 100644
  		return
 diff --git a/internal/cgroups/phase_test.go b/internal/cgroups/phase_test.go
 new file mode 100644
-index 0000000..385d046
+index 0000000..ba6353d
 --- /dev/null
 +++ b/internal/cgroups/phase_test.go
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,182 @@
 +package cgroups
 +
 +import "testing"
@@ -737,6 +835,186 @@ index 0000000..385d046
 +		t.Error("startup band identical to steady must report not staged")
 +	}
 +}
++
++func TestPhaseEventsFromEnv(t *testing.T) {
++	env := []string{
++		"WINGS_CG_PHASE_EVENTS=steam-update-started=Checking for available updates\nsteam-update-done=regex:already up to date|fully installed\n\nworld-load-begin=LogLoad: LoadMap:\nbad-entry-no-match=\n=no-name",
++	}
++	got := PhaseEventsFromEnv(env)
++	if len(got) != 3 {
++		t.Fatalf("want 3 valid entries, got %d: %+v", len(got), got)
++	}
++	if got[0].Name != "steam-update-started" || got[0].Match != "Checking for available updates" {
++		t.Errorf("entry 0 = %+v", got[0])
++	}
++	if got[1].Match != "regex:already up to date|fully installed" {
++		t.Errorf("regex prefix must be preserved for the caller: %q", got[1].Match)
++	}
++	if PhaseEventsFromEnv([]string{"OTHER=x"}) != nil {
++		t.Error("no WINGS_CG_PHASE_EVENTS must yield nil")
++	}
++}
+diff --git a/internal/cgroups/sysd.go b/internal/cgroups/sysd.go
+index 79fd3ca..bfb1c21 100644
+--- a/internal/cgroups/sysd.go
++++ b/internal/cgroups/sysd.go
+@@ -6,7 +6,9 @@ import (
+ 	"strconv"
+ 	"strings"
+ 	"sync"
++	"time"
+ 
++	"github.com/apex/log"
+ 	sdbus "github.com/coreos/go-systemd/v22/dbus"
+ 	godbus "github.com/godbus/dbus/v5"
+ 
+@@ -294,6 +296,119 @@ func Ensure(ctx context.Context, name string, props Props, b Budget) (Result, er
+ 	return res, nil
+ }
+ 
++// rampStepTimeout bounds how long a single ramp step waits for reclaim to
++// catch up before proceeding anyway. The ramp must reach its target even if
++// the workload refuses to yield (imposing the ceiling is the whole point), so
++// a stuck step falls through rather than blocking.
++const rampStepTimeout = 2 * time.Second
++
++// rampMaxDuration is a hard ceiling on a whole ramp, a backstop against a
++// pathological loop; a normal ramp of a few-GiB cold tail finishes in well
++// under a minute.
++const rampMaxDuration = 10 * time.Minute
++
++// memoryCurrent reads the slice's current memory usage (the MemoryCurrent unit
++// property) over D-Bus. systemd enables accounting implicitly once any Memory*
++// property is set, so this is valid for every slice this package manages. ok
++// is false when systemd reports it unavailable (MaxUint64) — treat as "unknown".
++func (c *conn) memoryCurrent(ctx context.Context, name string) (uint64, bool, error) {
++	p, err := c.dbus.GetUnitPropertyContext(ctx, name, "MemoryCurrent")
++	if err != nil {
++		return 0, false, err
++	}
++	v, ok := p.Value.Value().(uint64)
++	if !ok || v == ^uint64(0) {
++		return 0, false, nil
++	}
++	return v, true, nil
++}
++
++func (c *conn) setMemoryHigh(ctx context.Context, name string, v uint64) error {
++	return c.dbus.SetUnitPropertiesContext(ctx, name, true,
++		sdbus.Property{Name: "MemoryHigh", Value: godbus.MakeVariant(v)})
++}
++
++// RampHigh lowers memory.high on a slice to target in steps of at most `step`
++// bytes, pausing between steps until memory.current falls to the new ceiling,
++// so the workload is never throttled by more than one step's worth of overage.
++// It first snaps the ceiling down to just above current usage — the span
++// between an unset/high ceiling and where memory actually sits is empty and
++// need not be walked.
++//
++// It runs on a single held D-Bus connection and stays entirely on the
++// systemd-owned channel (SetUnitProperties runtime=true), so the resting value
++// survives daemon-reload and no cgroupfs write is involved. step == 0 applies
++// the target in one shot (the pre-ramp behaviour).
++//
++// Best-effort: it returns the first error and never blocks past
++// rampMaxDuration; a workload that will not yield is throttled toward the
++// target gradually rather than in one slam.
++func RampHigh(ctx context.Context, name string, target, step uint64, l *log.Entry) error {
++	ctx, cancel := context.WithTimeout(ctx, rampMaxDuration)
++	defer cancel()
++
++	c, err := connect(ctx)
++	if err != nil {
++		return err
++	}
++	defer c.close()
++
++	if step == 0 {
++		return c.setMemoryHigh(ctx, name, target)
++	}
++
++	high := target
++	if cur, ok, err := c.memoryCurrent(ctx, name); err != nil {
++		return err
++	} else if ok && cur > target {
++		high = cur // snap to current; the empty span above it is free
++	}
++	if err := c.setMemoryHigh(ctx, name, high); err != nil {
++		return err
++	}
++	steps := 0
++	for high > target {
++		next := target
++		if high-target > step {
++			next = high - step
++		}
++		if err := c.setMemoryHigh(ctx, name, next); err != nil {
++			return err
++		}
++		high = next
++		steps++
++		if high == target {
++			break
++		}
++		c.waitMemoryAtOrBelow(ctx, name, high)
++	}
++	l.WithField("slice", name).WithField("memory_high", FormatSize(target)).WithField("steps", steps).
++		Info("cgroups: memory.high ramped to the steady ceiling")
++	return nil
++}
++
++// waitMemoryAtOrBelow polls memory.current until it is at most target, or
++// rampStepTimeout elapses, or ctx is done. Falling through on timeout is
++// deliberate — see RampHigh.
++func (c *conn) waitMemoryAtOrBelow(ctx context.Context, name string, target uint64) {
++	deadline := time.NewTimer(rampStepTimeout)
++	defer deadline.Stop()
++	tick := time.NewTicker(100 * time.Millisecond)
++	defer tick.Stop()
++	for {
++		if cur, ok, err := c.memoryCurrent(ctx, name); err != nil || (ok && cur <= target) {
++			return
++		}
++		select {
++		case <-ctx.Done():
++			return
++		case <-deadline.C:
++			return
++		case <-tick.C:
++		}
++	}
++}
++
+ // Stop stops (and thereby removes) a slice unit. Stopping a transient slice
+ // deletes it; stopping a unit-file-backed slice merely deactivates it until
+ // its next start, so callers should only pass slices Wings itself derived.
+diff --git a/internal/database/database.go b/internal/database/database.go
+index 5e76c4b..5fb2fc4 100644
+--- a/internal/database/database.go
++++ b/internal/database/database.go
+@@ -59,3 +59,10 @@ func Instance() *gorm.DB {
+ 	}
+ 	return db
+ }
++
++// Initialized reports whether the global instance is available. Code on paths
++// that may run before Initialize() — or in unit tests — checks this to avoid
++// the panic in Instance().
++func Initialized() bool {
++	return db != nil
++}
+diff --git a/server/activity.go b/server/activity.go
+index 271d022..dd826be 100644
+--- a/server/activity.go
++++ b/server/activity.go
+@@ -21,6 +21,7 @@ const (
+ 	ActivitySftpDelete          = models.Event("server:sftp.delete")
+ 	ActivityFileUploaded        = models.Event("server:file.uploaded")
+ 	ActivityServerCrashed       = models.Event("server:crashed")
++	ActivityCgroupPhase         = models.Event("server:cgroups.phase")
+ )
+ 
+ // RequestActivity is a wrapper around a LoggedEvent that is able to track additional request
 diff --git a/server/install.go b/server/install.go
 index 2064e3b..d709841 100644
 --- a/server/install.go
@@ -751,10 +1029,10 @@ index 2064e3b..d709841 100644
  	if cgroupParent != "" {
  		hostConf.CgroupParent = cgroupParent
 diff --git a/server/listeners.go b/server/listeners.go
-index bce8162..ccc85f8 100644
+index bce8162..29513b3 100644
 --- a/server/listeners.go
 +++ b/server/listeners.go
-@@ -236,6 +236,23 @@ func (s *Server) onConsoleOutput(data []byte) {
+@@ -236,6 +236,24 @@ func (s *Server) onConsoleOutput(data []byte) {
  	}
  
  
@@ -774,15 +1052,16 @@ index bce8162..ccc85f8 100644
 +	// what the startup band exists to avoid. No-op unless the server both
 +	// stages a startup band and defines a trigger.
 +	s.matchSliceSteady(sliceLine)
++	s.matchPhaseEvents(sliceLine)
 +
  	// If the command sent to the server is one that should stop the server we will need to
  	// set the server to be in a stopping state, otherwise crash detection will kick in and
  	// cause the server to unexpectedly restart on the user.
 diff --git a/server/server.go b/server/server.go
-index 2a6fcd6..ebb976a 100644
+index 2a6fcd6..9c5b17f 100644
 --- a/server/server.go
 +++ b/server/server.go
-@@ -68,6 +68,14 @@ type Server struct {
+@@ -68,6 +68,16 @@ type Server struct {
  	transferring *system.AtomicBool
  	restoring    *system.AtomicBool
  
@@ -793,11 +1072,13 @@ index 2a6fcd6..ebb976a 100644
 +	slicePhaseFired bool
 +	slicePhaseSlice string
 +	slicePhaseMatch *regexp.Regexp
++	sliceEvents     []sliceConsoleEvent
++	sliceEventsSet  bool
 +
  	// The console throttler instance used to control outputs.
  	throttler    *ConsoleThrottle
  	throttleOnce sync.Once
-@@ -114,6 +122,10 @@ func New(client remote.Client) (*Server, error) {
+@@ -114,6 +124,10 @@ func New(client remote.Client) (*Server, error) {
  // using the context on the server struct. This will cancel any running install
  // processes for the server as well.
  func (s *Server) CleanupForDestroy() {
@@ -808,7 +1089,7 @@ index 2a6fcd6..ebb976a 100644
  	s.CtxCancel()
  	s.Events().Destroy()
  	s.DestroyAllSinks()
-@@ -410,6 +422,10 @@ func (s *Server) OnStateChange() {
+@@ -410,6 +424,10 @@ func (s *Server) OnStateChange() {
  	if prevState != s.Environment.State() {
  		s.Log().WithField("status", st).Debug("saw server status change event")
  		s.Events().Publish(StatusEvent, st)
@@ -821,10 +1102,10 @@ index 2a6fcd6..ebb976a 100644
  	// Reset the resource usage to 0 when the process fully stops so that all the UI
 diff --git a/server/slice_phase.go b/server/slice_phase.go
 new file mode 100644
-index 0000000..bfbf559
+index 0000000..7d4f5c7
 --- /dev/null
 +++ b/server/slice_phase.go
-@@ -0,0 +1,269 @@
+@@ -0,0 +1,347 @@
 +package server
 +
 +import (
@@ -837,6 +1118,8 @@ index 0000000..bfbf559
 +	"github.com/apex/log"
 +
 +	"github.com/pelican-dev/wings/config"
++	"github.com/pelican-dev/wings/internal/database"
++	"github.com/pelican-dev/wings/internal/models"
 +	"github.com/pelican-dev/wings/environment"
 +	"github.com/pelican-dev/wings/internal/cgroups"
 +)
@@ -928,6 +1211,7 @@ index 0000000..bfbf559
 +		s.slicePhaseTimer = time.AfterFunc(grace, func() {
 +			s.Log().WithField("grace", grace.String()).
 +				Warn("cgroups: startup grace expired without the steady trigger firing; applying steady slice properties")
++			s.emitPhaseActivity("steady-reached", sliceReasonGrace)
 +			s.applySliceProps(cgroups.PhaseSteady, sliceReasonGrace)
 +		})
 +	}
@@ -999,6 +1283,7 @@ index 0000000..bfbf559
 +		"against": strconv.QuoteToASCII(string(line)),
 +	}).Info("cgroups: steady trigger matched; leaving the startup band")
 +	s.endSlicePhase()
++	s.emitPhaseActivity("steady-reached", sliceReasonMatch)
 +	go s.applySliceProps(cgroups.PhaseSteady, sliceReasonMatch)
 +}
 +
@@ -1064,11 +1349,81 @@ index 0000000..bfbf559
 +	cgroups.EnsureForServer(ctx, s.Log(), req, reason)
 +}
 +
++// sliceConsoleEvent is one compiled WINGS_CG_PHASE_EVENTS entry plus whether it
++// has already been recorded (fire-once).
++type sliceConsoleEvent struct {
++	name  string
++	re    *regexp.Regexp
++	fired bool
++}
++
++// emitPhaseActivity records a per-server slice phase to the Panel activity log.
++// Best-effort and non-blocking (SaveActivity dispatches its own goroutine);
++// the activity carries no user/IP because it is system-generated.
++func (s *Server) emitPhaseActivity(phase, detail string) {
++	s.Log().WithField("phase", phase).WithField("detail", detail).Info("cgroups: phase")
++	// The activity log needs the database; it is always initialised in a real
++	// Wings but not in unit tests, and SaveActivity dispatches its write on a
++	// goroutine where an unset handle would panic the daemon. Guard it.
++	if !database.Initialized() {
++		return
++	}
++	s.SaveActivity(s.NewRequestActivity("", ""), ActivityCgroupPhase, models.ActivityMeta{
++		"phase":  phase,
++		"detail": detail,
++	})
++}
++
++// beginPhaseEvents compiles this server's WINGS_CG_PHASE_EVENTS once per start.
++func (s *Server) beginPhaseEvents() {
++	env := s.GetEnvironmentVariables()
++	var evs []sliceConsoleEvent
++	for _, pe := range cgroups.PhaseEventsFromEnv(env) {
++		re, err := compileSliceMatch(pe.Match)
++		if err != nil || re == nil {
++			if err != nil {
++				s.Log().WithField("event", pe.Name).WithError(err).
++					Warn("cgroups: ignoring invalid " + cgroups.EnvPhaseEvents + " entry")
++			}
++			continue
++		}
++		evs = append(evs, sliceConsoleEvent{name: pe.Name, re: re})
++	}
++	s.slicePhaseMu.Lock()
++	s.sliceEvents = evs
++	s.sliceEventsSet = true
++	s.slicePhaseMu.Unlock()
++}
++
++// matchPhaseEvents records the first console line that matches each configured
++// informational phase event. Cheap and non-blocking; fed every console line.
++func (s *Server) matchPhaseEvents(line []byte) {
++	s.slicePhaseMu.Lock()
++	if !s.sliceEventsSet || len(s.sliceEvents) == 0 {
++		s.slicePhaseMu.Unlock()
++		return
++	}
++	var hit string
++	for i := range s.sliceEvents {
++		e := &s.sliceEvents[i]
++		if !e.fired && e.re.Match(line) {
++			e.fired = true
++			hit = e.name
++			break
++		}
++	}
++	s.slicePhaseMu.Unlock()
++	if hit != "" {
++		s.emitPhaseActivity(hit, strings.TrimSpace(string(line)))
++	}
++}
++
 +// onSliceStateChange drives the startup -> steady transition from the server's
 +// own state machine.
 +func (s *Server) onSliceStateChange(state string) {
 +	switch state {
 +	case environment.ProcessStartingState:
++		s.beginPhaseEvents()
 +		s.beginSlicePhase()
 +	case environment.ProcessRunningState:
 +		// The egg's "done" matcher fired. When the server defines its own
@@ -1086,20 +1441,24 @@ index 0000000..bfbf559
 +			return
 +		}
 +		// Dispatched: OnStateChange runs crash detection after this, and a
-+		// slice application is a D-Bus round trip bounded only by
-+		// cgroups.ensureTimeout. Slice management is best-effort decoration
-+		// and must never sit in the state machine's path.
++		// slice application is a D-Bus round trip (and possibly a ramp) that
++		// must never sit in the state machine's path.
++		s.emitPhaseActivity("steady-reached", sliceReasonReady)
 +		go s.applySliceProps(cgroups.PhaseSteady, sliceReasonReady)
 +	case environment.ProcessOfflineState:
 +		s.endSlicePhase()
++		s.slicePhaseMu.Lock()
++		s.sliceEvents = nil
++		s.sliceEventsSet = false
++		s.slicePhaseMu.Unlock()
 +	}
 +}
 diff --git a/server/slice_phase_test.go b/server/slice_phase_test.go
 new file mode 100644
-index 0000000..85171cd
+index 0000000..c04db15
 --- /dev/null
 +++ b/server/slice_phase_test.go
-@@ -0,0 +1,286 @@
+@@ -0,0 +1,323 @@
 +package server
 +
 +import (
@@ -1244,7 +1603,6 @@ index 0000000..85171cd
 +		t.Fatalf("New: %v", err)
 +	}
 +	s.cfg.Uuid = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
-+	// Pelican dereferences this unconditionally; New() does not populate it.
 +	s.cfg.Allocations.DefaultMapping = &environment.DefaultAllocationMapping{Ip: "127.0.0.1", Port: 0}
 +	s.beginSlicePhase()
 +	if s.slicePhaseTimer == nil {
@@ -1384,6 +1742,44 @@ index 0000000..85171cd
 +		if set != tt.set || d != tt.want {
 +			t.Errorf("grace %q = (%v, %v), want (%v, %v)", tt.raw, d, set, tt.want, tt.set)
 +		}
++	}
++}
++
++
++func TestPhaseEventsRecordOncePerLine(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	s := newSliceTestServer()
++	s.cfg.EnvVars = map[string]interface{}{
++		"WINGS_CG_PHASE_EVENTS": "load=regex:LogLoad: LoadMap:\nupdate=Checking for available updates",
++	}
++	s.beginPhaseEvents()
++
++	// A non-matching line records nothing; the matching line arms once.
++	s.matchPhaseEvents([]byte("noise"))
++	s.slicePhaseMu.Lock()
++	fired := 0
++	for _, e := range s.sliceEvents {
++		if e.fired {
++			fired++
++		}
++	}
++	s.slicePhaseMu.Unlock()
++	if fired != 0 {
++		t.Fatalf("nothing should have fired yet, %d did", fired)
++	}
++
++	s.matchPhaseEvents([]byte("[..] Checking for available updates..."))
++	s.matchPhaseEvents([]byte("[..] Checking for available updates...")) // repeat: no re-fire
++	s.matchPhaseEvents([]byte("LogLoad: LoadMap: /Game/X"))
++
++	s.slicePhaseMu.Lock()
++	defer s.slicePhaseMu.Unlock()
++	byName := map[string]bool{}
++	for _, e := range s.sliceEvents {
++		byName[e.name] = e.fired
++	}
++	if !byName["update"] || !byName["load"] {
++		t.Errorf("both events should have fired once: %+v", byName)
 +	}
 +}
 -- 
