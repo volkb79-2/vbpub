@@ -17,6 +17,17 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               {critical, error}. --rebuild prints diffs.
   status [--project X]        per task: id, state, since, attempt route,
                               cost, notes. Reads statefiles only.
+  resync <project>            PACKAGE RP01 2026-07-21 (docs/plan-state-
+                              integrity.md Part B): ground-truth
+                              re-baseline PROBE. Reads statefiles + trove
+                              handoff presence + git merge facts (branch
+                              --merged AND a content-check fallback for a
+                              squash/CAS/deleted-branch merge), plans via
+                              resync.resync_plan, prints a table (task,
+                              believed, ground-truth, proposed action,
+                              evidence). PURE READ-ONLY: no writes, no
+                              events, no `--apply` (that is RP02, not yet
+                              built).
   render                      render.render_all(registry); prints www path.
   daemon [--foreground]       Daemon(registry).run() (foreground only in
                               the pilot; systemd/tmux owns daemonization).
@@ -349,6 +360,46 @@ def cmd_status(args) -> int:
 
     if rows:
         print(_format_table(rows, ["task_id", "state", "since", "route", "cost", "notes"]))
+    return 0
+
+
+def cmd_resync(args) -> int:
+    """resync <project>
+
+    PACKAGE RP01 2026-07-21: ground-truth re-baseline PROBE (docs/plan-
+    state-integrity.md Part B.4). Gathers the three B.1 ground-truth
+    sources (statefile belief via storage.list_states, handoff presence
+    via resync.gather_handoff_presence, git merge facts via
+    resync.gather_git_facts), plans via the pure resync.resync_plan, and
+    prints the plan as a table. No writes, no events -- dry-run only.
+    """
+    from . import storage
+    from .resync import gather_git_facts, gather_handoff_presence, resync_plan
+
+    cfg = _cfg(args.project)
+    states = storage.list_states(args.project)
+    frontmatters = gather_handoff_presence(cfg.root, states)
+    git_facts = gather_git_facts(str(cfg.root), cfg.default_branch, states)
+    plan = resync_plan(states, frontmatters, git_facts)
+
+    rows = [
+        {
+            "task_id": p.task_id,
+            "believed": p.believed_state.value,
+            "ground_truth": p.ground_truth,
+            "proposed_action": p.proposed_action,
+            "evidence": p.evidence,
+        }
+        for p in plan
+    ]
+
+    if rows:
+        print(_format_table(
+            rows, ["task_id", "believed", "ground_truth", "proposed_action", "evidence"]
+        ))
+    else:
+        print("no tasks")
+
     return 0
 
 
@@ -873,6 +924,10 @@ def main(argv: list[str] | None = None) -> int:
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--project", help="Project ID (optional)")
 
+    # resync
+    resync_parser = subparsers.add_parser("resync")
+    resync_parser.add_argument("project", help="Project ID")
+
     # render
     render_parser = subparsers.add_parser("render")
 
@@ -993,6 +1048,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_doctor(args)
         elif args.cmd == "status":
             return cmd_status(args)
+        elif args.cmd == "resync":
+            return cmd_resync(args)
         elif args.cmd == "render":
             return cmd_render(args)
         elif args.cmd == "daemon":
