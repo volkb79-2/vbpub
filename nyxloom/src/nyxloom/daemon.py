@@ -3937,6 +3937,13 @@ class Daemon:
             handler.end_headers()
             return
 
+        if path == "/favicon.ico":
+            # Browsers auto-request this; the dashboard ships no icon. Answer 204
+            # (No Content) so it is not a recurring 404 in the access log.
+            handler.send_response(204)
+            handler.end_headers()
+            return
+
         if path in _CONFIG_POST_PATHS:
             self._send_json(handler, 405, b'{"error":"method not allowed"}')
             return

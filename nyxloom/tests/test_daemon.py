@@ -2847,6 +2847,13 @@ def test_http_endpoints(http_daemon):
     evs = json.loads(urllib.request.urlopen(f"{base}/api/events?project=demo&since=0", timeout=5).read())
     assert isinstance(evs, list)
 
+    conn = http.client.HTTPConnection("127.0.0.1", d.http_port, timeout=5)
+    conn.request("GET", "/favicon.ico")
+    fav = conn.getresponse()
+    fav.read()
+    assert fav.status == 204
+    conn.close()
+
     with pytest.raises(urllib.error.HTTPError) as exc2:
         urllib.request.urlopen(f"{base}/unknown/path", timeout=5)
     assert exc2.value.code == 404
