@@ -260,6 +260,48 @@ def test_enforce_standalone_root_noop_when_repo_root_unset(monkeypatch) -> None:
     enforce_standalone_root(_STANDALONE_ROOT / "app")  # no raise
 
 
+# --- Integration: the render/deploy ENTRYPOINT (deploy._run) enforces S1.2 ---
+#
+# CIU-11 lived in the render path (deploy._run), which checked the already-RESOLVED
+# repo_root instead of the invocation dir — so `ciu render` from repo A with a stale
+# REPO_ROOT=B silently rendered B's stacks. The unit tests above cover the helper; these
+# pin the WIRING: the entrypoint must catch the mismatch from cwd, and must NOT impose
+# any constraint from a root that did not opt in. `bootstrap_workspace_env` is stubbed so
+# the test needs no ciu.env / docker — the guard runs immediately after it in _run.
+
+
+class _ReachedConfigLoad(Exception):
+    """Sentinel: raised in place of load_global_config to prove _run got PAST the
+    S1.2 guard (i.e. the guard did not fire)."""
+
+
+def test_render_entrypoint_catches_standalone_mismatch(monkeypatch) -> None:
+    """Regression (CIU-11): invoked from inside the standalone root but with
+    REPO_ROOT pointing elsewhere, `ciu render`'s _run MUST abort with [S1.2]."""
+    monkeypatch.setattr(deploy, "bootstrap_workspace_env", lambda **kw: None)
+    monkeypatch.chdir(_STANDALONE_ROOT)                 # invocation dir = the standalone root
+    monkeypatch.setenv("REPO_ROOT", str(TEST_REPO))     # ...but REPO_ROOT is the OTHER root
+    args = deploy.parse_args(["--render-toml"])
+    with pytest.raises(WorkspaceEnvError, match=r"\[S1\.2\].*does not match"):
+        deploy._run(args, ["--render-toml"])
+
+
+def test_render_entrypoint_no_guard_for_non_standalone_root(monkeypatch) -> None:
+    """A root that does NOT set standalone_root imposes no REPO_ROOT constraint:
+    _run runs past the guard even with a mismatched REPO_ROOT."""
+    monkeypatch.setattr(deploy, "bootstrap_workspace_env", lambda **kw: None)
+    monkeypatch.setattr(
+        deploy, "load_global_config",
+        lambda repo_root: (_ for _ in ()).throw(_ReachedConfigLoad()),
+    )
+    monkeypatch.chdir(TEST_REPO)                         # TEST_REPO's marker has NO standalone_root
+    monkeypatch.setenv("REPO_ROOT", str(TEST_REPO / "elsewhere"))
+    args = deploy.parse_args(["--render-toml"])
+    # Reaching load_global_config proves the S1.2 guard did not fire.
+    with pytest.raises(_ReachedConfigLoad):
+        deploy._run(args, ["--render-toml"])
+
+
 def test_deploy_render_all_configs_respects_phases(monkeypatch) -> None:
     _set_env_defaults()
     _bootstrap(monkeypatch)
