@@ -118,8 +118,15 @@ def make_tarball(local_dir: str, *, excludes: Optional[list[str]] = None) -> str
     root = Path(local_dir).resolve()
 
     def _filter(ti: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
-        # ti.name is relative to arcname "." e.g. "./.git/config" or ".git/config"
-        rel = ti.name.lstrip("./")
+        # ti.name is relative to arcname "." e.g. "./.git/config" or ".git/config".
+        # Strip exactly the leading "./" prefix — NOT with str.lstrip("./"), which
+        # deletes *every* leading '.'/'/' char and would mangle dotpaths
+        # ("./.git" -> "git"), silently defeating the default ".git" exclude and
+        # shipping a different tree than rsync (SPEC S14.6a: "identical tree").
+        name = ti.name
+        if name in (".", "./"):
+            return ti
+        rel = name[2:] if name.startswith("./") else name
         if not rel:
             return ti
         first = rel.split("/", 1)[0]

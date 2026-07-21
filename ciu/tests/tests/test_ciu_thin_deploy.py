@@ -84,14 +84,50 @@ class TestMakeTarball:
         finally:
             Path(tb).unlink()
 
-    def test_excludes_drop_top_level_dir(self, tmp_path):
+    @staticmethod
+    def _rel_names(tb: str) -> set[str]:
+        # Strip ONLY the leading "./" arcname prefix (never str.lstrip, which
+        # would mangle dotpaths and hide an exclusion bug — see below).
+        out = set()
+        with tarfile.open(tb) as tar:
+            for n in tar.getnames():
+                out.add(n[2:] if n.startswith("./") else n)
+        return out
+
+    def test_excludes_drop_top_level_dotdir(self, tmp_path):
+        # Regression: a dot-prefixed exclude (the default ".git") must actually
+        # drop the dir. The old lstrip("./") turned "./.git" into "git" so the
+        # exclude never matched and .git shipped anyway (divergent from rsync).
         src = self._tree(tmp_path)
         tb = act.make_tarball(str(src), excludes=[".git"])
         try:
-            with tarfile.open(tb) as tar:
-                names = {n.lstrip("./") for n in tar.getnames()}
-            assert not any(n.startswith(".git") for n in names)
+            names = self._rel_names(tb)
+            assert ".git" not in names and ".git/config" not in names
+            assert not any(n == ".git" or n.startswith(".git/") for n in names)
             assert "app.py" in names
+        finally:
+            Path(tb).unlink()
+
+    def test_default_excludes_drop_git(self, tmp_path):
+        # push_bundle applies DEFAULT_BUNDLE_EXCLUDES ([".git"]); make_tarball
+        # must honour that same list so the scp/tar fallback matches rsync.
+        src = self._tree(tmp_path)
+        tb = act.make_tarball(str(src), excludes=act.DEFAULT_BUNDLE_EXCLUDES)
+        try:
+            names = self._rel_names(tb)
+            assert not any(n == ".git" or n.startswith(".git/") for n in names)
+        finally:
+            Path(tb).unlink()
+
+    def test_non_dot_exclude_still_drops_dir(self, tmp_path):
+        src = self._tree(tmp_path)
+        (src / "node_modules").mkdir()
+        (src / "node_modules" / "pkg").write_text("x")
+        tb = act.make_tarball(str(src), excludes=["node_modules"])
+        try:
+            names = self._rel_names(tb)
+            assert not any(n == "node_modules" or n.startswith("node_modules/") for n in names)
+            assert "app.py" in names and "sub/x.txt" in names
         finally:
             Path(tb).unlink()
 
