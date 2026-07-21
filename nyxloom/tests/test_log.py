@@ -227,3 +227,68 @@ def test_effective_level_introspection(tmp_path):
     assert lg.get_effective_level() == log.WARNING
     assert lg.is_enabled_for(log.ERROR) is True
     assert lg.is_enabled_for(log.INFO) is False
+
+
+# --------------------------------------------------------------------------
+# paths.py additions (§4.2)
+
+def test_path_helpers(tmp_path, monkeypatch):
+    from nyxloom import paths
+
+    monkeypatch.setenv("NYXLOOM_STATE", str(tmp_path))
+    assert paths.logs_dir() == tmp_path / "logs"
+    assert paths.nyxloom_log_path() == tmp_path / "logs" / "nyxloom.jsonl"
+    assert paths.daemon_log_level_path() == tmp_path / "daemon" / "log-level"
+
+    paths.ensure_layout()
+    assert paths.logs_dir().is_dir()
+
+
+# --------------------------------------------------------------------------
+# Edge cases needed for full diff-coverage of log.py's branches
+
+def test_get_logger_with_no_name_maps_to_the_nyxloom_logger_itself(tmp_path):
+    """`get_logger()`/`get_logger("nyxloom")` are the same edge case: the
+    factory backs them directly onto `logging.getLogger("nyxloom")` (no
+    `.child` suffix), and `_short_logger_name` renders that as `"nyxloom"`."""
+    log.configure(level=log.INFO, log_dir=tmp_path, console=False)
+    lg = log.get_logger()
+    lg.info("root-ish line")
+    records = _read_records(tmp_path / "nyxloom.jsonl")
+    assert any(r["msg"] == "root-ish line" and r["logger"] == "nyxloom" for r in records)
+
+
+def test_short_logger_name_processor_fallback_for_unrelated_name():
+    """Direct unit test of the processor's defensive else-branch: a `logger`
+    whose `.name` is neither "nyxloom" nor "nyxloom.<x>" (can't happen via
+    our own factory, but `_short_logger_name` also runs as `foreign_pre_chain`
+    for any plain stdlib call, so it must degrade safely for a name it
+    doesn't recognize rather than raising)."""
+
+    class _FakeLogger:
+        name = "totally-unrelated"
+
+    event_dict = log._short_logger_name(_FakeLogger(), "info", {})
+    assert event_dict["logger"] == "totally-unrelated"
+
+
+def test_trace_supports_percent_style_args(tmp_path):
+    log.configure(level=log.TRACE, log_dir=tmp_path, console=False)
+    lg = log.get_logger("tracer3")
+    lg.trace("value is %s", "42")
+    msgs = {r["msg"] for r in _read_records(tmp_path / "nyxloom.jsonl")}
+    assert "value is 42" in msgs
+
+
+def test_trace_returns_none_on_drop_event():
+    """Direct unit test of `trace()`'s DropEvent handling -- mirrors
+    structlog's own `_proxy_to_logger` (a processor is allowed to signal
+    "drop this record" mid-chain), exercised without needing to smuggle a
+    drop-triggering processor through the full configure() pipeline."""
+    cls = log._make_wrapper_class(log.TRACE)
+
+    class _FakeSelf:
+        def _process_event(self, method_name, event, kw):
+            raise structlog.DropEvent
+
+    assert cls.trace(_FakeSelf(), "dropped") is None
