@@ -900,6 +900,38 @@ def test_live_html_parsed_renderer(seed_data, sample_project):
     assert "evt-task-transitioned" in content
 
 
+def test_logs_html_wired_and_never_uses_innerhtml(seed_data, sample_project):
+    """P04 Oracle O7: render_all writes www/logs.html; the NAV carries its
+    link; the page wires a bare `/api/logs/stream` EventSource (mirrors
+    live.html's project-less URL -- level filtering of the live tail is
+    client-side, not baked into the connection URL), a level <select>, a
+    highlight mechanism that wraps matches in <mark> elements, a pause/
+    resume-tail toggle, and UTC-explicit timestamps (getUTC*) -- and NEVER
+    innerHTML anywhere on the page. Negative: missing page/link, wrong
+    stream URL, or innerHTML present would each fail one assertion below."""
+    registry = {"demo": sample_project.root}
+
+    www = render.render_all(registry)
+
+    assert (www / "logs.html").exists()
+
+    index_content = (www / "index.html").read_text(encoding="utf-8")
+    assert '<a href="logs.html">Logs</a>' in index_content  # NAV link present
+
+    content = (www / "logs.html").read_text(encoding="utf-8")
+    assert "new EventSource('/api/logs/stream')" in content
+    assert '<select id="level-select">' in content
+    # The highlight wraps matches in <mark> elements built dynamically -- assert
+    # the actual mechanism (createElement('mark')), not a literal "<mark>" tag,
+    # which never appears in the source and would only match an incidental
+    # comment (a hollow assertion that survives deleting the real code).
+    assert "createElement('mark')" in content
+    assert 'id="pause-toggle"' in content
+    assert "getUTC" in content
+    assert "textContent" in content
+    assert "innerHTML" not in content  # NEGATIVE: never innerHTML anywhere
+
+
 # ---------------------------------------------------------------------------
 # P22: dashboard state legend + attempt liveness + read-only drilldown
 

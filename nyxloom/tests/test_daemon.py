@@ -2631,6 +2631,18 @@ def _read_log_records(log_dir: Path) -> list[dict]:
     return [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
+def _write_raw_log_lines(records: list[dict]) -> None:
+    """P04 test helper: append raw JSONL lines directly to
+    paths.nyxloom_log_path(), bypassing structlog entirely -- gives the
+    /api/logs* endpoint oracles exact control over level/project/msg/order
+    without depending on the daemon's own live logging configuration."""
+    p = paths.nyxloom_log_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as fh:
+        for r in records:
+            fh.write(json.dumps(r) + "\n")
+
+
 def test_nonloopback_bind_prints_unauthenticated_notice(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     """2026-07-20: a non-loopback bind states the security assumption out loud
@@ -4383,3 +4395,305 @@ def test_run_pass_emits_debug_pass_summary(
     assert summary[0]["project"] == "demo"
     assert summary[0]["actions"] == 0
     assert summary[0]["events"] == 0
+
+
+# ==========================================================================
+# P04 2026-07-21 (docs/plan-logging.md §4.5): the /api/logs* read-only HTTP
+# surface + logs.html dashboard page. Oracles O1-O6 below cover the
+# endpoints; O7 (render.py) lives in tests/test_render.py.
+#
+# http_daemon (fixture above) boots a real Daemon.run() thread with
+# lint.lint_project/reconcile.plan_project stubbed to no-ops at the
+# DEFAULT effective level (INFO) -- the only thing it logs at INFO+ is the
+# one-time "daemon started" record, so the log file is quiescent after
+# startup and these tests can append their own controlled records via
+# _write_raw_log_lines without racing further daemon output.
+
+def test_logs_endpoint_level_filter(http_daemon):
+    """O1: GET /api/logs?level=warning returns only records level>=warning;
+    an info line is absent. Negative: info leaking, or a 500."""
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+    _write_raw_log_lines([
+        {"ts": "2026-07-21T10:00:00", "level": "info", "logger": "x", "msg": "o1-info-line"},
+        {"ts": "2026-07-21T10:00:01", "level": "warning", "logger": "x", "msg": "o1-warn-line"},
+        {"ts": "2026-07-21T10:00:02", "level": "error", "logger": "x", "msg": "o1-err-line"},
+    ])
+
+    data = json.loads(urllib.request.urlopen(f"{base}/api/logs?level=warning", timeout=5).read())
+    msgs = [r["msg"] for r in data]
+    assert "o1-warn-line" in msgs
+    assert "o1-err-line" in msgs
+    assert "o1-info-line" not in msgs  # NEGATIVE: info must not leak through the filter
+
+
+def test_logs_endpoint_paging_limit_and_since(http_daemon):
+    """O2: ?limit=2 returns the 2 newest; ?since=<seq> returns only
+    seq>since. Negative: limit ignored / since returns duplicates."""
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+    _write_raw_log_lines([
+        {"ts": "2026-07-21T10:00:00", "level": "info", "logger": "x", "msg": "o2-line-a"},
+        {"ts": "2026-07-21T10:00:01", "level": "info", "logger": "x", "msg": "o2-line-b"},
+        {"ts": "2026-07-21T10:00:02", "level": "info", "logger": "x", "msg": "o2-line-c"},
+    ])
+
+    limited = json.loads(urllib.request.urlopen(f"{base}/api/logs?limit=2", timeout=5).read())
+    limited_msgs = [r["msg"] for r in limited if r["msg"].startswith("o2-line-")]
+    assert limited_msgs == ["o2-line-b", "o2-line-c"]  # the 2 newest, newest-last
+
+    all_records = json.loads(urllib.request.urlopen(f"{base}/api/logs", timeout=5).read())
+    by_msg = {r["msg"]: r["seq"] for r in all_records if r["msg"].startswith("o2-line-")}
+    since_seq = by_msg["o2-line-a"]
+
+    paged = json.loads(urllib.request.urlopen(f"{base}/api/logs?since={since_seq}", timeout=5).read())
+    paged_msgs = [r["msg"] for r in paged if r["msg"].startswith("o2-line-")]
+    assert "o2-line-a" not in paged_msgs          # NEGATIVE: since must exclude its own seq
+    assert paged_msgs == ["o2-line-b", "o2-line-c"]  # no duplicates, strictly seq>since
+
+
+def test_logs_endpoint_empty_state_missing_file(http_daemon):
+    """O3: no nyxloom.jsonl -> 200 []. Negative: 404/500."""
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+    log_path = paths.nyxloom_log_path()
+    if log_path.exists():
+        log_path.unlink()
+    assert not log_path.exists()
+
+    resp = urllib.request.urlopen(f"{base}/api/logs", timeout=5)
+    assert resp.status == 200
+    assert json.loads(resp.read()) == []
+
+
+def test_logs_endpoint_search_query(http_daemon):
+    """O5: ?q=needle returns only records containing 'needle' (case-
+    insensitive); a non-match is absent; a regex-special q (e.g. '.*')
+    does not crash. Negative: q ignored / 500 on special chars."""
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+    _write_raw_log_lines([
+        {"ts": "2026-07-21T10:00:00", "level": "info", "logger": "x", "msg": "found the O5-NEEDLE here"},
+        {"ts": "2026-07-21T10:00:01", "level": "info", "logger": "x", "msg": "o5 nothing relevant"},
+    ])
+
+    data = json.loads(urllib.request.urlopen(f"{base}/api/logs?q=o5-needle", timeout=5).read())
+    msgs = [r["msg"] for r in data]
+    assert "found the O5-NEEDLE here" in msgs      # case-insensitive match
+    assert "o5 nothing relevant" not in msgs        # NEGATIVE: a non-match must not leak in
+
+    # NEGATIVE: a regex-special q must not crash the (plain-substring) search.
+    resp = urllib.request.urlopen(f"{base}/api/logs?q=.*", timeout=5)
+    assert resp.status == 200
+
+
+def test_logs_export_endpoint(http_daemon):
+    """O6: /api/logs/export?level=error -> 200, Content-Disposition:
+    attachment, body is JSONL of exactly the filtered set. Negative: wrong
+    content-type / no attachment header / body != filtered set."""
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+    _write_raw_log_lines([
+        {"ts": "2026-07-21T10:00:00", "level": "info", "logger": "x", "msg": "o6-info-line"},
+        {"ts": "2026-07-21T10:00:01", "level": "error", "logger": "x", "msg": "o6-error-line"},
+    ])
+
+    resp = urllib.request.urlopen(f"{base}/api/logs/export?level=error", timeout=5)
+    assert resp.status == 200
+    assert resp.headers.get("Content-Type") == "application/x-ndjson"
+    assert resp.headers.get("Content-Disposition") == 'attachment; filename="nyxloom-logs.jsonl"'
+
+    body = resp.read().decode("utf-8")
+    exported = [json.loads(ln) for ln in body.splitlines() if ln.strip()]
+
+    expected = json.loads(urllib.request.urlopen(f"{base}/api/logs?level=error", timeout=5).read())
+    assert exported == expected
+    assert any(r["msg"] == "o6-error-line" for r in exported)
+    assert not any(r["msg"] == "o6-info-line" for r in exported)  # NEGATIVE: wrong filter set
+
+
+def test_logs_stream_level_filter_and_heartbeat(tmp_state, sample_project, monkeypatch):
+    """O4: a line appended AFTER connect arrives as an SSE data: frame
+    within a poll interval; a below-level line does NOT arrive; a
+    heartbeat is emitted. Negative: no data frame / below-level leaks."""
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    monkeypatch.setattr(daemon, "SSE_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(daemon, "SSE_HEARTBEAT_SECONDS", 0.2)
+    _set_ephemeral_http_port(sample_project)
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    t = threading.Thread(target=d.run, daemon=True)
+    t.start()
+    deadline = time.monotonic() + 5
+    while d.http_port == 0 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert d.http_port != 0
+
+    received: dict = {"records": [], "heartbeats": 0}
+
+    def reader():
+        conn = http.client.HTTPConnection("127.0.0.1", d.http_port, timeout=10)
+        conn.request("GET", "/api/logs/stream?level=warning")
+        resp = conn.getresponse()
+        buf = b""
+        deadline2 = time.monotonic() + 10
+        while time.monotonic() < deadline2:
+            chunk = resp.read(1)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n\n" in buf:
+                line, buf = buf.split(b"\n\n", 1)
+                if line.startswith(b"data: "):
+                    payload = json.loads(line[len(b"data: "):])
+                    received["records"].append(payload)
+                elif line.startswith(b": hb"):
+                    received["heartbeats"] += 1
+            if received["records"] and received["heartbeats"]:
+                break
+        conn.close()
+
+    reader_thread = threading.Thread(target=reader, daemon=True)
+    reader_thread.start()
+    time.sleep(0.3)  # let the reader connect first -- the stream starts tailing at EOF
+
+    _write_raw_log_lines([
+        {"ts": "2026-07-21T10:00:00", "level": "info", "logger": "x", "msg": "o4-below-threshold"},
+        {"ts": "2026-07-21T10:00:01", "level": "warning", "logger": "x", "msg": "o4-at-threshold"},
+    ])
+
+    reader_thread.join(timeout=10)
+    d.stop()
+    t.join(timeout=5)
+
+    msgs = [r.get("msg") for r in received["records"]]
+    assert "o4-at-threshold" in msgs
+    assert "o4-below-threshold" not in msgs  # NEGATIVE: below-level must not stream
+    assert received["heartbeats"] >= 1
+
+
+# --------------------------------------------------------------------------
+# P04 coverage completion (controller re-gate 2026-07-21): the parked agent's
+# tests covered the happy paths but not the defensive branches the 100% diff-
+# coverage floor requires -- malformed query params, blank/malformed log
+# lines, project exclusion, log-stream rotation, and the disconnect path. The
+# stream branches are exercised through _log_stream_tick (the pure per-poll
+# helper) in the MAIN thread, deterministically, rather than racing the SSE
+# loop in the daemon thread (which is why those lines went uncovered).
+
+def test_read_log_records_skips_blank_and_malformed_and_excludes_project(
+        tmp_state, sample_project):
+    """The reader drops blank + malformed lines and honours project=.
+    Negative: a blank/garbage line 500s the read, or project= is ignored."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    p = paths.nyxloom_log_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        json.dumps({"ts": "2026-07-21T10:00:00", "level": "info",
+                    "logger": "x", "msg": "keep-demo", "project": "demo"}) + "\n"
+        + "\n"                                   # blank line -> skipped
+        + "this is not json\n"                   # malformed -> skipped
+        + json.dumps({"ts": "2026-07-21T10:00:01", "level": "info",
+                      "logger": "x", "msg": "keep-other", "project": "other"}) + "\n",
+        encoding="utf-8",
+    )
+
+    allrecs = d._read_log_records()
+    assert [r["msg"] for r in allrecs] == ["keep-demo", "keep-other"]  # blank+garbage skipped
+
+    demo_only = d._read_log_records(project="demo")
+    assert [r["msg"] for r in demo_only] == ["keep-demo"]  # project= excludes 'other'
+
+
+def test_log_stream_tick_filters_rotates_and_heartbeats(tmp_state, sample_project):
+    """_log_stream_tick: blank/malformed/below-level lines are dropped, above-
+    level lines become data: frames, a heartbeat frame appears once the
+    interval elapses, and an offset past a shrunken file resets to 0
+    (rotation). Negative: below-level leaks, rotation tails a rotated-away
+    file, or no heartbeat ever emits."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    p = paths.nyxloom_log_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        json.dumps({"ts": "2026-07-21T10:00:00", "level": "info",
+                    "logger": "x", "msg": "tick-below"}) + "\n"
+        + "\n"                                   # blank -> skipped
+        + "garbage-not-json\n"                   # malformed -> skipped
+        + json.dumps({"ts": "2026-07-21T10:00:01", "level": "error",
+                      "logger": "x", "msg": "tick-above"}) + "\n",
+        encoding="utf-8",
+    )
+    warn = log._normalize_level("warning")
+
+    # From offset 0 with the heartbeat interval elapsed (now huge, last=0):
+    chunks, new_offset, new_hb = d._log_stream_tick(1_000_000.0, p, 0, 0.0, warn)
+    text = b"".join(chunks).decode("utf-8")
+    assert "tick-above" in text                  # above-level streamed
+    assert "tick-below" not in text              # NEGATIVE: below-level dropped
+    assert b": hb\n\n" in chunks                 # heartbeat emitted
+    assert new_offset == p.stat().st_size        # advanced to EOF
+    assert new_hb == 1_000_000.0                 # heartbeat clock reset
+
+    # No new data + interval NOT elapsed -> empty (no spurious heartbeat).
+    none_chunks, _, _ = d._log_stream_tick(new_hb, p, new_offset, new_hb, warn)
+    assert none_chunks == []                     # NEGATIVE: no spurious heartbeat
+
+    # Rotation: an offset past a now-smaller file resets to 0 and re-reads.
+    rot_chunks, rot_offset, _ = d._log_stream_tick(1.0, p, 10_000_000, 0.0, warn)
+    assert rot_offset == p.stat().st_size        # reset to 0 then read to EOF
+    assert any(b"tick-above" in c for c in rot_chunks)  # re-read after rotation
+
+
+def test_log_stream_serve_returns_cleanly_on_client_disconnect(
+        tmp_state, sample_project, monkeypatch):
+    """_serve_log_stream swallows a mid-write client disconnect (wfile raises)
+    and returns rather than propagating. Deterministic + main-thread: the
+    heartbeat interval is forced to 0 so the first tick writes, and the fake
+    wfile raises BrokenPipeError. Negative: the exception escapes / hangs."""
+    monkeypatch.setattr(daemon, "SSE_HEARTBEAT_SECONDS", 0.0)
+    monkeypatch.setattr(daemon, "SSE_POLL_SECONDS", 0.0)
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    class _RaisingWFile:
+        def write(self, _b):
+            raise BrokenPipeError("client gone")
+
+        def flush(self):  # pragma: no cover - never reached (write raises first)
+            pass
+
+    class _FakeHandler:
+        def __init__(self):
+            self.wfile = _RaisingWFile()
+
+        def send_response(self, _code):
+            pass
+
+        def send_header(self, _k, _v):
+            pass
+
+        def end_headers(self):
+            pass
+
+    # Must return promptly: the write on the first heartbeat raises -> except.
+    d._serve_log_stream(_FakeHandler(), None)
+
+
+def test_logs_endpoint_malformed_params_default_gracefully(http_daemon):
+    """Malformed since=/limit= fall back to defaults rather than 500, on both
+    /api/logs and /api/logs/export (the except ValueError branches)."""
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+    _write_raw_log_lines([
+        {"ts": "2026-07-21T10:00:00", "level": "info", "logger": "x", "msg": "mp-line"},
+    ])
+
+    resp = urllib.request.urlopen(f"{base}/api/logs?since=notint&limit=alsobad", timeout=5)
+    assert resp.status == 200
+    assert any(r["msg"] == "mp-line" for r in json.loads(resp.read()))  # defaults, not a 500
+
+    exp = urllib.request.urlopen(
+        f"{base}/api/logs/export?since=notint&limit=alsobad", timeout=5)
+    assert exp.status == 200
+    assert exp.headers.get("Content-Disposition") == 'attachment; filename="nyxloom-logs.jsonl"'
+    assert "mp-line" in exp.read().decode("utf-8")

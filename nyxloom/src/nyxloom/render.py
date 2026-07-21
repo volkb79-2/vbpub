@@ -270,6 +270,20 @@ svg text {{ font-family: sans-serif; }}
 .component-tag {{ background: #263140; color: #9fb4cc; padding: 1px 6px;
                  border-radius: 3px; font-size: 11px; white-space: nowrap; }}
 #drilldown-transcript {{ background: #0e1114; padding: 10px; border: 1px solid #333a41; overflow-x: auto; color: #b8c4cc; white-space: pre-wrap; }}
+#logrows {{ font-family: monospace; font-size: 12px; background: #0e1114; border: 1px solid #333a41;
+           padding: 10px; height: 480px; overflow-y: auto; white-space: pre-wrap; }}
+.log-row {{ display: block; padding: 1px 0; cursor: pointer; }}
+.log-row.log-dim {{ opacity: 0.35; }}
+.log-trace {{ color: #7a8894; }}
+.log-debug {{ color: #9fb4cc; }}
+.log-info {{ color: #d6dde3; }}
+.log-warning {{ color: #ffcc00; }}
+.log-error {{ color: #ff6666; }}
+.log-critical {{ color: #ff2222; font-weight: bold; }}
+.log-raw {{ display: none; color: #7a8894; }}
+#logrows.show-raw .log-msg, #logrows.show-raw .log-meta {{ display: none; }}
+#logrows.show-raw .log-raw {{ display: inline; }}
+mark {{ background: #ffee66; color: #14171a; }}
 </style>
 """
 
@@ -281,6 +295,7 @@ NAV = """
   <a href="timeline.html">Timeline</a> |
   <a href="quality.html">Quality</a> |
   <a href="live.html">Live</a> |
+  <a href="logs.html">Logs</a> |
   <a href="config.html">Config</a> |
   <a href="decisions.html">Decisions</a> |
   <a href="intake.html">Intake</a>
@@ -584,6 +599,9 @@ def render_all(registry: dict[str, Path]) -> Path:
 
     # Render live.html
     _render_live(www)
+
+    # Render logs.html (P04 2026-07-21: log-stream dashboard page)
+    _render_logs(www)
 
     # Remove stale task pages
     _clean_stale_pages(www, all_states)
@@ -1954,6 +1972,235 @@ def _render_live(www: Path) -> None:
 
     html_content = _html_head("Live") + content + _html_foot()
     (www / "live.html").write_text(html_content, encoding="utf-8")
+
+
+def _render_logs(www: Path) -> None:
+    """Render logs.html: the P04 log-stream dashboard page (docs/plan-
+    logging.md §4.5 / D-L7). Live tail via SSE (/api/logs/stream, no query
+    params on the EventSource itself -- mirrors live.html's project-less
+    URL; level filtering of the live tail is client-side, same idiom as the
+    raw-JSON toggle), a history/paging fetch off /api/logs, a level
+    <select>, a client-side highlight input (substring or /regex/) that
+    wraps matches in <mark> elements built via document.createElement +
+    textContent (never innerHTML), a server-side search box (?q= on
+    /api/logs), an export link (/api/logs/export), a pause/resume-tail
+    toggle, the raw-JSON toggle idiom, click-a-row-for-context, colour-by-
+    level, and UTC timestamps rendered explicitly (getUTC* + a trailing
+    'Z')."""
+    log.debug("page render", page="logs")
+    content = """
+    <h2>Logs</h2>
+    <p>Live tail + history of the daemon's diagnostic log stream (docs/plan-logging.md).</p>
+    <p>
+      Level:
+      <select id="level-select">
+        <option value="trace">trace</option>
+        <option value="debug">debug</option>
+        <option value="info" selected>info</option>
+        <option value="warning">warning</option>
+        <option value="error">error</option>
+        <option value="critical">critical</option>
+      </select>
+      Highlight: <input type="text" id="highlight-input" placeholder="substring or /regex/">
+      Search: <input type="text" id="search-input" placeholder="server-side search (?q=)">
+      <button type="button" id="search-btn">Search</button>
+      <a id="export-link" href="/api/logs/export">Export</a>
+      <label><input type="checkbox" id="pause-toggle"> Pause tail</label>
+      <label><input type="checkbox" id="raw-toggle"> Show raw JSON</label>
+    </p>
+    <div id="logrows"></div>
+    <script>
+    var LEVEL_VALUE = {trace: 5, debug: 10, info: 20, warning: 30, error: 40, critical: 50};
+    var CONTEXT_LINES = 3;
+    var rowSeq = 0;
+    var paused = false;
+    var pending = [];
+    var currentSource = null;
+
+    function fmtTime(ts) {
+        // log.py's ts (D-L2) is "YYYY-MM-DDTHH:MM:SS" UTC with NO offset
+        // suffix -- append 'Z' before parsing or the browser reads it as
+        // local time. getUTC* below re-renders it back out explicitly UTC.
+        var d = new Date(ts + 'Z');
+        if (isNaN(d.getTime())) { return String(ts); }
+        function pad(n) { return (n < 10 ? '0' : '') + n; }
+        return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds()) + 'Z';
+    }
+
+    function highlightInto(el, text) {
+        // Wraps matches in <mark> elements -- built with document.createElement
+        // + textContent + appendChild only, never raw markup assignment.
+        var pattern = document.getElementById('highlight-input').value;
+        el.textContent = '';
+        if (!pattern) {
+            el.textContent = text;
+            return;
+        }
+        var re = null;
+        var slash = pattern.match(/^\\/(.*)\\/([a-z]*)$/);
+        try {
+            if (slash) {
+                var flags = slash[2].indexOf('g') >= 0 ? slash[2] : slash[2] + 'g';
+                re = new RegExp(slash[1], flags);
+            } else {
+                re = new RegExp(pattern.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'), 'gi');
+            }
+        } catch (e) {
+            el.textContent = text;
+            return;
+        }
+        var last = 0;
+        var match;
+        while ((match = re.exec(text)) !== null) {
+            if (match.index > last) {
+                el.appendChild(document.createTextNode(text.slice(last, match.index)));
+            }
+            var mark = document.createElement('mark');
+            mark.textContent = match[0];
+            el.appendChild(mark);
+            last = match.index + match[0].length;
+            if (match[0].length === 0) { re.lastIndex += 1; }
+        }
+        el.appendChild(document.createTextNode(text.slice(last)));
+    }
+
+    function buildRow(rec) {
+        var row = document.createElement('div');
+        var level = rec.level || 'info';
+        row.className = 'log-row log-' + level;
+        row.dataset.level = level;
+        row.dataset.idx = rowSeq;
+        rowSeq += 1;
+
+        var meta = document.createElement('span');
+        meta.className = 'log-meta';
+        meta.textContent = fmtTime(rec.ts) + ' [' + level + '] ' +
+            (rec.logger || '') + (rec.project ? ' (' + rec.project + ')' : '') + ': ';
+        row.appendChild(meta);
+
+        var msg = document.createElement('span');
+        msg.className = 'log-msg';
+        highlightInto(msg, rec.msg || '');
+        row.appendChild(msg);
+
+        var raw = document.createElement('span');
+        raw.className = 'log-raw';
+        raw.textContent = JSON.stringify(rec);
+        row.appendChild(raw);
+
+        row.addEventListener('click', function () { revealContext(row); });
+        applyLevelVisibility(row);
+        return row;
+    }
+
+    function applyLevelVisibility(row) {
+        var floor = LEVEL_VALUE[document.getElementById('level-select').value] || 0;
+        row.style.display = (LEVEL_VALUE[row.dataset.level] || 0) >= floor ? '' : 'none';
+    }
+
+    function appendRow(rec) {
+        var container = document.getElementById('logrows');
+        var pinned = (container.scrollTop + container.clientHeight) >= (container.scrollHeight - 4);
+        container.appendChild(buildRow(rec));
+        if (pinned) { container.scrollTop = container.scrollHeight; }
+    }
+
+    function revealContext(row) {
+        var container = document.getElementById('logrows');
+        var rows = Array.prototype.slice.call(container.children);
+        var idx = rows.indexOf(row);
+        rows.forEach(function (r, i) {
+            if (Math.abs(i - idx) <= CONTEXT_LINES) {
+                r.classList.remove('log-dim');
+            } else {
+                r.classList.add('log-dim');
+            }
+        });
+    }
+
+    function onRecord(rec) {
+        if (paused) {
+            pending.push(rec);
+            return;
+        }
+        appendRow(rec);
+    }
+
+    function clearRows() {
+        document.getElementById('logrows').textContent = '';
+        rowSeq = 0;
+    }
+
+    function loadHistory(extraParams) {
+        var url = '/api/logs?' + (extraParams || '');
+        fetch(url).then(function (r) { return r.json(); }).then(function (records) {
+            clearRows();
+            records.forEach(function (rec) { appendRow(rec); });
+        });
+    }
+
+    function updateExportLink() {
+        var q = document.getElementById('search-input').value;
+        document.getElementById('export-link').href =
+            '/api/logs/export' + (q ? ('?q=' + encodeURIComponent(q)) : '');
+    }
+
+    function runSearch() {
+        var q = document.getElementById('search-input').value;
+        updateExportLink();
+        loadHistory(q ? ('q=' + encodeURIComponent(q)) : '');
+    }
+
+    document.getElementById('search-btn').addEventListener('click', runSearch);
+    document.getElementById('search-input').addEventListener('change', updateExportLink);
+
+    document.getElementById('level-select').addEventListener('change', function () {
+        Array.prototype.forEach.call(
+            document.getElementById('logrows').children, applyLevelVisibility);
+    });
+
+    document.getElementById('pause-toggle').addEventListener('change', function () {
+        paused = this.checked;
+        if (!paused) {
+            pending.forEach(function (rec) { appendRow(rec); });
+            pending = [];
+        }
+    });
+
+    document.getElementById('raw-toggle').addEventListener('change', function () {
+        document.getElementById('logrows').classList.toggle('show-raw', this.checked);
+    });
+
+    if (window.location.protocol === 'file:') {
+        var note = document.createElement('p');
+        note.textContent = 'Note: This page must be served over HTTP to receive live log lines.';
+        document.getElementById('logrows').appendChild(note);
+    } else {
+        currentSource = new EventSource('/api/logs/stream');
+        currentSource.onmessage = function (event) {
+            var rec = null;
+            try {
+                rec = JSON.parse(event.data);
+            } catch (e) {
+                rec = null;
+            }
+            if (rec) { onRecord(rec); }
+        };
+        currentSource.onerror = function () {
+            var row = document.createElement('div');
+            row.className = 'log-row';
+            row.textContent = '[Connection closed]';
+            document.getElementById('logrows').appendChild(row);
+        };
+    }
+
+    updateExportLink();
+    loadHistory();
+    </script>
+    """
+
+    html_content = _html_head("Logs") + content + _html_foot()
+    (www / "logs.html").write_text(html_content, encoding="utf-8")
 
 
 # --- P22 2026-07-16: read-only agent drilldown (handoff item 3) ---------
