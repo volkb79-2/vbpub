@@ -12,15 +12,28 @@ Oracles from handoff/P20-transition-idempotency.md:
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
-from nyxloom import storage
+from nyxloom import log, storage
 from nyxloom.types import (
     Actor, ActorKind, Blocker, BlockerType, EventType, TaskState, TaskStateFile,
     TransitionError, utc_now,
 )
 
 ACTOR = Actor(kind=ActorKind.TICK, id="test")
+
+
+def _read_log_records(log_dir: Path) -> list[dict]:
+    """P05a: local helper (never added to conftest.py, per this suite's own
+    convention -- see test_daemon.py's identical helper) reading back the
+    rendered JSONL records nyxloom.log writes."""
+    p = log_dir / "nyxloom.jsonl"
+    if not p.exists():
+        return []
+    return [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
 def _blocker(reason: str) -> Blocker:
@@ -326,3 +339,89 @@ def test_illegal_fixed_target_transition_via_append_and_apply_appends_no_event(t
     assert after == before
     assert states[task_id].state is TaskState.COMPLETED
     assert storage.load_state(project, task_id).state is TaskState.COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# P05a (docs/plan-logging.md §5, §6 P05a): storage instrumentation.
+#
+# Oracle 4: an event append emits TRACE.
+# Oracle 5 (THE load-bearing oracle, §2 "replay is silent"): replaying an
+# existing event history emits NO live log records, while a FRESH live event
+# still logs -- by construction (append_event/save_state are never called
+# from replay()/apply_event(), only from the live append_and_apply path).
+
+def test_event_append_emits_trace(tmp_state, tmp_path):
+    """Oracle 4: an event append emits TRACE."""
+    log.configure(level=log.TRACE, log_dir=tmp_path, console=False)
+    project = "p05a-trace"
+    task_id = "t-trace"
+    _seed(project, task_id, TaskState.QUEUED)
+
+    records = _read_log_records(tmp_path)
+    appends = [r for r in records if r.get("msg") == "event-append"]
+    assert appends, "expected at least one TRACE event-append record"
+    assert all(r["level"] == "trace" for r in appends)
+    created = next(r for r in appends if r.get("event") == EventType.TASK_CREATED.value)
+    assert created["project"] == project
+    assert created["task"] == task_id
+    assert created["sequence"] == 1
+
+
+def test_statefile_read_write_emit_trace(tmp_state, tmp_path):
+    """§5: a state file read/write -> TRACE (save_state/load_state)."""
+    log.configure(level=log.TRACE, log_dir=tmp_path, console=False)
+    project = "p05a-statefile-trace"
+    task_id = "t-statefile-trace"
+    _seed(project, task_id, TaskState.QUEUED)  # exercises save_state via append_and_apply
+
+    storage.load_state(project, task_id)  # exercises load_state directly
+
+    records = _read_log_records(tmp_path)
+    writes = [r for r in records if r.get("msg") == "statefile-write"]
+    reads = [r for r in records if r.get("msg") == "statefile-read"]
+    assert writes and all(r["level"] == "trace" for r in writes)
+    assert reads and all(r["level"] == "trace" for r in reads)
+    assert writes[0]["project"] == project and writes[0]["task"] == task_id
+    assert reads[0]["project"] == project and reads[0]["task"] == task_id
+
+
+def test_replay_is_silent_but_live_append_logs(tmp_state, tmp_path):
+    """Oracle 5 (THE load-bearing oracle): replaying an existing event
+    history emits ZERO log records at DEBUG (the noisiest non-TRACE level a
+    live pass would normally use) -- proving apply_event/replay never
+    re-logs history on a daemon restart -- while a FRESH live event (the
+    exact same append_and_apply a genuine reconcile pass uses) DOES log.
+    Fails against any implementation that logs inside apply_event/replay
+    instead of only on the live append_event/save_state paths."""
+    project = "p05a-replay-silent"
+    task_id = "t-replay-silent"
+
+    # Build a real history WITHOUT logging configured yet (simulates the
+    # pre-restart history already sitting on disk from a prior daemon run).
+    _seed(project, task_id, TaskState.QUEUED)
+    storage.append_event(
+        project, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "QUEUED", "to": "ACTIVE", "notes": None}, task_id=task_id,
+    )
+
+    # NOW configure logging at DEBUG (INFO/DEBUG would both be visible here
+    # if replay logged anything) and replay the WHOLE history from scratch --
+    # exactly what Daemon.run()'s bootstrap does via config.load_registry ->
+    # storage.list_states, and what `nyxloom doctor`'s divergence check does.
+    log.configure(level=log.DEBUG, log_dir=tmp_path, console=False)
+    replayed = storage.replay(project)
+    assert replayed[task_id].state is TaskState.ACTIVE
+
+    records = _read_log_records(tmp_path)
+    assert records == [], "replay() must emit ZERO log records -- it must never re-log history"
+
+    # Contrapositive half of the oracle: a FRESH live event (append_and_apply,
+    # exactly what a genuine reconcile pass does) DOES log.
+    storage.append_and_apply(
+        project, dict(replayed), actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "ACTIVE", "to": "AWAITING_REVIEW", "notes": None}, task_id=task_id,
+    )
+    records2 = _read_log_records(tmp_path)
+    assert any(r.get("msg") == "event-append" for r in records2), (
+        "a FRESH live event append must log (contrast with replay's silence)"
+    )

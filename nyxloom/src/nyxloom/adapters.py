@@ -124,7 +124,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import RouteDef
+from .log import get_logger
 from .types import Basis, Role, Usage
+
+log = get_logger("adapters")  # P05a (docs/plan-logging.md §5)
 
 
 class AdapterError(Exception):
@@ -492,18 +495,25 @@ def probe(route: RouteDef) -> tuple[bool, str]:
     else:
         probe_argv = route.probe
 
+    # P05a (§5): a provider call -> DEBUG.
+    log.debug("probe", route=route.route_id, cli=route.cli)
     try:
         result = subprocess.run(probe_argv, capture_output=True, text=True,
                               timeout=60)
         if result.returncode == 0:
             return (True, "ok")
         else:
+            # P05a (§5): "a route probe failure/pause" is a named WARNING example.
+            log.warning("probe-failed", route=route.route_id, detail=f"exit code {result.returncode}")
             return (False, f"exit code {result.returncode}")
     except subprocess.TimeoutExpired:
+        log.warning("probe-failed", route=route.route_id, detail="timeout after 60s")
         return (False, "timeout after 60s")
     except FileNotFoundError:
+        log.warning("probe-failed", route=route.route_id, detail=f"command not found: {probe_argv[0]}")
         return (False, f"command not found: {probe_argv[0]}")
     except Exception as e:
+        log.warning("probe-failed", route=route.route_id, detail=str(e))
         return (False, str(e))
 
 
@@ -567,7 +577,8 @@ def capture_session(route: RouteDef, *, attempt_dir: Path, worktree: str,
         return None
 
     elif route.session_discover:
-        # Run session discovery command
+        # Run session discovery command. P05a (§5): a provider call -> DEBUG.
+        log.debug("session-discover", route=route.route_id, worktree=worktree)
         try:
             result = subprocess.run(route.session_discover, capture_output=True,
                                   text=True, timeout=30)

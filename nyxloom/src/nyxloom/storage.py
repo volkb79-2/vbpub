@@ -45,11 +45,23 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import paths
+from .log import get_logger
 from .types import (
     ActorKind, Actor, Attempt, AttemptState, Event, EventType, GateResult,
     Blocker, TERMINAL_ATTEMPT_STATES, TaskState, TaskStateFile,
     check_task_transition, iso, parse_iso, utc_now,
 )
+
+# P05a (docs/plan-logging.md §5, §2 "replay is silent"): TRACE-only, and
+# ONLY on the LIVE append/save paths below (append_event, save_state) --
+# NEVER inside apply_event/replay, which is the shared projection function
+# both the live path (via append_and_apply) AND a full replay() call. A
+# restart replays the whole event history through apply_event alone
+# (append_event/save_state are never called by replay()), so keeping every
+# log call out of apply_event/replay is what makes replay silent by
+# construction rather than by a level check that could be flipped on by
+# accident.
+log = get_logger("storage")
 
 SCHEMA_VERSION = 1
 
@@ -133,6 +145,11 @@ def append_event(
             f.write(json.dumps(ev.to_dict(), separators=(",", ":"), sort_keys=True) + "\n")
             f.flush()
             os.fsync(f.fileno())
+            # P05a (§6 P05a oracle 4): an event append emits TRACE. Only
+            # reachable on the LIVE append path -- replay() never calls
+            # append_event, so this can never fire during a replay.
+            log.trace("event-append", project=project, event=type.value,
+                      task=task_id, attempt=attempt_id, sequence=ev.sequence)
             return ev
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
@@ -166,6 +183,7 @@ def load_state(project: str, task_id: str) -> TaskStateFile | None:
     p = paths.statefile_path(project, task_id)
     if not p.exists():
         return None
+    log.trace("statefile-read", project=project, task=task_id)
     return TaskStateFile.from_dict(json.loads(p.read_text(encoding="utf-8")))
 
 
@@ -187,6 +205,7 @@ def save_state(state: TaskStateFile) -> None:
                 encoding="utf-8",
             )
             os.replace(tmp, p)
+            log.trace("statefile-write", project=state.project, task=state.task_id)
         finally:
             fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 

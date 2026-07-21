@@ -766,6 +766,11 @@ class Daemon:
                             pass
                     except Exception:
                         pass
+            # P05a (§5): "per-pass counts ... -> DEBUG" -- one summary line
+            # per reconcile pass (the reconcile-trace breadcrumbs above
+            # already cover the per-decision "guard evals" half of this
+            # rubric bullet).
+            log.debug("pass-summary", project=project, actions=len(actions), events=len(appended))
             if appended:
                 render.render_after_event(self.registry)
             return len(actions)
@@ -1626,6 +1631,11 @@ class Daemon:
     def _transition(self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
                      task_id: str, to: TaskState, notes: str | None) -> Event:
         frm = states[task_id].state
+        # P05a (§5): every state transition funnels through this ONE helper,
+        # so one INFO call here covers the whole daemon's "state transitions
+        # -> INFO" instrumentation requirement without touching every call
+        # site individually.
+        log.info("state-transition", project=project, task=task_id, frm=frm.value, to=to.value)
         return self._append_ev(project, cfg, states, EventType.TASK_TRANSITIONED,
                                 {"from": frm.value, "to": to.value, "notes": notes}, task_id=task_id)
 
@@ -1810,6 +1820,10 @@ class Daemon:
                 unblock_condition="operator: inspect post-merge gate failure",
                 detail=f"post-merge gate {gate.gate_id} exit_code={exit_code}"[:200],
             )
+            # P05a (§5, §6 P05a oracle 2): "a gate failure" is one of the
+            # named ERROR examples in the rubric.
+            log.error("gate-failed", project=project, task=task_id,
+                      gate=gate.gate_id, exit_code=exit_code)
             events.append(self._append_ev(
                 project, cfg, states, EventType.TASK_BLOCKED,
                 {"from": states[task_id].state.value, "blocker": blocker.to_dict()},
@@ -1929,6 +1943,9 @@ class Daemon:
                             capture_output=True, text=True)
             subprocess.run(["git", "-C", repo_root, "worktree", "remove", "--force", str(scratch)],
                             capture_output=True, text=True)
+            # P05a (§5): "merge conflict escalated" is one of the named ERROR
+            # examples in the rubric -- a genuine conflict that needs a human.
+            log.error("merge-conflict", project=project, task=task_id, branch=branch)
             events.append(self._append_ev(
                 project, cfg, states, EventType.NEEDS_OPERATOR,
                 {"detail": f"auto-merge: real conflict merging {task_id} -- operator must resolve by hand",
@@ -1971,6 +1988,10 @@ class Daemon:
         # (see _run_post_merge_gate).
 
         events.append(self._transition(project, cfg, states, task_id, TaskState.MERGED, None))
+        # P05a (§5): a distinct "merge" INFO line (merge_commit/branch),
+        # alongside (not instead of) the generic state-transition INFO
+        # _transition() already emits above.
+        log.info("merge", project=project, task=task_id, merge_commit=new_commit, branch=branch)
         events.append(self._append_ev(
             project, cfg, states, EventType.MERGE_RECORDED,
             {"merge_commit": new_commit,
@@ -3114,6 +3135,14 @@ class Daemon:
             routes_obj = config.Routes.load()
             route_def = routes_obj.routes[action.route_id]
             attempt_id = new_id("att")
+            # P05a (docs/plan-logging.md §5, §6 P05a oracle 1): a dispatch
+            # emits INFO carrying project+task+route -- `project` comes from
+            # this call's own arg (no pass-level bind exists yet, see
+            # run_pass), `task`/`attempt` bound for the duration of this one
+            # log call per the module contract's "bind task/attempt context
+            # around attempt execution."
+            with bind(task=task_id, attempt=attempt_id):
+                log.info("dispatch", project=project, route=route_def.route_id)
             route_snap = Route(route_id=route_def.route_id, cli=route_def.cli, model=route_def.model,
                                 variant=route_def.variant, effort=route_def.effort,
                                 routes_rev=routes_obj.revision)
@@ -3163,6 +3192,10 @@ class Daemon:
             resume_n = self._next_resume_n(attempt_dir)
             routes_obj = config.Routes.load()
             route_def = routes_obj.routes[attempt.route.route_id]
+            # P05a (§5): an attempt retry (resuming an INTERRUPTED/STALLED
+            # attempt) is degraded-but-continuing -> WARNING, not INFO.
+            with bind(task=task_id, attempt=action.attempt_id):
+                log.warning("attempt-retry", project=project, route=route_def.route_id, resume_n=resume_n)
             worktree = attempt.worktree or str(cfg.root)
             prompt = f"Resume {task_id} attempt {action.attempt_id} in {worktree}"
             argv = adapters.build_resume(route_def, session=attempt.session_handle,
@@ -3666,6 +3699,11 @@ class Daemon:
             routes_obj = config.Routes.load()
             review_routes = routes_obj.for_tier("frontier-review")
             route_def = review_routes[0]
+            # P05a (§5): review launch -> INFO. Carries every wave member
+            # (not a single `task`, since one review attempt can cover a
+            # whole wave -- see A9 above) plus the route and wave id.
+            log.info("review-launch", project=project, tasks=list(action.task_ids),
+                     route=route_def.route_id, wave=wave_id)
             route_snap = Route(route_id=route_def.route_id, cli=route_def.cli, model=route_def.model,
                                 variant=route_def.variant, effort=route_def.effort,
                                 routes_rev=routes_obj.revision)

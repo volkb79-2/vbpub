@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nyxloom import storage
+from nyxloom import log, storage
 from nyxloom.config import RouteDef
 from nyxloom.types import (
     Actor, ActorKind, Attempt, AttemptState, EventType, Receipt,
@@ -21,6 +21,16 @@ from nyxloom.types import (
     utc_now,
 )
 from nyxloom.wrapper import WrapperSpec, launch_detached, wrapper_main, SESSION_CAPTURE_DELAY
+
+
+def _read_log_records(log_dir: Path) -> list[dict]:
+    """P05a: local helper (never added to conftest.py -- see
+    tests/test_daemon.py's identical helper) reading back the rendered
+    JSONL records nyxloom.log writes."""
+    p = log_dir / "nyxloom.jsonl"
+    if not p.exists():
+        return []
+    return [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
 def seed(project="demo", task="demo-P01-sample", att="att-1"):
@@ -916,3 +926,104 @@ class TestKillDrill:
                         os.killpg(pid, signal.SIGKILL)
                     except (OSError, ProcessLookupError):
                         pass
+
+
+class TestP05aLogging:
+    """P05a (docs/plan-logging.md §5): wrapper.py instrumentation --
+    subprocess spawn / provider calls -> DEBUG; failures -> WARNING/ERROR."""
+
+    def test_happy_path_emits_debug_spawn_session_capture_and_done_attempt_exit(
+            self, tmp_state, tmp_path, fake_cli, mock_adapters):
+        project = "demo"
+        task_id = "demo-P01-sample"
+        attempt_id = "att-1"
+        seed(project, task_id, attempt_id)
+
+        script = fake_cli(["line 1"], exit_code=0)
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir(parents=True)
+        log_path = attempt_dir / "wrapper.log"
+        receipt_path = attempt_dir / "receipt.json"
+
+        spec = WrapperSpec(
+            project=project, task_id=task_id, attempt_id=attempt_id,
+            argv=[str(script)], cwd=str(tmp_path), log_path=str(log_path),
+            receipt_path=str(receipt_path), attempt_dir=str(attempt_dir),
+            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+        )
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+        log_dir = tmp_path / "logs"
+        log.configure(level=log.DEBUG, log_dir=log_dir, console=False)
+
+        with patch("nyxloom.wrapper.SESSION_CAPTURE_DELAY", 0.05):
+            exit_code = wrapper_main(str(spec_path))
+        assert exit_code == 0
+
+        records = _read_log_records(log_dir)
+
+        spawn = [r for r in records if r.get("msg") == "spawn"]
+        assert len(spawn) == 1
+        assert spawn[0]["level"] == "debug"
+        assert spawn[0]["project"] == project
+        assert spawn[0]["task"] == task_id
+        assert spawn[0]["attempt"] == attempt_id
+        assert isinstance(spawn[0]["pid"], int)
+
+        captured = [r for r in records if r.get("msg") == "session-capture-attempt"]
+        assert len(captured) == 1
+        assert captured[0]["level"] == "debug"
+        assert captured[0]["route"] == "fake-cli"
+
+        exits = [r for r in records if r.get("msg") == "attempt-exit"]
+        assert len(exits) == 1
+        assert exits[0]["level"] == "debug"
+        assert exits[0]["result"] == "done"
+        assert exits[0]["exit_code"] == 0
+
+    def test_lease_race_emits_error_lease_lost_race(
+            self, tmp_state, tmp_path, fake_cli, mock_adapters):
+        from nyxloom import leases as leases_module
+
+        project = "demo"
+        task_id = "demo-P01-sample"
+        attempt_id = "att-1"
+        seed(project, task_id, attempt_id)
+
+        pre_lease = leases_module.acquire(
+            "demo.stack", owner="pretest", purpose="test", capacity=1)
+        assert pre_lease is not None
+        try:
+            script = fake_cli(["output"], exit_code=0)
+            attempt_dir = tmp_path / "attempt"
+            attempt_dir.mkdir(parents=True)
+            log_path = attempt_dir / "wrapper.log"
+            receipt_path = attempt_dir / "receipt.json"
+
+            spec = WrapperSpec(
+                project=project, task_id=task_id, attempt_id=attempt_id,
+                argv=[str(script)], cwd=str(tmp_path), log_path=str(log_path),
+                receipt_path=str(receipt_path), attempt_dir=str(attempt_dir),
+                route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+                leases=[{"name": "demo.stack", "capacity": 1}],
+            )
+            spec_path = attempt_dir / "spec.json"
+            spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+            log_dir = tmp_path / "logs"
+            log.configure(level=log.INFO, log_dir=log_dir, console=False)
+
+            exit_code = wrapper_main(str(spec_path))
+            assert exit_code == 75
+
+            records = _read_log_records(log_dir)
+            errs = [r for r in records if r.get("msg") == "lease-lost-race"]
+            assert len(errs) == 1
+            assert errs[0]["level"] == "error"
+            assert errs[0]["project"] == project
+            assert errs[0]["task"] == task_id
+            assert errs[0]["attempt"] == attempt_id
+            assert errs[0]["lease"] == "demo.stack"
+        finally:
+            pre_lease.release()
