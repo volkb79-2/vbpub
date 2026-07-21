@@ -132,12 +132,19 @@ def lint_graph(
             if dep not in color:
                 continue  # dep not in our known stacks - skip
             if color[dep] == GRAY:
-                # Found a cycle
+                # A GRAY dep is a back-edge to a node on the CURRENT recursion
+                # path — a cycle. This invariant only holds because every return
+                # below marks the node BLACK; without that, a node left GRAY by
+                # an earlier aborted (cycle-returning) DFS tree would be misread
+                # here as a back-edge and `path.index(dep)` would raise
+                # "x not in list" for a dep that is not on this path.
                 cycle_start = path.index(dep)
+                color[node] = BLACK
                 return path[cycle_start:] + [dep]
             if color[dep] == WHITE:
                 result = dfs(dep, path)
                 if result is not None:
+                    color[node] = BLACK
                     return result
         color[node] = BLACK
         return None

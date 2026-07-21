@@ -227,6 +227,41 @@ def test_lint_graph_three_node_cycle():
     assert len(cycle_errors) >= 1
 
 
+def test_lint_graph_cycle_with_inbound_edge_does_not_crash():
+    # Regression: a cycle (A<->B) PLUS a third stack C with an edge INTO the
+    # cycle. The DFS used to leave A/B GRAY after early-returning the A<->B
+    # cycle; C's later DFS then hit the stale-GRAY A and called
+    # path.index(A) with A not on C's path -> ValueError. Must instead report
+    # the cycle cleanly and never raise.
+    stacks = {
+        "A": {"requires": ["stack:B:healthy"], "provides": ["stack:A:healthy"]},
+        "B": {"requires": ["stack:A:healthy"], "provides": ["stack:B:healthy"]},
+        "C": {"requires": ["stack:A:healthy"], "provides": ["stack:C:healthy"]},
+    }
+    errors = lint_graph(stacks)  # must not raise
+    cycle_errors = [e for e in errors if "cycle" in e.lower()]
+    assert len(cycle_errors) >= 1
+    # C requires stack:A which IS provided, so no missing-provider error for C
+    assert not any("nobody provides" in e and "'C'" in e for e in errors)
+
+
+def test_lint_graph_two_disjoint_cycles_via_shared_root_no_crash():
+    # A branches to two independent cycles (B<->D and C<->E). Regardless of the
+    # (set-ordered) branch the DFS explores first, the other branch's nodes must
+    # not be left stale-GRAY in a way that crashes a later DFS. At least one
+    # cycle is always reported; the graph is correctly flagged cyclic.
+    stacks = {
+        "A": {"requires": ["stack:B:healthy", "stack:C:healthy"], "provides": ["stack:A:healthy"]},
+        "B": {"requires": ["stack:D:healthy"], "provides": ["stack:B:healthy"]},
+        "D": {"requires": ["stack:B:healthy"], "provides": ["stack:D:healthy"]},
+        "C": {"requires": ["stack:E:healthy"], "provides": ["stack:C:healthy"]},
+        "E": {"requires": ["stack:C:healthy"], "provides": ["stack:E:healthy"]},
+    }
+    errors = lint_graph(stacks)  # must not raise
+    cycle_errors = [e for e in errors if "cycle" in e.lower()]
+    assert len(cycle_errors) >= 1
+
+
 # ---------------------------------------------------------------------------
 # probe_ref — injected docker_exec_fn
 # ---------------------------------------------------------------------------
