@@ -4032,6 +4032,49 @@ def test_daemon_run_configures_logging_before_loop_and_logs_started(
     assert started[0]["level_source"] == "default"
 
 
+def test_daemon_run_renders_dashboard_on_startup_when_project_paused(
+        tmp_state, sample_project, monkeypatch):
+    """A paused, event-free project still gets a fresh dashboard at startup."""
+    paths.pause_flag("demo").write_text("drain-agents", encoding="utf-8")
+    assert list(storage.iter_events("demo")) == []
+    assert not (tmp_state / "www" / "index.html").exists()
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    startup_render = d._render_dashboard_on_startup
+    calls = []
+
+    def tracked_startup_render():
+        calls.append(True)
+        startup_render()
+
+    monkeypatch.setattr(d, "_render_dashboard_on_startup", tracked_startup_render)
+    monkeypatch.setattr(d, "_start_http", lambda: None)
+    monkeypatch.setattr(d, "_start_cmd_listener", lambda: None)
+    d._stop_event.set()
+    d.run()
+
+    assert calls == [True]
+    assert (tmp_state / "www" / "index.html").exists()
+    assert (tmp_state / "www" / "logs.html").exists()
+
+
+def test_daemon_startup_render_failure_is_swallowed(
+        tmp_state, sample_project, monkeypatch):
+    """A render failure at startup is logged, not fatal: the daemon must still
+    come up (the reconcile loop starts) rather than crash. Pins the except
+    branch of _render_dashboard_on_startup."""
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    def boom(_registry):
+        raise RuntimeError("render exploded")
+
+    monkeypatch.setattr(daemon.render, "render_all", boom)
+    # Must NOT raise -- the except/log.warning branch swallows it.
+    d._render_dashboard_on_startup()
+    # render never succeeded, so no dashboard was produced.
+    assert not (tmp_state / "www" / "index.html").exists()
+
+
 def test_daemon_run_bootstraps_from_project_logging_level(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     """End-to-end: a project's `[logging] level` (D-L3 layer 3) is honoured

@@ -626,6 +626,7 @@ class Daemon:
             for project in self.registry:
                 self._emit_lifecycle(project, EventType.DAEMON_STARTED)
             self._start_http()
+            self._render_dashboard_on_startup()
             self._start_cmd_listener()
             try:
                 while not self._stop_event.is_set():
@@ -712,6 +713,12 @@ class Daemon:
                 notify.notify_event(cfg, {}, ev)
             except Exception:
                 pass
+
+    def _render_dashboard_on_startup(self) -> None:
+        try:
+            render.render_all(self.registry)
+        except Exception as exc:
+            log.warning("dashboard startup render failed", error=repr(exc))
 
     # -- one reconcile pass -----------------------------------------------
 
