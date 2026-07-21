@@ -76,7 +76,7 @@ The point is *measured* verbosity, not noise. Default effective level: **INFO**.
   taken, a watchdog suppression, work skipped for a soft reason.
 - **INFO** — the operational narrative you want in `docker logs`: daemon
   start/stop, project pass begin/end, dispatch, review launch, merge, carve
-  dispatch, state transitions, config changes, pause/unpause. *One line per
+  dispatch, state transitions, config changes, pause/resume. *One line per
   decision that changed the world.*
 - **DEBUG** — the reasoning: reconcile-trace breadcrumbs (why dispatched / why
   skipped), guard evaluations, per-pass counts, HTTP requests served.

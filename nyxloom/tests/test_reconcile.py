@@ -3189,7 +3189,7 @@ def test_ready_to_carve_no_dispatch_when_project_paused():
     """P52 2026-07-19 (live incident, dstdns): a READY_TO_CARVE task in a
     'paused' project must not get a CarveDispatch either -- it stays in
     READY_TO_CARVE untouched (no SUPERSEDED transition), picked up once the
-    project is unpaused, same as the carver-already-inflight case below."""
+    project is resumed, same as the carver-already-inflight case below."""
     fm = make_frontmatter(id="P01")
     tsf = make_tsf(task_id="P01", state=TaskState.READY_TO_CARVE)
     inp = ReconcileInput(**_carve_base_kwargs(

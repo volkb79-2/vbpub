@@ -1487,14 +1487,14 @@ class Daemon:
                rather than merely slows down. A no-op if already paused
                (human or an earlier runaway already handled it).
 
-        P49 2026-07-19 (fixes a live incident: unpausing re-paused within
+        P49 2026-07-19 (fixes a live incident: resuming re-paused within
         one reconcile_interval_seconds, repeatedly): the streak used to
         increment UNCONDITIONALLY every pass a signal was (re-)detected --
         including every pass spent ALREADY paused, since detect_runaways
         keeps re-finding the same still-undecayed historical condition
         (e.g. review_rejections_by_area>=2, true for a full 7-day window
         regardless of an operator having acted). By the time an operator
-        unpaused, the in-memory streak had climbed far past
+        resumed, the in-memory streak had climbed far past
         RUNAWAY_PERSIST_AFTER_CYCLES from all the passes spent paused, so
         the very next pass re-paused almost instantly -- the pause flag
         was the only thing gating _auto_pause_for_runaway's OWN no-op, not
@@ -1503,8 +1503,8 @@ class Daemon:
         the same as this watchdog's own prior pause), freeze+reset each
         signal's streak to 0 instead of incrementing it, and skip
         escalating/suppressing for it this pass (there is nothing new to
-        suppress while already paused). The pass after an operator
-        unpauses starts every streak at 0, so the SAME still-open
+        suppress while already paused). Resuming starts every streak at 0,
+        so the SAME still-open
         condition needs RUNAWAY_PERSIST_AFTER_CYCLES fresh detections
         again (not zero) before re-pausing -- a real window, not an
         instant re-trip, while still re-pausing if the condition is
@@ -2639,7 +2639,7 @@ class Daemon:
             # correct ONLY for the one-level-nested nyxloom layout; for a
             # repo-root project it inserted a bogus segment and EVERY carve
             # parse-failed (dstdns would reproduce the P51 incident the moment
-            # its carving unpaused). `git rev-parse --show-prefix` from
+            # its carving resumed). `git rev-parse --show-prefix` from
             # cfg.root is that repo-relative path exactly: "" for a repo-root
             # project, "nyxloom/" for the nested one. An empty component is a
             # no-op in Path joining, so one expression handles both layouts.
@@ -3883,7 +3883,7 @@ class Daemon:
         self.http_port = httpd.server_address[1]
         self.http_bind = httpd.server_address[0]
         # 2026-07-20: state the security assumption out loud at bind time. The
-        # control plane is UNAUTHENTICATED (POST /api/config/* can pause/unpause
+        # control plane is UNAUTHENTICATED (POST /api/config/* can pause/resume
         # projects, edit policy, answer decisions) -- a non-loopback bind is only
         # safe on a PRIVATE, unpublished network (the ciu bridge), which the infra
         # layer, not this process, guarantees. A WARNING, not INFO (2026-07-21,

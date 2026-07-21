@@ -37,7 +37,7 @@
 8. `discuss demo D-002` prints the monkeypatched command string verbatim.
 9. `pause demo` → flag file exists + PAUSE_SET event (no task_id);
    `pause demo demo-P01-sample` → task flag + PAUSE_SET with task_id and
-   statefile.paused True (seed the statefile first); `unpause` reverses
+   statefile.paused True (seed the statefile first); `resume` reverses
    both (flag gone, PAUSE_CLEARED, paused False).
 10. `leases` with one held lease (acquire in-test) → row shows name and
     held=True with owner.

@@ -1,14 +1,14 @@
 # P12 — ntfy inbound command listener (operator chat-ops)
 
 > Tier: sonnet · Date: 2026-07-15 · Requested by user ("could I send just
-> `unpause` in the channel? do we have help?"). Read handoff/STANDING.md
+> `resume` in the channel? do we have help?"). Read handoff/STANDING.md
 > first — its rules bind you (STANDING's "frozen files" list still applies;
 > daemon.py gets a narrow exception below).
 
 ## Objective
 
 A daemon-side listener on an ntfy command topic so the operator can send
-`unpause topos` (etc.) from the phone app. Outbound notifications stay
+`resume topos` (etc.) from the phone app. Outbound notifications stay
 untouched. Security model is non-negotiable:
 
 - The listener reads the topic via the READ-ONLY identity: token from env
@@ -18,14 +18,14 @@ untouched. Security model is non-negotiable:
   (notify.send with the normal token env) to the SAME cmd topic, always
   tagged `nyxloomd-reply` — and the listener MUST ignore any message
   carrying that tag (loop prevention; ntfy does not expose sender identity).
-- Verb allowlist, strict parse: `^(help|status|pause|unpause|digest)`
+- Verb allowlist, strict parse: `^(help|status|pause|resume|digest)`
   `( [a-z][a-z0-9-]{0,30})?$` on the trimmed message body. Anything else ->
   reply "unknown command — send: help". NO other execution path; NO shell;
   NO free-text interpolation into replies (typed data + fixed templates
   only — the injection boundary applies to replies too).
 - Every executed verb appends an audited event via storage.append_event
   (actor Actor(OPERATOR, "ntfy-cmd")): PAUSE_SET/PAUSE_CLEARED for
-  pause/unpause (reuse the CLI's exact semantics — flag file + event),
+  pause/resume (reuse the CLI's exact semantics — flag file + event),
   NEEDS_OPERATOR payload {"detail": "cmd-<verb>"} is NOT needed; for
   status/digest/help no state changes, no events.
 
@@ -62,7 +62,7 @@ Verbs (project arg required where shown; unknown project -> reply
 - `help` -> fixed multi-line list of verbs with one-line descriptions.
 - `status <project>` -> per-state counts + active-attempt count (from
   storage.list_states; e.g. "topos: 11 QUEUED, 0 ACTIVE (paused)").
-- `pause <project>` / `unpause <project>` -> same effect as the CLI verbs
+- `pause <project>` / `resume <project>` -> same effect as the CLI verbs
   (flag file + PAUSE_SET/PAUSE_CLEARED event, actor ntfy-cmd), reply
   confirms new state.
 - `digest <project>` -> notify.digest(cfg, project, 0) capped to 1500 chars.
@@ -72,10 +72,10 @@ prepared JSON lines, then hanging until closed)
 
 1. handle_message('help', []) returns text listing all five verbs;
    handle_message('rm -rf /', []) returns the unknown-command reply;
-   handle_message('unpause; rm x', []) -> unknown-command (strict regex).
-2. handle_message('unpause topos', []) on a registered tmp project with the
+   handle_message('resume; rm x', []) -> unknown-command (strict regex).
+2. handle_message('resume topos', []) on a registered tmp project with the
    pause flag set: flag removed, PAUSE_CLEARED event with actor id
-   'ntfy-cmd', reply contains 'unpaused'. pause symmetric.
+   'ntfy-cmd', reply contains 'resumed'. pause symmetric.
 3. handle_message('status topos', []) reflects seeded statefiles.
 4. handle_message(anything, ['nyxloomd-reply']) -> None (loop guard).
 5. Transport: fake server streams one command message then blocks; listener

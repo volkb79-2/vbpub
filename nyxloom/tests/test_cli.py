@@ -554,8 +554,8 @@ def test_pause_task(sample_project, tmp_state, capsys, make_statefile, monkeypat
     assert states["demo-P01-test"].paused is True
 
 
-def test_unpause_project(sample_project, tmp_state, capsys):
-    """Oracle 9: unpause <project> removes flag + PAUSE_CLEARED event."""
+def test_resume_project(sample_project, tmp_state, capsys):
+    """Oracle 9: resume <project> removes flag + PAUSE_CLEARED event."""
     from nyxloom import paths, storage
 
     # Create pause first
@@ -563,7 +563,7 @@ def test_unpause_project(sample_project, tmp_state, capsys):
     flag_path.parent.mkdir(parents=True, exist_ok=True)
     flag_path.touch()
 
-    exit_code = cli.main(["unpause", "demo"])
+    exit_code = cli.main(["resume", "demo"])
     assert exit_code == 0
 
     # Check flag gone
@@ -575,8 +575,8 @@ def test_unpause_project(sample_project, tmp_state, capsys):
     assert len(clear_events) == 1
 
 
-def test_unpause_task(sample_project, tmp_state, capsys, make_statefile):
-    """unpause <project> <task> removes task flag + event."""
+def test_resume_task(sample_project, tmp_state, capsys, make_statefile):
+    """resume <project> <task> removes task flag + event."""
     from nyxloom import paths, storage
 
     # Create statefile and flag
@@ -587,7 +587,7 @@ def test_unpause_task(sample_project, tmp_state, capsys, make_statefile):
     flag_path.parent.mkdir(parents=True, exist_ok=True)
     flag_path.touch()
 
-    exit_code = cli.main(["unpause", "demo", "demo-P01-test"])
+    exit_code = cli.main(["resume", "demo", "demo-P01-test"])
     assert exit_code == 0
 
     # Check flag gone

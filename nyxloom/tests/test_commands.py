@@ -24,7 +24,7 @@ from nyxloom.types import (
 def test_help_lists_all_five_verbs(sample_project):
     cl = CommandListener(load_registry())
     reply = cl.handle_message("help", [])
-    for verb in ("help", "status", "pause", "unpause", "digest"):
+    for verb in ("help", "status", "pause", "resume", "digest"):
         assert verb in reply
     assert reply == HELP_TEXT
 
@@ -36,23 +36,23 @@ def test_garbage_command_is_rejected(sample_project):
 
 def test_shell_metacharacters_rejected_by_strict_regex(sample_project):
     cl = CommandListener(load_registry())
-    assert cl.handle_message("unpause; rm x", []) == UNKNOWN_REPLY
+    assert cl.handle_message("resume; rm x", []) == UNKNOWN_REPLY
 
 
 # =========================================================================
-# Oracle 2: pause / unpause -- CLI-equivalent flag + event semantics
+# Oracle 2: pause / resume -- CLI-equivalent flag + event semantics
 # =========================================================================
 
-def test_unpause_clears_flag_and_appends_cleared_event(tmp_state, sample_project):
+def test_resume_clears_flag_and_appends_cleared_event(tmp_state, sample_project):
     flag = paths.pause_flag("demo")
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.touch()
     assert flag.exists()
 
     cl = CommandListener(load_registry())
-    reply = cl.handle_message("unpause demo", [])
+    reply = cl.handle_message("resume demo", [])
 
-    assert "unpaused" in reply
+    assert "resumed" in reply
     assert not flag.exists()
     events = list(storage.iter_events("demo"))
     cleared = [e for e in events if e.type is EventType.PAUSE_CLEARED]
@@ -171,7 +171,7 @@ def test_status_missing_project_arg(sample_project):
 
 def test_nyxloomd_reply_tag_is_ignored(sample_project):
     cl = CommandListener(load_registry())
-    assert cl.handle_message("unpause demo", [REPLY_TAG]) is None
+    assert cl.handle_message("resume demo", [REPLY_TAG]) is None
     assert cl.handle_message("anything at all, really", ["x", REPLY_TAG]) is None
 
 
@@ -331,8 +331,8 @@ def _read_log_records(path) -> list[dict]:
     return [json.loads(ln) for ln in lines]
 
 
-def test_pause_and_unpause_emit_info(tmp_state, sample_project, tmp_path):
-    """§5: pause/unpause are the canonical INFO example -- 'one line per
+def test_pause_and_resume_emit_info(tmp_state, sample_project, tmp_path):
+    """§5: pause/resume are the canonical INFO example -- 'one line per
     decision that changed the world'."""
     from nyxloom import log as nyx_log
 
@@ -341,16 +341,16 @@ def test_pause_and_unpause_emit_info(tmp_state, sample_project, tmp_path):
     try:
         cl = CommandListener(load_registry())
         cl.handle_message("pause demo", [])
-        cl.handle_message("unpause demo", [])
+        cl.handle_message("resume demo", [])
 
         records = _read_log_records(log_dir / "nyxloom.jsonl")
         paused = [r for r in records if r["msg"] == "project paused"]
-        unpaused = [r for r in records if r["msg"] == "project unpaused"]
+        resumed = [r for r in records if r["msg"] == "project resumed"]
         assert len(paused) == 1 and paused[0]["level"] == "info"
         assert paused[0]["project"] == "demo"
         assert paused[0]["mode"] == "drain-handoffs"
-        assert len(unpaused) == 1 and unpaused[0]["level"] == "info"
-        assert unpaused[0]["project"] == "demo"
+        assert len(resumed) == 1 and resumed[0]["level"] == "info"
+        assert resumed[0]["project"] == "demo"
     finally:
         nyx_log.configure(level=nyx_log.CRITICAL, log_dir=None, console=False)
 
@@ -440,7 +440,7 @@ def test_listener_start_stop_emit_info(sample_project, tmp_path):
 
 def test_status_and_digest_query_log_debug(tmp_state, sample_project, tmp_path):
     """§5: read-only queries (status/digest) are DEBUG, not INFO -- they
-    don't change the world, unlike pause/unpause above."""
+    don't change the world, unlike pause/resume above."""
     from nyxloom import log as nyx_log
 
     log_dir = tmp_path / "logs"
@@ -495,7 +495,7 @@ def test_hostile_prose_after_verb_is_rejected(sample_project):
 
 def test_hostile_prose_as_project_arg_is_rejected(sample_project):
     cl = CommandListener(load_registry())
-    reply = cl.handle_message("unpause demo AND EXTRA STUFF", [])
+    reply = cl.handle_message("resume demo AND EXTRA STUFF", [])
     assert reply == UNKNOWN_REPLY
     assert "EXTRA" not in reply
     assert "STUFF" not in reply

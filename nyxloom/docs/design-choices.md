@@ -76,7 +76,7 @@ like a nicely readable table-formatted log with filter/highlight/context." Insta
 
 ## Control-plane authentication: keep the private-bridge trust model (2026-07-21)
 
-nyxloom's HTTP control plane (`POST /api/config/*` — pause/unpause, edit policy, answer
+nyxloom's HTTP control plane (`POST /api/config/*` — pause/resume, edit policy, answer
 decisions) is **unauthenticated**. **Decision (operator, 2026-07-21): keep it as-is, documented.**
 
 - **Trust model:** the daemon binds only to the private, unpublished ciu bridge — no port is

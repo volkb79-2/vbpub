@@ -32,7 +32,7 @@ structurally impossible here (config files never contain secret values).
    attempt_max_wall_seconds (if P14 added it — tolerate absence),
    reconcile_interval_seconds. Integer-validated against sane bounds
    (1..64, interval 5..600).
-2. **Pause/unpause buttons** per project (reuse the exact CLI semantics:
+2. **Pause/resume buttons** per project (reuse the exact CLI semantics:
    flag file + PAUSE_SET/PAUSE_CLEARED with actor OPERATOR 'ui').
 3. **Routing matrix** (writes $XDG_STATE_HOME/nyxloom/routes.toml):
    per tier, reorder/select which route ids are active (from the set of
@@ -78,9 +78,9 @@ structurally impossible here (config files never contain secret values).
    "run"|"drain-handoffs"|"drain-agents"}. Events: PAUSE_SET payload
    {"mode": ...} / PAUSE_CLEARED. CLI `pause <project> [agents|handoffs]`
    and the ntfy command verb `pause <project> [agents|handoffs]` accept
-   the optional mode (default handoffs); `unpause` = run. commands.py may
+   the optional mode (default handoffs); `resume` = run. commands.py may
    be touched ONLY for this verb-arg extension (strict regex widened to
-   `^(help|status|pause|unpause|digest)( [a-z][a-z0-9-]{0,30}){0,2}$`).
+   `^(help|status|pause|resume|digest)( [a-z][a-z0-9-]{0,30}){0,2}$`).
 5. **'last activity' column per agent**: index.html active-tasks table and
    task-page attempts table gain a last-activity age (from the newest
    attempt log's mtime at render time — paths.attempt_dir; '-' when no
@@ -95,7 +95,7 @@ structurally impossible here (config files never contain secret values).
 2. Bounds: max_active_tasks=0 or 999 -> 400, file untouched, no event.
 3. Tier remap: POST tier flash-high -> ["claude-sonnet5-high"] rewrites
    only that line; unknown route id in list -> 400.
-4. Pause via UI -> flag + event; unpause reverses.
+4. Pause via UI -> flag + event; resume reverses.
 5. config.html renders current policy values and tier table; contains no
    inline secrets (assert token strings absent) and no innerHTML use.
 6. Traversal/method safety: GET on POST endpoints -> 405/404; unknown

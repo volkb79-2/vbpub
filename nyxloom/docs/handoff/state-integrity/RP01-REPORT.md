@@ -216,7 +216,7 @@ edited (grep-confirmed no diff hunks against any of them).
 
 - `--apply` (RP02): no event is ever emitted, no statefile is ever
   written. `resync_plan` and `cmd_resync` are read/print-only.
-- Wiring the pre-unpause guard (RP03) or actually re-syncing the live
+- Wiring the pre-resume guard (RP03) or actually re-syncing the live
   dstdns/topos registered projects — this branch never touched the running
   daemon, the real registry, or any live project's state volume; only a
   temporary git-repo fixture and in-memory dataclasses were used in tests.

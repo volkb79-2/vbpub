@@ -27,8 +27,8 @@ All 13 oracle test cases pass successfully (29/29 tests passing):
 | 8 | `test_discuss` | ✓ PASS | discuss prints command string verbatim |
 | 9a | `test_pause_project` | ✓ PASS | pause creates flag file and PAUSE_SET event (no task_id) |
 | 9b | `test_pause_task` | ✓ PASS | pause with task_id creates flag, sets paused=True, PAUSE_SET with task_id |
-| 9c | `test_unpause_project` | ✓ PASS | unpause removes flag, appends PAUSE_CLEARED |
-| 9d | `test_unpause_task` | ✓ PASS | unpause task removes flag, sets paused=False, PAUSE_CLEARED with task_id |
+| 9c | `test_resume_project` | ✓ PASS | resume removes flag, appends PAUSE_CLEARED |
+| 9d | `test_resume_task` | ✓ PASS | resume task removes flag, sets paused=False, PAUSE_CLEARED with task_id |
 | 10a | `test_leases_empty` | ✓ PASS | leases with no held leases displays table |
 | 10b | `test_leases_held` | ✓ PASS | leases shows held lease with owner |
 | 11a | `test_digest` | ✓ PASS | digest calls notify.digest and prints output |
@@ -77,7 +77,7 @@ The CLI follows the contract exactly:
 9. `decide <project> <D-id> --choose TEXT [--note TEXT]` — update inbox, append DECISION_RESOLVED event
 10. `discuss <project> <D-id>` — print resume command string
 11. `pause <project> [task]` — set pause flag, append PAUSE_SET event (project or task scoped)
-12. `unpause <project> [task]` — clear pause flag, append PAUSE_CLEARED event
+12. `resume <project> [task]` — clear pause flag, append PAUSE_CLEARED event
 13. `leases` — display lease holder info per registered project
 14. `events <project> [--since SEQ] [--type TYPE]` — print event lines, filtered by type
 15. `digest <project> [--since SEQ]` — print event digest summary
@@ -90,7 +90,7 @@ The CLI follows the contract exactly:
 - **Event actor**: All CLI-emitted events use `ActorKind.OPERATOR` with `$USER` from environment (default 'operator').
 - **Config resolution**: `_cfg(project_id)` helper raises RuntimeError for unknown projects → caught, "error:" printed, exit 1.
 - **Table formatting**: Simple `str.ljust()` columns; no external deps. All cells are justified to column widths.
-- **Project-level vs. task-level scope**: pause/unpause correctly distinguish via flag path and whether task_id is set in event.
+- **Project-level vs. task-level scope**: pause/resume correctly distinguish via flag path and whether task_id is set in event.
 
 ### Deviations from Contract
 
