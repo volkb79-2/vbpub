@@ -78,5 +78,29 @@ Base: `main` @ `622d4cb` (which contains `9c22b51`, the commit that added
 
 ## Status
 
-Implementing resync.py + cli.py + test_resync.py now. Will append gate
-result once green.
+Implemented `src/nyxloom/resync.py` (new), `src/nyxloom/cli.py` (`resync`
+verb registered), `tests/test_resync.py` (new, 20 tests: pure planner ×9,
+git/handoff fact-gatherers ×9 against a real temp git repo (the
+`sample_project` fixture) + 1 mocked-OSError edge case, CLI ×2).
+
+First commit `b0fc77f`. First gate run: had to be re-run after realizing
+nothing was staged/committed yet — `coverage_gate` diffs against committed
+history, so an uncommitted worktree reads as a 0/0 empty diff (a clean
+pass that proves nothing). After committing, the real gate run reported
+`121/122` (99.2%) — `resync.py:148`, a defensive `if not name: continue`
+guard in `_branch_merged_refs` for a blank `git branch --merged` line,
+which real git output never produces (unreachable without a contrived
+mock). Removed it (folded into an `if name:` wrapper, same behavior, one
+fewer line) rather than pragma-ing it — it was genuinely dead code, not a
+covered-but-untestable line. Second commit `7ca224e`. Re-ran the gate:
+**GATE_EXIT=0**, `diff-coverage OK: 121/121 changed executable lines
+covered (100.0% ≥ 100.0% floor)`. Full suite: `1006 passed, 1 xfailed`
+(the pre-existing, unrelated `test_invariants.py::test_no_dead_end_draft`
+xfail — confirmed by name, not just count, via a separate non-double-`-q`
+run since the gate command's literal `-q` stacks with `pyproject.toml`'s
+own `addopts = "-q"` into pytest's quieter `-qq`-equivalent mode, which
+suppresses the one-line summary entirely; re-ran once more with a single
+`-q` to recover the human-readable count for this LOG only — the gate's
+own verdict does not depend on that summary line, only on its exit code).
+
+See `RP01-REPORT.md` for the full oracle-by-oracle evidence.
