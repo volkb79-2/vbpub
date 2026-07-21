@@ -29,6 +29,17 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               events, no `--apply` (that is RP02, not yet
                               built).
   render                      render.render_all(registry); prints www path.
+  migrate-store <project>     PACKAGE SP02 2026-07-21 (docs/plan-state-
+                              integrity.md Part A.3): imports a project's
+                              file-backend events.jsonl into the SQLite
+                              backend (storage_sqlite), verifies ZERO
+                              divergence against the on-disk statefiles,
+                              then retires the source (events.jsonl ->
+                              events.jsonl.pre-sqlite, kept as a backup,
+                              never deleted). Idempotent. See
+                              migrate_store.migrate for the full
+                              contract; only ever run against a live
+                              project at the SP03 cutover (not here).
   daemon [--foreground]       Daemon(registry).run() (foreground only in
                               the pilot; systemd/tmux owns daemonization).
   tick [--project X]          daemon.run_once — one pass, prints action
@@ -410,6 +421,36 @@ def cmd_render(args) -> int:
     registry = config.load_registry()
     www_path = render.render_all(registry)
     print(www_path)
+    return 0
+
+
+def cmd_migrate_store(args) -> int:
+    """migrate-store <project>
+
+    PACKAGE SP02 2026-07-21 (docs/plan-state-integrity.md Part A.3): thin
+    wrapper -- all logic lives in migrate_store.migrate (import/verify/
+    rename). Prints the resulting status + counts; a MigrationError
+    (corrupt source line, divergence, or an inconsistent partial-import
+    state) is caught here and reported the same way other verbs report
+    domain errors: 'error: ...' to stderr, exit 1.
+    """
+    from .migrate_store import MigrationError, migrate
+
+    try:
+        result = migrate(args.project)
+    except MigrationError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    if result.status == "migrated":
+        print(
+            f"migrated: {result.imported_count} event(s) imported, "
+            f"{len(result.task_ids)} task(s) verified zero-divergence"
+        )
+    elif result.status == "already-migrated":
+        print("already-migrated: events.jsonl.pre-sqlite backup already present, nothing to do")
+    else:
+        print("nothing-to-migrate: no events.jsonl source found")
     return 0
 
 
@@ -931,6 +972,10 @@ def main(argv: list[str] | None = None) -> int:
     # render
     render_parser = subparsers.add_parser("render")
 
+    # migrate-store
+    migrate_store_parser = subparsers.add_parser("migrate-store")
+    migrate_store_parser.add_argument("project", help="Project ID")
+
     # daemon
     daemon_parser = subparsers.add_parser("daemon")
     daemon_parser.add_argument("--foreground", action="store_true", help="Foreground mode")
@@ -1052,6 +1097,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_resync(args)
         elif args.cmd == "render":
             return cmd_render(args)
+        elif args.cmd == "migrate-store":
+            return cmd_migrate_store(args)
         elif args.cmd == "daemon":
             return cmd_daemon(args)
         elif args.cmd == "tick":
