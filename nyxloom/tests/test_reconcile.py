@@ -13,8 +13,9 @@ from dataclasses import replace
 from nyxloom.reconcile import (
     Action, AutoMergeTask, CarveDispatch, CreateTask, DispatchImplementer,
     EmitAttemptExit, InterruptAttempt, LaunchReview, LaunchSelfReview,
-    MarkInterrupted, MarkStalled, OpenWave, ProviderPause, ReconcileInput,
-    ResumeAttempt, RunPostMergeGate, SpecAttention, StallCheck, Transition,
+    MarkInterrupted, MarkStalled, OpenWave, PlanResult, ProviderPause,
+    ReconcileInput, ReconcileTrace, ResumeAttempt, RunPostMergeGate,
+    SpecAttention, StallCheck, TraceNote, Transition,
     attempts_used, dispatch_eligible, plan_project,
 )
 from nyxloom.types import (
@@ -3830,3 +3831,219 @@ def test_review_cold_when_stage_context_lacks_session_reuse(monkeypatch):
                if isinstance(a, LaunchReview)]
     assert len(reviews) == 1
     assert reviews[0].resume_session is None
+
+
+# ============================================================================
+# P03 (D-L5): reconcile trace -- pure-core observability
+# ============================================================================
+#
+# `plan_project` now returns a `PlanResult` (a `list` subclass, back-compat
+# with every test above) additionally carrying `.trace` -- a pure
+# `ReconcileTrace` of breadcrumbs recording WHY key decisions were made.
+# These tests cover: (1) the purity + determinism invariant, (2) the trace
+# records the decisive reason for representative cases, (3) breadcrumbs
+# carry ids/enums only -- never handoff prose, (4) PlanResult's back-compat
+# list-subclass shape. (Oracle 5 -- the ~50 tests above still passing
+# unchanged -- is proven by this file needing no other edits.)
+
+def _dispatch_skip_base_kwargs(**overrides) -> dict:
+    base = dict(
+        now=utc(2026, 7, 15),
+        cfg=make_config(),
+        routes=make_routes(),
+        states={"P01": make_tsf(task_id="P01", state=TaskState.QUEUED)},
+        frontmatters={"P01": (make_frontmatter(id="P01"), "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={"route-1": True, "route-2": True},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+    )
+    base.update(overrides)
+    return base
+
+
+def test_reconcile_module_never_imports_logger():
+    """Oracle 1: plan_project stays pure -- no `log`/`nyxloom.log` import
+    reachable from reconcile.py. A source-level check (not merely "does
+    calling it raise") so a stray logger import anywhere in the module
+    trips this even on a path no test happens to exercise."""
+    import nyxloom.reconcile as reconcile_mod
+
+    forbidden_snippets = (
+        "from .log import",
+        "from nyxloom.log import",
+        "from . import log",
+        "from . import log_module",
+        "import nyxloom.log",
+    )
+    source = Path(reconcile_mod.__file__).read_text(encoding="utf-8")
+    for snippet in forbidden_snippets:
+        assert snippet not in source, f"reconcile.py must stay pure: found {snippet!r}"
+    assert not hasattr(reconcile_mod, "log")
+    assert not hasattr(reconcile_mod, "log_module")
+
+
+def test_plan_project_is_deterministic_given_identical_input():
+    """Oracle 1: given identical input, plan_project returns an identical
+    result -- both the actions AND the trace breadcrumbs. This determinism
+    is exactly what the doctor replay-divergence guard and this module's
+    property-testability both rely on; building the trace must not
+    introduce any hidden nondeterminism (a clock read, a set-iteration
+    order, ...)."""
+    inp = ReconcileInput(**_carve_base_kwargs())
+    r1 = plan_project(inp)
+    r2 = plan_project(inp)
+    assert list(r1) == list(r2)
+    assert r1.trace == r2.trace
+
+
+def test_trace_dispatch_names_the_route():
+    """Oracle 2: a dispatch breadcrumb names the chosen route."""
+    inp = ReconcileInput(**_dispatch_skip_base_kwargs())
+    result = plan_project(inp)
+    dispatch_notes = [n for n in result.trace.breadcrumbs if n.kind == "dispatch"]
+    assert len(dispatch_notes) == 1
+    assert dispatch_notes[0].task_id == "P01"
+    assert dispatch_notes[0].detail == "route:route-1"
+
+
+def test_trace_dispatch_skip_paused():
+    """Oracle 2: a dispatch-skip breadcrumb for a paused project names 'paused'."""
+    inp = ReconcileInput(**_dispatch_skip_base_kwargs(project_paused=True))
+    result = plan_project(inp)
+    skips = [n for n in result.trace.breadcrumbs
+             if n.kind == "dispatch-skip" and n.task_id == "P01"]
+    assert len(skips) == 1
+    assert skips[0].detail == "paused"
+
+
+def test_trace_dispatch_skip_no_healthy_route():
+    """Oracle 2: a dispatch-skip breadcrumb names 'no-healthy-route'."""
+    inp = ReconcileInput(**_dispatch_skip_base_kwargs(
+        provider_ok={"route-1": False, "route-2": False}))
+    result = plan_project(inp)
+    skips = [n for n in result.trace.breadcrumbs
+             if n.kind == "dispatch-skip" and n.task_id == "P01"]
+    assert len(skips) == 1
+    assert skips[0].detail == "no-healthy-route"
+
+
+def test_trace_dispatch_skip_budget_exhausted():
+    """Oracle 2: a dispatch-skip breadcrumb names 'budget-exhausted'."""
+    inp = ReconcileInput(**_dispatch_skip_base_kwargs(budget_remaining=0.0))
+    result = plan_project(inp)
+    skips = [n for n in result.trace.breadcrumbs
+             if n.kind == "dispatch-skip" and n.task_id == "P01"]
+    assert len(skips) == 1
+    assert skips[0].detail == "budget-exhausted"
+
+
+def test_trace_carve_skip_paused():
+    """Oracle 2: a carve-skip breadcrumb for a paused project names 'paused'."""
+    inp = ReconcileInput(**_carve_base_kwargs(project_paused=True))
+    result = plan_project(inp)
+    skips = [n for n in result.trace.breadcrumbs if n.kind == "carve-skip"]
+    assert len(skips) == 1
+    assert skips[0].detail == "paused"
+    assert skips[0].task_id is None
+
+
+def test_trace_carve_skip_in_flight():
+    """Oracle 2: a carve-skip breadcrumb while a carver is in flight names
+    'in-flight'."""
+    carve_att = make_attempt(attempt_id="att-carve", state=AttemptState.RUNNING,
+                              role=Role.CARVER)
+    carve_tsf = make_tsf(task_id="carve-demo-1", state=TaskState.ACTIVE,
+                          attempts=[carve_att])
+    inp = ReconcileInput(**_carve_base_kwargs(states={"carve-demo-1": carve_tsf}))
+    result = plan_project(inp)
+    skips = [n for n in result.trace.breadcrumbs if n.kind == "carve-skip"]
+    assert len(skips) == 1
+    assert skips[0].detail == "in-flight"
+
+
+def test_trace_guard_exclude_decision_held():
+    """Oracle 2: a guard-exclude breadcrumb names 'decision-held' for a
+    QUEUED task whose decision dep is still open (excluded from the
+    admissible-ready count)."""
+    cfg = make_config(carve_ahead_target=1)
+    fm = make_frontmatter(id="Q1", depends_on=["D-001"])
+    tsf = make_tsf(task_id="Q1", state=TaskState.QUEUED)
+    inp = ReconcileInput(**_carve_base_kwargs(
+        cfg=cfg,
+        states={"Q1": tsf},
+        frontmatters={"Q1": (fm, "h.md")},
+        decisions_open={"D-001"},
+    ))
+    result = plan_project(inp)
+    excludes = [n for n in result.trace.breadcrumbs if n.kind == "guard-exclude"]
+    assert len(excludes) == 1
+    assert excludes[0].task_id == "Q1"
+    assert excludes[0].detail == "decision-held"
+
+
+def test_trace_state_transition_carved_to_queued():
+    """Oracle 2: a state-transition breadcrumb names the transition."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    tsf = make_tsf(task_id="P01", state=TaskState.CARVED)
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15), cfg=cfg, routes=routes,
+        states={"P01": tsf}, frontmatters={"P01": (fm, "h.md")},
+        lint_clean={"P01": True}, project_paused=False, decisions_open=set(),
+        merged_branches=set(), leases_free={}, provider_ok={},
+        log_quiet_seconds={}, pid_alive={}, receipts={},
+    )
+    result = plan_project(inp)
+    transitions = [n for n in result.trace.breadcrumbs if n.kind == "state-transition"]
+    assert len(transitions) == 1
+    assert transitions[0].task_id == "P01"
+    assert transitions[0].detail == "CARVED->QUEUED"
+
+
+def test_trace_breadcrumbs_carry_ids_and_enums_never_prose():
+    """Oracle 4 (payload injection rule, module contract item 8): breadcrumb
+    `detail` values are short ids/enums/fixed strings -- never free-form
+    handoff prose. Prose has spaces and unbounded length; none of the
+    fixed detail vocabularies used across kinds ever do. Swept across
+    several representative scenarios rather than just one."""
+    carve_att = make_attempt(attempt_id="att-carve", state=AttemptState.RUNNING,
+                              role=Role.CARVER)
+    scenarios = [
+        ReconcileInput(**_dispatch_skip_base_kwargs()),
+        ReconcileInput(**_dispatch_skip_base_kwargs(project_paused=True)),
+        ReconcileInput(**_carve_base_kwargs(project_paused=True)),
+        ReconcileInput(**_carve_base_kwargs(states={
+            "carve-demo-1": make_tsf(task_id="carve-demo-1", state=TaskState.ACTIVE,
+                                      attempts=[carve_att]),
+        })),
+    ]
+    seen_kinds = set()
+    for scenario in scenarios:
+        for note in plan_project(scenario).trace.breadcrumbs:
+            seen_kinds.add(note.kind)
+            assert " " not in note.detail, f"breadcrumb detail looks like prose: {note.detail!r}"
+            assert len(note.detail) < 80
+    assert {"dispatch", "dispatch-skip", "carve-skip"} <= seen_kinds
+
+
+def test_plan_result_is_a_list_backcompat():
+    """Oracle 5: PlanResult IS the actions list -- isinstance(..., list),
+    len(), indexing, iteration and equality against a plain list all work
+    exactly as they did pre-P03 (the ~50 tests above already prove this
+    structurally by needing zero edits; this test names the property
+    directly)."""
+    inp = ReconcileInput(**_carve_base_kwargs())
+    result = plan_project(inp)
+    assert isinstance(result, list)
+    assert isinstance(result, PlanResult)
+    assert isinstance(result.trace, ReconcileTrace)
+    assert len(result) == 1
+    assert isinstance(result[0], CarveDispatch)
+    assert result == [result[0]]  # list-subclass equality against a plain list
