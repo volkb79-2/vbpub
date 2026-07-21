@@ -71,3 +71,21 @@ like a nicely readable table-formatted log with filter/highlight/context." Insta
   `rotator`/`namer` zstd-compress on rollover, applied only once a segment leaves the 3-day native
   window. Retention beyond that = a configurable number of `.zst` backups.
 - This is `plan-logging.md`'s D-L6, resolved.
+
+---
+
+## Control-plane authentication: keep the private-bridge trust model (2026-07-21)
+
+nyxloom's HTTP control plane (`POST /api/config/*` — pause/unpause, edit policy, answer
+decisions) is **unauthenticated**. **Decision (operator, 2026-07-21): keep it as-is, documented.**
+
+- **Trust model:** the daemon binds only to the private, unpublished ciu bridge — no port is
+  published to the host or beyond the internal docker network (`http_bind` is infra-sourced via
+  `NYXLOOM_HTTP_BIND`, default loopback; the daemon prints a startup warning if bound off-loopback).
+  Anything that can reach the control plane is already inside the trusted network boundary.
+- **Why not add auth now:** a shared-secret token or a fronting auth proxy is defense-in-depth
+  against an *exposure that does not exist* in the current single-tenant private-bridge deployment.
+  The cost (token plumbing / proxy) buys nothing until a port is actually published.
+- **Revisit trigger:** if the control plane is ever bound to a published/host-reachable interface
+  (the startup warning fires), add a shared-secret token on mutating POSTs **before** exposing it.
+  This note is the standing record so that decision isn't silently skipped.

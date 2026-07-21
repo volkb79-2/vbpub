@@ -133,11 +133,14 @@ logs fire only where the daemon acts on a *fresh* event. (Enforced by an oracle 
   precedence, runtime-adjustable being the point.
 - **D-L4 — logs ≠ events.** Per §2. Asserted as an invariant with a test that a full pass
   emits log records but appends **no** extra events beyond the domain ones.
-- **D-L5 — reconcile stays pure.** `reconcile.plan_project` is PURE (no clock, no I/O — a
-  load-bearing invariant). It must not import/emit logs. *Recommend:* `plan_project` also
-  returns a **`ReconcileTrace`** (pure data: ordered breadcrumbs — "dispatch P12 via route-x",
-  "carve skipped: paused", "task P7 excluded: decision-held") which the **daemon** flushes to
-  the logger at DEBUG after the pass. Purity preserved; reconcile fully debuggable. (§4.3)
+- **D-L5 — reconcile stays pure. RESOLVED 2026-07-21 (operator): ReconcileTrace return
+  channel.** `reconcile.plan_project` is PURE (no clock, no I/O — a load-bearing invariant).
+  It must not import/emit logs. `plan_project` also returns a **`ReconcileTrace`** (pure data:
+  ordered breadcrumbs — "dispatch P12 via route-x", "carve skipped: paused", "task P7 excluded:
+  decision-held") which the **daemon** flushes to the logger at DEBUG after the pass. Purity
+  preserved; reconcile fully debuggable. (§4.3) The rejected alternatives — an injected logger
+  (makes reconcile side-effecting) and relaxing purity (kills the deterministic guarantee the
+  doctor divergence check relies on) — were explicitly declined.
 - **D-L6 — storage & rotation. RESOLVED 2026-07-21.** One daemon-global stream
   `logs/nyxloom.jsonl` under the state volume (records carry a `project` field; one file is far
   easier to tail/filter in the UI — and in `lnav` — than N per-project files). **Retention:
@@ -149,10 +152,13 @@ logs fire only where the daemon acts on a *fresh* event. (Enforced by an oracle 
   backups bound total retention (independent of the event log's `retention_days`). Gitignored;
   never in the trove. Full rationale + the tooling that reads this (lnav/klp/jq/duckdb) is in
   `docs/design-choices.md`.
-- **D-L7 — UI v1 scope.** Level filter + substring/regex **highlight** + **context-around-line**
-  (click → N lines before/after) + **live tail** (SSE) + **history/paging** + UTC display +
-  colour-by-level + pause/resume. *Defer to v2:* full-text server-side search, download/export,
-  multi-file (rotated-backup) browsing.
+- **D-L7 — UI v1 scope. RESOLVED 2026-07-21 (operator): "Full + search/export".** Level filter +
+  substring/regex **highlight** + **context-around-line** (click → N lines before/after) + **live
+  tail** (SSE) + **history/paging** + UTC display + colour-by-level + pause/resume + **server-side
+  full-text search** + **download/export** (the last two promoted INTO v1 by operator choice —
+  they were originally proposed for v2). *Defer to v2 (only):* multi-file (rotated-backup)
+  browsing. Note the enlarged surface: P04 now carries a search endpoint + an export endpoint and
+  their pwmcp browser-leg oracles.
 
 ---
 
@@ -366,8 +372,8 @@ the logs-vs-events principle. Finalize rotation/retention (size×backups) with a
 - **Perf of DEBUG in hot paths.** Mitigated by stdlib `isEnabledFor` gating + lazy `%s` args.
 
 ## 9. Open decisions
-- **Resolved 2026-07-21:** D-L1 → **structlog**; D-L2 timestamp → **`YYYY-MM-DDTHH:MM:SS` UTC**;
-  D-L6 → **one global `nyxloom.jsonl`, 3 days native then zstd** (see design-choices.md).
-- **Still open (confirm before their phase):** D-L5 (reconcile trace vs injected logger vs relax
-  purity — recommend trace, blocks P03), D-L7 (v1 UI feature cut — blocks P04). Recommendations
-  inline in §3; these become `D-<NNN>` entries in `nyxloom-trove/decisions.md` at carve time.
+- **All resolved 2026-07-21:** D-L1 → **structlog**; D-L2 timestamp → **`YYYY-MM-DDTHH:MM:SS`
+  UTC**; D-L5 → **ReconcileTrace return channel** (§4.3); D-L6 → **one global `nyxloom.jsonl`,
+  3 days native then zstd** (design-choices.md); D-L7 → **"Full + search/export" v1** (§3).
+- **Nothing open blocks any phase.** These become `D-<NNN>` entries in
+  `nyxloom-trove/decisions.md` at each phase's carve time (P03 for D-L5, P04 for D-L7).
