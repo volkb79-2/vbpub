@@ -165,6 +165,26 @@ def test_corrupt_line_reported(tmp_state):
     assert list(storage_sqlite.iter_events(project)) == []
 
 
+def test_blank_lines_in_source_are_skipped_not_corrupt(tmp_state):
+    """A blank line in events.jsonl (e.g. stray whitespace between
+    records) is tolerated -- skipped, not treated as a corrupt line and
+    not counted as an event -- matching the file backend's own
+    `iter_events` blank-line tolerance."""
+    project = "sp02-blank-lines"
+    _seed_project(project)
+
+    src = paths.events_path(project)
+    lines = src.read_text(encoding="utf-8").splitlines()
+    lines.insert(1, "")  # a blank line between two real event records
+    lines.append("   ")  # a whitespace-only trailing line
+    src.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = migrate(project)
+
+    assert result.status == "migrated"
+    assert result.imported_count == 6  # blank lines contribute no events
+
+
 # ---------------------------------------------------------------------------
 # Oracle 5: event order/seq preserved
 
