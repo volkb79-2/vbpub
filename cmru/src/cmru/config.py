@@ -10,6 +10,7 @@ See docs/SPEC.md S2 for the full schema.
 """
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -90,6 +91,20 @@ class DelegatedConfig:
 
 
 @dataclass(frozen=True)
+class VariantConfig:
+    """A named per-interpreter artifact variant (S-REL.6).
+
+    Multi-variant bundle/tarball projects publish N variants under ONE release tag as
+    distinct assets named ``<tag>-<name><suffix>`` (e.g. a version-locked ``py39`` and
+    ``py311`` bundle). The operator selects one at install time (get.py ``--variant``).
+    An empty variant list ⇒ today's exact single-asset behaviour.
+    """
+    name: str                    # variant id, used verbatim in the asset filename
+    build_arg: Optional[str]     # per-variant build arg the project's build step consumes
+    label: Optional[str]         # human description shown by the installer's variant prompt
+
+
+@dataclass(frozen=True)
 class ProjectS2Config:
     name: str
     prefix: str              # git tag prefix, e.g. "tls-edge-v"
@@ -102,6 +117,7 @@ class ProjectS2Config:
     installer: Optional[InstallerConfig]
     delegated: Optional[DelegatedConfig]
     steps: Mapping[str, list]
+    variants: List[VariantConfig] = field(default_factory=list)  # empty ⇒ single-asset (S-REL.6)
 
 
 @dataclass(frozen=True)
@@ -253,6 +269,56 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
     )
 
 
+# A variant name is used verbatim inside a release-asset filename, so keep it to a
+# filesystem/URL-safe token (letters, digits, dot, dash, underscore) — V22.
+_VARIANT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _parse_variants(name: str, raw: dict) -> List[VariantConfig]:
+    """Parse ``[[project.<name>.variants]]`` — fail-fast, unknown keys rejected (V09/V22).
+
+    Returns [] when no variants are declared (the single-asset path). Each variant needs a
+    unique, filename-safe ``name``; ``build_arg`` and ``label`` are optional.
+    """
+    items = raw.get("variants")
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        print(f"[ERROR] project.{name}.variants must be an array of tables")
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+
+    _KNOWN_VARIANT_KEYS = {"name", "build_arg", "label"}
+    variants: List[VariantConfig] = []
+    seen: set[str] = set()
+    for i, v in enumerate(items):
+        if not isinstance(v, dict):
+            print(f"[ERROR] project.{name}.variants[{i}] must be a table")
+            raise SystemExit(exit_codes.CONFIG_ERROR)
+        unknown = [k for k in v if k not in _KNOWN_VARIANT_KEYS]
+        if unknown:
+            print(f"[ERROR] project.{name}.variants[{i}]: unknown keys {sorted(unknown)} (V09)")
+            raise SystemExit(exit_codes.CONFIG_ERROR)
+        vname = str(_require(v, "name", f"project.{name}.variants[{i}]"))
+        if not _VARIANT_NAME_RE.match(vname):
+            print(
+                f"[ERROR] project.{name}.variants[{i}].name {vname!r} is invalid (V22): "
+                "use only letters, digits, '.', '-', '_' (it goes into the asset filename)"
+            )
+            raise SystemExit(exit_codes.CONFIG_ERROR)
+        if vname in seen:
+            print(f"[ERROR] project.{name}.variants: duplicate name {vname!r} (V22)")
+            raise SystemExit(exit_codes.CONFIG_ERROR)
+        seen.add(vname)
+        build_arg = v.get("build_arg")
+        label = v.get("label")
+        variants.append(VariantConfig(
+            name=vname,
+            build_arg=str(build_arg) if build_arg is not None else None,
+            label=str(label) if label is not None else None,
+        ))
+    return variants
+
+
 def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
     # V09: reject the retired [getsh] key
     if "getsh" in raw:
@@ -303,6 +369,8 @@ def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
         print(f"[ERROR] project.{name}.steps must be a table")
         raise SystemExit(exit_codes.CONFIG_ERROR)
 
+    variants = _parse_variants(name, raw)
+
     return ProjectS2Config(
         name=name,
         prefix=prefix,
@@ -315,6 +383,7 @@ def _parse_project(name: str, raw: dict, config_dir: Path) -> ProjectS2Config:
         installer=installer,
         delegated=delegated,
         steps=steps,
+        variants=variants,
     )
 
 

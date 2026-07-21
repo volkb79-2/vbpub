@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sys
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -309,6 +311,134 @@ def publish_versioned(
     return result
 
 
+# ─── multi-variant publish (S-REL.6) ─────────────────────────────────────────
+@dataclass(frozen=True)
+class VariantArtifact:
+    """One built per-interpreter variant to publish under a multi-variant release.
+
+    ``asset_path`` is the artifact the build produced for this variant; it is uploaded
+    (renamed if needed) as ``<prefix>-v<version>-<name><suffix>``. ``extra_assets`` are
+    per-variant sidecars uploaded alongside it (for a ``bundle``: its ``manifest.json``
+    and ``manifest.json.minisig``), namespaced by the variant so they never collide.
+    """
+    name: str
+    asset_path: Path
+    extra_assets: Sequence[Path] = ()
+    label: Optional[str] = None
+
+
+def variant_asset_name(prefix: str, version: str, variant: str, suffix: str) -> str:
+    """Deterministic per-variant asset name: ``<prefix>-v<version>-<variant><suffix>``."""
+    return f"{version_to_tag(prefix, version)}-{variant}{suffix}"
+
+
+def _place_named(src: Path, target_name: str) -> Path:
+    """Ensure a file named ``target_name`` exists next to ``src`` (copy iff renamed)."""
+    dest = src.with_name(target_name)
+    if src.name != target_name:
+        shutil.copy2(src, dest)
+    return dest
+
+
+def publish_versioned_variants(
+    gh: GitHubReleases,
+    *,
+    prefix: str,
+    version: str,
+    variants: Sequence[VariantArtifact],
+    asset_suffix: str,
+    notes: Optional[str] = None,
+    latest_pointer: bool = True,
+    target_commitish: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Publish N per-interpreter variants under ONE ``<prefix>-v<version>`` release.
+
+    Each variant contributes a deterministically-named asset
+    (``<prefix>-v<version>-<name><asset_suffix>``) plus its ``.sha256`` sidecar and any
+    per-variant ``extra_assets`` (for ``bundle``: manifest.json + .minisig). The thin
+    ``<prefix>-latest`` pointer records the full variant list and every hash, so an
+    installer can present the choice and verify the selected one (see get.py ``--variant``).
+
+    Mirrors :func:`publish_versioned` (single-asset path) but for the variant matrix;
+    the single-asset function is intentionally left byte-for-byte unchanged.
+
+    Returns ``{version, release_tag|None, variants:[{name, asset, sha256, url, label}]}``.
+    """
+    if not variants:
+        _die("publish_versioned_variants requires at least one variant")
+
+    released = is_release_version(version)
+    release_tag = version_to_tag(prefix, version)
+
+    records: List[Dict[str, Any]] = []
+    assets: List[Path] = []
+    for v in variants:
+        canonical = variant_asset_name(prefix, version, v.name, asset_suffix)
+        asset = _place_named(Path(v.asset_path), canonical)
+        digest = sha256_file(asset)
+        sidecar = write_sha256_sidecar(asset)
+        assets.extend([asset, sidecar])
+        for extra in v.extra_assets:
+            extra = Path(extra)
+            extra_name = f"{release_tag}-{v.name}.{extra.name}"
+            assets.append(_place_named(extra, extra_name))
+        records.append({
+            "name": v.name,
+            "asset": canonical,
+            "sha256": digest,
+            "url": gh.asset_download_url(release_tag, canonical) if released else None,
+            "label": v.label,
+        })
+
+    result: Dict[str, Any] = {"version": version, "release_tag": None, "variants": records}
+
+    if released:
+        variant_lines = "\n".join(
+            f"- `{r['asset']}` — `{r['sha256']}`" for r in records
+        )
+        body = (notes or f"{prefix} {version}") + (
+            f"\n\n**Variants** ({len(records)}), one asset each under this tag "
+            f"(select at install time with `--variant <name>`):\n{variant_lines}\n\n"
+            f"Verify: `sha256sum -c <asset>.sha256`\n\n"
+            f"Resolve latest programmatically by scanning `{prefix}-v*` releases "
+            f"(highest semver); see cmru docs/SPEC.md S5."
+        )
+        gh.publish(release_tag, release_tag, body, assets, target_commitish=target_commitish)
+        result["release_tag"] = release_tag
+        print(f"[INFO] Published immutable multi-variant release {release_tag} "
+              f"({', '.join(r['name'] for r in records)})")
+    else:
+        print(f"[INFO] Dev build {version} — no immutable version release")
+
+    if latest_pointer:
+        latest_tag = f"{prefix}-latest"
+        if released:
+            manifest = Path(variants[0].asset_path).with_name("latest.json")
+            manifest.write_text(json.dumps({
+                "project": prefix,
+                "version": version,
+                "tag": release_tag,
+                "variants": [
+                    {"name": r["name"], "asset": r["asset"], "sha256": r["sha256"],
+                     "url": r["url"], "label": r["label"]}
+                    for r in records
+                ],
+                "note": "multi-variant release — pick a variant at install time "
+                        "(get.py --variant <name>); assets live on the versioned release",
+            }, indent=2) + "\n", encoding="utf-8")
+            gh.publish(latest_tag, latest_tag,
+                       f"{prefix} latest → {version} "
+                       f"({len(records)} variants; thin pointer, see latest.json)",
+                       [manifest], recreate=True)
+            print(f"[INFO] Refreshed thin pointer {latest_tag} → {release_tag}")
+        else:
+            gh.publish(latest_tag, latest_tag, f"{prefix} latest (dev → {version})",
+                       assets, recreate=True)
+            print(f"[INFO] Moved {latest_tag} (dev variant assets → {version})")
+
+    return result
+
+
 # ─── profile glue (was duplicated across project publish scripts) ─────────────
 # These are the per-artifact helpers every wheel project re-implemented (find the
 # built wheel, read its version, assert the published "latest" is well-formed). They
@@ -319,16 +449,36 @@ def _die(message: str) -> None:
     raise SystemExit(1)
 
 
-def find_artifact(directory: Path, glob: str) -> Path:
+def _matches_variant(name: str, variant: str, suffix: Optional[str]) -> bool:
+    """True if asset ``name`` belongs to ``variant`` (named ``<base>-<variant><suffix>``).
+
+    When ``suffix`` is known it is stripped first so a dotted version (e.g. ``1.0.0``)
+    is never mistaken for a file extension; the remaining base must end in ``-<variant>``.
+    """
+    base = name[: -len(suffix)] if (suffix and name.endswith(suffix)) else name
+    return base.endswith(f"-{variant}")
+
+
+def find_artifact(directory: Path, glob: str, *, variant: Optional[str] = None,
+                  suffix: Optional[str] = None) -> Path:
     """Return the single artifact the build step produced (never rebuilds — a rebuild
     would differ in bytes/version from what was tested). Errors if 0 or >1 match.
 
     Generic over artifact type (wheel ``.whl``, tarball ``.tar.xz``, …) — every profile
-    can route through this rather than carrying its own discovery logic."""
+    can route through this rather than carrying its own discovery logic.
+
+    Multi-variant (S-REL.6): when ``variant`` is given, the glob matches are further
+    narrowed to the single asset named ``<base>-<variant><suffix>``. This is why a
+    multi-variant build (several ``<prefix>-v*`` files in dist/) no longer trips the
+    ">1 match" guard — resolution is by (tag, variant), so each variant resolves to
+    exactly one file while genuine duplicates within a variant still error."""
     directory = Path(directory)
     matches = sorted(directory.glob(glob))
+    if variant is not None:
+        matches = [m for m in matches if _matches_variant(m.name, variant, suffix)]
     if not matches:
-        _die(f"No artifact in {directory} (glob: {glob}). Run the build step first.")
+        extra = f" for variant {variant!r}" if variant is not None else ""
+        _die(f"No artifact in {directory} (glob: {glob}){extra}. Run the build step first.")
     if len(matches) > 1:
         _die(f"Multiple artifacts in {directory}: {[m.name for m in matches]}; clean + rebuild.")
     return matches[0]

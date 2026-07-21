@@ -10,6 +10,25 @@
 
 ---
 
+## Landed
+
+### FEAT-01 — Multi-variant `bundle`/`tarball` publish + variant-selecting installer — *shipped*
+**Status:** landed (code + tests + spec in lockstep).
+**SPEC:** `S-REL.6`, `S1.6`, `S2` (`[[project.<name>.variants]]`), `S5.3` (latest.json
+`variants`), `S6.12` (installer `--variant`), `V22`.
+**Why:** an artifact that carries version-locked C-extension wheels can't serve two host
+interpreters from one archive (e.g. netcup-api-filter's `py39` vs `py311`). One release tag
+now publishes one asset per named variant (`<tag>-<variant>.tar.xz` + `.sha256`, and for
+`bundle` a per-variant `manifest.json` + `.minisig`), recorded in `latest.json`. The operator
+selects one explicitly at install time (`get.py --variant NAME`) — the webhoster has no
+interpreter to auto-detect, so there is no silent default; the choice is remembered for
+`update`. Zero declared variants ⇒ the single-asset path is unchanged (a separate keystone,
+`publish_versioned_variants`, leaves `publish_versioned` byte-for-byte intact).
+**Resolution** is by `(tag, variant)`: `find_artifact(..., variant=, suffix=)` narrows a
+multi-variant `dist/` to one file, so the old ">1 match" guard no longer fires spuriously.
+
+---
+
 ## Known Issues
 
 ### KI-02 — Built-in OCI repack is disabled pending production equivalence — *fail-closed*

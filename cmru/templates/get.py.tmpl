@@ -16,6 +16,9 @@ Install (user scope):
 Pin a specific version:
     sudo python3 get.py install --config HOST.toml --version [[TAG_PREFIX]]0.2.0
 
+Select a variant (multi-variant releases — one asset per interpreter):
+    sudo python3 get.py install --config HOST.toml --variant py311
+
 Update:
     sudo python3 get.py update
 
@@ -60,6 +63,10 @@ ENTRYPOINT       = "[[ENTRYPOINT]]"           # "" means no adapter
 REQUIRED_COMMANDS: List[str] = [[REQUIRED_COMMANDS_LIST]]
 PRESERVE_PATHS: List[str]    = [[PRESERVE_PATHS_LIST]]
 WHEEL_SPECS: List[Tuple[str, str]] = [[WHEEL_SPECS_LIST]]  # [(glob, distribution), ...]
+# Per-interpreter variants (S-REL.6). [] ⇒ single-asset release (legacy path, unchanged).
+# When non-empty the release carries one asset per variant, named <tag>-<name><suffix>,
+# and the operator MUST select one at install time with --variant NAME (no silent default).
+VARIANTS: List[dict] = [[VARIANTS_LIST]]  # e.g. [{"name": "py39", "label": "Python 3.9"}, ...]
 
 # Scope directories (injected)
 INSTALL_DIR_SYSTEM = "[[INSTALL_DIR_SYSTEM]]"
@@ -288,6 +295,74 @@ def _find_asset_by_name(assets: list, name: str) -> Optional[dict]:
     return None
 
 
+# ─── Variant selection (S-REL.6 / S6.12) ──────────────────────────────────────
+
+def _variant_names() -> List[str]:
+    return [v["name"] for v in VARIANTS]
+
+
+def _format_variants() -> str:
+    lines = []
+    for v in VARIANTS:
+        label = v.get("label")
+        lines.append(f"  - {v['name']}" + (f"  ({label})" if label else ""))
+    return "\n".join(lines)
+
+
+def _variant_marker_path(root: Path) -> Path:
+    """Where the selected variant is remembered so `update` keeps the host's choice."""
+    return root / "shared" / ".variant"
+
+
+def _persist_variant(root: Path, variant: Optional[str]) -> None:
+    if not variant:
+        return
+    marker = _variant_marker_path(root)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(variant + "\n", encoding="utf-8")
+
+
+def _select_variant(args: argparse.Namespace, root: Path) -> Optional[str]:
+    """Resolve which per-interpreter variant to install/update (S6.12).
+
+    Returns None for a single-asset release (VARIANTS empty) — the byte-for-byte legacy
+    path. Otherwise, in priority order: an explicit --variant (validated); a variant
+    remembered from a prior install (so `update` stays on the same interpreter); an
+    interactive prompt on a TTY; else a fatal error listing the choices. No silent default.
+    """
+    if not VARIANTS:
+        return None
+    names = _variant_names()
+    chosen = getattr(args, "variant", None)
+    if chosen:
+        if chosen not in names:
+            fatal(f"Unknown --variant {chosen!r}. Available:\n{_format_variants()}", EXIT_CONFIG)
+        return chosen
+    marker = _variant_marker_path(root)
+    if marker.exists():
+        prev = marker.read_text(encoding="utf-8").strip()
+        if prev in names:
+            info(f"Using previously selected variant: {_c('BLD', prev)}")
+            return prev
+    if sys.stdin.isatty():
+        info("This release ships multiple variants — choose one:")
+        for i, v in enumerate(VARIANTS, 1):
+            label = v.get("label")
+            print(f"  {i}) {v['name']}" + (f"  ({label})" if label else ""))
+        raw = input("Variant [name or number]: ").strip()
+        if raw.isdigit() and 1 <= int(raw) <= len(VARIANTS):
+            return VARIANTS[int(raw) - 1]["name"]
+        if raw in names:
+            return raw
+        fatal(f"Invalid selection {raw!r}. Available:\n{_format_variants()}", EXIT_CONFIG)
+    fatal(
+        "This release ships multiple per-interpreter variants; none was selected.\n"
+        f"Re-run with --variant NAME. Available variants:\n{_format_variants()}",
+        EXIT_CONFIG,
+    )
+    return None  # unreachable (fatal raises)
+
+
 # ─── Download (public or private) (S5) ────────────────────────────────────────
 
 def _download_asset(tag: str, asset_name: str, dest: Path, token: Optional[str]) -> None:
@@ -399,9 +474,13 @@ def download_and_verify(
     workdir: Path,
     token: Optional[str],
     pubkey_arg: Optional[str],
+    variant: Optional[str] = None,
 ) -> Path:
-    """Download the bundle + sidecar; verify SHA256 + minisign; return bundle path."""
-    asset_name   = f"{tag}{ASSET_SUFFIX}"
+    """Download the bundle + sidecar; verify SHA256 + minisign; return bundle path.
+
+    ``variant`` (S-REL.6) selects the per-interpreter asset ``<tag>-<variant>{suffix}``;
+    ``None`` keeps the single-asset name ``<tag>{suffix}`` (legacy path, unchanged)."""
+    asset_name   = f"{tag}-{variant}{ASSET_SUFFIX}" if variant else f"{tag}{ASSET_SUFFIX}"
     sidecar_name = f"{asset_name}.sha256"
     asset   = workdir / asset_name
     sidecar = workdir / sidecar_name
@@ -754,8 +833,13 @@ def do_install(args: argparse.Namespace, token: Optional[str]) -> None:
         tag = resolve_latest_tag(token)
         info(f"Latest: {_c('BLD', tag)}")
 
+    variant = _select_variant(args, root)
+    if variant:
+        info(f"Variant: {_c('BLD', variant)}")
+
     shared_dir.mkdir(parents=True, exist_ok=True)
     releases_dir.mkdir(parents=True, exist_ok=True)
+    _persist_variant(root, variant)
 
     with _Lock(root):
         staging = releases_dir / f"{tag}.staging"
@@ -763,7 +847,7 @@ def do_install(args: argparse.Namespace, token: Optional[str]) -> None:
 
         with tempfile.TemporaryDirectory() as tmp:
             bundle = download_and_verify(
-                tag, Path(tmp), token, getattr(args, "manifest_pubkey", None)
+                tag, Path(tmp), token, getattr(args, "manifest_pubkey", None), variant
             )
             _extract_bundle(bundle, staging)
 
@@ -813,10 +897,15 @@ def do_update(args: argparse.Namespace, token: Optional[str]) -> None:
         ok(f"Already at {tag}. Nothing to do.")
         return
 
+    variant = _select_variant(args, root)
+    if variant:
+        info(f"Variant: {_c('BLD', variant)}")
+
     info(f"Updating {current_ver} -> {tag} ...")
     _copy_preserve_to_shared(root)
 
     releases_dir.mkdir(parents=True, exist_ok=True)
+    _persist_variant(root, variant)
 
     with _Lock(root):
         staging = releases_dir / f"{tag}.staging"
@@ -824,7 +913,7 @@ def do_update(args: argparse.Namespace, token: Optional[str]) -> None:
 
         with tempfile.TemporaryDirectory() as tmp:
             bundle = download_and_verify(
-                tag, Path(tmp), token, getattr(args, "manifest_pubkey", None)
+                tag, Path(tmp), token, getattr(args, "manifest_pubkey", None), variant
             )
             _extract_bundle(bundle, staging)
 
@@ -981,10 +1070,14 @@ def main() -> None:
     p_install.add_argument("--version", metavar="TAG", help="Pin a specific release")
     p_install.add_argument("--scope", choices=["system", "user"], default="system",
                            help="Install scope (default: system)")
+    p_install.add_argument("--variant", metavar="NAME",
+                           help="Select a per-interpreter variant (multi-variant releases)")
 
     p_update = subparsers.add_parser("update", help="Update to latest (or --version)")
     p_update.add_argument("--version", metavar="TAG")
     p_update.add_argument("--scope", choices=["system", "user"], default="system")
+    p_update.add_argument("--variant", metavar="NAME",
+                          help="Override the remembered variant (multi-variant releases)")
 
     p_status = subparsers.add_parser("status", help="Show current/previous versions + health")
     p_status.add_argument("--scope", choices=["system", "user"], default="system")

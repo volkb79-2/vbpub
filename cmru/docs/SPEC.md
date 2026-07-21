@@ -101,6 +101,13 @@ deployment: it pins every content-addressed asset (wheel sha256, image digest) s
 installer (SPEC A) can verify the entire release transitively from a single trusted
 signature check.
 
+A `bundle` (or `tarball`) MAY additionally declare **per-interpreter variants** (S-REL.6):
+one release tag then carries N distinct triples, one per variant (e.g. a `py39` and a
+`py311` bundle, each with version-locked C-extension wheels). Each variant's assets are
+named `<tag>-<variant>.tar.xz` (+ its `.sha256`, and for `bundle` its `manifest.json` +
+`manifest.json.minisig`). With **no** declared variants the artifact is a single
+`<tag>.tar.xz` triple exactly as before.
+
 **S1.4** OCI images are published to a registry (ghcr) with a dated immutable tag plus a
 floating `:latest`; their manifest digest is the content address. They are **not**
 git-tagged and create **no** GitHub Release (S-REL).
@@ -163,6 +170,32 @@ get a clean `X.Y.Z` from setuptools-scm). cmru auto-commits **only** the declare
 build (resolver regenerates manifests pre-build, bake embeds them) → commit
 `commit_generated` → push commit → push images. Wheel flow: clean-gate → tag at HEAD →
 build → push tag → (project step) Release + asset + `latest.json`.
+
+**S-REL.6 — Multi-variant releases (per-interpreter artifact matrix).** A `bundle` or
+`tarball` project MAY declare N named **variants** so that ONE release tag publishes one
+artifact per variant. This exists for artifacts that cannot be interpreter-agnostic — e.g.
+a bundle that carries version-locked C-extension wheels, where a single archive cannot serve
+both a py39 and a py311 host.
+
+- **Declaration** (`[[project.<name>.variants]]`, S2): each entry has a required, filename-safe
+  `name` (V22), and optional `build_arg` (a build-time knob the project's build step consumes)
+  and `label` (a human description surfaced by the installer). **Zero declared variants ⇒ the
+  exact single-asset behaviour of prior versions** (no naming, latest.json, or installer change).
+- **Asset naming** is deterministic: `<prefix>-v<version>-<name><suffix>` (e.g.
+  `naf-v1.0.0-py39.tar.xz`), each with its `.sha256` sidecar, and for `bundle` a per-variant
+  `manifest.json` + `manifest.json.minisig`, all uploaded under the single `<prefix>-v<version>`
+  release. cmru MUST NOT publish two variants under two different tags.
+- **latest.json** records the full variant list and every hash (see S5.3), so a consumer can
+  enumerate and verify variants without listing the release's assets.
+- **Resolution** is by `(tag, variant)`: `find_artifact(..., variant=<name>, suffix=<suffix>)`
+  narrows a multi-variant `dist/` to exactly one file, so a build that produced several
+  `<prefix>-v*` artifacts no longer trips the ">1 match" guard; genuine duplicates within a
+  single variant still error.
+- **Selection is explicit at install time** (S6.12): the target host has no interpreter to
+  auto-detect, so the operator names the variant. cmru MUST NOT pick a silent default.
+
+The single-asset publish keystone (`publish_versioned`) is unchanged; the variant matrix is a
+separate keystone (`publish_versioned_variants`) so the legacy path is provably untouched.
 
 ---
 
@@ -231,6 +264,19 @@ distribution = "cmru"               # pip distribution name
 [[project.<name>.installer.wheels]]
 path         = "vendor/ciu-*.whl"
 distribution = "ciu"
+
+# Optional per-interpreter variants (S-REL.6). Zero entries ⇒ single-asset behaviour.
+# Each variant publishes one asset (<prefix>-v<version>-<name><suffix>) under the same tag;
+# the operator selects one at install time via get.py --variant <name>.
+[[project.<name>.variants]]
+name      = "py39"                 # required: filename-safe token (V22); used in the asset name
+build_arg = "PYTHON_VERSION=3.9"   # optional: build knob the project's build step consumes
+label     = "Python 3.9 (glibc)"   # optional: human description shown by the installer prompt
+
+[[project.<name>.variants]]
+name      = "py311"
+build_arg = "PYTHON_VERSION=3.11"
+label     = "Python 3.11 (glibc)"
 
 # NOTE: [project.<name>.getsh] is REMOVED (V09 rejects it — migrate to [installer]).
 
@@ -332,6 +378,22 @@ The resolver implements differentiator #2: highest-semver selection, replacing G
 }
 ```
 
+For a **multi-variant** release (S-REL.6) the pointer instead records a `variants` array —
+one entry per interpreter variant, each with its own `asset`, `sha256`, `url`, and optional
+`label` — and carries no single top-level `asset`/`sha256` (there is no single artifact):
+
+```json
+{
+  "project": "naf",
+  "version": "1.0.0",
+  "tag": "naf-v1.0.0",
+  "variants": [
+    {"name": "py39",  "asset": "naf-v1.0.0-py39.tar.xz",  "sha256": "<hex>", "url": "https://…/naf-v1.0.0-py39.tar.xz",  "label": "Python 3.9"},
+    {"name": "py311", "asset": "naf-v1.0.0-py311.tar.xz", "sha256": "<hex>", "url": "https://…/naf-v1.0.0-py311.tar.xz", "label": "Python 3.11"}
+  ]
+}
+```
+
 **S5.4** Fallback if latest.json is absent or stale: scan releases via host API, filter by prefix, select max semver.
 
 **S5.5** `--format` flag: `json` (default), `env` (shell-sourceable `KEY=value` lines), `url` (bare download URL).
@@ -366,7 +428,9 @@ get.py rollback [--version TAG] [--scope system|user]
 2. **Resolve** — resolve the highest-semver `TAG_PREFIX*` release via the GitHub Releases API,
    or use `--version`. Public requests carry **no** Authorization header. Private assets are
    resolved by API asset-ID with the Authorization header stripped before the CDN redirect.
-3. **Download** — fetch `<tag><asset_suffix>` + its `.sha256` sidecar.
+3. **Download** — fetch `<tag><asset_suffix>` + its `.sha256` sidecar. For a multi-variant
+   release the selected variant (S6.12) changes the asset name to
+   `<tag>-<variant><asset_suffix>` (+ matching `.sha256`).
 4. **Verify SHA256** — recompute and compare; mismatch → exit 1, before extraction.
 5. **Verify minisign** — if `--manifest-pubkey` is supplied (or pubkey in host config),
    extract `manifest_name` + `signature_name` from the bundle and run
@@ -427,6 +491,22 @@ no third-party dependencies. `minisign`, `docker`, and the project adapter are s
 is empty, no adapter is called and no venv is created (tls-edge minimal path).
 
 **S6.6** `--version <TAG>` pins the install to a specific tag (bare semver or full tag). Arguments go to the right side of the pipe (`curl … | sudo python3 - install --version …`), so there is no env-var-across-pipe footgun.
+
+**S6.12** **Variant selection (multi-variant releases, S-REL.6).** When the emitted `get.py`
+carries a non-empty `VARIANTS` list, the operator MUST select one at install/update time —
+the target webhoster has no interpreter to auto-detect, so there is **no silent default**.
+Resolution order (first hit wins):
+
+1. `--variant NAME` — explicit; rejected with the available list if unknown (exit 2).
+2. A variant remembered from a prior install (persisted at `<root>/shared/.variant`), so
+   `update` stays on the host's interpreter unless `--variant` overrides it.
+3. On an interactive TTY: a numbered prompt listing each variant's `name` (and `label`).
+4. Otherwise: a fatal error (exit 2) that lists the available variants.
+
+The chosen variant is written to `<root>/shared/.variant` (preserved across updates) and
+drives the download asset name (`<tag>-<variant><asset_suffix>`, S6.3 step 3). When `VARIANTS`
+is empty every step above is skipped and the installer behaves **byte-for-byte** as before
+(single asset `<tag><asset_suffix>`).
 
 ---
 
@@ -537,6 +617,7 @@ _This section enumerates all config validation rules. Each rule references the s
 | V15 | `[installer.wheels[*]].path` and `.distribution` are required | 2 |
 | V16 | `installer.required_commands` are checked before network I/O (exit 3) | 3 |
 | V17 | Token file for `--github-token-file` must be owned by current user and chmod 600 | 2 |
+| V22 | `[[project.<name>.variants]].name` is present, unique, and filename-safe (`[A-Za-z0-9][A-Za-z0-9._-]*`); unknown variant keys are rejected | 2 |
 
 ---
 

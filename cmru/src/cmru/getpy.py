@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 _TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "get.py.tmpl"
@@ -37,6 +37,25 @@ def _py_wheel_specs(wheel_specs: List[Tuple[str, str]]) -> str:
     return "[" + ", ".join(parts) + "]"
 
 
+def _py_lit(value: Optional[str]) -> str:
+    """Render a Python string literal (or ``None``) with the essentials escaped."""
+    if value is None:
+        return "None"
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _py_variants(variants: List[Dict[str, Optional[str]]]) -> str:
+    """Render VARIANTS as a Python list-of-dict literal ([{"name","label"}, ...])."""
+    if not variants:
+        return "[]"
+    parts = [
+        '{"name": %s, "label": %s}' % (_py_lit(v["name"]), _py_lit(v.get("label")))
+        for v in variants
+    ]
+    return "[" + ", ".join(parts) + "]"
+
+
 def render_get_py(
     *,
     project_name: str,
@@ -52,6 +71,7 @@ def render_get_py(
     wheel_specs: Optional[List[Tuple[str, str]]] = None,
     manifest_name: str = "manifest.json",
     signature_name: str = "manifest.json.minisig",
+    variants: Optional[List[Dict[str, Optional[str]]]] = None,
     template_path: Path = _TEMPLATE_PATH,
 ) -> str:
     """Render the get.py template for a project.
@@ -65,6 +85,7 @@ def render_get_py(
     cmds = required_commands or []
     preserve = preserve_paths or []
     wheels = wheel_specs or []
+    variant_list = variants or []
 
     # Comment string for the docstring header: ", cmd1, cmd2"
     if cmds:
@@ -86,6 +107,7 @@ def render_get_py(
         "[[REQUIRED_COMMANDS_COMMENT]]": required_commands_comment,
         "[[PRESERVE_PATHS_LIST]]":       _py_str_list(preserve),
         "[[WHEEL_SPECS_LIST]]":          _py_wheel_specs(wheels),
+        "[[VARIANTS_LIST]]":             _py_variants(variant_list),
         "[[MANIFEST_NAME]]":             manifest_name,
         "[[SIGNATURE_NAME]]":            signature_name,
     }
@@ -118,6 +140,9 @@ def render_from_config(project_name: str, config_path: Path) -> str:
     wheel_specs: List[Tuple[str, str]] = [
         (w.path, w.distribution) for w in ins.wheels
     ]
+    variants: List[Dict[str, Optional[str]]] = [
+        {"name": v.name, "label": v.label} for v in proj.variants
+    ]
 
     return render_get_py(
         project_name=project_name,
@@ -133,6 +158,7 @@ def render_from_config(project_name: str, config_path: Path) -> str:
         wheel_specs=wheel_specs or None,
         manifest_name=ins.manifest_name,
         signature_name=ins.signature_name,
+        variants=variants or None,
     )
 
 
