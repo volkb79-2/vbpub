@@ -26,7 +26,6 @@ render-on-target path (S14.2) is untouched — ``--thin`` is a parallel branch.
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tarfile
 import tempfile
