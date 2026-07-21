@@ -49,7 +49,7 @@ def split_frontmatter(text: str) -> tuple[dict, str, int]:
 
     # Check for leading ---
     if not lines or lines[0] != "---":
-        log.warning("frontmatter split failed", reason="missing leading ---")
+        log.debug("frontmatter split failed", reason="missing leading ---")
         raise HandoffParseError("<text>", ["missing leading '---'"])
 
     # Find closing ---
@@ -60,7 +60,7 @@ def split_frontmatter(text: str) -> tuple[dict, str, int]:
             break
 
     if closing_idx is None:
-        log.warning("frontmatter split failed", reason="unterminated frontmatter")
+        log.debug("frontmatter split failed", reason="unterminated frontmatter")
         raise HandoffParseError("<text>", ["unterminated frontmatter"])
 
     # Parse YAML
@@ -68,12 +68,12 @@ def split_frontmatter(text: str) -> tuple[dict, str, int]:
     try:
         data = yaml.safe_load(fm_text)
     except yaml.YAMLError as e:
-        log.warning("frontmatter split failed", reason="yaml parse error")
+        log.debug("frontmatter split failed", reason="yaml parse error")
         raise HandoffParseError("<text>", [f"YAML parse error: {e}"])
 
     # Ensure it's a mapping (dict)
     if not isinstance(data, dict):
-        log.warning("frontmatter split failed", reason="not a mapping")
+        log.debug("frontmatter split failed", reason="not a mapping")
         raise HandoffParseError("<text>", ["frontmatter YAML is not a mapping"])
 
     # Body starts after the closing ---
