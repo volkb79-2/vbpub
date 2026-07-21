@@ -271,8 +271,16 @@ def test_log_signals_emits_warning_for_a_real_detected_runaway(tmp_path):
         for i in range(1, 7)  # 6 consecutive > default threshold of 5
     ]
     signals = detect_runaways(events, WatchdogConfig())
-    assert len(signals) == 1  # sanity: the detector really did fire
-    sig = signals[0]
+    # A 6x-SPEC_ATTENTION(rejections) stream legitimately trips TWO detectors:
+    # reconcile-thrash (trailing run 6 > thrash_consecutive_count=5) AND the
+    # reason-form notification-storm (windowed count 6 > reason_storm_count=5).
+    # Assert the detector fired and isolate the reconcile-thrash signal this
+    # test verifies the fields of; the multi-signal fan-out itself is covered
+    # by test_log_signals_emits_one_warning_per_signal.
+    assert signals, "sanity: the detector really did fire"
+    thrash = [s for s in signals if s.pattern == "reconcile-thrash"]
+    assert len(thrash) == 1
+    sig = thrash[0]
 
     log_dir = tmp_path / "logs"
     nyx_log.configure(level=nyx_log.WARNING, log_dir=log_dir, console=False)
@@ -282,11 +290,12 @@ def test_log_signals_emits_warning_for_a_real_detected_runaway(tmp_path):
         log_path = log_dir / "nyxloom.jsonl"
         assert log_path.exists()
         records = [json.loads(ln) for ln in log_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        assert len(records) == 1
-        rec = records[0]
-        assert rec["level"] == "warning"
-        assert rec["msg"] == "watchdog runaway detected"
-        assert rec["pattern"] == sig.pattern == "reconcile-thrash"
+        # one WARNING record per detected signal
+        assert len(records) == len(signals)
+        for rec in records:
+            assert rec["level"] == "warning"
+            assert rec["msg"] == "watchdog runaway detected"
+        rec = next(r for r in records if r["pattern"] == "reconcile-thrash")
         assert rec["key"] == sig.key == "reconcile-thrash:rejections"
         assert rec["detail"] == sig.detail
     finally:

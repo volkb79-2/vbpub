@@ -306,7 +306,7 @@ def notify_event(cfg: ProjectConfig, states: dict[str, TaskStateFile], ev: Event
         # Both unconfigured: don't call send, just mark as failed -- a soft,
         # expected skip (no channel configured), not an operational failure.
         log.warning("notification skipped", reason="unconfigured",
-                    event=ev.type.value, project=ev.project, task=ev.task_id)
+                    event_type=ev.type.value, project=ev.project, task=ev.task_id)
         storage.append_event(
             ev.project,
             actor=Actor(ActorKind.NOTIFIER, "notify"),
@@ -320,7 +320,7 @@ def notify_event(cfg: ProjectConfig, states: dict[str, TaskStateFile], ev: Event
         # Try to send
         ok, detail = send(cfg.notify, note)
         if ok:
-            log.info("notification delivered", event=ev.type.value,
+            log.info("notification delivered", event_type=ev.type.value,
                      project=ev.project, task=ev.task_id)
             storage.append_event(
                 ev.project,
@@ -332,7 +332,7 @@ def notify_event(cfg: ProjectConfig, states: dict[str, TaskStateFile], ev: Event
                 wave_id=ev.wave_id,
             )
         else:
-            log.warning("notification delivery failed", event=ev.type.value,
+            log.warning("notification delivery failed", event_type=ev.type.value,
                         project=ev.project, task=ev.task_id, detail=detail)
             storage.append_event(
                 ev.project,
