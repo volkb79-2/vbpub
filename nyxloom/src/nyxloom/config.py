@@ -184,6 +184,16 @@ class ProjectConfig:
     # stages.effective_concurrency(); empty (the default) means every stage uses
     # its registry default -- implement inherits policy.max_active_tasks (parity).
     stage_overrides: dict = field(default_factory=dict)
+    # P02 2026-07-21 (docs/plan-logging.md §3 D-L3, layer 3 of the verbosity
+    # precedence chain): an OPTIONAL static default log level from this
+    # project's own `[logging] level` TOML table. None when the project sets
+    # no preference (daemon.resolve_level then falls through to hardcoded
+    # INFO). Deliberately top-level (not nested under [policy]) -- same
+    # rationale as http_bind's own carve-out (this is a daemon-global
+    # runtime-control knob, not a per-project policy value, even though this
+    # ONE field happens to be read from a specific project's config as the
+    # "static default if nothing else overrides it" layer).
+    logging_level: str | None = None
 
     @classmethod
     def load(cls, root: Path) -> "ProjectConfig":
@@ -261,6 +271,13 @@ class ProjectConfig:
         # B3: per-stage `[stage.<name>]` overrides (currently just concurrency).
         stage_overrides = {name: dict(tbl) for name, tbl in data.get("stage", {}).items()}
         validate_stage_overrides(stage_overrides)
+        # P02 (D-L3 layer 3): `[logging] level`, a plain optional string --
+        # no further validation here. An unrecognised name is caught by
+        # daemon.resolve_level (which treats it as absent and falls through
+        # to the next precedence layer) rather than by config load itself,
+        # so a typo in one project's toml never breaks config loading for
+        # every project sharing this frozen module.
+        logging_level = data.get("logging", {}).get("level")
         return cls(
             project_id=data["project"]["id"],
             root=root,
@@ -281,6 +298,7 @@ class ProjectConfig:
             backlog=data["project"].get("backlog"),
             pipeline=pipeline,
             stage_overrides=stage_overrides,
+            logging_level=logging_level if isinstance(logging_level, str) else None,
         )
 
     def redact(self, text: str) -> str:
