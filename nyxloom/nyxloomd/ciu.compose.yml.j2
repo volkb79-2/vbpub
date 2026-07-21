@@ -61,20 +61,33 @@ services:
       TZ: UTC
       PYTHONPATH: /workspaces/vbpub/nyxloom/src
       PATH: /home/vscode/.local/bin:/usr/local/bin:/usr/bin:/bin
+      NYXLOOM_STATE_BACKEND: "sqlite"          # SP03 cutover 2026-07-21:
+                                                 # authoritative state store is
+                                                 # per-project SQLite (state.db);
+                                                 # events.jsonl retired to
+                                                 # .pre-sqlite. Reversible: drop
+                                                 # this line -> file backend.
       NYXLOOM_HTTP_BIND: "0.0.0.0"              # P38: safe here -- a private ciu
                                                  # bridge network, never host-net
-    # tini (PID 1, via init: true above) supervises this shell, which is a
-    # SUPERVISOR LOOP for the daemon, not the daemon itself -- no `exec`, so
-    # bash stays the daemon's parent and respawns it 2s after every exit
-    # (crash OR clean restart). A daemon crash reparents its still-live
-    # wrapper children to tini; the respawned daemon re-adopts them via their
-    # on-disk pid/wrapper.pid (the belt-and-braces liveness check daemon.py
-    # already implements -- see docs/runtime-process-model.md §2). The stale
-    # pidfile is cleared once up front, same as before.
+    # tini (PID 1, via init: true above) supervises this shell, which runs
+    # supervise.sh -- a SUPERVISOR LOOP for the daemon, not the daemon itself
+    # (no `exec`), so bash stays the daemon's parent and respawns it after each
+    # exit. A daemon crash reparents its still-live wrapper children to tini;
+    # the respawned daemon re-adopts them via their on-disk pid/wrapper.pid
+    # (the belt-and-braces liveness check daemon.py already implements -- see
+    # docs/runtime-process-model.md §2). The stale pidfile is cleared once up
+    # front. CRASH-LOOP BREAKER (2026-07-21): after N consecutive RAPID
+    # failures (a persistent startup fault -- missing dep, bad config, corrupt
+    # state) supervise.sh STOPS respawning, logs why, and PARKS the container
+    # Up-but-UNHEALTHY for inspection instead of flapping every 2s forever (it
+    # must park, not exit: `restart: unless-stopped` would otherwise recreate
+    # the container into a slow container-level loop). A run that stays up >=
+    # its healthy threshold resets the counter, preserving one-off-crash
+    # auto-recovery. Bind-mounted from the repo => supervisor changes need only
+    # a restart, no image rebuild (same as daemon code).
     command:
       - bash
-      - -c
-      - "rm -f /home/vscode/.local/state/nyxloom/daemon/nyxloomd.pid; while true; do /opt/nyxloom-venv/bin/python -m nyxloom.cli daemon; sleep 2; done"
+      - /workspaces/vbpub/nyxloom/nyxloomd/supervise.sh
     volumes:
       - /home/vb/mdt--mounted-folders:/home/vscode          # home: auth + .local (state)
       - /home/vb/volkb79-2/vbpub:/workspaces/vbpub          # repo + nyxloom src
