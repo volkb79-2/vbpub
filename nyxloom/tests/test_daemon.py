@@ -3753,6 +3753,40 @@ def test_resolve_level_treats_corrupt_layers_as_absent(tmp_state, sample_project
     assert daemon.resolve_level(registry) == ("warning", "config")
 
 
+def test_resolve_level_runtime_file_read_error_falls_through(tmp_state, sample_project, monkeypatch):
+    """A runtime-override path that EXISTS but can't be read as a file (a
+    directory sits there instead of a file -- e.g. a botched deploy) is
+    treated as absent, not a crash: falls through to the next layer."""
+    monkeypatch.setenv("NYXLOOM_LOG_LEVEL", "warning")
+    level_path = paths.daemon_log_level_path()
+    level_path.parent.mkdir(parents=True, exist_ok=True)
+    level_path.mkdir()   # a directory where a file is expected -> read_text() raises OSError
+
+    registry = {"demo": sample_project.root}
+    assert daemon.resolve_level(registry) == ("warning", "env")
+
+
+def test_resolve_level_primary_config_load_failure_falls_through(tmp_state, monkeypatch):
+    """If loading the "primary" project's config raises (missing/invalid
+    toml), layer 3 is treated as absent rather than propagating -- falls
+    through to hardcoded INFO."""
+    monkeypatch.delenv("NYXLOOM_LOG_LEVEL", raising=False)
+    bogus_root = tmp_state.parent / "does-not-exist"
+    registry = {"zzz-nonexistent": bogus_root}
+    assert daemon.resolve_level(registry) == ("info", "default")
+
+
+def test_resolve_level_config_invalid_level_falls_through_to_default(
+        tmp_state, sample_project, monkeypatch):
+    """The primary project's own [logging] level can itself be garbage --
+    treated as absent (falls through to hardcoded INFO), not propagated."""
+    monkeypatch.delenv("NYXLOOM_LOG_LEVEL", raising=False)
+    _set_logging_level(sample_project, "not-a-real-level")
+
+    registry = {"demo": sample_project.root}
+    assert daemon.resolve_level(registry) == ("info", "default")
+
+
 def test_log_level_post_flips_live_no_restart_and_persists(http_daemon, tmp_state, monkeypatch):
     """Oracle 2: POST /api/config/log-level changes the EFFECTIVE level
     without a restart (the same already-running process's `daemon.log`
