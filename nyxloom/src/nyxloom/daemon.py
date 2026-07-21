@@ -4056,16 +4056,22 @@ class Daemon:
                 {"error": f"unknown log level: {level!r}"}).encode("utf-8"))
             return
 
-        log_module.set_level(canonical)
-        override_path = paths.daemon_log_level_path()
-        override_path.parent.mkdir(parents=True, exist_ok=True)
-        override_path.write_text(canonical, encoding="utf-8")
+        # Log the transition BEFORE applying it -- emitted under the OLD
+        # (still-active) effective level, not the new one. Ordering matters:
+        # flipping to a STRICTER level (e.g. info -> warning) would gate out
+        # this very INFO announcement if set_level() ran first, silently
+        # swallowing the one record an operator most wants to see.
         # NB: field name "new_level", NOT "level" -- see the matching
         # comment on the "daemon started" log call in Daemon.run(); "level"
         # in the rendered record is always the record's own severity
         # ("info" here), overwritten unconditionally by structlog.stdlib.
         # add_log_level regardless of what a same-named kwarg carried.
         log.info("log level changed", new_level=canonical, change_source="ui")
+
+        log_module.set_level(canonical)
+        override_path = paths.daemon_log_level_path()
+        override_path.parent.mkdir(parents=True, exist_ok=True)
+        override_path.write_text(canonical, encoding="utf-8")
 
         self._send_json(handler, 200, json.dumps({"ok": True, "level": canonical}).encode("utf-8"))
 
