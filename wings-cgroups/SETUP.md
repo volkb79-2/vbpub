@@ -77,7 +77,7 @@ Weight" alike) are inert under `none`/`mq-deadline`; only BFQ enforces them.
 ```yaml
 services:
   wings:
-    image: wings-local:1.13.1-cgroup.9        # the patched image
+    image: wings-local:1.13.1-cgroup.10        # the patched image
     cgroup_parent: wings-mgmt.slice           # optional (T0a): cap the daemon itself
     volumes:
       # …existing mounts (docker.sock, /etc/pterodactyl, /var/lib/pterodactyl, …)…

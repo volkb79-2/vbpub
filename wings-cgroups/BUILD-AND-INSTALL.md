@@ -30,7 +30,7 @@ zero new warnings.
 ## 3. Build the image
 
 ```bash
-patchstack/scripts/build-image.sh pterodactyl cgroup.9    # -> wings-local:1.13.1-cgroup.9
+patchstack/scripts/build-image.sh pterodactyl cgroup.10    # -> wings-local:1.13.1-cgroup.10
 patchstack/scripts/build-image.sh pelican               # -> wings-local-pelican:<ver>-cgroup.1
 ```
 
@@ -41,13 +41,13 @@ push. Idempotent: re-running rebuilds the same tag.
 
 **The registry-less name is deliberate.** A stray `docker compose pull` on the
 node fails loudly instead of silently reverting the node to stock upstream Wings.
-Bump the suffix (`cgroup.9` → `cgroup.10`) for each deployable change so compose
+Bump the suffix (`cgroup.10` → `cgroup.11`) for each deployable change so compose
 `--force-recreate` and rollback stay unambiguous.
 
 ## 4. Verify the image before deploying
 
 ```bash
-docker run --rm wings-local:1.13.1-cgroup.9 version      # prints the version
+docker run --rm wings-local:1.13.1-cgroup.10 version      # prints the version
 test/smoke-placement.sh                                  # placement vs the real host daemon
 test/e2e-systemd/run-e2e.sh                              # privileged systemd-in-Docker: effective floors
 ```
@@ -68,7 +68,7 @@ node — `systemctl stop wings-smoke.slice` — or the `FragmentPath` pre-flight
 patchstack/scripts/rebase.sh pterodactyl v1.13.2   # rebase the series
 patchstack/scripts/test.sh pterodactyl             # must be green
 patchstack/scripts/export-patches.sh pterodactyl   # refresh patchstack/patches/
-patchstack/scripts/build-image.sh pterodactyl cgroup.9
+patchstack/scripts/build-image.sh pterodactyl cgroup.10
 ```
 
 Then bump `PTERODACTYL_REF` in `stack.conf`. Details and the systemd gotchas the

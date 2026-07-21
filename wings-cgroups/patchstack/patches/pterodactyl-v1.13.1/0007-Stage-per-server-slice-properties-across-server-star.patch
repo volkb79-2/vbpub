@@ -1,4 +1,4 @@
-From ed8c2c66014e7ec423a6672f5c445a760fbc9f6c Mon Sep 17 00:00:00 2001
+From 5e6320b1442239e69a5d08999f91ddaccdcd6033 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 03:59:43 +0000
 Subject: [PATCH 7/8] Stage per-server slice properties across server startup
@@ -50,27 +50,28 @@ with instead of raw byte counts:
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
- config/config_docker.go         | 110 +++++++++-
- environment/docker/container.go |   8 +-
- environment/docker/power.go     |  32 +++
- internal/cgroups/cgroups.go     | 205 +++++++++++++++++++
- internal/cgroups/ensure.go      |  93 ++++++++-
- internal/cgroups/phase_test.go  | 182 +++++++++++++++++
- internal/cgroups/sysd.go        | 115 +++++++++++
- internal/database/database.go   |   7 +
- server/activity.go              |   1 +
- server/install.go               |   2 +-
- server/listeners.go             |  18 ++
- server/server.go                |  20 ++
- server/slice_phase.go           | 347 ++++++++++++++++++++++++++++++++
- server/slice_phase_test.go      | 318 +++++++++++++++++++++++++++++
- 14 files changed, 1441 insertions(+), 17 deletions(-)
+ config/config_docker.go          | 113 +++++++++-
+ environment/docker/container.go  |   8 +-
+ environment/docker/power.go      |  32 +++
+ internal/cgroups/cgroups.go      | 239 ++++++++++++++++++++
+ internal/cgroups/cgroups_test.go |  12 +-
+ internal/cgroups/ensure.go       |  93 +++++++-
+ internal/cgroups/phase_test.go   | 217 ++++++++++++++++++
+ internal/cgroups/sysd.go         | 109 +++++++++
+ internal/database/database.go    |   7 +
+ server/activity.go               |   1 +
+ server/install.go                |   2 +-
+ server/listeners.go              |  18 ++
+ server/server.go                 |  20 ++
+ server/slice_phase.go            | 369 +++++++++++++++++++++++++++++++
+ server/slice_phase_test.go       | 325 +++++++++++++++++++++++++++
+ 15 files changed, 1542 insertions(+), 23 deletions(-)
  create mode 100644 internal/cgroups/phase_test.go
  create mode 100644 server/slice_phase.go
  create mode 100644 server/slice_phase_test.go
 
 diff --git a/config/config_docker.go b/config/config_docker.go
-index b0b791e..8b26621 100644
+index b0b791e..f74aeca 100644
 --- a/config/config_docker.go
 +++ b/config/config_docker.go
 @@ -7,6 +7,7 @@ import (
@@ -131,7 +132,7 @@ index b0b791e..8b26621 100644
  	// BudgetPolicy decides what happens to a MemoryMin request exceeding the
  	// remaining budget. Every other property is applied unchanged in all
  	// three cases:
-@@ -391,6 +428,23 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
+@@ -391,6 +428,27 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
  	if _, errs := c.SliceDefaults().Props(); len(errs) > 0 {
  		return errors.Wrap(errs[0], "docker.per_server_slices.defaults")
  	}
@@ -139,8 +140,12 @@ index b0b791e..8b26621 100644
 +		return errors.Wrap(errs[0], "docker.per_server_slices.startup_defaults")
 +	}
 +	if raw := s.SteadyRampStep; raw != "" && raw != "0" {
-+		if _, err := cgroups.ParseSize(raw); err != nil {
++		v, err := cgroups.ParseSize(raw)
++		if err != nil {
 +			return errors.Wrap(err, "docker.per_server_slices.steady_ramp_step")
++		}
++		if v < 1<<20 {
++			return errors.New("docker.per_server_slices.steady_ramp_step must be at least 1M (a smaller step just multiplies systemd writes for no benefit)")
 +		}
 +	}
 +	if raw := s.StartupGrace; raw != "" {
@@ -155,7 +160,7 @@ index b0b791e..8b26621 100644
  	return nil
  }
  
-@@ -412,16 +466,60 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
+@@ -412,14 +470,57 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
  // SliceEnsureRequest assembles the cgroups.EnsureForServer request for a
  // server whose containers are about to be placed under slice (a value
  // previously returned as managed by ResolveServerCgroupParent).
@@ -175,9 +180,9 @@ index b0b791e..8b26621 100644
 +		Env:             env,
 +		Budget:          c.SliceBudget(slice),
 +		RampStep:        c.sliceRampStep(),
- 	}
- }
- 
++	}
++}
++
 +// sliceRampStep parses docker.per_server_slices.steady_ramp_step into bytes.
 +// Invalid or empty yields 0 (one-shot); a bad value is validated at startup.
 +func (c DockerConfiguration) sliceRampStep() uint64 {
@@ -214,14 +219,11 @@ index b0b791e..8b26621 100644
 +	d, err := time.ParseDuration(raw)
 +	if err != nil || d < 0 {
 +		return 0
-+	}
+ 	}
 +	return d
-+}
-+
-+
+ }
+ 
  // SliceBudget converts the configured floor budget into the internal/cgroups
- // representation, excluding the slice currently being ensured from the
- // sibling sum. Derived slices share the parent's name prefix, so the sibling
 diff --git a/environment/docker/container.go b/environment/docker/container.go
 index 3e0af2e..2311850 100644
 --- a/environment/docker/container.go
@@ -296,7 +298,7 @@ index 7b143a4..770b6a8 100644
  // listeners for the console. If a container does not exist, or needs to be
  // rebuilt that will happen in the call to OnBeforeStart().
 diff --git a/internal/cgroups/cgroups.go b/internal/cgroups/cgroups.go
-index 06ad73d..0085bc2 100644
+index 06ad73d..12e1d03 100644
 --- a/internal/cgroups/cgroups.go
 +++ b/internal/cgroups/cgroups.go
 @@ -20,6 +20,7 @@ import (
@@ -372,7 +374,48 @@ index 06ad73d..0085bc2 100644
  // BFQ weight bounds. BFQ keeps its own per-cgroup weight in io.bfq.weight on a
  // 1..1000 scale and does NOT read io.weight — that file belongs to the iocost
  // controller, which is inert unless io.cost.model/io.cost.qos are configured.
-@@ -124,6 +183,21 @@ func FormatSize(v uint64) string {
+@@ -62,6 +121,40 @@ const (
+ 	BFQWeightDefault = 100
+ )
+ 
++// rampMaxSteps caps how many memory.high writes a single ramp performs,
++// regardless of step size, so a tiny misconfigured step cannot turn into a
++// D-Bus write storm — the effective step is enlarged to fit this budget.
++const rampMaxSteps = 512
++
++// rampCeilings plans the descending sequence of memory.high values to walk a
++// ceiling from current usage `cur` down to `target` in steps of at most `step`
++// bytes, never more than rampMaxSteps writes. It returns nil when there is
++// nothing to walk (step 0, or cur already at/below target). The first element
++// is one step below cur — the span between an unset/high starting ceiling and
++// current usage is empty, so it need not be walked; the last element is exactly
++// target. Pure and deterministic, so the step/termination logic is unit-tested
++// without a live systemd.
++func rampCeilings(cur, target, step uint64) []uint64 {
++	if step == 0 || cur <= target {
++		return nil
++	}
++	span := cur - target
++	if n := (span + step - 1) / step; n > rampMaxSteps {
++		step = (span + rampMaxSteps - 1) / rampMaxSteps // enlarge to fit the budget
++	}
++	out := make([]uint64, 0, (span+step-1)/step)
++	high := cur
++	for high > target {
++		if high-target > step {
++			high -= step
++		} else {
++			high = target
++		}
++		out = append(out, high)
++	}
++	return out
++}
++
+ // IOWeightFromBFQ inverts systemd's conversion, so an administrator can state
+ // the BFQ weight they actually want instead of reverse-engineering the
+ // IOWeight that happens to produce it. 900/9900 is exactly 1/11, so the round
+@@ -124,6 +217,21 @@ func FormatSize(v uint64) string {
  	return strconv.FormatUint(v, 10)
  }
  
@@ -394,7 +437,7 @@ index 06ad73d..0085bc2 100644
  // String renders the requested properties for logs, naming each systemd
  // property (what Wings actually sets) and rendering memory sizes with the
  // binary suffix they were configured with, so a log line can be read against
-@@ -239,6 +313,137 @@ func FromEnv(env []string) (props Props, errs []error) {
+@@ -239,6 +347,137 @@ func FromEnv(env []string) (props Props, errs []error) {
  	return props, errs
  }
  
@@ -532,8 +575,31 @@ index 06ad73d..0085bc2 100644
  // Defaults are node-wide slice property defaults, carried as the raw strings
  // and integers found in the Wings configuration. Zero values mean "no
  // default" for the respective property.
+diff --git a/internal/cgroups/cgroups_test.go b/internal/cgroups/cgroups_test.go
+index 1d69107..9111f0c 100644
+--- a/internal/cgroups/cgroups_test.go
++++ b/internal/cgroups/cgroups_test.go
+@@ -168,12 +168,12 @@ func TestIsDerivedName(t *testing.T) {
+ 		want bool
+ 	}{
+ 		{"wings-b87c0a5b23874a1c8863ff23e6800a1d.slice", true},
+-		{"wings-b87c0a5b.slice", false},                            // admin short-form, not derived shape
+-		{"wings-B87C0A5B23874A1C8863FF23E6800A1D.slice", false},    // uppercase never derived
+-		{"wings-b87c0a5b23874a1c8863ff23e6800a1d", false},          // missing suffix
+-		{"other-b87c0a5b23874a1c8863ff23e6800a1d.slice", false},    // wrong prefix
+-		{"wings-g87c0a5b23874a1c8863ff23e6800a1d.slice", false},    // non-hex
+-		{"wings-b87c0a5b23874a1c8863ff23e6800a1d00.slice", false},  // wrong length
++		{"wings-b87c0a5b.slice", false},                           // admin short-form, not derived shape
++		{"wings-B87C0A5B23874A1C8863FF23E6800A1D.slice", false},   // uppercase never derived
++		{"wings-b87c0a5b23874a1c8863ff23e6800a1d", false},         // missing suffix
++		{"other-b87c0a5b23874a1c8863ff23e6800a1d.slice", false},   // wrong prefix
++		{"wings-g87c0a5b23874a1c8863ff23e6800a1d.slice", false},   // non-hex
++		{"wings-b87c0a5b23874a1c8863ff23e6800a1d00.slice", false}, // wrong length
+ 		{"wings.slice", false},
+ 	} {
+ 		if got := isDerivedName(c.name, "wings-"); got != c.want {
 diff --git a/internal/cgroups/ensure.go b/internal/cgroups/ensure.go
-index 003dccb..7435878 100644
+index 003dccb..dc64ab4 100644
 --- a/internal/cgroups/ensure.go
 +++ b/internal/cgroups/ensure.go
 @@ -20,40 +20,115 @@ type EnsureRequest struct {
@@ -639,7 +705,7 @@ index 003dccb..7435878 100644
 +		}
 +		l.WithField("properties", res.Applied.String()).WithField("memory_high_target", FormatSize(target)).
 +			Info("cgroups: steady band applied; ramping memory.high down to the ceiling")
-+		if err := RampHigh(ctx, req.Slice, target, req.RampStep, l); err != nil {
++		if err := rampHigh(ctx, req.Slice, target, req.RampStep, l); err != nil {
 +			l.WithError(err).Warn("cgroups: memory.high ramp did not complete")
 +		}
 +		return
@@ -663,10 +729,10 @@ index 003dccb..7435878 100644
  		return
 diff --git a/internal/cgroups/phase_test.go b/internal/cgroups/phase_test.go
 new file mode 100644
-index 0000000..ba6353d
+index 0000000..929e075
 --- /dev/null
 +++ b/internal/cgroups/phase_test.go
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,217 @@
 +package cgroups
 +
 +import "testing"
@@ -849,8 +915,43 @@ index 0000000..ba6353d
 +		t.Error("no WINGS_CG_PHASE_EVENTS must yield nil")
 +	}
 +}
++
++func TestRampCeilings(t *testing.T) {
++	const G = uint64(1) << 30
++	// Nothing to walk.
++	if rampCeilings(6*G, 7*G, 64<<20) != nil {
++		t.Error("cur below target must plan nothing")
++	}
++	if rampCeilings(9*G, 7*G, 0) != nil {
++		t.Error("step 0 must plan nothing (one-shot)")
++	}
++	// A clean 2G tail in 1G steps: 8G, then 7G (target). First step is one
++	// `step` below cur, NOT cur itself (the empty span above cur is free).
++	seq := rampCeilings(9*G, 7*G, 1*G)
++	if len(seq) != 2 || seq[0] != 8*G || seq[len(seq)-1] != 7*G {
++		t.Errorf("2G/1G ramp = %v, want [8G 7G]", seq)
++	}
++	// Always lands exactly on target, monotonically decreasing.
++	seq = rampCeilings(10*G, 7*G, 700<<20)
++	if seq[len(seq)-1] != 7*G {
++		t.Errorf("last element = %d, want target %d", seq[len(seq)-1], 7*G)
++	}
++	for i := 1; i < len(seq); i++ {
++		if seq[i] >= seq[i-1] {
++			t.Errorf("not monotonically decreasing at %d: %v", i, seq)
++		}
++	}
++	// A pathologically small step is capped at rampMaxSteps writes, not millions.
++	seq = rampCeilings(9*G, 7*G, 1) // 2G tail, 1-byte step
++	if len(seq) > rampMaxSteps {
++		t.Errorf("tiny step produced %d writes, must cap at %d", len(seq), rampMaxSteps)
++	}
++	if seq[len(seq)-1] != 7*G {
++		t.Errorf("capped ramp must still reach target, got %d", seq[len(seq)-1])
++	}
++}
 diff --git a/internal/cgroups/sysd.go b/internal/cgroups/sysd.go
-index 79fd3ca..bfb1c21 100644
+index 79fd3ca..3995d5a 100644
 --- a/internal/cgroups/sysd.go
 +++ b/internal/cgroups/sysd.go
 @@ -6,7 +6,9 @@ import (
@@ -863,7 +964,7 @@ index 79fd3ca..bfb1c21 100644
  	sdbus "github.com/coreos/go-systemd/v22/dbus"
  	godbus "github.com/godbus/dbus/v5"
  
-@@ -294,6 +296,119 @@ func Ensure(ctx context.Context, name string, props Props, b Budget) (Result, er
+@@ -294,6 +296,113 @@ func Ensure(ctx context.Context, name string, props Props, b Budget) (Result, er
  	return res, nil
  }
  
@@ -899,22 +1000,23 @@ index 79fd3ca..bfb1c21 100644
 +		sdbus.Property{Name: "MemoryHigh", Value: godbus.MakeVariant(v)})
 +}
 +
-+// RampHigh lowers memory.high on a slice to target in steps of at most `step`
-+// bytes, pausing between steps until memory.current falls to the new ceiling,
-+// so the workload is never throttled by more than one step's worth of overage.
-+// It first snaps the ceiling down to just above current usage — the span
-+// between an unset/high ceiling and where memory actually sits is empty and
-+// need not be walked.
++// rampHigh lowers memory.high on a slice to target, walking it down through the
++// sequence rampCeilings plans (steps of at most `step` bytes, capped count) and
++// pausing at each step until memory.current falls to the new ceiling so the
++// workload is throttled by at most about one step's overage per step. On the
++// per-step timeout it proceeds anyway — imposing the ceiling is the point — so
++// a workload that will not yield is walked to target gradually rather than in
++// one slam, bounded by rampMaxDuration.
 +//
-+// It runs on a single held D-Bus connection and stays entirely on the
-+// systemd-owned channel (SetUnitProperties runtime=true), so the resting value
-+// survives daemon-reload and no cgroupfs write is involved. step == 0 applies
-+// the target in one shot (the pre-ramp behaviour).
++// It holds a single D-Bus connection and stays on the systemd-owned channel
++// (SetUnitProperties runtime=true): the resting value survives daemon-reload and
++// no cgroupfs write is involved. step == 0 (or usage already at/below target)
++// applies the target in one shot.
 +//
-+// Best-effort: it returns the first error and never blocks past
-+// rampMaxDuration; a workload that will not yield is throttled toward the
-+// target gradually rather than in one slam.
-+func RampHigh(ctx context.Context, name string, target, step uint64, l *log.Entry) error {
++// Only memory.high is walked. memory.max is a HARD limit and is applied at once
++// by the caller's base Ensure, so a steady memory.max staged below the load
++// peak would OOM the container regardless of this ramp — do not stage one there.
++func rampHigh(ctx context.Context, name string, target, step uint64, l *log.Entry) error {
 +	ctx, cancel := context.WithTimeout(ctx, rampMaxDuration)
 +	defer cancel()
 +
@@ -924,43 +1026,36 @@ index 79fd3ca..bfb1c21 100644
 +	}
 +	defer c.close()
 +
-+	if step == 0 {
++	cur, ok, err := c.memoryCurrent(ctx, name)
++	if err != nil {
++		return err
++	}
++	ceilings := []uint64(nil)
++	if ok {
++		ceilings = rampCeilings(cur, target, step)
++	}
++	if len(ceilings) == 0 {
++		// Nothing to walk (one-shot config, usage already low, or accounting
++		// unavailable): drop straight to the target.
 +		return c.setMemoryHigh(ctx, name, target)
 +	}
-+
-+	high := target
-+	if cur, ok, err := c.memoryCurrent(ctx, name); err != nil {
-+		return err
-+	} else if ok && cur > target {
-+		high = cur // snap to current; the empty span above it is free
-+	}
-+	if err := c.setMemoryHigh(ctx, name, high); err != nil {
-+		return err
-+	}
-+	steps := 0
-+	for high > target {
-+		next := target
-+		if high-target > step {
-+			next = high - step
-+		}
-+		if err := c.setMemoryHigh(ctx, name, next); err != nil {
++	for _, high := range ceilings {
++		if err := c.setMemoryHigh(ctx, name, high); err != nil {
 +			return err
 +		}
-+		high = next
-+		steps++
 +		if high == target {
 +			break
 +		}
 +		c.waitMemoryAtOrBelow(ctx, name, high)
 +	}
-+	l.WithField("slice", name).WithField("memory_high", FormatSize(target)).WithField("steps", steps).
++	l.WithField("slice", name).WithField("memory_high", FormatSize(target)).WithField("steps", len(ceilings)).
 +		Info("cgroups: memory.high ramped to the steady ceiling")
 +	return nil
 +}
 +
 +// waitMemoryAtOrBelow polls memory.current until it is at most target, or
 +// rampStepTimeout elapses, or ctx is done. Falling through on timeout is
-+// deliberate — see RampHigh.
++// deliberate — see rampHigh.
 +func (c *conn) waitMemoryAtOrBelow(ctx context.Context, name string, target uint64) {
 +	deadline := time.NewTimer(rampStepTimeout)
 +	defer deadline.Stop()
@@ -1053,7 +1148,7 @@ index d39e664..998cecc 100644
  	// set the server to be in a stopping state, otherwise crash detection will kick in and
  	// cause the server to unexpectedly restart on the user.
 diff --git a/server/server.go b/server/server.go
-index a1777b0..bd0e7a7 100644
+index a1777b0..a914f0e 100644
 --- a/server/server.go
 +++ b/server/server.go
 @@ -8,8 +8,10 @@ import (
@@ -1075,7 +1170,7 @@ index a1777b0..bd0e7a7 100644
 +	// slice property band (see slice_phase.go).
 +	slicePhaseMu    sync.Mutex
 +	slicePhaseTimer *time.Timer
-+	slicePhaseFired bool
++	sliceSteadyDone bool
 +	slicePhaseSlice string
 +	slicePhaseMatch *regexp.Regexp
 +	sliceEvents     []sliceConsoleEvent
@@ -1108,10 +1203,10 @@ index a1777b0..bd0e7a7 100644
  	// Reset the resource usage to 0 when the process fully stops so that all the UI
 diff --git a/server/slice_phase.go b/server/slice_phase.go
 new file mode 100644
-index 0000000..64d3c4a
+index 0000000..9bbbd0e
 --- /dev/null
 +++ b/server/slice_phase.go
-@@ -0,0 +1,347 @@
+@@ -0,0 +1,369 @@
 +package server
 +
 +import (
@@ -1124,10 +1219,10 @@ index 0000000..64d3c4a
 +	"github.com/apex/log"
 +
 +	"github.com/pterodactyl/wings/config"
-+	"github.com/pterodactyl/wings/internal/database"
-+	"github.com/pterodactyl/wings/internal/models"
 +	"github.com/pterodactyl/wings/environment"
 +	"github.com/pterodactyl/wings/internal/cgroups"
++	"github.com/pterodactyl/wings/internal/database"
++	"github.com/pterodactyl/wings/internal/models"
 +)
 +
 +// Staged per-server slice properties.
@@ -1199,26 +1294,20 @@ index 0000000..64d3c4a
 +	if err != nil {
 +		s.Log().WithError(err).Warn("cgroups: ignoring invalid " + cgroups.EnvSteadyMatch + "; falling back to the egg's startup done matcher")
 +	}
-+	if grace == 0 && matcher == nil {
-+		// No timer and no matcher: the running state is the only trigger left,
-+		// which onSliceStateChange already handles.
-+		return
-+	}
-+
 +	s.slicePhaseMu.Lock()
 +	defer s.slicePhaseMu.Unlock()
 +	if s.slicePhaseTimer != nil {
 +		s.slicePhaseTimer.Stop()
 +	}
-+	s.slicePhaseFired = false
-+	s.slicePhaseSlice = req.Slice
++	s.sliceSteadyDone = false
++	s.slicePhaseSlice = req.Slice // pinned for the whole phase, see enterSteady
 +	s.slicePhaseMatch = matcher
++	s.slicePhaseTimer = nil
 +	if grace > 0 {
 +		s.slicePhaseTimer = time.AfterFunc(grace, func() {
 +			s.Log().WithField("grace", grace.String()).
 +				Warn("cgroups: startup grace expired without the steady trigger firing; applying steady slice properties")
-+			s.emitPhaseActivity("steady-reached", sliceReasonGrace)
-+			s.applySliceProps(cgroups.PhaseSteady, sliceReasonGrace)
++			s.enterSteady(sliceReasonGrace)
 +		})
 +	}
 +	trigger := "the egg's startup done matcher"
@@ -1229,20 +1318,45 @@ index 0000000..64d3c4a
 +		Info("cgroups: startup slice properties in effect")
 +}
 +
-+// endSlicePhase cancels a pending grace timer. Safe to call repeatedly.
++// enterSteady applies the steady band exactly once per start, whichever trigger
++// fires first — a console match, the running state, or the grace timer. The
++// idempotent guard is what makes the three triggers safe to race: an egg whose
++// steady matcher happens to appear before its "done"/running line would
++// otherwise emit two activity rows and apply the steady band twice.
++func (s *Server) enterSteady(reason string) {
++	s.slicePhaseMu.Lock()
++	if s.sliceSteadyDone {
++		s.slicePhaseMu.Unlock()
++		return
++	}
++	s.sliceSteadyDone = true
++	pinned := s.slicePhaseSlice // captured now; the apply runs on a goroutine
++	s.slicePhaseSlice = ""
++	if s.slicePhaseTimer != nil {
++		s.slicePhaseTimer.Stop()
++		s.slicePhaseTimer = nil
++	}
++	s.slicePhaseMatch = nil
++	s.slicePhaseMu.Unlock()
++
++	s.emitPhaseActivity("steady-reached", reason)
++	// Dispatched: OnStateChange runs crash detection after this, and a steady
++	// application is a D-Bus round trip plus a possible ramp — it must never sit
++	// in the state machine's path.
++	go s.applySliceProps(cgroups.PhaseSteady, reason, pinned)
++}
++
++// endSlicePhase resets all phase state; called when the server goes offline.
 +func (s *Server) endSlicePhase() {
 +	s.slicePhaseMu.Lock()
 +	defer s.slicePhaseMu.Unlock()
-+	if s.slicePhaseTimer == nil {
-+		return
++	if s.slicePhaseTimer != nil {
++		s.slicePhaseTimer.Stop()
++		s.slicePhaseTimer = nil
 +	}
-+	// Stop reports false when the callback goroutine has already started, in
-+	// which case a steady application is in flight and we must not pretend we
-+	// cancelled it — the caller may be about to apply a band itself.
-+	s.slicePhaseFired = !s.slicePhaseTimer.Stop()
-+	s.slicePhaseTimer = nil
 +	s.slicePhaseSlice = ""
 +	s.slicePhaseMatch = nil
++	s.sliceSteadyDone = false
 +}
 +
 +// sliceRequest resolves this server's slice and builds the ensure request for
@@ -1288,9 +1402,7 @@ index 0000000..64d3c4a
 +		"match":   m.String(),
 +		"against": strconv.QuoteToASCII(string(line)),
 +	}).Info("cgroups: steady trigger matched; leaving the startup band")
-+	s.endSlicePhase()
-+	s.emitPhaseActivity("steady-reached", sliceReasonMatch)
-+	go s.applySliceProps(cgroups.PhaseSteady, sliceReasonMatch)
++	s.enterSteady(sliceReasonMatch)
 +}
 +
 +// compileSliceMatch builds the steady trigger. A "regex:" prefix makes it a
@@ -1306,14 +1418,6 @@ index 0000000..64d3c4a
 +	return regexp.Compile(regexp.QuoteMeta(raw))
 +}
 +
-+// gracePhaseFired reports whether the last endSlicePhase found the grace timer
-+// already running its callback.
-+func (s *Server) gracePhaseFired() bool {
-+	s.slicePhaseMu.Lock()
-+	defer s.slicePhaseMu.Unlock()
-+	return s.slicePhaseFired
-+}
-+
 +// pinnedSlice returns the slice captured when this server's startup phase
 +// began, or "" when no phase is in progress.
 +func (s *Server) pinnedSlice() string {
@@ -1323,9 +1427,10 @@ index 0000000..64d3c4a
 +}
 +
 +// applySliceProps re-ensures this server's slice with the given phase's
-+// property band. Best-effort like every other slice operation: a server that
-+// is already running is never disturbed by a failure here.
-+func (s *Server) applySliceProps(phase cgroups.Phase, reason string) {
++// property band. pinned is the slice captured when the phase began (see
++// enterSteady). Best-effort: a server that is already running is never
++// disturbed by a failure here.
++func (s *Server) applySliceProps(phase cgroups.Phase, reason, pinned string) {
 +	req := s.sliceRequest(phase)
 +	if req.Slice == "" {
 +		return
@@ -1334,7 +1439,7 @@ index 0000000..64d3c4a
 +	// in whatever slice it was placed under even if the Panel later syncs a
 +	// different WINGS_CGROUP_PARENT. Apply to the slice this phase began with,
 +	// or the steady band lands on a unit holding nothing.
-+	if pinned := s.pinnedSlice(); pinned != "" && pinned != req.Slice {
++	if pinned != "" && pinned != req.Slice {
 +		s.Log().WithFields(log.Fields{"resolved": req.Slice, "applying_to": pinned}).
 +			Warn("cgroups: server cgroup parent changed while starting; the container is still in the slice it was created under")
 +		req.Slice = pinned
@@ -1363,9 +1468,15 @@ index 0000000..64d3c4a
 +	fired bool
 +}
 +
++// systemActivityIP is the source IP recorded for system-generated activity.
++// It must be a PARSEABLE address: the activity cron purges any row whose IP
++// fails net.ParseIP (a guard against a historical octet-truncation bug), so an
++// empty string would delete every phase event before it reached the Panel.
++// Loopback is the honest choice — the event originated on the node itself.
++const systemActivityIP = "127.0.0.1"
++
 +// emitPhaseActivity records a per-server slice phase to the Panel activity log.
-+// Best-effort and non-blocking (SaveActivity dispatches its own goroutine);
-+// the activity carries no user/IP because it is system-generated.
++// Best-effort and non-blocking (SaveActivity dispatches its own goroutine).
 +func (s *Server) emitPhaseActivity(phase, detail string) {
 +	s.Log().WithField("phase", phase).WithField("detail", detail).Info("cgroups: phase")
 +	// The activity log needs the database; it is always initialised in a real
@@ -1374,14 +1485,19 @@ index 0000000..64d3c4a
 +	if !database.Initialized() {
 +		return
 +	}
-+	s.SaveActivity(s.NewRequestActivity("", ""), ActivityCgroupPhase, models.ActivityMeta{
++	s.SaveActivity(s.NewRequestActivity("", systemActivityIP), ActivityCgroupPhase, models.ActivityMeta{
 +		"phase":  phase,
 +		"detail": detail,
 +	})
 +}
 +
 +// beginPhaseEvents compiles this server's WINGS_CG_PHASE_EVENTS once per start.
++// Gated on per-server slices being enabled node-wide, so a node not using this
++// feature never compiles or matches anything.
 +func (s *Server) beginPhaseEvents() {
++	if !config.Get().Docker.PerServerSlices.Enabled {
++		return
++	}
 +	env := s.GetEnvironmentVariables()
 +	var evs []sliceConsoleEvent
 +	for _, pe := range cgroups.PhaseEventsFromEnv(env) {
@@ -1410,13 +1526,23 @@ index 0000000..64d3c4a
 +		return
 +	}
 +	var hit string
++	remaining := 0
 +	for i := range s.sliceEvents {
 +		e := &s.sliceEvents[i]
-+		if !e.fired && e.re.Match(line) {
++		if e.fired {
++			continue
++		}
++		if hit == "" && e.re.Match(line) {
 +			e.fired = true
 +			hit = e.name
-+			break
++			continue
 +		}
++		remaining++
++	}
++	if remaining == 0 {
++		// All events have fired: stop matching every console line for the rest
++		// of the server's life.
++		s.sliceEventsSet = false
 +	}
 +	s.slicePhaseMu.Unlock()
 +	if hit != "" {
@@ -1435,22 +1561,13 @@ index 0000000..64d3c4a
 +		// The egg's "done" matcher fired. When the server defines its own
 +		// steady trigger this is deliberately NOT the end of the startup
 +		// phase: "done" is whatever makes the Panel show Running, which for a
-+		// world-streaming game is routinely well before loading finishes.
++		// world-streaming game is routinely well before loading finishes. Once
++		// that trigger has fired (or without one at all), enterSteady is the
++		// idempotent gate — a duplicate call here is a no-op.
 +		if s.hasSliceMatcher() {
 +			return
 +		}
-+		s.endSlicePhase()
-+		if s.gracePhaseFired() {
-+			// The grace timer beat us to it by a hair and is already applying
-+			// the steady band; a second concurrent Ensure on the same slice
-+			// would race it for no benefit.
-+			return
-+		}
-+		// Dispatched: OnStateChange runs crash detection after this, and a
-+		// slice application is a D-Bus round trip (and possibly a ramp) that
-+		// must never sit in the state machine's path.
-+		s.emitPhaseActivity("steady-reached", sliceReasonReady)
-+		go s.applySliceProps(cgroups.PhaseSteady, sliceReasonReady)
++		s.enterSteady(sliceReasonReady)
 +	case environment.ProcessOfflineState:
 +		s.endSlicePhase()
 +		s.slicePhaseMu.Lock()
@@ -1461,10 +1578,10 @@ index 0000000..64d3c4a
 +}
 diff --git a/server/slice_phase_test.go b/server/slice_phase_test.go
 new file mode 100644
-index 0000000..9f991c3
+index 0000000..ba28966
 --- /dev/null
 +++ b/server/slice_phase_test.go
-@@ -0,0 +1,318 @@
+@@ -0,0 +1,325 @@
 +package server
 +
 +import (
@@ -1572,28 +1689,32 @@ index 0000000..9f991c3
 +	if s.slicePhaseTimer != nil {
 +		t.Error("timer should be nil after cancellation")
 +	}
-+	if s.gracePhaseFired() {
-+		t.Error("a cleanly cancelled timer must not report as fired")
++	if s.sliceSteadyDone {
++		t.Error("a cancelled phase must not be marked steady-done")
 +	}
 +}
 +
-+// A cancelled timer that had already started its callback must be reported as
-+// fired, so the ready path does not race a steady application already running.
-+func TestEndSlicePhaseReportsAlreadyFired(t *testing.T) {
++// enterSteady must apply the steady band exactly once no matter how many
++// triggers fire — the guard against a matcher-before-running double-apply.
++func TestEnterSteadyIsIdempotent(t *testing.T) {
 +	sliceTestConfig(t, true, "15m", "64G")
 +	s := newSliceTestServer()
-+
-+	fired := make(chan struct{})
-+	s.slicePhaseMu.Lock()
-+	s.slicePhaseFired = false
-+	s.slicePhaseTimer = time.AfterFunc(time.Millisecond, func() { close(fired) })
-+	s.slicePhaseMu.Unlock()
-+
-+	<-fired
-+	time.Sleep(10 * time.Millisecond) // let the callback goroutine finish
-+	s.endSlicePhase()
-+	if !s.gracePhaseFired() {
-+		t.Error("timer that already fired must be reported as fired")
++	s.beginSlicePhase()
++	if s.pinnedSlice() == "" {
++		t.Fatal("precondition: a phase should be in progress")
++	}
++	s.enterSteady("match") // first trigger wins
++	if !s.sliceSteadyDone {
++		t.Fatal("first enterSteady must mark the phase steady-done")
++	}
++	if s.pinnedSlice() != "" || s.hasSliceMatcher() {
++		t.Error("entering steady must clear the pin and matcher")
++	}
++	// Subsequent triggers (running, grace) are no-ops.
++	s.enterSteady("running")
++	s.onSliceStateChange("running")
++	if !s.sliceSteadyDone {
++		t.Error("phase must stay steady-done")
 +	}
 +}
 +
@@ -1728,7 +1849,11 @@ index 0000000..9f991c3
 +
 +func TestPerServerStartupGraceOverride(t *testing.T) {
 +	sliceTestConfig(t, true, "15m", "64G")
-+	for _, tt := range []struct{ raw string; want time.Duration; set bool }{
++	for _, tt := range []struct {
++		raw  string
++		want time.Duration
++		set  bool
++	}{
 +		{"30m", 30 * time.Minute, true},
 +		{"", 0, false},
 +		{"nonsense", 0, true}, // reported as an error, node default used
@@ -1745,7 +1870,6 @@ index 0000000..9f991c3
 +		}
 +	}
 +}
-+
 +
 +func TestPhaseEventsRecordOncePerLine(t *testing.T) {
 +	sliceTestConfig(t, true, "15m", "64G")
