@@ -3,7 +3,7 @@ name = "nyxloom"
 version = "0.1.0a0"
 description = "Files-first, daemon-supervised control plane for role-separated AI-assisted development"
 requires-python = ">=3.11"
-dependencies = ["PyYAML>=6", "jsonschema>=4"]
+dependencies = ["PyYAML>=6", "jsonschema>=4", "structlog>=24,<27"]  # structlog: D-L1, runtime dep (nyxloom/docs/plan-logging.md)
 
 [project.optional-dependencies]
 # tester-unified SoT: nyxloom's test closure lives HERE (not duplicated in
