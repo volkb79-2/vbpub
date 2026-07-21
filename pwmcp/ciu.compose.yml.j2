@@ -80,14 +80,15 @@ services:
       retries: {{ pwmcp.health.retries }}
       start_period: {{ pwmcp.health.start_period }}
     networks:
-      default: {}
-      {% if pwmcp.consumer.network %}
-      consumer:
+      # One project network only. The base service alias plus the extra aliases
+      # (pwmcp-mcp / pwmcp-playwright / ...) all ride it, so consumers resolve every
+      # well-known hostname on the shared network — no separate "consumer" attach.
+      default:
         aliases:
+          - {{ pwmcp.unified.name }}
           {% for alias in pwmcp.consumer.aliases %}
           - {{ alias }}
           {% endfor %}
-      {% endif %}
       {% if pwmcp.external.enabled and pwmcp.external.unified_host %}
       ingress: {}
       {% endif %}
@@ -137,13 +138,14 @@ services:
     {% endif %}
 
 networks:
+  # default = the project network. As the image SOURCE's own standalone build-test
+  # root, pwmcp CREATES its own network (external_default = false). A VENDORED
+  # consumer runs this as a SUB-STACK of its parent ciu root and ATTACHES to that
+  # root's already-existing network — it sets pwmcp.network.external_default = true
+  # in its own override. (Jinja bools render "True"/"False"; emit lowercase for YAML.)
   default:
     name: {{ deploy.network_name }}
-  {% if pwmcp.consumer.network %}
-  consumer:
-    name: {{ pwmcp.consumer.network }}
-    external: true
-  {% endif %}
+    external: {% if pwmcp.network.external_default %}true{% else %}false{% endif %}
   {% if pwmcp.external.enabled %}
   ingress:
     name: {{ pwmcp.network.ingress_network }}

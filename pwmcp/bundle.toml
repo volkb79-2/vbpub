@@ -12,11 +12,17 @@ fallback_env = "BUILD_DATE"
 [copy]
 # Consumer-facing stack files only. Maintainer-only files (Dockerfile, docker-bake.hcl,
 # build-push.toml, bundle.toml, scripts/) are excluded — the image is already on GHCR.
+#
+# NOT vendored: ciu.global.defaults.toml.j2 / ciu.global.toml.j2. Those carry
+# standalone_root=true and are the image SOURCE's OWN build-test ciu root — shipping
+# them made every vendored consumer an independent standalone root (the S1.2 hack that
+# breaks `ciu up`, reaches across projects, and yields ambiguous container names). A
+# consumer must instead run pwmcp as a proper SUB-STACK of ITS OWN ciu root: it drops
+# these files into a subdir, inherits deploy.* from its root global, and sets
+# pwmcp.network.external_default = true in an override. See netcup-api-filter/infra/pwmcp.
 files = [
   "ciu.compose.yml.j2",
   "ciu.defaults.toml.j2",
-  "ciu.global.defaults.toml.j2",
-  "ciu.global.toml.j2",
   "pwmcp.contract.json",
   "README.md",
 ]

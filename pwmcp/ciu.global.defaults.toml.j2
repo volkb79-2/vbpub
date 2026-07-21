@@ -1,6 +1,12 @@
 # ==========================================================================
-# Global CIU defaults for PWMCP (standalone)
+# Global CIU defaults for PWMCP (standalone) — image SOURCE's OWN build-test root
 # ==========================================================================
+# BUILD-TEST ONLY, and NOT vendored (see bundle.toml [copy]). This global makes
+# vbpub/pwmcp its own ciu root so a maintainer can `ciu up --dir .` a freshly-built
+# image locally (project "pwmcp-local", its own network — pwmcp.network.external_default
+# = false). Consumers must NOT copy this file: they run pwmcp as a SUB-STACK of THEIR
+# ciu root (inheriting deploy.*), setting pwmcp.network.external_default = true.
+# Shipping this to consumers is what created the standalone-root anti-pattern.
 
 [deploy]
 project_name = "pwmcp"
