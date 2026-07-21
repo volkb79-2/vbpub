@@ -37,6 +37,13 @@ image_distro = "noble"            # -> mcr.microsoft.com/playwright:v<version>-<
 
 [pwmcp.network]
 ingress_network = "ingress_public"   # shared tls-edge network (external mode only)
+# Ownership of the `default` project network:
+#   false — this stack CREATES it. Correct for topos: the topos daemon is NATIVE
+#           (a Unix socket, no Docker network), so no daemon stack owns a network;
+#           pwmcp-instance owns the topos ui-test network, and the future web-UI
+#           test server joins it. This is the shipped default here.
+#   true  — attach to an already-existing parent-root network (set in an override).
+external_default = false
 
 # ============================================================
 # Unified single-image deployment (the only supported mode)
@@ -116,8 +123,12 @@ start_period = "30s"
 # Optional consumer network. Set this in a consumer's override when pwmcp is
 # rendered separately from the application stack but must be reachable there.
 [pwmcp.consumer]
+# Extra network aliases folded onto the single `default` network (alongside the base
+# service alias "pwmcp", which compose resolves automatically). `network` is retained
+# empty for override back-compat — a non-empty value is the removed standalone
+# "second network" pattern; use pwmcp.network.external_default instead.
 network = ""
-aliases = ["pwmcp", "pwmcp-mcp", "pwmcp-playwright"]
+aliases = ["pwmcp-mcp", "pwmcp-playwright"]
 
 [pwmcp.unified.image]
 registry = "ghcr.io"

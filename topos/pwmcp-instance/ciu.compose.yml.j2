@@ -80,14 +80,15 @@ services:
       retries: {{ pwmcp.health.retries }}
       start_period: {{ pwmcp.health.start_period }}
     networks:
-      default: {}
-      {% if pwmcp.consumer.network %}
-      consumer:
+      # One project network only. The base service alias plus the extra aliases
+      # (pwmcp-mcp / pwmcp-playwright / ...) all ride it, so consumers resolve every
+      # well-known hostname on the shared network — no separate "consumer" attach.
+      default:
         aliases:
+          - {{ pwmcp.unified.name }}
           {% for alias in pwmcp.consumer.aliases %}
           - {{ alias }}
           {% endfor %}
-      {% endif %}
       {% if pwmcp.external.enabled and pwmcp.external.unified_host %}
       ingress: {}
       {% endif %}
@@ -137,13 +138,14 @@ services:
     {% endif %}
 
 networks:
+  # default = the topos ui-test network. topos has NO containerized daemon to own a
+  # network (the daemon is native — a Unix socket), so THIS stack creates it
+  # (external_default = false). The future React operator-console test server joins
+  # this same network so the browser reaches it by container DNS. A consumer that
+  # instead attaches to a pre-existing parent network sets external_default = true.
   default:
     name: {{ deploy.network_name }}
-  {% if pwmcp.consumer.network %}
-  consumer:
-    name: {{ pwmcp.consumer.network }}
-    external: true
-  {% endif %}
+    external: {% if pwmcp.network.external_default %}true{% else %}false{% endif %}
   {% if pwmcp.external.enabled %}
   ingress:
     name: {{ pwmcp.network.ingress_network }}

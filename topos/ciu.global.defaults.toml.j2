@@ -1,0 +1,45 @@
+# ==========================================================================
+# topos — CIU ROOT global (multi-stack). topos's PRODUCTION daemon runs NATIVE
+# (a systemd unit, `topos daemon serve` on a Unix socket /run/topos/topos.sock —
+# no Docker network, no HTTP port; the optional `topos gateway` is loopback-only),
+# so the daemon is deliberately NOT a ciu stack: it is host-forensics (reads the
+# host /sys/fs/cgroup + /proc + DAMON) and belongs on the host, not in a container.
+#
+# This ciu root exists ONLY for the opt-in browser / UI-testing scaffold:
+# pwmcp-instance today, and (when it ships) the React operator-console test server.
+# See pwmcp-instance/README.md.
+# ==========================================================================
+
+[deploy]
+project_name = "topos"
+environment_tag = "ui-test"
+network_name = "topos-ui-test"
+log_level = "INFO"
+
+# Hostdir ownership values (ciu S6/S7), expanded from ciu.env.
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+CONTAINER_GID = "$DOCKER_GID"
+DOCKER_GID = "$DOCKER_GID"
+
+# There is NO default deploy wave — the topos daemon is native, not a stack, and the
+# only ciu stack is the opt-in ui-test scaffold below. A plain `ciu up` deploys nothing.
+[deploy.profiles.default]
+stacks = []
+
+# tools: the opt-in browser / UI-testing scaffold (NON-DEFAULT, so `ciu up`/`ciu down`
+# never sweep it). pwmcp-instance OWNS the topos ui-test network here (no native daemon
+# owns one — pwmcp.network.external_default = false); the future web-UI test server
+# joins that same network so the browser reaches it by container DNS.
+#   ciu up --profile tools        (or: ciu up --dir pwmcp-instance)
+[deploy.profiles.tools]
+stacks = ["pwmcp-instance"]
+
+[ciu]
+# S1.2 — independent root: refuse to run if $REPO_ROOT points elsewhere (this
+# devcontainer's shell auto-sources a sibling repo's ciu.env). CORRECT on a real
+# root (unlike the removed per-stack standalone_root that made pwmcp its own root).
+standalone_root = true
+require_certs = false
+require_fqdn = false
+auto_connect_network = false

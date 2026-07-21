@@ -12,10 +12,13 @@ manifest_url = "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-lates
 project = "vbpub/ciu"
 required_version = "4.6.0"
 
+# NOTE: ciu.global.defaults.toml.j2 was REMOVED from the vendored set — it carried
+# standalone_root=true and made this a standalone root instead of a sub-stack of the
+# topos ciu root. The upstream bundle (vbpub/pwmcp ab1ebf1) no longer ships it; on the
+# next re-vendor this list matches upstream automatically.
 [vendored]
 files = [
   "ciu.compose.yml.j2",
   "ciu.defaults.toml.j2",
-  "ciu.global.defaults.toml.j2",
   "pwmcp.contract.json",
 ]

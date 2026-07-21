@@ -1,0 +1,21 @@
+# Topos UI/browser-test policy. Upstream image/version values remain pinned in
+# ciu.defaults.toml.j2 and are tracked by UPSTREAM.toml.
+
+[pwmcp.unified]
+browser_mode = "per-session"
+expose = false
+
+[pwmcp.run_server]
+default_lease_s = 900
+max_lease_s = 3600
+max_clients = 2
+idle_recycle_s = 15
+
+# [pwmcp.consumer].network is intentionally NOT set here. It used to be
+# "$DOCKER_NETWORK_INTERNAL", which resolved to the DSTDNS devcontainer network
+# (dstdns-98535c-network) — topos piggybacking on dstdns's network, the exact
+# cross-project reach we removed. As a sub-stack of the topos ciu root, this stack
+# now owns the topos ui-test network via pwmcp.network.external_default = false.
+
+[pwmcp.external]
+enabled = false
