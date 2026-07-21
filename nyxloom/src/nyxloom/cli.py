@@ -70,7 +70,25 @@ INTERFACE CONTRACT (frozen) — subcommands:
   leases                      leases.holder_info for every mutex declared
                               by any registered project (project + host).
   digest <project> [--since SEQ]   prints notify.digest.
-  events <project> [--since SEQ] [--type T]   raw event lines (debug).
+  events <project> [--since SEQ] [--type T] [--tail] [--json]
+                              PACKAGE SP04 2026-07-21 (docs/plan-state-
+                              integrity.md A.3): the greppability bridge --
+                              dumps the event store as JSONL to stdout via
+                              storage.iter_events, which is backend-agnostic
+                              (file or SQLite, per NYXLOOM_STATE_BACKEND),
+                              restoring `| jq` / `| lnav` over the event log
+                              regardless of backend. --since/--type filter
+                              (--type unchanged from the original P10 debug
+                              verb); --json is an explicit alias for the
+                              already-JSONL default output (no other output
+                              mode exists); --tail polls for new appends
+                              after the initial dump and follows them
+                              (KeyboardInterrupt during the poll -> clean
+                              exit 0). Reads only -- never writes an event
+                              or a statefile. An unknown/never-written
+                              project is not an error: iter_events yields
+                              nothing for it, so nothing is printed and the
+                              exit code is 0.
   version                     nyxloom.__version__.
   init <project_folder>       PACKAGE P23. Scaffold nyxloom-trove/ into
                               <project_folder> from this package's bundled
@@ -738,19 +756,63 @@ def cmd_digest(args) -> int:
 
 
 def cmd_events(args) -> int:
-    """events <project> [--since SEQ] [--type T]"""
-    from . import storage
+    """events <project> [--since SEQ] [--type T] [--tail] [--json]
 
-    cfg = _cfg(args.project)
+    PACKAGE SP04 2026-07-21 (docs/plan-state-integrity.md A.3 -- the
+    greppability bridge). Dumps the event store as JSONL to stdout via
+    storage.iter_events, which is backend-agnostic (file or SQLite, per
+    NYXLOOM_STATE_BACKEND) -- so `nyxloom events P | jq` / `| lnav` works
+    unchanged regardless of which backend is selected. Each printed line is
+    `Event.to_dict()` JSON-encoded, the exact shape storage.py's file
+    backend writes to events.jsonl, so a dump round-trips to the same
+    records `iter_events` yields.
+
+    Deliberately does NOT resolve the project through `_cfg`/the registry:
+    storage.iter_events works directly off the project id string on both
+    backends and simply yields nothing for a project with no events.jsonl /
+    no state.db row, so an unknown or never-written project is not an
+    error here -- it prints nothing and exits 0 (this is a read-only
+    debug/grep tool, not a mutation path that needs config validation).
+
+    --since SEQ   only sequence > SEQ (passed straight through to
+                  iter_events(project, since=SEQ)).
+    --type T      filter to one event type value (unchanged P10 behavior).
+    --json        explicit alias for the (already-JSONL) default output --
+                  accepted so a script can be unambiguous about the format
+                  it depends on; there is no other output mode to select.
+    --tail        after the initial dump, poll for new appends and emit
+                  them as they arrive, tracking the highest sequence seen
+                  so each poll only re-queries iter_events for the delta.
+                  Interruptible: a KeyboardInterrupt (Ctrl-C) during the
+                  poll is caught and the command exits 0 cleanly.
+
+    Reads only -- iter_events is a pure SELECT/scan on both backends; this
+    command never calls append_event/append_and_apply/save_state.
+    """
+    import json as json_lib
+    import time
+
+    from . import storage
 
     since_seq = int(args.since) if hasattr(args, 'since') and args.since else 0
     filter_type = args.type if hasattr(args, 'type') and args.type else None
 
-    for ev in storage.iter_events(args.project, since_seq):
-        if filter_type is None or ev.type.value == filter_type:
-            # Print event as JSON line
-            import json
-            print(json.dumps(ev.to_dict()))
+    def _dump_since(last_seq: int) -> int:
+        for ev in storage.iter_events(args.project, last_seq):
+            if filter_type is None or ev.type.value == filter_type:
+                print(json_lib.dumps(ev.to_dict()))
+            last_seq = ev.sequence
+        return last_seq
+
+    last_seq = _dump_since(since_seq)
+
+    if getattr(args, "tail", False):
+        try:
+            while True:
+                time.sleep(1.0)
+                last_seq = _dump_since(last_seq)
+        except KeyboardInterrupt:
+            pass
 
     return 0
 
@@ -992,6 +1054,10 @@ def main(argv: list[str] | None = None) -> int:
     events_parser.add_argument("project", help="Project ID")
     events_parser.add_argument("--since", help="Since sequence (optional)")
     events_parser.add_argument("--type", help="Event type (optional)")
+    events_parser.add_argument("--tail", action="store_true",
+                                help="Follow new events as they are appended (Ctrl-C to stop)")
+    events_parser.add_argument("--json", action="store_true",
+                                help="Explicit JSONL output (default; no other output mode exists)")
 
     # version
     version_parser = subparsers.add_parser("version")
