@@ -176,6 +176,51 @@ def test_atomicity_upsert_failure_rolls_back_event_and_projection(sqlite_backend
     assert state_after.state is TaskState.QUEUED  # projection unchanged on disk
 
 
+def test_append_event_standalone_rolls_back_on_failure(sqlite_backend, monkeypatch):
+    """append_event's OWN try/except/rollback (distinct from
+    append_and_apply's): a failure inside its single-statement transaction
+    rolls back cleanly and re-raises -- no event row is left behind."""
+    project = "sp01-append-event-rollback"
+    original = storage_sqlite._insert_event
+
+    def _boom(conn, project_, **kwargs):
+        raise RuntimeError("simulated insert failure")
+
+    monkeypatch.setattr(storage_sqlite, "_insert_event", _boom)
+    try:
+        with pytest.raises(RuntimeError, match="simulated insert failure"):
+            storage.append_event(project, actor=ACTOR, type=EventType.PROJECT_REGISTERED,
+                                  payload={})
+    finally:
+        monkeypatch.setattr(storage_sqlite, "_insert_event", original)
+
+    assert list(storage.iter_events(project)) == []
+
+
+def test_save_state_standalone_rolls_back_on_failure(sqlite_backend, monkeypatch):
+    """save_state's OWN try/except/rollback (the doctor recovery-path write,
+    no event involved): a failure inside its transaction rolls back cleanly
+    and re-raises -- no projection row is left behind."""
+    project = "sp01-save-state-rollback"
+    task_id = "t-save-rollback"
+    tsf = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id=task_id,
+                         project=project, state=TaskState.QUEUED, since=utc_now())
+
+    original = storage_sqlite._upsert_state_row
+
+    def _boom(conn, state):
+        raise RuntimeError("simulated upsert failure")
+
+    monkeypatch.setattr(storage_sqlite, "_upsert_state_row", _boom)
+    try:
+        with pytest.raises(RuntimeError, match="simulated upsert failure"):
+            storage.save_state(tsf)
+    finally:
+        monkeypatch.setattr(storage_sqlite, "_upsert_state_row", original)
+
+    assert storage.load_state(project, task_id) is None
+
+
 def test_atomicity_validate_before_append_still_blocks_illegal_transitions(sqlite_backend):
     """The SQLite backend still runs `_validate_before_append` before ever
     touching the DB -- an illegal transition raises with zero side effects,
