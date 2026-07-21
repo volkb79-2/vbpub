@@ -80,6 +80,7 @@ production-equivalence requirements are tracked in [SPEC S14.3](docs/SPEC.md#s14
 1. **N products, one Releases page** via per-product `prefix` (`ciu-v…`, `pwmcp-v…`).
 2. **Per-product "latest"** — `cmru resolve` returns the highest-semver release for a prefix; `<prefix>-latest` holds a thin `latest.json` pointer, not a duplicated asset.
 3. **Profile-driven publishing** — wheels, OCI images, bundles and tarballs each release correctly from one config, with cmru as the generic orchestrator.
+4. **Per-interpreter variants** (S-REL.6) — a `bundle`/`tarball` may declare `[[project.X.variants]]` so one tag publishes one asset per variant (`<tag>-<variant><suffix>`); the generated `get.py` installer selects one explicitly with `--variant NAME`. Zero declared variants keeps the single-asset path unchanged.
 
 ## cmru vs ciu
 

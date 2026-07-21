@@ -151,13 +151,13 @@ wheel/image/bundle, create the GitHub Release + upload assets, push to ghcr, wri
 `oci-image`, by cmru's built-in handler — see S14). cmru never hardcodes a project's file
 paths.
 
-**S-REL.4 — delegated publication is source-first and fail-closed.** After the delegated
+**S-REL.4a — delegated publication is source-first and fail-closed.** After the delegated
 build step, cmru commits any tracked changes confined to the project subtree and performs
 `git push origin HEAD` before the publish step, even when the build made no new diff. A
 non-fast-forward or any other source-push failure MUST abort publication so the remote host
 cannot create an immutable release tag from a tree different from the one that was built.
 
-**S-REL.4 — Overrides & guards** (`[project.X.release]`): `git_tag = false/true` overrides
+**S-REL.4b — Overrides & guards** (`[project.X.release]`): `git_tag = false/true` overrides
 the profile's tag capability; `commit_generated = ["<project-relative path>", …]` lists
 build outputs cmru must `git add`+commit after `build` (e.g. mdt's
 `package-manifests-versioned`). An `oci-image`-only project paired with a tagging strategy
@@ -370,6 +370,7 @@ The resolver implements differentiator #2: highest-semver selection, replacing G
 
 ```json
 {
+  "project": "tls-edge",
   "version": "0.2.0",
   "tag": "tls-edge-v0.2.0",
   "asset": "tls-edge-v0.2.0.tar.xz",
@@ -490,7 +491,7 @@ no third-party dependencies. `minisign`, `docker`, and the project adapter are s
 **S6.11** `install_dir_user` degrades gracefully: if `entrypoint` is empty and `wheels`
 is empty, no adapter is called and no venv is created (tls-edge minimal path).
 
-**S6.6** `--version <TAG>` pins the install to a specific tag (bare semver or full tag). Arguments go to the right side of the pipe (`curl … | sudo python3 - install --version …`), so there is no env-var-across-pipe footgun.
+**S6.13** `--version <TAG>` pins the install to a specific tag (bare semver or full tag). Arguments go to the right side of the pipe (`curl … | sudo python3 - install --version …`), so there is no env-var-across-pipe footgun.
 
 **S6.12** **Variant selection (multi-variant releases, S-REL.6).** When the emitted `get.py`
 carries a non-empty `VARIANTS` list, the operator MUST select one at install/update time —
@@ -504,9 +505,12 @@ Resolution order (first hit wins):
 4. Otherwise: a fatal error (exit 2) that lists the available variants.
 
 The chosen variant is written to `<root>/shared/.variant` (preserved across updates) and
-drives the download asset name (`<tag>-<variant><asset_suffix>`, S6.3 step 3). When `VARIANTS`
-is empty every step above is skipped and the installer behaves **byte-for-byte** as before
-(single asset `<tag><asset_suffix>`).
+drives the download asset name (`<tag>-<variant><asset_suffix>`, S6.3 step 3). `update` is a
+no-op ("already at …") only when **both** the resolved version **and** the selected variant
+already match what is installed — so `update --variant OTHER` at the current version
+re-installs the other variant rather than being short-circuited. When `VARIANTS` is empty
+every step above is skipped and the installer behaves **byte-for-byte** as before (single
+asset `<tag><asset_suffix>`).
 
 ---
 
