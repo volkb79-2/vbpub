@@ -16,6 +16,12 @@ These files are the shipped defaults that land under the visible user customizat
   a compact cgroup-governance banner (`memory.max`, `memory.high`, `cpu.weight`,
   `io.max` read from `/sys/fs/cgroup`, skipped when unreadable/absent) so you can
   see at a glance whether the container is host-governed — see
-  "Host resource governance (cgroups/slices)" in `../DEVCONTAINER-LIFECYCLE.md`.
+  "Host resource governance (cgroups/slices)" in `../DEVCONTAINER-LIFECYCLE.md` —
+  plus a one-line KSM opt-in status (see "KSM opt-in" in `../README.md`).
+- `ksm-optin.c` is the `LD_PRELOAD` shim built in a throwaway Dockerfile stage;
+  see "KSM opt-in (kernel same-page merging)" in `../README.md`.
+- `lnav/formats/nyxloom/nyxloom_events.json` is a bundled `lnav` log-format
+  definition for nyxloom's `events.jsonl`, installed image-wide at
+  `/etc/lnav/formats/nyxloom/`; see "`lnav`: JSONL inspection" in `../README.md`.
 
 The image also installs compatibility links into the standard tool paths where needed.

@@ -192,11 +192,61 @@ Container and system inspection, in-image:
 | `syft` | SBOM generation, image/package inventory |
 | `htop` | GitHub-sourced build with a shipped default config |
 | `zswap-status` | prints kernel zswap counters directly from sysfs/debugfs |
+| `lnav` | ncurses log/JSONL viewer with SQL queries over parsed fields — see below |
 
 Neovim ships as `nvim` with the NvChad `v2.5` starter config staged into
 `/home/vscode/.config/nvim`; the shell defaults prefer `nvim` as `$EDITOR` when present.
 GitHub-release tools keep their manpages and completions where upstream ships them; `fd` is
 installed as both `fd` and Debian-compatible `fdfind`.
+
+#### `lnav`: JSONL inspection
+
+`lnav` ([tstack/lnav](https://github.com/tstack/lnav), latest release resolved at build time
+via `LNAV_VERSION`, default `latest`) works on any JSON-lines file out of the box — point it
+at one and its generic JSON format auto-detects timestamp-shaped and message-shaped fields:
+
+```bash
+lnav path/to/whatever.jsonl
+```
+
+On top of that, the image ships one **bundled format** at
+`/etc/lnav/formats/nyxloom/nyxloom_events.json`, matched automatically by filename against
+nyxloom's `events.jsonl` (or a `nyxloom events <project>` dump saved to a file ending the same
+way) — no `-f`/`-i` flag needed. It maps nyxloom's `Event` schema
+(`nyxloom/src/nyxloom/types.py`) into:
+
+- a compact summary line — `TYPE  project  actor_kind:actor_id  seq=N  payload`
+- proper timestamp parsing off the `timestamp` field
+- `error`/`warning` **levels** derived from `type` (e.g. `ATTEMPT_FAILED`, `TICK_ERROR` →
+  error; `TASK_BLOCKED`, `NEEDS_OPERATOR` → warning), so lnav's level-based navigation,
+  highlighting, and `:filter-in`/`:filter-out` all work meaningfully on the event stream
+- a queryable `nyxloom_events` SQL table, e.g. from lnav's `;`-prompt:
+  `;SELECT type, count(*) FROM nyxloom_events GROUP BY type`
+
+Any other JSONL file — including a different project's event log — still falls back to
+lnav's stock generic-JSON handling; the bundled format only activates for files whose path
+matches `events.jsonl`.
+
+### KSM opt-in (kernel same-page merging)
+
+Every process in the image opts into KSM by default: a tiny `LD_PRELOAD` shim
+(`customization/ksm-optin.c`) calls `PR_SET_MEMORY_MERGE` in a constructor that runs on every
+exec, so identical private-anonymous pages across containers become mergeable by the host's
+`ksmd` (`/sys/kernel/mm/ksm/run=1`) — a deliberate CPU-for-RAM trade on hosts that run many
+containers built from the same layers.
+
+- **Build option:** `ENABLE_KSM_OPTIN` (default `true`). Set to `false` to leave `LD_PRELOAD`
+  unset in the built image; the shim still compiles (a few KB, negligible build cost) but
+  never activates. Reported in the generated manifest as `ksm-optin=true|false`.
+- **Per-command opt-out at runtime**, regardless of the build-time default: `LD_PRELOAD= <cmd>`
+  (or unset it in your own environment). Useful when running sanitizers/valgrind, which set
+  their own `LD_PRELOAD` — compose as `LD_PRELOAD="theirs:/usr/local/lib/ksm-optin.so"` or drop
+  ours for that invocation.
+- **Runtime status banner:** since success depends on the *host's* kernel (needs 6.4+,
+  `CONFIG_KSM`, and effectively `CAP_SYS_RESOURCE` in the container's user namespace) and not
+  on anything decided at build time, every interactive shell login prints whether *this*
+  container actually opted in — see the `ksm` line next to the cgroup banner in
+  `customization/profile.sh`, and set `KSM_OPTIN_VERBOSE=1` for a line on every single exec.
 
 ### Customization roots
 

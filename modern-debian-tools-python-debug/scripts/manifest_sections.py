@@ -24,6 +24,7 @@ CONTAINER_INSPECTION_TOOL_NAMES = (
     "dtop",
     "glances",
     "lazydocker",
+    "lnav",
     "regctl",
     "syft",
 )
@@ -115,6 +116,7 @@ PROJECT_HOMES = {
     "hadolint": "https://github.com/hadolint/hadolint",
     "htop": "https://github.com/htop-dev/htop",
     "lazydocker": "https://github.com/jesseduffield/lazydocker",
+    "lnav": "https://github.com/tstack/lnav",
     "nvchad": "https://github.com/NvChad/NvChad",
     "nvim": "https://github.com/neovim/neovim",
     "rga": "https://github.com/phiresky/ripgrep-all",

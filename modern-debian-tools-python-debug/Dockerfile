@@ -9,9 +9,12 @@ ARG BASE_IMAGE="mcr.microsoft.com/devcontainers/python:${PYTHON_VERSION}-${DEBIA
 # BASE_IMAGE is set by `docker-bake.hcl` during build
 
 # ── KSM opt-in shim (throwaway build stage) ──────────────────────────────────
-# Compiles customization/ksm-optin.c; the main stage copies the .so and sets
-# a global LD_PRELOAD so every process opts into KSM (PR_SET_MEMORY_MERGE).
-# Host prerequisite: /sys/kernel/mm/ksm/run=1 (this host: enabled, tuned).
+# Compiles customization/ksm-optin.c; the main stage copies the .so unconditionally
+# (a few KB, negligible cost — keeps this build stage uniform regardless of the
+# ENABLE_KSM_OPTIN toggle below). Whether it actually activates depends on
+# ENABLE_KSM_OPTIN, resolved in docker-bake.hcl into KSM_OPTIN_LD_PRELOAD (the
+# shim's path when enabled, empty when disabled) and assigned to LD_PRELOAD
+# further down. Host prerequisite for it to take effect: /sys/kernel/mm/ksm/run=1.
 FROM ${BASE_IMAGE} AS ksm-build
 COPY customization/ksm-optin.c /tmp/ksm-optin.c
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
@@ -51,6 +54,7 @@ ARG AIDER_VERSION
 ARG DELTA_VERSION
 ARG GH_VERSION
 ARG GRPCURL_VERSION
+ARG LNAV_VERSION
 ARG CONSUL_VERSION
 ARG FD_VERSION
 ARG FZF_VERSION
@@ -74,6 +78,8 @@ ARG PHP_VERSION
 ARG NVIM_VER=""
 ARG NVCHAD_VER=""
 ARG NODE_MAJOR
+ARG ENABLE_KSM_OPTIN="true"
+ARG KSM_OPTIN_LD_PRELOAD="/usr/local/lib/ksm-optin.so"
 ARG GITHUB_USERNAME
 ARG GITHUB_REPO
 ARG CIU_WHEEL_TAG
@@ -270,6 +276,7 @@ RUN set -euo pipefail; \
     ln -sfn "${user_customization_dir}/htoprc" /home/vscode/.config/htop/htoprc; \
     ln -sfn "${user_customization_dir}/mc.ini" /home/vscode/.config/mc/ini; \
     chown -R vscode:vscode "${user_customization_dir}" /home/vscode/.config/mc /home/vscode/.config/nano /home/vscode/.config/htop; \
+    install -D -m 0644 /tmp/customization/lnav/formats/nyxloom/nyxloom_events.json /etc/lnav/formats/nyxloom/nyxloom_events.json; \
     install -d -m 0755 /etc/profile.d; \
     printf '%s\n' '#!/bin/sh' '# shellcheck source=/dev/null' '. /usr/local/share/modern-debian-tools-python-debug/profile.sh' > /etc/profile.d/50-modern-debian-tools.sh; \
     chmod 0644 /etc/profile.d/50-modern-debian-tools.sh
@@ -522,6 +529,12 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     EXPECTED_SYFT_SHA256="$(grep "syft_${SYFT_VER}_linux_${syft_arch}.tar.gz\$" "${DOWNLOADS_DIR}/syft-${SYFT_VER}-checksums.txt" | awk '{print $1}')"; \
     echo "${EXPECTED_SYFT_SHA256}  ${DOWNLOADS_DIR}/syft-${SYFT_VER}.tar.gz" | sha256sum -c -; \
     install_from_tar "${DOWNLOADS_DIR}/syft-${SYFT_VER}.tar.gz" syft /tmp/syft-extract; \
+    # lnav: JSONL/log viewer (tstack/lnav); ships as a zip with the binary nested \
+    # under lnav-<ver>/. No upstream checksum file is published for zip releases. \
+    require_file "${DOWNLOADS_DIR}/lnav-${LNAV_VER}-linux-musl-x86_64.zip"; \
+    unzip -q "${DOWNLOADS_DIR}/lnav-${LNAV_VER}-linux-musl-x86_64.zip" -d /tmp/lnav-extract; \
+    install -m 755 "/tmp/lnav-extract/lnav-${LNAV_VER}/lnav" /usr/local/bin/lnav; \
+    install_manpage_from_tree /tmp/lnav-extract lnav.1 /usr/local/share/man/man1/lnav.1; \
     # Security & Debug Tools — installed from pre-staged + checksum-verified artifacts. \
     # hadolint: single static binary (no archive); asset has no version in the name. \
     # The per-asset .sha256 file contains a single line: "<hex>  hadolint-Linux-x86_64". \
@@ -571,6 +584,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
         /tmp/dtop-extract \
         /tmp/lazydocker-extract \
         /tmp/syft-extract \
+        /tmp/lnav-extract \
         /tmp/grype-extract \
         /tmp/cdebug-extract \
         /tmp/awscli \
@@ -747,6 +761,7 @@ RUN set -euo pipefail; \
     system_packages_file="$(mktemp /tmp/system-packages.XXXXXX)"; \
     php_extensions_file="$(mktemp /tmp/php-extensions.XXXXXX)"; \
     { \
+        echo "ksm-optin=${ENABLE_KSM_OPTIN}"; \
         if [ -n "${cmru_version_output}" ]; then \
             echo "cmru=${cmru_version_output}"; \
         else \
@@ -796,6 +811,11 @@ RUN set -euo pipefail; \
             echo "lazydocker=$(lazydocker --version 2>&1 | head -1)"; \
         else \
             echo "lazydocker=not-installed"; \
+        fi; \
+        if command -v lnav >/dev/null 2>&1; then \
+            echo "lnav=$(lnav -V 2>&1 | awk '{print $2}')"; \
+        else \
+            echo "lnav=not-installed"; \
         fi; \
         if command -v glances >/dev/null 2>&1; then \
             echo "glances=$(glances --version 2>&1 | head -1)"; \
@@ -925,13 +945,15 @@ RUN set -euo pipefail; \
         "${canonical_manifest}" "${inventory_manifest}" "${_image_tag}" "${_image_ref}" \
         "${OCI_VERSION}" "${BUILD_TIMESTAMP}" "${OCI_CREATED}" "${OCI_REVISION}" >> /etc/os-release
 
-# ── KSM opt-in: every process in mdt-based containers becomes KSM-mergeable.
-# Silent by default (KSM_OPTIN_VERBOSE=1 to log); per-command opt-out via
-# `LD_PRELOAD= <cmd>`. Decided 2026-07-15: this host trades ksmd CPU for RAM.
-# NOTE for tooling that manipulates LD_PRELOAD (sanitizers, valgrind): compose
-# their preloads as "theirs:ours" or unset ours for that run.
+# ── KSM opt-in: every process in mdt-based containers becomes KSM-mergeable,
+# unless disabled at build time via ENABLE_KSM_OPTIN=false (docker-bake.hcl
+# resolves that into KSM_OPTIN_LD_PRELOAD — the shim's path, or "" to leave
+# LD_PRELOAD unset). Silent by default (KSM_OPTIN_VERBOSE=1 to log); per-command
+# opt-out via `LD_PRELOAD= <cmd>`. Decided 2026-07-15: this host trades ksmd CPU
+# for RAM. NOTE for tooling that manipulates LD_PRELOAD (sanitizers, valgrind):
+# compose their preloads as "theirs:ours" or unset ours for that run.
 COPY --from=ksm-build /tmp/ksm-optin.so /usr/local/lib/ksm-optin.so
-ENV LD_PRELOAD=/usr/local/lib/ksm-optin.so
+ENV LD_PRELOAD=${KSM_OPTIN_LD_PRELOAD}
 
 USER vscode
 

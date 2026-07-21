@@ -21,6 +21,14 @@
  *
  * Build: gcc -shared -fPIC -O2 -o ksm-optin.so ksm-optin.c   (Dockerfile stage)
  * Disable per-process: LD_PRELOAD= <cmd>   (or unset in the environment)
+ *
+ * MDT_KSM_STATUS: set unconditionally (not gated by KSM_OPTIN_VERBOSE) to
+ * "enabled" or "unavailable" via setenv() in the constructor, which — per ELF
+ * startup order — runs before the exec'd binary's own main(). For the login
+ * shell itself this lands in its environment before it imports envp into shell
+ * variables, so customization/profile.sh's banner can read $MDT_KSM_STATUS
+ * to report the real, host-dependent outcome (unset entirely when the shim
+ * isn't preloaded at all, i.e. ENABLE_KSM_OPTIN=false at build time).
  */
 #include <sys/prctl.h>
 #include <stdio.h>
@@ -39,15 +47,19 @@ static void ksm_optin(void)
     const char *verbose = getenv("KSM_OPTIN_VERBOSE");
 
     if (prctl(PR_GET_MEMORY_MERGE, 0, 0, 0, 0) == 1) {
+        setenv("MDT_KSM_STATUS", "enabled", 1);
         if (verbose && *verbose == '1')
             fprintf(stderr, "[ksm-optin] already enabled (inherited)\n");
         return;
     }
     if (prctl(PR_SET_MEMORY_MERGE, 1, 0, 0, 0) == 0) {
+        setenv("MDT_KSM_STATUS", "enabled", 1);
         if (verbose && *verbose == '1')
             fprintf(stderr, "[ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)\n");
-    } else if (verbose && *verbose == '1') {
-        perror("[ksm-optin] PR_SET_MEMORY_MERGE failed "
-               "(kernel <6.4, CONFIG_KSM off, or needs CAP_SYS_RESOURCE)");
+    } else {
+        setenv("MDT_KSM_STATUS", "unavailable", 1);
+        if (verbose && *verbose == '1')
+            perror("[ksm-optin] PR_SET_MEMORY_MERGE failed "
+                   "(kernel <6.4, CONFIG_KSM off, or needs CAP_SYS_RESOURCE)");
     }
 }

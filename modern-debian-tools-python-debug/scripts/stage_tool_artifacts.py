@@ -951,6 +951,19 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
         records=records,
     )
 
+    _stage_zip_tool(
+        tool="lnav",
+        version=resolved["LNAV_VER"],
+        destination=DOWNLOADS_DIR / f"lnav-{resolved['LNAV_VER']}-linux-musl-x86_64.zip",
+        url=(
+            "https://github.com/tstack/lnav/releases/download/"
+            f"v{resolved['LNAV_VER']}/lnav-{resolved['LNAV_VER']}-linux-musl-x86_64.zip"
+        ),
+        expected_binary="lnav",
+        verification="archive contains lnav",
+        records=records,
+    )
+
     yq_path = DOWNLOADS_DIR / f"yq-{resolved['YQ_VER']}-linux_amd64"
     yq_url = f"https://github.com/mikefarah/yq/releases/download/v{resolved['YQ_VER']}/yq_linux_amd64"
     yq_final_url = _download(yq_url, yq_path)
@@ -1502,6 +1515,7 @@ def _resolve_versions() -> dict[str, str]:
         "NVIM_VER": _resolve_version(os.getenv("NVIM_VERSION"), "neovim/neovim"),
         "NVCHAD_VER": _resolve_version(os.getenv("NVCHAD_VERSION"), "NvChad/NvChad"),
         "GRPCURL_VER": _resolve_version(os.getenv("GRPCURL_VERSION"), "fullstorydev/grpcurl"),
+        "LNAV_VER": _resolve_version(os.getenv("LNAV_VERSION"), "tstack/lnav"),
         "RGA_VER": _resolve_version(os.getenv("RGA_VERSION"), "phiresky/ripgrep-all"),
         "VAULT_VER": _resolve_version(os.getenv("VAULT_VERSION"), "hashicorp/vault"),
     }

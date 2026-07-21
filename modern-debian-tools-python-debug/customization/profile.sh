@@ -38,6 +38,19 @@ mdt_cgroup_banner() {
     mdt_cgroup_banner_line io.max      io.max
 }
 
+# KSM opt-in banner — reports whether THIS shell actually opted into KSM at
+# exec time. $MDT_KSM_STATUS is set by customization/ksm-optin.c's constructor,
+# which runs (per ELF startup order) before this shell imports its environment,
+# so the value is already visible here. Unset entirely means the shim was never
+# preloaded (ENABLE_KSM_OPTIN=false at build time) — prints nothing then, same
+# silent-when-inapplicable convention as the cgroup banner above.
+mdt_ksm_banner() {
+    case "$MDT_KSM_STATUS" in
+        enabled)     printf '  ksm         opted-in (KSM_OPTIN_VERBOSE=1 for exec-level detail)\n' ;;
+        unavailable) printf '  ksm         unavailable (kernel <6.4, CONFIG_KSM off, or missing CAP_SYS_RESOURCE)\n' ;;
+    esac
+}
+
 case "$-" in
     *i*)
         if [ -r "$HOME/.config/modern-debian-tools-python-debug/aliases.sh" ]; then
@@ -45,5 +58,6 @@ case "$-" in
             . "$HOME/.config/modern-debian-tools-python-debug/aliases.sh"
         fi
         mdt_cgroup_banner
+        mdt_ksm_banner
         ;;
 esac

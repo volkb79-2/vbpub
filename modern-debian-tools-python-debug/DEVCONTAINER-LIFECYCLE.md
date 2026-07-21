@@ -160,6 +160,11 @@ The devcontainer's login shell prints a compact one-line summary of these automa
 interactive login — see the cgroup banner in `customization/profile.sh`. This is display-only: it
 lets you see at a glance whether you're on a governed host, it cannot change placement.
 
+The same login banner also reports KSM (kernel same-page merging) opt-in status — whether *this*
+container's processes actually got `PR_SET_MEMORY_MERGE`, which depends on the host kernel and is
+therefore just as un-knowable from a build as cgroup placement is. See "KSM opt-in (kernel
+same-page merging)" in `README.md` for the build-time toggle and the per-command runtime opt-out.
+
 ### BuildKit/buildx builders are governed separately
 
 The above covers the devcontainer *itself*. Release builds run through `docker buildx bake` /

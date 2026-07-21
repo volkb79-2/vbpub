@@ -167,6 +167,11 @@ variable "GRPCURL_VERSION" {
   default = "latest"
 }
 
+// Version pin for lnav; "latest" resolves at staging time for reproducibility control.
+variable "LNAV_VERSION" {
+  default = "latest"
+}
+
 // Version pin for ripgrep-all; "latest" resolves at staging time for reproducibility control.
 variable "RGA_VERSION" {
   default = "latest"
@@ -309,6 +314,14 @@ variable "INSTALL_OPENCODE" {
 // Architectural decision set in docker-bake.hcl, not in the Dockerfile.
 variable "NODE_MAJOR" {
   default = "26"
+}
+
+// Master switch for the KSM (kernel same-page merging) opt-in shim: "true" bakes
+// customization/ksm-optin.c into the image and points LD_PRELOAD at it so every
+// process opts in; "false" still compiles the shim (negligible cost, keeps the
+// build path uniform) but leaves LD_PRELOAD unset. See the Dockerfile KSM stage.
+variable "ENABLE_KSM_OPTIN" {
+  default = "true"
 }
 
 // CIU release coordinates are explicit because the resolver stages a concrete wheel,
@@ -493,6 +506,7 @@ target "base" {
     FZF_VERSION = "${FZF_VERSION}"
     GH_VERSION = "${GH_VERSION}"
     GRPCURL_VERSION = "${GRPCURL_VERSION}"
+    LNAV_VERSION = "${LNAV_VERSION}"
     CODEX_VERSION = "${CODEX_VERSION}"
     CLAUDE_CODE_VERSION = "${CLAUDE_CODE_VERSION}"
     ANTIGRAVITY_VERSION = "${ANTIGRAVITY_VERSION}"
@@ -506,6 +520,8 @@ target "base" {
     OPENCODE_VERSION = "${OPENCODE_VERSION}"
     INSTALL_OPENCODE = "${INSTALL_OPENCODE}"
     NODE_MAJOR = "${NODE_MAJOR}"
+    ENABLE_KSM_OPTIN = "${ENABLE_KSM_OPTIN}"
+    KSM_OPTIN_LD_PRELOAD = ENABLE_KSM_OPTIN == "true" ? "/usr/local/lib/ksm-optin.so" : ""
     OCI_TITLE = "${OCI_TITLE}"
     OCI_DESCRIPTION = "${OCI_DESCRIPTION}"
     OCI_DESCRIPTION_BASE = "${OCI_DESCRIPTION_BASE}"
