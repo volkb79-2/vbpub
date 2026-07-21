@@ -273,7 +273,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .config import ProjectConfig, RouteDef, Routes
 from .stages import effective_concurrency, stage_context
@@ -470,6 +470,67 @@ class AutoMergeTask(Action):
     """
 
 
+# --- reconcile trace (P03, D-L5: pure observability channel) ---------------
+#
+# `plan_project` stays pure (no clock, no I/O, no `log`/`nyxloom.log` import
+# reachable from this module -- a load-bearing invariant the doctor replay-
+# divergence guard and this module's property-testability both rely on). It
+# ALSO records an ordered `ReconcileTrace` of short, pure breadcrumbs -- WHY
+# it made each decision -- as pure in-memory data manipulation (no clock, no
+# I/O). The daemon (never this module) flushes `.trace.breadcrumbs` to the
+# logger at DEBUG after the pass, inside its own `bind(project=...)` scope
+# (see daemon.py's run_pass) -- this module never imports or calls the
+# logger itself. Breadcrumb `detail` values are ids/enums/short fixed
+# strings ONLY -- never handoff-body prose (payload injection rule, module
+# contract item 8 -- the exact same rule Action fields like Transition.notes
+# already follow).
+
+TRACE_KINDS = frozenset({
+    "dispatch", "dispatch-skip", "carve", "carve-skip", "merge",
+    "guard-exclude", "state-transition",
+})
+
+
+@dataclass(frozen=True)
+class TraceNote:
+    """One pure breadcrumb. `kind` is one of TRACE_KINDS; `task_id` is the
+    task the decision concerns (None for a project-wide decision like the
+    untargeted carve trigger); `detail` is a short id/enum/fixed string (a
+    dispatch_eligible reason, a route id, a transition label) -- never
+    free-form prose."""
+    kind: str
+    task_id: str | None
+    detail: str
+
+
+@dataclass(frozen=True)
+class ReconcileTrace:
+    """Pure data (D-L5): an ordered list of breadcrumbs recording WHY
+    plan_project made each decision this pass. No clock, no I/O -- `note()`
+    is a plain in-memory list append (legal on a frozen dataclass: frozen
+    blocks reassigning `self.breadcrumbs`, not mutating the list object it
+    already points at)."""
+    breadcrumbs: list[TraceNote] = field(default_factory=list)
+
+    def note(self, kind: str, task_id: str | None, detail: str) -> None:
+        self.breadcrumbs.append(TraceNote(kind=kind, task_id=task_id, detail=detail))
+
+
+class PlanResult(list):
+    """`plan_project`'s return value (D-L5). Chosen over a plain `(actions,
+    trace)` tuple specifically to avoid churning the ~50 existing call
+    sites across test_reconcile.py and daemon.py: PlanResult subclasses
+    `list` and IS the actions list, so every iterate/index/len()/
+    isinstance(..., list) call site keeps working byte-identically. It
+    additionally carries `.trace`, the pass's ReconcileTrace -- only the
+    daemon ever reads `.trace`; everything else keeps treating the return
+    value as a plain list of actions, exactly as before this package."""
+
+    def __init__(self, actions: Iterable[Action] = (), trace: ReconcileTrace | None = None) -> None:
+        super().__init__(actions)
+        self.trace = trace if trace is not None else ReconcileTrace()
+
+
 # --- input snapshot ---------------------------------------------------------
 
 @dataclass
@@ -587,12 +648,21 @@ def _premise_drifted(input_revision: str | None, head_revision: str | None) -> b
     return not (a.startswith(b) or b.startswith(a))
 
 
-def plan_project(inp: ReconcileInput) -> list[Action]:
+def plan_project(inp: ReconcileInput) -> PlanResult:
     """Deterministic action plan for one project (see module contract).
 
     Output order: task lifecycle actions (sorted by task id), then attempt
     actions, then waves, then SpecAttention — so tests can assert exactly.
+
+    Returns a `PlanResult` (P03, D-L5): IS the actions list (back-compat --
+    see PlanResult's own docstring) and additionally carries `.trace`, a
+    pure `ReconcileTrace` of breadcrumbs recording WHY key decisions were
+    made this pass. Building the trace is itself pure in-memory bookkeeping
+    -- no clock, no I/O, no logger import -- so this function's purity is
+    unchanged; only the daemon ever flushes `.trace` to the logger.
     """
+    trace = ReconcileTrace()
+
     # === Task lifecycle actions (sorted by task_id) ===
     lifecycle_by_id: dict[str, list[Action]] = {}
 
@@ -614,6 +684,7 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
         # CARVED -> QUEUED transition: check lint_clean
         if tsf.state == TaskState.CARVED and inp.lint_clean.get(fm_id, False):
             task_actions.append(Transition(task_id=fm_id, to=TaskState.QUEUED, notes=None))
+            trace.note("state-transition", fm_id, "CARVED->QUEUED")
 
         # Decision hold logic
         d_deps = fm.decision_deps()
@@ -623,9 +694,11 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
             # Transition to NEEDS_DECISION
             notes = ", ".join(open_d_deps)
             task_actions.append(Transition(task_id=fm_id, to=TaskState.NEEDS_DECISION, notes=notes))
+            trace.note("state-transition", fm_id, "QUEUED->NEEDS_DECISION")
         elif tsf.state == TaskState.NEEDS_DECISION and not open_d_deps:
             # Transition back to QUEUED
             task_actions.append(Transition(task_id=fm_id, to=TaskState.QUEUED, notes=None))
+            trace.note("state-transition", fm_id, "NEEDS_DECISION->QUEUED")
 
         # SELF-CORRECT 2026-07-16 (bug 2 of the review-verdict + reject-loop
         # package): REVIEW_REJECTED had NO handler at all. The state machine
@@ -787,6 +860,7 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
               and inp.cfg.policy.merge_mode == "guarded-automatic"
               and not inp.project_paused):
             task_actions.append(AutoMergeTask(task_id=fm_id))
+            trace.note("merge", fm_id, "auto-merge")
 
     # Shared single-carve-authority guard (module contract items 9 & 12,
     # P45 2026-07-19): computed ONCE, reused verbatim by BOTH item 12's
@@ -858,6 +932,7 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                 CarveDispatch(project=inp.cfg.project_id, task_id=chosen_id)
             )
             carve_dispatch_planned = True
+            trace.note("carve", chosen_id, "ready-to-carve")
 
     # 3. Dispatch eligible QUEUED tasks (with capacity limit)
     # Count current active tasks
@@ -897,7 +972,10 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                         DispatchImplementer(task_id=fm_id, route_id=route_def.route_id)
                     )
                     dispatched += 1
+                    trace.note("dispatch", fm_id, f"route:{route_def.route_id}")
                     break
+        else:
+            trace.note("dispatch-skip", fm_id, reason)
 
     # === Attempt actions (no specific sort within category) ===
     attempt_actions: list[Action] = []
@@ -1364,7 +1442,17 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
             )
             carve_dispatch_planned = True
 
-    if not inp.project_paused and not carve_in_flight and not carve_dispatch_planned:
+    # P03 (D-L5): the shared guard is restructured into an if/elif chain
+    # SOLELY to attribute a carve-skip breadcrumb to its actual reason
+    # (paused / in-flight) -- the overall truth table (enter the ready_count
+    # computation iff paused is False AND carve_in_flight is False AND
+    # carve_dispatch_planned is False) is byte-identical to the original
+    # single `and`-chained condition it replaces.
+    if inp.project_paused:
+        trace.note("carve-skip", None, "paused")
+    elif carve_in_flight:
+        trace.note("carve-skip", None, "in-flight")
+    elif not carve_dispatch_planned:
         ready_states = (TaskState.CARVED, TaskState.QUEUED, TaskState.NEEDS_DECISION)
         ready_count = 0
         for fm_id, (fm, _handoff_path) in inp.frontmatters.items():
@@ -1372,6 +1460,7 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
             if tsf is None or tsf.state not in ready_states:
                 continue
             if any(d in inp.decisions_open for d in fm.decision_deps()):
+                trace.note("guard-exclude", fm_id, "decision-held")
                 continue  # decision-held -- not admissible ready work
             ready_count += 1
 
@@ -1389,6 +1478,7 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
                 and frontier_route_available):
             carve_actions.append(CarveDispatch(project=inp.cfg.project_id))
             carve_dispatch_planned = True
+            trace.note("carve", None, "headroom")
 
     # === Combine results in order ===
     actions = []
@@ -1427,7 +1517,7 @@ def plan_project(inp: ReconcileInput) -> list[Action]:
             deconflicted.append(a)
         actions = deconflicted
 
-    return actions
+    return PlanResult(actions, trace=trace)
 
 
 def _wall_clock_cap_exceeded(attempt, fm: Frontmatter | None, inp: ReconcileInput) -> bool:

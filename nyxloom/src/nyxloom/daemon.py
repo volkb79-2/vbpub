@@ -345,7 +345,7 @@ from . import (
 from . import __version__
 from .config import GateDef, ProjectConfig
 from . import log as log_module
-from .log import get_logger
+from .log import bind, get_logger
 from .types import (
     Actor, ActorKind, Attempt, AttemptState, Blocker, BlockerType, Event,
     EventType, GateResult, Receipt, ReceiptResult, Role, Route, TaskState,
@@ -727,6 +727,19 @@ class Daemon:
 
             inp = self._build_input(project, cfg, states)
             actions = reconcile.plan_project(inp)
+            # P03 (D-L5): plan_project stays pure (no clock/IO/logger import)
+            # but its PlanResult return value optionally carries `.trace` --
+            # a pure ReconcileTrace of breadcrumbs recording WHY it made each
+            # decision this pass. THIS is the only place that trace ever
+            # touches the logger: one DEBUG record per breadcrumb, with
+            # `project` bound. `getattr` degrades gracefully when a test (or
+            # any caller) stubs plan_project to return a bare list with no
+            # `.trace` attribute -- there is simply nothing to flush.
+            trace = getattr(actions, "trace", None)
+            if trace is not None:
+                with bind(project=project):
+                    for note in trace.breadcrumbs:
+                        log.debug("reconcile-trace", kind=note.kind, task=note.task_id, detail=note.detail)
             actions, watchdog_events = self._apply_watchdog(
                 project, cfg, states, actions, inp.project_paused)
             appended.extend(watchdog_events)

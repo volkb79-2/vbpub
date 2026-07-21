@@ -2689,6 +2689,66 @@ def test_loopback_bind_prints_no_notice_THE_NEGATIVE(
 
 
 # --------------------------------------------------------------------------
+# P03 2026-07-21 (D-L5): the daemon flushes reconcile.py's pure ReconcileTrace
+# to the logger -- one DEBUG record per breadcrumb, project bound. This is
+# the ONLY place that trace ever touches a logger (reconcile.py itself stays
+# pure -- see test_reconcile.py's module-level purity oracle).
+
+def test_reconcile_trace_flushed_as_one_debug_record_per_breadcrumb(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Oracle 3: exactly one DEBUG record per breadcrumb, each with
+    `project` bound."""
+    trace = reconcile.ReconcileTrace(breadcrumbs=[
+        reconcile.TraceNote(kind="dispatch", task_id="P01", detail="route:route-1"),
+        reconcile.TraceNote(kind="dispatch-skip", task_id="P02", detail="paused"),
+        reconcile.TraceNote(kind="guard-exclude", task_id="P03", detail="decision-held"),
+    ])
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+    monkeypatch.setattr(
+        reconcile, "plan_project",
+        lambda inp: reconcile.PlanResult([], trace=trace),
+    )
+    log_dir = tmp_state / "logs"
+    log.configure(level=log.DEBUG, log_dir=log_dir, console=False)
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    n = d.run_pass("demo")
+    assert n == 0  # the stubbed plan_project returned zero actions
+
+    records = _read_log_records(log_dir)
+    trace_records = [r for r in records
+                     if r.get("level") == "debug" and r.get("msg") == "reconcile-trace"]
+    assert len(trace_records) == 3
+    assert all(r.get("project") == "demo" for r in trace_records)
+    by_kind = {r["kind"]: r for r in trace_records}
+    assert by_kind["dispatch"]["task"] == "P01"
+    assert by_kind["dispatch"]["detail"] == "route:route-1"
+    assert by_kind["dispatch-skip"]["task"] == "P02"
+    assert by_kind["dispatch-skip"]["detail"] == "paused"
+    assert by_kind["guard-exclude"]["task"] == "P03"
+    assert by_kind["guard-exclude"]["detail"] == "decision-held"
+
+
+def test_reconcile_trace_flush_skipped_when_plan_project_returns_bare_list(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Back-compat: many existing tests (and the pre-P03 daemon contract)
+    monkeypatch plan_project to return a bare `list` with no `.trace`
+    attribute -- the daemon must degrade gracefully (nothing to flush)
+    rather than raising AttributeError."""
+    monkeypatch.setattr(lint, "lint_project", lambda cfg: {})
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    log_dir = tmp_state / "logs"
+    log.configure(level=log.DEBUG, log_dir=log_dir, console=False)
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    n = d.run_pass("demo")  # must not raise
+    assert n == 0
+
+    records = _read_log_records(log_dir)
+    assert not any(r.get("msg") == "reconcile-trace" for r in records)
+
+
+# --------------------------------------------------------------------------
 # P38 2026-07-16 Oracle 3: `nyxloom doctor`'s dashboard-URL line reflects
 # reachability -- a bridge bind (0.0.0.0) also names the alias address
 # reachable from a co-networked container (e.g. the devcontainer), not only
