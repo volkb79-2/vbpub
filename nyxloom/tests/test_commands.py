@@ -321,6 +321,167 @@ def test_transport_reply_and_reconnect_carries_since(tmp_state, tmp_path, monkey
 
 
 # =========================================================================
+# logging-P05b: command dispatch -> DEBUG/INFO per §5; failures -> WARNING
+# =========================================================================
+
+def _read_log_records(path) -> list[dict]:
+    if not path.exists():
+        return []
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    return [json.loads(ln) for ln in lines]
+
+
+def test_pause_and_unpause_emit_info(tmp_state, sample_project, tmp_path):
+    """§5: pause/unpause are the canonical INFO example -- 'one line per
+    decision that changed the world'."""
+    from nyxloom import log as nyx_log
+
+    log_dir = tmp_path / "logs"
+    nyx_log.configure(level=nyx_log.INFO, log_dir=log_dir, console=False)
+    try:
+        cl = CommandListener(load_registry())
+        cl.handle_message("pause demo", [])
+        cl.handle_message("unpause demo", [])
+
+        records = _read_log_records(log_dir / "nyxloom.jsonl")
+        paused = [r for r in records if r["msg"] == "project paused"]
+        unpaused = [r for r in records if r["msg"] == "project unpaused"]
+        assert len(paused) == 1 and paused[0]["level"] == "info"
+        assert paused[0]["project"] == "demo"
+        assert paused[0]["mode"] == "drain-handoffs"
+        assert len(unpaused) == 1 and unpaused[0]["level"] == "info"
+        assert unpaused[0]["project"] == "demo"
+    finally:
+        nyx_log.configure(level=nyx_log.CRITICAL, log_dir=None, console=False)
+
+
+def test_pause_unknown_mode_emits_warning(tmp_state, sample_project, tmp_path):
+    """§5: a rejected control command (bad mode word) is a WARNING, and --
+    non-hollow control -- distinct from the INFO a successful pause emits."""
+    from nyxloom import log as nyx_log
+
+    log_dir = tmp_path / "logs"
+    nyx_log.configure(level=nyx_log.INFO, log_dir=log_dir, console=False)
+    try:
+        cl = CommandListener(load_registry())
+        reply = cl.handle_message("pause demo bogus-mode", [])
+        assert "unknown mode" in reply
+
+        records = _read_log_records(log_dir / "nyxloom.jsonl")
+        rejected = [r for r in records if r["msg"] == "pause command rejected"]
+        assert len(rejected) == 1
+        assert rejected[0]["level"] == "warning"
+        assert rejected[0]["project"] == "demo"
+        assert rejected[0]["mode"] == "bogus-mode"
+        # The control: no "project paused" INFO was emitted for the rejection.
+        assert not any(r["msg"] == "project paused" for r in records)
+    finally:
+        nyx_log.configure(level=nyx_log.CRITICAL, log_dir=None, console=False)
+
+
+def test_transport_failure_logs_warning(tmp_state, tmp_path, monkeypatch):
+    """§5: command dispatch failures -> WARNING. Points the listener at an
+    unreachable (closed) port so `_listen_once` genuinely raises inside
+    `_run`'s try/except, and asserts the real WARNING record."""
+    from nyxloom import log as nyx_log
+
+    monkeypatch.delenv("NTFY_URL", raising=False)
+    monkeypatch.setenv("NTFY_CMD_TOKEN", "read-tok")
+
+    root = tmp_path / "fail-repo"
+    (root / ".nyxloom").mkdir(parents=True)
+    (root / ".nyxloom" / "project.toml").write_text(_CMD_PROJECT_TOML.format(port=1))
+    register_project("failproj", root)
+    paths.ensure_layout("failproj")
+
+    log_dir = tmp_path / "logs"
+    nyx_log.configure(level=nyx_log.WARNING, log_dir=log_dir, console=False)
+    try:
+        cl = CommandListener(load_registry(), poll_timeout=2)
+        cl.BACKOFF_INITIAL = 0.02
+        cl.BACKOFF_MAX = 0.1
+        cl.start()
+        try:
+            deadline = time.time() + 5
+            records: list[dict] = []
+            while time.time() < deadline:
+                records = _read_log_records(log_dir / "nyxloom.jsonl")
+                if any(r["msg"] == "command listener transport failed" for r in records):
+                    break
+                time.sleep(0.05)
+        finally:
+            cl.stop()
+
+        failures = [r for r in records if r["msg"] == "command listener transport failed"]
+        assert failures, "expected at least one transport-failure WARNING record"
+        assert failures[0]["level"] == "warning"
+    finally:
+        nyx_log.configure(level=nyx_log.CRITICAL, log_dir=None, console=False)
+
+
+def test_listener_start_stop_emit_info(sample_project, tmp_path):
+    """§5: component lifecycle (start/stop) is an INFO-worthy decision,
+    mirroring the daemon's own start/stop convention (§4.4)."""
+    from nyxloom import log as nyx_log
+
+    log_dir = tmp_path / "logs"
+    nyx_log.configure(level=nyx_log.INFO, log_dir=log_dir, console=False)
+    try:
+        cl = CommandListener(load_registry())
+        cl.start()
+        cl.stop()
+
+        records = _read_log_records(log_dir / "nyxloom.jsonl")
+        assert any(r["msg"] == "command listener started" and r["level"] == "info" for r in records)
+        assert any(r["msg"] == "command listener stopped" and r["level"] == "info" for r in records)
+    finally:
+        nyx_log.configure(level=nyx_log.CRITICAL, log_dir=None, console=False)
+
+
+def test_status_and_digest_query_log_debug(tmp_state, sample_project, tmp_path):
+    """§5: read-only queries (status/digest) are DEBUG, not INFO -- they
+    don't change the world, unlike pause/unpause above."""
+    from nyxloom import log as nyx_log
+
+    log_dir = tmp_path / "logs"
+    nyx_log.configure(level=nyx_log.DEBUG, log_dir=log_dir, console=False)
+    try:
+        cl = CommandListener(load_registry())
+        cl.handle_message("status demo", [])
+        cl.handle_message("digest demo", [])
+
+        records = _read_log_records(log_dir / "nyxloom.jsonl")
+        assert any(r["msg"] == "status queried" and r["level"] == "debug"
+                   and r["project"] == "demo" for r in records)
+        assert any(r["msg"] == "digest queried" and r["level"] == "debug"
+                   and r["project"] == "demo" for r in records)
+    finally:
+        nyx_log.configure(level=nyx_log.CRITICAL, log_dir=None, console=False)
+
+
+def test_unmatched_and_missing_project_commands_log_debug(sample_project, tmp_path):
+    """§5: benign command-parse misses (no verb match, missing/unknown
+    project) are DEBUG guard-evaluation notes, not WARNING/ERROR noise."""
+    from nyxloom import log as nyx_log
+
+    log_dir = tmp_path / "logs"
+    nyx_log.configure(level=nyx_log.DEBUG, log_dir=log_dir, console=False)
+    try:
+        cl = CommandListener(load_registry())
+        cl.handle_message("rm -rf /", [])
+        cl.handle_message("status", [])
+        cl.handle_message("status nope", [])
+
+        records = _read_log_records(log_dir / "nyxloom.jsonl")
+        assert any(r["msg"] == "command unmatched" for r in records)
+        assert any(r["msg"] == "command missing project" and r["verb"] == "status" for r in records)
+        assert any(r["msg"] == "command unknown project" and r["project"] == "nope" for r in records)
+        assert all(r["level"] == "debug" for r in records)
+    finally:
+        nyx_log.configure(level=nyx_log.CRITICAL, log_dir=None, console=False)
+
+
+# =========================================================================
 # Oracle 6: injection -- hostile prose appended after a valid verb is
 # rejected outright (regex has no such form), never echoed in the reply.
 # =========================================================================

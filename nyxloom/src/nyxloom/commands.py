@@ -54,7 +54,10 @@ from pathlib import Path
 
 from . import config, notify, paths, storage
 from .config import NotifyConfig, ProjectConfig
+from .log import get_logger
 from .types import Actor, ActorKind, EventType, TaskState
+
+log = get_logger("commands")
 
 # Marks (and lets us recognize) our own replies -- the loop-prevention
 # mechanism, since ntfy exposes no sender identity.
@@ -110,12 +113,14 @@ class CommandListener:
         t = threading.Thread(target=self._run, daemon=True)
         t.start()
         self._thread = t
+        log.info("command listener started")
 
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
+        log.info("command listener stopped")
 
     # -- verb dispatch (pure; no transport) ----------------------------------
 
@@ -128,6 +133,7 @@ class CommandListener:
         trimmed = (text or "").strip()
         m = _VERB_RE.match(trimmed)
         if not m:
+            log.debug("command unmatched", trimmed_len=len(trimmed))
             return UNKNOWN_REPLY
 
         verb = m.group(1)
@@ -138,8 +144,10 @@ class CommandListener:
             return HELP_TEXT
 
         if project is None:
+            log.debug("command missing project", verb=verb)
             return f"missing project: send '{verb} <project>'"
         if project not in self.registry:
+            log.debug("command unknown project", verb=verb, project=project)
             return f"unknown project: {project}"
 
         if verb == "status":
@@ -153,6 +161,7 @@ class CommandListener:
         return UNKNOWN_REPLY  # unreachable given _VERB_RE; kept defensive
 
     def _cmd_status(self, project: str) -> str:
+        log.debug("status queried", project=project)
         states = storage.list_states(project)
         counts: dict[str, int] = {}
         for tsf in states.values():
@@ -181,6 +190,8 @@ class CommandListener:
         flag file's CONTENT becomes the mode (reconcile.py/daemon.py's
         pause-mode contract); PAUSE_SET carries {"mode": ...}."""
         if mode_word is not None and mode_word not in _MODE_WORD_TO_MODE:
+            log.warning("pause command rejected", reason="unknown-mode",
+                        project=project, mode=mode_word)
             return f"unknown mode: {mode_word} (use agents|handoffs)"
         mode = _MODE_WORD_TO_MODE.get(mode_word, "drain-handoffs")
 
@@ -191,6 +202,7 @@ class CommandListener:
             project, actor=Actor(ActorKind.OPERATOR, "ntfy-cmd"),
             type=EventType.PAUSE_SET, payload={"mode": mode},
         )
+        log.info("project paused", project=project, mode=mode)
         return f"paused ({mode}): {project}"
 
     def _cmd_unpause(self, project: str) -> str:
@@ -200,9 +212,11 @@ class CommandListener:
             project, actor=Actor(ActorKind.OPERATOR, "ntfy-cmd"),
             type=EventType.PAUSE_CLEARED, payload={},
         )
+        log.info("project unpaused", project=project)
         return f"unpaused: {project}"
 
     def _cmd_digest(self, project: str) -> str:
+        log.debug("digest queried", project=project)
         cfg = ProjectConfig.load(self.registry[project])
         text = notify.digest(cfg, project, 0)
         if not text:
@@ -224,8 +238,9 @@ class CommandListener:
             try:
                 self._listen_once(cfg)
                 backoff = self.BACKOFF_INITIAL
-            except Exception:
-                pass
+                log.debug("command listener poll cycle complete")
+            except Exception as e:
+                log.warning("command listener transport failed", error=type(e).__name__)
             if self._stop_event.is_set():
                 return
             if self._stop_event.wait(backoff):

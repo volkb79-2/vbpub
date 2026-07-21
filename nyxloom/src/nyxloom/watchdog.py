@@ -68,7 +68,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
+from .log import get_logger
 from .types import Event, EventType
+
+log = get_logger("watchdog")
 
 
 @dataclass
@@ -164,3 +167,35 @@ def detect_runaways(recent_events: list[Event], cfg: WatchdogConfig) -> list[Run
             ))
 
     return signals
+
+
+def log_signals(signals: list[RunawaySignal]) -> None:
+    """Diagnostic side effect for detected RunawaySignals (logging-P05b).
+
+    Deliberately SEPARATE from `detect_runaways` above, which stays exactly
+    as documented -- PURE, no I/O, no imports beyond `.types` -- so this
+    function (and its `.log` import) never touches that frozen contract.
+    This mirrors the established pure-core/logging-shell split this project
+    already uses for reconcile.py's `plan_project` (docs/plan-logging.md
+    §4.3, D-L5): the pure detector computes WHAT was detected; a thin,
+    separate, explicitly-impure function decides how it's logged.
+
+    Emits one WARNING per signal -- §5's own canonical WARNING example is
+    "a watchdog suppression", and every detected RunawaySignal here
+    corresponds 1:1 to daemon.py's `_apply_watchdog` escalating (a
+    NEEDS_OPERATOR event) and/or suppressing a repeating action for it.
+    `pattern`/`key`/`detail` are already injection-safe by this module's
+    own frozen contract above (ids/reasons/enum values and counts only,
+    never event/handoff prose), so they are safe to log verbatim.
+
+    Integration note: call this right after `detect_runaways(...)`, e.g.
+    daemon.py's `_apply_watchdog`:
+        signals = detect_runaways(recent_events, cfg)
+        log_signals(signals)
+        ... (the existing escalate/suppress/auto-pause handling, unchanged)
+    `daemon.py` is outside this package's touch scope (logging-P05b), so
+    that one-line call site is NOT yet wired in -- see this phase's REPORT.
+    """
+    for sig in signals:
+        log.warning("watchdog runaway detected", pattern=sig.pattern,
+                    key=sig.key, detail=sig.detail)

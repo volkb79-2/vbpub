@@ -304,6 +304,127 @@ def test_send_webhook_fallback():
     assert webhook_data["title"] == "Test"
 
 
+def test_send_webhook_server_error():
+    """logging-P05b: closes the previously-uncovered webhook non-200 branch
+    (needed so its new log.warning line has diff-coverage)."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(500)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_port
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+
+    nc = NotifyConfig(
+        ntfy_url="http://127.0.0.1:1",  # closed port -- ntfy fails, falls to webhook
+        ntfy_topic="alerts",
+        webhook_url=f"http://127.0.0.1:{port}/webhook",
+    )
+    note = {"title": "Test", "body": "Test body", "click": "http://example.com",
+            "priority": 4, "tags": []}
+
+    ok, detail = send(nc, note)
+    thread.join(timeout=2)
+    server.server_close()
+
+    assert ok is False
+    assert "webhook" in detail.lower()
+
+
+def test_send_webhook_connection_refused():
+    """logging-P05b: closes the previously-uncovered webhook-exception
+    branch (needed so its new log.warning line has diff-coverage)."""
+    nc = NotifyConfig(
+        ntfy_url="http://127.0.0.1:1",   # closed port
+        ntfy_topic="alerts",
+        webhook_url="http://127.0.0.1:1",  # also closed
+    )
+    note = {"title": "Test", "body": "Test body", "click": "http://example.com",
+            "priority": 4, "tags": []}
+
+    start = time.time()
+    ok, detail = send(nc, note)
+    elapsed = time.time() - start
+
+    assert ok is False
+    assert "webhook" in detail.lower()
+    assert elapsed < 1.0
+
+
+# =========================================================================
+# Oracle (logging-P05b, explicit): notify NEVER logs a secret token
+# =========================================================================
+
+def test_send_never_logs_secret_token(tmp_path, monkeypatch):
+    """The single explicit oracle for this phase: drive a real send() with a
+    token/secret in scope, read back EVERY emitted log record, and assert
+    the secret string appears in NONE of them -- only the fixed channel
+    name + topic identifier may be logged, never the credential."""
+    from nyxloom import log as nyx_log
+
+    received = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            received["auth"] = self.headers.get("Authorization")
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_port
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+
+    SECRET = "tk_super_secret_v3f9x_do_not_leak"
+    monkeypatch.setenv("NTFY_TOKEN", SECRET)
+
+    log_dir = tmp_path / "logs"
+    nyx_log.configure(level=nyx_log.DEBUG, log_dir=log_dir, console=False)
+    try:
+        nc = NotifyConfig(
+            ntfy_url=f"http://127.0.0.1:{port}",
+            ntfy_topic="alerts",
+            token_env="NTFY_TOKEN",
+        )
+        note = {"title": "Test", "body": "Test body", "click": "http://example.com",
+                "priority": 4, "tags": ["test"]}
+
+        ok, detail = send(nc, note)
+        thread.join(timeout=2)
+        server.server_close()
+
+        assert ok is True
+        # Confirm the token really WAS used on the wire (so this is a real
+        # drive, not a hollow no-op).
+        assert received.get("auth") == f"Bearer {SECRET}"
+
+        log_path = log_dir / "nyxloom.jsonl"
+        assert log_path.exists()
+        lines = [ln for ln in log_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        records = [json.loads(ln) for ln in lines]
+        assert records, "expected at least one emitted log record"
+
+        for rec in records:
+            rec_text = json.dumps(rec)
+            assert SECRET not in rec_text, f"secret leaked into log record: {rec}"
+
+        # Non-hollow: the expected INFO 'notification sent' record IS present.
+        assert any(r.get("msg") == "notification sent" and r.get("level") == "info"
+                   for r in records)
+        assert any(r.get("topic") == "alerts" for r in records)
+    finally:
+        nyx_log.configure(level=nyx_log.CRITICAL, log_dir=None, console=False)
+
+
 # =========================================================================
 # Oracle 4: notify_event — appends notification events
 # =========================================================================

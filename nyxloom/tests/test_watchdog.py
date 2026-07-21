@@ -240,3 +240,111 @@ def test_runaway_signal_fields():
     assert sig.pattern == "reconcile-thrash"
     assert sig.key == "reconcile-thrash:rejections"
     assert "rejections" in sig.detail
+
+
+# ============================================================================
+# logging-P05b: log_signals -- the diagnostic shell around the pure detector
+#
+# detect_runaways stays untouched (PURE, no I/O, no imports beyond .types --
+# its own frozen interface contract). log_signals is a NEW, separate,
+# explicitly-impure function (mirrors reconcile.py's plan_project / daemon.py
+# trace-flush split, docs/plan-logging.md §4.3) that a caller runs the real
+# signals from detect_runaways through to get the WARNING log oracle asks
+# for. Not yet wired into daemon.py's _apply_watchdog (out of this
+# package's touch scope) -- see P05b-REPORT.md.
+# ============================================================================
+
+def test_log_signals_emits_warning_for_a_real_detected_runaway(tmp_path):
+    """Oracle 1: a watchdog escalation emits WARNING or ERROR. Non-hollow:
+    runs the REAL detector over a synthetic stream that genuinely trips the
+    reconcile-thrash detector, feeds the REAL returned signals through
+    log_signals, and asserts the emitted record's level and fields match."""
+    import json
+
+    from nyxloom import log as nyx_log
+    from nyxloom.watchdog import log_signals
+
+    base = _utc(2026, 7, 16, 12, 0)
+    events = [
+        make_event(i, EventType.SPEC_ATTENTION, base + timedelta(minutes=i),
+                   payload={"reason": "rejections"})
+        for i in range(1, 7)  # 6 consecutive > default threshold of 5
+    ]
+    signals = detect_runaways(events, WatchdogConfig())
+    assert len(signals) == 1  # sanity: the detector really did fire
+    sig = signals[0]
+
+    log_dir = tmp_path / "logs"
+    nyx_log.configure(level=nyx_log.WARNING, log_dir=log_dir, console=False)
+    try:
+        log_signals(signals)
+
+        log_path = log_dir / "nyxloom.jsonl"
+        assert log_path.exists()
+        records = [json.loads(ln) for ln in log_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert len(records) == 1
+        rec = records[0]
+        assert rec["level"] == "warning"
+        assert rec["msg"] == "watchdog runaway detected"
+        assert rec["pattern"] == sig.pattern == "reconcile-thrash"
+        assert rec["key"] == sig.key == "reconcile-thrash:rejections"
+        assert rec["detail"] == sig.detail
+    finally:
+        nyx_log.configure(level=nyx_log.CRITICAL, log_dir=None, console=False)
+
+
+def test_log_signals_emits_one_warning_per_signal(tmp_path):
+    """One WARNING record per detected signal -- multiple concurrent
+    runaways (here: a notification-storm AND an attempt-loop, from
+    genuinely distinct synthetic streams merged into one call) each get
+    their own record, not a single collapsed one."""
+    import json
+
+    from nyxloom import log as nyx_log
+    from nyxloom.watchdog import log_signals
+
+    base = _utc(2026, 7, 16, 12, 0)
+    storm_events = [
+        make_event(i, EventType.NOTIFICATION_REQUESTED, base + timedelta(seconds=i))
+        for i in range(1, 25)  # > default notification_storm_count of 20
+    ]
+    loop_events = [
+        make_event(100 + i, EventType.ATTEMPT_CREATED, base + timedelta(minutes=i), task_id="demo-P09")
+        for i in range(1, 8)  # > default attempt_loop_count of 5
+    ]
+    all_events = storm_events + loop_events
+    signals = detect_runaways(all_events, WatchdogConfig())
+    patterns = {s.pattern for s in signals}
+    assert {"notification-storm", "attempt-loop"} <= patterns
+
+    log_dir = tmp_path / "logs"
+    nyx_log.configure(level=nyx_log.WARNING, log_dir=log_dir, console=False)
+    try:
+        log_signals(signals)
+        log_path = log_dir / "nyxloom.jsonl"
+        records = [json.loads(ln) for ln in log_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert len(records) == len(signals)
+        assert all(r["level"] == "warning" for r in records)
+        assert {r["pattern"] for r in records} == patterns
+    finally:
+        nyx_log.configure(level=nyx_log.CRITICAL, log_dir=None, console=False)
+
+
+def test_log_signals_empty_list_emits_nothing(tmp_path):
+    """Laziness/no-noise control: an empty signal list (the overwhelmingly
+    common case -- a healthy pass) logs nothing at all."""
+    import json
+
+    from nyxloom import log as nyx_log
+    from nyxloom.watchdog import log_signals
+
+    log_dir = tmp_path / "logs"
+    nyx_log.configure(level=nyx_log.WARNING, log_dir=log_dir, console=False)
+    try:
+        log_signals([])
+        log_path = log_dir / "nyxloom.jsonl"
+        records = [json.loads(ln) for ln in log_path.read_text(encoding="utf-8").splitlines() if ln.strip()] \
+            if log_path.exists() else []
+        assert records == []
+    finally:
+        nyx_log.configure(level=nyx_log.CRITICAL, log_dir=None, console=False)
