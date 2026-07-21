@@ -1,53 +1,26 @@
-"""File -> SQLite event-store importer. PACKAGE SP02
-(docs/plan-state-integrity.md Part A.3).
+"""Statefile-authoritative FILE -> SQLite importer.
 
-`nyxloom migrate-store <project>`:
+`nyxloom migrate-store <project>` reads the FILE backend directly, carrying
+every valid `events.jsonl` record into SQLite's `events` table in source order
+as an opaque audit trail. It does *not* replay that audit trail: incumbent FILE
+logs can contain non-atomic-write drift, such as an event appended before its
+statefile update was rejected or failed. The daemon's current statefiles are
+the operational truth, so their complete `TaskStateFile` records are copied
+verbatim into SQLite's `states` table instead.
 
-1. READ the FILE backend's source directly: parse every event out of
-   `paths.events_path(project)` (`events.jsonl`), in order. This
-   deliberately does NOT go through `storage.py`'s `NYXLOOM_STATE_BACKEND`
-   selector -- this tool migrates a project FROM file TO sqlite
-   regardless of that flag (see the ordering-constraint note below), so
-   it reads the file directly (`_parse_source_events`, a duplicate of
-   `storage.py`'s own file-backend `iter_events` line-parse -- kept
-   local rather than imported so this tool's read path can never be
-   silently redirected by the selector it exists to retire).
-2. INSERT every event, in original order, into the project's SQLite
-   `events` table via `storage_sqlite.append_event` (the SP01 public
-   API), then REBUILD the `states` projection: `storage_sqlite.replay()`
-   + `storage_sqlite.save_state()` per task (so the SQLite backend is
-   immediately usable after this tool runs -- not just the event log).
-3. VERIFY zero divergence: the rebuilt projection must equal the
-   CURRENT on-disk FILE statefiles -- read directly via
-   `_read_file_statefiles` (again bypassing the selector, for the same
-   reason as step 1: this check must be meaningful even if
-   `NYXLOOM_STATE_BACKEND=sqlite` already happens to be set in the
-   calling environment). Comparison reuses doctor's own
-   `_replayable_projection` (`doctor.py`, read-only import -- see
-   docs/plan-state-integrity.md SP02 "reuse doctor's divergence diff").
-   Any divergence ABORTS with `MigrationError`; `events.jsonl` is left
-   untouched.
-4. On success, RENAME `events.jsonl` -> `events.jsonl.pre-sqlite` (a
-   backup, NEVER deleted).
+The copy is round-trip verified by comparing every statefile's full `to_dict()`
+with `storage_sqlite.list_states`. A save/load fidelity failure deletes the
+SQLite database, leaves `events.jsonl` in place, and raises `MigrationError` so
+a later invocation starts clean. Reconciling nyxloom's belief with git ground
+truth is deliberately separate work for `resync`, not this migration.
 
-Idempotency: a project already fully migrated is detected by the
-`.pre-sqlite` backup already existing (source absent) -- re-running is
-then a documented no-op (`status="already-migrated"`), no re-insert, no
-error. A project whose SQLite `events` table already holds an import
-that matches the current source log exactly (source still present --
-e.g. a prior run crashed between the insert/verify/rename steps) is
-detected by `_already_imported` (exact ordered content match) and its
-insert step is skipped, but verify+rename still run to finish the job.
-Anything else observed in that table (a partial or mismatched count/
-content) is NOT guessed about -- `_already_imported` raises loudly
-rather than risking a double-import or a wrong skip.
-
-Ordering constraint (docs/plan-state-integrity.md, PACKAGE SP02): this
-tool is meant to run against a LIVE, registered project only at the
-SP03 cutover, AFTER the daemon default flips to SQLite -- the rename
-retires the file backend for that project. SP02 itself only BUILDS and
-TESTS this importer (tests/test_migrate_store.py, temp fixtures only);
-it is never invoked here against a live registered project.
+On success, `events.jsonl` is renamed to `events.jsonl.pre-sqlite` and retained
+as a backup. If that backup already exists while the source is absent, the
+migration is an idempotent no-op. If a prior run inserted an exact ordered copy
+of the source events but crashed before the rename, `_already_imported` skips
+the duplicate insertion and completes the statefile copy and rename. A partial
+or mismatched prior import raises rather than guessing. Corrupt or partial
+source lines likewise raise with their line number before SQLite is changed.
 """
 
 from __future__ import annotations
@@ -58,13 +31,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import paths, storage_sqlite
-from .doctor import _replayable_projection
 from .types import Event, TaskStateFile
 
 
 class MigrationError(Exception):
     """Raised when migrate-store cannot proceed safely: a corrupt/partial
-    source line, a zero-divergence verification failure, or a partial/
+    source line, a statefile-copy verification failure, or a partial/
     inconsistent prior-import state in the SQLite events table that
     `_already_imported` refuses to guess about."""
 
@@ -177,25 +149,25 @@ def migrate(project: str) -> MigrationResult:
                 timestamp=ev.timestamp,
             )
 
-    replayed = storage_sqlite.replay(project)
-    for tsf in replayed.values():
+    on_disk = _read_file_statefiles(project)
+    for tsf in on_disk.values():
         storage_sqlite.save_state(tsf)
 
-    on_disk = _read_file_statefiles(project)
-    diverged = [
-        task_id for task_id, disk_state in on_disk.items()
-        if (replayed.get(task_id) is None
-            or _replayable_projection(replayed[task_id]) != _replayable_projection(disk_state))
-    ]
-    # A task the event log projects that has NO on-disk statefile at all
-    # (e.g. deleted by hand) is equally a divergence -- the symmetric
-    # half of the check above, which only walks on_disk's own keys.
-    diverged += sorted(set(replayed) - set(on_disk))
-    if diverged:
+    copied = storage_sqlite.list_states(project)
+    mismatching = sorted(
+        set(on_disk) ^ set(copied)
+        | {
+            task_id for task_id in set(on_disk) & set(copied)
+            if on_disk[task_id].to_dict() != copied[task_id].to_dict()
+        }
+    )
+    if mismatching:
+        storage_sqlite.db_path(project).unlink(missing_ok=True)
         raise MigrationError(
-            f"zero-divergence check failed for project {project!r}: "
-            f"{len(diverged)} task(s) diverged ({', '.join(sorted(diverged)[:20])}) "
-            f"-- aborting; {src} was NOT renamed"
+            f"statefile copy verification failed for project {project!r}: "
+            f"{len(mismatching)} task(s) mismatched "
+            f"({', '.join(mismatching[:20])}) -- rolled back SQLite; "
+            f"{src} was NOT renamed"
         )
 
     os.replace(src, backup)
