@@ -169,15 +169,22 @@ docker:
                               # on BFQ nodes: the number you write is the number
                               # BFQ uses. (patch 0005)
     # Startup band (patch 0007) — applied when the slice is ensured, BEFORE the
-    # container starts, then replaced by `defaults:` once the server reports
-    # ready (the egg's startup "done" matcher) or startup_grace expires.
+    # container starts, then replaced by `defaults:` when the WINGS_CG_STEADY_MATCH
+    # trigger fires (default: the egg's startup "done" matcher) or startup_grace
+    # expires.
     #
     # Why this exists: a game's load-time peak dwarfs its steady working set,
-    # and memory.high reclaim is the one path that IGNORES memory.min. A
-    # ceiling sized for the steady state therefore evicts the server through
-    # its own floor while it is still loading — permanently, because nothing
-    # faults those pages back except the workload. Leave empty to apply the
-    # steady band from the start (behaviour before 0006).
+    # and a cgroup is not protected from reclaim it inflicts on itself — exceeding
+    # its own memory.high reclaims straight through its own memory.min floor. A
+    # ceiling sized for the steady state therefore evicts the server through its
+    # own floor while it is still loading — permanently, because nothing faults
+    # those pages back except the workload. Leave empty to apply the steady band
+    # from the start (behaviour before 0007).
+    #
+    # ENGAGEMENT: the startup band only does something when its memory_high is
+    # ABOVE the steady defaults.memory_high. If they are equal, the phase change
+    # and the ramp below are no-ops. Set startup memory_high high (or leave the
+    # steady one low) so there is a ceiling to lift during load and lower after.
     startup_defaults:
       memory_min: ""          # e.g. "9G" — a higher floor while loading
       memory_low: ""
@@ -193,7 +200,9 @@ docker:
     # ceiling is below current usage; the floor and everything else apply at
     # once. Empty or "0" = one-shot (the pre-ramp behaviour). 64M is a gentle
     # default; the ramp self-paces (each step waits for reclaim to catch up), so
-    # this bounds per-step throttle, not the total time.
+    # this bounds per-step throttle, not the total time. NODE-WIDE ONLY — there
+    # is no per-server WINGS_CG_* equivalent; it applies to every server's
+    # startup->steady transition on this node.
     steady_ramp_step: 64M
     # Floor budget: Σ MemoryMin over all Wings-managed slices must stay ≤ this.
     # Set it = the wings.slice unit's MemoryMin. Empty = unlimited (not advised:
@@ -254,9 +263,16 @@ Add these 15 admin-only variables to your egg. A complete worked example in
 PTDL_v2 export format is `../game_stuff/soulmask/egg-soulmask-rcon-ksm-cgroups.json`
 (import it over an existing egg to update in place — servers keep their egg
 association); `t2-per-server-placement/egg-variable.snippet.json` carries just
-`WINGS_CGROUP_PARENT`, for placement-only deployments. All have empty defaults,
-so importing changes no behavior by itself, and a changed value takes effect at
-the next container (re)creation — panel **Stop → Start**, not restart.
+`WINGS_CGROUP_PARENT`, for placement-only deployments. A changed value takes
+effect at the next container (re)creation — panel **Stop → Start**, not restart.
+
+> **Prerequisite:** import/patch the egg (panel → Nests → your egg → *Import*,
+> over the existing egg) **before** these variables can be set on a server —
+> a `WINGS_CG_*` variable that the egg does not define is not settable in the
+> panel. Node-level `config.yml` `defaults:` apply without the egg, so per-server
+> variables are genuinely optional; but any per-server override needs the egg
+> imported first. The ramp itself (`steady_ramp_step`) is `config.yml`-only and
+> has **no** egg variable.
 
 | Variable | Meaning |
 |---|---|
@@ -326,9 +342,21 @@ systemctl daemon-reload \
 #    the phase, what triggered it, and the values actually applied
 docker logs <wings-container> 2>&1 | grep "cgroups:"
 #   ... ensured per-server slice  slice=wings-<32hex>.slice phase=startup
-#       reason="container create" properties="MemoryMin=9G MemoryHigh=64G ..."
-#   ... ensured per-server slice  slice=wings-<32hex>.slice phase=steady
-#       reason="server reported ready" properties="MemoryMin=6G MemoryHigh=7G ..."
+#       reason="server starting" properties="MemoryMin=6G MemoryHigh=20G ..."
+#   ... steady band applied; ramping memory.high down   memory_high_target=7G
+#   ... memory.high ramped to the steady ceiling  memory_high=7G steps=NN
+#   (steps=NN present only when steady_ramp_step is set; one-shot otherwise)
+
+# 5. The ramp actually stepping the ceiling down (only with steady_ramp_step set)
+watch -n1 "cat /sys/fs/cgroup/wings.slice/$SLICE/memory.high"   # 20G -> ... -> 7G
+
+# 6. Phase events reached the Panel activity log (WINGS_CG_PHASE_EVENTS)
+#    — visible in the panel's server → Activity tab as `server:cgroups.phase`,
+#    and in the Wings log:
+docker logs <wings-container> 2>&1 | grep "cgroups: phase"
+#   ... cgroups: phase  phase=steam-update-started ...
+#   ... cgroups: phase  phase=world-load-begin ...
+#   ... cgroups: phase  phase=steady-reached ...
 ```
 
 Lifecycle spot-checks worth doing once: panel Restart (slice re-ensured,
