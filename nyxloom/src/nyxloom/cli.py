@@ -17,17 +17,32 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               {critical, error}. --rebuild prints diffs.
   status [--project X]        per task: id, state, since, attempt route,
                               cost, notes. Reads statefiles only.
-  resync <project>            PACKAGE RP01 2026-07-21 (docs/plan-state-
-                              integrity.md Part B): ground-truth
-                              re-baseline PROBE. Reads statefiles + trove
-                              handoff presence + git merge facts (branch
-                              --merged AND a content-check fallback for a
-                              squash/CAS/deleted-branch merge), plans via
+  resync <project> [--apply] [--apply-content-merges]
+                              PACKAGE RP01 2026-07-21 + RP02 (docs/plan-
+                              state-integrity.md Part B): ground-truth
+                              re-baseline. Reads statefiles + trove handoff
+                              presence + git merge facts (branch --merged
+                              AND a content-check fallback for a squash/
+                              CAS/deleted-branch merge), plans via
                               resync.resync_plan, prints a table (task,
                               believed, ground-truth, proposed action,
-                              evidence). PURE READ-ONLY: no writes, no
-                              events, no `--apply` (that is RP02, not yet
-                              built).
+                              evidence). Without --apply: PURE READ-ONLY,
+                              unchanged RP01 dry-run (no writes, no
+                              events). With --apply (RP02): emits the
+                              audited transitions via
+                              resync.resync_apply/storage.append_and_apply
+                              (actor RESYNC) for every ACTION_ADVANCE row
+                              backed by a high-confidence `git branch
+                              --merged` hit; a row backed ONLY by the
+                              content-check channel is left flagged unless
+                              --apply-content-merges is ALSO passed (lower-
+                              confidence evidence -- see resync.py's
+                              module docstring). ACTION_NEEDS_OPERATOR rows
+                              are NEVER auto-applied. Idempotent: a second
+                              --apply performs no further writes. Allowed
+                              on a PAUSED project (operator verb, not
+                              daemon dispatch -- resync a project before
+                              unpausing it is the whole point).
   render                      render.render_all(registry); prints www path.
   migrate-store <project>     PACKAGE SP02 2026-07-21 (docs/plan-state-
                               integrity.md Part A.3): imports a project's
@@ -393,17 +408,36 @@ def cmd_status(args) -> int:
 
 
 def cmd_resync(args) -> int:
-    """resync <project>
+    """resync <project> [--apply] [--apply-content-merges]
 
-    PACKAGE RP01 2026-07-21: ground-truth re-baseline PROBE (docs/plan-
+    PACKAGE RP01 2026-07-21 + RP02: ground-truth re-baseline (docs/plan-
     state-integrity.md Part B.4). Gathers the three B.1 ground-truth
     sources (statefile belief via storage.list_states, handoff presence
     via resync.gather_handoff_presence, git merge facts via
     resync.gather_git_facts), plans via the pure resync.resync_plan, and
-    prints the plan as a table. No writes, no events -- dry-run only.
+    prints the plan as a table -- unchanged RP01 behavior, always printed
+    first (an --apply run must still show the plan it is about to act on).
+
+    Without --apply: dry-run only, no writes, no events (RP01, unchanged).
+
+    With --apply (RP02): hands the SAME plan to resync.resync_apply, which
+    emits the audited transitions for every ACTION_ADVANCE row -- gated by
+    the merge-evidence confidence split (see resync.py's module docstring
+    and resync_apply's own docstring for the full SAFETY contract):
+    a `git branch --merged`-backed row auto-applies; a row backed ONLY by
+    the content-check channel applies only when --apply-content-merges is
+    ALSO passed. ACTION_NEEDS_OPERATOR rows are never auto-applied (only
+    reported). Prints an "applied N; skipped M" summary line plus one line
+    per considered row. Deliberately does NOT check the project's pause
+    flag -- resync is an operator verb, not daemon dispatch, and remaining
+    resyncable while paused is the entire point (B.4's pre-unpause use
+    case).
     """
     from . import storage
-    from .resync import gather_git_facts, gather_handoff_presence, resync_plan
+    from .resync import (
+        ACTION_NONE, gather_git_facts, gather_handoff_presence, resync_apply,
+        resync_plan,
+    )
 
     cfg = _cfg(args.project)
     states = storage.list_states(args.project)
@@ -428,6 +462,24 @@ def cmd_resync(args) -> int:
         ))
     else:
         print("no tasks")
+
+    if not getattr(args, "apply", False):
+        return 0
+
+    allow_content_merge = getattr(args, "apply_content_merges", False)
+    results = resync_apply(
+        args.project, states, plan, allow_content_merge=allow_content_merge,
+    )
+
+    applied = [r for r in results if r.applied]
+    skipped = [r for r in results if not r.applied]
+    considered = [p for p in plan if p.proposed_action != ACTION_NONE]
+    print(f"\napplied {len(applied)}/{len(considered)} transition(s); "
+          f"{len(skipped)} skipped")
+    for r in applied:
+        print(f"  applied  {r.task_id}: {r.reason}")
+    for r in skipped:
+        print(f"  skipped  {r.task_id}: {r.reason}")
 
     return 0
 
@@ -1030,6 +1082,14 @@ def main(argv: list[str] | None = None) -> int:
     # resync
     resync_parser = subparsers.add_parser("resync")
     resync_parser.add_argument("project", help="Project ID")
+    resync_parser.add_argument("--apply", action="store_true",
+                                help="PACKAGE RP02: emit the audited re-baseline "
+                                     "transitions (default: dry-run plan only)")
+    resync_parser.add_argument("--apply-content-merges", action="store_true",
+                                help="PACKAGE RP02 SAFETY opt-in: also apply "
+                                     "ACTION_ADVANCE rows whose ONLY merge evidence "
+                                     "is the (lower-confidence) content-check channel "
+                                     "-- requires --apply")
 
     # render
     render_parser = subparsers.add_parser("render")

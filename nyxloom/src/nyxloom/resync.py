@@ -1,18 +1,33 @@
-"""Ground-truth re-baseline — PROBE + DRY-RUN ONLY. PACKAGE RP01.
+"""Ground-truth re-baseline — PROBE + DRY-RUN (RP01) + APPLY (RP02).
 
 `docs/plan-state-integrity.md` Part B: nyxloom's statefiles only transition
 via nyxloom's OWN actions, so a project advanced manually (or squash/CAS
 merged, or a branch deleted post-merge) drifts from reality. `resync`
 compares each task's *believed* state against three ground-truth sources
 (B.1) — handoff presence in the trove, merge state of its branch, and the
-statefile's own belief — and proposes (never applies) a re-baseline action
-per B.2's decision table.
+statefile's own belief — and proposes a re-baseline action per B.2's
+decision table.
 
-RP01 is data-only: it produces a `list[ProposedTransition]`, never an
-event, never a statefile write. `nyxloom resync <project>` prints the plan
-as a table. Applying the plan (`--apply`, real `TASK_TRANSITIONED` /
-`TASK_SUPERSEDED` events through `storage.append_and_apply`) is RP02, out
-of scope here.
+RP01 (`resync_plan`) is data-only: pure, I/O-free, produces a
+`list[ProposedTransition]`, never an event, never a statefile write.
+`nyxloom resync <project>` prints the plan as a table.
+
+RP02 (`resync_apply`, below) turns the `ACTION_ADVANCE` rows of that same
+plan into REAL audited events via `storage.append_and_apply` — never a
+silent statefile edit (B.3). `ACTION_NONE` and `ACTION_NEEDS_OPERATOR` rows
+are NEVER auto-applied (flag/skip only); an orphan or a genuinely-open task
+always needs an operator's own judgment call, not resync's.
+
+SAFETY (RP02, load-bearing): a merge-confirmed row's evidence comes from
+one of two channels of very different reliability (`GitFacts.merged_refs`
+vs `GitFacts.content_merged` — see that dataclass's own docstring). A
+`content_merged`-only hit (the commit-log grep / archive-path scan) CAN
+match an unrelated commit, so it is NEVER auto-applied by a bare
+`--apply` — only a `merged_refs` hit (an actual `git branch --merged` ref)
+auto-applies. The content-check channel applies only with the caller's
+explicit extra opt-in (`allow_content_merge=True` / the CLI's
+`--apply-content-merges`). See `ProposedTransition.merge_source` and
+`resync_apply`'s docstring for the full contract.
 
 Two I/O boundaries feed the pure planner, mirroring reconcile.py's own
 purity discipline (ReconcileInput as a precomputed snapshot):
@@ -51,8 +66,11 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import frontmatter
-from .types import TERMINAL_TASK_STATES, TaskState, TaskStateFile
+from . import frontmatter, storage
+from .types import (
+    TERMINAL_TASK_STATES, Actor, ActorKind, Event, EventType, TaskState,
+    TaskStateFile,
+)
 
 # ---------------------------------------------------------------------------
 # proposed-action vocabulary (B.2's decision-table outputs)
@@ -61,16 +79,29 @@ ACTION_NONE = "none"
 ACTION_ADVANCE = "MERGED/COMPLETED"
 ACTION_NEEDS_OPERATOR = "NEEDS_OPERATOR"
 
+# Merge-evidence source tags (RP02 SAFETY): which GitFacts channel produced
+# the evidence backing an ACTION_ADVANCE row. MERGE_SOURCE_REFS is a real
+# `git branch --merged` hit (high confidence); MERGE_SOURCE_CONTENT is the
+# commit-log-grep / archive-path-scan fallback (lower confidence — it CAN
+# match an unrelated commit), so it gates auto-apply differently. See
+# `resync_apply`.
+MERGE_SOURCE_REFS = "merged_refs"
+MERGE_SOURCE_CONTENT = "content_merged"
+
 
 @dataclass(frozen=True)
 class ProposedTransition:
-    """One row of the resync plan. Never applied by RP01 — printed only."""
+    """One row of the resync plan. Only `resync_apply` (RP02) turns an
+    ACTION_ADVANCE row into a real event — never a silent statefile edit."""
 
     task_id: str
     believed_state: TaskState
     ground_truth: str          # "terminal" | "merged" | "open" | "orphan"
     proposed_action: str       # ACTION_NONE | ACTION_ADVANCE | ACTION_NEEDS_OPERATOR
     evidence: str
+    # None for non-merge rows (open/orphan/terminal); for a "merged" row,
+    # MERGE_SOURCE_REFS or MERGE_SOURCE_CONTENT — see the constants above.
+    merge_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -206,15 +237,23 @@ def gather_git_facts(repo_root: str, default_branch: str,
 # ---------------------------------------------------------------------------
 # the pure planner (B.2's decision table)
 
-def _merge_evidence(task_id: str, tsf: TaskStateFile, git_facts: GitFacts) -> str | None:
-    """None when not merged by either signal; else a human-readable
-    evidence string naming WHICH signal fired."""
+def _merge_evidence(task_id: str, tsf: TaskStateFile,
+                     git_facts: GitFacts) -> tuple[str, str] | None:
+    """None when not merged by either signal; else `(evidence, source)` —
+    a human-readable evidence string naming WHICH signal fired, and which
+    channel (MERGE_SOURCE_REFS | MERGE_SOURCE_CONTENT) it came from. The
+    `merged_refs` channel is checked FIRST and wins even if the (weaker)
+    content-check also happens to have an entry for this task — a
+    genuine `--merged` hit is always the higher-confidence signal when
+    both are present (see `gather_git_facts`: it only populates
+    `content_merged` for tasks NOT already resolved by `--merged`, so this
+    branch order also matches how the facts were gathered)."""
     candidates = _task_branch_candidates(task_id, tsf)
     hit = candidates & git_facts.merged_refs
     if hit:
-        return f"branch {sorted(hit)[0]!r} present in `git branch --merged`"
+        return f"branch {sorted(hit)[0]!r} present in `git branch --merged`", MERGE_SOURCE_REFS
     if task_id in git_facts.content_merged:
-        return git_facts.content_merged[task_id]
+        return git_facts.content_merged[task_id], MERGE_SOURCE_CONTENT
     return None
 
 
@@ -254,14 +293,16 @@ def resync_plan(
             ))
             continue
 
-        merge_evidence = _merge_evidence(task_id, tsf, git_facts)
-        if merge_evidence is not None:
+        merge_result = _merge_evidence(task_id, tsf, git_facts)
+        if merge_result is not None:
+            merge_evidence, merge_source = merge_result
             out.append(ProposedTransition(
                 task_id=task_id,
                 believed_state=believed,
                 ground_truth="merged",
                 proposed_action=ACTION_ADVANCE,
                 evidence=merge_evidence,
+                merge_source=merge_source,
             ))
             continue
 
@@ -284,3 +325,151 @@ def resync_plan(
                          "— flagged for operator, never silently dropped",
             ))
     return out
+
+
+# ---------------------------------------------------------------------------
+# RP02 — the apply layer (audited, never a silent statefile edit — B.3)
+
+@dataclass(frozen=True)
+class ApplyResult:
+    """One outcome row per plan entry that `resync_apply` considered (every
+    ACTION_ADVANCE / ACTION_NEEDS_OPERATOR row — ACTION_NONE rows carry
+    nothing actionable and are skipped entirely, not even reported here).
+    `event` is the real `Event` written to the log when `applied` is True,
+    else None (nothing was written for this task)."""
+
+    task_id: str
+    applied: bool
+    reason: str
+    event: Event | None = None
+
+
+def _legal_advance_transition(believed: TaskState) -> tuple[TaskState, EventType] | None:
+    """The B.3 legal-transition map for a merge-confirmed ACTION_ADVANCE
+    row — resync NEVER fabricates an illegal or multi-hop transition just
+    to reach a nominal target; it only ever emits ONE real, machine-legal
+    edge (see `types.TASK_TRANSITIONS`):
+
+      MERGE_READY -- the ONLY state with a direct edge into MERGED (the
+                      dstdns-P30 / ui-P10 case) -- emits TASK_TRANSITIONED
+                      to MERGED.
+      any OTHER non-terminal, non-MERGED believed state (CARVED/QUEUED/
+      ACTIVE/AWAITING_REVIEW/SELF_REVIEWING/REVIEW_REJECTED/BLOCKED/DRAFT/
+      NEEDS_DECISION/READY_TO_CARVE) -- MERGED has exactly one incoming
+      edge (from MERGE_READY), so it is NOT directly reachable from any of
+      these. Faking a multi-hop chain through the review/gate stages would
+      manufacture events for review/gate work that never happened --
+      corrupting the audit trail. Instead resync retires the task's OWN
+      tracked lifecycle via TASK_SUPERSEDED, which is legal from every
+      non-terminal state: the ground truth is that this task's real work
+      already landed through a channel nyxloom wasn't tracking, so its
+      *nyxloom-side* lifecycle is superseded by that reality.
+      MERGED itself (already advanced by a prior --apply), or any state
+      already in TERMINAL_TASK_STATES -- nothing further for resync to do
+      -- returns None. This is the idempotency contract: a second --apply
+      against an already-advanced task computes None here and therefore
+      never calls `storage.append_and_apply` at all (no redundant event,
+      not even a from==to no-op one).
+    """
+    if believed is TaskState.MERGE_READY:
+        return TaskState.MERGED, EventType.TASK_TRANSITIONED
+    if believed is TaskState.MERGED or believed in TERMINAL_TASK_STATES:
+        return None
+    return TaskState.SUPERSEDED, EventType.TASK_SUPERSEDED
+
+
+def resync_apply(
+    project: str,
+    states: dict[str, TaskStateFile],
+    plan: list[ProposedTransition],
+    *,
+    allow_content_merge: bool = False,
+    actor_id: str = "resync",
+) -> list[ApplyResult]:
+    """Turn `plan`'s ACTION_ADVANCE rows into REAL audited events via
+    `storage.append_and_apply` (B.3: never a silent statefile edit). Every
+    event's actor is `Actor(ActorKind.RESYNC, actor_id)`; its payload names
+    the ground-truth evidence (both `"reason"`, verbatim, and folded into
+    `"notes"` for the normal statefile-notes projection).
+
+    `ACTION_NONE` rows are skipped entirely — nothing to apply or flag.
+    `ACTION_NEEDS_OPERATOR` rows are NEVER auto-applied — reported as an
+    unapplied `ApplyResult` only, so the CLI can surface them, exactly per
+    B.3 ("never silently dropped") and the RP02 contract ("never auto-
+    applied": an operator's own judgment call, not resync's).
+
+    SAFETY (RP02's load-bearing rule) — confidence gate on ACTION_ADVANCE:
+    a row backed ONLY by the content-check channel
+    (`merge_source == MERGE_SOURCE_CONTENT`, i.e. `GitFacts.content_merged`
+    — a commit-log grep / archive-path scan that CAN match an unrelated
+    commit) is LOWER-CONFIDENCE than a `git branch --merged` hit
+    (`MERGE_SOURCE_REFS`). A `merged_refs`-backed row auto-applies under a
+    bare `--apply`. A `content_merged`-only row is left untouched (flagged,
+    not silently retired) UNLESS the caller passes `allow_content_merge=True`
+    (the CLI's `--apply-content-merges`) — emitting a real
+    TASK_TRANSITIONED/TASK_SUPERSEDED off a false-positive grep would
+    wrongly retire a still-live task.
+
+    Legal-transition mapping: see `_legal_advance_transition`. A row whose
+    mapping is None (already MERGED or already terminal) is reported as an
+    unapplied `ApplyResult` too — this IS the idempotency contract: a
+    second `--apply` computes None for every already-advanced task and so
+    performs zero new `append_and_apply` calls (nothing left drifted).
+    """
+    results: list[ApplyResult] = []
+    actor = Actor(kind=ActorKind.RESYNC, id=actor_id)
+
+    for row in plan:
+        if row.proposed_action == ACTION_NONE:
+            continue  # genuinely open or already terminal -- nothing to report
+
+        if row.proposed_action == ACTION_NEEDS_OPERATOR:
+            results.append(ApplyResult(
+                task_id=row.task_id, applied=False,
+                reason="NEEDS_OPERATOR rows are never auto-applied "
+                       "(operator judgment required)",
+            ))
+            continue
+
+        # ACTION_ADVANCE from here on.
+        if row.merge_source == MERGE_SOURCE_CONTENT and not allow_content_merge:
+            results.append(ApplyResult(
+                task_id=row.task_id, applied=False,
+                reason="content-check-only merge evidence requires the explicit "
+                       "content-merge opt-in (--apply-content-merges) -- lower "
+                       "confidence than a `git branch --merged` hit",
+            ))
+            continue
+
+        mapping = _legal_advance_transition(row.believed_state)
+        if mapping is None:
+            results.append(ApplyResult(
+                task_id=row.task_id, applied=False,
+                reason="already MERGED or terminal -- nothing further for resync "
+                       "(idempotent: no event written)",
+            ))
+            continue
+
+        to_state, event_type = mapping
+        if event_type is EventType.TASK_TRANSITIONED:
+            payload = {
+                "from": row.believed_state.value,
+                "to": to_state.value,
+                "reason": row.evidence,
+                "notes": f"resync: {row.evidence}",
+            }
+        else:
+            payload = {
+                "from": row.believed_state.value,
+                "reason": row.evidence,
+                "notes": f"resync: {row.evidence}",
+            }
+
+        ev = storage.append_and_apply(
+            project, states,
+            actor=actor, type=event_type, payload=payload, task_id=row.task_id,
+        )
+        results.append(ApplyResult(task_id=row.task_id, applied=True,
+                                    reason=row.evidence, event=ev))
+
+    return results

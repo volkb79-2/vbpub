@@ -239,6 +239,9 @@ class ActorKind(enum.Enum):
     GATE = "gate"
     NOTIFIER = "notifier"
     FRONTIER_SESSION = "frontier-session"
+    RESYNC = "resync"      # PACKAGE RP02 (docs/plan-state-integrity.md B.4):
+                           # `nyxloom resync --apply`'s audited ground-truth
+                           # re-baseline transitions (resync.resync_apply).
 
 
 # ---------------------------------------------------------------------------
