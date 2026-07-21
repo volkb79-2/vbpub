@@ -63,7 +63,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import ProjectConfig
+from .log import get_logger
 from .types import TaskStateFile, utc_now
+
+log = get_logger("decisions")
 
 
 class DecisionError(Exception):
@@ -127,6 +130,7 @@ def parse_inbox(text: str) -> list[Decision]:
     if current_entry is not None:
         decisions.append(_finalize_decision(current_entry))
 
+    log.debug("inbox parsed", count=len(decisions))
     return decisions
 
 
@@ -236,6 +240,7 @@ def reconcile_decisions(cfg: ProjectConfig, states: dict[str, TaskStateFile],
     # Sort by id for determinism
     events.sort(key=lambda x: x[1])
 
+    log.debug("decisions reconciled", event_count=len(events))
     return events
 
 
@@ -263,9 +268,12 @@ def decide(cfg: ProjectConfig, decision_id: str, choice: str, note: str,
             break
 
     if decision is None:
+        log.warning("decide failed: decision not found", decision_id=decision_id)
         raise DecisionError(f"Decision {decision_id} not found")
 
     if decision.status in ("DECIDED", "DROPPED"):
+        log.warning("decide failed: already resolved", decision_id=decision_id,
+                    status=decision.status)
         raise DecisionError(f"Decision {decision_id} is already {decision.status}")
 
     # Get today's date in ISO format
@@ -311,6 +319,7 @@ def decide(cfg: ProjectConfig, decision_id: str, choice: str, note: str,
         new_text += "\n"
 
     inbox_path.write_text(new_text, encoding="utf-8")
+    log.info("decision decided", decision_id=decision_id, choice=choice, authority=authority)
 
 
 def discuss(cfg: ProjectConfig, decision_id: str) -> str:
@@ -335,9 +344,11 @@ def discuss(cfg: ProjectConfig, decision_id: str) -> str:
             break
 
     if decision is None:
+        log.warning("discuss failed: decision not found", decision_id=decision_id)
         raise DecisionError(f"Decision {decision_id} not found")
 
     if not decision.resume_prompt:
+        log.warning("discuss failed: no resume prompt", decision_id=decision_id)
         raise DecisionError(f"Decision {decision_id} has no resume prompt")
 
     # Build the prompt content: resume prompt + entry heading + inbox path
@@ -363,6 +374,7 @@ def discuss(cfg: ProjectConfig, decision_id: str) -> str:
     # Build the command
     cmd = f"claude --append-system-prompt {quoted_prompt}"
 
+    log.debug("discuss command built", decision_id=decision_id)
     return cmd
 
 
@@ -399,4 +411,5 @@ def open_decision(cfg: ProjectConfig, question: str, resume_prompt: str,
 
     text = text.rstrip("\n") + "\n\n" + entry
     inbox_path.write_text(text, encoding="utf-8")
+    log.info("decision opened", decision_id=new_id, raised_by=raised_by)
     return new_id

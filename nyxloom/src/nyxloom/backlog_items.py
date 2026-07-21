@@ -68,7 +68,10 @@ from pathlib import Path
 import jsonschema
 
 from .config import ProjectConfig
+from .log import get_logger
 from .types import LintFinding
+
+log = get_logger("backlog_items")
 
 DEFAULT_RELPATH = "nyxloom-trove/backlog.md"
 
@@ -100,7 +103,9 @@ def parse(path: Path) -> list[BacklogItem]:
     """Parse a backlog.md file into typed items. Missing file -> []."""
     if not path.exists():
         return []
-    return _parse_text(path.read_text(encoding="utf-8"))
+    items = _parse_text(path.read_text(encoding="utf-8"))
+    log.debug("backlog parsed", path=str(path), count=len(items))
+    return items
 
 
 def _parse_text(text: str) -> list[BacklogItem]:
@@ -231,6 +236,7 @@ def validate(items: list[BacklogItem], path: str = "") -> list[LintFinding]:
                 line=item.header_line,
             ))
 
+    log.debug("backlog validated", item_count=len(items), finding_count=len(findings))
     return findings
 
 
@@ -261,6 +267,7 @@ def tick_merged(path: Path, task_id: str, commit: str) -> bool:
     items = _parse_text(text)
     target = next((it for it in items if it.carved_handoff == task_id), None)
     if target is None or target.header_line is None:
+        log.debug("backlog tick: no linked item", task_id=task_id)
         return False
 
     lines = text.splitlines(keepends=True)
@@ -281,6 +288,7 @@ def tick_merged(path: Path, task_id: str, commit: str) -> bool:
 
     with path.open("w", encoding="utf-8", newline="") as fh:
         fh.write("".join(lines))
+    log.info("backlog item ticked merged", id=target.id, task_id=task_id, commit=commit)
     return True
 
 
@@ -312,4 +320,5 @@ def create(path: Path, title: str, detail: str, *, priority: int | None = None,
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+    log.info("backlog item created", id=new_id, title=title)
     return new_id

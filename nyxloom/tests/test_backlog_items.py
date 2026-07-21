@@ -3,13 +3,37 @@ on merge (P28). Each oracle (O1-O4) is a test case."""
 
 from __future__ import annotations
 
+import logging
 import textwrap
 from pathlib import Path
 
 import pytest
+import structlog.contextvars
 
-from nyxloom import backlog_items, cli, lint
+from nyxloom import backlog_items, cli, lint, log
 from nyxloom.types import TaskState, TaskStateFile, utc_now
+
+
+@pytest.fixture(autouse=True)
+def _silence_nyxloom_logging():
+    """PACKAGE P05c safety net (see nyxloom/docs/plan-logging.md P05c's
+    byte-unchanged CLI oracle): backlog_items.py now carries log.debug/
+    log.info calls. structlog's OWN pre-configure default (before ANYONE in
+    the process calls log.configure()) is an unfiltered PrintLogger straight
+    to stdout, which would corrupt this file's own byte-exact/substring
+    stdout assertions if this were the first test file in the whole suite
+    to reach one of those calls. CRITICAL sits above every level this
+    package emits, so every added call is a guaranteed silent no-op here,
+    regardless of test collection order relative to test_log.py (mirrors
+    that file's own local-autouse-fixture idiom -- conftest.py stays
+    FROZEN)."""
+    log.configure(level=log.CRITICAL, console=False)
+    yield
+    structlog.contextvars.clear_contextvars()
+    nyxloom_logger = logging.getLogger("nyxloom")
+    for handler in list(nyxloom_logger.handlers):
+        nyxloom_logger.removeHandler(handler)
+        handler.close()
 
 
 @pytest.fixture()

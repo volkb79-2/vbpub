@@ -119,7 +119,10 @@ import jsonschema
 
 from . import backlog_items, frontmatter, paths
 from .config import ProjectConfig
+from .log import get_logger
 from .types import LintFinding, utc_now
+
+log = get_logger("lint")
 
 
 def lint_file(path: Path, cfg: ProjectConfig) -> list[LintFinding]:
@@ -131,6 +134,7 @@ def lint_file(path: Path, cfg: ProjectConfig) -> list[LintFinding]:
         fm, body = frontmatter.parse_handoff(path)
     except frontmatter.HandoffParseError as e:
         # L1 error: parse/schema failure
+        log.warning("lint file: parse/schema error", path=str(path))
         return [LintFinding(
             rule="L1",
             severity="error",
@@ -182,6 +186,7 @@ def lint_file(path: Path, cfg: ProjectConfig) -> list[LintFinding]:
     # Sort findings by rule then line
     findings.sort(key=lambda f: (f.rule, f.line or 9999))
 
+    log.debug("lint file", path=str(path), finding_count=len(findings))
     return findings
 
 
@@ -206,6 +211,8 @@ def lint_project(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
         results[str(backlog_path.relative_to(cfg.root))] = lint_backlog(cfg)
     for rel_path, spine_findings in lint_spine(cfg).items():
         results.setdefault(rel_path, []).extend(spine_findings)
+    log.debug("lint project", project_id=cfg.project_id, file_count=len(results),
+              finding_count=sum(len(f) for f in results.values()))
     return results
 
 
@@ -341,6 +348,7 @@ def lint_config(cfg: ProjectConfig) -> list[LintFinding]:
             path=str(config_path),
         ))
 
+    log.debug("lint config", path=str(config_path), finding_count=len(findings))
     return findings
 
 
@@ -572,6 +580,7 @@ def lint_spine(cfg: ProjectConfig) -> dict[str, list[LintFinding]]:
                     path=doc_relpaths["backlog"],
                 ))
 
+    log.debug("lint spine", doc_count=len(results))
     return results
 
 

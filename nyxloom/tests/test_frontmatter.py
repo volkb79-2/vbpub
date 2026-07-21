@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import logging
 import textwrap
 from pathlib import Path
 
 import pytest
+import structlog.contextvars
 
-from nyxloom import frontmatter
+from nyxloom import frontmatter, log
+
+
+@pytest.fixture(autouse=True)
+def _silence_nyxloom_logging():
+    """PACKAGE P05c safety net -- see test_backlog_items.py's copy of this
+    fixture for the full rationale (byte-unchanged CLI oracle,
+    docs/plan-logging.md P05c)."""
+    log.configure(level=log.CRITICAL, console=False)
+    yield
+    structlog.contextvars.clear_contextvars()
+    nyxloom_logger = logging.getLogger("nyxloom")
+    for handler in list(nyxloom_logger.handlers):
+        nyxloom_logger.removeHandler(handler)
+        handler.close()
 
 
 class TestSplitFrontmatter:

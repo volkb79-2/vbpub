@@ -3,17 +3,37 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from unittest import mock
 
 import pytest
+import structlog.contextvars
 
-from nyxloom import cli
+from nyxloom import cli, log
 from nyxloom.config import ProjectConfig
 from nyxloom.types import (
     DoctorFinding, LintFinding, EventType, Actor, ActorKind,
     TaskStateFile, TaskState, Attempt, AttemptState, Route, Usage, Basis,
 )
+
+
+@pytest.fixture(autouse=True)
+def _silence_nyxloom_logging():
+    """PACKAGE P05c safety net -- see test_backlog_items.py's copy of this
+    fixture for the full rationale (byte-unchanged CLI stdout/stderr oracle,
+    docs/plan-logging.md P05c). cli.main() now bootstraps `log.configure()`
+    itself (see cli.py's `_bootstrap_logging`), which already routes every
+    level to a JSONL file rather than stdout/stderr -- this fixture is
+    belt-and-braces on top of that, and load-bearing for any test here that
+    calls a library function directly rather than through `cli.main`."""
+    log.configure(level=log.CRITICAL, console=False)
+    yield
+    structlog.contextvars.clear_contextvars()
+    nyxloom_logger = logging.getLogger("nyxloom")
+    for handler in list(nyxloom_logger.handlers):
+        nyxloom_logger.removeHandler(handler)
+        handler.close()
 
 
 @pytest.fixture()
@@ -192,11 +212,18 @@ def test_doctor_rebuild_write(sample_project, tmp_state, capsys, monkeypatch):
 
 
 def test_status_empty(sample_project, tmp_state, capsys):
-    """status with no tasks outputs nothing."""
+    """status with no tasks outputs nothing.
+
+    PACKAGE P05c (docs/plan-logging.md): tightened to an EXACT byte-for-byte
+    empty-string assertion (was a vacuous "# Empty is okay" comment with no
+    real check) -- this is the simplest possible instance of oracle 1's
+    byte-unchanged CLI stdout contract: `status`'s new-instrumented
+    dependencies (config.py et al, now logging) must add NOTHING to stdout,
+    not even whitespace."""
     exit_code = cli.main(["status"])
     assert exit_code == 0
     out = capsys.readouterr().out
-    # Empty is okay
+    assert out == ""
 
 
 def test_status_one_task(sample_project, tmp_state, capsys, make_statefile, monkeypatch):
@@ -853,3 +880,101 @@ def test_decide_debug_reraises(sample_project, tmp_state, monkeypatch):
 
     with pytest.raises(decisions.DecisionError):
         cli.main(["--debug", "decide", "demo", "D-002", "--choose", "b"])
+
+
+# ==========================================================================
+# PACKAGE P05c (docs/plan-logging.md, logging sweep): the load-bearing
+# byte-unchanged CLI oracle, plus direct coverage of cli.py's own
+# _bootstrap_logging (the ONE addition this package makes to cli.py itself
+# -- see the module's own docstring on the user-facing-print distinction).
+# ==========================================================================
+
+def test_doctor_full_stdout_byte_exact(sample_project, tmp_state, capsys, monkeypatch):
+    """Oracle 1: `doctor`'s FULL stdout is byte-for-byte the pre-
+    instrumentation composition of _format_table's findings table + the
+    fixed dashboard-URL line -- nothing from this package's new log.* calls
+    (in config.py, lint.py, decisions.py, ...) leaks in. The expected value
+    is computed independently via the SAME _format_table (unchanged code)
+    cmd_doctor itself calls, rather than a hand-maintained literal, so this
+    pins "nothing EXTRA appears" rather than freezing the table's exact
+    column widths forever."""
+    from nyxloom.types import DoctorFinding
+
+    monkeypatch.delenv("NYXLOOM_HTTP_BIND", raising=False)
+    finding = DoctorFinding(
+        kind="replay-divergence", severity="critical",
+        message="task state diverged", project="demo",
+    )
+    monkeypatch.setattr("nyxloom.doctor.doctor_project", lambda cfg: [finding])
+
+    expected_table = cli._format_table(
+        [{
+            "kind": "replay-divergence", "severity": "critical",
+            "message": "task state diverged", "project": "demo", "refs": "",
+        }],
+        ["kind", "severity", "message", "project", "refs"],
+    )
+    expected = (
+        expected_table
+        + "\n\ndashboard: http://127.0.0.1:8942  (read-only; loopback on the daemon host)\n"
+    )
+
+    exit_code = cli.main(["doctor"])
+    assert exit_code == 1
+    assert capsys.readouterr().out == expected
+
+
+def test_status_full_stdout_byte_exact(sample_project, tmp_state, capsys, make_statefile):
+    """Oracle 1 (status half): the SAME byte-exact treatment as the doctor
+    test above, for a non-empty status table."""
+    from nyxloom import storage
+
+    tsf = make_statefile()
+    storage.save_state(tsf)
+
+    expected = cli._format_table(
+        [{
+            "task_id": "demo-P01-test", "state": "ACTIVE", "since": tsf.since.isoformat(),
+            "route": "", "cost": "", "notes": "",
+        }],
+        ["task_id", "state", "since", "route", "cost", "notes"],
+    ) + "\n"
+
+    exit_code = cli.main(["status"])
+    assert exit_code == 0
+    assert capsys.readouterr().out == expected
+
+
+def test_bootstrap_logging_writes_jsonl_not_stdout(sample_project, tmp_state, capsys):
+    """The bootstrap this package adds to cli.main() (_bootstrap_logging)
+    must be invisible on stdout/stderr -- it should ONLY ever produce a
+    nyxloom.jsonl file. Drives `lint` (unmocked -- the fixture handoff has
+    pre-existing L7/L11 findings, so exit 1 is the correct, UNCHANGED
+    outcome; this test is about the log plumbing, not lint's own verdict)
+    which reaches config.py/frontmatter.py/lint.py's new log.debug calls at
+    PACKAGE P05c's default 'info' bootstrap level -- DEBUG itself is
+    dropped, but this proves the plumbing runs end-to-end with zero
+    stdout/stderr leakage even so."""
+    from nyxloom import paths
+
+    exit_code = cli.main(["lint"])
+    assert exit_code == 1
+    # No raw structlog line (e.g. a bare "logger" key, as an unconfigured
+    # PrintLogger/ConsoleRenderer line would carry) ever reached stdout/stderr.
+    captured = capsys.readouterr()
+    assert "logger" not in captured.out and "logger" not in captured.err
+    assert paths.logs_dir().exists()
+
+
+def test_bootstrap_logging_invalid_env_level_falls_back_to_info(
+    sample_project, tmp_state, capsys, monkeypatch
+):
+    """cli.py's _bootstrap_logging ValueError fallback: an invalid
+    NYXLOOM_LOG_LEVEL must never crash the CLI (or leak onto stdout) --
+    it silently falls back to INFO, same as an unset env var."""
+    monkeypatch.setenv("NYXLOOM_LOG_LEVEL", "not-a-real-level")
+
+    exit_code = cli.main(["version"])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() != ""

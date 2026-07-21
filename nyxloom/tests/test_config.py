@@ -8,11 +8,33 @@ NotifyConfig(...) directly still keeps the url it passes.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from nyxloom.config import NotifyConfig, ProjectConfig
+import pytest
+import structlog.contextvars
+
+from nyxloom import log
+from nyxloom.config import NotifyConfig, ProjectConfig, Prices
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _silence_nyxloom_logging():
+    """PACKAGE P05c safety net -- see test_backlog_items.py's copy of this
+    fixture for the full rationale (byte-unchanged CLI oracle,
+    docs/plan-logging.md P05c). ProjectConfig.load now carries the P05c
+    config-resolved DEBUG (oracle 2 below drives it explicitly with its own
+    log.configure(); every OTHER test in this file must not have that call
+    leak through structlog's pre-configure PrintLogger default)."""
+    log.configure(level=log.CRITICAL, console=False)
+    yield
+    structlog.contextvars.clear_contextvars()
+    nyxloom_logger = logging.getLogger("nyxloom")
+    for handler in list(nyxloom_logger.handlers):
+        nyxloom_logger.removeHandler(handler)
+        handler.close()
 
 _PROJECT_TOML = """\
 [project]
@@ -249,3 +271,143 @@ def test_empty_http_bind_env_does_not_shadow_the_default(tmp_path, monkeypatch):
     root = _write_policy_project(tmp_path)
     cfg = ProjectConfig.load(root)
     assert cfg.policy.http_bind == "127.0.0.1"
+
+
+# ==========================================================================
+# PACKAGE P05c (docs/plan-logging.md, logging sweep): config.py oracles.
+# ==========================================================================
+
+def _read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    import json
+    return [json.loads(ln) for ln in lines]
+
+
+class TestConfigLoadLogging:
+    """Oracle 2: a config load/resolve logs a DEBUG record."""
+
+    def test_config_load_logs_debug_on_resolve(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("NTFY_URL", raising=False)
+        log.configure(level=log.DEBUG, log_dir=tmp_path, console=False)
+        root = _write_project(tmp_path)
+
+        ProjectConfig.load(root)
+
+        records = _read_jsonl(tmp_path / "nyxloom.jsonl")
+        resolved = [r for r in records if r.get("msg") == "config resolved"]
+        assert len(resolved) == 1
+        assert resolved[0]["level"] == "debug"
+        assert resolved[0]["project_id"] == "p39proj"
+
+    def test_config_load_never_logs_secret_values(self, tmp_path, monkeypatch):
+        """Oracle 3: a token/secret VALUE reachable from config load never
+        appears in any emitted record. config.py only ever reads/logs the
+        env var NAME a secret lives under (NotifyConfig.token_env) -- the
+        value itself is never parsed out of the environment by config.py,
+        so planting one in NTFY_TOKEN and asserting it never appears in the
+        JSONL output pins that invariant directly."""
+        secret = "sk-should-never-appear-in-any-log-record-000111"
+        monkeypatch.setenv("NTFY_TOKEN", secret)
+        monkeypatch.delenv("NTFY_URL", raising=False)
+        log.configure(level=log.DEBUG, log_dir=tmp_path, console=False)
+        root = _write_project(tmp_path, 'ntfy_url = "https://example.test"\n')
+
+        ProjectConfig.load(root)
+
+        raw = (tmp_path / "nyxloom.jsonl").read_text(encoding="utf-8")
+        assert secret not in raw
+        # ... while the env-var NAME (never the value) is expected to appear.
+        records = _read_jsonl(tmp_path / "nyxloom.jsonl")
+        resolved = [r for r in records if r.get("msg") == "config resolved"]
+        assert resolved[0]["token_env"] == "NTFY_TOKEN"
+
+
+class TestUpdateProjectPolicy:
+    """update_project_policy: a surgical single-line [policy] editor
+    (P15). Direct unit coverage -- previously exercised only indirectly
+    (and incompletely) via the P15 UI HTTP surface in test_config_ui.py,
+    which pre-validates keys/tiers before ever reaching this function's own
+    not-found branch."""
+
+    def _write(self, root: Path, policy_body: str) -> None:
+        trove = root / "nyxloom-trove"
+        trove.mkdir(parents=True, exist_ok=True)
+        (trove / "nyxloom.toml").write_text(
+            '[project]\nid = "polproj"\ndefault_branch = "main"\n'
+            'handoff_globs = ["handoff/*.md"]\n\n'
+            f'[policy]\n{policy_body}\n[notify]\n',
+            encoding="utf-8",
+        )
+
+    def test_update_existing_key_rewrites_value(self, tmp_path):
+        from nyxloom.config import update_project_policy
+
+        self._write(tmp_path, "max_active_tasks = 2\n")
+        update_project_policy(tmp_path, {"max_active_tasks": 9})
+
+        cfg = ProjectConfig.load(tmp_path)
+        assert cfg.policy.max_active_tasks == 9
+
+    def test_update_missing_key_raises_no_write(self, tmp_path):
+        from nyxloom.config import update_project_policy
+
+        self._write(tmp_path, "max_active_tasks = 2\n")
+        before = (tmp_path / "nyxloom-trove" / "nyxloom.toml").read_text(encoding="utf-8")
+
+        with pytest.raises(ValueError, match="not found"):
+            update_project_policy(tmp_path, {"ready_queue_target": 9})
+
+        after = (tmp_path / "nyxloom-trove" / "nyxloom.toml").read_text(encoding="utf-8")
+        assert after == before
+
+
+class TestUpdateRoutes:
+    """update_routes: a surgical `routes = [...]` line editor per tier."""
+
+    def test_update_existing_tier_rewrites_routes_line(self, tmp_state):
+        from nyxloom import paths
+        from nyxloom.config import update_routes
+
+        paths.routes_path().write_text(
+            'revision = "r1"\n\n[tiers.flash-high]\nroutes = ["a"]\n',
+            encoding="utf-8",
+        )
+
+        update_routes({"flash-high": ["a", "b"]})
+
+        text = paths.routes_path().read_text(encoding="utf-8")
+        assert 'routes = ["a", "b"]' in text
+
+    def test_update_missing_tier_raises_no_write(self, tmp_state):
+        from nyxloom import paths
+        from nyxloom.config import update_routes
+
+        original = 'revision = "r1"\n\n[tiers.flash-high]\nroutes = ["a"]\n'
+        paths.routes_path().write_text(original, encoding="utf-8")
+
+        with pytest.raises(ValueError, match="not found"):
+            update_routes({"no-such-tier": ["a"]})
+
+        assert paths.routes_path().read_text(encoding="utf-8") == original
+
+
+class TestPricesLoad:
+    """Prices.load: absent-file vs. present-file resolution (§5 config
+    rubric: "a config load/resolve -> DEBUG")."""
+
+    def test_absent_file_returns_empty(self, tmp_path):
+        prices = Prices.load(path=tmp_path / "does-not-exist.toml")
+        assert prices.revision == "absent"
+        assert prices.models == {}
+
+    def test_present_file_parses_models(self, tmp_path):
+        p = tmp_path / "prices.toml"
+        p.write_text(
+            'revision = "2026-07"\n\n[models.demo-model]\ninput = 1.0\noutput = 2.0\n',
+            encoding="utf-8",
+        )
+        prices = Prices.load(path=p)
+        assert prices.revision == "2026-07"
+        assert "demo-model" in prices.models

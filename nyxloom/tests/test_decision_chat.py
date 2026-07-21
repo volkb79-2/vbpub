@@ -15,13 +15,29 @@ cfg.notify.cmd_topic (never a decision_topic field, which does not exist).
 
 from __future__ import annotations
 
+import logging
 import textwrap
 
 import pytest
+import structlog.contextvars
 
-from nyxloom import adapters, decision_chat, decisions, notify, paths, storage
+from nyxloom import adapters, decision_chat, decisions, log, notify, paths, storage
 from nyxloom.config import load_registry
 from nyxloom.types import EventType
+
+
+@pytest.fixture(autouse=True)
+def _silence_nyxloom_logging():
+    """PACKAGE P05c safety net -- see test_backlog_items.py's copy of this
+    fixture for the full rationale (byte-unchanged CLI oracle,
+    docs/plan-logging.md P05c)."""
+    log.configure(level=log.CRITICAL, console=False)
+    yield
+    structlog.contextvars.clear_contextvars()
+    nyxloom_logger = logging.getLogger("nyxloom")
+    for handler in list(nyxloom_logger.handlers):
+        nyxloom_logger.removeHandler(handler)
+        handler.close()
 
 
 # --------------------------------------------------------------------------
@@ -384,3 +400,39 @@ def test_post_feedback_carries_free_text_with_loop_guard_tag(sample_project, mon
 def test_find_project_for_decision_unknown_returns_none(sample_project):
     registry = load_registry()
     assert decision_chat.find_project_for_decision(registry, "D-does-not-exist") is None
+
+
+# ==========================================================================
+# PACKAGE P05c (docs/plan-logging.md, logging sweep): a failed notify send
+# is silently swallowed (`except Exception: pass`, unchanged) -- this
+# rubric-matches §5's WARNING tier ("degraded-but-continuing... a fallback
+# taken") and must never propagate. Direct coverage of that branch (the
+# existing tests above only exercise the success path).
+# ==========================================================================
+
+def test_notify_decision_opened_swallows_send_failure(sample_project, monkeypatch):
+    cfg = sample_project
+    cfg.notify.ntfy_url = "http://fake-ntfy.example"
+    cfg.notify.cmd_topic = "feedback"
+
+    def _raise(nc, note):
+        raise RuntimeError("ntfy unreachable")
+
+    monkeypatch.setattr(notify, "send", _raise)
+
+    # Must not raise -- a failed notify push degrades silently (WARNING-
+    # logged, per §5), never sinks the caller.
+    decision_chat.notify_decision_opened(cfg, "D-002")
+
+
+def test_post_feedback_swallows_send_failure(sample_project, monkeypatch):
+    cfg = sample_project
+    cfg.notify.ntfy_url = "http://fake-ntfy.example"
+    cfg.notify.cmd_topic = "feedback"
+
+    def _raise(nc, note):
+        raise RuntimeError("ntfy unreachable")
+
+    monkeypatch.setattr(notify, "send", _raise)
+
+    decision_chat._post_feedback(cfg, "D-001", "free text reply body")

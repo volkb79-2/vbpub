@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import structlog.contextvars
 
-from nyxloom import paths, storage, render
+from nyxloom import log, paths, storage, render
 from nyxloom.types import (
     TaskStateFile, Attempt, Route, Usage, Basis, AttemptState,
     Receipt, ReceiptResult, TaskState, Actor, ActorKind, Event,
@@ -18,6 +20,21 @@ from nyxloom.types import (
 )
 from nyxloom.config import ProjectConfig
 from conftest import SAMPLE_HANDOFF
+
+
+@pytest.fixture(autouse=True)
+def _silence_nyxloom_logging():
+    """PACKAGE P05c safety net -- see test_backlog_items.py's copy of this
+    fixture for the full rationale (byte-unchanged CLI oracle,
+    docs/plan-logging.md P05c). render.py now carries a log.debug per
+    page-render function."""
+    log.configure(level=log.CRITICAL, console=False)
+    yield
+    structlog.contextvars.clear_contextvars()
+    nyxloom_logger = logging.getLogger("nyxloom")
+    for handler in list(nyxloom_logger.handlers):
+        nyxloom_logger.removeHandler(handler)
+        handler.close()
 
 
 @pytest.fixture()

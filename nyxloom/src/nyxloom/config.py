@@ -15,10 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from . import paths
+from .log import get_logger
 from .stages import (
     DEFAULT_PIPELINE, compose, validate_pipeline, validate_stage_overrides,
 )
 from .types import Basis, Usage
+
+log = get_logger("config")
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +45,7 @@ def register_project(project_id: str, root: Path) -> None:
     for pid, r in sorted(reg.items()):
         lines.append(f'[projects.{pid}]\nroot = "{r}"\n')
     paths.registry_path().write_text("\n".join(lines), encoding="utf-8")
+    log.info("project registered", project_id=project_id, root=str(root))
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +282,20 @@ class ProjectConfig:
         # so a typo in one project's toml never breaks config loading for
         # every project sharing this frozen module.
         logging_level = data.get("logging", {}).get("level")
+        # DEBUG only -- NEVER the token/secret VALUE. token_env/cmd_token_env
+        # below are the env var NAMEs a secret lives under (see NotifyConfig's
+        # own docstring: "the TOKEN VALUE never appears in config files --
+        # only the var name"), so logging them is safe by construction.
+        log.debug(
+            "config resolved",
+            project_id=data["project"]["id"],
+            root=str(root),
+            config_path=str(p),
+            pipeline=list(pipeline),
+            logging_level=logging_level,
+            token_env=noti.token_env,
+            cmd_token_env=noti.cmd_token_env,
+        )
         return cls(
             project_id=data["project"]["id"],
             root=root,
@@ -353,9 +371,11 @@ def update_project_policy(root: Path, changes: dict[str, int]) -> None:
             lines[i] = f"{indent}{key}{eq}{remaining.pop(key)}{trail}{newline_suffix}"
 
     if remaining:
+        log.warning("policy update failed: key(s) not found", keys=sorted(remaining))
         raise ValueError(f"policy key(s) not found in [policy] section: {sorted(remaining)}")
 
     p.write_text("".join(lines), encoding="utf-8")
+    log.info("policy updated", keys=sorted(changes))
 
 
 def update_routes(changes: dict[str, list[str]]) -> None:
@@ -400,9 +420,11 @@ def update_routes(changes: dict[str, list[str]]) -> None:
                 break
 
     if remaining:
+        log.warning("routes update failed: tier(s) not found", tiers=sorted(remaining))
         raise ValueError(f"tier(s) not found or missing routes= line: {sorted(remaining)}")
 
     p.write_text("".join(lines), encoding="utf-8")
+    log.info("routes updated", tiers=sorted(changes))
 
 
 _DEFAULT_REDACT = [
@@ -474,6 +496,7 @@ class Routes:
             kw = {k: v for k, v in spec.items() if k in known}
             routes[rid] = RouteDef(route_id=rid, raw=spec, **kw)
         tiers = {t: list(spec["routes"]) for t, spec in data.get("tiers", {}).items()}
+        log.debug("routes resolved", route_count=len(routes), tier_count=len(tiers))
         return cls(revision=str(data.get("revision", "unversioned")), tiers=tiers, routes=routes)
 
     def for_tier(self, tier: str) -> list[RouteDef]:
@@ -492,8 +515,10 @@ class Prices:
     def load(cls, path: Path | None = None) -> "Prices":
         p = path or paths.prices_path()
         if not p.exists():
+            log.debug("prices resolved", present=False)
             return cls(revision="absent", models={})
         data = tomllib.loads(p.read_text(encoding="utf-8"))
+        log.debug("prices resolved", present=True, model_count=len(data.get("models", {})))
         return cls(revision=str(data.get("revision", "unversioned")),
                    models=dict(data.get("models", {})))
 
