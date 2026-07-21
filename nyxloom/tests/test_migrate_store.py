@@ -1,32 +1,9 @@
-"""Tests for migrate_store.py (PACKAGE SP02, docs/plan-state-integrity.md
-Part A.3): the file -> SQLite event-store importer + zero-divergence
-verification.
+"""Behavioral tests for the statefile-authoritative migrate-store import.
 
-Every fixture is built via the FILE backend ONLY (`storage.append_and_apply`
-with `NYXLOOM_STATE_BACKEND` unset -- the default) so `migrate()` has a real
-`events.jsonl` + on-disk statefiles to import from, matching the ordering
-constraint in migrate_store.py's module docstring: this suite is the only
-place `migrate()` ever runs, never against a live registered project.
-
-Oracles (per the SP02 handoff):
-  1. Zero-divergence import: a multi-event, >=2-task fixture imports with
-     the rebuilt SQLite projection exactly equal to the file backend's.
-  2. Backup preserved + source retired: events.jsonl.pre-sqlite exists with
-     the original content; events.jsonl is gone.
-  3. Idempotent: a second migrate() call is a no-op (status
-     "already-migrated", no double events, no error).
-  4. Corrupt line reported: a malformed JSONL line raises MigrationError
-     naming the line, never silently dropped.
-  5. Event order/seq preserved: the imported (type, task_id) sequence
-     matches the source order exactly.
-
-Plus coverage-completeness cases for every branch migrate_store.py adds:
-nothing-to-migrate (no source, no backup), the crash-recovery dedup path
-(_already_imported True: source still present but SQLite already holds an
-exact match -- skip re-insert, still verify+rename), the inconsistent-
-partial-state path (_already_imported raises), and both divergence shapes
-(on-disk content differs from replay; a task replay projects that has no
-on-disk statefile at all).
+Fixtures write raw FILE events plus statefiles independently so the audit log
+can contain histories that today's live append guard would reject. Migration
+must preserve those events without applying them, copy statefiles verbatim,
+and retire the source only after a successful SQLite round-trip check.
 """
 
 from __future__ import annotations
@@ -37,53 +14,64 @@ import pytest
 
 from nyxloom import cli, paths, storage, storage_sqlite
 from nyxloom.migrate_store import MigrationError, migrate
-from nyxloom.types import Actor, ActorKind, EventType, TaskState, TaskStateFile, utc_now
+from nyxloom.types import (
+    Actor, ActorKind, Attempt, AttemptState, Basis, BlockerType, EventType,
+    OracleResult, Receipt, ReceiptResult, Role, Route, TaskState,
+    TaskStateFile, Usage, utc_now,
+)
 
 ACTOR = Actor(kind=ActorKind.TICK, id="test")
 
 
 def _seed_project(project: str) -> None:
-    """Build a realistic multi-task, multi-event history via the FILE
-    backend: 2 tasks, TASK_CREATED + TASK_TRANSITIONED (x2) +
-    PROGRESS_RECORDED for task 1, TASK_CREATED + PROGRESS_RECORDED for
-    task 2 -- for the zero-divergence and event-order oracles."""
-    states: dict[str, TaskStateFile] = {}
-
-    t1 = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id="demo-P01",
-                        project=project, state=TaskState.CARVED, since=utc_now())
-    storage.append_and_apply(
-        project, states, actor=ACTOR, type=EventType.TASK_CREATED,
-        payload={"statefile": t1.to_dict()}, task_id="demo-P01",
+    """Build independently-written raw events and operational statefiles."""
+    created = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="demo-P01",
+        project=project, state=TaskState.CARVED, since=utc_now(),
     )
-    storage.append_and_apply(
-        project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+    storage.append_event(
+        project, actor=ACTOR, type=EventType.TASK_CREATED,
+        payload={"statefile": created.to_dict()}, task_id="demo-P01",
+    )
+    storage.append_event(
+        project, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
         payload={"from": "CARVED", "to": "QUEUED", "notes": None}, task_id="demo-P01",
     )
-    storage.append_and_apply(
-        project, states, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+    storage.append_event(
+        project, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
         payload={"from": "QUEUED", "to": "ACTIVE", "notes": None}, task_id="demo-P01",
     )
-    storage.append_and_apply(
-        project, states, actor=ACTOR, type=EventType.PROGRESS_RECORDED,
+    storage.append_event(
+        project, actor=ACTOR, type=EventType.PROGRESS_RECORDED,
         payload={"units": ["step-1"]}, task_id="demo-P01",
     )
 
-    t2 = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id="demo-P02",
-                        project=project, state=TaskState.QUEUED, since=utc_now())
-    storage.append_and_apply(
-        project, states, actor=ACTOR, type=EventType.TASK_CREATED,
+    t2 = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="demo-P02",
+        project=project, state=TaskState.QUEUED, since=utc_now(),
+    )
+    storage.append_event(
+        project, actor=ACTOR, type=EventType.TASK_CREATED,
         payload={"statefile": t2.to_dict()}, task_id="demo-P02",
     )
-    storage.append_and_apply(
-        project, states, actor=ACTOR, type=EventType.PROGRESS_RECORDED,
+    storage.append_event(
+        project, actor=ACTOR, type=EventType.PROGRESS_RECORDED,
         payload={"units": ["p2-step"]}, task_id="demo-P02",
     )
 
+    storage.save_state(TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="demo-P01",
+        project=project, state=TaskState.ACTIVE, since=utc_now(),
+        progress_units=["step-1"],
+    ))
+    t2.progress_units = ["p2-step"]
+    storage.save_state(t2)
+
 
 # ---------------------------------------------------------------------------
-# Oracle 1: zero-divergence import
+# Oracle 1: statefile-authoritative import
 
-def test_zero_divergence_import(tmp_state):
+def test_statefile_authoritative_import(tmp_state):
     project = "sp02-zero-div"
     _seed_project(project)
 
@@ -100,10 +88,44 @@ def test_zero_divergence_import(tmp_state):
     for task_id in file_states:
         assert sqlite_states[task_id].to_dict() == file_states[task_id].to_dict()
 
-    replayed = storage_sqlite.replay(project)
-    assert replayed.keys() == file_states.keys()
-    for task_id in file_states:
-        assert replayed[task_id].to_dict() == file_states[task_id].to_dict()
+
+def test_verbatim_fidelity_preserves_rich_attempt_fields(tmp_state):
+    project = "sp02-verbatim-fidelity"
+    _seed_project(project)
+
+    rich = storage.load_state(project, "demo-P01")
+    assert rich is not None
+    rich.attempts = [Attempt(
+        attempt_id="att-rich", role=Role.IMPLEMENTER, state=AttemptState.EXITED,
+        route=Route(
+            route_id="route-rich", cli="codex", model="gpt-5",
+            variant="high", effort="thorough", routes_rev="routes-42",
+        ),
+        started=utc_now(), ended=utc_now(), worktree="/tmp/rich-worktree",
+        branch="rich-branch", base_commit="abc123", pid=123, pgid=456,
+        log_path="/tmp/rich.log", session_handle="session-rich",
+        receipt=Receipt(
+            result=ReceiptResult.DONE, exit_code=0,
+            oracles=[OracleResult(id="O-rich", result="pass")],
+            files_touched=["src/rich.py"], head_commit="def456",
+        ),
+        usage=Usage(
+            basis=Basis.ACTUAL, tokens_in=101, tokens_out=202, cached_in=3,
+            cost=0.42, currency="USD", price_rev="price-1",
+        ),
+        wave_id="wave-rich",
+    )]
+    storage.save_state(rich)
+    file_states = storage.list_states(project)
+
+    migrate(project)
+
+    sqlite_states = storage_sqlite.list_states(project)
+    assert {task_id: state.to_dict() for task_id, state in sqlite_states.items()} == {
+        task_id: state.to_dict() for task_id, state in file_states.items()
+    }
+    assert sqlite_states["demo-P01"].attempts[0].usage.cost == 0.42
+    assert sqlite_states["demo-P01"].attempts[0].receipt.head_commit == "def456"
 
 
 # ---------------------------------------------------------------------------
@@ -264,43 +286,90 @@ def test_already_imported_mismatched_partial_state_raises(tmp_state):
 
 
 # ---------------------------------------------------------------------------
-# Divergence: on-disk content differs from what the event log replays
+# Audit drift is tolerated: events are carried but not replayed.
 
-def test_divergence_content_mismatch_raises_and_does_not_rename(tmp_state):
-    project = "sp02-divergence-content"
+def test_orphan_rejected_blocked_event_is_preserved_as_audit(tmp_state):
+    project = "sp02-orphan-blocked"
+    created = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="topos-P64",
+        project=project, state=TaskState.VALIDATING, since=utc_now(),
+    )
+    completed = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="topos-P64",
+        project=project, state=TaskState.COMPLETED, since=utc_now(),
+    )
+    storage.append_event(
+        project, actor=ACTOR, type=EventType.TASK_CREATED,
+        payload={"statefile": created.to_dict()}, task_id="topos-P64",
+    )
+    storage.append_event(
+        project, actor=ACTOR, type=EventType.TASK_TRANSITIONED,
+        payload={"from": "VALIDATING", "to": "COMPLETED", "notes": None},
+        task_id="topos-P64",
+    )
+    storage.append_event(
+        project, actor=ACTOR, type=EventType.TASK_BLOCKED,
+        payload={
+            "from": "COMPLETED",
+            "blocker": {
+                "type": BlockerType.ENVIRONMENT.value,
+                "unblock_condition": "repair test environment",
+            },
+        },
+        task_id="topos-P64",
+    )
+    storage.save_state(completed)
+
+    result = migrate(project)
+
+    assert result.status == "migrated"
+    assert storage_sqlite.list_states(project)["topos-P64"].state is TaskState.COMPLETED
+    assert EventType.TASK_BLOCKED in [
+        event.type for event in storage_sqlite.iter_events(project)
+    ]
+
+
+def test_event_projection_without_statefile_is_tolerated(tmp_state):
+    project = "sp02-projected-absent"
+    absent = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="dstdns-P10",
+        project=project, state=TaskState.QUEUED, since=utc_now(),
+    )
+    storage.append_event(
+        project, actor=ACTOR, type=EventType.TASK_CREATED,
+        payload={"statefile": absent.to_dict()}, task_id="dstdns-P10",
+    )
+
+    result = migrate(project)
+
+    assert result.status == "migrated"
+    assert "dstdns-P10" not in storage_sqlite.list_states(project)
+    assert [event.type for event in storage_sqlite.iter_events(project)] == [
+        EventType.TASK_CREATED
+    ]
+
+
+def test_copy_verification_failure_rolls_back_and_keeps_source(tmp_state, monkeypatch):
+    project = "sp02-copy-verify-failure"
     _seed_project(project)
+    src = paths.events_path(project)
+    backup = src.parent / "events.jsonl.pre-sqlite"
+    db = storage_sqlite.db_path(project)
+    real_list_states = storage_sqlite.list_states
 
-    # Hand-edit the on-disk statefile so it disagrees with what replaying
-    # the event log would derive (notes is not one of doctor's lossy
-    # per-attempt allowances, so this is a genuine divergence).
-    saved = storage.load_state(project, "demo-P01")
-    saved.notes = "hand-edited-after-events"
-    storage.save_state(saved)
+    def corrupt_copy(project: str):
+        copied = real_list_states(project)
+        copied["demo-P01"].notes = "corrupted-by-test"
+        return copied
 
-    with pytest.raises(MigrationError, match="zero-divergence check failed"):
+    monkeypatch.setattr(storage_sqlite, "list_states", corrupt_copy)
+
+    with pytest.raises(MigrationError, match="demo-P01"):
         migrate(project)
 
-    assert paths.events_path(project).exists()  # NOT renamed
-
-
-# ---------------------------------------------------------------------------
-# Divergence: a task the event log projects has NO on-disk statefile at all
-
-def test_divergence_missing_on_disk_statefile_raises(tmp_state):
-    project = "sp02-divergence-missing"
-    _seed_project(project)
-
-    # Delete one task's statefile entirely -- replay() still projects it
-    # (it is derived purely from the event log), but it is now missing on
-    # disk, which is equally a divergence (the symmetric case: not
-    # "content differs", but "absent").
-    statefile = paths.statefile_path(project, "demo-P02")
-    statefile.unlink()
-
-    with pytest.raises(MigrationError, match="demo-P02"):
-        migrate(project)
-
-    assert paths.events_path(project).exists()  # NOT renamed
+    assert not db.exists()
+    assert src.exists()
+    assert not backup.exists()
 
 
 # ---------------------------------------------------------------------------
