@@ -22,6 +22,14 @@ DOCKER_GID = "$DOCKER_GID"
 [deploy.profiles.default]
 stacks = ["ntfy", "nyxloomd"]
 
+# Optional tooling, deliberately OUTSIDE the default up/down waves — the operator's
+# "shared dev-tool, like a skywalking instance" property. pwmcp-instance is nyxloom's
+# own browser / UI-testing service (Playwright-as-a-Service). A default `ciu up` /
+# `ciu down` (default profile above) never touches it; bring it up explicitly with
+# `ciu up --profile tools` or `ciu up --dir pwmcp-instance`.
+[deploy.profiles.tools]
+stacks = ["pwmcp-instance"]
+
 [ciu]
 # S1.2 — independent root: refuse to run if $REPO_ROOT points elsewhere
 # (this devcontainer's shell auto-sources a sibling repo's ciu.env).

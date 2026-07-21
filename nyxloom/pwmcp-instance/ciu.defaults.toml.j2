@@ -1,0 +1,46 @@
+# pwmcp-instance/ciu.defaults.toml.j2 — nyxloom's OWN browser / UI-testing service
+# =============================================================================
+#   Rendered output: ciu.toml  (GITIGNORED — never edit or commit the rendered file)
+#
+# WHY nyxloom-owned: the browser must reach the nyxloom dashboard at nyxloomd:8942,
+# which lives on nyxloom-prod-nyxloomd-net (OWNED by the nyxloomd stack). Attaching
+# THIS container to that one network gives both legs with no cross-project bridging:
+#   * browser (inside this container)    -> http://nyxloomd:8942/
+#   * devcontainer (already on that net) -> the MCP at http://pwmcp:8931/mcp
+# This matches the agreed security boundary: the devcontainer joins ONLY nyxloom's net.
+#
+# NOT the image source (that is vbpub/pwmcp, the build/publish tooling); this is a
+# regular consumer of the published, digest-tracked unified Playwright image
+# (run-server :3000 + @playwright/mcp :8931 under supervisord).
+#
+# LIFECYCLE: registered in the nyxloom ciu root under the NON-DEFAULT `tools`
+# profile, so `ciu up` / `ciu down` (default profile = ntfy + nyxloomd) never
+# sweep it — the "shared dev-tool, like a skywalking instance" property. Bring it
+# up explicitly: `ciu up --dir pwmcp-instance` (or `ciu up --profile tools`);
+# tear down with `ciu down --dir pwmcp-instance`.
+# =============================================================================
+
+[pwmcp]
+name = "pwmcp"
+image_registry = "ghcr.io/volkb79-2"
+image_name = "pwmcp"
+image_tag = "latest"
+# `always`: a freshly-pushed ghcr build of the governed image is pulled on every
+# `ciu up` (compose recreates the container when the digest changed). A bare
+# `docker restart` never pulls regardless of policy — only `ciu up` / `docker
+# compose up` honors pull_policy, so "restart to get the new build" means a re-up.
+pull_policy = "always"
+# Chromium needs real shared memory — the 64mb compose default crashes the renderer.
+shm_size = "2gb"
+
+[pwmcp.ports]
+run_server = 3000
+run_server_upstream = 3001
+run_server_admin = 8940
+mcp = 8931
+
+[pwmcp.tunables]
+default_lease_s = 1800
+max_lease_s = 7200
+max_clients = 2
+idle_recycle_s = 30

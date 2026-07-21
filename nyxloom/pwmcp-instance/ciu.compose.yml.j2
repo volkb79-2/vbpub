@@ -1,0 +1,77 @@
+# pwmcp-instance/ciu.compose.yml.j2 — PWMCP: Playwright-as-a-Service for nyxloom UI tests
+# =============================================================================
+#   Rendered output: ciu.compose.yml  (GITIGNORED)
+#
+# nyxloom's OWN browser service (see ciu.defaults.toml.j2 for the why). The
+# browser inside this container drives the nyxloom dashboard at nyxloomd:8942;
+# the devcontainer / Claude Code reaches the MCP at pwmcp:8931. Both legs ride
+# the ONE network the nyxloomd stack owns (nyxloom-prod-nyxloomd-net), attached
+# here as EXTERNAL — we ATTACH to it, we do not define it.
+#
+# COMPOSE PROJECT NAME is ciu's job: ciu drives `docker compose` with an explicit,
+# ciu-derived project scope (project + env + stack, e.g. nyxloom-prod-pwmcp-instance),
+# NOT the bare directory basename — so a bare `docker compose up` from here (which
+# would default the compose project to the dir basename "pwmcp-instance" and could
+# collide with another project's pwmcp) is NOT the supported path. Use
+# `ciu up --dir pwmcp-instance`.
+#
+# Hardened on purpose: non-root user, all caps dropped, no-new-privileges, and a
+# real /dev/shm (Chromium crashes on the 64mb compose default). Do not weaken these.
+# =============================================================================
+
+services:
+  {{ pwmcp.name }}:
+    image: {{ pwmcp.image_registry }}/{{ pwmcp.image_name }}:{{ pwmcp.image_tag }}
+    pull_policy: {{ pwmcp.pull_policy }}
+    container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.name }}
+    # supervisord is the ENTRYPOINT — no command override.
+    user: "1000:1000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    shm_size: "{{ pwmcp.shm_size }}"
+    restart: unless-stopped
+    environment:
+      # @playwright/mcp DNS-rebind guard: only these Host headers are honoured on
+      # :{{ pwmcp.ports.mcp }}. Includes the wire alias the devcontainer connects to
+      # (pwmcp:{{ pwmcp.ports.mcp }}) plus the container name and the extra aliases.
+      # The network already controls WHO can connect.
+      PWMCP_MCP_ALLOWED_HOSTS: "{{ pwmcp.name }}:{{ pwmcp.ports.mcp }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.name }}:{{ pwmcp.ports.mcp }},pwmcp-mcp:{{ pwmcp.ports.mcp }},pwmcp-playwright:{{ pwmcp.ports.mcp }}"
+      PWMCP_RUN_SERVER_PORT: "{{ pwmcp.ports.run_server }}"
+      PWMCP_RUN_SERVER_UPSTREAM_PORT: "{{ pwmcp.ports.run_server_upstream }}"
+      PWMCP_RUN_SERVER_ADMIN_PORT: "{{ pwmcp.ports.run_server_admin }}"
+      PWMCP_RUN_SERVER_DEFAULT_LEASE_S: "{{ pwmcp.tunables.default_lease_s }}"
+      PWMCP_RUN_SERVER_MAX_LEASE_S: "{{ pwmcp.tunables.max_lease_s }}"
+      PWMCP_RUN_SERVER_MAX_CLIENTS: "{{ pwmcp.tunables.max_clients }}"
+      PWMCP_RUN_SERVER_IDLE_RECYCLE_S: "{{ pwmcp.tunables.idle_recycle_s }}"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:{{ pwmcp.ports.run_server }}/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      nyxloomd-net:
+        aliases:
+          - {{ pwmcp.name }}       # wire alias in nyxloom/.mcp.json (http://pwmcp:8931/mcp)
+          - pwmcp-mcp
+          - pwmcp-playwright
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "nyxloom.component={{ pwmcp.name }}"
+      - "nyxloom.stack=pwmcp-instance"
+      - "nyxloom.service-type=browser"
+      - "nyxloom.managed-by=ciu"
+
+networks:
+  # nyxloom's daemon network, OWNED by the nyxloomd stack. External here: we
+  # ATTACH to it (we do not define it), so the browser reaches nyxloomd:8942 and
+  # the devcontainer reaches this pwmcp — all on the one nyxloom network.
+  nyxloomd-net:
+    external: true
+    name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-nyxloomd-net
