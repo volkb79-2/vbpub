@@ -144,11 +144,10 @@ def _branch_merged_refs(repo_root: str, default_branch: str) -> frozenset[str]:
     out: set[str] = set()
     for line in _git(repo_root, ["branch", "--merged", default_branch]).splitlines():
         name = line.strip().lstrip("*").strip()
-        if not name:
-            continue
-        out.add(name)
-        if name.startswith("feat/"):
-            out.add(name[len("feat/"):])
+        if name:
+            out.add(name)
+            if name.startswith("feat/"):
+                out.add(name[len("feat/"):])
     return frozenset(out)
 
 
