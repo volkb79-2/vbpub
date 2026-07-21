@@ -4565,14 +4565,57 @@ class Daemon:
             records = records[-limit:]
         return records
 
+    def _log_stream_tick(
+        self, now: float, log_path: Path, offset: int,
+        last_heartbeat: float, min_level: int | None,
+    ) -> tuple[list[bytes], int, float]:
+        """One SSE poll iteration of the log tail, as PURE data: read any new
+        complete lines from ``offset`` (rotation-aware -- a file that shrank
+        below ``offset`` resets to 0), drop blank/malformed lines and records
+        below ``min_level``, format each survivor as an SSE ``data:`` frame,
+        and append a ``: hb`` heartbeat frame once ``SSE_HEARTBEAT_SECONDS``
+        has elapsed. Returns ``(chunks, new_offset, new_last_heartbeat)``.
+
+        Extracted from ``_serve_log_stream`` so the tail's parse/filter/
+        rotation/heartbeat branches are exercised deterministically from the
+        MAIN thread: coverage of a loop body running inside the HTTP handler
+        thread is otherwise racy, and these edge branches (rotation, a blank
+        or partial-write line, a below-level line) never arise on the happy
+        integration path. The thread shell below only does blocking I/O."""
+        size = log_path.stat().st_size if log_path.exists() else 0
+        if size < offset:
+            offset = 0  # D6: rotation -- do not chase the rotated-away tail
+        chunks: list[bytes] = []
+        if size > offset:
+            with log_path.open("r", encoding="utf-8") as fh:
+                fh.seek(offset)
+                new_text = fh.read()
+                offset = fh.tell()
+            for line in new_text.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if min_level is not None:
+                    rec_level = log_module._normalize_level(record.get("level", "info"))
+                    if rec_level < min_level:
+                        continue
+                chunks.append(f"data: {json.dumps(record)}\n\n".encode("utf-8"))
+        if now - last_heartbeat >= SSE_HEARTBEAT_SECONDS:
+            chunks.append(b": hb\n\n")
+            last_heartbeat = now
+        return chunks, offset, last_heartbeat
+
     def _serve_log_stream(self, handler: http.server.BaseHTTPRequestHandler,
                            level: str | None) -> None:
         """P04 (D6/§4.5): SSE tail of ``paths.nyxloom_log_path()``, mirroring
-        ``_serve_sse``'s exact poll/heartbeat/disconnect shape but tailing
-        the log FILE by byte offset (there is no event-sequence store for
-        logs). Starts at EOF (only NEW lines stream). D6: reads the CURRENT
-        file only; if it shrinks below the last offset (rotation happened)
-        the offset resets to 0 rather than tailing a rotated-away file."""
+        ``_serve_sse``'s exact poll/heartbeat/disconnect shape but tailing the
+        log FILE by byte offset (there is no event-sequence store for logs).
+        Starts at EOF (only NEW lines stream). The per-poll read/filter/
+        rotation/heartbeat logic lives in ``_log_stream_tick`` (main-thread
+        tested); this shell only performs the blocking writes and sleeps."""
         min_level = log_module._normalize_level(level) if level is not None else None
         handler.send_response(200)
         handler.send_header("Content-Type", "text/event-stream")
@@ -4584,33 +4627,13 @@ class Daemon:
         last_heartbeat = time.monotonic()
         try:
             while not self._stop_event.is_set():
-                size = log_path.stat().st_size if log_path.exists() else 0
-                if size < offset:
-                    offset = 0  # D6: rotation -- do not chase the rotated-away tail
-                if size > offset:
-                    with log_path.open("r", encoding="utf-8") as fh:
-                        fh.seek(offset)
-                        new_text = fh.read()
-                        offset = fh.tell()
-                    for line in new_text.splitlines():
-                        if not line.strip():
-                            continue
-                        try:
-                            record = json.loads(line)
-                        except ValueError:
-                            continue
-                        if min_level is not None:
-                            rec_level = log_module._normalize_level(record.get("level", "info"))
-                            if rec_level < min_level:
-                                continue
-                        chunk = f"data: {json.dumps(record)}\n\n".encode("utf-8")
-                        handler.wfile.write(chunk)
-                    handler.wfile.flush()
                 now = time.monotonic()
-                if now - last_heartbeat >= SSE_HEARTBEAT_SECONDS:
-                    handler.wfile.write(b": hb\n\n")
+                chunks, offset, last_heartbeat = self._log_stream_tick(
+                    now, log_path, offset, last_heartbeat, min_level)
+                for chunk in chunks:
+                    handler.wfile.write(chunk)
+                if chunks:
                     handler.wfile.flush()
-                    last_heartbeat = now
                 time.sleep(SSE_POLL_SECONDS)
         except (BrokenPipeError, ConnectionResetError, OSError):
             return

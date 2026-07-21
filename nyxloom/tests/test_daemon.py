@@ -4571,3 +4571,129 @@ def test_logs_stream_level_filter_and_heartbeat(tmp_state, sample_project, monke
     assert "o4-at-threshold" in msgs
     assert "o4-below-threshold" not in msgs  # NEGATIVE: below-level must not stream
     assert received["heartbeats"] >= 1
+
+
+# --------------------------------------------------------------------------
+# P04 coverage completion (controller re-gate 2026-07-21): the parked agent's
+# tests covered the happy paths but not the defensive branches the 100% diff-
+# coverage floor requires -- malformed query params, blank/malformed log
+# lines, project exclusion, log-stream rotation, and the disconnect path. The
+# stream branches are exercised through _log_stream_tick (the pure per-poll
+# helper) in the MAIN thread, deterministically, rather than racing the SSE
+# loop in the daemon thread (which is why those lines went uncovered).
+
+def test_read_log_records_skips_blank_and_malformed_and_excludes_project(
+        tmp_state, sample_project):
+    """The reader drops blank + malformed lines and honours project=.
+    Negative: a blank/garbage line 500s the read, or project= is ignored."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    p = paths.nyxloom_log_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        json.dumps({"ts": "2026-07-21T10:00:00", "level": "info",
+                    "logger": "x", "msg": "keep-demo", "project": "demo"}) + "\n"
+        + "\n"                                   # blank line -> skipped
+        + "this is not json\n"                   # malformed -> skipped
+        + json.dumps({"ts": "2026-07-21T10:00:01", "level": "info",
+                      "logger": "x", "msg": "keep-other", "project": "other"}) + "\n",
+        encoding="utf-8",
+    )
+
+    allrecs = d._read_log_records()
+    assert [r["msg"] for r in allrecs] == ["keep-demo", "keep-other"]  # blank+garbage skipped
+
+    demo_only = d._read_log_records(project="demo")
+    assert [r["msg"] for r in demo_only] == ["keep-demo"]  # project= excludes 'other'
+
+
+def test_log_stream_tick_filters_rotates_and_heartbeats(tmp_state, sample_project):
+    """_log_stream_tick: blank/malformed/below-level lines are dropped, above-
+    level lines become data: frames, a heartbeat frame appears once the
+    interval elapses, and an offset past a shrunken file resets to 0
+    (rotation). Negative: below-level leaks, rotation tails a rotated-away
+    file, or no heartbeat ever emits."""
+    d = daemon.Daemon({"demo": sample_project.root})
+    p = paths.nyxloom_log_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        json.dumps({"ts": "2026-07-21T10:00:00", "level": "info",
+                    "logger": "x", "msg": "tick-below"}) + "\n"
+        + "\n"                                   # blank -> skipped
+        + "garbage-not-json\n"                   # malformed -> skipped
+        + json.dumps({"ts": "2026-07-21T10:00:01", "level": "error",
+                      "logger": "x", "msg": "tick-above"}) + "\n",
+        encoding="utf-8",
+    )
+    warn = log._normalize_level("warning")
+
+    # From offset 0 with the heartbeat interval elapsed (now huge, last=0):
+    chunks, new_offset, new_hb = d._log_stream_tick(1_000_000.0, p, 0, 0.0, warn)
+    text = b"".join(chunks).decode("utf-8")
+    assert "tick-above" in text                  # above-level streamed
+    assert "tick-below" not in text              # NEGATIVE: below-level dropped
+    assert b": hb\n\n" in chunks                 # heartbeat emitted
+    assert new_offset == p.stat().st_size        # advanced to EOF
+    assert new_hb == 1_000_000.0                 # heartbeat clock reset
+
+    # No new data + interval NOT elapsed -> empty (no spurious heartbeat).
+    none_chunks, _, _ = d._log_stream_tick(new_hb, p, new_offset, new_hb, warn)
+    assert none_chunks == []                     # NEGATIVE: no spurious heartbeat
+
+    # Rotation: an offset past a now-smaller file resets to 0 and re-reads.
+    rot_chunks, rot_offset, _ = d._log_stream_tick(1.0, p, 10_000_000, 0.0, warn)
+    assert rot_offset == p.stat().st_size        # reset to 0 then read to EOF
+    assert any(b"tick-above" in c for c in rot_chunks)  # re-read after rotation
+
+
+def test_log_stream_serve_returns_cleanly_on_client_disconnect(
+        tmp_state, sample_project, monkeypatch):
+    """_serve_log_stream swallows a mid-write client disconnect (wfile raises)
+    and returns rather than propagating. Deterministic + main-thread: the
+    heartbeat interval is forced to 0 so the first tick writes, and the fake
+    wfile raises BrokenPipeError. Negative: the exception escapes / hangs."""
+    monkeypatch.setattr(daemon, "SSE_HEARTBEAT_SECONDS", 0.0)
+    monkeypatch.setattr(daemon, "SSE_POLL_SECONDS", 0.0)
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    class _RaisingWFile:
+        def write(self, _b):
+            raise BrokenPipeError("client gone")
+
+        def flush(self):  # pragma: no cover - never reached (write raises first)
+            pass
+
+    class _FakeHandler:
+        def __init__(self):
+            self.wfile = _RaisingWFile()
+
+        def send_response(self, _code):
+            pass
+
+        def send_header(self, _k, _v):
+            pass
+
+        def end_headers(self):
+            pass
+
+    # Must return promptly: the write on the first heartbeat raises -> except.
+    d._serve_log_stream(_FakeHandler(), None)
+
+
+def test_logs_endpoint_malformed_params_default_gracefully(http_daemon):
+    """Malformed since=/limit= fall back to defaults rather than 500, on both
+    /api/logs and /api/logs/export (the except ValueError branches)."""
+    d = http_daemon
+    base = f"http://127.0.0.1:{d.http_port}"
+    _write_raw_log_lines([
+        {"ts": "2026-07-21T10:00:00", "level": "info", "logger": "x", "msg": "mp-line"},
+    ])
+
+    resp = urllib.request.urlopen(f"{base}/api/logs?since=notint&limit=alsobad", timeout=5)
+    assert resp.status == 200
+    assert any(r["msg"] == "mp-line" for r in json.loads(resp.read()))  # defaults, not a 500
+
+    exp = urllib.request.urlopen(
+        f"{base}/api/logs/export?since=notint&limit=alsobad", timeout=5)
+    assert exp.status == 200
+    assert exp.headers.get("Content-Disposition") == 'attachment; filename="nyxloom-logs.jsonl"'
+    assert "mp-line" in exp.read().decode("utf-8")

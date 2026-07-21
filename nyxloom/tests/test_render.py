@@ -921,7 +921,11 @@ def test_logs_html_wired_and_never_uses_innerhtml(seed_data, sample_project):
     content = (www / "logs.html").read_text(encoding="utf-8")
     assert "new EventSource('/api/logs/stream')" in content
     assert '<select id="level-select">' in content
-    assert "<mark>" in content
+    # The highlight wraps matches in <mark> elements built dynamically -- assert
+    # the actual mechanism (createElement('mark')), not a literal "<mark>" tag,
+    # which never appears in the source and would only match an incidental
+    # comment (a hollow assertion that survives deleting the real code).
+    assert "createElement('mark')" in content
     assert 'id="pause-toggle"' in content
     assert "getUTC" in content
     assert "textContent" in content
