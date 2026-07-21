@@ -245,7 +245,10 @@ def run_hooks(
         - Any other ``persist`` value → ``ValueError [S9.4]``.
         - Plain ``{KEY: scalar}`` (v1 form) → ``ValueError [S9.4]``.
     - Hooks MUST NOT mutate ``os.environ`` (snapshot/compare; S9.4).
-    - Hook exceptions propagate unchanged.
+    - Runner-contract exceptions (the S9.2 ``FileNotFoundError`` from a missing
+      hook file, the S9.4 ``ValueError`` for a malformed return) propagate
+      unchanged; any exception raised by the hook *body* is re-wrapped as
+      ``HookExecutionError`` (engine maps it to exit 1).
     """
     # --- Phase 1: resolve and validate all paths before running any hook ---
     resolved: list[tuple[str, Path, Callable]] = []

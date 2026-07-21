@@ -461,10 +461,13 @@ def _chown_with_fallback(
         privileged_fs_op(physical_path, "chown", f"{uid}:{gid}")
 
 
-def _chmod_with_fallback(
-    path: Path, mode: int, *, physical_path: Path, chown_fn: Optional[Callable]
-) -> None:
-    """os.chmod; on PermissionError fall back to the helper container (S6.5)."""
+def _chmod_with_fallback(path: Path, mode: int, *, physical_path: Path) -> None:
+    """os.chmod; on PermissionError fall back to the helper container (S6.5).
+
+    Unlike :func:`_chown_with_fallback`, chmod has no test-seam override: mode is
+    always applied via ``os.chmod`` (which succeeds on real test temp dirs) and
+    only escalates to the privileged helper on a genuine PermissionError.
+    """
     try:
         os.chmod(path, mode)
     except PermissionError:
@@ -535,7 +538,7 @@ def create_hostdirs(
             chown_fn(path, uid, gid)
         else:
             _chown_with_fallback(path, uid, gid, physical_path=physical, chown_fn=None)
-        _chmod_with_fallback(path, mode, physical_path=physical, chown_fn=chown_fn)
+        _chmod_with_fallback(path, mode, physical_path=physical)
 
     def _seed(path: Path, seed_rel: str, uid: int, gid: int, mode: int) -> None:
         src = (stack_dir / seed_rel).resolve()
