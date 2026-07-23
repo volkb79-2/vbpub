@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P25-dashboard-project-info-archive
 project: nyxloom
 title: "dashboard: surface each project's gate/channels/folders + archive-collapse UX"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "82593d5"
 depends_on: []
 session: fresh

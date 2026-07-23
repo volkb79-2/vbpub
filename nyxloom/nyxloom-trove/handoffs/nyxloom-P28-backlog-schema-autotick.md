@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P28-backlog-schema-autotick
 project: nyxloom
 title: "Backlog-item light schema + daemon typed auto-tick on merge"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "e329de2"
 depends_on: [nyxloom-P24-config-schema-lint]
 session: fresh

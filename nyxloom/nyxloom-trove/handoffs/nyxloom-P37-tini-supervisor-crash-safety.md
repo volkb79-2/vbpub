@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P37-tini-supervisor-crash-safety
 project: nyxloom
 title: "nyxloomd runs under tini + a supervisor loop (crash/restart without agent loss)"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "fe45c7c"
 depends_on: []
 session: fresh

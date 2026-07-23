@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P39-ntfy-url-single-source
 project: nyxloom
 title: "ntfy URL is server-authoritative (one NTFY_URL env source, not per-project)"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "613d15f"
 depends_on: []
 session: fresh

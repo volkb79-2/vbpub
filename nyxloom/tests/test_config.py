@@ -393,6 +393,52 @@ class TestUpdateRoutes:
         assert paths.routes_path().read_text(encoding="utf-8") == original
 
 
+class TestRoutesForRole:
+    """Routes.for_role: the B16/D-R1 decoupling of call sites from tier
+    names -- resolves a role (e.g. "frontier-review") to whichever route(s)
+    carry a matching RouteDef.role_default, independent of tier membership."""
+
+    def test_for_role_returns_the_route_default_match(self, tmp_path):
+        from nyxloom.config import Routes
+
+        p = tmp_path / "routes.toml"
+        p.write_text(
+            'revision = "test"\n\n'
+            '[tiers.review-3]\n'
+            'routes = ["claude-opus-high"]\n\n'
+            '[routes.claude-opus-high]\n'
+            'cli = "claude"\n'
+            'model = "opus"\n'
+            'role_default = "frontier-review"\n\n'
+            '[routes.claude-haiku]\n'
+            'cli = "claude"\n'
+            'model = "haiku"\n',
+            encoding="utf-8",
+        )
+        routes = Routes.load(path=p)
+
+        matches = routes.for_role("frontier-review")
+        assert [r.route_id for r in matches] == ["claude-opus-high"]
+
+    def test_for_role_returns_empty_when_no_route_defaults_to_it(self, tmp_path):
+        from nyxloom.config import Routes
+
+        p = tmp_path / "routes.toml"
+        p.write_text(
+            'revision = "test"\n\n'
+            '[tiers.implement-1]\n'
+            'routes = ["claude-haiku"]\n\n'
+            '[routes.claude-haiku]\n'
+            'cli = "claude"\n'
+            'model = "haiku"\n',
+            encoding="utf-8",
+        )
+        routes = Routes.load(path=p)
+
+        assert routes.for_role("frontier-review") == []
+        assert routes.for_role("nonexistent") == []
+
+
 class TestPricesLoad:
     """Prices.load: absent-file vs. present-file resolution (§5 config
     rubric: "a config load/resolve -> DEBUG")."""

@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P42-component-field
 project: nyxloom
 title: "First-class optional component field for handoffs (categories/grouping)"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "f098cbf"
 depends_on: []
 session: fresh

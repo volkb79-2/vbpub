@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P41-direct-carve-from-brief
 project: nyxloom
 title: "Seed the carver with an intake brief (direct carve, no context loss)"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "f098cbf"
 depends_on: []
 session: fresh

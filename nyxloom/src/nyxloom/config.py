@@ -502,6 +502,11 @@ class Routes:
     def for_tier(self, tier: str) -> list[RouteDef]:
         return [self.routes[rid] for rid in self.tiers.get(tier, [])]
 
+    def for_role(self, role: str) -> list[RouteDef]:
+        """Routes a role defaults to — decouples call sites from tier names.
+        Backs the currently-dead RouteDef.role_default (D-R1)."""
+        return [r for r in self.routes.values() if r.role_default == role]
+
 
 # ---------------------------------------------------------------------------
 # prices

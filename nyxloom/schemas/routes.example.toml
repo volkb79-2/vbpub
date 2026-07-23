@@ -6,28 +6,27 @@
 # resolved route onto the attempt event, so history never depends on this
 # file's later state. Dated dispatch docs are retired by this file.
 # Values below mirror the matrix as of 2026-07-13 (v2 §5) — verify before use.
+#
+# 2026-07-23 (B16): tier keys renamed to the verb-band taxonomy (D-R1,
+# docs/routing-model-redesign.md) -- tiers name the TASK, not the model.
 
 revision = "2026-07-15"
 
-[tiers.flash-high]
-routes = ["opencode-deepseek-high", "reasonix-deepseek-high"]  # preference order
+[tiers.implement-1]      # was flash-high + terra-med (preference order preserved: the
+                         # previously-standalone flash-high stays primary)
+routes = ["opencode-deepseek-high", "reasonix-deepseek-high", "codex-terra-med"]
 
-[tiers.flash-max]
-routes = ["opencode-deepseek-max", "reasonix-deepseek-max"]
+[tiers.implement-2]      # was sonnet5-high + flash-max (mirrors routes.host.toml:
+                         # sonnet5-high stays primary, flash-max's routes fall back)
+routes = ["claude-sonnet5-high", "opencode-deepseek-max", "reasonix-deepseek-max"]
 
 [tiers.luna-med]
 routes = ["codex-luna-med"]            # native codex only; OpenRouter cannot route it
 
-[tiers.terra-med]
-routes = ["codex-terra-med"]
-
 [tiers.sol-med]
 routes = ["codex-sol-med"]
 
-[tiers.sonnet5-high]
-routes = ["claude-sonnet5-high"]
-
-[tiers.frontier-review]
+[tiers.review-3]         # was frontier-review
 routes = ["claude-opus-high"]
 
 # ---------------------------------------------------------------------------

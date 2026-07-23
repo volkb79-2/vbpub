@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P29-intake-agent-backend
 project: nyxloom
 title: "Feature-intake conversational agent (backend, decision-chat sibling)"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "e329de2"
 depends_on: [nyxloom-P28-backlog-schema-autotick]
 session: fresh
