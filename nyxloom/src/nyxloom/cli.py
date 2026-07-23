@@ -484,7 +484,7 @@ def cmd_resync(args) -> int:
 
     cfg = _cfg(args.project)
     states = storage.list_states(args.project)
-    frontmatters = gather_handoff_presence(cfg.root, states)
+    frontmatters = gather_handoff_presence(cfg, states)
     git_facts = gather_git_facts(str(cfg.root), cfg.default_branch, states)
     plan = resync_plan(states, frontmatters, git_facts)
 
