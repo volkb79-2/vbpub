@@ -91,6 +91,67 @@ never lose accumulated history.
 - **P4 — scheduled refresh + dashboard** (B20 first consumer + B19 ext): refresh job
   (scrape→validate→merge→assemble→persist; failure ⇒ no-op+alert); dashboard shows effort/version/stale.
 
+## Update 2026-07-23 (operator) — OpenRouter source + unrated-model surfacing
+- **OpenRouter benchmark source (P5, in flight via luna@high).** Not a browser-scrape: a clean
+  UNAUTHENTICATED JSON API — `GET /api/frontend/v1/catalog/models` (slug→permaslug) then
+  `GET /api/frontend/v1/stats/benchmark-scores?permaslug=…` (`data.scores[]`; use the
+  `auto-routing` / `endpoint_id=null` canonical row; score 0..1 → ×100). Source kind
+  `openrouter-benchmarks`, safeguarded (catalog-size floor + canary-slug → fail-safe raise;
+  per-model gaps tolerated). Feeds P2 accumulate-store + **P4 scheduled refresh so our data
+  updates periodically.** Wiring into DEFAULT_SOURCES/routes = P4 (not P5).
+- **Ingest slug list (config, extensible):** `nvidia/nemotron-3-ultra-550b-a55b`,
+  `nvidia/nemotron-3-super-120b-a12b`, `cohere/north-mini-code`, `deepseek/deepseek-v4-pro`,
+  `deepseek/deepseek-v4-flash`. Observed (auto-routing, gpqa/tau %): **v4-flash 86.0/74.9 ≈
+  v4-pro 86.8/77.2** (flash ≈ pro — good cheap implementer signal); nemotron-ultra has data;
+  **nemotron-super + north-mini-code publish NO benchmarks.**
+- **D-B7 — unrated-model operator surfacing (operator-locked 2026-07-23).** A benchmark-less model
+  must NOT vanish. The capability catalog includes discovered-but-unbenchmarked models as
+  **`unrated`** (band 0, empty scores, an `unrated=true` flag); the dashboard shows them
+  distinctly; the OPERATOR decides if/how to use one via (a) the existing role-grant and (b) a
+  **manual comparison** — a `compares_to` / `manual_band` operator override in `[capability_map]`
+  ("treat like luna" / "≈ band 2"). *"Let the user decide if/how to use it, what it compares to."*
+  Scope: a capability_map change — today `refresh_catalog` pulls ONLY from benchmark sources, so
+  it must ALSO ingest the discovered model list (free_models / the OpenRouter catalog) to surface
+  the unrated ones. (New package, after P5.)
+- **D-B8 — benchmarks must match OUR task profile, not what a leaderboard ships (operator-locked
+  2026-07-23).** The per-model `stats/benchmark-scores` exposes ONLY `gpqa_diamond` (grad-science
+  MCQ) + `tau_bench_verified_airline` (airline customer-service agent) across all 12 top models
+  sampled — BOTH off-domain for us (Python coding, infra/docker ops, config, DB, API integration,
+  code review, system/perf analysis). So the shipped per-model source is a WEAK routing signal and
+  MISSES coding entirely. Relevant benchmarks, by axis:
+    - coding → **DeepSWE** (have — per-effort CURVE) + **aaData.coding** (`rankings/benchmarks`, AA
+      coding composite, effort-labeled: Sol(xhigh) 78.3, Terra(max) 76.7, Fable 76.5, Opus 74.3) +
+      SWE-bench Verified.
+    - ops/terminal/docker/system → **terminal-bench-v2** (AA agents chart) — on-target for our
+      operational work; add as a source.
+    - agentic/tool-use → SWE-agentic / terminal-bench (software domain), NOT tau-airline.
+    - intelligence → aaData.intelligence, LOW weight (general reasoning, weakly predictive here).
+  ACTION: make the BULK `rankings/benchmarks` (aaData incl coding, effort parsed from `aa_name`) the
+  PRIMARY OpenRouter signal (new bulk source); demote the shipped per-model gpqa/tau source to a
+  minor sanity signal, NOT a routing driver; add a terminal-bench-v2 source. Per-axis routing
+  weights reflect task relevance (coding/ops high, intelligence low).
+- **D-B9 — realize D-B8 via the AA DIRECT API, not tbench.ai or OpenRouter aaData (operator-locked
+  2026-07-23, after Terminal-Bench exploration).** tbench.ai itself = poor data source (no official
+  API; results scattered across GitHub run-log repos — laude-institute/harbor-framework — + 3rd-party
+  aggregators; no clean per-model effort). BUT Artificial Analysis's `GET /api/v2/data/llms/models`
+  (keyed — our AA_API_KEY has access; 580 models) exposes per-model `evaluations.{terminalbench_v2_1,
+  terminalbench_hard, livecodebench, scicode, tau2, tau_banking, ifbench, gpqa, aime, math_500,
+  mmlu_pro, hle, lcr, artificial_analysis_{coding,intelligence,math}_index}` (per-eval fields 0..1
+  fractions; composites 0-100). FILL: terminalbench_hard 432/580, scicode 539, tau2 440, livecodebench
+  343, terminalbench_v2_1 170 (thin but present for frontier models we route to: opus-4-8 0.8,
+  sonnet-5 0.8, gemini-3-6-flash 0.8). **EFFORT = SLUG SUFFIXES** (`-low`/`-medium`/`-minimal`;
+  default=high/max), e.g. gpt-oss-120b 0.3 vs gpt-oss-120b-low 0.1 → real per-effort rows (imperfect
+  fill, but better than OpenRouter aaData which collapses to one representative).
+  ACTION (SUPERSEDES D-B8's OpenRouter-aaData + separate terminal-bench-source plan): UPGRADE the P1
+  AA source into the PRIMARY multi-benchmark source — (1) **FIX endpoint back to `/data/llms/models`**
+  (P1 wrongly switched to `/language/models/free` = 200 models MISSING these eval fields — a
+  regression); (2) map RELEVANT evals per axis — coding: livecodebench+scicode+aa_coding_index;
+  ops/agentic: terminalbench_v2_1+terminalbench_hard+tau2; intelligence: aa_intelligence_index (LOW
+  weight); (3) parse EFFORT from slug suffix; (4) keep per-eval scores (not only composites) so
+  routing weights by relevance. This ONE source replaces the proposed OpenRouter-bulk + terminal-bench
+  sources; OpenRouter per-model gpqa/tau + aaData are now redundant subsets; DeepSWE stays for the
+  fine per-effort coding CURVE.
+
 ## Open items
 - Verify (optional, one pwmcp read) whether DeepSWE v1.0 shares v1.1's exact task set — only then
   is any cross-version comparison legitimate. Default stays version-isolated regardless.
