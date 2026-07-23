@@ -210,3 +210,115 @@ final `pytest tests/ -q` (the WHOLE suite, every file, background run):
 of this is the authoritative gate** — the real gate is the Docker
 `tester-unified` run under a 100% diff-coverage floor, which the controller
 runs separately; this agent did not and cannot run it.
+
+## 2026-07-23 (later) — controller-reported gate flake: O4 test never sees INTERRUPTED
+
+The controller ran the authoritative `tester-unified` gate: **everything
+passed except O4** (`test_transient_throttle_resumes_same_attempt_end_to_end`).
+All six D-B24 decisions were independently re-verified correct in the
+actual code (not just docstrings). Symptom from the controller's captured
+logs: the task reaches CARVED→QUEUED→dispatch→ACTIVE, then the daemon
+repeats `pass-summary actions=1 events=0` forever — no receipt, no
+`ATTEMPT_INTERRUPTED` ever. Raising both wait budgets (30→120, 20→60) did
+NOT fix it — ruled out as "just needs more time." Reliable in this
+devcontainer, unreliable (3/4 failing) under `tester-unified` for the
+identical test.
+
+**Investigation (this agent, this session):**
+- Re-derived `classify_log_tail`'s correctness independently (already
+  confirmed by the controller) — not the cause.
+- Confirmed `route.resume` (the field my routes.toml override adds) is read
+  ONLY by `adapters.build_resume` — nothing in the dispatch path (`build_
+  dispatch`, `_ensure_worktree`, `Routes.load`) branches on its presence, so
+  merely adding it cannot affect the FIRST leg (before any resume). Ruled
+  out.
+- Confirmed the FIRST scripted step (`FakeStep(extra_stdout=...,
+  exit_code=1)`) has NO `commit_files`, so `testing._run_step` never calls
+  `git commit` for it — a GPG-signing-hang theory (a real risk for the
+  SECOND, commit-carrying step) does not apply to the leg that actually
+  fails. Ruled out for this specific symptom.
+- Reproduced the CONTROLLER's exact gate invocation locally as closely as
+  this devcontainer allows: `coverage run --source=src/nyxloom -m pytest
+  tests/test_behavioral.py -k transient_throttle -q` (read straight out of
+  `coverage_gate.py`'s own docstring — the ACTUAL command `tester-unified`
+  runs), repeated ~12 times (bare pytest, `coverage run`, and the exact
+  `--source=` invocation) plus a full-suite run: **100% green every time in
+  this devcontainer** — could NOT reproduce the flake locally despite
+  matching the gate's own command. This is itself informative: whatever is
+  wrong is specific to the `tester-unified` CONTAINER/dependency-version
+  combination, not the test's logic in the abstract.
+- Read `tester-unified/Dockerfile`: confirms a SEPARATE venv
+  (`/opt/tester-venv`) built by `pip install .../nyxloom[test]` against
+  nyxloom's own loosely-pinned `pyproject.toml` (`pytest>=8`,
+  `hypothesis>=6`, `coverage[toml]>=7`) — meaning `tester-unified`'s
+  installed `pytest`/`coverage`/`hypothesis` versions can legitimately
+  differ from this devcontainer's, even though the Python runtime itself
+  (3.14) is the same in both. The Dockerfile's OWN comment: **"The one test
+  that relied on the pre-3.14 multiprocessing 'fork' default is now
+  explicitly fork-scoped, so 3.14 is green"** — i.e. this exact codebase has
+  ALREADY hit one fork-related Python-3.14 fragility before. `wrapper.py`'s
+  `launch_detached` uses a raw double `os.fork()` (not `multiprocessing`) to
+  detach the wrapper process, called from inside the SAME pytest process a
+  `coverage run` trace is active in (per `coverage_gate.py`'s own
+  documented invocation) — `os.fork()` under active line-tracing/coverage
+  instrumentation, combined with a `pytest`/`coverage` version this
+  devcontainer does not have installed, is the strongest candidate theory
+  for a container-specific, non-deterministic (the controller saw 1-pass-
+  in-4 too) hang. I could NOT prove this without the actual `tester-unified`
+  image, and it is a PRE-EXISTING characteristic of `launch_detached`
+  (shared by every other `test_behavioral.py` test), not something this
+  package introduced.
+- Also flagged (not fixed, unproven): `daemon._pid_alive` (`daemon.py:600`)
+  is a raw `os.kill(pid, 0)` check with no pid-reuse guard (no `/proc/PID`
+  start-time/comm verification). Under a busier gate container running many
+  subprocess-heavy tests in one process, this is a THEORETICAL pid-reuse
+  blind spot that could make a dead wrapper look permanently "alive" — but
+  I found no way to confirm or rule this out from here, and it is
+  pre-existing, general daemon.py behavior outside this package's scope, so
+  I did not touch it speculatively.
+
+**What I changed (`tests/test_behavioral.py` only — no source-file changes,
+since I could not PROVE a feature bug; per the controller's own
+instruction, source changes require a demonstrated bug and I have none):**
+1. **`wrapper.SESSION_CAPTURE_DELAY` pinned to 0** via `monkeypatch` (was
+   the real, unconditional 5.0s wall-clock block in `wrapper_main` Step 5,
+   paid by EVERY dispatch in this test for nothing — `capture_session`
+   always returns `None` for this bare `cli="fake"` route with no
+   `session_capture`/`session_discover` set). Precedented
+   (`test_daemon.py`/`test_wrapper.py` already do this for "real wrapper"
+   tests). This shrinks the real-time window for whatever the gate's
+   timing-sensitive issue is, and makes the test meaningfully faster
+   locally too (confirmed same-content passes, faster wall clock).
+2. **Replaced the mid-test `paths.routes_path().write_text(...)` second
+   file-write with an in-memory `config.Routes` object + a
+   `config.Routes.load` monkeypatch.** Every route lookup in this codebase
+   goes through `Routes.load()` (confirmed via grep), never a direct file
+   read, so this is behavior-preserving and removes one genuinely unique
+   (no other `test_behavioral.py` test does a second routes.toml rewrite
+   mid-test) moving part with zero offsetting benefit — reduces risk
+   surface even though I could not prove it was causal.
+3. **Added `_diagnose_stuck_attempt(project, task_id)`** — a durable
+   (reads straight from disk/the event log, never in-memory/sampled state)
+   forensic dump wired into every assertion message in this test. If this
+   recurs under the gate, the NEXT report will show: attempt state,
+   receipt-on-disk existence, `child.pid` content, the tails of
+   `wrapper.log`/`attempt.log`, and the full event-type tail + any
+   `TICK_ERROR` payloads — turning a bare "never went INTERRUPTED" into an
+   actionable trace without needing another round-trip.
+
+**What I deliberately did NOT do:** delete, skip, or xfail the test; weaken
+its assertions (still requires the SAME attempt resumed, exactly one
+implementer `ATTEMPT_CREATED`, never `BLOCKED` — all read from durable
+storage, unchanged); or speculatively patch `daemon.py`/`wrapper.py`
+without being able to demonstrate the bug myself.
+
+**Honest status:** I could not reproduce the failure in this devcontainer
+under ~12 attempts including the gate's own exact `coverage run` invocation,
+so I cannot claim to have PROVEN the fix. The three changes above are each
+independently justified (real risk reduction / real diagnosability gain),
+not cosmetic dodges, and the strongest candidate root cause (`os.fork()`
+under active coverage instrumentation, in a container with different
+`pytest`/`coverage` versions than this devcontainer, for a codebase that has
+already hit one Python-3.14 fork-related issue per the Dockerfile's own
+comment) is now recorded here for the controller to weigh. Re-run the gate;
+if it recurs, `_diagnose_stuck_attempt`'s output is the next lead.
