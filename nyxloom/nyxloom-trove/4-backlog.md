@@ -113,17 +113,6 @@ items:
   component: routing
   context_estimate: small
   folds_into: F009
-- id: B16
-  title: 'tier taxonomy rename to verb-band ({implement,review,carve}-{1,2,3}): a data
-    migration, not a schema change. Rename the [tiers.*] keys in routes.toml, rewrite the
-    tier: values in existing handoffs, replace the 3 hardcoded "frontier-review" string
-    literals (reconcile.py:875, daemon.py:2428, daemon.py:3707) with a per-role tier
-    lookup, and wire the currently-dead RouteDef.role_default (config.py:464) as its
-    backing. Parallelizable with F5 (disjoint from the carve path).'
-  type: feature
-  component: routing
-  context_estimate: medium
-  folds_into: F009
 - id: B18
   title: 'capability_map.py: extend DiscoveredModel to a CapabilityRecord (per-axis coding/
     agentic/reasoning scores + price + band-per-axis + may_review/may_carve). Operator-set
@@ -163,15 +152,6 @@ items:
   type: feature
   component: dispatch
   context_estimate: medium
-  folds_into: F005
-- id: B22
-  title: 'lint rule: a handoff whose oracle references a file outside its scope.touch
-    allowlist is an authoring defect (every oracle must be satisfiable within scope).
-    Extends nyxloom lint carve-quality rules; catches the D-R16 Axis-B failure at carve
-    time rather than mid-implementation.'
-  type: feature
-  component: lint
-  context_estimate: small
   folds_into: F005
 - id: B23
   title: 'per-task permission fields: make the OS sandbox mode (read-only / workspace-write
