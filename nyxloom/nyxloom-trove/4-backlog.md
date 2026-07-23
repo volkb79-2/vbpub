@@ -131,6 +131,22 @@ items:
   component: runtime
   context_estimate: medium
   folds_into: F010
+- id: B25
+  title: 'de-flake + re-land test_transient_throttle_resumes_same_attempt_end_to_end
+    (B24/D-R17 O4), currently xfail(strict=False). It is the only behavioral test that
+    drives a REAL wrapper double-fork (wrapper.launch_detached uses os.fork()) through a
+    transient-classified leg, and os.fork() under load on Python 3.14 is fragile in the
+    tester-unified image: it passed its solo branch gate then failed the certify on the
+    same tree (~50% under full-suite load), while passing ~12/12 in the devcontainer.
+    Re-land it driving the transient leg deterministically (without a real fork), then
+    remove the xfail. NOT a feature defect -- the D-R17 contract is covered by
+    deterministic oracles in test_wrapper/test_reconcile/test_daemon. Also consider
+    skipping wrapper.SESSION_CAPTURE_DELAY entirely when a route declares no
+    session_capture/session_discover (capture can never succeed, so the 5s block is
+    always wasted) -- a real product speedup, not just a test fix.'
+  type: bugfix
+  component: testing
+  context_estimate: small
 ---
 
 # nyxloom — backlog
