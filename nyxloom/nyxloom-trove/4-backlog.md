@@ -189,6 +189,18 @@ items:
   component: runtime
   context_estimate: medium
   folds_into: F010
+- id: B24
+  title: 'transient-failure backoff-resume: classify a provider-throttled attempt (502/429/
+    ResourceExhausted/rate-limit/idle-timeout — matched by OUTPUT, not exit code, since free
+    routes exit 0 on failure) as retryable-via-resume, NOT BLOCKED or fresh-restart. Schedule
+    a delayed build_resume(session_handle) with exponential backoff; after N failed resumes
+    escalate to the D-R4 availability layer + re-route to the next route in the tier. Reuses
+    the resume templates + D-R10/D-R11 session machinery already in place. Makes
+    capacity-throttled free models viable for longer work (D-R17).'
+  type: feature
+  component: routing
+  context_estimate: medium
+  folds_into: F009
 ---
 
 # nyxloom — backlog

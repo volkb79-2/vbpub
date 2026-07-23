@@ -358,6 +358,40 @@ Decisions:
    read-mostly; a cross-cutting refactor gets a broad allowlist + full access.
    Capability-match the PERMISSIONS to the task, same as the model.
 
+## D-R17 — Transient-failure backoff-resume (resume, don't restart) — decided 2026-07-23
+
+Operator question: on a transient provider failure (the 2026-07-23 free-model
+trial hit both a 502 `ResourceExhausted / Worker local total request limit
+reached` and an `Upstream idle timeout`), can a CLI resume after a while rather
+than lose the run?
+
+**Yes — the mechanism already exists.** Every route in `routes.toml` carries a
+`resume` template + `session_capture`/`session_discover` for the session handle,
+and the daemon already resumes sessions for three things (implementer
+interrupt-resume `daemon.py:2054`; persistent carver D-R10; daemon-driven
+`/compact` D-R11). What is missing is the *classification + scheduling* that
+applies resume to transient failures:
+
+1. **Classify by OUTPUT, not exit code.** Free routes exit 0 even on failure (the
+   D-R9 gotcha, observed again in this trial). A failure whose output matches a
+   transient-provider signature — HTTP 502/429, `ResourceExhausted`, `rate limit`,
+   `idle timeout`, `Worker local total request limit` — is **provider-throttled**,
+   NOT a contract BLOCKED and NOT a code failure.
+2. **Back off, then RESUME the same session** (not a fresh dispatch): schedule a
+   delayed `build_resume(session_handle)` with exponential backoff (e.g. 1/5/15
+   min). Resume continues where the agent stopped; a fresh restart re-does the
+   work and re-burns tokens.
+3. **Bounded:** after N backoff-resumes on the same route still failing, escalate
+   to the D-R4 availability layer (disable that provider) and re-route to the next
+   route in the tier (a fresh dispatch on a healthy route).
+
+**Why it matters most for free models:** the trial showed free endpoints fail on
+CAPACITY, not capability — backoff-resume is exactly what makes a free/band-1
+route viable for longer work despite throttling, instead of one 502 wasting the
+whole run. Folds into F009 + the D-R4 availability layer; the detection half
+shares D-R9's output-signature parsing, the resume half reuses D-R10/D-R11's
+session machinery. Backlog B24.
+
 ## What folds where
 
 - **North-star** (identity-level): capability-matched review (D-R2), the
