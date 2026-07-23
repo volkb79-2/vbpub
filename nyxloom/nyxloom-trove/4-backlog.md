@@ -124,21 +124,14 @@ items:
   component: routing
   context_estimate: medium
   folds_into: F009
-- id: B17
-  title: 'benchmark_sources.py: pluggable BenchmarkSource registry mirroring free_models.py
-    @register_kind/FreeModelSource. Plugins for Artificial Analysis (capability + price in
-    one schema), plus LMArena / Aider-polyglot / LiveBench / SWE-bench as swappable
-    sources; blend/prefer configurable. All HTTP mocked in tests.'
-  type: feature
-  component: routing
-  context_estimate: medium
-  folds_into: F014
 - id: B18
   title: 'capability_map.py: extend DiscoveredModel to a CapabilityRecord (per-axis coding/
     agentic/reasoning scores + price + band-per-axis + may_review/may_carve). Operator-set
     per-axis band thresholds; complexity band auto-assigned, role-eligibility operator-gated
     unless capability_map.role_gating=auto; context/flags hard-filter. Managed-block writer
-    (frozen config.py untouched). This is the capability half onto free_models.py discovery.'
+    (frozen config.py untouched). This is the capability half onto free_models.py discovery.
+    NOTE: the pure banding core is already extracted + merged as band_thresholds.py (55be277,
+    2026-07-23 free-model trial); remaining = CapabilityRecord assembly + role-gating + writer.'
   type: feature
   component: routing
   context_estimate: large
