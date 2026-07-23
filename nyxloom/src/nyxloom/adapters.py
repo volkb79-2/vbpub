@@ -23,6 +23,8 @@ INTERFACE CONTRACT (frozen):
                brace-line with usage/total_cost_usd" rule.)
     codex:    [cli, 'exec', '--sandbox', sandbox or 'workspace-write',
                '--cd', worktree, prompt] (+ model via ['-m', model])
+              (+ ['-c', 'model_reasoning_effort="<effort>"'] if route.effort;
+               codex has no --effort flag, so effort rides a config override)
     opencode: [cli, 'run', '--model', model, '--dir', worktree]
               (+ ['--variant', variant] if set) (+ dispatch_extra) + [prompt]
     reasonix: [cli, 'run', '-dir', worktree, prompt]
@@ -371,6 +373,12 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         sandbox = route.sandbox or "workspace-write"
         argv = [route.cli, "exec", "--sandbox", sandbox,
                 "--cd", worktree, prompt, "-m", route.model]
+        if route.effort:
+            # codex has no --effort flag; reasoning effort is a config override
+            # (mirrors ~/.codex/config.toml `model_reasoning_effort`). Without
+            # this the route's `effort` was silently dropped, so every codex
+            # route ran at the config default regardless of its declared tier.
+            argv.extend(["-c", f'model_reasoning_effort="{route.effort}"'])
     elif route.cli == "opencode":
         argv = [route.cli, "run", "--model", route.model, "--dir", worktree]
         if route.variant:
