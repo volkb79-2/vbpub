@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P27-project-mount-reachability
 project: nyxloom
 title: "A registered project the daemon cannot reach: netcup mount + exec-nyxloom container resolution"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "a9f8991"
 depends_on: []
 session: fresh

@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P23-init-command
 project: nyxloom
 title: "exec-nyxloom init <project_folder> — scaffold a trove from templates"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "51bce30"
 depends_on: []
 session: fresh

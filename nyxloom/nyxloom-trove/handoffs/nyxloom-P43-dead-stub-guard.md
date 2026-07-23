@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P43-dead-stub-guard
 project: nyxloom
 title: "Guard: no role defined-but-never-dispatched (catch silent stubs)"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "f098cbf"
 depends_on: []
 session: fresh

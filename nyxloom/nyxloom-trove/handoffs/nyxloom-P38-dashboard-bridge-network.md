@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P38-dashboard-bridge-network
 project: nyxloom
 title: "Dashboard on a ciu bridge network (devcontainer/VS Code reachable, no host-net)"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "5a4a4aa"
 depends_on: [nyxloom-P37-tini-supervisor-crash-safety]
 session: fresh

@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P30-intake-ui-tab
 project: nyxloom
 title: "Dashboard tab: start & run a feature-intake conversation"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "e329de2"
 depends_on: [nyxloom-P29-intake-agent-backend]
 session: fresh

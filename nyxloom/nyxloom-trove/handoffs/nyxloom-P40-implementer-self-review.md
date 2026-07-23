@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P40-implementer-self-review
 project: nyxloom
 title: "Implementer self-reviews its work against the oracles before finishing"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "f098cbf"
 depends_on: []
 session: fresh

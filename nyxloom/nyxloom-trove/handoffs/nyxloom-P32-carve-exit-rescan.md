@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P32-carve-exit-rescan
 project: nyxloom
 title: "Finalize carve tasks whose exit pass was missed (CARVER re-scan gap)"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "593a585"
 depends_on: [nyxloom-P26-daemon-resume-safety]
 session: fresh

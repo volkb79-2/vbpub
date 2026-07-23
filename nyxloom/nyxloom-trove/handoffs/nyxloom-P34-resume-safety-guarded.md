@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P34-resume-safety-guarded
 project: nyxloom
 title: "Resume-safety re-cut: poisoned resumes fresh-start through the dispatch guards"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "a7499cc"
 depends_on: [nyxloom-P32-carve-exit-rescan, nyxloom-P33-robust-review-verdict]
 session: fresh

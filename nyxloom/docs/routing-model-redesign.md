@@ -3,12 +3,14 @@
 > Status: design · 2026-07-17, extended 2026-07-23 · decisions **D-R1..D-R15**
 > captured from operator interviews. **Correction (2026-07-23):** the earlier
 > note that the tier-rename (D-R1) "folds into P44" was wrong — P44 delivered
-> only role-scoped *prompt text*; the tier taxonomy is still model-named in the
-> live matrix (`sonnet5-high`, `flash-high`, …). D-R1 and the
-> capability/catalog/UI work (D-R12..D-R15) form a bundle that is
-> **file-disjoint from F5 (gap-engine) and therefore parallelizable with it**;
-> only D-R3 (carver complexity→tier prediction) couples to the carve path and
-> rides with F5. Companion to `nyxloom-operating-model.md`.
+> only role-scoped *prompt text*; the tier taxonomy was still model-named in
+> the live matrix (`sonnet5-high`, `flash-high`, …) at that time. **D-R1 has
+> since landed (B16, 2026-07-23)** — see its section below for the concrete
+> mapping; the rest of the capability/catalog/UI work (D-R12..D-R15) remains
+> a bundle that is **file-disjoint from F5 (gap-engine) and therefore
+> parallelizable with it**; only D-R3 (carver complexity→tier prediction)
+> couples to the carve path and rides with F5. Companion to
+> `nyxloom-operating-model.md`.
 
 ## Motivation
 
@@ -45,7 +47,29 @@ VALUES in use are still model proxies (`sonnet5-high` ×32, `flash-high` ×2,
 4. wire the currently-**dead** `RouteDef.role_default` (`config.py:464`, read
    nowhere today) as that lookup's backing — a pre-cut socket for exactly this.
 
-**Status: NOT built.** The live matrix is still model-named.
+**Status: BUILT (B16, 2026-07-23).** `routes.host.toml`'s `[tiers.*]` keys are
+verb-band names; all 20 live `nyxloom-trove/handoffs/*.md` carry a verb-band
+`tier:` value; the 3 hardcoded `"frontier-review"` lookups now resolve via the
+new `Routes.for_role(Role.FRONTIER_REVIEW.value)` (`config.py`, added right
+after `for_tier`), backed by `RouteDef.role_default` (now wired, no longer
+dead). Each consolidated tier kept its previously-standalone tier's route
+PRIMARY, preserving today's dispatch behavior (cost-posture re-ranking is
+still the separate, undone D-R5). The concrete mapping applied:
+
+| old tier (model-proxy) | new tier (verb-band) | primary route preserved |
+|---|---|---|
+| `sonnet5-high` | `implement-2` | `claude-sonnet5-high` |
+| `flash-high` | `implement-1` | (folded in; `claude-haiku` stayed primary) |
+| `flash-max` | `implement-2` | (folded in; `claude-sonnet5-high` stayed primary) |
+| `haiku-low` | `implement-1` | `claude-haiku` |
+| `luna-high` | `implement-2` | (folded in; `claude-sonnet5-high` stayed primary) |
+| `terra-med` | `implement-1` | (folded in as a shared fallback route) |
+| `frontier-review` | `review-3` | `claude-opus-high` |
+| `free-high` | `implement-1-free` | (opt-in tier, unchanged route set) |
+
+`schemas/routes.example.toml` was updated to the same taxonomy for consistency
+(its own illustrative `luna-med`/`sol-med` tiers are outside this map and were
+left as-is — they name routes that don't exist in the live matrix).
 
 ## D-R2 — Capability-matched review (invariants)
 

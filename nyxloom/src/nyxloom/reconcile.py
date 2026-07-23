@@ -872,7 +872,7 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
         and any(a.role is Role.CARVER for a in tsf.attempts)
         for tsf in inp.states.values()
     )
-    frontier_routes = inp.routes.for_tier("frontier-review")
+    frontier_routes = inp.routes.for_role(Role.FRONTIER_REVIEW.value)
     frontier_route_available = any(
         inp.provider_ok.get(r.route_id, False) for r in frontier_routes
     )

@@ -2793,13 +2793,16 @@ def test_pause_mode_default_is_run_when_unset():
 
 def make_carve_routes() -> Routes:
     """flash-high (ordinary implementer tier) + frontier-review (the carver's
-    own tier, module contract item 9's route-availability gate)."""
+    own review route, module contract item 9's route-availability gate).
+    B16/D-R1: the gate resolves via Routes.for_role, not tier membership, so
+    route-review carries role_default="frontier-review" (not the tier key)."""
     return Routes(
         revision="test",
         tiers={"flash-high": ["route-1"], "frontier-review": ["route-review"]},
         routes={
             "route-1": RouteDef(route_id="route-1", cli="fake", model="fake-model"),
-            "route-review": RouteDef(route_id="route-review", cli="fake", model="review-model"),
+            "route-review": RouteDef(route_id="route-review", cli="fake", model="review-model",
+                                      role_default="frontier-review"),
         },
     )
 

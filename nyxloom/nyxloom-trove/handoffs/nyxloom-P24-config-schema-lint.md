@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P24-config-schema-lint
 project: nyxloom
 title: "nyxloom.toml JSON schema + `nyxloom lint` config validation"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "82593d5"
 depends_on: []
 session: fresh

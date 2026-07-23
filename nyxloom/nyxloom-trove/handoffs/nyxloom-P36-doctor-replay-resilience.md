@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P36-doctor-replay-resilience
 project: nyxloom
 title: "doctor must not die on its own event log (BLOCKED -> BLOCKED replay crash)"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "a7499cc"
 depends_on: []
 session: fresh

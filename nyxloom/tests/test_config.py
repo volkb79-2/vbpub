@@ -393,6 +393,75 @@ class TestUpdateRoutes:
         assert paths.routes_path().read_text(encoding="utf-8") == original
 
 
+class TestRoutesForRole:
+    """Routes.for_role: the B16/D-R1 decoupling of call sites from tier
+    names -- prefers route(s) carrying a matching RouteDef.role_default, and
+    falls back to a tier named after the role (back-compat with tier-named
+    configs, so the migration is non-breaking)."""
+
+    def test_for_role_returns_the_route_default_match(self, tmp_path):
+        from nyxloom.config import Routes
+
+        p = tmp_path / "routes.toml"
+        p.write_text(
+            'revision = "test"\n\n'
+            '[tiers.review-3]\n'
+            'routes = ["claude-opus-high"]\n\n'
+            '[routes.claude-opus-high]\n'
+            'cli = "claude"\n'
+            'model = "opus"\n'
+            'role_default = "frontier-review"\n\n'
+            '[routes.claude-haiku]\n'
+            'cli = "claude"\n'
+            'model = "haiku"\n',
+            encoding="utf-8",
+        )
+        routes = Routes.load(path=p)
+
+        matches = routes.for_role("frontier-review")
+        assert [r.route_id for r in matches] == ["claude-opus-high"]
+
+    def test_for_role_returns_empty_when_no_route_defaults_to_it(self, tmp_path):
+        from nyxloom.config import Routes
+
+        p = tmp_path / "routes.toml"
+        p.write_text(
+            'revision = "test"\n\n'
+            '[tiers.implement-1]\n'
+            'routes = ["claude-haiku"]\n\n'
+            '[routes.claude-haiku]\n'
+            'cli = "claude"\n'
+            'model = "haiku"\n',
+            encoding="utf-8",
+        )
+        routes = Routes.load(path=p)
+
+        assert routes.for_role("frontier-review") == []
+        assert routes.for_role("nonexistent") == []
+
+    def test_for_role_falls_back_to_tier_named_after_role(self, tmp_path):
+        """Back-compat: with no role_default anywhere but a tier whose name
+        equals the role, for_role resolves via that tier (so pre-migration
+        tier-named configs keep working, e.g. the many test fixtures that
+        declare [tiers.frontier-review])."""
+        from nyxloom.config import Routes
+
+        p = tmp_path / "routes.toml"
+        p.write_text(
+            'revision = "test"\n\n'
+            '[tiers.frontier-review]\n'
+            'routes = ["fake-review"]\n\n'
+            '[routes.fake-review]\n'
+            'cli = "claude"\n'
+            'model = "opus"\n',
+            encoding="utf-8",
+        )
+        routes = Routes.load(path=p)
+
+        matches = routes.for_role("frontier-review")
+        assert [r.route_id for r in matches] == ["fake-review"]
+
+
 class TestPricesLoad:
     """Prices.load: absent-file vs. present-file resolution (§5 config
     rubric: "a config load/resolve -> DEBUG")."""

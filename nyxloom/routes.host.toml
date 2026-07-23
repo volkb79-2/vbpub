@@ -3,47 +3,47 @@
 # attempt events snapshot the resolved route + this revision at dispatch).
 # Values from controller-workflow-v2 §5 as of 2026-07-13/15; probe before
 # trusting a route that hasn't run recently.
+#
+# 2026-07-23 (B16): tiers renamed to the verb-band taxonomy locked in D-R1
+# (docs/routing-model-redesign.md) -- `{implement,review,carve}-{1,2,3}`.
+# Tiers now name the TASK, not the model; routes (below) keep their
+# model-named ids and are the swappable, policy-driven selection within a
+# tier. Each old standalone tier's route is kept PRIMARY (first) in its
+# consolidated tier so existing handoffs resolve to the same model as
+# before the rename -- this is a data migration, not a re-ranking (cost-
+# posture ordering is the separate D-R5).
 
 revision = "2026-07-23"
 
 # 2026-07-23 (operator): added codex-luna-high (gpt-5.6-luna @ high effort via
-# codex) as a medium/band-2 implementation route, exposed as [tiers.luna-high].
-# Destined for the `implement-2` tier once B16 (verb-band taxonomy rename) lands;
-# kept model-named for now so the live matrix stays internally consistent (one
-# atomic migration in B16, not a half-migrated mix). Being trialed on B17.
+# codex) as a medium/band-2 implementation route. Folded into `implement-2`
+# by the B16 tier-rename (was previously its own [tiers.luna-high] pending
+# the migration). Being trialed on B17.
 
 # 2026-07-17: LIFTED the 2026-07-15 temporary sonnet-high override on the
-# implementation tiers -- cheap-first (deepseek) restored, codex reintegrated as
-# a fallback, and vetted free OpenRouter models available via [tiers.free-high]
-# (opt-in; see the free-route block + the free-endpoint confidentiality guard).
-[tiers.flash-high]
-routes = ["opencode-deepseek-high", "reasonix-deepseek-high", "codex-terra-med"]
+# implementation tiers -- cheap-first (deepseek) restored, codex reintegrated
+# as a fallback, and vetted free OpenRouter models available via
+# [tiers.implement-1-free] (opt-in; see the free-route block + the
+# free-endpoint confidentiality guard).
+[tiers.implement-1]      # was haiku-low + flash-high (band 1: mechanical/cheap)
+routes = ["claude-haiku", "opencode-deepseek-high", "reasonix-deepseek-high", "codex-terra-med"]
 
-[tiers.flash-max]
-routes = ["opencode-deepseek-max", "reasonix-deepseek-max", "codex-terra-med"]
+[tiers.implement-2]      # was sonnet5-high + luna-high + flash-max (band 2: medium)
+routes = ["claude-sonnet5-high", "codex-luna-high", "opencode-deepseek-max", "reasonix-deepseek-max", "codex-terra-med"]
 
-[tiers.terra-med]
-routes = ["codex-terra-med"]
+[tiers.implement-1-free] # was free-high (opt-in; free-endpoint confidentiality guard; NOT a default path)
+routes = ["openrouter-free-nemotron-ultra", "openrouter-free-hy3", "openrouter-free-nemotron-nano", "openrouter-free-laguna-xs"]
 
-# 2026-07-23 (operator): gpt-5.6-luna @ high effort via codex, for medium/band-2
-# implementation. Will fold into `implement-2` under B16.
-[tiers.luna-high]
-routes = ["codex-luna-high"]
-
-[tiers.sonnet5-high]
-routes = ["claude-sonnet5-high"]
-
-[tiers.frontier-review]
+[tiers.review-3]         # was frontier-review (review + carve authority)
 routes = ["claude-opus-high"]
 
-# 2026-07-16 (user): cheap tier for mechanical, well-specified handoffs
+# 2026-07-16 (user): cheap band for mechanical, well-specified handoffs
 # (add-a-branch-mirroring-existing, config edits, small lint fixes). The
 # BLOCKED escape hatch makes cheap-first safe — haiku re-routes up on
-# anything beyond it. Route fitting handoffs here via `tier: haiku-low`.
+# anything beyond it. Route fitting handoffs here via `tier: implement-1`
+# (was `tier: haiku-low` before the B16 rename).
 # (Live-deployed 2026-07-16; backfilled into this tracked copy 2026-07-19 --
 # it had drifted deployed-only, see the P44/P45 pilot's routes-sync step.)
-[tiers.haiku-low]
-routes = ["claude-haiku"]
 
 # Vetted free OpenRouter coding models (2026-07-17, probed live via opencode+
 # openrouter). OPT-IN tier -- deliberately NOT in the default implementation
@@ -55,8 +55,6 @@ routes = ["claude-haiku"]
 # (its free providers are filtered out under this account's data policy).
 # GOTCHA for the future `route doctor` (D-R9): opencode returned exit 0 even for
 # that failure -- probe by OUTPUT content, never the exit code alone.
-[tiers.free-high]
-routes = ["openrouter-free-nemotron-ultra", "openrouter-free-hy3", "openrouter-free-nemotron-nano", "openrouter-free-laguna-xs"]
 
 [routes.opencode-deepseek-high]
 cli = "opencode"
@@ -117,6 +115,7 @@ usage_source = "output-format-json"
 [routes.claude-opus-high]
 inherit = "claude-sonnet5-high"
 model = "opus"
+role_default = "frontier-review"
 
 # Haiku 4.5 — cheap/fast tier for mechanical implementation. Explicit route
 # (not `inherit`) so the resume template carries `--model haiku`, not the
@@ -130,7 +129,7 @@ session_capture = "newest-jsonl"
 resume = ["claude", "--resume", "{session}", "--model", "haiku", "-p", "{prompt}"]
 usage_source = "output-format-json"
 
-# --- vetted free OpenRouter routes (see [tiers.free-high] note) -------------
+# --- vetted free OpenRouter routes (see [tiers.implement-1-free] note) ------
 # Every free route carries prompt_hints=["free-endpoint"] -> the no-secrets
 # guard is injected into the dispatch prompt. status="free" is informational.
 # resume hardcodes each route's own model (build_resume does NOT substitute

@@ -578,7 +578,7 @@ def test_carve_dispatch_branch_authority_creates_worktree_and_carver_attempt(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
     )
     _scripted(monkeypatch, [[reconcile.CarveDispatch(project="demo")]])
     d = daemon.Daemon({"demo": cfg.root})
@@ -628,7 +628,7 @@ def test_carve_dispatch_wrapper_spec_carries_strategic_carver_lease(
     two racing carve dispatches could both spawn a real CARVER attempt."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
     )
     _scripted(monkeypatch, [[reconcile.CarveDispatch(project="demo")]])
     d = daemon.Daemon({"demo": cfg.root})
@@ -647,7 +647,7 @@ def test_dispatch_targeted_carve_wrapper_spec_carries_strategic_carver_lease(
     the same lease population as the untargeted trigger above."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
     )
     backlog = cfg.root / "nyxloom-trove" / "4-backlog.md"
     backlog.parent.mkdir(parents=True, exist_ok=True)
@@ -669,7 +669,7 @@ def test_carve_dispatch_main_authority_uses_project_root_no_worktree(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
     )
     ptoml = cfg.root / ".nyxloom" / "project.toml"
     text = ptoml.read_text(encoding="utf-8").replace(
@@ -697,7 +697,7 @@ def test_carve_dispatch_files_authority_uses_project_root_no_git(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
     )
     ptoml = cfg.root / ".nyxloom" / "project.toml"
     text = ptoml.read_text(encoding="utf-8").replace(
@@ -884,7 +884,7 @@ def test_execute_carve_dispatch_rescope_supersedes_origin_with_rescoped_outcome(
     -> _execute_carve_dispatch plumbing is exercised, not just the leaf method."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n")
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n")
     _make_feature_branch(cfg.root, "demo-P01", "P01.py", "# P01\n")
     _commit_review_report(
         cfg.root, "demo-P01", cfg.reports_dir,
@@ -951,7 +951,7 @@ def test_execute_carve_dispatch_untargeted_supersedes_nothing(
     every headroom carve try to supersede a None task."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n")
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n")
     d = daemon.Daemon({"demo": cfg.root})
     states = storage.list_states("demo")
 
@@ -1611,7 +1611,7 @@ def test_launch_review_packet_requires_machine_readable_verdict_line(
     in addition to the existing BLOCKED: rejected final-line signal."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
     )
     _seed_task("demo", "t1", TaskState.AWAITING_REVIEW, handoff_path=None)
     _make_feature_branch(cfg.root, "t1", "t1.py", "# t1\n")
@@ -2114,7 +2114,7 @@ def test_run_pass_isolates_a_failing_action_from_the_rest(
 def test_open_wave_and_launch_review(tmp_state, sample_project, patch_siblings, monkeypatch):
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
     )
 
     for tid in ("t1", "t2"):
@@ -2175,7 +2175,7 @@ def test_launch_review_packet_captures_uncommitted_worktree(
     rather than a silent omission."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
     )
 
     for tid in ("t1", "t2"):
@@ -2217,7 +2217,7 @@ def test_launch_review_packet_reviewer_text_has_git_truth_clause(
     when real work was committed)."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
     )
     _seed_task("demo", "t1", TaskState.AWAITING_REVIEW, handoff_path=None)
     _make_feature_branch(cfg.root, "t1", "t1.py", "# t1\n")
@@ -3627,7 +3627,7 @@ def test_build_input_plumbs_head_revision_and_triage_class(
 
 def _frontier_routes():
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n")
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n")
 
 
 def test_review_warm_resume_uses_build_resume_and_stamps_fresh_attempt_id(
@@ -4387,7 +4387,7 @@ def test_launch_review_emits_info_review_launch(
     """§5: review launch -> INFO."""
     cfg = sample_project
     paths.routes_path().write_text(
-        SAMPLE_ROUTES_TOML + "\n[tiers.frontier-review]\nroutes = [\"fake-cli\"]\n"
+        SAMPLE_ROUTES_TOML + "\nrole_default = \"frontier-review\"\n"
     )
     for tid in ("rt1", "rt2"):
         _seed_task("demo", tid, TaskState.AWAITING_REVIEW, handoff_path=None)

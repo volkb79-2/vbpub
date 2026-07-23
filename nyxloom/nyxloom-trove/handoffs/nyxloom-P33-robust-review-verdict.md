@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P33-robust-review-verdict
 project: nyxloom
 title: "Robust review verdict — derive from REVIEW.md, fail-safe to REJECTED"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "45b0546"
 depends_on: []
 session: fresh

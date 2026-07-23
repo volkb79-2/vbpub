@@ -502,6 +502,15 @@ class Routes:
     def for_tier(self, tier: str) -> list[RouteDef]:
         return [self.routes[rid] for rid in self.tiers.get(tier, [])]
 
+    def for_role(self, role: str) -> list[RouteDef]:
+        """Routes a role defaults to — decouples call sites from tier names.
+        Prefers routes explicitly flagged via RouteDef.role_default (D-R1);
+        falls back to a tier named after the role, so tier-named routing
+        configs keep resolving (back-compat: the review role's value equals
+        the pre-migration tier name, so no flag-day)."""
+        flagged = [r for r in self.routes.values() if r.role_default == role]
+        return flagged or self.for_tier(role)
+
 
 # ---------------------------------------------------------------------------
 # prices

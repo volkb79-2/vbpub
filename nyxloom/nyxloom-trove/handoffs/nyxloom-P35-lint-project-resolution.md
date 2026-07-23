@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P35-lint-project-resolution
 project: nyxloom
 title: "Lint path resolution: owning project, own repo, and trove handoff paths"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "a7499cc"
 depends_on: [nyxloom-P29-intake-agent-backend]
 session: fresh

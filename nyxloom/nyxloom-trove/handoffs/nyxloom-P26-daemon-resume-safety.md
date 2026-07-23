@@ -3,7 +3,7 @@ schema_version: 1
 id: nyxloom-P26-daemon-resume-safety
 project: nyxloom
 title: "Daemon resume-safety: detect failing resumes, fresh-start instead of looping"
-tier: sonnet5-high
+tier: implement-2
 input_revision: "6d1f2be"
 depends_on: [nyxloom-P24-config-schema-lint]
 session: fresh

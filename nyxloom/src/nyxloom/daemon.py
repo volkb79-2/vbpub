@@ -2425,7 +2425,7 @@ class Daemon:
         # planning and execution within the same pass. Never mint a
         # synthetic task / worktree we cannot actually dispatch into.
         routes_obj = config.Routes.load()
-        review_routes = routes_obj.for_tier("frontier-review")
+        review_routes = routes_obj.for_role(Role.FRONTIER_REVIEW.value)
         if not review_routes:
             events.append(self._append_ev(
                 project, cfg, states, EventType.NEEDS_OPERATOR,
@@ -3704,7 +3704,7 @@ class Daemon:
             (packet_dir / "packet.md").write_text("\n".join(packet_lines), encoding="utf-8")
 
             routes_obj = config.Routes.load()
-            review_routes = routes_obj.for_tier("frontier-review")
+            review_routes = routes_obj.for_role(Role.FRONTIER_REVIEW.value)
             route_def = review_routes[0]
             # P05a (§5): review launch -> INFO. Carries every wave member
             # (not a single `task`, since one review attempt can cover a
