@@ -22,8 +22,10 @@ worktree_root = "../.worktrees"
 handoff_globs         = ["nyxloom-trove/handoffs/*.md"]   # work packages (frontmatter, lint-gated)
 reports_dir           = "nyxloom-trove/reports"            # P<NN>-LOG.md / P<NN>-REPORT.md / P<NN>-REVIEW.md / P<NN>-SELFREVIEW.md
 decisions_inbox       = "nyxloom-trove/decisions.md"       # product calls (D-<NNN>)
-roadmap               = "nyxloom-trove/roadmap.md"          # self-dev milestones (pointer doc)
-backlog               = "nyxloom-trove/backlog.md"          # un-carved ideas (pointer doc)
+north_star            = "nyxloom-trove/1-north-star.md"     # invariant vision / WHY (F1 spine)
+product_definition    = "nyxloom-trove/2-product-definition.md"  # versioned features + acceptance (F1 spine)
+roadmap               = "nyxloom-trove/3-roadmap.md"        # ordered milestones (F1 spine)
+backlog               = "nyxloom-trove/4-backlog.md"        # features + bugfixes ledger (F1 spine)
 archive_dir           = "nyxloom-trove/archive"             # merged handoffs+reports land here
 archive_keep_visible  = 10                                  # dashboard shows last N completed; rest behind an Archive button
 agent_logs            = "nyxloom-trove/agent-logs"          # per-attempt transcripts; gitignored by default
@@ -43,7 +45,7 @@ roadmap_product   = "docs/ROADMAP.md"
 backlog_product   = "docs/BACKLOG.md"
 architecture      = "docs/ARCHITECTURE.md"
 status            = "docs/STATUS.md"
-docs_dir          = "docs/*"
+docs_dir          = "docs"
 
 # --- THE gate: tester-unified container (dstdns-style test-runner doctrine —
 # cockpit greens are never a ship signal), run from the vbpub REPO ROOT
