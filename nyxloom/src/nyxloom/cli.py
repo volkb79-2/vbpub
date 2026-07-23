@@ -116,6 +116,21 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               nothing for it, so nothing is printed and the
                               exit code is 0.
   version                     nyxloom.__version__.
+  free-models list [--source NAME]
+                              D-R12 (docs/routing-model-redesign.md,
+                              src/nyxloom/free_models.py): discover
+                              currently-free models across every ENABLED
+                              pluggable source (OpenRouter + configurable
+                              OpenAI-compatible providers) and print them.
+                              Read-only -- no routes.toml write.
+  free-models refresh [--dry-run] [--source NAME]
+                              D-R12: discover + regenerate routes.toml's
+                              `[tiers.free-high]` + `[routes.auto-*]`
+                              managed block from the same discovery pass.
+                              Never touches other tiers or hand-authored
+                              routes (free_models.write_routes_toml).
+                              --dry-run computes and prints the identical
+                              plan without writing.
   init <project_folder>       PACKAGE P23. Scaffold nyxloom-trove/ into
                               <project_folder> from this package's bundled
                               templates (STANDARD.md + AUTHORING.md copied
@@ -1085,6 +1100,60 @@ def cmd_onboard(args) -> int:
     return 0
 
 
+def cmd_free_models_list(args) -> int:
+    """free-models list [--source NAME]
+
+    D-R12: discover currently-free models across every ENABLED source
+    (free_models.discover_all) and print them, read-only -- no routes.toml
+    write. `--source NAME` restricts discovery to one source (matches a
+    `[free_models.sources.<name>]`/DEFAULT_SOURCES name)."""
+    from . import free_models
+
+    cfg = free_models.FreeModelsConfig.load()
+    models = free_models.discover_all(cfg, only=getattr(args, "source", None))
+
+    rows = [{
+        "source": m.source,
+        "id": m.id,
+        "context_length": str(m.context_length) if m.context_length is not None else "",
+        "privacy": m.privacy,
+        "free": "True" if m.free else "False",
+    } for m in models]
+
+    if rows:
+        print(_format_table(rows, ["source", "id", "context_length", "privacy", "free"]))
+    else:
+        print("no free models discovered")
+    return 0
+
+
+def cmd_free_models_refresh(args) -> int:
+    """free-models refresh [--dry-run] [--source NAME]
+
+    D-R12: discover + write. Aggregates every discovered FREE model into a
+    regenerated `[tiers.free-high]` + `[routes.auto-*]` managed block in
+    routes.toml (free_models.refresh) -- never touches other tiers or
+    hand-authored routes. `--dry-run` computes and prints the identical
+    plan without writing."""
+    from . import free_models
+
+    cfg = free_models.FreeModelsConfig.load()
+    result = free_models.refresh(
+        cfg,
+        only=getattr(args, "source", None),
+        dry_run=getattr(args, "dry_run", False),
+    )
+
+    print(f"discovered {len(result.discovered)} free model(s)")
+    for rid in result.route_ids:
+        print(f"  {rid}")
+    if result.written:
+        print(f"wrote {result.path}")
+    else:
+        print(f"dry-run: {result.path} not written")
+    return 0
+
+
 def cmd_version(args) -> int:
     """version"""
     from . import __version__
@@ -1239,6 +1308,18 @@ def main(argv: list[str] | None = None) -> int:
                                       "to draft the direction spine from a STORED assessment (run "
                                       "--scan first, or pass both --scan --questionnaire together)")
 
+    # free-models (D-R12: pluggable free-model discovery + routes.toml refresh)
+    free_models_parser = subparsers.add_parser("free-models")
+    free_models_subs = free_models_parser.add_subparsers(dest="free_models_cmd")
+
+    fm_list_parser = free_models_subs.add_parser("list")
+    fm_list_parser.add_argument("--source", help="Restrict to one source name (optional)")
+
+    fm_refresh_parser = free_models_subs.add_parser("refresh")
+    fm_refresh_parser.add_argument("--source", help="Restrict to one source name (optional)")
+    fm_refresh_parser.add_argument("--dry-run", action="store_true", dest="dry_run",
+                                    help="Compute the plan without writing routes.toml")
+
     try:
         args = parser.parse_args(argv)
     except (SystemExit, argparse.ArgumentError) as e:
@@ -1293,6 +1374,14 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_digest(args)
         elif args.cmd == "events":
             return cmd_events(args)
+        elif args.cmd == "free-models":
+            if args.free_models_cmd == "list":
+                return cmd_free_models_list(args)
+            elif args.free_models_cmd == "refresh":
+                return cmd_free_models_refresh(args)
+            else:
+                parser.print_help(sys.stderr)
+                return 2
         elif args.cmd == "version":
             return cmd_version(args)
         elif args.cmd == "init":
