@@ -762,6 +762,28 @@ def test_routing_html_degrades_for_load_errors_and_empty_tiers(
     assert "No declared candidates" in content
 
 
+def test_routing_html_degrades_when_routes_load_raises(
+        seed_data, sample_project, monkeypatch):
+    """B19 coverage: a RAISING config.Routes.load still leaves routing.html
+    renderable, with an explicit no-tiers state.
+
+    Distinct from the EmptyRoutes case above: that one RETURNS a routes object,
+    so it never exercises _render_routing's `except Exception: routes = None`
+    arm. Raising globally is safe because all three config.Routes.load() call
+    sites in render.py (_render_routing, _render_quality, _render_config) are
+    individually try/except-guarded and each checks the None result, so every
+    page degrades rather than breaking render_all."""
+    def _boom():
+        raise ValueError("bad routes")
+
+    monkeypatch.setattr(render.config.Routes, "load", _boom)
+
+    render.render_all({"demo": sample_project.root})
+
+    content = (paths.www_dir() / "routing.html").read_text(encoding="utf-8")
+    assert "No declared tiers." in content
+
+
 def test_render_after_event_is_alias(seed_data, sample_project):
     """render_after_event is a cheap alias for render_all."""
     tmp_state, project_id = seed_data
