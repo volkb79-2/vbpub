@@ -76,7 +76,7 @@ soulmask_cgroup_of() {
 # not per-instance) still honour ambient env overrides in setup-cgroups.sh.
 soulmask_load_instance_env() {
   local uuid="$1"
-  unset SOULMASK_MIN SOULMASK_LOW SOULMASK_HIGH SOULMASK_WRITEBACK ROLE PAK_RAMDISK
+  unset SOULMASK_MIN SOULMASK_LOW SOULMASK_HIGH SOULMASK_WRITEBACK ROLE PAK_RAMDISK STATIC_RAMDISK
   # shellcheck disable=SC1091
   [ -f "$GSTAMMTISCH_ETC/instance-defaults.env" ] && . "$GSTAMMTISCH_ETC/instance-defaults.env"
   # shellcheck disable=SC1091
@@ -89,6 +89,11 @@ soulmask_load_instance_env() {
   SOULMASK_WRITEBACK="${SOULMASK_WRITEBACK:-1}"
   ROLE="${ROLE:-standalone}"
   PAK_RAMDISK="${PAK_RAMDISK:-0}"
+  # STATIC_RAMDISK: opt into the generalized read-only install-content
+  # ramdisk (soulmask-static-ramdisk.service — Engine/Binaries/bundled Steam
+  # libs, NOT the pak, which stays on the separate, pre-existing
+  # soulmask-pak-ramdisk.service / PAK_RAMDISK). See SOULMASK.md.
+  STATIC_RAMDISK="${STATIC_RAMDISK:-0}"
 }
 
 # --- RCON port/password -------------------------------------------------------

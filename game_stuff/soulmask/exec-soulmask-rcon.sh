@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# exec-soulmask-rcon.sh [-d] [-i|--interactive] [-c|--container SEL] <rcon command [args...]>
+# exec-soulmask-rcon.sh [options] <rcon command [args...]>
 #   -d                debug (verbose diagnostics on stderr)
+#   -h/--help         show this help and exit
 #   -i/--interactive  drop into an interactive rcon-cli session (one held-open
 #                     connection, reads commands from stdin) instead of the
 #                     default one-shot request/reply. Ignores any trailing
@@ -13,7 +14,9 @@
 #                     host (Wings names each container after its server UUID).
 #                     SEL = server-UUID prefix, container-id prefix, or any
 #                     substring of the container name. Without -c the FIRST
-#                     WSServer container is used and a notice lists any others.
+#                     WSServer container is used only when it is the only one.
+#   --uuid UUID       select the Soulmask server container by its UUID (a
+#                     unique UUID prefix is also accepted).
 # Runs Soulmask RCON commands against the running container and prints the reply.
 #
 # Command reference: https://saraserenity.net/soulmask/remote_console.php
@@ -46,17 +49,45 @@
 set -uo pipefail   # deliberately NOT -e — we handle errors with clear messages
 RCON_IMAGE="${RCON_IMAGE:-itzg/rcon-cli}"
 
-# Leading flags, any order: -d, -i/--interactive, -c/--container SEL.
+usage(){
+  cat <<'EOF'
+Usage: exec-soulmask-rcon.sh [options] [rcon command [args...]]
+
+Options:
+  -d                 print diagnostic details on stderr
+  -h, --help         show this help and exit
+  -i, --interactive  open an interactive rcon-cli session
+  -c, --container S  select by container ID/name, UUID prefix, or name substring
+      --uuid UUID    select by server UUID (a unique prefix is accepted)
+
+With multiple Soulmask servers running, --uuid (or --container) is required.
+Without a command, the script only checks the RCON connection.
+EOF
+}
+
+# Leading flags, any order: -d, -h/--help, -i/--interactive,
+# -c/--container SEL, and --uuid UUID.
 # Anything else (including the rcon command itself) stops flag parsing.
-DEBUG=0; INTERACTIVE=0; SELECTOR=""
+DEBUG=0; INTERACTIVE=0; SELECTOR=""; REQUESTED_UUID=""
 while :; do
   case "${1:-}" in
     -d)               DEBUG=1; shift ;;
+    -h|--help)
+      usage
+      exit 0 ;;
     -i|--interactive) INTERACTIVE=1; shift ;;
     -c|--container)
       SELECTOR="${2:-}"
       [ -z "$SELECTOR" ] && { echo "[rcon:ERROR] -c/--container needs a value" >&2; exit 1; }
       shift 2 ;;
+    --uuid)
+      REQUESTED_UUID="${2:-}"
+      [ -z "$REQUESTED_UUID" ] && { echo "[rcon:ERROR] --uuid needs a value" >&2; exit 1; }
+      shift 2 ;;
+    --uuid=*)
+      REQUESTED_UUID="${1#*=}"
+      [ -z "$REQUESTED_UUID" ] && { echo "[rcon:ERROR] --uuid needs a value" >&2; exit 1; }
+      shift ;;
     *)                break ;;
   esac
 done
@@ -67,7 +98,10 @@ die(){ echo "[rcon:ERROR] $*" >&2; exit "${2:-1}"; }
 
 command -v docker >/dev/null || die "docker not in PATH"
 
-# 1) find the Soulmask container by its real running process, honouring -c.
+[ -n "$SELECTOR" ] && [ -n "$REQUESTED_UUID" ] && \
+  die "use either -c/--container or --uuid, not both"
+
+# 1) find the Soulmask container by its real running process, honouring -c/--uuid.
 #    A -c SELECTOR matches a container-id prefix or a name substring (Wings
 #    names containers by server UUID, so a UUID prefix is a name prefix).
 _sel_match(){ # $1=cid $2=name — succeeds when no selector or selector matches
@@ -76,25 +110,54 @@ _sel_match(){ # $1=cid $2=name — succeeds when no selector or selector matches
   case "$2" in *"$SELECTOR"*) return 0 ;; esac
   return 1
 }
-CID=""; OTHERS=""
+
+_uuid_match(){ # $1=server UUID — succeeds when no UUID or it matches
+  [ -z "$REQUESTED_UUID" ] && return 0
+  case "$1" in "$REQUESTED_UUID"*) return 0 ;; esac
+  return 1
+}
+
+container_uuid(){
+  docker inspect -f '{{.Name}}' "$1" 2>/dev/null | sed 's#^/##'
+}
+
+declare -a SOULMASK_CIDS=()
+declare -a SOULMASK_UUIDS=()
 for c in $(docker ps -q); do
     name=$(docker ps --format '{{.Names}}' --filter id="$c")
+    [ -n "$name" ] || name=$(container_uuid "$c")
     if ! _sel_match "$c" "$name"; then dbg "$c ($name): does not match -c $SELECTOR"; continue; fi
+    if ! _uuid_match "$name"; then dbg "$c ($name): does not match --uuid $REQUESTED_UUID"; continue; fi
     if docker top "$c" 2>/dev/null | grep -q 'WSServer-Linux-Shipping'; then
-        if [ -z "$CID" ]; then CID="$c"; CNAME="$name"; else OTHERS="$OTHERS $c($name)"; fi
+        SOULMASK_CIDS+=("$c")
+        SOULMASK_UUIDS+=("$name")
         continue
     fi
     dbg "$c: no WSServer"
 done
-if [ -z "$CID" ] && [ -z "$SELECTOR" ]; then
-    CID=$(docker ps --filter ancestor=ghcr.io/ptero-eggs/steamcmd:debian -q | head -n1)
-    [ -n "$CID" ] && CNAME=$(docker ps --format '{{.Names}}' --filter id="$CID")
-fi
-if [ -z "$CID" ]; then
+
+if [ "${#SOULMASK_CIDS[@]}" -eq 0 ]; then
+    [ -n "$REQUESTED_UUID" ] && die "no WSServer container matches --uuid '$REQUESTED_UUID' (is that server running?)"
     [ -n "$SELECTOR" ] && die "no WSServer container matches -c '$SELECTOR' (is that server running?)"
     die "Soulmask container not found (is the server running?)"
 fi
-[ -n "$OTHERS" ] && log "NOTICE: multiple WSServer containers — using $CID ($CNAME); ignoring:$OTHERS. Select one with -c/--container."
+
+if [ -z "$REQUESTED_UUID" ] && [ -z "$SELECTOR" ] && [ "${#SOULMASK_CIDS[@]}" -gt 1 ]; then
+    echo "[rcon:ERROR] multiple Soulmask servers are running; specify --uuid <server-uuid>" >&2
+    echo "Available server UUIDs:" >&2
+    printf '  %s\n' "${SOULMASK_UUIDS[@]}" >&2
+    exit 2
+fi
+
+if [ "${#SOULMASK_CIDS[@]}" -gt 1 ]; then
+    echo "[rcon:ERROR] selector matches multiple Soulmask servers; use a full --uuid" >&2
+    echo "Matching server UUIDs:" >&2
+    printf '  %s\n' "${SOULMASK_UUIDS[@]}" >&2
+    exit 2
+fi
+
+CID="${SOULMASK_CIDS[0]}"
+CNAME="${SOULMASK_UUIDS[0]}"
 log "container: $CID ($CNAME)"
 
 # 2) RCON port + password from the container env (Wings injects egg variables)

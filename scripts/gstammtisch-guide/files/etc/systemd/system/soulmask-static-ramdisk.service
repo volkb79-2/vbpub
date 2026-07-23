@@ -1,0 +1,34 @@
+# /etc/systemd/system/soulmask-static-ramdisk.service
+[Unit]
+Description=Soulmask static read-only install content ramdisk (shared tmpfs, bind-mounted into every STATIC_RAMDISK=1 instance)
+Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK.md
+# Must run before Docker so containers mount the tmpfs-backed content
+# directories/files. Same ordering rationale as soulmask-pak-ramdisk.service,
+# which this generalizes (kept separate/unchanged) for content beyond the
+# pak file — see soulmask-static-ramdisk-setup.sh's header.
+Before=docker.service
+After=local-fs.target
+DefaultDependencies=no
+
+[Service]
+# Run inside soulmask-static.slice so this tmpfs's pages are charged there,
+# not the root cgroup or soulmask-paks.slice — independent memory.min +
+# zswap control (see soulmask-static.slice).
+Slice=soulmask-static.slice
+Type=oneshot
+RemainAfterExit=yes
+# Enumerates /etc/gstammtisch/instances.d/*.env for STATIC_RAMDISK=1
+# instances and /etc/gstammtisch/static-ramdisk-paths.conf for what to
+# share, bind-mounting ONE shared tmpfs copy of each path into every
+# opted-in instance's volume.
+ExecStart=/usr/local/sbin/soulmask-static-ramdisk-setup.sh
+# Teardown: unmount every bind target recorded in the setup script's state
+# file, then the shared tmpfs itself.
+ExecStop=/usr/local/sbin/soulmask-static-ramdisk-teardown.sh
+# Generous: this copies ~386M (2026-07-21) across several paths on cold disk.
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

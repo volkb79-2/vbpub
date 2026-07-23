@@ -2034,6 +2034,65 @@ sets `PAK_RAMDISK=1`:
   affected instance still needs its own clean Wings stop+start for the
   ramdisk to take effect for it (the game mmaps pak files at startup).
 
+### Shared static-content ramdisk (generalizing the pak pattern, 2026-07-21)
+
+Beyond the pak file, every Soulmask instance also has its own byte-identical
+copy of the game's Engine, `WS/Binaries`, and bundled Steam redistributable
+libs (same depot/version) — duplicated in RAM the same way the pak was
+before it got its own ramdisk, since page cache is keyed per-inode and each
+instance's copy is a separate file even with identical bytes. Rather than
+extend the pak-specific scripts to a second, unrelated payload,
+`soulmask-static-ramdisk.service` is a **new, parallel** mechanism —
+`soulmask-pak-ramdisk.service` and its scripts are untouched and still the
+dedicated path for the pak file specifically:
+
+- **Generalized, not hardcoded**: the list of what to share lives in
+  `/etc/gstammtisch/static-ramdisk-paths.conf` (one relative path per line,
+  each may be a directory or a single file — `mount --bind` doesn't care
+  which). Shipped list (2026-07-21, ~380M total): `Engine`, `WS/Binaries`,
+  `linux64`, `Steam`, `steamclient.so`, `libsteamwebrtc.so`. Deliberately
+  excludes `WS/Saved`, `WS/Config`, `steamcmd/` (the update tool itself —
+  writes during updates), any `archive-*.tar.gz` backup, and a few tiny
+  top-level `.txt`/`.sh` files (negligible size, not worth the entries).
+- Same `Before=docker.service` / target-discovery-via-`instances.d` /
+  idempotent / retry-on-missing-volume design as the pak service. Opt in per
+  instance via `STATIC_RAMDISK=1` (new key in `instance-defaults.env` /
+  `instances.d/<uuid>.env`, parallel to `PAK_RAMDISK`, added to
+  `soulmask_load_instance_env()` in `soulmask-instance-lib.sh`).
+- Own tmpfs (`/mnt/soulmask-static`, 1G, `SOULMASK_STATIC_RAMDISK_SIZE` to
+  override), own state file (`/run/soulmask-static-ramdisk.state`), own
+  slice (`soulmask-static.slice`, `MemoryMin=200M` — a starting guess, NOT
+  yet calibrated against a `vmtouch` reading the way the pak slice's 150M
+  is; revisit once measured). Unlike the pak file (measured
+  zstd-incompressible), this content has no `MemoryZSwapMax=0` override —
+  ordinary zswap eligibility applies if it goes cold.
+- The "sticky, zswap-eligible instead of silently-dropped" rationale matters
+  *more* here than for the pak: `WS/Binaries`/`Engine` are executable code
+  touched continuously during execution, not just at load time.
+- Deployed and verified 2026-07-21 on `soulmask2`/`b87c0a5b` and
+  `soulmask2b`/`6c418fe7` (both opted in): 12 bind targets (6 paths × 2
+  instances) confirmed as tmpfs mounts via `findmnt`. **Gotcha hit while
+  setting this up**: running the setup script directly (bypassing
+  `systemctl start`) places the copy under whatever cgroup invoked it, NOT
+  `soulmask-static.slice` — `Slice=` in the unit only takes effect when
+  systemd itself starts the process. Fixed by tearing down and re-running
+  via `systemctl start soulmask-static-ramdisk.service` (confirmed via the
+  unit's own `Mem peak` in `systemctl status`). This only matters for a
+  **brand new, never-started** unit — for `soulmask-pak-ramdisk.service`,
+  already `active (exited)` with a live bind into a running container,
+  invoking the script directly instead of `restart` is still correct (avoids
+  `ExecStop` tearing down the live instance's bind), and pages already
+  charged before this fix isn't a concern for that established mount.
+- As with the pak ramdisk: each opted-in instance still needs its own clean
+  Wings stop+start for the new binds to take effect (both `soulmask2` and
+  `soulmask2b` are stopped as of this writing — the config is in place, no
+  restart done yet).
+- `/sys/fs/cgroup/soulmask-static.slice/` not existing between runs is
+  expected, not a bug — `soulmask-paks.slice` (proven, 7+ hours in
+  production as of this writing) shows the same empty-directory behavior
+  once its oneshot `ExecStart` process exits; the underlying memcg charge
+  persists with the offline slice regardless.
+
 ### Single-instance-scoped tools: `-c <uuid-or-prefix>`
 
 `soulmask-startup-cgroup.sh`, `soulmask-mempress.sh` (and its
@@ -2055,6 +2114,18 @@ if asked to disambiguate. `soulmask-mempress.sh apply`/`finalize`'s
 `instances.d/<uuid>.env` instead of `sed`-ing `setup-cgroups.sh` (whose
 per-instance defaults moved out to `instance-defaults.env`).
 
+### `wings-ps.sh` — `docker ps` with panel names instead of bare UUIDs
+
+Wings names every container after the server UUID (its own lookup key —
+never `docker rename` these, Wings won't find them again). With 2+ servers
+running, `docker ps` is unreadable. No local cache of the panel's display
+name exists (checked: no docker label, `states.json` is uuid:status only),
+so `/usr/local/sbin/wings-ps.sh` resolves it live per UUID via the same
+node-to-panel call Wings itself makes (`GET /api/remote/servers/<uuid>`,
+node token from `config.yml`, reading `settings.meta.name`) — no
+hand-maintained mapping to go stale on rename/add. Node-wide, not
+soulmask-specific.
+
 ### How to add instance #2 (base-map server, §9)
 
 1. Complete the panel-side prerequisites from §9 (new allocations,
@@ -2073,6 +2144,94 @@ per-instance defaults moved out to `instance-defaults.env`).
 4. Verify: `setup-cgroups.sh`'s log shows both instances and the recomputed
    `system.slice MemoryMin`; `soulmask-shutdown.sh` (or a real host reboot)
    stops the client before the main.
+
+### Forcing a container to pick up a Startup Command change without the panel
+
+`docker start` / `docker restart` on an existing container reuse its frozen
+`Config.Env` from creation time — editing a server's Startup Command in the
+panel does **not** get picked up by starting/restarting the *existing*
+container object; it just keeps running the stale command it was created
+with (verified 2026-07-21 with an `LD_PRELOAD=` prefix that silently didn't
+apply this way).
+
+Wings only resyncs config — and recreates the container with the new
+`STARTUP` baked into `Config.Env` — when it processes a genuine power-action
+"start". That happens two ways: the panel/API Start button, or Wings'
+**crash-handler path**: a `docker stop` / `docker kill` / unexpected
+container death while Wings still believes the server should be running is
+logged as "entering a crashed state", which triggers Wings' own start
+handler (config resync + recreate) automatically. Same underlying
+re-attach-on-death mechanism as the dockerd-restart flap noted in
+`plan-host-resource-governance.md` §6 row 6 ("live-restore").
+
+Practical implication: to force a Startup Command edit live without the
+panel, `docker stop <uuid-container>` then start it (panel, or a plain
+`docker start` afterward — Wings' crash handler does the recreate as part of
+processing the stop-triggered "crashed" event, before you even issue the
+start). `docker start` alone on an *already-stopped* container is a no-op
+for config purposes — Wings isn't watching for that transition the same way,
+since it already believes the server is offline. The panel's Start/Restart
+button remains the cleanest path; it goes through the identical resync
+without the "crashed" framing cluttering the log.
+
+### Cluster wiring — MAIN/CLIENT (implementation, 2026-07-21)
+
+Actual wiring plan for linking `soulmask2`/`b87c0a5b` (established DLC-map
+world → cluster **MAIN**) and `soulmask2b`/`6c418fe7` (base-map `Level01_Main`
+→ cluster **CLIENT**), superseding the "needs a decision at implementation
+time" networking gap flagged in §9's research summary — now resolved:
+
+**Networking (resolved).** Both containers sit on the same custom docker
+bridge (`pterodactyl_nw`), each with a live internal IP and a registered
+DNS name for the OTHER (`docker inspect <container> --format
+'{{json .NetworkSettings.Networks}}'` shows `DNSNames: [<uuid>, <short-id>]`
+on both). Containers on a shared user-defined bridge reach each other on
+ANY port the destination listens on, published or not — confirmed by
+inspecting the live port bindings: `EchoPort`/`RconPort` never appear in
+either server's published-port list despite both already running with the
+*same* values (18888/19000) on both servers with zero conflict all
+session. Consequence: **no new panel port allocation is needed** for the
+cluster link itself, only `Port`/`QueryPort` need to stay externally unique
+(already done).
+
+**Egg (implementation).** `game_stuff/soulmask/egg-soulmask-rcon-ksm-cgroups.json`
+now has three panel-configurable variables — `SERVER_ID` → `-serverid=`,
+`MAIN_SERVER_PORT` → `-mainserverport=`, `CLIENT_SERVER_CONNECT` →
+`-clientserverconnect=` — appended to the Startup Command, all defaulting to
+empty (harmless no-op, same tolerance the game already shows for an empty
+`-PSW=`/`-mod=""`). Re-import the egg over the existing association to pick
+these up before setting values in the panel. See each variable's own
+description in the egg for the full interaction rationale (mirrors this
+section).
+
+**Values to set (panel Startup Command, once the egg is re-imported):**
+- `soulmask2` (MAIN): `MAIN_SERVER_PORT=7900` (any port not already used by
+  this server's own Port/QueryPort/EchoPort/RconPort — 8777/27015/18888/19000
+  are taken).
+- `soulmask2b` (CLIENT): `CLIENT_SERVER_CONNECT=b87c0a5b-2387-4a1c-8863-ff23e6800a1d:7900`
+  (the stable docker-DNS form, preferred over the live bridge IP
+  `172.18.0.3:7900` since it survives `soulmask2`'s container being
+  recreated — Wings always names containers after the UUID). Whether
+  Soulmask's networking stack resolves container hostnames for this
+  specific flag is UNTESTED — if the connection fails, fall back to the
+  current bridge IP and re-check it after any future recreation of the main.
+- `SERVER_ID` on both, before real players are on either — **caution**: both
+  servers have already booted many times this session without this flag set,
+  so each already has an implicit ID baked into its save data. Test the
+  explicit value on `soulmask2b` (disposable) first; do not touch
+  `soulmask2` until that's confirmed safe, since it holds the real
+  established player accounts.
+
+**Cross-server character transfer (`KaiQiKuaFu`/"Cross-server Mode")** is
+NOT a host-side config file setting — searched the entire `soulmask2`
+volume for the literal string and found it nowhere. Consistent with the
+original §9 research: it's toggled via an in-game action at a portal
+terminal by a GM/admin, after the servers are already linked and running,
+not something to pre-configure here.
+
+**Status 2026-07-21:** plan finalized and egg updated; panel Startup
+Command values not yet set/tested live. `instances.d/6c418fe7-....env`
+already updated `ROLE=standalone → client`.
 
 ### Deduplicating the two installs — disk AND page cache (jdupes / image-layer options)
 

@@ -247,22 +247,157 @@ wings); on this kernel no wings/egg capability change is needed.
    or just prefix the per-server Startup Command in the panel. Missing .so =
    harmless ld.so warning, server runs without KSM.
 4. Confirm opt-in in the server console log: `[ksm-optin] KSM enabled…`.
-5. ksmd is already enabled at boot (`files/etc/tmpfiles.d/ksm.conf`,
-   `/sys/kernel/mm/ksm/run=1`). Scan-rate knobs if the default is too lazy:
-   `pages_to_scan` (default 100/wake) and `sleep_millisecs` (default 20).
+5. ksmd is already enabled at boot (`files/etc/tmpfiles.d/ksm.conf`:
+   `run=1`, `advisor_mode=scan-time` self-tuning, `use_zero_pages=1` since
+   2026-07-21 — all-zero anon pages map straight to the kernel's shared
+   zero-page instead of the general merge path, freeing that RAM without
+   waiting on zswap). ksmd is a **single kernel thread** — confirmed via
+   `ps -eLo pid,tid,comm | grep ksmd` (pid == tid, no siblings) — so ~100%
+   of *one* core is the hard ceiling, not configurable higher regardless of
+   tuning.
 
-**Measure the benefit (run ≥1 h with both instances up and players seen on both):**
+   The self-tuning `scan-time` advisor is conservative by default (observed
+   ~13.5K pages/sec, ksmd <4% of one core idle). To accelerate scanning
+   temporarily for a measurement session:
+   ```bash
+   echo none      > /sys/kernel/mm/ksm/advisor_mode      # take manual control
+   echo 4000      > /sys/kernel/mm/ksm/pages_to_scan       # up from the ~270-300 default
+   echo 0         > /sys/kernel/mm/ksm/sleep_millisecs     # 20 -> 0, continuous scanning
+   # ksmd climbs to ~99% of one core. Revert when done:
+   echo scan-time > /sys/kernel/mm/ksm/advisor_mode
+   echo 300       > /sys/kernel/mm/ksm/pages_to_scan
+   echo 20        > /sys/kernel/mm/ksm/sleep_millisecs
+   ```
+   `advisor_max_cpu` / `advisor_target_scan_time` only take effect while
+   `advisor_mode=scan-time` — writes to them are silently accepted but inert
+   while in manual (`none`) mode. A reboot alone reverts any manual override
+   back to `ksm.conf`'s defaults (nothing above persists on its own).
+
+**Measure the benefit — prefer per-process** (kernel 7.0 exposes
+`/proc/<pid>/ksm_stat`), since it's scoped to exactly the processes you care
+about and immune to unrelated KSM activity elsewhere on the host (the global
+counters below are host-wide, not per-server):
+```bash
+for c in <container-id-1> <container-id-2>; do
+  echo "--- container $c ---"
+  docker exec "$c" sh -c '
+    for p in /proc/[0-9]*; do
+      if grep -q WSServer "$p/cmdline" 2>/dev/null; then
+        echo "pid $(basename "$p"):"
+        cat "$p/ksm_stat" 2>/dev/null | sed "s/^/    /"
+      fi
+    done'
+done
+```
+Key fields: `ksm_merging_pages` (this process's own pages currently
+deduplicated — ×4K for MB saved); `ksm_process_profit` (net benefit
+estimate in bytes, nets rmap bookkeeping overhead against savings — starts
+negative early on, turns positive as ksmd works through the candidate
+backlog, don't judge off an early reading); `ksm_rmap_items` (current
+candidate-pool size, **not** a shrinking backlog — tracks the process's
+mergeable memory footprint and fluctuates with normal alloc/free, doesn't
+count down to zero). A PID showing `ksm_merge_any: no` / all-zero fields is
+a forked child that didn't inherit the preload's opt-in — expected, only
+the main process and some children pick it up.
+
+Cross-check with the global counters, but don't rely on them alone if
+anything else on the host might also be KSM-opted-in:
 ```bash
 grep . /sys/kernel/mm/ksm/{pages_shared,pages_sharing,pages_unshared,pages_volatile,full_scans,stable_node_chains}
-# RAM actually saved ≈ (pages_sharing − pages_shared) × 4K
+# RAM actually saved ≈ (pages_sharing − pages_shared) × 4K — host-wide, not per-process
 ```
-**Measure the costs:** ksmd CPU (`pidstat -p $(pgrep ksmd) 10`) and CoW-unshare
-stutter — a merged page the game WRITES triggers a copy fault in the game
-thread. Watch game minor-fault rate and frame consistency (`ServerFPS`)
-with KSM on vs off.
+
+**Measure the costs:** ksmd CPU (`pidstat -p $(pgrep ksmd) 10`, or the
+instantaneous `/proc/<pid>/stat` utime/stime delta method if `pidstat` isn't
+installed — `ps %CPU` is a lifetime average and won't reflect a recent
+tuning change) and CoW-unshare stutter — a merged page the game WRITES
+triggers a copy fault in the game thread. Watch game minor-fault rate and
+frame consistency (`ServerFPS`) with KSM on vs off.
 
 **Expectation:** modest. Worlds/actor graphs differ per map; the biggest
 identical anon data is what both engines build from the same pak. Decision
 rule: keep KSM if savings ≥ ~300 M with no ServerFPS/stutter regression;
 otherwise revert (remove the LD_PRELOAD prefix; merged pages unshare on the
 next write, or immediately via `echo 2 > /sys/kernel/mm/ksm/run`).
+
+**Session log — 2026-07-21, full data series and what it taught us.** All
+readings are the main `WSServer` process's `/proc/<pid>/ksm_stat` on
+`soulmask2`/`b87c0a5b` and `soulmask2b`/`6c418fe7`. Sequence, not clock
+time (some minutes apart each):
+
+| # | Event | `soulmask2` rmap / merging (MB) / profit (MB) | `soulmask2b` rmap / merging (MB) / profit (MB) |
+|---|---|---|---|
+| 1 | Both freshly opted into KSM, same map (`DLC_Level01_Main`), default scan rate | 936927 / 35.8 / **-21.4** | 666856 / 39.1 / **-1.6** |
+| 2 | Same map, still default scan rate, later | 1010305 / 110.0 / +48.3 | 385439 / 70.8 / +47.3 |
+| 3 | Boost applied (`pages_to_scan=4000`, `sleep_millisecs` 20→10, ~69.6% CPU) | 909568 / 152.1 / +96.6 | 171382 / 96.8 / +86.3 |
+| 4 | `sleep_millisecs`→5 (~75.8% CPU), →2 (~84.2%), →0 (~99.1%), `use_zero_pages` on | 953058→909568 range, converging | — |
+| 5 | "Stabilized" reading (declared prematurely, see below) | 807991 / 169.2 / +120.1 | 294748 / 121.2 / +103.5 |
+| 6 | `soulmask2b` switched to `Level01_Main` (base map), fresh container/PID; `soulmask2` untouched | 139115 / 87.9 / **+79.6** (dropped, not restarted) | 1595974 / **1319.6** / **+1287.0** (fresh boot, huge) |
+| 7 | `soulmask2` restarted (fresh container/PID); `soulmask2b` untouched | 1337018 / **963.9** / **+928.9** (fresh boot, also huge) | 120090 / **169.7** / **+193.1** (collapsed, not restarted) |
+| 8 | Later, neither restarted | 1074346 / 757.0 / +739.0 (still declining) | 146335 / 168.4 / +190.4 (flat) |
+| 9 | Later still, neither restarted | 348513 / 470.6 / +500.1 (still declining) | 137274 / 167.3 / +190.1 (flat, this is the floor) |
+
+**What this actually shows, in order of discovery:**
+
+1. **Rows 1→2**: `ksm_process_profit` starts negative and turns positive as
+   `ksmd` works through the initial rmap-bookkeeping backlog — don't judge
+   off an early reading, this is expected, not a sign KSM isn't working.
+2. **Rows 6→7, the important one**: restarting ONE instance visibly
+   disturbs the OTHER's numbers even though it was never touched. When
+   `soulmask2b` restarted (row 6), `soulmask2` — untouched — dropped
+   169→87.9 MB. When `soulmask2` then restarted (row 7), `soulmask2b` —
+   untouched — collapsed 1319.6→169.7 MB. **These two processes' KSM state
+   is not independent.** Best explanation (not fully certain): `ksmd` is a
+   single kernel thread with limited scan throughput even boosted; a fresh
+   ~1M-item backlog from a newly-restarted process competes for that same
+   attention, and previously-tracked-but-not-yet-*stable* candidates on the
+   untouched side can drop out of tracking while the scan is dominated by
+   the new arrival. **Practical implication: don't restart either instance
+   mid-measurement-window** — it invalidates both readings, not just the
+   restarted one.
+3. **Rows 6-7's huge initial numbers (up to ~1.3 GB) are themselves
+   inflated**, not a true steady state — a freshly-booted, mostly-empty
+   world is disproportionately full of identical freshly-initialized/
+   template memory (default actor structs, empty inventory slots, zeroed
+   buffers) that hasn't yet been touched by real, divergent simulation.
+   `use_zero_pages` (row 4) compounds this further by giving an instant,
+   free win on any of that content that's literally all-zero.
+4. **Rows 7→8→9: the decline is the real signal, and it's expected.**
+   A live, continuously-simulating game server *writes* to its heap
+   constantly — actor movement, procedural dungeon generation (seen in the
+   boot log: "Create Dungeon Successed"), physics, inventory state — and
+   ANY write to a KSM-merged page triggers copy-on-write, permanently
+   breaking that specific merge. So the true trajectory isn't "ramp up to a
+   plateau," it's **peak shortly after boot, then erode as gameplay
+   diverges each server's actual content**, settling toward whatever
+   subset is genuinely static and never written (this was the user's own
+   hypothesis, confirmed by rows 8-9). `soulmask2b` (row 9, untouched since
+   row 6) reached a flat floor (~167-169 MB, ~190 MB profit) faster because
+   it had more elapsed post-restart time to diverge; `soulmask2` (freshly
+   restarted at row 7) was still declining at row 9 and hadn't reached its
+   own floor yet.
+
+**Revised decision procedure, superseding the original "run ≥1h and read
+once" framing above:** take repeated readings spaced several minutes apart
+and wait for `ksm_merging_pages`/`ksm_process_profit` to visibly flatten
+(consecutive reads within a few percent of each other) before applying the
+≥300 MB keep/revert rule — an early or post-restart reading will
+overstate real, sustained savings. Do not restart either instance while
+waiting, for the reason in point 2. Real player activity (not just idle
+world-ticking) during the wait is still preferable per the original
+guidance, since it exercises the divergence this section describes rather
+than waiting on it passively.
+
+**Where this leaves the actual decision:** `soulmask2b`'s floor (~167 MB
+merging, ~190 MB profit) is the more trustworthy number so far, since it's
+the only one that's visibly flattened. That alone is already close to the
+~300 MB keep/revert threshold when added to `soulmask2`'s own
+(still-declining, so currently overstated) number — worth re-reading both
+once `soulmask2` flattens too, rather than deciding now.
+
+CPU-boost knobs used throughout: `advisor_mode=none`, `pages_to_scan=4000`,
+`sleep_millisecs=0` (~99% of one core, confirmed single-threaded — see step
+5 above for the full procedure and revert command), plus
+`use_zero_pages=1` (now persisted in `files/etc/tmpfiles.d/ksm.conf`, so it
+survives reboots; the scan-rate override does not and reverts to
+`advisor_mode=scan-time` defaults on the next reboot).

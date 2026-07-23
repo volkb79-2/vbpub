@@ -1,0 +1,25 @@
+# /etc/systemd/system/soulmask-static.slice
+[Unit]
+Description=Soulmask static read-only install content ramdisk cgroup slice
+Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK.md
+
+[Slice]
+# Static-content tmpfs pages charged here (cp runs inside this slice via
+# soulmask-static-ramdisk.service). Independent memory accounting from both
+# Soulmask's game cgroups and the separate soulmask-paks.slice.
+
+# Rough starting floor, NOT yet calibrated against a vmtouch measurement
+# (unlike soulmask-paks.slice's 150M, which is — see MEASUREMENTS.md M2).
+# ~386M total payload (Engine + WS/Binaries + linux64 + Steam +
+# steamclient.so + libsteamwebrtc.so); the actually-executed working set of
+# a binary/library is normally well under its on-disk size (unused code
+# paths, debug sections), so this starts at roughly half. Revisit once a
+# vmtouch reading exists for this content.
+# NOTE: only effective if the parent soulmask.slice also carries
+# MemoryMin >= this value, same caveat as soulmask-paks.slice.
+MemoryMin=200M
+
+# Unlike the pak file (measured zstd-incompressible, 1.006x — see
+# soulmask-paks.slice), executable code and libraries are NOT known to be
+# incompressible — no MemoryZSwapMax override here, so normal zswap
+# eligibility applies if this content goes cold under pressure.
