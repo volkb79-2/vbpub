@@ -1081,8 +1081,6 @@ def _extract_candidate_paths(text: str) -> list[str]:
     candidates = []
     for match in _PATH_TOKEN_RE.finditer(text):
         token = match.group().rstrip(".,;:)]}'\"")
-        if not token:
-            continue
         if _PATH_EXTENSION_RE.search(token) or token.startswith(_KNOWN_TOP_DIRS):
             candidates.append(token)
     return candidates
