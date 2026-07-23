@@ -361,6 +361,152 @@ class TestBlocked:
         assert receipt["blocked_reason"].startswith("contract 2 unmeetable")
 
 
+class TestScopeAmendment:
+    """O5 (B21 2026-07-23, D-R16 §3): wrapper translation of the
+    SCOPE_AMENDMENT_REQUEST: marker into the receipt's amendment_request
+    carrier. NOTE: unlike the fake_cli fixture's naive `echo "{line}"`
+    wrapping (fine for the BLOCKED/LIMIT tests' plain-text lines above), a
+    JSON payload's own embedded double quotes get MANGLED by that wrapping
+    (`echo "..."file"..."` word-concatenates and drops the quote chars) --
+    verified empirically while writing this test. A quoted heredoc
+    (`cat <<'EOF' ... EOF`) prints the marker line byte-for-byte with no
+    shell interpretation at all, so these tests write their own script
+    directly instead of using the fake_cli fixture."""
+
+    def _amendment_script(self, tmp_path, file_path: str, reason: str, exit_code: int = 0) -> Path:
+        script = tmp_path / "scope_amendment_cli.sh"
+        script.write_text(
+            "#!/bin/sh\n"
+            "cat <<'HEREDOC_EOF'\n"
+            f'SCOPE_AMENDMENT_REQUEST: {{"file": "{file_path}", "reason": "{reason}"}}\n'
+            "HEREDOC_EOF\n"
+            f"exit {exit_code}\n"
+        )
+        script.chmod(0o755)
+        return script
+
+    def test_scope_amendment_classification(self, tmp_state, tmp_path, mock_adapters):
+        """O5: given a log tail with the marker, the wrapper writes a
+        receipt.json carrying the extracted {file, reason} AND result
+        'scope_amendment' (not 'blocked' or 'error')."""
+        project = "demo"
+        task_id = "demo-P01-sample"
+        attempt_id = "att-1"
+        seed(project, task_id, attempt_id)
+
+        script = self._amendment_script(
+            tmp_path, "src/demo/shared_helper.py", "needs a shared helper")
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir(parents=True)
+
+        log_path = attempt_dir / "wrapper.log"
+        receipt_path = attempt_dir / "receipt.json"
+
+        spec = WrapperSpec(
+            project=project,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            argv=[str(script)],
+            cwd=str(tmp_path),
+            log_path=str(log_path),
+            receipt_path=str(receipt_path),
+            attempt_dir=str(attempt_dir),
+            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+        )
+
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+        mock_adapters.extract_usage.return_value = Usage(basis=Basis.UNKNOWN)
+        mock_adapters.capture_session.return_value = None
+
+        def real_classify(text):
+            for line in text.split("\n"):
+                if line.startswith("SCOPE_AMENDMENT_REQUEST:"):
+                    return "scope_amendment"
+            return None
+
+        mock_adapters.classify_log_tail.side_effect = real_classify
+
+        exit_code = wrapper_main(str(spec_path))
+
+        assert exit_code == 0
+        receipt = json.loads(receipt_path.read_text())
+        assert receipt["result"] == "scope_amendment"
+        assert receipt["amendment_request"] == {
+            "file": "src/demo/shared_helper.py",
+            "reason": "needs a shared helper",
+        }
+        # NEGATIVE: not misclassified as a dead-end BLOCKED.
+        assert receipt["blocked_reason"] is None
+
+    def test_scope_amendment_malformed_json_degrades_to_none(
+        self, tmp_state, tmp_path, mock_adapters
+    ):
+        """NEGATIVE: a marker line whose payload fails to parse as JSON
+        degrades amendment_request to None rather than crashing the wrapper
+        -- daemon.py's EmitAttemptExit still routes on receipt.result
+        (SCOPE_AMENDMENT), it just has no file/reason to report.
+
+        The payload MUST still match the `{...}` regex shape (so the
+        `if amendment_match:` branch is actually entered and `json.loads`
+        is actually reached and actually raises) -- a payload with no
+        braces at all (e.g. bare prose) never reaches json.loads, hitting a
+        DIFFERENT branch (no match) that looks superficially similar but
+        exercises none of the try/except lines this test targets."""
+        project = "demo"
+        task_id = "demo-P01-sample"
+        attempt_id = "att-1"
+        seed(project, task_id, attempt_id)
+
+        script = tmp_path / "malformed_cli.sh"
+        script.write_text(
+            "#!/bin/sh\n"
+            "cat <<'HEREDOC_EOF'\n"
+            "SCOPE_AMENDMENT_REQUEST: {not: valid json}\n"
+            "HEREDOC_EOF\n"
+            "exit 0\n"
+        )
+        script.chmod(0o755)
+
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir(parents=True)
+        log_path = attempt_dir / "wrapper.log"
+        receipt_path = attempt_dir / "receipt.json"
+
+        spec = WrapperSpec(
+            project=project,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            argv=[str(script)],
+            cwd=str(tmp_path),
+            log_path=str(log_path),
+            receipt_path=str(receipt_path),
+            attempt_dir=str(attempt_dir),
+            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+        )
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+        mock_adapters.extract_usage.return_value = Usage(basis=Basis.UNKNOWN)
+        mock_adapters.capture_session.return_value = None
+
+        def real_classify(text):
+            for line in text.split("\n"):
+                if line.startswith("SCOPE_AMENDMENT_REQUEST:"):
+                    return "scope_amendment"
+            return None
+
+        mock_adapters.classify_log_tail.side_effect = real_classify
+
+        exit_code = wrapper_main(str(spec_path))
+
+        assert exit_code == 0
+        receipt = json.loads(receipt_path.read_text())
+        assert receipt["result"] == "scope_amendment"
+        assert receipt["amendment_request"] is None
+
+
 class TestLimit:
     """Oracle 4: rate limit classification."""
 

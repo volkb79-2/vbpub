@@ -12,7 +12,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from nyxloom.types import RESERVED_ROLES, Role
+from nyxloom.types import (
+    Actor, ActorKind, Event, EventType, Receipt, ReceiptResult,
+    RESERVED_ROLES, Role, utc_now,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DAEMON_SRC = (REPO_ROOT / "src" / "nyxloom" / "daemon.py").read_text()
@@ -111,3 +114,74 @@ def test_all_roles_dispatched_none_reserved_after_b5():
     dispatched = _dispatched_roles()
     for role in Role:
         assert role in dispatched, f"{role} is neither dispatched nor reserved"
+
+
+# ============================================================================
+# B21 2026-07-23 (D-R16 §3, scope-amendment escalation). Oracle O7: the new
+# EventType members, the new ReceiptResult member, and the new Receipt field
+# are ADDITIVE ONLY (D-B21-3) and round-trip through their EXISTING generic
+# serde (_Serde.to_dict/from_dict, Event's own _FIELD_TYPES) -- no bespoke
+# converter needed for any of the three, proving the addition is truly
+# additive rather than a change requiring new serde machinery.
+# ============================================================================
+
+def test_receipt_result_pre_existing_members_unchanged():
+    """D-B21-3 non-hollow anchor: the four pre-B21 members keep their exact
+    .value -- a real pin on the VALUES, not just 'the names still exist'."""
+    assert ReceiptResult.DONE.value == "done"
+    assert ReceiptResult.BLOCKED.value == "blocked"
+    assert ReceiptResult.LIMIT.value == "limit"
+    assert ReceiptResult.ERROR.value == "error"
+
+
+def test_receipt_result_scope_amendment_member_added():
+    """O7: the new member exists with its own value. NEGATIVE: it is a
+    genuinely distinct member from BLOCKED -- a scope-amendment request is a
+    different, never-a-dead-end outcome, not BLOCKED relabelled."""
+    assert ReceiptResult.SCOPE_AMENDMENT.value == "scope_amendment"
+    assert ReceiptResult.SCOPE_AMENDMENT is not ReceiptResult.BLOCKED
+
+
+def test_receipt_amendment_request_field_round_trips():
+    """O7: Receipt.amendment_request is a plain additive dict field -- no
+    _FIELD_TYPES converter needed (the generic _Serde encode/decode passes a
+    plain dict through transparently). Round-trips with a populated value.
+    NEGATIVE: a pre-B21 receipt dict with NO amendment_request key at all
+    still from_dict's cleanly, defaulting to None -- proves old receipts are
+    unaffected, not silently broken by the new field."""
+    r = Receipt(
+        result=ReceiptResult.SCOPE_AMENDMENT, exit_code=0,
+        amendment_request={"file": "src/demo/x.py", "reason": "needs a shared helper"},
+    )
+    d = r.to_dict()
+    assert d["amendment_request"] == {"file": "src/demo/x.py", "reason": "needs a shared helper"}
+    back = Receipt.from_dict(d)
+    assert back.amendment_request == {"file": "src/demo/x.py", "reason": "needs a shared helper"}
+    assert back.result is ReceiptResult.SCOPE_AMENDMENT
+
+    legacy = {"result": "done", "exit_code": 0}
+    legacy_receipt = Receipt.from_dict(legacy)
+    assert legacy_receipt.amendment_request is None
+
+
+def test_event_type_scope_amendment_members_added_and_round_trip():
+    """O7: both new EventType members exist, are distinct from every
+    pre-existing member and each other, and round-trip through Event's
+    existing generic serde (Event._FIELD_TYPES maps 'type': EventType with no
+    special-casing per member -- a new member needs zero new serde code)."""
+    assert EventType.SCOPE_AMENDMENT_REQUESTED.value == "SCOPE_AMENDMENT_REQUESTED"
+    assert EventType.SCOPE_AMENDMENT_APPROVED.value == "SCOPE_AMENDMENT_APPROVED"
+    assert EventType.SCOPE_AMENDMENT_REQUESTED is not EventType.TASK_BLOCKED
+    assert EventType.SCOPE_AMENDMENT_APPROVED is not EventType.SCOPE_AMENDMENT_REQUESTED
+
+    ev = Event(
+        schema_version=1, sequence=1, timestamp=utc_now(), project="demo",
+        actor=Actor(ActorKind.TICK, "test"), type=EventType.SCOPE_AMENDMENT_APPROVED,
+        payload={"file": "src/demo/x.py", "reason": "needs a shared helper"},
+        task_id="demo-P01-sample",
+    )
+    d = ev.to_dict()
+    assert d["type"] == "SCOPE_AMENDMENT_APPROVED"
+    back = Event.from_dict(d)
+    assert back.type is EventType.SCOPE_AMENDMENT_APPROVED
+    assert back.payload == {"file": "src/demo/x.py", "reason": "needs a shared helper"}

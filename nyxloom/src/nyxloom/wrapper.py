@@ -44,6 +44,11 @@ INTERFACE CONTRACT (frozen):
        reason 'interrupted'} + ATTEMPT_INTERRUPTED (state INTERRUPTED);
        else adapters.classify_log_tail(last 200 log lines): 'blocked' ->
        receipt result 'blocked' with blocked_reason = first BLOCKED: line;
+       'scope_amendment' (B21 2026-07-23, D-R16 §3) -> receipt result
+       'scope_amendment' with amendment_request = the {"file", "reason"} dict
+       parsed from the first SCOPE_AMENDMENT_REQUEST: line (None if the line
+       failed to parse as JSON) -- daemon.py's EmitAttemptExit routes this to
+       a bounded approve-and-requeue, never a dead end;
        'limit' -> result 'limit'; else exit 0 -> 'done', nonzero -> 'error'.
     8. Usage: adapters.extract_usage(route, attempt_dir, full log text),
        then config.Prices.load().price_tokens(route.model, usage).
@@ -396,6 +401,7 @@ def wrapper_main(spec_path: str) -> int:
         log_text = log_path.read_text(encoding="utf-8")
         log_tail = "\n".join(log_text.split("\n")[-200:])
 
+        amendment_request: dict | None = None
         if interrupted:
             result = ReceiptResult.ERROR
             blocked_reason = "interrupted"
@@ -407,6 +413,24 @@ def wrapper_main(spec_path: str) -> int:
                 result = ReceiptResult.BLOCKED
                 blocked_match = re.search(r"^BLOCKED: (.+)$", log_tail, re.MULTILINE)
                 blocked_reason = blocked_match.group(1) if blocked_match else "unknown"
+                event_type = EventType.ATTEMPT_EXITED
+                attempt_state = AttemptState.EXITED
+            elif classification == "scope_amendment":
+                # B21 2026-07-23 (D-R16 §3): translate the marker into the
+                # receipt's amendment_request carrier. A malformed/missing
+                # JSON payload degrades to None -- daemon.py's EmitAttemptExit
+                # still routes on receipt.result (SCOPE_AMENDMENT), it just
+                # has no file/reason to report; it does not crash or
+                # misclassify as BLOCKED.
+                result = ReceiptResult.SCOPE_AMENDMENT
+                blocked_reason = None
+                amendment_match = re.search(
+                    r"^SCOPE_AMENDMENT_REQUEST:\s*(\{.*\})\s*$", log_tail, re.MULTILINE)
+                if amendment_match:
+                    try:
+                        amendment_request = json.loads(amendment_match.group(1))
+                    except json.JSONDecodeError:
+                        amendment_request = None
                 event_type = EventType.ATTEMPT_EXITED
                 attempt_state = AttemptState.EXITED
             elif classification == "limit":
@@ -431,14 +455,16 @@ def wrapper_main(spec_path: str) -> int:
         # narrative, not a duplicate record of domain state). INTERRUPTED is
         # a handled, operator/supervisor-triggered stop (degraded, not a
         # crash) -> WARNING; a genuine process error -> ERROR (§5's "attempt
-        # errored"); LIMIT/BLOCKED are soft, handled outcomes -> WARNING.
+        # errored"); LIMIT/BLOCKED/SCOPE_AMENDMENT (B21 2026-07-23, D-R16 §3
+        # -- a bounded, never-a-dead-end escalation, same soft-outcome shape
+        # as LIMIT/BLOCKED) are soft, handled outcomes -> WARNING.
         if attempt_state is AttemptState.INTERRUPTED:
             log.warning("attempt-exit", project=spec.project, task=spec.task_id,
                         attempt=spec.attempt_id, result=result.value, exit_code=child_exit_code)
         elif result is ReceiptResult.DONE:
             log.debug("attempt-exit", project=spec.project, task=spec.task_id,
                       attempt=spec.attempt_id, result=result.value, exit_code=child_exit_code)
-        elif result in (ReceiptResult.LIMIT, ReceiptResult.BLOCKED):
+        elif result in (ReceiptResult.LIMIT, ReceiptResult.BLOCKED, ReceiptResult.SCOPE_AMENDMENT):
             log.warning("attempt-exit", project=spec.project, task=spec.task_id,
                         attempt=spec.attempt_id, result=result.value, exit_code=child_exit_code,
                         blocked_reason=blocked_reason)
@@ -458,6 +484,7 @@ def wrapper_main(spec_path: str) -> int:
             result=result,
             exit_code=child_exit_code,
             blocked_reason=blocked_reason,
+            amendment_request=amendment_request,
         )
 
         # Atomic write

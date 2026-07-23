@@ -29,7 +29,7 @@ from nyxloom import daemon, paths, storage
 from nyxloom.config import ProjectConfig
 from nyxloom.testing import FakeScript, FakeStep
 from nyxloom.types import (
-    AttemptState, BlockerType, EventType, Role, TaskState,
+    Actor, ActorKind, AttemptState, BlockerType, EventType, Role, TaskState,
 )
 
 TASK_ID = "demo-P01-sample"
@@ -414,6 +414,197 @@ def test_fake_blocked_exit_sets_typed_contract_blocker(behavioral_project, tmp_s
     assert tsf.blocker is not None
     assert tsf.blocker.type is BlockerType.CONTRACT
     assert "ambiguous scope" in (tsf.blocker.detail or "")
+
+
+# ===========================================================================
+# B21 2026-07-23 (D-R16 §3, scope-amendment escalation). O1: an IMPLEMENTER
+# whose log tail emits SCOPE_AMENDMENT_REQUEST: {...} gets a bounded,
+# never-a-dead-end fresh re-dispatch (the fix for the P26/P31 forbidden-
+# needed-file failure mode). O3: bounded -- past
+# daemon.MAX_SCOPE_AMENDMENTS_PER_TASK approvals, a further request falls
+# through to the SAME hard-BLOCK path CONTRACT-blocked receipts use above.
+# Modeled on test_fake_blocked_exit_sets_typed_contract_blocker (the BLOCKED
+# analog, just above) and test_reject_loop_requeues_never_strands (the >= 2
+# fresh-dispatch shape, just below).
+# ===========================================================================
+
+def test_scope_amendment_request_triggers_bounded_re_dispatch_not_blocked(
+    behavioral_project, tmp_state, fake_cli
+):
+    """O1: a SCOPE_AMENDMENT_REQUEST results in a FRESH implementer
+    re-dispatch (>= 2 implementer attempts created), exactly one
+    SCOPE_AMENDMENT_APPROVED event recorded for the requested file, and the
+    task NEVER lands in BLOCKED -- never the P26/P31 dead end (fake a
+    workaround, or hard-BLOCK) this package replaces."""
+    cfg = behavioral_project
+    fake_cli.queue(
+        TASK_ID, "implementer",
+        FakeStep(extra_stdout=(
+            'SCOPE_AMENDMENT_REQUEST: {"file": "src/demo/shared_helper.py", '
+            '"reason": "needs a shared helper outside scope.touch"}'
+        )),
+    )
+    fake_cli.queue(TASK_ID, "implementer", _impl_commit_step())
+
+    d = daemon.Daemon({"demo": cfg.root})
+    for _ in range(30):
+        _tick(d, "demo")
+        tsf = storage.load_state("demo", TASK_ID)
+        impl_attempts = [a for a in tsf.attempts if a.role is Role.IMPLEMENTER]
+        if len(impl_attempts) >= 2:
+            break
+
+    tsf = storage.load_state("demo", TASK_ID)
+    events = list(storage.iter_events("demo"))
+    impl_created = [e for e in events if e.type is EventType.ATTEMPT_CREATED
+                     and e.payload["attempt"]["role"] == "implementer"]
+    approved = [e for e in events if e.type is EventType.SCOPE_AMENDMENT_APPROVED
+                and e.task_id == TASK_ID]
+    tick_errors = [e for e in events if e.type is EventType.TICK_ERROR]
+
+    assert not tick_errors, f"reconcile pass raised: {[e.payload for e in tick_errors]}"
+    assert len(impl_created) >= 2, (
+        "the scope-amendment escalation must re-dispatch a FRESH implementer "
+        "attempt -- never a dead end"
+    )
+    assert len(approved) == 1
+    assert approved[0].payload.get("file") == "src/demo/shared_helper.py"
+    assert tsf.state != TaskState.BLOCKED, (
+        f"task must never be BLOCKED by a bounded scope-amendment request, got {tsf.state}"
+    )
+
+
+def test_scope_amendment_bounded_falls_through_to_blocked_at_cap(
+    behavioral_project, tmp_state, fake_cli
+):
+    """O3: after daemon.MAX_SCOPE_AMENDMENTS_PER_TASK approved amendments, a
+    FURTHER SCOPE_AMENDMENT_REQUEST for the SAME task lands in TASK_BLOCKED
+    with a typed CONTRACT blocker -- NOT another re-dispatch. Bounded, so the
+    escalation can never loop forever (mirrors D-R8's bounded reviewer-fix
+    cap)."""
+    cfg = behavioral_project
+    for n in range(daemon.MAX_SCOPE_AMENDMENTS_PER_TASK + 1):
+        fake_cli.queue(
+            TASK_ID, "implementer",
+            FakeStep(extra_stdout=(
+                f'SCOPE_AMENDMENT_REQUEST: {{"file": "src/demo/extra_{n}.py", '
+                f'"reason": "amendment number {n}"}}'
+            )),
+        )
+
+    d = daemon.Daemon({"demo": cfg.root})
+    for _ in range(40):
+        _tick(d, "demo")
+        tsf = storage.load_state("demo", TASK_ID)
+        if tsf and tsf.state == TaskState.BLOCKED:
+            break
+
+    tsf = storage.load_state("demo", TASK_ID)
+    events = list(storage.iter_events("demo"))
+    approved = [e for e in events if e.type is EventType.SCOPE_AMENDMENT_APPROVED
+                and e.task_id == TASK_ID]
+    tick_errors = [e for e in events if e.type is EventType.TICK_ERROR]
+
+    assert not tick_errors, f"reconcile pass raised: {[e.payload for e in tick_errors]}"
+    assert tsf.state == TaskState.BLOCKED
+    assert tsf.blocker is not None
+    assert tsf.blocker.type is BlockerType.CONTRACT
+    assert "scope-amendment cap" in (tsf.blocker.detail or "")
+    assert len(approved) == daemon.MAX_SCOPE_AMENDMENTS_PER_TASK, (
+        "the cap must stop approving at exactly MAX_SCOPE_AMENDMENTS_PER_TASK"
+    )
+
+
+def test_scope_amendment_helpers_degrade_gracefully_on_storage_error(
+    behavioral_project, tmp_state, monkeypatch
+):
+    """Defensive branch: Daemon._scope_amendments_approved/
+    _scope_amendment_files degrade to [] rather than raising if
+    storage.iter_events blows up (mirrors _ratchet_already_open's identical
+    try/except shape, just above the O2 section below) -- a transient
+    storage hiccup must never crash reconcile or misreport the amendment
+    count."""
+    cfg = behavioral_project
+    d = daemon.Daemon({"demo": cfg.root})
+
+    def _boom(project, since=0):
+        raise RuntimeError("simulated storage failure")
+
+    monkeypatch.setattr(storage, "iter_events", _boom)
+    assert d._scope_amendments_approved("demo", TASK_ID) == []
+    assert d._scope_amendment_files("demo", TASK_ID) == []
+
+
+def test_scope_amendment_files_reach_frontier_review_dispatch(
+    behavioral_project, tmp_state, fake_cli
+):
+    """O6 wiring (daemon-level, complements the O6 adapter-unit test in
+    test_adapters.py): LaunchReview's aggregation loop actually COMPUTES a
+    wave member's approved amendment file(s) (Daemon._scope_amendment_files)
+    and threads them into the real build_dispatch call, for a task that
+    genuinely reaches a review wave carrying an approved amendment -- not
+    just a synthetic direct call.
+
+    Seeds the SCOPE_AMENDMENT_APPROVED event directly (bypassing the actual
+    request/approve cycle, which O1/O3 above already cover) rather than
+    scripting a real SCOPE_AMENDMENT_REQUEST + a second implementer attempt.
+    Reason (found while writing this test, documented in LOG.md): daemon.py's
+    `_attempt_scan` (module contract item 4) rescans EVERY historical EXITED
+    IMPLEMENTER attempt on a task -- not just the latest -- whenever the task
+    is currently ACTIVE. Once a second real implementer attempt is dispatched
+    (task ACTIVE again), the FIRST (already-consumed) scope-amendment
+    attempt's stale receipt matches that same "EXITED while ACTIVE" catch-all
+    and gets a SECOND EmitAttemptExit planned in the same pass as the fresh
+    attempt's own exit -- a pre-existing daemon quirk (unrelated to and out
+    of scope for this package) that a two-attempt scope-amendment scenario
+    can trigger over enough ticks. A single clean implementer attempt (no
+    scope-amendment marker at all) with the approval event seeded ahead of
+    time reaches the same amendment-carrying-review state without it."""
+    cfg = behavioral_project
+    ptoml = cfg.root / ".nyxloom" / "project.toml"
+    ptoml.write_text(ptoml.read_text().replace(
+        "[project]\n",
+        '[project]\npipeline = ["carve", "implement", "frontier_review", '
+        '"triage", "auto_merge", "post_merge_gate"]\n', 1))
+
+    d = daemon.Daemon({"demo": cfg.root})
+    d.run_pass("demo")  # discover handoff -> CARVED (creates the statefile)
+
+    states = storage.list_states("demo")
+    storage.append_and_apply(
+        "demo", states,
+        actor=Actor(ActorKind.OPERATOR, "test-seed"),
+        type=EventType.SCOPE_AMENDMENT_APPROVED,
+        payload={"file": "src/demo/shared_helper.py", "reason": "test seed"},
+        task_id=TASK_ID,
+    )
+
+    fake_cli.queue(TASK_ID, "implementer", _impl_commit_step())
+    fake_cli.queue(TASK_ID, "review", _review_approve_step(cfg, TASK_ID))
+
+    for _ in range(30):
+        _tick(d, "demo")
+        tsf = storage.load_state("demo", TASK_ID)
+        if tsf and tsf.state in (TaskState.MERGE_READY, TaskState.REVIEW_REJECTED,
+                                   TaskState.BLOCKED):
+            break
+
+    tsf = storage.load_state("demo", TASK_ID)
+    assert tsf.state == TaskState.MERGE_READY, (
+        "the review dispatch must have actually run (and approved) for this "
+        f"assertion to mean anything about LaunchReview's amendment "
+        f"aggregation; got {tsf.state}"
+    )
+    review_attempts = [a for a in tsf.attempts if a.role is Role.FRONTIER_REVIEW]
+    assert review_attempts, "expected a real FRONTIER_REVIEW dispatch to have run"
+
+    approved = [e for e in storage.iter_events("demo")
+                if e.type is EventType.SCOPE_AMENDMENT_APPROVED and e.task_id == TASK_ID]
+    assert len(approved) == 1, (
+        "sanity: the task must still carry its approved amendment when the "
+        "review wave dispatched -- otherwise this test proves nothing about "
+        "the aggregation loop actually running with a non-empty list"
+    )
 
 
 # ===========================================================================

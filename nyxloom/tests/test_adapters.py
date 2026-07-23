@@ -1075,6 +1075,28 @@ def test_classify_log_tail_blocked():
     assert result == "blocked"
 
 
+def test_classify_log_tail_scope_amendment():
+    """O4 (B21 2026-07-23, D-R16 §3): 'SCOPE_AMENDMENT_REQUEST:' at line
+    start -> 'scope_amendment' -- the mid-flight escalation marker,
+    recognized the same way BLOCKED is (line-start match, anywhere in the
+    last 200 lines)."""
+    log = ('some log\nSCOPE_AMENDMENT_REQUEST: {"file": "src/x.py", '
+           '"reason": "needs shared helper"}\nmore log')
+    result = adapters.classify_log_tail(log)
+    assert result == "scope_amendment"
+
+
+def test_classify_log_tail_blocked_still_wins_no_regression():
+    """O4 NEGATIVE (no regression): classify_log_tail still returns 'blocked'
+    for a BLOCKED: line -- the new SCOPE_AMENDMENT_REQUEST recognizer must
+    not shadow or displace the pre-existing BLOCKED path. Also pins BLOCKED's
+    precedence when BOTH markers somehow appear in the same tail."""
+    assert adapters.classify_log_tail("BLOCKED: cannot meet contract") == "blocked"
+    both = ('BLOCKED: cannot meet contract\n'
+            'SCOPE_AMENDMENT_REQUEST: {"file": "x.py", "reason": "y"}')
+    assert adapters.classify_log_tail(both) == "blocked"
+
+
 def test_classify_log_tail_limit():
     """Oracle 8: 'rate limit exceeded' -> 'limit'."""
     log = "some log\nrate limit exceeded\nmore"
@@ -1371,6 +1393,150 @@ def test_implementer_prior_verdict_bounded_to_argv_max():
     assert len(prompt) <= 1500                       # never overflows the guard
     assert "REVIEWER FINDINGS" in prompt             # keeps the head of the review
     assert "truncated to fit" in prompt              # marked as truncated
+
+
+# ============================================================================
+# B21 2026-07-23 (D-R16 §3, scope-amendment escalation). Oracle O1: every
+# IMPLEMENTER dispatch carries the standing escape-hatch instruction. Oracle
+# O2: a re-dispatch with approved_amendments actually widens the PROMPT (the
+# mechanism D-B21-1's overlay depends on -- the handoff file itself is never
+# rewritten). Oracle O6: the FRONTIER_REVIEW prompt tells the reviewer about
+# approved amendments so it does not reject the now-legitimate out-of-scope
+# edit. Each pins a NEGATIVE so the assertion cannot pass hollowly.
+# ============================================================================
+
+def test_implementer_prompt_always_carries_scope_amendment_escape_hatch():
+    """O1: EVERY implementer dispatch (not just a re-dispatch) is told the
+    escape hatch exists -- the SCOPE_AMENDMENT_REQUEST marker syntax, and
+    that it replaces faking a workaround or hard-BLOCKing. NEGATIVE: a
+    CARVER dispatch (which never emits attempt receipts through this same
+    IMPLEMENTER-facing path) does NOT get this instruction."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER,
+    )
+    assert "SCOPE_AMENDMENT_REQUEST:" in prompt
+    assert "do NOT hard-BLOCK" in prompt
+
+    _a2, carver_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.CARVER, carve_authority="branch",
+    )
+    assert "SCOPE_AMENDMENT_REQUEST:" not in carver_prompt
+
+
+def test_implementer_re_dispatch_widens_prompt_with_approved_amendments():
+    """O2: after an amendment is approved for file X, the re-dispatched
+    IMPLEMENTER prompt CONTAINS X in an amendment-approved instruction --
+    the widened allowlist actually reaches the agent's next attempt (D-B21-1:
+    this prompt injection, not a handoff rewrite, IS the widening mechanism).
+    NEGATIVE: approved_amendments=None (no amendment history -- every pre-B21
+    dispatch) produces NO such block, and does not mention the file."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER, approved_amendments=["src/demo/shared_helper.py"],
+    )
+    assert "Amendment-approved" in prompt
+    assert "src/demo/shared_helper.py" in prompt
+    assert "you MAY also edit" in prompt
+
+    _a2, plain_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.IMPLEMENTER, approved_amendments=None,
+    )
+    assert "Amendment-approved" not in plain_prompt
+    assert "src/demo/shared_helper.py" not in plain_prompt
+
+
+def test_approved_amendments_only_embedded_for_implementer():
+    """The docstring's claim generalizes prior_verdict's own pin (test
+    above): approved_amendments passed to a FRONTIER_REVIEW dispatch does NOT
+    get the IMPLEMENTER-worded 'you MAY also edit' embed (the reviewer gets
+    its OWN differently-worded note instead -- see the O6 test below)."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.FRONTIER_REVIEW, approved_amendments=["src/demo/shared_helper.py"],
+    )
+    assert "you MAY also edit" not in prompt
+
+
+def test_frontier_review_prompt_tells_reviewer_about_approved_amendments():
+    """O6: the FRONTIER_REVIEW prompt for a task with approved amendments
+    includes the granted file(s) as in-scope, so the reviewer does not reject
+    the (now-legitimate) out-of-scope edit as a scope violation. NEGATIVE: no
+    approved_amendments (the common case -- most reviews have no amendment
+    history) produces NO such note."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.FRONTIER_REVIEW, approved_amendments=["src/demo/shared_helper.py"],
+    )
+    assert "src/demo/shared_helper.py" in prompt
+    assert "legitimately in-scope" in prompt
+
+    _a2, plain_prompt = adapters.build_dispatch(
+        _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
+        task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
+        role=Role.FRONTIER_REVIEW,
+    )
+    assert "src/demo/shared_helper.py" not in plain_prompt
+    assert "Scope-amendment note" not in plain_prompt
+
+
+def test_implementer_amendment_note_skipped_when_argv_max_too_tight():
+    """B21 regression guard (found LIVE while writing the behavioral test:
+    an earlier unconditional version of the FRONTIER_REVIEW counterpart of
+    this note overflowed argv_max for a realistic packet path and
+    permanently stranded a review attempt at CREATED -- see LOG.md). The
+    amendment-approved note must be BOUNDED like prior_verdict's embed:
+    skipped (never raising, never truncated mid-list) when too little room
+    remains. NEGATIVE: the base prompt WITHOUT the note still fits and is
+    dispatched -- degrade, never strand."""
+    kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
+              task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
+    route_wide = _fake_route()
+    _a, base_prompt = adapters.build_dispatch(route_wide, role=Role.IMPLEMENTER, **kw)
+
+    # A route whose argv_max sits strictly between the base prompt's length
+    # and (base + note)'s length: the base fits, the note-augmented one does
+    # not.
+    tight_route = RouteDef(route_id="tight", cli="fake", model="m", argv_max=len(base_prompt) + 20)
+    _argv, prompt = adapters.build_dispatch(
+        tight_route, role=Role.IMPLEMENTER, approved_amendments=["src/demo/shared_helper.py"], **kw)
+
+    assert "Amendment-approved" not in prompt   # skipped, not truncated
+    assert "src/demo/shared_helper.py" not in prompt
+    assert len(prompt) <= tight_route.argv_max   # never raises AdapterError
+    assert prompt == base_prompt                 # byte-identical to the no-amendments dispatch
+
+
+def test_frontier_review_amendment_note_skipped_when_argv_max_too_tight():
+    """B21 regression guard: the LIVE-observed failure mode (see LOG.md/
+    the test above) was specifically on THIS branch -- the reviewer prompt
+    is already close to argv_max with real packet paths, so an unconditional
+    note overflowed it and permanently stranded a review dispatch (the
+    daemon never retries a review whose Attempt record already exists).
+    Same bounded "skip, never strand" fix as the IMPLEMENTER side."""
+    kw = dict(handoff_path="h.md", worktree="/wt", branch="feat/T1",
+              task_id="T1", gate_hint="pytest -q", receipt_path="r.json")
+    route_wide = _fake_route()
+    _a, base_prompt = adapters.build_dispatch(
+        route_wide, role=Role.FRONTIER_REVIEW, attempt_id="att-x", **kw)
+
+    tight_route = RouteDef(route_id="tight", cli="fake", model="m", argv_max=len(base_prompt) + 20)
+    _argv, prompt = adapters.build_dispatch(
+        tight_route, role=Role.FRONTIER_REVIEW, attempt_id="att-x",
+        approved_amendments=["src/demo/shared_helper.py"], **kw)
+
+    assert "Scope-amendment note" not in prompt
+    assert "src/demo/shared_helper.py" not in prompt
+    assert len(prompt) <= tight_route.argv_max
+    assert prompt == base_prompt
 
 
 # ---------------------------------------------------------------------------

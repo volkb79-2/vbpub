@@ -168,6 +168,14 @@ class ReceiptResult(enum.Enum):
     BLOCKED = "blocked"
     LIMIT = "limit"
     ERROR = "error"
+    # B21 2026-07-23 (D-R16 §3, scope-amendment escalation): a mid-flight
+    # "I need file X outside my scope.touch allowlist" request, recognized by
+    # adapters.classify_log_tail's SCOPE_AMENDMENT_REQUEST: marker and
+    # translated here by wrapper.py -- a DISTINCT outcome from BLOCKED (the
+    # daemon's EmitAttemptExit branches on it separately: approve-and-requeue
+    # under the per-task cap, else fall through to the same hard-BLOCK).
+    # Additive only -- DONE/BLOCKED/LIMIT/ERROR are unchanged.
+    SCOPE_AMENDMENT = "scope_amendment"
 
 
 class Basis(enum.Enum):
@@ -191,6 +199,17 @@ class EventType(enum.Enum):
     TASK_CREATED = "TASK_CREATED"
     TASK_TRANSITIONED = "TASK_TRANSITIONED"
     TASK_BLOCKED = "TASK_BLOCKED"
+    # B21 2026-07-23 (D-R16 §3, scope-amendment escalation). No TaskStateFile
+    # projection (storage.apply_event does not special-case either -- same
+    # shape as other pass-through event types like DECISION_OPENED): daemon.py
+    # counts prior SCOPE_AMENDMENT_APPROVED events for a task by scanning
+    # storage.iter_events directly (mirrors _ratchet_already_open's own
+    # event-log scan), not via the projected tsf. REQUESTED is the raw ask
+    # (file/reason); APPROVED is emitted only when the per-task cap
+    # (daemon.MAX_SCOPE_AMENDMENTS_PER_TASK) is not yet reached, and its
+    # count IS the cap's enforcement mechanism.
+    SCOPE_AMENDMENT_REQUESTED = "SCOPE_AMENDMENT_REQUESTED"
+    SCOPE_AMENDMENT_APPROVED = "SCOPE_AMENDMENT_APPROVED"
     TASK_SUPERSEDED = "TASK_SUPERSEDED"
     TASK_CANCELLED = "TASK_CANCELLED"
     CARVE_OUTCOME = "CARVE_OUTCOME"
@@ -406,6 +425,13 @@ class Receipt(_Serde):
     blocked_reason: str | None = None
     files_touched: list[str] = field(default_factory=list)
     head_commit: str | None = None
+    # B21 2026-07-23 (D-R16 §3): populated by wrapper.py only when
+    # result is SCOPE_AMENDMENT -- {"file": <path>, "reason": <str>} parsed
+    # from the agent's SCOPE_AMENDMENT_REQUEST: marker line. None for every
+    # other result (additive field; a plain dict passes through _Serde's
+    # generic to_dict/from_dict with no _FIELD_TYPES converter needed, same
+    # as payload dicts elsewhere in this module).
+    amendment_request: dict | None = None
 
     _FIELD_TYPES = {"result": ReceiptResult, "oracles": _list_of(OracleResult.from_dict)}
 
