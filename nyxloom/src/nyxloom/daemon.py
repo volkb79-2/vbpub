@@ -379,6 +379,17 @@ HISTORY_REJECTION_WINDOW_SECONDS = 7 * 24 * 3600
 # never a wrong-direction outcome.
 RUNAWAY_PERSIST_AFTER_CYCLES = 3
 
+# B21 2026-07-23 (D-R16 §3, scope-amendment escalation; D-B21-2): the bounded
+# cap on mid-flight scope.touch widenings PER TASK -- a module constant, not a
+# config.Policy field (Policy is frozen for this package, same reasoning as
+# HISTORY_REJECTION_WINDOW_SECONDS/RUNAWAY_PERSIST_AFTER_CYCLES above).
+# Enforced by counting prior SCOPE_AMENDMENT_APPROVED events for the task (see
+# Daemon._scope_amendments_approved): under the cap, a SCOPE_AMENDMENT_REQUEST
+# receipt is approved and the task re-dispatched; at the cap, it falls through
+# to the SAME hard-BLOCK path CONTRACT-blocked receipts use -- bounded, never
+# an infinite loop (mirrors D-R8's bounded reviewer-fix cap).
+MAX_SCOPE_AMENDMENTS_PER_TASK = 2
+
 # P02 2026-07-21 (docs/plan-logging.md §3 D-L3, §4.4): bootstrap env var for
 # the daemon-global log level -- layer 2 of the verbosity precedence chain
 # (below the runtime-override file, above a project's own `[logging] level`).
@@ -1369,6 +1380,40 @@ class Daemon:
             return False
         return any(ev.type is EventType.SPEC_ATTENTION and ev.payload.get("reason") == "ratchet"
                    for ev in recent)
+
+    def _scope_amendments_approved(self, project: str, task_id: str) -> list[dict]:
+        """B21 2026-07-23 (D-R16 §3): every SCOPE_AMENDMENT_APPROVED event
+        payload recorded for this task, in log order. SCOPE_AMENDMENT_APPROVED
+        has no TaskStateFile projection (storage.apply_event does not
+        special-case it -- same pass-through shape as DECISION_OPENED and
+        other events the projection switch does not touch), so counting/
+        reading it back requires a direct event-log scan, not the projected
+        tsf -- mirrors _ratchet_already_open's own iter_events scan just
+        above. Unlike that helper's 500-event recent window, this is NOT
+        windowed: MAX_SCOPE_AMENDMENTS_PER_TASK is a per-task LIFETIME cap
+        (the whole point of D-B21-2's bound), so an old approval scrolling
+        out of a recent-N window must never let the cap silently re-open."""
+        try:
+            events = list(storage.iter_events(project))
+        except Exception:
+            return []
+        return [ev.payload for ev in events
+                if ev.type is EventType.SCOPE_AMENDMENT_APPROVED and ev.task_id == task_id]
+
+    def _scope_amendment_files(self, project: str, task_id: str) -> list[str]:
+        """B21: the granted file path(s) from every approved amendment for
+        this task, in approval order, de-duplicated. Fed to build_dispatch's
+        `approved_amendments` kwarg -- both the IMPLEMENTER re-dispatch (D-
+        B21-1: the widened allowlist reaches the agent via the PROMPT, never
+        by rewriting the handoff's scope.touch on disk) and the FRONTIER_
+        REVIEW dispatch (so the reviewer does not reject the now-legitimate
+        out-of-scope edit)."""
+        files: list[str] = []
+        for payload in self._scope_amendments_approved(project, task_id):
+            f = payload.get("file")
+            if f and f not in files:
+                files.append(f)
+        return files
 
     def _days_since_test_health_carve(self, project: str) -> float | None:
         """D-065 (B63 2026-07-20): age in days of the most recent test-health
@@ -3169,10 +3214,17 @@ class Daemon:
             # the fix is targeted -- never a bare context-free same-model retry.
             # None on a first dispatch (no committed review yet) -> unchanged prompt.
             prior_verdict = self._review_rationale(cfg, task_id)
+            # B21 2026-07-23 (D-R16 §3, D-B21-1 overlay): any file(s) a PRIOR
+            # SCOPE_AMENDMENT_REQUEST for this task already had approved --
+            # [] on a task with no amendment history (every pre-B21 dispatch,
+            # unchanged). Injected into the prompt so the widened allowlist
+            # actually reaches this re-dispatched attempt.
+            approved_amendments = self._scope_amendment_files(project, task_id)
             argv, _prompt = adapters.build_dispatch(
                 route_def, handoff_path=tsf.handoff_path or "", worktree=str(worktree_path),
                 branch=branch, task_id=task_id, gate_hint=gate_hint, receipt_path=receipt_path,
                 role=Role.IMPLEMENTER, prior_verdict=prior_verdict,
+                approved_amendments=approved_amendments,
             )
             spec = wrapper.WrapperSpec(
                 project=project, task_id=task_id, attempt_id=attempt_id, argv=argv,
@@ -3544,6 +3596,50 @@ class Daemon:
                 events.append(self._append_ev(project, cfg, states, EventType.TASK_BLOCKED,
                                                {"from": states[task_id].state.value,
                                                 "blocker": blocker.to_dict()}, task_id=task_id))
+            elif result is ReceiptResult.SCOPE_AMENDMENT:
+                # B21 2026-07-23 (D-R16 §3, scope-amendment escalation): a
+                # mid-flight "I need file X outside my scope.touch allowlist"
+                # request (see adapters.classify_log_tail's SCOPE_AMENDMENT_
+                # REQUEST: marker + wrapper.py's receipt translation). Bounded
+                # like D-R8's reviewer-fix cap: under
+                # MAX_SCOPE_AMENDMENTS_PER_TASK prior approvals for this task,
+                # approve it (record BOTH the raw request and the approval as
+                # events -- the APPROVED count IS the cap's enforcement) and
+                # re-dispatch via the EXISTING legal ACTIVE->QUEUED edge (the
+                # same one the LIMIT branch below uses) -- no new TaskState,
+                # no TASK_TRANSITIONS edit (D-B21-3). The widened allowlist
+                # itself never touches the handoff file on disk (D-B21-1
+                # overlay) -- DispatchImplementer's build_dispatch call
+                # reads these SAME SCOPE_AMENDMENT_APPROVED events back
+                # (_scope_amendment_files) and injects the approved file(s)
+                # into the re-dispatch prompt. At the cap, fall through to
+                # the SAME hard-BLOCK the CONTRACT-blocked path above uses --
+                # this is what makes the escalation bounded, never an
+                # infinite loop.
+                amendment = receipt.amendment_request or {}
+                requested_file = amendment.get("file") or "(unspecified)"
+                reason = amendment.get("reason") or ""
+                prior_count = len(self._scope_amendments_approved(project, task_id))
+                if prior_count < MAX_SCOPE_AMENDMENTS_PER_TASK:
+                    events.append(self._append_ev(
+                        project, cfg, states, EventType.SCOPE_AMENDMENT_REQUESTED,
+                        {"file": requested_file, "reason": reason}, task_id=task_id))
+                    events.append(self._append_ev(
+                        project, cfg, states, EventType.SCOPE_AMENDMENT_APPROVED,
+                        {"file": requested_file, "reason": reason}, task_id=task_id))
+                    events.append(self._transition(
+                        project, cfg, states, task_id, TaskState.QUEUED,
+                        f"scope amendment approved: {requested_file} -- "
+                        "re-dispatching with widened allowlist"))
+                else:
+                    blocker = Blocker(
+                        type=BlockerType.CONTRACT,
+                        unblock_condition="triage BLOCKED reason",
+                        detail=(f"scope-amendment cap ({MAX_SCOPE_AMENDMENTS_PER_TASK}) "
+                                f"reached; further request: {requested_file} -- {reason}")[:200])
+                    events.append(self._append_ev(project, cfg, states, EventType.TASK_BLOCKED,
+                                                   {"from": states[task_id].state.value,
+                                                    "blocker": blocker.to_dict()}, task_id=task_id))
             elif result is ReceiptResult.LIMIT:
                 events.append(self._transition(project, cfg, states, task_id, TaskState.QUEUED, None))
                 events.extend(self._provider_pause(project, cfg, states, attempt.route.route_id, task_id))
@@ -3745,6 +3841,16 @@ class Daemon:
             gate_hint = self._gate_hint(cfg)
             receipt_path = str(attempt_dir / "receipt.json")
             packet_md = str(packet_dir / "packet.md")
+            # B21 2026-07-23 (D-R16 §3): aggregate every approved scope-
+            # amendment file across ALL wave members, so the reviewer is
+            # told about every widened allowlist in this review, not just
+            # one member's. [] on a wave with no amendment history (every
+            # pre-B21 review, unchanged).
+            approved_amendments: list[str] = []
+            for t in members:
+                for f in self._scope_amendment_files(project, t):
+                    if f not in approved_amendments:
+                        approved_amendments.append(f)
             if action.resume_session:
                 # B6/P74 (D-R10): WARM resume of a prior review session -> the
                 # ~35-40k role-contract/orientation prefix replays from prompt
@@ -3768,6 +3874,7 @@ class Daemon:
                     branch=cfg.default_branch, task_id=first_task or wave_id or "review",
                     gate_hint=gate_hint, receipt_path=receipt_path, role=Role.FRONTIER_REVIEW,
                     attempt_id=attempt_id,  # P59b (A7): reviewer stamps this on the VERDICT line
+                    approved_amendments=approved_amendments,
                 )
             # P61 (A9): the review holds the UNION of its members' leases, so a
             # concurrent carve/dispatch cannot touch a task while it is under

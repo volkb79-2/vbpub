@@ -584,6 +584,13 @@ KNOWN_IGNORED_EVENT_TYPES: frozenset[EventType] = frozenset({
     EventType.CARVE_OUTCOME,
     EventType.DECISION_OPENED,
     EventType.DECISION_RESOLVED,
+    # B21 2026-07-23 (D-R16 §3): scope-amendment events are pass-through --
+    # daemon.py counts them by scanning storage.iter_events directly (no
+    # TaskStateFile projection), so apply_event intentionally ignores them
+    # (same no-op shape as DECISION_OPENED/RESOLVED above). Registered here so
+    # the projection-guard invariant does not read them as silently-dropped.
+    EventType.SCOPE_AMENDMENT_REQUESTED,
+    EventType.SCOPE_AMENDMENT_APPROVED,
     EventType.PROVIDER_STATE_CHANGED,
     # GATE_STARTED/REVIEW_RECORDED/EVIDENCE_RECORDED/WAVE_CLOSED: audit-only
     # markers whose real state consequence (if any) arrives via a SEPARATE,

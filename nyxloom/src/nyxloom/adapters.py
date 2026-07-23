@@ -177,7 +177,8 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
                    receipt_path: str, role: Role = Role.IMPLEMENTER,
                    carve_authority: str | None = None,
                    attempt_id: str | None = None,
-                   prior_verdict: str | None = None) -> tuple[list[str], str]:
+                   prior_verdict: str | None = None,
+                   approved_amendments: list[str] | None = None) -> tuple[list[str], str]:
     """Returns (argv, prompt). See module contract for per-CLI shapes.
 
     P44 2026-07-19: `role` selects the PROMPT TEXT only (the per-CLI argv
@@ -198,6 +199,22 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
     the same handoff. Defaults None (a first dispatch, or any non-implementer
     role) -> the prompt is byte-identical to the pre-B4b text. Only the
     IMPLEMENTER branch consults it.
+
+    B21 2026-07-23 (D-R16 §3, scope-amendment escalation; D-B21-1 overlay --
+    the handoff's scope.touch on disk is never rewritten, this is the ONLY
+    widening mechanism): every IMPLEMENTER dispatch now also carries a
+    standing instruction for the escape hatch -- if the agent genuinely needs
+    a file outside its scope.touch allowlist, emit a `SCOPE_AMENDMENT_
+    REQUEST: {...}` marker and stop, instead of faking a workaround or
+    hard-BLOCKing (the P26/P31 dead end this package fixes). `approved_
+    amendments`, when given, is the list of file paths a PRIOR request for
+    THIS task already had approved (the daemon counts these from
+    SCOPE_AMENDMENT_APPROVED events) -- an IMPLEMENTER re-dispatch embeds them
+    as "you MAY also edit" so the widened allowlist actually reaches the
+    agent's next attempt. A FRONTIER_REVIEW dispatch instead tells the
+    reviewer which files were approved, so it does not reject the (now
+    legitimate) out-of-scope edit as a scope violation. Defaults None (no
+    amendments yet) -> byte-identical to the pre-B21 prompt for both roles.
     """
     # Construct the prompt (short, names handoff, worktree, branch, gate, receipt)
     if role is Role.CARVER:
@@ -286,8 +303,17 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
             "product>` (fixable=local defect, fix on retry; architectural=re-carve; "
             "product=human decision). Omit it on APPROVED."
         )
+        # B21 2026-07-23 (D-R16 §3): the scope-amendment note (if any) is
+        # appended LATER, after argv_max is known -- this prompt is already
+        # close to argv_max with real paths (see
+        # test_frontier_review_prompt_stays_under_argv_max_with_real_paths),
+        # so it MUST be bounded the same way prior_verdict's embed below is,
+        # not appended unconditionally here.
     else:
-        # IMPLEMENTER (default). Byte-for-byte identical to the pre-P44 text.
+        # IMPLEMENTER (default). The pre-P44 core text is preserved verbatim;
+        # B21 2026-07-23 appends the standing scope-amendment escape-hatch
+        # instruction below -- so this literal is no longer byte-identical to
+        # pre-P44 (the escape hatch ships on EVERY implementer dispatch).
         prompt = (
             f"Handoff: {handoff_path}\n"
             f"Worktree: {worktree}\n"
@@ -305,6 +331,15 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
             "before finishing. Uncommitted work will be surfaced to review but "
             "risks loss on worktree teardown — committing is required for a "
             "clean review."
+            # B21 2026-07-23 (D-R16 §3): the scope-amendment escape hatch --
+            # replaces the old dead end (fake a workaround, or hard-BLOCK)
+            # that stranded P26/P31 when the correct fix needed a file outside
+            # scope.touch. Standing instruction on EVERY implementer dispatch.
+            "\nIf you genuinely need to edit a file outside your `scope.touch` "
+            "allowlist, do NOT fake a workaround and do NOT hard-BLOCK. Emit "
+            "exactly one line `SCOPE_AMENDMENT_REQUEST: {\"file\": \"<path>\", "
+            "\"reason\": \"<why>\"}` and stop; your allowlist will be widened "
+            "and you will be re-dispatched."
         )
 
     # Append incremental-write hint if present
@@ -342,6 +377,57 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
             if len(body) > room:
                 body = body[: room - len(marker)].rstrip() + marker
             prompt += header + body
+
+    # B21 2026-07-23 (D-R16 §3): the actual allowlist-widening the escape
+    # hatch promises -- a re-dispatch for a task with prior approved
+    # amendments tells the agent WHICH files it may now also touch. Appended
+    # last (after prior_verdict) and BOUNDED to the remaining argv budget --
+    # skip entirely (never truncate mid-list) if too little room remains,
+    # same "degrade, never strand the dispatch" philosophy as prior_verdict's
+    # embed above. Discovered live (not just theoretical): an EARLIER
+    # unconditional version of this same idea on the FRONTIER_REVIEW side
+    # (below) overflowed argv_max for realistic packet paths and permanently
+    # stranded a review attempt at CREATED (build_dispatch raised
+    # AdapterError, and the daemon never retries a review whose Attempt
+    # record already exists) -- see LOG.md for the full trace. Amendment
+    # file lists are normally short, but "normally" is not a bound.
+    if role is Role.IMPLEMENTER and approved_amendments:
+        files_str = ", ".join(approved_amendments)
+        note = (
+            f"\n\nAmendment-approved — you MAY also edit: {files_str} (a "
+            "prior SCOPE_AMENDMENT_REQUEST for this task was approved; these "
+            "files are now in-scope in addition to your original scope.touch "
+            "allowlist)."
+        )
+        if len(prompt) + len(note) <= argv_max:
+            prompt += note
+        # else: skip -- dispatching without the widened-allowlist note beats
+        # not dispatching at all (the agent still has its base scope.touch;
+        # the SCOPE_AMENDMENT_REQUEST escape hatch remains available for a
+        # follow-up request if it needs the file again).
+
+    # B21 2026-07-23 (D-R16 §3): the reviewer-facing counterpart -- tell the
+    # reviewer about any mid-flight scope.touch widening approved for this
+    # wave's task(s), so the (now-legitimate) out-of-scope file(s) are not
+    # mistaken for a scope violation and rejected on that basis alone.
+    # Bounded for the SAME reason as the IMPLEMENTER note above (this is the
+    # branch where the overflow was actually observed): the FRONTIER_REVIEW
+    # prompt is already close to argv_max with real packet paths.
+    if role is Role.FRONTIER_REVIEW and approved_amendments:
+        files_str = ", ".join(approved_amendments)
+        note = (
+            f"\nScope-amendment note: {files_str} were approved mid-flight "
+            "beyond this task's original scope.touch allowlist (a prior "
+            "SCOPE_AMENDMENT_REQUEST was granted) -- treat them as "
+            "legitimately in-scope; do not reject solely for touching them."
+        )
+        if len(prompt) + len(note) <= argv_max:
+            prompt += note
+        # else: skip -- the review still dispatches; worst case the reviewer
+        # flags the amended file as out-of-scope and rejects, a recoverable
+        # outcome (reject-loop re-queue) vs. a permanently stranded review
+        # attempt (AdapterError here would abort a dispatch whose Attempt
+        # record was already created and is never retried -- see LOG.md).
 
     # Check prompt length
     if len(prompt) > argv_max:
@@ -694,6 +780,12 @@ def classify_log_tail(text: str) -> str | None:
     - BLOCKED: still recognized anywhere in the last 200 lines (the agent
       writes it as a deliberate final marker; a line-start match is
       unambiguous).
+    - SCOPE_AMENDMENT_REQUEST: (B21 2026-07-23, D-R16 §3) recognized the same
+      way as BLOCKED -- a line-start match anywhere in the last 200 lines.
+      This is the mid-flight "I need file X outside scope.touch" escalation:
+      distinct from BLOCKED (never a dead end -- wrapper.py/daemon.py route
+      it to a bounded approve-and-requeue instead of a hard block). BLOCKED
+      still takes precedence if BOTH somehow appear (checked first, below).
     - limit phrases only count in the last LIMIT_TAIL_LINES lines AND only
       when the line looks like a CLI/error surface (starts with a known
       error prefix or contains 'error'/'exceeded'/HTTP 429), not arbitrary
@@ -705,6 +797,9 @@ def classify_log_tail(text: str) -> str | None:
 
     if any(line.startswith("BLOCKED:") for line in tail200):
         return "blocked"
+
+    if any(line.startswith("SCOPE_AMENDMENT_REQUEST:") for line in tail200):
+        return "scope_amendment"
 
     # Specific limit phrases only (never bare 'limit'/'quota'/'capped' — that
     # is domain vocabulary), and only in the terminal tail where a real
