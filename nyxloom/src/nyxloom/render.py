@@ -127,6 +127,10 @@ INTERFACE CONTRACT (frozen):
                     row. The view auto-scrolls to the newest event unless
                     the user has scrolled up. Degrades gracefully when
                     served from file:// (show note).
+    routing.html    id="capability-catalog" read-only persisted model
+                    capability catalog and id="tier-resolution" declared
+                    tier candidates in dispatch order. Availability is not
+                    persisted, so it is explicitly rendered as unknown.
 - All pages share one inline CSS block (COLORS constant maps TaskState ->
   color) and a nav header; valid HTML5; every dynamic string passes
   html.escape.
@@ -172,7 +176,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import decision_chat, decisions, intake_chat, paths, storage, config, frontmatter
+from . import capability_map, decision_chat, decisions, intake_chat, paths, storage, config, frontmatter
 from .log import get_logger
 from .types import TaskState, TaskStateFile, AttemptState, Basis, Frontmatter, BlockerType
 
@@ -294,6 +298,7 @@ NAV = """
   <a href="dag.html">DAG</a> |
   <a href="timeline.html">Timeline</a> |
   <a href="quality.html">Quality</a> |
+  <a href="routing.html">Routing</a> |
   <a href="live.html">Live</a> |
   <a href="logs.html">Logs</a> |
   <a href="config.html">Config</a> |
@@ -583,6 +588,9 @@ def render_all(registry: dict[str, Path]) -> Path:
 
     # Render config.html (P15 2026-07-15)
     _render_config(www, registry)
+
+    # Render routing.html (B19)
+    _render_routing(www, registry)
 
     # Render decisions.html (P18 2026-07-16: decision-chat bridge)
     _render_decisions(www, registry)
@@ -1221,6 +1229,81 @@ def _render_timeline(www: Path, all_states: dict[str, dict[str, TaskStateFile]])
 
     html_content = _html_head("Timeline") + content + _html_foot()
     (www / "timeline.html").write_text(html_content, encoding="utf-8")
+
+
+def _render_routing(www: Path, registry: dict[str, Path]) -> None:
+    """Render the persisted capability catalog and declared tier routes."""
+    log.debug("page render", page="routing")
+    try:
+        catalog = capability_map.load_capability_catalog()
+    except Exception:
+        catalog = None
+    try:
+        routes = config.Routes.load()
+    except Exception:
+        routes = None
+
+    catalog_rows = []
+    for record in sorted(catalog or [], key=lambda item: (item.model_id, item.source)):
+        scores = [html.escape(str(record.scores.get(axis, "—"))) for axis in capability_map.AXES]
+        bands = [html.escape(str(record.bands.get(axis, 0) or "—"))
+                 for axis in capability_map.AXES]
+        catalog_rows.append(f"""
+          <tr>
+            <td>{html.escape(record.model_id)}</td>
+            <td>{html.escape(record.source)}</td>
+            <td>{scores[0]}</td><td>{scores[1]}</td><td>{scores[2]}</td>
+            <td>{bands[0]}</td><td>{bands[1]}</td><td>{bands[2]}</td>
+            <td>{html.escape(str(record.price_input if record.price_input is not None else "—"))}</td>
+            <td>{html.escape(str(record.price_output if record.price_output is not None else "—"))}</td>
+            <td>{html.escape(str(record.context_length if record.context_length is not None else "—"))}</td>
+            <td>{html.escape(str(record.may_review))}</td>
+            <td>{html.escape(str(record.may_carve))}</td>
+            <td>unknown — not persisted</td>
+          </tr>
+        """)
+
+    tier_rows = []
+    if routes is not None:
+        for tier in sorted(routes.tiers):
+            candidates = routes.for_tier(tier)
+            if not candidates:
+                tier_rows.append(f"""
+                  <tr><td>{html.escape(tier)}</td><td colspan="6">No declared candidates</td></tr>
+                """)
+                continue
+            for index, route in enumerate(candidates):
+                rank = "winner" if index == 0 else "runner-up"
+                privacy = ("free-endpoint" if "free-endpoint" in route.prompt_hints
+                           else "standard")
+                tier_rows.append(f"""
+                  <tr>
+                    <td>{html.escape(tier)}</td>
+                    <td>{html.escape(rank)}</td>
+                    <td>{html.escape(route.route_id)}</td>
+                    <td>{html.escape(route.cli)}</td>
+                    <td>{html.escape(route.model)}</td>
+                    <td>{html.escape(route.status or "—")}</td>
+                    <td>{html.escape(privacy)}</td>
+                  </tr>
+                """)
+
+    content = f"""
+    <p>Dispatch selects the first candidate whose live probe is healthy; status is a declared attribute.</p>
+    <h2>Capability catalog</h2>
+    <table id="capability-catalog">
+      <thead><tr><th>Model</th><th>Source</th><th>Intelligence score</th><th>Coding score</th><th>Agentic score</th><th>Intelligence band</th><th>Coding band</th><th>Agentic band</th><th>Price in</th><th>Price out</th><th>Context length</th><th>May review</th><th>May carve</th><th>Availability</th></tr></thead>
+      <tbody>{"".join(catalog_rows) if catalog_rows else '<tr><td colspan="14">No persisted capability catalog.</td></tr>'}</tbody>
+    </table>
+    <p><em>Availability is unknown — not persisted (daemon.py:1066).</em></p>
+    <h2>Per-tier resolution</h2>
+    <table id="tier-resolution">
+      <thead><tr><th>Tier</th><th>Rank</th><th>Route</th><th>CLI</th><th>Model</th><th>Declared status</th><th>Privacy</th></tr></thead>
+      <tbody>{"".join(tier_rows) if tier_rows else '<tr><td colspan="7">No declared tiers.</td></tr>'}</tbody>
+    </table>
+    """
+    html_content = _html_head("Routing") + content + _html_foot()
+    (www / "routing.html").write_text(html_content, encoding="utf-8")
 
 
 def _render_quality(www: Path, registry: dict[str, Path], all_states: dict[str, dict[str, TaskStateFile]]) -> None:
