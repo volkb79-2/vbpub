@@ -82,16 +82,31 @@ ready_queue_target = 5
 # schema field the carver stamps but nothing ever re-validates against current
 # main before an implementer attempt starts, so carving 10-deep genuinely
 # raises stale-premise risk with no safety net yet.
-carve_ahead_target = 10
-test_health_interval_days = 14
-# D-065 2026-07-20 (B63): cadence for the project-WIDE test-health carve
-# (reconcile.py module contract item 15) -- a seldom-run pass where the
+carve_ahead_target = 0
+# 2026-07-19: TEMPORARY convergence freeze (operator directive) -- drain all
+# currently-carved/queued/active/awaiting-review/merge-ready work to a
+# terminal state, with no NEW headroom-refill carve dispatch (reconcile.py
+# item 9) starting in the meantime, so a deep review can converge on a
+# stable point. Does NOT stop item 12's READY_TO_CARVE re-carve handler
+# (not gated by carve_ahead_target) -- a task already in the backlog that
+# needs re-carving after an exhausted-budget rejection still gets one,
+# since that is finishing existing work, not starting new work. Restore to
+# 10 after the deep review.
+test_health_interval_days = 0
+# D-065 2026-07-20 (B63): cadence in days for the project-WIDE test-health
+# carve (reconcile.py module contract item 15) -- a seldom-run pass where the
 # strategic carver evaluates the SUITE's standing debt and carves test-
 # improvement packages. It complements the D-064-L2 diff-coverage gate: that
 # gate enforces coverage on lines a change TOUCHES and so is structurally
-# blind to code that was already there and already untested. 14 days keeps it
-# rare enough not to compete with real work (it takes the pass's single carve
-# slot when it fires). 0 disables; nyxloom sets it because nyxloom dogfoods.
+# blind to code that was already there and already untested.
+# The committed value is 14 (nyxloom dogfoods its own features). HELD AT 0
+# HERE, alongside the carve_ahead_target=0 freeze above and for the same
+# reason: item 15 is gated by its own cadence, NOT by carve_ahead_target, so
+# leaving it at 14 would fire a brand-new carve the moment the project
+# unpauses -- precisely the "no NEW work starting" the freeze exists to
+# prevent. Restore to 14 together with carve_ahead_target after the deep
+# review. (Its first fire is immediate whenever enabled: a null age means
+# "never run", which item 15 reads as "do a first pass".)
 max_attempts_per_task = 3
 merge_mode = "guarded-automatic"  # 2026-07-19: P48 shipped -- real git merge --no-ff
                                    # via a scratch worktree, escalates NEEDS_OPERATOR
