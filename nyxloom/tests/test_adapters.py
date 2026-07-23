@@ -1506,13 +1506,17 @@ def test_implementer_amendment_note_skipped_when_argv_max_too_tight():
     # and (base + note)'s length: the base fits, the note-augmented one does
     # not.
     tight_route = RouteDef(route_id="tight", cli="fake", model="m", argv_max=len(base_prompt) + 20)
+    # Baseline must be built under the SAME route: the doctrine manifest is
+    # argv-budgeted too (doc-ownership 2026-07-23), so comparing a tight build
+    # against a WIDE-route baseline would conflate two independent variables.
+    _b, tight_base = adapters.build_dispatch(tight_route, role=Role.IMPLEMENTER, **kw)
     _argv, prompt = adapters.build_dispatch(
         tight_route, role=Role.IMPLEMENTER, approved_amendments=["src/demo/shared_helper.py"], **kw)
 
     assert "Amendment-approved" not in prompt   # skipped, not truncated
     assert "src/demo/shared_helper.py" not in prompt
     assert len(prompt) <= tight_route.argv_max   # never raises AdapterError
-    assert prompt == base_prompt                 # byte-identical to the no-amendments dispatch
+    assert prompt == tight_base                  # byte-identical to the no-amendments dispatch
 
 
 def test_frontier_review_amendment_note_skipped_when_argv_max_too_tight():
@@ -1529,6 +1533,11 @@ def test_frontier_review_amendment_note_skipped_when_argv_max_too_tight():
         route_wide, role=Role.FRONTIER_REVIEW, attempt_id="att-x", **kw)
 
     tight_route = RouteDef(route_id="tight", cli="fake", model="m", argv_max=len(base_prompt) + 20)
+    # Baseline must be built under the SAME route: the doctrine manifest is
+    # argv-budgeted too (doc-ownership 2026-07-23), so comparing a tight build
+    # against a WIDE-route baseline would conflate two independent variables.
+    _b, tight_base = adapters.build_dispatch(
+        tight_route, role=Role.FRONTIER_REVIEW, attempt_id="att-x", **kw)
     _argv, prompt = adapters.build_dispatch(
         tight_route, role=Role.FRONTIER_REVIEW, attempt_id="att-x",
         approved_amendments=["src/demo/shared_helper.py"], **kw)
@@ -1536,7 +1545,7 @@ def test_frontier_review_amendment_note_skipped_when_argv_max_too_tight():
     assert "Scope-amendment note" not in prompt
     assert "src/demo/shared_helper.py" not in prompt
     assert len(prompt) <= tight_route.argv_max
-    assert prompt == base_prompt
+    assert prompt == tight_base
 
 
 # ---------------------------------------------------------------------------
@@ -1644,3 +1653,38 @@ def test_probe_generic_exception_emits_warning(tmp_path):
     assert failed[0]["level"] == "warning"
     assert failed[0]["route"] == "probe-route-boom"
     assert failed[0]["detail"] == "boom"
+
+
+# ---------------------------------------------------------------------------
+# Doc-ownership read-first manifest (2026-07-23)
+
+def test_implementer_prompt_carries_the_doctrine_manifest():
+    """Canonical doctrine ships with the product; the dispatch prompt emits a
+    read-first POINTER to it (never the content) plus the same-named
+    nyxloom-trove sibling convention for project overrides."""
+    _argv, prompt = adapters.build_dispatch(
+        _fake_route(),
+        handoff_path="nyxloom-trove/handoffs/t.md", worktree="/w", branch="b",
+        task_id="t", gate_hint="pytest -q", receipt_path="/r.json",
+        role=Role.IMPLEMENTER, attempt_id="att-1",
+    )
+    assert "reference/AUTHORING.md" in prompt
+    assert "reference/DOCTRINE.md" in prompt
+    assert "nyxloom-trove/" in prompt
+
+
+def test_doctrine_manifest_is_skipped_when_it_would_eat_argv_headroom():
+    """THE NEGATIVE: the manifest is a convenience, never a dispatch risk. With
+    an argv_max so tight that appending it would consume the reserved 200-char
+    headroom, it is dropped and the prompt still builds (a stranded dispatch is
+    strictly worse than a missing doc pointer)."""
+    route = _fake_route()
+    route.argv_max = 800
+    _argv, prompt = adapters.build_dispatch(
+        route,
+        handoff_path="nyxloom-trove/handoffs/t.md", worktree="/w", branch="b",
+        task_id="t", gate_hint="pytest -q", receipt_path="/r.json",
+        role=Role.IMPLEMENTER, attempt_id="att-1",
+    )
+    assert "reference/DOCTRINE.md" not in prompt
+    assert "Handoff:" in prompt          # the real prompt still built

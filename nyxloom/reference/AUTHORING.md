@@ -1,8 +1,15 @@
 # Writing a nyxloom handoff — the authoring guide
 
-> **Revision:** 2026-07-16-r2 · (bump on every substantive change; `nyxloom init`
-> copies carry this line so a project can detect a stale copy against the
-> canonical `nyxloom/nyxloom-trove/AUTHORING.md`.)
+> **Canonical doctrine — ships with the nyxloom product** (`reference/AUTHORING.md`).
+> This file is **not** copied into project troves. **Project-specific additions or
+> overrides live in the same-named sibling `nyxloom-trove/AUTHORING.md`** — when that
+> sibling exists, read it *after* this file; it refines (never replaces) the rules
+> here. One canonical source, one optional project delta.
+
+
+> **Revision:** 2026-07-23-r3 · (bump on every substantive change. Consumers no
+> longer hold copies to go stale — this file is read from the running nyxloom
+> product, so its revision is simply the product's doctrine version.)
 
 Point an implementation agent (or yourself) here when a feature/fix comes out of
 a discussion and needs to become a **handoff** — a self-contained work package.

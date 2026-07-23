@@ -63,11 +63,28 @@ def test_scaffold_trove_creates_the_p23_layout(tmp_path):
     trove_dir = onboarding.scaffold_trove(project_folder)
 
     assert trove_dir == project_folder / "nyxloom-trove"
-    for name in ("nyxloom.toml", "STANDARD.md", "AUTHORING.md", "decisions.md",
+    for name in ("nyxloom.toml", "README.md", "decisions.md",
                  "roadmap.md", "backlog.md", ".gitignore"):
         assert (trove_dir / name).is_file(), name
     for name in ("handoffs", "reports", "archive", "agent-logs"):
         assert (trove_dir / name).is_dir(), name
+
+
+def test_scaffold_trove_does_not_copy_canonical_doctrine(tmp_path):
+    """Doc-ownership 2026-07-23: canonical doctrine ships WITH the product under
+    reference/ and is read from there, so a trove must never hold a duplicate
+    that can go stale. The stamped README points at the upstream docs and
+    explains the same-named-sibling override convention."""
+    trove_dir = onboarding.scaffold_trove(tmp_path / "myproj")
+
+    for absent in ("AUTHORING.md", "STANDARD.md", "DOCTRINE.md"):
+        assert not (trove_dir / absent).exists(), absent
+
+    readme = (trove_dir / "README.md").read_text()
+    assert "reference/AUTHORING.md" in readme
+    assert "reference/DOCTRINE.md" in readme
+    assert "nyxloom-trove/AUTHORING.md" in readme      # the override convention
+    assert "myproj" in readme                          # stamped per project
 
 
 def test_scaffold_trove_refuses_existing(tmp_path):
@@ -211,11 +228,11 @@ def test_onboard_reuses_existing_trove_without_rescaffolding(tmp_path):
     not invoked again (no refusal, no re-copy)."""
     project_root = tmp_path / "myproj"
     trove_dir = onboarding.scaffold_trove(project_root)
-    standard_before = (trove_dir / "STANDARD.md").read_text()
+    readme_before = (trove_dir / "README.md").read_text()
 
     result = onboarding.run_wizard(project_root, _answers())
 
-    assert (trove_dir / "STANDARD.md").read_text() == standard_before
+    assert (trove_dir / "README.md").read_text() == readme_before
     assert len(result.created_docs) == 4
     assert result.skipped_docs == []
 
