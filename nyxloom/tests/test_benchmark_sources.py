@@ -7,6 +7,7 @@ and its internals get a dedicated urllib test, matching test_free_models.py.
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -226,6 +227,193 @@ class TestJSONHTTPSource:
         assert record.scores == {"intelligence": 1.0, "coding": 2.0, "agentic": 3.0}
 
 
+class TestOpenRouterBenchmarksSource:
+    catalog_url = benchmark_sources._OPENROUTER_CATALOG_URL
+
+    def _catalog(self):
+        return {"data": [
+            {"slug": "nvidia/nemotron-3-ultra-550b-a55b",
+             "permaslug": "nvidia/nemotron-3-ultra-550b-a55b-20260604",
+             "name": "NVIDIA: Nemotron 3 Ultra (free)", "context_length": 1000000},
+            {"slug": "nvidia/nemotron-3-super-120b-a12b",
+             "permaslug": "nvidia/nemotron-3-super-120b-a12b-20230311",
+             "name": "NVIDIA: Nemotron 3 Super (free)", "context_length": 262144},
+            {"slug": "cohere/north-mini-code",
+             "permaslug": "cohere/north-mini-code-20260617",
+             "name": "Cohere: North Mini Code (free)", "context_length": 256000},
+            {"slug": "deepseek/deepseek-v4-pro",
+             "permaslug": "deepseek/deepseek-v4-pro-20260423",
+             "name": "DeepSeek: DeepSeek V4 Pro", "context_length": 1048576},
+        ]}
+
+    def _cfg(self, **overrides):
+        cfg = {
+            "kind": "openrouter-benchmarks",
+            "slugs": [
+                "deepseek/deepseek-v4-pro",
+                "nvidia/nemotron-3-super-120b-a12b",
+                "cohere/north-mini-code",
+                "missing/model",
+            ],
+            "min_catalog": 4,
+        }
+        cfg.update(overrides)
+        return cfg
+
+    def _side_effect(self, catalog, scores_by_permaslug):
+        def fetch(url, *, headers=None, timeout=None):
+            if url == self.catalog_url:
+                return catalog
+            permaslug = urllib.parse.unquote(url.split("permaslug=", 1)[1])
+            return scores_by_permaslug[permaslug]
+        return fetch
+
+    def test_happy_path_skips_empty_and_missing_models(self):
+        catalog = self._catalog()
+        deepseek_scores = {"data": {"scores": [
+            {"provider_name": "auto-routing", "benchmark_type": "gpqa_diamond",
+             "score": 0.8678707173992051, "run_count": 3, "endpoint_id": None},
+            {"provider_name": "auto-routing", "benchmark_type": "tau_bench_verified_airline",
+             "score": 0.7719116058423616, "run_count": 3, "endpoint_id": None},
+            {"provider_name": "Alibaba", "benchmark_type": "gpqa_diamond",
+             "score": 0.8667693520355789, "run_count": 3, "endpoint_id": "8cd1..."},
+            {"provider_name": "AtlasCloud", "benchmark_type": "gpqa_diamond",
+             "score": 0.8713111324700634, "run_count": 3, "endpoint_id": "c661..."},
+        ]}}
+        empty = {"data": {"scores": []}}
+        scores = {
+            "deepseek/deepseek-v4-pro-20260423": deepseek_scores,
+            "nvidia/nemotron-3-super-120b-a12b-20230311": empty,
+            "cohere/north-mini-code-20260617": empty,
+        }
+        with patch("nyxloom.benchmark_sources._fetch_json",
+                   side_effect=self._side_effect(catalog, scores)) as fetch:
+            records = benchmark_sources.OpenRouterBenchmarksSource(
+                "openrouter", self._cfg()).fetch()
+
+        assert len(records) == 1
+        record = records[0]
+        assert record.model_id == "deepseek/deepseek-v4-pro"
+        assert record.scores == {"intelligence": 86.7871, "agentic": 77.1912}
+        assert record.context_length == 1048576
+        assert record.benchmark == "openrouter"
+        assert record.raw["model"] is catalog["data"][3]
+        assert record.raw["scores"] is deepseek_scores["data"]["scores"]
+        assert fetch.call_count == 4
+
+    def test_auto_routing_score_wins_over_provider_rows(self):
+        catalog = self._catalog()
+        scores = {"data": {"scores": [
+            {"provider_name": "auto-routing", "benchmark_type": "gpqa_diamond",
+             "score": 0.8678707173992051, "endpoint_id": None},
+            {"provider_name": "Alibaba", "benchmark_type": "gpqa_diamond",
+             "score": 0.8667693520355789, "endpoint_id": "provider"},
+        ]}}
+        with patch("nyxloom.benchmark_sources._fetch_json",
+                   side_effect=self._side_effect(catalog, {
+                       "deepseek/deepseek-v4-pro-20260423": scores})):
+            records = benchmark_sources.OpenRouterBenchmarksSource(
+                "openrouter", self._cfg(slugs=["deepseek/deepseek-v4-pro"])).fetch()
+        assert records[0].scores == {"intelligence": 86.7871}
+
+    def test_provider_mean_fallback_is_used_without_canonical_row(self):
+        catalog = self._catalog()
+        scores = {"data": {"scores": [
+            {"provider_name": "Alibaba", "benchmark_type": "provider_only",
+             "score": 0.2, "endpoint_id": "a"},
+            {"provider_name": "AtlasCloud", "benchmark_type": "provider_only",
+             "score": 0.8, "endpoint_id": "b"},
+            {"provider_name": "Alibaba", "benchmark_type": "not_numeric",
+             "score": "unavailable", "endpoint_id": "c"},
+        ]}}
+        with patch("nyxloom.benchmark_sources._fetch_json",
+                   side_effect=self._side_effect(catalog, {
+                       "deepseek/deepseek-v4-pro-20260423": scores})):
+            records = benchmark_sources.OpenRouterBenchmarksSource(
+                "openrouter", self._cfg(
+                    slugs=["deepseek/deepseek-v4-pro"],
+                    axis_map={"provider_only": "coding", "not_numeric": "agentic"})).fetch()
+        assert records[0].scores == {"coding": 50.0}
+
+    def test_out_of_range_axis_is_skipped_and_unmapped_rows_are_ignored(self):
+        catalog = self._catalog()
+        scores = {"data": {"scores": [
+            {"provider_name": "auto-routing", "benchmark_type": "gpqa_diamond",
+             "score": 1.5, "endpoint_id": None},
+            {"provider_name": "auto-routing", "benchmark_type": "tau_bench_verified_airline",
+             "score": 0.5, "endpoint_id": None},
+            {"provider_name": "auto-routing", "benchmark_type": "not_mapped",
+             "score": 0.99, "endpoint_id": None},
+        ]}}
+        with patch("nyxloom.benchmark_sources._fetch_json",
+                   side_effect=self._side_effect(catalog, {
+                       "deepseek/deepseek-v4-pro-20260423": scores})):
+            records = benchmark_sources.OpenRouterBenchmarksSource(
+                "openrouter", self._cfg(slugs=["deepseek/deepseek-v4-pro"])).fetch()
+        assert records[0].scores == {"agentic": 50.0}
+
+    def test_model_with_no_valid_mapped_scores_is_skipped(self):
+        catalog = self._catalog()
+        scores = {"data": {"scores": [
+            {"provider_name": "auto-routing", "benchmark_type": "gpqa_diamond",
+             "score": 1.5, "endpoint_id": None},
+            {"provider_name": "auto-routing", "benchmark_type": "unmapped",
+             "score": 0.99, "endpoint_id": None},
+        ]}}
+        with patch("nyxloom.benchmark_sources._fetch_json",
+                   side_effect=self._side_effect(catalog, {
+                       "deepseek/deepseek-v4-pro-20260423": scores})):
+            assert benchmark_sources.OpenRouterBenchmarksSource(
+                "openrouter", self._cfg(slugs=["deepseek/deepseek-v4-pro"])).fetch() == []
+
+    def test_missing_or_malformed_scores_are_tolerated(self):
+        catalog = self._catalog()
+        malformed = {"data": {}}
+        with patch("nyxloom.benchmark_sources._fetch_json",
+                   side_effect=self._side_effect(catalog, {
+                       "deepseek/deepseek-v4-pro-20260423": malformed})):
+            assert benchmark_sources.OpenRouterBenchmarksSource(
+                "openrouter", self._cfg(slugs=["deepseek/deepseek-v4-pro"])).fetch() == []
+
+    def test_permaslug_falls_back_to_slug(self):
+        catalog = {"data": [
+            {"slug": "deepseek/deepseek-v4-pro"},
+            {"slug": "target/model", "context_length": "123"},
+        ]}
+        scores = {"data": {"scores": [
+            {"provider_name": "auto-routing", "benchmark_type": "gpqa_diamond",
+             "score": 0.5, "endpoint_id": None},
+        ]}}
+        with patch("nyxloom.benchmark_sources._fetch_json",
+                   side_effect=self._side_effect(catalog, {"target/model": scores})):
+            records = benchmark_sources.OpenRouterBenchmarksSource(
+                "openrouter", self._cfg(
+                    slugs=["target/model"], min_catalog=2)).fetch()
+        assert records[0].context_length == 123
+        assert records[0].scores == {"intelligence": 50.0}
+
+    def test_missing_slugs_raise_before_network(self):
+        with patch("nyxloom.benchmark_sources._fetch_json") as fetch:
+            with pytest.raises(benchmark_sources.BenchmarkSourceError, match="slugs"):
+                benchmark_sources.OpenRouterBenchmarksSource(
+                    "openrouter", {"kind": "openrouter-benchmarks"}).fetch()
+        fetch.assert_not_called()
+
+    def test_catalog_safety_floor_raises(self):
+        with patch("nyxloom.benchmark_sources._fetch_json", return_value=self._catalog()):
+            with pytest.raises(benchmark_sources.BenchmarkSourceError, match="safety floor"):
+                benchmark_sources.OpenRouterBenchmarksSource(
+                    "openrouter", self._cfg(min_catalog=5)).fetch()
+
+    def test_missing_canary_raises(self):
+        catalog = self._catalog()
+        catalog["data"][3] = {**catalog["data"][3], "slug": "other/model"}
+        with patch("nyxloom.benchmark_sources._fetch_json", return_value=catalog):
+            with pytest.raises(benchmark_sources.BenchmarkSourceError, match="canary"):
+                benchmark_sources.OpenRouterBenchmarksSource(
+                    "openrouter", self._cfg()).fetch()
+
+
 class TestRegistryAndFactory:
     def test_register_kind_and_factory_for_each_builtin(self):
         class CustomSource(benchmark_sources.BenchmarkSource):
@@ -242,6 +430,9 @@ class TestRegistryAndFactory:
         assert isinstance(benchmark_sources.source_from_config(
             "static", {"kind": "static", "path": "seed.toml"}),
             benchmark_sources.StaticBenchmarkSource)
+        assert isinstance(benchmark_sources.source_from_config(
+            "openrouter", {"kind": "openrouter-benchmarks", "slugs": ["x"]}),
+            benchmark_sources.OpenRouterBenchmarksSource)
         assert isinstance(benchmark_sources.source_from_config("custom", {"kind": "custom-test"}),
                           CustomSource)
 

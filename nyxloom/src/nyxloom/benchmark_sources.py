@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import tomllib
+import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -320,6 +321,97 @@ class JSONHTTPSource(BenchmarkSource):
             record = _record_from_mapping(self.name, item, field_map)
             if record is not None:
                 out.append(record)
+        return out
+
+
+_OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/frontend/v1/catalog/models"
+_OPENROUTER_SCORES_URL_TEMPLATE = (
+    "https://openrouter.ai/api/frontend/v1/stats/benchmark-scores?permaslug={permaslug}")
+_OPENROUTER_AXIS_MAP = {
+    "gpqa_diamond": "intelligence",
+    "tau_bench_verified_airline": "agentic",
+}
+
+
+@register_kind("openrouter-benchmarks")
+class OpenRouterBenchmarksSource(BenchmarkSource):
+    """OpenRouter's public model catalog and benchmark score listings."""
+
+    kind = "openrouter-benchmarks"
+
+    def fetch(self) -> list[BenchmarkRecord]:
+        slugs = self.cfg.get("slugs")
+        if not isinstance(slugs, list) or not slugs:
+            raise BenchmarkSourceError(
+                f"benchmark source {self.name!r}: slugs must be a non-empty list")
+
+        catalog_url = str(self.cfg.get("catalog_url", _OPENROUTER_CATALOG_URL))
+        scores_url_template = str(self.cfg.get(
+            "scores_url_template", _OPENROUTER_SCORES_URL_TEMPLATE))
+        axis_map = self.cfg.get("axis_map", _OPENROUTER_AXIS_MAP)
+        canary_slug = str(self.cfg.get("canary_slug", "deepseek/deepseek-v4-pro"))
+        min_catalog = self.cfg.get("min_catalog", 100)
+
+        payload = _fetch_source_json(self.name, catalog_url, timeout=_HTTP_TIMEOUT)
+        models = _records(payload)
+        if len(models) < min_catalog:
+            raise BenchmarkSourceError(
+                f"benchmark source {self.name!r}: catalog below safety floor")
+        by_slug = {m["slug"]: m for m in models
+                    if isinstance(m, dict) and m.get("slug")}
+        if canary_slug not in by_slug:
+            raise BenchmarkSourceError(
+                f"benchmark source {self.name!r}: catalog canary is absent")
+
+        out: list[BenchmarkRecord] = []
+        for slug in slugs:
+            model = by_slug.get(slug)
+            if model is None:
+                log.warning("openrouter model absent from catalog", source=self.name,
+                            model_id=slug)
+                continue
+            permaslug = model.get("permaslug") or model.get("slug")
+            scores_url = scores_url_template.format(
+                permaslug=urllib.parse.quote(permaslug, safe=""))
+            scores_payload = _fetch_source_json(
+                self.name, scores_url, timeout=_HTTP_TIMEOUT)
+            score_data = scores_payload.get("data") if isinstance(scores_payload, dict) else None
+            rows = score_data.get("scores") if isinstance(score_data, dict) else []
+            if not isinstance(rows, list):
+                rows = []
+            if not rows:
+                continue
+
+            scores: dict[str, float] = {}
+            for benchmark_type, axis in axis_map.items():
+                typed_rows = [row for row in rows
+                              if isinstance(row, dict)
+                              and row.get("benchmark_type") == benchmark_type]
+                if not typed_rows:
+                    continue
+                canonical = next(
+                    (row for row in typed_rows
+                     if row.get("provider_name") == "auto-routing"
+                     or row.get("endpoint_id") is None), None)
+                if canonical is not None:
+                    value = _as_float(canonical.get("score"))
+                else:
+                    provider_scores = [score for row in typed_rows
+                                       if (score := _as_float(row.get("score"))) is not None]
+                    if not provider_scores:
+                        continue
+                    value = sum(provider_scores) / len(provider_scores)
+                if value is None or not 0.0 <= value <= 1.0:
+                    continue
+                scores[axis] = round(value * 100, 4)
+            if not scores:
+                continue
+            out.append(BenchmarkRecord(
+                model_id=slug, source=self.name, scores=scores,
+                price_input=None, price_output=None,
+                context_length=_as_int(model.get("context_length")),
+                benchmark="openrouter", version=None, effort=None,
+                raw={"model": model, "scores": rows}))
         return out
 
 
