@@ -1,0 +1,415 @@
+# DeepSWE v1.1 leaderboard snapshot — committed static benchmark seed.
+# Captured 2026-07-23 via pwmcp headless browser (no machine-readable feed exists).
+# Aggregate leaderboard scores ONLY; the underlying task set is canary-guarded and
+# must NOT be ingested. The P3 browser-scrape source refreshes this seed in place.
+source = "deepswe"
+benchmark = "DeepSWE"
+version = "1.1"
+captured = "2026-07-23"
+score_axis = "coding"
+unit = "pass@1 percent on 113 long-horizon SWE tasks, 91 repos, 5 langs"
+
+[[records]]
+model = "gpt-5.6-sol"
+effort = "max"
+pass1 = 73.0
+ci = 3.0
+cost_usd = 8.39
+out_tok = "60k"
+steps = 61
+
+[[records]]
+model = "gpt-5.6-sol"
+effort = "xhigh"
+pass1 = 71.0
+ci = 1.0
+cost_usd = 4.7
+out_tok = "41k"
+steps = 44
+
+[[records]]
+model = "claude-fable-5"
+effort = "xhigh"
+pass1 = 70.0
+ci = 3.0
+cost_usd = 13.41
+out_tok = "80k"
+steps = 68
+
+[[records]]
+model = "claude-fable-5"
+effort = "max"
+pass1 = 70.0
+ci = 4.0
+cost_usd = 21.63
+out_tok = "119k"
+steps = 88
+
+[[records]]
+model = "gpt-5.6-terra"
+effort = "max"
+pass1 = 70.0
+ci = 3.0
+cost_usd = 4.95
+out_tok = "72k"
+steps = 76
+
+[[records]]
+model = "gpt-5.6-sol"
+effort = "high"
+pass1 = 69.0
+ci = 1.0
+cost_usd = 3.47
+out_tok = "28k"
+steps = 37
+
+[[records]]
+model = "claude-fable-5"
+effort = "high"
+pass1 = 69.0
+ci = 1.0
+cost_usd = 9.18
+out_tok = "57k"
+steps = 59
+
+[[records]]
+model = "kimi-k3"
+effort = "max"
+pass1 = 69.0
+ci = 5.0
+cost_usd = 4.65
+out_tok = "81k"
+steps = 98
+
+[[records]]
+model = "gpt-5.6-luna"
+effort = "max"
+pass1 = 67.0
+ci = 4.0
+cost_usd = 3.03
+out_tok = "73k"
+steps = 102
+
+[[records]]
+model = "gpt-5.5"
+effort = "xhigh"
+pass1 = 67.0
+ci = 6.0
+cost_usd = 7.23
+out_tok = "46k"
+steps = 82
+
+[[records]]
+model = "claude-fable-5"
+effort = "medium"
+pass1 = 65.0
+ci = 4.0
+cost_usd = 6.09
+out_tok = "40k"
+steps = 48
+
+[[records]]
+model = "gpt-5.5"
+effort = "high"
+pass1 = 64.0
+ci = 3.0
+cost_usd = 5.1
+out_tok = "31k"
+steps = 62
+
+[[records]]
+model = "gpt-5.6-sol"
+effort = "medium"
+pass1 = 61.0
+ci = 2.0
+cost_usd = 1.86
+out_tok = "18k"
+steps = 31
+
+[[records]]
+model = "gpt-5.6-terra"
+effort = "xhigh"
+pass1 = 60.0
+ci = 2.0
+cost_usd = 2.13
+out_tok = "40k"
+steps = 43
+
+[[records]]
+model = "claude-fable-5"
+effort = "low"
+pass1 = 60.0
+ci = 3.0
+cost_usd = 3.76
+out_tok = "25k"
+steps = 38
+
+[[records]]
+model = "claude-opus-4.8"
+effort = "max"
+pass1 = 59.0
+ci = 2.0
+cost_usd = 13.22
+out_tok = "135k"
+steps = 120
+
+[[records]]
+model = "gpt-5.6-luna"
+effort = "xhigh"
+pass1 = 57.0
+ci = 2.0
+cost_usd = 1.54
+out_tok = "45k"
+steps = 71
+
+[[records]]
+model = "claude-opus-4.8"
+effort = "xhigh"
+pass1 = 54.0
+ci = 4.0
+cost_usd = 8.01
+out_tok = "86k"
+steps = 95
+
+[[records]]
+model = "gpt-5.5"
+effort = "medium"
+pass1 = 54.0
+ci = 3.0
+cost_usd = 2.75
+out_tok = "20k"
+steps = 46
+
+[[records]]
+model = "claude-sonnet-5"
+effort = "max"
+pass1 = 54.0
+ci = 4.0
+cost_usd = 26.4
+out_tok = "214k"
+steps = 268
+
+[[records]]
+model = "gpt-5.6-terra"
+effort = "high"
+pass1 = 54.0
+ci = 4.0
+cost_usd = 1.13
+out_tok = "22k"
+steps = 34
+
+[[records]]
+model = "grok-4.5"
+effort = "high"
+pass1 = 54.0
+ci = 2.0
+cost_usd = 2.42
+out_tok = "36k"
+steps = 61
+
+[[records]]
+model = "muse-spark-1.1"
+effort = "xhigh"
+pass1 = 53.0
+ci = 3.0
+cost_usd = 2.36
+out_tok = "74k"
+steps = 96
+
+[[records]]
+model = "claude-opus-4.8"
+effort = "high"
+pass1 = 52.0
+ci = 5.0
+cost_usd = 4.28
+out_tok = "50k"
+steps = 73
+
+[[records]]
+model = "gpt-5.4"
+effort = "xhigh"
+pass1 = 52.0
+ci = 2.0
+cost_usd = 5.65
+out_tok = "71k"
+steps = 70
+
+[[records]]
+model = "claude-sonnet-5"
+effort = "xhigh"
+pass1 = 50.0
+ci = 3.0
+cost_usd = 11.89
+out_tok = "121k"
+steps = 186
+
+[[records]]
+model = "claude-opus-4.8"
+effort = "medium"
+pass1 = 49.0
+ci = 2.0
+cost_usd = 3.44
+out_tok = "41k"
+steps = 66
+
+[[records]]
+model = "gemini-3.6-flash"
+effort = "high"
+pass1 = 49.0
+ci = 5.0
+cost_usd = 3.53
+out_tok = "97k"
+steps = 108
+
+[[records]]
+model = "claude-sonnet-5"
+effort = "high"
+pass1 = 48.0
+ci = 5.0
+cost_usd = 7.43
+out_tok = "87k"
+steps = 147
+
+[[records]]
+model = "gpt-5.6-sol"
+effort = "low"
+pass1 = 45.0
+ci = 2.0
+cost_usd = 1.07
+out_tok = "11k"
+steps = 23
+
+[[records]]
+model = "gpt-5.6-luna"
+effort = "high"
+pass1 = 44.0
+ci = 3.0
+cost_usd = 0.78
+out_tok = "26k"
+steps = 49
+
+[[records]]
+model = "glm-5.2"
+effort = "max"
+pass1 = 44.0
+ci = 2.0
+cost_usd = 3.92
+out_tok = "78k"
+steps = 129
+
+[[records]]
+model = "claude-opus-4.8"
+effort = "low"
+pass1 = 41.0
+ci = 1.0
+cost_usd = 2.29
+out_tok = "29k"
+steps = 54
+
+[[records]]
+model = "claude-sonnet-5"
+effort = "medium"
+pass1 = 40.0
+ci = 3.0
+cost_usd = 4.08
+out_tok = "57k"
+steps = 108
+
+[[records]]
+model = "gemini-3.5-flash"
+effort = "medium"
+pass1 = 37.0
+ci = 2.0
+cost_usd = 7.34
+out_tok = "276k"
+steps = 86
+
+[[records]]
+model = "glm-5.2"
+effort = "high"
+pass1 = 36.0
+ci = 5.0
+cost_usd = 2.84
+out_tok = "54k"
+steps = 122
+
+[[records]]
+model = "gpt-5.6-terra"
+effort = "medium"
+pass1 = 35.0
+ci = 3.0
+cost_usd = 0.58
+out_tok = "12k"
+steps = 25
+
+[[records]]
+model = "kimi-k2.7-code"
+pass1 = 31.0
+ci = 1.0
+cost_usd = 2.82
+out_tok = "59k"
+steps = 149
+
+[[records]]
+model = "claude-sonnet-5"
+effort = "low"
+pass1 = 31.0
+ci = 1.0
+cost_usd = 2.19
+out_tok = "36k"
+steps = 77
+
+[[records]]
+model = "claude-sonnet-4.6"
+effort = "high"
+pass1 = 30.0
+ci = 4.0
+cost_usd = 5.52
+out_tok = "76k"
+steps = 134
+
+[[records]]
+model = "gpt-5.5"
+effort = "low"
+pass1 = 27.0
+ci = 2.0
+cost_usd = 1.2
+out_tok = "9.4k"
+steps = 28
+
+[[records]]
+model = "gpt-5.6-terra"
+effort = "low"
+pass1 = 24.0
+ci = 1.0
+cost_usd = 0.43
+out_tok = "8.6k"
+steps = 21
+
+[[records]]
+model = "gemini-3.1-pro"
+effort = "high"
+pass1 = 12.0
+ci = 2.0
+cost_usd = 9.48
+out_tok = "196k"
+steps = 81
+
+[[records]]
+model = "gpt-5.6-luna"
+effort = "medium"
+pass1 = 11.0
+ci = 1.0
+cost_usd = 0.22
+out_tok = "8.2k"
+steps = 24
+
+[[records]]
+model = "gpt-5.6-luna"
+effort = "low"
+pass1 = 2.0
+ci = 1.0
+cost_usd = 0.07
+out_tok = "3.1k"
+steps = 12
+
