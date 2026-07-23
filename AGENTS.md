@@ -13,6 +13,12 @@ review, merge discipline). A project adds to or overrides any of them with the
 the sibling, which refines (never replaces) it. Everything below is *this repo's*
 delta on top of that doctrine.
 
+**Working on nyxloom itself?** Also read **`nyxloom/nyxloom-trove/DOCTRINE.md`**
+(its project delta: structlog reserved-key traps, and `build_dispatch`'s hard
+argv budget) and `nyxloom/nyxloom-trove/STANDING.md` (the current wave's frozen
+files). A hand-started CLI agent gets only this file — a nyxloomd-dispatched one
+gets the set injected — so check `ls nyxloom/nyxloom-trove/*.md` yourself.
+
 ## Writing a handoff / dispatch prompt — honor AUTHORING.md
 When you are asked to **start an agent for a task**, or to **write a prompt or a
 handoff package**, first read and follow
