@@ -310,7 +310,10 @@ def build_dispatch(route: RouteDef, *, handoff_path: str, worktree: str,
         # so it MUST be bounded the same way prior_verdict's embed below is,
         # not appended unconditionally here.
     else:
-        # IMPLEMENTER (default). Byte-for-byte identical to the pre-P44 text.
+        # IMPLEMENTER (default). The pre-P44 core text is preserved verbatim;
+        # B21 2026-07-23 appends the standing scope-amendment escape-hatch
+        # instruction below -- so this literal is no longer byte-identical to
+        # pre-P44 (the escape hatch ships on EVERY implementer dispatch).
         prompt = (
             f"Handoff: {handoff_path}\n"
             f"Worktree: {worktree}\n"
