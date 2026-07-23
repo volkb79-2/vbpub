@@ -524,8 +524,56 @@ def test_scope_amendment_bounded_falls_through_to_blocked_at_cap(
 # above (tick loop + queued FakeStep + event assertions).
 # ===========================================================================
 
+def _diagnose_stuck_attempt(project: str, task_id: str) -> str:
+    """B24 (post-review hardening, 2026-07-23): DURABLE forensic dump for
+    when the interrupted-wait loop below times out -- read straight from
+    disk/the event log, nothing sampled/in-memory, so a recurrence under
+    the gate gives a definitive next clue instead of a bare 'never went
+    INTERRUPTED'. Never raises itself (a diagnostic that crashes is worse
+    than no diagnostic)."""
+    lines: list[str] = []
+    try:
+        tsf = storage.load_state(project, task_id)
+    except Exception as exc:
+        return f"(diagnose failed: load_state raised {exc!r})"
+    if not tsf:
+        return "(no statefile at all)"
+    lines.append(f"task state={tsf.state!r} attempts={len(tsf.attempts)}")
+    for att in tsf.attempts:
+        attempt_dir = paths.attempt_dir(project, att.attempt_id)
+        receipt_path = attempt_dir / "receipt.json"
+        child_pid_path = attempt_dir / "child.pid"
+        wrapper_log = attempt_dir / "wrapper.log"
+        attempt_log = attempt_dir / "attempt.log"
+        lines.append(
+            f"  attempt {att.attempt_id}: state={att.state!r} pid={att.pid!r} "
+            f"receipt_on_disk={receipt_path.exists()} "
+            f"child_pid_on_disk={child_pid_path.read_text().strip() if child_pid_path.exists() else None!r}"
+        )
+        for label, p in (("wrapper.log", wrapper_log), ("attempt.log", attempt_log)):
+            if p.exists():
+                try:
+                    tail = p.read_text(encoding="utf-8", errors="replace")[-1000:]
+                except Exception as exc:
+                    tail = f"(read failed: {exc!r})"
+                lines.append(f"  {label} tail: {tail!r}")
+            else:
+                lines.append(f"  {label}: MISSING")
+    try:
+        events = list(storage.iter_events(project))
+    except Exception as exc:
+        events = []
+        lines.append(f"  (iter_events raised {exc!r})")
+    lines.append(f"  total events in log: {len(events)}; last 5 types: "
+                 f"{[e.type.value for e in events[-5:]]}")
+    tick_errors = [e for e in events if e.type is EventType.TICK_ERROR]
+    if tick_errors:
+        lines.append(f"  TICK_ERROR payloads: {[e.payload for e in tick_errors]}")
+    return "\n".join(lines)
+
+
 def test_transient_throttle_resumes_same_attempt_end_to_end(
-    behavioral_project, tmp_state, fake_cli
+    behavioral_project, tmp_state, fake_cli, monkeypatch
 ):
     """O4: a scripted idle-timeout on the FIRST implementer leg is resumed
     as the SAME attempt (ATTEMPT_RESUMED for the same attempt_id,
@@ -533,7 +581,12 @@ def test_transient_throttle_resumes_same_attempt_end_to_end(
     role=implementer (no fresh dispatch), and the task never lands BLOCKED.
 
     BEHAVIORAL_ROUTES_TOML's fake-impl route has no `resume` template (no
-    existing behavioral test exercises resume), so this test adds one --
+    existing behavioral test exercises resume), so this test adds one via
+    an in-memory Routes object + a config.Routes.load monkeypatch (NOT a
+    second on-disk routes.toml rewrite -- post-review hardening,
+    2026-07-23: a mid-test file rewrite was a needless extra moving part
+    with no offsetting benefit, since every route lookup in this codebase
+    goes through config.Routes.load(), never a direct file read).
     build_resume's own mapping only supports {session}/{worktree}/{prompt}
     (no {task_id}), so the literal TASK_ID is baked into the template, same
     as any fixed-task test route. The fake CLI also has no real session-
@@ -542,15 +595,40 @@ def test_transient_throttle_resumes_same_attempt_end_to_end(
     once the attempt is observed INTERRUPTED -- mirroring
     test_mark_interrupted_and_resume's (test_daemon.py) identical manual
     seeding -- so it is the DAEMON's own backoff/resume gate under test,
-    not this harness's session-capture plumbing."""
+    not this harness's session-capture plumbing.
+
+    SESSION_CAPTURE_DELAY (wrapper.py, real 5s block per dispatch before the
+    wrapper even starts waiting on the child) is pinned to 0 -- this is a
+    REAL, unconditional wall-clock cost every dispatch in this test pays for
+    nothing (capture_session always returns None for this bare "fake" cli
+    route), and shrinking it shrinks the real-time window for whatever
+    timing-sensitive issue a slower/busier gate container might be hitting."""
+    from nyxloom import config as config_mod
+    from nyxloom import wrapper as wrapper_mod
+
+    monkeypatch.setattr(wrapper_mod, "SESSION_CAPTURE_DELAY", 0)
+
     cfg = behavioral_project
-    routes_toml = BEHAVIORAL_ROUTES_TOML.replace(
-        'dispatch_extra = ["--role", "implementer", "--task", "{task_id}"]',
-        'dispatch_extra = ["--role", "implementer", "--task", "{task_id}"]\n'
-        f'resume = ["fake", "--role", "implementer", "--task", "{TASK_ID}", "{{prompt}}"]',
+    resume_template = ["fake", "--role", "implementer", "--task", TASK_ID, "{prompt}"]
+    custom_routes = config_mod.Routes(
+        revision="test-behavioral-resume",
+        tiers={"flash-high": ["fake-impl"], "frontier-review": ["fake-review"]},
+        routes={
+            "fake-impl": config_mod.RouteDef(
+                route_id="fake-impl", cli="fake", model="fake-model",
+                probe=["true"], usage_source="none",
+                dispatch_extra=["--role", "implementer", "--task", "{task_id}"],
+                resume=resume_template,
+            ),
+            "fake-review": config_mod.RouteDef(
+                route_id="fake-review", cli="fake", model="fake-model",
+                probe=["true"], usage_source="none",
+                dispatch_extra=["--role", "review", "--task", "{task_id}"],
+            ),
+        },
     )
-    assert "resume = " in routes_toml and routes_toml != BEHAVIORAL_ROUTES_TOML
-    paths.routes_path().write_text(routes_toml)
+    monkeypatch.setattr(config_mod.Routes, "load",
+                        classmethod(lambda cls, path=None: custom_routes))
 
     fake_cli.queue(
         TASK_ID, "implementer",
@@ -578,14 +656,18 @@ def test_transient_throttle_resumes_same_attempt_end_to_end(
         if _went_interrupted():
             break
 
-    assert _went_interrupted(), "attempt never went INTERRUPTED"
+    assert _went_interrupted(), (
+        "attempt never went INTERRUPTED\n" + _diagnose_stuck_attempt("demo", TASK_ID)
+    )
 
     tsf = storage.load_state("demo", TASK_ID)
     attempt_id = tsf.attempts[-1].attempt_id
     # THE oracle, checked before doing anything else: TRANSIENT, INTERRUPTED
     # -- never EXITED (an EXITED attempt could never be revived).
     att = tsf.attempt_by_id(attempt_id)
-    assert att.receipt is not None and att.receipt.result.value == "transient"
+    assert att.receipt is not None and att.receipt.result.value == "transient", (
+        f"receipt={att.receipt!r}\n" + _diagnose_stuck_attempt("demo", TASK_ID)
+    )
     assert att.state is AttemptState.INTERRUPTED
 
     att.session_handle = "sess-fake-1"
@@ -606,12 +688,14 @@ def test_transient_throttle_resumes_same_attempt_end_to_end(
                      and e.payload["attempt"]["role"] == "implementer"]
     tick_errors = [e for e in events if e.type is EventType.TICK_ERROR]
 
+    diag = lambda: _diagnose_stuck_attempt("demo", TASK_ID)  # noqa: E731
     assert not tick_errors, f"reconcile pass raised: {[e.payload for e in tick_errors]}"
-    assert len(resumed) == 1, "the SAME attempt must be resumed exactly once"
+    assert len(resumed) == 1, f"the SAME attempt must be resumed exactly once\n{diag()}"
     attempt_dir = paths.attempt_dir("demo", attempt_id)
-    assert (attempt_dir / "attempt.resume-1.log").exists()
+    assert (attempt_dir / "attempt.resume-1.log").exists(), diag()
     assert len(impl_created) == 1, (
-        "no FRESH implementer dispatch -- the throttled attempt is resumed, not restarted"
+        "no FRESH implementer dispatch -- the throttled attempt is resumed, not restarted\n"
+        + diag()
     )
     assert tsf.state != TaskState.BLOCKED, (
         f"task must never be BLOCKED by a transient provider throttle, got {tsf.state}"
