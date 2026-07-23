@@ -717,6 +717,197 @@ class TestL12BlockedMarker:
         assert len(l12_errors) > 0
 
 
+class TestL13OracleScopeCoverage:
+    """Test L13 (B22): every oracle-referenced repo path must be covered by
+    scope.touch -- an oracle the implementer cannot satisfy without editing
+    a file outside scope.touch is an authoring defect."""
+
+    def test_oracle_path_in_scope_no_finding(self, sample_project, tmp_path):
+        """O2: the referenced path IS in scope.touch -> no L13 finding."""
+        content = textwrap.dedent("""\
+            ---
+            schema_version: 1
+            id: demo-P01-test
+            project: demo
+            title: Test
+            tier: flash-high
+            input_revision: "0000000"
+            source: {kind: review}
+            scope: {touch: ["src/nyxloom/foo.py"]}
+            oracles:
+              - id: O1
+                observable: "pytest verifies src/nyxloom/foo.py behaves as expected"
+                negative: "a violation raises"
+                gate: pytest-q
+            gates: [pytest-q]
+            escalate_if: ["trigger"]
+            ---
+
+            Body with BLOCKED: marker.
+            worktree branch out of scope read first context to read
+            """)
+        path = tmp_path / "demo-P01-test.md"
+        path.write_text(content)
+
+        findings = lint.lint_file(path, sample_project)
+        l13 = [f for f in findings if f.rule == "L13"]
+        assert l13 == []
+
+    def test_oracle_path_out_of_scope_flagged(self, sample_project, tmp_path):
+        """O1: the referenced path is NOT in scope.touch -> exactly one L13
+        finding citing the oracle id and the offending path."""
+        content = textwrap.dedent("""\
+            ---
+            schema_version: 1
+            id: demo-P01-test
+            project: demo
+            title: Test
+            tier: flash-high
+            input_revision: "0000000"
+            source: {kind: review}
+            scope: {touch: ["src/nyxloom/bar.py"]}
+            oracles:
+              - id: O1
+                observable: "pytest verifies src/nyxloom/foo.py behaves as expected"
+                negative: "a violation raises"
+                gate: pytest-q
+            gates: [pytest-q]
+            escalate_if: ["trigger"]
+            ---
+
+            Body with BLOCKED: marker.
+            worktree branch out of scope read first context to read
+            """)
+        path = tmp_path / "demo-P01-test.md"
+        path.write_text(content)
+
+        findings = lint.lint_file(path, sample_project)
+        l13 = [f for f in findings if f.rule == "L13"]
+        assert len(l13) == 1
+        assert l13[0].severity == "error"
+        assert "O1" in l13[0].message
+        assert "src/nyxloom/foo.py" in l13[0].message
+
+    def test_oracle_prose_only_no_false_positive(self, sample_project, tmp_path):
+        """O3: pure prose with no path token -> no L13 finding (no false
+        positive on ordinary English)."""
+        content = textwrap.dedent("""\
+            ---
+            schema_version: 1
+            id: demo-P01-test
+            project: demo
+            title: Test
+            tier: flash-high
+            input_revision: "0000000"
+            source: {kind: review}
+            scope: {touch: ["src/test.py"]}
+            oracles:
+              - id: O1
+                observable: "the response contains every expected field and status ok"
+                negative: "a missing field raises a validation error"
+                gate: pytest-q
+            gates: [pytest-q]
+            escalate_if: ["trigger"]
+            ---
+
+            Body with BLOCKED: marker.
+            worktree branch out of scope read first context to read
+            """)
+        path = tmp_path / "demo-P01-test.md"
+        path.write_text(content)
+
+        findings = lint.lint_file(path, sample_project)
+        l13 = [f for f in findings if f.rule == "L13"]
+        assert l13 == []
+
+    def test_same_path_in_observable_and_negative_dedupes(self, sample_project, tmp_path):
+        """The same out-of-scope path repeated across observable/negative for
+        one oracle still yields exactly one finding (not one per mention)."""
+        content = textwrap.dedent("""\
+            ---
+            schema_version: 1
+            id: demo-P01-test
+            project: demo
+            title: Test
+            tier: flash-high
+            input_revision: "0000000"
+            source: {kind: review}
+            scope: {touch: ["src/nyxloom/bar.py"]}
+            oracles:
+              - id: O1
+                observable: "src/nyxloom/foo.py behaves as expected"
+                negative: "src/nyxloom/foo.py raises on a bad value"
+                gate: pytest-q
+            gates: [pytest-q]
+            escalate_if: ["trigger"]
+            ---
+
+            Body with BLOCKED: marker.
+            worktree branch out of scope read first context to read
+            """)
+        path = tmp_path / "demo-P01-test.md"
+        path.write_text(content)
+
+        findings = lint.lint_file(path, sample_project)
+        l13 = [f for f in findings if f.rule == "L13"]
+        assert len(l13) == 1
+
+    def test_empty_scope_touch_flags_rather_than_crashes(self):
+        """Edge case: scope.touch cannot actually be empty through the public
+        schema-validated path (minItems: 1), so this exercises the rule
+        function directly against a hand-built Frontmatter -- an empty
+        scope.touch matches nothing, so a referenced path is (correctly)
+        flagged, and the rule must not crash."""
+        from nyxloom.types import Frontmatter, Oracle, Scope, Source
+
+        fm = Frontmatter(
+            schema_version=1,
+            id="demo-P01-test",
+            project="demo",
+            title="Test",
+            tier="flash-high",
+            input_revision="0000000",
+            source=Source(kind="review"),
+            scope=Scope(touch=[]),
+            oracles=[
+                Oracle(id="O1", observable="see src/nyxloom/foo.py for the fix",
+                       negative="fail", gate="pytest-q"),
+            ],
+            gates=["pytest-q"],
+            escalate_if=["trigger"],
+        )
+        findings: list = []
+        lint._check_l13(findings, Path("demo-P01-test.md"), fm)
+        assert len(findings) == 1
+        assert findings[0].rule == "L13"
+        assert findings[0].severity == "error"
+
+    def test_empty_scope_touch_no_path_reference_no_finding(self):
+        """Same empty scope.touch, but the oracle has no path token at all --
+        must not crash and must not fabricate a finding."""
+        from nyxloom.types import Frontmatter, Oracle, Scope, Source
+
+        fm = Frontmatter(
+            schema_version=1,
+            id="demo-P01-test",
+            project="demo",
+            title="Test",
+            tier="flash-high",
+            input_revision="0000000",
+            source=Source(kind="review"),
+            scope=Scope(touch=[]),
+            oracles=[
+                Oracle(id="O1", observable="the test passes", negative="it fails",
+                       gate="pytest-q"),
+            ],
+            gates=["pytest-q"],
+            escalate_if=["trigger"],
+        )
+        findings: list = []
+        lint._check_l13(findings, Path("demo-P01-test.md"), fm)
+        assert findings == []
+
+
 class TestGoldenCorpus:
     """Test golden corpus fixtures against expected rules."""
 

@@ -1,4 +1,4 @@
-"""Carve-quality lint, rules L1-L12 (SPEC docs/SPEC.md §6). PACKAGE P01.
+"""Carve-quality lint, rules L1-L13 (SPEC docs/SPEC.md §6). PACKAGE P01.
 
 INTERFACE CONTRACT (frozen):
 
@@ -66,6 +66,17 @@ L11 error   body must contain (case-insens.) a worktree path mention
 L12 error   body must contain the BLOCKED rule marker 'BLOCKED:' and must
             not instruct violating project policy (heuristic: 'skip the
             gate', 'without running', 'ignore lint' -> flag).
+L13 error   every oracle (its observable/negative/gate fields) is scanned for
+            CONSERVATIVE repo-path tokens: a '/'-bearing token counts as an
+            unambiguous file-path reference only when it also carries a file
+            extension (e.g. '.py') or starts with a known top-level project
+            dir (src/, tests/, infra/, docs/, nyxloom-trove/, scripts/) --
+            bare prose is never flagged. Each extracted path must be matched
+            (fnmatch) by at least one scope.touch entry; an oracle
+            referencing a path matched by none of scope.touch is flagged
+            'oracle references path not covered by scope.touch' (B22) -- the
+            implementer cannot satisfy that oracle without editing a
+            forbidden file.
 
 RULE NAMESPACE S1-S5 (PACKAGE F1, docs/spine-documents-spec.md -- the
 "direction spine" documents: nyxloom.toml's optional north_star/
@@ -182,6 +193,9 @@ def lint_file(path: Path, cfg: ProjectConfig) -> list[LintFinding]:
 
     # L12: Body contains BLOCKED marker
     _check_l12(findings, path, body)
+
+    # L13: Every oracle-referenced path is covered by scope.touch
+    _check_l13(findings, path, fm)
 
     # Sort findings by rule then line
     findings.sort(key=lambda f: (f.rule, f.line or 9999))
@@ -1036,3 +1050,56 @@ def _check_l12(findings: list[LintFinding], path: Path, body: str) -> None:
                 message=f"body instructs violating policy: '{label}'",
                 path=str(path)
             ))
+
+
+# ----- L13 (B22: every oracle must be satisfiable within scope.touch) -----
+
+_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)+")
+_PATH_EXTENSION_RE = re.compile(r"\.[A-Za-z0-9]{1,10}$")
+_KNOWN_TOP_DIRS = ("src/", "tests/", "infra/", "docs/", "nyxloom-trove/", "scripts/")
+
+
+def _extract_candidate_paths(text: str) -> list[str]:
+    """Conservative repo-path token extraction (L13, B22).
+
+    A token is only treated as an unambiguous file-path reference when it
+    contains a '/' AND (carries a recognizable file extension OR starts with
+    a known top-level project dir) -- ordinary prose with no such token is
+    never mistaken for a path (O3). Trailing sentence punctuation (a period
+    closing the sentence, a comma, a closing paren/bracket/quote) is
+    stripped so 'see src/nyxloom/foo.py.' still yields 'src/nyxloom/foo.py'.
+    """
+    candidates = []
+    for match in _PATH_TOKEN_RE.finditer(text):
+        token = match.group().rstrip(".,;:)]}'\"")
+        if not token:
+            continue
+        if _PATH_EXTENSION_RE.search(token) or token.startswith(_KNOWN_TOP_DIRS):
+            candidates.append(token)
+    return candidates
+
+
+def _check_l13(findings: list[LintFinding], path: Path, fm) -> None:
+    """Check: every oracle-referenced repo path is matched by at least one
+    scope.touch entry (fnmatch, mirrors L9's glob-matching convention). An
+    oracle whose observable/negative/gate names a path outside scope.touch
+    is an authoring defect -- the implementer cannot satisfy it without
+    editing a file scope.touch doesn't allow (B22). Not a special case for
+    empty scope.touch: an empty glob list naturally matches nothing, so any
+    referenced path is (correctly) flagged rather than silently skipped."""
+    touch_globs = fm.scope.touch
+    for oracle in fm.oracles:
+        seen: set[str] = set()
+        for text in (oracle.observable, oracle.negative, oracle.gate):
+            for candidate in _extract_candidate_paths(text):
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                if not any(fnmatch.fnmatch(candidate, glob) for glob in touch_globs):
+                    findings.append(LintFinding(
+                        rule="L13",
+                        severity="error",
+                        message=f"oracle '{oracle.id}' references path '{candidate}' "
+                                f"not covered by scope.touch",
+                        path=str(path)
+                    ))
