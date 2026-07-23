@@ -1,0 +1,289 @@
+From 4896a7a475d71fac47cfa38da95635d3b5ad2130 Mon Sep 17 00:00:00 2001
+From: Volker Badziong <development@richtfest.tech>
+Date: Wed, 15 Jul 2026 10:43:10 +0000
+Subject: [PATCH 02/11] Support per-server cgroup parent override via
+ WINGS_CGROUP_PARENT
+
+Allows a reserved, admin-only egg/server environment variable,
+WINGS_CGROUP_PARENT, to override the node-wide docker.cgroup_parent for
+a single server. Both the runtime container and the installer container
+resolve the override through the same helper, so a server's
+installation workloads land under the same slice as its runtime
+container.
+
+Panel-supplied values are not trusted: an override must either match an
+entry in the new docker.allowed_cgroup_parents allowlist or, when no
+allowlist is configured, fall inside the built-in "wings.slice" /
+"wings-*.slice" namespace. Values equal to the node-wide default are
+always accepted. Anything else fails closed: the override is rejected
+with a logged warning that includes the attempted value, and the
+node-wide default is used instead.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ config/config_docker.go             |  60 ++++++++++++++++
+ config/config_docker_cgroup_test.go | 102 ++++++++++++++++++++++++++++
+ environment/docker/container.go     |  16 ++++-
+ server/install.go                   |  16 +++--
+ 4 files changed, 186 insertions(+), 8 deletions(-)
+
+diff --git a/config/config_docker.go b/config/config_docker.go
+index bf521a0..688c2e6 100644
+--- a/config/config_docker.go
++++ b/config/config_docker.go
+@@ -5,6 +5,7 @@ import (
+ 	"encoding/json"
+ 	"net/url"
+ 	"sort"
++	"strconv"
+ 	"strings"
+ 
+ 	"emperror.dev/errors"
+@@ -115,6 +116,20 @@ type DockerConfiguration struct {
+ 	//     affects containers created after Wings picks up the new config.
+ 	CgroupParent string `default:"" json:"cgroup_parent" yaml:"cgroup_parent"`
+ 
++	// AllowedCgroupParents is an optional, explicit allowlist of values that a
++	// per-server WINGS_CGROUP_PARENT environment variable override may select
++	// (see ResolveCgroupParent). When the list is empty, overrides are instead
++	// restricted to the built-in "wings.slice" / "wings-*.slice" namespace.
++	// When the list is non-empty it fully replaces the built-in namespace: only
++	// exact matches are accepted. The node-wide CgroupParent value itself is
++	// always an accepted override, and is not subject to this list.
++	//
++	// Egg/server variables are panel data, not a security boundary: Wings must
++	// enforce this restriction itself so that a compromised or misconfigured
++	// panel payload cannot place a server under arbitrary host slices such as
++	// system.slice.
++	AllowedCgroupParents []string `json:"allowed_cgroup_parents" yaml:"allowed_cgroup_parents"`
++
+ 	LogConfig struct {
+ 		Type   string            `default:"local" json:"type" yaml:"type"`
+ 		Config map[string]string `default:"{\"max-size\":\"5m\",\"max-file\":\"1\",\"compress\":\"false\",\"mode\":\"non-blocking\"}" json:"config" yaml:"config"`
+@@ -162,6 +177,51 @@ func ValidateCgroupParentValue(v string) error {
+ 	return nil
+ }
+ 
++// CgroupParentOverrideEnv is the reserved server environment variable that may
++// override the node-wide docker.cgroup_parent for a single server. It is
++// expected to be defined as an admin-only egg or server variable in the Panel
++// (user_viewable=false, user_editable=false). Wings does not trust the value:
++// every override is validated and checked against AllowedCgroupParents or the
++// built-in "wings.slice" / "wings-*.slice" namespace, and rejected overrides
++// fall back to the node-wide default. Note that, like every server environment
++// variable, the value is visible to the server process itself, so it must only
++// ever carry non-secret placement metadata.
++const CgroupParentOverrideEnv = "WINGS_CGROUP_PARENT"
++
++// ResolveCgroupParent returns the cgroup parent that a server's containers
++// (runtime and installer) should be created under. It starts from the
++// node-wide CgroupParent and applies a per-server override from the resolved
++// server environment (CgroupParentOverrideEnv) when one is present. Overrides
++// fail closed: any invalid or disallowed value is ignored and the node-wide
++// default is returned together with an error describing the rejection so that
++// callers can log it. The returned string is always safe to use.
++func (c DockerConfiguration) ResolveCgroupParent(env []string) (string, error) {
++	override := ""
++	for _, v := range env {
++		if val, ok := strings.CutPrefix(v, CgroupParentOverrideEnv+"="); ok {
++			override = val
++		}
++	}
++	if override == "" || override == c.CgroupParent {
++		return c.CgroupParent, nil
++	}
++	if err := ValidateCgroupParentValue(override); err != nil {
++		return c.CgroupParent, errors.WrapIf(err, "invalid "+CgroupParentOverrideEnv+" override")
++	}
++	if len(c.AllowedCgroupParents) > 0 {
++		for _, allowed := range c.AllowedCgroupParents {
++			if override == allowed {
++				return override, nil
++			}
++		}
++		return c.CgroupParent, errors.New(CgroupParentOverrideEnv + " override " + strconv.Quote(override) + " is not listed in docker.allowed_cgroup_parents")
++	}
++	if override == "wings.slice" || (strings.HasPrefix(override, "wings-") && strings.HasSuffix(override, ".slice")) {
++		return override, nil
++	}
++	return c.CgroupParent, errors.New(CgroupParentOverrideEnv + " override " + strconv.Quote(override) + " is outside the built-in wings-*.slice namespace and docker.allowed_cgroup_parents is not configured")
++}
++
+ // RegistryCredentialsForImage returns registry credentials for an image only
+ // when the configured registry and image reference share the same registry
+ // identity.
+diff --git a/config/config_docker_cgroup_test.go b/config/config_docker_cgroup_test.go
+index 98c933b..b8d5f1b 100644
+--- a/config/config_docker_cgroup_test.go
++++ b/config/config_docker_cgroup_test.go
+@@ -46,3 +46,105 @@ func TestDockerConfigurationValidateCgroupParent(t *testing.T) {
+ 		t.Error("expected an error for a value without the .slice suffix, got nil")
+ 	}
+ }
++
++func TestDockerConfigurationResolveCgroupParent(t *testing.T) {
++	tests := []struct {
++		name    string
++		cfg     DockerConfiguration
++		env     []string
++		want    string
++		wantErr bool
++	}{
++		{
++			name: "no default and no override",
++			cfg:  DockerConfiguration{},
++			env:  []string{"FOO=bar"},
++			want: "",
++		},
++		{
++			name: "node-wide default only",
++			cfg:  DockerConfiguration{CgroupParent: "wings.slice"},
++			env:  nil,
++			want: "wings.slice",
++		},
++		{
++			name: "empty override keeps default",
++			cfg:  DockerConfiguration{CgroupParent: "wings.slice"},
++			env:  []string{"WINGS_CGROUP_PARENT="},
++			want: "wings.slice",
++		},
++		{
++			name: "namespace override accepted",
++			cfg:  DockerConfiguration{CgroupParent: "wings.slice"},
++			env:  []string{"WINGS_CGROUP_PARENT=wings-b87c0a5b.slice"},
++			want: "wings-b87c0a5b.slice",
++		},
++		{
++			name: "wings.slice itself accepted without default",
++			cfg:  DockerConfiguration{},
++			env:  []string{"WINGS_CGROUP_PARENT=wings.slice"},
++			want: "wings.slice",
++		},
++		{
++			name: "override equal to node default always accepted",
++			cfg:  DockerConfiguration{CgroupParent: "custom.slice"},
++			env:  []string{"WINGS_CGROUP_PARENT=custom.slice"},
++			want: "custom.slice",
++		},
++		{
++			name:    "non-namespace override rejected without allowlist",
++			cfg:     DockerConfiguration{CgroupParent: "wings.slice"},
++			env:     []string{"WINGS_CGROUP_PARENT=system.slice"},
++			want:    "wings.slice",
++			wantErr: true,
++		},
++		{
++			name: "allowlist accepts listed value",
++			cfg:  DockerConfiguration{CgroupParent: "wings.slice", AllowedCgroupParents: []string{"premium.slice", "besteffort.slice"}},
++			env:  []string{"WINGS_CGROUP_PARENT=premium.slice"},
++			want: "premium.slice",
++		},
++		{
++			name:    "allowlist replaces built-in namespace",
++			cfg:     DockerConfiguration{CgroupParent: "wings.slice", AllowedCgroupParents: []string{"premium.slice"}},
++			env:     []string{"WINGS_CGROUP_PARENT=wings-abc.slice"},
++			want:    "wings.slice",
++			wantErr: true,
++		},
++		{
++			name:    "invalid value rejected before allow checks",
++			cfg:     DockerConfiguration{CgroupParent: "wings.slice"},
++			env:     []string{"WINGS_CGROUP_PARENT=../escape"},
++			want:    "wings.slice",
++			wantErr: true,
++		},
++		{
++			name: "last occurrence wins",
++			cfg:  DockerConfiguration{},
++			env:  []string{"WINGS_CGROUP_PARENT=wings-a.slice", "WINGS_CGROUP_PARENT=wings-b.slice"},
++			want: "wings-b.slice",
++		},
++		{
++			name:    "rejected override with empty default returns empty",
++			cfg:     DockerConfiguration{},
++			env:     []string{"WINGS_CGROUP_PARENT=system.slice"},
++			want:    "",
++			wantErr: true,
++		},
++	}
++
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			got, err := tc.cfg.ResolveCgroupParent(tc.env)
++			if got != tc.want {
++				t.Errorf("resolved parent = %q, want %q", got, tc.want)
++			}
++			if tc.wantErr && err == nil {
++				t.Error("expected a rejection error, got nil")
++			}
++			if !tc.wantErr && err != nil {
++				t.Errorf("expected no error, got: %v", err)
++			}
++		})
++	}
++}
+diff --git a/environment/docker/container.go b/environment/docker/container.go
+index 512d1a3..2f95511 100644
+--- a/environment/docker/container.go
++++ b/environment/docker/container.go
+@@ -163,6 +163,16 @@ func (e *Environment) Create() error {
+ 		}
+ 	}
+ 
++	// Resolve the cgroup parent this container should be created under: the
++	// node-wide docker.cgroup_parent by default, optionally overridden for
++	// this server through the reserved, admin-only WINGS_CGROUP_PARENT
++	// environment variable. Rejected overrides fail closed to the node-wide
++	// value. See config.DockerConfiguration.ResolveCgroupParent.
++	cgroupParent, err := cfg.Docker.ResolveCgroupParent(evs)
++	if err != nil {
++		e.log().WithField("cgroup_parent", cgroupParent).WithError(err).Warn("environment/docker: rejected per-server cgroup parent override")
++	}
++
+ 	// Merge user-provided labels with system labels
+ 	confLabels := e.Configuration.Labels()
+ 	labels := make(map[string]string, 2+len(confLabels))
+@@ -259,10 +269,10 @@ func (e *Environment) Create() error {
+ 		UsernsMode:  container.UsernsMode(cfg.Docker.UsernsMode),
+ 	}
+ 
+-	// Place the container under the node-wide cgroup parent (systemd slice) if
++	// Place the container under the resolved cgroup parent (systemd slice) if
+ 	// one is configured. See config.DockerConfiguration.CgroupParent.
+-	if cfg.Docker.CgroupParent != "" {
+-		hostConf.CgroupParent = cfg.Docker.CgroupParent
++	if cgroupParent != "" {
++		hostConf.CgroupParent = cgroupParent
+ 	}
+ 
+ 	if _, err := e.client.ContainerCreate(ctx, conf, hostConf, nil, nil, e.Id); err != nil {
+diff --git a/server/install.go b/server/install.go
+index e513d71..39475a5 100644
+--- a/server/install.go
++++ b/server/install.go
+@@ -450,11 +450,17 @@ func (ip *InstallationProcess) Execute() (string, error) {
+ 		UsernsMode:  container.UsernsMode(cfg.Docker.UsernsMode),
+ 	}
+ 
+-	// Keep the installer container under the same cgroup parent as the server
+-	// containers so that installation workloads are subject to the same
+-	// slice-level resource policy. See config.DockerConfiguration.CgroupParent.
+-	if cfg.Docker.CgroupParent != "" {
+-		hostConf.CgroupParent = cfg.Docker.CgroupParent
++	// Keep the installer container under the same cgroup parent as the
++	// server's runtime container so that installation workloads are subject to
++	// the same slice-level resource policy. Per-server overrides resolve
++	// through the same helper as the runtime container; rejected overrides
++	// fail closed to the node-wide value.
++	cgroupParent, err := cfg.Docker.ResolveCgroupParent(ip.Server.GetEnvironmentVariables())
++	if err != nil {
++		ip.Server.Log().WithField("cgroup_parent", cgroupParent).WithError(err).Warn("installer: rejected per-server cgroup parent override")
++	}
++	if cgroupParent != "" {
++		hostConf.CgroupParent = cgroupParent
+ 	}
+ 
+ 	// Ensure the root directory for the server exists properly before attempting
+-- 
+2.55.0
+

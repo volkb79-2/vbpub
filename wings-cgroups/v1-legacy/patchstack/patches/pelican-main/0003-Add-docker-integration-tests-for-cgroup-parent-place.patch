@@ -1,0 +1,150 @@
+From ba773d13ed36ee0c8fe0a534f6003c11fbde6b02 Mon Sep 17 00:00:00 2001
+From: Volker Badziong <development@richtfest.tech>
+Date: Wed, 15 Jul 2026 10:51:22 +0000
+Subject: [PATCH 03/11] Add docker integration tests for cgroup parent
+ placement
+
+Adds build-tagged (dockerintegration) tests that drive the full docker
+Environment.Create() path against a real Docker daemon and assert the
+created container's HostConfig.CgroupParent for: no configuration, the
+node-wide setting, an accepted per-server override, and a rejected
+override falling back to the node-wide default. Excluded from normal
+test runs; run with:
+
+    go test -tags dockerintegration ./environment/docker/
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ environment/docker/cgroup_integration_test.go | 120 ++++++++++++++++++
+ 1 file changed, 120 insertions(+)
+ create mode 100644 environment/docker/cgroup_integration_test.go
+
+diff --git a/environment/docker/cgroup_integration_test.go b/environment/docker/cgroup_integration_test.go
+new file mode 100644
+index 0000000..9464d05
+--- /dev/null
++++ b/environment/docker/cgroup_integration_test.go
+@@ -0,0 +1,120 @@
++//go:build dockerintegration
++
++package docker
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/pelican-dev/wings/config"
++	"github.com/pelican-dev/wings/environment"
++)
++
++// These tests exercise the full docker Environment.Create() path against a
++// real Docker daemon and assert the cgroup parent that ends up on the created
++// container. They are excluded from normal test runs; run them with:
++//
++//	go test -tags dockerintegration ./environment/docker/
++//
++// The daemon resolved from the standard Docker environment variables (or the
++// default unix socket) is used. Containers are created but never started, and
++// are removed again when each test finishes.
++
++func setTestConfig(t *testing.T, mutate func(c *config.Configuration)) {
++	t.Helper()
++	c, err := config.NewAtPath("/dev/null")
++	if err != nil {
++		t.Fatalf("failed to build default configuration: %v", err)
++	}
++	// config.Set derives a JWT signer from the panel token; any non-empty
++	// value satisfies it for tests that never talk to a panel.
++	c.AuthenticationToken = "dockerintegration-test-token"
++	// The default network mode references the wings-managed network, which does
++	// not exist on a plain test daemon; the bridge network is always available.
++	c.Docker.Network.Mode = "bridge"
++	mutate(c)
++	config.Set(c)
++}
++
++func createAndInspectParent(t *testing.T, id string, envVars []string) string {
++	t.Helper()
++	e, err := New(id, &Metadata{Image: "busybox:latest"}, environment.NewConfiguration(environment.Settings{
++		Limits: environment.Limits{MemoryLimit: 128},
++		// Create() dereferences DefaultMapping unconditionally; a real server
++		// always has one in the panel payload. Port 0 = "no allocation".
++		Allocations: environment.Allocations{
++			DefaultMapping: &environment.DefaultAllocationMapping{Ip: "127.0.0.1", Port: 0},
++		},
++	}, envVars))
++	if err != nil {
++		t.Fatalf("failed to build environment: %v", err)
++	}
++	t.Cleanup(func() {
++		_ = e.Destroy()
++	})
++	if err := e.Create(); err != nil {
++		t.Fatalf("failed to create container: %v", err)
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
++	defer cancel()
++	inspected, err := e.ContainerInspect(ctx)
++	if err != nil {
++		t.Fatalf("failed to inspect created container: %v", err)
++	}
++	return inspected.HostConfig.CgroupParent
++}
++
++func TestCreateWithoutCgroupParentLeavesDefault(t *testing.T) {
++	setTestConfig(t, func(c *config.Configuration) {})
++	if got := createAndInspectParent(t, "wings-cgtest-none", nil); got != "" {
++		t.Errorf("CgroupParent = %q, want empty", got)
++	}
++}
++
++func TestCreateAppliesNodeWideCgroupParent(t *testing.T) {
++	setTestConfig(t, func(c *config.Configuration) {
++		c.Docker.CgroupParent = "wings.slice"
++	})
++	if got := createAndInspectParent(t, "wings-cgtest-nodewide", nil); got != "wings.slice" {
++		t.Errorf("CgroupParent = %q, want %q", got, "wings.slice")
++	}
++}
++
++func TestCreateAppliesAcceptedOverride(t *testing.T) {
++	setTestConfig(t, func(c *config.Configuration) {
++		c.Docker.CgroupParent = "wings.slice"
++	})
++	got := createAndInspectParent(t, "wings-cgtest-override", []string{"WINGS_CGROUP_PARENT=wings-cgtest.slice"})
++	if got != "wings-cgtest.slice" {
++		t.Errorf("CgroupParent = %q, want %q", got, "wings-cgtest.slice")
++	}
++}
++
++func TestCreateRejectsDisallowedOverride(t *testing.T) {
++	setTestConfig(t, func(c *config.Configuration) {
++		c.Docker.CgroupParent = "wings.slice"
++	})
++	got := createAndInspectParent(t, "wings-cgtest-rejected", []string{"WINGS_CGROUP_PARENT=system.slice"})
++	if got != "wings.slice" {
++		t.Errorf("CgroupParent = %q, want fallback to %q", got, "wings.slice")
++	}
++}
++
++func TestCreateInstallerUsesSameResolver(t *testing.T) {
++	// The installer container path resolves through the identical
++	// config.DockerConfiguration.ResolveCgroupParent helper; the pure
++	// resolution logic is covered by the config package unit tests. This test
++	// documents the shared-resolver invariant at the integration level by
++	// asserting the resolver output the installer would use.
++	setTestConfig(t, func(c *config.Configuration) {
++		c.Docker.CgroupParent = "wings.slice"
++	})
++	got, err := config.Get().Docker.ResolveCgroupParent([]string{"WINGS_CGROUP_PARENT=wings-cgtest.slice"})
++	if err != nil {
++		t.Fatalf("unexpected rejection: %v", err)
++	}
++	if got != "wings-cgtest.slice" {
++		t.Errorf("installer-path resolver = %q, want %q", got, "wings-cgtest.slice")
++	}
++}
+-- 
+2.55.0
+

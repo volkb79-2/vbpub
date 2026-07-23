@@ -1,0 +1,611 @@
+From 79c3a50c700851117c7cf895e9cf424cca7eb53f Mon Sep 17 00:00:00 2001
+From: Volker Badziong <development@richtfest.tech>
+Date: Tue, 21 Jul 2026 16:27:53 +0000
+Subject: [PATCH 11/11] Trigger host ramdisk-setup units via systemd D-Bus
+ before container create
+
+Phase 0 of the ramdisk-sharing design: Wings does not manage mounts itself and
+never will. Instead, Environment.Create() asks systemd to (re)start a named,
+pre-existing unit -- the host's own soulmask-pak-ramdisk-setup.sh /
+soulmask-static-ramdisk-setup.sh .service units, or any other admin-installed
+unit -- and waits for the job to finish before proceeding to convertMounts()/
+ContainerCreate(). The unit's own script remains the only thing that ever
+touches a mount.
+
+WINGS_CG_RAMDISK_UNITS is a new admin-only, per-server egg/server variable
+(comma- or newline-separated unit names, mirroring WINGS_CG_CHILD_SERVERS'
+list convention). Every requested name must also appear in the new node-level
+docker.allowed_ramdisk_units allowlist or it is rejected and logged, never
+acted on -- the same fail-closed pattern docker.allowed_cgroup_parents already
+uses for WINGS_CGROUP_PARENT, applied here because a unit name is even more
+dangerous to trust blindly: unlike a cgroup slice, an arbitrary systemd unit
+could be sshd, a firewall service, or anything else installed on the host.
+Unlike the cgroup-parent allowlist there is no built-in fallback namespace --
+an empty docker.allowed_ramdisk_units permits triggering no unit at all.
+
+internal/cgroups gains StartUnit, which issues systemd's "start" job
+(StartUnitContext) against a persistent unit already defined on disk, and
+blocks on the job-done channel exactly like Ensure/Stop already do, bounded by
+a new TriggerUnitTimeout (150s: the ramdisk-setup units' own TimeoutStartSec=
+120 plus margin). This is deliberately never "restart" (RestartUnitContext):
+restarting an already-active oneshot unit runs ExecStop before ExecStart,
+which would tear down a live sibling server's bind mount -- confirmed by a
+new systemd e2e integration test (TestStartUnitIntegration) that starts a real
+oneshot unit twice (proving the second call is a no-op: ExecStart does not
+re-run) and then contrasts it against `systemctl restart` on the same unit
+(proving restart DOES run ExecStop then ExecStart), using a marker file to
+observe exactly which of the unit's ExecStart/ExecStop ran.
+
+Fail-open throughout: a rejected, missing, failing, or slow unit is logged
+and never blocks container creation -- a missing ramdisk share degrades to
+each server keeping its own private copy, which is safe.
+
+Also factors the comma-or-newline list-splitting logic (previously inlined in
+ChildServersFromEnv) into a shared splitCommaOrNewlineList helper, reused by
+the new RamdiskUnitsFromEnv.
+
+Tests: unit tests for RamdiskUnitsFromEnv parsing (comma/newline, dedup,
+order) and DockerConfiguration.ResolveRamdiskUnits (allowlist accept/reject/
+empty-allowlist/mixed-list); docker integration tests proving Create() fails
+open when systemd is unreachable and when a requested unit is not allowlisted
+(both verified against a real Docker daemon); a systemd e2e integration test
+proving the start-vs-restart idempotency contract against a real systemd
+instance.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ config/config_docker.go                       |  54 +++++++++
+ config/config_docker_cgroup_test.go           |  65 +++++++++++
+ environment/docker/cgroup_integration_test.go |  23 ++++
+ environment/docker/container.go               |  35 ++++++
+ internal/cgroups/cgroups.go                   |  53 ++++++++-
+ internal/cgroups/cgroups_test.go              |  30 ++++-
+ internal/cgroups/integration_test.go          | 106 ++++++++++++++++++
+ internal/cgroups/sysd.go                      |  52 +++++++++
+ 8 files changed, 406 insertions(+), 12 deletions(-)
+
+diff --git a/config/config_docker.go b/config/config_docker.go
+index 18c24ad..515343b 100644
+--- a/config/config_docker.go
++++ b/config/config_docker.go
+@@ -135,6 +135,29 @@ type DockerConfiguration struct {
+ 	// system.slice.
+ 	AllowedCgroupParents []string `json:"allowed_cgroup_parents" yaml:"allowed_cgroup_parents"`
+ 
++	// AllowedRamdiskUnits is a node-level allowlist of systemd unit names
++	// Wings is permitted to trigger (systemd "start" job, never "restart" —
++	// see internal/cgroups.StartUnit) on a server's behalf via the per-server
++	// WINGS_CG_RAMDISK_UNITS egg/server variable (see RamdiskUnitsFromEnv /
++	// ResolveRamdiskUnits). The motivating case is a host-side ramdisk-setup
++	// unit shared by several sibling servers; Wings never creates, modifies,
++	// or understands the mount such a unit sets up, it only asks systemd to
++	// (re)run a unit that is already installed on the host.
++	//
++	// Unlike AllowedCgroupParents there is no built-in fallback namespace to
++	// fall back into when this is empty: a systemd unit name carries no
++	// structural marker (no "wings-*" naming convention) that would let Wings
++	// safely infer which units an administrator meant to expose this way. An
++	// empty list therefore means Wings may trigger NO unit through this
++	// mechanism at all, full stop.
++	//
++	// Egg/server variables are panel data, not a security boundary: Wings
++	// must enforce this restriction itself so that a compromised or
++	// misconfigured panel payload cannot ask Wings to (re)start an arbitrary
++	// unit on the host — sshd, a firewall service, anything else installed as
++	// a .service, not only the ramdisk-setup units this exists for.
++	AllowedRamdiskUnits []string `json:"allowed_ramdisk_units" yaml:"allowed_ramdisk_units"`
++
+ 	// PerServerSlices enables automatic per-server slice management: every
+ 	// server is placed under its own derived slice (see ServerSliceName)
+ 	// nested inside CgroupParent, and Wings creates/reconciles that slice as
+@@ -343,6 +366,37 @@ func cgroupParentOverride(env []string) string {
+ 	return override
+ }
+ 
++// ResolveRamdiskUnits parses the per-server WINGS_CG_RAMDISK_UNITS variable
++// (cgroups.RamdiskUnitsFromEnv) and splits the requested unit names into the
++// subset allowed by docker.allowed_ramdisk_units and the subset rejected.
++// Every rejected name is returned (not just dropped) so the caller can log
++// each one individually, exactly as a rejected WINGS_CGROUP_PARENT override
++// is by ResolveCgroupParent. Both slices are nil when the server requests
++// nothing.
++//
++// There is deliberately no fallback namespace the way ResolveCgroupParent
++// falls back to "wings-*.slice": an empty AllowedRamdiskUnits rejects every
++// request, because a unit name has no equivalent structural marker Wings
++// could trust in its place.
++func (c DockerConfiguration) ResolveRamdiskUnits(env []string) (allowed, rejected []string) {
++	requested := cgroups.RamdiskUnitsFromEnv(env)
++	if len(requested) == 0 {
++		return nil, nil
++	}
++	allow := make(map[string]struct{}, len(c.AllowedRamdiskUnits))
++	for _, u := range c.AllowedRamdiskUnits {
++		allow[u] = struct{}{}
++	}
++	for _, u := range requested {
++		if _, ok := allow[u]; ok {
++			allowed = append(allowed, u)
++		} else {
++			rejected = append(rejected, u)
++		}
++	}
++	return allowed, rejected
++}
++
+ // ServerSliceName derives the per-server slice unit name for a server UUID:
+ // the node-wide CgroupParent with the dashless lowercase UUID appended, e.g.
+ // "wings.slice" + "b87c0a5b-…" -> "wings-b87c0a5b23874a1c8863ff23e6800a1d.slice".
+diff --git a/config/config_docker_cgroup_test.go b/config/config_docker_cgroup_test.go
+index b8d5f1b..b35bfd8 100644
+--- a/config/config_docker_cgroup_test.go
++++ b/config/config_docker_cgroup_test.go
+@@ -148,3 +148,68 @@ func TestDockerConfigurationResolveCgroupParent(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestDockerConfigurationResolveRamdiskUnits(t *testing.T) {
++	tests := []struct {
++		name         string
++		cfg          DockerConfiguration
++		env          []string
++		wantAllowed  []string
++		wantRejected []string
++	}{
++		{
++			name: "no variable set",
++			cfg:  DockerConfiguration{AllowedRamdiskUnits: []string{"soulmask-pak-ramdisk.service"}},
++			env:  nil,
++		},
++		{
++			name:        "listed unit accepted",
++			cfg:         DockerConfiguration{AllowedRamdiskUnits: []string{"soulmask-pak-ramdisk.service", "soulmask-static-ramdisk.service"}},
++			env:         []string{"WINGS_CG_RAMDISK_UNITS=soulmask-pak-ramdisk.service"},
++			wantAllowed: []string{"soulmask-pak-ramdisk.service"},
++		},
++		{
++			name:         "unlisted unit rejected",
++			cfg:          DockerConfiguration{AllowedRamdiskUnits: []string{"soulmask-pak-ramdisk.service"}},
++			env:          []string{"WINGS_CG_RAMDISK_UNITS=sshd.service"},
++			wantRejected: []string{"sshd.service"},
++		},
++		{
++			name:         "empty allowlist rejects everything",
++			cfg:          DockerConfiguration{},
++			env:          []string{"WINGS_CG_RAMDISK_UNITS=soulmask-pak-ramdisk.service"},
++			wantRejected: []string{"soulmask-pak-ramdisk.service"},
++		},
++		{
++			name:         "mixed list splits allowed and rejected, order preserved",
++			cfg:          DockerConfiguration{AllowedRamdiskUnits: []string{"soulmask-pak-ramdisk.service"}},
++			env:          []string{"WINGS_CG_RAMDISK_UNITS=soulmask-pak-ramdisk.service,sshd.service,soulmask-static-ramdisk.service"},
++			wantAllowed:  []string{"soulmask-pak-ramdisk.service"},
++			wantRejected: []string{"sshd.service", "soulmask-static-ramdisk.service"},
++		},
++	}
++
++	strEq := func(a, b []string) bool {
++		if len(a) != len(b) {
++			return false
++		}
++		for i := range a {
++			if a[i] != b[i] {
++				return false
++			}
++		}
++		return true
++	}
++
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			allowed, rejected := tc.cfg.ResolveRamdiskUnits(tc.env)
++			if !strEq(allowed, tc.wantAllowed) {
++				t.Errorf("allowed = %v, want %v", allowed, tc.wantAllowed)
++			}
++			if !strEq(rejected, tc.wantRejected) {
++				t.Errorf("rejected = %v, want %v", rejected, tc.wantRejected)
++			}
++		})
++	}
++}
+diff --git a/environment/docker/cgroup_integration_test.go b/environment/docker/cgroup_integration_test.go
+index 9464d05..08175ae 100644
+--- a/environment/docker/cgroup_integration_test.go
++++ b/environment/docker/cgroup_integration_test.go
+@@ -101,6 +101,29 @@ func TestCreateRejectsDisallowedOverride(t *testing.T) {
+ 	}
+ }
+ 
++func TestCreateFailsOpenWhenRamdiskUnitTriggerUnreachable(t *testing.T) {
++	// This test environment has no /run/dbus or /run/systemd/private mounted
++	// (see internal/cgroups.connect), so cgroups.StartUnit fails immediately.
++	// Create() must still succeed: a missing ramdisk share degrades to each
++	// server keeping its own private copy, never a reason to refuse to start.
++	setTestConfig(t, func(c *config.Configuration) {
++		c.Docker.AllowedRamdiskUnits = []string{"soulmask-pak-ramdisk.service"}
++	})
++	createAndInspectParent(t, "wings-cgtest-ramdisk-failopen", []string{"WINGS_CG_RAMDISK_UNITS=soulmask-pak-ramdisk.service"})
++}
++
++func TestCreateSkipsDisallowedRamdiskUnit(t *testing.T) {
++	// A unit not on the node's allowlist must never even be attempted; the
++	// pure allowlist-filtering logic is covered in the config package tests
++	// (TestDockerConfigurationResolveRamdiskUnits) — this asserts the
++	// integration path still creates the container normally when the only
++	// requested unit is rejected.
++	setTestConfig(t, func(c *config.Configuration) {
++		c.Docker.AllowedRamdiskUnits = []string{"soulmask-pak-ramdisk.service"}
++	})
++	createAndInspectParent(t, "wings-cgtest-ramdisk-rejected", []string{"WINGS_CG_RAMDISK_UNITS=sshd.service"})
++}
++
+ func TestCreateInstallerUsesSameResolver(t *testing.T) {
+ 	// The installer container path resolves through the identical
+ 	// config.DockerConfiguration.ResolveCgroupParent helper; the pure
+diff --git a/environment/docker/container.go b/environment/docker/container.go
+index d75a6e7..b13e4ae 100644
+--- a/environment/docker/container.go
++++ b/environment/docker/container.go
+@@ -192,6 +192,41 @@ func (e *Environment) Create() error {
+ 		cgroups.EnsureForServer(ctx, e.log(), cfg.Docker.SliceEnsureRequest(e.Id, cgroupParent, evs, cgroups.PhaseSteady), "container create")
+ 	}
+ 
++	// Trigger any host-side, pre-existing systemd units this server names via
++	// WINGS_CG_RAMDISK_UNITS — typically a ramdisk-setup unit shared with
++	// sibling servers (see scripts/gstammtisch-guide/SOULMASK.md). Wings never
++	// manages the mount itself: it only asks systemd to start a unit that is
++	// already installed and defined on the host, and waits for the job to
++	// finish, exactly like an operator running `systemctl start <unit>` — the
++	// host scripts remain the only thing that ever touches a mount. Only unit
++	// names also listed in docker.allowed_ramdisk_units are honoured; every
++	// other requested name is rejected and logged, never acted on, because
++	// this variable is panel data a compromised or misconfigured server could
++	// otherwise abuse to ask Wings to (re)start an arbitrary host unit. See
++	// config.DockerConfiguration.ResolveRamdiskUnits.
++	//
++	// Runs on every Create(), not only the server's first: the units this
++	// targets are idempotent oneshots (systemd's "start" job on an
++	// already-active-exited oneshot does not re-run ExecStart — see
++	// cgroups.StartUnit), so a repeat trigger is a cheap no-op.
++	//
++	// Fail-open, exactly like the slice management above: a missing, failing,
++	// or slow unit is logged and never blocks the server from starting — a
++	// missing ramdisk share degrades to each server keeping its own private
++	// copy of whatever it backs, which is correct/safe, never a reason to
++	// refuse to start the server.
++	allowedRamdiskUnits, rejectedRamdiskUnits := cfg.Docker.ResolveRamdiskUnits(evs)
++	for _, name := range rejectedRamdiskUnits {
++		e.log().WithField("unit", name).Warn("environment/docker: rejected WINGS_CG_RAMDISK_UNITS unit not listed in docker.allowed_ramdisk_units")
++	}
++	for _, name := range allowedRamdiskUnits {
++		if err := cgroups.StartUnit(ctx, name); err != nil {
++			e.log().WithField("unit", name).WithError(err).Warn("environment/docker: failed to trigger ramdisk-setup unit; continuing without it")
++		} else {
++			e.log().WithField("unit", name).Info("environment/docker: triggered ramdisk-setup unit")
++		}
++	}
++
+ 	// Merge user-provided labels with system labels
+ 	confLabels := e.Configuration.Labels()
+ 	labels := make(map[string]string, 2+len(confLabels))
+diff --git a/internal/cgroups/cgroups.go b/internal/cgroups/cgroups.go
+index 975ebf6..aac14f8 100644
+--- a/internal/cgroups/cgroups.go
++++ b/internal/cgroups/cgroups.go
+@@ -124,6 +124,27 @@ const (
+ 	// hand, autostarts unconditionally like any other server. Keeping a child
+ 	// stopped whenever its parent is stopped is the operator's responsibility.
+ 	EnvChildServers = "WINGS_CG_CHILD_SERVERS"
++
++	// EnvRamdiskUnits is an admin-only, per-server list of systemd unit names
++	// (comma- or newline-separated, the same convention as EnvChildServers)
++	// that Wings triggers with StartUnit before creating this server's
++	// container — see environment/docker.Environment.Create. The motivating
++	// case is a host-side ramdisk-setup unit shared by several sibling
++	// servers (e.g. scripts/gstammtisch-guide's soulmask-pak-ramdisk.service,
++	// soulmask-static-ramdisk.service): Wings does not create, own, or
++	// understand the mount those units set up, it only asks systemd to
++	// (re)run a unit that is already installed and defined on the host,
++	// exactly like an operator typing `systemctl start <unit>`.
++	//
++	// This is deliberately NOT a free-text unit name honoured on trust: every
++	// requested name must also appear in the node's
++	// docker.allowed_ramdisk_units allowlist (config.DockerConfiguration.
++	// ResolveRamdiskUnits) or it is rejected and logged, never acted on. Egg
++	// or server variables are panel data — without the allowlist, a
++	// compromised or misconfigured server could ask Wings to (re)start ANY
++	// unit installed on the host. RamdiskUnitsFromEnv below only parses the
++	// raw request; it performs no allowlist check itself.
++	EnvRamdiskUnits = "WINGS_CG_RAMDISK_UNITS"
+ )
+ 
+ // Phase selects which property band a slice should carry.
+@@ -465,7 +486,17 @@ func PhaseEventsFromEnv(env []string) []PhaseEvent {
+ // node manages, or the server's own ID, is left to the caller (server.
+ // resolveChildServers) — this function only parses the raw list.
+ func ChildServersFromEnv(env []string) []string {
+-	raw := envValue(env, EnvChildServers)
++	return splitCommaOrNewlineList(envValue(env, EnvChildServers))
++}
++
++// splitCommaOrNewlineList parses the shared multi-entry convention of the
++// WINGS_CG_* list variables (EnvChildServers, EnvRamdiskUnits): comma- or
++// newline-separated, trimmed, de-duplicated, and order-preserving. Blank
++// entries (from a trailing separator or a blank line) are dropped silently —
++// they carry no information either way. Callers own whatever entry-shape
++// validation applies to their own list (a UUID, a unit name, ...); this only
++// splits the raw string.
++func splitCommaOrNewlineList(raw string) []string {
+ 	if raw == "" {
+ 		return nil
+ 	}
+@@ -473,19 +504,29 @@ func ChildServersFromEnv(env []string) []string {
+ 	var out []string
+ 	seen := map[string]struct{}{}
+ 	for _, part := range strings.Split(raw, ",") {
+-		id := strings.TrimSpace(part)
+-		if id == "" {
++		v := strings.TrimSpace(part)
++		if v == "" {
+ 			continue
+ 		}
+-		if _, ok := seen[id]; ok {
++		if _, ok := seen[v]; ok {
+ 			continue
+ 		}
+-		seen[id] = struct{}{}
+-		out = append(out, id)
++		seen[v] = struct{}{}
++		out = append(out, v)
+ 	}
+ 	return out
+ }
+ 
++// RamdiskUnitsFromEnv parses EnvRamdiskUnits into the list of systemd unit
++// names it requests (see splitCommaOrNewlineList for the shared list
++// convention). This performs no validation against the node's
++// docker.allowed_ramdisk_units allowlist — that check is
++// config.DockerConfiguration.ResolveRamdiskUnits's job, since the allowlist is
++// node configuration this package has no access to.
++func RamdiskUnitsFromEnv(env []string) []string {
++	return splitCommaOrNewlineList(envValue(env, EnvRamdiskUnits))
++}
++
+ // StartupGraceFromEnv returns the per-server startup grace override. The bool
+ // reports whether the server defined one at all; an unparseable value is
+ // reported as an error so it can be logged and the node default used.
+diff --git a/internal/cgroups/cgroups_test.go b/internal/cgroups/cgroups_test.go
+index a9411e5..f5416c9 100644
+--- a/internal/cgroups/cgroups_test.go
++++ b/internal/cgroups/cgroups_test.go
+@@ -180,18 +180,36 @@ func TestChildServersFromEnv(t *testing.T) {
+ 	}
+ }
+ 
++func TestRamdiskUnitsFromEnv(t *testing.T) {
++	if got := RamdiskUnitsFromEnv([]string{"OTHER=x"}); got != nil {
++		t.Errorf("no WINGS_CG_RAMDISK_UNITS must yield nil, got %v", got)
++	}
++	got := RamdiskUnitsFromEnv([]string{
++		EnvRamdiskUnits + "=soulmask-pak-ramdisk.service, soulmask-static-ramdisk.service\nsoulmask-pak-ramdisk.service\n\n",
++	})
++	want := []string{"soulmask-pak-ramdisk.service", "soulmask-static-ramdisk.service"}
++	if len(got) != len(want) {
++		t.Fatalf("RamdiskUnitsFromEnv = %v, want %v", got, want)
++	}
++	for i := range want {
++		if got[i] != want[i] {
++			t.Errorf("entry %d = %q, want %q (order/dedup)", i, got[i], want[i])
++		}
++	}
++}
++
+ func TestIsDerivedName(t *testing.T) {
+ 	for _, c := range []struct {
+ 		name string
+ 		want bool
+ 	}{
+ 		{"wings-b87c0a5b23874a1c8863ff23e6800a1d.slice", true},
+-		{"wings-b87c0a5b.slice", false},                            // admin short-form, not derived shape
+-		{"wings-B87C0A5B23874A1C8863FF23E6800A1D.slice", false},    // uppercase never derived
+-		{"wings-b87c0a5b23874a1c8863ff23e6800a1d", false},          // missing suffix
+-		{"other-b87c0a5b23874a1c8863ff23e6800a1d.slice", false},    // wrong prefix
+-		{"wings-g87c0a5b23874a1c8863ff23e6800a1d.slice", false},    // non-hex
+-		{"wings-b87c0a5b23874a1c8863ff23e6800a1d00.slice", false},  // wrong length
++		{"wings-b87c0a5b.slice", false},                           // admin short-form, not derived shape
++		{"wings-B87C0A5B23874A1C8863FF23E6800A1D.slice", false},   // uppercase never derived
++		{"wings-b87c0a5b23874a1c8863ff23e6800a1d", false},         // missing suffix
++		{"other-b87c0a5b23874a1c8863ff23e6800a1d.slice", false},   // wrong prefix
++		{"wings-g87c0a5b23874a1c8863ff23e6800a1d.slice", false},   // non-hex
++		{"wings-b87c0a5b23874a1c8863ff23e6800a1d00.slice", false}, // wrong length
+ 		{"wings.slice", false},
+ 	} {
+ 		if got := isDerivedName(c.name, "wings-"); got != c.want {
+diff --git a/internal/cgroups/integration_test.go b/internal/cgroups/integration_test.go
+index 359ade4..d0b3224 100644
+--- a/internal/cgroups/integration_test.go
++++ b/internal/cgroups/integration_test.go
+@@ -11,6 +11,9 @@ package cgroups
+ 
+ import (
+ 	"context"
++	"os"
++	"os/exec"
++	"strings"
+ 	"testing"
+ 	"time"
+ )
+@@ -196,3 +199,106 @@ func TestSliceLifecycleIntegration(t *testing.T) {
+ 		t.Errorf("Stop(B) again must tolerate a not-loaded unit: %v", err)
+ 	}
+ }
++
++// itMarkerPath and itUnitName back TestStartUnitIntegration: a real
++// persistent (non-transient) oneshot unit, installed the same way an
++// administrator's ramdisk-setup unit is, whose ExecStart/ExecStop each append
++// a line to the marker file so the test can observe exactly which of them ran.
++const (
++	itUnitName   = "wings-e2e-startunit-test.service"
++	itMarkerPath = "/tmp/wings-e2e-startunit.marker"
++)
++
++func itWriteStartUnitTestUnit(t *testing.T) {
++	t.Helper()
++	unit := "[Unit]\n" +
++		"Description=wings-cgroups e2e StartUnit test unit\n\n" +
++		"[Service]\n" +
++		"Type=oneshot\n" +
++		"RemainAfterExit=yes\n" +
++		"ExecStart=/bin/sh -c 'echo start >> " + itMarkerPath + "'\n" +
++		"ExecStop=/bin/sh -c 'echo stop >> " + itMarkerPath + "'\n"
++	path := "/etc/systemd/system/" + itUnitName
++	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
++		t.Fatalf("writing test unit file: %v", err)
++	}
++	t.Cleanup(func() { _ = os.Remove(path) })
++	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
++		t.Fatalf("daemon-reload: %v: %s", err, out)
++	}
++}
++
++// itMarkerLines reads the marker file as a plain ordered log of events, one
++// per line — NOT via splitCommaOrNewlineList, whose de-duplication is correct
++// for its actual callers (a list of distinct names) but wrong here: this test
++// relies on telling a single "start" from two "start" lines (idempotent no-op
++// vs. a genuine second ExecStart), so a repeated identical line must survive.
++func itMarkerLines(t *testing.T) []string {
++	t.Helper()
++	b, err := os.ReadFile(itMarkerPath)
++	if err != nil {
++		if os.IsNotExist(err) {
++			return nil
++		}
++		t.Fatalf("reading marker file: %v", err)
++	}
++	var out []string
++	for _, line := range strings.Split(string(b), "\n") {
++		if line != "" {
++			out = append(out, line)
++		}
++	}
++	return out
++}
++
++// TestStartUnitIntegration proves the exact contract StartUnit relies on for
++// the ramdisk-trigger feature: "start" on an already-active-exited oneshot is
++// a no-op (ExecStart does not re-run), and — as a negative control on this
++// same systemd version — "restart" is NOT equivalent: it runs ExecStop first.
++// Getting this distinction backwards in production would tear down a live
++// sibling server's bind mount on every subsequent container Create().
++func TestStartUnitIntegration(t *testing.T) {
++	ctx := itCtx(t)
++	_ = os.Remove(itMarkerPath)
++	t.Cleanup(func() { _ = os.Remove(itMarkerPath) })
++	itWriteStartUnitTestUnit(t)
++	t.Cleanup(func() {
++		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++		defer cancel()
++		_ = Stop(cctx, itUnitName)
++	})
++
++	// 1. First start: the unit is not yet loaded/active, so ExecStart runs.
++	if err := StartUnit(ctx, itUnitName); err != nil {
++		t.Fatalf("StartUnit (first): %v", err)
++	}
++	if got := itMarkerLines(t); len(got) != 1 || got[0] != "start" {
++		t.Fatalf("marker after first StartUnit = %v, want [start]", got)
++	}
++	if s := itActiveState(t, ctx, itUnitName); s != "active" {
++		t.Fatalf("unit ActiveState after first StartUnit = %q, want active", s)
++	}
++
++	// 2. Second start: the unit is already active-exited. This must be a
++	// no-op — ExecStart must NOT run again, and critically ExecStop must NOT
++	// run either (that would be the "restart" behaviour, and for the real
++	// ramdisk-setup units it would tear down a sibling's live bind mount).
++	if err := StartUnit(ctx, itUnitName); err != nil {
++		t.Fatalf("StartUnit (second, already active): %v", err)
++	}
++	if got := itMarkerLines(t); len(got) != 1 || got[0] != "start" {
++		t.Fatalf("marker after second StartUnit = %v, want [start] unchanged (start must be a no-op on an active-exited oneshot)", got)
++	}
++
++	// 3. Negative control: systemd's RESTART job — never issued through this
++	// package's public API, which deliberately has no restart mode — DOES run
++	// ExecStop then ExecStart on this same unit. Issued via the systemctl CLI,
++	// which blocks until the whole restart transaction (stop, then start) is
++	// complete.
++	if out, err := exec.Command("systemctl", "restart", itUnitName).CombinedOutput(); err != nil {
++		t.Fatalf("systemctl restart %s: %v: %s", itUnitName, err, out)
++	}
++	if got := itMarkerLines(t); len(got) != 3 || got[0] != "start" || got[1] != "stop" || got[2] != "start" {
++		t.Fatalf("marker after systemctl restart = %v, want [start stop start] (restart runs ExecStop then ExecStart)", got)
++	}
++}
+diff --git a/internal/cgroups/sysd.go b/internal/cgroups/sysd.go
+index 0b6ddc4..d4215ae 100644
+--- a/internal/cgroups/sysd.go
++++ b/internal/cgroups/sysd.go
+@@ -433,6 +433,58 @@ func Stop(ctx context.Context, name string) error {
+ 	return nil
+ }
+ 
++// TriggerUnitTimeout bounds how long StartUnit waits for a triggered unit's
++// start job to finish. Sized against the concrete units this exists to
++// trigger — the host ramdisk-setup services (soulmask-pak-ramdisk.service,
++// soulmask-static-ramdisk.service) declare TimeoutStartSec=120 for their own
++// cold-cache ExecStart (copying up to a few hundred MB on a slow disk) — so
++// this is that outer bound plus margin, not an independent policy choice. A
++// warm no-op start (see StartUnit) returns almost immediately regardless.
++const TriggerUnitTimeout = 150 * time.Second
++
++// StartUnit asks systemd to start a unit that is expected to already be
++// loaded from disk (e.g. an admin-installed /etc/systemd/system/*.service),
++// and blocks until the job completes or ctx is done (bounded by
++// TriggerUnitTimeout regardless of what ctx itself allows). Unlike
++// Ensure/StartTransientUnitContext above, this never creates, modifies, or
++// removes a unit definition — Wings does not own it, only asks systemd to
++// (re)run it, exactly like an operator typing `systemctl start <unit>`.
++//
++// This is deliberately systemd's "start" job (StartUnitContext), never
++// "restart" (RestartUnitContext): restarting an already-active oneshot unit
++// runs its ExecStop before ExecStart, and for the ramdisk-setup units this
++// function exists to trigger, ExecStop tears down the bind mounts one or
++// more sibling servers may be actively relying on — a live lesson from this
++// project's own host-side operation, not a theoretical concern. "start" on
++// an already-active-exited oneshot is instead a documented systemd no-op
++// (ExecStart is not re-run), which is exactly the idempotent, cheap, safe
++// behaviour wanted here: this runs on every container Create(), not only
++// the server's first.
++func StartUnit(ctx context.Context, name string) error {
++	ctx, cancel := context.WithTimeout(ctx, TriggerUnitTimeout)
++	defer cancel()
++
++	c, err := connect(ctx)
++	if err != nil {
++		return err
++	}
++	defer c.close()
++
++	ch := make(chan string, 1)
++	if _, err := c.dbus.StartUnitContext(ctx, name, "replace", ch); err != nil {
++		return err
++	}
++	select {
++	case result := <-ch:
++		if result != "done" {
++			return errors.New("starting unit " + name + ": job result " + strconv.Quote(result))
++		}
++	case <-ctx.Done():
++		return ctx.Err()
++	}
++	return nil
++}
++
+ // CleanupOrphans stops active transient slices matching prefix<32 hex>.slice —
+ // the shape of Wings-derived per-server slices — for which keep returns
+ // false. Slices not marked Transient by systemd are never touched: those are
+-- 
+2.55.0
+

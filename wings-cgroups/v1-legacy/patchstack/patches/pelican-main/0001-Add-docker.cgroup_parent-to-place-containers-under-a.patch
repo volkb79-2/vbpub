@@ -1,0 +1,217 @@
+From 9ef92d7081929b0223089cbaf5d7d15fce0e905a Mon Sep 17 00:00:00 2001
+From: Volker Badziong <development@richtfest.tech>
+Date: Wed, 15 Jul 2026 10:46:14 +0000
+Subject: [PATCH 01/11] Add docker.cgroup_parent to place containers under a
+ systemd slice
+
+Adds an opt-in, node-level docker.cgroup_parent configuration key that
+sets HostConfig.CgroupParent on every server and installer container
+Wings creates. With the systemd cgroup driver this places containers
+under a named, admin-managed systemd slice instead of system.slice,
+making cgroup v2 resource policy (memory.min/low/high protection floors
+and ceilings, cpu.weight, io.weight) applicable to the game workload as
+a whole without affecting host services.
+
+The value is validated at Wings startup: it must be a bare unit name
+ending in ".slice" with no whitespace, control characters or path
+separators. An empty value (the default) leaves Docker's placement
+unchanged. Existing containers are not moved; the setting applies to
+containers created after the configuration change.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ cmd/root.go                         |  3 ++
+ config/config_docker.go             | 55 +++++++++++++++++++++++++++++
+ config/config_docker_cgroup_test.go | 48 +++++++++++++++++++++++++
+ environment/docker/container.go     |  6 ++++
+ server/install.go                   |  7 ++++
+ 5 files changed, 119 insertions(+)
+ create mode 100644 config/config_docker_cgroup_test.go
+
+diff --git a/cmd/root.go b/cmd/root.go
+index 5b95ac5..eb16a3b 100644
+--- a/cmd/root.go
++++ b/cmd/root.go
+@@ -445,6 +445,9 @@ func initConfig() {
+ 		}
+ 		log2.Fatalf("cmd/root: error while reading configuration file: %s", err)
+ 	}
++	if err := config.Get().Docker.ValidateCgroupParent(); err != nil {
++		log2.Fatalf("cmd/root: invalid docker configuration: %s", err)
++	}
+ 	if debug && !config.Get().Debug {
+ 		config.SetDebugViaFlag(debug)
+ 	}
+diff --git a/config/config_docker.go b/config/config_docker.go
+index f3e846b..4309d96 100644
+--- a/config/config_docker.go
++++ b/config/config_docker.go
+@@ -3,7 +3,9 @@ package config
+ import (
+ 	"encoding/base64"
+ 	"sort"
++	"strings"
+ 
++	"emperror.dev/errors"
+ 	"github.com/docker/docker/api/types/container"
+ 	"github.com/docker/docker/api/types/registry"
+ 	"github.com/goccy/go-json"
+@@ -92,6 +94,29 @@ type DockerConfiguration struct {
+ 	// Sets the IPS that the user is able to bind to
+ 	SystemIps []string `default:"[]" json:"system_ips" yaml:"system_ips"`
+ 
++	// CgroupParent sets the parent cgroup that every server and installer
++	// container is created under (Docker HostConfig.CgroupParent). When the
++	// Docker daemon uses the systemd cgroup driver this is the name of a
++	// systemd slice unit, e.g. "wings.slice". Leave blank (default) to keep
++	// Docker's normal placement, which is typically system.slice with the
++	// systemd cgroup driver.
++	//
++	// Placing all Wings-created containers under a dedicated, admin-managed
++	// slice allows cgroup v2 resource policy (memory.min/memory.low protection
++	// floors, memory.high/max ceilings, cpu.weight, io.weight) to be scoped to
++	// the game workload as a whole instead of being applied to system.slice.
++	//
++	// Requirements that are NOT validated beyond the ".slice" suffix check:
++	//   - The Docker daemon should be running with the systemd cgroup driver
++	//     (daemon.json: "exec-opts": ["native.cgroupdriver=systemd"]).
++	//   - The named slice unit should already be installed and loaded on the
++	//     host. If it is not, systemd silently creates a transient slice with
++	//     no resource properties instead of failing loudly: the cgroup path
++	//     will look correct while the intended guarantees are absent.
++	//   - Existing containers are NOT moved when this value changes; it only
++	//     affects containers created after Wings picks up the new config.
++	CgroupParent string `default:"" json:"cgroup_parent" yaml:"cgroup_parent"`
++
+ 	LogConfig struct {
+ 		Type   string            `default:"local" json:"type" yaml:"type"`
+ 		Config map[string]string `default:"{\"max-size\":\"5m\",\"max-file\":\"1\",\"compress\":\"false\",\"mode\":\"non-blocking\"}" json:"config" yaml:"config"`
+@@ -109,6 +134,36 @@ func (c DockerConfiguration) ContainerLogConfig() container.LogConfig {
+ 	}
+ }
+ 
++// ValidateCgroupParent performs a best-effort sanity check on the configured
++// CgroupParent. Wings has no dependency on systemd and cannot confirm that the
++// referenced slice unit is actually loaded on the host -- Docker/runc surface
++// that class of error at container creation time when the cgroup driver is
++// systemd and the value is genuinely invalid. This only guards against
++// obviously wrong values (e.g. a cgroupfs-style path or an embedded control
++// character) being silently accepted.
++func (c DockerConfiguration) ValidateCgroupParent() error {
++	return ValidateCgroupParentValue(c.CgroupParent)
++}
++
++// ValidateCgroupParentValue is the standalone check used both for the
++// node-wide docker.cgroup_parent setting and for any per-server override
++// value. An empty value is valid and means "no parent configured".
++func ValidateCgroupParentValue(v string) error {
++	if v == "" {
++		return nil
++	}
++	if strings.ContainsAny(v, "\x00\n\r\t ") || strings.TrimSpace(v) != v {
++		return errors.New("cgroup parent must not contain whitespace or control characters: " + v)
++	}
++	if strings.Contains(v, "/") {
++		return errors.New("cgroup parent must be a systemd slice unit name, not a cgroupfs path: " + v)
++	}
++	if !strings.HasSuffix(v, ".slice") {
++		return errors.New("cgroup parent must end in \".slice\" (systemd cgroup driver naming convention): " + v)
++	}
++	return nil
++}
++
+ // RegistryConfiguration defines the authentication credentials for a given
+ // Docker registry.
+ type RegistryConfiguration struct {
+diff --git a/config/config_docker_cgroup_test.go b/config/config_docker_cgroup_test.go
+new file mode 100644
+index 0000000..98c933b
+--- /dev/null
++++ b/config/config_docker_cgroup_test.go
+@@ -0,0 +1,48 @@
++package config
++
++import "testing"
++
++func TestValidateCgroupParentValue(t *testing.T) {
++	tests := []struct {
++		name    string
++		value   string
++		wantErr bool
++	}{
++		{name: "empty is valid", value: "", wantErr: false},
++		{name: "simple slice", value: "wings.slice", wantErr: false},
++		{name: "custom slice", value: "gameservers.slice", wantErr: false},
++		{name: "dashed child slice", value: "wings-b87c0a5b.slice", wantErr: false},
++		{name: "missing suffix", value: "wings", wantErr: true},
++		{name: "wrong unit type", value: "wings.scope", wantErr: true},
++		{name: "cgroupfs absolute path", value: "/sys/fs/cgroup/wings.slice", wantErr: true},
++		{name: "nested path", value: "wings.slice/wings-a.slice", wantErr: true},
++		{name: "leading whitespace", value: " wings.slice", wantErr: true},
++		{name: "inner whitespace", value: "wings .slice", wantErr: true},
++		{name: "trailing newline", value: "wings.slice\n", wantErr: true},
++		{name: "embedded tab", value: "wings\t.slice", wantErr: true},
++	}
++
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			err := ValidateCgroupParentValue(tc.value)
++			if tc.wantErr && err == nil {
++				t.Errorf("expected an error for %q, got nil", tc.value)
++			}
++			if !tc.wantErr && err != nil {
++				t.Errorf("expected no error for %q, got: %v", tc.value, err)
++			}
++		})
++	}
++}
++
++func TestDockerConfigurationValidateCgroupParent(t *testing.T) {
++	if err := (DockerConfiguration{}).ValidateCgroupParent(); err != nil {
++		t.Errorf("empty CgroupParent should validate, got: %v", err)
++	}
++	if err := (DockerConfiguration{CgroupParent: "wings.slice"}).ValidateCgroupParent(); err != nil {
++		t.Errorf("wings.slice should validate, got: %v", err)
++	}
++	if err := (DockerConfiguration{CgroupParent: "not-a-slice"}).ValidateCgroupParent(); err == nil {
++		t.Error("expected an error for a value without the .slice suffix, got nil")
++	}
++}
+diff --git a/environment/docker/container.go b/environment/docker/container.go
+index 4c77929..e7c7251 100644
+--- a/environment/docker/container.go
++++ b/environment/docker/container.go
+@@ -270,6 +270,12 @@ func (e *Environment) Create() error {
+ 		UsernsMode:  container.UsernsMode(cfg.Docker.UsernsMode),
+ 	}
+ 
++	// Place the container under the node-wide cgroup parent (systemd slice) if
++	// one is configured. See config.DockerConfiguration.CgroupParent.
++	if cfg.Docker.CgroupParent != "" {
++		hostConf.CgroupParent = cfg.Docker.CgroupParent
++	}
++
+ 	var netConf *network.NetworkingConfig = nil //In case when no networking config is needed set nil
+ 	var serverNetConfig = config.Get().Docker.Network
+ 	if "macvlan" == serverNetConfig.Driver { //Generate networking config for macvlan driver
+diff --git a/server/install.go b/server/install.go
+index 8307517..c79c248 100644
+--- a/server/install.go
++++ b/server/install.go
+@@ -459,6 +459,13 @@ func (ip *InstallationProcess) Execute() (string, error) {
+ 		UsernsMode:  container.UsernsMode(cfg.Docker.UsernsMode),
+ 	}
+ 
++	// Keep the installer container under the same cgroup parent as the server
++	// containers so that installation workloads are subject to the same
++	// slice-level resource policy. See config.DockerConfiguration.CgroupParent.
++	if cfg.Docker.CgroupParent != "" {
++		hostConf.CgroupParent = cfg.Docker.CgroupParent
++	}
++
+ 	// Ensure the root directory for the server exists properly before attempting
+ 	// to trigger the reinstall of the server. It is possible the directory would
+ 	// not exist when this runs if Wings boots with a missing directory and a user
+-- 
+2.55.0
+

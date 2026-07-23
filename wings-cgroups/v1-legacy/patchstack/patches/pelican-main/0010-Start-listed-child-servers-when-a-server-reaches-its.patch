@@ -1,0 +1,961 @@
+From 60d4c8dc0b0059c752ad8d2ab702f8762a52628b Mon Sep 17 00:00:00 2001
+From: Volker Badziong <development@richtfest.tech>
+Date: Tue, 21 Jul 2026 15:57:04 +0000
+Subject: [PATCH 10/11] Start listed child servers when a server reaches its
+ steady trigger
+
+A single Wings node routinely runs servers that depend on one another. The
+motivating case: two Soulmask instances share a read-only ramdisk holding the
+bind-mounted install content. One instance owns the update (AUTO_UPDATE=1); the
+other (AUTO_UPDATE=0) depends on the owner's steamcmd writes having propagated
+through the shared mount. If the dependent instance starts while the owner's
+update is still in flight it can read a half-written file. The general shape is
+ordinary cluster start-ordering: a client that must not come up until its main
+is confirmed ready.
+
+Add WINGS_CG_CHILD_SERVERS, an admin-only per-server list of OTHER server UUIDs
+on this node. When THIS server reaches its steady trigger, Wings attempts to
+start each listed child. It deliberately piggybacks on the existing
+WINGS_CG_STEADY_MATCH event (server/slice_phase.go enterSteady) rather than on
+plain "started": the steady trigger only fires once the server is genuinely up,
+which for an update-on-boot server is after the update has completed -- so a
+dependent server gated on it never races a half-written install.
+
+Design points, all of which fail safe:
+
+- NOT honoured on the grace-timer backstop. A trigger that never fired means
+  readiness was never confirmed -- pulled out as its own named predicate,
+  childStartEligible, so the exclusion has a unit test that does not need a
+  live Environment.
+
+- Fire-and-forget on its own goroutine (server/slice_children.go), so
+  resolving and starting children never delays the triggering server's own
+  phase transition or console processing.
+
+- Idempotent and defensive. Each child is started through HandlePowerAction,
+  the exact path the Panel/API start uses. A suspended child, a UUID not
+  managed by this node, or a server listing itself is logged and skipped.
+  resolveChildServers is kept pure (never calls HandlePowerAction itself) so
+  the resolution/skip logic is unit-testable with a bare *Manager and *Server
+  values, with no Environment/Docker involved -- the same split
+  applySliceProps already uses against cgroups.EnsureForServer, rather than a
+  package-level test-seam variable (this codebase's existing pattern for a
+  side effect that genuinely needs Docker/systemd is a build-tag-gated
+  integration test, e.g. internal/cgroups/integration_test.go, not a seam in
+  the production call graph).
+
+Servers reach their siblings through a new set-once back-reference to the
+owning Manager, wired in Manager.InitServer before the server is used; nil for
+servers built outside a manager (unit tests), every read guards against that.
+Parsing (cgroups.ChildServersFromEnv) accepts comma- or newline-separated
+UUIDs, mirroring the multi-entry convention of the other WINGS_CG_* list
+variables, and de-duplicates.
+
+Two correctness gaps closed before this could be trusted:
+
+- WINGS_CG_STEADY_MATCH was only compiled/armed when a startup memory band was
+  also staged (beginSlicePhase bailed out before reaching the matcher when
+  Staged() was false). A server with an explicit trigger but no band therefore
+  had it silently ignored, and the phase ended on the egg's own done/running
+  line instead -- exactly the gap a child-gating trigger cannot afford. The
+  matcher (and, behind it, the startup_grace backstop) is now armed whenever
+  either a band is staged OR an explicit trigger is configured; a node using
+  neither still arms nothing, so this is not a regression for the common case
+  (TestBeginSlicePhaseOnlyArmsWhenStaged still passes unchanged;
+  TestBeginSlicePhaseArmsMatcherWithoutStagedBand is the new coverage).
+
+- Wings' own boot sequence (cmd/root.go) previously restored every server
+  whose persisted state was running/starting by calling HandlePowerAction
+  directly, with no awareness of WINGS_CG_CHILD_SERVERS -- so a parent and
+  child both running across a reboot would be started concurrently by that
+  same boot sequence, reintroducing the exact race this feature exists to
+  prevent. The boot sequence now probes every server's live container state
+  in its own pass first, then (cgroups.DeferBootRestart) defers a child's
+  direct restart whenever its configured parent is ALSO being restored this
+  boot: the parent's restart replays the ordinary HandlePowerAction path,
+  which refires its console listener and therefore its steady trigger exactly
+  as it would at runtime, and that is what starts the child -- no new
+  waiting/timeout machinery, just not racing it a second time here. A cyclic
+  or mutual child relationship cannot supply a server that starts unprompted,
+  so it is left unsuppressed (fails open, same as resolveChildServers does at
+  runtime) rather than risk every member of the cycle staying offline forever.
+
+Remaining, deliberate limitation (documented, not solved in code): if a
+child's parent is stopped while the child keeps running, then an operator
+starts the child by hand, it autostarts unconditionally like any other server
+on the next reboot with no parent to wait for -- Wings has no dedicated "do
+not autostart" flag. Keeping a child stopped whenever its parent is stopped is
+the operator's responsibility; see the EnvChildServers doc comment and
+SETUP.md.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+---
+ cmd/root.go                      |  84 ++++++++++++++++++++---
+ internal/cgroups/boot.go         | 109 ++++++++++++++++++++++++++++++
+ internal/cgroups/boot_test.go    | 111 +++++++++++++++++++++++++++++++
+ internal/cgroups/cgroups.go      |  66 ++++++++++++++++++
+ internal/cgroups/cgroups_test.go |  18 +++++
+ server/manager.go                |   3 +
+ server/server.go                 |  10 +++
+ server/slice_children.go         |  96 ++++++++++++++++++++++++++
+ server/slice_children_test.go    |  95 ++++++++++++++++++++++++++
+ server/slice_phase.go            |  62 +++++++++++++----
+ server/slice_phase_test.go       |  32 +++++++++
+ 11 files changed, 664 insertions(+), 22 deletions(-)
+ create mode 100644 internal/cgroups/boot.go
+ create mode 100644 internal/cgroups/boot_test.go
+ create mode 100644 server/slice_children.go
+ create mode 100644 server/slice_children_test.go
+
+diff --git a/cmd/root.go b/cmd/root.go
+index e8af42d..909e4bb 100644
+--- a/cmd/root.go
++++ b/cmd/root.go
+@@ -14,6 +14,7 @@ import (
+ 	"runtime"
+ 	"strconv"
+ 	"strings"
++	"sync"
+ 	"time"
+ 
+ 	"github.com/NYTimes/logrotate"
+@@ -258,6 +259,69 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
+ 		}
+ 	}()
+ 
++	// Determine each server's actual container state up front, in its own
++	// bounded pass, before deciding what to do about any of them. Working out
++	// WINGS_CG_CHILD_SERVERS deferral (below) needs to know -- for every
++	// server on the node, not just the one a worker happens to be looking at
++	// -- whether Wings is about to start it directly, and that has to come
++	// from one consistent snapshot rather than each worker racing its own
++	// Docker query while other workers are already acting on theirs.
++	type bootProbe struct {
++		running bool
++	}
++	liveState := make(map[string]bootProbe, manager.Len())
++	var liveMu sync.Mutex
++	probePool := workerpool.New(4)
++	for _, serv := range manager.All() {
++		s := serv
++		probePool.Submit(func() {
++			ctx, cancel := context.WithTimeout(cmd.Context(), time.Second*30)
++			defer cancel()
++			r, err := s.Environment.IsRunning(ctx)
++			// We ignore missing containers because we don't want to actually block booting of wings at this
++			// point. If we didn't do this, and you pruned all the images and then started wings you could
++			// end up waiting a long period of time for all the images to be re-pulled on Wings boot rather
++			// than when the server itself is started.
++			if err != nil && !client.IsErrNotFound(err) {
++				s.Log().WithField("error", err).Error("error checking server environment status")
++			}
++			liveMu.Lock()
++			liveState[s.ID()] = bootProbe{running: r}
++			liveMu.Unlock()
++		})
++	}
++	probePool.StopWait()
++
++	// A server about to be restarted directly below (no live container,
++	// persisted state running/starting) may be a WINGS_CG_CHILD_SERVERS child
++	// of another server in the same position. Left alone, this boot sequence
++	// would start both of them concurrently -- reintroducing exactly the race
++	// WINGS_CG_CHILD_SERVERS exists to prevent, since a direct HandlePowerAction
++	// call here bypasses the parent-steady wait entirely. Defer those children
++	// to their parent's own restart instead: it replays the same
++	// HandlePowerAction path a live restart would, so the parent's console
++	// listener -- and therefore its steady trigger -- refires exactly as it
++	// does at runtime, and that is what starts the child
++	// (see server/slice_children.go). See cgroups.DeferBootRestart for the
++	// fail-open handling of a cyclic or mutual relationship.
++	restartCandidates := make(map[string]struct{})
++	for _, s := range manager.All() {
++		if st := states[s.ID()]; !liveState[s.ID()].running && (st == environment.ProcessRunningState || st == environment.ProcessStartingState) {
++			restartCandidates[s.ID()] = struct{}{}
++		}
++	}
++	childLists := make(map[string][]string)
++	for _, s := range manager.All() {
++		if kids := cgroups.ChildServersFromEnv(s.GetEnvironmentVariables()); len(kids) > 0 {
++			childLists[s.ID()] = kids
++		}
++	}
++	deferredChildren := cgroups.DeferBootRestart(childLists, restartCandidates)
++	for childID, parentID := range deferredChildren {
++		log.WithField("server", childID).WithField("parent", parentID).
++			Info("cgroups: deferring boot-time restart; will be started once its WINGS_CG_CHILD_SERVERS parent reaches its steady trigger")
++	}
++
+ 	// Create a new workerpool that limits us to 4 servers being bootstrapped at a time
+ 	// on Wings. This allows us to ensure the environment exists, write configurations,
+ 	// and reboot processes without causing a slow-down due to sequential booting.
+@@ -288,14 +352,7 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
+ 			ctx, cancel := context.WithTimeout(cmd.Context(), time.Second*30)
+ 			defer cancel()
+ 
+-			r, err := s.Environment.IsRunning(ctx)
+-			// We ignore missing containers because we don't want to actually block booting of wings at this
+-			// point. If we didn't do this, and you pruned all the images and then started wings you could
+-			// end up waiting a long period of time for all the images to be re-pulled on Wings boot rather
+-			// than when the server itself is started.
+-			if err != nil && !client.IsErrNotFound(err) {
+-				s.Log().WithField("error", err).Error("error checking server environment status")
+-			}
++			r := liveState[s.ID()].running
+ 
+ 			// Check if the server was previously running. If so, attempt to start the server now so that Wings
+ 			// can pick up where it left off. If the environment does not exist at all, just create it and then allow
+@@ -303,7 +360,16 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
+ 			//
+ 			// This does mean that booting wings after a catastrophic machine crash and wiping out the Docker images
+ 			// as a result will result in a slow boot.
+-			if !r && (st == environment.ProcessRunningState || st == environment.ProcessStartingState) {
++			if parentID, deferred := deferredChildren[s.ID()]; deferred && !r {
++				// See the deferral computation above: this server's configured
++				// parent is also being restored this boot and will start it once
++				// its own steady trigger fires. Its container genuinely is not
++				// running right now, so Offline is the accurate state -- exactly
++				// what the final "else" branch below would set anyway.
++				s.Log().WithField("parent", parentID).
++					Info("cgroups: not starting directly; waiting for its WINGS_CG_CHILD_SERVERS parent to reach steady")
++				s.Environment.SetState(environment.ProcessOfflineState)
++			} else if !r && (st == environment.ProcessRunningState || st == environment.ProcessStartingState) {
+ 				if err := s.HandlePowerAction(server.PowerActionStart); err != nil {
+ 					s.Log().WithField("error", err).Warn("failed to return server to running state")
+ 				}
+diff --git a/internal/cgroups/boot.go b/internal/cgroups/boot.go
+new file mode 100644
+index 0000000..ae3cbe7
+--- /dev/null
++++ b/internal/cgroups/boot.go
+@@ -0,0 +1,109 @@
++package cgroups
++
++// DeferBootRestart computes, among a set of servers Wings is about to restart
++// directly on its own boot sequence, which ones should instead be left for a
++// WINGS_CG_CHILD_SERVERS parent to start once THAT parent's own restart
++// reaches its steady trigger.
++//
++// The problem this solves: Wings' boot sequence restores every server whose
++// persisted state was running/starting by calling HandlePowerAction directly
++// (cmd/root.go), with no awareness of WINGS_CG_CHILD_SERVERS. If a parent and
++// its child were both running when Wings (or the host) restarted, both would
++// be started by that same boot sequence concurrently — reintroducing exactly
++// the race the feature exists to prevent, since the child's own
++// HandlePowerAction start bypasses the parent-steady wait entirely. Deferring
++// the child's direct boot start closes that gap: the parent's restart replays
++// the ordinary HandlePowerAction path, which refires the parent's console
++// listener and therefore its steady trigger exactly as it would at runtime,
++// and THAT is what starts the child (server.startChildren) — no new waiting
++// or timeout machinery needed, just not racing it a second time here.
++//
++// restartCandidates is the set of server IDs Wings is about to start directly
++// this boot: persisted state running/starting AND no live container found for
++// it. children maps a server ID to the (already-parsed) list of server IDs it
++// names via WINGS_CG_CHILD_SERVERS; only entries for servers who define at
++// least one child need be present.
++//
++// The result maps a deferred child's ID to the parent ID it is waiting on. A
++// candidate is deferred only when:
++//   - it is named as a child by at least one OTHER restart candidate, and
++//   - the parent relationship does not loop back to the candidate within
++//     maxAncestorHops.
++//
++// The second condition matters because a cyclic or mutual relationship (A
++// lists B as a child, B lists A) cannot supply a server that starts
++// unprompted — deferring every member of such a cycle would leave all of them
++// offline forever after a reboot, with nothing left to break the deadlock.
++// Wings fails open here exactly as server.resolveChildServers does at
++// runtime: a relationship it cannot safely honour is logged and ignored
++// rather than allowed to strand a server, so every member of a cycle is left
++// unsuppressed and starts directly, same as before this feature existed.
++func DeferBootRestart(children map[string][]string, restartCandidates map[string]struct{}) map[string]string {
++	if len(children) == 0 || len(restartCandidates) == 0 {
++		return nil
++	}
++
++	// Invert to child -> parents, restricted to parents that are themselves
++	// restart candidates (only those will actually replay their steady
++	// trigger this boot) and excluding self-references (a server listing
++	// itself is a no-op everywhere else this list is consumed).
++	parentsOf := make(map[string][]string)
++	for parent, kids := range children {
++		if _, ok := restartCandidates[parent]; !ok {
++			continue
++		}
++		for _, kid := range kids {
++			if kid == parent {
++				continue
++			}
++			parentsOf[kid] = append(parentsOf[kid], parent)
++		}
++	}
++	if len(parentsOf) == 0 {
++		return nil
++	}
++
++	const maxAncestorHops = 64
++	deferred := make(map[string]string)
++	for id := range restartCandidates {
++		parents := parentsOf[id]
++		if len(parents) == 0 {
++			continue
++		}
++		if isSelfAncestor(id, parentsOf, maxAncestorHops) {
++			continue
++		}
++		deferred[id] = parents[0]
++	}
++	if len(deferred) == 0 {
++		return nil
++	}
++	return deferred
++}
++
++// isSelfAncestor reports whether id is reachable from itself by following
++// parentsOf edges upward — i.e. whether id participates in a cycle of the
++// parent relationship. Bounded to maxHops so a pathological/very long chain
++// cannot turn boot into an unbounded walk; a chain that deep is for all
++// practical purposes indistinguishable from a cycle, and failing open
++// (treating it as one, i.e. NOT deferring) is the same safe choice this
++// function makes for a genuine cycle.
++func isSelfAncestor(id string, parentsOf map[string][]string, maxHops int) bool {
++	visited := map[string]bool{id: true}
++	frontier := parentsOf[id]
++	for hop := 0; hop < maxHops && len(frontier) > 0; hop++ {
++		var next []string
++		for _, p := range frontier {
++			if p == id {
++				return true
++			}
++			if visited[p] {
++				continue
++			}
++			visited[p] = true
++			next = append(next, parentsOf[p]...)
++		}
++		frontier = next
++	}
++	return false
++}
+diff --git a/internal/cgroups/boot_test.go b/internal/cgroups/boot_test.go
+new file mode 100644
+index 0000000..ea2bae3
+--- /dev/null
++++ b/internal/cgroups/boot_test.go
+@@ -0,0 +1,111 @@
++package cgroups
++
++import "testing"
++
++func TestDeferBootRestartSimpleChain(t *testing.T) {
++	// A -> B -> C, all about to be restarted directly by boot.
++	children := map[string][]string{
++		"A": {"B"},
++		"B": {"C"},
++	}
++	candidates := map[string]struct{}{"A": {}, "B": {}, "C": {}}
++	got := DeferBootRestart(children, candidates)
++	if got["A"] != "" {
++		t.Errorf("A has no parent and must not be deferred, got %q", got["A"])
++	}
++	if got["B"] != "A" {
++		t.Errorf("B should defer to A, got %q", got["B"])
++	}
++	if got["C"] != "B" {
++		t.Errorf("C should defer to B, got %q", got["C"])
++	}
++}
++
++func TestDeferBootRestartMutualCycleStartsBothDirectly(t *testing.T) {
++	// A and B each list the other as a child: neither can supply an
++	// unprompted starter, so deferring either would strand both forever.
++	children := map[string][]string{
++		"A": {"B"},
++		"B": {"A"},
++	}
++	candidates := map[string]struct{}{"A": {}, "B": {}}
++	got := DeferBootRestart(children, candidates)
++	if len(got) != 0 {
++		t.Errorf("a mutual cycle must defer nobody, got %v", got)
++	}
++}
++
++func TestDeferBootRestartSelfReferenceIgnored(t *testing.T) {
++	children := map[string][]string{"A": {"A", "B"}}
++	candidates := map[string]struct{}{"A": {}, "B": {}}
++	got := DeferBootRestart(children, candidates)
++	if got["A"] != "" {
++		t.Errorf("A must not defer to itself, got %q", got["A"])
++	}
++	if got["B"] != "A" {
++		t.Errorf("B should still defer to A despite the self-reference entry, got %q", got["B"])
++	}
++}
++
++func TestDeferBootRestartParentNotRestartingLeavesChildDirect(t *testing.T) {
++	// A is the configured parent but is NOT itself a restart candidate this
++	// boot (e.g. it was already stopped) -- nothing will replay its trigger,
++	// so B must start directly, exactly as it would without this feature.
++	children := map[string][]string{"A": {"B"}}
++	candidates := map[string]struct{}{"B": {}}
++	got := DeferBootRestart(children, candidates)
++	if len(got) != 0 {
++		t.Errorf("a non-restarting parent must defer nothing, got %v", got)
++	}
++}
++
++func TestDeferBootRestartNoChildConfigDefersNothing(t *testing.T) {
++	if got := DeferBootRestart(nil, map[string]struct{}{"A": {}}); got != nil {
++		t.Errorf("no WINGS_CG_CHILD_SERVERS anywhere must defer nothing, got %v", got)
++	}
++	children := map[string][]string{"A": {"B"}}
++	if got := DeferBootRestart(children, nil); got != nil {
++		t.Errorf("no restart candidates must defer nothing, got %v", got)
++	}
++}
++
++func TestDeferBootRestartMultipleParentsPicksOne(t *testing.T) {
++	// C is named as a child by both A and B; either is a valid anchor.
++	children := map[string][]string{"A": {"C"}, "B": {"C"}}
++	candidates := map[string]struct{}{"A": {}, "B": {}, "C": {}}
++	got := DeferBootRestart(children, candidates)
++	if got["C"] != "A" && got["C"] != "B" {
++		t.Errorf("C should defer to one of its restarting parents, got %q", got["C"])
++	}
++}
++
++func TestIsSelfAncestorLongChainIsNotACycle(t *testing.T) {
++	// A -> B -> C -> D -> E, well within the hop bound: none of these should
++	// be reported as their own ancestor.
++	parentsOf := map[string][]string{
++		"B": {"A"},
++		"C": {"B"},
++		"D": {"C"},
++		"E": {"D"},
++	}
++	for _, id := range []string{"B", "C", "D", "E"} {
++		if isSelfAncestor(id, parentsOf, 64) {
++			t.Errorf("%s should not be its own ancestor in a simple chain", id)
++		}
++	}
++}
++
++func TestIsSelfAncestorThreeCycle(t *testing.T) {
++	// A -> B -> C -> A: a longer cycle than the mutual case, still must be
++	// caught for every member.
++	parentsOf := map[string][]string{
++		"A": {"C"},
++		"B": {"A"},
++		"C": {"B"},
++	}
++	for _, id := range []string{"A", "B", "C"} {
++		if !isSelfAncestor(id, parentsOf, 64) {
++			t.Errorf("%s should be detected as part of the 3-cycle", id)
++		}
++	}
++}
+diff --git a/internal/cgroups/cgroups.go b/internal/cgroups/cgroups.go
+index 12e1d03..975ebf6 100644
+--- a/internal/cgroups/cgroups.go
++++ b/internal/cgroups/cgroups.go
+@@ -72,6 +72,18 @@ const (
+ 	//
+ 	// A "regex:" prefix makes it a regular expression, matching the convention
+ 	// the Panel already uses for startup.done; anything else is a substring.
++	//
++	// This is honoured whenever it is set, whether or not a startup memory
++	// band is staged for this server (see server.beginSlicePhase) — a node
++	// that stages no band but still names a trigger here is deliberately
++	// gating something else on it, most commonly WINGS_CG_CHILD_SERVERS
++	// (below): with no band staged there is no ceiling to swap, but the
++	// "steady reached" transition itself still only fires on this line, not
++	// on the egg's own (possibly much earlier) done/running signal. An egg
++	// that defines WINGS_CG_CHILD_SERVERS without also pinning down an
++	// explicit, accurate EnvSteadyMatch is trusting the egg's own done/running
++	// line to mean "truly ready" — verify that before relying on it, because
++	// a child is started the moment that line (or this one) appears.
+ 	EnvSteadyMatch = "WINGS_CG_STEADY_MATCH"
+ 
+ 	// EnvStartupGrace overrides docker.per_server_slices.startup_grace for one
+@@ -86,6 +98,32 @@ const (
+ 	// game's long, opaque startup ("steam update", "world load") to operators —
+ 	// and drives no cgroup behaviour. Empty = nothing recorded.
+ 	EnvPhaseEvents = "WINGS_CG_PHASE_EVENTS"
++
++	// EnvChildServers is an admin-only, per-server list of OTHER server UUIDs
++	// on this node (comma- or newline-separated). When this server reaches its
++	// steady trigger — see server.enterSteady, the same event EnvSteadyMatch
++	// gates — Wings attempts to start each listed server, exactly as if an
++	// operator had pressed start in the Panel.
++	//
++	// The motivating case is ordinary cluster start-ordering: a server that
++	// must not come up until another one is confirmed ready (e.g. two
++	// instances sharing a read-only bind mount, where one owns writing to it
++	// and the other must not read it mid-write). It is deliberately NOT honoured
++	// on the startup-grace backstop (a trigger that never fired means readiness
++	// was never confirmed, so starting a dependent server is exactly as unsafe
++	// as the race this exists to prevent) and it is best-effort/fire-and-forget
++	// in every other regard — a listed UUID this node does not manage, a
++	// server listing itself, or a child that is currently suspended is logged
++	// and skipped, never fatal to the server whose trigger fired.
++	//
++	// Wings has no "do not autostart" flag: on boot it restores whatever was
++	// last known running/starting, including a child, and a child whose
++	// parent is ALSO being restored this boot is deferred to the parent's own
++	// restart (see cmd/root.go's boot sequence) rather than started directly
++	// — but a child left running with its parent stopped, then started by
++	// hand, autostarts unconditionally like any other server. Keeping a child
++	// stopped whenever its parent is stopped is the operator's responsibility.
++	EnvChildServers = "WINGS_CG_CHILD_SERVERS"
+ )
+ 
+ // Phase selects which property band a slice should carry.
+@@ -420,6 +458,34 @@ func PhaseEventsFromEnv(env []string) []PhaseEvent {
+ 	return out
+ }
+ 
++// ChildServersFromEnv parses EnvChildServers into the list of server UUIDs it
++// names: comma- or newline-separated (mirroring the multi-entry convention of
++// the other WINGS_CG_* list variable, EnvPhaseEvents), trimmed, de-duplicated,
++// and order-preserving. Resolving whether an entry is actually a UUID this
++// node manages, or the server's own ID, is left to the caller (server.
++// resolveChildServers) — this function only parses the raw list.
++func ChildServersFromEnv(env []string) []string {
++	raw := envValue(env, EnvChildServers)
++	if raw == "" {
++		return nil
++	}
++	raw = strings.ReplaceAll(raw, "\n", ",")
++	var out []string
++	seen := map[string]struct{}{}
++	for _, part := range strings.Split(raw, ",") {
++		id := strings.TrimSpace(part)
++		if id == "" {
++			continue
++		}
++		if _, ok := seen[id]; ok {
++			continue
++		}
++		seen[id] = struct{}{}
++		out = append(out, id)
++	}
++	return out
++}
++
+ // StartupGraceFromEnv returns the per-server startup grace override. The bool
+ // reports whether the server defined one at all; an unparseable value is
+ // reported as an error so it can be logged and the node default used.
+diff --git a/internal/cgroups/cgroups_test.go b/internal/cgroups/cgroups_test.go
+index 1d69107..a9411e5 100644
+--- a/internal/cgroups/cgroups_test.go
++++ b/internal/cgroups/cgroups_test.go
+@@ -162,6 +162,24 @@ func TestPropsString(t *testing.T) {
+ 	}
+ }
+ 
++func TestChildServersFromEnv(t *testing.T) {
++	if got := ChildServersFromEnv([]string{"OTHER=x"}); got != nil {
++		t.Errorf("no WINGS_CG_CHILD_SERVERS must yield nil, got %v", got)
++	}
++	got := ChildServersFromEnv([]string{
++		EnvChildServers + "=b87c0a5b-2387-4a1c-8863-ff23e6800a1d, 6c418fe7-9be1-4971-87ec-529f6e909f89\nb87c0a5b-2387-4a1c-8863-ff23e6800a1d\n\n",
++	})
++	want := []string{"b87c0a5b-2387-4a1c-8863-ff23e6800a1d", "6c418fe7-9be1-4971-87ec-529f6e909f89"}
++	if len(got) != len(want) {
++		t.Fatalf("ChildServersFromEnv = %v, want %v", got, want)
++	}
++	for i := range want {
++		if got[i] != want[i] {
++			t.Errorf("entry %d = %q, want %q (order/dedup)", i, got[i], want[i])
++		}
++	}
++}
++
+ func TestIsDerivedName(t *testing.T) {
+ 	for _, c := range []struct {
+ 		name string
+diff --git a/server/manager.go b/server/manager.go
+index e6dd3a7..4716850 100644
+--- a/server/manager.go
++++ b/server/manager.go
+@@ -189,6 +189,9 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server,
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	// Wired before the server is used anywhere else: see the "manager" field
++	// doc comment on Server for why this exists and what depends on it.
++	s.manager = m
+ 
+ 	// Setup the base server configuration data which will be used for all of the
+ 	// remaining functionality in this call.
+diff --git a/server/server.go b/server/server.go
+index 5ce1811..cff9a47 100644
+--- a/server/server.go
++++ b/server/server.go
+@@ -78,6 +78,16 @@ type Server struct {
+ 	sliceEvents     []sliceConsoleEvent
+ 	sliceEventsSet  bool
+ 
++	// manager is a set-once back-reference to the Manager this server was
++	// created through, wired in Manager.InitServer before the server is used
++	// anywhere else. It lets a server reach its WINGS_CG_CHILD_SERVERS
++	// siblings by UUID (see slice_children.go) without every call site having
++	// to thread a *Manager through. Never reassigned after InitServer, so it
++	// is safe to read without a lock; nil for a server built outside a
++	// manager (unit tests, direct struct construction), and every reader
++	// guards against that.
++	manager *Manager
++
+ 	// The console throttler instance used to control outputs.
+ 	throttler    *ConsoleThrottle
+ 	throttleOnce sync.Once
+diff --git a/server/slice_children.go b/server/slice_children.go
+new file mode 100644
+index 0000000..aa015fa
+--- /dev/null
++++ b/server/slice_children.go
+@@ -0,0 +1,96 @@
++package server
++
++import (
++	"github.com/pelican-dev/wings/internal/cgroups"
++)
++
++// Starting a listed child server when this server reaches its steady trigger.
++//
++// A single Wings node routinely runs servers that depend on one another. The
++// motivating case: two instances share a read-only bind mount holding
++// installed content that only one of them (the owner) writes to. If the
++// dependent instance starts while the owner's write is still in flight it can
++// read a half-written file. The general shape is ordinary cluster
++// start-ordering: a client that must not come up until its main is confirmed
++// ready.
++//
++// WINGS_CG_CHILD_SERVERS (internal/cgroups.EnvChildServers) names the other
++// servers to start. It piggybacks on the existing steady trigger
++// (enterSteady) rather than on plain "started": that trigger only fires once
++// the server is genuinely up, which for an update-on-boot server is after the
++// update has completed — so a dependent server gated on it never races a
++// half-written install. See the EnvChildServers doc comment for the exact
++// contract (skip rules, boot-time interaction, fail-open behaviour).
++
++// resolveChildServers returns the *Server for each UUID named in raw that is
++// safe to start: managed by this node, not this server itself, and not
++// suspended (HandlePowerAction does not itself refuse a suspended start the
++// way the Panel router does, so that check has to happen here). Every other
++// entry is logged and skipped.
++//
++// Deliberately pure with respect to HandlePowerAction — it only reads the
++// current server set through s.manager and never starts anything — so the
++// resolution/skip logic is unit-testable with a plain *Manager and bare
++// *Server values, without a live Environment. See slice_children_test.go and
++// the "childStartAction" discussion it replaces: earlier drafts of this patch
++// used a package-level function variable to stub the actual start call for
++// tests, which this codebase does not do anywhere else (the established
++// pattern for a side effect that genuinely needs Docker/systemd is a
++// build-tag-gated integration test, e.g. internal/cgroups/integration_test.go
++// and environment/docker/cgroup_integration_test.go — not a test seam in the
++// production call graph). Splitting resolution from dispatch gets the same
++// testability without introducing an unidiomatic seam: only the dispatch
++// half — a single HandlePowerAction call per resolved child — goes untested
++// at the unit level, exactly like applySliceProps's call into
++// cgroups.EnsureForServer.
++func (s *Server) resolveChildServers(raw []string) []*Server {
++	if s.manager == nil || len(raw) == 0 {
++		return nil
++	}
++	selfID := s.ID()
++	var out []*Server
++	for _, id := range raw {
++		if id == selfID {
++			s.Log().WithField("child", id).Warn("cgroups: WINGS_CG_CHILD_SERVERS lists the server itself; skipping")
++			continue
++		}
++		child, ok := s.manager.Get(id)
++		if !ok {
++			s.Log().WithField("child", id).Warn("cgroups: WINGS_CG_CHILD_SERVERS lists a UUID not managed by this node; skipping")
++			continue
++		}
++		if child.IsSuspended() {
++			s.Log().WithField("child", id).Info("cgroups: child server is suspended; not starting it")
++			continue
++		}
++		out = append(out, child)
++	}
++	return out
++}
++
++// startChildren starts every resolved WINGS_CG_CHILD_SERVERS entry after this
++// server has reached its steady trigger. Called on its own goroutine from
++// enterSteady, so nothing here may block that server's own state machine or
++// console processing.
++//
++// Each child is started through HandlePowerAction, the exact path the
++// Panel/API start uses: it takes the child's own power lock and re-checks its
++// state, so "already running" and installing/transferring/restoring are
++// reported by it, not raced here. Nothing here is fatal to the server whose
++// trigger fired — every outcome is a single "cgroups: child server ..." log
++// line attributed to the child, naming the server and reason that triggered
++// it.
++func (s *Server) startChildren(reason string) {
++	raw := cgroups.ChildServersFromEnv(s.GetEnvironmentVariables())
++	for _, child := range s.resolveChildServers(raw) {
++		child := child
++		go func() {
++			l := child.Log().WithField("trigger_server", s.ID()).WithField("trigger_reason", reason)
++			if err := child.HandlePowerAction(PowerActionStart); err != nil {
++				l.WithError(err).Warn("cgroups: child server did not start")
++				return
++			}
++			l.Info("cgroups: child server started")
++		}()
++	}
++}
+diff --git a/server/slice_children_test.go b/server/slice_children_test.go
+new file mode 100644
+index 0000000..2857193
+--- /dev/null
++++ b/server/slice_children_test.go
+@@ -0,0 +1,95 @@
++package server
++
++import "testing"
++
++// childTestServer builds a bare Server carrying just enough state for
++// resolveChildServers to exercise its skip rules -- no Environment, no
++// Docker, no systemd. HandlePowerAction is deliberately never called by these
++// tests: see the package doc comment on resolveChildServers for why that
++// split exists.
++func childTestServer(uuid string) *Server {
++	s := &Server{}
++	s.cfg.Uuid = uuid
++	return s
++}
++
++func TestResolveChildServersHappyPath(t *testing.T) {
++	mgr := NewEmptyManager(nil)
++	parent := childTestServer("parent-1")
++	parent.manager = mgr
++	child := childTestServer("child-1")
++	mgr.Put([]*Server{parent, child})
++
++	got := parent.resolveChildServers([]string{"child-1"})
++	if len(got) != 1 || got[0] != child {
++		t.Fatalf("resolveChildServers = %v, want [child]", got)
++	}
++}
++
++func TestResolveChildServersSkipsSelf(t *testing.T) {
++	mgr := NewEmptyManager(nil)
++	parent := childTestServer("parent-1")
++	parent.manager = mgr
++	mgr.Put([]*Server{parent})
++
++	if got := parent.resolveChildServers([]string{"parent-1"}); len(got) != 0 {
++		t.Errorf("a server listing itself must resolve to nothing, got %v", got)
++	}
++}
++
++func TestResolveChildServersSkipsUnknownUUID(t *testing.T) {
++	mgr := NewEmptyManager(nil)
++	parent := childTestServer("parent-1")
++	parent.manager = mgr
++	mgr.Put([]*Server{parent})
++
++	if got := parent.resolveChildServers([]string{"not-on-this-node"}); len(got) != 0 {
++		t.Errorf("a UUID unknown to this node must resolve to nothing, got %v", got)
++	}
++}
++
++func TestResolveChildServersSkipsSuspended(t *testing.T) {
++	mgr := NewEmptyManager(nil)
++	parent := childTestServer("parent-1")
++	parent.manager = mgr
++	child := childTestServer("child-1")
++	child.cfg.Suspended = true
++	mgr.Put([]*Server{parent, child})
++
++	if got := parent.resolveChildServers([]string{"child-1"}); len(got) != 0 {
++		t.Errorf("a suspended child must resolve to nothing, got %v", got)
++	}
++}
++
++func TestResolveChildServersNilManager(t *testing.T) {
++	parent := childTestServer("parent-1")
++	if got := parent.resolveChildServers([]string{"child-1"}); got != nil {
++		t.Errorf("a server with no manager (built outside one) must resolve nothing, got %v", got)
++	}
++}
++
++func TestChildStartEligible(t *testing.T) {
++	for _, reason := range []string{sliceReasonReady, sliceReasonMatch} {
++		if !childStartEligible(reason) {
++			t.Errorf("reason %q should be eligible to start children", reason)
++		}
++	}
++	if childStartEligible(sliceReasonGrace) {
++		t.Error("the grace backstop must never start children: a trigger that never fired means readiness was never confirmed")
++	}
++}
++
++func TestResolveChildServersMixedValidAndInvalid(t *testing.T) {
++	mgr := NewEmptyManager(nil)
++	parent := childTestServer("parent-1")
++	parent.manager = mgr
++	good := childTestServer("child-good")
++	suspended := childTestServer("child-suspended")
++	suspended.cfg.Suspended = true
++	mgr.Put([]*Server{parent, good, suspended})
++
++	got := parent.resolveChildServers([]string{"parent-1", "child-good", "unknown", "child-suspended"})
++	if len(got) != 1 || got[0] != good {
++		t.Fatalf("resolveChildServers = %v, want only [child-good]", got)
++	}
++}
+diff --git a/server/slice_phase.go b/server/slice_phase.go
+index 96e3734..dad78f8 100644
+--- a/server/slice_phase.go
++++ b/server/slice_phase.go
+@@ -61,16 +61,39 @@ func (s *Server) beginSlicePhase() {
+ 	if !cfg.Docker.PerServerSlices.Enabled {
+ 		return
+ 	}
+-	// Nothing staged for this server: the band applied at container create is
+-	// already the steady one, so there is nothing to swap in later.
+ 	req := s.sliceRequest(cgroups.PhaseSteady)
+-	if !req.Staged() {
++	if req.Slice == "" {
++		// Not a Wings-managed slice at all: nothing to stage and no trigger to
++		// gate, since nothing here reads the phase back.
+ 		return
+ 	}
+ 	env := s.GetEnvironmentVariables()
+ 
++	// An explicit matcher displaces the egg's "done" line as the trigger. This
++	// is compiled and armed independent of whether a startup memory band is
++	// staged below: a server with no band configured but an explicit
++	// WINGS_CG_STEADY_MATCH is still gating something on it (most commonly
++	// WINGS_CG_CHILD_SERVERS, or the "steady-reached" activity/phase event),
++	// and that must wait for the configured line, not silently fall back to
++	// whatever the egg's own done/running matcher considers ready.
++	matcher, err := compileSliceMatch(cgroups.SteadyMatchFromEnv(env))
++	if err != nil {
++		s.Log().WithError(err).Warn("cgroups: ignoring invalid " + cgroups.EnvSteadyMatch + "; falling back to the egg's startup done matcher")
++	}
++
++	// Nothing staged AND no explicit trigger: the band applied at container
++	// create is already the steady one, and nothing waits on a console line
++	// either, so there is nothing for this phase to do. Bailing out here (as
++	// opposed to always arming) keeps a node using none of this exactly as it
++	// was before the feature existed — no stray timer, no log line.
++	staged := req.Staged()
++	if !staged && matcher == nil {
++		return
++	}
++
+ 	// How long a world takes to load is a property of the game and its save,
+-	// so the server may override the node default.
++	// so the server may override the node default. This also bounds an
++	// explicit trigger that never fires, same as it bounds a staged band.
+ 	grace := cfg.Docker.SliceStartupGrace()
+ 	if d, set, err := cgroups.StartupGraceFromEnv(env); err != nil {
+ 		s.Log().WithError(err).Warn("cgroups: ignoring invalid per-server startup grace; using the node default")
+@@ -78,13 +101,6 @@ func (s *Server) beginSlicePhase() {
+ 		grace = d
+ 	}
+ 
+-	// An explicit matcher displaces the egg's "done" line as the trigger. That
+-	// matters when "done" fires before the world has finished loading, which is
+-	// exactly the case the startup band exists for.
+-	matcher, err := compileSliceMatch(cgroups.SteadyMatchFromEnv(env))
+-	if err != nil {
+-		s.Log().WithError(err).Warn("cgroups: ignoring invalid " + cgroups.EnvSteadyMatch + "; falling back to the egg's startup done matcher")
+-	}
+ 	s.slicePhaseMu.Lock()
+ 	defer s.slicePhaseMu.Unlock()
+ 	if s.slicePhaseTimer != nil {
+@@ -105,8 +121,11 @@ func (s *Server) beginSlicePhase() {
+ 	if matcher != nil {
+ 		trigger = cgroups.EnvSteadyMatch + "=" + matcher.String()
+ 	}
+-	s.Log().WithFields(log.Fields{"grace": grace.String(), "steady_trigger": trigger}).
+-		Info("cgroups: startup slice properties in effect")
++	msg := "cgroups: startup slice properties in effect"
++	if !staged {
++		msg = "cgroups: steady trigger armed (no startup memory band staged; only the phase transition itself is gated)"
++	}
++	s.Log().WithFields(log.Fields{"grace": grace.String(), "steady_trigger": trigger, "staged": staged}).Info(msg)
+ }
+ 
+ // enterSteady applies the steady band exactly once per start, whichever trigger
+@@ -135,6 +154,23 @@ func (s *Server) enterSteady(reason string) {
+ 	// application is a D-Bus round trip plus a possible ramp — it must never sit
+ 	// in the state machine's path.
+ 	go s.applySliceProps(cgroups.PhaseSteady, reason, pinned)
++
++	// Start any WINGS_CG_CHILD_SERVERS this server names, but never on the
++	// grace-timer backstop: a trigger that never fired means readiness was
++	// never confirmed, so pulling up a dependent server is exactly as unsafe
++	// as the race this exists to prevent (see internal/cgroups.EnvChildServers).
++	if childStartEligible(reason) {
++		go s.startChildren(reason)
++	}
++}
++
++// childStartEligible reports whether a steady-trigger reason is allowed to
++// start this server's WINGS_CG_CHILD_SERVERS. Pulled out as its own named,
++// pure predicate purely so the grace exclusion has a unit test that does not
++// need to touch startChildren/HandlePowerAction (which do need a live
++// Environment) to verify it.
++func childStartEligible(reason string) bool {
++	return reason != sliceReasonGrace
+ }
+ 
+ // endSlicePhase resets all phase state; called when the server goes offline.
+diff --git a/server/slice_phase_test.go b/server/slice_phase_test.go
+index d0828ea..7c3d422 100644
+--- a/server/slice_phase_test.go
++++ b/server/slice_phase_test.go
+@@ -96,6 +96,38 @@ func TestBeginSlicePhaseOnlyArmsWhenStaged(t *testing.T) {
+ 	s.endSlicePhase()
+ }
+ 
++// A server with no startup memory band staged, but an explicit
++// WINGS_CG_STEADY_MATCH, must still have that matcher armed (and a grace
++// backstop behind it) -- otherwise the trigger is silently ignored and the
++// phase ends on the egg's own done/running line instead, which is exactly the
++// gap WINGS_CG_CHILD_SERVERS depends on not existing.
++func TestBeginSlicePhaseArmsMatcherWithoutStagedBand(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "") // no startup band configured node-wide
++	s := newSliceTestServer()
++	s.cfg.EnvVars = map[string]interface{}{
++		"WINGS_CG_STEADY_MATCH": "world is ready",
++	}
++
++	s.beginSlicePhase()
++	if !s.hasSliceMatcher() {
++		t.Fatal("an explicit steady trigger must be armed even with no startup band staged")
++	}
++	if s.slicePhaseTimer == nil {
++		t.Error("the grace backstop must still be armed behind an explicit trigger")
++	}
++	// The egg's own running/done signal must NOT end the phase; only the
++	// configured line may.
++	s.onSliceStateChange("running")
++	if s.sliceSteadyDone {
++		t.Error("running state ended the phase despite an explicit trigger with no staged band")
++	}
++	s.matchSliceSteady([]byte("[log] world is ready now"))
++	if !s.sliceSteadyDone {
++		t.Error("the configured trigger line did not end the phase")
++	}
++	s.endSlicePhase()
++}
++
+ func TestEndSlicePhaseIsIdempotent(t *testing.T) {
+ 	sliceTestConfig(t, true, "15m", "64G")
+ 	s := newSliceTestServer()
+-- 
+2.55.0
+

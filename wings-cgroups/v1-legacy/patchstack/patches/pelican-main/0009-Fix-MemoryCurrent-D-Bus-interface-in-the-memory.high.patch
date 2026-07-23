@@ -1,0 +1,41 @@
+From 0bfb075d41d3335fdd5f6895ae77d2fd9eeba0f7 Mon Sep 17 00:00:00 2001
+From: Volker Badziong <development@richtfest.tech>
+Date: Tue, 21 Jul 2026 07:57:06 +0000
+Subject: [PATCH 09/11] Fix MemoryCurrent D-Bus interface in the memory.high
+ ramp
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+memoryCurrent() read MemoryCurrent via GetUnitPropertyContext against the
+generic org.freedesktop.systemd1.Unit interface. MemoryCurrent, like
+MemoryMin (see sumMemoryMin below), is a resource-control property that
+only exists on the type-specific Slice interface, so every call failed
+with "Unknown interface org.freedesktop.systemd1.Unit or property
+MemoryCurrent." — confirmed live in production. rampHigh() returns
+immediately when its first memoryCurrent() call errors, so the ramp never
+ran; memory.high fell back to whatever the surrounding non-ramped Ensure()
+call resolved to instead of walking down gradually.
+
+Switch to GetUnitTypePropertyContext(ctx, name, "Slice", "MemoryCurrent"),
+matching the existing MemoryMin read.
+---
+ internal/cgroups/sysd.go | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/internal/cgroups/sysd.go b/internal/cgroups/sysd.go
+index 3995d5a..0b6ddc4 100644
+--- a/internal/cgroups/sysd.go
++++ b/internal/cgroups/sysd.go
+@@ -312,7 +312,7 @@ const rampMaxDuration = 10 * time.Minute
+ // property is set, so this is valid for every slice this package manages. ok
+ // is false when systemd reports it unavailable (MaxUint64) — treat as "unknown".
+ func (c *conn) memoryCurrent(ctx context.Context, name string) (uint64, bool, error) {
+-	p, err := c.dbus.GetUnitPropertyContext(ctx, name, "MemoryCurrent")
++	p, err := c.dbus.GetUnitTypePropertyContext(ctx, name, "Slice", "MemoryCurrent")
+ 	if err != nil {
+ 		return 0, false, err
+ 	}
+-- 
+2.55.0
+
