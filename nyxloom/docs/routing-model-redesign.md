@@ -247,6 +247,16 @@ scalar:
   stable — a newly-discovered model bins itself without shifting everyone else's
   band (the rejected alternative, relative-ranking, would have drifted bands as
   the roster changed).
+- **Band count = 3 now (1-3), mechanism open to 5** (operator question
+  2026-07-23): three bands match the model market's natural strata — band 1
+  cheap/mechanical (haiku/flash/free), band 2 mainstream workhorse
+  (sonnet/deepseek-max/gpt-5.6-luna), band 3 frontier (opus/gpt-5.6-high) — and
+  keep the carver's D-R3 band PREDICTION tractable (fewer bands → fewer
+  mispredictions; the BLOCKED→escalate-up net cheaply corrects under-provisioning).
+  Bands also multiply by role (3×{implement,review,carve}=9 tiers; 5×3=15). Because
+  bands are threshold-defined (above), extending to 1-5 later is a config-only
+  change (two more threshold rows + tier keys), never a schema migration — so we do
+  not pay for granularity the noisy benchmark scores cannot yet resolve.
 - **Role authority = hybrid, with an auto switch** (operator choice): the
   benchmark auto-sets the complexity BAND; role-eligibility (may-review /
   may-carve) is operator-confirmed before a model goes live in a review/carve
@@ -296,16 +306,59 @@ The underlying refresh operation stays a plain callable (a cron firing is just a
 scheduled invocation), so it remains invocable ad-hoc via `exec-nyxloom` at zero
 extra cost — same as `free-models refresh` today.
 
+## D-R16 — Per-task permissions: separate the OS sandbox from the scope allowlist — decided 2026-07-23
+
+Operator concern: past handoffs could not be completed because of "restrictions."
+Diagnosis — there are TWO distinct restriction axes that fail differently, and
+the one that historically bit is NOT the OS sandbox:
+
+- **Axis A — OS/process sandbox** (codex `--sandbox`, claude
+  `--dangerously-skip-permissions`, opencode `--auto`): what the agent PROCESS
+  may do. Implementation agents already run **permissive** here (codex routes =
+  `danger-full-access`). D-R7's ciu/cgroup containerization ADDS isolation, but
+  its job is to bound **blast radius** (host, other worktrees, secrets) — NOT to
+  restrict the agent within its own workspace. Invariant: **inside its assigned
+  worktree + declared environment the agent keeps full read/write/exec; the
+  sandbox only walls off everything else** (exactly D-R7's "mount the worktree
+  into the container" requirement).
+- **Axis B — handoff `scope.touch`** (the per-task edit allowlist, enforced by
+  review/lint, not the OS): which files the TASK permits editing. **This is what
+  bit** — P26 + P31 failed because the handoff forbade a file the correct
+  implementation needed, so the agent either faked a hollow workaround or
+  hard-BLOCKED. Neither ships the work.
+
+Decisions:
+1. **Do NOT loosen the OS sandbox globally** — implementation agents already have
+   what they need there. (The live 2026-07-23 luna/B17 trial ran under
+   `danger-full-access` precisely so it could run its own tests and iterate; a
+   read-only sandbox would have blocked a legitimate task — the concrete
+   illustration.)
+2. **Authoring rule + lint:** every oracle must be satisfiable within
+   `scope.touch`; a handoff whose oracle references a file outside the allowlist
+   is an authoring defect. Add a lint rule to flag it (extends `nyxloom lint`).
+3. **Scope-amendment escalation (the real fix):** when an agent discovers it
+   genuinely needs a file outside scope, it emits a structured "needs file X
+   because Y" request that the carver/operator cheaply approves (expanding the
+   allowlist mid-flight) — a fast amendment, NOT a hard BLOCK + full re-carve.
+   Folds into F005 (fail-closed correctness contract), bounded like D-R8's
+   reviewer fixes.
+4. **Both are per-task declared, not global:** the OS sandbox mode AND the scope
+   breadth are handoff fields — a mechanical config edit gets a narrow allowlist +
+   read-mostly; a cross-cutting refactor gets a broad allowlist + full access.
+   Capability-match the PERMISSIONS to the task, same as the model.
+
 ## What folds where
 
 - **North-star** (identity-level): capability-matched review (D-R2), the
   self-contained sandboxed runtime (D-R7), cost-aware/policy-driven routing
   (D-R1/R5/R6), and the human control/escalation surface. See north-star draft.
-- **This design doc**: the full D-R1..R15 contract.
+- **This design doc**: the full D-R1..R16 contract.
 - **Spine features:** D-R1/R2/R3/R5/R6 → **F009** (capability-matched, cost-aware
   routing). D-R12/R13 → **F014** (model capability catalog — new 2026-07-23).
   D-R14 → **F012** (human control surface, routing panel). D-R15 → **F015**
-  (scheduled-jobs subsystem — new 2026-07-23). D-R7 → F010. D-R8 → B4. D-R9 → B1.
+  (scheduled-jobs subsystem — new 2026-07-23). D-R16 → **F005** (scope-amendment
+  escalation, B21) + **F010** (per-task sandbox/scope fields, B23). D-R7 → F010.
+  D-R8 → B4. D-R9 → B1.
 - **Pulled forward (2026-07-19, operator directive):** D-R10 + D-R11 are
   P44 (role-scoped `build_dispatch`, closes #34/B7) + P45 (`READY_TO_CARVE`
   dead-end fix + review-initiated micro-carve routing, closes #25/#26/B8).

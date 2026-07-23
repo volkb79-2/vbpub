@@ -161,6 +161,34 @@ items:
   component: control
   context_estimate: medium
   folds_into: F015
+- id: B21
+  title: 'scope-amendment escalation: when an implementer genuinely needs a file outside its
+    scope.touch allowlist, it emits a structured "needs file X because Y" request the carver/
+    operator cheaply approves (mid-flight allowlist expansion), instead of a hard BLOCK +
+    full re-carve. Bounded like D-R8 reviewer fixes; re-gate after. Fixes the P26/P31
+    forbidden-needed-file failure mode (D-R16 Axis B).'
+  type: feature
+  component: dispatch
+  context_estimate: medium
+  folds_into: F005
+- id: B22
+  title: 'lint rule: a handoff whose oracle references a file outside its scope.touch
+    allowlist is an authoring defect (every oracle must be satisfiable within scope).
+    Extends nyxloom lint carve-quality rules; catches the D-R16 Axis-B failure at carve
+    time rather than mid-implementation.'
+  type: feature
+  component: lint
+  context_estimate: small
+  folds_into: F005
+- id: B23
+  title: 'per-task permission fields: make the OS sandbox mode (read-only / workspace-write
+    / full-access) AND the scope breadth declared handoff fields, capability-matched to the
+    task, rather than a global route/CLI default. Narrow + read-mostly for mechanical edits,
+    broad + full-access for cross-cutting refactors (D-R16 Axis A/B unification).'
+  type: feature
+  component: runtime
+  context_estimate: medium
+  folds_into: F010
 ---
 
 # nyxloom — backlog
