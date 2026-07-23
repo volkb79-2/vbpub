@@ -515,6 +515,109 @@ def test_scope_amendment_bounded_falls_through_to_blocked_at_cap(
     )
 
 
+# ===========================================================================
+# B24 2026-07-23 (D-R17, transient-failure backoff-resume). O4: an
+# IMPLEMENTER whose log tail carries a provider-throttle signature (idle
+# timeout) gets the SAME attempt RESUMED -- never a fresh implementer
+# dispatch, never BLOCKED. Modeled on
+# test_scope_amendment_request_triggers_bounded_re_dispatch_not_blocked just
+# above (tick loop + queued FakeStep + event assertions).
+# ===========================================================================
+
+def test_transient_throttle_resumes_same_attempt_end_to_end(
+    behavioral_project, tmp_state, fake_cli
+):
+    """O4: a scripted idle-timeout on the FIRST implementer leg is resumed
+    as the SAME attempt (ATTEMPT_RESUMED for the same attempt_id,
+    attempt.resume-1.log on disk) -- exactly one ATTEMPT_CREATED for
+    role=implementer (no fresh dispatch), and the task never lands BLOCKED.
+
+    BEHAVIORAL_ROUTES_TOML's fake-impl route has no `resume` template (no
+    existing behavioral test exercises resume), so this test adds one --
+    build_resume's own mapping only supports {session}/{worktree}/{prompt}
+    (no {task_id}), so the literal TASK_ID is baked into the template, same
+    as any fixed-task test route. The fake CLI also has no real session-
+    capture wiring (no session_capture/session_discover on this test route,
+    see adapters.capture_session), so the session_handle is seeded directly
+    once the attempt is observed INTERRUPTED -- mirroring
+    test_mark_interrupted_and_resume's (test_daemon.py) identical manual
+    seeding -- so it is the DAEMON's own backoff/resume gate under test,
+    not this harness's session-capture plumbing."""
+    cfg = behavioral_project
+    routes_toml = BEHAVIORAL_ROUTES_TOML.replace(
+        'dispatch_extra = ["--role", "implementer", "--task", "{task_id}"]',
+        'dispatch_extra = ["--role", "implementer", "--task", "{task_id}"]\n'
+        f'resume = ["fake", "--role", "implementer", "--task", "{TASK_ID}", "{{prompt}}"]',
+    )
+    assert "resume = " in routes_toml and routes_toml != BEHAVIORAL_ROUTES_TOML
+    paths.routes_path().write_text(routes_toml)
+
+    fake_cli.queue(
+        TASK_ID, "implementer",
+        FakeStep(extra_stdout="Upstream idle timeout after 90s, connection reset",
+                 exit_code=1),
+    )
+    fake_cli.queue(TASK_ID, "implementer", _impl_commit_step())
+
+    d = daemon.Daemon({"demo": cfg.root})
+
+    # A fresh handoff needs several ticks just to go CARVED->QUEUED->ACTIVE
+    # (dispatch) before the fake CLI ever runs at all (see e.g.
+    # test_scope_amendment_request_triggers_bounded_re_dispatch_not_blocked's
+    # identical `for _ in range(30)` warm-up above) -- the wrapper itself
+    # writes receipt.json + ATTEMPT_INTERRUPTED synchronously before its own
+    # exit, and _tick waits for that receipt after every pass, so once an
+    # attempt exists this loop naturally lands on INTERRUPTED.
+    def _went_interrupted() -> bool:
+        tsf = storage.load_state("demo", TASK_ID)
+        return bool(tsf and tsf.attempts
+                    and tsf.attempts[-1].state == AttemptState.INTERRUPTED)
+
+    for _ in range(30):
+        _tick(d, "demo")
+        if _went_interrupted():
+            break
+
+    assert _went_interrupted(), "attempt never went INTERRUPTED"
+
+    tsf = storage.load_state("demo", TASK_ID)
+    attempt_id = tsf.attempts[-1].attempt_id
+    # THE oracle, checked before doing anything else: TRANSIENT, INTERRUPTED
+    # -- never EXITED (an EXITED attempt could never be revived).
+    att = tsf.attempt_by_id(attempt_id)
+    assert att.receipt is not None and att.receipt.result.value == "transient"
+    assert att.state is AttemptState.INTERRUPTED
+
+    att.session_handle = "sess-fake-1"
+    storage.save_state(tsf)
+
+    for _ in range(20):
+        _tick(d, "demo")
+        events = list(storage.iter_events("demo"))
+        if any(e.type is EventType.ATTEMPT_RESUMED and e.attempt_id == attempt_id
+               for e in events):
+            break
+
+    tsf = storage.load_state("demo", TASK_ID)
+    events = list(storage.iter_events("demo"))
+    resumed = [e for e in events
+               if e.type is EventType.ATTEMPT_RESUMED and e.attempt_id == attempt_id]
+    impl_created = [e for e in events if e.type is EventType.ATTEMPT_CREATED
+                     and e.payload["attempt"]["role"] == "implementer"]
+    tick_errors = [e for e in events if e.type is EventType.TICK_ERROR]
+
+    assert not tick_errors, f"reconcile pass raised: {[e.payload for e in tick_errors]}"
+    assert len(resumed) == 1, "the SAME attempt must be resumed exactly once"
+    attempt_dir = paths.attempt_dir("demo", attempt_id)
+    assert (attempt_dir / "attempt.resume-1.log").exists()
+    assert len(impl_created) == 1, (
+        "no FRESH implementer dispatch -- the throttled attempt is resumed, not restarted"
+    )
+    assert tsf.state != TaskState.BLOCKED, (
+        f"task must never be BLOCKED by a transient provider throttle, got {tsf.state}"
+    )
+
+
 def test_scope_amendment_helpers_degrade_gracefully_on_storage_error(
     behavioral_project, tmp_state, monkeypatch
 ):

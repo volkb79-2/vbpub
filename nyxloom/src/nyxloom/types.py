@@ -176,6 +176,21 @@ class ReceiptResult(enum.Enum):
     # under the per-task cap, else fall through to the same hard-BLOCK).
     # Additive only -- DONE/BLOCKED/LIMIT/ERROR are unchanged.
     SCOPE_AMENDMENT = "scope_amendment"
+    # B24 2026-07-23 (D-R17, transient-failure backoff-resume): a PROVIDER-
+    # side throttle/outage (502/429/ResourceExhausted/idle-timeout/worker
+    # request-limit), recognized by adapters.classify_log_tail's "transient"
+    # classification and translated here by wrapper.py. UNLIKE every other
+    # non-DONE result, this pairs with EventType.ATTEMPT_INTERRUPTED +
+    # AttemptState.INTERRUPTED (NOT ATTEMPT_EXITED/EXITED, see wrapper.py) --
+    # an EXITED attempt can never be revived (TERMINAL_ATTEMPT_STATES,
+    # ATTEMPT_TRANSITIONS[EXITED] == frozenset()), so classifying a merely-
+    # throttled leg as EXITED would silently strand it. The daemon's
+    # EXISTING ResumeAttempt path (already built for INTERRUPTED attempts)
+    # then retries it unmodified, gated by a fresh backoff schedule
+    # (daemon.py's TRANSIENT_BACKOFF_SCHEDULE) and bounded by
+    # MAX_TRANSIENT_RESUMES (daemon.py's _transient_escalate). Additive
+    # only -- DONE/BLOCKED/LIMIT/ERROR/SCOPE_AMENDMENT are unchanged.
+    TRANSIENT = "transient"
 
 
 class Basis(enum.Enum):

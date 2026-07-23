@@ -390,6 +390,34 @@ RUNAWAY_PERSIST_AFTER_CYCLES = 3
 # an infinite loop (mirrors D-R8's bounded reviewer-fix cap).
 MAX_SCOPE_AMENDMENTS_PER_TASK = 2
 
+# B24 2026-07-23 (D-R17, transient-failure backoff-resume; D-B24-2/4/5):
+# module constants (config.Policy is frozen for this package, same reasoning
+# as HISTORY_REJECTION_WINDOW_SECONDS/RUNAWAY_PERSIST_AFTER_CYCLES/
+# MAX_SCOPE_AMENDMENTS_PER_TASK above -- daemon.py:358 says outright these
+# are "module constants so tests can shrink them for determinism").
+#
+# TRANSIENT_BACKOFF_SCHEDULE[n]: seconds to wait after the (n+1)-th resume of
+# a TRANSIENT-classified INTERRUPTED attempt before the (n+2)-th resume may
+# fire (n is 0-based: index 0 governs the wait after the FIRST resume, before
+# the second). No wait gates the very first resume (see
+# Daemon._transient_backoff_ready) -- the schedule governs waits BETWEEN
+# resumes, not before the first one. Backoff readiness is derived from disk
+# (newest attempt.resume-N.log mtime), never a new persisted field -- no
+# timer wheel exists in this daemon. Backoff granularity floors at
+# reconcile_interval_seconds (~30s) -- fine at these magnitudes.
+TRANSIENT_BACKOFF_SCHEDULE = (60, 300, 900)
+# Bound on how many times the SAME transient-classified attempt may be
+# resumed before the daemon gives up on resuming THAT attempt and escalates
+# instead: pauses the throttled route (Daemon._provider_pause) and requeues
+# the task (Daemon._transient_escalate) so the EXISTING first-healthy-route
+# dispatch loop (reconcile.py's queued-task dispatch, unmodified) naturally
+# re-routes to the NEXT route in the tier. NOT enforced by
+# Daemon._resume_failures' existing poison counter -- that counter skips any
+# attempt whose receipt.json exists, and a transient attempt ALWAYS has one
+# (the wrapper writes a receipt before every exit/interrupt event) -- so
+# without this SEPARATE bound, transient resumes would be unbounded.
+MAX_TRANSIENT_RESUMES = 3
+
 # P02 2026-07-21 (docs/plan-logging.md §3 D-L3, §4.4): bootstrap env var for
 # the daemon-global log level -- layer 2 of the verbosity precedence chain
 # (below the runtime-override file, above a project's own `[logging] level`).
@@ -742,6 +770,12 @@ class Daemon:
             appended: list[Event] = []
 
             appended.extend(self._reconcile_decisions(project, cfg, states))
+            # B24 2026-07-23 (D-R17, D-B24-5/6): the at-cap escalation for
+            # TRANSIENT-classified INTERRUPTED attempts. Runs here (same
+            # early-mutation timing as _reconcile_decisions above, BEFORE
+            # _build_input/plan_project) so a requeued task's fresh
+            # DispatchImplementer can fire in this SAME pass.
+            appended.extend(self._transient_escalate(project, cfg, states))
 
             inp = self._build_input(project, cfg, states)
             actions = reconcile.plan_project(inp)
@@ -896,6 +930,7 @@ class Daemon:
         log_quiet_seconds, pid_alive, receipts = self._attempt_scan(project, states)
         stall_confirmed = self._confirm_stall(states, log_quiet_seconds, pid_alive, cfg)
         resume_failures = self._resume_failures(project, states, cfg.policy.resume_progress_grace_seconds)
+        transient_backoff_ready = self._transient_backoff_ready(project, states)
         budget_remaining = self._budget_remaining(cfg, states)
         merge_history, carve_outcomes, review_rejections_by_area, blocked_underspecified_count = \
             self._history(project)
@@ -939,6 +974,7 @@ class Daemon:
             receipts=receipts,
             stall_confirmed=stall_confirmed,
             resume_failures=resume_failures,
+            transient_backoff_ready=transient_backoff_ready,
             budget_remaining=budget_remaining,
             merge_history=merge_history,
             ratchet_already_open=ratchet_already_open,
@@ -1183,6 +1219,124 @@ class Daemon:
                         count += 1
                 out[att.attempt_id] = count
         return out
+
+    def _transient_backoff_ready(self, project: str,
+                                  states: dict[str, TaskStateFile]) -> dict[str, bool]:
+        """B24 2026-07-23 (D-R17, D-B24-2): attempt_id -> whether a
+        TRANSIENT-classified INTERRUPTED attempt has waited out its
+        exponential backoff and may be resumed again THIS pass. Missing
+        entries default to True at the reconcile.py call site
+        (`.get(attempt_id, True)`) -- an ordinary (non-transient, e.g.
+        signal-interrupted) INTERRUPTED attempt is unaffected, byte-
+        identical to pre-B24 behavior.
+
+        Readiness is DERIVED from disk, not a persisted field (no timer
+        wheel exists in this daemon): the resume count so far is
+        `self._next_resume_n(attempt_dir) - 1` (mirrors _resume_failures'
+        reliance on the same helper, one glob of attempt.resume-N.log); the
+        wait clock starts at the newest such log's mtime (the moment the
+        last resume was launched). An attempt that has never been resumed
+        (prior_resumes == 0) is always ready -- TRANSIENT_BACKOFF_SCHEDULE
+        governs the wait BETWEEN resumes, not before the first one.
+
+        Once prior_resumes reaches MAX_TRANSIENT_RESUMES this returns False
+        FOREVER for that attempt_id (not just "not yet") -- this is what
+        keeps reconcile.py's ResumeAttempt gate from ever planning another
+        resume for it. That permanent False does NOT by itself move the
+        task forward -- Daemon._transient_escalate (run once per pass,
+        before this snapshot is even built) is the piece that actually
+        gives up on the task's ACTIVE state and re-dispatches elsewhere;
+        this helper only ever answers "is a resume of THIS SAME attempt
+        allowed right now."""
+        out: dict[str, bool] = {}
+        now = time.time()
+        for tsf in states.values():
+            for att in tsf.attempts:
+                if att.state != AttemptState.INTERRUPTED:
+                    continue
+                if att.receipt is None or att.receipt.result != ReceiptResult.TRANSIENT:
+                    continue
+                attempt_dir = paths.attempt_dir(project, att.attempt_id)
+                resume_n = self._next_resume_n(attempt_dir)
+                prior_resumes = resume_n - 1
+                if prior_resumes == 0:
+                    out[att.attempt_id] = True
+                    continue
+                if prior_resumes >= MAX_TRANSIENT_RESUMES:
+                    out[att.attempt_id] = False
+                    continue
+                newest_mtime: float | None = None
+                for n in range(1, resume_n):
+                    log_path = attempt_dir / f"attempt.resume-{n}.log"
+                    try:
+                        mtime = log_path.stat().st_mtime
+                    except OSError:
+                        continue
+                    if newest_mtime is None or mtime > newest_mtime:
+                        newest_mtime = mtime
+                if newest_mtime is None:
+                    # Belt-and-braces: no resume log actually found on disk
+                    # despite _next_resume_n counting some -- do not wedge
+                    # the attempt on a backoff it cannot time from.
+                    out[att.attempt_id] = True
+                    continue
+                idx = min(prior_resumes - 1, len(TRANSIENT_BACKOFF_SCHEDULE) - 1)
+                wait = TRANSIENT_BACKOFF_SCHEDULE[idx]
+                out[att.attempt_id] = (now - newest_mtime) >= wait
+        return out
+
+    def _transient_escalate(self, project: str, cfg: ProjectConfig,
+                             states: dict[str, TaskStateFile]) -> list[Event]:
+        """B24 2026-07-23 (D-R17, D-B24-5/6): the at-cap escalation. Once a
+        TRANSIENT-classified INTERRUPTED attempt has exhausted
+        MAX_TRANSIENT_RESUMES resumes, _transient_backoff_ready above
+        already permanently parks it (never plans another ResumeAttempt for
+        THIS attempt_id) -- this method is what actually moves the TASK
+        forward: pause the throttled route (self._provider_pause, a new
+        state='throttled' so it reads distinctly from a genuine LIMIT
+        receipt's 'limited' in the event log) and requeue the task
+        (ACTIVE->QUEUED, the SAME legal edge the LIMIT branch in
+        EmitAttemptExit already uses) so the EXISTING first-healthy-route
+        dispatch loop (reconcile.py's queued-task lifecycle dispatch,
+        UNMODIFIED) naturally re-routes to the next route in the tier on a
+        following dispatch.
+
+        Called early in run_pass (mirrors _reconcile_decisions' pattern:
+        BEFORE _build_input/plan_project, mutating `states` in place) so a
+        fresh DispatchImplementer can even fire in the SAME pass the
+        provider gets paused, exactly like _reconcile_decisions' own
+        early-mutation timing.
+
+        Scoped to the task's LATEST attempt + tsf.state == ACTIVE so this
+        fires EXACTLY ONCE per stuck attempt: after the transition below,
+        the task is no longer ACTIVE (self-limiting -- the same "moves the
+        task off its current state" idiom reconcile.py's FAILED/CARVER
+        branch already documents), and once a fresh attempt becomes the
+        task's latest, this old attempt is no longer tsf.attempts[-1] and is
+        never revisited -- it stays INTERRUPTED forever, inert, the SAME
+        "stale record" shape a resume-poisoned attempt already has today
+        (implementer_record_count's whole reason to exist)."""
+        events: list[Event] = []
+        for task_id, tsf in states.items():
+            if tsf.state != TaskState.ACTIVE or not tsf.attempts:
+                continue
+            attempt = tsf.attempts[-1]
+            if attempt.state != AttemptState.INTERRUPTED or attempt.role != Role.IMPLEMENTER:
+                continue
+            if attempt.receipt is None or attempt.receipt.result != ReceiptResult.TRANSIENT:
+                continue
+            attempt_dir = paths.attempt_dir(project, attempt.attempt_id)
+            prior_resumes = self._next_resume_n(attempt_dir) - 1
+            if prior_resumes < MAX_TRANSIENT_RESUMES:
+                continue
+            route_id = attempt.route.route_id if attempt.route else None
+            events.append(self._transition(
+                project, cfg, states, task_id, TaskState.QUEUED,
+                f"transient-resume cap ({MAX_TRANSIENT_RESUMES}) reached on route "
+                f"{route_id} -- provider-pausing and re-dispatching to the next route"))
+            events.extend(self._provider_pause(project, cfg, states, route_id, task_id,
+                                                state="throttled"))
+        return events
 
     def _confirm_stall(self, states: dict[str, TaskStateFile], log_quiet_seconds, pid_alive,
                         cfg: ProjectConfig) -> dict[str, bool]:
@@ -1692,12 +1846,19 @@ class Daemon:
                                 {"from": frm.value, "to": to.value, "notes": notes}, task_id=task_id)
 
     def _provider_pause(self, project: str, cfg: ProjectConfig, states: dict[str, TaskStateFile],
-                        route_id: str | None, task_id: str | None) -> list[Event]:
+                        route_id: str | None, task_id: str | None,
+                        state: str = "limited") -> list[Event]:
+        # B24 2026-07-23 (D-R17, D-B24-3): `state` defaults to "limited"
+        # (byte-identical to every pre-B24 caller); _transient_escalate
+        # passes state="throttled" so a provider-throttle escalation reads
+        # distinctly from a genuine LIMIT receipt's pause in the event log,
+        # without a new EventType (PROVIDER_STATE_CHANGED already carries a
+        # free-form `state` payload value).
         out: list[Event] = []
         if route_id:
             self._provider_paused[route_id] = time.monotonic() + PROVIDER_PAUSE_SECONDS
         out.append(self._append_ev(project, cfg, states, EventType.PROVIDER_STATE_CHANGED,
-                                    {"route_id": route_id, "state": "limited"}, task_id=task_id))
+                                    {"route_id": route_id, "state": state}, task_id=task_id))
         out.append(self._append_ev(project, cfg, states, EventType.NEEDS_OPERATOR,
                                     {"route_id": route_id, "reason": "provider-limited"}, task_id=task_id))
         return out

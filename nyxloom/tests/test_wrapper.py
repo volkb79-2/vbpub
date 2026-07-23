@@ -555,6 +555,79 @@ class TestLimit:
         assert receipt["result"] == "limit"
 
 
+class TestTransient:
+    """O2 (B24 2026-07-23, D-R17, D-B24-1 -- the load-bearing oracle):
+    a TRANSIENT classification must NOT be treated like BLOCKED/LIMIT/ERROR
+    (ATTEMPT_EXITED + EXITED, a terminal state that can never be revived).
+    It must pair with ATTEMPT_INTERRUPTED + AttemptState.INTERRUPTED -- the
+    SAME pair the real interrupted-by-signal branch uses -- so the daemon's
+    EXISTING ResumeAttempt path (built for INTERRUPTED attempts) can retry
+    the SAME session."""
+
+    def test_transient_classification_is_interrupted_not_exited(
+        self, tmp_state, tmp_path, fake_cli, mock_adapters
+    ):
+        """Script printing a provider-throttle signature, nonzero exit ->
+        receipt.result == 'transient' AND the statefile attempt ends up
+        INTERRUPTED (never EXITED) with an ATTEMPT_INTERRUPTED event -- NOT
+        ATTEMPT_EXITED/EXITED."""
+        project = "demo"
+        task_id = "demo-P01-sample"
+        attempt_id = "att-1"
+        seed(project, task_id, attempt_id)
+
+        script = fake_cli(["Error: HTTP 502 Bad Gateway from upstream"], exit_code=1)
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir(parents=True)
+
+        log_path = attempt_dir / "wrapper.log"
+        receipt_path = attempt_dir / "receipt.json"
+
+        spec = WrapperSpec(
+            project=project,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            argv=[str(script)],
+            cwd=str(tmp_path),
+            log_path=str(log_path),
+            receipt_path=str(receipt_path),
+            attempt_dir=str(attempt_dir),
+            route_def={"route_id": "fake-cli", "cli": "fake", "model": "fake-model"},
+        )
+
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+        mock_adapters.extract_usage.return_value = Usage(basis=Basis.UNKNOWN)
+        mock_adapters.capture_session.return_value = None
+
+        def real_classify(text):
+            if "502 bad gateway" in text.lower():
+                return "transient"
+            return None
+
+        mock_adapters.classify_log_tail.side_effect = real_classify
+
+        exit_code = wrapper_main(str(spec_path))
+
+        receipt = json.loads(receipt_path.read_text())
+        assert receipt["result"] == "transient"
+
+        tsf = storage.load_state(project, task_id)
+        attempt = tsf.attempt_by_id(attempt_id)
+        # THE oracle: INTERRUPTED, never EXITED.
+        assert attempt.state is AttemptState.INTERRUPTED
+        assert attempt.state is not AttemptState.EXITED
+
+        events = list(storage.iter_events(project))
+        interrupted = [e for e in events
+                       if e.type is EventType.ATTEMPT_INTERRUPTED and e.attempt_id == attempt_id]
+        exited = [e for e in events
+                 if e.type is EventType.ATTEMPT_EXITED and e.attempt_id == attempt_id]
+        assert len(interrupted) == 1
+        assert len(exited) == 0
+
+
 class TestError:
     """Oracle 5: error classification."""
 

@@ -1200,6 +1200,126 @@ def test_interrupted_attempts_exhausted_blocks_task_even_with_handle():
 
 
 # ============================================================================
+# B24 2026-07-23 (D-R17, transient-failure backoff-resume). O3: an
+# INTERRUPTED attempt whose transient_backoff_ready reads False must PARK
+# (no ResumeAttempt, no BLOCKED) -- the backoff hasn't elapsed yet, this is
+# NOT a dead end; True resumes normally. Missing entries (the default)
+# behave exactly like today (True), covering every existing (non-transient)
+# INTERRUPTED test above with zero change.
+# ============================================================================
+
+def test_transient_backoff_not_ready_parks_no_resume_no_blocked():
+    """O3: not-ready direction -- session_handle present, budget available,
+    but transient_backoff_ready is False -> NEITHER ResumeAttempt NOR a
+    BLOCKED dead-end transition is planned (park; retry next pass)."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(
+        attempt_id="att-1", state=AttemptState.INTERRUPTED,
+        receipt=Receipt(result=ReceiptResult.TRANSIENT, exit_code=1),
+    )
+    att.session_handle = "sess-xyz"
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        transient_backoff_ready={"att-1": False},
+    )
+
+    actions = plan_project(inp)
+    resumes = [a for a in actions if isinstance(a, ResumeAttempt) and a.attempt_id == "att-1"]
+    assert len(resumes) == 0
+    blocks = [a for a in actions if isinstance(a, Transition) and a.task_id == "P01"
+              and a.to == TaskState.BLOCKED]
+    assert len(blocks) == 0
+
+
+def test_transient_backoff_ready_resumes():
+    """O3: ready direction -- transient_backoff_ready True (backoff
+    elapsed) -> ResumeAttempt IS planned, same as any other resumable
+    INTERRUPTED attempt."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(
+        attempt_id="att-1", state=AttemptState.INTERRUPTED,
+        receipt=Receipt(result=ReceiptResult.TRANSIENT, exit_code=1),
+    )
+    att.session_handle = "sess-xyz"
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+        transient_backoff_ready={"att-1": True},
+    )
+
+    actions = plan_project(inp)
+    resumes = [a for a in actions if isinstance(a, ResumeAttempt) and a.attempt_id == "att-1"]
+    assert len(resumes) == 1
+
+
+def test_transient_backoff_ready_defaults_true_for_non_transient():
+    """O3 NEGATIVE (no regression): an ordinary (non-transient,
+    receipt=None) INTERRUPTED attempt with no transient_backoff_ready entry
+    at all still resumes -- the missing-entry default (True) preserves every
+    pre-B24 INTERRUPTED-resume test byte-identically."""
+    cfg = make_config()
+    routes = make_routes()
+    fm = make_frontmatter(id="P01")
+    att = make_attempt(attempt_id="att-1", state=AttemptState.INTERRUPTED, receipt=None)
+    att.session_handle = "sess-xyz"
+    tsf = make_tsf(task_id="P01", state=TaskState.ACTIVE, attempts=[att])
+
+    inp = ReconcileInput(
+        now=utc(2026, 7, 15),
+        cfg=cfg,
+        routes=routes,
+        states={"P01": tsf},
+        frontmatters={"P01": (fm, "h.md")},
+        lint_clean={},
+        project_paused=False,
+        decisions_open=set(),
+        merged_branches=set(),
+        leases_free={},
+        provider_ok={},
+        log_quiet_seconds={},
+        pid_alive={},
+        receipts={},
+    )
+
+    actions = plan_project(inp)
+    resumes = [a for a in actions if isinstance(a, ResumeAttempt) and a.attempt_id == "att-1"]
+    assert len(resumes) == 1
+
+
+# ============================================================================
 # P34: resume-safety re-cut (poisoned resumes fresh-start through the
 # dispatch guards -- see nyxloom-trove/handoffs/nyxloom-P34-resume-safety-
 # guarded.md). Oracles O1-O6.
@@ -3057,6 +3177,21 @@ def test_attempts_used_counts_only_implementer_not_review_or_carve():
     tsf = make_tsf(task_id="P01", state=TaskState.REVIEW_REJECTED,
                    attempts=[impl, review, limited])
     assert attempts_used(tsf) == 1   # only the one non-LIMIT implementer
+
+
+def test_attempts_used_excludes_transient():
+    """O6 (B24 2026-07-23, D-R17, D-B24-6): a TRANSIENT receipt is excluded
+    from the implementer budget exactly like LIMIT -- a provider-throttled
+    attempt (502/429/ResourceExhausted/idle-timeout) does not consume
+    max_attempts_per_task, mirroring the existing LIMIT exclusion this same
+    accessor already grants."""
+    impl = make_attempt(attempt_id="i1", state=AttemptState.EXITED, role=Role.IMPLEMENTER,
+                        receipt=Receipt(result=ReceiptResult.DONE, exit_code=0))
+    throttled = make_attempt(attempt_id="i2", state=AttemptState.EXITED, role=Role.IMPLEMENTER,
+                             receipt=Receipt(result=ReceiptResult.TRANSIENT, exit_code=1))
+    tsf = make_tsf(task_id="P01", state=TaskState.REVIEW_REJECTED,
+                   attempts=[impl, throttled])
+    assert attempts_used(tsf) == 1   # only the one non-TRANSIENT/non-LIMIT implementer
 
 
 def test_review_reject_cycle_counts_one_implementer_unit_not_two():
