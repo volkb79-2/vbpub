@@ -4,7 +4,13 @@
 # Values from controller-workflow-v2 §5 as of 2026-07-13/15; probe before
 # trusting a route that hasn't run recently.
 
-revision = "2026-07-15"
+revision = "2026-07-23"
+
+# 2026-07-23 (operator): added codex-luna-high (gpt-5.6-luna @ high effort via
+# codex) as a medium/band-2 implementation route, exposed as [tiers.luna-high].
+# Destined for the `implement-2` tier once B16 (verb-band taxonomy rename) lands;
+# kept model-named for now so the live matrix stays internally consistent (one
+# atomic migration in B16, not a half-migrated mix). Being trialed on B17.
 
 # 2026-07-17: LIFTED the 2026-07-15 temporary sonnet-high override on the
 # implementation tiers -- cheap-first (deepseek) restored, codex reintegrated as
@@ -18,6 +24,11 @@ routes = ["opencode-deepseek-max", "reasonix-deepseek-max", "codex-terra-med"]
 
 [tiers.terra-med]
 routes = ["codex-terra-med"]
+
+# 2026-07-23 (operator): gpt-5.6-luna @ high effort via codex, for medium/band-2
+# implementation. Will fold into `implement-2` under B16.
+[tiers.luna-high]
+routes = ["codex-luna-high"]
 
 [tiers.sonnet5-high]
 routes = ["claude-sonnet5-high"]
@@ -79,6 +90,15 @@ model = "deepseek-flash-max/deepseek-v4-flash"
 cli = "codex"
 model = "gpt-5.6-terra"
 effort = "medium"
+sandbox = "danger-full-access"
+probe = ["codex", "--version"]
+resume = ["codex", "exec", "--sandbox", "danger-full-access", "--cd", "{worktree}", "resume", "--last", "{prompt}"]
+usage_source = "exec-output-footer"
+
+[routes.codex-luna-high]
+cli = "codex"
+model = "gpt-5.6-luna"
+effort = "high"
 sandbox = "danger-full-access"
 probe = ["codex", "--version"]
 resume = ["codex", "exec", "--sandbox", "danger-full-access", "--cd", "{worktree}", "resume", "--last", "{prompt}"]
