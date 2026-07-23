@@ -113,18 +113,6 @@ items:
   component: routing
   context_estimate: small
   folds_into: F009
-- id: B18
-  title: 'capability_map.py: extend DiscoveredModel to a CapabilityRecord (per-axis coding/
-    agentic/reasoning scores + price + band-per-axis + may_review/may_carve). Operator-set
-    per-axis band thresholds; complexity band auto-assigned, role-eligibility operator-gated
-    unless capability_map.role_gating=auto; context/flags hard-filter. Managed-block writer
-    (frozen config.py untouched). This is the capability half onto free_models.py discovery.
-    NOTE: the pure banding core is already extracted + merged as band_thresholds.py (55be277,
-    2026-07-23 free-model trial); remaining = CapabilityRecord assembly + role-gating + writer.'
-  type: feature
-  component: routing
-  context_estimate: large
-  folds_into: F014
 - id: B19
   title: 'routing/capability dashboard panel (read-only): catalog table (model x per-axis
     scores x price x privacy x availability x band) plus per-tier resolution (winner,
@@ -143,16 +131,6 @@ items:
   component: control
   context_estimate: medium
   folds_into: F015
-- id: B21
-  title: 'scope-amendment escalation: when an implementer genuinely needs a file outside its
-    scope.touch allowlist, it emits a structured "needs file X because Y" request the carver/
-    operator cheaply approves (mid-flight allowlist expansion), instead of a hard BLOCK +
-    full re-carve. Bounded like D-R8 reviewer fixes; re-gate after. Fixes the P26/P31
-    forbidden-needed-file failure mode (D-R16 Axis B).'
-  type: feature
-  component: dispatch
-  context_estimate: medium
-  folds_into: F005
 - id: B23
   title: 'per-task permission fields: make the OS sandbox mode (read-only / workspace-write
     / full-access) AND the scope breadth declared handoff fields, capability-matched to the
