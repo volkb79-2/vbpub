@@ -313,14 +313,21 @@ Diagnosis — there are TWO distinct restriction axes that fail differently, and
 the one that historically bit is NOT the OS sandbox:
 
 - **Axis A — OS/process sandbox** (codex `--sandbox`, claude
-  `--dangerously-skip-permissions`, opencode `--auto`): what the agent PROCESS
-  may do. Implementation agents already run **permissive** here (codex routes =
-  `danger-full-access`). D-R7's ciu/cgroup containerization ADDS isolation, but
-  its job is to bound **blast radius** (host, other worktrees, secrets) — NOT to
-  restrict the agent within its own workspace. Invariant: **inside its assigned
-  worktree + declared environment the agent keeps full read/write/exec; the
-  sandbox only walls off everything else** (exactly D-R7's "mount the worktree
-  into the container" requirement).
+  `--dangerously-skip-permissions`, opencode `--auto`, reasonix
+  `[sandbox]`/`[permissions]`): what the agent PROCESS may do. **These permission
+  levels are LOCAL CONFIG per CLI, NOT vendor ship-defaults** (operator
+  correction 2026-07-23): in this environment codex/claude were
+  operator-configured wide-open (`danger-full-access` /
+  `--dangerously-skip-permissions`), while reasonix shipped conservative
+  (`bash=off`, `permissions.mode=ask`) and had to be relaxed (`bash=enforce`,
+  `mode=allow`) before it could even self-test in the 2026-07-23 free-model
+  trial. So "permissive" is a knob each CLI exposes, not a property of the CLI.
+  D-R7's ciu/cgroup containerization ADDS isolation, but its job is to bound
+  **blast radius** (host, other worktrees, secrets) — NOT to restrict the agent
+  within its own workspace. Invariant: **inside its assigned worktree + declared
+  environment the agent keeps full read/write/exec; the sandbox only walls off
+  everything else** (exactly D-R7's "mount the worktree into the container"
+  requirement).
 - **Axis B — handoff `scope.touch`** (the per-task edit allowlist, enforced by
   review/lint, not the OS): which files the TASK permits editing. **This is what
   bit** — P26 + P31 failed because the handoff forbade a file the correct
@@ -328,11 +335,15 @@ the one that historically bit is NOT the OS sandbox:
   hard-BLOCKED. Neither ships the work.
 
 Decisions:
-1. **Do NOT loosen the OS sandbox globally** — implementation agents already have
-   what they need there. (The live 2026-07-23 luna/B17 trial ran under
-   `danger-full-access` precisely so it could run its own tests and iterate; a
-   read-only sandbox would have blocked a legitimate task — the concrete
-   illustration.)
+1. **nyxloom OWNS the OS-sandbox level per route/task — do NOT inherit each CLI's
+   ambient local config.** Because the level is a per-CLI knob (above), a route
+   must set it deliberately so the SAME task gets the SAME effective permissions
+   regardless of which CLI runs it — otherwise a task lands wide-open on codex but
+   blocked on a stock reasonix (exactly what happened in the free-model trial
+   until reasonix was relaxed). Default it permissive-WITHIN-worktree for
+   implementers (the luna/B17 trial needed `danger-full-access` to run its own
+   tests; a read-only sandbox blocks a legitimate task), and tighten only where a
+   task declares it (Decision 4).
 2. **Authoring rule + lint:** every oracle must be satisfiable within
    `scope.touch`; a handoff whose oracle references a file outside the allowlist
    is an authoring defect. Add a lint rule to flag it (extends `nyxloom lint`).
