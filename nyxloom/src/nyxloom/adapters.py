@@ -786,7 +786,7 @@ def extract_usage(route: RouteDef, attempt_dir: Path, log_text: str) -> Usage:
 
 
 def classify_log_tail(text: str) -> str | None:
-    """Classify the log tail for blocked/limit indicators.
+    """Classify the log tail for blocked/transient/limit indicators.
 
     2026-07-15 false-positive fix (topos-P91 "persistent capped history"):
     a real provider limit TERMINATES the process, so its phrase lands in the
@@ -805,10 +805,28 @@ def classify_log_tail(text: str) -> str | None:
       distinct from BLOCKED (never a dead end -- wrapper.py/daemon.py route
       it to a bounded approve-and-requeue instead of a hard block). BLOCKED
       still takes precedence if BOTH somehow appear (checked first, below).
-    - limit phrases only count in the last LIMIT_TAIL_LINES lines AND only
-      when the line looks like a CLI/error surface (starts with a known
-      error prefix or contains 'error'/'exceeded'/HTTP 429), not arbitrary
-      prose. 'blocked' still beats 'limit'.
+    - transient (B24 2026-07-23, D-R17): a PROVIDER-side throttle/outage
+      signature (HTTP 502, google's ResourceExhausted, an upstream idle
+      timeout, a worker request-limit message, or a distinct HTTP-429
+      signature) in the last LIMIT_TAIL_LINES lines. Checked BEFORE the
+      limit-phrase match below (a "...request limit" phrase would otherwise
+      ALSO match limit_phrase's own bare "limit reached" alternative --
+      transient must win so wrapper.py/daemon.py resume the SAME session
+      rather than burning the task's attempt budget on a provider hiccup).
+      Deliberately narrow so it does NOT reclassify the existing "<n> too
+      many requests" limit phrasing below (unchanged) -- transient's own
+      HTTP-429 signature requires an "http ... 429" or "error code: 429"
+      shape, not the "too many requests" wording.
+    - limit phrases only count in the last LIMIT_TAIL_LINES lines (never
+      bare 'limit'/'quota'/'capped' -- that is domain vocabulary), and only
+      in the terminal tail where a real provider limit that ended the
+      process would land. (2026-07-23 correction: earlier revisions of this
+      docstring additionally claimed limit phrases only count "when the
+      line looks like a CLI/error surface (starts with a known error prefix
+      or contains 'error'/'exceeded'/HTTP 429)" -- no such heuristic, and no
+      `ERROR_PREFIXES` constant, has ever existed in the code below; the
+      only actual gate is the fixed `limit_phrase` regex over `tail_lim`.)
+      'blocked' still beats 'limit' (and now 'transient').
     """
     lines = text.split("\n")
     tail200 = lines[-200:] if len(lines) > 200 else lines
@@ -819,6 +837,9 @@ def classify_log_tail(text: str) -> str | None:
 
     if any(line.startswith("SCOPE_AMENDMENT_REQUEST:") for line in tail200):
         return "scope_amendment"
+
+    if any(TRANSIENT_PHRASE.search(line) for line in tail_lim):
+        return "transient"
 
     # Specific limit phrases only (never bare 'limit'/'quota'/'capped' — that
     # is domain vocabulary), and only in the terminal tail where a real
@@ -834,3 +855,14 @@ def classify_log_tail(text: str) -> str | None:
 
 
 LIMIT_TAIL_LINES = 25
+
+# B24 2026-07-23 (D-R17, D-B24-3): PROVIDER-throttle/outage signatures --
+# checked in classify_log_tail BEFORE limit_phrase (see its docstring).
+# Deliberately does NOT include "too many requests" (the existing LIMIT
+# phrasing for 429) -- the 429 alternatives here require an "http"/"error
+# code" shape distinct from that wording, so the pre-existing "429 too many
+# requests" -> "limit" classification is unchanged (no regression).
+TRANSIENT_PHRASE = re.compile(
+    r"(?i)(502 bad gateway|\bhttp\S*\s+502\b|\bresourceexhausted\b|"
+    r"upstream idle timeout|worker local total request limit|"
+    r"\bhttp\S*\s+429\b|error code:\s*429\b)")

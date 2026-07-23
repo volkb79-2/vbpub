@@ -1963,6 +1963,314 @@ def test_resume_archives_stale_receipt_so_no_premature_exit(
     assert receipts.get(attempt_id) is None
 
 
+# ============================================================================
+# B24 2026-07-23 (D-R17, transient-failure backoff-resume). Oracles O3/O5.
+# _transient_backoff_ready (the backoff-timing helper) and _transient_escalate
+# (the at-cap escalation) are tested directly, mirroring this file's existing
+# direct-call convention for pure daemon helpers (_attempt_scan,
+# _parse_review_verdict, _build_carve_packet above).
+# ============================================================================
+
+def _make_transient_attempt(attempt_id="att-tr", session_handle="sess-1"):
+    route = Route(route_id="fake-cli", cli="fake", model="fake-model", routes_rev="test-rev")
+    return Attempt(
+        attempt_id=attempt_id, role=Role.IMPLEMENTER, state=AttemptState.INTERRUPTED,
+        route=route, started=utc_now(), session_handle=session_handle,
+        receipt=Receipt(result=ReceiptResult.TRANSIENT, exit_code=1),
+    )
+
+
+def test_transient_backoff_ready_non_interrupted_and_non_transient_excluded(
+        tmp_state, sample_project):
+    """_transient_backoff_ready only ever produces entries for TRANSIENT-
+    classified INTERRUPTED attempts -- a RUNNING attempt and an INTERRUPTED-
+    but-not-transient (e.g. LIMIT, or receipt=None real-signal-interrupt)
+    attempt are both excluded from the output dict entirely (so
+    reconcile.py's `.get(id, True)` default applies, unchanged behavior)."""
+    project = "demo"
+    running = _make_transient_attempt("att-running")
+    running.state = AttemptState.RUNNING
+    limit_att = _make_transient_attempt("att-limit")
+    limit_att.receipt = Receipt(result=ReceiptResult.LIMIT, exit_code=1)
+    real_interrupt = _make_transient_attempt("att-real-int")
+    real_interrupt.receipt = None
+    tsf = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id="t-x", project=project,
+                        state=TaskState.ACTIVE, since=utc_now(),
+                        attempts=[running, limit_att, real_interrupt])
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    out = d._transient_backoff_ready(project, {"t-x": tsf})
+    assert out == {}
+
+
+def test_transient_backoff_ready_first_resume_always_ready(tmp_state, sample_project):
+    """O3: an INTERRUPTED transient attempt with NO prior resumes (no
+    attempt.resume-N.log on disk) is always ready -- the schedule governs
+    waits BETWEEN resumes, not before the first one."""
+    project = "demo"
+    att = _make_transient_attempt()
+    tsf = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id="t-x", project=project,
+                        state=TaskState.ACTIVE, since=utc_now(), attempts=[att])
+    # No attempt_dir contents at all -- _next_resume_n returns 1 -> prior_resumes 0.
+    d = daemon.Daemon({"demo": sample_project.root})
+    out = d._transient_backoff_ready(project, {"t-x": tsf})
+    assert out == {att.attempt_id: True}
+
+
+def test_transient_backoff_ready_waiting_vs_elapsed(tmp_state, sample_project):
+    """O3: one prior resume -- a freshly-written resume-1.log (mtime ~now)
+    is NOT ready (TRANSIENT_BACKOFF_SCHEDULE[0]=60s hasn't elapsed); the
+    SAME attempt with that log's mtime backdated past the wait IS ready.
+    Both directions asserted, per the oracle."""
+    project = "demo"
+    att = _make_transient_attempt()
+    tsf = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id="t-x", project=project,
+                        state=TaskState.ACTIVE, since=utc_now(), attempts=[att])
+    attempt_dir = paths.attempt_dir(project, att.attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    log_path = attempt_dir / "attempt.resume-1.log"
+    log_path.write_text("x", encoding="utf-8")
+
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    # Not ready: mtime is ~now, schedule[0] == 60s.
+    out = d._transient_backoff_ready(project, {"t-x": tsf})
+    assert out == {att.attempt_id: False}
+
+    # Ready: backdate the log's mtime well past the 60s wait.
+    old = time.time() - daemon.TRANSIENT_BACKOFF_SCHEDULE[0] - 5
+    os.utime(log_path, (old, old))
+    out2 = d._transient_backoff_ready(project, {"t-x": tsf})
+    assert out2 == {att.attempt_id: True}
+
+
+def test_transient_backoff_ready_picks_newest_of_multiple_logs(tmp_state, sample_project):
+    """O3: two prior resumes (still under MAX_TRANSIENT_RESUMES) -- the
+    mtime scan must pick the NEWEST of the two resume-N.log files, not
+    just the first found, so the wait clock starts from the LAST resume,
+    not an earlier one. resume-1.log is old (would already be ready under
+    schedule[0]=60s alone); resume-2.log is fresh (~now) -- not ready,
+    proving the newer mtime won."""
+    project = "demo"
+    att = _make_transient_attempt()
+    tsf = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id="t-x", project=project,
+                        state=TaskState.ACTIVE, since=utc_now(), attempts=[att])
+    attempt_dir = paths.attempt_dir(project, att.attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    old = time.time() - 10_000
+    log1 = attempt_dir / "attempt.resume-1.log"
+    log1.write_text("x", encoding="utf-8")
+    os.utime(log1, (old, old))
+    log2 = attempt_dir / "attempt.resume-2.log"
+    log2.write_text("x", encoding="utf-8")  # fresh mtime (~now)
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    out = d._transient_backoff_ready(project, {"t-x": tsf})
+    # 2 prior resumes -> schedule[min(1, len-1)] = schedule[1] = 300s;
+    # newest (log2) is ~now -> not ready.
+    assert out == {att.attempt_id: False}
+
+
+def test_transient_backoff_ready_capped_forever_false(tmp_state, sample_project):
+    """O3/D-B24-5: once prior_resumes reaches MAX_TRANSIENT_RESUMES, ready
+    is False regardless of mtime (even backdated far in the past) -- the
+    ResumeAttempt gate must never fire again for THIS attempt; escalation
+    (_transient_escalate) is the separate mechanism that moves the task."""
+    project = "demo"
+    att = _make_transient_attempt()
+    tsf = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id="t-x", project=project,
+                        state=TaskState.ACTIVE, since=utc_now(), attempts=[att])
+    attempt_dir = paths.attempt_dir(project, att.attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    old = time.time() - 10_000
+    for n in range(1, daemon.MAX_TRANSIENT_RESUMES + 1):
+        p = attempt_dir / f"attempt.resume-{n}.log"
+        p.write_text("x", encoding="utf-8")
+        os.utime(p, (old, old))
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    out = d._transient_backoff_ready(project, {"t-x": tsf})
+    assert out == {att.attempt_id: False}
+
+
+def test_transient_backoff_ready_missing_log_falls_back_to_ready(tmp_state, sample_project):
+    """Belt-and-braces branch: _next_resume_n also counts a resume via
+    spec.resume-N.json (the wrapper spec written before the log exists) --
+    if the corresponding attempt.resume-N.log is missing on disk, the mtime
+    scan finds nothing (OSError per candidate, caught) and must not wedge
+    the attempt on a backoff it cannot time from -- defaults to ready."""
+    project = "demo"
+    att = _make_transient_attempt()
+    tsf = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id="t-x", project=project,
+                        state=TaskState.ACTIVE, since=utc_now(), attempts=[att])
+    attempt_dir = paths.attempt_dir(project, att.attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    # spec.resume-1.json satisfies _next_resume_n (prior_resumes becomes 1)
+    # but attempt.resume-1.log itself was never written.
+    (attempt_dir / "spec.resume-1.json").write_text("{}", encoding="utf-8")
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    out = d._transient_backoff_ready(project, {"t-x": tsf})
+    assert out == {att.attempt_id: True}
+
+
+def test_transient_escalate_excludes_non_matching_tasks(tmp_state, sample_project):
+    """_transient_escalate's guard clauses: a non-ACTIVE task, an ACTIVE
+    task with no attempts at all, a latest attempt that is not INTERRUPTED,
+    one whose role is not IMPLEMENTER, and one whose receipt is not
+    TRANSIENT are ALL excluded -- even when every one of them (except the
+    first two) is otherwise sitting at/over MAX_TRANSIENT_RESUMES prior
+    resumes. Only a genuine at-cap transient IMPLEMENTER attempt on an
+    ACTIVE task escalates (see test_transient_escalate_at_cap_pauses_and_
+    requeues just below)."""
+    project = "demo"
+
+    def _at_cap_dir(attempt_id: str) -> None:
+        attempt_dir = paths.attempt_dir(project, attempt_id)
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        for n in range(1, daemon.MAX_TRANSIENT_RESUMES + 1):
+            (attempt_dir / f"attempt.resume-{n}.log").write_text("x", encoding="utf-8")
+
+    not_active_att = _make_transient_attempt("att-not-active")
+    _at_cap_dir(not_active_att.attempt_id)
+    tsf_not_active = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="t-not-active", project=project,
+        state=TaskState.QUEUED, since=utc_now(), attempts=[not_active_att])
+
+    tsf_no_attempts = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="t-no-attempts", project=project,
+        state=TaskState.ACTIVE, since=utc_now(), attempts=[])
+
+    running_att = _make_transient_attempt("att-running-latest")
+    running_att.state = AttemptState.RUNNING
+    _at_cap_dir(running_att.attempt_id)
+    tsf_running = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="t-running", project=project,
+        state=TaskState.ACTIVE, since=utc_now(), attempts=[running_att])
+
+    review_att = _make_transient_attempt("att-review-role")
+    review_att.role = Role.FRONTIER_REVIEW
+    _at_cap_dir(review_att.attempt_id)
+    tsf_review = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="t-review", project=project,
+        state=TaskState.ACTIVE, since=utc_now(), attempts=[review_att])
+
+    limit_att = _make_transient_attempt("att-limit-receipt")
+    limit_att.receipt = Receipt(result=ReceiptResult.LIMIT, exit_code=1)
+    _at_cap_dir(limit_att.attempt_id)
+    tsf_limit = TaskStateFile(
+        schema_version=storage.SCHEMA_VERSION, task_id="t-limit", project=project,
+        state=TaskState.ACTIVE, since=utc_now(), attempts=[limit_att])
+
+    states = {
+        "t-not-active": tsf_not_active, "t-no-attempts": tsf_no_attempts,
+        "t-running": tsf_running, "t-review": tsf_review, "t-limit": tsf_limit,
+    }
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    events = d._transient_escalate(project, sample_project, states)
+
+    assert events == []
+    assert tsf_not_active.state is TaskState.QUEUED
+    assert tsf_no_attempts.state is TaskState.ACTIVE
+    assert tsf_running.state is TaskState.ACTIVE
+    assert tsf_review.state is TaskState.ACTIVE
+    assert tsf_limit.state is TaskState.ACTIVE
+
+
+def test_transient_escalate_below_cap_no_action(tmp_state, sample_project):
+    """O5 (below-cap direction): fewer than MAX_TRANSIENT_RESUMES prior
+    resumes -> no escalation events, task stays ACTIVE."""
+    project = "demo"
+    task_id = "t-tresc-under"
+    att = _make_transient_attempt()
+    tsf = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
+                        state=TaskState.ACTIVE, since=utc_now(), attempts=[att])
+    attempt_dir = paths.attempt_dir(project, att.attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    for n in range(1, daemon.MAX_TRANSIENT_RESUMES):  # one short of the cap
+        (attempt_dir / f"attempt.resume-{n}.log").write_text("x", encoding="utf-8")
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    events = d._transient_escalate(project, sample_project, {task_id: tsf})
+
+    assert events == []
+    assert tsf.state is TaskState.ACTIVE
+
+
+def test_transient_escalate_at_cap_pauses_and_requeues(tmp_state, sample_project):
+    """O5 (bounded escalation): at MAX_TRANSIENT_RESUMES prior resumes, the
+    task is requeued (ACTIVE->QUEUED) and the route provider-paused with a
+    DISTINCT state ('throttled', not LIMIT's 'limited') -- verified via the
+    real events this method appends (mirrors test_emit_attempt_exit_limit's
+    own PROVIDER_STATE_CHANGED/NEEDS_OPERATOR assertions)."""
+    project = "demo"
+    task_id = "t-tresc-cap"
+    att = _make_transient_attempt()
+    tsf = TaskStateFile(schema_version=storage.SCHEMA_VERSION, task_id=task_id, project=project,
+                        state=TaskState.ACTIVE, since=utc_now(), attempts=[att])
+    attempt_dir = paths.attempt_dir(project, att.attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    for n in range(1, daemon.MAX_TRANSIENT_RESUMES + 1):
+        (attempt_dir / f"attempt.resume-{n}.log").write_text("x", encoding="utf-8")
+
+    d = daemon.Daemon({"demo": sample_project.root})
+    events = d._transient_escalate(project, sample_project, {task_id: tsf})
+
+    assert tsf.state is TaskState.QUEUED
+    ev_types = [e.type for e in events]
+    assert EventType.TASK_TRANSITIONED in ev_types
+    assert EventType.PROVIDER_STATE_CHANGED in ev_types
+    assert EventType.NEEDS_OPERATOR in ev_types
+    psc = next(e for e in events if e.type is EventType.PROVIDER_STATE_CHANGED)
+    assert psc.payload == {"route_id": "fake-cli", "state": "throttled"}
+
+    # On the NEXT snapshot, the just-paused route reads unhealthy -- the
+    # EXISTING first-healthy-route selector then re-routes elsewhere.
+    from nyxloom import config as config_mod
+    routes = config_mod.Routes.load()
+    assert d._provider_ok(routes).get("fake-cli") is False
+
+
+def test_transient_escalate_full_pass_bounded_and_reroutes(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """O5 end-to-end (modeled on test_emit_attempt_exit_limit): drives it
+    through a REAL run_pass (plan_project scripted to a no-op, since
+    _transient_escalate runs BEFORE _build_input/plan_project and does not
+    depend on planned actions) -- after the cap, the task is QUEUED and the
+    route provider-paused; on the NEXT pass, the captured ReconcileInput's
+    provider_ok['fake-cli'] is False."""
+    task_id, attempt_id = "t-tresc-e2e", "att-tresc-e2e"
+    _seed_running_attempt("demo", task_id, attempt_id)
+    tsf = storage.load_state("demo", task_id)
+    att = tsf.attempt_by_id(attempt_id)
+    att.state = AttemptState.INTERRUPTED
+    att.session_handle = "sess-1"
+    att.receipt = Receipt(result=ReceiptResult.TRANSIENT, exit_code=1)
+    storage.save_state(tsf)
+
+    attempt_dir = paths.attempt_dir("demo", attempt_id)
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    for n in range(1, daemon.MAX_TRANSIENT_RESUMES + 1):
+        (attempt_dir / f"attempt.resume-{n}.log").write_text("x", encoding="utf-8")
+
+    captured = _scripted(monkeypatch, [[], []])
+    d = daemon.Daemon({"demo": sample_project.root})
+    d.run_pass("demo")
+
+    tsf2 = storage.load_state("demo", task_id)
+    assert tsf2.state is TaskState.QUEUED
+
+    events = list(storage.iter_events("demo"))
+    types = [e.type for e in events]
+    assert EventType.PROVIDER_STATE_CHANGED in types
+    assert EventType.NEEDS_OPERATOR in types
+
+    d.run_pass("demo")
+    assert len(captured) == 2
+    assert captured[1].provider_ok.get("fake-cli") is False
+
+
 def test_interrupt_attempt_signals_pgid(tmp_state, sample_project, patch_siblings, monkeypatch):
     task_id, attempt_id = "t-kill", "att-kill"
     _seed_running_attempt("demo", task_id, attempt_id)

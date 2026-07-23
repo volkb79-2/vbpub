@@ -60,6 +60,26 @@ INTERFACE CONTRACT (frozen). Semantics:
      currently refuses; otherwise a fresh DispatchImplementer with NO
      session_handle carried, consuming one unit of that record budget so
      the sequence terminates.
+     B24 2026-07-23 (D-R17, transient-failure backoff-resume): an
+     INTERRUPTED attempt whose receipt.result is TRANSIENT (a provider
+     throttle/outage -- 502/429/ResourceExhausted/idle-timeout/worker
+     request-limit, see adapters.classify_log_tail) is gated by
+     inp.transient_backoff_ready (attempt_id -> bool, computed by the
+     daemon from disk against daemon.py's TRANSIENT_BACKOFF_SCHEDULE;
+     missing entries default True, so an ordinary non-transient INTERRUPTED
+     attempt is unaffected): not-ready parks BOTH the ResumeAttempt AND the
+     dead-end-BLOCKED branch above (a backoff wait is neither "resume now"
+     nor "no path forward"); ready resumes normally. Once the daemon's own
+     resume count for that attempt reaches MAX_TRANSIENT_RESUMES,
+     transient_backoff_ready is False FOREVER for it -- the daemon's
+     Daemon._transient_escalate (run before this snapshot is even built,
+     see run_pass) is what then actually moves the task (ACTIVE -> QUEUED
+     + provider-pause the throttled route with state='throttled'), so the
+     ordinary QUEUED-task dispatch loop (item 3 above) re-routes to the
+     next healthy route in the tier; the old attempt itself is left
+     permanently INTERRUPTED and inert, the same "stale record" shape a
+     resume-poisoned attempt already has above. attempts_used excludes a
+     TRANSIENT receipt from the budget exactly like LIMIT (D-B24-6).
    - no receipt, pid alive, elapsed since attempt.started exceeds the
      wall-clock cap (fm.budget.max_wall_seconds if set, else
      inp.attempt_max_wall_seconds, P14 2026-07-15 item 6) -> InterruptAttempt
@@ -557,6 +577,14 @@ class ReconcileInput:
     # policy.max_resume_failures. Missing entries default to 0 (not
     # poisoned) so existing tests that omit this still build.
     resume_failures: dict[str, int] = field(default_factory=dict)
+    # B24 2026-07-23 (D-R17, D-B24-2): attempt_id -> whether a TRANSIENT-
+    # classified INTERRUPTED attempt has waited out its exponential backoff
+    # (daemon.py's TRANSIENT_BACKOFF_SCHEDULE) and may be resumed again this
+    # pass, computed by the daemon from disk (Daemon._transient_backoff_
+    # ready). Missing entries default to True at the ResumeAttempt gate
+    # below -- an ordinary (non-transient) INTERRUPTED attempt, and every
+    # existing test that omits this field, is unaffected.
+    transient_backoff_ready: dict[str, bool] = field(default_factory=dict)
     budget_remaining: float | None = None
     wave_open_after_seconds: int = 1800
     merge_history: list[tuple[str, int, str]] = field(default_factory=list)
@@ -1125,11 +1153,29 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
                 # fresh-started through the ordinary dispatch guards.
                 poisoned = (inp.resume_failures.get(attempt.attempt_id, 0)
                             >= inp.cfg.policy.max_resume_failures)
+                # B24 2026-07-23 (D-R17, D-B24-2): a TRANSIENT-classified
+                # attempt's backoff-not-yet-elapsed reading is a THIRD case
+                # here -- neither "resume now" nor "genuine dead end" -- so
+                # it must gate BOTH branches below, not just the
+                # ResumeAttempt one: gating only the resume line would let a
+                # merely-still-backing-off attempt fall through to the
+                # BLOCKED branch and misreport a transient wait as "no
+                # resume handle or attempts exhausted." Missing entries
+                # default to True (today's ordinary INTERRUPTED attempts are
+                # unaffected). Once the daemon's own resume count for this
+                # attempt reaches MAX_TRANSIENT_RESUMES, the helper returns
+                # False FOREVER -- daemon.py's _transient_escalate is what
+                # actually moves the task off this dead attempt (pause
+                # provider + requeue); this branch just correctly parks
+                # meanwhile instead of BLOCKing a task that is really just
+                # waiting its turn / about to be requeued.
+                ready = inp.transient_backoff_ready.get(attempt.attempt_id, True)
                 if not poisoned:
                     # unchanged (O2): today's ResumeAttempt-or-BLOCKED branch.
-                    if attempts_used(tsf) < inp.cfg.policy.max_attempts_per_task and attempt.session_handle:  # P60 (M8): was this same formula inline
+                    if (attempts_used(tsf) < inp.cfg.policy.max_attempts_per_task
+                            and attempt.session_handle and ready):  # P60 (M8): was this same formula inline
                         attempt_actions.append(ResumeAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
-                    elif tsf.state == TaskState.ACTIVE:
+                    elif tsf.state == TaskState.ACTIVE and ready:
                         # P14 2026-07-15 item 4 (silent-dead-end fix): no resume
                         # handle, or the attempt budget is exhausted -- either
                         # way there is no path forward. The prior code silently
@@ -1157,8 +1203,10 @@ def plan_project(inp: ReconcileInput) -> PlanResult:
                         )
                         attempt_actions.append(Transition(task_id=task_id, to=TaskState.BLOCKED,
                                                            notes="interrupted-dead-end", blocker=blocker))
-                    # else (e.g. AWAITING_REVIEW): park -- the wave loop plans the
-                    # review relaunch; no dead-end here (M10 contradiction fix).
+                    # else (e.g. AWAITING_REVIEW, or a transient attempt still
+                    # backing off / at its resume cap awaiting the daemon's own
+                    # escalation): park -- no dead-end here (M10 contradiction
+                    # fix; B24 backoff/cap parking).
                 else:
                     is_latest = bool(tsf.attempts) and tsf.attempts[-1].attempt_id == attempt.attempt_id
                     if not is_latest:
@@ -1657,17 +1705,25 @@ def attempts_used(tsf: TaskStateFile) -> int:
 
     Counts IMPLEMENTER attempts that reached a terminal state and carry a
     receipt whose result is not LIMIT (a rate-limited attempt does not consume
-    the budget -- it is retried for free). The TERMINAL_ATTEMPT_STATES guard
-    matches the resume path's existing condition (never counts an in-flight
-    INTERRUPTED attempt against itself) and is a no-op for the other sites
-    (a REVIEW_REJECTED / QUEUED / just-ERRORed task's counted attempts are all
-    already terminal). Distinct from implementer_record_count below, which is
-    the RECORD budget (counts receiptless poisoned records too, P34)."""
+    the budget -- it is retried for free) and, as of B24 2026-07-23 (D-R17,
+    D-B24-6), not TRANSIENT either -- a provider-throttled attempt is
+    likewise retried for free, never burning the budget on a 502/429/
+    ResourceExhausted hiccup (a TRANSIENT-classified attempt normally stays
+    INTERRUPTED, non-terminal, so this exclusion mostly guards a future/
+    edge path rather than today's steady-state one -- cheap and correct
+    either way, and mirrors LIMIT's existing exclusion exactly). The
+    TERMINAL_ATTEMPT_STATES guard matches the resume path's existing
+    condition (never counts an in-flight INTERRUPTED attempt against itself)
+    and is a no-op for the other sites (a REVIEW_REJECTED / QUEUED / just-
+    ERRORed task's counted attempts are all already terminal). Distinct from
+    implementer_record_count below, which is the RECORD budget (counts
+    receiptless poisoned records too, P34)."""
     return sum(
         1 for a in tsf.attempts
         if a.role is Role.IMPLEMENTER
         and a.state in TERMINAL_ATTEMPT_STATES
-        and a.receipt is not None and a.receipt.result != ReceiptResult.LIMIT
+        and a.receipt is not None
+        and a.receipt.result not in (ReceiptResult.LIMIT, ReceiptResult.TRANSIENT)
     )
 
 

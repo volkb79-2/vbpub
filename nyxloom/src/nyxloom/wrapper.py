@@ -49,6 +49,16 @@ INTERFACE CONTRACT (frozen):
        parsed from the first SCOPE_AMENDMENT_REQUEST: line (None if the line
        failed to parse as JSON) -- daemon.py's EmitAttemptExit routes this to
        a bounded approve-and-requeue, never a dead end;
+       'transient' (B24 2026-07-23, D-R17) -> receipt result 'transient' but
+       -- UNLIKE every other classification -- event_type/attempt_state are
+       the SAME pair the interrupted-by-signal branch above uses
+       (ATTEMPT_INTERRUPTED / INTERRUPTED), NOT ATTEMPT_EXITED/EXITED: a
+       provider throttle (502/429/ResourceExhausted/idle-timeout/worker
+       request-limit) means the LEG was cut off, not that the attempt
+       reached a genuine dead end, and EXITED can never be revived
+       (TERMINAL_ATTEMPT_STATES). daemon.py's EXISTING ResumeAttempt path
+       (built for INTERRUPTED attempts) then retries the SAME session,
+       gated by an exponential backoff and bounded by MAX_TRANSIENT_RESUMES;
        'limit' -> result 'limit'; else exit 0 -> 'done', nonzero -> 'error'.
     8. Usage: adapters.extract_usage(route, attempt_dir, full log text),
        then config.Prices.load().price_tokens(route.model, usage).
@@ -433,6 +443,22 @@ def wrapper_main(spec_path: str) -> int:
                         amendment_request = None
                 event_type = EventType.ATTEMPT_EXITED
                 attempt_state = AttemptState.EXITED
+            elif classification == "transient":
+                # B24 2026-07-23 (D-R17, D-B24-1 -- THE critical seam): a
+                # provider throttle/outage, NOT a genuine dead end. Pair
+                # with ATTEMPT_INTERRUPTED/INTERRUPTED (exactly the
+                # interrupted-by-signal branch's pair above), never
+                # ATTEMPT_EXITED/EXITED -- an EXITED attempt can never be
+                # revived (TERMINAL_ATTEMPT_STATES, ATTEMPT_TRANSITIONS
+                # [EXITED] == frozenset()), which would silently strand a
+                # merely-throttled leg. RUNNING->INTERRUPTED is a legal edge
+                # and INTERRUPTED->RUNNING (the daemon's ResumeAttempt path)
+                # is explicitly whitelisted as not-a-regression, so the
+                # EXISTING resume machinery picks this up unmodified.
+                result = ReceiptResult.TRANSIENT
+                blocked_reason = None
+                event_type = EventType.ATTEMPT_INTERRUPTED
+                attempt_state = AttemptState.INTERRUPTED
             elif classification == "limit":
                 result = ReceiptResult.LIMIT
                 blocked_reason = None

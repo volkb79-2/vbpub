@@ -1117,6 +1117,59 @@ def test_classify_log_tail_limit_variants():
     assert adapters.classify_log_tail("the quota knob and rate limit setting\ndone") is None
 
 
+# Oracle 8 (B24 2026-07-23, D-R17): transient provider-throttle classification
+def test_classify_log_tail_transient_variants():
+    """O1: each PROVIDER-throttle/outage signature -> 'transient', checked
+    (per the terminal-tail reasoning shared with 'limit') in the last
+    LIMIT_TAIL_LINES lines."""
+    cases = [
+        "Error: HTTP 502 Bad Gateway from upstream proxy",
+        "google.api_core.exceptions.ResourceExhausted: 429 Resource has been exhausted",
+        "Upstream idle timeout after 90s, connection reset",
+        "Worker local total request limit reached, retrying in backoff",
+        "anthropic.APIStatusError: Error code: 429 - rate limited, retry-after: 30s",
+    ]
+    for phrase in cases:
+        log = "progress\n" * 30 + phrase
+        result = adapters.classify_log_tail(log)
+        assert result == "transient", f"Failed for phrase: {phrase!r} (got {result!r})"
+
+
+def test_classify_log_tail_transient_ordering_beats_limit():
+    """O1: order matters -- 'Worker local total request limit reached' would
+    ALSO match limit_phrase's own bare 'limit reached' alternative, so
+    transient must be checked BEFORE limit and win (reclassified transient,
+    not LIMIT)."""
+    log = "progress\n" * 10 + "Worker local total request limit reached"
+    assert adapters.classify_log_tail(log) == "transient"
+
+
+def test_classify_log_tail_transient_no_regression():
+    """O1 NEGATIVE (no regression):
+    - a BLOCKED: line still returns 'blocked' (transient never shadows it)
+    - a scope-amendment marker still returns 'scope_amendment'
+    - a genuine session/usage limit still returns 'limit' -- the existing
+      '<n> too many requests' LIMIT phrasing is UNCHANGED (transient's own
+      HTTP-429 signature is deliberately narrower, see classify_log_tail's
+      docstring), so this is a true no-regression check, not a hollow one
+    - ordinary domain prose about 'limits'/'quota' still returns None
+    """
+    assert adapters.classify_log_tail(
+        "progress\n" * 10 + "BLOCKED: cannot meet contract") == "blocked"
+    assert adapters.classify_log_tail(
+        "progress\n" * 10 +
+        'SCOPE_AMENDMENT_REQUEST: {"file": "x.py", "reason": "y"}'
+    ) == "scope_amendment"
+    assert adapters.classify_log_tail(
+        "progress\n" * 10 + "session limit exceeded, please wait") == "limit"
+    assert adapters.classify_log_tail(
+        "progress\n" * 10 + "usage limit reached for this billing period") == "limit"
+    assert adapters.classify_log_tail(
+        "progress\n" * 10 + "error: rate limit exceeded (429 too many requests)") == "limit"
+    assert adapters.classify_log_tail(
+        "the quota knob and rate limit setting\ndone") is None
+
+
 def test_classify_log_tail_both_blocked_wins():
     """Oracle 8: both blocked and limit present -> 'blocked'."""
     log = "some\nrate limit exceeded\nBLOCKED: reason\nmore"
