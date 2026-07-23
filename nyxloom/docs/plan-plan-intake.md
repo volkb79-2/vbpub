@@ -94,11 +94,23 @@ ownership), applied to an incoming plan.
   reconciliation friction — good first test) plus a deliberately-thin plan (to exercise the
   UNDERSPECIFIED route-back).
 
-## Open decision
-- **D-PI1 — reconciliation authority default.** *Recommended:* **BLOCKING** on north-star /
-  standing-decision CONTRADICTIONs (halt until ruled), **advisory** on GAPs (proceed under a
-  stated assumption + a confirming `D-NNN`). Alternative: fully-advisory (report only, always
-  proceed) — faster, but lets a plan quietly fight the north star, which is exactly what the
-  operator said must not happen. Defaulting to the recommended hybrid unless overridden.
+## Reconciliation authority is PLAN-DECLARED (D-PI1, operator-locked 2026-07-23)
+A global blocking-vs-advisory switch is too blunt — **the plan itself declares how conflicts
+resolve**, via a `reconciliation:` directive in its header/frontmatter:
+
+- **`plan-precedence`** — *"this takes precedence; align the standing decisions/architecture to
+  the plan."* CONTRADICTIONs become **realignment tasks** (revise the conflicting standing `D-NNN`
+  / north-star wording to match the plan), not blockers. Still surfaced for a human **ack** —
+  direction is changing — but the plan wins.
+- **`honor-standing`** — *"implement the plan only where results stay usable while honoring
+  standing decisions + current core architecture."* CONTRADICTIONs are **dropped/rescoped** (cut
+  the conflicting slice, proceed with the compatible remainder), each noted in the report.
+- **unspecified** → **fallback = BLOCKING** on north-star / standing-decision contradictions
+  (halt → decision-request), advisory on gaps. The safe default.
+
+Either declared mode still emits the reconciliation report **and** a decision-request for a human
+ack: the machine never *silently* changes direction (plan-precedence) nor *silently* drops plan
+intent (honor-standing). The plan's directive only says which way to lean once a conflict is
+found — the human still sees it.
 ```
 ```
