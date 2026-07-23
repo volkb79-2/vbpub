@@ -89,3 +89,97 @@ decisions) is **unauthenticated**. **Decision (operator, 2026-07-21): keep it as
 - **Revisit trigger:** if the control plane is ever bound to a published/host-reachable interface
   (the startup warning fires), add a shared-secret token on mutating POSTs **before** exposing it.
   This note is the standing record so that decision isn't silently skipped.
+
+---
+
+## Doc ownership: nyxloom ships its doctrine; troves carry only project deltas (2026-07-23)
+
+**Problem.** The canonical reference docs (`AUTHORING.md`, `STANDARD.md`, `STANDING.md`)
+physically live in `nyxloom-trove/` — nyxloom's *own consumer trove* — and
+`onboarding.scaffold_trove` (`src/nyxloom/onboarding.py:243-253`) `copyfile`s them into every
+new consumer. So "canonical reference" and "nyxloom's self-consumption copy" are literally the
+same files, and each consumer holds an unmanaged duplicate that silently goes stale. Because
+nyxloom self-hosts (nyxloom develops nyxloom), this ambiguity is structural, not cosmetic.
+
+**The deciding question is operational, not editorial** (operator, 2026-07-23): *how will people
+actually run nyxloom once it ships?* Ownership falls out of the deployment model:
+
+| UC | Scenario | Doctrine source | Consumer's role |
+|---|---|---|---|
+| **UC1** | nyxloom released as a product, run as a **container on a host** (target) | **baked into the image**; doctrine version == nyxloom release. A doc update ships *as* a nyxloom update. | client root mounted in; trove holds project content only |
+| **UC2** | nyxloomd-spawned CLI agents **containerized, folder-limited** (D-R7) | mounted **read-only from the product image** into each agent container | agent also gets its worktree (r/w, scope-limited) + the project's trove from the client mount |
+| **UC3** | **direct-drive** by a human / CLI agent (today, transitional) | repo-root `AGENTS.md` points at the product's reference docs | `CLAUDE.md` → thin `@import AGENTS.md`, so Claude Code still loads it |
+| **UC4** | **nyxloom develops nyxloom** (self-hosting) | the same product `reference/` | nyxloom's own trove is just another client — **zero reference authority** |
+
+**Decision.** The doctrine is **part of the product**, not of any trove:
+
+- **Canonical `reference/` ships inside the nyxloom package/image, outside every trove** —
+  `AUTHORING.md`, `STANDARD.md`, `STANDING.md`, a new `DOCTRINE.md` (operational lessons), plus
+  the orchestration docs nyxloom now owns (`controller-workflow*.md`,
+  `reasonix-controller-guide.md`).
+- **Names and locations are spec constants** (this doc + `SPEC.md`), never discovered at runtime.
+  *Why not an env var / lookup verb:* discovery only pays off when a location is unknown or
+  deployment-variable. Here the product defines both the reference dir and the trove name
+  (`nyxloom-trove`) by spec, so an env var only adds a failure mode (unset / wrong / divergent)
+  and buys nothing. Bind-mount today vs baked image tomorrow changes the *host* path, never the
+  product-relative path an agent uses.
+- **Two layers via same-named siblings — no extra directory.** Each canonical `reference/X.md`
+  instructs its reader: *also check `nyxloom-trove/X.md` for project-specific additions or
+  overrides.* Canonical = general; trove sibling = project delta. A dedicated `local/` /
+  `add-ons/` folder was rejected: the shared filename already expresses the pairing, and one
+  convention beats two. **Precedent already in the tree:** canonical `STANDARD.md` documents the
+  optional `nyxloom-trove/GUIDE.md` ("`AGENTS.md` carries a one-line pointer… the detail lives in
+  the trove"), first adopted by dstdns 2026-07-16 — this decision generalizes that single
+  catch-all doc into a per-document overlay.
+- **No copies.** Consumers stop carrying stamped duplicates of canonical docs, so drift becomes
+  structurally impossible rather than lint-policed.
+- **Onboarding stamps an informational `README.md`** into each new trove: what the trove owns,
+  that canonical doctrine lives upstream in the product, and how the sibling-override convention
+  works.
+
+**Migration ledger (measured 2026-07-23, before any change).** "Nothing gets lost" was *verified*,
+not assumed — every stamped copy was diffed against canonical:
+
+| Consumer | `AUTHORING.md` | `STANDARD.md` | `STANDING.md` | consumer-unique |
+|---|---|---|---|---|
+| dstdns | identical | **stale** (44 canonical-only lines) | absent | `GUIDE.md` (216 ln) |
+| topos | absent | **stale** | absent | — |
+| netcup-api-filter | identical | identical | absent | `STATE.md` |
+| nyxloom (self) | canonical source | canonical source | canonical source | — |
+
+**Decisive result: 0 consumer-only lines in any stamped copy** — all drift is canonical-newer.
+No project-specific content is trapped in the duplicates, so deleting them is lossless. What must
+be preserved is the genuinely consumer-authored material: dstdns's `GUIDE.md` and naf's
+`STATE.md` (both already project docs; both stay). Note also that `STANDING.md` is **absent from
+every consumer** — it is referenced by code (`daemon.py:522`, `decision_chat.py:23`) but was never
+stamped; the reference model closes that gap for free (nothing to stamp — it is read from the
+product).
+
+**Concrete changes** (a carve-able package):
+
+1. Create `reference/` in the nyxloom package; `git mv` AUTHORING/STANDARD/STANDING out of
+   `nyxloom-trove/`; add `DOCTRINE.md`; bring `controller-workflow*.md` +
+   `reasonix-controller-guide.md` under nyxloom ownership.
+2. Write `DOCTRINE.md` — promote the operational lessons that today live only in a *consumer's*
+   `CLAUDE.md` + session memory: serialize gate runs (one gate container at a time); an agent that
+   parks on a backgrounded gate reads as a false-done; trust git state, never receipts; a
+   pipe-to-`tail` masks the real exit code. These are orchestration-general — any consumer running
+   gates and dispatch hits them.
+3. `onboarding.scaffold_trove`: **stop copying doctrine**; stamp the informational `README.md` +
+   a fresh `nyxloom.toml` instead.
+4. `adapters.py` dispatch: emit a **read-first manifest** naming the canonical docs and their
+   trove siblings (mounted per D-R7).
+5. Consumers: `CLAUDE.md` → thin `@import AGENTS.md`; `AGENTS.md` points at the product reference
+   and names the trove siblings; migrate project-specific prose (dstdns: ciu / pwmcp /
+   cockpit-vs-gating / test-runner) into the trove siblings / `GUIDE.md`.
+6. Demote `vbpub/nyxloom/nyxloom-trove/` to an ordinary zero-authority trove; nyxloom re-onboards
+   itself through the same path — UC4 then validates the mechanism by construction.
+
+**Follow-ons deliberately not folded in:** (a) a trove sibling needs a way to mark itself
+*mandatory* reading, so a project can force its environment-critical doc on every agent;
+(b) a `nyxloom doctor` check that the running product's doctrine version matches what in-flight
+handoffs were authored against, so an upgrade that changes AUTHORING rules surfaces loudly instead
+of silently invalidating work.
+
+**Sequencing constraint:** change 4 edits `adapters.py`, which is in the active `scope.touch` of
+in-flight package B21 — this refactor must sequence *after* B21 merges, or the two will collide.
